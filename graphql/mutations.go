@@ -46,7 +46,7 @@ type paramBuilder interface {
 	Build(params map[string]any) ([]byte, error)
 }
 
-func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker) (graphqlgo.Schema, error) {
+func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *BroadcastHub) (graphqlgo.Schema, error) {
 	if builder == nil {
 		return graphqlgo.Schema{}, fmt.Errorf("graphql schema missing builder: %w", ebuserrors.ErrInvalidPayload)
 	}
@@ -59,14 +59,20 @@ func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker) (grap
 		mutationType = buildMutationType(registry, invoker)
 	}
 
+	var subscriptionType *graphqlgo.Object
+	if hub != nil {
+		subscriptionType = buildSubscriptionType(hub, types)
+	}
+
 	return graphqlgo.NewSchema(graphqlgo.SchemaConfig{
-		Query:    queryType,
-		Mutation: mutationType,
+		Query:        queryType,
+		Mutation:     mutationType,
+		Subscription: subscriptionType,
 	})
 }
 
 func NewInvokeHandler(builder *Builder, registry InvokeRegistry, invoker Invoker) (http.Handler, error) {
-	schema, err := NewSchema(builder, registry, invoker)
+	schema, err := NewSchema(builder, registry, invoker, nil)
 	if err != nil {
 		return nil, err
 	}

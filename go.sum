@@ -2,6 +2,8 @@ github.com/d3vi1/helianthus-ebusgo v0.0.0-20260201200950-6fa99f8750e2 h1:5htyCCO
 github.com/d3vi1/helianthus-ebusgo v0.0.0-20260201200950-6fa99f8750e2/go.mod h1:WVYXygxQrRS/FMsQm9h04pQbJp6zoVyY4scq1ps3OS8=
 github.com/d3vi1/helianthus-ebusreg v0.0.0-20260201212610-32c2b7eeec50 h1:y0fv+QOfxFZhgmSiNbr8U2WvFyVHn5L/bqBLRNqRrFQ=
 github.com/d3vi1/helianthus-ebusreg v0.0.0-20260201212610-32c2b7eeec50/go.mod h1:W9ZtSpWXmA60YD5PeGKmL9CO93Eqj48iugtgslAFkf0=
+github.com/gorilla/websocket v1.5.1 h1:gmztn0JnHVt9JZquRuzLw3g4wouNVzKL15iLr/zn/QY=
+github.com/gorilla/websocket v1.5.1/go.mod h1:x3kM2JMyaluk02fnUJpQuwD2dCS5NDG2ZHL0uE0tcaY=
 github.com/graphql-go/graphql v0.8.1 h1:p7/Ou/WpmulocJeEx7wjQy611rtXGQaAcXGqanuMMgc=
 github.com/graphql-go/graphql v0.8.1/go.mod h1:nKiHzRM0qopJEwCITUuIsxk9PlVlwIiiI8pnJEhordQ=
 github.com/graphql-go/handler v0.2.4 h1:gz9q11TUHPNUpqzV8LMa+rkqM5NUuH/nkE3oF2LS3rI=
@@ -12,3 +14,5 @@ github.com/matryer/is v1.4.1 h1:55ehd8zaGABKLXQUe2awZ99BD/PTc2ls+KV/dXphgEQ=
 github.com/matryer/is v1.4.1/go.mod h1:8I/i5uYgLzgsgEloJE1U6xx5HkBQpAZvepWuujKwMRU=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
+golang.org/x/net v0.17.0 h1:pVaXccu2ozPjCXewfr1S7xza/zcXTity9cCdXQYSjIM=
+golang.org/x/net v0.17.0/go.mod h1:NxSsAGuq816PNPmqtQdLE42eU2Fs7NoRIZrHJAlaCOE=

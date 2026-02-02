@@ -10,11 +10,12 @@ import (
 )
 
 type graphqlSchemaTypes struct {
-	fieldType    *graphqlgo.Object
-	responseType *graphqlgo.Object
-	methodType   *graphqlgo.Object
-	planeType    *graphqlgo.Object
-	deviceType   *graphqlgo.Object
+	fieldType     *graphqlgo.Object
+	responseType  *graphqlgo.Object
+	methodType    *graphqlgo.Object
+	planeType     *graphqlgo.Object
+	deviceType    *graphqlgo.Object
+	broadcastType *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {
@@ -219,11 +220,12 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	})
 
 	return graphqlSchemaTypes{
-		fieldType:    fieldType,
-		responseType: responseType,
-		methodType:   methodType,
-		planeType:    planeType,
-		deviceType:   deviceType,
+		fieldType:     fieldType,
+		responseType:  responseType,
+		methodType:    methodType,
+		planeType:     planeType,
+		deviceType:    deviceType,
+		broadcastType: buildBroadcastType(),
 	}
 }
 
@@ -314,7 +316,7 @@ func NewQuerySchema(builder *Builder) (graphqlgo.Schema, error) {
 }
 
 func NewHandler(builder *Builder) (http.Handler, error) {
-	schema, err := NewSchema(builder, nil, nil)
+	schema, err := NewSchema(builder, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}

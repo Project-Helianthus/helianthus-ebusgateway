@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
@@ -19,6 +20,8 @@ type Gateway struct {
 	Bus       *protocol.Bus
 	Registry  *registry.DeviceRegistry
 	Router    *router.BusEventRouter
+	extraMu   sync.RWMutex
+	extra     []router.Plane
 	closeFn   func() error
 }
 
@@ -62,7 +65,11 @@ func (g *Gateway) RefreshRouterPlanes() int {
 		return 0
 	}
 
-	planes := make([]router.Plane, 0)
+	g.extraMu.RLock()
+	extra := append([]router.Plane(nil), g.extra...)
+	g.extraMu.RUnlock()
+
+	planes := make([]router.Plane, 0, len(extra))
 	g.Registry.Iterate(func(entry registry.DeviceEntry) bool {
 		for _, plane := range entry.Planes() {
 			if routerPlane, ok := plane.(router.Plane); ok {
@@ -72,8 +79,18 @@ func (g *Gateway) RefreshRouterPlanes() int {
 		return true
 	})
 
+	planes = append(planes, extra...)
 	g.Router.SetPlanes(planes)
 	return len(planes)
+}
+
+func (g *Gateway) AddRouterPlane(plane router.Plane) {
+	if g == nil || plane == nil {
+		return
+	}
+	g.extraMu.Lock()
+	g.extra = append(g.extra, plane)
+	g.extraMu.Unlock()
 }
 
 func resolveTransport(ctx context.Context, cfg Config) (transport.RawTransport, func() error, error) {

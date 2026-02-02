@@ -128,6 +128,42 @@ func TestGateway_RefreshRouterPlanes(t *testing.T) {
 	}
 }
 
+func TestGateway_AddRouterPlane(t *testing.T) {
+	plane := &mockPlane{
+		name: "extra",
+		subscriptions: []router.Subscription{
+			{Primary: 0xA1, Secondary: 0xB2},
+		},
+	}
+
+	gateway, err := New(context.Background(), Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}()
+
+	gateway.AddRouterPlane(plane)
+	count := gateway.RefreshRouterPlanes()
+	if count != 1 {
+		t.Fatalf("RefreshRouterPlanes() = %d; want 1", count)
+	}
+
+	_ = gateway.Router.HandleBroadcast(protocol.Frame{
+		Primary:   0xA1,
+		Secondary: 0xB2,
+	})
+
+	if plane.broadcasts != 1 {
+		t.Fatalf("OnBroadcast calls = %d; want 1", plane.broadcasts)
+	}
+}
+
 type mockProvider struct {
 	plane *mockPlane
 }

@@ -1,6 +1,7 @@
 package ebusgateway
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/d3vi1/helianthus-ebusgo/protocol"
@@ -124,5 +125,19 @@ func TestDecodeDeviceInfoPayload(t *testing.T) {
 	}
 	if _, err := decodeDeviceInfoPayload([]byte{0x01}); err == nil {
 		t.Fatalf("expected error on short payload")
+	}
+}
+
+func TestScanTargetsFromExpectedDevices(t *testing.T) {
+	expected := []expectedDevice{
+		{Address: hexByte(0x08), Description: "Boiler"},
+		{Address: hexByte(0x10), Description: "Controller"},
+		{Address: hexByte(0x08), Description: "Duplicate"},
+	}
+
+	got := scanTargetsFromExpectedDevices(expected)
+	want := []byte{0x08, 0x10}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scan targets = %v; want %v", got, want)
 	}
 }

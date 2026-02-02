@@ -90,7 +90,11 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 
 	source := opts.SourceAddress
 	if source == 0 {
-		source = defaultSmokeSource
+		if cfg.Smoke.SourceAddress.Byte() != 0 {
+			source = cfg.Smoke.SourceAddress.Byte()
+		} else {
+			source = defaultSmokeSource
+		}
 	}
 
 	scanBus := &timeoutBus{
@@ -98,7 +102,8 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 		timeout: time.Duration(cfg.Smoke.ScanTimeoutSec) * time.Second,
 	}
 
-	entries, err := registry.Scan(ctx, scanBus, gateway.Registry, source, nil)
+	targets := scanTargetsFromExpectedDevices(cfg.ExpectedDevices)
+	entries, err := registry.Scan(ctx, scanBus, gateway.Registry, source, targets)
 	if err != nil {
 		return err
 	}
@@ -507,4 +512,21 @@ func decodeDeviceInfoPayload(payload []byte) (map[string]string, error) {
 		"sw_version":   fmt.Sprintf("%02X%02X", payload[4], payload[5]),
 		"hw_version":   fmt.Sprintf("%02X%02X", payload[6], payload[7]),
 	}, nil
+}
+
+func scanTargetsFromExpectedDevices(expected []expectedDevice) []byte {
+	if len(expected) == 0 {
+		return nil
+	}
+	seen := make(map[byte]struct{}, len(expected))
+	out := make([]byte, 0, len(expected))
+	for _, item := range expected {
+		addr := item.Address.Byte()
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	return out
 }

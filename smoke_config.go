@@ -37,6 +37,7 @@ type smokeBehavior struct {
 	VerboseFrames    bool `yaml:"verbose_frames"`
 	ScanTimeoutSec   int  `yaml:"scan_timeout_sec"`
 	MethodTimeoutSec int  `yaml:"method_timeout_sec"`
+	SourceAddress    hexByte `yaml:"source_address"`
 }
 
 type expectedDevice struct {

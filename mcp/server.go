@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -404,5 +403,3 @@ func rpcErrorInvalidParams(message string) *rpcError {
 func rpcErrorInternal(message string) *rpcError {
 	return &rpcError{Code: -32603, Message: message}
 }
-
-var errServerMisconfigured = errors.New("mcp server misconfigured")

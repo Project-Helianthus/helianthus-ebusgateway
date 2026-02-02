@@ -168,6 +168,28 @@ func TestBuilder_RebuildsOnChange(t *testing.T) {
 	}
 }
 
+func TestBuilder_StopsOnClosedChannel(t *testing.T) {
+	reg := mockRegistry{}
+	changes := make(chan struct{})
+
+	builder := NewBuilder(reg, changes)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := builder.Start(ctx); err != nil {
+		t.Fatalf("Start error = %v", err)
+	}
+
+	rev := builder.Revision()
+	close(changes)
+
+	time.Sleep(50 * time.Millisecond)
+
+	if got := builder.Revision(); got != rev {
+		t.Fatalf("Revision advanced after close: %d -> %d", rev, got)
+	}
+}
+
 func waitForRevision(t *testing.T, builder *Builder, last uint64) {
 	t.Helper()
 

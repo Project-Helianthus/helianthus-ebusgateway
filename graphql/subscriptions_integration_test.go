@@ -28,26 +28,6 @@ func (noopBus) Send(context.Context, protocol.Frame) (*protocol.Frame, error) {
 }
 
 func TestBroadcastSubscriptions_Integration(t *testing.T) {
-	builder := NewBuilder(emptyRegistry{}, nil)
-	if err := builder.Start(context.Background()); err != nil {
-		t.Fatalf("builder.Start error = %v", err)
-	}
-
-	eventRouter := router.NewBusEventRouter(noopBus{})
-	var hub *BroadcastHub
-	hub = NewBroadcastHub(func() {
-		eventRouter.SetPlanes([]router.Plane{hub})
-	})
-	eventRouter.SetPlanes([]router.Plane{hub})
-
-	handler, err := NewSubscriptionHandler(builder, nil, nil, hub)
-	if err != nil {
-		t.Fatalf("NewSubscriptionHandler error = %v", err)
-	}
-
-	server := httptest.NewServer(handler)
-	defer server.Close()
-
 	query := `
 		subscription($primary: Int!, $secondary: Int!) {
 			broadcast(primary: $primary, secondary: $secondary) {
@@ -69,6 +49,9 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 	}
 
 	t.Run("websocket", func(t *testing.T) {
+		server, hub, eventRouter := newSubscriptionServer(t)
+		defer server.Close()
+
 		wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 		dialer := websocket.Dialer{Subprotocols: []string{wsProtocolTransport}}
 		conn, _, err := dialer.Dial(wsURL, nil)
@@ -82,7 +65,9 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 		}
 
 		var ack wsMessage
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatalf("SetReadDeadline error = %v", err)
+		}
 		if err := conn.ReadJSON(&ack); err != nil {
 			t.Fatalf("connection_ack read error = %v", err)
 		}
@@ -110,7 +95,9 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 		eventRouter.HandleBroadcast(frame)
 
 		var msg wsMessage
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatalf("SetReadDeadline error = %v", err)
+		}
 		if err := conn.ReadJSON(&msg); err != nil {
 			t.Fatalf("next read error = %v", err)
 		}
@@ -141,6 +128,9 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("sse", func(t *testing.T) {
+		server, hub, eventRouter := newSubscriptionServer(t)
+		defer server.Close()
+
 		body, err := json.Marshal(graphqlRequest{
 			Query: query,
 			Variables: map[string]any{
@@ -194,6 +184,29 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 			t.Fatalf("broadcast data = %v; want [1 2]", payloadData.Data.Broadcast.Data)
 		}
 	})
+}
+
+func newSubscriptionServer(t *testing.T) (*httptest.Server, *BroadcastHub, *router.BusEventRouter) {
+	t.Helper()
+
+	builder := NewBuilder(emptyRegistry{}, nil)
+	if err := builder.Start(context.Background()); err != nil {
+		t.Fatalf("builder.Start error = %v", err)
+	}
+
+	eventRouter := router.NewBusEventRouter(noopBus{})
+	var hub *BroadcastHub
+	hub = NewBroadcastHub(func() {
+		eventRouter.SetPlanes([]router.Plane{hub})
+	})
+	eventRouter.SetPlanes([]router.Plane{hub})
+
+	handler, err := NewSubscriptionHandler(builder, nil, nil, hub)
+	if err != nil {
+		t.Fatalf("NewSubscriptionHandler error = %v", err)
+	}
+
+	return httptest.NewServer(handler), hub, eventRouter
 }
 
 func waitForSubscription(t *testing.T, hub *BroadcastHub, primary, secondary byte) {

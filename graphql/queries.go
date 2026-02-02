@@ -9,11 +9,15 @@ import (
 	"github.com/graphql-go/handler"
 )
 
-func NewQuerySchema(builder *Builder) (graphqlgo.Schema, error) {
-	if builder == nil {
-		return graphqlgo.Schema{}, fmt.Errorf("graphql query schema missing builder: %w", ebuserrors.ErrInvalidPayload)
-	}
+type graphqlSchemaTypes struct {
+	fieldType    *graphqlgo.Object
+	responseType *graphqlgo.Object
+	methodType   *graphqlgo.Object
+	planeType    *graphqlgo.Object
+	deviceType   *graphqlgo.Object
+}
 
+func buildSchemaTypes() graphqlSchemaTypes {
 	fieldType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Field",
 		Fields: graphqlgo.Fields{
@@ -214,18 +218,28 @@ func NewQuerySchema(builder *Builder) (graphqlgo.Schema, error) {
 		},
 	})
 
-	queryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+	return graphqlSchemaTypes{
+		fieldType:    fieldType,
+		responseType: responseType,
+		methodType:   methodType,
+		planeType:    planeType,
+		deviceType:   deviceType,
+	}
+}
+
+func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Object {
+	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Query",
 		Fields: graphqlgo.Fields{
 			"devices": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(deviceType))),
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.deviceType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					snapshot := builder.Schema()
 					return snapshot.Devices, nil
 				},
 			},
 			"device": &graphqlgo.Field{
-				Type: deviceType,
+				Type: types.deviceType,
 				Args: graphqlgo.FieldConfigArgument{
 					"address": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
 				},
@@ -243,7 +257,7 @@ func NewQuerySchema(builder *Builder) (graphqlgo.Schema, error) {
 				},
 			},
 			"planes": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(planeType))),
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.planeType))),
 				Args: graphqlgo.FieldConfigArgument{
 					"address": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
 				},
@@ -261,7 +275,7 @@ func NewQuerySchema(builder *Builder) (graphqlgo.Schema, error) {
 				},
 			},
 			"methods": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(methodType))),
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.methodType))),
 				Args: graphqlgo.FieldConfigArgument{
 					"address": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
 					"plane":   &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
@@ -286,12 +300,21 @@ func NewQuerySchema(builder *Builder) (graphqlgo.Schema, error) {
 			},
 		},
 	})
+}
+
+func NewQuerySchema(builder *Builder) (graphqlgo.Schema, error) {
+	if builder == nil {
+		return graphqlgo.Schema{}, fmt.Errorf("graphql query schema missing builder: %w", ebuserrors.ErrInvalidPayload)
+	}
+
+	types := buildSchemaTypes()
+	queryType := buildQueryType(builder, types)
 
 	return graphqlgo.NewSchema(graphqlgo.SchemaConfig{Query: queryType})
 }
 
 func NewHandler(builder *Builder) (http.Handler, error) {
-	schema, err := NewQuerySchema(builder)
+	schema, err := NewSchema(builder, nil, nil)
 	if err != nil {
 		return nil, err
 	}

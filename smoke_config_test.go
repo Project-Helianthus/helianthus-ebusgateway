@@ -25,7 +25,7 @@ smoke:
 func TestLoadSmokeConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "AGENT-local.md")
-	content := "```yaml\nenh:\n  type: tcp\n  host: \"127.0.0.1\"\n  port: 7624\n  timeout_sec: 3\nexpected_devices:\n  - address: 0x08\n    description: \"Boiler\"\nsmoke:\n  verbose_frames: true\n  scan_timeout_sec: 4\n  method_timeout_sec: 6\n```\n"
+	content := "```yaml\nenh:\n  type: tcp\n  host: \"127.0.0.1\"\n  port: 7624\n  timeout_sec: 3\nexpected_devices:\n  - address: 0x08\n    description: \"Boiler\"\nsmoke:\n  source_address: 0xf0\n  verbose_frames: true\n  scan_timeout_sec: 4\n  method_timeout_sec: 6\n```\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile error = %v", err)
 	}
@@ -39,6 +39,9 @@ func TestLoadSmokeConfigFile(t *testing.T) {
 	}
 	if cfg.ENH.TimeoutSec != 3 {
 		t.Fatalf("timeout = %d; want 3", cfg.ENH.TimeoutSec)
+	}
+	if cfg.Smoke.SourceAddress.Byte() != 0xF0 {
+		t.Fatalf("source address = 0x%02x; want 0xf0", cfg.Smoke.SourceAddress.Byte())
 	}
 	if !cfg.Smoke.VerboseFrames || cfg.Smoke.ScanTimeoutSec != 4 || cfg.Smoke.MethodTimeoutSec != 6 {
 		t.Fatalf("unexpected smoke config: %+v", cfg.Smoke)

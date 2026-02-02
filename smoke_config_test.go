@@ -1,6 +1,7 @@
 package ebusgateway
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ func TestLoadSmokeConfigMissingFile(t *testing.T) {
 
 func TestRunSmokeFromEnvMissingConfig(t *testing.T) {
 	t.Setenv("EBUS_SMOKE", "1")
-	err := RunSmokeFromEnv(nil, SmokeOptions{RootDir: t.TempDir()})
+	err := RunSmokeFromEnv(context.Background(), SmokeOptions{RootDir: t.TempDir()})
 	if !errors.Is(err, errSmokeConfigMissing) {
 		t.Fatalf("expected errSmokeConfigMissing, got %v", err)
 	}

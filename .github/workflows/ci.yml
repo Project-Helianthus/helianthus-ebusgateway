@@ -7,8 +7,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: github.com/d3vi1/*
+      GONOSUMDB: github.com/d3vi1/*
+      GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
+      - run: git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
@@ -17,8 +22,13 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: github.com/d3vi1/*
+      GONOSUMDB: github.com/d3vi1/*
+      GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
+      - run: git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
@@ -26,8 +36,13 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: github.com/d3vi1/*
+      GONOSUMDB: github.com/d3vi1/*
+      GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
+      - run: git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'

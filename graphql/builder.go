@@ -38,7 +38,10 @@ func (b *Builder) Start(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				return
-			case <-b.changes:
+			case _, ok := <-b.changes:
+				if !ok {
+					return
+				}
 				_ = b.Rebuild()
 			}
 		}

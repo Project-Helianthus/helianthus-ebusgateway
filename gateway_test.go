@@ -2,6 +2,7 @@ package ebusgateway
 
 import (
 	"context"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -51,6 +52,17 @@ func TestNewGateway_DialsWithENH(t *testing.T) {
 		gotAddress = address
 		client, server := net.Pipe()
 		serverClose = func() { _ = server.Close() }
+
+		go func() {
+			buf := make([]byte, 2)
+			if _, err := io.ReadFull(server, buf); err != nil {
+				_ = server.Close()
+				return
+			}
+			resp := transport.EncodeENH(transport.ENHResResetted, 0x00)
+			_, _ = server.Write(resp[:])
+		}()
+
 		return client, nil
 	}
 
@@ -61,6 +73,7 @@ func TestNewGateway_DialsWithENH(t *testing.T) {
 			Address:     "/tmp/ebusd.sock",
 			DialTimeout: time.Second,
 			Dial:        dialer,
+			ReadTimeout: 200 * time.Millisecond,
 		},
 	}
 
@@ -84,6 +97,53 @@ func TestNewGateway_DialsWithENH(t *testing.T) {
 	if err := gateway.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
+}
+
+type mockInitTransport struct {
+	called   bool
+	features []byte
+}
+
+func (m *mockInitTransport) Init(features byte) error {
+	m.called = true
+	m.features = append(m.features, features)
+	return nil
+}
+
+func (m *mockInitTransport) ReadByte() (byte, error) { return 0, nil }
+func (m *mockInitTransport) Write([]byte) (int, error) {
+	return 0, nil
+}
+func (m *mockInitTransport) Close() error { return nil }
+
+type mockRawTransport struct{}
+
+func (mockRawTransport) ReadByte() (byte, error) { return 0, nil }
+func (mockRawTransport) Write([]byte) (int, error) {
+	return 0, nil
+}
+func (mockRawTransport) Close() error { return nil }
+
+func TestInitTransportIfSupported(t *testing.T) {
+	t.Run("calls Init when supported", func(t *testing.T) {
+		tr := &mockInitTransport{}
+		if err := initTransportIfSupported(tr); err != nil {
+			t.Fatalf("initTransportIfSupported error = %v", err)
+		}
+		if !tr.called {
+			t.Fatalf("Init was not called")
+		}
+		if len(tr.features) != 1 || tr.features[0] != 0x00 {
+			t.Fatalf("Init features = %v; want [0]", tr.features)
+		}
+	})
+
+	t.Run("no-op when unsupported", func(t *testing.T) {
+		tr := mockRawTransport{}
+		if err := initTransportIfSupported(tr); err != nil {
+			t.Fatalf("initTransportIfSupported error = %v", err)
+		}
+	})
 }
 
 func TestGateway_RefreshRouterPlanes(t *testing.T) {

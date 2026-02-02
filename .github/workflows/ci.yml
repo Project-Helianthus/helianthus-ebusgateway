@@ -17,6 +17,10 @@ jobs:
           TOKEN="${{ secrets.GH_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.GIT_TOKEN }}"; fi
           if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.REPO_READ_TOKEN }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_TOKEN }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_READ_TOKEN }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PAT }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PRIVATE_REPO_TOKEN }}"; fi
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
@@ -37,6 +41,10 @@ jobs:
           TOKEN="${{ secrets.GH_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.GIT_TOKEN }}"; fi
           if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.REPO_READ_TOKEN }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_TOKEN }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_READ_TOKEN }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PAT }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PRIVATE_REPO_TOKEN }}"; fi
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
@@ -56,6 +64,10 @@ jobs:
           TOKEN="${{ secrets.GH_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.GIT_TOKEN }}"; fi
           if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.REPO_READ_TOKEN }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_TOKEN }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_READ_TOKEN }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PAT }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PRIVATE_REPO_TOKEN }}"; fi
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5

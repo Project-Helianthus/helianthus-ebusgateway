@@ -95,6 +95,9 @@ func (g *Gateway) AddRouterPlane(plane router.Plane) {
 
 func resolveTransport(ctx context.Context, cfg Config) (transport.RawTransport, func() error, error) {
 	if cfg.Transport != nil {
+		if err := initTransportIfSupported(cfg.Transport); err != nil {
+			return nil, nil, err
+		}
 		return cfg.Transport, cfg.Transport.Close, nil
 	}
 
@@ -125,6 +128,10 @@ func resolveTransport(ctx context.Context, cfg Config) (transport.RawTransport, 
 		_ = conn.Close()
 		return nil, nil, err
 	}
+	if err := initTransportIfSupported(transportLayer); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
 
 	return transportLayer, conn.Close, nil
 }
@@ -139,6 +146,22 @@ func transportFromConn(protocolName TransportProtocol, conn net.Conn, readTimeou
 	default:
 		return nil, fmt.Errorf("gateway transport unsupported protocol %q: %w", protocolName, ebuserrors.ErrInvalidPayload)
 	}
+}
+
+type initTransport interface {
+	Init(features byte) error
+}
+
+func initTransportIfSupported(tr transport.RawTransport) error {
+	initializer, ok := tr.(initTransport)
+	if !ok {
+		return nil
+	}
+	const defaultInitFeatures = byte(0x00)
+	if err := initializer.Init(defaultInitFeatures); err != nil {
+		return fmt.Errorf("gateway transport init failed: %w", err)
+	}
+	return nil
 }
 
 func dialContext(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {

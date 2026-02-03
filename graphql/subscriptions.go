@@ -121,7 +121,7 @@ func (hub *BroadcastHub) BuildRequest(registry.Method, map[string]any) (protocol
 	return protocol.Frame{}, fmt.Errorf("broadcast hub does not send requests: %w", ebuserrors.ErrInvalidPayload)
 }
 
-func (hub *BroadcastHub) DecodeResponse(registry.Method, protocol.Frame) (any, error) {
+func (hub *BroadcastHub) DecodeResponse(registry.Method, protocol.Frame, map[string]any) (any, error) {
 	return nil, fmt.Errorf("broadcast hub does not decode responses: %w", ebuserrors.ErrInvalidPayload)
 }
 

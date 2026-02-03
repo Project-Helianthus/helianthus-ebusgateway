@@ -85,7 +85,7 @@ func (p *testPlane) BuildRequest(registry.Method, map[string]any) (protocol.Fram
 	p.lastBuilt = "ok"
 	return protocol.Frame{}, nil
 }
-func (p *testPlane) DecodeResponse(registry.Method, protocol.Frame) (any, error) {
+func (p *testPlane) DecodeResponse(registry.Method, protocol.Frame, map[string]any) (any, error) {
 	return map[string]any{"ok": true}, nil
 }
 

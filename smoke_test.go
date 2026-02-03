@@ -100,7 +100,7 @@ func TestSmokePlaneBuildRequestAndDecode(t *testing.T) {
 	}
 
 	resp := protocol.Frame{Data: []byte{0x07}}
-	decoded, err := smokePlane.DecodeResponse(method, resp)
+	decoded, err := smokePlane.DecodeResponse(method, resp, map[string]any{"value": int8(5)})
 	if err != nil {
 		t.Fatalf("DecodeResponse error = %v", err)
 	}

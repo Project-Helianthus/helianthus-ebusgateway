@@ -143,15 +143,6 @@ func (s *scriptedTransport) Close() error {
 	return nil
 }
 
-func (s *scriptedTransport) lastWrite() []byte {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.writes) == 0 {
-		return nil
-	}
-	return s.writes[len(s.writes)-1]
-}
-
 func (s *scriptedTransport) allWrites() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()

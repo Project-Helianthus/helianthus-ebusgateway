@@ -33,6 +33,7 @@ type Config struct {
 	BusConfig       protocol.BusConfig
 	QueueCapacity   int
 	Providers       []registry.PlaneProvider
+	BroadcastListen bool
 }
 
 func DefaultConfig() Config {

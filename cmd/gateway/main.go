@@ -29,7 +29,20 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if err != nil {
 		return err
 	}
+	var listener *ebusgateway.BroadcastListener
+	if cfg.BroadcastListen {
+		listener, err = ebusgateway.StartBroadcastListener(ctx, cfg, gateway.Router)
+		if err != nil {
+			_ = gateway.Close()
+			return err
+		}
+	}
 	defer func() {
+		if listener != nil {
+			if err := listener.Close(); err != nil {
+				log.Printf("broadcast listener close: %v", err)
+			}
+		}
 		if err := gateway.Close(); err != nil {
 			log.Printf("gateway close: %v", err)
 		}
@@ -52,4 +65,5 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.DurationVar(&cfg.TransportConfig.WriteTimeout, "write-timeout", cfg.TransportConfig.WriteTimeout, "transport write timeout")
 	fs.DurationVar(&cfg.TransportConfig.DialTimeout, "dial-timeout", cfg.TransportConfig.DialTimeout, "transport dial timeout")
 	fs.IntVar(&cfg.QueueCapacity, "queue-capacity", cfg.QueueCapacity, "bus queue capacity (0 uses protocol default)")
+	fs.BoolVar(&cfg.BroadcastListen, "broadcast", cfg.BroadcastListen, "enable broadcast listener (separate connection)")
 }

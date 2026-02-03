@@ -257,6 +257,60 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 	})
 
+	t.Run("energy_totals", func(t *testing.T) {
+		request := graphqlclient.NewRequest(`
+			query {
+				energyTotals {
+					gas { dhw { today yearly } climate { today yearly } }
+					electric { dhw { today yearly } climate { today yearly } }
+					solar { dhw { today yearly } climate { today yearly } }
+				}
+			}
+		`)
+
+		var response struct {
+			EnergyTotals *struct {
+				Gas struct {
+					DHW struct {
+						Today  float64   `json:"today"`
+						Yearly []float64 `json:"yearly"`
+					} `json:"dhw"`
+					Climate struct {
+						Today  float64   `json:"today"`
+						Yearly []float64 `json:"yearly"`
+					} `json:"climate"`
+				} `json:"gas"`
+				Electric struct {
+					DHW struct {
+						Today  float64   `json:"today"`
+						Yearly []float64 `json:"yearly"`
+					} `json:"dhw"`
+					Climate struct {
+						Today  float64   `json:"today"`
+						Yearly []float64 `json:"yearly"`
+					} `json:"climate"`
+				} `json:"electric"`
+				Solar struct {
+					DHW struct {
+						Today  float64   `json:"today"`
+						Yearly []float64 `json:"yearly"`
+					} `json:"dhw"`
+					Climate struct {
+						Today  float64   `json:"today"`
+						Yearly []float64 `json:"yearly"`
+					} `json:"climate"`
+				} `json:"solar"`
+			} `json:"energyTotals"`
+		}
+
+		if err := client.Run(context.Background(), request, &response); err != nil {
+			t.Fatalf("energyTotals query error = %v", err)
+		}
+		if response.EnergyTotals != nil {
+			t.Fatalf("energyTotals expected nil with static provider")
+		}
+	})
+
 	t.Run("planes", func(t *testing.T) {
 		request := graphqlclient.NewRequest(`
 			query($address: Int!) {

@@ -173,20 +173,27 @@ func TestBuilder_StopsOnClosedChannel(t *testing.T) {
 	changes := make(chan struct{})
 
 	builder := NewBuilder(reg, changes)
+	close(changes)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := builder.Start(ctx); err != nil {
-		t.Fatalf("Start error = %v", err)
-	}
+	done := make(chan struct{})
+	go func() {
+		builder.watchChanges(ctx)
+		close(done)
+	}()
 
-	rev := builder.Revision()
-	close(changes)
-
-	time.Sleep(50 * time.Millisecond)
-
-	if got := builder.Revision(); got != rev {
-		t.Fatalf("Revision advanced after close: %d -> %d", rev, got)
+	select {
+	case <-done:
+		return
+	case <-time.After(200 * time.Millisecond):
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(200 * time.Millisecond):
+		}
+		t.Fatalf("watchChanges did not exit after changes closed")
 	}
 }
 

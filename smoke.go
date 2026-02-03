@@ -2,6 +2,7 @@ package ebusgateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -175,6 +176,10 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 				cancelMethod()
 				invoked = true
 				if err != nil {
+					if errors.Is(err, ebuserrors.ErrInvalidPayload) {
+						logger.Printf("device 0x%02x plane %s method %s skipped: %v", entry.Address(), invokePlane.Name(), method.Name(), err)
+						continue
+					}
 					invokeErrors = append(invokeErrors, fmt.Sprintf("device 0x%02x plane %s method %s: %v", entry.Address(), invokePlane.Name(), method.Name(), err))
 					break
 				}

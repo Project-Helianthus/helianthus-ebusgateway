@@ -205,6 +205,58 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 	})
 
+	t.Run("zones_dhw", func(t *testing.T) {
+		request := graphqlclient.NewRequest(`
+			query {
+				zones {
+					id
+					name
+					operatingMode
+					preset
+					currentTempC
+					targetTempC
+					heatingDemand
+				}
+				dhw {
+					operatingMode
+					preset
+					currentTempC
+					targetTempC
+					heatingDemand
+				}
+			}
+		`)
+
+		var response struct {
+			Zones []struct {
+				ID            string   `json:"id"`
+				Name          string   `json:"name"`
+				OperatingMode *string  `json:"operatingMode"`
+				Preset        *string  `json:"preset"`
+				CurrentTempC  *float64 `json:"currentTempC"`
+				TargetTempC   *float64 `json:"targetTempC"`
+				HeatingDemand *float64 `json:"heatingDemand"`
+			} `json:"zones"`
+			DHW *struct {
+				OperatingMode *string  `json:"operatingMode"`
+				Preset        *string  `json:"preset"`
+				CurrentTempC  *float64 `json:"currentTempC"`
+				TargetTempC   *float64 `json:"targetTempC"`
+				HeatingDemand *float64 `json:"heatingDemand"`
+			} `json:"dhw"`
+		}
+
+		if err := client.Run(context.Background(), request, &response); err != nil {
+			t.Fatalf("zones/dhw query error = %v", err)
+		}
+		if len(response.Zones) != 0 {
+			t.Fatalf("zones = %d; want 0", len(response.Zones))
+		}
+		if response.DHW != nil {
+			t.Fatalf("dhw expected nil with static provider")
+		}
+	})
+
 	t.Run("planes", func(t *testing.T) {
 		request := graphqlclient.NewRequest(`
 			query($address: Int!) {

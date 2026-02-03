@@ -164,6 +164,47 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 	})
 
+	t.Run("service_status", func(t *testing.T) {
+		request := graphqlclient.NewRequest(`
+			query {
+				daemonStatus {
+					status
+					firmwareVersion
+					updatesAvailable
+				}
+				adapterStatus {
+					status
+					firmwareVersion
+					updatesAvailable
+				}
+			}
+		`)
+
+		var response struct {
+			DaemonStatus struct {
+				Status           string `json:"status"`
+				FirmwareVersion  string `json:"firmwareVersion"`
+				UpdatesAvailable bool   `json:"updatesAvailable"`
+			} `json:"daemonStatus"`
+			AdapterStatus struct {
+				Status           string `json:"status"`
+				FirmwareVersion  string `json:"firmwareVersion"`
+				UpdatesAvailable bool   `json:"updatesAvailable"`
+			} `json:"adapterStatus"`
+		}
+
+		if err := client.Run(context.Background(), request, &response); err != nil {
+			t.Fatalf("status query error = %v", err)
+		}
+
+		if response.DaemonStatus.Status == "" {
+			t.Fatalf("daemon status empty")
+		}
+		if response.AdapterStatus.Status == "" {
+			t.Fatalf("adapter status empty")
+		}
+	})
+
 	t.Run("planes", func(t *testing.T) {
 		request := graphqlclient.NewRequest(`
 			query($address: Int!) {

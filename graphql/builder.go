@@ -8,6 +8,7 @@ import (
 type Builder struct {
 	registry Registry
 	changes  <-chan struct{}
+	status   StatusProvider
 
 	mu       sync.RWMutex
 	schema   Schema
@@ -18,6 +19,7 @@ func NewBuilder(reg Registry, changes <-chan struct{}) *Builder {
 	return &Builder{
 		registry: reg,
 		changes:  changes,
+		status:   staticStatusProvider{},
 	}
 }
 
@@ -89,4 +91,26 @@ func (b *Builder) Revision() uint64 {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.revision
+}
+
+func (b *Builder) SetStatusProvider(provider StatusProvider) {
+	if b == nil || provider == nil {
+		return
+	}
+	b.mu.Lock()
+	b.status = provider
+	b.mu.Unlock()
+}
+
+func (b *Builder) statusProvider() StatusProvider {
+	if b == nil {
+		return staticStatusProvider{}
+	}
+	b.mu.RLock()
+	provider := b.status
+	b.mu.RUnlock()
+	if provider == nil {
+		return staticStatusProvider{}
+	}
+	return provider
 }

@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	// ServiceTypeGateway is the DNS-SD service type advertised by the eBUS gateway.
-	ServiceTypeGateway = "_helianthus-ebusgateway._tcp"
+	// ServiceTypeGateway is the DNS-SD service type advertised for the GraphQL endpoint.
+	ServiceTypeGateway = "_helianthus-graphql._tcp"
 
 	defaultDomain = "local."
 )

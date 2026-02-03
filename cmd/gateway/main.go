@@ -3,12 +3,18 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/d3vi1/helianthus-ebusgateway"
+	"github.com/d3vi1/helianthus-ebusgateway/graphql"
+	"github.com/d3vi1/helianthus-ebusgateway/mcp"
+	"github.com/d3vi1/helianthus-ebusgateway/mdns"
 )
 
 func main() {
@@ -29,10 +35,21 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if err != nil {
 		return err
 	}
+	server, advertiser, err := startHTTPServer(ctx, cfg, gateway)
+	if err != nil {
+		_ = gateway.Close()
+		return err
+	}
 	var listener *ebusgateway.BroadcastListener
 	if cfg.BroadcastListen {
 		listener, err = ebusgateway.StartBroadcastListener(ctx, cfg, gateway.Router)
 		if err != nil {
+			if advertiser != nil {
+				_ = advertiser.Close()
+			}
+			if server != nil {
+				_ = server.Close()
+			}
 			_ = gateway.Close()
 			return err
 		}
@@ -41,6 +58,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		if listener != nil {
 			if err := listener.Close(); err != nil {
 				log.Printf("broadcast listener close: %v", err)
+			}
+		}
+		if advertiser != nil {
+			if err := advertiser.Close(); err != nil {
+				log.Printf("mdns close: %v", err)
+			}
+		}
+		if server != nil {
+			if err := server.Close(); err != nil {
+				log.Printf("http server close: %v", err)
 			}
 		}
 		if err := gateway.Close(); err != nil {
@@ -66,4 +93,93 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.DurationVar(&cfg.TransportConfig.DialTimeout, "dial-timeout", cfg.TransportConfig.DialTimeout, "transport dial timeout")
 	fs.IntVar(&cfg.QueueCapacity, "queue-capacity", cfg.QueueCapacity, "bus queue capacity (0 uses protocol default)")
 	fs.BoolVar(&cfg.BroadcastListen, "broadcast", cfg.BroadcastListen, "enable broadcast listener (separate connection)")
+	fs.StringVar(&cfg.HTTPAddr, "http-addr", cfg.HTTPAddr, "http listen address (empty disables)")
+	fs.StringVar(&cfg.GraphQLPath, "graphql-path", cfg.GraphQLPath, "graphql endpoint path")
+	fs.StringVar(&cfg.SubscriptionPath, "subscription-path", cfg.SubscriptionPath, "graphql subscriptions path")
+	fs.StringVar(&cfg.MCPPath, "mcp-path", cfg.MCPPath, "mcp endpoint path")
+	fs.BoolVar(&cfg.MDNSAdvertise, "mdns", cfg.MDNSAdvertise, "advertise graphql endpoint via mdns")
+	fs.StringVar(&cfg.MDNSInstance, "mdns-instance", cfg.MDNSInstance, "mdns instance name")
+}
+
+func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway) (*http.Server, mdns.Advertiser, error) {
+	if cfg.HTTPAddr == "" {
+		return nil, nil, nil
+	}
+	if gateway == nil {
+		return nil, nil, fmt.Errorf("gateway missing for http server")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	builder := graphql.NewBuilder(gateway.Registry, nil)
+	hub := graphql.NewBroadcastHub(nil)
+	gateway.AddRouterPlane(hub)
+	gateway.RefreshRouterPlanes()
+
+	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
+	semanticRuntime.Start(ctx)
+
+	if err := builder.Start(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	queryHandler, err := graphql.NewInvokeHandler(builder, gateway.Registry, gateway.Router)
+	if err != nil {
+		return nil, nil, err
+	}
+	subscriptionHandler, err := graphql.NewSubscriptionHandler(builder, gateway.Registry, gateway.Router, hub)
+	if err != nil {
+		return nil, nil, err
+	}
+	mcpServer, err := mcp.NewServer(gateway.Registry, gateway.Router)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle(cfg.GraphQLPath, queryHandler)
+	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)
+	mux.Handle(cfg.MCPPath, mcpServer.Handler())
+
+	listener, err := net.Listen("tcp", cfg.HTTPAddr)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	server := &http.Server{
+		Handler: mux,
+	}
+
+	go func() {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			log.Printf("http server error: %v", err)
+		}
+	}()
+
+	var advertiser mdns.Advertiser
+	if cfg.MDNSAdvertise {
+		port := listener.Addr().(*net.TCPAddr).Port
+		advertiser, err = mdns.Advertise(ctx, mdns.Service{
+			Instance: cfg.MDNSInstance,
+			Service:  mdns.ServiceTypeGateway,
+			Port:     port,
+			Text: []string{
+				"path=" + cfg.GraphQLPath,
+				"transport=http",
+				"version=1",
+			},
+		})
+		if err != nil {
+			_ = server.Close()
+			return nil, nil, err
+		}
+	}
+
+	go func() {
+		<-ctx.Done()
+		_ = server.Shutdown(context.Background())
+	}()
+
+	return server, advertiser, nil
 }

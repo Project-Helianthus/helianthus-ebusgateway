@@ -28,12 +28,18 @@ type TransportConfig struct {
 }
 
 type Config struct {
-	Transport       transport.RawTransport
-	TransportConfig TransportConfig
-	BusConfig       protocol.BusConfig
-	QueueCapacity   int
-	Providers       []registry.PlaneProvider
-	BroadcastListen bool
+	Transport        transport.RawTransport
+	TransportConfig  TransportConfig
+	BusConfig        protocol.BusConfig
+	QueueCapacity    int
+	Providers        []registry.PlaneProvider
+	BroadcastListen  bool
+	HTTPAddr         string
+	GraphQLPath      string
+	SubscriptionPath string
+	MCPPath          string
+	MDNSAdvertise    bool
+	MDNSInstance     string
 }
 
 func DefaultConfig() Config {
@@ -46,7 +52,13 @@ func DefaultConfig() Config {
 			WriteTimeout: 5 * time.Second,
 			DialTimeout:  5 * time.Second,
 		},
-		BusConfig: protocol.DefaultBusConfig(),
+		BusConfig:        protocol.DefaultBusConfig(),
+		HTTPAddr:         ":8080",
+		GraphQLPath:      "/graphql",
+		SubscriptionPath: "/graphql/subscriptions",
+		MCPPath:          "/mcp",
+		MDNSAdvertise:    true,
+		MDNSInstance:     "helianthus",
 	}
 }
 
@@ -73,6 +85,21 @@ func applyDefaults(cfg Config) Config {
 		if cfg.TransportConfig.DialTimeout == 0 {
 			cfg.TransportConfig.DialTimeout = 5 * time.Second
 		}
+	}
+	if cfg.HTTPAddr == "" {
+		cfg.HTTPAddr = ":8080"
+	}
+	if cfg.GraphQLPath == "" {
+		cfg.GraphQLPath = "/graphql"
+	}
+	if cfg.SubscriptionPath == "" {
+		cfg.SubscriptionPath = "/graphql/subscriptions"
+	}
+	if cfg.MCPPath == "" {
+		cfg.MCPPath = "/mcp"
+	}
+	if cfg.MDNSInstance == "" {
+		cfg.MDNSInstance = "helianthus"
 	}
 	return cfg
 }

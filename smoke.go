@@ -301,17 +301,24 @@ func smokeParams(entry registry.DeviceEntry, planeName, methodName string, sourc
 	if entry == nil {
 		return nil, false
 	}
-	if strings.TrimSpace(entry.DeviceID()) != "BAI00" {
-		return nil, false
-	}
-	if planeName != "system" || methodName != "get_operational_data" {
-		return nil, false
-	}
 
-	return map[string]any{
-		"source": source,
-		"op":     byte(0x00),
-	}, true
+	deviceID := strings.TrimSpace(entry.DeviceID())
+	switch {
+	case deviceID == "BAI00" && planeName == "system" && methodName == "get_operational_data":
+		return map[string]any{
+			"source": source,
+			"op":     byte(0x00),
+		}, true
+	case deviceID == "BASV2" && planeName == "system" && methodName == "get_ext_register":
+		return map[string]any{
+			"source":   source,
+			"group":    byte(0x00),
+			"instance": byte(0x00),
+			"addr":     uint16(0x5C00),
+		}, true
+	default:
+		return nil, false
+	}
 }
 
 func smokeMethodNeedsParams(method registry.Method) bool {

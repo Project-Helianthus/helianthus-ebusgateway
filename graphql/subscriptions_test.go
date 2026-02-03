@@ -86,3 +86,57 @@ func TestBroadcastHub_SubscriptionsUpdated(t *testing.T) {
 		t.Fatal("timeout waiting for subscription channel close")
 	}
 }
+
+func TestBroadcastHub_SemanticUpdates(t *testing.T) {
+	hub := NewBroadcastHub(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	zoneCh, err := hub.SubscribeZones(ctx)
+	if err != nil {
+		t.Fatalf("SubscribeZones error = %v", err)
+	}
+
+	dhwCh, err := hub.SubscribeDHW(ctx)
+	if err != nil {
+		t.Fatalf("SubscribeDHW error = %v", err)
+	}
+
+	energyCh, err := hub.SubscribeEnergy(ctx)
+	if err != nil {
+		t.Fatalf("SubscribeEnergy error = %v", err)
+	}
+
+	hub.PublishZoneUpdate(Zone{ID: "zone-1", Name: "Zone 1"})
+	hub.PublishDHWUpdate(&DhwStatus{OperatingMode: "auto"})
+	hub.PublishEnergyUpdate(&EnergyTotals{})
+
+	select {
+	case value := <-zoneCh:
+		zone, ok := value.(Zone)
+		if !ok || zone.ID != "zone-1" {
+			t.Fatalf("zone = %#v; want zone-1", value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for zone update")
+	}
+
+	select {
+	case value := <-dhwCh:
+		status, ok := value.(*DhwStatus)
+		if !ok || status.OperatingMode != "auto" {
+			t.Fatalf("dhw = %#v; want operatingMode=auto", value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for dhw update")
+	}
+
+	select {
+	case value := <-energyCh:
+		if _, ok := value.(*EnergyTotals); !ok {
+			t.Fatalf("energy = %#v; want EnergyTotals", value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for energy update")
+	}
+}

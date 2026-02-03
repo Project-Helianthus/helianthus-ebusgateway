@@ -112,6 +112,54 @@ func buildSubscriptionType(hub *BroadcastHub, types graphqlSchemaTypes) *graphql
 					return params.Source, nil
 				},
 			},
+			"zoneUpdate": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.zoneType),
+				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
+					ctx := params.Context
+					if ctx == nil {
+						ctx = context.Background()
+					}
+					return hub.SubscribeZones(ctx)
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if params.Source == nil {
+						return nil, fmt.Errorf("graphql subscription missing zone payload: %w", ebuserrors.ErrInvalidPayload)
+					}
+					return params.Source, nil
+				},
+			},
+			"dhwUpdate": &graphqlgo.Field{
+				Type: types.dhwType,
+				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
+					ctx := params.Context
+					if ctx == nil {
+						ctx = context.Background()
+					}
+					return hub.SubscribeDHW(ctx)
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if params.Source == nil {
+						return nil, fmt.Errorf("graphql subscription missing dhw payload: %w", ebuserrors.ErrInvalidPayload)
+					}
+					return params.Source, nil
+				},
+			},
+			"energyUpdate": &graphqlgo.Field{
+				Type: types.energyTotals,
+				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
+					ctx := params.Context
+					if ctx == nil {
+						ctx = context.Background()
+					}
+					return hub.SubscribeEnergy(ctx)
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if params.Source == nil {
+						return nil, fmt.Errorf("graphql subscription missing energy payload: %w", ebuserrors.ErrInvalidPayload)
+					}
+					return params.Source, nil
+				},
+			},
 		},
 	})
 }

@@ -357,6 +357,12 @@ func smokeMethodNeedsParams(method registry.Method) bool {
 	if _, ok := template.(interface {
 		Build(params map[string]any) ([]byte, error)
 	}); ok {
+		builder := template.(interface {
+			Build(params map[string]any) ([]byte, error)
+		})
+		if _, err := builder.Build(map[string]any{}); err == nil {
+			return false
+		}
 		return true
 	}
 	return false

@@ -16,9 +16,46 @@ type graphqlSchemaTypes struct {
 	planeType     *graphqlgo.Object
 	deviceType    *graphqlgo.Object
 	broadcastType *graphqlgo.Object
+	statusType    *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {
+	statusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ServiceStatus",
+		Fields: graphqlgo.Fields{
+			"status": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(ServiceStatus)
+					if !ok {
+						return nil, nil
+					}
+					return status.Status, nil
+				},
+			},
+			"firmwareVersion": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(ServiceStatus)
+					if !ok {
+						return nil, nil
+					}
+					return status.FirmwareVersion, nil
+				},
+			},
+			"updatesAvailable": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(ServiceStatus)
+					if !ok {
+						return nil, nil
+					}
+					return status.UpdatesAvailable, nil
+				},
+			},
+		},
+	})
+
 	fieldType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Field",
 		Fields: graphqlgo.Fields{
@@ -246,6 +283,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		planeType:     planeType,
 		deviceType:    deviceType,
 		broadcastType: buildBroadcastType(),
+		statusType:    statusType,
 	}
 }
 
@@ -253,6 +291,18 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Query",
 		Fields: graphqlgo.Fields{
+			"daemonStatus": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.statusType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.statusProvider().DaemonStatus(), nil
+				},
+			},
+			"adapterStatus": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.statusType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.statusProvider().AdapterStatus(), nil
+				},
+			},
 			"devices": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.deviceType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

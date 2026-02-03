@@ -5,6 +5,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/d3vi1/helianthus-ebusgo/protocol"
 	"github.com/d3vi1/helianthus-ebusgo/types"
@@ -146,6 +147,16 @@ func TestScanTargetsFromExpectedDevices(t *testing.T) {
 	}
 }
 
+func TestDefaultSmokeProviders(t *testing.T) {
+	providers := defaultSmokeProviders()
+	if len(providers) != 1 {
+		t.Fatalf("defaultSmokeProviders() returned %d providers; want 1", len(providers))
+	}
+	if _, ok := providers[0].(system.Provider); !ok {
+		t.Fatalf("defaultSmokeProviders()[0] type = %T; want system.Provider", providers[0])
+	}
+}
+
 type smokeMockBus struct {
 	lastRequest protocol.Frame
 	response    *protocol.Frame
@@ -155,6 +166,38 @@ type smokeMockBus struct {
 func (bus *smokeMockBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
 	bus.lastRequest = frame
 	return bus.response, bus.err
+}
+
+func TestInvokeIdentify_SendsRequestAndDecodesResponse(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte{0xB5, 'B', 'A', 'I', '0', '0', 0x01, 0x02, 0x76, 0x03}
+	bus := &smokeMockBus{
+		response: &protocol.Frame{
+			Data: payload,
+		},
+	}
+	eventRouter := router.NewBusEventRouter(bus)
+
+	entry := testEntry{
+		info: registry.DeviceInfo{
+			Address: 0x08,
+		},
+	}
+	err := invokeIdentify(context.Background(), eventRouter, entry, 0x10, time.Second, nil)
+	if err != nil {
+		t.Fatalf("invokeIdentify error = %v", err)
+	}
+
+	if bus.lastRequest.Source != 0x10 || bus.lastRequest.Target != 0x08 {
+		t.Fatalf("unexpected request addresses: %+v", bus.lastRequest)
+	}
+	if bus.lastRequest.Primary != 0x07 || bus.lastRequest.Secondary != 0x04 {
+		t.Fatalf("unexpected request type: %+v", bus.lastRequest)
+	}
+	if len(bus.lastRequest.Data) != 0 {
+		t.Fatalf("unexpected request data: %x", bus.lastRequest.Data)
+	}
 }
 
 func TestSmokeInvoke_UsesDirectRouterPlaneAndDefaultsParams(t *testing.T) {

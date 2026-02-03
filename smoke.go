@@ -26,6 +26,7 @@ type SmokeOptions struct {
 	Providers     []registry.PlaneProvider
 	Logger        *log.Logger
 	SourceAddress byte
+	OnGatewayReady func(ctx context.Context, gateway *Gateway, logger *log.Logger)
 }
 
 func RunSmokeFromEnv(ctx context.Context, opts SmokeOptions) error {
@@ -79,7 +80,13 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 	if err != nil {
 		return err
 	}
+	var broadcastListener *BroadcastListener
 	defer func() {
+		if broadcastListener != nil {
+			if err := broadcastListener.Close(); err != nil {
+				logger.Printf("broadcast listener close: %v", err)
+			}
+		}
 		if err := gateway.Close(); err != nil {
 			logger.Printf("gateway close: %v", err)
 		}
@@ -116,6 +123,18 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 	logExpectedDevices(logger, cfg.ExpectedDevices, entries)
 
 	_ = gateway.RefreshRouterPlanes()
+	if broadcastListener == nil {
+		listener, err := StartBroadcastListener(ctx, gatewayCfg, gateway.Router)
+		if err != nil {
+			logger.Printf("broadcast listener start: %v", err)
+		} else {
+			broadcastListener = listener
+			logger.Printf("broadcast listener started")
+		}
+	}
+	if opts.OnGatewayReady != nil {
+		opts.OnGatewayReady(ctx, gateway, logger)
+	}
 
 	var invokeErrors []string
 	for _, entry := range entries {

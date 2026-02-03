@@ -16,6 +16,7 @@ import (
 	"github.com/d3vi1/helianthus-ebusreg/registry"
 	"github.com/d3vi1/helianthus-ebusreg/router"
 	"github.com/d3vi1/helianthus-ebusreg/schema"
+	"github.com/d3vi1/helianthus-ebusreg/vaillant/system"
 )
 
 const defaultSmokeSource = byte(0x10)
@@ -117,17 +118,13 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 	_ = gateway.RefreshRouterPlanes()
 
 	var invokeErrors []string
-	fallbackIdentify := len(providers) == 0
 	for _, entry := range entries {
 		planes := entry.Planes()
 		if len(planes) == 0 {
-			if fallbackIdentify {
-				if err := invokeIdentify(ctx, gateway.Router, entry, source, time.Duration(cfg.Smoke.MethodTimeoutSec)*time.Second, logger); err != nil {
-					invokeErrors = append(invokeErrors, fmt.Sprintf("device 0x%02x identify: %v", entry.Address(), err))
-				}
-				continue
+			logger.Printf("device 0x%02x has no planes; running identify", entry.Address())
+			if err := invokeIdentify(ctx, gateway.Router, entry, source, time.Duration(cfg.Smoke.MethodTimeoutSec)*time.Second, logger); err != nil {
+				invokeErrors = append(invokeErrors, fmt.Sprintf("device 0x%02x identify: %v", entry.Address(), err))
 			}
-			logger.Printf("device 0x%02x has no planes", entry.Address())
 			continue
 		}
 		for _, plane := range planes {
@@ -224,7 +221,9 @@ func transportConfigFromSmoke(enh enhConfig) (TransportConfig, error) {
 }
 
 func defaultSmokeProviders() []registry.PlaneProvider {
-	return nil
+	return []registry.PlaneProvider{
+		system.NewProvider(),
+	}
 }
 
 func logDeviceInfo(logger *log.Logger, entries []registry.DeviceEntry) {

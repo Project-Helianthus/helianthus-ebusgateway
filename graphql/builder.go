@@ -9,6 +9,7 @@ type Builder struct {
 	registry Registry
 	changes  <-chan struct{}
 	status   StatusProvider
+	semantic SemanticProvider
 
 	mu       sync.RWMutex
 	schema   Schema
@@ -20,6 +21,7 @@ func NewBuilder(reg Registry, changes <-chan struct{}) *Builder {
 		registry: reg,
 		changes:  changes,
 		status:   staticStatusProvider{},
+		semantic: staticSemanticProvider{},
 	}
 }
 
@@ -111,6 +113,28 @@ func (b *Builder) statusProvider() StatusProvider {
 	b.mu.RUnlock()
 	if provider == nil {
 		return staticStatusProvider{}
+	}
+	return provider
+}
+
+func (b *Builder) SetSemanticProvider(provider SemanticProvider) {
+	if b == nil || provider == nil {
+		return
+	}
+	b.mu.Lock()
+	b.semantic = provider
+	b.mu.Unlock()
+}
+
+func (b *Builder) semanticProvider() SemanticProvider {
+	if b == nil {
+		return staticSemanticProvider{}
+	}
+	b.mu.RLock()
+	provider := b.semantic
+	b.mu.RUnlock()
+	if provider == nil {
+		return staticSemanticProvider{}
 	}
 	return provider
 }

@@ -19,6 +19,10 @@ type BroadcastListener struct {
 }
 
 func StartBroadcastListener(ctx context.Context, cfg Config, router *router.BusEventRouter) (*BroadcastListener, error) {
+	return StartBroadcastListenerWithTransport(ctx, cfg, router, nil)
+}
+
+func StartBroadcastListenerWithTransport(ctx context.Context, cfg Config, router *router.BusEventRouter, wrap func(transport.RawTransport) transport.RawTransport) (*BroadcastListener, error) {
 	if router == nil {
 		return nil, fmt.Errorf("broadcast listener missing router: %w", ebuserrors.ErrInvalidPayload)
 	}
@@ -28,6 +32,9 @@ func StartBroadcastListener(ctx context.Context, cfg Config, router *router.BusE
 	tr, closeFn, err := resolveBroadcastTransport(ctx, cfg)
 	if err != nil {
 		return nil, err
+	}
+	if wrap != nil {
+		tr = wrap(tr)
 	}
 
 	listener := &BroadcastListener{
@@ -165,27 +172,4 @@ func (reader *frameReader) ReadFrame(ctx context.Context) (protocol.Frame, bool,
 			reader.buffer = append(reader.buffer, symbol)
 		}
 	}
-}
-
-func parseFrame(raw []byte) (protocol.Frame, bool) {
-	if len(raw) < 6 {
-		return protocol.Frame{}, false
-	}
-	length := int(raw[4])
-	expected := 6 + length
-	if len(raw) != expected {
-		return protocol.Frame{}, false
-	}
-	crc := protocol.CRC(raw[:len(raw)-1])
-	if crc != raw[len(raw)-1] {
-		return protocol.Frame{}, false
-	}
-	data := append([]byte(nil), raw[5:5+length]...)
-	return protocol.Frame{
-		Source:    raw[0],
-		Target:    raw[1],
-		Primary:   raw[2],
-		Secondary: raw[3],
-		Data:      data,
-	}, true
 }

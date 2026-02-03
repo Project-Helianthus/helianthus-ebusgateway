@@ -34,10 +34,16 @@ type enhConfig struct {
 }
 
 type smokeBehavior struct {
-	VerboseFrames    bool `yaml:"verbose_frames"`
-	ScanTimeoutSec   int  `yaml:"scan_timeout_sec"`
-	MethodTimeoutSec int  `yaml:"method_timeout_sec"`
-	SourceAddress    hexByte `yaml:"source_address"`
+	VerboseFrames          bool    `yaml:"verbose_frames"`
+	ScanTimeoutSec         int     `yaml:"scan_timeout_sec"`
+	MethodTimeoutSec       int     `yaml:"method_timeout_sec"`
+	SourceAddress          hexByte `yaml:"source_address"`
+	WireLogPath            string  `yaml:"wire_log_path"`
+	RegisterDumpTSP        string  `yaml:"register_dump_tsp"`
+	RegisterDumpTarget     hexByte `yaml:"register_dump_target"`
+	RegisterDumpOutput     string  `yaml:"register_dump_output"`
+	RegisterDumpTimeoutSec int     `yaml:"register_dump_timeout_sec"`
+	RegisterDumpLimit      int     `yaml:"register_dump_limit"`
 }
 
 type expectedDevice struct {
@@ -116,6 +122,9 @@ func (cfg *smokeConfig) normalize() error {
 	cfg.ENH.Type = strings.ToLower(strings.TrimSpace(cfg.ENH.Type))
 	cfg.ENH.Path = strings.TrimSpace(cfg.ENH.Path)
 	cfg.ENH.Host = strings.TrimSpace(cfg.ENH.Host)
+	cfg.Smoke.WireLogPath = strings.TrimSpace(cfg.Smoke.WireLogPath)
+	cfg.Smoke.RegisterDumpTSP = strings.TrimSpace(cfg.Smoke.RegisterDumpTSP)
+	cfg.Smoke.RegisterDumpOutput = strings.TrimSpace(cfg.Smoke.RegisterDumpOutput)
 
 	if cfg.ENH.Type == "" {
 		return fmt.Errorf("smoke config missing enh.type")

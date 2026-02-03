@@ -4,7 +4,7 @@ go 1.22
 
 require (
 	github.com/d3vi1/helianthus-ebusgo v0.0.0-20260202235800-1f4cf9472862
-	github.com/d3vi1/helianthus-ebusreg v0.0.0-20260203120801-0a0c31ea5331
+	github.com/d3vi1/helianthus-ebusreg v0.0.0-20260203141339-3c747c980a73
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/graphql-go/graphql v0.8.1
 	github.com/graphql-go/handler v0.2.4

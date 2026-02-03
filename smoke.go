@@ -16,7 +16,7 @@ import (
 	"github.com/d3vi1/helianthus-ebusreg/registry"
 	"github.com/d3vi1/helianthus-ebusreg/router"
 	"github.com/d3vi1/helianthus-ebusreg/schema"
-	"github.com/d3vi1/helianthus-ebusreg/vaillant/system"
+	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
 )
 
 const defaultSmokeSource = byte(0x10)
@@ -241,7 +241,9 @@ func transportConfigFromSmoke(enh enhConfig) (TransportConfig, error) {
 
 func defaultSmokeProviders() []registry.PlaneProvider {
 	return []registry.PlaneProvider{
-		system.NewProvider(),
+		vaillantproviders.System(),
+		vaillantproviders.Heating(),
+		vaillantproviders.DHW(),
 	}
 }
 

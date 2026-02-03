@@ -18,6 +18,7 @@ import (
 )
 
 type registerDumpEntry struct {
+	Method   string
 	Group    byte
 	Instance byte
 	Addr     uint16
@@ -26,9 +27,12 @@ type registerDumpEntry struct {
 }
 
 type baseContext struct {
-	Group    byte
-	Instance byte
-	AddrLo   byte
+	Secondary byte
+	Prefix    byte
+	Group     byte
+	Instance  byte
+	AddrLo    byte
+	HasAddrLo bool
 }
 
 func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, entries []registry.DeviceEntry, source byte, logger *wireLogger, logOutput io.Writer) error {
@@ -109,14 +113,16 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 			return ctx.Err()
 		}
 		params := map[string]any{
-			"source":   source,
-			"group":    req.Group,
-			"instance": req.Instance,
-			"addr":     req.Addr,
+			"source": source,
+			"addr":   req.Addr,
+		}
+		if req.Method == "get_ext_register" {
+			params["group"] = req.Group
+			params["instance"] = req.Instance
 		}
 
 		ctxMethod, cancel := context.WithTimeout(ctx, timeout)
-		result, err := gateway.Router.Invoke(ctxMethod, systemPlane, "get_ext_register", params)
+		result, err := gateway.Router.Invoke(ctxMethod, systemPlane, req.Method, params)
 		cancel()
 		if err != nil {
 			writeDumpLine(writer, "target=0x%02x group=0x%02x instance=0x%02x addr=0x%04x model=%s line=%d error=%v",
@@ -125,8 +131,8 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 		}
 
 		payload := extractDumpPayload(result)
-		writeDumpLine(writer, "target=0x%02x group=0x%02x instance=0x%02x addr=0x%04x model=%s line=%d payload=%s",
-			target, req.Group, req.Instance, req.Addr, req.Model, req.Line, payload)
+		writeDumpLine(writer, "target=0x%02x group=0x%02x instance=0x%02x addr=0x%04x method=%s model=%s line=%d payload=%s",
+			target, req.Group, req.Instance, req.Addr, req.Method, req.Model, req.Line, payload)
 	}
 
 	writeDumpLine(writer, "register dump completed: target=0x%02x entries=%d", target, len(requests))
@@ -209,20 +215,29 @@ func parseRegisterDumpTSP(content []byte) ([]registerDumpEntry, byte, error) {
 				base = nil
 				continue
 			}
-			basePrimary, okPrimary := parseUintToken(args[1])
-			baseSecondary, okSecondary := parseUintToken(args[2])
-			if !okPrimary || !okSecondary || basePrimary != 0x24 || baseSecondary != 0x2 {
+			baseSecondary, okSecondary := parseUintToken(args[1])
+			basePrefix, okPrefix := parseUintToken(args[2])
+			if !okSecondary || !okPrefix {
 				base = nil
 				continue
 			}
-			group, okGroup := parseByteToken(args[3])
-			instance, okInstance := parseByteToken(args[4])
-			addrLo, okAddr := parseByteToken(args[5])
-			if !okGroup || !okInstance || !okAddr {
-				base = nil
-				continue
+
+			ctx := baseContext{
+				Secondary: byte(baseSecondary),
+				Prefix:    byte(basePrefix),
 			}
-			base = &baseContext{Group: group, Instance: instance, AddrLo: addrLo}
+			if len(args) >= 6 {
+				group, okGroup := parseByteToken(args[3])
+				instance, okInstance := parseByteToken(args[4])
+				addrLo, okAddr := parseByteToken(args[5])
+				if okGroup && okInstance && okAddr {
+					ctx.Group = group
+					ctx.Instance = instance
+					ctx.AddrLo = addrLo
+					ctx.HasAddrLo = true
+				}
+			}
+			base = &ctx
 			continue
 		}
 
@@ -267,14 +282,30 @@ func parseRegisterDumpTSP(content []byte) ([]registerDumpEntry, byte, error) {
 }
 
 func buildRegisterEntry(args []string, base *baseContext) (registerDumpEntry, bool) {
+	method := ""
+	switch base.Secondary {
+	case 0x24:
+		if base.Prefix == 0x2 {
+			method = "get_ext_register"
+		}
+	case 0x09:
+		method = "get_register"
+	}
+	if method == "" {
+		return registerDumpEntry{}, false
+	}
+
 	switch len(args) {
 	case 1:
 		hi, ok := parseByteToken(args[0])
 		if !ok {
 			return registerDumpEntry{}, false
 		}
+		if !base.HasAddrLo {
+			return registerDumpEntry{}, false
+		}
 		addr := uint16(hi)<<8 | uint16(base.AddrLo)
-		return registerDumpEntry{Group: base.Group, Instance: base.Instance, Addr: addr}, true
+		return registerDumpEntry{Method: method, Group: base.Group, Instance: base.Instance, Addr: addr}, true
 	case 2:
 		hi, ok := parseByteToken(args[0])
 		if !ok {
@@ -285,10 +316,13 @@ func buildRegisterEntry(args []string, base *baseContext) (registerDumpEntry, bo
 			return registerDumpEntry{}, false
 		}
 		if lo == 0 {
+			if !base.HasAddrLo {
+				return registerDumpEntry{}, false
+			}
 			lo = base.AddrLo
 		}
 		addr := uint16(hi)<<8 | uint16(lo)
-		return registerDumpEntry{Group: base.Group, Instance: base.Instance, Addr: addr}, true
+		return registerDumpEntry{Method: method, Group: base.Group, Instance: base.Instance, Addr: addr}, true
 	case 4:
 		group, okGroup := parseByteToken(args[0])
 		instance, okInstance := parseByteToken(args[1])
@@ -298,7 +332,7 @@ func buildRegisterEntry(args []string, base *baseContext) (registerDumpEntry, bo
 			return registerDumpEntry{}, false
 		}
 		addr := uint16(hi)<<8 | uint16(lo)
-		return registerDumpEntry{Group: group, Instance: instance, Addr: addr}, true
+		return registerDumpEntry{Method: method, Group: group, Instance: instance, Addr: addr}, true
 	default:
 		return registerDumpEntry{}, false
 	}

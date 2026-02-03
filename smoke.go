@@ -131,22 +131,48 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 			continue
 		}
 		for _, plane := range planes {
-			method, ok := firstReadOnlyMethod(plane.Methods())
-			if !ok {
-				logger.Printf("device 0x%02x plane %s has no read-only methods", entry.Address(), plane.Name())
-				continue
-			}
+			invokePlane, direct := smokeInvocationPlane(entry, plane, source)
 
-			smokePlane := newSmokePlane(entry, plane, source)
-			methodTimeout := time.Duration(cfg.Smoke.MethodTimeoutSec) * time.Second
-			ctxMethod, cancelMethod := context.WithTimeout(ctx, methodTimeout)
-			result, err := gateway.Router.Invoke(ctxMethod, smokePlane, method.Name(), map[string]any{})
-			cancelMethod()
-			if err != nil {
-				invokeErrors = append(invokeErrors, fmt.Sprintf("device 0x%02x plane %s method %s: %v", entry.Address(), plane.Name(), method.Name(), err))
+			hasReadOnly := false
+			invoked := false
+			for _, method := range invokePlane.Methods() {
+				if method == nil || !method.ReadOnly() {
+					continue
+				}
+				hasReadOnly = true
+
+				params, ok := smokeParams(entry, invokePlane.Name(), method.Name(), source)
+				if !ok {
+					if smokeMethodNeedsParams(method) {
+						logger.Printf("device 0x%02x plane %s method %s skipped: cannot determine params", entry.Address(), invokePlane.Name(), method.Name())
+						continue
+					}
+					params = map[string]any{}
+					if direct {
+						params["source"] = source
+					}
+				}
+
+				methodTimeout := time.Duration(cfg.Smoke.MethodTimeoutSec) * time.Second
+				ctxMethod, cancelMethod := context.WithTimeout(ctx, methodTimeout)
+				result, err := gateway.Router.Invoke(ctxMethod, invokePlane, method.Name(), params)
+				cancelMethod()
+				invoked = true
+				if err != nil {
+					invokeErrors = append(invokeErrors, fmt.Sprintf("device 0x%02x plane %s method %s: %v", entry.Address(), invokePlane.Name(), method.Name(), err))
+					break
+				}
+				logger.Printf("device 0x%02x plane %s method %s ok: %+v", entry.Address(), invokePlane.Name(), method.Name(), result)
+				break
+			}
+			if !hasReadOnly {
+				logger.Printf("device 0x%02x plane %s has no read-only methods", entry.Address(), invokePlane.Name())
 				continue
 			}
-			logger.Printf("device 0x%02x plane %s method %s ok: %+v", entry.Address(), plane.Name(), method.Name(), result)
+			if !invoked {
+				logger.Printf("device 0x%02x plane %s has no invokable read-only methods", entry.Address(), invokePlane.Name())
+				continue
+			}
 		}
 	}
 
@@ -260,6 +286,53 @@ func firstReadOnlyMethod(methods []registry.Method) (registry.Method, bool) {
 		}
 	}
 	return nil, false
+}
+
+func smokeInvocationPlane(entry registry.DeviceEntry, plane registry.Plane, source byte) (router.Plane, bool) {
+	if plane == nil {
+		return newSmokePlane(entry, plane, source), false
+	}
+	if typed, ok := plane.(router.Plane); ok {
+		return typed, true
+	}
+	return newSmokePlane(entry, plane, source), false
+}
+
+func smokeParams(entry registry.DeviceEntry, planeName, methodName string, source byte) (map[string]any, bool) {
+	if entry == nil {
+		return nil, false
+	}
+	if strings.TrimSpace(entry.DeviceID()) != "BAI00" {
+		return nil, false
+	}
+	if planeName != "system" || methodName != "get_operational_data" {
+		return nil, false
+	}
+
+	return map[string]any{
+		"source": source,
+		"op":     byte(0x00),
+	}, true
+}
+
+func smokeMethodNeedsParams(method registry.Method) bool {
+	if method == nil {
+		return false
+	}
+	template := method.Template()
+	if template == nil {
+		return false
+	}
+
+	if schemaProvider, ok := template.(interface{ ParamSchema() schema.Schema }); ok {
+		return len(schemaProvider.ParamSchema().Fields) > 0
+	}
+	if _, ok := template.(interface {
+		Build(params map[string]any) ([]byte, error)
+	}); ok {
+		return true
+	}
+	return false
 }
 
 func newGatewayWithTransport(ctx context.Context, cfg Config, wrap func(transport.RawTransport) transport.RawTransport) (*Gateway, error) {

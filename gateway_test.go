@@ -267,6 +267,6 @@ func (plane *mockPlane) BuildRequest(registry.Method, map[string]any) (protocol.
 	return protocol.Frame{}, nil
 }
 
-func (plane *mockPlane) DecodeResponse(registry.Method, protocol.Frame) (any, error) {
+func (plane *mockPlane) DecodeResponse(registry.Method, protocol.Frame, map[string]any) (any, error) {
 	return nil, nil
 }

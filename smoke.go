@@ -441,7 +441,7 @@ func (p *smokePlane) BuildRequest(method registry.Method, params map[string]any)
 	}, nil
 }
 
-func (p *smokePlane) DecodeResponse(method registry.Method, response protocol.Frame) (any, error) {
+func (p *smokePlane) DecodeResponse(method registry.Method, response protocol.Frame, _ map[string]any) (any, error) {
 	if p == nil || method == nil {
 		return nil, fmt.Errorf("smoke decode response missing data: %w", ebuserrors.ErrInvalidPayload)
 	}
@@ -484,7 +484,7 @@ func (p *identifyPlane) BuildRequest(registry.Method, map[string]any) (protocol.
 	}, nil
 }
 
-func (p *identifyPlane) DecodeResponse(_ registry.Method, response protocol.Frame) (any, error) {
+func (p *identifyPlane) DecodeResponse(_ registry.Method, response protocol.Frame, _ map[string]any) (any, error) {
 	return decodeDeviceInfoPayload(response.Data)
 }
 

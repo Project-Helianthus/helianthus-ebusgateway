@@ -81,7 +81,7 @@ func (plane *invokePlane) BuildRequest(method registry.Method, params map[string
 	}, nil
 }
 
-func (plane *invokePlane) DecodeResponse(method registry.Method, response protocol.Frame) (any, error) {
+func (plane *invokePlane) DecodeResponse(method registry.Method, response protocol.Frame, _ map[string]any) (any, error) {
 	selector := method.ResponseSchema()
 	schemaValue := selector.Select(plane.target, plane.hardwareVersion)
 	return schemaValue.Decode(response.Data)
@@ -128,6 +128,12 @@ func (s *scriptedTransport) ReadByte() (byte, error) {
 func (s *scriptedTransport) Write(payload []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Direct eBUS transport expects echoed bytes after each write.
+	echo := make([]readEvent, len(payload))
+	for i, b := range payload {
+		echo[i] = readEvent{value: b}
+	}
+	s.reads = append(echo, s.reads...)
 	copyPayload := append([]byte(nil), payload...)
 	s.writes = append(s.writes, copyPayload)
 	return len(payload), nil
@@ -137,13 +143,21 @@ func (s *scriptedTransport) Close() error {
 	return nil
 }
 
-func (s *scriptedTransport) lastWrite() []byte {
+func (s *scriptedTransport) allWrites() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.writes) == 0 {
 		return nil
 	}
-	return s.writes[len(s.writes)-1]
+	size := 0
+	for _, w := range s.writes {
+		size += len(w)
+	}
+	out := make([]byte, 0, size)
+	for _, w := range s.writes {
+		out = append(out, w...)
+	}
+	return out
 }
 
 func TestInvokeMutation_Integration(t *testing.T) {
@@ -282,12 +296,12 @@ func TestInvokeMutation_Integration(t *testing.T) {
 	}, payload...)
 	expectedWrite = append(expectedWrite, protocol.CRC(expectedWrite))
 
-	if got := transport.lastWrite(); len(got) == 0 {
-		t.Fatalf("transport write missing")
-	} else if !equalBytes(got, expectedWrite) {
-		t.Fatalf("transport write = %v; want %v", got, expectedWrite)
+		if got := transport.allWrites(); len(got) < len(expectedWrite) {
+			t.Fatalf("transport write missing")
+		} else if !equalBytes(got[:len(expectedWrite)], expectedWrite) {
+			t.Fatalf("transport write prefix = %v; want %v", got[:len(expectedWrite)], expectedWrite)
+		}
 	}
-}
 
 func equalBytes(a, b []byte) bool {
 	if len(a) != len(b) {

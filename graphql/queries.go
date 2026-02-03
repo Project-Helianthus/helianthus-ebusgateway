@@ -19,6 +19,7 @@ type graphqlSchemaTypes struct {
 	statusType    *graphqlgo.Object
 	zoneType      *graphqlgo.Object
 	dhwType       *graphqlgo.Object
+	energyTotals  *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {
@@ -108,6 +109,94 @@ func buildSchemaTypes() graphqlSchemaTypes {
 						return nil, nil
 					}
 					return *zone.HeatingDemand, nil
+				},
+			},
+		},
+	})
+
+	energySeriesType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "EnergySeries",
+		Fields: graphqlgo.Fields{
+			"today": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Float),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					series, ok := params.Source.(EnergySeries)
+					if !ok {
+						return nil, nil
+					}
+					return series.Today, nil
+				},
+			},
+			"yearly": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.Float))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					series, ok := params.Source.(EnergySeries)
+					if !ok {
+						return nil, nil
+					}
+					return series.Yearly, nil
+				},
+			},
+		},
+	})
+
+	energyChannelType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "EnergyChannel",
+		Fields: graphqlgo.Fields{
+			"dhw": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(energySeriesType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					channel, ok := params.Source.(EnergyChannel)
+					if !ok {
+						return nil, nil
+					}
+					return channel.DHW, nil
+				},
+			},
+			"climate": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(energySeriesType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					channel, ok := params.Source.(EnergyChannel)
+					if !ok {
+						return nil, nil
+					}
+					return channel.Climate, nil
+				},
+			},
+		},
+	})
+
+	energyTotalsType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "EnergyTotals",
+		Fields: graphqlgo.Fields{
+			"gas": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(energyChannelType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					totals, ok := params.Source.(*EnergyTotals)
+					if !ok || totals == nil {
+						return nil, nil
+					}
+					return totals.Gas, nil
+				},
+			},
+			"electric": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(energyChannelType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					totals, ok := params.Source.(*EnergyTotals)
+					if !ok || totals == nil {
+						return nil, nil
+					}
+					return totals.Electric, nil
+				},
+			},
+			"solar": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(energyChannelType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					totals, ok := params.Source.(*EnergyTotals)
+					if !ok || totals == nil {
+						return nil, nil
+					}
+					return totals.Solar, nil
 				},
 			},
 		},
@@ -450,6 +539,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		statusType:    statusType,
 		zoneType:      zoneType,
 		dhwType:       dhwType,
+		energyTotals:  energyTotalsType,
 	}
 }
 
@@ -479,6 +569,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				Type: types.dhwType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().DHW(), nil
+				},
+			},
+			"energyTotals": &graphqlgo.Field{
+				Type: types.energyTotals,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().EnergyTotals(), nil
 				},
 			},
 			"devices": &graphqlgo.Field{

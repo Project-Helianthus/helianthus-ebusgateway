@@ -18,9 +18,26 @@ type DhwStatus struct {
 	HeatingDemand *float64
 }
 
+type EnergySeries struct {
+	Today  float64
+	Yearly []float64
+}
+
+type EnergyChannel struct {
+	DHW     EnergySeries
+	Climate EnergySeries
+}
+
+type EnergyTotals struct {
+	Gas      EnergyChannel
+	Electric EnergyChannel
+	Solar    EnergyChannel
+}
+
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
+	EnergyTotals() *EnergyTotals
 }
 
 type staticSemanticProvider struct{}
@@ -30,5 +47,9 @@ func (staticSemanticProvider) Zones() []Zone {
 }
 
 func (staticSemanticProvider) DHW() *DhwStatus {
+	return nil
+}
+
+func (staticSemanticProvider) EnergyTotals() *EnergyTotals {
 	return nil
 }

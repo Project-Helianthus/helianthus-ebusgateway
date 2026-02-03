@@ -261,6 +261,14 @@ func (entry mockEntry) DeviceID() string {
 	return entry.info.DeviceID
 }
 
+func (entry mockEntry) SerialNumber() string {
+	return entry.info.SerialNumber
+}
+
+func (entry mockEntry) MacAddress() string {
+	return entry.info.MacAddress
+}
+
 func (entry mockEntry) SoftwareVersion() string {
 	return entry.info.SoftwareVersion
 }

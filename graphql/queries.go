@@ -186,6 +186,26 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return device.DeviceID, nil
 				},
 			},
+			"serialNumber": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return device.SerialNumber, nil
+				},
+			},
+			"macAddress": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return device.MacAddress, nil
+				},
+			},
 			"softwareVersion": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

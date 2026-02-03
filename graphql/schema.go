@@ -17,6 +17,8 @@ type Device struct {
 	Address         byte
 	Manufacturer    string
 	DeviceID        string
+	SerialNumber    string
+	MacAddress      string
 	SoftwareVersion string
 	HardwareVersion string
 	Planes          []Plane
@@ -64,6 +66,8 @@ func BuildSchema(reg Registry) (Schema, error) {
 			Address:         entry.Address(),
 			Manufacturer:    entry.Manufacturer(),
 			DeviceID:        entry.DeviceID(),
+			SerialNumber:    entry.SerialNumber(),
+			MacAddress:      entry.MacAddress(),
 			SoftwareVersion: entry.SoftwareVersion(),
 			HardwareVersion: entry.HardwareVersion(),
 			Planes:          make([]Plane, 0),
@@ -183,6 +187,8 @@ func cloneSchema(schema Schema) Schema {
 			Address:         device.Address,
 			Manufacturer:    device.Manufacturer,
 			DeviceID:        device.DeviceID,
+			SerialNumber:    device.SerialNumber,
+			MacAddress:      device.MacAddress,
 			SoftwareVersion: device.SoftwareVersion,
 			HardwareVersion: device.HardwareVersion,
 			Planes:          planes,

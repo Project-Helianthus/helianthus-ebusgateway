@@ -25,7 +25,7 @@ func StartBroadcastListener(ctx context.Context, cfg Config, router *router.BusE
 
 	// Always use a fresh transport connection to avoid interfering with bus I/O.
 	cfg.Transport = nil
-	tr, closeFn, err := resolveTransport(ctx, cfg)
+	tr, closeFn, err := resolveBroadcastTransport(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -38,6 +38,38 @@ func StartBroadcastListener(ctx context.Context, cfg Config, router *router.BusE
 	}
 	listener.Start(ctx)
 	return listener, nil
+}
+
+func resolveBroadcastTransport(ctx context.Context, cfg Config) (transport.RawTransport, func() error, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	config := cfg.TransportConfig
+	if config.Network == "" {
+		return nil, nil, fmt.Errorf("broadcast transport missing network: %w", ebuserrors.ErrInvalidPayload)
+	}
+	if config.Address == "" {
+		return nil, nil, fmt.Errorf("broadcast transport missing address: %w", ebuserrors.ErrInvalidPayload)
+	}
+
+	dial := config.Dial
+	if dial == nil {
+		dial = dialContext
+	}
+
+	conn, err := dial(ctx, config.Network, config.Address, config.DialTimeout)
+	if err != nil {
+		return nil, nil, fmt.Errorf("broadcast transport dial failed: %w", err)
+	}
+
+	transportLayer, err := transportFromConn(config.Protocol, conn, config.ReadTimeout, config.WriteTimeout)
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+
+	return transportLayer, conn.Close, nil
 }
 
 func (listener *BroadcastListener) Start(ctx context.Context) {

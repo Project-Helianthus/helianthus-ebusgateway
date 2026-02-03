@@ -42,6 +42,9 @@ type BroadcastHub struct {
 
 	mu          sync.RWMutex
 	subscribers map[broadcastKey]map[uint64]*broadcastSubscriber
+	zoneSubs    map[uint64]*broadcastSubscriber
+	dhwSubs     map[uint64]*broadcastSubscriber
+	energySubs  map[uint64]*broadcastSubscriber
 	nextID      uint64
 	onChange    func()
 }
@@ -50,6 +53,9 @@ func NewBroadcastHub(onChange func()) *BroadcastHub {
 	return &BroadcastHub{
 		name:        "graphql_broadcasts",
 		subscribers: make(map[broadcastKey]map[uint64]*broadcastSubscriber),
+		zoneSubs:    make(map[uint64]*broadcastSubscriber),
+		dhwSubs:     make(map[uint64]*broadcastSubscriber),
+		energySubs:  make(map[uint64]*broadcastSubscriber),
 		onChange:    onChange,
 	}
 }
@@ -163,6 +169,97 @@ func (hub *BroadcastHub) Subscribe(ctx context.Context, primary, secondary byte)
 	}(id)
 
 	return sub.ch, nil
+}
+
+func (hub *BroadcastHub) SubscribeZones(ctx context.Context) (chan interface{}, error) {
+	return hub.subscribeSemantic(ctx, hub.zoneSubs)
+}
+
+func (hub *BroadcastHub) SubscribeDHW(ctx context.Context) (chan interface{}, error) {
+	return hub.subscribeSemantic(ctx, hub.dhwSubs)
+}
+
+func (hub *BroadcastHub) SubscribeEnergy(ctx context.Context) (chan interface{}, error) {
+	return hub.subscribeSemantic(ctx, hub.energySubs)
+}
+
+func (hub *BroadcastHub) PublishZoneUpdate(zone Zone) {
+	hub.publishSemantic(hub.zoneSubs, zone)
+}
+
+func (hub *BroadcastHub) PublishDHWUpdate(status *DhwStatus) {
+	if status == nil {
+		return
+	}
+	hub.publishSemantic(hub.dhwSubs, status)
+}
+
+func (hub *BroadcastHub) PublishEnergyUpdate(totals *EnergyTotals) {
+	if totals == nil {
+		return
+	}
+	hub.publishSemantic(hub.energySubs, totals)
+}
+
+func (hub *BroadcastHub) subscribeSemantic(ctx context.Context, subscribers map[uint64]*broadcastSubscriber) (chan interface{}, error) {
+	if hub == nil {
+		return nil, fmt.Errorf("broadcast hub missing: %w", ebuserrors.ErrInvalidPayload)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	sub := &broadcastSubscriber{
+		ch: make(chan interface{}, broadcastBufferSize),
+	}
+
+	hub.mu.Lock()
+	hub.nextID++
+	sub.id = hub.nextID
+	subscribers[sub.id] = sub
+	id := sub.id
+	hub.mu.Unlock()
+
+	go func(id uint64) {
+		<-ctx.Done()
+		hub.removeSemanticSubscriber(subscribers, id)
+	}(id)
+
+	return sub.ch, nil
+}
+
+func (hub *BroadcastHub) removeSemanticSubscriber(subscribers map[uint64]*broadcastSubscriber, id uint64) {
+	if hub == nil {
+		return
+	}
+	hub.mu.Lock()
+	sub := subscribers[id]
+	delete(subscribers, id)
+	hub.mu.Unlock()
+
+	if sub != nil {
+		sub.close()
+	}
+}
+
+func (hub *BroadcastHub) publishSemantic(subscribers map[uint64]*broadcastSubscriber, payload any) {
+	if hub == nil {
+		return
+	}
+
+	hub.mu.RLock()
+	list := make([]*broadcastSubscriber, 0, len(subscribers))
+	for _, sub := range subscribers {
+		list = append(list, sub)
+	}
+	hub.mu.RUnlock()
+
+	for _, sub := range list {
+		select {
+		case sub.ch <- payload:
+		default:
+		}
+	}
 }
 
 func (hub *BroadcastHub) notifyChange() {

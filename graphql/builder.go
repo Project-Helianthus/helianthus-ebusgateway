@@ -28,26 +28,31 @@ func (b *Builder) Start(ctx context.Context) error {
 	if b.changes == nil {
 		return nil
 	}
+
+	// Goroutine exits when ctx.Done() closes or when changes closes.
+	go b.watchChanges(ctx)
+
+	return nil
+}
+
+func (b *Builder) watchChanges(ctx context.Context) {
+	if b == nil || b.changes == nil {
+		return
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-
-	// Goroutine exits when ctx.Done() closes.
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-b.changes:
+			if !ok {
 				return
-			case _, ok := <-b.changes:
-				if !ok {
-					return
-				}
-				_ = b.Rebuild()
 			}
+			_ = b.Rebuild()
 		}
-	}()
-
-	return nil
+	}
 }
 
 func (b *Builder) Rebuild() error {

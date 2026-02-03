@@ -284,3 +284,36 @@ func TestSmokeInvoke_UsesDirectRouterPlaneAndDefaultsParams(t *testing.T) {
 		t.Fatalf("dcfstate = %+v; want 1 valid", got)
 	}
 }
+
+func TestSmokeParams_SelectsBASV2ExtRegister(t *testing.T) {
+	t.Parallel()
+
+	entry := testEntry{
+		info: registry.DeviceInfo{
+			Manufacturer: "Vaillant",
+			DeviceID:     "BASV2",
+			Address:      0x15,
+		},
+	}
+
+	params, ok := smokeParams(entry, "system", "get_ext_register", 0x10)
+	if !ok {
+		t.Fatalf("expected smoke params for BASV2 get_ext_register")
+	}
+
+	if len(params) != 4 {
+		t.Fatalf("params keys=%d; want 4", len(params))
+	}
+	if got, ok := params["source"].(byte); !ok || got != 0x10 {
+		t.Fatalf("source=%v (%T); want 0x10 byte", params["source"], params["source"])
+	}
+	if got, ok := params["group"].(byte); !ok || got != 0x00 {
+		t.Fatalf("group=%v (%T); want 0x00 byte", params["group"], params["group"])
+	}
+	if got, ok := params["instance"].(byte); !ok || got != 0x00 {
+		t.Fatalf("instance=%v (%T); want 0x00 byte", params["instance"], params["instance"])
+	}
+	if got, ok := params["addr"].(uint16); !ok || got != 0x5C00 {
+		t.Fatalf("addr=%v (%T); want 0x5C00 uint16", params["addr"], params["addr"])
+	}
+}

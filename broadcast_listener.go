@@ -64,6 +64,9 @@ func (listener *BroadcastListener) run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
+			if errors.Is(err, ebuserrors.ErrTransportClosed) {
+				return
+			}
 			continue
 		}
 		if !ok {

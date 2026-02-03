@@ -115,12 +115,12 @@ func TestSmokePlaneBuildRequestAndDecode(t *testing.T) {
 }
 
 func TestDecodeDeviceInfoPayload(t *testing.T) {
-	payload := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	payload := []byte{0xB5, ' ', 'A', 'B', ' ', 0x00, 0x01, 0x02, 0x76, 0x03}
 	info, err := decodeDeviceInfoPayload(payload)
 	if err != nil {
 		t.Fatalf("decodeDeviceInfoPayload error = %v", err)
 	}
-	if info["manufacturer"] != "0102" || info["device_id"] != "0304" || info["sw_version"] != "0506" || info["hw_version"] != "0708" {
+	if info["manufacturer"] != "Vaillant" || info["device_id"] != "AB" || info["sw_version"] != "0102" || info["hw_version"] != "7603" {
 		t.Fatalf("unexpected decoded info: %+v", info)
 	}
 	if _, err := decodeDeviceInfoPayload([]byte{0x01}); err == nil {

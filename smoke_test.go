@@ -12,7 +12,7 @@ import (
 	"github.com/d3vi1/helianthus-ebusreg/registry"
 	"github.com/d3vi1/helianthus-ebusreg/router"
 	"github.com/d3vi1/helianthus-ebusreg/schema"
-	"github.com/d3vi1/helianthus-ebusreg/vaillant/system"
+	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
 )
 
 type testMethod struct {
@@ -151,11 +151,17 @@ func TestScanTargetsFromExpectedDevices(t *testing.T) {
 
 func TestDefaultSmokeProviders(t *testing.T) {
 	providers := defaultSmokeProviders()
-	if len(providers) != 1 {
-		t.Fatalf("defaultSmokeProviders() returned %d providers; want 1", len(providers))
+	if len(providers) != 3 {
+		t.Fatalf("defaultSmokeProviders() returned %d providers; want 3", len(providers))
 	}
-	if _, ok := providers[0].(system.Provider); !ok {
-		t.Fatalf("defaultSmokeProviders()[0] type = %T; want system.Provider", providers[0])
+	if providers[0].Name() != vaillantproviders.System().Name() {
+		t.Fatalf("defaultSmokeProviders()[0] name = %q; want %q", providers[0].Name(), vaillantproviders.System().Name())
+	}
+	if providers[1].Name() != vaillantproviders.Heating().Name() {
+		t.Fatalf("defaultSmokeProviders()[1] name = %q; want %q", providers[1].Name(), vaillantproviders.Heating().Name())
+	}
+	if providers[2].Name() != vaillantproviders.DHW().Name() {
+		t.Fatalf("defaultSmokeProviders()[2] name = %q; want %q", providers[2].Name(), vaillantproviders.DHW().Name())
 	}
 }
 
@@ -205,7 +211,7 @@ func TestInvokeIdentify_SendsRequestAndDecodesResponse(t *testing.T) {
 func TestSmokeInvoke_UsesDirectRouterPlaneAndDefaultsParams(t *testing.T) {
 	t.Parallel()
 
-	planes := system.NewProvider().CreatePlanes(registry.DeviceInfo{
+	planes := vaillantproviders.System().CreatePlanes(registry.DeviceInfo{
 		Manufacturer: "Vaillant",
 		Address:      0x08,
 	})

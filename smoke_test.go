@@ -1,13 +1,17 @@
 package ebusgateway
 
 import (
+	"bytes"
+	"context"
 	"reflect"
 	"testing"
 
 	"github.com/d3vi1/helianthus-ebusgo/protocol"
 	"github.com/d3vi1/helianthus-ebusgo/types"
 	"github.com/d3vi1/helianthus-ebusreg/registry"
+	"github.com/d3vi1/helianthus-ebusreg/router"
 	"github.com/d3vi1/helianthus-ebusreg/schema"
+	"github.com/d3vi1/helianthus-ebusreg/vaillant/system"
 )
 
 type testMethod struct {
@@ -139,5 +143,101 @@ func TestScanTargetsFromExpectedDevices(t *testing.T) {
 	want := []byte{0x08, 0x10}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("scan targets = %v; want %v", got, want)
+	}
+}
+
+type smokeMockBus struct {
+	lastRequest protocol.Frame
+	response    *protocol.Frame
+	err         error
+}
+
+func (bus *smokeMockBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+	bus.lastRequest = frame
+	return bus.response, bus.err
+}
+
+func TestSmokeInvoke_UsesDirectRouterPlaneAndDefaultsParams(t *testing.T) {
+	t.Parallel()
+
+	planes := system.NewProvider().CreatePlanes(registry.DeviceInfo{
+		Manufacturer: "Vaillant",
+		Address:      0x08,
+	})
+	if len(planes) != 1 {
+		t.Fatalf("expected 1 plane, got %d", len(planes))
+	}
+	plane := planes[0]
+
+	entry := testEntry{
+		info: registry.DeviceInfo{
+			Manufacturer: "Vaillant",
+			DeviceID:     "BAI00",
+			Address:      0x08,
+		},
+		planes: []registry.Plane{plane},
+	}
+
+	invokePlane, direct := smokeInvocationPlane(entry, plane, 0x10)
+	if !direct {
+		t.Fatalf("expected plane to be invoked directly")
+	}
+	if typed, ok := plane.(router.Plane); !ok || invokePlane != typed {
+		t.Fatalf("expected returned plane to match the original router.Plane")
+	}
+
+	params, ok := smokeParams(entry, invokePlane.Name(), "get_operational_data", 0x10)
+	if !ok {
+		t.Fatalf("expected smoke params for get_operational_data")
+	}
+
+	payload := []byte{
+		0x01,       // dcfstate
+		0x12,       // hour (BCD 12)
+		0x34,       // minute (BCD 34)
+		0x03,       // day (BCD 03)
+		0x02,       // month (BCD 02)
+		0x26,       // year (BCD 26)
+		0x80, 0x14, // temp (DATA2b 20.5)
+	}
+
+	bus := &smokeMockBus{
+		response: &protocol.Frame{
+			Source:    0x08,
+			Target:    0x10,
+			Primary:   0xB5,
+			Secondary: 0x04,
+			Data:      payload,
+		},
+	}
+	eventRouter := router.NewBusEventRouter(bus)
+
+	result, err := eventRouter.Invoke(context.Background(), invokePlane, "get_operational_data", params)
+	if err != nil {
+		t.Fatalf("Invoke error = %v", err)
+	}
+
+	if bus.lastRequest.Source != 0x10 || bus.lastRequest.Target != 0x08 {
+		t.Fatalf("unexpected request addresses: %+v", bus.lastRequest)
+	}
+	if bus.lastRequest.Primary != 0xB5 || bus.lastRequest.Secondary != 0x04 {
+		t.Fatalf("unexpected request type: %+v", bus.lastRequest)
+	}
+	if !bytes.Equal(bus.lastRequest.Data, []byte{0x00}) {
+		t.Fatalf("unexpected request data %v", bus.lastRequest.Data)
+	}
+
+	values, ok := result.(map[string]types.Value)
+	if !ok {
+		t.Fatalf("expected map[string]types.Value, got %T", result)
+	}
+	if op := values["op"]; !op.Valid || op.Value != byte(0x00) {
+		t.Fatalf("op = %+v; want 0x00 valid", op)
+	}
+	if got := values["payload"]; !got.Valid || !bytes.Equal(got.Value.([]byte), payload) {
+		t.Fatalf("payload = %+v; want %v", got, payload)
+	}
+	if got := values["dcfstate"]; !got.Valid || got.Value != uint8(0x01) {
+		t.Fatalf("dcfstate = %+v; want 1 valid", got)
 	}
 }

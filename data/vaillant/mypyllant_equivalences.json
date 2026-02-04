@@ -1,0 +1,39 @@
+{
+  "source": {
+    "mypyliant_dump": "mypyliant_dump_2026-02-04T07-15-06Z",
+    "wire_dump_window_local": "2026-02-04T09:19:00+02:00..2026-02-04T09:23:00+02:00",
+    "notes": "Equivalences are based on value correlation; normalized to configuration.domestic_hot_water[*] naming."
+  },
+  "equivalences": [
+    {
+      "register": {
+        "model": "HwcTempDesired",
+        "group": "0x01",
+        "instance": "0x01",
+        "addr": "0x0400",
+        "method": "get_ext_register"
+      },
+      "mypyliant_path": "configuration.domestic_hot_water[0].tapping_setpoint",
+      "description": "DHW target temperature",
+      "observed": {
+        "register_value": 61.0,
+        "mypyliant_value": 61.0
+      }
+    },
+    {
+      "register": {
+        "model": "HwcStorageTemp",
+        "group": "0x01",
+        "instance": "0x01",
+        "addr": "0x0500",
+        "method": "get_ext_register"
+      },
+      "mypyliant_path": "state.domestic_hot_water[0].current_dhw_temperature",
+      "description": "DHW cylinder temperature",
+      "observed": {
+        "register_value": 61.88,
+        "mypyliant_value": 61.9375
+      }
+    }
+  ]
+}

@@ -274,6 +274,12 @@ func loadRegisterDumpTemplates(source string) []templateSource {
 }
 
 func resolveRelativeSource(base, rel string) (string, bool) {
+	if strings.HasPrefix(rel, "http://") || strings.HasPrefix(rel, "https://") {
+		return rel, true
+	}
+	if filepath.IsAbs(rel) {
+		return rel, true
+	}
 	if strings.HasPrefix(base, "http://") || strings.HasPrefix(base, "https://") {
 		baseURL, err := url.Parse(base)
 		if err != nil {

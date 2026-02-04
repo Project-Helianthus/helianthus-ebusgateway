@@ -123,6 +123,31 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 		}
 	}
 
+	if cfg.Smoke.RegisterDumpProbeOnly {
+		target := cfg.Smoke.RegisterDumpTarget.Byte()
+		if target == 0 {
+			return fmt.Errorf("smoke probe-only requires register_dump_target")
+		}
+		manufacturer := strings.TrimSpace(cfg.Smoke.RegisterDumpProbeManufacturer)
+		if manufacturer == "" {
+			manufacturer = "Vaillant"
+		}
+		deviceRegistry := registry.NewDeviceRegistry(providers)
+		entry := deviceRegistry.Register(registry.DeviceInfo{
+			Address:      target,
+			Manufacturer: manufacturer,
+		})
+		systemPlane, ok := findSystemPlane(entry.Planes())
+		if !ok {
+			return fmt.Errorf("smoke probe-only: no system plane for target 0x%02x", target)
+		}
+		if err := runRegisterProbe(ctx, cfg, gateway, systemPlane, source, nil); err != nil {
+			return err
+		}
+		logger.Printf("probe-only completed")
+		return nil
+	}
+
 	scanBus := &timeoutBus{
 		bus:     gateway.Bus,
 		timeout: time.Duration(cfg.Smoke.ScanTimeoutSec) * time.Second,

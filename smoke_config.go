@@ -44,6 +44,7 @@ type smokeBehavior struct {
 	RegisterDumpOutput     string  `yaml:"register_dump_output"`
 	RegisterDumpTimeoutSec int     `yaml:"register_dump_timeout_sec"`
 	RegisterDumpLimit      int     `yaml:"register_dump_limit"`
+	IdentifyB50928xx       bool    `yaml:"identify_b509_28xx"`
 }
 
 type expectedDevice struct {

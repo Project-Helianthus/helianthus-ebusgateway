@@ -3,11 +3,16 @@ package ebusgateway
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +29,20 @@ type registerDumpEntry struct {
 	Addr     uint16
 	Model    string
 	Line     int
+}
+
+type registerField struct {
+	Name   string
+	Type   string
+	Base   string
+	Scale  float64
+	Size   int
+	Offset int
+}
+
+type modelInfo struct {
+	Name   string
+	Fields []registerField
 }
 
 type baseContext struct {
@@ -43,17 +62,18 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 		return fmt.Errorf("register dump missing gateway")
 	}
 
-	content, err := loadRegisterDumpSource(cfg.Smoke.RegisterDumpTSP)
+	content, err := loadRegisterDumpSourceWithIncludes(cfg.Smoke.RegisterDumpTSP)
 	if err != nil {
 		return err
 	}
 
-	requests, targetFromTSP, err := parseRegisterDumpTSP(content)
+	templateSources := loadRegisterDumpTemplates(cfg.Smoke.RegisterDumpTSP)
+	requests, targetFromTSP, models, err := parseRegisterDumpTSP(content, templateSources)
 	if err != nil {
 		return err
 	}
 	if len(requests) == 0 {
-		return fmt.Errorf("register dump: no ext registers found")
+		return fmt.Errorf("register dump: no registers found")
 	}
 
 	target := cfg.Smoke.RegisterDumpTarget.Byte()
@@ -106,6 +126,10 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 		requests = requests[:limit]
 	}
 
+	if cfg.Smoke.IdentifyB50928xx {
+		requests = appendIdentifyRegisters(requests, 0x28)
+	}
+
 	writeDumpLine(writer, "register dump started: target=0x%02x entries=%d tsp=%s", target, len(requests), cfg.Smoke.RegisterDumpTSP)
 
 	for _, req := range requests {
@@ -131,8 +155,9 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 		}
 
 		payload := extractDumpPayload(result)
-		writeDumpLine(writer, "target=0x%02x group=0x%02x instance=0x%02x addr=0x%04x method=%s model=%s line=%d payload=%s",
-			target, req.Group, req.Instance, req.Addr, req.Method, req.Model, req.Line, payload)
+		fields := decodeRegisterFields(req, payload, models)
+		writeDumpLine(writer, "target=0x%02x group=0x%02x instance=0x%02x addr=0x%04x method=%s model=%s line=%d payload=%s fields=%s",
+			target, req.Group, req.Instance, req.Addr, req.Method, req.Model, req.Line, payload, fields)
 	}
 
 	writeDumpLine(writer, "register dump completed: target=0x%02x entries=%d", target, len(requests))
@@ -182,7 +207,91 @@ func loadRegisterDumpSource(source string) ([]byte, error) {
 	return os.ReadFile(source)
 }
 
-func parseRegisterDumpTSP(content []byte) ([]registerDumpEntry, byte, error) {
+func loadRegisterDumpSourceWithIncludes(source string) ([]byte, error) {
+	content, err := loadRegisterDumpSource(source)
+	if err != nil {
+		return nil, err
+	}
+	visited := map[string]bool{source: true}
+	return expandRegisterDumpIncludes(content, source, visited)
+}
+
+func expandRegisterDumpIncludes(content []byte, base string, visited map[string]bool) ([]byte, error) {
+	lines := strings.Split(string(content), "\n")
+	var out strings.Builder
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "@include(") {
+			args, ok := parseDirectiveArgs(trimmed)
+			if ok && len(args) == 1 {
+				includeTarget := trimQuotes(args[0])
+				if includeTarget != "" {
+					if resolved, ok := resolveRelativeSource(base, includeTarget); ok {
+						if !visited[resolved] {
+							visited[resolved] = true
+							data, err := loadRegisterDumpSource(resolved)
+							if err != nil {
+								return nil, err
+							}
+							expanded, err := expandRegisterDumpIncludes(data, resolved, visited)
+							if err != nil {
+								return nil, err
+							}
+							out.Write(expanded)
+							if len(expanded) > 0 && expanded[len(expanded)-1] != '\n' {
+								out.WriteString("\n")
+							}
+							continue
+						}
+					}
+				}
+			}
+		}
+		out.WriteString(line)
+		out.WriteString("\n")
+	}
+	return []byte(out.String()), nil
+}
+
+type templateSource struct {
+	Path string
+	Data []byte
+}
+
+func loadRegisterDumpTemplates(source string) []templateSource {
+	var templates []templateSource
+	if strings.TrimSpace(source) == "" {
+		return templates
+	}
+
+	paths := []string{"./_templates.tsp", "../_templates.tsp"}
+	for _, rel := range paths {
+		if resolved, ok := resolveRelativeSource(source, rel); ok {
+			templates = append(templates, templateSource{Path: resolved})
+		}
+	}
+	return templates
+}
+
+func resolveRelativeSource(base, rel string) (string, bool) {
+	if strings.HasPrefix(base, "http://") || strings.HasPrefix(base, "https://") {
+		baseURL, err := url.Parse(base)
+		if err != nil {
+			return "", false
+		}
+		baseURL.Path = path.Clean(path.Join(path.Dir(baseURL.Path), rel))
+		return baseURL.String(), true
+	}
+	if base == "" {
+		return "", false
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(base), rel)), true
+}
+
+func parseRegisterDumpTSP(content []byte, templates []templateSource) ([]registerDumpEntry, byte, map[string]modelInfo, error) {
+	aliasMap := parseScalarAliases(content, templates)
+	models := parseModelDefinitions(content, aliasMap)
+
 	scanner := bufio.NewScanner(strings.NewReader(string(content)))
 	scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
 
@@ -211,7 +320,7 @@ func parseRegisterDumpTSP(content []byte) ([]registerDumpEntry, byte, error) {
 
 		if strings.HasPrefix(line, "@base(") {
 			args, ok := parseDirectiveArgs(line)
-			if !ok || len(args) < 6 {
+			if !ok || len(args) < 3 {
 				base = nil
 				continue
 			}
@@ -276,9 +385,9 @@ func parseRegisterDumpTSP(content []byte) ([]registerDumpEntry, byte, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
-	return entries, target, nil
+	return entries, target, models, nil
 }
 
 func buildRegisterEntry(args []string, base *baseContext) (registerDumpEntry, bool) {
@@ -356,6 +465,16 @@ func parseDirectiveArgs(line string) ([]string, bool) {
 	return args, len(args) > 0
 }
 
+func trimQuotes(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+			return value[1 : len(value)-1]
+		}
+	}
+	return value
+}
+
 func parseByteToken(token string) (byte, bool) {
 	value, ok := parseUintToken(token)
 	if !ok || value > 0xFF {
@@ -386,6 +505,18 @@ func parseUintToken(token string) (uint64, bool) {
 	return 0, false
 }
 
+func parseFloatToken(token string) (float64, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(token, 64)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
 func parseModelName(line string) string {
 	fields := strings.Fields(line)
 	if len(fields) < 2 {
@@ -411,6 +542,529 @@ func extractDumpPayload(result any) string {
 		return fmt.Sprintf("%x", payload)
 	}
 	return ""
+}
+
+func decodeRegisterFields(req registerDumpEntry, payloadHex string, models map[string]modelInfo) string {
+	if payloadHex == "" {
+		return ""
+	}
+	payload, err := hexToBytes(payloadHex)
+	if err != nil {
+		return ""
+	}
+	model, ok := models[req.Model]
+	if !ok || len(model.Fields) == 0 {
+		return ""
+	}
+
+	data := payload
+	if req.Method == "get_ext_register" && len(payload) >= 4 {
+		data = payload[4:]
+	}
+
+	values := make([]string, 0, len(model.Fields))
+	for _, field := range model.Fields {
+		if field.Size <= 0 || field.Offset+field.Size > len(data) {
+			continue
+		}
+		chunk := data[field.Offset : field.Offset+field.Size]
+		value, ok := decodeFieldValue(field, chunk)
+		if !ok {
+			continue
+		}
+		values = append(values, fmt.Sprintf("%s=%s", field.Name, value))
+	}
+	return strings.Join(values, ",")
+}
+
+func decodeFieldValue(field registerField, chunk []byte) (string, bool) {
+	value, ok := decodeBaseValue(field.Base, chunk)
+	if !ok {
+		return "", false
+	}
+
+	switch typed := value.(type) {
+	case float64:
+		val := typed
+		if field.Scale != 0 && field.Scale != 1 {
+			val *= field.Scale
+		}
+		return fmt.Sprintf("%.4g", val), true
+	case float32:
+		val := float64(typed)
+		if field.Scale != 0 && field.Scale != 1 {
+			val *= field.Scale
+		}
+		return fmt.Sprintf("%.4g", val), true
+	case int, int8, int16, int32, int64:
+		val := toFloat(typed)
+		if field.Scale != 0 && field.Scale != 1 {
+			val *= field.Scale
+			return fmt.Sprintf("%.4g", val), true
+		}
+		return fmt.Sprintf("%.0f", val), true
+	case uint, uint8, uint16, uint32, uint64:
+		val := float64(toUint(typed))
+		if field.Scale != 0 && field.Scale != 1 {
+			val *= field.Scale
+			return fmt.Sprintf("%.4g", val), true
+		}
+		return fmt.Sprintf("%.0f", val), true
+	case string:
+		return typed, true
+	default:
+		return fmt.Sprintf("%v", typed), true
+	}
+}
+
+func decodeBaseValue(base string, payload []byte) (any, bool) {
+	switch base {
+	case "EXP":
+		value, err := types.EXP{}.Decode(payload)
+		if err != nil || !value.Valid {
+			return nil, false
+		}
+		return float64(value.Value.(float32)), true
+	case "D2C":
+		value, err := types.DATA2c{}.Decode(payload)
+		if err != nil || !value.Valid {
+			return nil, false
+		}
+		return value.Value.(float64), true
+	case "D2B":
+		value, err := types.DATA2b{}.Decode(payload)
+		if err != nil || !value.Valid {
+			return nil, false
+		}
+		return value.Value.(float64), true
+	case "D1B":
+		value, err := types.DATA1b{}.Decode(payload)
+		if err != nil || !value.Valid {
+			return nil, false
+		}
+		return int(value.Value.(int8)), true
+	case "UIN":
+		value, err := types.WORD{}.Decode(payload)
+		if err != nil || !value.Valid {
+			return nil, false
+		}
+		return uint16(value.Value.(uint16)), true
+	case "BCD":
+		value, err := types.BCD{}.Decode(payload)
+		if err != nil || !value.Valid {
+			return nil, false
+		}
+		return int(value.Value.(uint8)), true
+	case "UCH":
+		if len(payload) < 1 {
+			return nil, false
+		}
+		if payload[0] == 0xFF {
+			return nil, false
+		}
+		return payload[0], true
+	case "SCH":
+		if len(payload) < 1 {
+			return nil, false
+		}
+		v := int8(payload[0])
+		if v == -128 {
+			return nil, false
+		}
+		return int(v), true
+	case "D1C":
+		if len(payload) < 1 {
+			return nil, false
+		}
+		v := int8(payload[0])
+		if v == -128 {
+			return nil, false
+		}
+		return float64(v) / 2.0, true
+	case "SIN":
+		if len(payload) < 2 {
+			return nil, false
+		}
+		raw := int16(binary.LittleEndian.Uint16(payload))
+		if raw == -32768 {
+			return nil, false
+		}
+		return int(raw), true
+	case "ULG":
+		if len(payload) < 4 {
+			return nil, false
+		}
+		raw := binary.LittleEndian.Uint32(payload)
+		if raw == 0xFFFFFFFF {
+			return nil, false
+		}
+		return raw, true
+	case "FLT":
+		if len(payload) < 4 {
+			return nil, false
+		}
+		raw := binary.LittleEndian.Uint32(payload)
+		value := math.Float32frombits(raw)
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			return nil, false
+		}
+		return float64(value), true
+	case "BCD3":
+		if len(payload) < 3 {
+			return nil, false
+		}
+		return decodeBCD(payload[:3])
+	case "BCD4":
+		if len(payload) < 4 {
+			return nil, false
+		}
+		return decodeBCD(payload[:4])
+	}
+	return nil, false
+}
+
+func decodeBCD(payload []byte) (int, bool) {
+	total := 0
+	multiplier := 1
+	for i := 0; i < len(payload); i++ {
+		raw := payload[i]
+		tens := raw >> 4
+		ones := raw & 0x0F
+		if tens > 9 || ones > 9 {
+			return 0, false
+		}
+		total += int(ones) * multiplier
+		multiplier *= 10
+		total += int(tens) * multiplier
+		multiplier *= 10
+	}
+	return total, true
+}
+
+func toFloat(value any) float64 {
+	switch typed := value.(type) {
+	case int:
+		return float64(typed)
+	case int8:
+		return float64(typed)
+	case int16:
+		return float64(typed)
+	case int32:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	default:
+		return 0
+	}
+}
+
+func toUint(value any) uint64 {
+	switch typed := value.(type) {
+	case uint:
+		return uint64(typed)
+	case uint8:
+		return uint64(typed)
+	case uint16:
+		return uint64(typed)
+	case uint32:
+		return uint64(typed)
+	case uint64:
+		return typed
+	default:
+		return 0
+	}
+}
+
+func hexToBytes(value string) ([]byte, error) {
+	if len(value)%2 != 0 {
+		return nil, fmt.Errorf("hex odd length")
+	}
+	data := make([]byte, len(value)/2)
+	for i := 0; i < len(data); i++ {
+		parsed, err := strconv.ParseUint(value[i*2:i*2+2], 16, 8)
+		if err != nil {
+			return nil, err
+		}
+		data[i] = byte(parsed)
+	}
+	return data, nil
+}
+
+type aliasInfo struct {
+	Base  string
+	Scale float64
+}
+
+func parseScalarAliases(content []byte, templates []templateSource) map[string]aliasInfo {
+	aliases := make(map[string]aliasInfo)
+	parseScalarAliasesText(content, aliases)
+	for _, item := range templates {
+		data := item.Data
+		if len(data) == 0 && item.Path != "" {
+			loaded, err := loadRegisterDumpSource(item.Path)
+			if err != nil {
+				continue
+			}
+			data = loaded
+		}
+		parseScalarAliasesText(data, aliases)
+	}
+	return aliases
+}
+
+func parseScalarAliasesText(content []byte, aliases map[string]aliasInfo) {
+	lines := strings.Split(string(content), "\n")
+	factor := 1.0
+	divisor := 1.0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "@factor(") {
+			if args, ok := parseDirectiveArgs(trimmed); ok && len(args) == 1 {
+				if value, ok := parseFloatToken(args[0]); ok {
+					factor = value
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "@divisor(") {
+			if args, ok := parseDirectiveArgs(trimmed); ok && len(args) == 1 {
+				if value, ok := parseFloatToken(args[0]); ok {
+					divisor = value
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "scalar ") {
+			matches := regexp.MustCompile(`scalar\\s+(\\w+)\\s+extends\\s+(\\w+)`).FindStringSubmatch(trimmed)
+			if len(matches) == 3 {
+				scale := 1.0
+				if divisor != 0 {
+					scale = factor / divisor
+				}
+				aliases[matches[1]] = aliasInfo{Base: matches[2], Scale: scale}
+			}
+			factor = 1.0
+			divisor = 1.0
+		}
+	}
+}
+
+func parseModelDefinitions(content []byte, aliases map[string]aliasInfo) map[string]modelInfo {
+	models := make(map[string]modelInfo)
+	modelDefs := make(map[string]modelDefinition)
+	var pendingInherits []string
+	var pendingMaxLength int
+	var current string
+	brace := 0
+
+	lines := strings.Split(string(content), "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+		if strings.HasPrefix(line, "@inherit(") {
+			args, ok := parseDirectiveArgs(line)
+			if ok {
+				pendingInherits = args
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "@maxLength(") {
+			args, ok := parseDirectiveArgs(line)
+			if ok && len(args) == 1 {
+				if value, ok := parseUintToken(args[0]); ok {
+					pendingMaxLength = int(value)
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "model ") {
+			name := parseModelName(line)
+			if name != "" {
+				current = name
+				modelDefs[name] = modelDefinition{
+					Name:     name,
+					Inherits: pendingInherits,
+				}
+				pendingInherits = nil
+				brace = strings.Count(line, "{") - strings.Count(line, "}")
+				continue
+			}
+		}
+		if current != "" {
+			brace += strings.Count(line, "{") - strings.Count(line, "}")
+			if isFieldLine(line) {
+				fieldName, fieldType := parseFieldLine(line)
+				if fieldName != "" && fieldType != "" {
+					def := modelDefs[current]
+					def.Fields = append(def.Fields, fieldDefinition{
+						Name:      fieldName,
+						Type:      fieldType,
+						MaxLength: pendingMaxLength,
+					})
+					modelDefs[current] = def
+					pendingMaxLength = 0
+				}
+			}
+			if brace <= 0 {
+				current = ""
+				brace = 0
+				pendingMaxLength = 0
+			}
+		}
+	}
+
+	for name := range modelDefs {
+		fields := resolveModelFields(name, modelDefs, aliases, map[string]bool{})
+		models[name] = modelInfo{Name: name, Fields: fields}
+	}
+
+	return models
+}
+
+type modelDefinition struct {
+	Name     string
+	Inherits []string
+	Fields   []fieldDefinition
+}
+
+type fieldDefinition struct {
+	Name      string
+	Type      string
+	MaxLength int
+}
+
+func resolveModelFields(name string, defs map[string]modelDefinition, aliases map[string]aliasInfo, visiting map[string]bool) []registerField {
+	if visiting[name] {
+		return nil
+	}
+	def, ok := defs[name]
+	if !ok {
+		return nil
+	}
+	visiting[name] = true
+	var fields []registerField
+	for _, base := range def.Inherits {
+		fields = append(fields, resolveModelFields(base, defs, aliases, visiting)...)
+	}
+	offset := 0
+	for _, field := range def.Fields {
+		base, scale := resolveAlias(field.Type, aliases)
+		size := fieldSize(base, field.MaxLength)
+		if size <= 0 {
+			break
+		}
+		fields = append(fields, registerField{
+			Name:   field.Name,
+			Type:   field.Type,
+			Base:   base,
+			Scale:  scale,
+			Size:   size,
+			Offset: offset,
+		})
+		offset += size
+	}
+	visiting[name] = false
+	return fields
+}
+
+func resolveAlias(name string, aliases map[string]aliasInfo) (string, float64) {
+	scale := 1.0
+	current := name
+	visited := make(map[string]bool)
+	for {
+		info, ok := aliases[current]
+		if !ok {
+			return current, scale
+		}
+		if visited[current] {
+			return current, scale
+		}
+		visited[current] = true
+		scale *= info.Scale
+		current = info.Base
+	}
+}
+
+func fieldSize(base string, maxLength int) int {
+	switch base {
+	case "UCH", "SCH", "D1B", "D1C", "BCD", "BDY":
+		return 1
+	case "UIN", "SIN", "D2B", "D2C", "WORD":
+		return 2
+	case "BCD3":
+		return 3
+	case "BCD4":
+		return 4
+	case "ULG", "SLG", "EXP", "FLT":
+		return 4
+	case "BTI", "VTI", "VTM":
+		return 3
+	case "BDA":
+		return 4
+	case "BDA3", "HDA3":
+		return 3
+	case "IGN":
+		return maxLength
+	default:
+		return 0
+	}
+}
+
+func isFieldLine(line string) bool {
+	if strings.HasPrefix(line, "@") {
+		return false
+	}
+	if !strings.HasSuffix(line, ";") {
+		return false
+	}
+	return strings.Contains(line, ":")
+}
+
+func parseFieldLine(line string) (string, string) {
+	parts := strings.Split(line, ":")
+	if len(parts) != 2 {
+		return "", ""
+	}
+	name := strings.TrimSpace(parts[0])
+	typeValue := strings.TrimSpace(strings.TrimSuffix(parts[1], ";"))
+	if name == "" || typeValue == "" {
+		return "", ""
+	}
+	if idx := strings.IndexAny(typeValue, "< "); idx != -1 {
+		typeValue = typeValue[:idx]
+	}
+	return name, typeValue
+}
+
+func appendIdentifyRegisters(entries []registerDumpEntry, prefix byte) []registerDumpEntry {
+	seen := make(map[uint32]struct{}, len(entries))
+	for _, entry := range entries {
+		extFlag := uint32(0)
+		if entry.Method == "get_ext_register" {
+			extFlag = 1
+		}
+		key := extFlag<<24 | uint32(entry.Addr)
+		seen[key] = struct{}{}
+	}
+
+	for addr := uint16(prefix)<<8 | 0x00; addr <= uint16(prefix)<<8|0xFF; addr++ {
+		key := uint32(0)<<24 | uint32(addr)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		entries = append(entries, registerDumpEntry{
+			Method: "get_register",
+			Addr:   addr,
+			Model:  "identify_b509_28xx",
+			Line:   0,
+		})
+	}
+	return entries
 }
 
 func writeDumpLine(writer io.Writer, format string, args ...any) {

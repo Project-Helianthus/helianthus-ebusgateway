@@ -1,6 +1,7 @@
 package ebusgateway
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -81,6 +82,16 @@ func (logger *wireLogger) logFrame(connLabel, dir string, frame protocol.Frame) 
 		len(frame.Data),
 		frame.Data,
 	)
+	if frame.Primary == 0xB5 && frame.Secondary == 0x12 {
+		if len(frame.Data) >= 2 {
+			le := binary.LittleEndian.Uint16(frame.Data[:2])
+			be := binary.BigEndian.Uint16(frame.Data[:2])
+			logger.logf("%s conn=%s dir=%s b5_12 raw=%x u16le=0x%04x u16be=0x%04x b0=0x%02x b1=0x%02x\n",
+				ts, connLabel, dir, frame.Data, le, be, frame.Data[0], frame.Data[1])
+		} else {
+			logger.logf("%s conn=%s dir=%s b5_12 raw=%x len=%d\n", ts, connLabel, dir, frame.Data, len(frame.Data))
+		}
+	}
 }
 
 type wireLogTransport struct {

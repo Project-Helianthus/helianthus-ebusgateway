@@ -45,6 +45,8 @@ type smokeBehavior struct {
 	RegisterDumpTimeoutSec int     `yaml:"register_dump_timeout_sec"`
 	RegisterDumpLimit      int     `yaml:"register_dump_limit"`
 	IdentifyB50928xx       bool    `yaml:"identify_b509_28xx"`
+	RegisterDumpRetryEmpty bool    `yaml:"register_dump_retry_empty"`
+	RegisterDumpRetryDelay int     `yaml:"register_dump_retry_delay_ms"`
 }
 
 type expectedDevice struct {

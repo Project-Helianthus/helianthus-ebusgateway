@@ -132,6 +132,7 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 
 	writeDumpLine(writer, "register dump started: target=0x%02x entries=%d tsp=%s", target, len(requests), cfg.Smoke.RegisterDumpTSP)
 
+	var emptyEntries []registerDumpEntry
 	for _, req := range requests {
 		if ctx != nil && ctx.Err() != nil {
 			return ctx.Err()
@@ -158,6 +159,45 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 		fields := decodeRegisterFields(req, payload, models)
 		writeDumpLine(writer, "target=0x%02x group=0x%02x instance=0x%02x addr=0x%04x method=%s model=%s line=%d payload=%s fields=%s",
 			target, req.Group, req.Instance, req.Addr, req.Method, req.Model, req.Line, payload, fields)
+		if payload == "" {
+			emptyEntries = append(emptyEntries, req)
+		}
+	}
+
+	if cfg.Smoke.RegisterDumpRetryEmpty && len(emptyEntries) > 0 {
+		delay := time.Duration(cfg.Smoke.RegisterDumpRetryDelay) * time.Millisecond
+		if delay <= 0 {
+			delay = 200 * time.Millisecond
+		}
+		writeDumpLine(writer, "register dump retry: empty=%d delay_ms=%d", len(emptyEntries), int(delay/time.Millisecond))
+		time.Sleep(delay)
+		for _, req := range emptyEntries {
+			if ctx != nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			params := map[string]any{
+				"source": source,
+				"addr":   req.Addr,
+			}
+			if req.Method == "get_ext_register" {
+				params["group"] = req.Group
+				params["instance"] = req.Instance
+			}
+
+			ctxMethod, cancel := context.WithTimeout(ctx, timeout)
+			result, err := gateway.Router.Invoke(ctxMethod, systemPlane, req.Method, params)
+			cancel()
+			if err != nil {
+				writeDumpLine(writer, "retry=1 target=0x%02x group=0x%02x instance=0x%02x addr=0x%04x model=%s line=%d error=%v",
+					target, req.Group, req.Instance, req.Addr, req.Model, req.Line, err)
+				continue
+			}
+
+			payload := extractDumpPayload(result)
+			fields := decodeRegisterFields(req, payload, models)
+			writeDumpLine(writer, "retry=1 target=0x%02x group=0x%02x instance=0x%02x addr=0x%04x method=%s model=%s line=%d payload=%s fields=%s",
+				target, req.Group, req.Instance, req.Addr, req.Method, req.Model, req.Line, payload, fields)
+		}
 	}
 
 	writeDumpLine(writer, "register dump completed: target=0x%02x entries=%d", target, len(requests))

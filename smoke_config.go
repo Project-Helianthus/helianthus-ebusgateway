@@ -47,6 +47,14 @@ type smokeBehavior struct {
 	IdentifyB50928xx       bool    `yaml:"identify_b509_28xx"`
 	RegisterDumpRetryEmpty bool    `yaml:"register_dump_retry_empty"`
 	RegisterDumpRetryDelay int     `yaml:"register_dump_retry_delay_ms"`
+	RegisterDumpProbe      bool    `yaml:"register_dump_probe"`
+	RegisterDumpProbeStart hexWord `yaml:"register_dump_probe_start"`
+	RegisterDumpProbeEnd   hexWord `yaml:"register_dump_probe_end"`
+	RegisterDumpProbeGroup hexByte `yaml:"register_dump_probe_group"`
+	RegisterDumpProbeInst  hexByte `yaml:"register_dump_probe_instance"`
+	RegisterDumpProbeMethod string `yaml:"register_dump_probe_method"`
+	RegisterDumpProbeTimeout int   `yaml:"register_dump_probe_timeout_ms"`
+	RegisterDumpProbeOutput  string `yaml:"register_dump_probe_output"`
 }
 
 type expectedDevice struct {
@@ -77,6 +85,31 @@ func (b *hexByte) UnmarshalYAML(node *yaml.Node) error {
 	}
 	*b = hexByte(byte(parsed))
 	return nil
+}
+
+type hexWord uint16
+
+func (w *hexWord) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return fmt.Errorf("address must be a scalar")
+	}
+	value := strings.TrimSpace(node.Value)
+	if value == "" {
+		return fmt.Errorf("address empty")
+	}
+	parsed, err := strconv.ParseInt(value, 0, 16)
+	if err != nil {
+		return err
+	}
+	if parsed < 0 || parsed > 0xFFFF {
+		return fmt.Errorf("address out of range: %s", value)
+	}
+	*w = hexWord(parsed)
+	return nil
+}
+
+func (w hexWord) Uint16() uint16 {
+	return uint16(w)
 }
 
 func (b hexByte) Byte() byte {

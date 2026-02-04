@@ -130,6 +130,12 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 		requests = appendIdentifyRegisters(requests, 0x28)
 	}
 
+	if cfg.Smoke.RegisterDumpProbe {
+		if err := runRegisterProbe(ctx, cfg, gateway, systemPlane, source, writer); err != nil {
+			return err
+		}
+	}
+
 	writeDumpLine(writer, "register dump started: target=0x%02x entries=%d tsp=%s", target, len(requests), cfg.Smoke.RegisterDumpTSP)
 
 	var emptyEntries []registerDumpEntry
@@ -205,6 +211,97 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 	if logger != nil {
 		logger.logf("%s register dump completed: target=0x%02x entries=%d\n", time.Now().Format(time.RFC3339Nano), target, len(requests))
 	}
+	return nil
+}
+
+func runRegisterProbe(ctx context.Context, cfg smokeConfig, gateway *Gateway, systemPlane router.Plane, source byte, writer io.Writer) error {
+	method := strings.TrimSpace(cfg.Smoke.RegisterDumpProbeMethod)
+	if method == "" {
+		method = "get_register"
+	}
+	start := cfg.Smoke.RegisterDumpProbeStart.Uint16()
+	end := cfg.Smoke.RegisterDumpProbeEnd.Uint16()
+	if start == 0 && end == 0 {
+		end = 0xFFFF
+	}
+	if end < start {
+		return fmt.Errorf("register dump probe: end < start (0x%04x < 0x%04x)", end, start)
+	}
+
+	group := cfg.Smoke.RegisterDumpProbeGroup.Byte()
+	instance := cfg.Smoke.RegisterDumpProbeInst.Byte()
+	timeout := time.Duration(cfg.Smoke.RegisterDumpProbeTimeout) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 100 * time.Millisecond
+	}
+
+	outPath := strings.TrimSpace(cfg.Smoke.RegisterDumpProbeOutput)
+	if outPath == "" {
+		outPath = cfg.Smoke.RegisterDumpOutput + ".probe.log"
+	}
+	outWriter := writer
+	if outWriter == nil || cfg.Smoke.RegisterDumpProbeOutput != "" {
+		file, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		outWriter = file
+	}
+
+	writeDumpLine(outWriter, "register probe started: method=%s group=0x%02x instance=0x%02x start=0x%04x end=0x%04x timeout_ms=%d",
+		method, group, instance, start, end, int(timeout/time.Millisecond))
+
+	var firstOK *uint16
+	var lastOK *uint16
+	var okCount int
+
+	for addr := start; addr <= end; addr++ {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		params := map[string]any{
+			"source": source,
+			"addr":   addr,
+		}
+		if method == "get_ext_register" {
+			params["group"] = group
+			params["instance"] = instance
+		}
+		ctxMethod, cancel := context.WithTimeout(ctx, timeout)
+		result, err := gateway.Router.Invoke(ctxMethod, systemPlane, method, params)
+		cancel()
+		if err != nil {
+			writeDumpLine(outWriter, "probe addr=0x%04x error=%v", addr, err)
+		} else {
+			payload := extractDumpPayload(result)
+			fields := ""
+			if payload != "" {
+				fields = payload
+			}
+			writeDumpLine(outWriter, "probe addr=0x%04x payload=%s", addr, fields)
+			okCount++
+			if firstOK == nil {
+				value := addr
+				firstOK = &value
+			}
+			value := addr
+			lastOK = &value
+		}
+		if addr == 0xFFFF {
+			break
+		}
+	}
+
+	firstText := "none"
+	lastText := "none"
+	if firstOK != nil {
+		firstText = fmt.Sprintf("0x%04x", *firstOK)
+	}
+	if lastOK != nil {
+		lastText = fmt.Sprintf("0x%04x", *lastOK)
+	}
+	writeDumpLine(outWriter, "register probe completed: ok=%d first_ok=%s last_ok=%s", okCount, firstText, lastText)
 	return nil
 }
 

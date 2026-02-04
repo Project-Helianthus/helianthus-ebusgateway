@@ -844,7 +844,7 @@ func parseScalarAliasesText(content []byte, aliases map[string]aliasInfo) {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "scalar ") {
-			matches := regexp.MustCompile(`scalar\\s+(\\w+)\\s+extends\\s+(\\w+)`).FindStringSubmatch(trimmed)
+			matches := regexp.MustCompile(`scalar\s+(\w+)\s+extends\s+(\w+)`).FindStringSubmatch(trimmed)
 			if len(matches) == 3 {
 				scale := 1.0
 				if divisor != 0 {

@@ -234,6 +234,7 @@ func runRegisterProbe(ctx context.Context, cfg smokeConfig, gateway *Gateway, sy
 	if timeout <= 0 {
 		timeout = 100 * time.Millisecond
 	}
+	delay := time.Duration(cfg.Smoke.RegisterDumpProbeDelay) * time.Millisecond
 
 	outPath := strings.TrimSpace(cfg.Smoke.RegisterDumpProbeOutput)
 	if outPath == "" {
@@ -290,6 +291,9 @@ func runRegisterProbe(ctx context.Context, cfg smokeConfig, gateway *Gateway, sy
 		}
 		if addr == 0xFFFF {
 			break
+		}
+		if delay > 0 {
+			time.Sleep(delay)
 		}
 	}
 

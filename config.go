@@ -41,6 +41,9 @@ type Config struct {
 	UIPath           string
 	MDNSAdvertise    bool
 	MDNSInstance     string
+	DumpOutputDir    string
+	DumpUploadURL    string
+	DumpIncludePII   bool
 }
 
 func DefaultConfig() Config {
@@ -61,6 +64,7 @@ func DefaultConfig() Config {
 		UIPath:           "/ui",
 		MDNSAdvertise:    true,
 		MDNSInstance:     "helianthus",
+		DumpOutputDir:    "./dumps",
 	}
 }
 
@@ -105,6 +109,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.MDNSInstance == "" {
 		cfg.MDNSInstance = "helianthus"
+	}
+	if cfg.DumpOutputDir == "" {
+		cfg.DumpOutputDir = "./dumps"
 	}
 	return cfg
 }

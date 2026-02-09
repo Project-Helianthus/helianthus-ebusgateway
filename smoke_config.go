@@ -34,10 +34,30 @@ type enhConfig struct {
 }
 
 type smokeBehavior struct {
-	VerboseFrames    bool `yaml:"verbose_frames"`
-	ScanTimeoutSec   int  `yaml:"scan_timeout_sec"`
-	MethodTimeoutSec int  `yaml:"method_timeout_sec"`
-	SourceAddress    hexByte `yaml:"source_address"`
+	VerboseFrames                 bool    `yaml:"verbose_frames"`
+	ScanTimeoutSec                int     `yaml:"scan_timeout_sec"`
+	MethodTimeoutSec              int     `yaml:"method_timeout_sec"`
+	SourceAddress                 hexByte `yaml:"source_address"`
+	WireLogPath                   string  `yaml:"wire_log_path"`
+	RegisterDumpTSP               string  `yaml:"register_dump_tsp"`
+	RegisterDumpTarget            hexByte `yaml:"register_dump_target"`
+	RegisterDumpOutput            string  `yaml:"register_dump_output"`
+	RegisterDumpTimeoutSec        int     `yaml:"register_dump_timeout_sec"`
+	RegisterDumpLimit             int     `yaml:"register_dump_limit"`
+	IdentifyB50928xx              bool    `yaml:"identify_b509_28xx"`
+	RegisterDumpRetryEmpty        bool    `yaml:"register_dump_retry_empty"`
+	RegisterDumpRetryDelay        int     `yaml:"register_dump_retry_delay_ms"`
+	RegisterDumpProbe             bool    `yaml:"register_dump_probe"`
+	RegisterDumpProbeStart        hexWord `yaml:"register_dump_probe_start"`
+	RegisterDumpProbeEnd          hexWord `yaml:"register_dump_probe_end"`
+	RegisterDumpProbeGroup        hexByte `yaml:"register_dump_probe_group"`
+	RegisterDumpProbeInst         hexByte `yaml:"register_dump_probe_instance"`
+	RegisterDumpProbeMethod       string  `yaml:"register_dump_probe_method"`
+	RegisterDumpProbeTimeout      int     `yaml:"register_dump_probe_timeout_ms"`
+	RegisterDumpProbeDelay        int     `yaml:"register_dump_probe_delay_ms"`
+	RegisterDumpProbeOutput       string  `yaml:"register_dump_probe_output"`
+	RegisterDumpProbeOnly         bool    `yaml:"register_dump_probe_only"`
+	RegisterDumpProbeManufacturer string  `yaml:"register_dump_probe_manufacturer"`
 }
 
 type expectedDevice struct {
@@ -68,6 +88,31 @@ func (b *hexByte) UnmarshalYAML(node *yaml.Node) error {
 	}
 	*b = hexByte(byte(parsed))
 	return nil
+}
+
+type hexWord uint16
+
+func (w *hexWord) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return fmt.Errorf("address must be a scalar")
+	}
+	value := strings.TrimSpace(node.Value)
+	if value == "" {
+		return fmt.Errorf("address empty")
+	}
+	parsed, err := strconv.ParseInt(value, 0, 16)
+	if err != nil {
+		return err
+	}
+	if parsed < 0 || parsed > 0xFFFF {
+		return fmt.Errorf("address out of range: %s", value)
+	}
+	*w = hexWord(parsed)
+	return nil
+}
+
+func (w hexWord) Uint16() uint16 {
+	return uint16(w)
 }
 
 func (b hexByte) Byte() byte {
@@ -116,6 +161,9 @@ func (cfg *smokeConfig) normalize() error {
 	cfg.ENH.Type = strings.ToLower(strings.TrimSpace(cfg.ENH.Type))
 	cfg.ENH.Path = strings.TrimSpace(cfg.ENH.Path)
 	cfg.ENH.Host = strings.TrimSpace(cfg.ENH.Host)
+	cfg.Smoke.WireLogPath = strings.TrimSpace(cfg.Smoke.WireLogPath)
+	cfg.Smoke.RegisterDumpTSP = strings.TrimSpace(cfg.Smoke.RegisterDumpTSP)
+	cfg.Smoke.RegisterDumpOutput = strings.TrimSpace(cfg.Smoke.RegisterDumpOutput)
 
 	if cfg.ENH.Type == "" {
 		return fmt.Errorf("smoke config missing enh.type")

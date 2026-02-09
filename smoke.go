@@ -14,19 +14,19 @@ import (
 	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
 	"github.com/d3vi1/helianthus-ebusgo/protocol"
 	"github.com/d3vi1/helianthus-ebusgo/transport"
+	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
 	"github.com/d3vi1/helianthus-ebusreg/registry"
 	"github.com/d3vi1/helianthus-ebusreg/router"
 	"github.com/d3vi1/helianthus-ebusreg/schema"
-	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
 )
 
 const defaultSmokeSource = byte(0x10)
 
 type SmokeOptions struct {
-	RootDir       string
-	Providers     []registry.PlaneProvider
-	Logger        *log.Logger
-	SourceAddress byte
+	RootDir        string
+	Providers      []registry.PlaneProvider
+	Logger         *log.Logger
+	SourceAddress  byte
 	OnGatewayReady func(ctx context.Context, gateway *Gateway, logger *log.Logger)
 }
 
@@ -70,11 +70,28 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 	gatewayCfg.TransportConfig = transportCfg
 	gatewayCfg.Providers = providers
 
+	wireLogger, err := newWireLogger(cfg.Smoke.WireLogPath)
+	if err != nil {
+		return err
+	}
+	if wireLogger != nil {
+		defer func() {
+			if err := wireLogger.Close(); err != nil {
+				logger.Printf("wire log close: %v", err)
+			}
+		}()
+	}
+
 	var wrap func(transport.RawTransport) transport.RawTransport
+	if wireLogger != nil {
+		wrap = chainTransportWrap(wrap, func(inner transport.RawTransport) transport.RawTransport {
+			return newWireLogTransport(inner, wireLogger, "bus")
+		})
+	}
 	if cfg.Smoke.VerboseFrames {
-		wrap = func(inner transport.RawTransport) transport.RawTransport {
+		wrap = chainTransportWrap(wrap, func(inner transport.RawTransport) transport.RawTransport {
 			return &loggingTransport{inner: inner, logger: logger}
-		}
+		})
 	}
 
 	gateway, err := newGatewayWithTransport(ctx, gatewayCfg, wrap)
@@ -106,6 +123,31 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 		}
 	}
 
+	if cfg.Smoke.RegisterDumpProbeOnly {
+		target := cfg.Smoke.RegisterDumpTarget.Byte()
+		if target == 0 {
+			return fmt.Errorf("smoke probe-only requires register_dump_target")
+		}
+		manufacturer := strings.TrimSpace(cfg.Smoke.RegisterDumpProbeManufacturer)
+		if manufacturer == "" {
+			manufacturer = "Vaillant"
+		}
+		deviceRegistry := registry.NewDeviceRegistry(providers)
+		entry := deviceRegistry.Register(registry.DeviceInfo{
+			Address:      target,
+			Manufacturer: manufacturer,
+		})
+		systemPlane, ok := findSystemPlane(entry.Planes())
+		if !ok {
+			return fmt.Errorf("smoke probe-only: no system plane for target 0x%02x", target)
+		}
+		if err := runRegisterProbe(ctx, cfg, gateway, systemPlane, source, nil); err != nil {
+			return err
+		}
+		logger.Printf("probe-only completed")
+		return nil
+	}
+
 	scanBus := &timeoutBus{
 		bus:     gateway.Bus,
 		timeout: time.Duration(cfg.Smoke.ScanTimeoutSec) * time.Second,
@@ -125,7 +167,19 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 
 	_ = gateway.RefreshRouterPlanes()
 	if broadcastListener == nil {
-		listener, err := StartBroadcastListener(ctx, gatewayCfg, gateway.Router)
+		var broadcastWrap func(transport.RawTransport) transport.RawTransport
+		if wireLogger != nil {
+			broadcastWrap = chainTransportWrap(broadcastWrap, func(inner transport.RawTransport) transport.RawTransport {
+				return newWireLogTransport(inner, wireLogger, "broadcast")
+			})
+		}
+		if cfg.Smoke.VerboseFrames {
+			broadcastWrap = chainTransportWrap(broadcastWrap, func(inner transport.RawTransport) transport.RawTransport {
+				return &loggingTransport{inner: inner, logger: logger}
+			})
+		}
+
+		listener, err := StartBroadcastListenerWithTransport(ctx, gatewayCfg, gateway.Router, broadcastWrap)
 		if err != nil {
 			logger.Printf("broadcast listener start: %v", err)
 		} else {
@@ -135,6 +189,10 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 	}
 	if opts.OnGatewayReady != nil {
 		opts.OnGatewayReady(ctx, gateway, logger)
+	}
+
+	if err := runRegisterDump(ctx, cfg, gateway, entries, source, wireLogger, nil); err != nil {
+		return err
 	}
 
 	var invokeErrors []string
@@ -395,6 +453,18 @@ func newGatewayWithTransport(ctx context.Context, cfg Config, wrap func(transpor
 		Router:    eventRouter,
 		closeFn:   closeFn,
 	}, nil
+}
+
+func chainTransportWrap(base, next func(transport.RawTransport) transport.RawTransport) func(transport.RawTransport) transport.RawTransport {
+	if base == nil {
+		return next
+	}
+	if next == nil {
+		return base
+	}
+	return func(inner transport.RawTransport) transport.RawTransport {
+		return next(base(inner))
+	}
 }
 
 type timeoutBus struct {

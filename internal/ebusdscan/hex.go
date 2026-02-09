@@ -16,10 +16,14 @@ func BuildHex(target byte, entry Entry) ([]byte, error) {
 	switch entry.Method {
 	case methodGetRegister:
 		payload := []byte{0x0D, byte(entry.Addr >> 8), byte(entry.Addr)}
-		return append([]byte{target, primaryVaillant, secondaryRegister}, payload...), nil
+		return append([]byte{target, primaryVaillant, secondaryRegister, byte(len(payload))}, payload...), nil
 	case methodGetExtRegister:
-		payload := []byte{0x02, 0x00, entry.Group, entry.Instance, byte(entry.Addr >> 8), byte(entry.Addr)}
-		return append([]byte{target, primaryVaillant, secondaryExtendedRegister}, payload...), nil
+		opcode := entry.Opcode
+		if opcode == 0 {
+			opcode = 0x02
+		}
+		payload := []byte{opcode, 0x00, entry.Group, entry.Instance, byte(entry.Addr), byte(entry.Addr >> 8)}
+		return append([]byte{target, primaryVaillant, secondaryExtendedRegister, byte(len(payload))}, payload...), nil
 	default:
 		return nil, fmt.Errorf("unsupported method %q", entry.Method)
 	}

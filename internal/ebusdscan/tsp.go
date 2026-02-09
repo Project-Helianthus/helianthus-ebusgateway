@@ -20,6 +20,7 @@ const (
 
 type Entry struct {
 	Method   string
+	Opcode   byte
 	Group    byte
 	Instance byte
 	Addr     uint16
@@ -164,7 +165,7 @@ func parseTSP(content []byte) ([]Entry, byte, error) {
 	var entries []Entry
 	var base *baseContext
 	var target byte
-	seen := make(map[uint32]struct{})
+	seen := make(map[string]struct{})
 
 	lineNumber := 0
 	for scanner.Scan() {
@@ -227,7 +228,7 @@ func parseTSP(content []byte) ([]Entry, byte, error) {
 				continue
 			}
 			entry.Line = lineNumber
-			key := uint32(entry.Group)<<24 | uint32(entry.Instance)<<16 | uint32(entry.Addr)
+			key := fmt.Sprintf("%02X:%02X:%02X:%04X", entry.Opcode, entry.Group, entry.Instance, entry.Addr)
 			if _, exists := seen[key]; exists {
 				continue
 			}
@@ -245,7 +246,7 @@ func buildEntry(args []string, base *baseContext) (Entry, bool) {
 	method := ""
 	switch base.Secondary {
 	case 0x24:
-		if base.Prefix == 0x2 {
+		if base.Prefix == 0x2 || base.Prefix == 0x6 {
 			method = methodGetExtRegister
 		}
 	case 0x09:
@@ -265,7 +266,7 @@ func buildEntry(args []string, base *baseContext) (Entry, bool) {
 			return Entry{}, false
 		}
 		addr := uint16(hi)<<8 | uint16(base.AddrLo)
-		return Entry{Method: method, Group: base.Group, Instance: base.Instance, Addr: addr}, true
+		return Entry{Method: method, Opcode: base.Prefix, Group: base.Group, Instance: base.Instance, Addr: addr}, true
 	case 2:
 		hi, ok := parseByteToken(args[0])
 		if !ok {
@@ -282,7 +283,7 @@ func buildEntry(args []string, base *baseContext) (Entry, bool) {
 			lo = base.AddrLo
 		}
 		addr := uint16(hi)<<8 | uint16(lo)
-		return Entry{Method: method, Group: base.Group, Instance: base.Instance, Addr: addr}, true
+		return Entry{Method: method, Opcode: base.Prefix, Group: base.Group, Instance: base.Instance, Addr: addr}, true
 	case 4:
 		group, okGroup := parseByteToken(args[0])
 		instance, okInstance := parseByteToken(args[1])
@@ -292,7 +293,7 @@ func buildEntry(args []string, base *baseContext) (Entry, bool) {
 			return Entry{}, false
 		}
 		addr := uint16(hi)<<8 | uint16(lo)
-		return Entry{Method: method, Group: group, Instance: instance, Addr: addr}, true
+		return Entry{Method: method, Opcode: base.Prefix, Group: group, Instance: instance, Addr: addr}, true
 	default:
 		return Entry{}, false
 	}

@@ -54,6 +54,9 @@ func (e testEntry) MacAddress() string       { return e.info.MacAddress }
 func (e testEntry) SoftwareVersion() string  { return e.info.SoftwareVersion }
 func (e testEntry) HardwareVersion() string  { return e.info.HardwareVersion }
 func (e testEntry) Planes() []registry.Plane { return e.planes }
+func (e testEntry) Projections() []registry.Projection {
+	return nil
+}
 
 type testPlane struct {
 	name    string

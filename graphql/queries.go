@@ -10,16 +10,19 @@ import (
 )
 
 type graphqlSchemaTypes struct {
-	fieldType     *graphqlgo.Object
-	responseType  *graphqlgo.Object
-	methodType    *graphqlgo.Object
-	planeType     *graphqlgo.Object
-	deviceType    *graphqlgo.Object
-	broadcastType *graphqlgo.Object
-	statusType    *graphqlgo.Object
-	zoneType      *graphqlgo.Object
-	dhwType       *graphqlgo.Object
-	energyTotals  *graphqlgo.Object
+	fieldType           *graphqlgo.Object
+	responseType        *graphqlgo.Object
+	methodType          *graphqlgo.Object
+	projectionNodeType  *graphqlgo.Object
+	projectionEdgeType  *graphqlgo.Object
+	projectionType      *graphqlgo.Object
+	planeType           *graphqlgo.Object
+	deviceType          *graphqlgo.Object
+	broadcastType       *graphqlgo.Object
+	statusType          *graphqlgo.Object
+	zoneType            *graphqlgo.Object
+	dhwType             *graphqlgo.Object
+	energyTotals        *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {
@@ -417,6 +420,114 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		},
 	})
 
+	projectionNodeType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ProjectionNode",
+		Fields: graphqlgo.Fields{
+			"id": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					node, ok := projectionNodeFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return node.ID, nil
+				},
+			},
+			"path": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					node, ok := projectionNodeFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return node.Path, nil
+				},
+			},
+			"canonicalPath": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					node, ok := projectionNodeFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return node.CanonicalPath, nil
+				},
+			},
+		},
+	})
+
+	projectionEdgeType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ProjectionEdge",
+		Fields: graphqlgo.Fields{
+			"id": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					edge, ok := projectionEdgeFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return edge.ID, nil
+				},
+			},
+			"from": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					edge, ok := projectionEdgeFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return edge.From, nil
+				},
+			},
+			"to": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					edge, ok := projectionEdgeFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return edge.To, nil
+				},
+			},
+		},
+	})
+
+	projectionType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "Projection",
+		Fields: graphqlgo.Fields{
+			"plane": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					projection, ok := projectionFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return projection.Plane, nil
+				},
+			},
+			"nodes": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(projectionNodeType))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					projection, ok := projectionFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return projection.Nodes, nil
+				},
+			},
+			"edges": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(projectionEdgeType))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					projection, ok := projectionFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return projection.Edges, nil
+				},
+			},
+		},
+	})
+
 	planeType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Plane",
 		Fields: graphqlgo.Fields{
@@ -526,20 +637,33 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return device.Planes, nil
 				},
 			},
+			"projections": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(projectionType))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return device.Projections, nil
+				},
+			},
 		},
 	})
 
 	return graphqlSchemaTypes{
-		fieldType:     fieldType,
-		responseType:  responseType,
-		methodType:    methodType,
-		planeType:     planeType,
-		deviceType:    deviceType,
-		broadcastType: buildBroadcastType(),
-		statusType:    statusType,
-		zoneType:      zoneType,
-		dhwType:       dhwType,
-		energyTotals:  energyTotalsType,
+		fieldType:          fieldType,
+		responseType:       responseType,
+		methodType:         methodType,
+		projectionNodeType: projectionNodeType,
+		projectionEdgeType: projectionEdgeType,
+		projectionType:     projectionType,
+		planeType:          planeType,
+		deviceType:         deviceType,
+		broadcastType:      buildBroadcastType(),
+		statusType:         statusType,
+		zoneType:           zoneType,
+		dhwType:            dhwType,
+		energyTotals:       energyTotalsType,
 	}
 }
 
@@ -735,6 +859,48 @@ func planeFromSource(params graphqlgo.ResolveParams) (Plane, bool) {
 		return *value, true
 	default:
 		return Plane{}, false
+	}
+}
+
+func projectionFromSource(params graphqlgo.ResolveParams) (Projection, bool) {
+	switch value := params.Source.(type) {
+	case Projection:
+		return value, true
+	case *Projection:
+		if value == nil {
+			return Projection{}, false
+		}
+		return *value, true
+	default:
+		return Projection{}, false
+	}
+}
+
+func projectionNodeFromSource(params graphqlgo.ResolveParams) (ProjectionNode, bool) {
+	switch value := params.Source.(type) {
+	case ProjectionNode:
+		return value, true
+	case *ProjectionNode:
+		if value == nil {
+			return ProjectionNode{}, false
+		}
+		return *value, true
+	default:
+		return ProjectionNode{}, false
+	}
+}
+
+func projectionEdgeFromSource(params graphqlgo.ResolveParams) (ProjectionEdge, bool) {
+	switch value := params.Source.(type) {
+	case ProjectionEdge:
+		return value, true
+	case *ProjectionEdge:
+		if value == nil {
+			return ProjectionEdge{}, false
+		}
+		return *value, true
+	default:
+		return ProjectionEdge{}, false
 	}
 }
 

@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/d3vi1/helianthus-ebusgateway"
 	"github.com/d3vi1/helianthus-ebusgateway/graphql"
 	"github.com/d3vi1/helianthus-ebusgateway/mcp"
 	"github.com/d3vi1/helianthus-ebusgateway/mdns"
+	"github.com/d3vi1/helianthus-ebusgateway/ui"
 )
 
 func main() {
@@ -97,6 +99,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.StringVar(&cfg.GraphQLPath, "graphql-path", cfg.GraphQLPath, "graphql endpoint path")
 	fs.StringVar(&cfg.SubscriptionPath, "subscription-path", cfg.SubscriptionPath, "graphql subscriptions path")
 	fs.StringVar(&cfg.MCPPath, "mcp-path", cfg.MCPPath, "mcp endpoint path")
+	fs.StringVar(&cfg.UIPath, "ui-path", cfg.UIPath, "portal ui path")
 	fs.BoolVar(&cfg.MDNSAdvertise, "mdns", cfg.MDNSAdvertise, "advertise graphql endpoint via mdns")
 	fs.StringVar(&cfg.MDNSInstance, "mdns-instance", cfg.MDNSInstance, "mdns instance name")
 }
@@ -141,6 +144,17 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 	mux.Handle(cfg.GraphQLPath, queryHandler)
 	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)
 	mux.Handle(cfg.MCPPath, mcpServer.Handler())
+	if cfg.UIPath != "" {
+		uiPath := cfg.UIPath
+		if !strings.HasPrefix(uiPath, "/") {
+			uiPath = "/" + uiPath
+		}
+		uiHandler := ui.NewHandler(cfg.GraphQLPath)
+		mux.Handle(uiPath+"/", http.StripPrefix(uiPath, uiHandler))
+		mux.HandleFunc(uiPath, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, uiPath+"/", http.StatusMovedPermanently)
+		})
+	}
 
 	listener, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {

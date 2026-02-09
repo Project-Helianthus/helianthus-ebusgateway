@@ -38,6 +38,7 @@ type Config struct {
 	GraphQLPath      string
 	SubscriptionPath string
 	MCPPath          string
+	UIPath           string
 	MDNSAdvertise    bool
 	MDNSInstance     string
 }
@@ -57,6 +58,7 @@ func DefaultConfig() Config {
 		GraphQLPath:      "/graphql",
 		SubscriptionPath: "/graphql/subscriptions",
 		MCPPath:          "/mcp",
+		UIPath:           "/ui",
 		MDNSAdvertise:    true,
 		MDNSInstance:     "helianthus",
 	}
@@ -97,6 +99,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.MCPPath == "" {
 		cfg.MCPPath = "/mcp"
+	}
+	if cfg.UIPath == "" {
+		cfg.UIPath = "/ui"
 	}
 	if cfg.MDNSInstance == "" {
 		cfg.MDNSInstance = "helianthus"

@@ -331,9 +331,16 @@ func firstHexLine(lines []string) (string, bool) {
 		if trimmed == "" {
 			continue
 		}
+		if strings.HasPrefix(trimmed, "0x") || strings.HasPrefix(trimmed, "0X") {
+			trimmed = strings.TrimSpace(trimmed[2:])
+		}
+		normalized := strings.Join(strings.Fields(trimmed), "")
+		if normalized == "" || len(normalized)%2 != 0 {
+			continue
+		}
 		allHex := true
-		for i := 0; i < len(trimmed); i++ {
-			c := trimmed[i]
+		for i := 0; i < len(normalized); i++ {
+			c := normalized[i]
 			if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
 				continue
 			}
@@ -341,7 +348,7 @@ func firstHexLine(lines []string) (string, bool) {
 			break
 		}
 		if allHex {
-			return trimmed, true
+			return strings.ToUpper(normalized), true
 		}
 	}
 	return "", false

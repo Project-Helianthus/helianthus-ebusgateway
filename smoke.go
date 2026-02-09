@@ -239,9 +239,6 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 						}
 						retryParams["opcode"] = byte(0x06)
 						result, err = gateway.Router.Invoke(ctxMethod, invokePlane, method.Name(), retryParams)
-						if err == nil {
-							params = retryParams
-						}
 					}
 				}
 				cancelMethod()

@@ -1199,7 +1199,9 @@ func appendIdentifyRegisters(entries []registerDumpEntry, prefix byte) []registe
 		seen[key] = struct{}{}
 	}
 
-	for addr := uint16(prefix)<<8 | 0x00; addr <= uint16(prefix)<<8|0xFF; addr++ {
+	base := uint16(prefix) << 8
+	end := base | 0xFF
+	for addr := base; addr <= end; addr++ {
 		key := uint32(0)<<24 | uint32(addr)
 		if _, ok := seen[key]; ok {
 			continue

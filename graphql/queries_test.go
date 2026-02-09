@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 
@@ -89,6 +90,19 @@ func TestQueryResolvers_Integration(t *testing.T) {
 							}
 						}
 					}
+					projections {
+						plane
+						nodes {
+							id
+							path
+							canonicalPath
+						}
+						edges {
+							id
+							from
+							to
+						}
+					}
 				}
 			}
 		`)
@@ -114,6 +128,19 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						} `json:"response"`
 					} `json:"methods"`
 				} `json:"planes"`
+				Projections []struct {
+					Plane string `json:"plane"`
+					Nodes []struct {
+						ID            string `json:"id"`
+						Path          string `json:"path"`
+						CanonicalPath string `json:"canonicalPath"`
+					} `json:"nodes"`
+					Edges []struct {
+						ID   string `json:"id"`
+						From string `json:"from"`
+						To   string `json:"to"`
+					} `json:"edges"`
+				} `json:"projections"`
 			} `json:"devices"`
 		}
 
@@ -135,6 +162,31 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if len(method.Response.Fields) != 1 || method.Response.Fields[0].Name != "status" {
 			t.Fatalf("method response fields = %+v; want status", method.Response.Fields)
+		}
+
+		if len(response.Devices[0].Projections) != 1 {
+			t.Fatalf("projections = %d; want 1", len(response.Devices[0].Projections))
+		}
+		projection := response.Devices[0].Projections[0]
+		if projection.Plane != "Observability" {
+			t.Fatalf("projection plane = %s; want Observability", projection.Plane)
+		}
+		if len(projection.Nodes) != 2 {
+			t.Fatalf("projection nodes = %d; want 2", len(projection.Nodes))
+		}
+		expectedRoot := fmt.Sprintf("Service:/ebus/addr@%02X/device@%s", 0x10, "device-a")
+		expectedChild := fmt.Sprintf("%s/method@get_status", expectedRoot)
+		if projection.Nodes[0].ID != expectedRoot || projection.Nodes[0].CanonicalPath != expectedRoot {
+			t.Fatalf("projection root node = %+v; want id=%s", projection.Nodes[0], expectedRoot)
+		}
+		if projection.Nodes[1].ID != expectedChild || projection.Nodes[1].CanonicalPath != expectedChild {
+			t.Fatalf("projection child node = %+v; want id=%s", projection.Nodes[1], expectedChild)
+		}
+		if len(projection.Edges) != 1 {
+			t.Fatalf("projection edges = %d; want 1", len(projection.Edges))
+		}
+		if projection.Edges[0].From != expectedRoot || projection.Edges[0].To != expectedChild {
+			t.Fatalf("projection edge = %+v; want from=%s to=%s", projection.Edges[0], expectedRoot, expectedChild)
 		}
 	})
 
@@ -375,6 +427,45 @@ func (provider mockProvider) Match(registry.DeviceInfo) bool {
 
 func (provider mockProvider) CreatePlanes(registry.DeviceInfo) []registry.Plane {
 	return provider.planes
+}
+
+func (provider mockProvider) CreateProjections(info registry.DeviceInfo, planes []registry.Plane) []registry.Projection {
+	projection, ok := mockProjection(info)
+	if !ok {
+		return nil
+	}
+	return []registry.Projection{projection}
+}
+
+func mockProjection(info registry.DeviceInfo) (registry.Projection, bool) {
+	base := []registry.PathSegment{
+		{Name: "ebus"},
+		{Name: fmt.Sprintf("addr@%02X", info.Address)},
+		{Name: fmt.Sprintf("device@%s", info.DeviceID)},
+	}
+	canonicalRoot := registry.ProjectionPath{Plane: registry.ServicePlane, Segments: base}
+	rootPath := registry.ProjectionPath{Plane: "Observability", Segments: base}
+	root, err := registry.NewNode(rootPath, canonicalRoot)
+	if err != nil {
+		return registry.Projection{}, false
+	}
+
+	childSegments := append(append([]registry.PathSegment(nil), base...), registry.PathSegment{Name: "method@get_status"})
+	canonicalChild := registry.ProjectionPath{Plane: registry.ServicePlane, Segments: childSegments}
+	childPath := registry.ProjectionPath{Plane: "Observability", Segments: childSegments}
+	child, err := registry.NewNode(childPath, canonicalChild)
+	if err != nil {
+		return registry.Projection{}, false
+	}
+	edge, err := registry.NewEdge("Observability", root.ID, child.ID)
+	if err != nil {
+		return registry.Projection{}, false
+	}
+	projection, err := registry.NewProjection("Observability", []registry.Node{root, child}, []registry.Edge{edge})
+	if err != nil {
+		return registry.Projection{}, false
+	}
+	return projection, true
 }
 
 func schemaSelector(name string) schema.SchemaSelector {

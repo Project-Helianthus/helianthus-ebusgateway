@@ -22,6 +22,7 @@ type Device struct {
 	SoftwareVersion string
 	HardwareVersion string
 	Planes          []Plane
+	Projections     []Projection
 }
 
 type Plane struct {
@@ -45,6 +46,24 @@ type Field struct {
 	Name string
 	Type string
 	Size int
+}
+
+type Projection struct {
+	Plane string
+	Nodes []ProjectionNode
+	Edges []ProjectionEdge
+}
+
+type ProjectionNode struct {
+	ID            string
+	Path          string
+	CanonicalPath string
+}
+
+type ProjectionEdge struct {
+	ID   string
+	From string
+	To   string
 }
 
 type Registry interface {
@@ -71,6 +90,7 @@ func BuildSchema(reg Registry) (Schema, error) {
 			SoftwareVersion: entry.SoftwareVersion(),
 			HardwareVersion: entry.HardwareVersion(),
 			Planes:          make([]Plane, 0),
+			Projections:     make([]Projection, 0),
 		}
 
 		for _, plane := range entry.Planes() {
@@ -100,6 +120,34 @@ func BuildSchema(reg Registry) (Schema, error) {
 			device.Planes = append(device.Planes, Plane{
 				Name:    plane.Name(),
 				Methods: methods,
+			})
+		}
+
+		for _, projection := range entry.Projections() {
+			if err := projection.Validate(); err != nil {
+				buildErr = fmt.Errorf("graphql schema build projection %q invalid: %w", projection.Plane, err)
+				return false
+			}
+			nodes := make([]ProjectionNode, len(projection.Nodes))
+			for index, node := range projection.Nodes {
+				nodes[index] = ProjectionNode{
+					ID:            string(node.ID),
+					Path:          node.Path.String(),
+					CanonicalPath: node.CanonicalPath.String(),
+				}
+			}
+			edges := make([]ProjectionEdge, len(projection.Edges))
+			for index, edge := range projection.Edges {
+				edges[index] = ProjectionEdge{
+					ID:   string(edge.ID),
+					From: string(edge.From),
+					To:   string(edge.To),
+				}
+			}
+			device.Projections = append(device.Projections, Projection{
+				Plane: projection.Plane,
+				Nodes: nodes,
+				Edges: edges,
 			})
 		}
 
@@ -183,6 +231,18 @@ func cloneSchema(schema Schema) Schema {
 				Methods: methods,
 			}
 		}
+		projections := make([]Projection, len(device.Projections))
+		for j, projection := range device.Projections {
+			nodes := make([]ProjectionNode, len(projection.Nodes))
+			copy(nodes, projection.Nodes)
+			edges := make([]ProjectionEdge, len(projection.Edges))
+			copy(edges, projection.Edges)
+			projections[j] = Projection{
+				Plane: projection.Plane,
+				Nodes: nodes,
+				Edges: edges,
+			}
+		}
 		devices[i] = Device{
 			Address:         device.Address,
 			Manufacturer:    device.Manufacturer,
@@ -192,6 +252,7 @@ func cloneSchema(schema Schema) Schema {
 			SoftwareVersion: device.SoftwareVersion,
 			HardwareVersion: device.HardwareVersion,
 			Planes:          planes,
+			Projections:     projections,
 		}
 	}
 	return Schema{Devices: devices}

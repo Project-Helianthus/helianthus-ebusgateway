@@ -12,6 +12,53 @@ import (
 )
 
 func TestBuildSchema_ReflectsRegistry(t *testing.T) {
+	canonical := registry.ProjectionPath{
+		Plane: registry.ServicePlane,
+		Segments: []registry.PathSegment{
+			{Name: "devices"},
+			{Name: "boiler"},
+		},
+	}
+	canonicalB := registry.ProjectionPath{
+		Plane: registry.ServicePlane,
+		Segments: []registry.PathSegment{
+			{Name: "devices"},
+			{Name: "boiler"},
+			{Name: "status"},
+		},
+	}
+	path := registry.ProjectionPath{
+		Plane: "Observability",
+		Segments: []registry.PathSegment{
+			{Name: "devices"},
+			{Name: "boiler"},
+		},
+	}
+	pathB := registry.ProjectionPath{
+		Plane: "Observability",
+		Segments: []registry.PathSegment{
+			{Name: "devices"},
+			{Name: "boiler"},
+			{Name: "status"},
+		},
+	}
+	node, err := registry.NewNode(path, canonical)
+	if err != nil {
+		t.Fatalf("NewNode error = %v", err)
+	}
+	nodeB, err := registry.NewNode(pathB, canonicalB)
+	if err != nil {
+		t.Fatalf("NewNodeB error = %v", err)
+	}
+	edge, err := registry.NewEdge("Observability", node.ID, nodeB.ID)
+	if err != nil {
+		t.Fatalf("NewEdge error = %v", err)
+	}
+	projection, err := registry.NewProjection("Observability", []registry.Node{node, nodeB}, []registry.Edge{edge})
+	if err != nil {
+		t.Fatalf("NewProjection error = %v", err)
+	}
+
 	entryA := mockEntry{
 		info: registry.DeviceInfo{
 			Address:         0x10,
@@ -42,6 +89,7 @@ func TestBuildSchema_ReflectsRegistry(t *testing.T) {
 				},
 			},
 		},
+		projections: []registry.Projection{projection},
 	}
 
 	entryB := mockEntry{
@@ -92,6 +140,34 @@ func TestBuildSchema_ReflectsRegistry(t *testing.T) {
 	}
 	if len(methodB.Response.Fields) != 1 || methodB.Response.Fields[0].Name != "base" || methodB.Response.Fields[0].Type != "DATA1b" {
 		t.Fatalf("MethodB response = %+v; want field base DATA1b", methodB.Response.Fields)
+	}
+
+	if len(got.Devices[0].Projections) != 1 {
+		t.Fatalf("Projections = %d; want 1", len(got.Devices[0].Projections))
+	}
+	gotProjection := got.Devices[0].Projections[0]
+	if gotProjection.Plane != "Observability" {
+		t.Fatalf("Projection plane = %s; want Observability", gotProjection.Plane)
+	}
+	if len(gotProjection.Nodes) != 2 {
+		t.Fatalf("Projection nodes = %d; want 2", len(gotProjection.Nodes))
+	}
+	nodeOut := gotProjection.Nodes[0]
+	if nodeOut.ID != canonical.String() {
+		t.Fatalf("Projection node id = %s; want %s", nodeOut.ID, canonical.String())
+	}
+	if nodeOut.Path != path.String() {
+		t.Fatalf("Projection node path = %s; want %s", nodeOut.Path, path.String())
+	}
+	if nodeOut.CanonicalPath != canonical.String() {
+		t.Fatalf("Projection node canonical = %s; want %s", nodeOut.CanonicalPath, canonical.String())
+	}
+	if len(gotProjection.Edges) != 1 {
+		t.Fatalf("Projection edges = %d; want 1", len(gotProjection.Edges))
+	}
+	edgeOut := gotProjection.Edges[0]
+	if edgeOut.ID == "" || edgeOut.From != canonical.String() || edgeOut.To != canonicalB.String() {
+		t.Fatalf("Projection edge = %+v; want from=%s to=%s", edgeOut, canonical.String(), canonicalB.String())
 	}
 }
 
@@ -245,8 +321,9 @@ func (reg *mutableRegistry) SetEntries(entries []registry.DeviceEntry) {
 }
 
 type mockEntry struct {
-	info   registry.DeviceInfo
-	planes []registry.Plane
+	info        registry.DeviceInfo
+	planes      []registry.Plane
+	projections []registry.Projection
 }
 
 func (entry mockEntry) Address() byte {
@@ -279,6 +356,10 @@ func (entry mockEntry) HardwareVersion() string {
 
 func (entry mockEntry) Planes() []registry.Plane {
 	return entry.planes
+}
+
+func (entry mockEntry) Projections() []registry.Projection {
+	return entry.projections
 }
 
 type mockPlane struct {

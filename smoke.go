@@ -165,6 +165,25 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 	logDeviceInfo(logger, entries)
 	logExpectedDevices(logger, cfg.ExpectedDevices, entries)
 
+	dumpBus := &timeoutBus{
+		bus:     gateway.Bus,
+		timeout: time.Duration(cfg.Smoke.MethodTimeoutSec) * time.Second,
+	}
+	dumpResults, err := DumpUnknownDevices(ctx, dumpBus, entries, UnknownDeviceDumpOptions{
+		OutputDir:      gatewayCfg.DumpOutputDir,
+		UploadURL:      gatewayCfg.DumpUploadURL,
+		IncludePII:     gatewayCfg.DumpIncludePII,
+		IncludeTraffic: false,
+		SourceAddress:  source,
+		Logger:         logger,
+	})
+	if err != nil {
+		return err
+	}
+	if len(dumpResults) > 0 {
+		logger.Printf("unknown device dump bundles generated: %d", len(dumpResults))
+	}
+
 	_ = gateway.RefreshRouterPlanes()
 	if broadcastListener == nil {
 		var broadcastWrap func(transport.RawTransport) transport.RawTransport
@@ -693,24 +712,6 @@ type identifyTemplate struct{}
 
 func (identifyTemplate) Primary() byte   { return 0x07 }
 func (identifyTemplate) Secondary() byte { return 0x04 }
-
-func decodeDeviceInfoPayload(payload []byte) (map[string]string, error) {
-	if len(payload) < 10 {
-		return nil, fmt.Errorf("identify short payload: %w", ebuserrors.ErrInvalidPayload)
-	}
-
-	manufacturer := fmt.Sprintf("0x%02X", payload[0])
-	if payload[0] == 0xB5 {
-		manufacturer = "Vaillant"
-	}
-
-	return map[string]string{
-		"manufacturer": manufacturer,
-		"device_id":    strings.Trim(string(payload[1:6]), " \x00"),
-		"sw_version":   fmt.Sprintf("%02X%02X", payload[6], payload[7]),
-		"hw_version":   fmt.Sprintf("%02X%02X", payload[8], payload[9]),
-	}, nil
-}
 
 func scanTargetsFromExpectedDevices(expected []expectedDevice) []byte {
 	if len(expected) == 0 {

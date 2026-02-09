@@ -231,6 +231,19 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 				methodTimeout := time.Duration(cfg.Smoke.MethodTimeoutSec) * time.Second
 				ctxMethod, cancelMethod := context.WithTimeout(ctx, methodTimeout)
 				result, err := gateway.Router.Invoke(ctxMethod, invokePlane, method.Name(), params)
+				if err != nil && method.Name() == "get_ext_register" {
+					if opcode, ok := params["opcode"].(byte); ok && opcode == 0x02 {
+						retryParams := make(map[string]any, len(params))
+						for k, v := range params {
+							retryParams[k] = v
+						}
+						retryParams["opcode"] = byte(0x06)
+						result, err = gateway.Router.Invoke(ctxMethod, invokePlane, method.Name(), retryParams)
+						if err == nil {
+							params = retryParams
+						}
+					}
+				}
 				cancelMethod()
 				invoked = true
 				if err != nil {
@@ -396,6 +409,7 @@ func smokeParams(entry registry.DeviceEntry, planeName, methodName string, sourc
 	case deviceID == "BASV2" && planeName == "system" && methodName == "get_ext_register":
 		return map[string]any{
 			"source":   source,
+			"opcode":   byte(0x02),
 			"group":    byte(0x00),
 			"instance": byte(0x00),
 			"addr":     uint16(0x5C00),

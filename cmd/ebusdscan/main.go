@@ -287,6 +287,13 @@ func run(cfg scanConfig) error {
 			lines, err = client.send(cmd)
 		}
 
+		if mode == "hex" {
+			if hexLine, ok := firstHexLine(lines); ok {
+				lines = []string{hexLine}
+				err = nil
+			}
+		}
+
 		responseText := strings.Join(lines, " | ")
 		label := formatEntryLabel(target, entry)
 		if err != nil {
@@ -316,6 +323,28 @@ func run(cfg scanConfig) error {
 	fmt.Printf("summary: total=%d ok=%d err=%d empty=%d elapsed=%s mode=%s\n",
 		len(result.Entries), okCount, errCount, emptyCount, elapsed.Truncate(time.Millisecond), mode)
 	return nil
+}
+
+func firstHexLine(lines []string) (string, bool) {
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		allHex := true
+		for i := 0; i < len(trimmed); i++ {
+			c := trimmed[i]
+			if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
+				continue
+			}
+			allHex = false
+			break
+		}
+		if allHex {
+			return trimmed, true
+		}
+	}
+	return "", false
 }
 
 func (c *ebusdClient) send(cmd string) ([]string, error) {

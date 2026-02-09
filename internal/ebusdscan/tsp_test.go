@@ -42,13 +42,13 @@ func TestLoadTSPWithIncludes(t *testing.T) {
 	}
 
 	second := result.Entries[1]
-	if second.Method != methodGetExtRegister || second.Addr != 0xAABB || second.Group != 0x03 || second.Instance != 0x04 {
-		t.Fatalf("second entry = %+v; want ext addr=0xAABB group=0x03 instance=0x04", second)
+	if second.Method != methodGetExtRegister || second.Addr != 0xAABB || second.Group != 0x03 || second.Instance != 0x04 || second.Opcode != 0x02 {
+		t.Fatalf("second entry = %+v; want ext addr=0xAABB group=0x03 instance=0x04 opcode=0x02", second)
 	}
 
 	third := result.Entries[2]
-	if third.Method != methodGetExtRegister || third.Addr != 0x1213 || third.Group != 0x10 || third.Instance != 0x11 {
-		t.Fatalf("third entry = %+v; want ext addr=0x1213 group=0x10 instance=0x11", third)
+	if third.Method != methodGetExtRegister || third.Addr != 0x1213 || third.Group != 0x10 || third.Instance != 0x11 || third.Opcode != 0x02 {
+		t.Fatalf("third entry = %+v; want ext addr=0x1213 group=0x10 instance=0x11 opcode=0x02", third)
 	}
 }
 
@@ -58,7 +58,7 @@ func TestBuildHex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildHex error: %v", err)
 	}
-	want := "15B5090DF600"
+	want := "15B509030DF600"
 	if got := HexString(data); got != want {
 		t.Fatalf("hex = %s; want %s", got, want)
 	}

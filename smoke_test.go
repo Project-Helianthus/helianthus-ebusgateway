@@ -309,11 +309,14 @@ func TestSmokeParams_SelectsBASV2ExtRegister(t *testing.T) {
 		t.Fatalf("expected smoke params for BASV2 get_ext_register")
 	}
 
-	if len(params) != 4 {
-		t.Fatalf("params keys=%d; want 4", len(params))
+	if len(params) != 5 {
+		t.Fatalf("params keys=%d; want 5", len(params))
 	}
 	if got, ok := params["source"].(byte); !ok || got != 0x10 {
 		t.Fatalf("source=%v (%T); want 0x10 byte", params["source"], params["source"])
+	}
+	if got, ok := params["opcode"].(byte); !ok || got != 0x02 {
+		t.Fatalf("opcode=%v (%T); want 0x02 byte", params["opcode"], params["opcode"])
 	}
 	if got, ok := params["group"].(byte); !ok || got != 0x00 {
 		t.Fatalf("group=%v (%T); want 0x00 byte", params["group"], params["group"])

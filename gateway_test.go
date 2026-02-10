@@ -99,6 +99,55 @@ func TestNewGateway_DialsWithENH(t *testing.T) {
 	}
 }
 
+func TestNewGateway_DialsWithEbusdTCP(t *testing.T) {
+	var (
+		dialed      bool
+		gotNetwork  string
+		gotAddress  string
+		serverClose func()
+	)
+
+	dialer := func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+		dialed = true
+		gotNetwork = network
+		gotAddress = address
+		client, server := net.Pipe()
+		serverClose = func() { _ = server.Close() }
+		return client, nil
+	}
+
+	cfg := Config{
+		TransportConfig: TransportConfig{
+			Protocol:    TransportEbusdTCP,
+			Network:     "tcp",
+			Address:     "127.0.0.1:8888",
+			DialTimeout: time.Second,
+			Dial:        dialer,
+		},
+	}
+
+	gateway, err := New(context.Background(), cfg)
+	if serverClose != nil {
+		defer serverClose()
+	}
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if !dialed {
+		t.Fatalf("dialer was not invoked")
+	}
+	if gotNetwork != "tcp" || gotAddress != "127.0.0.1:8888" {
+		t.Fatalf("dialer args = %s %s; want tcp 127.0.0.1:8888", gotNetwork, gotAddress)
+	}
+	if _, ok := gateway.Transport.(*transport.EbusdTCPTransport); !ok {
+		t.Fatalf("gateway.Transport = %T; want *transport.EbusdTCPTransport", gateway.Transport)
+	}
+
+	if err := gateway.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 type mockInitTransport struct {
 	called   bool
 	features []byte

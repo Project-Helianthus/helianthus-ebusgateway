@@ -15,6 +15,7 @@ type TransportProtocol string
 const (
 	TransportENH TransportProtocol = "enh"
 	TransportENS TransportProtocol = "ens"
+	TransportEbusdTCP TransportProtocol = "ebusd-tcp"
 )
 
 type TransportConfig struct {

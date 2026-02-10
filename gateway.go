@@ -143,6 +143,8 @@ func transportFromConn(protocolName TransportProtocol, conn net.Conn, readTimeou
 		return transport.NewENHTransport(conn, readTimeout, writeTimeout), nil
 	case TransportENS:
 		return transport.NewENSTransport(conn, readTimeout, writeTimeout), nil
+	case TransportEbusdTCP, TransportProtocol("ebusd"):
+		return transport.NewEbusdTCPTransport(conn), nil
 	default:
 		return nil, fmt.Errorf("gateway transport unsupported protocol %q: %w", protocolName, ebuserrors.ErrInvalidPayload)
 	}

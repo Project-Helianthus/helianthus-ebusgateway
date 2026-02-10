@@ -171,6 +171,92 @@ func TestBuildSchema_ReflectsRegistry(t *testing.T) {
 	}
 }
 
+func TestBuildSchema_ProjectionCanonicalIDs(t *testing.T) {
+	canonicalRoot := registry.ProjectionPath{
+		Plane: registry.ServicePlane,
+		Segments: []registry.PathSegment{
+			{Name: "devices"},
+			{Name: "boiler"},
+		},
+	}
+	canonicalChild := registry.ProjectionPath{
+		Plane: registry.ServicePlane,
+		Segments: []registry.PathSegment{
+			{Name: "devices"},
+			{Name: "boiler"},
+			{Name: "status"},
+		},
+	}
+	pathRoot := registry.ProjectionPath{
+		Plane: "Observability",
+		Segments: []registry.PathSegment{
+			{Name: "devices"},
+			{Name: "boiler"},
+		},
+	}
+	pathChild := registry.ProjectionPath{
+		Plane: "Observability",
+		Segments: []registry.PathSegment{
+			{Name: "devices"},
+			{Name: "boiler"},
+			{Name: "status"},
+		},
+	}
+	root := registry.Node{
+		ID:            registry.NodeID("obs-root"),
+		Path:          pathRoot,
+		CanonicalPath: canonicalRoot,
+	}
+	child := registry.Node{
+		ID:            registry.NodeID("obs-child"),
+		Path:          pathChild,
+		CanonicalPath: canonicalChild,
+	}
+	edge := registry.Edge{
+		ID:   registry.EdgeID("edge-custom"),
+		From: root.ID,
+		To:   child.ID,
+	}
+	projection, err := registry.NewProjection("Observability", []registry.Node{root, child}, []registry.Edge{edge})
+	if err != nil {
+		t.Fatalf("NewProjection error = %v", err)
+	}
+
+	entry := mockEntry{
+		info: registry.DeviceInfo{
+			Address:         0x10,
+			Manufacturer:    "vaillant",
+			DeviceID:        "device-a",
+			SoftwareVersion: "1.0",
+			HardwareVersion: "7603",
+		},
+		projections: []registry.Projection{projection},
+	}
+
+	reg := mockRegistry{entries: []registry.DeviceEntry{entry}}
+	got, err := BuildSchema(reg)
+	if err != nil {
+		t.Fatalf("BuildSchema error = %v", err)
+	}
+	if len(got.Devices) != 1 || len(got.Devices[0].Projections) != 1 {
+		t.Fatalf("Projections = %d; want 1", len(got.Devices[0].Projections))
+	}
+	gotProjection := got.Devices[0].Projections[0]
+	if gotProjection.Nodes[0].ID != canonicalRoot.String() || gotProjection.Nodes[0].CanonicalPath != canonicalRoot.String() {
+		t.Fatalf("Root node = %+v; want id=%s canonical=%s", gotProjection.Nodes[0], canonicalRoot.String(), canonicalRoot.String())
+	}
+	if gotProjection.Nodes[1].ID != canonicalChild.String() || gotProjection.Nodes[1].CanonicalPath != canonicalChild.String() {
+		t.Fatalf("Child node = %+v; want id=%s canonical=%s", gotProjection.Nodes[1], canonicalChild.String(), canonicalChild.String())
+	}
+	expectedEdgeID, err := registry.StableEdgeID("Observability", registry.NodeID(canonicalRoot.String()), registry.NodeID(canonicalChild.String()))
+	if err != nil {
+		t.Fatalf("StableEdgeID error = %v", err)
+	}
+	if gotProjection.Edges[0].ID != string(expectedEdgeID) || gotProjection.Edges[0].From != canonicalRoot.String() || gotProjection.Edges[0].To != canonicalChild.String() {
+		t.Fatalf("Edge = %+v; want id=%s from=%s to=%s", gotProjection.Edges[0], expectedEdgeID, canonicalRoot.String(), canonicalChild.String())
+	}
+}
+
 func TestBuilder_RebuildsOnChange(t *testing.T) {
 	entryA := mockEntry{
 		info: registry.DeviceInfo{

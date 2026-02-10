@@ -129,19 +129,37 @@ func BuildSchema(reg Registry) (Schema, error) {
 				return false
 			}
 			nodes := make([]ProjectionNode, len(projection.Nodes))
+			canonicalByID := make(map[registry.NodeID]string, len(projection.Nodes))
 			for index, node := range projection.Nodes {
+				canonicalPath := node.CanonicalPath.String()
+				canonicalByID[node.ID] = canonicalPath
 				nodes[index] = ProjectionNode{
-					ID:            string(node.ID),
+					ID:            canonicalPath,
 					Path:          node.Path.String(),
-					CanonicalPath: node.CanonicalPath.String(),
+					CanonicalPath: canonicalPath,
 				}
 			}
 			edges := make([]ProjectionEdge, len(projection.Edges))
 			for index, edge := range projection.Edges {
+				from := canonicalByID[edge.From]
+				to := canonicalByID[edge.To]
+				if from == "" {
+					from = string(edge.From)
+				}
+				if to == "" {
+					to = string(edge.To)
+				}
+				edgeID := edge.ID
+				if from != "" && to != "" {
+					stableID, err := registry.StableEdgeID(projection.Plane, registry.NodeID(from), registry.NodeID(to))
+					if err == nil {
+						edgeID = stableID
+					}
+				}
 				edges[index] = ProjectionEdge{
-					ID:   string(edge.ID),
-					From: string(edge.From),
-					To:   string(edge.To),
+					ID:   string(edgeID),
+					From: from,
+					To:   to,
 				}
 			}
 			device.Projections = append(device.Projections, Projection{

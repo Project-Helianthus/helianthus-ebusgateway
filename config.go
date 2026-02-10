@@ -37,6 +37,7 @@ type Config struct {
 	BroadcastListen  bool
 	HTTPAddr         string
 	GraphQLPath      string
+	SnapshotPath     string
 	SubscriptionPath string
 	MCPPath          string
 	UIPath           string
@@ -60,6 +61,7 @@ func DefaultConfig() Config {
 		BusConfig:        protocol.DefaultBusConfig(),
 		HTTPAddr:         ":8080",
 		GraphQLPath:      "/graphql",
+		SnapshotPath:     "/snapshot",
 		SubscriptionPath: "/graphql/subscriptions",
 		MCPPath:          "/mcp",
 		UIPath:           "/ui",
@@ -98,6 +100,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.GraphQLPath == "" {
 		cfg.GraphQLPath = "/graphql"
+	}
+	if cfg.SnapshotPath == "" {
+		cfg.SnapshotPath = "/snapshot"
 	}
 	if cfg.SubscriptionPath == "" {
 		cfg.SubscriptionPath = "/graphql/subscriptions"

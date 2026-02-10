@@ -97,6 +97,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.BoolVar(&cfg.BroadcastListen, "broadcast", cfg.BroadcastListen, "enable broadcast listener (separate connection)")
 	fs.StringVar(&cfg.HTTPAddr, "http-addr", cfg.HTTPAddr, "http listen address (empty disables)")
 	fs.StringVar(&cfg.GraphQLPath, "graphql-path", cfg.GraphQLPath, "graphql endpoint path")
+	fs.StringVar(&cfg.SnapshotPath, "snapshot-path", cfg.SnapshotPath, "projection snapshot endpoint path")
 	fs.StringVar(&cfg.SubscriptionPath, "subscription-path", cfg.SubscriptionPath, "graphql subscriptions path")
 	fs.StringVar(&cfg.MCPPath, "mcp-path", cfg.MCPPath, "mcp endpoint path")
 	fs.StringVar(&cfg.UIPath, "ui-path", cfg.UIPath, "portal ui path")
@@ -134,6 +135,10 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 	if err != nil {
 		return nil, nil, err
 	}
+	snapshotHandler, err := graphql.NewProjectionSnapshotHandler(builder)
+	if err != nil {
+		return nil, nil, err
+	}
 	subscriptionHandler, err := graphql.NewSubscriptionHandler(builder, gateway.Registry, gateway.Router, hub)
 	if err != nil {
 		return nil, nil, err
@@ -145,6 +150,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 
 	mux := http.NewServeMux()
 	mux.Handle(cfg.GraphQLPath, queryHandler)
+	mux.Handle(cfg.SnapshotPath, snapshotHandler)
 	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)
 	mux.Handle(cfg.MCPPath, mcpServer.Handler())
 	if cfg.UIPath != "" {

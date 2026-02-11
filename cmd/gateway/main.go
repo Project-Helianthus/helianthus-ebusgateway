@@ -101,6 +101,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.StringVar(&cfg.SubscriptionPath, "subscription-path", cfg.SubscriptionPath, "graphql subscriptions path")
 	fs.StringVar(&cfg.MCPPath, "mcp-path", cfg.MCPPath, "mcp endpoint path")
 	fs.StringVar(&cfg.UIPath, "ui-path", cfg.UIPath, "portal ui path")
+	fs.StringVar(&cfg.DumpUploadPath, "dump-upload-path", cfg.DumpUploadPath, "register dump upload endpoint path")
 	fs.BoolVar(&cfg.MDNSAdvertise, "mdns", cfg.MDNSAdvertise, "advertise graphql endpoint via mdns")
 	fs.StringVar(&cfg.MDNSInstance, "mdns-instance", cfg.MDNSInstance, "mdns instance name")
 	fs.StringVar(&cfg.DumpOutputDir, "dump-output-dir", cfg.DumpOutputDir, "unknown device dump output dir")
@@ -153,6 +154,13 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 	mux.Handle(cfg.SnapshotPath, snapshotHandler)
 	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)
 	mux.Handle(cfg.MCPPath, mcpServer.Handler())
+	if cfg.DumpUploadPath != "" {
+		uploadPath := cfg.DumpUploadPath
+		if !strings.HasPrefix(uploadPath, "/") {
+			uploadPath = "/" + uploadPath
+		}
+		mux.Handle(uploadPath, ebusgateway.NewRegisterDumpUploadHandler(cfg.DumpOutputDir))
+	}
 	if cfg.UIPath != "" {
 		uiPath := cfg.UIPath
 		if !strings.HasPrefix(uiPath, "/") {

@@ -15,6 +15,8 @@ import (
 
 const registerDumpUploadMaxBytes = 10 << 20
 
+var registerDumpUploadTimeout = 20 * time.Second
+
 type registerDumpUploadResponse struct {
 	Path string `json:"path"`
 	Size int64  `json:"size"`
@@ -83,7 +85,8 @@ func uploadRegisterDumpJSON(ctx context.Context, uploadURL string, jsonPath stri
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: registerDumpUploadTimeout}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

@@ -42,6 +42,7 @@ type smokeBehavior struct {
 	RegisterDumpTSP               string  `yaml:"register_dump_tsp"`
 	RegisterDumpTarget            hexByte `yaml:"register_dump_target"`
 	RegisterDumpOutput            string  `yaml:"register_dump_output"`
+	RegisterDumpJSONOutput        string  `yaml:"register_dump_json_output"`
 	RegisterDumpTimeoutSec        int     `yaml:"register_dump_timeout_sec"`
 	RegisterDumpLimit             int     `yaml:"register_dump_limit"`
 	IdentifyB50928xx              bool    `yaml:"identify_b509_28xx"`
@@ -164,6 +165,7 @@ func (cfg *smokeConfig) normalize() error {
 	cfg.Smoke.WireLogPath = strings.TrimSpace(cfg.Smoke.WireLogPath)
 	cfg.Smoke.RegisterDumpTSP = strings.TrimSpace(cfg.Smoke.RegisterDumpTSP)
 	cfg.Smoke.RegisterDumpOutput = strings.TrimSpace(cfg.Smoke.RegisterDumpOutput)
+	cfg.Smoke.RegisterDumpJSONOutput = strings.TrimSpace(cfg.Smoke.RegisterDumpJSONOutput)
 
 	if cfg.ENH.Type == "" {
 		return fmt.Errorf("smoke config missing enh.type")

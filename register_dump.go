@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -31,6 +32,27 @@ type registerDumpEntry struct {
 	Line     int
 }
 
+type registerDumpJSON struct {
+	Metadata registerDumpJSONMetadata `json:"metadata"`
+	Entries  []registerDumpJSONEntry  `json:"entries"`
+}
+
+type registerDumpJSONMetadata struct {
+	Timestamp  string `json:"timestamp"`
+	Target     string `json:"target"`
+	TSPSource  string `json:"tsp_source"`
+	EntryCount int    `json:"entry_count"`
+}
+
+type registerDumpJSONEntry struct {
+	Method   string `json:"method"`
+	Group    string `json:"group"`
+	Instance string `json:"instance"`
+	Address  string `json:"address"`
+	Raw      string `json:"raw"`
+	Decoded  string `json:"decoded"`
+}
+
 type registerField struct {
 	Name   string
 	Type   string
@@ -52,6 +74,11 @@ type baseContext struct {
 	Instance  byte
 	AddrLo    byte
 	HasAddrLo bool
+}
+
+type registerDumpRetryEntry struct {
+	Index int
+	Entry registerDumpEntry
 }
 
 func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, entries []registry.DeviceEntry, source byte, logger *wireLogger, logOutput io.Writer) error {
@@ -94,14 +121,8 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 		return fmt.Errorf("register dump target 0x%02x missing system plane", target)
 	}
 
-	dumpPath := cfg.Smoke.RegisterDumpOutput
-	if strings.TrimSpace(dumpPath) == "" {
-		if strings.TrimSpace(cfg.Smoke.WireLogPath) != "" {
-			dumpPath = cfg.Smoke.WireLogPath + ".dump.log"
-		} else {
-			dumpPath = filepath.Join(".", "register_dump.log")
-		}
-	}
+	dumpPath := resolveRegisterDumpLogPath(cfg)
+	jsonPath := resolveRegisterDumpJSONPath(cfg, dumpPath)
 
 	writer := logOutput
 	if writer == nil {
@@ -138,10 +159,17 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 
 	writeDumpLine(writer, "register dump started: target=0x%02x entries=%d tsp=%s", target, len(requests), cfg.Smoke.RegisterDumpTSP)
 
-	var emptyEntries []registerDumpEntry
-	for _, req := range requests {
+	jsonEntries := make([]registerDumpJSONEntry, len(requests))
+	var emptyEntries []registerDumpRetryEntry
+	for idx, req := range requests {
 		if ctx != nil && ctx.Err() != nil {
 			return ctx.Err()
+		}
+		jsonEntries[idx] = registerDumpJSONEntry{
+			Method:   req.Method,
+			Group:    formatHexByte(req.Group),
+			Instance: formatHexByte(req.Instance),
+			Address:  formatHexWord(req.Addr),
 		}
 		params := map[string]any{
 			"source": source,
@@ -163,10 +191,12 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 
 		payload := extractDumpPayload(result)
 		fields := decodeRegisterFields(req, payload, models)
+		jsonEntries[idx].Raw = payload
+		jsonEntries[idx].Decoded = fields
 		writeDumpLine(writer, "target=0x%02x group=0x%02x instance=0x%02x addr=0x%04x method=%s model=%s line=%d payload=%s fields=%s",
 			target, req.Group, req.Instance, req.Addr, req.Method, req.Model, req.Line, payload, fields)
 		if payload == "" {
-			emptyEntries = append(emptyEntries, req)
+			emptyEntries = append(emptyEntries, registerDumpRetryEntry{Index: idx, Entry: req})
 		}
 	}
 
@@ -177,7 +207,8 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 		}
 		writeDumpLine(writer, "register dump retry: empty=%d delay_ms=%d", len(emptyEntries), int(delay/time.Millisecond))
 		time.Sleep(delay)
-		for _, req := range emptyEntries {
+		for _, retry := range emptyEntries {
+			req := retry.Entry
 			if ctx != nil && ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -201,9 +232,15 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 
 			payload := extractDumpPayload(result)
 			fields := decodeRegisterFields(req, payload, models)
+			jsonEntries[retry.Index].Raw = payload
+			jsonEntries[retry.Index].Decoded = fields
 			writeDumpLine(writer, "retry=1 target=0x%02x group=0x%02x instance=0x%02x addr=0x%04x method=%s model=%s line=%d payload=%s fields=%s",
 				target, req.Group, req.Instance, req.Addr, req.Method, req.Model, req.Line, payload, fields)
 		}
+	}
+
+	if err := writeRegisterDumpJSON(jsonPath, buildRegisterDumpJSON(time.Now(), target, cfg.Smoke.RegisterDumpTSP, jsonEntries)); err != nil {
+		return err
 	}
 
 	writeDumpLine(writer, "register dump completed: target=0x%02x entries=%d", target, len(requests))
@@ -1222,4 +1259,69 @@ func writeDumpLine(writer io.Writer, format string, args ...any) {
 	}
 	ts := time.Now().Format(time.RFC3339Nano)
 	fmt.Fprintf(writer, "%s %s\n", ts, fmt.Sprintf(format, args...))
+}
+
+func resolveRegisterDumpLogPath(cfg smokeConfig) string {
+	dumpPath := strings.TrimSpace(cfg.Smoke.RegisterDumpOutput)
+	if dumpPath == "" {
+		if strings.TrimSpace(cfg.Smoke.WireLogPath) != "" {
+			dumpPath = cfg.Smoke.WireLogPath + ".dump.log"
+		} else {
+			dumpPath = filepath.Join(".", "register_dump.log")
+		}
+	}
+	return dumpPath
+}
+
+func resolveRegisterDumpJSONPath(cfg smokeConfig, dumpPath string) string {
+	jsonPath := strings.TrimSpace(cfg.Smoke.RegisterDumpJSONOutput)
+	if jsonPath != "" {
+		return jsonPath
+	}
+	base := dumpPath
+	if strings.HasSuffix(strings.ToLower(base), ".log") {
+		base = strings.TrimSuffix(base, ".log")
+	}
+	if strings.TrimSpace(base) == "" {
+		base = filepath.Join(".", "register_dump")
+	}
+	return base + ".json"
+}
+
+func buildRegisterDumpJSON(ts time.Time, target byte, tspSource string, entries []registerDumpJSONEntry) registerDumpJSON {
+	return registerDumpJSON{
+		Metadata: registerDumpJSONMetadata{
+			Timestamp:  ts.Format(time.RFC3339Nano),
+			Target:     formatHexByte(target),
+			TSPSource:  tspSource,
+			EntryCount: len(entries),
+		},
+		Entries: entries,
+	}
+}
+
+func writeRegisterDumpJSON(path string, payload registerDumpJSON) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o644)
+}
+
+func formatHexByte(value byte) string {
+	return fmt.Sprintf("0x%02x", value)
+}
+
+func formatHexWord(value uint16) string {
+	return fmt.Sprintf("0x%04x", value)
 }

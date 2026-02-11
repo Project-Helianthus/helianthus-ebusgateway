@@ -66,7 +66,6 @@ func DefaultConfig() Config {
 		SubscriptionPath: "/graphql/subscriptions",
 		MCPPath:          "/mcp",
 		UIPath:           "/ui",
-		DumpUploadPath:   "/dump/upload",
 		MDNSAdvertise:    true,
 		MDNSInstance:     "helianthus",
 		DumpOutputDir:    "./dumps",
@@ -114,9 +113,6 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.UIPath == "" {
 		cfg.UIPath = "/ui"
-	}
-	if cfg.DumpUploadPath == "" {
-		cfg.DumpUploadPath = "/dump/upload"
 	}
 	if cfg.MDNSInstance == "" {
 		cfg.MDNSInstance = "helianthus"

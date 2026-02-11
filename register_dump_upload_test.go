@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRegisterDumpUploadHandler_WritesFile(t *testing.T) {
@@ -83,5 +84,26 @@ func TestUploadRegisterDumpJSON_PostsPayload(t *testing.T) {
 
 	if err := uploadRegisterDumpJSON(context.Background(), server.URL, path); err != nil {
 		t.Fatalf("uploadRegisterDumpJSON error: %v", err)
+	}
+}
+
+func TestUploadRegisterDumpJSON_TimesOut(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dump.json")
+	if err := os.WriteFile(path, []byte(`{"metadata":{},"entries":[]}`), 0o644); err != nil {
+		t.Fatalf("write temp json: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	originalTimeout := registerDumpUploadTimeout
+	registerDumpUploadTimeout = 50 * time.Millisecond
+	defer func() { registerDumpUploadTimeout = originalTimeout }()
+
+	if err := uploadRegisterDumpJSON(context.Background(), server.URL, path); err == nil {
+		t.Fatalf("expected timeout error, got nil")
 	}
 }

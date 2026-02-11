@@ -43,6 +43,7 @@ type smokeBehavior struct {
 	RegisterDumpTarget            hexByte `yaml:"register_dump_target"`
 	RegisterDumpOutput            string  `yaml:"register_dump_output"`
 	RegisterDumpJSONOutput        string  `yaml:"register_dump_json_output"`
+	RegisterDumpUploadURL         string  `yaml:"register_dump_upload_url"`
 	RegisterDumpTimeoutSec        int     `yaml:"register_dump_timeout_sec"`
 	RegisterDumpLimit             int     `yaml:"register_dump_limit"`
 	IdentifyB50928xx              bool    `yaml:"identify_b509_28xx"`

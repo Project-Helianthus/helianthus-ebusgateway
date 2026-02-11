@@ -242,6 +242,11 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 	if err := writeRegisterDumpJSON(jsonPath, buildRegisterDumpJSON(time.Now(), target, cfg.Smoke.RegisterDumpTSP, jsonEntries)); err != nil {
 		return err
 	}
+	if uploadURL := strings.TrimSpace(cfg.Smoke.RegisterDumpUploadURL); uploadURL != "" {
+		if err := uploadRegisterDumpJSON(ctx, uploadURL, jsonPath); err != nil {
+			return err
+		}
+	}
 
 	writeDumpLine(writer, "register dump completed: target=0x%02x entries=%d", target, len(requests))
 

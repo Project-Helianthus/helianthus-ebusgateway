@@ -14,53 +14,38 @@
           <div class="subtitle">Projection explorer</div>
         </div>
         <div class="header-actions">
+          <span id="statusText" class="status-text"></span>
           <button id="refreshBtn" type="button">Refresh</button>
           <button id="pauseBtn" type="button">Pause</button>
-          <button id="snapshotBtn" type="button">Snapshot</button>
         </div>
       </header>
-      <section class="controls">
-        <label>
-          Device
-          <select id="deviceSelect"></select>
-        </label>
-        <label>
-          Plane
-          <select id="planeSelect"></select>
-        </label>
-        <label class="search">
-          Search
-          <input id="searchInput" type="search" placeholder="path or canonical path" />
-        </label>
-        <label>
-          Scope
-          <select id="searchScope">
-            <option value="all">All</option>
-            <option value="path">Path</option>
-            <option value="canonical">Canonical</option>
-          </select>
-        </label>
-      </section>
-      <section class="status" id="statusBar" aria-live="polite"></section>
-      <main class="layout">
-        <section class="panel tree-panel">
-          <h2>Projection Tree</h2>
-          <div id="treeContainer" class="tree"></div>
-        </section>
-        <section class="panel detail-panel">
-          <h2>Node Details</h2>
-          <div id="detailContainer" class="details"></div>
+      <div class="shell">
+        <aside class="sidebar">
           <div class="section">
-            <h3>Path List</h3>
-            <div id="pathList" class="chip-list"></div>
+            <div class="section-title">Devices</div>
+            <div id="deviceList" class="device-list"></div>
           </div>
-          <div class="section">
-            <h3>Cross-plane Paths</h3>
-            <div id="crossPlaneList" class="chip-list"></div>
-          </div>
-        </section>
-      </main>
+          <label class="plane-label">
+            Plane
+            <select id="planeSelect"></select>
+          </label>
+        </aside>
+        <main class="main">
+          <section class="panel graph-panel">
+            <div class="panel-header">
+              <h2>Projection Graph</h2>
+              <div id="graphMeta" class="graph-meta"></div>
+            </div>
+            <div id="graphContainer" class="graph"></div>
+          </section>
+          <section class="panel detail-panel">
+            <h2>Node Details</h2>
+            <div id="detailContainer" class="details"></div>
+          </section>
+        </main>
+      </div>
     </div>
+    <script src="./projection_helpers.js" defer></script>
     <script src="./app.js" defer></script>
   </body>
 </html>

@@ -34,11 +34,13 @@ type enhConfig struct {
 }
 
 type smokeBehavior struct {
+	Profile                       string  `yaml:"profile"`
 	VerboseFrames                 bool    `yaml:"verbose_frames"`
 	ScanTimeoutSec                int     `yaml:"scan_timeout_sec"`
 	MethodTimeoutSec              int     `yaml:"method_timeout_sec"`
 	SourceAddress                 hexByte `yaml:"source_address"`
 	WireLogPath                   string  `yaml:"wire_log_path"`
+	ReportJSONOutput              string  `yaml:"report_json_output"`
 	RegisterDumpTSP               string  `yaml:"register_dump_tsp"`
 	RegisterDumpTarget            hexByte `yaml:"register_dump_target"`
 	RegisterDumpOutput            string  `yaml:"register_dump_output"`
@@ -163,10 +165,21 @@ func (cfg *smokeConfig) normalize() error {
 	cfg.ENH.Type = strings.ToLower(strings.TrimSpace(cfg.ENH.Type))
 	cfg.ENH.Path = strings.TrimSpace(cfg.ENH.Path)
 	cfg.ENH.Host = strings.TrimSpace(cfg.ENH.Host)
+	cfg.Smoke.Profile = strings.ToLower(strings.TrimSpace(cfg.Smoke.Profile))
 	cfg.Smoke.WireLogPath = strings.TrimSpace(cfg.Smoke.WireLogPath)
+	cfg.Smoke.ReportJSONOutput = strings.TrimSpace(cfg.Smoke.ReportJSONOutput)
 	cfg.Smoke.RegisterDumpTSP = strings.TrimSpace(cfg.Smoke.RegisterDumpTSP)
 	cfg.Smoke.RegisterDumpOutput = strings.TrimSpace(cfg.Smoke.RegisterDumpOutput)
 	cfg.Smoke.RegisterDumpJSONOutput = strings.TrimSpace(cfg.Smoke.RegisterDumpJSONOutput)
+
+	if cfg.Smoke.Profile == "" {
+		cfg.Smoke.Profile = string(TransportENH)
+	}
+	switch cfg.Smoke.Profile {
+	case string(TransportENH), string(TransportEbusdTCP):
+	default:
+		return fmt.Errorf("smoke config unsupported smoke.profile %q", cfg.Smoke.Profile)
+	}
 
 	if cfg.ENH.Type == "" {
 		return fmt.Errorf("smoke config missing enh.type")

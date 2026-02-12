@@ -1,16 +1,23 @@
 package ebusgateway
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/d3vi1/helianthus-ebusgateway/mcp"
 	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
 	"github.com/d3vi1/helianthus-ebusgo/protocol"
 	"github.com/d3vi1/helianthus-ebusgo/transport"
@@ -21,6 +28,7 @@ import (
 )
 
 const defaultSmokeSource = byte(0x10)
+const defaultSmokeReportPath = "artifacts/smoke-report.json"
 
 type SmokeOptions struct {
 	RootDir        string
@@ -28,6 +36,47 @@ type SmokeOptions struct {
 	Logger         *log.Logger
 	SourceAddress  byte
 	OnGatewayReady func(ctx context.Context, gateway *Gateway, logger *log.Logger)
+	GraphQLCheck   func(ctx context.Context, gateway *Gateway) SmokeCheckResult
+	MCPCheck       func(ctx context.Context, gateway *Gateway) SmokeCheckResult
+}
+
+type SmokeCheckResult struct {
+	OK      bool
+	Details string
+	Error   string
+}
+
+type smokeReport struct {
+	Version    string                `json:"version"`
+	Profile    string                `json:"profile"`
+	ReadOnly   bool                  `json:"read_only"`
+	Success    bool                  `json:"success"`
+	StartedAt  string                `json:"started_at"`
+	FinishedAt string                `json:"finished_at"`
+	DurationMS int64                 `json:"duration_ms"`
+	Transport  smokeTransportSummary `json:"transport"`
+	Startup    smokeCheckSummary     `json:"startup"`
+	Scan       smokeScanSummary      `json:"scan"`
+	GraphQL    smokeCheckSummary     `json:"graphql"`
+	MCP        smokeCheckSummary     `json:"mcp"`
+	Error      string                `json:"error,omitempty"`
+}
+
+type smokeTransportSummary struct {
+	Protocol string `json:"protocol"`
+	Network  string `json:"network"`
+	Address  string `json:"address"`
+}
+
+type smokeCheckSummary struct {
+	OK      bool   `json:"ok"`
+	Details string `json:"details,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type smokeScanSummary struct {
+	OK      bool `json:"ok"`
+	Devices int  `json:"devices"`
 }
 
 func RunSmokeFromEnv(ctx context.Context, opts SmokeOptions) error {
@@ -43,7 +92,7 @@ func RunSmokeFromEnv(ctx context.Context, opts SmokeOptions) error {
 	return RunSmoke(ctx, cfg, opts)
 }
 
-func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
+func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) (runErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -53,9 +102,53 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 		logger = log.New(os.Stdout, "smoke: ", log.LstdFlags)
 	}
 
-	transportCfg, err := transportConfigFromSmoke(cfg.ENH)
+	reportPath, err := resolveSmokeReportPath(cfg.Smoke.ReportJSONOutput, opts.RootDir)
 	if err != nil {
 		return err
+	}
+
+	profile := strings.TrimSpace(cfg.Smoke.Profile)
+	if profile == "" {
+		profile = string(TransportENH)
+	}
+	startTime := time.Now()
+	report := smokeReport{
+		Version:   "1",
+		Profile:   profile,
+		ReadOnly:  true,
+		StartedAt: startTime.UTC().Format(time.RFC3339Nano),
+		Transport: smokeTransportSummary{Protocol: profile},
+		Startup:   smokeCheckSummary{OK: false},
+		Scan:      smokeScanSummary{OK: false},
+		GraphQL:   smokeCheckSummary{OK: false},
+		MCP:       smokeCheckSummary{OK: false},
+	}
+	defer func() {
+		report.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		report.DurationMS = time.Since(startTime).Milliseconds()
+		report.Success = runErr == nil
+		if runErr != nil {
+			report.Error = runErr.Error()
+		}
+		if err := writeSmokeReport(reportPath, report); err != nil {
+			logger.Printf("smoke report write: %v", err)
+			if runErr == nil {
+				runErr = err
+			} else {
+				runErr = fmt.Errorf("%w; smoke report write: %v", runErr, err)
+			}
+			return
+		}
+		logger.Printf("smoke report written: %s", reportPath)
+	}()
+	transportCfg, err := transportConfigFromSmoke(cfg)
+	if err != nil {
+		return err
+	}
+	report.Transport = smokeTransportSummary{
+		Protocol: string(transportCfg.Protocol),
+		Network:  transportCfg.Network,
+		Address:  transportCfg.Address,
 	}
 
 	providers := opts.Providers
@@ -113,6 +206,10 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	gateway.Start(ctx)
+	report.Startup = smokeCheckSummary{
+		OK:      true,
+		Details: "gateway started",
+	}
 
 	source := opts.SourceAddress
 	if source == 0 {
@@ -161,6 +258,10 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 	if len(entries) == 0 {
 		return fmt.Errorf("smoke scan found no devices")
 	}
+	report.Scan = smokeScanSummary{
+		OK:      true,
+		Devices: len(entries),
+	}
 
 	logDeviceInfo(logger, entries)
 	logExpectedDevices(logger, cfg.ExpectedDevices, entries)
@@ -185,6 +286,14 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) error {
 	}
 
 	_ = gateway.RefreshRouterPlanes()
+	report.GraphQL = runSmokeGraphQLCheck(ctx, gateway, opts)
+	if !report.GraphQL.OK {
+		return fmt.Errorf("smoke graphql check failed: %s", smokeCheckError(report.GraphQL))
+	}
+	report.MCP = runSmokeMCPCheck(ctx, gateway, opts)
+	if !report.MCP.OK {
+		return fmt.Errorf("smoke mcp check failed: %s", smokeCheckError(report.MCP))
+	}
 	if broadcastListener == nil {
 		var broadcastWrap func(transport.RawTransport) transport.RawTransport
 		if wireLogger != nil {
@@ -309,9 +418,22 @@ func invokeIdentify(ctx context.Context, router *router.BusEventRouter, entry re
 	return nil
 }
 
-func transportConfigFromSmoke(enh enhConfig) (TransportConfig, error) {
+func transportConfigFromSmoke(smokeCfg smokeConfig) (TransportConfig, error) {
 	cfg := DefaultConfig().TransportConfig
-	cfg.Protocol = TransportENH
+	profile := strings.TrimSpace(smokeCfg.Smoke.Profile)
+	if profile == "" {
+		profile = string(TransportENH)
+	}
+	switch profile {
+	case string(TransportENH):
+		cfg.Protocol = TransportENH
+	case string(TransportEbusdTCP):
+		cfg.Protocol = TransportEbusdTCP
+	default:
+		return TransportConfig{}, fmt.Errorf("smoke config unsupported smoke.profile %q", profile)
+	}
+
+	enh := smokeCfg.ENH
 	switch enh.Type {
 	case "unix":
 		cfg.Network = "unix"
@@ -321,6 +443,9 @@ func transportConfigFromSmoke(enh enhConfig) (TransportConfig, error) {
 		cfg.Address = net.JoinHostPort(enh.Host, fmt.Sprintf("%d", enh.Port))
 	default:
 		return TransportConfig{}, fmt.Errorf("smoke config unsupported enh.type %q", enh.Type)
+	}
+	if cfg.Protocol == TransportEbusdTCP && cfg.Network != "tcp" {
+		return TransportConfig{}, fmt.Errorf("smoke profile %q requires enh.type tcp", profile)
 	}
 	timeout := time.Duration(enh.TimeoutSec) * time.Second
 	if timeout > 0 {
@@ -728,4 +853,241 @@ func scanTargetsFromExpectedDevices(expected []expectedDevice) []byte {
 		out = append(out, addr)
 	}
 	return out
+}
+
+func runSmokeGraphQLCheck(ctx context.Context, gateway *Gateway, opts SmokeOptions) smokeCheckSummary {
+	if opts.GraphQLCheck != nil {
+		return smokeCheckSummaryFromResult(opts.GraphQLCheck(ctx, gateway))
+	}
+	return smokeCheckSummary{
+		OK:    false,
+		Error: "graphql read-only check not configured",
+	}
+}
+
+func runSmokeMCPCheck(ctx context.Context, gateway *Gateway, opts SmokeOptions) smokeCheckSummary {
+	if opts.MCPCheck != nil {
+		return smokeCheckSummaryFromResult(opts.MCPCheck(ctx, gateway))
+	}
+	if gateway == nil || gateway.Registry == nil {
+		return smokeCheckSummary{
+			OK:    false,
+			Error: "mcp check missing gateway registry",
+		}
+	}
+
+	server, err := mcp.NewServer(gateway.Registry, gateway.Router)
+	if err != nil {
+		return smokeCheckSummary{
+			OK:    false,
+			Error: err.Error(),
+		}
+	}
+
+	handler := server.Handler()
+	tools, err := mcpToolsListCheck(ctx, handler)
+	if err != nil {
+		return smokeCheckSummary{
+			OK:    false,
+			Error: err.Error(),
+		}
+	}
+	if containsString(tools, "ebus.devices") {
+		if err := mcpDevicesCallCheck(ctx, handler); err != nil {
+			return smokeCheckSummary{
+				OK:    false,
+				Error: err.Error(),
+			}
+		}
+		return smokeCheckSummary{
+			OK:      true,
+			Details: fmt.Sprintf("tools=%d (read-only tools/list + ebus.devices)", len(tools)),
+		}
+	}
+	return smokeCheckSummary{
+		OK:      true,
+		Details: fmt.Sprintf("tools=%d (listing only; no safe read-only MCP call available)", len(tools)),
+	}
+}
+
+func mcpToolsListCheck(ctx context.Context, handler http.Handler) ([]string, error) {
+	response, err := invokeSmokeJSONRPC(ctx, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	if err != nil {
+		return nil, err
+	}
+
+	result, ok := response["result"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("mcp tools/list response missing result object")
+	}
+	rawTools, ok := result["tools"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("mcp tools/list response missing tools array")
+	}
+	if len(rawTools) == 0 {
+		return nil, fmt.Errorf("mcp tools/list returned no tools")
+	}
+
+	toolNames := make([]string, 0, len(rawTools))
+	for _, rawTool := range rawTools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := tool["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		toolNames = append(toolNames, name)
+	}
+	if len(toolNames) == 0 {
+		return nil, fmt.Errorf("mcp tools/list has no valid tool names")
+	}
+	return toolNames, nil
+}
+
+func mcpDevicesCallCheck(ctx context.Context, handler http.Handler) error {
+	response, err := invokeSmokeJSONRPC(ctx, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ebus.devices","arguments":{}}}`)
+	if err != nil {
+		return err
+	}
+	result, ok := response["result"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("mcp tools/call response missing result object")
+	}
+	if isError, _ := result["isError"].(bool); isError {
+		return fmt.Errorf("mcp tools/call ebus.devices returned isError=true")
+	}
+	content, ok := result["content"].([]any)
+	if !ok || len(content) == 0 {
+		return fmt.Errorf("mcp tools/call ebus.devices missing content")
+	}
+	first, ok := content[0].(map[string]any)
+	if !ok {
+		return fmt.Errorf("mcp tools/call ebus.devices content item invalid")
+	}
+	text, _ := first["text"].(string)
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("mcp tools/call ebus.devices returned empty text")
+	}
+	return nil
+}
+
+func containsString(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func invokeSmokeJSONRPC(ctx context.Context, handler http.Handler, payload string) (map[string]any, error) {
+	if handler == nil {
+		return nil, fmt.Errorf("json-rpc handler missing")
+	}
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	if ctx != nil {
+		req = req.WithContext(ctx)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		return nil, fmt.Errorf("json-rpc status %d: %s", recorder.Code, strings.TrimSpace(recorder.Body.String()))
+	}
+
+	raw, err := io.ReadAll(recorder.Body)
+	if err != nil {
+		return nil, err
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("json-rpc decode: %w", err)
+	}
+	if rpcErr, ok := parsed["error"].(map[string]any); ok {
+		message, _ := rpcErr["message"].(string)
+		if message == "" {
+			message = fmt.Sprintf("%v", rpcErr)
+		}
+		return nil, fmt.Errorf("json-rpc error: %s", message)
+	}
+	return parsed, nil
+}
+
+func smokeCheckSummaryFromResult(result SmokeCheckResult) smokeCheckSummary {
+	return smokeCheckSummary{
+		OK:      result.OK,
+		Details: strings.TrimSpace(result.Details),
+		Error:   strings.TrimSpace(result.Error),
+	}
+}
+
+func smokeCheckError(summary smokeCheckSummary) string {
+	if strings.TrimSpace(summary.Error) != "" {
+		return strings.TrimSpace(summary.Error)
+	}
+	if strings.TrimSpace(summary.Details) != "" {
+		return strings.TrimSpace(summary.Details)
+	}
+	return "check failed"
+}
+
+func resolveSmokeReportPath(outputPath, rootDir string) (string, error) {
+	path := strings.TrimSpace(outputPath)
+	if path == "" {
+		path = defaultSmokeReportPath
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), nil
+	}
+
+	base := strings.TrimSpace(rootDir)
+	if base == "" {
+		resolvedRoot, err := findRepoRoot()
+		if err != nil {
+			return "", err
+		}
+		base = resolvedRoot
+	}
+	return filepath.Clean(filepath.Join(base, path)), nil
+}
+
+func writeSmokeReport(path string, report smokeReport) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("smoke report path missing")
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	payload, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	payload = append(payload, '\n')
+
+	tmpFile, err := os.CreateTemp(dir, "smoke-report-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(payload); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }

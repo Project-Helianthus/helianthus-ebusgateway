@@ -46,8 +46,45 @@ func TestLoadSmokeConfigFile(t *testing.T) {
 	if !cfg.Smoke.VerboseFrames || cfg.Smoke.ScanTimeoutSec != 4 || cfg.Smoke.MethodTimeoutSec != 6 {
 		t.Fatalf("unexpected smoke config: %+v", cfg.Smoke)
 	}
+	if cfg.Smoke.Profile != string(TransportENH) {
+		t.Fatalf("profile = %q; want %q", cfg.Smoke.Profile, string(TransportENH))
+	}
 	if len(cfg.ExpectedDevices) != 1 || cfg.ExpectedDevices[0].Address.Byte() != 0x08 {
 		t.Fatalf("unexpected expected devices: %+v", cfg.ExpectedDevices)
+	}
+}
+
+func TestLoadSmokeConfigFileProfileValidValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENT-local.md")
+	content := "```yaml\nenh:\n  type: tcp\n  host: \"127.0.0.1\"\n  port: 7624\nsmoke:\n  profile: ebusd-tcp\n```\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	cfg, err := loadSmokeConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadSmokeConfigFile error = %v", err)
+	}
+	if cfg.Smoke.Profile != string(TransportEbusdTCP) {
+		t.Fatalf("profile = %q; want %q", cfg.Smoke.Profile, string(TransportEbusdTCP))
+	}
+}
+
+func TestLoadSmokeConfigFileProfileInvalidValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENT-local.md")
+	content := "```yaml\nenh:\n  type: tcp\n  host: \"127.0.0.1\"\n  port: 7624\nsmoke:\n  profile: nope\n```\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	_, err := loadSmokeConfigFile(path)
+	if err == nil {
+		t.Fatalf("expected error for invalid profile")
+	}
+	if !strings.Contains(err.Error(), "unsupported smoke.profile") {
+		t.Fatalf("error = %v; want unsupported smoke.profile", err)
 	}
 }
 

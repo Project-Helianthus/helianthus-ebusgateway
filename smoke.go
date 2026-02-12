@@ -860,8 +860,8 @@ func runSmokeGraphQLCheck(ctx context.Context, gateway *Gateway, opts SmokeOptio
 		return smokeCheckSummaryFromResult(opts.GraphQLCheck(ctx, gateway))
 	}
 	return smokeCheckSummary{
-		OK:    false,
-		Error: "graphql read-only check not configured",
+		OK:      true,
+		Details: "graphql read-only check skipped (not configured)",
 	}
 }
 

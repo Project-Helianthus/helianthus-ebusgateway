@@ -1,6 +1,7 @@
 package ebusgateway
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -58,6 +59,45 @@ func TestTransportConfigFromSmokeEbusdTCPRejectsNonTCP(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "requires enh.type tcp") {
 		t.Fatalf("error = %v; want requires enh.type tcp", err)
+	}
+}
+
+func TestRunSmokeGraphQLCheck_DefaultOptionsSkips(t *testing.T) {
+	t.Parallel()
+
+	got := runSmokeGraphQLCheck(context.Background(), nil, SmokeOptions{})
+	if !got.OK {
+		t.Fatalf("runSmokeGraphQLCheck().OK = false; want true")
+	}
+	if got.Error != "" {
+		t.Fatalf("runSmokeGraphQLCheck().Error = %q; want empty", got.Error)
+	}
+	if got.Details != "graphql read-only check skipped (not configured)" {
+		t.Fatalf("runSmokeGraphQLCheck().Details = %q; want skip detail", got.Details)
+	}
+}
+
+func TestRunSmokeGraphQLCheck_ConfiguredFailure(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	got := runSmokeGraphQLCheck(context.Background(), nil, SmokeOptions{
+		GraphQLCheck: func(context.Context, *Gateway) SmokeCheckResult {
+			called = true
+			return SmokeCheckResult{
+				OK:    false,
+				Error: "graphql probe failed",
+			}
+		},
+	})
+	if !called {
+		t.Fatalf("GraphQLCheck was not invoked")
+	}
+	if got.OK {
+		t.Fatalf("runSmokeGraphQLCheck().OK = true; want false")
+	}
+	if got.Error != "graphql probe failed" {
+		t.Fatalf("runSmokeGraphQLCheck().Error = %q; want graphql probe failed", got.Error)
 	}
 }
 

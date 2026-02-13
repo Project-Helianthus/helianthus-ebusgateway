@@ -44,9 +44,14 @@ export GOPROXY=direct
 # Use a GitHub token with read access to private repos.
 export GH_TOKEN='<your_github_token>'
 
-# Align Git URL rewrite with CI so Go can fetch private modules.
-git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+# CI uses a tokenized Git URL rewrite; keep local onboarding non-persistent.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0="url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf"
+export GIT_CONFIG_VALUE_0="https://github.com/"
 ```
+
+After local checks, clear auth-related shell variables:
+`unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GH_TOKEN`
 
 ### 1) Clone and baseline validation
 

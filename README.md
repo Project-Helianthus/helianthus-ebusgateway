@@ -69,34 +69,134 @@ curl -sS http://127.0.0.1:8080/graphql \
   --data '{"query":"{ devices { address manufacturer deviceId planes { name } } }"}'
 ```
 
-## Configuration (gateway command)
+## Deployment profiles (dev / HA / prod-like)
+
+### Dev profile (single instance, local-first)
+
+Use defaults and local transport assumptions:
+
+```bash
+go run ./cmd/gateway \
+  -transport enh \
+  -network unix \
+  -address /var/run/ebusd/ebusd.socket \
+  -http-addr :8080
+```
+
+Good for local validation with UI + GraphQL + MCP exposed on one node.
+
+### HA profile (multi-instance API tier)
+
+Run multiple identical `cmd/gateway` instances behind a reverse proxy/load balancer:
+
+- Each instance keeps its own in-memory registry/router state.
+- Use the same transport/provider wiring per instance.
+- Prefer `-mdns=false` to avoid duplicate DNS-SD announcements unless explicitly needed.
+- Probe each instance at API level (`/graphql`, `/mcp`) before admitting traffic.
+
+Per-instance example:
+
+```bash
+go run ./cmd/gateway \
+  -transport enh \
+  -network tcp \
+  -address 127.0.0.1:9999 \
+  -http-addr :8080 \
+  -mdns=false
+```
+
+### Production-like profile (single hardened edge)
+
+Keep gateway private and terminate auth/TLS at the edge proxy:
+
+```bash
+go run ./cmd/gateway \
+  -transport enh \
+  -network unix \
+  -address /var/run/ebusd/ebusd.socket \
+  -http-addr 127.0.0.1:8080 \
+  -mdns=false \
+  -ui-path '' \
+  -dump-upload-path ''
+```
+
+This keeps optional surfaces disabled by default while preserving GraphQL/MCP API access through the proxy.
+
+## Security and hardening notes
+
+- `cmd/gateway` serves plain HTTP only; there is no in-process TLS termination.
+- API endpoints are unauthenticated in current implementation; enforce authN/authZ upstream (reverse proxy, API gateway, service mesh).
+- Auth roadmap in current deployments is edge-enforced authentication/authorization; this binary has no auth flags today.
+- Default `-http-addr :8080` binds on all interfaces. For hardened setups, bind loopback/private interfaces and publish only via proxy.
+- `-mdns` defaults to `true`; disable outside trusted LAN segments to avoid service discovery leakage.
+- Leave `-dump-upload-path` unset unless you intentionally need register-dump upload ingestion.
+- `-dump-include-pii` defaults to `false`; keep it disabled in shared/production-like environments.
+- GraphQL subscription WebSocket upgrade currently accepts all origins; enforce origin policy and allowed callers at the edge.
+
+## Configuration cheat sheet (gateway command)
 
 `cmd/gateway` is flag-driven (no environment-variable parsing in this command).
 
-Core transport/runtime flags:
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `-transport` | `enh` | `enh`, `ens`, or `ebusd-tcp` |
+| `-network` | `unix` | Transport dial network (`unix` or `tcp`) |
+| `-address` | `/var/run/ebusd/ebusd.socket` | Transport socket path or `host:port` |
+| `-read-timeout` | `5s` | Transport read timeout |
+| `-write-timeout` | `5s` | Transport write timeout |
+| `-dial-timeout` | `5s` | Transport dial timeout |
+| `-queue-capacity` | `0` | `0` uses protocol default |
+| `-broadcast` | `false` | Starts separate broadcast listener connection |
+| `-http-addr` | `:8080` | Empty disables HTTP server |
+| `-graphql-path` | `/graphql` | GraphQL query/mutation endpoint |
+| `-snapshot-path` | `/snapshot` | Projection snapshot endpoint |
+| `-subscription-path` | `/graphql/subscriptions` | WebSocket/SSE subscription endpoint |
+| `-mcp-path` | `/mcp` | MCP JSON-RPC endpoint |
+| `-ui-path` | `/ui` | Portal UI mount path (set empty to disable) |
+| `-dump-upload-path` | _disabled_ | Register-dump upload endpoint path |
+| `-dump-output-dir` | `./dumps` | Dump output directory |
+| `-dump-upload-url` | _empty_ | Internal unknown-device dump upload target |
+| `-dump-include-pii` | `false` | Include identifiers in unknown-device dumps |
+| `-mdns` | `true` | Advertise GraphQL over mDNS |
+| `-mdns-instance` | `helianthus` | mDNS instance label |
 
-- `-transport`: `enh` | `ens` | `ebusd-tcp`
-- `-network`: dial network (`unix` or `tcp`)
-- `-address`: socket path or `host:port`
-- `-read-timeout`, `-write-timeout`, `-dial-timeout`
-- `-queue-capacity`: bus queue size (`0` = protocol default)
-- `-broadcast`: start separate broadcast listener connection
+Required deployment inputs:
 
-HTTP/API flags:
+- Reachable transport endpoint at `-network` + `-address`.
+- Private module access if building outside CI (`GOPRIVATE=github.com/d3vi1/*` and auth setup).
 
-- `-http-addr` (default `:8080`; empty disables HTTP server)
-- `-graphql-path` (default `/graphql`)
-- `-snapshot-path` (default `/snapshot`)
-- `-subscription-path` (default `/graphql/subscriptions`)
-- `-mcp-path` (default `/mcp`)
-- `-ui-path` (default `/ui`)
-- `-dump-upload-path` (disabled unless set)
-- `-dump-output-dir` (default `./dumps`)
+Environment variables used by deployment/smoke paths:
 
-mDNS flags:
+- `cmd/gateway`: none.
+- `cmd/smoke`: set `EBUS_SMOKE=1` to enable smoke execution path.
 
-- `-mdns` (default `true`)
-- `-mdns-instance` (default `helianthus`)
+## API readiness probes
+
+There is currently no dedicated `/healthz` or `/readyz` endpoint. Use functional API probes.
+
+GraphQL readiness (`200` and non-empty `data.__typename`):
+
+```bash
+curl -fsS http://127.0.0.1:8080/graphql \
+  -H 'content-type: application/json' \
+  --data '{"query":"{ __typename }"}'
+```
+
+MCP readiness (`200` and JSON-RPC `result` object):
+
+```bash
+curl -fsS http://127.0.0.1:8080/mcp \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":"ready","method":"ping","params":{}}'
+```
+
+MCP tool-surface probe (`tools/list` should include built-in tools):
+
+```bash
+curl -fsS http://127.0.0.1:8080/mcp \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":"ready-tools","method":"tools/list","params":{}}'
+```
 
 ## API entrypoints
 
@@ -143,19 +243,22 @@ When enabled, gateway advertises GraphQL via DNS-SD service type:
 
 TXT records include path + transport metadata (for example `path=/graphql`).
 
-## Smoke test context and limits
+## Smoke context and limits
 
 Smoke coverage is intentionally opt-in and hardware-backed:
 
 - Command: `EBUS_SMOKE=1 go run ./cmd/smoke`
-- Reads local `AGENT-local.md` YAML blocks for transport + expected devices + behavior
-- Designed for real-bus validation (scan, read-only invoke flows, optional register dump/probe)
+- Loads repo-root `AGENT-local.md` YAML blocks (`enh`, `expected_devices`, `smoke`)
+- Supports smoke profiles: `enh` and `ebusd-tcp`
+- Runs read-only GraphQL/MCP checks as part of the smoke flow
+- Writes JSON report to `artifacts/smoke-report.json` by default (`smoke.report_json_output` overrides)
+- Supports register probe-only mode with `smoke.register_dump_probe_only=true` (requires `smoke.register_dump_target`)
 
 Important limits:
 
 - Not part of default `go test ./...` CI path
 - Fails early when `AGENT-local.md` is missing/invalid while `EBUS_SMOKE=1`
-- Requires reachable bus transport and matching local environment
+- Requires reachable transport and local environment matching the smoke config
 
 ## Package map
 

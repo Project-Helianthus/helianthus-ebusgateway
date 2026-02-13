@@ -33,6 +33,21 @@ helianthus-ebusgo  ->  helianthus-ebusreg  ->  helianthus-ebusgateway  ->  opera
 
 ## Quickstart (copy/paste)
 
+### 0) Prerequisite: private module access (outside CI)
+
+```bash
+# Align local module settings with CI for private dependencies.
+export GOPRIVATE='github.com/d3vi1/*'
+export GONOSUMDB='github.com/d3vi1/*'
+export GOPROXY=direct
+
+# Use a GitHub token with read access to private repos.
+export GH_TOKEN='<your_github_token>'
+
+# Align Git URL rewrite with CI so Go can fetch private modules.
+git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+```
+
 ### 1) Clone and baseline validation
 
 ```bash

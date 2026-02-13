@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -106,6 +107,10 @@ func resolveTransport(ctx context.Context, cfg Config) (transport.RawTransport, 
 	}
 
 	config := cfg.TransportConfig
+	config, err := normalizeTransportConfig(config)
+	if err != nil {
+		return nil, nil, err
+	}
 	if config.Network == "" {
 		return nil, nil, fmt.Errorf("gateway transport missing network: %w", ebuserrors.ErrInvalidPayload)
 	}
@@ -134,6 +139,78 @@ func resolveTransport(ctx context.Context, cfg Config) (transport.RawTransport, 
 	}
 
 	return transportLayer, conn.Close, nil
+}
+
+func normalizeTransportConfig(config TransportConfig) (TransportConfig, error) {
+	config.Protocol = TransportProtocol(strings.ToLower(strings.TrimSpace(string(config.Protocol))))
+	config.Network = strings.ToLower(strings.TrimSpace(config.Network))
+	config.Address = strings.TrimSpace(config.Address)
+
+	if !strings.Contains(config.Address, "://") {
+		if config.Protocol == "" {
+			config.Protocol = TransportENH
+		}
+		return config, nil
+	}
+
+	protocol, network, address, err := parseTransportEndpoint(config.Address, config.Protocol)
+	if err != nil {
+		return TransportConfig{}, err
+	}
+	config.Protocol = protocol
+	config.Network = network
+	config.Address = address
+	return config, nil
+}
+
+func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol) (TransportProtocol, string, string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", "", "", fmt.Errorf("gateway transport endpoint parse failed %q: %w", endpoint, err)
+	}
+
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	if scheme == "" {
+		return "", "", "", fmt.Errorf("gateway transport endpoint missing scheme %q", endpoint)
+	}
+
+	protocol := fallbackProtocol
+	switch scheme {
+	case "enh":
+		protocol = TransportENH
+	case "ens":
+		protocol = TransportENS
+	case "ebusd", "ebusd-tcp":
+		protocol = TransportEbusdTCP
+	case "tcp", "unix":
+	default:
+		return "", "", "", fmt.Errorf("gateway transport endpoint unsupported scheme %q", scheme)
+	}
+
+	network := ""
+	address := ""
+	switch {
+	case parsed.Host != "":
+		network = "tcp"
+		address = strings.TrimSpace(parsed.Host)
+	case parsed.Path != "" && parsed.Path != "/":
+		network = "unix"
+		address = strings.TrimSpace(parsed.Path)
+	default:
+		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing host or unix path", endpoint)
+	}
+
+	if scheme == "tcp" && network != "tcp" {
+		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing tcp host", endpoint)
+	}
+	if scheme == "unix" && network != "unix" {
+		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing unix path", endpoint)
+	}
+	if protocol == "" {
+		protocol = TransportENH
+	}
+
+	return protocol, network, address, nil
 }
 
 func transportFromConn(protocolName TransportProtocol, conn net.Conn, readTimeout, writeTimeout time.Duration) (transport.RawTransport, error) {

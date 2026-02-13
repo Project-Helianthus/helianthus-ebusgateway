@@ -427,6 +427,8 @@ func transportConfigFromSmoke(smokeCfg smokeConfig) (TransportConfig, error) {
 	switch profile {
 	case string(TransportENH):
 		cfg.Protocol = TransportENH
+	case string(TransportENS):
+		cfg.Protocol = TransportENS
 	case string(TransportEbusdTCP):
 		cfg.Protocol = TransportEbusdTCP
 	default:

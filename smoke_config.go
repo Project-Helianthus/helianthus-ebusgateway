@@ -176,7 +176,7 @@ func (cfg *smokeConfig) normalize() error {
 		cfg.Smoke.Profile = string(TransportENH)
 	}
 	switch cfg.Smoke.Profile {
-	case string(TransportENH), string(TransportEbusdTCP):
+	case string(TransportENH), string(TransportENS), string(TransportEbusdTCP):
 	default:
 		return fmt.Errorf("smoke config unsupported smoke.profile %q", cfg.Smoke.Profile)
 	}

@@ -61,6 +61,13 @@ go run ./cmd/gateway \
   -http-addr :8080
 ```
 
+Adapter-proxy direct endpoint profile examples (profile inferred from endpoint URI):
+
+```bash
+go run ./cmd/gateway -address enh://127.0.0.1:19001 -http-addr :8080
+go run ./cmd/gateway -address ens://127.0.0.1:19002 -http-addr :8080
+```
+
 Basic GraphQL probe:
 
 ```bash
@@ -141,7 +148,7 @@ This keeps optional surfaces disabled by default while preserving GraphQL/MCP AP
 | --- | --- | --- |
 | `-transport` | `enh` | `enh`, `ens`, or `ebusd-tcp` |
 | `-network` | `unix` | Transport dial network (`unix` or `tcp`) |
-| `-address` | `/var/run/ebusd/ebusd.socket` | Transport socket path or `host:port` |
+| `-address` | `/var/run/ebusd/ebusd.socket` | Transport socket path, `host:port`, or endpoint URI (`enh://`, `ens://`, `ebusd-tcp://`) |
 | `-read-timeout` | `5s` | Transport read timeout |
 | `-write-timeout` | `5s` | Transport write timeout |
 | `-dial-timeout` | `5s` | Transport dial timeout |
@@ -249,10 +256,20 @@ Smoke coverage is intentionally opt-in and hardware-backed:
 
 - Command: `EBUS_SMOKE=1 go run ./cmd/smoke`
 - Loads repo-root `AGENT-local.md` YAML blocks (`enh`, `expected_devices`, `smoke`)
-- Supports smoke profiles: `enh` and `ebusd-tcp`
+- Supports smoke profiles: `enh`, `ens`, and `ebusd-tcp`
 - Runs read-only GraphQL/MCP checks as part of the smoke flow
 - Writes JSON report to `artifacts/smoke-report.json` by default (`smoke.report_json_output` overrides)
 - Supports register probe-only mode with `smoke.register_dump_probe_only=true` (requires `smoke.register_dump_target`)
+
+Dual-topology smoke notes (`helianthus-ebus-adapter-proxy` issue #15):
+
+- Run smoke once per proxy endpoint profile (`smoke.profile: enh` then `smoke.profile: ens`) against the matching endpoint.
+- Keep the same read-only smoke flow; only endpoint/profile wiring changes between runs.
+- Suggested command:
+
+```bash
+EBUS_SMOKE=1 go run ./cmd/smoke
+```
 
 Important limits:
 

@@ -148,6 +148,139 @@ func TestNewGateway_DialsWithEbusdTCP(t *testing.T) {
 	}
 }
 
+func TestNewGateway_DialsWithENHEndpointProfile(t *testing.T) {
+	var (
+		dialed      bool
+		gotNetwork  string
+		gotAddress  string
+		serverClose func()
+	)
+
+	dialer := func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+		dialed = true
+		gotNetwork = network
+		gotAddress = address
+		client, server := net.Pipe()
+		serverClose = func() { _ = server.Close() }
+
+		go func() {
+			buf := make([]byte, 2)
+			if _, err := io.ReadFull(server, buf); err != nil {
+				_ = server.Close()
+				return
+			}
+			resp := transport.EncodeENH(transport.ENHResResetted, 0x00)
+			_, _ = server.Write(resp[:])
+		}()
+
+		return client, nil
+	}
+
+	cfg := Config{
+		TransportConfig: TransportConfig{
+			Address:     "enh://127.0.0.1:9999",
+			DialTimeout: time.Second,
+			Dial:        dialer,
+			ReadTimeout: 200 * time.Millisecond,
+		},
+	}
+
+	gateway, err := New(context.Background(), cfg)
+	if serverClose != nil {
+		defer serverClose()
+	}
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if !dialed {
+		t.Fatalf("dialer was not invoked")
+	}
+	if gotNetwork != "tcp" || gotAddress != "127.0.0.1:9999" {
+		t.Fatalf("dialer args = %s %s; want tcp 127.0.0.1:9999", gotNetwork, gotAddress)
+	}
+	if _, ok := gateway.Transport.(*transport.ENHTransport); !ok {
+		t.Fatalf("gateway.Transport = %T; want *transport.ENHTransport", gateway.Transport)
+	}
+
+	if err := gateway.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestNewGateway_DialsWithENSEndpointProfile(t *testing.T) {
+	var (
+		dialed      bool
+		gotNetwork  string
+		gotAddress  string
+		serverClose func()
+	)
+
+	dialer := func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+		dialed = true
+		gotNetwork = network
+		gotAddress = address
+		client, server := net.Pipe()
+		serverClose = func() { _ = server.Close() }
+		return client, nil
+	}
+
+	cfg := Config{
+		TransportConfig: TransportConfig{
+			Address:     "ens://127.0.0.1:10000",
+			DialTimeout: time.Second,
+			Dial:        dialer,
+		},
+	}
+
+	gateway, err := New(context.Background(), cfg)
+	if serverClose != nil {
+		defer serverClose()
+	}
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if !dialed {
+		t.Fatalf("dialer was not invoked")
+	}
+	if gotNetwork != "tcp" || gotAddress != "127.0.0.1:10000" {
+		t.Fatalf("dialer args = %s %s; want tcp 127.0.0.1:10000", gotNetwork, gotAddress)
+	}
+	if _, ok := gateway.Transport.(*transport.ENSTransport); !ok {
+		t.Fatalf("gateway.Transport = %T; want *transport.ENSTransport", gateway.Transport)
+	}
+
+	if err := gateway.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestNormalizeTransportConfigRejectsUnsupportedEndpointScheme(t *testing.T) {
+	_, err := normalizeTransportConfig(TransportConfig{
+		Address: "unsupported://127.0.0.1:9999",
+	})
+	if err == nil {
+		t.Fatalf("expected error for unsupported endpoint scheme")
+	}
+}
+
+func TestNormalizeTransportConfigENHUnixEndpoint(t *testing.T) {
+	cfg, err := normalizeTransportConfig(TransportConfig{
+		Address: "enh:///var/run/ebusd/ebusd.socket",
+	})
+	if err != nil {
+		t.Fatalf("normalizeTransportConfig error = %v", err)
+	}
+	if cfg.Protocol != TransportENH {
+		t.Fatalf("protocol = %q; want %q", cfg.Protocol, TransportENH)
+	}
+	if cfg.Network != "unix" {
+		t.Fatalf("network = %q; want unix", cfg.Network)
+	}
+	if cfg.Address != "/var/run/ebusd/ebusd.socket" {
+		t.Fatalf("address = %q; want /var/run/ebusd/ebusd.socket", cfg.Address)
+	}
+}
+
 type mockInitTransport struct {
 	called   bool
 	features []byte

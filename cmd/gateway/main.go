@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/d3vi1/helianthus-ebusgateway/ui"
 	"github.com/d3vi1/helianthus-ebusgo/protocol"
 	"github.com/d3vi1/helianthus-ebusreg/registry"
+	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
 )
 
 func main() {
@@ -36,13 +38,25 @@ func main() {
 }
 
 func run(ctx context.Context, cfg ebusgateway.Config) error {
+	if len(cfg.Providers) == 0 {
+		cfg.Providers = vaillantproviders.Default()
+	}
+
 	gateway, err := ebusgateway.New(ctx, cfg)
 	if err != nil {
 		return err
 	}
+
+	defer func() {
+		if err := gateway.Close(); err != nil {
+			log.Printf("gateway close: %v", err)
+		}
+	}()
+
+	gateway.Start(ctx)
+
 	server, advertiser, err := startHTTPServer(ctx, cfg, gateway)
 	if err != nil {
-		_ = gateway.Close()
 		return err
 	}
 	var listener *ebusgateway.BroadcastListener
@@ -55,7 +69,6 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			if server != nil {
 				_ = server.Close()
 			}
-			_ = gateway.Close()
 			return err
 		}
 	}
@@ -75,12 +88,8 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				log.Printf("http server close: %v", err)
 			}
 		}
-		if err := gateway.Close(); err != nil {
-			log.Printf("gateway close: %v", err)
-		}
 	}()
 
-	gateway.Start(ctx)
 	<-ctx.Done()
 	return nil
 }
@@ -97,6 +106,10 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.DurationVar(&cfg.TransportConfig.WriteTimeout, "write-timeout", cfg.TransportConfig.WriteTimeout, "transport write timeout")
 	fs.DurationVar(&cfg.TransportConfig.DialTimeout, "dial-timeout", cfg.TransportConfig.DialTimeout, "transport dial timeout")
 	fs.IntVar(&cfg.QueueCapacity, "queue-capacity", cfg.QueueCapacity, "bus queue capacity (0 uses protocol default)")
+	fs.BoolVar(&cfg.ScanOnStart, "scan", cfg.ScanOnStart, "scan bus on startup")
+	fs.DurationVar(&cfg.ScanTimeout, "scan-timeout", cfg.ScanTimeout, "startup scan timeout")
+	fs.DurationVar(&cfg.ScanInterval, "scan-interval", cfg.ScanInterval, "startup scan retry interval (when scan finds 0 devices)")
+	fs.DurationVar(&cfg.SemanticInterval, "semantic-interval", cfg.SemanticInterval, "semantic polling interval")
 	fs.BoolVar(&cfg.BroadcastListen, "broadcast", cfg.BroadcastListen, "enable broadcast listener (separate connection)")
 	fs.StringVar(&cfg.HTTPAddr, "http-addr", cfg.HTTPAddr, "http listen address (empty disables)")
 	fs.StringVar(&cfg.GraphQLPath, "graphql-path", cfg.GraphQLPath, "graphql endpoint path")
@@ -110,6 +123,19 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.StringVar(&cfg.DumpOutputDir, "dump-output-dir", cfg.DumpOutputDir, "unknown device dump output dir")
 	fs.StringVar(&cfg.DumpUploadURL, "dump-upload-url", cfg.DumpUploadURL, "unknown device dump upload url (internal)")
 	fs.BoolVar(&cfg.DumpIncludePII, "dump-include-pii", cfg.DumpIncludePII, "include identifiers in unknown device dumps")
+
+	fs.Func("source-addr", "source address for scans/semantic reads (e.g. 0xf0)", func(value string) error {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil
+		}
+		parsed, err := strconv.ParseUint(value, 0, 8)
+		if err != nil {
+			return fmt.Errorf("invalid source-addr %q", value)
+		}
+		cfg.ScanSource = byte(parsed)
+		return nil
+	})
 }
 
 func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway) (*http.Server, mdns.Advertiser, error) {
@@ -130,10 +156,12 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
 	semanticRuntime.Start(ctx)
+	startVaillantSemanticPolling(ctx, cfg, gateway, semanticRuntime.Provider(), hub)
 
 	if err := builder.Start(ctx); err != nil {
 		return nil, nil, err
 	}
+	startDiscoveryScanLoop(ctx, cfg, gateway, builder)
 
 	startStartupScan(ctx, cfg, gateway, builder)
 

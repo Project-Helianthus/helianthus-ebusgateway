@@ -39,6 +39,8 @@ type Config struct {
 	ScanSource         byte
 	ScanTimeout        time.Duration
 	ScanRequestTimeout time.Duration
+	ScanInterval       time.Duration
+	SemanticInterval   time.Duration
 	BroadcastListen    bool
 	HTTPAddr           string
 	GraphQLPath        string
@@ -70,15 +72,17 @@ func DefaultConfig() Config {
 		ScanSource:         0x30,
 		ScanTimeout:        3 * time.Minute,
 		ScanRequestTimeout: 150 * time.Millisecond,
-		HTTPAddr:           ":8080",
-		GraphQLPath:        "/graphql",
-		SnapshotPath:       "/snapshot",
-		SubscriptionPath:   "/graphql/subscriptions",
-		MCPPath:            "/mcp",
-		UIPath:             "/ui",
-		MDNSAdvertise:      true,
-		MDNSInstance:       "helianthus",
-		DumpOutputDir:      "./dumps",
+		ScanInterval:     30 * time.Second,
+		SemanticInterval: 10 * time.Second,
+		HTTPAddr:         ":8080",
+		GraphQLPath:      "/graphql",
+		SnapshotPath:     "/snapshot",
+		SubscriptionPath: "/graphql/subscriptions",
+		MCPPath:          "/mcp",
+		UIPath:           "/ui",
+		MDNSAdvertise:    true,
+		MDNSInstance:     "helianthus",
+		DumpOutputDir:    "./dumps",
 	}
 }
 
@@ -97,6 +101,12 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.ScanRequestTimeout == 0 {
 		cfg.ScanRequestTimeout = 150 * time.Millisecond
+	}
+	if cfg.ScanInterval == 0 {
+		cfg.ScanInterval = 30 * time.Second
+	}
+	if cfg.SemanticInterval == 0 {
+		cfg.SemanticInterval = 10 * time.Second
 	}
 	if cfg.Transport == nil {
 		if cfg.TransportConfig.Protocol == "" {

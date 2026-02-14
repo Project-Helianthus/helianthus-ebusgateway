@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -753,13 +754,18 @@ func normalizeDumpValue(value any) any {
 			out[key] = normalizeDumpValue(nested)
 		}
 		return out
-	case []any:
-		out := make([]any, len(typed))
-		for index, nested := range typed {
-			out[index] = normalizeDumpValue(nested)
-		}
-		return out
 	default:
+		if typed == nil {
+			return nil
+		}
+		rv := reflect.ValueOf(typed)
+		if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+			out := make([]any, rv.Len())
+			for index := 0; index < rv.Len(); index++ {
+				out[index] = normalizeDumpValue(rv.Index(index).Interface())
+			}
+			return out
+		}
 		return value
 	}
 }

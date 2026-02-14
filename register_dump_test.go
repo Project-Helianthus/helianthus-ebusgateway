@@ -102,6 +102,10 @@ func TestNormalizeDumpResult_RecursesSlices(t *testing.T) {
 					[]byte{0xAA, 0xBB},
 					map[string]any{"raw": []byte{0x01, 0x02}},
 				},
+				"typed": [][]byte{
+					{0x0A},
+					{0x0B, 0x0C},
+				},
 			},
 			Valid: true,
 		},
@@ -128,5 +132,12 @@ func TestNormalizeDumpResult_RecursesSlices(t *testing.T) {
 	}
 	if second["raw"] != "0102" {
 		t.Fatalf("nested items[1].raw = %#v; want 0102", second["raw"])
+	}
+	typedSlice, ok := nested["typed"].([]any)
+	if !ok {
+		t.Fatalf("nested typed type = %T; want []any", nested["typed"])
+	}
+	if len(typedSlice) != 2 || typedSlice[0] != "0a" || typedSlice[1] != "0b0c" {
+		t.Fatalf("nested typed value = %#v; want [0a 0b0c]", typedSlice)
 	}
 }

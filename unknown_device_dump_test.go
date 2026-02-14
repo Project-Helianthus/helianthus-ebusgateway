@@ -76,6 +76,21 @@ func (s stubBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Fram
 	}
 }
 
+type countDumpBus struct {
+	sendCount int
+}
+
+func (bus *countDumpBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+	bus.sendCount++
+	return &protocol.Frame{
+		Source:    frame.Target,
+		Target:    frame.Source,
+		Primary:   frame.Primary,
+		Secondary: frame.Secondary,
+		Data:      []byte{frame.Data[0], 0x00, frame.Data[2], frame.Data[3], frame.Data[4], frame.Data[5]},
+	}, nil
+}
+
 func TestUnknownDeviceDump_BundleAndRedaction(t *testing.T) {
 	payload := []byte{0xB5, 'A', 'B', 'C', 'D', ' ', 0x01, 0x02, 0x76, 0x03}
 	bus := stubBus{identifyPayload: payload}
@@ -241,6 +256,48 @@ func TestUnknownDeviceDump_Upload(t *testing.T) {
 		if !gotParts[name] {
 			t.Fatalf("missing multipart part %s", name)
 		}
+	}
+}
+
+func TestDefaultB524Requests_ExcludeConstraintOpcode(t *testing.T) {
+	reqs := defaultB524Requests()
+	if len(reqs) == 0 {
+		t.Fatalf("defaultB524Requests returned no requests")
+	}
+	for _, req := range reqs {
+		if req.Opcode == 0x01 {
+			t.Fatalf("defaultB524Requests contains opcode 0x01: %+v", req)
+		}
+	}
+}
+
+func TestRunB524Dump_SkipsConstraintOpcode(t *testing.T) {
+	bus := &countDumpBus{}
+	now := time.Date(2026, 2, 14, 0, 0, 0, 0, time.UTC)
+	opts := UnknownDeviceDumpOptions{
+		Now: func() time.Time { return now },
+		B524Requests: []ExtRegisterRequest{
+			{Opcode: 0x01, Group: 0x03, Instance: 0x01, Addr: 0x0400},
+			{Opcode: 0x02, Group: 0x03, Instance: 0x01, Addr: 0x0400},
+		},
+	}
+
+	dump := runB524Dump(context.Background(), bus, 0x15, 0x10, opts, func(trafficFrame) {})
+
+	if bus.sendCount != 1 {
+		t.Fatalf("bus send count = %d; want 1", bus.sendCount)
+	}
+	if len(dump.Requests) != 2 {
+		t.Fatalf("dump requests len = %d; want 2", len(dump.Requests))
+	}
+	if dump.Requests[0].Error == "" {
+		t.Fatalf("first request error empty; want static-only opcode 0x01 error")
+	}
+	if dump.Requests[0].Request.Data != "010003010004" {
+		t.Fatalf("first request data = %q; want 010003010004", dump.Requests[0].Request.Data)
+	}
+	if dump.Requests[1].Error != "" {
+		t.Fatalf("second request error = %q; want empty", dump.Requests[1].Error)
 	}
 }
 

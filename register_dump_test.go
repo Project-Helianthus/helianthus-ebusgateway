@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/d3vi1/helianthus-ebusgo/types"
 )
 
 func TestResolveRegisterDumpJSONPath(t *testing.T) {
@@ -34,6 +36,14 @@ func TestWriteRegisterDumpJSON(t *testing.T) {
 			Address:  "0x0100",
 			Raw:      "010203",
 			Decoded:  "value=7",
+			Result: map[string]any{
+				"constraints": map[string]any{
+					"type": "tempv",
+					"min":  float64(35),
+					"max":  float64(70),
+					"step": float64(1),
+				},
+			},
 		},
 	})
 
@@ -74,5 +84,60 @@ func TestWriteRegisterDumpJSON(t *testing.T) {
 	}
 	if entry.Raw != "010203" || entry.Decoded != "value=7" {
 		t.Fatalf("entry payload mismatch: %+v", entry)
+	}
+	constraints, ok := entry.Result["constraints"].(map[string]any)
+	if !ok {
+		t.Fatalf("entry constraints type = %T; want map[string]any", entry.Result["constraints"])
+	}
+	if constraints["type"] != "tempv" || constraints["min"] != float64(35) || constraints["max"] != float64(70) || constraints["step"] != float64(1) {
+		t.Fatalf("entry constraints mismatch: %#v", constraints)
+	}
+}
+
+func TestNormalizeDumpResult_RecursesSlices(t *testing.T) {
+	result := map[string]types.Value{
+		"nested": {
+			Value: map[string]any{
+				"items": []any{
+					[]byte{0xAA, 0xBB},
+					map[string]any{"raw": []byte{0x01, 0x02}},
+				},
+				"typed": [][]byte{
+					{0x0A},
+					{0x0B, 0x0C},
+				},
+			},
+			Valid: true,
+		},
+	}
+
+	normalized := normalizeDumpResult(result)
+	nested, ok := normalized["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested type = %T; want map[string]any", normalized["nested"])
+	}
+	items, ok := nested["items"].([]any)
+	if !ok {
+		t.Fatalf("nested items type = %T; want []any", nested["items"])
+	}
+	if len(items) != 2 {
+		t.Fatalf("nested items len = %d; want 2", len(items))
+	}
+	if items[0] != "aabb" {
+		t.Fatalf("nested items[0] = %#v; want aabb", items[0])
+	}
+	second, ok := items[1].(map[string]any)
+	if !ok {
+		t.Fatalf("nested items[1] type = %T; want map[string]any", items[1])
+	}
+	if second["raw"] != "0102" {
+		t.Fatalf("nested items[1].raw = %#v; want 0102", second["raw"])
+	}
+	typedSlice, ok := nested["typed"].([]any)
+	if !ok {
+		t.Fatalf("nested typed type = %T; want []any", nested["typed"])
+	}
+	if len(typedSlice) != 2 || typedSlice[0] != "0a" || typedSlice[1] != "0b0c" {
+		t.Fatalf("nested typed value = %#v; want [0a 0b0c]", typedSlice)
 	}
 }

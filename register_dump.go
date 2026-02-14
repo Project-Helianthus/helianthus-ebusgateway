@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -45,12 +46,13 @@ type registerDumpJSONMetadata struct {
 }
 
 type registerDumpJSONEntry struct {
-	Method   string `json:"method"`
-	Group    string `json:"group"`
-	Instance string `json:"instance"`
-	Address  string `json:"address"`
-	Raw      string `json:"raw"`
-	Decoded  string `json:"decoded"`
+	Method   string         `json:"method"`
+	Group    string         `json:"group"`
+	Instance string         `json:"instance"`
+	Address  string         `json:"address"`
+	Raw      string         `json:"raw"`
+	Decoded  string         `json:"decoded"`
+	Result   map[string]any `json:"result,omitempty"`
 }
 
 type registerField struct {
@@ -189,7 +191,11 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 			continue
 		}
 
-		payload := extractDumpPayload(result)
+		normalizedResult := normalizeDumpResult(result)
+		if len(normalizedResult) > 0 {
+			jsonEntries[idx].Result = normalizedResult
+		}
+		payload := extractDumpPayload(normalizedResult)
 		fields := decodeRegisterFields(req, payload, models)
 		jsonEntries[idx].Raw = payload
 		jsonEntries[idx].Decoded = fields
@@ -230,7 +236,11 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 				continue
 			}
 
-			payload := extractDumpPayload(result)
+			normalizedResult := normalizeDumpResult(result)
+			if len(normalizedResult) > 0 {
+				jsonEntries[retry.Index].Result = normalizedResult
+			}
+			payload := extractDumpPayload(normalizedResult)
 			fields := decodeRegisterFields(req, payload, models)
 			jsonEntries[retry.Index].Raw = payload
 			jsonEntries[retry.Index].Decoded = fields
@@ -317,7 +327,7 @@ func runRegisterProbe(ctx context.Context, cfg smokeConfig, gateway *Gateway, sy
 		if err != nil {
 			writeDumpLine(outWriter, "probe addr=0x%04x error=%v", addr, err)
 		} else {
-			payload := extractDumpPayload(result)
+			payload := extractDumpPayload(normalizeDumpResult(result))
 			fields := ""
 			if payload != "" {
 				fields = payload
@@ -718,17 +728,61 @@ func parseModelName(line string) string {
 	return strings.TrimSpace(name)
 }
 
-func extractDumpPayload(result any) string {
+func normalizeDumpResult(result any) map[string]any {
 	values, ok := result.(map[string]types.Value)
 	if !ok {
+		return nil
+	}
+	normalized := make(map[string]any, len(values))
+	for key, value := range values {
+		if value.Valid {
+			normalized[key] = normalizeDumpValue(value.Value)
+		} else {
+			normalized[key] = nil
+		}
+	}
+	return normalized
+}
+
+func normalizeDumpValue(value any) any {
+	switch typed := value.(type) {
+	case []byte:
+		return fmt.Sprintf("%x", typed)
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			out[key] = normalizeDumpValue(nested)
+		}
+		return out
+	default:
+		if typed == nil {
+			return nil
+		}
+		rv := reflect.ValueOf(typed)
+		if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+			out := make([]any, rv.Len())
+			for index := 0; index < rv.Len(); index++ {
+				out[index] = normalizeDumpValue(rv.Index(index).Interface())
+			}
+			return out
+		}
+		return value
+	}
+}
+
+func extractDumpPayload(result map[string]any) string {
+	if len(result) == 0 {
 		return ""
 	}
-	value, ok := values["payload"]
-	if !ok || !value.Valid {
+	value, ok := result["payload"]
+	if !ok || value == nil {
 		return ""
 	}
-	if payload, ok := value.Value.([]byte); ok {
+	if payload, ok := value.([]byte); ok {
 		return fmt.Sprintf("%x", payload)
+	}
+	if payload, ok := value.(string); ok {
+		return payload
 	}
 	return ""
 }

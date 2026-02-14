@@ -34,6 +34,14 @@ func TestWriteRegisterDumpJSON(t *testing.T) {
 			Address:  "0x0100",
 			Raw:      "010203",
 			Decoded:  "value=7",
+			Result: map[string]any{
+				"constraints": map[string]any{
+					"type": "tempv",
+					"min":  float64(35),
+					"max":  float64(70),
+					"step": float64(1),
+				},
+			},
 		},
 	})
 
@@ -74,5 +82,12 @@ func TestWriteRegisterDumpJSON(t *testing.T) {
 	}
 	if entry.Raw != "010203" || entry.Decoded != "value=7" {
 		t.Fatalf("entry payload mismatch: %+v", entry)
+	}
+	constraints, ok := entry.Result["constraints"].(map[string]any)
+	if !ok {
+		t.Fatalf("entry constraints type = %T; want map[string]any", entry.Result["constraints"])
+	}
+	if constraints["type"] != "tempv" || constraints["min"] != float64(35) || constraints["max"] != float64(70) || constraints["step"] != float64(1) {
+		t.Fatalf("entry constraints mismatch: %#v", constraints)
 	}
 }

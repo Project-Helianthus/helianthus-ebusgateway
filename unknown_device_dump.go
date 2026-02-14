@@ -425,6 +425,20 @@ func runB524Dump(ctx context.Context, bus DumpBus, target, source byte, opts Unk
 		if opcode == 0x00 {
 			opcode = 0x02
 		}
+		if opcode == 0x01 {
+			dump.Requests = append(dump.Requests, registerRead{
+				Timestamp: opts.Now().UTC().Format(time.RFC3339Nano),
+				Request: frameSnapshot{
+					Source:    source,
+					Target:    target,
+					Primary:   0xB5,
+					Secondary: 0x24,
+					Data:      "",
+				},
+				Error: "opcode 0x01 is static-only and must not be queried on runtime bus",
+			})
+			continue
+		}
 		request := protocol.Frame{
 			Source:    source,
 			Target:    target,

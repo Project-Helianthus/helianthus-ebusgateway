@@ -150,5 +150,43 @@ func TestMapInvokeError_Categories(t *testing.T) {
 	}
 }
 
+func TestNormalizeInvokeResult_ConstraintFields(t *testing.T) {
+	result := map[string]types.Value{
+		"constraints": {
+			Value: map[string]any{
+				"type": "tempv",
+				"min":  float64(35),
+				"max":  float64(70),
+				"step": float64(1),
+			},
+			Valid: true,
+		},
+		"constraint_type": {Value: "tempv", Valid: true},
+		"constraint_min":  {Value: float64(35), Valid: true},
+		"constraint_max":  {Value: float64(70), Valid: true},
+		"constraint_step": {Value: float64(1), Valid: true},
+		"value":           {Valid: false},
+	}
+
+	normalized, ok := normalizeInvokeResult(result).(map[string]any)
+	if !ok {
+		t.Fatalf("normalizeInvokeResult type = %T; want map[string]any", normalizeInvokeResult(result))
+	}
+	constraints, ok := normalized["constraints"].(map[string]any)
+	if !ok {
+		t.Fatalf("constraints type = %T; want map[string]any", normalized["constraints"])
+	}
+	if constraints["type"] != "tempv" || constraints["min"] != float64(35) || constraints["max"] != float64(70) || constraints["step"] != float64(1) {
+		t.Fatalf("constraints mismatch: %#v", constraints)
+	}
+	if normalized["constraint_type"] != "tempv" || normalized["constraint_min"] != float64(35) ||
+		normalized["constraint_max"] != float64(70) || normalized["constraint_step"] != float64(1) {
+		t.Fatalf("flattened constraints mismatch: %#v", normalized)
+	}
+	if normalized["value"] != nil {
+		t.Fatalf("value = %#v; want nil for invalid source value", normalized["value"])
+	}
+}
+
 var _ registry.FrameTemplate = schemaTemplate{}
 var _ registry.FrameTemplate = buildTemplate{}

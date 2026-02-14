@@ -753,6 +753,12 @@ func normalizeDumpValue(value any) any {
 			out[key] = normalizeDumpValue(nested)
 		}
 		return out
+	case []any:
+		out := make([]any, len(typed))
+		for index, nested := range typed {
+			out[index] = normalizeDumpValue(nested)
+		}
+		return out
 	default:
 		return value
 	}

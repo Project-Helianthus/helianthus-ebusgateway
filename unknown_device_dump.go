@@ -425,26 +425,20 @@ func runB524Dump(ctx context.Context, bus DumpBus, target, source byte, opts Unk
 		if opcode == 0x00 {
 			opcode = 0x02
 		}
-		if opcode == 0x01 {
-			dump.Requests = append(dump.Requests, registerRead{
-				Timestamp: opts.Now().UTC().Format(time.RFC3339Nano),
-				Request: frameSnapshot{
-					Source:    source,
-					Target:    target,
-					Primary:   0xB5,
-					Secondary: 0x24,
-					Data:      "",
-				},
-				Error: "opcode 0x01 is static-only and must not be queried on runtime bus",
-			})
-			continue
-		}
 		request := protocol.Frame{
 			Source:    source,
 			Target:    target,
 			Primary:   0xB5,
 			Secondary: 0x24,
 			Data:      []byte{opcode, 0x00, req.Group, req.Instance, byte(req.Addr), byte(req.Addr >> 8)},
+		}
+		if opcode == 0x01 {
+			dump.Requests = append(dump.Requests, registerRead{
+				Timestamp: opts.Now().UTC().Format(time.RFC3339Nano),
+				Request:   snapshotFrame(request, opts.IncludePII),
+				Error:     "opcode 0x01 is static-only and must not be queried on runtime bus",
+			})
+			continue
 		}
 		ts := opts.Now().UTC().Format(time.RFC3339Nano)
 		recordTraffic(trafficFrame{Timestamp: ts, Dir: "tx", Frame: snapshotFrame(request, opts.IncludePII)})

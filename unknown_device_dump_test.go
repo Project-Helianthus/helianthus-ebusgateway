@@ -293,6 +293,9 @@ func TestRunB524Dump_SkipsConstraintOpcode(t *testing.T) {
 	if dump.Requests[0].Error == "" {
 		t.Fatalf("first request error empty; want static-only opcode 0x01 error")
 	}
+	if dump.Requests[0].Request.Data != "010003010004" {
+		t.Fatalf("first request data = %q; want 010003010004", dump.Requests[0].Request.Data)
+	}
 	if dump.Requests[1].Error != "" {
 		t.Fatalf("second request error = %q; want empty", dump.Requests[1].Error)
 	}

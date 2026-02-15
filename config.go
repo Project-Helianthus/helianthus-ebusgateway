@@ -69,7 +69,7 @@ func DefaultConfig() Config {
 		ScanOnStart:        true,
 		ScanSource:         0x30,
 		ScanTimeout:        90 * time.Second,
-		ScanRequestTimeout: 500 * time.Millisecond,
+		ScanRequestTimeout: 150 * time.Millisecond,
 		HTTPAddr:           ":8080",
 		GraphQLPath:        "/graphql",
 		SnapshotPath:       "/snapshot",
@@ -96,7 +96,7 @@ func applyDefaults(cfg Config) Config {
 		cfg.ScanTimeout = 90 * time.Second
 	}
 	if cfg.ScanRequestTimeout == 0 {
-		cfg.ScanRequestTimeout = 500 * time.Millisecond
+		cfg.ScanRequestTimeout = 150 * time.Millisecond
 	}
 	if cfg.Transport == nil {
 		if cfg.TransportConfig.Protocol == "" {

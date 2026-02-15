@@ -24,6 +24,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 	}
 
 	go func() {
+		previousTotal := 0
 		for {
 			scanCtx := ctx
 			cancel := func() {}
@@ -36,15 +37,20 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			if err != nil && ctx.Err() == nil {
 				log.Printf("startup scan error: %v", err)
 			}
-			log.Printf("startup scan: %d device(s) registered", len(devices))
+			total := countRegistryDevices(gateway.Registry)
+			log.Printf("startup scan: pass=%d device(s), total=%d", len(devices), total)
 
-			if len(devices) > 0 {
+			if total > 0 && total != previousTotal {
+				previousTotal = total
 				gateway.RefreshRouterPlanes()
 				if builder != nil {
 					if err := builder.Rebuild(); err != nil {
 						log.Printf("graphql schema rebuild failed after scan: %v", err)
 					}
 				}
+			}
+
+			if err == nil && total > 0 {
 				return
 			}
 
@@ -57,4 +63,16 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			}
 		}
 	}()
+}
+
+func countRegistryDevices(reg *registry.DeviceRegistry) int {
+	if reg == nil {
+		return 0
+	}
+	count := 0
+	reg.Iterate(func(entry registry.DeviceEntry) bool {
+		count++
+		return true
+	})
+	return count
 }

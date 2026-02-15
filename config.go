@@ -68,7 +68,7 @@ func DefaultConfig() Config {
 		Providers:          vaillantproviders.Default(),
 		ScanOnStart:        true,
 		ScanSource:         0x30,
-		ScanTimeout:        90 * time.Second,
+		ScanTimeout:        3 * time.Minute,
 		ScanRequestTimeout: 150 * time.Millisecond,
 		HTTPAddr:           ":8080",
 		GraphQLPath:        "/graphql",
@@ -93,7 +93,7 @@ func applyDefaults(cfg Config) Config {
 		cfg.ScanSource = 0x30
 	}
 	if cfg.ScanTimeout == 0 {
-		cfg.ScanTimeout = 90 * time.Second
+		cfg.ScanTimeout = 3 * time.Minute
 	}
 	if cfg.ScanRequestTimeout == 0 {
 		cfg.ScanRequestTimeout = 150 * time.Millisecond

@@ -197,15 +197,20 @@ func TestInvokeMutation_Integration(t *testing.T) {
 		t.Fatalf("responseSchema.Encode error = %v", err)
 	}
 
-	length := byte(len(responsePayload))
-	crc := protocol.CRC(append([]byte{length}, responsePayload...))
+	responseSegment := append([]byte{
+		plane.target,
+		plane.source,
+		method.Template().Primary(),
+		method.Template().Secondary(),
+		byte(len(responsePayload)),
+	}, responsePayload...)
+	crc := protocol.CRC(responseSegment)
 	transport := &scriptedTransport{
 		reads: []readEvent{
 			{value: protocol.SymbolAck},
-			{value: length},
 		},
 	}
-	for _, b := range responsePayload {
+	for _, b := range responseSegment {
 		transport.reads = append(transport.reads, readEvent{value: b})
 	}
 	transport.reads = append(transport.reads, readEvent{value: crc})
@@ -296,12 +301,12 @@ func TestInvokeMutation_Integration(t *testing.T) {
 	}, payload...)
 	expectedWrite = append(expectedWrite, protocol.CRC(expectedWrite))
 
-		if got := transport.allWrites(); len(got) < len(expectedWrite) {
-			t.Fatalf("transport write missing")
-		} else if !equalBytes(got[:len(expectedWrite)], expectedWrite) {
-			t.Fatalf("transport write prefix = %v; want %v", got[:len(expectedWrite)], expectedWrite)
-		}
+	if got := transport.allWrites(); len(got) < len(expectedWrite) {
+		t.Fatalf("transport write missing")
+	} else if !equalBytes(got[:len(expectedWrite)], expectedWrite) {
+		t.Fatalf("transport write prefix = %v; want %v", got[:len(expectedWrite)], expectedWrite)
 	}
+}
 
 func equalBytes(a, b []byte) bool {
 	if len(a) != len(b) {

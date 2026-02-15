@@ -11,12 +11,15 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/d3vi1/helianthus-ebusgateway"
 	"github.com/d3vi1/helianthus-ebusgateway/graphql"
 	"github.com/d3vi1/helianthus-ebusgateway/mcp"
 	"github.com/d3vi1/helianthus-ebusgateway/mdns"
 	"github.com/d3vi1/helianthus-ebusgateway/ui"
+	"github.com/d3vi1/helianthus-ebusgo/protocol"
+	"github.com/d3vi1/helianthus-ebusreg/registry"
 )
 
 func main() {
@@ -132,6 +135,8 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 		return nil, nil, err
 	}
 
+	startStartupScan(ctx, cfg, gateway, builder)
+
 	queryHandler, err := graphql.NewInvokeHandler(builder, gateway.Registry, gateway.Router)
 	if err != nil {
 		return nil, nil, err
@@ -213,4 +218,69 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 	}()
 
 	return server, advertiser, nil
+}
+
+type timeoutBus struct {
+	bus     registry.ScanBus
+	timeout time.Duration
+}
+
+func (b *timeoutBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+	if b == nil || b.bus == nil {
+		return nil, fmt.Errorf("scan timeout bus missing")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if b.timeout <= 0 {
+		return b.bus.Send(ctx, frame)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if time.Until(deadline) <= b.timeout {
+			return b.bus.Send(ctx, frame)
+		}
+	}
+	ctxTimeout, cancel := context.WithTimeout(ctx, b.timeout)
+	defer cancel()
+	return b.bus.Send(ctxTimeout, frame)
+}
+
+func startStartupScan(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder) {
+	if !cfg.ScanOnStart {
+		return
+	}
+	if gateway == nil || gateway.Bus == nil || gateway.Registry == nil {
+		return
+	}
+	if builder == nil {
+		return
+	}
+
+	go func() {
+		scanCtx := ctx
+		var cancel context.CancelFunc = func() {}
+		if cfg.ScanTimeout > 0 {
+			scanCtx, cancel = context.WithTimeout(ctx, cfg.ScanTimeout)
+		}
+		defer cancel()
+
+		gateway.Start(ctx)
+
+		scanBus := &timeoutBus{bus: gateway.Bus, timeout: cfg.ScanRequestTimeout}
+		entries, err := registry.Scan(scanCtx, scanBus, gateway.Registry, cfg.ScanSource, nil)
+		if err != nil {
+			log.Printf("startup scan failed: %v", err)
+			return
+		}
+		if len(entries) == 0 {
+			log.Printf("startup scan: no devices found")
+			return
+		}
+
+		_ = gateway.RefreshRouterPlanes()
+		if err := builder.Rebuild(); err != nil {
+			log.Printf("startup scan: graphql rebuild failed: %v", err)
+		}
+		log.Printf("startup scan completed: devices=%d", len(entries))
+	}()
 }

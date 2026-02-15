@@ -2,11 +2,13 @@ package graphql
 
 import (
 	"fmt"
+	"strings"
 
 	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
 	"github.com/d3vi1/helianthus-ebusgo/types"
 	"github.com/d3vi1/helianthus-ebusreg/registry"
 	"github.com/d3vi1/helianthus-ebusreg/schema"
+	"github.com/d3vi1/helianthus-ebusreg/vaillant/productids"
 )
 
 type Schema struct {
@@ -21,6 +23,11 @@ type Device struct {
 	MacAddress      string
 	SoftwareVersion string
 	HardwareVersion string
+	DisplayName     string
+	ProductFamily   string
+	ProductModel    string
+	PartNumber      string
+	Role            string
 	Planes          []Plane
 	Projections     []Projection
 }
@@ -79,8 +86,19 @@ func BuildSchema(reg Registry) (Schema, error) {
 		Devices: make([]Device, 0),
 	}
 	var buildErr error
+	catalog, catalogErr := productids.LoadCatalog()
 
 	reg.Iterate(func(entry registry.DeviceEntry) bool {
+		partNumber := ""
+		displayName := ""
+		family := ""
+		model := ""
+		role := ""
+		if entry.Manufacturer() == "Vaillant" {
+			partNumber = extractVaillantPartNumber(entry.SerialNumber())
+			displayName, family, model, role = resolveVaillantProduct(partNumber, catalog, catalogErr)
+		}
+
 		device := Device{
 			Address:         entry.Address(),
 			Manufacturer:    entry.Manufacturer(),
@@ -89,6 +107,11 @@ func BuildSchema(reg Registry) (Schema, error) {
 			MacAddress:      entry.MacAddress(),
 			SoftwareVersion: entry.SoftwareVersion(),
 			HardwareVersion: entry.HardwareVersion(),
+			DisplayName:     displayName,
+			ProductFamily:   family,
+			ProductModel:    model,
+			PartNumber:      partNumber,
+			Role:            role,
 			Planes:          make([]Plane, 0),
 			Projections:     make([]Projection, 0),
 		}
@@ -178,6 +201,89 @@ func BuildSchema(reg Registry) (Schema, error) {
 	}
 
 	return out, nil
+}
+
+func extractVaillantPartNumber(serial string) string {
+	serial = strings.TrimSpace(serial)
+	if serial == "" {
+		return ""
+	}
+
+	parts := strings.Split(serial, "-")
+	if len(parts) >= 4 {
+		partNumber := strings.TrimSpace(parts[3])
+		if len(partNumber) == 10 && isDigits(partNumber) {
+			return partNumber
+		}
+	}
+
+	compact := make([]byte, 0, len(serial))
+	for i := 0; i < len(serial); i++ {
+		ch := serial[i]
+		if (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
+			compact = append(compact, ch)
+		}
+	}
+	if len(compact) >= 16 {
+		candidate := string(compact[6:16])
+		if len(candidate) == 10 && isDigits(candidate) {
+			return candidate
+		}
+	}
+
+	return ""
+}
+
+func resolveVaillantProduct(partNumber string, catalog productids.Catalog, catalogErr error) (displayName string, family string, model string, role string) {
+	if partNumber == "" || catalogErr != nil {
+		return "", "", "", ""
+	}
+	record, ok := catalog.ByPartNumber[partNumber]
+	if !ok {
+		return "", "", "", ""
+	}
+
+	family = strings.TrimSpace(record.Family)
+	model = strings.TrimSpace(record.ProductModel)
+	role = strings.TrimSpace(record.Role)
+	displayName = formatVaillantDisplayName(family, role)
+	return displayName, family, model, role
+}
+
+func formatVaillantDisplayName(family string, role string) string {
+	if family == "" {
+		return role
+	}
+	parts := strings.Fields(family)
+	if len(parts) > 0 && looksLikeVaillantFunctionalModule(parts[0]) && role != "" {
+		return parts[0] + " " + role
+	}
+	return family
+}
+
+func looksLikeVaillantFunctionalModule(prefix string) bool {
+	if len(prefix) < 3 || !strings.HasPrefix(prefix, "FM") {
+		return false
+	}
+	for i := 2; i < len(prefix); i++ {
+		if prefix[i] < '0' || prefix[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func selectResponseSchema(entry registry.DeviceEntry, selector schema.SchemaSelector) (ResponseSchema, error) {

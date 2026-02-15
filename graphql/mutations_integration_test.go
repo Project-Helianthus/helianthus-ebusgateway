@@ -286,7 +286,7 @@ func TestInvokeMutation_Integration(t *testing.T) {
 		t.Fatalf("invoke mutation error = %v", err)
 	}
 	if !response.Invoke.Ok || response.Invoke.Error != nil {
-		t.Fatalf("invoke result = %+v; want ok", response.Invoke)
+		t.Fatalf("invoke result = ok=%v error=%+v result=%v; want ok", response.Invoke.Ok, response.Invoke.Error, response.Invoke.Result)
 	}
 	if got := response.Invoke.Result["status"]; got != float64(42) {
 		t.Fatalf("invoke result status = %#v; want 42", got)

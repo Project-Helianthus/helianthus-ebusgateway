@@ -375,6 +375,11 @@ func cloneSchema(schema Schema) Schema {
 			MacAddress:      device.MacAddress,
 			SoftwareVersion: device.SoftwareVersion,
 			HardwareVersion: device.HardwareVersion,
+			DisplayName:     device.DisplayName,
+			ProductFamily:   device.ProductFamily,
+			ProductModel:    device.ProductModel,
+			PartNumber:      device.PartNumber,
+			Role:            device.Role,
 			Planes:          planes,
 			Projections:     projections,
 		}

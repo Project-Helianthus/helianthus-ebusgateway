@@ -2,13 +2,40 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
 	"github.com/d3vi1/helianthus-ebusgateway"
 	"github.com/d3vi1/helianthus-ebusgateway/graphql"
+	"github.com/d3vi1/helianthus-ebusgo/protocol"
 	"github.com/d3vi1/helianthus-ebusreg/registry"
 )
+
+type timeoutBus struct {
+	bus     registry.ScanBus
+	timeout time.Duration
+}
+
+func (b *timeoutBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+	if b == nil || b.bus == nil {
+		return nil, fmt.Errorf("scan timeout bus missing")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if b.timeout <= 0 {
+		return b.bus.Send(ctx, frame)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if time.Until(deadline) <= b.timeout {
+			return b.bus.Send(ctx, frame)
+		}
+	}
+	ctxTimeout, cancel := context.WithTimeout(ctx, b.timeout)
+	defer cancel()
+	return b.bus.Send(ctxTimeout, frame)
+}
 
 func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder) {
 	if !cfg.ScanOnStart || gateway == nil || gateway.Bus == nil || gateway.Registry == nil {
@@ -31,7 +58,8 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			if cfg.ScanTimeout > 0 {
 				scanCtx, cancel = context.WithTimeout(ctx, cfg.ScanTimeout)
 			}
-			devices, err := registry.Scan(scanCtx, gateway.Bus, gateway.Registry, cfg.ScanSource, nil)
+			scanBus := &timeoutBus{bus: gateway.Bus, timeout: cfg.ScanRequestTimeout}
+			devices, err := registry.Scan(scanCtx, scanBus, gateway.Registry, cfg.ScanSource, nil)
 			cancel()
 
 			if err != nil && ctx.Err() == nil {

@@ -170,7 +170,15 @@ func readB524Value(ctx context.Context, bus *protocol.Bus, source, target, opcod
 		return nil, false
 	}
 	payload := response.Data
-	if len(payload) == 1 && payload[0] == 0x00 {
+	if len(payload) == 1 {
+		return nil, false
+	}
+	if len(payload) < 4 {
+		return nil, false
+	}
+
+	tt := payload[0]
+	if tt == 0x00 {
 		return nil, false
 	}
 	if len(payload) <= 4 {
@@ -178,9 +186,9 @@ func readB524Value(ctx context.Context, bus *protocol.Bus, source, target, opcod
 	}
 
 	replyGroup := payload[1]
-	replyAddr := uint16(payload[3])<<8 | uint16(payload[2])
+	replyAddr := uint16(payload[2]) | uint16(payload[3])<<8
 	if replyGroup != group || replyAddr != addr {
-		log.Printf("b524 read mismatch: want group=0x%02x addr=0x%04x; got group=0x%02x addr=0x%04x", group, addr, replyGroup, replyAddr)
+		log.Printf("b524 read mismatch: want group=0x%02x addr=0x%04x; got tt=0x%02x group=0x%02x addr=0x%04x", group, addr, tt, replyGroup, replyAddr)
 	}
 	return payload[4:], true
 }

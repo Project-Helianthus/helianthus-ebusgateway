@@ -83,9 +83,9 @@ func loadConfig() (scanConfig, error) {
 
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
-		fmt.Fprintln(out, "Usage: ebusdscan [options]")
-		fmt.Fprintln(out, "Scans TSP register entries via ebusd command port (hex or read-h mode).")
-		fmt.Fprintln(out, "")
+		_, _ = fmt.Fprintln(out, "Usage: ebusdscan [options]")
+		_, _ = fmt.Fprintln(out, "Scans TSP register entries via ebusd command port (hex or read-h mode).")
+		_, _ = fmt.Fprintln(out, "")
 		flag.PrintDefaults()
 	}
 
@@ -239,12 +239,12 @@ func run(cfg scanConfig) error {
 		return fmt.Errorf("target address missing (use --target or @zz in TSP)")
 	}
 
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	addr := net.JoinHostPort(normalizeDialHost(cfg.Host), strconv.Itoa(cfg.Port))
 	conn, err := net.DialTimeout("tcp", addr, cfg.Timeout)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", addr, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	client := &ebusdClient{
 		conn:    conn,
@@ -403,6 +403,14 @@ func isErrorResponse(lines []string) bool {
 	}
 	line := strings.TrimSpace(lines[0])
 	return strings.HasPrefix(line, "ERR:")
+}
+
+func normalizeDialHost(host string) string {
+	host = strings.TrimSpace(host)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") && len(host) >= 2 {
+		return host[1 : len(host)-1]
+	}
+	return host
 }
 
 func isEmptyResponse(lines []string) bool {

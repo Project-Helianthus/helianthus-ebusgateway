@@ -627,6 +627,71 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return device.HardwareVersion, nil
 				},
 			},
+			"displayName": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					if device.DisplayName == "" {
+						return nil, nil
+					}
+					return device.DisplayName, nil
+				},
+			},
+			"productFamily": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					if device.ProductFamily == "" {
+						return nil, nil
+					}
+					return device.ProductFamily, nil
+				},
+			},
+			"productModel": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					if device.ProductModel == "" {
+						return nil, nil
+					}
+					return device.ProductModel, nil
+				},
+			},
+			"partNumber": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					if device.PartNumber == "" {
+						return nil, nil
+					}
+					return device.PartNumber, nil
+				},
+			},
+			"role": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					if device.Role == "" {
+						return nil, nil
+					}
+					return device.Role, nil
+				},
+			},
 			"planes": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(planeType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

@@ -52,6 +52,15 @@ func TestParseB524ReadPayload(t *testing.T) {
 			addr:     0x0022,
 			ok:       false,
 		},
+		{
+			name:     "rejects mismatched header",
+			payload:  []byte{0x02, 0x00, 0x03, 0x02, 0x22, 0x00, 0x01},
+			opcode:   0x02,
+			group:    0x03,
+			instance: 0x01,
+			addr:     0x0022,
+			ok:       false,
+		},
 	}
 
 	for _, test := range tests {

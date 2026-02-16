@@ -199,6 +199,7 @@ func parseB524ReadPayload(payload []byte, opcode, group, instance byte, addr uin
 			replyInstance,
 			replyAddr,
 		)
+		return nil, false
 	}
 	if len(payload) == 6 {
 		return nil, false

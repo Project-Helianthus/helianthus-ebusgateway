@@ -132,7 +132,7 @@ func runRegisterDump(ctx context.Context, cfg smokeConfig, gateway *Gateway, ent
 		if err != nil {
 			return err
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		writer = file
 	}
 
@@ -298,7 +298,7 @@ func runRegisterProbe(ctx context.Context, cfg smokeConfig, gateway *Gateway, sy
 		if err != nil {
 			return err
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		outWriter = file
 	}
 
@@ -391,7 +391,7 @@ func loadRegisterDumpSource(source string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, fmt.Errorf("register dump http status %s", resp.Status)
 		}
@@ -1317,7 +1317,7 @@ func writeDumpLine(writer io.Writer, format string, args ...any) {
 		return
 	}
 	ts := time.Now().Format(time.RFC3339Nano)
-	fmt.Fprintf(writer, "%s %s\n", ts, fmt.Sprintf(format, args...))
+	_, _ = fmt.Fprintf(writer, "%s %s\n", ts, fmt.Sprintf(format, args...))
 }
 
 func resolveRegisterDumpLogPath(cfg smokeConfig) string {

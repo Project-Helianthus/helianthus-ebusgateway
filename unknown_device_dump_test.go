@@ -172,7 +172,7 @@ func TestUnknownDeviceDump_BundleAndRedaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open zip: %v", err)
 	}
-	defer zipReader.Close()
+	defer func() { _ = zipReader.Close() }()
 	wantFiles := map[string]bool{
 		"manifest.json":       false,
 		"identify.json":       false,
@@ -205,7 +205,7 @@ func TestUnknownDeviceDump_Upload(t *testing.T) {
 
 	var gotParts = make(map[string]bool)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return

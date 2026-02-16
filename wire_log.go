@@ -53,7 +53,7 @@ func (logger *wireLogger) logf(format string, args ...any) {
 	}
 	logger.mu.Lock()
 	defer logger.mu.Unlock()
-	fmt.Fprintf(logger.writer, format, args...)
+	_, _ = fmt.Fprintf(logger.writer, format, args...)
 }
 
 func (logger *wireLogger) logByte(connLabel, dir string, value byte) {

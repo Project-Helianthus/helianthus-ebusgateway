@@ -29,7 +29,7 @@ func NewRegisterDumpUploadHandler(outputDir string) http.Handler {
 			return
 		}
 		body := http.MaxBytesReader(w, r.Body, registerDumpUploadMaxBytes)
-		defer body.Close()
+		defer func() { _ = body.Close() }()
 
 		var payload registerDumpJSON
 		if err := json.NewDecoder(body).Decode(&payload); err != nil {
@@ -90,7 +90,7 @@ func uploadRegisterDumpJSON(ctx context.Context, uploadURL string, jsonPath stri
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("register dump upload status %s", resp.Status)

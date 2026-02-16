@@ -78,7 +78,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				}
 			}
 
-			if err == nil && total > 0 {
+			if shouldStopDiscoveryScan(total) {
 				return
 			}
 
@@ -91,6 +91,10 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			}
 		}
 	}()
+}
+
+func shouldStopDiscoveryScan(total int) bool {
+	return total > 0
 }
 
 func countRegistryDevices(reg *registry.DeviceRegistry) int {

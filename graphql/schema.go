@@ -94,7 +94,7 @@ func BuildSchema(reg Registry) (Schema, error) {
 		family := ""
 		model := ""
 		role := ""
-		if entry.Manufacturer() == "Vaillant" {
+		if strings.EqualFold(entry.Manufacturer(), "Vaillant") {
 			partNumber = extractVaillantPartNumber(entry.SerialNumber())
 			displayName, family, model, role = resolveVaillantProduct(partNumber, catalog, catalogErr)
 		}

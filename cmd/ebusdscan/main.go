@@ -239,7 +239,7 @@ func run(cfg scanConfig) error {
 		return fmt.Errorf("target address missing (use --target or @zz in TSP)")
 	}
 
-	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	addr := net.JoinHostPort(normalizeDialHost(cfg.Host), strconv.Itoa(cfg.Port))
 	conn, err := net.DialTimeout("tcp", addr, cfg.Timeout)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", addr, err)
@@ -403,6 +403,14 @@ func isErrorResponse(lines []string) bool {
 	}
 	line := strings.TrimSpace(lines[0])
 	return strings.HasPrefix(line, "ERR:")
+}
+
+func normalizeDialHost(host string) string {
+	host = strings.TrimSpace(host)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") && len(host) >= 2 {
+		return host[1 : len(host)-1]
+	}
+	return host
 }
 
 func isEmptyResponse(lines []string) bool {

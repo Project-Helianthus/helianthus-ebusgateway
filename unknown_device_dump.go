@@ -148,7 +148,7 @@ func dumpUnknownDevice(ctx context.Context, bus DumpBus, entry registry.DeviceEn
 		result.Error = err.Error()
 		return result
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	var traffic []trafficFrame
 	recordTraffic := func(record trafficFrame) {
@@ -663,7 +663,7 @@ func hashFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, file); err != nil {
 		return "", err
@@ -681,7 +681,7 @@ func writeBundleZip(bundlePath, manifestPath string, files []dumpFileInfo) error
 	if err != nil {
 		return err
 	}
-	defer zipFile.Close()
+	defer func() { _ = zipFile.Close() }()
 
 	archive := zip.NewWriter(zipFile)
 	if err := addFileToZip(archive, manifestPath); err != nil {
@@ -706,7 +706,7 @@ func addFileToZip(archive *zip.Writer, path string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return err
@@ -729,12 +729,12 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 	if _, err := io.Copy(out, in); err != nil {
 		return err
 	}
@@ -765,7 +765,7 @@ func uploadDumpBundle(ctx context.Context, uploadURL string, bundlePath string, 
 	if err != nil {
 		return "network_error", 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return resp.Status, resp.StatusCode, fmt.Errorf("upload status %s", resp.Status)
@@ -778,8 +778,8 @@ func buildMultipart(bundlePath string, manifest dumpManifest, metadata map[strin
 	multipartWriter := newMultipartWriter(writer)
 
 	go func() {
-		defer writer.Close()
-		defer multipartWriter.Close()
+		defer func() { _ = writer.Close() }()
+		defer func() { _ = multipartWriter.Close() }()
 
 		if err := multipartWriter.WriteJSONPart("manifest", manifest); err != nil {
 			_ = writer.CloseWithError(err)
@@ -832,7 +832,7 @@ func (m *multipartWriter) WriteFilePart(name, path, contentType string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	part, err := m.writer.CreateFormFile(name, filepath.Base(path))
 	if err != nil {
 		return err

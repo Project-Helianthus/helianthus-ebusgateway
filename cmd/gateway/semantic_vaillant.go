@@ -169,28 +169,41 @@ func readB524Value(ctx context.Context, bus *protocol.Bus, source, target, opcod
 	if err != nil || response == nil {
 		return nil, false
 	}
-	payload := response.Data
-	if len(payload) == 1 {
-		return nil, false
-	}
-	if len(payload) < 4 {
+	return parseB524ReadPayload(response.Data, opcode, group, instance, addr)
+}
+
+func parseB524ReadPayload(payload []byte, opcode, group, instance byte, addr uint16) ([]byte, bool) {
+	if len(payload) < 6 {
 		return nil, false
 	}
 
-	tt := payload[0]
-	if tt == 0x00 {
+	replyOpcode := payload[0]
+	replyMode := payload[1]
+	replyGroup := payload[2]
+	replyInstance := payload[3]
+	replyAddr := uint16(payload[4]) | uint16(payload[5])<<8
+	if replyMode != vaillantB524OpRead {
 		return nil, false
 	}
-	if len(payload) <= 4 {
+	if replyOpcode != opcode || replyGroup != group || replyInstance != instance || replyAddr != addr {
+		log.Printf(
+			"b524 read mismatch: want opcode=0x%02x mode=0x%02x group=0x%02x instance=0x%02x addr=0x%04x; got opcode=0x%02x mode=0x%02x group=0x%02x instance=0x%02x addr=0x%04x",
+			opcode,
+			vaillantB524OpRead,
+			group,
+			instance,
+			addr,
+			replyOpcode,
+			replyMode,
+			replyGroup,
+			replyInstance,
+			replyAddr,
+		)
+	}
+	if len(payload) == 6 {
 		return nil, false
 	}
-
-	replyGroup := payload[1]
-	replyAddr := uint16(payload[2]) | uint16(payload[3])<<8
-	if replyGroup != group || replyAddr != addr {
-		log.Printf("b524 read mismatch: want group=0x%02x addr=0x%04x; got tt=0x%02x group=0x%02x addr=0x%04x", group, addr, tt, replyGroup, replyAddr)
-	}
-	return payload[4:], true
+	return payload[6:], true
 }
 
 func readB524Float32LE(ctx context.Context, bus *protocol.Bus, source, target, opcode, group, instance byte, addr uint16) (float64, bool) {

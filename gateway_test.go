@@ -315,8 +315,8 @@ func TestInitTransportIfSupported(t *testing.T) {
 		if !tr.called {
 			t.Fatalf("Init was not called")
 		}
-		if len(tr.features) != 1 || tr.features[0] != 0x00 {
-			t.Fatalf("Init features = %v; want [0]", tr.features)
+		if len(tr.features) != 1 || tr.features[0] != 0x01 {
+			t.Fatalf("Init features = %v; want [1]", tr.features)
 		}
 	})
 

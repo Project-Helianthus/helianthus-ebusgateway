@@ -236,7 +236,9 @@ func initTransportIfSupported(tr transport.RawTransport) error {
 	if !ok {
 		return nil
 	}
-	const defaultInitFeatures = byte(0x00)
+	// Match ebusd behavior: request additional infos (bit0) during INIT.
+	// Some adapters gate optional capabilities behind this feature flag.
+	const defaultInitFeatures = byte(0x01)
 	if err := initializer.Init(defaultInitFeatures); err != nil {
 		return fmt.Errorf("gateway transport init failed: %w", err)
 	}

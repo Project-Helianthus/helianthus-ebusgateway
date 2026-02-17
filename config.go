@@ -71,7 +71,9 @@ func DefaultConfig() Config {
 		ScanOnStart:        true,
 		ScanSource:         0x30,
 		ScanTimeout:        3 * time.Minute,
-		ScanRequestTimeout: 150 * time.Millisecond,
+		// Per-request scan timeout must accommodate bus/transport latency.
+		// 150ms is too aggressive for real-world ENH over TCP setups.
+		ScanRequestTimeout: 400 * time.Millisecond,
 		ScanInterval:       30 * time.Second,
 		SemanticInterval:   10 * time.Second,
 		HTTPAddr:           ":8080",

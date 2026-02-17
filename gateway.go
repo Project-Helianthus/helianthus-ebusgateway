@@ -111,6 +111,22 @@ func resolveTransport(ctx context.Context, cfg Config) (transport.RawTransport, 
 	if err != nil {
 		return nil, nil, err
 	}
+	// ebusd command port responses include the bus roundtrip, so short socket
+	// deadlines can desync the stream (late "ERR:" lines from a previous command
+	// appear as the next command's response). Clamp to at least the per-request
+	// scan timeout to keep scans stable under the default add-on config.
+	if config.Protocol == TransportEbusdTCP {
+		minTimeout := cfg.ScanRequestTimeout
+		if minTimeout <= 0 {
+			minTimeout = 400 * time.Millisecond
+		}
+		if config.ReadTimeout > 0 && config.ReadTimeout < minTimeout {
+			config.ReadTimeout = minTimeout
+		}
+		if config.WriteTimeout > 0 && config.WriteTimeout < minTimeout {
+			config.WriteTimeout = minTimeout
+		}
+	}
 	if config.Network == "" {
 		return nil, nil, fmt.Errorf("gateway transport missing network: %w", ebuserrors.ErrInvalidPayload)
 	}

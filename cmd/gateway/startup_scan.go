@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/d3vi1/helianthus-ebusgateway"
@@ -102,7 +106,14 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			scanBus := &statsBus{
 				bus: &timeoutBus{bus: gateway.Bus, timeout: cfg.ScanRequestTimeout},
 			}
-			devices, err := registry.Scan(scanCtx, scanBus, gateway.Registry, cfg.ScanSource, nil)
+			targets := ([]byte)(nil)
+			if cfg.TransportConfig.Protocol == ebusgateway.TransportEbusdTCP && cfg.TransportConfig.Network == "tcp" {
+				if scanTargets, err := ebusdScanResultTargets(scanCtx, cfg.TransportConfig); err == nil && len(scanTargets) > 0 {
+					targets = scanTargets
+				}
+			}
+
+			devices, err := registry.Scan(scanCtx, scanBus, gateway.Registry, cfg.ScanSource, targets)
 			cancel()
 
 			if err != nil && ctx.Err() == nil {
@@ -159,4 +170,74 @@ func countRegistryDevices(reg *registry.DeviceRegistry) int {
 		return true
 	})
 	return count
+}
+
+func ebusdScanResultTargets(ctx context.Context, cfg ebusgateway.TransportConfig) ([]byte, error) {
+	if cfg.Address == "" || cfg.Network != "tcp" {
+		return nil, nil
+	}
+
+	dial := cfg.Dial
+	if dial == nil {
+		dial = dialContext
+	}
+
+	dialCtx := ctx
+	cancel := func() {}
+	if dialCtx == nil {
+		dialCtx = context.Background()
+	}
+	if cfg.DialTimeout > 0 {
+		dialCtx, cancel = context.WithTimeout(dialCtx, cfg.DialTimeout)
+	}
+	defer cancel()
+
+	conn, err := dial(dialCtx, cfg.Network, cfg.Address, cfg.DialTimeout)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+
+	reader := bufio.NewReader(conn)
+	if _, err := conn.Write([]byte("scan result\n")); err != nil {
+		return nil, err
+	}
+
+	var targets []byte
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, net.ErrClosed) {
+				return targets, err
+			}
+			return targets, err
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			break
+		}
+		if strings.HasPrefix(strings.ToLower(line), "err") {
+			continue
+		}
+		fields := strings.Split(line, ";")
+		if len(fields) == 0 {
+			continue
+		}
+		raw := strings.TrimSpace(fields[0])
+		if raw == "" {
+			continue
+		}
+		value, parseErr := strconv.ParseUint(raw, 16, 8)
+		if parseErr != nil {
+			continue
+		}
+		targets = append(targets, byte(value))
+	}
+
+	return targets, nil
+}
+
+func dialContext(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: timeout}
+	return dialer.DialContext(ctx, network, address)
 }

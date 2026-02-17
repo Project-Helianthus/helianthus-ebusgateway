@@ -40,7 +40,13 @@ type Config struct {
 	ScanTimeout        time.Duration
 	ScanRequestTimeout time.Duration
 	ScanInterval       time.Duration
-	SemanticInterval   time.Duration
+	// SemanticInterval is a legacy single-interval semantic polling configuration.
+	// Prefer SemanticDiscoveryInterval / SemanticConfigInterval / SemanticStateInterval.
+	SemanticInterval          time.Duration
+	SemanticDiscoveryInterval time.Duration
+	SemanticConfigInterval    time.Duration
+	SemanticStateInterval     time.Duration
+	SemanticRequestTimeout    time.Duration
 	BroadcastListen    bool
 	HTTPAddr           string
 	GraphQLPath        string
@@ -73,13 +79,17 @@ func DefaultConfig() Config {
 		ScanTimeout:        3 * time.Minute,
 		// Per-request scan timeout must accommodate bus/transport latency.
 		// 150ms is too aggressive for real-world ENH over TCP setups.
-		ScanRequestTimeout: 400 * time.Millisecond,
-		ScanInterval:       30 * time.Second,
-		SemanticInterval:   10 * time.Second,
-		HTTPAddr:           ":8080",
-		GraphQLPath:        "/graphql",
-		SnapshotPath:       "/snapshot",
-		SubscriptionPath:   "/graphql/subscriptions",
+			ScanRequestTimeout: 400 * time.Millisecond,
+			ScanInterval:       30 * time.Second,
+			SemanticInterval:          1 * time.Minute,
+			SemanticDiscoveryInterval: 10 * time.Minute,
+			SemanticConfigInterval:    5 * time.Minute,
+			SemanticStateInterval:     1 * time.Minute,
+			SemanticRequestTimeout:    2 * time.Second,
+			HTTPAddr:           ":8080",
+			GraphQLPath:        "/graphql",
+			SnapshotPath:       "/snapshot",
+			SubscriptionPath:   "/graphql/subscriptions",
 		MCPPath:            "/mcp",
 		UIPath:             "/ui",
 		MDNSAdvertise:      true,
@@ -108,7 +118,19 @@ func applyDefaults(cfg Config) Config {
 		cfg.ScanInterval = 30 * time.Second
 	}
 	if cfg.SemanticInterval == 0 {
-		cfg.SemanticInterval = 10 * time.Second
+		cfg.SemanticInterval = 1 * time.Minute
+	}
+	if cfg.SemanticStateInterval == 0 {
+		cfg.SemanticStateInterval = cfg.SemanticInterval
+	}
+	if cfg.SemanticConfigInterval == 0 {
+		cfg.SemanticConfigInterval = 5 * time.Minute
+	}
+	if cfg.SemanticDiscoveryInterval == 0 {
+		cfg.SemanticDiscoveryInterval = 10 * time.Minute
+	}
+	if cfg.SemanticRequestTimeout == 0 {
+		cfg.SemanticRequestTimeout = 2 * time.Second
 	}
 	if cfg.Transport == nil {
 		if cfg.TransportConfig.Protocol == "" {

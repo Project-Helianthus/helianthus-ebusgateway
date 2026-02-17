@@ -27,6 +27,10 @@ func main() {
 	bindFlags(flag.CommandLine, &cfg)
 	flag.Parse()
 
+	if cfg.ScanSource == 0x31 {
+		log.Printf("warning: source-addr=0x31 is commonly used by ebusd; when running alongside ebusd pick a different source address (e.g. --source-addr=0xf0)")
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

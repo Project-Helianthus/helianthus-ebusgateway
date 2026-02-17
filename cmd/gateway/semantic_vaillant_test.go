@@ -17,7 +17,7 @@ func TestParseB524ReadPayload(t *testing.T) {
 	}{
 		{
 			name:     "valid payload with float value",
-			payload:  []byte{0x02, 0x00, 0x03, 0x01, 0x22, 0x00, 0x00, 0x00, 0x30, 0x41},
+			payload:  []byte{0x01, 0x03, 0x22, 0x00, 0x00, 0x00, 0x30, 0x41},
 			opcode:   0x02,
 			group:    0x03,
 			instance: 0x01,
@@ -27,7 +27,7 @@ func TestParseB524ReadPayload(t *testing.T) {
 		},
 		{
 			name:     "header only has no value",
-			payload:  []byte{0x02, 0x00, 0x03, 0x01, 0x22, 0x00},
+			payload:  []byte{0x01, 0x03, 0x22, 0x00},
 			opcode:   0x02,
 			group:    0x03,
 			instance: 0x01,
@@ -36,7 +36,7 @@ func TestParseB524ReadPayload(t *testing.T) {
 		},
 		{
 			name:     "short payload",
-			payload:  []byte{0x02, 0x00, 0x03},
+			payload:  []byte{0x01, 0x03, 0x22},
 			opcode:   0x02,
 			group:    0x03,
 			instance: 0x01,
@@ -44,8 +44,8 @@ func TestParseB524ReadPayload(t *testing.T) {
 			ok:       false,
 		},
 		{
-			name:     "rejects non-read mode",
-			payload:  []byte{0x02, 0x01, 0x03, 0x01, 0x22, 0x00, 0x01},
+			name:     "single 0x00 has no value",
+			payload:  []byte{0x00},
 			opcode:   0x02,
 			group:    0x03,
 			instance: 0x01,
@@ -53,13 +53,32 @@ func TestParseB524ReadPayload(t *testing.T) {
 			ok:       false,
 		},
 		{
-			name:     "rejects mismatched header",
-			payload:  []byte{0x02, 0x00, 0x03, 0x02, 0x22, 0x00, 0x01},
+			name:     "rejects mismatched group",
+			payload:  []byte{0x01, 0x02, 0x22, 0x00, 0x01},
 			opcode:   0x02,
 			group:    0x03,
 			instance: 0x01,
 			addr:     0x0022,
 			ok:       false,
+		},
+		{
+			name:     "rejects mismatched addr",
+			payload:  []byte{0x01, 0x03, 0x21, 0x00, 0x01},
+			opcode:   0x02,
+			group:    0x03,
+			instance: 0x01,
+			addr:     0x0022,
+			ok:       false,
+		},
+		{
+			name:     "allows kind 0x00 with value bytes",
+			payload:  []byte{0x00, 0x03, 0x1c, 0x00, 0xff},
+			opcode:   0x02,
+			group:    0x03,
+			instance: 0x02,
+			addr:     0x001c,
+			want:     []byte{0xff},
+			ok:       true,
 		},
 	}
 

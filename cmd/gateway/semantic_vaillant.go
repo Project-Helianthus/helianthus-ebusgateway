@@ -173,38 +173,38 @@ func readB524Value(ctx context.Context, bus *protocol.Bus, source, target, opcod
 }
 
 func parseB524ReadPayload(payload []byte, opcode, group, instance byte, addr uint16) ([]byte, bool) {
-	if len(payload) < 6 {
+	if len(payload) == 0 {
 		return nil, false
 	}
 
-	replyOpcode := payload[0]
-	replyMode := payload[1]
-	replyGroup := payload[2]
-	replyInstance := payload[3]
-	replyAddr := uint16(payload[4]) | uint16(payload[5])<<8
-	if replyMode != vaillantB524OpRead {
+	if len(payload) == 1 && payload[0] == 0x00 {
 		return nil, false
 	}
-	if replyOpcode != opcode || replyGroup != group || replyInstance != instance || replyAddr != addr {
+	if len(payload) < 4 {
+		return nil, false
+	}
+
+	replyKind := payload[0]
+	replyGroup := payload[1]
+	replyAddr := uint16(payload[2]) | uint16(payload[3])<<8
+	if replyGroup != group || replyAddr != addr {
 		log.Printf(
-			"b524 read mismatch: want opcode=0x%02x mode=0x%02x group=0x%02x instance=0x%02x addr=0x%04x; got opcode=0x%02x mode=0x%02x group=0x%02x instance=0x%02x addr=0x%04x",
+			"b524 read mismatch: want opcode=0x%02x group=0x%02x instance=0x%02x addr=0x%04x; got kind=0x%02x group=0x%02x addr=0x%04x len=%d",
 			opcode,
-			vaillantB524OpRead,
 			group,
 			instance,
 			addr,
-			replyOpcode,
-			replyMode,
+			replyKind,
 			replyGroup,
-			replyInstance,
 			replyAddr,
+			len(payload),
 		)
 		return nil, false
 	}
-	if len(payload) == 6 {
+	if len(payload) == 4 {
 		return nil, false
 	}
-	return payload[6:], true
+	return payload[4:], true
 }
 
 func readB524Float32LE(ctx context.Context, bus *protocol.Bus, source, target, opcode, group, instance byte, addr uint16) (float64, bool) {

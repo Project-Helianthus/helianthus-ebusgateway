@@ -69,7 +69,7 @@ func DefaultConfig() Config {
 		BusConfig:          protocol.DefaultBusConfig(),
 		Providers:          vaillantproviders.Default(),
 		ScanOnStart:        true,
-		ScanSource:         0x30,
+		ScanSource:         0x31,
 		ScanTimeout:        3 * time.Minute,
 		// Per-request scan timeout must accommodate bus/transport latency.
 		// 150ms is too aggressive for real-world ENH over TCP setups.
@@ -96,7 +96,7 @@ func applyDefaults(cfg Config) Config {
 		cfg.Providers = vaillantproviders.Default()
 	}
 	if cfg.ScanSource == 0 {
-		cfg.ScanSource = 0x30
+		cfg.ScanSource = 0x31
 	}
 	if cfg.ScanTimeout == 0 {
 		cfg.ScanTimeout = 3 * time.Minute

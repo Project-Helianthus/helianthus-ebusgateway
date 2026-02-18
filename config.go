@@ -47,19 +47,19 @@ type Config struct {
 	SemanticConfigInterval    time.Duration
 	SemanticStateInterval     time.Duration
 	SemanticRequestTimeout    time.Duration
-	BroadcastListen    bool
-	HTTPAddr           string
-	GraphQLPath        string
-	SnapshotPath       string
-	SubscriptionPath   string
-	MCPPath            string
-	UIPath             string
-	MDNSAdvertise      bool
-	MDNSInstance       string
-	DumpOutputDir      string
-	DumpUploadPath     string
-	DumpUploadURL      string
-	DumpIncludePII     bool
+	BroadcastListen           bool
+	HTTPAddr                  string
+	GraphQLPath               string
+	SnapshotPath              string
+	SubscriptionPath          string
+	MCPPath                   string
+	UIPath                    string
+	MDNSAdvertise             bool
+	MDNSInstance              string
+	DumpOutputDir             string
+	DumpUploadPath            string
+	DumpUploadURL             string
+	DumpIncludePII            bool
 }
 
 func DefaultConfig() Config {
@@ -72,29 +72,30 @@ func DefaultConfig() Config {
 			WriteTimeout: 5 * time.Second,
 			DialTimeout:  5 * time.Second,
 		},
-		BusConfig:          protocol.DefaultBusConfig(),
-		Providers:          vaillantproviders.Default(),
-		ScanOnStart:        true,
-		ScanSource:         0x31,
-		ScanTimeout:        3 * time.Minute,
+		BusConfig:   protocol.DefaultBusConfig(),
+		Providers:   vaillantproviders.Default(),
+		ScanOnStart: true,
+		// Use a non-ebusd default to allow running alongside ebusd without address conflicts.
+		ScanSource:  0xF0,
+		ScanTimeout: 3 * time.Minute,
 		// Per-request scan timeout must accommodate bus/transport latency.
 		// 150ms is too aggressive for real-world ENH over TCP setups.
-			ScanRequestTimeout: 400 * time.Millisecond,
-			ScanInterval:       30 * time.Second,
-			SemanticInterval:          1 * time.Minute,
-			SemanticDiscoveryInterval: 10 * time.Minute,
-			SemanticConfigInterval:    5 * time.Minute,
-			SemanticStateInterval:     1 * time.Minute,
-			SemanticRequestTimeout:    2 * time.Second,
-			HTTPAddr:           ":8080",
-			GraphQLPath:        "/graphql",
-			SnapshotPath:       "/snapshot",
-			SubscriptionPath:   "/graphql/subscriptions",
-		MCPPath:            "/mcp",
-		UIPath:             "/ui",
-		MDNSAdvertise:      true,
-		MDNSInstance:       "helianthus",
-		DumpOutputDir:      "./dumps",
+		ScanRequestTimeout:        400 * time.Millisecond,
+		ScanInterval:              30 * time.Second,
+		SemanticInterval:          1 * time.Minute,
+		SemanticDiscoveryInterval: 10 * time.Minute,
+		SemanticConfigInterval:    5 * time.Minute,
+		SemanticStateInterval:     1 * time.Minute,
+		SemanticRequestTimeout:    2 * time.Second,
+		HTTPAddr:                  ":8080",
+		GraphQLPath:               "/graphql",
+		SnapshotPath:              "/snapshot",
+		SubscriptionPath:          "/graphql/subscriptions",
+		MCPPath:                   "/mcp",
+		UIPath:                    "/ui",
+		MDNSAdvertise:             true,
+		MDNSInstance:              "helianthus",
+		DumpOutputDir:             "./dumps",
 	}
 }
 
@@ -106,7 +107,7 @@ func applyDefaults(cfg Config) Config {
 		cfg.Providers = vaillantproviders.Default()
 	}
 	if cfg.ScanSource == 0 {
-		cfg.ScanSource = 0x31
+		cfg.ScanSource = 0xF0
 	}
 	if cfg.ScanTimeout == 0 {
 		cfg.ScanTimeout = 3 * time.Minute

@@ -48,8 +48,8 @@ type vaillantSemanticPoller struct {
 	provider *graphql.LiveSemanticProvider
 	hub      *graphql.BroadcastHub
 
-	source           byte
-	requestTimeout   time.Duration
+	source            byte
+	requestTimeout    time.Duration
 	discoveryInterval time.Duration
 	configInterval    time.Duration
 	stateInterval     time.Duration

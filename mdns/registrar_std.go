@@ -33,4 +33,3 @@ func (a *zeroconfAdvertiser) Close() error {
 	a.server.Shutdown()
 	return nil
 }
-

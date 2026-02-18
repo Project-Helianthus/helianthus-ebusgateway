@@ -10,19 +10,19 @@ import (
 )
 
 type graphqlSchemaTypes struct {
-	fieldType           *graphqlgo.Object
-	responseType        *graphqlgo.Object
-	methodType          *graphqlgo.Object
-	projectionNodeType  *graphqlgo.Object
-	projectionEdgeType  *graphqlgo.Object
-	projectionType      *graphqlgo.Object
-	planeType           *graphqlgo.Object
-	deviceType          *graphqlgo.Object
-	broadcastType       *graphqlgo.Object
-	statusType          *graphqlgo.Object
-	zoneType            *graphqlgo.Object
-	dhwType             *graphqlgo.Object
-	energyTotals        *graphqlgo.Object
+	fieldType          *graphqlgo.Object
+	responseType       *graphqlgo.Object
+	methodType         *graphqlgo.Object
+	projectionNodeType *graphqlgo.Object
+	projectionEdgeType *graphqlgo.Object
+	projectionType     *graphqlgo.Object
+	planeType          *graphqlgo.Object
+	deviceType         *graphqlgo.Object
+	broadcastType      *graphqlgo.Object
+	statusType         *graphqlgo.Object
+	zoneType           *graphqlgo.Object
+	dhwType            *graphqlgo.Object
+	energyTotals       *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {

@@ -173,4 +173,3 @@ func (a *countingAdvertiser) closes() int32 {
 	}
 	return a.count.Load()
 }
-

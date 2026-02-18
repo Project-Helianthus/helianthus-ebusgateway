@@ -44,12 +44,12 @@ func (b *timeoutBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.
 }
 
 type scanStats struct {
-	ok        int
-	timeouts  int
+	ok         int
+	timeouts   int
 	collisions int
-	nacks     int
-	crcErrors int
-	otherErrs int
+	nacks      int
+	crcErrors  int
+	otherErrs  int
 }
 
 type statsBus struct {

@@ -9,10 +9,10 @@ import (
 
 	"github.com/d3vi1/helianthus-ebusgo/protocol"
 	"github.com/d3vi1/helianthus-ebusgo/types"
+	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
 	"github.com/d3vi1/helianthus-ebusreg/registry"
 	"github.com/d3vi1/helianthus-ebusreg/router"
 	"github.com/d3vi1/helianthus-ebusreg/schema"
-	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
 )
 
 type testMethod struct {

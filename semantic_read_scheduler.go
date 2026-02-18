@@ -103,4 +103,3 @@ func (s *SemanticReadScheduler) Get(ctx context.Context, key string, maxAge time
 		return append([]byte(nil), value...), nil
 	}
 }
-

@@ -221,6 +221,16 @@ func TestNewGateway_DialsWithENSEndpointProfile(t *testing.T) {
 		gotAddress = address
 		client, server := net.Pipe()
 		serverClose = func() { _ = server.Close() }
+
+		go func() {
+			buf := make([]byte, 2)
+			if _, err := io.ReadFull(server, buf); err != nil {
+				_ = server.Close()
+				return
+			}
+			resp := transport.EncodeENH(transport.ENHResResetted, 0x00)
+			_, _ = server.Write(resp[:])
+		}()
 		return client, nil
 	}
 
@@ -229,6 +239,7 @@ func TestNewGateway_DialsWithENSEndpointProfile(t *testing.T) {
 			Address:     "ens://127.0.0.1:10000",
 			DialTimeout: time.Second,
 			Dial:        dialer,
+			ReadTimeout: 200 * time.Millisecond,
 		},
 	}
 
@@ -245,8 +256,8 @@ func TestNewGateway_DialsWithENSEndpointProfile(t *testing.T) {
 	if gotNetwork != "tcp" || gotAddress != "127.0.0.1:10000" {
 		t.Fatalf("dialer args = %s %s; want tcp 127.0.0.1:10000", gotNetwork, gotAddress)
 	}
-	if _, ok := gateway.Transport.(*transport.ENSTransport); !ok {
-		t.Fatalf("gateway.Transport = %T; want *transport.ENSTransport", gateway.Transport)
+	if _, ok := gateway.Transport.(*transport.ENHTransport); !ok {
+		t.Fatalf("gateway.Transport = %T; want *transport.ENHTransport", gateway.Transport)
 	}
 
 	if err := gateway.Close(); err != nil {
@@ -279,6 +290,60 @@ func TestNormalizeTransportConfigENHUnixEndpoint(t *testing.T) {
 	if cfg.Address != "/var/run/ebusd/ebusd.socket" {
 		t.Fatalf("address = %q; want /var/run/ebusd/ebusd.socket", cfg.Address)
 	}
+}
+
+func TestNormalizeTransportConfigUDPPlainEndpoint(t *testing.T) {
+	cfg, err := normalizeTransportConfig(TransportConfig{
+		Address: "udp-plain://127.0.0.1:9999",
+	})
+	if err != nil {
+		t.Fatalf("normalizeTransportConfig error = %v", err)
+	}
+	if cfg.Protocol != TransportUDPPlain {
+		t.Fatalf("protocol = %q; want %q", cfg.Protocol, TransportUDPPlain)
+	}
+	if cfg.Network != "udp" {
+		t.Fatalf("network = %q; want udp", cfg.Network)
+	}
+	if cfg.Address != "127.0.0.1:9999" {
+		t.Fatalf("address = %q; want 127.0.0.1:9999", cfg.Address)
+	}
+}
+
+func TestTransportFromConn_UDPPlain(t *testing.T) {
+	t.Run("requires udp conn", func(t *testing.T) {
+		client, server := net.Pipe()
+		defer func() { _ = client.Close() }()
+		defer func() { _ = server.Close() }()
+
+		_, err := transportFromConn(TransportUDPPlain, client, 200*time.Millisecond, 200*time.Millisecond)
+		if err == nil {
+			t.Fatalf("expected error for non-udp conn")
+		}
+	})
+
+	t.Run("returns UDPPlainTransport", func(t *testing.T) {
+		server, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+		if err != nil {
+			t.Fatalf("ListenUDP error = %v", err)
+		}
+		t.Cleanup(func() { _ = server.Close() })
+
+		clientConn, err := net.DialUDP("udp", nil, server.LocalAddr().(*net.UDPAddr))
+		if err != nil {
+			t.Fatalf("DialUDP error = %v", err)
+		}
+		t.Cleanup(func() { _ = clientConn.Close() })
+
+		raw, err := transportFromConn(TransportUDPPlain, clientConn, 200*time.Millisecond, 200*time.Millisecond)
+		if err != nil {
+			t.Fatalf("transportFromConn error = %v", err)
+		}
+		if _, ok := raw.(*transport.UDPPlainTransport); !ok {
+			t.Fatalf("transport = %T; want *transport.UDPPlainTransport", raw)
+		}
+		_ = raw.Close()
+	})
 }
 
 type mockInitTransport struct {

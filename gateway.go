@@ -195,7 +195,11 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 	case "enh":
 		protocol = TransportENH
 	case "ens":
-		protocol = TransportENS
+		// ebusd semantics: ENS is an ENH variant (serial speed selector).
+		// For TCP/UDP endpoints, ENS behaves as ENH.
+		protocol = TransportENH
+	case "udp-plain":
+		protocol = TransportUDPPlain
 	case "ebusd", "ebusd-tcp":
 		protocol = TransportEbusdTCP
 	case "tcp", "unix":
@@ -208,6 +212,9 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 	switch {
 	case parsed.Host != "":
 		network = "tcp"
+		if scheme == "udp-plain" {
+			network = "udp"
+		}
 		address = strings.TrimSpace(parsed.Host)
 	case parsed.Path != "" && parsed.Path != "/":
 		network = "unix"
@@ -218,6 +225,9 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 
 	if scheme == "tcp" && network != "tcp" {
 		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing tcp host", endpoint)
+	}
+	if scheme == "udp-plain" && network != "udp" {
+		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing udp host", endpoint)
 	}
 	if scheme == "unix" && network != "unix" {
 		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing unix path", endpoint)
@@ -232,10 +242,14 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 func transportFromConn(protocolName TransportProtocol, conn net.Conn, readTimeout, writeTimeout time.Duration) (transport.RawTransport, error) {
 	normalized := strings.ToLower(string(protocolName))
 	switch TransportProtocol(normalized) {
-	case TransportENH, "":
+	case TransportENH, TransportENS, "":
 		return transport.NewENHTransport(conn, readTimeout, writeTimeout), nil
-	case TransportENS:
-		return transport.NewENSTransport(conn, readTimeout, writeTimeout), nil
+	case TransportUDPPlain:
+		udpConn, ok := conn.(*net.UDPConn)
+		if !ok {
+			return nil, fmt.Errorf("gateway transport %q requires udp connection: %w", protocolName, ebuserrors.ErrInvalidPayload)
+		}
+		return transport.NewUDPPlainTransport(udpConn, readTimeout, writeTimeout), nil
 	case TransportEbusdTCP, TransportProtocol("ebusd"):
 		return transport.NewEbusdTCPTransport(conn, readTimeout, writeTimeout), nil
 	default:

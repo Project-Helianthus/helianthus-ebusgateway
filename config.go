@@ -16,6 +16,7 @@ type TransportProtocol string
 const (
 	TransportENH      TransportProtocol = "enh"
 	TransportENS      TransportProtocol = "ens"
+	TransportUDPPlain TransportProtocol = "udp-plain"
 	TransportEbusdTCP TransportProtocol = "ebusd-tcp"
 )
 

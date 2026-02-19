@@ -137,14 +137,15 @@ Protocol can be inferred from endpoint URI in `-address`:
 go run ./cmd/gateway -address enh://127.0.0.1:19001 -http-addr :8080
 go run ./cmd/gateway -address ens://127.0.0.1:19002 -http-addr :8080
 go run ./cmd/gateway -address ebusd-tcp://127.0.0.1:9999 -http-addr :8080
+go run ./cmd/gateway -address udp-plain://203.0.113.10:9999 -http-addr :8080
 ```
 
 ## Gateway Flag Cheat Sheet
 
 | Flag | Default | Notes |
 |---|---|---|
-| `-transport` | `enh` | `enh`, `ens`, `ebusd-tcp` |
-| `-network` | `unix` | `unix` or `tcp` |
+| `-transport` | `enh` | `enh`, `ens`, `ebusd-tcp`, `udp-plain` |
+| `-network` | `unix` | `unix`, `tcp`, or `udp` |
 | `-address` | `/var/run/ebusd/ebusd.socket` | socket path, `host:port`, or endpoint URI |
 | `-http-addr` | `:8080` | empty disables HTTP server |
 | `-graphql-path` | `/graphql` | query/mutation endpoint |

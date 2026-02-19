@@ -429,10 +429,10 @@ func transportConfigFromSmoke(smokeCfg smokeConfig) (TransportConfig, error) {
 		cfg.Protocol = TransportENH
 	case string(TransportENS):
 		cfg.Protocol = TransportENS
-	case string(TransportEbusdTCP):
+	case string(TransportEbusdTCP), "ebusd":
 		cfg.Protocol = TransportEbusdTCP
 	default:
-		return TransportConfig{}, fmt.Errorf("smoke config unsupported smoke.profile %q", profile)
+		return TransportConfig{}, fmt.Errorf("smoke config unsupported smoke.profile %q (allowed: enh, ens, ebusd-tcp)", profile)
 	}
 
 	enh := smokeCfg.ENH
@@ -455,6 +455,7 @@ func transportConfigFromSmoke(smokeCfg smokeConfig) (TransportConfig, error) {
 		cfg.WriteTimeout = timeout
 		cfg.DialTimeout = timeout
 	}
+	cfg = clampEbusdTCPTimeouts(cfg, DefaultConfig().ScanRequestTimeout)
 	return cfg, nil
 }
 

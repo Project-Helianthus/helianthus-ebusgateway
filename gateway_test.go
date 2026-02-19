@@ -382,7 +382,7 @@ func TestClampEbusdTCPTimeouts_LeavesLargerTimeoutsUntouched(t *testing.T) {
 	}
 }
 
-func TestClampEbusdTCPTimeouts_NonEbusdUnchanged(t *testing.T) {
+func TestClampEbusdTCPTimeouts_NonEbusdUsesScanRequestTimeout(t *testing.T) {
 	t.Parallel()
 
 	cfg := TransportConfig{
@@ -391,8 +391,25 @@ func TestClampEbusdTCPTimeouts_NonEbusdUnchanged(t *testing.T) {
 		WriteTimeout: 120 * time.Millisecond,
 	}
 	got := clampEbusdTCPTimeouts(cfg, 2*time.Second)
+	if got.ReadTimeout != 2*time.Second {
+		t.Fatalf("ReadTimeout = %s; want 2s", got.ReadTimeout)
+	}
+	if got.WriteTimeout != 2*time.Second {
+		t.Fatalf("WriteTimeout = %s; want 2s", got.WriteTimeout)
+	}
+}
+
+func TestClampEbusdTCPTimeouts_NonEbusdWithoutScanTimeoutUnchanged(t *testing.T) {
+	t.Parallel()
+
+	cfg := TransportConfig{
+		Protocol:     TransportENS,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 120 * time.Millisecond,
+	}
+	got := clampEbusdTCPTimeouts(cfg, 0)
 	if got.ReadTimeout != cfg.ReadTimeout || got.WriteTimeout != cfg.WriteTimeout {
-		t.Fatalf("timeouts changed for non-ebusd: got read=%s write=%s", got.ReadTimeout, got.WriteTimeout)
+		t.Fatalf("timeouts changed with zero scan timeout: got read=%s write=%s", got.ReadTimeout, got.WriteTimeout)
 	}
 }
 

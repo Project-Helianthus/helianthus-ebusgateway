@@ -143,17 +143,23 @@ func resolveTransport(ctx context.Context, cfg Config) (transport.RawTransport, 
 }
 
 func clampEbusdTCPTimeouts(config TransportConfig, scanRequestTimeout time.Duration) TransportConfig {
-	if config.Protocol != TransportEbusdTCP {
+	minTimeout := scanRequestTimeout
+	switch config.Protocol {
+	case TransportEbusdTCP, TransportENH, TransportENS, TransportUDPPlain:
+	default:
 		return config
 	}
-	// ebusd command port responses include the full bus roundtrip, so too-short
-	// socket deadlines can desync the stream (late `ERR:` lines from the previous
-	// command can be consumed by the next command). Keep read/write timeouts at
-	// least at per-request scan timeout (or a conservative floor when unset).
-	minTimeout := scanRequestTimeout
+
 	if minTimeout <= 0 {
+		if config.Protocol != TransportEbusdTCP {
+			return config
+		}
 		minTimeout = 400 * time.Millisecond
 	}
+	if config.Protocol == TransportEbusdTCP && minTimeout < 400*time.Millisecond {
+		minTimeout = 400 * time.Millisecond
+	}
+
 	if config.ReadTimeout <= 0 || config.ReadTimeout < minTimeout {
 		config.ReadTimeout = minTimeout
 	}

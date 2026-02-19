@@ -346,6 +346,56 @@ func TestTransportFromConn_UDPPlain(t *testing.T) {
 	})
 }
 
+func TestClampEbusdTCPTimeouts_UsesMinimumForShortOrUnset(t *testing.T) {
+	t.Parallel()
+
+	cfg := TransportConfig{
+		Protocol:     TransportEbusdTCP,
+		ReadTimeout:  0,
+		WriteTimeout: 150 * time.Millisecond,
+	}
+
+	got := clampEbusdTCPTimeouts(cfg, 2*time.Second)
+	if got.ReadTimeout != 2*time.Second {
+		t.Fatalf("ReadTimeout = %s; want 2s", got.ReadTimeout)
+	}
+	if got.WriteTimeout != 2*time.Second {
+		t.Fatalf("WriteTimeout = %s; want 2s", got.WriteTimeout)
+	}
+}
+
+func TestClampEbusdTCPTimeouts_LeavesLargerTimeoutsUntouched(t *testing.T) {
+	t.Parallel()
+
+	cfg := TransportConfig{
+		Protocol:     TransportEbusdTCP,
+		ReadTimeout:  4 * time.Second,
+		WriteTimeout: 3 * time.Second,
+	}
+
+	got := clampEbusdTCPTimeouts(cfg, 2*time.Second)
+	if got.ReadTimeout != 4*time.Second {
+		t.Fatalf("ReadTimeout = %s; want 4s", got.ReadTimeout)
+	}
+	if got.WriteTimeout != 3*time.Second {
+		t.Fatalf("WriteTimeout = %s; want 3s", got.WriteTimeout)
+	}
+}
+
+func TestClampEbusdTCPTimeouts_NonEbusdUnchanged(t *testing.T) {
+	t.Parallel()
+
+	cfg := TransportConfig{
+		Protocol:     TransportENH,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 120 * time.Millisecond,
+	}
+	got := clampEbusdTCPTimeouts(cfg, 2*time.Second)
+	if got.ReadTimeout != cfg.ReadTimeout || got.WriteTimeout != cfg.WriteTimeout {
+		t.Fatalf("timeouts changed for non-ebusd: got read=%s write=%s", got.ReadTimeout, got.WriteTimeout)
+	}
+}
+
 type mockInitTransport struct {
 	called   bool
 	features []byte

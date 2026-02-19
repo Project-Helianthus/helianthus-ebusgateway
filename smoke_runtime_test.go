@@ -39,6 +39,30 @@ func TestTransportConfigFromSmokeEbusdTCPProfile(t *testing.T) {
 	}
 }
 
+func TestTransportConfigFromSmokeEbusdAliasProfile(t *testing.T) {
+	t.Parallel()
+
+	cfg := smokeConfig{
+		ENH: enhConfig{
+			Type:       "tcp",
+			Host:       "127.0.0.1",
+			Port:       9999,
+			TimeoutSec: 3,
+		},
+		Smoke: smokeBehavior{
+			Profile: "ebusd",
+		},
+	}
+
+	transportCfg, err := transportConfigFromSmoke(cfg)
+	if err != nil {
+		t.Fatalf("transportConfigFromSmoke error = %v", err)
+	}
+	if transportCfg.Protocol != TransportEbusdTCP {
+		t.Fatalf("protocol = %q; want %q", transportCfg.Protocol, TransportEbusdTCP)
+	}
+}
+
 func TestTransportConfigFromSmokeENSProfile(t *testing.T) {
 	t.Parallel()
 

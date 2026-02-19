@@ -177,8 +177,10 @@ func (cfg *smokeConfig) normalize() error {
 	}
 	switch cfg.Smoke.Profile {
 	case string(TransportENH), string(TransportENS), string(TransportEbusdTCP):
+	case "ebusd":
+		cfg.Smoke.Profile = string(TransportEbusdTCP)
 	default:
-		return fmt.Errorf("smoke config unsupported smoke.profile %q", cfg.Smoke.Profile)
+		return fmt.Errorf("smoke config unsupported smoke.profile %q (allowed: enh, ens, ebusd-tcp)", cfg.Smoke.Profile)
 	}
 
 	if cfg.ENH.Type == "" {

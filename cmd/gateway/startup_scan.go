@@ -134,7 +134,6 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			}
 
 			devices, err := registry.Scan(scanCtx, scanBus, gateway.Registry, cfg.ScanSource, targets)
-			cancel()
 
 			if err != nil && ctx.Err() == nil {
 				log.Printf("startup scan error: %v", err)
@@ -168,6 +167,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				scanBus.stats.crcErrors,
 				scanBus.stats.otherErrs,
 			)
+			cancel()
 
 			if total > 0 && total != previousTotal {
 				previousTotal = total

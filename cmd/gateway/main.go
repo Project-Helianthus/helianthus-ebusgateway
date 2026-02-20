@@ -154,9 +154,14 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.StringVar(&cfg.DumpUploadURL, "dump-upload-url", cfg.DumpUploadURL, "unknown device dump upload url (internal)")
 	fs.BoolVar(&cfg.DumpIncludePII, "dump-include-pii", cfg.DumpIncludePII, "include identifiers in unknown device dumps")
 
-	fs.Func("source-addr", "source address for scans/semantic reads (e.g. 0xf0)", func(value string) error {
-		value = strings.TrimSpace(value)
+	fs.Func("source-addr", "source address for scans/semantic reads (e.g. 0xf0, 0x00, or auto)", func(value string) error {
+		value = strings.TrimSpace(strings.ToLower(value))
 		if value == "" {
+			return nil
+		}
+		if value == "auto" {
+			cfg.ScanSource = 0x00
+			cfg.ScanSourceAuto = true
 			return nil
 		}
 		parsed, err := strconv.ParseUint(value, 0, 8)
@@ -164,6 +169,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 			return fmt.Errorf("invalid source-addr %q", value)
 		}
 		cfg.ScanSource = byte(parsed)
+		cfg.ScanSourceAuto = cfg.ScanSource == 0x00
 		return nil
 	})
 }

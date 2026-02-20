@@ -29,3 +29,13 @@ func TestApplyDefaults_SetsScanSource(t *testing.T) {
 		t.Fatalf("expected ScanSource=0xf0 after defaults, got 0x%02x", cfg.ScanSource)
 	}
 }
+
+func TestApplyDefaults_PreservesAutoScanSource(t *testing.T) {
+	cfg := applyDefaults(Config{
+		ScanSource:     0x00,
+		ScanSourceAuto: true,
+	})
+	if cfg.ScanSource != 0x00 {
+		t.Fatalf("expected ScanSource=0x00 for auto mode, got 0x%02x", cfg.ScanSource)
+	}
+}

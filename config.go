@@ -38,6 +38,7 @@ type Config struct {
 	Providers          []registry.PlaneProvider
 	ScanOnStart        bool
 	ScanSource         byte
+	ScanSourceAuto     bool
 	ScanTimeout        time.Duration
 	ScanRequestTimeout time.Duration
 	ScanInterval       time.Duration
@@ -107,7 +108,7 @@ func applyDefaults(cfg Config) Config {
 	if cfg.Providers == nil {
 		cfg.Providers = vaillantproviders.Default()
 	}
-	if cfg.ScanSource == 0 {
+	if cfg.ScanSource == 0 && !cfg.ScanSourceAuto {
 		cfg.ScanSource = 0xF0
 	}
 	if cfg.ScanTimeout == 0 {

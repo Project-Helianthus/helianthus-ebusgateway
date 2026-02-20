@@ -52,6 +52,15 @@ type scanStats struct {
 	otherErrs  int
 }
 
+type ebusdScanResultRow struct {
+	Address         byte
+	Manufacturer    string
+	DeviceID        string
+	SoftwareVersion string
+	HardwareVersion string
+	SerialNumber    string
+}
+
 type statsBus struct {
 	bus   registry.ScanBus
 	stats scanStats
@@ -108,6 +117,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			}
 			targets := ([]byte)(nil)
 			targetLabel := ""
+			var targetConfig *ebusgateway.TransportConfig
 			for _, candidate := range ebusdScanTargetCandidates(cfg.TransportConfig) {
 				scanTargets, err := ebusdScanResultTargets(scanCtx, candidate)
 				if err != nil || len(scanTargets) == 0 {
@@ -115,6 +125,8 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				}
 				targets = scanTargets
 				targetLabel = candidate.Address
+				candidateCopy := candidate
+				targetConfig = &candidateCopy
 				break
 			}
 			if len(targets) > 0 {
@@ -127,7 +139,25 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			if err != nil && ctx.Err() == nil {
 				log.Printf("startup scan error: %v", err)
 			}
+
 			total := countRegistryDevices(gateway.Registry)
+			imported := 0
+			if total == 0 && len(devices) == 0 && targetConfig != nil &&
+				scanBus.stats.ok == 0 && (scanBus.stats.timeouts > 0 || scanBus.stats.collisions > 0) {
+				infos, infoErr := ebusdScanResultInfos(scanCtx, *targetConfig)
+				if infoErr != nil {
+					log.Printf("startup scan fallback error: %v", infoErr)
+				} else if len(infos) > 0 {
+					for _, info := range infos {
+						gateway.Registry.Register(info)
+					}
+					imported = len(infos)
+					total = countRegistryDevices(gateway.Registry)
+				}
+			}
+			if imported > 0 {
+				log.Printf("startup scan fallback: imported %d device(s) from ebusd scan result", imported)
+			}
 			log.Printf("startup scan: pass=%d device(s), total=%d", len(devices), total)
 			log.Printf(
 				"startup scan stats: ok=%d timeouts=%d collisions=%d nacks=%d crc=%d other=%d",
@@ -213,6 +243,38 @@ func countRegistryDevices(reg *registry.DeviceRegistry) int {
 }
 
 func ebusdScanResultTargets(ctx context.Context, cfg ebusgateway.TransportConfig) ([]byte, error) {
+	rows, err := ebusdScanResultRows(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	targets := make([]byte, 0, len(rows))
+	for _, row := range rows {
+		targets = append(targets, row.Address)
+	}
+	return targets, nil
+}
+
+func ebusdScanResultInfos(ctx context.Context, cfg ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+	rows, err := ebusdScanResultRows(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	infos := make([]registry.DeviceInfo, 0, len(rows))
+	for _, row := range rows {
+		infos = append(infos, registry.DeviceInfo{
+			Address:         row.Address,
+			Manufacturer:    row.Manufacturer,
+			DeviceID:        row.DeviceID,
+			SoftwareVersion: row.SoftwareVersion,
+			HardwareVersion: row.HardwareVersion,
+			SerialNumber:    row.SerialNumber,
+		})
+	}
+	return infos, nil
+}
+
+func ebusdScanResultRows(ctx context.Context, cfg ebusgateway.TransportConfig) ([]ebusdScanResultRow, error) {
 	if cfg.Address == "" || cfg.Network != "tcp" {
 		return nil, nil
 	}
@@ -243,38 +305,63 @@ func ebusdScanResultTargets(ctx context.Context, cfg ebusgateway.TransportConfig
 		return nil, err
 	}
 
-	var targets []byte
+	rows := make([]ebusdScanResultRow, 0)
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, net.ErrClosed) {
-				return targets, err
+				return rows, err
 			}
-			return targets, err
+			return rows, err
 		}
 		line = strings.TrimSpace(line)
 		if line == "" {
 			break
 		}
-		if strings.HasPrefix(strings.ToLower(line), "err") {
+		row, ok := parseEbusdScanResultLine(line)
+		if !ok {
 			continue
 		}
-		fields := strings.Split(line, ";")
-		if len(fields) == 0 {
-			continue
-		}
-		raw := strings.TrimSpace(fields[0])
-		if raw == "" {
-			continue
-		}
-		value, parseErr := strconv.ParseUint(raw, 16, 8)
-		if parseErr != nil {
-			continue
-		}
-		targets = append(targets, byte(value))
+		rows = append(rows, row)
 	}
 
-	return targets, nil
+	return rows, nil
+}
+
+func parseEbusdScanResultLine(line string) (ebusdScanResultRow, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(strings.ToLower(line), "err") {
+		return ebusdScanResultRow{}, false
+	}
+
+	fields := strings.Split(line, ";")
+	if len(fields) < 5 {
+		return ebusdScanResultRow{}, false
+	}
+
+	rawAddress := strings.TrimSpace(fields[0])
+	value, err := strconv.ParseUint(rawAddress, 16, 8)
+	if err != nil {
+		return ebusdScanResultRow{}, false
+	}
+
+	serialParts := make([]string, 0, len(fields)-5)
+	for _, field := range fields[5:] {
+		trimmed := strings.TrimSpace(field)
+		if trimmed == "" {
+			continue
+		}
+		serialParts = append(serialParts, trimmed)
+	}
+
+	return ebusdScanResultRow{
+		Address:         byte(value),
+		Manufacturer:    strings.TrimSpace(fields[1]),
+		DeviceID:        strings.TrimSpace(fields[2]),
+		SoftwareVersion: strings.TrimSpace(fields[3]),
+		HardwareVersion: strings.TrimSpace(fields[4]),
+		SerialNumber:    strings.Join(serialParts, "-"),
+	}, true
 }
 
 func dialContext(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {

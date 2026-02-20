@@ -96,3 +96,51 @@ func TestEbusdScanTargetCandidates(t *testing.T) {
 		}
 	})
 }
+
+func TestParseEbusdScanResultLine(t *testing.T) {
+	t.Parallel()
+
+	row, ok := parseEbusdScanResultLine("15;Vaillant;BASV2;0507;1704;21;21;34;0020262148;0082;014267;N7")
+	if !ok {
+		t.Fatalf("parseEbusdScanResultLine returned ok=false")
+	}
+	if row.Address != 0x15 {
+		t.Fatalf("Address = 0x%02x; want 0x15", row.Address)
+	}
+	if row.Manufacturer != "Vaillant" {
+		t.Fatalf("Manufacturer = %q; want %q", row.Manufacturer, "Vaillant")
+	}
+	if row.DeviceID != "BASV2" {
+		t.Fatalf("DeviceID = %q; want %q", row.DeviceID, "BASV2")
+	}
+	if row.SoftwareVersion != "0507" {
+		t.Fatalf("SoftwareVersion = %q; want %q", row.SoftwareVersion, "0507")
+	}
+	if row.HardwareVersion != "1704" {
+		t.Fatalf("HardwareVersion = %q; want %q", row.HardwareVersion, "1704")
+	}
+	if row.SerialNumber != "21-21-34-0020262148-0082-014267-N7" {
+		t.Fatalf("SerialNumber = %q; want %q", row.SerialNumber, "21-21-34-0020262148-0082-014267-N7")
+	}
+}
+
+func TestParseEbusdScanResultLineRejectsInvalid(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		"",
+		"ERR: failed",
+		"15;too;short",
+		"ZZ;Vaillant;BASV2;0507;1704",
+	}
+
+	for _, sample := range cases {
+		sample := sample
+		t.Run(sample, func(t *testing.T) {
+			t.Parallel()
+			if _, ok := parseEbusdScanResultLine(sample); ok {
+				t.Fatalf("parseEbusdScanResultLine(%q) returned ok=true; want false", sample)
+			}
+		})
+	}
+}

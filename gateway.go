@@ -254,8 +254,10 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 func transportFromConn(protocolName TransportProtocol, conn net.Conn, readTimeout, writeTimeout time.Duration) (transport.RawTransport, error) {
 	normalized := strings.ToLower(string(protocolName))
 	switch TransportProtocol(normalized) {
-	case TransportENH, TransportENS, "":
+	case TransportENH, "":
 		return transport.NewENHTransport(conn, readTimeout, writeTimeout), nil
+	case TransportENS:
+		return transport.NewENSTransport(conn, readTimeout, writeTimeout), nil
 	case TransportUDPPlain:
 		udpConn, ok := conn.(*net.UDPConn)
 		if !ok {

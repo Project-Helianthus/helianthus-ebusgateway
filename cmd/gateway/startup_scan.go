@@ -107,10 +107,18 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				bus: &timeoutBus{bus: gateway.Bus, timeout: cfg.ScanRequestTimeout},
 			}
 			targets := ([]byte)(nil)
-			if cfg.TransportConfig.Protocol == ebusgateway.TransportEbusdTCP && cfg.TransportConfig.Network == "tcp" {
-				if scanTargets, err := ebusdScanResultTargets(scanCtx, cfg.TransportConfig); err == nil && len(scanTargets) > 0 {
-					targets = scanTargets
+			targetLabel := ""
+			for _, candidate := range ebusdScanTargetCandidates(cfg.TransportConfig) {
+				scanTargets, err := ebusdScanResultTargets(scanCtx, candidate)
+				if err != nil || len(scanTargets) == 0 {
+					continue
 				}
+				targets = scanTargets
+				targetLabel = candidate.Address
+				break
+			}
+			if len(targets) > 0 {
+				log.Printf("startup scan: using %d target(s) from ebusd scan result at %s", len(targets), targetLabel)
 			}
 
 			devices, err := registry.Scan(scanCtx, scanBus, gateway.Registry, cfg.ScanSource, targets)
@@ -154,6 +162,38 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			}
 		}
 	}()
+}
+
+func ebusdScanTargetCandidates(config ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
+	candidates := make([]ebusgateway.TransportConfig, 0, 2)
+
+	if config.Protocol == ebusgateway.TransportEbusdTCP && strings.EqualFold(config.Network, "tcp") {
+		candidates = append(candidates, config)
+	}
+
+	fallback := ebusgateway.TransportConfig{
+		Network:     "tcp",
+		Address:     "127.0.0.1:8888",
+		DialTimeout: config.DialTimeout,
+		Dial:        config.Dial,
+	}
+	if fallback.DialTimeout <= 0 || fallback.DialTimeout > 2*time.Second {
+		fallback.DialTimeout = 2 * time.Second
+	}
+
+	alreadyPresent := false
+	for _, candidate := range candidates {
+		if strings.EqualFold(strings.TrimSpace(candidate.Network), fallback.Network) &&
+			strings.TrimSpace(candidate.Address) == fallback.Address {
+			alreadyPresent = true
+			break
+		}
+	}
+	if !alreadyPresent {
+		candidates = append(candidates, fallback)
+	}
+
+	return candidates
 }
 
 func shouldStopDiscoveryScan(total int) bool {

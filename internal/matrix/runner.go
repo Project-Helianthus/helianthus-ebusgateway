@@ -12,19 +12,20 @@ import (
 )
 
 type RunnerOptions struct {
-	OutputDir    string
-	Target       string
-	IncludeIDs   []string
-	Execute      bool
-	SettleDelay  time.Duration
-	CaseTimeout  time.Duration
-	StartGateway string
-	StopGateway  string
-	StartProxy   string
-	StopProxy    string
-	StartEbusd   string
-	StopEbusd    string
-	SmokeCommand string
+	OutputDir        string
+	Target           string
+	IncludeIDs       []string
+	ExpectedFailures map[string]string
+	Execute          bool
+	SettleDelay      time.Duration
+	CaseTimeout      time.Duration
+	StartGateway     string
+	StopGateway      string
+	StartProxy       string
+	StopProxy        string
+	StartEbusd       string
+	StopEbusd        string
+	SmokeCommand     string
 }
 
 type commandResult struct {
@@ -43,6 +44,10 @@ type CaseVerdict struct {
 	Kind        TopologyKind    `json:"kind"`
 	Target      string          `json:"target"`
 	Status      string          `json:"status"`
+	Outcome     string          `json:"outcome"`
+	InfraReason string          `json:"infra_reason,omitempty"`
+	Expected    string          `json:"expected"`
+	Expectation string          `json:"expectation,omitempty"`
 	Error       string          `json:"error,omitempty"`
 	StartedAt   string          `json:"started_at"`
 	EndedAt     string          `json:"ended_at"`
@@ -55,6 +60,24 @@ type Runner struct {
 	options RunnerOptions
 	nowUTC  func() time.Time
 }
+
+const (
+	actualStatusPlanned = "planned"
+	actualStatusPassed  = "passed"
+	actualStatusFailed  = "failed"
+
+	expectedStatusPass = "pass"
+	expectedStatusFail = "fail"
+
+	caseOutcomePlanned = "planned"
+	caseOutcomePass    = "pass"
+	caseOutcomeFail    = "fail"
+	caseOutcomeXFail   = "xfail"
+	caseOutcomeXPass   = "xpass"
+	caseOutcomeBlocked = "blocked-infra"
+
+	infraReasonAdapterNoSignal = "adapter_no_signal"
+)
 
 func NewRunner(options RunnerOptions) (*Runner, error) {
 	if strings.TrimSpace(options.OutputDir) == "" {
@@ -73,6 +96,7 @@ func NewRunner(options RunnerOptions) (*Runner, error) {
 	if options.CaseTimeout < 0 {
 		return nil, fmt.Errorf("case timeout must be >= 0")
 	}
+	options.ExpectedFailures = normalizeExpectedFailures(options.ExpectedFailures)
 	return &Runner{
 		options: options,
 		nowUTC: func() time.Time {
@@ -142,8 +166,18 @@ func (runner *Runner) runCase(ctx context.Context, testCase TopologyCase) (CaseV
 	commandLogPath := filepath.Join(logDir, "runner.log")
 	logFiles := []string{filepath.ToSlash(commandLogPath)}
 	commands := make([]commandResult, 0, 8)
-	status := "planned"
+	status := actualStatusPlanned
 	var firstError string
+	var infraReason string
+	expected := expectedStatusPass
+	expectation := defaultExpectedFailure(testCase)
+	if expectation != "" {
+		expected = expectedStatusFail
+	}
+	if reason, ok := runner.options.ExpectedFailures[testCase.ID]; ok {
+		expected = expectedStatusFail
+		expectation = reason
+	}
 
 	if !runner.options.Execute {
 		planned := []string{
@@ -181,9 +215,10 @@ func (runner *Runner) runCase(ctx context.Context, testCase TopologyCase) (CaseV
 		appendResult := func(result commandResult) {
 			commands = append(commands, result)
 			logFiles = append(logFiles, filepath.ToSlash(result.LogFile))
-			if result.Status == "failed" && firstError == "" {
+			if result.Status == actualStatusFailed && firstError == "" {
 				firstError = result.Error
-				status = "failed"
+				status = actualStatusFailed
+				infraReason = inferInfraReasonFromLog(result.LogFile)
 			}
 		}
 
@@ -209,7 +244,7 @@ func (runner *Runner) runCase(ctx context.Context, testCase TopologyCase) (CaseV
 		for _, step := range startPlan {
 			result := runner.runPlannedCommand(caseCtx, commandLogPath, step.name, step.command, step.enabled, env)
 			appendResult(result)
-			if result.Status == "failed" {
+			if result.Status == actualStatusFailed {
 				break
 			}
 		}
@@ -236,15 +271,21 @@ func (runner *Runner) runCase(ctx context.Context, testCase TopologyCase) (CaseV
 		}
 
 		if firstError == "" {
-			status = "passed"
+			status = actualStatusPassed
 		}
 	}
+
+	outcome := classifyCaseOutcome(status, expected, infraReason)
 
 	verdict := CaseVerdict{
 		CaseID:      testCase.ID,
 		Kind:        testCase.Kind,
 		Target:      runner.options.Target,
 		Status:      status,
+		Outcome:     outcome,
+		InfraReason: infraReason,
+		Expected:    expected,
+		Expectation: expectation,
 		Error:       firstError,
 		StartedAt:   startedAt.Format(time.RFC3339),
 		EndedAt:     runner.nowUTC().Format(time.RFC3339),
@@ -289,6 +330,7 @@ func (runner *Runner) writeCaseConfigs(testCase TopologyCase, configDir string) 
 			"southbound_addr_env":   "MATRIX_ADAPTER_ADDR",
 			"northbound_enh_env":    "MATRIX_PROXY_ENH_ADDR",
 			"northbound_ens_env":    "MATRIX_PROXY_ENS_ADDR",
+			"northbound_tcp_env":    "MATRIX_PROXY_TCP_ADDR",
 			"northbound_udp_env":    "MATRIX_PROXY_UDP_ADDR",
 			"max_parallel_sessions": 2,
 		}
@@ -304,7 +346,16 @@ func (runner *Runner) writeCaseConfigs(testCase TopologyCase, configDir string) 
 		deviceEnv := "MATRIX_ADAPTER_ADDR"
 		if testCase.EbusdViaProxy {
 			target = "proxy"
-			deviceEnv = "MATRIX_PROXY_ENS_ADDR"
+			switch testCase.EbusdTransport {
+			case TransportUDPPlain:
+				deviceEnv = "MATRIX_PROXY_UDP_ADDR"
+			case TransportTCPPlain:
+				deviceEnv = "MATRIX_PROXY_TCP_ADDR"
+			case TransportENH:
+				deviceEnv = "MATRIX_PROXY_ENH_ADDR"
+			default:
+				deviceEnv = "MATRIX_PROXY_ENS_ADDR"
+			}
 		}
 		ebusdConfig := map[string]any{
 			"case_id":          testCase.ID,
@@ -442,4 +493,86 @@ func uniqueStrings(values []string) []string {
 		filtered = append(filtered, trimmed)
 	}
 	return filtered
+}
+
+func classifyCaseOutcome(actualStatus string, expectedStatus string, infraReason string) string {
+	if actualStatus == actualStatusPlanned {
+		return caseOutcomePlanned
+	}
+	if strings.TrimSpace(infraReason) != "" {
+		return caseOutcomeBlocked
+	}
+	if expectedStatus == expectedStatusFail {
+		if actualStatus == actualStatusFailed {
+			return caseOutcomeXFail
+		}
+		if actualStatus == actualStatusPassed {
+			return caseOutcomeXPass
+		}
+	}
+	if actualStatus == actualStatusPassed {
+		return caseOutcomePass
+	}
+	return caseOutcomeFail
+}
+
+func inferInfraReasonFromLog(logFilePath string) string {
+	data, err := os.ReadFile(logFilePath)
+	if err != nil {
+		return ""
+	}
+	lower := strings.ToLower(string(data))
+	if strings.Contains(lower, "adapter preflight failed: ebus signal is not acquired") {
+		return infraReasonAdapterNoSignal
+	}
+	if strings.Contains(lower, "adapter reports ebus signal: no signal") {
+		return infraReasonAdapterNoSignal
+	}
+	if strings.Contains(lower, "ebus signal: no signal") {
+		return infraReasonAdapterNoSignal
+	}
+	return ""
+}
+
+func normalizeExpectedFailures(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make(map[string]string, len(values))
+	for key, value := range values {
+		caseID := strings.TrimSpace(strings.ToUpper(key))
+		if caseID == "" {
+			continue
+		}
+		reason := strings.TrimSpace(value)
+		if reason == "" {
+			reason = "known limitation"
+		}
+		normalized[caseID] = reason
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func defaultExpectedFailure(testCase TopologyCase) string {
+	if testCase.Kind == TopologyViaEbusdTCP {
+		if testCase.EbusdTransport == TransportUDPPlain || testCase.EbusdTransport == TransportTCPPlain {
+			return "ebusd direct udp/tcp to adapter reports no signal in matrix runs"
+		}
+		return ""
+	}
+	if testCase.Kind == TopologyProxyDual {
+		if testCase.ProxyTransport == TransportUDPPlain {
+			return "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)"
+		}
+		if testCase.ProxyTransport == TransportTCPPlain {
+			return "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)"
+		}
+		if testCase.EbusdTransport == TransportUDPPlain {
+			return "proxy dual-client with ebusd northbound udp reports no signal"
+		}
+	}
+	return ""
 }

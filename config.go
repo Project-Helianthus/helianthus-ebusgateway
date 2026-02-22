@@ -17,6 +17,7 @@ const (
 	TransportENH      TransportProtocol = "enh"
 	TransportENS      TransportProtocol = "ens"
 	TransportUDPPlain TransportProtocol = "udp-plain"
+	TransportTCPPlain TransportProtocol = "tcp-plain"
 	TransportEbusdTCP TransportProtocol = "ebusd-tcp"
 )
 

@@ -310,6 +310,24 @@ func TestNormalizeTransportConfigUDPPlainEndpoint(t *testing.T) {
 	}
 }
 
+func TestNormalizeTransportConfigTCPPlainEndpoint(t *testing.T) {
+	cfg, err := normalizeTransportConfig(TransportConfig{
+		Address: "tcp-plain://127.0.0.1:9999",
+	})
+	if err != nil {
+		t.Fatalf("normalizeTransportConfig error = %v", err)
+	}
+	if cfg.Protocol != TransportTCPPlain {
+		t.Fatalf("protocol = %q; want %q", cfg.Protocol, TransportTCPPlain)
+	}
+	if cfg.Network != "tcp" {
+		t.Fatalf("network = %q; want tcp", cfg.Network)
+	}
+	if cfg.Address != "127.0.0.1:9999" {
+		t.Fatalf("address = %q; want 127.0.0.1:9999", cfg.Address)
+	}
+}
+
 func TestTransportFromConn_UDPPlain(t *testing.T) {
 	t.Run("requires udp conn", func(t *testing.T) {
 		client, server := net.Pipe()
@@ -344,6 +362,23 @@ func TestTransportFromConn_UDPPlain(t *testing.T) {
 		}
 		_ = raw.Close()
 	})
+}
+
+func TestTransportFromConn_TCPPlain(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
+
+	raw, err := transportFromConn(TransportTCPPlain, client, 200*time.Millisecond, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("transportFromConn error = %v", err)
+	}
+	if _, ok := raw.(*transport.TCPPlainTransport); !ok {
+		t.Fatalf("transport = %T; want *transport.TCPPlainTransport", raw)
+	}
+	_ = raw.Close()
 }
 
 func TestClampEbusdTCPTimeouts_UsesMinimumForShortOrUnset(t *testing.T) {

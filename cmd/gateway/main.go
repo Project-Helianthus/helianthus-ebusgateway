@@ -26,8 +26,9 @@ func main() {
 	cfg := ebusgateway.DefaultConfig()
 	bindFlags(flag.CommandLine, &cfg)
 	flag.Parse()
+	applyTransportSourcePolicy(&cfg)
 
-	if cfg.ScanSource == 0x31 {
+	if cfg.ScanSource == 0x31 && !cfg.ScanSourceAuto {
 		log.Printf("warning: source-addr=0x31 is commonly used by ebusd; when running alongside ebusd pick a different source address (e.g. --source-addr=0xf0)")
 	}
 
@@ -40,6 +41,8 @@ func main() {
 }
 
 func run(ctx context.Context, cfg ebusgateway.Config) error {
+	applyTransportSourcePolicy(&cfg)
+
 	if len(cfg.Providers) == 0 {
 		cfg.Providers = vaillantproviders.Default()
 	}
@@ -111,12 +114,29 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	return nil
 }
 
+func applyTransportSourcePolicy(cfg *ebusgateway.Config) {
+	if cfg == nil {
+		return
+	}
+	if !cfg.ScanSourceAuto {
+		return
+	}
+
+	protocol := strings.TrimSpace(strings.ToLower(string(cfg.TransportConfig.Protocol)))
+	switch protocol {
+	case "ebusd", "ebusd-tcp":
+		cfg.ScanSource = 0x31
+	default:
+		cfg.ScanSource = 0x00
+	}
+}
+
 func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	if fs == nil || cfg == nil {
 		return
 	}
 
-	fs.StringVar((*string)(&cfg.TransportConfig.Protocol), "transport", string(cfg.TransportConfig.Protocol), "transport protocol: enh, ens, udp-plain, or ebusd-tcp")
+	fs.StringVar((*string)(&cfg.TransportConfig.Protocol), "transport", string(cfg.TransportConfig.Protocol), "transport protocol: enh, ens, udp-plain, tcp-plain, or ebusd-tcp")
 	fs.StringVar(&cfg.TransportConfig.Network, "network", cfg.TransportConfig.Network, "transport network: unix, tcp, or udp")
 	fs.StringVar(&cfg.TransportConfig.Address, "address", cfg.TransportConfig.Address, "transport address (unix socket path or host:port)")
 	fs.DurationVar(&cfg.TransportConfig.ReadTimeout, "read-timeout", cfg.TransportConfig.ReadTimeout, "transport read timeout")

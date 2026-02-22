@@ -51,3 +51,29 @@ func TestBindFlags_SourceAddrExplicitDisablesAuto(t *testing.T) {
 		t.Fatal("ScanSourceAuto = true; want false")
 	}
 }
+
+func TestApplyTransportSourcePolicy_EbusdTCPAutoUsesEbusdSource(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
+	cfg.ScanSource = 0x00
+	cfg.ScanSourceAuto = true
+
+	applyTransportSourcePolicy(&cfg)
+
+	if cfg.ScanSource != 0x31 {
+		t.Fatalf("ScanSource = 0x%02x; want 0x31", cfg.ScanSource)
+	}
+}
+
+func TestApplyTransportSourcePolicy_NonEbusdAutoRemainsDynamic(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.TransportConfig.Protocol = ebusgateway.TransportENH
+	cfg.ScanSource = 0x00
+	cfg.ScanSourceAuto = true
+
+	applyTransportSourcePolicy(&cfg)
+
+	if cfg.ScanSource != 0x00 {
+		t.Fatalf("ScanSource = 0x%02x; want 0x00", cfg.ScanSource)
+	}
+}

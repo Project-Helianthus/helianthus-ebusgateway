@@ -34,3 +34,5 @@ else
   echo "==> golangci-lint not found; skipping"
 fi
 
+echo "==> transport gate"
+./scripts/transport_gate.sh

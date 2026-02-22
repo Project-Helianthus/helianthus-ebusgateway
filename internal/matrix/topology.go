@@ -8,6 +8,7 @@ const (
 	TransportENS      Transport = "ens"
 	TransportENH      Transport = "enh"
 	TransportUDPPlain Transport = "udp"
+	TransportTCPPlain Transport = "tcp"
 	TransportEbusdTCP Transport = "ebusd-tcp"
 )
 
@@ -15,6 +16,7 @@ var StandardTransports = []Transport{
 	TransportENS,
 	TransportENH,
 	TransportUDPPlain,
+	TransportTCPPlain,
 }
 
 type TopologyKind string
@@ -45,7 +47,7 @@ func GenerateTopologyCases() []TopologyCase {
 		return value
 	}
 
-	cases := make([]TopologyCase, 0, 42)
+	cases := make([]TopologyCase, 0, 88)
 
 	for _, transport := range StandardTransports {
 		cases = append(cases, TopologyCase{

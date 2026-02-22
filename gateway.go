@@ -145,7 +145,7 @@ func resolveTransport(ctx context.Context, cfg Config) (transport.RawTransport, 
 func clampEbusdTCPTimeouts(config TransportConfig, scanRequestTimeout time.Duration) TransportConfig {
 	minTimeout := scanRequestTimeout
 	switch config.Protocol {
-	case TransportEbusdTCP, TransportENH, TransportENS, TransportUDPPlain:
+	case TransportEbusdTCP, TransportENH, TransportENS, TransportUDPPlain, TransportTCPPlain:
 	default:
 		return config
 	}
@@ -212,9 +212,15 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 		protocol = TransportENH
 	case "udp-plain":
 		protocol = TransportUDPPlain
+	case "tcp-plain":
+		protocol = TransportTCPPlain
 	case "ebusd", "ebusd-tcp":
 		protocol = TransportEbusdTCP
-	case "tcp", "unix":
+	case "tcp":
+		if protocol == "" {
+			protocol = TransportTCPPlain
+		}
+	case "unix":
 	default:
 		return "", "", "", fmt.Errorf("gateway transport endpoint unsupported scheme %q", scheme)
 	}
@@ -241,6 +247,9 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 	if scheme == "udp-plain" && network != "udp" {
 		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing udp host", endpoint)
 	}
+	if scheme == "tcp-plain" && network != "tcp" {
+		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing tcp host", endpoint)
+	}
 	if scheme == "unix" && network != "unix" {
 		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing unix path", endpoint)
 	}
@@ -264,6 +273,8 @@ func transportFromConn(protocolName TransportProtocol, conn net.Conn, readTimeou
 			return nil, fmt.Errorf("gateway transport %q requires udp connection: %w", protocolName, ebuserrors.ErrInvalidPayload)
 		}
 		return transport.NewUDPPlainTransport(udpConn, readTimeout, writeTimeout), nil
+	case TransportTCPPlain:
+		return transport.NewTCPPlainTransport(conn, readTimeout, writeTimeout), nil
 	case TransportEbusdTCP, TransportProtocol("ebusd"):
 		return transport.NewEbusdTCPTransport(conn, readTimeout, writeTimeout), nil
 	default:

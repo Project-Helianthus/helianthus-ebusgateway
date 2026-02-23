@@ -141,6 +141,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	if endpoints["graphql"] != "/graphql" {
 		t.Fatalf("graphql endpoint=%v; want /graphql", endpoints["graphql"])
 	}
+	if endpoints["search"] != "/portal/api/v1/search" {
+		t.Fatalf("search endpoint=%v; want /portal/api/v1/search", endpoints["search"])
+	}
 	capabilities := payload["capabilities"].(map[string]any)
 	if capabilities["registry"] != true {
 		t.Fatalf("capabilities.registry=%v; want true", capabilities["registry"])
@@ -150,6 +153,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	}
 	if capabilities["projection"] != true {
 		t.Fatalf("capabilities.projection=%v; want true", capabilities["projection"])
+	}
+	if capabilities["search"] != true {
+		t.Fatalf("capabilities.search=%v; want true", capabilities["search"])
 	}
 }
 
@@ -409,5 +415,87 @@ func TestProjectionGraphEndpoint(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing plane status=%d; want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestSearchEndpoint(t *testing.T) {
+	current := 21.7
+	h := NewHandler(Options{
+		ListRegistry: func() []RegistryDevice {
+			return []RegistryDevice{
+				{
+					Address:      0x10,
+					Manufacturer: "Vaillant",
+					DeviceID:     "VRC720",
+					Planes: []RegistryPlane{
+						{Name: "system", Methods: []string{"get_status"}},
+					},
+				},
+			}
+		},
+		ListSemantic: func() SemanticSnapshot {
+			return SemanticSnapshot{
+				Zones: []SemanticZone{
+					{ID: "zone_1", Name: "Living", OperatingMode: "auto", CurrentTempC: &current},
+				},
+				DHW: &SemanticDHW{OperatingMode: "auto"},
+			}
+		},
+		ListProjections: func() []ProjectionDevice {
+			return []ProjectionDevice{
+				{
+					Address:      0x10,
+					DeviceID:     "VRC720",
+					DisplayName:  "sensoCOMFORT",
+					Manufacturer: "Vaillant",
+					Projections: []ProjectionSummary{
+						{Plane: "Service", NodeCount: 1, EdgeCount: 1},
+					},
+				},
+			}
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=service&limit=10", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload["query"] != "service" {
+		t.Fatalf("query=%v; want service", payload["query"])
+	}
+	items := payload["items"].([]any)
+	if len(items) == 0 {
+		t.Fatalf("expected at least one search result")
+	}
+	first := items[0].(map[string]any)
+	if first["layer"] == "" {
+		t.Fatalf("layer missing on first result")
+	}
+	if first["title"] == "" {
+		t.Fatalf("title missing on first result")
+	}
+}
+
+func TestSearchEndpoint_EmptyQuery(t *testing.T) {
+	h := NewHandler(Options{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=&limit=10", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if int(payload["count"].(float64)) != 0 {
+		t.Fatalf("count=%v; want 0", payload["count"])
 	}
 }

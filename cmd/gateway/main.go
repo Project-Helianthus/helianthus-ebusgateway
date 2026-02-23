@@ -21,6 +21,7 @@ import (
 	"github.com/d3vi1/helianthus-ebusgateway/portal"
 	"github.com/d3vi1/helianthus-ebusgateway/ui"
 	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
+	"github.com/d3vi1/helianthus-ebusreg/registry"
 )
 
 var (
@@ -265,6 +266,44 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 			MCPPath:          cfg.MCPPath,
 			GatewayVersion:   buildVersion,
 			BuildID:          buildID,
+			ListRegistry: func() []portal.RegistryDevice {
+				items := make([]portal.RegistryDevice, 0)
+				gateway.Registry.Iterate(func(entry registry.DeviceEntry) bool {
+					if entry == nil {
+						return true
+					}
+					device := portal.RegistryDevice{
+						Address:      entry.Address(),
+						Addresses:    append([]byte(nil), entry.Addresses()...),
+						Manufacturer: entry.Manufacturer(),
+						DeviceID:     entry.DeviceID(),
+						SerialNumber: entry.SerialNumber(),
+						Software:     entry.SoftwareVersion(),
+						Hardware:     entry.HardwareVersion(),
+						Planes:       make([]portal.RegistryPlane, 0),
+					}
+					for _, plane := range entry.Planes() {
+						if plane == nil {
+							continue
+						}
+						methods := plane.Methods()
+						methodNames := make([]string, 0, len(methods))
+						for _, method := range methods {
+							if method == nil {
+								continue
+							}
+							methodNames = append(methodNames, method.Name())
+						}
+						device.Planes = append(device.Planes, portal.RegistryPlane{
+							Name:    plane.Name(),
+							Methods: methodNames,
+						})
+					}
+					items = append(items, device)
+					return true
+				})
+				return items
+			},
 		})
 		mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))
 		mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {

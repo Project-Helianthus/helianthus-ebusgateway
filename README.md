@@ -91,6 +91,9 @@ curl -fsS http://127.0.0.1:8080/graphql \
 curl -fsS http://127.0.0.1:8080/mcp \
   -H 'content-type: application/json' \
   --data '{"jsonrpc":"2.0","id":"ready","method":"ping","params":{}}'
+
+# Portal registry browse preview
+curl -fsS 'http://127.0.0.1:8080/portal/api/v1/registry/devices?limit=5'
 ```
 
 ## Local Smoke-Test Configuration Example

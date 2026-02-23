@@ -18,6 +18,13 @@ if [ -n "${unformatted}" ]; then
   exit 1
 fi
 
+if command -v npm >/dev/null 2>&1; then
+  echo "==> portal assets"
+  ./scripts/check_portal_assets.sh
+else
+  echo "==> npm not found; skipping portal asset check"
+fi
+
 echo "==> go vet"
 go vet ./...
 

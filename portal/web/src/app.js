@@ -1,4 +1,3 @@
-// Generated from portal/web/src/app.js. DO NOT EDIT.
 const THEME_KEY = "helianthus-portal-theme";
 
 function loadTheme() {

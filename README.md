@@ -1,6 +1,6 @@
 # helianthus-ebusgateway
 
-`helianthus-ebusgateway` is the runtime/API edge for Helianthus eBUS systems. It connects to an eBUS transport and exposes GraphQL, subscriptions, MCP, optional UI, and optional mDNS advertisement.
+`helianthus-ebusgateway` is the runtime/API edge for Helianthus eBUS systems. It connects to an eBUS transport and exposes GraphQL, subscriptions, MCP, optional UI surfaces (`/ui`, `/portal`), and optional mDNS advertisement.
 
 ## Purpose and Scope
 
@@ -154,6 +154,7 @@ go run ./cmd/gateway -address tcp-plain://203.0.113.10:9999 -http-addr :8080
 | `-snapshot-path` | `/snapshot` | projection snapshot endpoint |
 | `-mcp-path` | `/mcp` | MCP JSON-RPC endpoint |
 | `-ui-path` | `/ui` | set empty to disable UI |
+| `-portal-path` | `/portal` | set empty to disable dynamic portal surface |
 | `-mdns` | `true` | set `false` outside trusted LAN |
 | `-dump-upload-path` | _disabled_ | unknown-device dump upload endpoint path |
 

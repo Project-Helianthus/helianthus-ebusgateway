@@ -18,8 +18,14 @@ import (
 	"github.com/d3vi1/helianthus-ebusgateway/graphql"
 	"github.com/d3vi1/helianthus-ebusgateway/mcp"
 	"github.com/d3vi1/helianthus-ebusgateway/mdns"
+	"github.com/d3vi1/helianthus-ebusgateway/portal"
 	"github.com/d3vi1/helianthus-ebusgateway/ui"
 	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
+)
+
+var (
+	buildVersion = "dev"
+	buildID      = "unknown"
 )
 
 func main() {
@@ -168,6 +174,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.StringVar(&cfg.SubscriptionPath, "subscription-path", cfg.SubscriptionPath, "graphql subscriptions path")
 	fs.StringVar(&cfg.MCPPath, "mcp-path", cfg.MCPPath, "mcp endpoint path")
 	fs.StringVar(&cfg.UIPath, "ui-path", cfg.UIPath, "portal ui path")
+	fs.StringVar(&cfg.PortalPath, "portal-path", cfg.PortalPath, "dynamic portal path")
 	fs.StringVar(&cfg.DumpUploadPath, "dump-upload-path", cfg.DumpUploadPath, "register dump upload endpoint path")
 	fs.BoolVar(&cfg.MDNSAdvertise, "mdns", cfg.MDNSAdvertise, "advertise graphql endpoint via mdns")
 	fs.StringVar(&cfg.MDNSInstance, "mdns-instance", cfg.MDNSInstance, "mdns instance name")
@@ -250,6 +257,24 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 		mux.Handle(uiPath+"/", http.StripPrefix(uiPath, uiHandler))
 		mux.HandleFunc(uiPath, func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, uiPath+"/", http.StatusMovedPermanently)
+		})
+	}
+	if cfg.PortalPath != "" {
+		portalPath := cfg.PortalPath
+		if !strings.HasPrefix(portalPath, "/") {
+			portalPath = "/" + portalPath
+		}
+		portalHandler := portal.NewHandler(portal.Options{
+			GraphQLPath:      cfg.GraphQLPath,
+			SnapshotPath:     cfg.SnapshotPath,
+			SubscriptionPath: cfg.SubscriptionPath,
+			MCPPath:          cfg.MCPPath,
+			GatewayVersion:   buildVersion,
+			BuildID:          buildID,
+		})
+		mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))
+		mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, portalPath+"/", http.StatusMovedPermanently)
 		})
 	}
 

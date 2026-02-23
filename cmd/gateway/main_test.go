@@ -77,3 +77,15 @@ func TestApplyTransportSourcePolicy_NonEbusdAutoRemainsDynamic(t *testing.T) {
 		t.Fatalf("ScanSource = 0x%02x; want 0x00", cfg.ScanSource)
 	}
 }
+
+func TestBindFlags_PortalPath(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-portal-path", "/portal-v2"}); err != nil {
+		t.Fatalf("parse portal-path: %v", err)
+	}
+	if cfg.PortalPath != "/portal-v2" {
+		t.Fatalf("PortalPath = %q; want /portal-v2", cfg.PortalPath)
+	}
+}

@@ -20,6 +20,7 @@ import (
 const (
 	vaillantExtRegisterPrimary   = byte(0xB5)
 	vaillantExtRegisterSecondary = byte(0x24)
+	vaillantB524OpcodeRead       = byte(0x06)
 	vaillantB524OpcodeLocal      = byte(0x02)
 	vaillantB524OpRead           = byte(0x00)
 
@@ -369,7 +370,7 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 			Target:    target,
 			Primary:   vaillantExtRegisterPrimary,
 			Secondary: vaillantExtRegisterSecondary,
-			Data:      []byte{opcode, vaillantB524OpRead, group, instance, byte(addr), byte(addr >> 8)},
+			Data:      buildB524ReadSelector(opcode, group, instance, addr),
 		}
 		response, err := p.bus.Send(reqCtx, request)
 		if err != nil {
@@ -388,6 +389,18 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 		return nil, false
 	}
 	return value, true
+}
+
+func buildB524ReadSelector(opcode, group, instance byte, addr uint16) []byte {
+	return []byte{
+		vaillantB524OpcodeRead,
+		opcode,
+		vaillantB524OpRead,
+		group,
+		instance,
+		byte(addr),
+		byte(addr >> 8),
+	}
 }
 
 func parseB524ReadPayload(payload []byte, opcode, group, instance byte, addr uint16) ([]byte, bool) {

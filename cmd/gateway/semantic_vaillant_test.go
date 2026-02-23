@@ -2,6 +2,21 @@ package main
 
 import "testing"
 
+func TestBuildB524ReadSelector(t *testing.T) {
+	t.Parallel()
+
+	got := buildB524ReadSelector(0x02, 0x03, 0x01, 0x001C)
+	want := []byte{0x06, 0x02, 0x00, 0x03, 0x01, 0x1C, 0x00}
+	if len(got) != len(want) {
+		t.Fatalf("len(got)=%d; want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("got[%d]=0x%02x; want 0x%02x", i, got[i], want[i])
+		}
+	}
+}
+
 func TestParseB524ReadPayload(t *testing.T) {
 	t.Parallel()
 

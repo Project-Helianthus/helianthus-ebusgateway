@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
@@ -86,6 +87,8 @@ type Server struct {
 	invoker        Invoker
 	statusProvider StatusProvider
 	semantic       SemanticProvider
+	idempotencyMu  sync.Mutex
+	idempotency    map[string]idempotencyEntry
 
 	tools []Tool
 }
@@ -108,9 +111,12 @@ const (
 	methodDangerUnknown       = "unknown"
 	methodDangerSafe          = "safe"
 	methodDangerDangerous     = "dangerous"
+	defaultInvokeTimeout      = 3 * time.Second
+	defaultIdempotencyTTL     = 30 * time.Second
 )
 
 var errInvokePermissionDenied = errors.New("invoke permission denied")
+var errInvokeIdempotencyConflict = errors.New("invoke idempotency conflict")
 
 type staticStatusProvider struct{}
 type staticSemanticProvider struct{}
@@ -144,6 +150,18 @@ func (staticSemanticProvider) EnergyTotals() *EnergyTotals {
 	return nil
 }
 
+type idempotencyEntry struct {
+	signature string
+	result    any
+	expiresAt time.Time
+}
+
+type invokeV1Policy struct {
+	intent         string
+	idempotencyKey string
+	timeout        time.Duration
+}
+
 func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("mcp server missing registry: %w", ebuserrors.ErrInvalidPayload)
@@ -154,6 +172,7 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 		invoker:        invoker,
 		statusProvider: staticStatusProvider{},
 		semantic:       staticSemanticProvider{},
+		idempotency:    make(map[string]idempotencyEntry),
 	}
 	server.tools = []Tool{
 		{
@@ -231,6 +250,7 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 					"intent":          map[string]any{"type": "string", "enum": []string{"READ_ONLY", "MUTATE"}},
 					"allow_dangerous": map[string]any{"type": "boolean"},
 					"idempotency_key": map[string]any{"type": "string"},
+					"timeout_ms":      map[string]any{"type": "integer", "minimum": 1},
 				},
 				"required":             []string{"address", "plane", "method", "intent", "allow_dangerous"},
 				"additionalProperties": false,
@@ -425,12 +445,36 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		if s.invoker == nil {
 			return nil, rpcErrorInternal("server missing invoker")
 		}
-		if err := s.enforceInvokeV1Safety(call.Arguments); err != nil {
-			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
-		}
-		out, err := s.invoke(ctx, call.Arguments)
+		policy, err := s.enforceInvokeV1Safety(call.Arguments)
 		if err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		signature := ""
+		if policy.intent == "MUTATE" {
+			signature, err = buildInvokeIdempotencySignature(call.Arguments)
+			if err != nil {
+				return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+			}
+			if cached, ok, err := s.lookupIdempotency(policy.idempotencyKey, signature); err != nil {
+				return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+			} else if ok {
+				return callToolResultText(mustJSON(newToolEnvelope(cached, nil)), false), nil
+			}
+		}
+
+		invokeCtx := ctx
+		cancel := func() {}
+		if policy.timeout > 0 {
+			invokeCtx, cancel = context.WithTimeout(ctx, policy.timeout)
+		}
+		defer cancel()
+
+		out, err := s.invoke(invokeCtx, call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		if policy.intent == "MUTATE" {
+			s.storeIdempotency(policy.idempotencyKey, signature, out)
 		}
 		return callToolResultText(mustJSON(newToolEnvelope(out, nil)), false), nil
 	case toolInvokeLegacyName:
@@ -490,8 +534,12 @@ func hashData(data any) string {
 
 func classifyToolError(err error) (code string, retriable bool, sourceLayer string) {
 	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "TIMEOUT", true, "gateway"
 	case errors.Is(err, errInvokePermissionDenied):
 		return "PERMISSION_DENIED", false, "gateway"
+	case errors.Is(err, errInvokeIdempotencyConflict):
+		return "CONFLICT", false, "gateway"
 	case errors.Is(err, ebuserrors.ErrInvalidPayload):
 		return "INVALID_ARGUMENT", false, "ebusreg"
 	case errors.Is(err, ebuserrors.ErrNoSuchDevice):
@@ -513,52 +561,63 @@ func classifyToolError(err error) (code string, retriable bool, sourceLayer stri
 	}
 }
 
-func (s *Server) enforceInvokeV1Safety(args map[string]any) error {
+func (s *Server) enforceInvokeV1Safety(args map[string]any) (invokeV1Policy, error) {
+	policy := invokeV1Policy{
+		timeout: defaultInvokeTimeout,
+	}
+
 	address, err := parseAddress(args["address"])
 	if err != nil {
-		return err
+		return invokeV1Policy{}, err
 	}
 	planeName, _ := args["plane"].(string)
 	if planeName == "" {
-		return fmt.Errorf("missing plane: %w", ebuserrors.ErrInvalidPayload)
+		return invokeV1Policy{}, fmt.Errorf("missing plane: %w", ebuserrors.ErrInvalidPayload)
 	}
 	methodName, _ := args["method"].(string)
 	if methodName == "" {
-		return fmt.Errorf("missing method: %w", ebuserrors.ErrInvalidPayload)
+		return invokeV1Policy{}, fmt.Errorf("missing method: %w", ebuserrors.ErrInvalidPayload)
 	}
 	intent, _ := args["intent"].(string)
 	intent = strings.TrimSpace(intent)
 	if intent == "" {
-		return fmt.Errorf("missing intent: %w", ebuserrors.ErrInvalidPayload)
+		return invokeV1Policy{}, fmt.Errorf("missing intent: %w", ebuserrors.ErrInvalidPayload)
 	}
+	policy.intent = intent
 	allowDangerous, ok := args["allow_dangerous"].(bool)
 	if !ok {
-		return fmt.Errorf("missing allow_dangerous: %w", ebuserrors.ErrInvalidPayload)
+		return invokeV1Policy{}, fmt.Errorf("missing allow_dangerous: %w", ebuserrors.ErrInvalidPayload)
+	}
+	if timeout, err := parseInvokeTimeout(args["timeout_ms"]); err != nil {
+		return invokeV1Policy{}, err
+	} else if timeout > 0 {
+		policy.timeout = timeout
 	}
 
 	methodKnown, methodReadOnly, err := s.lookupMethodMutability(address, planeName, methodName)
 	if err != nil {
-		return err
+		return invokeV1Policy{}, err
 	}
 
 	switch intent {
 	case "READ_ONLY":
 		if !methodKnown || !methodReadOnly {
-			return fmt.Errorf("READ_ONLY intent denied for mutating/unknown method: %w", errInvokePermissionDenied)
+			return invokeV1Policy{}, fmt.Errorf("READ_ONLY intent denied for mutating/unknown method: %w", errInvokePermissionDenied)
 		}
 	case "MUTATE":
 		if !allowDangerous {
-			return fmt.Errorf("MUTATE intent requires allow_dangerous=true: %w", errInvokePermissionDenied)
+			return invokeV1Policy{}, fmt.Errorf("MUTATE intent requires allow_dangerous=true: %w", errInvokePermissionDenied)
 		}
 		idempotencyKey, _ := args["idempotency_key"].(string)
 		if strings.TrimSpace(idempotencyKey) == "" {
-			return fmt.Errorf("MUTATE intent requires idempotency_key: %w", errInvokePermissionDenied)
+			return invokeV1Policy{}, fmt.Errorf("MUTATE intent requires idempotency_key: %w", errInvokePermissionDenied)
 		}
+		policy.idempotencyKey = strings.TrimSpace(idempotencyKey)
 	default:
-		return fmt.Errorf("invalid intent %q: %w", intent, ebuserrors.ErrInvalidPayload)
+		return invokeV1Policy{}, fmt.Errorf("invalid intent %q: %w", intent, ebuserrors.ErrInvalidPayload)
 	}
 
-	return nil
+	return policy, nil
 }
 
 func (s *Server) lookupMethodMutability(address byte, planeName string, methodName string) (methodKnown bool, methodReadOnly bool, err error) {
@@ -584,6 +643,94 @@ func (s *Server) lookupMethodMutability(address byte, planeName string, methodNa
 		}
 	}
 	return false, false, nil
+}
+
+func parseInvokeTimeout(raw any) (time.Duration, error) {
+	if raw == nil {
+		return defaultInvokeTimeout, nil
+	}
+
+	switch value := raw.(type) {
+	case int:
+		if value <= 0 {
+			return 0, fmt.Errorf("invalid timeout_ms: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return time.Duration(value) * time.Millisecond, nil
+	case int64:
+		if value <= 0 {
+			return 0, fmt.Errorf("invalid timeout_ms: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return time.Duration(value) * time.Millisecond, nil
+	case float64:
+		if value <= 0 || value != float64(int(value)) {
+			return 0, fmt.Errorf("invalid timeout_ms: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return time.Duration(int(value)) * time.Millisecond, nil
+	default:
+		return 0, fmt.Errorf("invalid timeout_ms: %w", ebuserrors.ErrInvalidPayload)
+	}
+}
+
+func buildInvokeIdempotencySignature(args map[string]any) (string, error) {
+	payload := map[string]any{
+		"address": args["address"],
+		"plane":   args["plane"],
+		"method":  args["method"],
+		"params":  args["params"],
+		"intent":  args["intent"],
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to canonicalize idempotency payload: %w", ebuserrors.ErrInvalidPayload)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func (s *Server) lookupIdempotency(key string, signature string) (any, bool, error) {
+	now := time.Now()
+	s.idempotencyMu.Lock()
+	defer s.idempotencyMu.Unlock()
+
+	for candidate, entry := range s.idempotency {
+		if now.After(entry.expiresAt) {
+			delete(s.idempotency, candidate)
+		}
+	}
+
+	entry, ok := s.idempotency[key]
+	if !ok {
+		return nil, false, nil
+	}
+	if entry.signature != signature {
+		return nil, false, fmt.Errorf("idempotency key reused with different payload: %w", errInvokeIdempotencyConflict)
+	}
+	return cloneJSONValue(entry.result), true, nil
+}
+
+func (s *Server) storeIdempotency(key string, signature string, result any) {
+	if strings.TrimSpace(key) == "" {
+		return
+	}
+	s.idempotencyMu.Lock()
+	s.idempotency[key] = idempotencyEntry{
+		signature: signature,
+		result:    cloneJSONValue(result),
+		expiresAt: time.Now().Add(defaultIdempotencyTTL),
+	}
+	s.idempotencyMu.Unlock()
+}
+
+func cloneJSONValue(value any) any {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return value
+	}
+	return out
 }
 
 type deviceInfo struct {

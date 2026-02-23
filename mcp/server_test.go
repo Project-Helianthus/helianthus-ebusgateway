@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
 	"github.com/d3vi1/helianthus-ebusgo/protocol"
@@ -129,6 +130,21 @@ func (i *testInvoker) Invoke(ctx context.Context, plane router.Plane, methodName
 	return map[string]any{"ok": true}, nil
 }
 
+type slowInvoker struct {
+	delay time.Duration
+	calls int
+}
+
+func (i *slowInvoker) Invoke(ctx context.Context, plane router.Plane, methodName string, params map[string]any) (any, error) {
+	i.calls++
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(i.delay):
+		return map[string]any{"ok": true}, nil
+	}
+}
+
 type testStatusProvider struct {
 	daemon  ServiceStatus
 	adapter ServiceStatus
@@ -239,7 +255,7 @@ func TestServer_InitializeAndTools(t *testing.T) {
 	if !ok {
 		t.Fatalf("invoke v1 properties type = %T; want map", inputSchema["properties"])
 	}
-	for _, key := range []string{"intent", "allow_dangerous", "idempotency_key"} {
+	for _, key := range []string{"intent", "allow_dangerous", "idempotency_key", "timeout_ms"} {
 		if _, ok := properties[key]; !ok {
 			t.Fatalf("invoke v1 properties missing %q", key)
 		}
@@ -862,6 +878,109 @@ func TestServer_ToolsCallInvokeV1SafetyGuards(t *testing.T) {
 	})
 }
 
+func TestServer_ToolsCallInvokeV1Idempotency(t *testing.T) {
+	plane := &testPlane{
+		name: "heating",
+		methods: []registry.Method{
+			testMethod{
+				name:     "set_target",
+				readOnly: false,
+				template: testTemplate{primary: 0xB5, secondary: 0x05},
+			},
+		},
+	}
+	entry := testEntry{
+		info: registry.DeviceInfo{
+			Address:         0x08,
+			Manufacturer:    "vaillant",
+			DeviceID:        "device-a",
+			SoftwareVersion: "1.0",
+			HardwareVersion: "7603",
+		},
+		planes: []registry.Plane{plane},
+	}
+	reg := &testRegistry{
+		entries: map[byte]registry.DeviceEntry{0x08: entry},
+		order:   []byte{0x08},
+	}
+	invoker := &testInvoker{}
+	server, err := NewServer(reg, invoker)
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	first := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"abc123"}}`),
+	})
+	if first.Error != nil {
+		t.Fatalf("first invoke rpc error = %+v", first.Error)
+	}
+
+	second := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"abc123"}}`),
+	})
+	if second.Error != nil {
+		t.Fatalf("second invoke rpc error = %+v", second.Error)
+	}
+	if len(invoker.calls) != 1 {
+		t.Fatalf("invoker calls = %d; want 1 (deduped)", len(invoker.calls))
+	}
+
+	conflict := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      3,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":22.0},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"abc123"}}`),
+	})
+	assertToolErrorCode(t, conflict, "CONFLICT")
+}
+
+func TestServer_ToolsCallInvokeV1Timeout(t *testing.T) {
+	plane := &testPlane{
+		name: "heating",
+		methods: []registry.Method{
+			testMethod{
+				name:     "get_status",
+				readOnly: true,
+				template: testTemplate{primary: 0xB5, secondary: 0x04},
+			},
+		},
+	}
+	entry := testEntry{
+		info: registry.DeviceInfo{
+			Address:         0x08,
+			Manufacturer:    "vaillant",
+			DeviceID:        "device-a",
+			SoftwareVersion: "1.0",
+			HardwareVersion: "7603",
+		},
+		planes: []registry.Plane{plane},
+	}
+	reg := &testRegistry{
+		entries: map[byte]registry.DeviceEntry{0x08: entry},
+		order:   []byte{0x08},
+	}
+	invoker := &slowInvoker{delay: 50 * time.Millisecond}
+	server, err := NewServer(reg, invoker)
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"get_status","params":{},"intent":"READ_ONLY","allow_dangerous":false,"timeout_ms":1}}`),
+	})
+	assertToolErrorCode(t, res, "TIMEOUT")
+}
+
 func TestClassifyToolError_KnownMappings(t *testing.T) {
 	t.Parallel()
 
@@ -880,6 +999,8 @@ func TestClassifyToolError_KnownMappings(t *testing.T) {
 		{name: "transport closed", err: ebuserrors.ErrTransportClosed, code: "BUS_UNAVAILABLE", retriable: false, sourceLayer: "ebusgo"},
 		{name: "bus collision", err: ebuserrors.ErrBusCollision, code: "BUS_UNAVAILABLE", retriable: true, sourceLayer: "ebusgo"},
 		{name: "retry exhausted", err: ebuserrors.ErrRetryExhausted, code: "BUS_UNAVAILABLE", retriable: true, sourceLayer: "ebusgo"},
+		{name: "deadline exceeded", err: context.DeadlineExceeded, code: "TIMEOUT", retriable: true, sourceLayer: "gateway"},
+		{name: "idempotency conflict", err: errInvokeIdempotencyConflict, code: "CONFLICT", retriable: false, sourceLayer: "gateway"},
 	}
 
 	for _, tc := range cases {

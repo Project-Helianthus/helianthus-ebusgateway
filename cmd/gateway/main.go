@@ -82,7 +82,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	startDiscoveryScanLoop(ctx, cfg, gateway, builder)
 
-	server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, hub)
+	server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, semanticRuntime.Provider(), hub)
 	if err != nil {
 		return err
 	}
@@ -202,7 +202,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	})
 }
 
-func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub) (*http.Server, mdns.Advertiser, error) {
+func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, semanticProvider graphql.SemanticProvider, hub *graphql.BroadcastHub) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
 	}
@@ -236,6 +236,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 		return nil, nil, err
 	}
 	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg))
+	mcpServer.SetSemanticProvider(newMCPSemanticProvider(semanticProvider))
 
 	mux := http.NewServeMux()
 	mux.Handle(cfg.GraphQLPath, queryHandler)

@@ -53,6 +53,8 @@ type Options struct {
 	BuildID          string
 	ListRegistry     func() []RegistryDevice
 	ListSemantic     func() SemanticSnapshot
+	ListProjections  func() []ProjectionDevice
+	GetProjection    func(address byte, plane string) (ProjectionGraph, bool)
 }
 
 type handler struct {
@@ -115,6 +117,39 @@ type SemanticEnergyChannel struct {
 type SemanticEnergySeries struct {
 	Today  float64   `json:"today"`
 	Yearly []float64 `json:"yearly,omitempty"`
+}
+
+type ProjectionDevice struct {
+	Address      byte                `json:"address"`
+	DeviceID     string              `json:"device_id,omitempty"`
+	DisplayName  string              `json:"display_name,omitempty"`
+	Manufacturer string              `json:"manufacturer,omitempty"`
+	Projections  []ProjectionSummary `json:"projections"`
+}
+
+type ProjectionSummary struct {
+	Plane     string `json:"plane"`
+	NodeCount int    `json:"node_count"`
+	EdgeCount int    `json:"edge_count"`
+}
+
+type ProjectionGraph struct {
+	Address byte             `json:"address"`
+	Plane   string           `json:"plane"`
+	Nodes   []ProjectionNode `json:"nodes"`
+	Edges   []ProjectionEdge `json:"edges"`
+}
+
+type ProjectionNode struct {
+	ID            string `json:"id"`
+	Path          string `json:"path"`
+	CanonicalPath string `json:"canonical_path"`
+}
+
+type ProjectionEdge struct {
+	ID   string `json:"id"`
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 func NewHandler(opts Options) http.Handler {
@@ -206,7 +241,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 			"capabilities": map[string]bool{
 				"registry":   h.opts.ListRegistry != nil,
 				"semantic":   h.opts.ListSemantic != nil,
-				"projection": true,
+				"projection": h.opts.ListProjections != nil && h.opts.GetProjection != nil,
 				"stream":     false,
 			},
 			"endpoints": map[string]string{
@@ -225,6 +260,10 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleRegistryDevices(w, r)
 	case "semantic/snapshot":
 		h.handleSemanticSnapshot(w)
+	case "projection/devices":
+		h.handleProjectionDevices(w, r)
+	case "projection/graph":
+		h.handleProjectionGraph(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -263,6 +302,10 @@ func classifyRoute(path string) string {
 		return "api.registry.devices"
 	case strings.HasPrefix(path, "/api/v1/semantic/snapshot"):
 		return "api.semantic.snapshot"
+	case strings.HasPrefix(path, "/api/v1/projection/devices"):
+		return "api.projection.devices"
+	case strings.HasPrefix(path, "/api/v1/projection/graph"):
+		return "api.projection.graph"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):
@@ -409,4 +452,85 @@ func (h *handler) handleSemanticSnapshot(w http.ResponseWriter) {
 		snapshot.Zones = []SemanticZone{}
 	}
 	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (h *handler) handleProjectionDevices(w http.ResponseWriter, r *http.Request) {
+	if h.opts.ListProjections == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"count": 0,
+			"items": []ProjectionDevice{},
+		})
+		return
+	}
+	items := h.opts.ListProjections()
+	needle := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("q")))
+	limit := parseQueryLimit(r.URL.Query().Get("limit"), 200)
+
+	filtered := make([]ProjectionDevice, 0, len(items))
+	for _, item := range items {
+		if needle != "" && !matchesProjectionFilter(item, needle) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	slices.SortFunc(filtered, func(a, b ProjectionDevice) int {
+		return cmp.Compare(int(a.Address), int(b.Address))
+	})
+
+	total := len(filtered)
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"count": total,
+		"items": filtered,
+	})
+}
+
+func (h *handler) handleProjectionGraph(w http.ResponseWriter, r *http.Request) {
+	if h.opts.GetProjection == nil {
+		http.NotFound(w, r)
+		return
+	}
+	address, err := parseQueryAddress(r.URL.Query().Get("address"))
+	if err != nil {
+		http.Error(w, "invalid address", http.StatusBadRequest)
+		return
+	}
+	plane := strings.TrimSpace(r.URL.Query().Get("plane"))
+	if plane == "" {
+		http.Error(w, "missing plane", http.StatusBadRequest)
+		return
+	}
+	graph, ok := h.opts.GetProjection(address, plane)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, graph)
+}
+
+func parseQueryAddress(raw string) (byte, error) {
+	parsed, err := strconv.ParseUint(strings.TrimSpace(raw), 0, 8)
+	if err != nil {
+		return 0, err
+	}
+	return byte(parsed), nil
+}
+
+func matchesProjectionFilter(item ProjectionDevice, needle string) bool {
+	text := strings.ToLower(strings.Join([]string{
+		item.DeviceID,
+		item.DisplayName,
+		item.Manufacturer,
+	}, " "))
+	if strings.Contains(text, needle) {
+		return true
+	}
+	for _, projection := range item.Projections {
+		if strings.Contains(strings.ToLower(projection.Plane), needle) {
+			return true
+		}
+	}
+	return false
 }

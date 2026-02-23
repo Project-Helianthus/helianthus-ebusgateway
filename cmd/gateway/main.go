@@ -358,6 +358,64 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 					CapturedUTC: time.Now().UTC().Format(time.RFC3339),
 				}
 			},
+			ListProjections: func() []portal.ProjectionDevice {
+				snapshot := builder.Schema()
+				items := make([]portal.ProjectionDevice, 0, len(snapshot.Devices))
+				for _, device := range snapshot.Devices {
+					summaries := make([]portal.ProjectionSummary, 0, len(device.Projections))
+					for _, projection := range device.Projections {
+						summaries = append(summaries, portal.ProjectionSummary{
+							Plane:     projection.Plane,
+							NodeCount: len(projection.Nodes),
+							EdgeCount: len(projection.Edges),
+						})
+					}
+					items = append(items, portal.ProjectionDevice{
+						Address:      device.Address,
+						DeviceID:     device.DeviceID,
+						DisplayName:  device.DisplayName,
+						Manufacturer: device.Manufacturer,
+						Projections:  summaries,
+					})
+				}
+				return items
+			},
+			GetProjection: func(address byte, plane string) (portal.ProjectionGraph, bool) {
+				snapshot := builder.Schema()
+				for _, device := range snapshot.Devices {
+					if device.Address != address {
+						continue
+					}
+					for _, projection := range device.Projections {
+						if !strings.EqualFold(projection.Plane, plane) {
+							continue
+						}
+						nodes := make([]portal.ProjectionNode, 0, len(projection.Nodes))
+						for _, node := range projection.Nodes {
+							nodes = append(nodes, portal.ProjectionNode{
+								ID:            node.ID,
+								Path:          node.Path,
+								CanonicalPath: node.CanonicalPath,
+							})
+						}
+						edges := make([]portal.ProjectionEdge, 0, len(projection.Edges))
+						for _, edge := range projection.Edges {
+							edges = append(edges, portal.ProjectionEdge{
+								ID:   edge.ID,
+								From: edge.From,
+								To:   edge.To,
+							})
+						}
+						return portal.ProjectionGraph{
+							Address: address,
+							Plane:   projection.Plane,
+							Nodes:   nodes,
+							Edges:   edges,
+						}, true
+					}
+				}
+				return portal.ProjectionGraph{}, false
+			},
 		})
 		mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))
 		mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {

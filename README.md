@@ -97,6 +97,9 @@ curl -fsS 'http://127.0.0.1:8080/portal/api/v1/registry/devices?limit=5'
 
 # Portal semantic browse preview
 curl -fsS 'http://127.0.0.1:8080/portal/api/v1/semantic/snapshot'
+
+# Portal projection browse preview
+curl -fsS 'http://127.0.0.1:8080/portal/api/v1/projection/devices?limit=5'
 ```
 
 ## Local Smoke-Test Configuration Example

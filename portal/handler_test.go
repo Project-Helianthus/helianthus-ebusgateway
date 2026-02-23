@@ -109,6 +109,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 		SnapshotPath:     "/snapshot",
 		SubscriptionPath: "/graphql/subscriptions",
 		MCPPath:          "/mcp",
+		ListRegistry: func() []RegistryDevice {
+			return []RegistryDevice{{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720"}}
+		},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
 	rec := httptest.NewRecorder()
@@ -128,6 +131,10 @@ func TestBootstrapEndpoint(t *testing.T) {
 	endpoints := payload["endpoints"].(map[string]any)
 	if endpoints["graphql"] != "/graphql" {
 		t.Fatalf("graphql endpoint=%v; want /graphql", endpoints["graphql"])
+	}
+	capabilities := payload["capabilities"].(map[string]any)
+	if capabilities["registry"] != true {
+		t.Fatalf("capabilities.registry=%v; want true", capabilities["registry"])
 	}
 }
 
@@ -177,5 +184,82 @@ func TestMountedPortalEndpoints(t *testing.T) {
 	}
 	if bootstrap["ui_version"] != "m0" {
 		t.Fatalf("ui_version=%v; want m0", bootstrap["ui_version"])
+	}
+}
+
+func TestRegistryDevicesEndpoint(t *testing.T) {
+	h := NewHandler(Options{
+		ListRegistry: func() []RegistryDevice {
+			return []RegistryDevice{
+				{
+					Address:      0x10,
+					Manufacturer: "Vaillant",
+					DeviceID:     "VRC720",
+					Planes: []RegistryPlane{
+						{Name: "system", Methods: []string{"get_status"}},
+					},
+				},
+				{
+					Address:      0x08,
+					Manufacturer: "Vaillant",
+					DeviceID:     "BAI",
+					Planes: []RegistryPlane{
+						{Name: "heating", Methods: []string{"get_operational_data"}},
+					},
+				},
+			}
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/registry/devices?limit=1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if int(payload["count"].(float64)) != 2 {
+		t.Fatalf("count=%v; want 2", payload["count"])
+	}
+	items := payload["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("len(items)=%d; want 1 due to limit", len(items))
+	}
+	first := items[0].(map[string]any)
+	if int(first["address"].(float64)) != 0x08 {
+		t.Fatalf("first.address=%v; want 8 sorted asc", first["address"])
+	}
+}
+
+func TestRegistryDevicesEndpoint_Filter(t *testing.T) {
+	h := NewHandler(Options{
+		ListRegistry: func() []RegistryDevice {
+			return []RegistryDevice{
+				{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720", Planes: []RegistryPlane{{Name: "system", Methods: []string{"get_status"}}}},
+				{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI", Planes: []RegistryPlane{{Name: "heating", Methods: []string{"get_operational_data"}}}},
+			}
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/registry/devices?q=operational", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if int(payload["count"].(float64)) != 1 {
+		t.Fatalf("count=%v; want 1", payload["count"])
+	}
+	items := payload["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("len(items)=%d; want 1", len(items))
+	}
+	if int(items[0].(map[string]any)["address"].(float64)) != 0x08 {
+		t.Fatalf("address=%v; want 8", items[0].(map[string]any)["address"])
 	}
 }

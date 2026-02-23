@@ -34,6 +34,7 @@ class PortalShell extends HTMLElement {
   async loadStatus() {
     const statusEl = this.querySelector('[data-role="status"]');
     const metaEl = this.querySelector('[data-role="meta"]');
+    const listEl = this.querySelector('[data-role="registry-list"]');
     try {
       const [healthRes, bootstrapRes] = await Promise.all([
         fetch("api/v1/health"),
@@ -49,6 +50,9 @@ class PortalShell extends HTMLElement {
         metaEl.textContent =
           `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, stream=${caps.stream}`;
       }
+      if (bootstrap.capabilities?.registry && listEl) {
+        await this.loadRegistryPreview(listEl);
+      }
     } catch (err) {
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
@@ -57,6 +61,29 @@ class PortalShell extends HTMLElement {
         metaEl.textContent = "Bootstrap fetch failed";
       }
       console.error("portal bootstrap failed", err);
+    }
+  }
+
+  async loadRegistryPreview(listEl) {
+    try {
+      const response = await fetch("api/v1/registry/devices?limit=8");
+      const payload = await response.json();
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (items.length === 0) {
+        listEl.innerHTML = "<li>No devices discovered yet.</li>";
+        return;
+      }
+      listEl.innerHTML = items
+        .map((item) => {
+          const addr = Number(item.address).toString(16).padStart(2, "0");
+          const model = item.device_id || "unknown";
+          const vendor = item.manufacturer || "unknown";
+          return `<li><strong>0x${addr}</strong> ${vendor} ${model}</li>`;
+        })
+        .join("");
+    } catch (err) {
+      listEl.innerHTML = "<li>Registry preview unavailable.</li>";
+      console.error("registry preview failed", err);
     }
   }
 
@@ -92,6 +119,12 @@ class PortalShell extends HTMLElement {
               <article class="card"><h3>Timeline</h3><span class="badge">Coming Soon</span></article>
               <article class="card"><h3>Snapshots</h3><span class="badge">Coming Soon</span></article>
               <article class="card"><h3>Issue Builder</h3><span class="badge">Coming Soon</span></article>
+            </section>
+            <section class="registry-preview">
+              <h2>Registry Preview</h2>
+              <ul data-role="registry-list">
+                <li>Loading discovered devices...</li>
+              </ul>
             </section>
             <div class="meta" data-role="meta">Waiting for bootstrap...</div>
           </main>

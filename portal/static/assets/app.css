@@ -175,6 +175,25 @@ body {
   color: var(--muted);
 }
 
+.registry-preview {
+  margin-top: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.8rem;
+  background: color-mix(in srgb, var(--panel-soft) 90%, transparent);
+}
+
+.registry-preview h2 {
+  margin: 0 0 0.55rem;
+  font-size: 0.95rem;
+}
+
+.registry-preview ul {
+  margin: 0;
+  padding-left: 1rem;
+  color: var(--muted);
+}
+
 @media (max-width: 900px) {
   .topbar {
     grid-template-columns: 1fr;

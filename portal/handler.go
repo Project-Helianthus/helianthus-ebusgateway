@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"cmp"
 	"embed"
 	"encoding/json"
 	"expvar"
@@ -10,6 +11,8 @@ import (
 	"log"
 	"net/http"
 	"path"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -48,11 +51,28 @@ type Options struct {
 	MCPPath          string
 	GatewayVersion   string
 	BuildID          string
+	ListRegistry     func() []RegistryDevice
 }
 
 type handler struct {
 	opts  Options
 	files http.Handler
+}
+
+type RegistryDevice struct {
+	Address      byte            `json:"address"`
+	Addresses    []byte          `json:"addresses,omitempty"`
+	Manufacturer string          `json:"manufacturer"`
+	DeviceID     string          `json:"device_id"`
+	SerialNumber string          `json:"serial_number,omitempty"`
+	Software     string          `json:"software_version"`
+	Hardware     string          `json:"hardware_version"`
+	Planes       []RegistryPlane `json:"planes,omitempty"`
+}
+
+type RegistryPlane struct {
+	Name    string   `json:"name"`
+	Methods []string `json:"methods,omitempty"`
 }
 
 func NewHandler(opts Options) http.Handler {
@@ -142,7 +162,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 	case "bootstrap":
 		writeJSON(w, http.StatusOK, map[string]any{
 			"capabilities": map[string]bool{
-				"registry":   true,
+				"registry":   h.opts.ListRegistry != nil,
 				"semantic":   true,
 				"projection": true,
 				"stream":     false,
@@ -159,6 +179,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 			},
 			"ui_version": "m0",
 		})
+	case "registry/devices":
+		h.handleRegistryDevices(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -193,6 +215,8 @@ func classifyRoute(path string) string {
 		return "api.health"
 	case strings.HasPrefix(path, "/api/v1/bootstrap"):
 		return "api.bootstrap"
+	case strings.HasPrefix(path, "/api/v1/registry/devices"):
+		return "api.registry.devices"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):
@@ -235,6 +259,90 @@ func applyAssetETag(w http.ResponseWriter, r *http.Request, assetPath string) bo
 	if strings.TrimSpace(r.Header.Get("If-None-Match")) == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return true
+	}
+	return false
+}
+
+func (h *handler) handleRegistryDevices(w http.ResponseWriter, r *http.Request) {
+	if h.opts.ListRegistry == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"count": 0,
+			"items": []RegistryDevice{},
+		})
+		return
+	}
+
+	devices := h.opts.ListRegistry()
+	needle := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("q")))
+	limit := parseQueryLimit(r.URL.Query().Get("limit"), 200)
+	if limit < 0 {
+		limit = 0
+	}
+
+	filtered := make([]RegistryDevice, 0, len(devices))
+	for _, device := range devices {
+		if needle != "" && !matchesDeviceFilter(device, needle) {
+			continue
+		}
+		filtered = append(filtered, device)
+	}
+
+	slices.SortFunc(filtered, func(a, b RegistryDevice) int {
+		return cmp.Compare(int(a.Address), int(b.Address))
+	})
+
+	total := len(filtered)
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"count": total,
+		"items": filtered,
+	})
+}
+
+func parseQueryLimit(raw string, fallback int) int {
+	if strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	switch {
+	case value <= 0:
+		return 0
+	case value > 1000:
+		return 1000
+	default:
+		return value
+	}
+}
+
+func matchesDeviceFilter(device RegistryDevice, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	candidate := strings.ToLower(strings.Join([]string{
+		device.Manufacturer,
+		device.DeviceID,
+		device.SerialNumber,
+		device.Software,
+		device.Hardware,
+	}, " "))
+	if strings.Contains(candidate, needle) {
+		return true
+	}
+	for _, plane := range device.Planes {
+		if strings.Contains(strings.ToLower(plane.Name), needle) {
+			return true
+		}
+		for _, method := range plane.Methods {
+			if strings.Contains(strings.ToLower(method), needle) {
+				return true
+			}
+		}
 	}
 	return false
 }

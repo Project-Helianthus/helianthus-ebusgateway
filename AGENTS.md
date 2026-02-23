@@ -53,3 +53,4 @@ No temporary/junk tool may remain in the showroom surface.
 ### CI gates
 - Breaking changes in `ebus.v1.*` require a new major namespace.
 - Parity drift MCP vs GraphQL fails CI.
+- MCP tool inventory must pass classification enforcement (`go test ./mcp -run TestToolClassificationPolicy`), and any unclassified tool fails the gate.

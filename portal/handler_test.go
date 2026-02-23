@@ -44,6 +44,32 @@ func TestHandlerAssets(t *testing.T) {
 	if got := rec.Header().Get("Cache-Control"); got == "" {
 		t.Fatalf("cache-control missing")
 	}
+	if got := rec.Header().Get("ETag"); got == "" {
+		t.Fatalf("etag missing")
+	}
+}
+
+func TestHandlerAssetsNotModified(t *testing.T) {
+	h := NewHandler(Options{})
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	firstRec := httptest.NewRecorder()
+	h.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("first status = %d; want %d", firstRec.Code, http.StatusOK)
+	}
+	etag := firstRec.Header().Get("ETag")
+	if etag == "" {
+		t.Fatalf("etag missing on initial response")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("If-None-Match", etag)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status = %d; want %d", rec.Code, http.StatusNotModified)
+	}
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -71,6 +97,9 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 	if _, err := time.Parse(time.RFC3339, payload["time_utc"].(string)); err != nil {
 		t.Fatalf("time_utc not RFC3339: %v", err)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control=%q; want no-store", got)
 	}
 }
 

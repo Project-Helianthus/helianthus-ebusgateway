@@ -4,6 +4,7 @@ type ServiceStatus struct {
 	Status           string
 	FirmwareVersion  string
 	UpdatesAvailable bool
+	InitiatorAddress string
 }
 
 type StatusProvider interface {
@@ -18,6 +19,7 @@ func (staticStatusProvider) DaemonStatus() ServiceStatus {
 		Status:           "running",
 		FirmwareVersion:  "",
 		UpdatesAvailable: false,
+		InitiatorAddress: "",
 	}
 }
 

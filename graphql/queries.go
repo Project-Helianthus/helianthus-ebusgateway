@@ -309,6 +309,16 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return status.UpdatesAvailable, nil
 				},
 			},
+			"initiatorAddress": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(ServiceStatus)
+					if !ok {
+						return nil, nil
+					}
+					return status.InitiatorAddress, nil
+				},
+			},
 		},
 	})
 

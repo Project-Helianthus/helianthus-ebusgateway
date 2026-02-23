@@ -218,16 +218,17 @@ func TestQueryResolvers_Integration(t *testing.T) {
 
 	t.Run("service_status", func(t *testing.T) {
 		request := graphqlclient.NewRequest(`
-			query {
-				daemonStatus {
-					status
-					firmwareVersion
-					updatesAvailable
-				}
-				adapterStatus {
-					status
-					firmwareVersion
-					updatesAvailable
+				query {
+					daemonStatus {
+						status
+						firmwareVersion
+						updatesAvailable
+						initiatorAddress
+					}
+					adapterStatus {
+						status
+						firmwareVersion
+						updatesAvailable
 				}
 			}
 		`)
@@ -237,6 +238,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				Status           string `json:"status"`
 				FirmwareVersion  string `json:"firmwareVersion"`
 				UpdatesAvailable bool   `json:"updatesAvailable"`
+				InitiatorAddress string `json:"initiatorAddress"`
 			} `json:"daemonStatus"`
 			AdapterStatus struct {
 				Status           string `json:"status"`
@@ -251,6 +253,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 
 		if response.DaemonStatus.Status == "" {
 			t.Fatalf("daemon status empty")
+		}
+		if response.DaemonStatus.InitiatorAddress != "" {
+			t.Fatalf("daemon initiatorAddress = %q; want empty for static provider", response.DaemonStatus.InitiatorAddress)
 		}
 		if response.AdapterStatus.Status == "" {
 			t.Fatalf("adapter status empty")

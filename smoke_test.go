@@ -47,6 +47,7 @@ type testEntry struct {
 }
 
 func (e testEntry) Address() byte            { return e.info.Address }
+func (e testEntry) Addresses() []byte        { return []byte{e.info.Address} }
 func (e testEntry) Manufacturer() string     { return e.info.Manufacturer }
 func (e testEntry) DeviceID() string         { return e.info.DeviceID }
 func (e testEntry) SerialNumber() string     { return e.info.SerialNumber }

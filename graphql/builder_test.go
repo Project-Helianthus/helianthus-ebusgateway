@@ -67,6 +67,7 @@ func TestBuildSchema_ReflectsRegistry(t *testing.T) {
 			SoftwareVersion: "1.0",
 			HardwareVersion: "7603",
 		},
+		addresses: []byte{0x10, 0x11},
 		planes: []registry.Plane{
 			mockPlane{
 				name: "heating",
@@ -124,6 +125,15 @@ func TestBuildSchema_ReflectsRegistry(t *testing.T) {
 	}
 	if len(got.Devices) != 2 {
 		t.Fatalf("Devices = %d; want 2", len(got.Devices))
+	}
+	if got.Devices[0].Address != 0x10 {
+		t.Fatalf("DeviceA address = 0x%02x; want 0x10", got.Devices[0].Address)
+	}
+	if len(got.Devices[0].Addresses) != 2 || got.Devices[0].Addresses[0] != 0x10 || got.Devices[0].Addresses[1] != 0x11 {
+		t.Fatalf("DeviceA addresses = %v; want [16 17]", got.Devices[0].Addresses)
+	}
+	if len(got.Devices[1].Addresses) != 1 || got.Devices[1].Addresses[0] != 0x08 {
+		t.Fatalf("DeviceB addresses = %v; want [8]", got.Devices[1].Addresses)
 	}
 
 	methodA := got.Devices[0].Planes[0].Methods[0]
@@ -408,12 +418,22 @@ func (reg *mutableRegistry) SetEntries(entries []registry.DeviceEntry) {
 
 type mockEntry struct {
 	info        registry.DeviceInfo
+	addresses   []byte
 	planes      []registry.Plane
 	projections []registry.Projection
 }
 
 func (entry mockEntry) Address() byte {
 	return entry.info.Address
+}
+
+func (entry mockEntry) Addresses() []byte {
+	if len(entry.addresses) == 0 {
+		return []byte{entry.info.Address}
+	}
+	out := make([]byte, len(entry.addresses))
+	copy(out, entry.addresses)
+	return out
 }
 
 func (entry mockEntry) Manufacturer() string {

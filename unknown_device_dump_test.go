@@ -24,6 +24,7 @@ type testDumpEntry struct {
 }
 
 func (e testDumpEntry) Address() byte        { return e.info.Address }
+func (e testDumpEntry) Addresses() []byte    { return []byte{e.info.Address} }
 func (e testDumpEntry) Manufacturer() string { return e.info.Manufacturer }
 func (e testDumpEntry) DeviceID() string     { return e.info.DeviceID }
 func (e testDumpEntry) SerialNumber() string { return e.info.SerialNumber }

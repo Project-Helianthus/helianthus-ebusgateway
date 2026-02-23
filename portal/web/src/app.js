@@ -35,11 +35,20 @@ class PortalShell extends HTMLElement {
       this.streamSource.close();
       this.streamSource = undefined;
     }
+    if (this.timelineInterval) {
+      clearInterval(this.timelineInterval);
+      this.timelineInterval = undefined;
+    }
+    if (this.timelineTimer) {
+      clearTimeout(this.timelineTimer);
+      this.timelineTimer = undefined;
+    }
   }
 
   bindEvents() {
     const toggle = this.querySelector('[data-role="theme-toggle"]');
     const search = this.querySelector('[data-role="search-input"]');
+    const correlation = this.querySelector('[data-role="timeline-correlation"]');
     if (toggle) {
       toggle.addEventListener("click", () => {
         const current = loadTheme();
@@ -49,6 +58,11 @@ class PortalShell extends HTMLElement {
     if (search) {
       search.addEventListener("input", () => {
         this.scheduleSearch(search.value);
+      });
+    }
+    if (correlation) {
+      correlation.addEventListener("input", () => {
+        this.scheduleTimelineRefresh();
       });
     }
   }
@@ -61,6 +75,7 @@ class PortalShell extends HTMLElement {
     const projectionEl = this.querySelector('[data-role="projection-list"]');
     const searchInput = this.querySelector('[data-role="search-input"]');
     const searchList = this.querySelector('[data-role="search-list"]');
+    const timelineList = this.querySelector('[data-role="timeline-list"]');
     try {
       const [healthRes, bootstrapRes] = await Promise.all([
         fetch("api/v1/health"),
@@ -74,7 +89,7 @@ class PortalShell extends HTMLElement {
       if (metaEl) {
         const caps = bootstrap.capabilities || {};
         metaEl.textContent =
-          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}`;
+          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}`;
       }
       if (searchInput) {
         searchInput.disabled = !bootstrap.capabilities?.search;
@@ -96,6 +111,20 @@ class PortalShell extends HTMLElement {
       }
       if (bootstrap.capabilities?.stream) {
         this.startStream();
+      }
+      if (timelineList) {
+        timelineList.innerHTML = bootstrap.capabilities?.timeline
+          ? "<li>Loading timeline events...</li>"
+          : "<li>Timeline unavailable: stream capability disabled.</li>";
+      }
+      if (bootstrap.capabilities?.timeline) {
+        await this.refreshTimeline();
+        if (this.timelineInterval) {
+          clearInterval(this.timelineInterval);
+        }
+        this.timelineInterval = setInterval(() => {
+          this.refreshTimeline();
+        }, 3000);
       }
     } catch (err) {
       if (statusEl) {
@@ -125,6 +154,7 @@ class PortalShell extends HTMLElement {
         const layer = payload.layer || "unknown";
         const at = payload.at || "n/a";
         streamStatus.textContent = `Stream live: layer=${layer} at=${at}`;
+        this.scheduleTimelineRefresh();
       } catch (err) {
         streamStatus.textContent = "Stream payload parse error";
       }
@@ -134,6 +164,49 @@ class PortalShell extends HTMLElement {
         streamStatus.textContent = "Stream disconnected";
       }
     };
+  }
+
+  scheduleTimelineRefresh() {
+    if (this.timelineTimer) {
+      clearTimeout(this.timelineTimer);
+    }
+    this.timelineTimer = setTimeout(() => {
+      this.refreshTimeline();
+    }, 220);
+  }
+
+  async refreshTimeline() {
+    const timelineList = this.querySelector('[data-role="timeline-list"]');
+    const correlationInput = this.querySelector('[data-role="timeline-correlation"]');
+    if (!timelineList) {
+      return;
+    }
+    try {
+      const correlation = correlationInput ? String(correlationInput.value || "").trim() : "";
+      const query = new URLSearchParams();
+      query.set("limit", "8");
+      if (correlation.length > 0) {
+        query.set("correlation_id", correlation);
+      }
+      const response = await fetch(`api/v1/timeline/events?${query.toString()}`);
+      const payload = await response.json();
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (items.length === 0) {
+        timelineList.innerHTML = "<li>No timeline events yet.</li>";
+        return;
+      }
+      timelineList.innerHTML = items
+        .map((item) => {
+          const layer = escapeHtml(item.layer || "unknown");
+          const corr = escapeHtml(item.correlation_id || "n/a");
+          const at = escapeHtml(item.at || "n/a");
+          return `<li><span class="pill">${layer}</span> <strong>${corr}</strong> <span class="muted-inline">${at}</span></li>`;
+        })
+        .join("");
+    } catch (err) {
+      timelineList.innerHTML = "<li>Timeline query failed.</li>";
+      console.error("timeline query failed", err);
+    }
   }
 
   scheduleSearch(rawQuery) {
@@ -298,6 +371,13 @@ class PortalShell extends HTMLElement {
               <h2>Search Results</h2>
               <ul data-role="search-list">
                 <li>Loading search capability...</li>
+              </ul>
+            </section>
+            <section class="registry-preview">
+              <h2>Timeline</h2>
+              <input class="search timeline-filter" data-role="timeline-correlation" type="search" placeholder="Filter by correlation id" aria-label="Filter timeline by correlation id" />
+              <ul data-role="timeline-list">
+                <li>Loading timeline capability...</li>
               </ul>
             </section>
             <div class="meta" data-role="stream-status">Stream idle</div>

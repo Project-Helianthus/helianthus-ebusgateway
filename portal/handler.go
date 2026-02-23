@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -60,8 +61,9 @@ type Options struct {
 }
 
 type handler struct {
-	opts  Options
-	files http.Handler
+	opts     Options
+	files    http.Handler
+	timeline *timelineBuffer
 }
 
 type RegistryDevice struct {
@@ -178,6 +180,12 @@ type StreamSource struct {
 	Interval int    `json:"interval_ms"`
 }
 
+type timelineBuffer struct {
+	mu      sync.Mutex
+	cap     int
+	entries []StreamEventEnvelope
+}
+
 func NewHandler(opts Options) http.Handler {
 	if opts.GraphQLPath == "" {
 		opts.GraphQLPath = "/graphql"
@@ -198,9 +206,85 @@ func NewHandler(opts Options) http.Handler {
 		opts.BuildID = "unknown"
 	}
 	return &handler{
-		opts:  opts,
-		files: http.FileServer(http.FS(staticFS)),
+		opts:     opts,
+		files:    http.FileServer(http.FS(staticFS)),
+		timeline: newTimelineBuffer(1000),
 	}
+}
+
+func newTimelineBuffer(capacity int) *timelineBuffer {
+	if capacity <= 0 {
+		capacity = 100
+	}
+	return &timelineBuffer{
+		cap:     capacity,
+		entries: make([]StreamEventEnvelope, 0, capacity),
+	}
+}
+
+func (tb *timelineBuffer) add(event StreamEventEnvelope) {
+	if tb == nil {
+		return
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	if len(tb.entries) >= tb.cap {
+		copy(tb.entries, tb.entries[1:])
+		tb.entries[len(tb.entries)-1] = cloneStreamEvent(event)
+		return
+	}
+	tb.entries = append(tb.entries, cloneStreamEvent(event))
+}
+
+func (tb *timelineBuffer) query(limit int, layer, correlationID string, since time.Time) []StreamEventEnvelope {
+	if tb == nil {
+		return []StreamEventEnvelope{}
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+
+	items := make([]StreamEventEnvelope, 0, limit)
+	wantsLayer := strings.TrimSpace(strings.ToLower(layer)) != ""
+	wantsCorrelation := strings.TrimSpace(strings.ToLower(correlationID)) != ""
+	sinceActive := !since.IsZero()
+
+	for i := len(tb.entries) - 1; i >= 0; i-- {
+		item := tb.entries[i]
+		if wantsLayer && !strings.EqualFold(item.Layer, layer) {
+			continue
+		}
+		if wantsCorrelation && !strings.Contains(strings.ToLower(item.CorrelationID), strings.ToLower(correlationID)) {
+			continue
+		}
+		if sinceActive {
+			at, err := time.Parse(time.RFC3339Nano, item.At)
+			if err != nil {
+				at, err = time.Parse(time.RFC3339, item.At)
+			}
+			if err == nil && at.Before(since) {
+				continue
+			}
+		}
+		items = append(items, cloneStreamEvent(item))
+		if limit > 0 && len(items) >= limit {
+			break
+		}
+	}
+
+	return items
+}
+
+func cloneStreamEvent(event StreamEventEnvelope) StreamEventEnvelope {
+	cloned := event
+	if event.Payload == nil {
+		return cloned
+	}
+	clonedPayload := make(map[string]any, len(event.Payload))
+	for key, value := range event.Payload {
+		clonedPayload[key] = value
+	}
+	cloned.Payload = clonedPayload
+	return cloned
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -271,6 +355,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"projection": h.opts.ListProjections != nil && h.opts.GetProjection != nil,
 				"search":     h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil,
 				"stream":     streamEnabled,
+				"timeline":   streamEnabled,
 			},
 			"endpoints": map[string]string{
 				"graphql":       h.opts.GraphQLPath,
@@ -279,6 +364,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"mcp":           h.opts.MCPPath,
 				"search":        "/portal/api/v1/search",
 				"stream":        "/portal/api/v1/stream",
+				"timeline":      "/portal/api/v1/timeline/events",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -298,6 +384,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleSearch(w, r)
 	case "stream":
 		h.handleStream(w, r)
+	case "timeline/events":
+		h.handleTimelineEvents(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -350,6 +438,8 @@ func classifyRoute(path string) string {
 		return "api.search"
 	case strings.HasPrefix(path, "/api/v1/stream"):
 		return "api.stream"
+	case strings.HasPrefix(path, "/api/v1/timeline/events"):
+		return "api.timeline.events"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):
@@ -736,6 +826,39 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *handler) handleTimelineEvents(w http.ResponseWriter, r *http.Request) {
+	if h.timeline == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"count": 0,
+			"items": []StreamEventEnvelope{},
+		})
+		return
+	}
+
+	limit := parseQueryLimit(r.URL.Query().Get("limit"), 100)
+	layer := strings.TrimSpace(r.URL.Query().Get("layer"))
+	correlationID := strings.TrimSpace(r.URL.Query().Get("correlation_id"))
+	sinceRaw := strings.TrimSpace(r.URL.Query().Get("since"))
+	var since time.Time
+	if sinceRaw != "" {
+		parsed, err := time.Parse(time.RFC3339, sinceRaw)
+		if err != nil {
+			parsed, err = time.Parse(time.RFC3339Nano, sinceRaw)
+		}
+		if err != nil {
+			http.Error(w, "invalid since timestamp", http.StatusBadRequest)
+			return
+		}
+		since = parsed
+	}
+
+	items := h.timeline.query(limit, layer, correlationID, since)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"count": len(items),
+		"items": items,
+	})
+}
+
 func (h *handler) handleStream(w http.ResponseWriter, r *http.Request) {
 	if h.opts.ListRegistry == nil && h.opts.ListSemantic == nil && h.opts.ListProjections == nil {
 		http.Error(w, "stream unavailable", http.StatusServiceUnavailable)
@@ -797,6 +920,7 @@ func (h *handler) handleStream(w http.ResponseWriter, r *http.Request) {
 			if dropped > 0 {
 				portalStreamDropped.Add(pending.Layer, int64(dropped))
 			}
+			h.timeline.add(*pending)
 			dropped = 0
 			pending = nil
 			sentEvents++

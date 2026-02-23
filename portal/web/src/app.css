@@ -193,6 +193,11 @@ body {
   color: var(--muted);
 }
 
+.timeline-filter {
+  width: 100%;
+  margin: 0 0 0.6rem;
+}
+
 .pill {
   display: inline-block;
   border: 1px solid var(--border);

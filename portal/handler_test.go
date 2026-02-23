@@ -145,3 +145,37 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 		t.Fatalf("Allow=%q; want GET", got)
 	}
 }
+
+func TestMountedPortalEndpoints(t *testing.T) {
+	portalPath := "/portal"
+	portalHandler := NewHandler(Options{})
+	mux := http.NewServeMux()
+	mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))
+	mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, portalPath+"/", http.StatusMovedPermanently)
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/portal", nil)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("redirect status=%d; want %d", rec.Code, http.StatusMovedPermanently)
+	}
+	if rec.Header().Get("Location") != "/portal/" {
+		t.Fatalf("redirect location=%q; want /portal/", rec.Header().Get("Location"))
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/portal/api/v1/bootstrap", nil)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var bootstrap map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &bootstrap); err != nil {
+		t.Fatalf("bootstrap unmarshal: %v", err)
+	}
+	if bootstrap["ui_version"] != "m0" {
+		t.Fatalf("ui_version=%v; want m0", bootstrap["ui_version"])
+	}
+}

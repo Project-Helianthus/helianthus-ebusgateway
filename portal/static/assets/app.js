@@ -31,6 +31,13 @@ class PortalShell extends HTMLElement {
     this.loadStatus();
   }
 
+  disconnectedCallback() {
+    if (this.streamSource) {
+      this.streamSource.close();
+      this.streamSource = undefined;
+    }
+  }
+
   bindEvents() {
     const toggle = this.querySelector('[data-role="theme-toggle"]');
     const search = this.querySelector('[data-role="search-input"]');
@@ -88,6 +95,9 @@ class PortalShell extends HTMLElement {
           ? "<li>Type at least 2 characters to search across registry, semantic and projection layers.</li>"
           : "<li>Search unavailable: no readable layers enabled.</li>";
       }
+      if (bootstrap.capabilities?.stream) {
+        this.startStream();
+      }
     } catch (err) {
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
@@ -97,6 +107,34 @@ class PortalShell extends HTMLElement {
       }
       console.error("portal bootstrap failed", err);
     }
+  }
+
+  startStream() {
+    const streamStatus = this.querySelector('[data-role="stream-status"]');
+    if (this.streamSource) {
+      this.streamSource.close();
+      this.streamSource = undefined;
+    }
+    const source = new EventSource("api/v1/stream?max_events_per_second=2&interval_ms=1000");
+    this.streamSource = source;
+    source.addEventListener("update", (event) => {
+      if (!streamStatus) {
+        return;
+      }
+      try {
+        const payload = JSON.parse(event.data);
+        const layer = payload.layer || "unknown";
+        const at = payload.at || "n/a";
+        streamStatus.textContent = `Stream live: layer=${layer} at=${at}`;
+      } catch (err) {
+        streamStatus.textContent = "Stream payload parse error";
+      }
+    });
+    source.onerror = () => {
+      if (streamStatus) {
+        streamStatus.textContent = "Stream disconnected";
+      }
+    };
   }
 
   scheduleSearch(rawQuery) {
@@ -263,6 +301,7 @@ class PortalShell extends HTMLElement {
                 <li>Loading search capability...</li>
               </ul>
             </section>
+            <div class="meta" data-role="stream-status">Stream idle</div>
             <div class="meta" data-role="meta">Waiting for bootstrap...</div>
           </main>
         </div>

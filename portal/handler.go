@@ -42,6 +42,8 @@ var (
 	portalRequestCount      = expvar.NewMap("portal_requests_total")
 	portalRouteDurationMS   = expvar.NewMap("portal_route_duration_ms_total")
 	portalAssetETagByTarget = loadAssetETags()
+	portalStreamEventsTotal = expvar.NewMap("portal_stream_events_total")
+	portalStreamDropped     = expvar.NewMap("portal_stream_dropped_total")
 )
 
 type Options struct {
@@ -161,6 +163,21 @@ type SearchResult struct {
 	Address  *byte  `json:"address,omitempty"`
 }
 
+type StreamEventEnvelope struct {
+	At            string         `json:"at"`
+	Type          string         `json:"type"`
+	Layer         string         `json:"layer"`
+	CorrelationID string         `json:"correlation_id"`
+	Payload       map[string]any `json:"payload"`
+	Provenance    StreamSource   `json:"provenance"`
+}
+
+type StreamSource struct {
+	Source   string `json:"source"`
+	Dropped  int    `json:"dropped"`
+	Interval int    `json:"interval_ms"`
+}
+
 func NewHandler(opts Options) http.Handler {
 	if opts.GraphQLPath == "" {
 		opts.GraphQLPath = "/graphql"
@@ -246,13 +263,14 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 			"time_utc":        time.Now().UTC().Format(time.RFC3339),
 		})
 	case "bootstrap":
+		streamEnabled := h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil
 		writeJSON(w, http.StatusOK, map[string]any{
 			"capabilities": map[string]bool{
 				"registry":   h.opts.ListRegistry != nil,
 				"semantic":   h.opts.ListSemantic != nil,
 				"projection": h.opts.ListProjections != nil && h.opts.GetProjection != nil,
 				"search":     h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil,
-				"stream":     false,
+				"stream":     streamEnabled,
 			},
 			"endpoints": map[string]string{
 				"graphql":       h.opts.GraphQLPath,
@@ -260,6 +278,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"subscriptions": h.opts.SubscriptionPath,
 				"mcp":           h.opts.MCPPath,
 				"search":        "/portal/api/v1/search",
+				"stream":        "/portal/api/v1/stream",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -277,6 +296,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleProjectionGraph(w, r)
 	case "search":
 		h.handleSearch(w, r)
+	case "stream":
+		h.handleStream(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -305,6 +326,12 @@ func (rec *statusRecorder) Write(payload []byte) (int, error) {
 	return rec.ResponseWriter.Write(payload)
 }
 
+func (rec *statusRecorder) Flush() {
+	if flusher, ok := rec.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 func classifyRoute(path string) string {
 	switch {
 	case strings.HasPrefix(path, "/api/v1/health"):
@@ -321,6 +348,8 @@ func classifyRoute(path string) string {
 		return "api.projection.graph"
 	case strings.HasPrefix(path, "/api/v1/search"):
 		return "api.search"
+	case strings.HasPrefix(path, "/api/v1/stream"):
+		return "api.stream"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):
@@ -705,4 +734,187 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		"count": len(results),
 		"items": results,
 	})
+}
+
+func (h *handler) handleStream(w http.ResponseWriter, r *http.Request) {
+	if h.opts.ListRegistry == nil && h.opts.ListSemantic == nil && h.opts.ListProjections == nil {
+		http.Error(w, "stream unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	intervalMS := parseIntBounded(r.URL.Query().Get("interval_ms"), 1000, 200, 5000)
+	maxEventsPerSecond := parseIntBounded(r.URL.Query().Get("max_events_per_second"), 3, 1, 30)
+	maxEvents := parseIntBounded(r.URL.Query().Get("max_events"), 0, 0, 200)
+
+	selectedLayers := parseLayerSelection(r.URL.Query().Get("layers"))
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "keep-alive")
+
+	produceTicker := time.NewTicker(time.Duration(intervalMS) * time.Millisecond)
+	defer produceTicker.Stop()
+	flushTicker := time.NewTicker(time.Second / time.Duration(maxEventsPerSecond))
+	defer flushTicker.Stop()
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+
+	var (
+		pending    *StreamEventEnvelope
+		dropped    int
+		sentEvents int
+	)
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-produceTicker.C:
+			for _, event := range h.snapshotStreamEvents(selectedLayers, intervalMS) {
+				if pending != nil {
+					dropped++
+				}
+				event.Provenance.Dropped = dropped
+				pending = &event
+			}
+		case <-flushTicker.C:
+			if pending == nil {
+				continue
+			}
+			payload, err := json.Marshal(pending)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "event: update\ndata: %s\n\n", payload); err != nil {
+				return
+			}
+			flusher.Flush()
+			portalStreamEventsTotal.Add(pending.Layer, 1)
+			if dropped > 0 {
+				portalStreamDropped.Add(pending.Layer, int64(dropped))
+			}
+			dropped = 0
+			pending = nil
+			sentEvents++
+			if maxEvents > 0 && sentEvents >= maxEvents {
+				return
+			}
+		case <-heartbeatTicker.C:
+			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func parseIntBounded(raw string, fallback, min, max int) int {
+	value := fallback
+	if strings.TrimSpace(raw) != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err == nil {
+			value = parsed
+		}
+	}
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func parseLayerSelection(raw string) map[string]bool {
+	layers := map[string]bool{
+		"registry":   true,
+		"semantic":   true,
+		"projection": true,
+	}
+	if strings.TrimSpace(raw) == "" {
+		return layers
+	}
+	selected := map[string]bool{
+		"registry":   false,
+		"semantic":   false,
+		"projection": false,
+	}
+	for _, token := range strings.Split(strings.ToLower(raw), ",") {
+		key := strings.TrimSpace(token)
+		if _, ok := selected[key]; ok {
+			selected[key] = true
+		}
+	}
+	return selected
+}
+
+func (h *handler) snapshotStreamEvents(layers map[string]bool, intervalMS int) []StreamEventEnvelope {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	events := make([]StreamEventEnvelope, 0, 3)
+
+	if layers["registry"] && h.opts.ListRegistry != nil {
+		devices := h.opts.ListRegistry()
+		events = append(events, StreamEventEnvelope{
+			At:            now,
+			Type:          "snapshot",
+			Layer:         "registry",
+			CorrelationID: fmt.Sprintf("reg-%d", time.Now().UnixNano()),
+			Payload: map[string]any{
+				"device_count": len(devices),
+			},
+			Provenance: StreamSource{
+				Source:   "poll:registry",
+				Interval: intervalMS,
+			},
+		})
+	}
+
+	if layers["semantic"] && h.opts.ListSemantic != nil {
+		snapshot := h.opts.ListSemantic()
+		events = append(events, StreamEventEnvelope{
+			At:            now,
+			Type:          "snapshot",
+			Layer:         "semantic",
+			CorrelationID: fmt.Sprintf("sem-%d", time.Now().UnixNano()),
+			Payload: map[string]any{
+				"zones_count":   len(snapshot.Zones),
+				"has_dhw":       snapshot.DHW != nil,
+				"captured_utc":  snapshot.CapturedUTC,
+				"has_energy":    snapshot.Energy != nil,
+				"energy_series": snapshot.Energy != nil,
+			},
+			Provenance: StreamSource{
+				Source:   "poll:semantic",
+				Interval: intervalMS,
+			},
+		})
+	}
+
+	if layers["projection"] && h.opts.ListProjections != nil {
+		items := h.opts.ListProjections()
+		projectionCount := 0
+		for _, item := range items {
+			projectionCount += len(item.Projections)
+		}
+		events = append(events, StreamEventEnvelope{
+			At:            now,
+			Type:          "snapshot",
+			Layer:         "projection",
+			CorrelationID: fmt.Sprintf("proj-%d", time.Now().UnixNano()),
+			Payload: map[string]any{
+				"device_count":     len(items),
+				"projection_count": projectionCount,
+			},
+			Provenance: StreamSource{
+				Source:   "poll:projection",
+				Interval: intervalMS,
+			},
+		})
+	}
+
+	return events
 }

@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -156,6 +157,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	}
 	if capabilities["search"] != true {
 		t.Fatalf("capabilities.search=%v; want true", capabilities["search"])
+	}
+	if capabilities["stream"] != true {
+		t.Fatalf("capabilities.stream=%v; want true", capabilities["stream"])
 	}
 }
 
@@ -497,5 +501,44 @@ func TestSearchEndpoint_EmptyQuery(t *testing.T) {
 	}
 	if int(payload["count"].(float64)) != 0 {
 		t.Fatalf("count=%v; want 0", payload["count"])
+	}
+}
+
+func TestStreamEndpoint(t *testing.T) {
+	h := NewHandler(Options{
+		ListRegistry: func() []RegistryDevice {
+			return []RegistryDevice{
+				{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720"},
+			}
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stream?layers=registry&interval_ms=10&max_events_per_second=10&max_events=1", nil)
+	ctx, cancel := context.WithTimeout(req.Context(), time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("Content-Type=%q; want text/event-stream", got)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: update") {
+		t.Fatalf("stream body missing update event: %q", body)
+	}
+	if !strings.Contains(body, "\"layer\":\"registry\"") {
+		t.Fatalf("stream payload missing registry layer: %q", body)
+	}
+}
+
+func TestStreamEndpoint_UnavailableWithoutProviders(t *testing.T) {
+	h := NewHandler(Options{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stream", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }

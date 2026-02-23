@@ -245,6 +245,12 @@ type sessionStore struct {
 	items       []InvestigationSession
 }
 
+type IssueDraft struct {
+	Title    string         `json:"title"`
+	Markdown string         `json:"markdown"`
+	Evidence map[string]any `json:"evidence"`
+}
+
 func NewHandler(opts Options) http.Handler {
 	if opts.GraphQLPath == "" {
 		opts.GraphQLPath = "/graphql"
@@ -637,6 +643,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"snapshots":     streamEnabled,
 				"snapshot_diff": streamEnabled,
 				"sessions":      true,
+				"issue_builder": true,
 			},
 			"endpoints": map[string]string{
 				"graphql":       h.opts.GraphQLPath,
@@ -654,6 +661,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"sessions":      "/portal/api/v1/sessions",
 				"session_save":  "/portal/api/v1/sessions/save",
 				"session_load":  "/portal/api/v1/sessions/load",
+				"issue_draft":   "/portal/api/v1/issues/draft",
+				"issue_export":  "/portal/api/v1/issues/export",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -691,6 +700,10 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleSessionsSave(w, r)
 	case "sessions/load":
 		h.handleSessionsLoad(w, r)
+	case "issues/draft":
+		h.handleIssueDraft(w, r)
+	case "issues/export":
+		h.handleIssueExport(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -761,6 +774,10 @@ func classifyRoute(path string) string {
 		return "api.sessions.load"
 	case strings.HasPrefix(path, "/api/v1/sessions"):
 		return "api.sessions.list"
+	case strings.HasPrefix(path, "/api/v1/issues/draft"):
+		return "api.issues.draft"
+	case strings.HasPrefix(path, "/api/v1/issues/export"):
+		return "api.issues.export"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):
@@ -1373,6 +1390,136 @@ func (h *handler) handleSessionsLoad(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session": session,
 	})
+}
+
+func (h *handler) handleIssueDraft(w http.ResponseWriter, r *http.Request) {
+	draft := h.buildIssueDraft(r)
+	writeJSON(w, http.StatusOK, draft)
+}
+
+func (h *handler) handleIssueExport(w http.ResponseWriter, r *http.Request) {
+	draft := h.buildIssueDraft(r)
+	bundle := map[string]any{
+		"format_version": "helianthus-issue-bundle/v1",
+		"generated_at":   time.Now().UTC().Format(time.RFC3339Nano),
+		"title":          draft.Title,
+		"markdown":       draft.Markdown,
+		"evidence":       draft.Evidence,
+		"filename_hint":  sanitizeFilename(draft.Title) + ".json",
+	}
+	writeJSON(w, http.StatusOK, bundle)
+}
+
+func (h *handler) buildIssueDraft(r *http.Request) IssueDraft {
+	query := r.URL.Query()
+	title := strings.TrimSpace(query.Get("title"))
+	if title == "" {
+		title = "Vaillant semantic mapping candidate"
+	}
+	observation := defaultText(query.Get("observation"), "Observed behavior requiring semantic mapping.")
+	repro := defaultText(query.Get("reproduction_steps"), "1) Open portal 2) Capture evidence 3) Compare expected vs actual behavior")
+	hypothesis := defaultText(query.Get("hypothesis"), "Potential register/method meaning inferred from correlated evidence.")
+	impact := defaultText(query.Get("impact"), "Incorrect/unknown mapping blocks reliable gateway semantic extension.")
+	proposal := defaultText(query.Get("proposal"), "Implement semantic mapping in gateway provider and expose through GraphQL contract.")
+	ac := defaultText(query.Get("acceptance_criteria"), "1) Deterministic mapping 2) Contract fields populated 3) Tests and docs updated")
+	controller := defaultText(query.Get("controller"), "unknown-controller")
+	device := defaultText(query.Get("device"), "unknown-device")
+
+	evidence := h.collectIssueEvidence()
+	prettyEvidence, _ := json.MarshalIndent(evidence, "", "  ")
+	markdown := strings.Join([]string{
+		"# " + title,
+		"",
+		"## 1) Context",
+		fmt.Sprintf("- gateway_version: `%s`", h.opts.GatewayVersion),
+		fmt.Sprintf("- build_id: `%s`", h.opts.BuildID),
+		fmt.Sprintf("- controller: `%s`", controller),
+		fmt.Sprintf("- device: `%s`", device),
+		"",
+		"## 2) Observation & Goal",
+		observation,
+		"",
+		"## 3) Reproduction Steps",
+		repro,
+		"",
+		"## 4) Evidence",
+		"- snapshots: included in JSON bundle",
+		"- timeline/provenance: included in JSON bundle",
+		"```json",
+		string(prettyEvidence),
+		"```",
+		"",
+		"## 5) Semantic Hypothesis",
+		hypothesis,
+		"",
+		"## 6) Impact",
+		impact,
+		"",
+		"## 7) Proposed Implementation",
+		proposal,
+		"",
+		"## 8) Acceptance Criteria",
+		ac,
+		"",
+	}, "\n")
+
+	return IssueDraft{
+		Title:    title,
+		Markdown: markdown,
+		Evidence: evidence,
+	}
+}
+
+func (h *handler) collectIssueEvidence() map[string]any {
+	evidence := map[string]any{
+		"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if h.snapshots != nil {
+		evidence["snapshots"] = h.snapshots.list(3)
+	}
+	if h.timeline != nil {
+		events := h.timeline.query(20, "", "", time.Time{})
+		evidence["timeline"] = events
+		provenance := make([]ProvenanceRecord, 0, len(events))
+		for _, event := range events {
+			provenance = append(provenance, toProvenanceRecord(event))
+		}
+		evidence["provenance"] = provenance
+	}
+	if h.opts.ListRegistry != nil {
+		evidence["registry_devices"] = h.opts.ListRegistry()
+	}
+	return evidence
+}
+
+func defaultText(value, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	return trimmed
+}
+
+func sanitizeFilename(value string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return "issue-draft"
+	}
+	var builder strings.Builder
+	for _, ch := range trimmed {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') {
+			builder.WriteRune(ch)
+			continue
+		}
+		if ch == '-' || ch == '_' || ch == ' ' {
+			builder.WriteByte('-')
+		}
+	}
+	out := strings.Trim(builder.String(), "-")
+	if out == "" {
+		return "issue-draft"
+	}
+	return out
 }
 
 func buildSnapshotDiffEntries(fromPayload map[string]any, toPayload map[string]any) []SnapshotDiffEntry {

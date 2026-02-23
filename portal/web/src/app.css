@@ -209,6 +209,19 @@ body {
   margin-bottom: 0;
 }
 
+.issue-preview {
+  white-space: pre-wrap;
+  font-family: "IBM Plex Mono", "Fira Code", monospace;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-soft) 90%, transparent);
+  max-height: 260px;
+  overflow: auto;
+}
+
 .pill {
   display: inline-block;
   border: 1px solid var(--border);

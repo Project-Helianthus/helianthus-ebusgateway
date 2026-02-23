@@ -68,6 +68,8 @@ class PortalShell extends HTMLElement {
     const diffButton = this.querySelector('[data-role="snapshot-diff-run"]');
     const sessionSave = this.querySelector('[data-role="session-save"]');
     const sessionLoad = this.querySelector('[data-role="session-load"]');
+    const issueDraftButton = this.querySelector('[data-role="issue-draft-run"]');
+    const issueExportButton = this.querySelector('[data-role="issue-export-run"]');
     if (toggle) {
       toggle.addEventListener("click", () => {
         const current = loadTheme();
@@ -114,6 +116,16 @@ class PortalShell extends HTMLElement {
         this.loadSession();
       });
     }
+    if (issueDraftButton) {
+      issueDraftButton.addEventListener("click", () => {
+        this.generateIssueDraft();
+      });
+    }
+    if (issueExportButton) {
+      issueExportButton.addEventListener("click", () => {
+        this.generateIssueExport();
+      });
+    }
   }
 
   async loadStatus() {
@@ -130,6 +142,7 @@ class PortalShell extends HTMLElement {
     const retentionInput = this.querySelector('[data-role="snapshot-retention"]');
     const diffList = this.querySelector('[data-role="snapshot-diff-list"]');
     const sessionsList = this.querySelector('[data-role="sessions-list"]');
+    const issuePreview = this.querySelector('[data-role="issue-preview"]');
     try {
       const [healthRes, bootstrapRes] = await Promise.all([
         fetch("api/v1/health"),
@@ -143,7 +156,7 @@ class PortalShell extends HTMLElement {
       if (metaEl) {
         const caps = bootstrap.capabilities || {};
         metaEl.textContent =
-          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}, provenance=${caps.provenance}, snapshots=${caps.snapshots}, snapshot_diff=${caps.snapshot_diff}, sessions=${caps.sessions}`;
+          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}, provenance=${caps.provenance}, snapshots=${caps.snapshots}, snapshot_diff=${caps.snapshot_diff}, sessions=${caps.sessions}, issue_builder=${caps.issue_builder}`;
       }
       if (searchInput) {
         searchInput.disabled = !bootstrap.capabilities?.search;
@@ -224,6 +237,11 @@ class PortalShell extends HTMLElement {
       }
       if (bootstrap.capabilities?.sessions) {
         await this.refreshSessions();
+      }
+      if (issuePreview) {
+        issuePreview.textContent = bootstrap.capabilities?.issue_builder
+          ? "Issue builder ready. Fill fields and generate draft."
+          : "Issue builder unavailable.";
       }
     } catch (err) {
       if (statusEl) {
@@ -598,6 +616,46 @@ class PortalShell extends HTMLElement {
     }
   }
 
+  async generateIssueDraft() {
+    const titleInput = this.querySelector('[data-role="issue-title"]');
+    const obsInput = this.querySelector('[data-role="issue-observation"]');
+    const hypoInput = this.querySelector('[data-role="issue-hypothesis"]');
+    const preview = this.querySelector('[data-role="issue-preview"]');
+    try {
+      const query = new URLSearchParams();
+      query.set("title", titleInput ? String(titleInput.value || "").trim() : "");
+      query.set("observation", obsInput ? String(obsInput.value || "").trim() : "");
+      query.set("hypothesis", hypoInput ? String(hypoInput.value || "").trim() : "");
+      const response = await fetch(`api/v1/issues/draft?${query.toString()}`);
+      const payload = await response.json();
+      if (preview) {
+        preview.textContent = payload.markdown || "Draft generation failed";
+      }
+    } catch (err) {
+      if (preview) {
+        preview.textContent = "Draft generation failed";
+      }
+    }
+  }
+
+  async generateIssueExport() {
+    const titleInput = this.querySelector('[data-role="issue-title"]');
+    const preview = this.querySelector('[data-role="issue-preview"]');
+    try {
+      const query = new URLSearchParams();
+      query.set("title", titleInput ? String(titleInput.value || "").trim() : "");
+      const response = await fetch(`api/v1/issues/export?${query.toString()}`);
+      const payload = await response.json();
+      if (preview) {
+        preview.textContent = JSON.stringify(payload, null, 2);
+      }
+    } catch (err) {
+      if (preview) {
+        preview.textContent = "Issue export failed";
+      }
+    }
+  }
+
   scheduleSearch(rawQuery) {
     if (this.searchTimer) {
       clearTimeout(this.searchTimer);
@@ -810,6 +868,17 @@ class PortalShell extends HTMLElement {
               <ul data-role="sessions-list">
                 <li>Loading sessions capability...</li>
               </ul>
+            </section>
+            <section class="registry-preview">
+              <h2>Issue Builder</h2>
+              <div class="snapshot-controls">
+                <input class="search timeline-filter" data-role="issue-title" type="search" placeholder="Issue title" aria-label="Issue title" />
+                <input class="search timeline-filter" data-role="issue-observation" type="search" placeholder="Observation" aria-label="Issue observation" />
+                <input class="search timeline-filter" data-role="issue-hypothesis" type="search" placeholder="Hypothesis" aria-label="Issue hypothesis" />
+                <button class="button" data-role="issue-draft-run" type="button">Draft Markdown</button>
+                <button class="button" data-role="issue-export-run" type="button">Export Bundle</button>
+              </div>
+              <pre class="issue-preview" data-role="issue-preview">Loading issue builder capability...</pre>
             </section>
             <div class="meta" data-role="stream-status">Stream idle</div>
             <div class="meta" data-role="meta">Waiting for bootstrap...</div>

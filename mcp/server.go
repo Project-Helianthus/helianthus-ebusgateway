@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,21 +29,63 @@ type Invoker interface {
 	Invoke(ctx context.Context, plane router.Plane, methodName string, params map[string]any) (any, error)
 }
 
+type ServiceStatus struct {
+	Status           string `json:"status"`
+	FirmwareVersion  string `json:"firmware_version"`
+	UpdatesAvailable bool   `json:"updates_available"`
+	InitiatorAddress string `json:"initiator_address,omitempty"`
+}
+
+type StatusProvider interface {
+	DaemonStatus() ServiceStatus
+	AdapterStatus() ServiceStatus
+}
+
 type Server struct {
-	registry Registry
-	invoker  Invoker
+	registry       Registry
+	invoker        Invoker
+	statusProvider StatusProvider
 
 	tools []Tool
 }
 
 const (
-	toolDevicesV1Name     = "ebus.v1.registry.devices.list"
-	toolInvokeV1Name      = "ebus.v1.rpc.invoke"
-	toolDevicesLegacyName = "ebus.devices"
-	toolInvokeLegacyName  = "ebus.invoke"
+	toolRuntimeStatusGetName = "ebus.v1.runtime.status.get"
+	toolDevicesV1Name        = "ebus.v1.registry.devices.list"
+	toolDeviceGetV1Name      = "ebus.v1.registry.devices.get"
+	toolPlanesListV1Name     = "ebus.v1.registry.planes.list"
+	toolMethodsListV1Name    = "ebus.v1.registry.methods.list"
+	toolInvokeV1Name         = "ebus.v1.rpc.invoke"
+	toolDevicesLegacyName    = "ebus.devices"
+	toolInvokeLegacyName     = "ebus.invoke"
+	methodMutabilityUnknown  = "unknown"
+	methodMutabilityReadOnly = "read_only"
+	methodMutabilityMutating = "mutating"
+	methodDangerUnknown      = "unknown"
+	methodDangerSafe         = "safe"
+	methodDangerDangerous    = "dangerous"
 )
 
 var errInvokePermissionDenied = errors.New("invoke permission denied")
+
+type staticStatusProvider struct{}
+
+func (staticStatusProvider) DaemonStatus() ServiceStatus {
+	return ServiceStatus{
+		Status:           "running",
+		FirmwareVersion:  "",
+		UpdatesAvailable: false,
+		InitiatorAddress: "",
+	}
+}
+
+func (staticStatusProvider) AdapterStatus() ServiceStatus {
+	return ServiceStatus{
+		Status:           "unknown",
+		FirmwareVersion:  "",
+		UpdatesAvailable: false,
+	}
+}
 
 func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 	if reg == nil {
@@ -49,14 +93,57 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 	}
 
 	server := &Server{
-		registry: reg,
-		invoker:  invoker,
+		registry:       reg,
+		invoker:        invoker,
+		statusProvider: staticStatusProvider{},
 	}
 	server.tools = []Tool{
+		{
+			Name:        toolRuntimeStatusGetName,
+			Description: "Get runtime daemon and adapter status.",
+			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+		},
 		{
 			Name:        toolDevicesV1Name,
 			Description: "List devices discovered on the eBUS, including planes and methods.",
 			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+		},
+		{
+			Name:        toolDeviceGetV1Name,
+			Description: "Get one device by address.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"address": map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
+				},
+				"required":             []string{"address"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolPlanesListV1Name,
+			Description: "List registry planes for one device address.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"address": map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
+				},
+				"required":             []string{"address"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolMethodsListV1Name,
+			Description: "List registry methods for a device address and plane.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"address": map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
+					"plane":   map[string]any{"type": "string"},
+				},
+				"required":             []string{"address", "plane"},
+				"additionalProperties": false,
+			},
 		},
 		{
 			Name:        toolInvokeV1Name,
@@ -99,6 +186,13 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 	}
 
 	return server, nil
+}
+
+func (s *Server) SetStatusProvider(provider StatusProvider) {
+	if s == nil || provider == nil {
+		return
+	}
+	s.statusProvider = provider
 }
 
 func (s *Server) Handler() http.Handler {
@@ -212,10 +306,34 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 
 	switch call.Name {
+	case toolRuntimeStatusGetName:
+		status := map[string]any{
+			"daemon_status":  s.statusProvider.DaemonStatus(),
+			"adapter_status": s.statusProvider.AdapterStatus(),
+		}
+		return callToolResultText(mustJSON(newToolEnvelope(status, nil)), false), nil
 	case toolDevicesV1Name, toolDevicesLegacyName:
 		devices := s.listDevices()
 		text := mustJSON(newToolEnvelope(devices, nil))
 		return callToolResultText(text, false), nil
+	case toolDeviceGetV1Name:
+		device, err := s.getDevice(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelope(device, nil)), false), nil
+	case toolPlanesListV1Name:
+		planes, err := s.listPlanes(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelope(planes, nil)), false), nil
+	case toolMethodsListV1Name:
+		methods, err := s.listMethods(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelope(methods, nil)), false), nil
 	case toolInvokeV1Name:
 		if s.invoker == nil {
 			return nil, rpcErrorInternal("server missing invoker")
@@ -391,56 +509,251 @@ type deviceInfo struct {
 }
 
 type planeInfo struct {
-	Name    string       `json:"name"`
-	Methods []methodInfo `json:"methods"`
+	Name     string       `json:"name"`
+	Routable bool         `json:"routable"`
+	Methods  []methodInfo `json:"methods"`
 }
 
 type methodInfo struct {
-	Name      string `json:"name"`
-	ReadOnly  bool   `json:"read_only"`
-	Primary   int    `json:"primary"`
-	Secondary int    `json:"secondary"`
+	Name       string `json:"name"`
+	ReadOnly   bool   `json:"read_only"`
+	Primary    int    `json:"primary"`
+	Secondary  int    `json:"secondary"`
+	Mutability string `json:"mutability"`
+	Danger     string `json:"danger_level"`
+	Routable   bool   `json:"routable"`
 }
 
 func (s *Server) listDevices() []deviceInfo {
 	out := make([]deviceInfo, 0)
 	s.registry.Iterate(func(entry registry.DeviceEntry) bool {
-		device := deviceInfo{
-			Address:         int(entry.Address()),
-			Manufacturer:    entry.Manufacturer(),
-			DeviceID:        entry.DeviceID(),
-			SoftwareVersion: entry.SoftwareVersion(),
-			HardwareVersion: entry.HardwareVersion(),
-			Planes:          make([]planeInfo, 0),
-		}
-
-		for _, plane := range entry.Planes() {
-			pi := planeInfo{
-				Name:    plane.Name(),
-				Methods: make([]methodInfo, 0, len(plane.Methods())),
-			}
-			for _, method := range plane.Methods() {
-				template := method.Template()
-				primary := 0
-				secondary := 0
-				if template != nil {
-					primary = int(template.Primary())
-					secondary = int(template.Secondary())
-				}
-				pi.Methods = append(pi.Methods, methodInfo{
-					Name:      method.Name(),
-					ReadOnly:  method.ReadOnly(),
-					Primary:   primary,
-					Secondary: secondary,
-				})
-			}
-			device.Planes = append(device.Planes, pi)
-		}
-
-		out = append(out, device)
+		out = append(out, buildDeviceInfo(entry))
 		return true
 	})
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Address != out[j].Address {
+			return out[i].Address < out[j].Address
+		}
+		if out[i].Manufacturer != out[j].Manufacturer {
+			return out[i].Manufacturer < out[j].Manufacturer
+		}
+		return out[i].DeviceID < out[j].DeviceID
+	})
 	return out
+}
+
+func (s *Server) getDevice(args map[string]any) (deviceInfo, error) {
+	address, err := parseAddress(args["address"])
+	if err != nil {
+		return deviceInfo{}, err
+	}
+	entry, ok := s.registry.Lookup(address)
+	if !ok {
+		return deviceInfo{}, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
+	}
+	return buildDeviceInfo(entry), nil
+}
+
+func (s *Server) listPlanes(args map[string]any) ([]planeInfo, error) {
+	address, err := parseAddress(args["address"])
+	if err != nil {
+		return nil, err
+	}
+	entry, ok := s.registry.Lookup(address)
+	if !ok {
+		return nil, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
+	}
+	return buildPlaneInfoList(entry.Planes()), nil
+}
+
+func (s *Server) listMethods(args map[string]any) ([]methodInfo, error) {
+	address, err := parseAddress(args["address"])
+	if err != nil {
+		return nil, err
+	}
+	planeName, _ := args["plane"].(string)
+	planeName = strings.TrimSpace(planeName)
+	if planeName == "" {
+		return nil, fmt.Errorf("missing plane: %w", ebuserrors.ErrInvalidPayload)
+	}
+
+	entry, ok := s.registry.Lookup(address)
+	if !ok {
+		return nil, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
+	}
+	plane, found := findPlane(entry.Planes(), planeName)
+	if !found {
+		return nil, fmt.Errorf("unknown plane %q: %w", planeName, ebuserrors.ErrInvalidPayload)
+	}
+
+	return buildMethodInfoList(plane), nil
+}
+
+func buildDeviceInfo(entry registry.DeviceEntry) deviceInfo {
+	return deviceInfo{
+		Address:         int(entry.Address()),
+		Manufacturer:    entry.Manufacturer(),
+		DeviceID:        entry.DeviceID(),
+		SoftwareVersion: entry.SoftwareVersion(),
+		HardwareVersion: entry.HardwareVersion(),
+		Planes:          buildPlaneInfoList(entry.Planes()),
+	}
+}
+
+func buildPlaneInfoList(planes []registry.Plane) []planeInfo {
+	out := make([]planeInfo, 0, len(planes))
+	for _, plane := range planes {
+		if plane == nil {
+			continue
+		}
+		_, routable := plane.(router.Plane)
+		out = append(out, planeInfo{
+			Name:     plane.Name(),
+			Routable: routable,
+			Methods:  buildMethodInfoList(plane),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func buildMethodInfoList(plane registry.Plane) []methodInfo {
+	if plane == nil {
+		return nil
+	}
+	methods := plane.Methods()
+	out := make([]methodInfo, 0, len(methods))
+	for _, method := range methods {
+		if method == nil {
+			continue
+		}
+		template := method.Template()
+		primary := 0
+		secondary := 0
+		if template != nil {
+			primary = int(template.Primary())
+			secondary = int(template.Secondary())
+		}
+		mutability, danger, routable := extractMethodMetadata(method, plane)
+		out = append(out, methodInfo{
+			Name:       method.Name(),
+			ReadOnly:   method.ReadOnly(),
+			Primary:    primary,
+			Secondary:  secondary,
+			Mutability: mutability,
+			Danger:     danger,
+			Routable:   routable,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		if out[i].Primary != out[j].Primary {
+			return out[i].Primary < out[j].Primary
+		}
+		return out[i].Secondary < out[j].Secondary
+	})
+	return out
+}
+
+func extractMethodMetadata(method registry.Method, plane registry.Plane) (mutability string, danger string, routable bool) {
+	if method == nil {
+		return methodMutabilityUnknown, methodDangerUnknown, false
+	}
+
+	if method.ReadOnly() {
+		mutability = methodMutabilityReadOnly
+	} else {
+		mutability = methodMutabilityMutating
+	}
+	if value, ok := invokeStringNoArg(method, "Mutability"); ok {
+		if normalized, valid := normalizeMethodMutability(value); valid {
+			mutability = normalized
+		}
+	}
+
+	if mutability == methodMutabilityReadOnly {
+		danger = methodDangerSafe
+	} else {
+		danger = methodDangerDangerous
+	}
+	if value, ok := invokeStringNoArg(method, "Danger"); ok {
+		if normalized, valid := normalizeMethodDanger(value); valid {
+			danger = normalized
+		}
+	}
+
+	_, routable = plane.(router.Plane)
+	if value, ok := invokeBoolNoArg(method, "Routable"); ok {
+		routable = value
+	}
+
+	return mutability, danger, routable
+}
+
+func normalizeMethodMutability(raw string) (string, bool) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	value = strings.ReplaceAll(value, "-", "_")
+	switch value {
+	case methodMutabilityUnknown, methodMutabilityReadOnly, methodMutabilityMutating:
+		return value, true
+	default:
+		return "", false
+	}
+}
+
+func normalizeMethodDanger(raw string) (string, bool) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case methodDangerUnknown, methodDangerSafe, methodDangerDangerous:
+		return value, true
+	default:
+		return "", false
+	}
+}
+
+func invokeStringNoArg(target any, methodName string) (string, bool) {
+	if target == nil {
+		return "", false
+	}
+	value := reflect.ValueOf(target)
+	method := value.MethodByName(methodName)
+	if !method.IsValid() || method.Type().NumIn() != 0 || method.Type().NumOut() != 1 {
+		return "", false
+	}
+	out := method.Call(nil)
+	if len(out) != 1 {
+		return "", false
+	}
+	return fmt.Sprint(out[0].Interface()), true
+}
+
+func invokeBoolNoArg(target any, methodName string) (bool, bool) {
+	if target == nil {
+		return false, false
+	}
+	value := reflect.ValueOf(target)
+	method := value.MethodByName(methodName)
+	if !method.IsValid() || method.Type().NumIn() != 0 || method.Type().NumOut() != 1 || method.Type().Out(0).Kind() != reflect.Bool {
+		return false, false
+	}
+	out := method.Call(nil)
+	if len(out) != 1 {
+		return false, false
+	}
+	return out[0].Bool(), true
+}
+
+func findPlane(planes []registry.Plane, planeName string) (registry.Plane, bool) {
+	for _, plane := range planes {
+		if plane != nil && plane.Name() == planeName {
+			return plane, true
+		}
+	}
+	return nil, false
 }
 
 func (s *Server) invoke(ctx context.Context, args map[string]any) (any, error) {

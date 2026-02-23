@@ -52,6 +52,7 @@ type Options struct {
 	GatewayVersion   string
 	BuildID          string
 	ListRegistry     func() []RegistryDevice
+	ListSemantic     func() SemanticSnapshot
 }
 
 type handler struct {
@@ -73,6 +74,47 @@ type RegistryDevice struct {
 type RegistryPlane struct {
 	Name    string   `json:"name"`
 	Methods []string `json:"methods,omitempty"`
+}
+
+type SemanticSnapshot struct {
+	Zones       []SemanticZone        `json:"zones"`
+	DHW         *SemanticDHW          `json:"dhw,omitempty"`
+	Energy      *SemanticEnergyTotals `json:"energy_totals,omitempty"`
+	CapturedUTC string                `json:"captured_utc"`
+}
+
+type SemanticZone struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	OperatingMode string   `json:"operating_mode,omitempty"`
+	Preset        string   `json:"preset,omitempty"`
+	CurrentTempC  *float64 `json:"current_temp_c,omitempty"`
+	TargetTempC   *float64 `json:"target_temp_c,omitempty"`
+	HeatingDemand *float64 `json:"heating_demand,omitempty"`
+}
+
+type SemanticDHW struct {
+	OperatingMode string   `json:"operating_mode,omitempty"`
+	Preset        string   `json:"preset,omitempty"`
+	CurrentTempC  *float64 `json:"current_temp_c,omitempty"`
+	TargetTempC   *float64 `json:"target_temp_c,omitempty"`
+	HeatingDemand *float64 `json:"heating_demand,omitempty"`
+}
+
+type SemanticEnergyTotals struct {
+	Gas      SemanticEnergyChannel `json:"gas"`
+	Electric SemanticEnergyChannel `json:"electric"`
+	Solar    SemanticEnergyChannel `json:"solar"`
+}
+
+type SemanticEnergyChannel struct {
+	DHW     SemanticEnergySeries `json:"dhw"`
+	Climate SemanticEnergySeries `json:"climate"`
+}
+
+type SemanticEnergySeries struct {
+	Today  float64   `json:"today"`
+	Yearly []float64 `json:"yearly,omitempty"`
 }
 
 func NewHandler(opts Options) http.Handler {
@@ -163,7 +205,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"capabilities": map[string]bool{
 				"registry":   h.opts.ListRegistry != nil,
-				"semantic":   true,
+				"semantic":   h.opts.ListSemantic != nil,
 				"projection": true,
 				"stream":     false,
 			},
@@ -181,6 +223,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		})
 	case "registry/devices":
 		h.handleRegistryDevices(w, r)
+	case "semantic/snapshot":
+		h.handleSemanticSnapshot(w)
 	default:
 		http.NotFound(w, r)
 	}
@@ -217,6 +261,8 @@ func classifyRoute(path string) string {
 		return "api.bootstrap"
 	case strings.HasPrefix(path, "/api/v1/registry/devices"):
 		return "api.registry.devices"
+	case strings.HasPrefix(path, "/api/v1/semantic/snapshot"):
+		return "api.semantic.snapshot"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):
@@ -345,4 +391,22 @@ func matchesDeviceFilter(device RegistryDevice, needle string) bool {
 		}
 	}
 	return false
+}
+
+func (h *handler) handleSemanticSnapshot(w http.ResponseWriter) {
+	if h.opts.ListSemantic == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"zones":        []SemanticZone{},
+			"captured_utc": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+	snapshot := h.opts.ListSemantic()
+	if strings.TrimSpace(snapshot.CapturedUTC) == "" {
+		snapshot.CapturedUTC = time.Now().UTC().Format(time.RFC3339)
+	}
+	if snapshot.Zones == nil {
+		snapshot.Zones = []SemanticZone{}
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }

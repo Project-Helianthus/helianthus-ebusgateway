@@ -206,6 +206,13 @@ type SnapshotEnvelope struct {
 	Payload    map[string]any `json:"payload"`
 }
 
+type SnapshotDiffEntry struct {
+	Path   string `json:"path"`
+	Change string `json:"change"`
+	From   string `json:"from,omitempty"`
+	To     string `json:"to,omitempty"`
+}
+
 type snapshotStore struct {
 	mu           sync.Mutex
 	maxSnapshots int
@@ -397,6 +404,49 @@ func (ss *snapshotStore) config() (maxSnapshots int, count int) {
 	return ss.maxSnapshots, len(ss.items)
 }
 
+func (ss *snapshotStore) getByID(id string) (SnapshotEnvelope, bool) {
+	if ss == nil {
+		return SnapshotEnvelope{}, false
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	for i := len(ss.items) - 1; i >= 0; i-- {
+		if ss.items[i].ID == id {
+			return SnapshotEnvelope{
+				ID:         ss.items[i].ID,
+				Label:      ss.items[i].Label,
+				CapturedAt: ss.items[i].CapturedAt,
+				Payload:    cloneMap(ss.items[i].Payload),
+			}, true
+		}
+	}
+	return SnapshotEnvelope{}, false
+}
+
+func (ss *snapshotStore) latestTwo() (SnapshotEnvelope, SnapshotEnvelope, bool) {
+	if ss == nil {
+		return SnapshotEnvelope{}, SnapshotEnvelope{}, false
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if len(ss.items) < 2 {
+		return SnapshotEnvelope{}, SnapshotEnvelope{}, false
+	}
+	from := ss.items[len(ss.items)-2]
+	to := ss.items[len(ss.items)-1]
+	return SnapshotEnvelope{
+			ID:         from.ID,
+			Label:      from.Label,
+			CapturedAt: from.CapturedAt,
+			Payload:    cloneMap(from.Payload),
+		}, SnapshotEnvelope{
+			ID:         to.ID,
+			Label:      to.Label,
+			CapturedAt: to.CapturedAt,
+			Payload:    cloneMap(to.Payload),
+		}, true
+}
+
 func cloneMap(payload map[string]any) map[string]any {
 	if payload == nil {
 		return nil
@@ -471,14 +521,15 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		streamEnabled := h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil
 		writeJSON(w, http.StatusOK, map[string]any{
 			"capabilities": map[string]bool{
-				"registry":   h.opts.ListRegistry != nil,
-				"semantic":   h.opts.ListSemantic != nil,
-				"projection": h.opts.ListProjections != nil && h.opts.GetProjection != nil,
-				"search":     h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil,
-				"stream":     streamEnabled,
-				"timeline":   streamEnabled,
-				"provenance": streamEnabled,
-				"snapshots":  streamEnabled,
+				"registry":      h.opts.ListRegistry != nil,
+				"semantic":      h.opts.ListSemantic != nil,
+				"projection":    h.opts.ListProjections != nil && h.opts.GetProjection != nil,
+				"search":        h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil,
+				"stream":        streamEnabled,
+				"timeline":      streamEnabled,
+				"provenance":    streamEnabled,
+				"snapshots":     streamEnabled,
+				"snapshot_diff": streamEnabled,
 			},
 			"endpoints": map[string]string{
 				"graphql":       h.opts.GraphQLPath,
@@ -492,6 +543,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"snapshots":     "/portal/api/v1/snapshots",
 				"capture":       "/portal/api/v1/snapshots/capture",
 				"retention":     "/portal/api/v1/snapshots/retention",
+				"snapshot_diff": "/portal/api/v1/snapshots/diff",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -521,6 +573,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleSnapshotsCapture(w, r)
 	case "snapshots/retention":
 		h.handleSnapshotsRetention(w, r)
+	case "snapshots/diff":
+		h.handleSnapshotsDiff(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -581,6 +635,8 @@ func classifyRoute(path string) string {
 		return "api.snapshots.capture"
 	case strings.HasPrefix(path, "/api/v1/snapshots/retention"):
 		return "api.snapshots.retention"
+	case strings.HasPrefix(path, "/api/v1/snapshots/diff"):
+		return "api.snapshots.diff"
 	case strings.HasPrefix(path, "/api/v1/snapshots"):
 		return "api.snapshots.list"
 	case strings.HasPrefix(path, "/assets/"):
@@ -1081,6 +1137,166 @@ func (h *handler) handleSnapshotsRetention(w http.ResponseWriter, r *http.Reques
 		"max_snapshots": maxSnapshots,
 		"stored_count":  count,
 	})
+}
+
+func (h *handler) handleSnapshotsDiff(w http.ResponseWriter, r *http.Request) {
+	if h.snapshots == nil {
+		http.Error(w, "snapshot store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	fromID := strings.TrimSpace(r.URL.Query().Get("from_id"))
+	toID := strings.TrimSpace(r.URL.Query().Get("to_id"))
+
+	var (
+		from SnapshotEnvelope
+		to   SnapshotEnvelope
+		ok   bool
+	)
+	switch {
+	case fromID == "" && toID == "":
+		from, to, ok = h.snapshots.latestTwo()
+		if !ok {
+			http.Error(w, "need at least two snapshots", http.StatusNotFound)
+			return
+		}
+	case fromID == "" || toID == "":
+		http.Error(w, "both from_id and to_id are required", http.StatusBadRequest)
+		return
+	default:
+		from, ok = h.snapshots.getByID(fromID)
+		if !ok {
+			http.Error(w, "from snapshot not found", http.StatusNotFound)
+			return
+		}
+		to, ok = h.snapshots.getByID(toID)
+		if !ok {
+			http.Error(w, "to snapshot not found", http.StatusNotFound)
+			return
+		}
+	}
+
+	limit := parseQueryLimit(r.URL.Query().Get("limit"), 200)
+	diffEntries := buildSnapshotDiffEntries(from.Payload, to.Payload)
+	totalChanges := len(diffEntries)
+	if limit > 0 && len(diffEntries) > limit {
+		diffEntries = diffEntries[:limit]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"from_snapshot": map[string]any{
+			"id":          from.ID,
+			"label":       from.Label,
+			"captured_at": from.CapturedAt,
+		},
+		"to_snapshot": map[string]any{
+			"id":          to.ID,
+			"label":       to.Label,
+			"captured_at": to.CapturedAt,
+		},
+		"change_count": totalChanges,
+		"count":        len(diffEntries),
+		"items":        diffEntries,
+	})
+}
+
+func buildSnapshotDiffEntries(fromPayload map[string]any, toPayload map[string]any) []SnapshotDiffEntry {
+	fromFlat := flattenSnapshotPayload(fromPayload)
+	toFlat := flattenSnapshotPayload(toPayload)
+
+	pathsMap := make(map[string]struct{}, len(fromFlat)+len(toFlat))
+	for path := range fromFlat {
+		pathsMap[path] = struct{}{}
+	}
+	for path := range toFlat {
+		pathsMap[path] = struct{}{}
+	}
+	paths := make([]string, 0, len(pathsMap))
+	for path := range pathsMap {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+
+	entries := make([]SnapshotDiffEntry, 0, len(paths))
+	for _, path := range paths {
+		fromValue, fromOK := fromFlat[path]
+		toValue, toOK := toFlat[path]
+		switch {
+		case !fromOK && toOK:
+			entries = append(entries, SnapshotDiffEntry{
+				Path:   path,
+				Change: "added",
+				To:     toValue,
+			})
+		case fromOK && !toOK:
+			entries = append(entries, SnapshotDiffEntry{
+				Path:   path,
+				Change: "removed",
+				From:   fromValue,
+			})
+		case fromOK && toOK && fromValue != toValue:
+			entries = append(entries, SnapshotDiffEntry{
+				Path:   path,
+				Change: "changed",
+				From:   fromValue,
+				To:     toValue,
+			})
+		}
+	}
+	return entries
+}
+
+func flattenSnapshotPayload(payload map[string]any) map[string]string {
+	normalized := normalizePayload(payload)
+	out := make(map[string]string)
+	flattenValue("$", normalized, out)
+	return out
+}
+
+func normalizePayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return map[string]any{}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return cloneMap(payload)
+	}
+	var normalized map[string]any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return cloneMap(payload)
+	}
+	return normalized
+}
+
+func flattenValue(path string, value any, out map[string]string) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if len(typed) == 0 {
+			out[path] = "{}"
+			return
+		}
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			flattenValue(path+"."+key, typed[key], out)
+		}
+	case []any:
+		if len(typed) == 0 {
+			out[path] = "[]"
+			return
+		}
+		for idx, item := range typed {
+			flattenValue(fmt.Sprintf("%s[%d]", path, idx), item, out)
+		}
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			out[path] = fmt.Sprintf("%v", typed)
+			return
+		}
+		out[path] = string(encoded)
+	}
 }
 
 func (h *handler) buildSnapshotPayload() map[string]any {

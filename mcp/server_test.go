@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
 	"github.com/d3vi1/helianthus-ebusgo/protocol"
 	"github.com/d3vi1/helianthus-ebusreg/registry"
 	"github.com/d3vi1/helianthus-ebusreg/router"
@@ -328,6 +329,40 @@ func TestServer_ToolsCallInvokeErrorEnvelope(t *testing.T) {
 	}
 	if source, _ := errorPayload["source_layer"].(string); source != "ebusreg" {
 		t.Fatalf("invoke source_layer = %q; want ebusreg", source)
+	}
+}
+
+func TestClassifyToolError_KnownMappings(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		err         error
+		code        string
+		retriable   bool
+		sourceLayer string
+	}{
+		{name: "invalid payload", err: ebuserrors.ErrInvalidPayload, code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "ebusreg"},
+		{name: "no such device", err: ebuserrors.ErrNoSuchDevice, code: "NOT_FOUND", retriable: false, sourceLayer: "ebusreg"},
+		{name: "nack", err: ebuserrors.ErrNACK, code: "PROTOCOL_ERROR", retriable: false, sourceLayer: "ebusgo"},
+		{name: "timeout", err: ebuserrors.ErrTimeout, code: "TIMEOUT", retriable: true, sourceLayer: "ebusgo"},
+		{name: "crc mismatch", err: ebuserrors.ErrCRCMismatch, code: "PROTOCOL_ERROR", retriable: true, sourceLayer: "ebusgo"},
+		{name: "transport closed", err: ebuserrors.ErrTransportClosed, code: "BUS_UNAVAILABLE", retriable: false, sourceLayer: "ebusgo"},
+		{name: "bus collision", err: ebuserrors.ErrBusCollision, code: "BUS_UNAVAILABLE", retriable: true, sourceLayer: "ebusgo"},
+		{name: "retry exhausted", err: ebuserrors.ErrRetryExhausted, code: "BUS_UNAVAILABLE", retriable: true, sourceLayer: "ebusgo"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			code, retriable, sourceLayer := classifyToolError(tc.err)
+			if code != tc.code || retriable != tc.retriable || sourceLayer != tc.sourceLayer {
+				t.Fatalf("classifyToolError(%s) = (%q,%v,%q); want (%q,%v,%q)",
+					tc.name, code, retriable, sourceLayer, tc.code, tc.retriable, tc.sourceLayer)
+			}
+		})
 	}
 }
 

@@ -244,10 +244,14 @@ func classifyToolError(err error) (code string, retriable bool, sourceLayer stri
 		return "INVALID_ARGUMENT", false, "ebusreg"
 	case errors.Is(err, ebuserrors.ErrNoSuchDevice):
 		return "NOT_FOUND", false, "ebusreg"
+	case errors.Is(err, ebuserrors.ErrNACK):
+		return "PROTOCOL_ERROR", false, "ebusgo"
 	case errors.Is(err, ebuserrors.ErrTimeout):
 		return "TIMEOUT", true, "ebusgo"
+	case errors.Is(err, ebuserrors.ErrCRCMismatch):
+		return "PROTOCOL_ERROR", true, "ebusgo"
 	case errors.Is(err, ebuserrors.ErrTransportClosed):
-		return "BUS_UNAVAILABLE", true, "ebusgo"
+		return "BUS_UNAVAILABLE", false, "ebusgo"
 	case errors.Is(err, ebuserrors.ErrBusCollision):
 		return "BUS_UNAVAILABLE", true, "ebusgo"
 	case errors.Is(err, ebuserrors.ErrRetryExhausted):

@@ -77,3 +77,38 @@ func TestApplyTransportSourcePolicy_NonEbusdAutoRemainsDynamic(t *testing.T) {
 		t.Fatalf("ScanSource = 0x%02x; want 0x00", cfg.ScanSource)
 	}
 }
+
+func TestBindFlags_PortalPath(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-portal-path", "/portal-v2"}); err != nil {
+		t.Fatalf("parse portal-path: %v", err)
+	}
+	if cfg.PortalPath != "/portal-v2" {
+		t.Fatalf("PortalPath = %q; want /portal-v2", cfg.PortalPath)
+	}
+}
+
+func TestNormalizeMountPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		fallback string
+		want     string
+	}{
+		{name: "already_clean", input: "/portal", fallback: "/portal", want: "/portal"},
+		{name: "without_leading_slash", input: "portal", fallback: "/portal", want: "/portal"},
+		{name: "trailing_slash", input: "/portal/", fallback: "/portal", want: "/portal"},
+		{name: "root_becomes_fallback", input: "/", fallback: "/portal", want: "/portal"},
+		{name: "empty_becomes_fallback", input: "", fallback: "/portal", want: "/portal"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeMountPath(tc.input, tc.fallback); got != tc.want {
+				t.Fatalf("normalizeMountPath(%q,%q)=%q; want %q", tc.input, tc.fallback, got, tc.want)
+			}
+		})
+	}
+}

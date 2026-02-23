@@ -57,6 +57,7 @@ type Config struct {
 	SubscriptionPath          string
 	MCPPath                   string
 	UIPath                    string
+	PortalPath                string
 	MDNSAdvertise             bool
 	MDNSInstance              string
 	DumpOutputDir             string
@@ -96,6 +97,7 @@ func DefaultConfig() Config {
 		SubscriptionPath:          "/graphql/subscriptions",
 		MCPPath:                   "/mcp",
 		UIPath:                    "/ui",
+		PortalPath:                "/portal",
 		MDNSAdvertise:             true,
 		MDNSInstance:              "helianthus",
 		DumpOutputDir:             "./dumps",
@@ -173,6 +175,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.UIPath == "" {
 		cfg.UIPath = "/ui"
+	}
+	if cfg.PortalPath == "" {
+		cfg.PortalPath = "/portal"
 	}
 	if cfg.MDNSInstance == "" {
 		cfg.MDNSInstance = "helianthus"

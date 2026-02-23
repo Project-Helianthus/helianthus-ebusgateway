@@ -39,3 +39,17 @@ func TestApplyDefaults_PreservesAutoScanSource(t *testing.T) {
 		t.Fatalf("expected ScanSource=0x00 for auto mode, got 0x%02x", cfg.ScanSource)
 	}
 }
+
+func TestDefaultConfig_SetsPortalPath(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.PortalPath != "/portal" {
+		t.Fatalf("expected PortalPath=/portal by default, got %q", cfg.PortalPath)
+	}
+}
+
+func TestApplyDefaults_SetsPortalPath(t *testing.T) {
+	cfg := applyDefaults(Config{})
+	if cfg.PortalPath != "/portal" {
+		t.Fatalf("expected PortalPath=/portal after defaults, got %q", cfg.PortalPath)
+	}
+}

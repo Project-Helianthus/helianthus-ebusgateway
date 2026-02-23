@@ -61,6 +61,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	gateway.Start(ctx)
 
 	builder := graphql.NewBuilder(gateway.Registry, nil)
+	builder.SetStatusProvider(newRuntimeStatusProvider(cfg))
 	hub := graphql.NewBroadcastHub(nil)
 	gateway.AddRouterPlane(hub)
 	gateway.RefreshRouterPlanes()

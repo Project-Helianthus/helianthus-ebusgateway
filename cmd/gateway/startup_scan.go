@@ -133,6 +133,47 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				log.Printf("startup scan: using %d target(s) from ebusd scan result at %s", len(targets), targetLabel)
 			}
 
+			if cfg.TransportConfig.Protocol == ebusgateway.TransportEbusdTCP && targetConfig != nil {
+				infos, infoErr := ebusdScanResultInfos(scanCtx, *targetConfig)
+				if infoErr != nil {
+					log.Printf("startup scan preload error: %v", infoErr)
+				} else if len(infos) > 0 {
+					beforeTotal := countRegistryDevices(gateway.Registry)
+					for _, info := range infos {
+						gateway.Registry.Register(info)
+					}
+					total := countRegistryDevices(gateway.Registry)
+					imported := total - beforeTotal
+					if imported < 0 {
+						imported = 0
+					}
+					log.Printf("startup scan preload: imported=%d total=%d (ebusd-tcp)", imported, total)
+					cancel()
+
+					if total > 0 && total != previousTotal {
+						previousTotal = total
+						gateway.RefreshRouterPlanes()
+						if builder != nil {
+							if err := builder.Rebuild(); err != nil {
+								log.Printf("graphql schema rebuild failed after scan preload: %v", err)
+							}
+						}
+					}
+
+					if shouldStopDiscoveryScan(total) {
+						return
+					}
+					timer := time.NewTimer(interval)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
+					continue
+				}
+			}
+
 			devices, err := registry.Scan(scanCtx, scanBus, gateway.Registry, cfg.ScanSource, targets)
 
 			if err != nil && ctx.Err() == nil {

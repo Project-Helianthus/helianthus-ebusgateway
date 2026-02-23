@@ -126,16 +126,17 @@ func applyTransportSourcePolicy(cfg *ebusgateway.Config) {
 	if cfg == nil {
 		return
 	}
-	if !cfg.ScanSourceAuto {
-		return
-	}
 
 	protocol := strings.TrimSpace(strings.ToLower(string(cfg.TransportConfig.Protocol)))
 	switch protocol {
 	case "ebusd", "ebusd-tcp":
-		cfg.ScanSource = 0x31
+		if cfg.ScanSourceAuto || cfg.ScanSource == 0xF0 {
+			cfg.ScanSource = 0x31
+		}
 	default:
-		cfg.ScanSource = 0x00
+		if cfg.ScanSourceAuto {
+			cfg.ScanSource = 0x00
+		}
 	}
 }
 

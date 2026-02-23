@@ -64,6 +64,7 @@ class PortalShell extends HTMLElement {
     const provenanceCorrelation = this.querySelector('[data-role="provenance-correlation"]');
     const captureButton = this.querySelector('[data-role="snapshot-capture"]');
     const retentionButton = this.querySelector('[data-role="snapshot-retention-apply"]');
+    const diffButton = this.querySelector('[data-role="snapshot-diff-run"]');
     if (toggle) {
       toggle.addEventListener("click", () => {
         const current = loadTheme();
@@ -95,6 +96,11 @@ class PortalShell extends HTMLElement {
         this.updateSnapshotRetention();
       });
     }
+    if (diffButton) {
+      diffButton.addEventListener("click", () => {
+        this.runSnapshotDiff();
+      });
+    }
   }
 
   async loadStatus() {
@@ -109,6 +115,7 @@ class PortalShell extends HTMLElement {
     const provenanceList = this.querySelector('[data-role="provenance-list"]');
     const snapshotsList = this.querySelector('[data-role="snapshots-list"]');
     const retentionInput = this.querySelector('[data-role="snapshot-retention"]');
+    const diffList = this.querySelector('[data-role="snapshot-diff-list"]');
     try {
       const [healthRes, bootstrapRes] = await Promise.all([
         fetch("api/v1/health"),
@@ -122,7 +129,7 @@ class PortalShell extends HTMLElement {
       if (metaEl) {
         const caps = bootstrap.capabilities || {};
         metaEl.textContent =
-          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}, provenance=${caps.provenance}, snapshots=${caps.snapshots}`;
+          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}, provenance=${caps.provenance}, snapshots=${caps.snapshots}, snapshot_diff=${caps.snapshot_diff}`;
       }
       if (searchInput) {
         searchInput.disabled = !bootstrap.capabilities?.search;
@@ -191,6 +198,11 @@ class PortalShell extends HTMLElement {
           this.refreshSnapshots();
         }, 5000);
       }
+      if (diffList) {
+        diffList.innerHTML = bootstrap.capabilities?.snapshot_diff
+          ? "<li>Select snapshot IDs and run diff.</li>"
+          : "<li>Snapshot diff unavailable.</li>";
+      }
     } catch (err) {
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
@@ -222,6 +234,7 @@ class PortalShell extends HTMLElement {
         this.scheduleTimelineRefresh();
         this.scheduleProvenanceRefresh();
         this.refreshSnapshots();
+        this.runSnapshotDiff();
       } catch (err) {
         streamStatus.textContent = "Stream payload parse error";
       }
@@ -351,6 +364,15 @@ class PortalShell extends HTMLElement {
           return `<li><span class="pill">snap</span> <strong>${id}</strong> <span class="muted-inline">${label} ${at}</span></li>`;
         })
         .join("");
+
+      const fromInput = this.querySelector('[data-role="snapshot-diff-from"]');
+      const toInput = this.querySelector('[data-role="snapshot-diff-to"]');
+      if (toInput && !String(toInput.value || "").trim() && items[0]?.id) {
+        toInput.value = String(items[0].id);
+      }
+      if (fromInput && !String(fromInput.value || "").trim() && items[1]?.id) {
+        fromInput.value = String(items[1].id);
+      }
     } catch (err) {
       list.innerHTML = "<li>Snapshot list query failed.</li>";
       console.error("snapshot query failed", err);
@@ -398,6 +420,50 @@ class PortalShell extends HTMLElement {
       if (streamStatus) {
         streamStatus.textContent = "Snapshot retention update failed";
       }
+    }
+  }
+
+  async runSnapshotDiff() {
+    const list = this.querySelector('[data-role="snapshot-diff-list"]');
+    const fromInput = this.querySelector('[data-role="snapshot-diff-from"]');
+    const toInput = this.querySelector('[data-role="snapshot-diff-to"]');
+    if (!list) {
+      return;
+    }
+    try {
+      const query = new URLSearchParams();
+      query.set("limit", "12");
+      const from = fromInput ? String(fromInput.value || "").trim() : "";
+      const to = toInput ? String(toInput.value || "").trim() : "";
+      if (from.length > 0) {
+        query.set("from_id", from);
+      }
+      if (to.length > 0) {
+        query.set("to_id", to);
+      }
+      const response = await fetch(`api/v1/snapshots/diff?${query.toString()}`);
+      if (!response.ok) {
+        list.innerHTML = `<li>Snapshot diff unavailable (${response.status}).</li>`;
+        return;
+      }
+      const payload = await response.json();
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (items.length === 0) {
+        list.innerHTML = "<li>No diff changes detected.</li>";
+        return;
+      }
+      list.innerHTML = items
+        .map((item) => {
+          const path = escapeHtml(item.path || "");
+          const change = escapeHtml(item.change || "changed");
+          const fromVal = escapeHtml(item.from || "");
+          const toVal = escapeHtml(item.to || "");
+          return `<li><span class="pill">${change}</span> <strong>${path}</strong> <span class="muted-inline">${fromVal} -> ${toVal}</span></li>`;
+        })
+        .join("");
+    } catch (err) {
+      list.innerHTML = "<li>Snapshot diff failed.</li>";
+      console.error("snapshot diff failed", err);
     }
   }
 
@@ -589,6 +655,17 @@ class PortalShell extends HTMLElement {
               </div>
               <ul data-role="snapshots-list">
                 <li>Loading snapshots capability...</li>
+              </ul>
+            </section>
+            <section class="registry-preview">
+              <h2>Snapshot Diff</h2>
+              <div class="snapshot-controls">
+                <input class="search timeline-filter" data-role="snapshot-diff-from" type="search" placeholder="from_id (optional)" aria-label="Snapshot diff from id" />
+                <input class="search timeline-filter" data-role="snapshot-diff-to" type="search" placeholder="to_id (optional)" aria-label="Snapshot diff to id" />
+                <button class="button" data-role="snapshot-diff-run" type="button">Run Diff</button>
+              </div>
+              <ul data-role="snapshot-diff-list">
+                <li>Loading snapshot diff capability...</li>
               </ul>
             </section>
             <div class="meta" data-role="stream-status">Stream idle</div>

@@ -160,6 +160,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	if endpoints["retention"] != "/portal/api/v1/snapshots/retention" {
 		t.Fatalf("retention endpoint=%v; want /portal/api/v1/snapshots/retention", endpoints["retention"])
 	}
+	if endpoints["snapshot_diff"] != "/portal/api/v1/snapshots/diff" {
+		t.Fatalf("snapshot_diff endpoint=%v; want /portal/api/v1/snapshots/diff", endpoints["snapshot_diff"])
+	}
 	capabilities := payload["capabilities"].(map[string]any)
 	if capabilities["registry"] != true {
 		t.Fatalf("capabilities.registry=%v; want true", capabilities["registry"])
@@ -184,6 +187,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	}
 	if capabilities["snapshots"] != true {
 		t.Fatalf("capabilities.snapshots=%v; want true", capabilities["snapshots"])
+	}
+	if capabilities["snapshot_diff"] != true {
+		t.Fatalf("capabilities.snapshot_diff=%v; want true", capabilities["snapshot_diff"])
 	}
 }
 
@@ -727,5 +733,107 @@ func TestSnapshotsCaptureUnavailableWithoutProviders(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d; want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestSnapshotsDiff_DefaultLatestPair(t *testing.T) {
+	h := NewHandler(Options{
+		ListRegistry: func() []RegistryDevice {
+			return []RegistryDevice{{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720"}}
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/capture?label=first", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first capture status=%d; want %d", rec.Code, http.StatusOK)
+	}
+
+	// Change upstream payload to ensure a detectable diff.
+	h.(*handler).opts.ListRegistry = func() []RegistryDevice {
+		return []RegistryDevice{{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720B"}}
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/capture?label=second", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second capture status=%d; want %d", rec.Code, http.StatusOK)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/diff", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("diff status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if int(payload["change_count"].(float64)) < 1 {
+		t.Fatalf("change_count=%v; want >=1", payload["change_count"])
+	}
+	items := payload["items"].([]any)
+	if len(items) < 1 {
+		t.Fatalf("len(items)=%d; want >=1", len(items))
+	}
+}
+
+func TestSnapshotsDiff_WithExplicitIDs(t *testing.T) {
+	h := NewHandler(Options{
+		ListRegistry: func() []RegistryDevice {
+			return []RegistryDevice{{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720"}}
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/capture?label=a", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var aPayload map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &aPayload)
+	aID := aPayload["snapshot"].(map[string]any)["id"].(string)
+
+	h.(*handler).opts.ListRegistry = func() []RegistryDevice {
+		return []RegistryDevice{{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720X"}}
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/capture?label=b", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var bPayload map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &bPayload)
+	bID := bPayload["snapshot"].(map[string]any)["id"].(string)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/diff?from_id="+aID+"&to_id="+bID+"&limit=5", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestSnapshotsDiff_ValidationErrors(t *testing.T) {
+	h := NewHandler(Options{
+		ListRegistry: func() []RegistryDevice {
+			return []RegistryDevice{{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720"}}
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/diff", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d; want %d when snapshots missing", rec.Code, http.StatusNotFound)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/capture?label=only-one", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/diff?from_id=snap-1", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d; want %d for partial id params", rec.Code, http.StatusBadRequest)
 	}
 }

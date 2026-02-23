@@ -76,6 +76,17 @@ func (m testMethod) ResponseSchema() schema.SchemaSelector {
 	return schema.SchemaSelector{}
 }
 
+type testMetadataMethod struct {
+	testMethod
+	mutability string
+	danger     string
+	routable   bool
+}
+
+func (m testMetadataMethod) Mutability() string { return m.mutability }
+func (m testMetadataMethod) Danger() string     { return m.danger }
+func (m testMetadataMethod) Routable() bool     { return m.routable }
+
 type testPlane struct {
 	name      string
 	methods   []registry.Method
@@ -96,6 +107,14 @@ func (p *testPlane) DecodeResponse(registry.Method, protocol.Frame, map[string]a
 	return map[string]any{"ok": true}, nil
 }
 
+type testPlainPlane struct {
+	name    string
+	methods []registry.Method
+}
+
+func (p testPlainPlane) Name() string               { return p.name }
+func (p testPlainPlane) Methods() []registry.Method { return p.methods }
+
 type testInvoker struct {
 	calls []invokeCall
 }
@@ -108,6 +127,19 @@ type invokeCall struct {
 func (i *testInvoker) Invoke(ctx context.Context, plane router.Plane, methodName string, params map[string]any) (any, error) {
 	i.calls = append(i.calls, invokeCall{plane: plane.Name(), method: methodName})
 	return map[string]any{"ok": true}, nil
+}
+
+type testStatusProvider struct {
+	daemon  ServiceStatus
+	adapter ServiceStatus
+}
+
+func (p testStatusProvider) DaemonStatus() ServiceStatus {
+	return p.daemon
+}
+
+func (p testStatusProvider) AdapterStatus() ServiceStatus {
+	return p.adapter
 }
 
 func TestServer_InitializeAndTools(t *testing.T) {
@@ -141,11 +173,15 @@ func TestServer_InitializeAndTools(t *testing.T) {
 		t.Fatalf("tools/list result type = %T; want map", res.Result)
 	}
 	tools, ok := resultMap["tools"].([]any)
-	if !ok || len(tools) < 4 {
-		t.Fatalf("tools = %#v; want at least 4 tools", resultMap["tools"])
+	if !ok || len(tools) < 8 {
+		t.Fatalf("tools = %#v; want at least 8 tools", resultMap["tools"])
 	}
 	for _, name := range []string{
+		toolRuntimeStatusGetName,
 		toolDevicesV1Name,
+		toolDeviceGetV1Name,
+		toolPlanesListV1Name,
+		toolMethodsListV1Name,
 		toolInvokeV1Name,
 		toolDevicesLegacyName,
 		toolInvokeLegacyName,
@@ -292,6 +328,227 @@ func TestServer_ToolsCallDevicesAndInvoke(t *testing.T) {
 	if len(invoker.calls) != 1 || invoker.calls[0].plane != "heating" || invoker.calls[0].method != "get_status" {
 		t.Fatalf("invoker calls = %+v; want heating/get_status", invoker.calls)
 	}
+}
+
+func TestServer_ToolsCallRuntimeStatus(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+	server.SetStatusProvider(testStatusProvider{
+		daemon: ServiceStatus{
+			Status:           "running",
+			FirmwareVersion:  "1.2.3",
+			UpdatesAvailable: false,
+			InitiatorAddress: "0x15",
+		},
+		adapter: ServiceStatus{
+			Status:           "connected",
+			FirmwareVersion:  "2.0.0",
+			UpdatesAvailable: true,
+		},
+	})
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.runtime.status.get","arguments":{}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("tools/call runtime status error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("runtime status result type = %T; want map", res.Result)
+	}
+	content, ok := resultMap["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("runtime status content = %#v; want 1 item", resultMap["content"])
+	}
+	contentItem, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("runtime status content item type = %T; want map", content[0])
+	}
+	text, _ := contentItem["text"].(string)
+	envelope := parseEnvelope(t, text)
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("runtime status data type = %T; want map", envelope["data"])
+	}
+	daemon, ok := data["daemon_status"].(map[string]any)
+	if !ok {
+		t.Fatalf("daemon_status type = %T; want map", data["daemon_status"])
+	}
+	if got, _ := daemon["initiator_address"].(string); got != "0x15" {
+		t.Fatalf("daemon initiator_address = %q; want 0x15", got)
+	}
+	adapter, ok := data["adapter_status"].(map[string]any)
+	if !ok {
+		t.Fatalf("adapter_status type = %T; want map", data["adapter_status"])
+	}
+	if got, _ := adapter["status"].(string); got != "connected" {
+		t.Fatalf("adapter status = %q; want connected", got)
+	}
+}
+
+func TestServer_RegistryReadToolsOrderingAndMetadata(t *testing.T) {
+	heatingPlane := &testPlane{
+		name: "heating",
+		methods: []registry.Method{
+			testMethod{
+				name:     "zeta",
+				readOnly: true,
+				template: testTemplate{primary: 0xB5, secondary: 0x0A},
+			},
+			testMetadataMethod{
+				testMethod: testMethod{
+					name:     "alpha",
+					readOnly: true,
+					template: testTemplate{primary: 0xB5, secondary: 0x04},
+				},
+				mutability: "unknown",
+				danger:     "dangerous",
+				routable:   false,
+			},
+		},
+	}
+	plainPlane := testPlainPlane{
+		name: "alpha",
+		methods: []registry.Method{
+			testMethod{
+				name:     "noop",
+				readOnly: true,
+				template: testTemplate{primary: 0xB5, secondary: 0x01},
+			},
+		},
+	}
+
+	reg := &testRegistry{
+		entries: map[byte]registry.DeviceEntry{
+			0x10: testEntry{
+				info: registry.DeviceInfo{
+					Address:         0x10,
+					Manufacturer:    "vaillant",
+					DeviceID:        "device-b",
+					SoftwareVersion: "1.0",
+					HardwareVersion: "7603",
+				},
+				planes: []registry.Plane{heatingPlane, plainPlane},
+			},
+			0x08: testEntry{
+				info: registry.DeviceInfo{
+					Address:         0x08,
+					Manufacturer:    "vaillant",
+					DeviceID:        "device-a",
+					SoftwareVersion: "1.0",
+					HardwareVersion: "7603",
+				},
+				planes: []registry.Plane{plainPlane},
+			},
+		},
+		order: []byte{0x10, 0x08},
+	}
+
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	t.Run("devices list sorted by address", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      1,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].([]any)
+		if !ok || len(data) != 2 {
+			t.Fatalf("devices data = %#v; want 2 entries", envelope["data"])
+		}
+		first, _ := data[0].(map[string]any)
+		if address, _ := first["address"].(float64); int(address) != 0x08 {
+			t.Fatalf("first device address = %v; want 8", first["address"])
+		}
+	})
+
+	t.Run("device get by address", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      2,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.get","arguments":{"address":16}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("device get data type = %T; want map", envelope["data"])
+		}
+		if address, _ := data["address"].(float64); int(address) != 0x10 {
+			t.Fatalf("device get address = %v; want 16", data["address"])
+		}
+	})
+
+	t.Run("planes list sorted and routable", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      3,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.registry.planes.list","arguments":{"address":16}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].([]any)
+		if !ok || len(data) != 2 {
+			t.Fatalf("planes data = %#v; want 2 entries", envelope["data"])
+		}
+		first, _ := data[0].(map[string]any)
+		second, _ := data[1].(map[string]any)
+		if name, _ := first["name"].(string); name != "alpha" {
+			t.Fatalf("first plane name = %q; want alpha", name)
+		}
+		if name, _ := second["name"].(string); name != "heating" {
+			t.Fatalf("second plane name = %q; want heating", name)
+		}
+		if routable, _ := first["routable"].(bool); routable {
+			t.Fatalf("alpha routable = true; want false")
+		}
+		if routable, _ := second["routable"].(bool); !routable {
+			t.Fatalf("heating routable = false; want true")
+		}
+	})
+
+	t.Run("methods list sorted with metadata", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      4,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.registry.methods.list","arguments":{"address":16,"plane":"heating"}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].([]any)
+		if !ok || len(data) != 2 {
+			t.Fatalf("methods data = %#v; want 2 entries", envelope["data"])
+		}
+		first, _ := data[0].(map[string]any)
+		second, _ := data[1].(map[string]any)
+		if name, _ := first["name"].(string); name != "alpha" {
+			t.Fatalf("first method name = %q; want alpha", name)
+		}
+		if name, _ := second["name"].(string); name != "zeta" {
+			t.Fatalf("second method name = %q; want zeta", name)
+		}
+		if mutability, _ := first["mutability"].(string); mutability != methodMutabilityUnknown {
+			t.Fatalf("alpha mutability = %q; want %q", mutability, methodMutabilityUnknown)
+		}
+		if danger, _ := first["danger_level"].(string); danger != methodDangerDangerous {
+			t.Fatalf("alpha danger = %q; want %q", danger, methodDangerDangerous)
+		}
+		if routable, _ := first["routable"].(bool); routable {
+			t.Fatalf("alpha routable = true; want false (explicit override)")
+		}
+	})
 }
 
 func TestServer_ToolsCallLegacyAliases(t *testing.T) {
@@ -521,6 +778,30 @@ func parseEnvelope(t *testing.T, text string) map[string]any {
 		t.Fatalf("Unmarshal envelope error = %v. text=%q", err, text)
 	}
 	return envelope
+}
+
+func envelopeFromResult(t *testing.T, res rpcResponse) map[string]any {
+	t.Helper()
+	if res.Error != nil {
+		t.Fatalf("unexpected rpc error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T; want map", res.Result)
+	}
+	content, ok := resultMap["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("content = %#v; want 1 item", resultMap["content"])
+	}
+	contentItem, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("content item type = %T; want map", content[0])
+	}
+	text, _ := contentItem["text"].(string)
+	if text == "" {
+		t.Fatal("content.text empty")
+	}
+	return parseEnvelope(t, text)
 }
 
 func hasToolName(tools []any, name string) bool {

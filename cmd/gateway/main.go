@@ -235,6 +235,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 	if err != nil {
 		return nil, nil, err
 	}
+	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg))
 
 	mux := http.NewServeMux()
 	mux.Handle(cfg.GraphQLPath, queryHandler)

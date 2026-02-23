@@ -249,10 +249,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 		mux.Handle(uploadPath, ebusgateway.NewRegisterDumpUploadHandler(cfg.DumpOutputDir))
 	}
 	if cfg.UIPath != "" {
-		uiPath := cfg.UIPath
-		if !strings.HasPrefix(uiPath, "/") {
-			uiPath = "/" + uiPath
-		}
+		uiPath := normalizeMountPath(cfg.UIPath, "/ui")
 		uiHandler := ui.NewHandler(cfg.GraphQLPath)
 		mux.Handle(uiPath+"/", http.StripPrefix(uiPath, uiHandler))
 		mux.HandleFunc(uiPath, func(w http.ResponseWriter, r *http.Request) {
@@ -260,10 +257,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 		})
 	}
 	if cfg.PortalPath != "" {
-		portalPath := cfg.PortalPath
-		if !strings.HasPrefix(portalPath, "/") {
-			portalPath = "/" + portalPath
-		}
+		portalPath := normalizeMountPath(cfg.PortalPath, "/portal")
 		portalHandler := portal.NewHandler(portal.Options{
 			GraphQLPath:      cfg.GraphQLPath,
 			SnapshotPath:     cfg.SnapshotPath,
@@ -318,4 +312,21 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 	}()
 
 	return server, advertiser, nil
+}
+
+func normalizeMountPath(path string, fallback string) string {
+	normalized := strings.TrimSpace(path)
+	if normalized == "" {
+		normalized = fallback
+	}
+	if !strings.HasPrefix(normalized, "/") {
+		normalized = "/" + normalized
+	}
+	if normalized != "/" {
+		normalized = strings.TrimRight(normalized, "/")
+	}
+	if normalized == "/" {
+		return fallback
+	}
+	return normalized
 }

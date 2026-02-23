@@ -89,3 +89,26 @@ func TestBindFlags_PortalPath(t *testing.T) {
 		t.Fatalf("PortalPath = %q; want /portal-v2", cfg.PortalPath)
 	}
 }
+
+func TestNormalizeMountPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		fallback string
+		want     string
+	}{
+		{name: "already_clean", input: "/portal", fallback: "/portal", want: "/portal"},
+		{name: "without_leading_slash", input: "portal", fallback: "/portal", want: "/portal"},
+		{name: "trailing_slash", input: "/portal/", fallback: "/portal", want: "/portal"},
+		{name: "root_becomes_fallback", input: "/", fallback: "/portal", want: "/portal"},
+		{name: "empty_becomes_fallback", input: "", fallback: "/portal", want: "/portal"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeMountPath(tc.input, tc.fallback); got != tc.want {
+				t.Fatalf("normalizeMountPath(%q,%q)=%q; want %q", tc.input, tc.fallback, got, tc.want)
+			}
+		})
+	}
+}

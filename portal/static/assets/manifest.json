@@ -1,0 +1,13 @@
+{
+  "generatedBy": "portal/web/scripts/build.mjs",
+  "assets": {
+    "app.js": {
+      "bytes": 3950,
+      "sha256": "1ef6451c89cbf0ca1a8adda71f2037ce2f5f620a3554a4a8ffddf841bd6404ab"
+    },
+    "app.css": {
+      "bytes": 3365,
+      "sha256": "d6d7d2cb80ab60a9a213b74cc2e140129d3109a25841449afd1b46d285862559"
+    }
+  }
+}

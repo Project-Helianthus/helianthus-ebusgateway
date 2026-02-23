@@ -3,11 +3,14 @@ package mcp
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
 	"github.com/d3vi1/helianthus-ebusreg/registry"
@@ -178,7 +181,7 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	switch call.Name {
 	case "ebus.devices":
 		devices := s.listDevices()
-		text := mustJSON(devices)
+		text := mustJSON(newToolEnvelope(devices, nil))
 		return callToolResultText(text, false), nil
 	case "ebus.invoke":
 		if s.invoker == nil {
@@ -186,11 +189,71 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		}
 		out, err := s.invoke(ctx, call.Arguments)
 		if err != nil {
-			return callToolResultText(err.Error(), true), nil
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
-		return callToolResultText(mustJSON(out), false), nil
+		return callToolResultText(mustJSON(newToolEnvelope(out, nil)), false), nil
 	default:
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", call.Name))
+	}
+}
+
+func newToolEnvelope(data any, err error) map[string]any {
+	meta := map[string]any{
+		"contract": map[string]any{
+			"name":  "helianthus-ebus-mcp",
+			"major": 1,
+			"minor": 0,
+		},
+		"consistency": map[string]any{
+			"mode": "LIVE",
+		},
+		"data_timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"data_hash":      hashData(data),
+	}
+
+	var envelopeError any
+	if err != nil {
+		code, retriable, sourceLayer := classifyToolError(err)
+		envelopeError = map[string]any{
+			"code":         code,
+			"message":      err.Error(),
+			"retriable":    retriable,
+			"source_layer": sourceLayer,
+		}
+	}
+
+	return map[string]any{
+		"meta":  meta,
+		"data":  data,
+		"error": envelopeError,
+	}
+}
+
+func hashData(data any) string {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func classifyToolError(err error) (code string, retriable bool, sourceLayer string) {
+	switch {
+	case errors.Is(err, ebuserrors.ErrInvalidPayload):
+		return "INVALID_ARGUMENT", false, "ebusreg"
+	case errors.Is(err, ebuserrors.ErrNoSuchDevice):
+		return "NOT_FOUND", false, "ebusreg"
+	case errors.Is(err, ebuserrors.ErrTimeout):
+		return "TIMEOUT", true, "ebusgo"
+	case errors.Is(err, ebuserrors.ErrTransportClosed):
+		return "BUS_UNAVAILABLE", true, "ebusgo"
+	case errors.Is(err, ebuserrors.ErrBusCollision):
+		return "BUS_UNAVAILABLE", true, "ebusgo"
+	case errors.Is(err, ebuserrors.ErrRetryExhausted):
+		return "BUS_UNAVAILABLE", true, "ebusgo"
+	default:
+		return "INTERNAL", false, "gateway"
 	}
 }
 

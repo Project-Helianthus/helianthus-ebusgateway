@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
@@ -33,6 +34,15 @@ type Server struct {
 	tools []Tool
 }
 
+const (
+	toolDevicesV1Name     = "ebus.v1.registry.devices.list"
+	toolInvokeV1Name      = "ebus.v1.rpc.invoke"
+	toolDevicesLegacyName = "ebus.devices"
+	toolInvokeLegacyName  = "ebus.invoke"
+)
+
+var errInvokePermissionDenied = errors.New("invoke permission denied")
+
 func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("mcp server missing registry: %w", ebuserrors.ErrInvalidPayload)
@@ -44,13 +54,36 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 	}
 	server.tools = []Tool{
 		{
-			Name:        "ebus.devices",
+			Name:        toolDevicesV1Name,
 			Description: "List devices discovered on the eBUS, including planes and methods.",
 			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
 		},
 		{
-			Name:        "ebus.invoke",
+			Name:        toolInvokeV1Name,
 			Description: "Invoke a plane method on a device.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"address":         map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
+					"plane":           map[string]any{"type": "string"},
+					"method":          map[string]any{"type": "string"},
+					"params":          map[string]any{"type": "object"},
+					"intent":          map[string]any{"type": "string", "enum": []string{"READ_ONLY", "MUTATE"}},
+					"allow_dangerous": map[string]any{"type": "boolean"},
+					"idempotency_key": map[string]any{"type": "string"},
+				},
+				"required":             []string{"address", "plane", "method", "intent", "allow_dangerous"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolDevicesLegacyName,
+			Description: "Compatibility alias for ebus.v1.registry.devices.list.",
+			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+		},
+		{
+			Name:        toolInvokeLegacyName,
+			Description: "Compatibility alias for ebus.v1.rpc.invoke.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -179,11 +212,23 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 
 	switch call.Name {
-	case "ebus.devices":
+	case toolDevicesV1Name, toolDevicesLegacyName:
 		devices := s.listDevices()
 		text := mustJSON(newToolEnvelope(devices, nil))
 		return callToolResultText(text, false), nil
-	case "ebus.invoke":
+	case toolInvokeV1Name:
+		if s.invoker == nil {
+			return nil, rpcErrorInternal("server missing invoker")
+		}
+		if err := s.enforceInvokeV1Safety(call.Arguments); err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		out, err := s.invoke(ctx, call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelope(out, nil)), false), nil
+	case toolInvokeLegacyName:
 		if s.invoker == nil {
 			return nil, rpcErrorInternal("server missing invoker")
 		}
@@ -240,6 +285,8 @@ func hashData(data any) string {
 
 func classifyToolError(err error) (code string, retriable bool, sourceLayer string) {
 	switch {
+	case errors.Is(err, errInvokePermissionDenied):
+		return "PERMISSION_DENIED", false, "gateway"
 	case errors.Is(err, ebuserrors.ErrInvalidPayload):
 		return "INVALID_ARGUMENT", false, "ebusreg"
 	case errors.Is(err, ebuserrors.ErrNoSuchDevice):
@@ -259,6 +306,79 @@ func classifyToolError(err error) (code string, retriable bool, sourceLayer stri
 	default:
 		return "INTERNAL", false, "gateway"
 	}
+}
+
+func (s *Server) enforceInvokeV1Safety(args map[string]any) error {
+	address, err := parseAddress(args["address"])
+	if err != nil {
+		return err
+	}
+	planeName, _ := args["plane"].(string)
+	if planeName == "" {
+		return fmt.Errorf("missing plane: %w", ebuserrors.ErrInvalidPayload)
+	}
+	methodName, _ := args["method"].(string)
+	if methodName == "" {
+		return fmt.Errorf("missing method: %w", ebuserrors.ErrInvalidPayload)
+	}
+	intent, _ := args["intent"].(string)
+	intent = strings.TrimSpace(intent)
+	if intent == "" {
+		return fmt.Errorf("missing intent: %w", ebuserrors.ErrInvalidPayload)
+	}
+	allowDangerous, ok := args["allow_dangerous"].(bool)
+	if !ok {
+		return fmt.Errorf("missing allow_dangerous: %w", ebuserrors.ErrInvalidPayload)
+	}
+
+	methodKnown, methodReadOnly, err := s.lookupMethodMutability(address, planeName, methodName)
+	if err != nil {
+		return err
+	}
+
+	switch intent {
+	case "READ_ONLY":
+		if !methodKnown || !methodReadOnly {
+			return fmt.Errorf("READ_ONLY intent denied for mutating/unknown method: %w", errInvokePermissionDenied)
+		}
+	case "MUTATE":
+		if !allowDangerous {
+			return fmt.Errorf("MUTATE intent requires allow_dangerous=true: %w", errInvokePermissionDenied)
+		}
+		idempotencyKey, _ := args["idempotency_key"].(string)
+		if strings.TrimSpace(idempotencyKey) == "" {
+			return fmt.Errorf("MUTATE intent requires idempotency_key: %w", errInvokePermissionDenied)
+		}
+	default:
+		return fmt.Errorf("invalid intent %q: %w", intent, ebuserrors.ErrInvalidPayload)
+	}
+
+	return nil
+}
+
+func (s *Server) lookupMethodMutability(address byte, planeName string, methodName string) (methodKnown bool, methodReadOnly bool, err error) {
+	entry, ok := s.registry.Lookup(address)
+	if !ok {
+		return false, false, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
+	}
+
+	var plane registry.Plane
+	for _, candidate := range entry.Planes() {
+		if candidate != nil && candidate.Name() == planeName {
+			plane = candidate
+			break
+		}
+	}
+	if plane == nil {
+		return false, false, fmt.Errorf("unknown plane %q: %w", planeName, ebuserrors.ErrInvalidPayload)
+	}
+
+	for _, method := range plane.Methods() {
+		if method != nil && method.Name() == methodName {
+			return true, method.ReadOnly(), nil
+		}
+	}
+	return false, false, nil
 }
 
 type deviceInfo struct {

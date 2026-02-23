@@ -65,6 +65,8 @@ class PortalShell extends HTMLElement {
     const captureButton = this.querySelector('[data-role="snapshot-capture"]');
     const retentionButton = this.querySelector('[data-role="snapshot-retention-apply"]');
     const diffButton = this.querySelector('[data-role="snapshot-diff-run"]');
+    const sessionSave = this.querySelector('[data-role="session-save"]');
+    const sessionLoad = this.querySelector('[data-role="session-load"]');
     if (toggle) {
       toggle.addEventListener("click", () => {
         const current = loadTheme();
@@ -101,6 +103,16 @@ class PortalShell extends HTMLElement {
         this.runSnapshotDiff();
       });
     }
+    if (sessionSave) {
+      sessionSave.addEventListener("click", () => {
+        this.saveSession();
+      });
+    }
+    if (sessionLoad) {
+      sessionLoad.addEventListener("click", () => {
+        this.loadSession();
+      });
+    }
   }
 
   async loadStatus() {
@@ -116,6 +128,7 @@ class PortalShell extends HTMLElement {
     const snapshotsList = this.querySelector('[data-role="snapshots-list"]');
     const retentionInput = this.querySelector('[data-role="snapshot-retention"]');
     const diffList = this.querySelector('[data-role="snapshot-diff-list"]');
+    const sessionsList = this.querySelector('[data-role="sessions-list"]');
     try {
       const [healthRes, bootstrapRes] = await Promise.all([
         fetch("api/v1/health"),
@@ -129,7 +142,7 @@ class PortalShell extends HTMLElement {
       if (metaEl) {
         const caps = bootstrap.capabilities || {};
         metaEl.textContent =
-          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}, provenance=${caps.provenance}, snapshots=${caps.snapshots}, snapshot_diff=${caps.snapshot_diff}`;
+          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}, provenance=${caps.provenance}, snapshots=${caps.snapshots}, snapshot_diff=${caps.snapshot_diff}, sessions=${caps.sessions}`;
       }
       if (searchInput) {
         searchInput.disabled = !bootstrap.capabilities?.search;
@@ -202,6 +215,14 @@ class PortalShell extends HTMLElement {
         diffList.innerHTML = bootstrap.capabilities?.snapshot_diff
           ? "<li>Select snapshot IDs and run diff.</li>"
           : "<li>Snapshot diff unavailable.</li>";
+      }
+      if (sessionsList) {
+        sessionsList.innerHTML = bootstrap.capabilities?.sessions
+          ? "<li>Loading sessions...</li>"
+          : "<li>Sessions unavailable.</li>";
+      }
+      if (bootstrap.capabilities?.sessions) {
+        await this.refreshSessions();
       }
     } catch (err) {
       if (statusEl) {
@@ -467,6 +488,115 @@ class PortalShell extends HTMLElement {
     }
   }
 
+  async refreshSessions() {
+    const sessionsList = this.querySelector('[data-role="sessions-list"]');
+    if (!sessionsList) {
+      return;
+    }
+    try {
+      const response = await fetch("api/v1/sessions?limit=8");
+      const payload = await response.json();
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (items.length === 0) {
+        sessionsList.innerHTML = "<li>No saved sessions.</li>";
+        return;
+      }
+      sessionsList.innerHTML = items
+        .map((item) => {
+          const id = escapeHtml(item.id || "n/a");
+          const name = escapeHtml(item.name || "session");
+          const updated = escapeHtml(item.updated_at || "");
+          return `<li><span class="pill">sess</span> <strong>${id}</strong> <span class="muted-inline">${name} ${updated}</span></li>`;
+        })
+        .join("");
+    } catch (err) {
+      sessionsList.innerHTML = "<li>Sessions query failed.</li>";
+      console.error("sessions query failed", err);
+    }
+  }
+
+  async saveSession() {
+    const nameInput = this.querySelector('[data-role="session-name"]');
+    const streamStatus = this.querySelector('[data-role="stream-status"]');
+    const searchInput = this.querySelector('[data-role="search-input"]');
+    const timelineInput = this.querySelector('[data-role="timeline-correlation"]');
+    const provenanceInput = this.querySelector('[data-role="provenance-correlation"]');
+    const fromInput = this.querySelector('[data-role="snapshot-diff-from"]');
+    const toInput = this.querySelector('[data-role="snapshot-diff-to"]');
+
+    const query = new URLSearchParams();
+    query.set("name", nameInput ? String(nameInput.value || "").trim() : "");
+    query.set("search_query", searchInput ? String(searchInput.value || "").trim() : "");
+    query.set("timeline_correlation", timelineInput ? String(timelineInput.value || "").trim() : "");
+    query.set("provenance_correlation", provenanceInput ? String(provenanceInput.value || "").trim() : "");
+    query.set("snapshot_from_id", fromInput ? String(fromInput.value || "").trim() : "");
+    query.set("snapshot_to_id", toInput ? String(toInput.value || "").trim() : "");
+
+    try {
+      const response = await fetch(`api/v1/sessions/save?${query.toString()}`);
+      const payload = await response.json();
+      const id = payload.session?.id || "unknown";
+      const loadInput = this.querySelector('[data-role="session-load-id"]');
+      if (loadInput) {
+        loadInput.value = id;
+      }
+      if (streamStatus) {
+        streamStatus.textContent = `Session saved: ${id}`;
+      }
+      await this.refreshSessions();
+    } catch (err) {
+      if (streamStatus) {
+        streamStatus.textContent = "Session save failed";
+      }
+    }
+  }
+
+  async loadSession() {
+    const loadInput = this.querySelector('[data-role="session-load-id"]');
+    const streamStatus = this.querySelector('[data-role="stream-status"]');
+    const sessionID = loadInput ? String(loadInput.value || "").trim() : "";
+    if (!sessionID) {
+      if (streamStatus) {
+        streamStatus.textContent = "Session id missing";
+      }
+      return;
+    }
+    try {
+      const response = await fetch(`api/v1/sessions/load?id=${encodeURIComponent(sessionID)}`);
+      if (!response.ok) {
+        if (streamStatus) {
+          streamStatus.textContent = `Session load failed (${response.status})`;
+        }
+        return;
+      }
+      const payload = await response.json();
+      const state = payload.session?.state || {};
+      const searchInput = this.querySelector('[data-role="search-input"]');
+      const timelineInput = this.querySelector('[data-role="timeline-correlation"]');
+      const provenanceInput = this.querySelector('[data-role="provenance-correlation"]');
+      const fromInput = this.querySelector('[data-role="snapshot-diff-from"]');
+      const toInput = this.querySelector('[data-role="snapshot-diff-to"]');
+      if (searchInput) searchInput.value = state.search_query || "";
+      if (timelineInput) timelineInput.value = state.timeline_correlation || "";
+      if (provenanceInput) provenanceInput.value = state.provenance_correlation || "";
+      if (fromInput) fromInput.value = state.snapshot_from_id || "";
+      if (toInput) toInput.value = state.snapshot_to_id || "";
+
+      this.scheduleSearch(searchInput ? searchInput.value : "");
+      this.scheduleTimelineRefresh();
+      this.scheduleProvenanceRefresh();
+      this.runSnapshotDiff();
+
+      if (streamStatus) {
+        streamStatus.textContent = `Session loaded: ${sessionID}`;
+      }
+    } catch (err) {
+      if (streamStatus) {
+        streamStatus.textContent = "Session load failed";
+      }
+    }
+  }
+
   scheduleSearch(rawQuery) {
     if (this.searchTimer) {
       clearTimeout(this.searchTimer);
@@ -666,6 +796,18 @@ class PortalShell extends HTMLElement {
               </div>
               <ul data-role="snapshot-diff-list">
                 <li>Loading snapshot diff capability...</li>
+              </ul>
+            </section>
+            <section class="registry-preview">
+              <h2>Sessions</h2>
+              <div class="snapshot-controls">
+                <input class="search timeline-filter" data-role="session-name" type="search" placeholder="Session name" aria-label="Session name" />
+                <button class="button" data-role="session-save" type="button">Save Session</button>
+                <input class="search timeline-filter" data-role="session-load-id" type="search" placeholder="Session id" aria-label="Session id" />
+                <button class="button" data-role="session-load" type="button">Load Session</button>
+              </div>
+              <ul data-role="sessions-list">
+                <li>Loading sessions capability...</li>
               </ul>
             </section>
             <div class="meta" data-role="stream-status">Stream idle</div>

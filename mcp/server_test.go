@@ -142,6 +142,40 @@ func (p testStatusProvider) AdapterStatus() ServiceStatus {
 	return p.adapter
 }
 
+type testSemanticProvider struct {
+	zones  []Zone
+	dhw    *DhwStatus
+	energy *EnergyTotals
+}
+
+func (p testSemanticProvider) Zones() []Zone {
+	if len(p.zones) == 0 {
+		return nil
+	}
+	out := make([]Zone, len(p.zones))
+	copy(out, p.zones)
+	return out
+}
+
+func (p testSemanticProvider) DHW() *DhwStatus {
+	if p.dhw == nil {
+		return nil
+	}
+	copy := *p.dhw
+	return &copy
+}
+
+func (p testSemanticProvider) EnergyTotals() *EnergyTotals {
+	if p.energy == nil {
+		return nil
+	}
+	copy := *p.energy
+	copy.Gas = cloneEnergyChannel(copy.Gas)
+	copy.Electric = cloneEnergyChannel(copy.Electric)
+	copy.Solar = cloneEnergyChannel(copy.Solar)
+	return &copy
+}
+
 func TestServer_InitializeAndTools(t *testing.T) {
 	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
 	server, err := NewServer(reg, &testInvoker{})
@@ -173,11 +207,14 @@ func TestServer_InitializeAndTools(t *testing.T) {
 		t.Fatalf("tools/list result type = %T; want map", res.Result)
 	}
 	tools, ok := resultMap["tools"].([]any)
-	if !ok || len(tools) < 8 {
-		t.Fatalf("tools = %#v; want at least 8 tools", resultMap["tools"])
+	if !ok || len(tools) < 11 {
+		t.Fatalf("tools = %#v; want at least 11 tools", resultMap["tools"])
 	}
 	for _, name := range []string{
 		toolRuntimeStatusGetName,
+		toolSemanticZonesGetName,
+		toolSemanticDHWGetName,
+		toolSemanticEnergyGetName,
 		toolDevicesV1Name,
 		toolDeviceGetV1Name,
 		toolPlanesListV1Name,
@@ -391,6 +428,94 @@ func TestServer_ToolsCallRuntimeStatus(t *testing.T) {
 	if got, _ := adapter["status"].(string); got != "connected" {
 		t.Fatalf("adapter status = %q; want connected", got)
 	}
+}
+
+func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+	server.SetSemanticProvider(testSemanticProvider{
+		zones: []Zone{
+			{ID: "zone-b", Name: "Bedroom", OperatingMode: "AUTO", Preset: "COMFORT"},
+			{ID: "zone-a", Name: "Living", OperatingMode: "AUTO", Preset: "COMFORT"},
+		},
+		dhw: &DhwStatus{
+			OperatingMode: "AUTO",
+			Preset:        "ECO",
+		},
+		energy: &EnergyTotals{
+			Gas: EnergyChannel{
+				DHW:     EnergySeries{Today: 1.25, Yearly: []float64{10, 20}},
+				Climate: EnergySeries{Today: 2.5, Yearly: []float64{30, 40}},
+			},
+		},
+	})
+
+	t.Run("zones sorted", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      1,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.zones.get","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].([]any)
+		if !ok || len(data) != 2 {
+			t.Fatalf("zones data = %#v; want 2 entries", envelope["data"])
+		}
+		first, _ := data[0].(map[string]any)
+		second, _ := data[1].(map[string]any)
+		if id, _ := first["id"].(string); id != "zone-a" {
+			t.Fatalf("first zone id = %q; want zone-a", id)
+		}
+		if id, _ := second["id"].(string); id != "zone-b" {
+			t.Fatalf("second zone id = %q; want zone-b", id)
+		}
+	})
+
+	t.Run("dhw payload", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      2,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.dhw.get","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("dhw data type = %T; want map", envelope["data"])
+		}
+		if preset, _ := data["preset"].(string); preset != "ECO" {
+			t.Fatalf("dhw preset = %q; want ECO", preset)
+		}
+	})
+
+	t.Run("energy totals payload", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      3,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.energy_totals.get","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("energy data type = %T; want map", envelope["data"])
+		}
+		gas, ok := data["gas"].(map[string]any)
+		if !ok {
+			t.Fatalf("energy gas type = %T; want map", data["gas"])
+		}
+		dhw, ok := gas["dhw"].(map[string]any)
+		if !ok {
+			t.Fatalf("energy gas.dhw type = %T; want map", gas["dhw"])
+		}
+		if today, _ := dhw["today"].(float64); today != 1.25 {
+			t.Fatalf("energy gas.dhw.today = %v; want 1.25", dhw["today"])
+		}
+	})
 }
 
 func TestServer_RegistryReadToolsOrderingAndMetadata(t *testing.T) {

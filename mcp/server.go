@@ -41,34 +41,79 @@ type StatusProvider interface {
 	AdapterStatus() ServiceStatus
 }
 
+type Zone struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	OperatingMode string   `json:"operating_mode"`
+	Preset        string   `json:"preset"`
+	CurrentTempC  *float64 `json:"current_temp_c,omitempty"`
+	TargetTempC   *float64 `json:"target_temp_c,omitempty"`
+	HeatingDemand *float64 `json:"heating_demand,omitempty"`
+}
+
+type DhwStatus struct {
+	OperatingMode string   `json:"operating_mode"`
+	Preset        string   `json:"preset"`
+	CurrentTempC  *float64 `json:"current_temp_c,omitempty"`
+	TargetTempC   *float64 `json:"target_temp_c,omitempty"`
+	HeatingDemand *float64 `json:"heating_demand,omitempty"`
+}
+
+type EnergySeries struct {
+	Today  float64   `json:"today"`
+	Yearly []float64 `json:"yearly"`
+}
+
+type EnergyChannel struct {
+	DHW     EnergySeries `json:"dhw"`
+	Climate EnergySeries `json:"climate"`
+}
+
+type EnergyTotals struct {
+	Gas      EnergyChannel `json:"gas"`
+	Electric EnergyChannel `json:"electric"`
+	Solar    EnergyChannel `json:"solar"`
+}
+
+type SemanticProvider interface {
+	Zones() []Zone
+	DHW() *DhwStatus
+	EnergyTotals() *EnergyTotals
+}
+
 type Server struct {
 	registry       Registry
 	invoker        Invoker
 	statusProvider StatusProvider
+	semantic       SemanticProvider
 
 	tools []Tool
 }
 
 const (
-	toolRuntimeStatusGetName = "ebus.v1.runtime.status.get"
-	toolDevicesV1Name        = "ebus.v1.registry.devices.list"
-	toolDeviceGetV1Name      = "ebus.v1.registry.devices.get"
-	toolPlanesListV1Name     = "ebus.v1.registry.planes.list"
-	toolMethodsListV1Name    = "ebus.v1.registry.methods.list"
-	toolInvokeV1Name         = "ebus.v1.rpc.invoke"
-	toolDevicesLegacyName    = "ebus.devices"
-	toolInvokeLegacyName     = "ebus.invoke"
-	methodMutabilityUnknown  = "unknown"
-	methodMutabilityReadOnly = "read_only"
-	methodMutabilityMutating = "mutating"
-	methodDangerUnknown      = "unknown"
-	methodDangerSafe         = "safe"
-	methodDangerDangerous    = "dangerous"
+	toolRuntimeStatusGetName  = "ebus.v1.runtime.status.get"
+	toolSemanticZonesGetName  = "ebus.v1.semantic.zones.get"
+	toolSemanticDHWGetName    = "ebus.v1.semantic.dhw.get"
+	toolSemanticEnergyGetName = "ebus.v1.semantic.energy_totals.get"
+	toolDevicesV1Name         = "ebus.v1.registry.devices.list"
+	toolDeviceGetV1Name       = "ebus.v1.registry.devices.get"
+	toolPlanesListV1Name      = "ebus.v1.registry.planes.list"
+	toolMethodsListV1Name     = "ebus.v1.registry.methods.list"
+	toolInvokeV1Name          = "ebus.v1.rpc.invoke"
+	toolDevicesLegacyName     = "ebus.devices"
+	toolInvokeLegacyName      = "ebus.invoke"
+	methodMutabilityUnknown   = "unknown"
+	methodMutabilityReadOnly  = "read_only"
+	methodMutabilityMutating  = "mutating"
+	methodDangerUnknown       = "unknown"
+	methodDangerSafe          = "safe"
+	methodDangerDangerous     = "dangerous"
 )
 
 var errInvokePermissionDenied = errors.New("invoke permission denied")
 
 type staticStatusProvider struct{}
+type staticSemanticProvider struct{}
 
 func (staticStatusProvider) DaemonStatus() ServiceStatus {
 	return ServiceStatus{
@@ -87,6 +132,18 @@ func (staticStatusProvider) AdapterStatus() ServiceStatus {
 	}
 }
 
+func (staticSemanticProvider) Zones() []Zone {
+	return nil
+}
+
+func (staticSemanticProvider) DHW() *DhwStatus {
+	return nil
+}
+
+func (staticSemanticProvider) EnergyTotals() *EnergyTotals {
+	return nil
+}
+
 func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("mcp server missing registry: %w", ebuserrors.ErrInvalidPayload)
@@ -96,11 +153,27 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 		registry:       reg,
 		invoker:        invoker,
 		statusProvider: staticStatusProvider{},
+		semantic:       staticSemanticProvider{},
 	}
 	server.tools = []Tool{
 		{
 			Name:        toolRuntimeStatusGetName,
 			Description: "Get runtime daemon and adapter status.",
+			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+		},
+		{
+			Name:        toolSemanticZonesGetName,
+			Description: "Get semantic zones snapshot.",
+			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+		},
+		{
+			Name:        toolSemanticDHWGetName,
+			Description: "Get semantic domestic hot water snapshot.",
+			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+		},
+		{
+			Name:        toolSemanticEnergyGetName,
+			Description: "Get semantic energy totals snapshot.",
 			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
 		},
 		{
@@ -193,6 +266,13 @@ func (s *Server) SetStatusProvider(provider StatusProvider) {
 		return
 	}
 	s.statusProvider = provider
+}
+
+func (s *Server) SetSemanticProvider(provider SemanticProvider) {
+	if s == nil || provider == nil {
+		return
+	}
+	s.semantic = provider
 }
 
 func (s *Server) Handler() http.Handler {
@@ -312,6 +392,13 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			"adapter_status": s.statusProvider.AdapterStatus(),
 		}
 		return callToolResultText(mustJSON(newToolEnvelope(status, nil)), false), nil
+	case toolSemanticZonesGetName:
+		zones := s.snapshotZones()
+		return callToolResultText(mustJSON(newToolEnvelope(zones, nil)), false), nil
+	case toolSemanticDHWGetName:
+		return callToolResultText(mustJSON(newToolEnvelope(s.snapshotDHW(), nil)), false), nil
+	case toolSemanticEnergyGetName:
+		return callToolResultText(mustJSON(newToolEnvelope(s.snapshotEnergyTotals(), nil)), false), nil
 	case toolDevicesV1Name, toolDevicesLegacyName:
 		devices := s.listDevices()
 		text := mustJSON(newToolEnvelope(devices, nil))
@@ -587,6 +674,70 @@ func (s *Server) listMethods(args map[string]any) ([]methodInfo, error) {
 	}
 
 	return buildMethodInfoList(plane), nil
+}
+
+func (s *Server) snapshotZones() []Zone {
+	if s == nil || s.semantic == nil {
+		return nil
+	}
+	zones := s.semantic.Zones()
+	if len(zones) == 0 {
+		return nil
+	}
+	out := make([]Zone, len(zones))
+	copy(out, zones)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ID != out[j].ID {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func (s *Server) snapshotDHW() *DhwStatus {
+	if s == nil || s.semantic == nil {
+		return nil
+	}
+	source := s.semantic.DHW()
+	if source == nil {
+		return nil
+	}
+	copy := *source
+	return &copy
+}
+
+func (s *Server) snapshotEnergyTotals() *EnergyTotals {
+	if s == nil || s.semantic == nil {
+		return nil
+	}
+	source := s.semantic.EnergyTotals()
+	if source == nil {
+		return nil
+	}
+	copy := *source
+	copy.Gas = cloneEnergyChannel(copy.Gas)
+	copy.Electric = cloneEnergyChannel(copy.Electric)
+	copy.Solar = cloneEnergyChannel(copy.Solar)
+	return &copy
+}
+
+func cloneEnergyChannel(channel EnergyChannel) EnergyChannel {
+	channel.DHW = cloneEnergySeries(channel.DHW)
+	channel.Climate = cloneEnergySeries(channel.Climate)
+	return channel
+}
+
+func cloneEnergySeries(series EnergySeries) EnergySeries {
+	if len(series.Yearly) == 0 {
+		return EnergySeries{Today: series.Today}
+	}
+	values := make([]float64, len(series.Yearly))
+	copy(values, series.Yearly)
+	return EnergySeries{
+		Today:  series.Today,
+		Yearly: values,
+	}
 }
 
 func buildDeviceInfo(entry registry.DeviceEntry) deviceInfo {

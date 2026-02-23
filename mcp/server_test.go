@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
 	"github.com/d3vi1/helianthus-ebusgo/protocol"
 	"github.com/d3vi1/helianthus-ebusreg/registry"
 	"github.com/d3vi1/helianthus-ebusreg/router"
@@ -204,6 +205,27 @@ func TestServer_ToolsCallDevicesAndInvoke(t *testing.T) {
 	if text == "" {
 		t.Fatalf("content.text empty")
 	}
+	envelope := parseEnvelope(t, text)
+	meta, ok := envelope["meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("devices envelope meta type = %T; want map", envelope["meta"])
+	}
+	if hash, _ := meta["data_hash"].(string); hash == "" {
+		t.Fatalf("devices envelope data_hash empty")
+	}
+	contract, ok := meta["contract"].(map[string]any)
+	if !ok {
+		t.Fatalf("devices envelope contract type = %T; want map", meta["contract"])
+	}
+	if major, _ := contract["major"].(float64); major != 1 {
+		t.Fatalf("devices envelope contract.major = %v; want 1", contract["major"])
+	}
+	if envelope["error"] != nil {
+		t.Fatalf("devices envelope error = %#v; want nil", envelope["error"])
+	}
+	if envelope["data"] == nil {
+		t.Fatal("devices envelope data is nil")
+	}
 
 	res = doRPC(t, server.Handler(), rpcRequest{
 		JSONRPC: "2.0",
@@ -214,9 +236,143 @@ func TestServer_ToolsCallDevicesAndInvoke(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("tools/call invoke error = %+v", res.Error)
 	}
+	resultMap, ok = res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("invoke call result type = %T; want map", res.Result)
+	}
+	if isError, _ := resultMap["isError"].(bool); isError {
+		t.Fatalf("invoke call isError=true; want false")
+	}
+	content, ok = resultMap["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("invoke call content = %#v; want 1 item", resultMap["content"])
+	}
+	contentItem, ok = content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("invoke content item type = %T; want map", content[0])
+	}
+	text, _ = contentItem["text"].(string)
+	if text == "" {
+		t.Fatalf("invoke content.text empty")
+	}
+	envelope = parseEnvelope(t, text)
+	if envelope["error"] != nil {
+		t.Fatalf("invoke envelope error = %#v; want nil", envelope["error"])
+	}
+	if envelope["data"] == nil {
+		t.Fatal("invoke envelope data is nil")
+	}
 	if len(invoker.calls) != 1 || invoker.calls[0].plane != "heating" || invoker.calls[0].method != "get_status" {
 		t.Fatalf("invoker calls = %+v; want heating/get_status", invoker.calls)
 	}
+}
+
+func TestServer_ToolsCallInvokeErrorEnvelope(t *testing.T) {
+	plane := &testPlane{
+		name:    "heating",
+		methods: []registry.Method{},
+	}
+	entry := testEntry{
+		info: registry.DeviceInfo{
+			Address:         0x08,
+			Manufacturer:    "vaillant",
+			DeviceID:        "device-a",
+			SoftwareVersion: "1.0",
+			HardwareVersion: "7603",
+		},
+		planes: []registry.Plane{plane},
+	}
+	reg := &testRegistry{
+		entries: map[byte]registry.DeviceEntry{0x08: entry},
+		order:   []byte{0x08},
+	}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.invoke","arguments":{"address":9,"plane":"heating","method":"get_status","params":{}}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("tools/call invoke error response should be content-level, got rpc error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("invoke error result type = %T; want map", res.Result)
+	}
+	if isError, _ := resultMap["isError"].(bool); !isError {
+		t.Fatalf("invoke error result isError=false; want true")
+	}
+	content, ok := resultMap["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("invoke error content = %#v; want 1 item", resultMap["content"])
+	}
+	contentItem, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("invoke error content item type = %T; want map", content[0])
+	}
+	text, _ := contentItem["text"].(string)
+	if text == "" {
+		t.Fatal("invoke error content.text empty")
+	}
+	envelope := parseEnvelope(t, text)
+	errorPayload, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("invoke error envelope error type = %T; want map", envelope["error"])
+	}
+	if code, _ := errorPayload["code"].(string); code != "NOT_FOUND" {
+		t.Fatalf("invoke error code = %q; want NOT_FOUND", code)
+	}
+	if source, _ := errorPayload["source_layer"].(string); source != "ebusreg" {
+		t.Fatalf("invoke source_layer = %q; want ebusreg", source)
+	}
+}
+
+func TestClassifyToolError_KnownMappings(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		err         error
+		code        string
+		retriable   bool
+		sourceLayer string
+	}{
+		{name: "invalid payload", err: ebuserrors.ErrInvalidPayload, code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "ebusreg"},
+		{name: "no such device", err: ebuserrors.ErrNoSuchDevice, code: "NOT_FOUND", retriable: false, sourceLayer: "ebusreg"},
+		{name: "nack", err: ebuserrors.ErrNACK, code: "PROTOCOL_ERROR", retriable: false, sourceLayer: "ebusgo"},
+		{name: "timeout", err: ebuserrors.ErrTimeout, code: "TIMEOUT", retriable: true, sourceLayer: "ebusgo"},
+		{name: "crc mismatch", err: ebuserrors.ErrCRCMismatch, code: "PROTOCOL_ERROR", retriable: true, sourceLayer: "ebusgo"},
+		{name: "transport closed", err: ebuserrors.ErrTransportClosed, code: "BUS_UNAVAILABLE", retriable: false, sourceLayer: "ebusgo"},
+		{name: "bus collision", err: ebuserrors.ErrBusCollision, code: "BUS_UNAVAILABLE", retriable: true, sourceLayer: "ebusgo"},
+		{name: "retry exhausted", err: ebuserrors.ErrRetryExhausted, code: "BUS_UNAVAILABLE", retriable: true, sourceLayer: "ebusgo"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			code, retriable, sourceLayer := classifyToolError(tc.err)
+			if code != tc.code || retriable != tc.retriable || sourceLayer != tc.sourceLayer {
+				t.Fatalf("classifyToolError(%s) = (%q,%v,%q); want (%q,%v,%q)",
+					tc.name, code, retriable, sourceLayer, tc.code, tc.retriable, tc.sourceLayer)
+			}
+		})
+	}
+}
+
+func parseEnvelope(t *testing.T, text string) map[string]any {
+	t.Helper()
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("Unmarshal envelope error = %v. text=%q", err, text)
+	}
+	return envelope
 }
 
 func doRPC(t *testing.T, handler http.Handler, req rpcRequest) rpcResponse {

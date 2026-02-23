@@ -182,6 +182,19 @@ Portal static assets are built from canonical sources under `portal/web/src` and
 
 Production runtime does not require Node. Node is only needed at build time when regenerating portal assets.
 
+## Portal Observability (M0 Baseline)
+
+Portal requests emit structured log lines with:
+- `method`
+- `path`
+- `route`
+- `status`
+- `duration_ms`
+
+Portal also exports `expvar` counters/maps:
+- `portal_requests_total`
+- `portal_route_duration_ms_total`
+
 ## Link Map
 
 ### Repositories and docs

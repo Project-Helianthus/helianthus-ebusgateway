@@ -89,6 +89,8 @@ type Server struct {
 	semantic       SemanticProvider
 	idempotencyMu  sync.Mutex
 	idempotency    map[string]idempotencyEntry
+	snapshotMu     sync.RWMutex
+	snapshots      map[string]snapshotState
 
 	tools []Tool
 }
@@ -98,6 +100,8 @@ const (
 	toolSemanticZonesGetName  = "ebus.v1.semantic.zones.get"
 	toolSemanticDHWGetName    = "ebus.v1.semantic.dhw.get"
 	toolSemanticEnergyGetName = "ebus.v1.semantic.energy_totals.get"
+	toolSnapshotCaptureName   = "ebus.v1.snapshot.capture"
+	toolSnapshotDropName      = "ebus.v1.snapshot.drop"
 	toolDevicesV1Name         = "ebus.v1.registry.devices.list"
 	toolDeviceGetV1Name       = "ebus.v1.registry.devices.get"
 	toolPlanesListV1Name      = "ebus.v1.registry.planes.list"
@@ -113,10 +117,12 @@ const (
 	methodDangerDangerous     = "dangerous"
 	defaultInvokeTimeout      = 3 * time.Second
 	defaultIdempotencyTTL     = 30 * time.Second
+	defaultSnapshotTTL        = 5 * time.Minute
 )
 
 var errInvokePermissionDenied = errors.New("invoke permission denied")
 var errInvokeIdempotencyConflict = errors.New("invoke idempotency conflict")
+var errSnapshotNotFound = errors.New("snapshot not found")
 
 type staticStatusProvider struct{}
 type staticSemanticProvider struct{}
@@ -162,6 +168,35 @@ type invokeV1Policy struct {
 	timeout        time.Duration
 }
 
+type envelopeConsistency struct {
+	mode          string
+	snapshotID    string
+	dataTimestamp time.Time
+}
+
+type snapshotState struct {
+	id        string
+	createdAt time.Time
+	expiresAt time.Time
+
+	runtime map[string]any
+	zones   []Zone
+	dhw     *DhwStatus
+	energy  *EnergyTotals
+	devices []deviceInfo
+}
+
+func consistencyInputProperty() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"mode":        map[string]any{"type": "string", "enum": []string{"LIVE", "SNAPSHOT"}},
+			"snapshot_id": map[string]any{"type": "string"},
+		},
+		"additionalProperties": false,
+	}
+}
+
 func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("mcp server missing registry: %w", ebuserrors.ErrInvalidPayload)
@@ -173,32 +208,80 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 		statusProvider: staticStatusProvider{},
 		semantic:       staticSemanticProvider{},
 		idempotency:    make(map[string]idempotencyEntry),
+		snapshots:      make(map[string]snapshotState),
 	}
 	server.tools = []Tool{
 		{
 			Name:        toolRuntimeStatusGetName,
 			Description: "Get runtime daemon and adapter status.",
-			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
 		},
 		{
 			Name:        toolSemanticZonesGetName,
 			Description: "Get semantic zones snapshot.",
-			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
 		},
 		{
 			Name:        toolSemanticDHWGetName,
 			Description: "Get semantic domestic hot water snapshot.",
-			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
 		},
 		{
 			Name:        toolSemanticEnergyGetName,
 			Description: "Get semantic energy totals snapshot.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolSnapshotCaptureName,
+			Description: "Capture a read snapshot for deterministic MCP reads.",
 			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+		},
+		{
+			Name:        toolSnapshotDropName,
+			Description: "Drop a previously captured snapshot.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"snapshot_id": map[string]any{"type": "string"},
+				},
+				"required":             []string{"snapshot_id"},
+				"additionalProperties": false,
+			},
 		},
 		{
 			Name:        toolDevicesV1Name,
 			Description: "List devices discovered on the eBUS, including planes and methods.",
-			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
 		},
 		{
 			Name:        toolDeviceGetV1Name,
@@ -206,7 +289,8 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"address": map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
+					"address":     map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
+					"consistency": consistencyInputProperty(),
 				},
 				"required":             []string{"address"},
 				"additionalProperties": false,
@@ -218,7 +302,8 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"address": map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
+					"address":     map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
+					"consistency": consistencyInputProperty(),
 				},
 				"required":             []string{"address"},
 				"additionalProperties": false,
@@ -230,8 +315,9 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"address": map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
-					"plane":   map[string]any{"type": "string"},
+					"address":     map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
+					"plane":       map[string]any{"type": "string"},
+					"consistency": consistencyInputProperty(),
 				},
 				"required":             []string{"address", "plane"},
 				"additionalProperties": false,
@@ -259,7 +345,13 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 		{
 			Name:        toolDevicesLegacyName,
 			Description: "Compatibility alias for ebus.v1.registry.devices.list.",
-			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
 		},
 		{
 			Name:        toolInvokeLegacyName,
@@ -407,40 +499,84 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 
 	switch call.Name {
 	case toolRuntimeStatusGetName:
-		status := map[string]any{
-			"daemon_status":  s.statusProvider.DaemonStatus(),
-			"adapter_status": s.statusProvider.AdapterStatus(),
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
-		return callToolResultText(mustJSON(newToolEnvelope(status, nil)), false), nil
+		status := s.runtimeStatus(snapshot)
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(status, nil, consistency)), false), nil
 	case toolSemanticZonesGetName:
-		zones := s.snapshotZones()
-		return callToolResultText(mustJSON(newToolEnvelope(zones, nil)), false), nil
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		zones := s.snapshotZones(snapshot)
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(zones, nil, consistency)), false), nil
 	case toolSemanticDHWGetName:
-		return callToolResultText(mustJSON(newToolEnvelope(s.snapshotDHW(), nil)), false), nil
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotDHW(snapshot), nil, consistency)), false), nil
 	case toolSemanticEnergyGetName:
-		return callToolResultText(mustJSON(newToolEnvelope(s.snapshotEnergyTotals(), nil)), false), nil
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotEnergyTotals(snapshot), nil, consistency)), false), nil
+	case toolSnapshotCaptureName:
+		snapshotID, createdAt, err := s.captureSnapshot()
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		data := map[string]any{
+			"snapshot_id": snapshotID,
+			"created_at":  createdAt.UTC().Format(time.RFC3339Nano),
+		}
+		return callToolResultText(mustJSON(newToolEnvelope(data, nil)), false), nil
+	case toolSnapshotDropName:
+		if err := s.dropSnapshot(call.Arguments); err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelope(map[string]any{"dropped": true}, nil)), false), nil
 	case toolDevicesV1Name, toolDevicesLegacyName:
-		devices := s.listDevices()
-		text := mustJSON(newToolEnvelope(devices, nil))
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		devices := s.listDevices(snapshot)
+		text := mustJSON(newToolEnvelopeWithConsistency(devices, nil, consistency))
 		return callToolResultText(text, false), nil
 	case toolDeviceGetV1Name:
-		device, err := s.getDevice(call.Arguments)
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
-		return callToolResultText(mustJSON(newToolEnvelope(device, nil)), false), nil
+		device, err := s.getDevice(call.Arguments, snapshot)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(nil, err, consistency)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(device, nil, consistency)), false), nil
 	case toolPlanesListV1Name:
-		planes, err := s.listPlanes(call.Arguments)
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
-		return callToolResultText(mustJSON(newToolEnvelope(planes, nil)), false), nil
+		planes, err := s.listPlanes(call.Arguments, snapshot)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(nil, err, consistency)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(planes, nil, consistency)), false), nil
 	case toolMethodsListV1Name:
-		methods, err := s.listMethods(call.Arguments)
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
-		return callToolResultText(mustJSON(newToolEnvelope(methods, nil)), false), nil
+		methods, err := s.listMethods(call.Arguments, snapshot)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(nil, err, consistency)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(methods, nil, consistency)), false), nil
 	case toolInvokeV1Name:
 		if s.invoker == nil {
 			return nil, rpcErrorInternal("server missing invoker")
@@ -491,17 +627,173 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 }
 
+func (s *Server) resolveConsistency(args map[string]any) (envelopeConsistency, *snapshotState, error) {
+	consistency := envelopeConsistency{
+		mode:          "LIVE",
+		dataTimestamp: time.Now().UTC(),
+	}
+	if args == nil {
+		return consistency, nil, nil
+	}
+	raw, ok := args["consistency"]
+	if !ok || raw == nil {
+		return consistency, nil, nil
+	}
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return envelopeConsistency{}, nil, fmt.Errorf("invalid consistency payload: %w", ebuserrors.ErrInvalidPayload)
+	}
+	mode, _ := value["mode"].(string)
+	mode = strings.ToUpper(strings.TrimSpace(mode))
+	if mode == "" || mode == "LIVE" {
+		return consistency, nil, nil
+	}
+	if mode != "SNAPSHOT" {
+		return envelopeConsistency{}, nil, fmt.Errorf("invalid consistency mode %q: %w", mode, ebuserrors.ErrInvalidPayload)
+	}
+	snapshotID, _ := value["snapshot_id"].(string)
+	snapshotID = strings.TrimSpace(snapshotID)
+	if snapshotID == "" {
+		return envelopeConsistency{}, nil, fmt.Errorf("missing consistency.snapshot_id: %w", ebuserrors.ErrInvalidPayload)
+	}
+	snapshot, ok := s.getSnapshot(snapshotID)
+	if !ok {
+		return envelopeConsistency{}, nil, fmt.Errorf("unknown snapshot %q: %w", snapshotID, errSnapshotNotFound)
+	}
+	consistency.mode = "SNAPSHOT"
+	consistency.snapshotID = snapshotID
+	consistency.dataTimestamp = snapshot.createdAt
+	return consistency, &snapshot, nil
+}
+
+func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err error) {
+	id, err := newSessionID()
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("snapshot id generation failed: %w", err)
+	}
+	now := time.Now().UTC()
+	snapshot := snapshotState{
+		id:        id,
+		createdAt: now,
+		expiresAt: now.Add(defaultSnapshotTTL),
+		runtime:   s.runtimeStatus(nil),
+		zones:     s.snapshotZones(nil),
+		dhw:       s.snapshotDHW(nil),
+		energy:    s.snapshotEnergyTotals(nil),
+		devices:   s.listDevices(nil),
+	}
+
+	s.snapshotMu.Lock()
+	s.cleanupExpiredSnapshotsLocked(now)
+	s.snapshots[id] = cloneSnapshotState(snapshot)
+	s.snapshotMu.Unlock()
+
+	return id, now, nil
+}
+
+func (s *Server) dropSnapshot(args map[string]any) error {
+	snapshotID, err := parseSnapshotID(args)
+	if err != nil {
+		return err
+	}
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+	if _, ok := s.snapshots[snapshotID]; !ok {
+		return fmt.Errorf("unknown snapshot %q: %w", snapshotID, errSnapshotNotFound)
+	}
+	delete(s.snapshots, snapshotID)
+	return nil
+}
+
+func (s *Server) getSnapshot(snapshotID string) (snapshotState, bool) {
+	now := time.Now().UTC()
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+	s.cleanupExpiredSnapshotsLocked(now)
+	snapshot, ok := s.snapshots[snapshotID]
+	if !ok {
+		return snapshotState{}, false
+	}
+	return cloneSnapshotState(snapshot), true
+}
+
+func (s *Server) cleanupExpiredSnapshotsLocked(now time.Time) {
+	for id, snapshot := range s.snapshots {
+		if now.After(snapshot.expiresAt) {
+			delete(s.snapshots, id)
+		}
+	}
+}
+
+func parseSnapshotID(args map[string]any) (string, error) {
+	if args == nil {
+		return "", fmt.Errorf("missing snapshot_id: %w", ebuserrors.ErrInvalidPayload)
+	}
+	snapshotID, _ := args["snapshot_id"].(string)
+	snapshotID = strings.TrimSpace(snapshotID)
+	if snapshotID == "" {
+		return "", fmt.Errorf("missing snapshot_id: %w", ebuserrors.ErrInvalidPayload)
+	}
+	return snapshotID, nil
+}
+
+func cloneSnapshotState(snapshot snapshotState) snapshotState {
+	var dhwCopy *DhwStatus
+	if snapshot.dhw != nil {
+		value := *snapshot.dhw
+		dhwCopy = &value
+	}
+	var energyCopy *EnergyTotals
+	if snapshot.energy != nil {
+		value := *snapshot.energy
+		value.Gas = cloneEnergyChannel(value.Gas)
+		value.Electric = cloneEnergyChannel(value.Electric)
+		value.Solar = cloneEnergyChannel(value.Solar)
+		energyCopy = &value
+	}
+	return snapshotState{
+		id:        snapshot.id,
+		createdAt: snapshot.createdAt,
+		expiresAt: snapshot.expiresAt,
+		runtime:   cloneMap(snapshot.runtime),
+		zones:     cloneZones(snapshot.zones),
+		dhw:       dhwCopy,
+		energy:    energyCopy,
+		devices:   cloneDeviceInfoList(snapshot.devices),
+	}
+}
+
 func newToolEnvelope(data any, err error) map[string]any {
+	return newToolEnvelopeWithConsistency(data, err, envelopeConsistency{
+		mode:          "LIVE",
+		dataTimestamp: time.Now().UTC(),
+	})
+}
+
+func newToolEnvelopeWithConsistency(data any, err error, consistency envelopeConsistency) map[string]any {
+	mode := strings.TrimSpace(consistency.mode)
+	if mode == "" {
+		mode = "LIVE"
+	}
+	timestamp := consistency.dataTimestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now().UTC()
+	}
+	consistencyMeta := map[string]any{
+		"mode": mode,
+	}
+	if strings.TrimSpace(consistency.snapshotID) != "" {
+		consistencyMeta["snapshot_id"] = consistency.snapshotID
+	}
+
 	meta := map[string]any{
 		"contract": map[string]any{
 			"name":  "helianthus-ebus-mcp",
 			"major": 1,
 			"minor": 0,
 		},
-		"consistency": map[string]any{
-			"mode": "LIVE",
-		},
-		"data_timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"consistency":    consistencyMeta,
+		"data_timestamp": timestamp.UTC().Format(time.RFC3339Nano),
 		"data_hash":      hashData(data),
 	}
 
@@ -540,6 +832,8 @@ func classifyToolError(err error) (code string, retriable bool, sourceLayer stri
 		return "PERMISSION_DENIED", false, "gateway"
 	case errors.Is(err, errInvokeIdempotencyConflict):
 		return "CONFLICT", false, "gateway"
+	case errors.Is(err, errSnapshotNotFound):
+		return "NOT_FOUND", false, "gateway"
 	case errors.Is(err, ebuserrors.ErrInvalidPayload):
 		return "INVALID_ARGUMENT", false, "ebusreg"
 	case errors.Is(err, ebuserrors.ErrNoSuchDevice):
@@ -733,6 +1027,77 @@ func cloneJSONValue(value any) any {
 	return out
 }
 
+func cloneMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	out := make(map[string]any, len(source))
+	for key, value := range source {
+		out[key] = cloneJSONValue(value)
+	}
+	return out
+}
+
+func cloneZones(source []Zone) []Zone {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make([]Zone, len(source))
+	copy(out, source)
+	return out
+}
+
+func cloneMethodInfoList(source []methodInfo) []methodInfo {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make([]methodInfo, len(source))
+	copy(out, source)
+	return out
+}
+
+func clonePlaneInfoList(source []planeInfo) []planeInfo {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make([]planeInfo, len(source))
+	for i, plane := range source {
+		out[i] = planeInfo{
+			Name:     plane.Name,
+			Routable: plane.Routable,
+			Methods:  cloneMethodInfoList(plane.Methods),
+		}
+	}
+	return out
+}
+
+func cloneDeviceInfoList(source []deviceInfo) []deviceInfo {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make([]deviceInfo, len(source))
+	for i, device := range source {
+		out[i] = deviceInfo{
+			Address:         device.Address,
+			Manufacturer:    device.Manufacturer,
+			DeviceID:        device.DeviceID,
+			SoftwareVersion: device.SoftwareVersion,
+			HardwareVersion: device.HardwareVersion,
+			Planes:          clonePlaneInfoList(device.Planes),
+		}
+	}
+	return out
+}
+
+func findDeviceInfoByAddress(devices []deviceInfo, address byte) (deviceInfo, bool) {
+	for _, device := range devices {
+		if device.Address == int(address) {
+			return device, true
+		}
+	}
+	return deviceInfo{}, false
+}
+
 type deviceInfo struct {
 	Address         int         `json:"address"`
 	Manufacturer    string      `json:"manufacturer"`
@@ -758,7 +1123,10 @@ type methodInfo struct {
 	Routable   bool   `json:"routable"`
 }
 
-func (s *Server) listDevices() []deviceInfo {
+func (s *Server) listDevices(snapshot *snapshotState) []deviceInfo {
+	if snapshot != nil {
+		return cloneDeviceInfoList(snapshot.devices)
+	}
 	out := make([]deviceInfo, 0)
 	s.registry.Iterate(func(entry registry.DeviceEntry) bool {
 		out = append(out, buildDeviceInfo(entry))
@@ -776,10 +1144,17 @@ func (s *Server) listDevices() []deviceInfo {
 	return out
 }
 
-func (s *Server) getDevice(args map[string]any) (deviceInfo, error) {
+func (s *Server) getDevice(args map[string]any, snapshot *snapshotState) (deviceInfo, error) {
 	address, err := parseAddress(args["address"])
 	if err != nil {
 		return deviceInfo{}, err
+	}
+	if snapshot != nil {
+		device, ok := findDeviceInfoByAddress(snapshot.devices, address)
+		if !ok {
+			return deviceInfo{}, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
+		}
+		return device, nil
 	}
 	entry, ok := s.registry.Lookup(address)
 	if !ok {
@@ -788,10 +1163,17 @@ func (s *Server) getDevice(args map[string]any) (deviceInfo, error) {
 	return buildDeviceInfo(entry), nil
 }
 
-func (s *Server) listPlanes(args map[string]any) ([]planeInfo, error) {
+func (s *Server) listPlanes(args map[string]any, snapshot *snapshotState) ([]planeInfo, error) {
 	address, err := parseAddress(args["address"])
 	if err != nil {
 		return nil, err
+	}
+	if snapshot != nil {
+		device, ok := findDeviceInfoByAddress(snapshot.devices, address)
+		if !ok {
+			return nil, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
+		}
+		return clonePlaneInfoList(device.Planes), nil
 	}
 	entry, ok := s.registry.Lookup(address)
 	if !ok {
@@ -800,7 +1182,7 @@ func (s *Server) listPlanes(args map[string]any) ([]planeInfo, error) {
 	return buildPlaneInfoList(entry.Planes()), nil
 }
 
-func (s *Server) listMethods(args map[string]any) ([]methodInfo, error) {
+func (s *Server) listMethods(args map[string]any, snapshot *snapshotState) ([]methodInfo, error) {
 	address, err := parseAddress(args["address"])
 	if err != nil {
 		return nil, err
@@ -809,6 +1191,19 @@ func (s *Server) listMethods(args map[string]any) ([]methodInfo, error) {
 	planeName = strings.TrimSpace(planeName)
 	if planeName == "" {
 		return nil, fmt.Errorf("missing plane: %w", ebuserrors.ErrInvalidPayload)
+	}
+
+	if snapshot != nil {
+		device, ok := findDeviceInfoByAddress(snapshot.devices, address)
+		if !ok {
+			return nil, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
+		}
+		for _, plane := range device.Planes {
+			if plane.Name == planeName {
+				return cloneMethodInfoList(plane.Methods), nil
+			}
+		}
+		return nil, fmt.Errorf("unknown plane %q: %w", planeName, ebuserrors.ErrInvalidPayload)
 	}
 
 	entry, ok := s.registry.Lookup(address)
@@ -823,7 +1218,20 @@ func (s *Server) listMethods(args map[string]any) ([]methodInfo, error) {
 	return buildMethodInfoList(plane), nil
 }
 
-func (s *Server) snapshotZones() []Zone {
+func (s *Server) runtimeStatus(snapshot *snapshotState) map[string]any {
+	if snapshot != nil {
+		return cloneMap(snapshot.runtime)
+	}
+	return map[string]any{
+		"daemon_status":  s.statusProvider.DaemonStatus(),
+		"adapter_status": s.statusProvider.AdapterStatus(),
+	}
+}
+
+func (s *Server) snapshotZones(snapshot *snapshotState) []Zone {
+	if snapshot != nil {
+		return cloneZones(snapshot.zones)
+	}
 	if s == nil || s.semantic == nil {
 		return nil
 	}
@@ -842,7 +1250,14 @@ func (s *Server) snapshotZones() []Zone {
 	return out
 }
 
-func (s *Server) snapshotDHW() *DhwStatus {
+func (s *Server) snapshotDHW(snapshot *snapshotState) *DhwStatus {
+	if snapshot != nil {
+		if snapshot.dhw == nil {
+			return nil
+		}
+		copy := *snapshot.dhw
+		return &copy
+	}
 	if s == nil || s.semantic == nil {
 		return nil
 	}
@@ -854,7 +1269,17 @@ func (s *Server) snapshotDHW() *DhwStatus {
 	return &copy
 }
 
-func (s *Server) snapshotEnergyTotals() *EnergyTotals {
+func (s *Server) snapshotEnergyTotals(snapshot *snapshotState) *EnergyTotals {
+	if snapshot != nil {
+		if snapshot.energy == nil {
+			return nil
+		}
+		copy := *snapshot.energy
+		copy.Gas = cloneEnergyChannel(copy.Gas)
+		copy.Electric = cloneEnergyChannel(copy.Electric)
+		copy.Solar = cloneEnergyChannel(copy.Solar)
+		return &copy
+	}
 	if s == nil || s.semantic == nil {
 		return nil
 	}

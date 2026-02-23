@@ -36,6 +36,7 @@ class PortalShell extends HTMLElement {
     const metaEl = this.querySelector('[data-role="meta"]');
     const listEl = this.querySelector('[data-role="registry-list"]');
     const semanticEl = this.querySelector('[data-role="semantic-list"]');
+    const projectionEl = this.querySelector('[data-role="projection-list"]');
     try {
       const [healthRes, bootstrapRes] = await Promise.all([
         fetch("api/v1/health"),
@@ -56,6 +57,9 @@ class PortalShell extends HTMLElement {
       }
       if (bootstrap.capabilities?.semantic && semanticEl) {
         await this.loadSemanticPreview(semanticEl);
+      }
+      if (bootstrap.capabilities?.projection && projectionEl) {
+        await this.loadProjectionPreview(projectionEl);
       }
     } catch (err) {
       if (statusEl) {
@@ -112,6 +116,28 @@ class PortalShell extends HTMLElement {
     }
   }
 
+  async loadProjectionPreview(listEl) {
+    try {
+      const response = await fetch("api/v1/projection/devices?limit=5");
+      const payload = await response.json();
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (items.length === 0) {
+        listEl.innerHTML = "<li>No projection graphs available.</li>";
+        return;
+      }
+      listEl.innerHTML = items
+        .map((item) => {
+          const projectionCount = Array.isArray(item.projections) ? item.projections.length : 0;
+          const label = item.display_name || item.device_id || `0x${Number(item.address).toString(16)}`;
+          return `<li><strong>${label}</strong> projections=${projectionCount}</li>`;
+        })
+        .join("");
+    } catch (err) {
+      listEl.innerHTML = "<li>Projection preview unavailable.</li>";
+      console.error("projection preview failed", err);
+    }
+  }
+
   render() {
     this.innerHTML = `
       <div class="shell">
@@ -155,6 +181,12 @@ class PortalShell extends HTMLElement {
               <h2>Semantic Preview</h2>
               <ul data-role="semantic-list">
                 <li>Loading semantic snapshot...</li>
+              </ul>
+            </section>
+            <section class="registry-preview">
+              <h2>Projection Preview</h2>
+              <ul data-role="projection-list">
+                <li>Loading projection summary...</li>
               </ul>
             </section>
             <div class="meta" data-role="meta">Waiting for bootstrap...</div>

@@ -115,6 +115,12 @@ func TestBootstrapEndpoint(t *testing.T) {
 		ListSemantic: func() SemanticSnapshot {
 			return SemanticSnapshot{Zones: []SemanticZone{{ID: "z1", Name: "Zone 1"}}}
 		},
+		ListProjections: func() []ProjectionDevice {
+			return []ProjectionDevice{{Address: 0x10, Projections: []ProjectionSummary{{Plane: "Service"}}}}
+		},
+		GetProjection: func(address byte, plane string) (ProjectionGraph, bool) {
+			return ProjectionGraph{}, true
+		},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
 	rec := httptest.NewRecorder()
@@ -141,6 +147,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	}
 	if capabilities["semantic"] != true {
 		t.Fatalf("capabilities.semantic=%v; want true", capabilities["semantic"])
+	}
+	if capabilities["projection"] != true {
+		t.Fatalf("capabilities.projection=%v; want true", capabilities["projection"])
 	}
 }
 
@@ -320,5 +329,85 @@ func TestSemanticSnapshotEndpoint_DefaultWhenMissingProvider(t *testing.T) {
 	zones := payload["zones"].([]any)
 	if len(zones) != 0 {
 		t.Fatalf("zones=%d; want 0", len(zones))
+	}
+}
+
+func TestProjectionDevicesEndpoint(t *testing.T) {
+	h := NewHandler(Options{
+		ListProjections: func() []ProjectionDevice {
+			return []ProjectionDevice{
+				{
+					Address:      0x10,
+					DeviceID:     "VRC720",
+					Manufacturer: "Vaillant",
+					Projections: []ProjectionSummary{
+						{Plane: "Service", NodeCount: 12, EdgeCount: 10},
+					},
+				},
+				{
+					Address:      0x08,
+					DeviceID:     "BAI",
+					Manufacturer: "Vaillant",
+					Projections: []ProjectionSummary{
+						{Plane: "Observability", NodeCount: 5, EdgeCount: 4},
+					},
+				},
+			}
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projection/devices?limit=1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if int(payload["count"].(float64)) != 2 {
+		t.Fatalf("count=%v; want 2", payload["count"])
+	}
+	items := payload["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("len(items)=%d; want 1 due limit", len(items))
+	}
+	if int(items[0].(map[string]any)["address"].(float64)) != 0x08 {
+		t.Fatalf("address=%v; want 8 sorted asc", items[0].(map[string]any)["address"])
+	}
+}
+
+func TestProjectionGraphEndpoint(t *testing.T) {
+	h := NewHandler(Options{
+		GetProjection: func(address byte, plane string) (ProjectionGraph, bool) {
+			if address != 0x10 || !strings.EqualFold(plane, "Service") {
+				return ProjectionGraph{}, false
+			}
+			return ProjectionGraph{
+				Address: 0x10,
+				Plane:   "Service",
+				Nodes: []ProjectionNode{
+					{ID: "n1", Path: "Service:/n1", CanonicalPath: "Service:/n1"},
+				},
+				Edges: []ProjectionEdge{
+					{ID: "e1", From: "n1", To: "n1"},
+				},
+			}, true
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projection/graph?address=0x10&plane=Service", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/projection/graph?address=0x10", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing plane status=%d; want %d", rec.Code, http.StatusBadRequest)
 	}
 }

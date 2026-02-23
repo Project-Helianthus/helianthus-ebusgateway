@@ -141,8 +141,35 @@ func TestServer_InitializeAndTools(t *testing.T) {
 		t.Fatalf("tools/list result type = %T; want map", res.Result)
 	}
 	tools, ok := resultMap["tools"].([]any)
-	if !ok || len(tools) < 2 {
-		t.Fatalf("tools = %#v; want at least 2 tools", resultMap["tools"])
+	if !ok || len(tools) < 4 {
+		t.Fatalf("tools = %#v; want at least 4 tools", resultMap["tools"])
+	}
+	for _, name := range []string{
+		toolDevicesV1Name,
+		toolInvokeV1Name,
+		toolDevicesLegacyName,
+		toolInvokeLegacyName,
+	} {
+		if !hasToolName(tools, name) {
+			t.Fatalf("tools list missing %q", name)
+		}
+	}
+	invokeV1 := findToolByName(tools, toolInvokeV1Name)
+	if invokeV1 == nil {
+		t.Fatalf("missing %q in tools list", toolInvokeV1Name)
+	}
+	inputSchema, ok := invokeV1["inputSchema"].(map[string]any)
+	if !ok {
+		t.Fatalf("invoke v1 inputSchema type = %T; want map", invokeV1["inputSchema"])
+	}
+	properties, ok := inputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("invoke v1 properties type = %T; want map", inputSchema["properties"])
+	}
+	for _, key := range []string{"intent", "allow_dangerous", "idempotency_key"} {
+		if _, ok := properties[key]; !ok {
+			t.Fatalf("invoke v1 properties missing %q", key)
+		}
 	}
 }
 
@@ -181,7 +208,7 @@ func TestServer_ToolsCallDevicesAndInvoke(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.devices","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{}}`),
 	})
 	if res.Error != nil {
 		t.Fatalf("tools/call devices error = %+v", res.Error)
@@ -231,7 +258,7 @@ func TestServer_ToolsCallDevicesAndInvoke(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.invoke","arguments":{"address":8,"plane":"heating","method":"get_status","params":{}}}`),
+		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"get_status","params":{},"intent":"READ_ONLY","allow_dangerous":false}}`),
 	})
 	if res.Error != nil {
 		t.Fatalf("tools/call invoke error = %+v", res.Error)
@@ -264,6 +291,65 @@ func TestServer_ToolsCallDevicesAndInvoke(t *testing.T) {
 	}
 	if len(invoker.calls) != 1 || invoker.calls[0].plane != "heating" || invoker.calls[0].method != "get_status" {
 		t.Fatalf("invoker calls = %+v; want heating/get_status", invoker.calls)
+	}
+}
+
+func TestServer_ToolsCallLegacyAliases(t *testing.T) {
+	plane := &testPlane{
+		name: "heating",
+		methods: []registry.Method{
+			testMethod{
+				name:     "get_status",
+				readOnly: true,
+				template: testTemplate{primary: 0xB5, secondary: 0x04},
+			},
+		},
+	}
+	entry := testEntry{
+		info: registry.DeviceInfo{
+			Address:         0x08,
+			Manufacturer:    "vaillant",
+			DeviceID:        "device-a",
+			SoftwareVersion: "1.0",
+			HardwareVersion: "7603",
+		},
+		planes: []registry.Plane{plane},
+	}
+	reg := &testRegistry{
+		entries: map[byte]registry.DeviceEntry{0x08: entry},
+		order:   []byte{0x08},
+	}
+	invoker := &testInvoker{}
+	server, err := NewServer(reg, invoker)
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.devices","arguments":{}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("legacy devices error = %+v", res.Error)
+	}
+
+	res = doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.invoke","arguments":{"address":8,"plane":"heating","method":"get_status","params":{}}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("legacy invoke error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("legacy invoke result type = %T; want map", res.Result)
+	}
+	if isError, _ := resultMap["isError"].(bool); isError {
+		t.Fatalf("legacy invoke isError=true; want false")
 	}
 }
 
@@ -332,6 +418,68 @@ func TestServer_ToolsCallInvokeErrorEnvelope(t *testing.T) {
 	}
 }
 
+func TestServer_ToolsCallInvokeV1SafetyGuards(t *testing.T) {
+	plane := &testPlane{
+		name: "heating",
+		methods: []registry.Method{
+			testMethod{
+				name:     "set_target",
+				readOnly: false,
+				template: testTemplate{primary: 0xB5, secondary: 0x05},
+			},
+		},
+	}
+	entry := testEntry{
+		info: registry.DeviceInfo{
+			Address:         0x08,
+			Manufacturer:    "vaillant",
+			DeviceID:        "device-a",
+			SoftwareVersion: "1.0",
+			HardwareVersion: "7603",
+		},
+		planes: []registry.Plane{plane},
+	}
+	reg := &testRegistry{
+		entries: map[byte]registry.DeviceEntry{0x08: entry},
+		order:   []byte{0x08},
+	}
+	invoker := &testInvoker{}
+	server, err := NewServer(reg, invoker)
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	t.Run("missing intent", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      1,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{},"allow_dangerous":false}}`),
+		})
+		assertToolErrorCode(t, res, "INVALID_ARGUMENT")
+	})
+
+	t.Run("read only intent denied for mutating method", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      2,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{},"intent":"READ_ONLY","allow_dangerous":false}}`),
+		})
+		assertToolErrorCode(t, res, "PERMISSION_DENIED")
+	})
+
+	t.Run("mutate intent requires idempotency key", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      3,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{},"intent":"MUTATE","allow_dangerous":true}}`),
+		})
+		assertToolErrorCode(t, res, "PERMISSION_DENIED")
+	})
+}
+
 func TestClassifyToolError_KnownMappings(t *testing.T) {
 	t.Parallel()
 
@@ -373,6 +521,66 @@ func parseEnvelope(t *testing.T, text string) map[string]any {
 		t.Fatalf("Unmarshal envelope error = %v. text=%q", err, text)
 	}
 	return envelope
+}
+
+func hasToolName(tools []any, name string) bool {
+	for _, raw := range tools {
+		toolMap, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if got, _ := toolMap["name"].(string); got == name {
+			return true
+		}
+	}
+	return false
+}
+
+func findToolByName(tools []any, name string) map[string]any {
+	for _, raw := range tools {
+		toolMap, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if got, _ := toolMap["name"].(string); got == name {
+			return toolMap
+		}
+	}
+	return nil
+}
+
+func assertToolErrorCode(t *testing.T, res rpcResponse, wantCode string) {
+	t.Helper()
+	if res.Error != nil {
+		t.Fatalf("unexpected rpc error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T; want map", res.Result)
+	}
+	if isError, _ := resultMap["isError"].(bool); !isError {
+		t.Fatalf("isError=false; want true")
+	}
+	content, ok := resultMap["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("content = %#v; want 1 item", resultMap["content"])
+	}
+	contentItem, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("content item type = %T; want map", content[0])
+	}
+	text, _ := contentItem["text"].(string)
+	if text == "" {
+		t.Fatal("content.text empty")
+	}
+	envelope := parseEnvelope(t, text)
+	errorPayload, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("error payload type = %T; want map", envelope["error"])
+	}
+	if code, _ := errorPayload["code"].(string); code != wantCode {
+		t.Fatalf("error code = %q; want %q", code, wantCode)
+	}
 }
 
 func doRPC(t *testing.T, handler http.Handler, req rpcRequest) rpcResponse {

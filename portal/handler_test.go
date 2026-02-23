@@ -112,6 +112,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 		ListRegistry: func() []RegistryDevice {
 			return []RegistryDevice{{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720"}}
 		},
+		ListSemantic: func() SemanticSnapshot {
+			return SemanticSnapshot{Zones: []SemanticZone{{ID: "z1", Name: "Zone 1"}}}
+		},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
 	rec := httptest.NewRecorder()
@@ -135,6 +138,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	capabilities := payload["capabilities"].(map[string]any)
 	if capabilities["registry"] != true {
 		t.Fatalf("capabilities.registry=%v; want true", capabilities["registry"])
+	}
+	if capabilities["semantic"] != true {
+		t.Fatalf("capabilities.semantic=%v; want true", capabilities["semantic"])
 	}
 }
 
@@ -261,5 +267,58 @@ func TestRegistryDevicesEndpoint_Filter(t *testing.T) {
 	}
 	if int(items[0].(map[string]any)["address"].(float64)) != 0x08 {
 		t.Fatalf("address=%v; want 8", items[0].(map[string]any)["address"])
+	}
+}
+
+func TestSemanticSnapshotEndpoint(t *testing.T) {
+	current := 43.5
+	h := NewHandler(Options{
+		ListSemantic: func() SemanticSnapshot {
+			return SemanticSnapshot{
+				Zones: []SemanticZone{
+					{ID: "zone_1", Name: "Living", CurrentTempC: &current},
+				},
+				DHW: &SemanticDHW{
+					OperatingMode: "auto",
+				},
+				CapturedUTC: "2026-02-23T22:00:00Z",
+			}
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/semantic/snapshot", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload["captured_utc"] != "2026-02-23T22:00:00Z" {
+		t.Fatalf("captured_utc=%v", payload["captured_utc"])
+	}
+	zones := payload["zones"].([]any)
+	if len(zones) != 1 {
+		t.Fatalf("zones=%d; want 1", len(zones))
+	}
+}
+
+func TestSemanticSnapshotEndpoint_DefaultWhenMissingProvider(t *testing.T) {
+	h := NewHandler(Options{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/semantic/snapshot", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	zones := payload["zones"].([]any)
+	if len(zones) != 0 {
+		t.Fatalf("zones=%d; want 0", len(zones))
 	}
 }

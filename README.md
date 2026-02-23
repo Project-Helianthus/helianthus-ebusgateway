@@ -94,6 +94,9 @@ curl -fsS http://127.0.0.1:8080/mcp \
 
 # Portal registry browse preview
 curl -fsS 'http://127.0.0.1:8080/portal/api/v1/registry/devices?limit=5'
+
+# Portal semantic browse preview
+curl -fsS 'http://127.0.0.1:8080/portal/api/v1/semantic/snapshot'
 ```
 
 ## Local Smoke-Test Configuration Example

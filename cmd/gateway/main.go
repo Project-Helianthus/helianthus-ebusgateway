@@ -83,7 +83,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	startDiscoveryScanLoop(ctx, cfg, gateway, builder)
 
-	server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, hub)
+	server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, hub, semanticRuntime.Provider())
 	if err != nil {
 		return err
 	}
@@ -203,7 +203,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	})
 }
 
-func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub) (*http.Server, mdns.Advertiser, error) {
+func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub, semantic graphql.SemanticProvider) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
 	}
@@ -303,6 +303,60 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 					return true
 				})
 				return items
+			},
+			ListSemantic: func() portal.SemanticSnapshot {
+				if semantic == nil {
+					return portal.SemanticSnapshot{}
+				}
+				zones := semantic.Zones()
+				zoneItems := make([]portal.SemanticZone, 0, len(zones))
+				for _, zone := range zones {
+					zoneItems = append(zoneItems, portal.SemanticZone{
+						ID:            zone.ID,
+						Name:          zone.Name,
+						OperatingMode: zone.OperatingMode,
+						Preset:        zone.Preset,
+						CurrentTempC:  zone.CurrentTempC,
+						TargetTempC:   zone.TargetTempC,
+						HeatingDemand: zone.HeatingDemand,
+					})
+				}
+
+				var dhw *portal.SemanticDHW
+				if value := semantic.DHW(); value != nil {
+					dhw = &portal.SemanticDHW{
+						OperatingMode: value.OperatingMode,
+						Preset:        value.Preset,
+						CurrentTempC:  value.CurrentTempC,
+						TargetTempC:   value.TargetTempC,
+						HeatingDemand: value.HeatingDemand,
+					}
+				}
+
+				var energy *portal.SemanticEnergyTotals
+				if value := semantic.EnergyTotals(); value != nil {
+					energy = &portal.SemanticEnergyTotals{
+						Gas: portal.SemanticEnergyChannel{
+							DHW:     portal.SemanticEnergySeries{Today: value.Gas.DHW.Today, Yearly: append([]float64(nil), value.Gas.DHW.Yearly...)},
+							Climate: portal.SemanticEnergySeries{Today: value.Gas.Climate.Today, Yearly: append([]float64(nil), value.Gas.Climate.Yearly...)},
+						},
+						Electric: portal.SemanticEnergyChannel{
+							DHW:     portal.SemanticEnergySeries{Today: value.Electric.DHW.Today, Yearly: append([]float64(nil), value.Electric.DHW.Yearly...)},
+							Climate: portal.SemanticEnergySeries{Today: value.Electric.Climate.Today, Yearly: append([]float64(nil), value.Electric.Climate.Yearly...)},
+						},
+						Solar: portal.SemanticEnergyChannel{
+							DHW:     portal.SemanticEnergySeries{Today: value.Solar.DHW.Today, Yearly: append([]float64(nil), value.Solar.DHW.Yearly...)},
+							Climate: portal.SemanticEnergySeries{Today: value.Solar.Climate.Today, Yearly: append([]float64(nil), value.Solar.Climate.Yearly...)},
+						},
+					}
+				}
+
+				return portal.SemanticSnapshot{
+					Zones:       zoneItems,
+					DHW:         dhw,
+					Energy:      energy,
+					CapturedUTC: time.Now().UTC().Format(time.RFC3339),
+				}
 			},
 		})
 		mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))

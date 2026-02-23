@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestBuildB524ReadSelector(t *testing.T) {
 	t.Parallel()
@@ -281,5 +284,63 @@ func TestParseB524ZonesFromGrabFiltersAbsentInstances(t *testing.T) {
 
 	if _, exists := zones[2]; exists {
 		t.Fatalf("zone instance 2 should be filtered as absent")
+	}
+}
+
+func TestParseB524ZonesFromGrabIncludesHumidityAndAllowedModes(t *testing.T) {
+	t.Parallel()
+
+	lines := []string{
+		"f115b52406020003001c00 / 0501031c0000 = 1",
+		"f115b52406020003000600 / 010306000200 = 1",
+		"f115b52406020003000e00 / 01030e000000 = 1",
+		"f115b52406020003001300 / 010313000000 = 1",
+		"f115b52406020003001200 / 010312000100 = 1",
+		"f115b52406020003002800 / 0103280000002042 = 1",
+		"f115b52406020003002200 / 0103220000003041 = 1",
+		"f115b52406020002000200 / 010202000100 = 1",
+	}
+
+	zones := parseB524ZonesFromGrab(lines, 0x15)
+	zone, ok := zones[0]
+	if !ok {
+		t.Fatalf("zone instance 0 missing")
+	}
+	if zone.HumidityPct == nil || *zone.HumidityPct != 40.0 {
+		t.Fatalf("zone humidity = %v; want 40.0", zone.HumidityPct)
+	}
+	if zone.Preset != "manual" {
+		t.Fatalf("zone preset = %q; want manual", zone.Preset)
+	}
+	if got, want := zone.AllowedModes, []string{"off", "auto", "heat"}; !slices.Equal(got, want) {
+		t.Fatalf("allowed modes = %v; want %v", got, want)
+	}
+}
+
+func TestParseB524DhwFromGrab(t *testing.T) {
+	t.Parallel()
+
+	lines := []string{
+		"f115b52406020001000300 / 010103000100 = 1",
+		"f115b52406020001000400 / 0101040000005c42 = 1",
+		"f115b52406020001000500 / 0101050000004842 = 1",
+		"f115b52406020001000d00 / 01010d000000 = 1",
+	}
+
+	dhw, ok := parseB524DhwFromGrab(lines, 0x15)
+	if !ok || dhw == nil {
+		t.Fatalf("parseB524DhwFromGrab returned nil")
+	}
+	if dhw.OperatingMode != "auto" {
+		t.Fatalf("operating mode = %q; want auto", dhw.OperatingMode)
+	}
+	if dhw.Preset != "schedule" {
+		t.Fatalf("preset = %q; want schedule", dhw.Preset)
+	}
+	if dhw.TargetTempC == nil || *dhw.TargetTempC != 55.0 {
+		t.Fatalf("target temp = %v; want 55", dhw.TargetTempC)
+	}
+	if dhw.CurrentTempC == nil || *dhw.CurrentTempC != 50.0 {
+		t.Fatalf("current temp = %v; want 50", dhw.CurrentTempC)
 	}
 }

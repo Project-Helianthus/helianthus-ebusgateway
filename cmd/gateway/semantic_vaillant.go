@@ -24,15 +24,30 @@ const (
 	vaillantB524OpcodeLocal      = byte(0x02)
 	vaillantB524OpRead           = byte(0x00)
 
-	vaillantGroupZones = byte(0x03)
+	vaillantGroupDHW      = byte(0x01)
+	vaillantGroupCircuits = byte(0x02)
+	vaillantGroupZones    = byte(0x03)
 
-	zoneRegName          = uint16(0x0016)
-	zoneRegNamePrefix    = uint16(0x0017)
-	zoneRegNameSuffix    = uint16(0x0018)
-	zoneRegIndex         = uint16(0x001C)
-	zoneRegHeatingOpMode = uint16(0x0006)
-	zoneRegCurrentTemp   = uint16(0x000F)
-	zoneRegTargetTemp    = uint16(0x0022)
+	zoneRegName                 = uint16(0x0016)
+	zoneRegNamePrefix           = uint16(0x0017)
+	zoneRegNameSuffix           = uint16(0x0018)
+	zoneRegIndex                = uint16(0x001C)
+	zoneRegHeatingOpMode        = uint16(0x0006) // configuration.heating.operation_mode
+	zoneRegCurrentTemp          = uint16(0x000F) // state.current_room_temperature
+	zoneRegTargetTemp           = uint16(0x0022) // configuration.heating.desired_setpoint
+	zoneRegFallbackManualTemp   = uint16(0x0014) // configuration.heating.manual_mode_setpoint
+	zoneRegSpecialFunction      = uint16(0x000E) // state.current_special_function
+	zoneRegValveStatus          = uint16(0x0012) // state.valve_status
+	zoneRegAssociatedCircuitRaw = uint16(0x0013) // configuration.associated_circuit_index
+	zoneRegCurrentHumidity      = uint16(0x0028) // state.current_room_humidity
+
+	circuitRegType = uint16(0x0002) // configuration.heating_circuit_type / mixer_circuit_type_external
+
+	dhwRegOperationMode   = uint16(0x0003) // configuration.domestic_hot_water.operation_mode
+	dhwRegTargetTemp      = uint16(0x0004) // configuration.domestic_hot_water.tapping_setpoint
+	dhwRegCurrentTemp     = uint16(0x0005) // state.current_dhw_temperature
+	dhwRegSpecialFunction = uint16(0x000D) // state.current_special_function
+	dhwInstance           = byte(0x00)
 )
 
 func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub) {
@@ -66,6 +81,7 @@ type vaillantSemanticPoller struct {
 	mu         sync.Mutex
 	controller byte
 	zones      map[byte]*vaillantZoneSnapshot
+	dhw        *vaillantDhwSnapshot
 }
 
 type vaillantZoneSnapshot struct {
@@ -76,9 +92,29 @@ type vaillantZoneSnapshot struct {
 
 	OperatingMode string
 	Preset        string
+	HvacAction    string
+	AllowedModes  []string
 
 	CurrentTempC *float64
 	TargetTempC  *float64
+	HumidityPct  *float64
+
+	ConfigurationHeatingOperationMode string
+	StateSpecialFunction              string
+	ConfigurationAssociatedCircuitRaw *uint16
+	ConfigurationCircuitTypeRaw       *uint16
+	StateValveStatusRaw               *uint16
+}
+
+type vaillantDhwSnapshot struct {
+	OperatingMode string
+	Preset        string
+
+	CurrentTempC *float64
+	TargetTempC  *float64
+
+	ConfigurationDHWOperationMode string
+	StateSpecialFunction          string
 }
 
 func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub) *vaillantSemanticPoller {
@@ -152,8 +188,10 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.mu.Lock()
 		p.controller = 0
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
+		p.dhw = nil
 		p.mu.Unlock()
 		p.publishZones()
+		p.publishDHW()
 		return
 	}
 
@@ -245,6 +283,8 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 		}
 	}
 	if controller == 0 || len(zones) == 0 {
+		p.refreshDHW(ctx)
+		p.publishDHW()
 		return
 	}
 
@@ -252,6 +292,7 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 		var (
 			currentPtr *float64
 			targetPtr  *float64
+			humidity   *float64
 		)
 		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegCurrentTemp); ok {
 			current := value
@@ -262,8 +303,26 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 			target := value
 			targetPtr = &target
 		}
+		if targetPtr == nil {
+			if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegFallbackManualTemp); ok {
+				target := value
+				targetPtr = &target
+			}
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegCurrentHumidity); ok {
+			currentHumidity := value
+			humidity = &currentHumidity
+		}
 
-		mode, preset, modeOK := p.readB524ZoneMode(ctx, instance)
+		zoneOpMode, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHeatingOpMode)
+		zoneSF, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegSpecialFunction)
+		zoneValve, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegValveStatus)
+		zoneCircuitRaw, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegAssociatedCircuitRaw)
+		circuitInstance := resolveCircuitInstance(zoneCircuitRaw, instance)
+		circuitType, hasCircuitType := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, circuitInstance, circuitRegType)
+
+		operatingMode, preset, allowedModes := deriveZoneModeAndPreset(zoneOpMode, zoneSF, circuitType, hasCircuitType)
+		hvacAction := deriveZoneHvacAction(zoneValve, circuitType, hasCircuitType)
 
 		p.mu.Lock()
 		if entry := p.zones[instance]; entry != nil {
@@ -273,15 +332,39 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 			if targetPtr != nil {
 				entry.TargetTempC = targetPtr
 			}
-			if modeOK {
-				entry.OperatingMode = mode
+			if humidity != nil {
+				entry.HumidityPct = humidity
+			}
+			if operatingMode != "" {
+				entry.OperatingMode = operatingMode
+			}
+			if preset != "" {
 				entry.Preset = preset
+			}
+			if hvacAction != "" {
+				entry.HvacAction = hvacAction
+			}
+			if len(allowedModes) > 0 {
+				entry.AllowedModes = allowedModes
+			}
+			if zoneOpMode != nil {
+				entry.ConfigurationHeatingOperationMode = formatUintToken(*zoneOpMode)
+			}
+			if zoneSF != nil {
+				entry.StateSpecialFunction = formatUintToken(*zoneSF)
+			}
+			entry.ConfigurationAssociatedCircuitRaw = zoneCircuitRaw
+			entry.StateValveStatusRaw = zoneValve
+			if hasCircuitType {
+				entry.ConfigurationCircuitTypeRaw = circuitType
 			}
 		}
 		p.mu.Unlock()
 	}
 
+	p.refreshDHW(ctx)
 	p.publishZones()
+	p.publishDHW()
 }
 
 func (p *vaillantSemanticPoller) snapshotZones() (byte, []byte) {
@@ -323,12 +406,21 @@ func (p *vaillantSemanticPoller) publishZones() {
 		}
 
 		zone := graphql.Zone{
-			ID:            fmt.Sprintf("zone-%d", instance+1),
-			Name:          name,
-			OperatingMode: entry.OperatingMode,
-			Preset:        entry.Preset,
-			CurrentTempC:  entry.CurrentTempC,
-			TargetTempC:   entry.TargetTempC,
+			ID:                     fmt.Sprintf("zone-%d", instance+1),
+			Name:                   name,
+			OperatingMode:          entry.OperatingMode,
+			Preset:                 entry.Preset,
+			HvacAction:             entry.HvacAction,
+			AllowedModes:           append([]string(nil), entry.AllowedModes...),
+			CurrentTempC:           entry.CurrentTempC,
+			TargetTempC:            entry.TargetTempC,
+			CurrentHumidityPct:     entry.HumidityPct,
+			SpecialFunction:        entry.StateSpecialFunction,
+			CircuitTypeRaw:         optionalUintToken(entry.ConfigurationCircuitTypeRaw),
+			ZoneCircuitIndexRaw:    optionalUintToken(entry.ConfigurationAssociatedCircuitRaw),
+			ZoneOperationModeRaw:   entry.ConfigurationHeatingOperationMode,
+			ZoneValveStatusRaw:     optionalUintToken(entry.StateValveStatusRaw),
+			ZoneSpecialFunctionRaw: entry.StateSpecialFunction,
 		}
 		zones = append(zones, zone)
 	}
@@ -354,13 +446,140 @@ func zoneEquals(a, b graphql.Zone) bool {
 	if a.ID != b.ID || a.Name != b.Name {
 		return false
 	}
+	if a.OperatingMode != b.OperatingMode || a.Preset != b.Preset {
+		return false
+	}
+	if a.HvacAction != b.HvacAction || a.SpecialFunction != b.SpecialFunction {
+		return false
+	}
+	if a.CircuitTypeRaw != b.CircuitTypeRaw ||
+		a.ZoneCircuitIndexRaw != b.ZoneCircuitIndexRaw ||
+		a.ZoneOperationModeRaw != b.ZoneOperationModeRaw ||
+		a.ZoneValveStatusRaw != b.ZoneValveStatusRaw ||
+		a.ZoneSpecialFunctionRaw != b.ZoneSpecialFunctionRaw {
+		return false
+	}
+	if !slices.Equal(a.AllowedModes, b.AllowedModes) {
+		return false
+	}
 	if !floatPtrEquals(a.CurrentTempC, b.CurrentTempC) {
 		return false
 	}
 	if !floatPtrEquals(a.TargetTempC, b.TargetTempC) {
 		return false
 	}
+	if !floatPtrEquals(a.CurrentHumidityPct, b.CurrentHumidityPct) {
+		return false
+	}
 	return true
+}
+
+func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) {
+	controller, _ := p.snapshotZones()
+	if controller == 0 {
+		return
+	}
+
+	currentPtr := p.readDhwFloat(ctx, dhwRegCurrentTemp)
+	targetPtr := p.readDhwFloat(ctx, dhwRegTargetTemp)
+	opModeRaw, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegOperationMode)
+	sfModeRaw, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegSpecialFunction)
+
+	operatingMode, preset := deriveDhwModeAndPreset(opModeRaw, sfModeRaw)
+	if operatingMode == "" && preset == "" && currentPtr == nil && targetPtr == nil {
+		if p.refreshDHWFromEbusdGrab(ctx) {
+			return
+		}
+		return
+	}
+
+	status := &vaillantDhwSnapshot{
+		OperatingMode: operatingMode,
+		Preset:        preset,
+		CurrentTempC:  currentPtr,
+		TargetTempC:   targetPtr,
+	}
+	if opModeRaw != nil {
+		status.ConfigurationDHWOperationMode = formatUintToken(*opModeRaw)
+	}
+	if sfModeRaw != nil {
+		status.StateSpecialFunction = formatUintToken(*sfModeRaw)
+	}
+
+	p.mu.Lock()
+	p.dhw = status
+	p.mu.Unlock()
+}
+
+func (p *vaillantSemanticPoller) readDhwFloat(ctx context.Context, addr uint16) *float64 {
+	value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, addr)
+	if !ok {
+		return nil
+	}
+	floatValue := value
+	return &floatValue
+}
+
+func (p *vaillantSemanticPoller) publishDHW() {
+	if p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	source := p.dhw
+	p.mu.Unlock()
+
+	previous := p.provider.DHW()
+	if source == nil {
+		p.provider.SetDHW(nil)
+		if previous != nil && p.hub != nil {
+			p.hub.PublishDHWUpdate(nil)
+		}
+		return
+	}
+
+	current := &graphql.DhwStatus{
+		OperatingMode:         source.OperatingMode,
+		Preset:                source.Preset,
+		CurrentTempC:          source.CurrentTempC,
+		TargetTempC:           source.TargetTempC,
+		SpecialFunction:       source.StateSpecialFunction,
+		DhwOperationModeRaw:   source.ConfigurationDHWOperationMode,
+		DhwSpecialFunctionRaw: source.StateSpecialFunction,
+	}
+
+	p.provider.SetDHW(current)
+	if p.hub != nil && !dhwEquals(previous, current) {
+		p.hub.PublishDHWUpdate(current)
+	}
+}
+
+func dhwEquals(a, b *graphql.DhwStatus) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if a.OperatingMode != b.OperatingMode || a.Preset != b.Preset {
+		return false
+	}
+	if a.SpecialFunction != b.SpecialFunction ||
+		a.DhwOperationModeRaw != b.DhwOperationModeRaw ||
+		a.DhwSpecialFunctionRaw != b.DhwSpecialFunctionRaw {
+		return false
+	}
+	if !floatPtrEquals(a.CurrentTempC, b.CurrentTempC) || !floatPtrEquals(a.TargetTempC, b.TargetTempC) {
+		return false
+	}
+	return true
+}
+
+func optionalUintToken(value *uint16) string {
+	if value == nil {
+		return ""
+	}
+	return formatUintToken(*value)
 }
 
 func floatPtrEquals(a, b *float64) bool {
@@ -601,25 +820,168 @@ func (p *vaillantSemanticPoller) readB524ZoneNamePart(ctx context.Context, insta
 	return strings.TrimSpace(raw)
 }
 
-func (p *vaillantSemanticPoller) readB524ZoneMode(ctx context.Context, instance byte) (string, string, bool) {
-	raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHeatingOpMode)
+func (p *vaillantSemanticPoller) readB524Uint16(ctx context.Context, opcode, group, instance byte, addr uint16) (*uint16, bool) {
+	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
 	if !ok || len(raw) == 0 {
-		return "", "", false
+		return nil, false
 	}
-	modeValue, ok := decodeB524Uint16(raw)
+	parsed, ok := decodeB524Uint16(raw)
 	if !ok {
-		return "", "", false
+		return nil, false
 	}
-	switch modeValue {
-	case 0:
-		return "off", "off", true
-	case 1:
-		return "auto", "auto", true
-	case 2:
-		return "heating", "manual", true
+	return &parsed, true
+}
+
+func resolveCircuitInstance(associatedCircuit *uint16, zoneInstance byte) byte {
+	if associatedCircuit == nil {
+		return zoneInstance
+	}
+	value := *associatedCircuit
+	switch value {
+	case 0xFF, 0xFFFF:
+		return zoneInstance
 	default:
-		return "", "", false
+		if value <= 0x1F {
+			return byte(value)
+		}
+		return zoneInstance
 	}
+}
+
+func deriveZoneModeAndPreset(opMode, specialFunction, circuitType *uint16, hasCircuitType bool) (string, string, []string) {
+	allowed := deriveZoneAllowedModes(circuitType, hasCircuitType)
+	var mode string
+	switch value := uint16Value(opMode, 1); value {
+	case 0:
+		mode = "off"
+	case 1:
+		mode = "auto"
+	case 2:
+		mode = deriveManualOperatingMode(circuitType, hasCircuitType)
+	default:
+		mode = "auto"
+	}
+
+	preset := derivePresetFromSpecialFunctionAndOpMode(specialFunction, opMode)
+	if preset == "" {
+		switch mode {
+		case "auto":
+			preset = "schedule"
+		default:
+			preset = "manual"
+		}
+	}
+	return mode, preset, allowed
+}
+
+func deriveDhwModeAndPreset(opMode, specialFunction *uint16) (string, string) {
+	var mode string
+	switch value := uint16Value(opMode, 1); value {
+	case 0:
+		mode = "off"
+	case 1:
+		mode = "auto"
+	case 2:
+		mode = "heat"
+	default:
+		mode = "auto"
+	}
+	preset := derivePresetFromSpecialFunctionAndOpMode(specialFunction, opMode)
+	if preset == "" {
+		switch mode {
+		case "auto":
+			preset = "schedule"
+		default:
+			preset = "manual"
+		}
+	}
+	return mode, preset
+}
+
+func derivePresetFromSpecialFunctionAndOpMode(specialFunction, opMode *uint16) string {
+	if token := normalizeSpecialFunctionToken(specialFunction); token != "" {
+		switch token {
+		case "quickveto":
+			return "quickveto"
+		case "away":
+			return "away"
+		}
+	}
+	switch uint16Value(opMode, 1) {
+	case 1:
+		return "schedule"
+	case 2:
+		return "manual"
+	}
+	return ""
+}
+
+func normalizeSpecialFunctionToken(specialFunction *uint16) string {
+	if specialFunction == nil {
+		return ""
+	}
+	switch *specialFunction {
+	case 2:
+		return "quickveto"
+	case 3, 4:
+		return "away"
+	default:
+		return ""
+	}
+}
+
+func deriveManualOperatingMode(circuitType *uint16, hasCircuitType bool) string {
+	if !hasCircuitType || circuitType == nil {
+		return "heat"
+	}
+	switch *circuitType {
+	case 2:
+		return "cool"
+	default:
+		return "heat"
+	}
+}
+
+func deriveZoneAllowedModes(circuitType *uint16, hasCircuitType bool) []string {
+	if !hasCircuitType || circuitType == nil {
+		return []string{"off", "auto", "heat"}
+	}
+	switch *circuitType {
+	case 0:
+		return []string{"off"}
+	case 2:
+		return []string{"off", "auto", "cool"}
+	default:
+		return []string{"off", "auto", "heat"}
+	}
+}
+
+func deriveZoneHvacAction(valveStatus, circuitType *uint16, hasCircuitType bool) string {
+	if valveStatus == nil {
+		return ""
+	}
+	switch *valveStatus {
+	case 0:
+		return "idle"
+	case 1:
+		if hasCircuitType && circuitType != nil && *circuitType == 2 {
+			return "cooling"
+		}
+		return "heating"
+	default:
+		return ""
+	}
+}
+
+func uint16Value(value *uint16, fallback uint16) uint16 {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func formatUintToken(value uint16) string {
+	return fmt.Sprintf("%d", value)
 }
 
 func decodeB524Uint16(payload []byte) (uint16, bool) {

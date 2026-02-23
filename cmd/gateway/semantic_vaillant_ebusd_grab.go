@@ -15,10 +15,9 @@ import (
 )
 
 const (
-	ebusdGrabCommand                = "grab result all\n"
-	ebusdGrabFollowupReadWindow     = 350 * time.Millisecond
-	ebusdGrabMinimumInitialTimeout  = 2 * time.Second
-	zoneRegFallbackTargetTempManual = uint16(0x0014)
+	ebusdGrabCommand               = "grab result all\n"
+	ebusdGrabFollowupReadWindow    = 350 * time.Millisecond
+	ebusdGrabMinimumInitialTimeout = 2 * time.Second
 )
 
 func (p *vaillantSemanticPoller) refreshFromEbusdGrab(ctx context.Context) bool {
@@ -72,6 +71,29 @@ func (p *vaillantSemanticPoller) refreshFromEbusdGrab(ctx context.Context) bool 
 			value := *incoming.TargetTempC
 			entry.TargetTempC = &value
 		}
+		if incoming.HumidityPct != nil {
+			value := *incoming.HumidityPct
+			entry.HumidityPct = &value
+		}
+		if incoming.HvacAction != "" {
+			entry.HvacAction = incoming.HvacAction
+		}
+		if incoming.OperatingMode != "" {
+			entry.OperatingMode = incoming.OperatingMode
+		}
+		if incoming.Preset != "" {
+			entry.Preset = incoming.Preset
+		}
+		if len(incoming.AllowedModes) > 0 {
+			entry.AllowedModes = append([]string(nil), incoming.AllowedModes...)
+		}
+		if incoming.StateSpecialFunction != "" {
+			entry.StateSpecialFunction = incoming.StateSpecialFunction
+		}
+		entry.ConfigurationAssociatedCircuitRaw = incoming.ConfigurationAssociatedCircuitRaw
+		entry.ConfigurationCircuitTypeRaw = incoming.ConfigurationCircuitTypeRaw
+		entry.StateValveStatusRaw = incoming.StateValveStatusRaw
+		entry.ConfigurationHeatingOperationMode = incoming.ConfigurationHeatingOperationMode
 	}
 	p.mu.Unlock()
 	return true
@@ -97,6 +119,41 @@ func readB524ZonesFromEbusdGrab(ctx context.Context, cfg ebusgateway.TransportCo
 		}
 	}
 	return nil, false
+}
+
+func (p *vaillantSemanticPoller) refreshDHWFromEbusdGrab(ctx context.Context) bool {
+	if p == nil {
+		return false
+	}
+	if !isEbusdTCPTransport(p.transportConfig) {
+		return false
+	}
+	var controller byte
+	p.mu.Lock()
+	controller = p.controller
+	p.mu.Unlock()
+	if controller == 0 {
+		if found, ok := findDeviceAddressByPrefix(p.reg, "BASV"); ok {
+			controller = found
+		}
+	}
+
+	candidates := ebusdScanTargetCandidates(p.transportConfig)
+	for _, candidate := range candidates {
+		lines, err := ebusdCommandLines(ctx, candidate, ebusdGrabCommand)
+		if err != nil || len(lines) == 0 {
+			continue
+		}
+		dhw, ok := parseB524DhwFromGrab(lines, controller)
+		if !ok || dhw == nil {
+			continue
+		}
+		p.mu.Lock()
+		p.dhw = dhw
+		p.mu.Unlock()
+		return true
+	}
+	return false
 }
 
 func ebusdCommandLines(ctx context.Context, cfg ebusgateway.TransportConfig, command string) ([]string, error) {
@@ -168,18 +225,33 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 		suffix  string
 	}
 	type zoneState struct {
-		snapshot     *vaillantZoneSnapshot
-		nameParts    zoneNameParts
-		hasIndex     bool
-		indexPresent bool
+		snapshot                   *vaillantZoneSnapshot
+		nameParts                  zoneNameParts
+		hasIndex                   bool
+		indexPresent               bool
+		configurationOperationMode *uint16
+		stateSpecialFunction       *uint16
+		stateValveStatus           *uint16
+		configurationCircuitRaw    *uint16
 	}
 
 	states := make(map[byte]*zoneState)
 	zones := make(map[byte]*vaillantZoneSnapshot)
+	circuitTypeByInstance := make(map[byte]*uint16)
 
 	for _, line := range lines {
-		instance, addr, payload, ok := parseB524ZoneGrabLine(line, controller)
+		group, instance, addr, payload, ok := parseB524GrabLine(line, controller)
 		if !ok {
+			continue
+		}
+		if group == vaillantGroupCircuits && addr == circuitRegType {
+			if value, ok := decodeB524Uint16(payload); ok {
+				typed := value
+				circuitTypeByInstance[instance] = &typed
+			}
+			continue
+		}
+		if group != vaillantGroupZones {
 			continue
 		}
 		state := states[instance]
@@ -212,9 +284,28 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 			parts.suffix = decodeCString(payload)
 			state.nameParts = parts
 		case zoneRegHeatingOpMode:
-			if mode, preset, ok := decodeZoneMode(payload); ok {
-				snapshot.OperatingMode = mode
-				snapshot.Preset = preset
+			if value, ok := decodeB524Uint16(payload); ok {
+				typed := value
+				state.configurationOperationMode = &typed
+				snapshot.ConfigurationHeatingOperationMode = formatUintToken(value)
+			}
+		case zoneRegSpecialFunction:
+			if value, ok := decodeB524Uint16(payload); ok {
+				typed := value
+				state.stateSpecialFunction = &typed
+				snapshot.StateSpecialFunction = formatUintToken(value)
+			}
+		case zoneRegValveStatus:
+			if value, ok := decodeB524Uint16(payload); ok {
+				typed := value
+				state.stateValveStatus = &typed
+				snapshot.StateValveStatusRaw = &typed
+			}
+		case zoneRegAssociatedCircuitRaw:
+			if value, ok := decodeB524Uint16(payload); ok {
+				typed := value
+				state.configurationCircuitRaw = &typed
+				snapshot.ConfigurationAssociatedCircuitRaw = &typed
 			}
 		case zoneRegCurrentTemp:
 			if value, ok := decodeFloat32LE(payload); ok {
@@ -226,12 +317,17 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 				v := value
 				snapshot.TargetTempC = &v
 			}
-		case zoneRegFallbackTargetTempManual:
+		case zoneRegFallbackManualTemp:
 			if snapshot.TargetTempC == nil {
 				if value, ok := decodeFloat32LE(payload); ok {
 					v := value
 					snapshot.TargetTempC = &v
 				}
+			}
+		case zoneRegCurrentHumidity:
+			if value, ok := decodeFloat32LE(payload); ok {
+				v := value
+				snapshot.HumidityPct = &v
 			}
 		}
 	}
@@ -240,6 +336,27 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 		if state == nil || state.snapshot == nil {
 			continue
 		}
+		circuitInstance := resolveCircuitInstance(state.configurationCircuitRaw, instance)
+		circuitType, hasCircuitType := circuitTypeByInstance[circuitInstance]
+		if hasCircuitType && circuitType != nil {
+			state.snapshot.ConfigurationCircuitTypeRaw = circuitType
+		}
+
+		mode, preset, allowedModes := deriveZoneModeAndPreset(state.configurationOperationMode, state.stateSpecialFunction, circuitType, hasCircuitType)
+		hvacAction := deriveZoneHvacAction(state.stateValveStatus, circuitType, hasCircuitType)
+		if mode != "" {
+			state.snapshot.OperatingMode = mode
+		}
+		if preset != "" {
+			state.snapshot.Preset = preset
+		}
+		if hvacAction != "" {
+			state.snapshot.HvacAction = hvacAction
+		}
+		if len(allowedModes) > 0 {
+			state.snapshot.AllowedModes = allowedModes
+		}
+
 		name := composeZoneName(state.nameParts.primary, state.nameParts.prefix, state.nameParts.suffix)
 		if strings.TrimSpace(name) != "" {
 			state.snapshot.Name = name
@@ -248,7 +365,8 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 			state.snapshot.OperatingMode != "" ||
 			state.snapshot.Preset != "" ||
 			state.snapshot.CurrentTempC != nil ||
-			state.snapshot.TargetTempC != nil
+			state.snapshot.TargetTempC != nil ||
+			state.snapshot.HumidityPct != nil
 		if state.hasIndex {
 			if !state.indexPresent {
 				continue
@@ -263,72 +381,129 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 	return zones
 }
 
-func parseB524ZoneGrabLine(line string, controller byte) (byte, uint16, []byte, bool) {
+func parseB524DhwFromGrab(lines []string, controller byte) (*vaillantDhwSnapshot, bool) {
+	var (
+		opModeRaw *uint16
+		sfModeRaw *uint16
+		current   *float64
+		target    *float64
+	)
+
+	for _, line := range lines {
+		group, instance, addr, payload, ok := parseB524GrabLine(line, controller)
+		if !ok || group != vaillantGroupDHW || instance != dhwInstance {
+			continue
+		}
+		switch addr {
+		case dhwRegOperationMode:
+			if value, ok := decodeB524Uint16(payload); ok {
+				typed := value
+				opModeRaw = &typed
+			}
+		case dhwRegSpecialFunction:
+			if value, ok := decodeB524Uint16(payload); ok {
+				typed := value
+				sfModeRaw = &typed
+			}
+		case dhwRegCurrentTemp:
+			if value, ok := decodeFloat32LE(payload); ok {
+				typed := value
+				current = &typed
+			}
+		case dhwRegTargetTemp:
+			if value, ok := decodeFloat32LE(payload); ok {
+				typed := value
+				target = &typed
+			}
+		}
+	}
+
+	operatingMode, preset := deriveDhwModeAndPreset(opModeRaw, sfModeRaw)
+	if operatingMode == "" && preset == "" && current == nil && target == nil {
+		return nil, false
+	}
+
+	dhw := &vaillantDhwSnapshot{
+		OperatingMode: operatingMode,
+		Preset:        preset,
+		CurrentTempC:  current,
+		TargetTempC:   target,
+	}
+	if opModeRaw != nil {
+		dhw.ConfigurationDHWOperationMode = formatUintToken(*opModeRaw)
+	}
+	if sfModeRaw != nil {
+		dhw.StateSpecialFunction = formatUintToken(*sfModeRaw)
+	}
+	return dhw, true
+}
+
+func parseB524GrabLine(line string, controller byte) (byte, byte, uint16, []byte, bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return 0, 0, nil, false
+		return 0, 0, 0, nil, false
 	}
 
 	slash := strings.Index(line, "/")
 	if slash <= 0 {
-		return 0, 0, nil, false
+		return 0, 0, 0, nil, false
 	}
 
 	reqText := strings.TrimSpace(line[:slash])
 	reqFields := strings.Fields(reqText)
 	if len(reqFields) == 0 {
-		return 0, 0, nil, false
+		return 0, 0, 0, nil, false
 	}
 	reqBytes, ok := decodeHexField(reqFields[0])
 	if !ok || len(reqBytes) < 11 {
-		return 0, 0, nil, false
+		return 0, 0, 0, nil, false
 	}
 	if reqBytes[2] != vaillantExtRegisterPrimary || reqBytes[3] != vaillantExtRegisterSecondary {
-		return 0, 0, nil, false
+		return 0, 0, 0, nil, false
 	}
 	if reqBytes[4] != vaillantB524OpcodeRead ||
 		reqBytes[5] != vaillantB524OpcodeLocal ||
-		reqBytes[6] != vaillantB524OpRead ||
-		reqBytes[7] != vaillantGroupZones {
-		return 0, 0, nil, false
+		reqBytes[6] != vaillantB524OpRead {
+		return 0, 0, 0, nil, false
 	}
 
 	target := reqBytes[1]
 	if controller != 0 && target != controller {
-		return 0, 0, nil, false
+		return 0, 0, 0, nil, false
 	}
 
+	group := reqBytes[7]
 	instance := reqBytes[8]
 	addr := uint16(reqBytes[9]) | uint16(reqBytes[10])<<8
 
 	respPart := strings.TrimSpace(line[slash+1:])
 	if respPart == "" {
-		return 0, 0, nil, false
+		return 0, 0, 0, nil, false
 	}
 	if equal := strings.Index(respPart, "="); equal >= 0 {
 		respPart = strings.TrimSpace(respPart[:equal])
 	}
 	respFields := strings.Fields(respPart)
 	if len(respFields) == 0 {
-		return 0, 0, nil, false
+		return 0, 0, 0, nil, false
 	}
 	if strings.HasPrefix(strings.ToLower(respFields[0]), "err") {
-		return 0, 0, nil, false
+		return 0, 0, 0, nil, false
 	}
 
 	respBytes, ok := decodeHexField(respFields[0])
 	if !ok || len(respBytes) == 0 {
-		return 0, 0, nil, false
+		return 0, 0, 0, nil, false
 	}
 	if int(respBytes[0]) == len(respBytes)-1 {
 		respBytes = respBytes[1:]
 	}
 
-	payload, ok := parseB524ReadPayload(respBytes, vaillantB524OpcodeLocal, vaillantGroupZones, instance, addr)
+	payload, ok := parseB524ReadPayload(respBytes, vaillantB524OpcodeLocal, group, instance, addr)
 	if !ok {
-		return 0, 0, nil, false
+		return 0, 0, 0, nil, false
 	}
-	return instance, addr, payload, true
+	return group, instance, addr, payload, true
 }
 
 func decodeHexField(value string) ([]byte, bool) {
@@ -360,23 +535,6 @@ func decodeCString(raw []byte) string {
 		}
 	}
 	return strings.TrimSpace(string(trimmed))
-}
-
-func decodeZoneMode(raw []byte) (string, string, bool) {
-	modeValue, ok := decodeB524Uint16(raw)
-	if !ok {
-		return "", "", false
-	}
-	switch modeValue {
-	case 0:
-		return "off", "off", true
-	case 1:
-		return "auto", "auto", true
-	case 2:
-		return "heating", "manual", true
-	default:
-		return "", "", false
-	}
 }
 
 func decodeFloat32LE(raw []byte) (float64, bool) {

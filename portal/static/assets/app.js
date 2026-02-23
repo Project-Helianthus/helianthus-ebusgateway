@@ -14,6 +14,15 @@ function setTheme(theme) {
   localStorage.setItem(THEME_KEY, theme);
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 class PortalShell extends HTMLElement {
   connectedCallback() {
     this.render();
@@ -24,10 +33,16 @@ class PortalShell extends HTMLElement {
 
   bindEvents() {
     const toggle = this.querySelector('[data-role="theme-toggle"]');
+    const search = this.querySelector('[data-role="search-input"]');
     if (toggle) {
       toggle.addEventListener("click", () => {
         const current = loadTheme();
         setTheme(current === "dark" ? "light" : "dark");
+      });
+    }
+    if (search) {
+      search.addEventListener("input", () => {
+        this.scheduleSearch(search.value);
       });
     }
   }
@@ -38,6 +53,8 @@ class PortalShell extends HTMLElement {
     const listEl = this.querySelector('[data-role="registry-list"]');
     const semanticEl = this.querySelector('[data-role="semantic-list"]');
     const projectionEl = this.querySelector('[data-role="projection-list"]');
+    const searchInput = this.querySelector('[data-role="search-input"]');
+    const searchList = this.querySelector('[data-role="search-list"]');
     try {
       const [healthRes, bootstrapRes] = await Promise.all([
         fetch("api/v1/health"),
@@ -51,7 +68,11 @@ class PortalShell extends HTMLElement {
       if (metaEl) {
         const caps = bootstrap.capabilities || {};
         metaEl.textContent =
-          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, stream=${caps.stream}`;
+          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}`;
+      }
+      if (searchInput) {
+        searchInput.disabled = !bootstrap.capabilities?.search;
+        searchInput.title = bootstrap.capabilities?.search ? "" : "Search is unavailable (no data providers)";
       }
       if (bootstrap.capabilities?.registry && listEl) {
         await this.loadRegistryPreview(listEl);
@@ -62,6 +83,11 @@ class PortalShell extends HTMLElement {
       if (bootstrap.capabilities?.projection && projectionEl) {
         await this.loadProjectionPreview(projectionEl);
       }
+      if (searchList) {
+        searchList.innerHTML = bootstrap.capabilities?.search
+          ? "<li>Type at least 2 characters to search across registry, semantic and projection layers.</li>"
+          : "<li>Search unavailable: no readable layers enabled.</li>";
+      }
     } catch (err) {
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
@@ -70,6 +96,47 @@ class PortalShell extends HTMLElement {
         metaEl.textContent = "Bootstrap fetch failed";
       }
       console.error("portal bootstrap failed", err);
+    }
+  }
+
+  scheduleSearch(rawQuery) {
+    if (this.searchTimer) {
+      clearTimeout(this.searchTimer);
+    }
+    this.searchTimer = setTimeout(() => {
+      this.runSearch(rawQuery);
+    }, 220);
+  }
+
+  async runSearch(rawQuery) {
+    const listEl = this.querySelector('[data-role="search-list"]');
+    if (!listEl) {
+      return;
+    }
+    const query = String(rawQuery || "").trim();
+    if (query.length < 2) {
+      listEl.innerHTML = "<li>Type at least 2 characters.</li>";
+      return;
+    }
+    try {
+      const response = await fetch(`api/v1/search?q=${encodeURIComponent(query)}&limit=20`);
+      const payload = await response.json();
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (items.length === 0) {
+        listEl.innerHTML = "<li>No matches.</li>";
+        return;
+      }
+      listEl.innerHTML = items
+        .map((item) => {
+          const layer = escapeHtml(item.layer || "unknown");
+          const title = escapeHtml(item.title || item.id || "item");
+          const subtitle = item.subtitle ? ` <span class="muted-inline">${escapeHtml(item.subtitle)}</span>` : "";
+          return `<li><span class="pill">${layer}</span> <strong>${title}</strong>${subtitle}</li>`;
+        })
+        .join("");
+    } catch (err) {
+      listEl.innerHTML = "<li>Search request failed.</li>";
+      console.error("search failed", err);
     }
   }
 
@@ -148,7 +215,7 @@ class PortalShell extends HTMLElement {
           <select class="select" aria-label="Controller selector">
             <option>Controller (M1)</option>
           </select>
-          <input class="search" type="search" disabled title="Available in M1" aria-label="Search" placeholder="Search (M1)" />
+          <input class="search" type="search" data-role="search-input" aria-label="Search" placeholder="Search across layers" />
           <button class="button" data-role="theme-toggle" aria-label="Toggle theme">Theme</button>
         </header>
         <div class="content">
@@ -188,6 +255,12 @@ class PortalShell extends HTMLElement {
               <h2>Projection Preview</h2>
               <ul data-role="projection-list">
                 <li>Loading projection summary...</li>
+              </ul>
+            </section>
+            <section class="registry-preview">
+              <h2>Search Results</h2>
+              <ul data-role="search-list">
+                <li>Loading search capability...</li>
               </ul>
             </section>
             <div class="meta" data-role="meta">Waiting for bootstrap...</div>

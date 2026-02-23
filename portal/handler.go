@@ -152,6 +152,15 @@ type ProjectionEdge struct {
 	To   string `json:"to"`
 }
 
+type SearchResult struct {
+	Layer    string `json:"layer"`
+	Kind     string `json:"kind"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle,omitempty"`
+	Address  *byte  `json:"address,omitempty"`
+}
+
 func NewHandler(opts Options) http.Handler {
 	if opts.GraphQLPath == "" {
 		opts.GraphQLPath = "/graphql"
@@ -242,6 +251,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"registry":   h.opts.ListRegistry != nil,
 				"semantic":   h.opts.ListSemantic != nil,
 				"projection": h.opts.ListProjections != nil && h.opts.GetProjection != nil,
+				"search":     h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil,
 				"stream":     false,
 			},
 			"endpoints": map[string]string{
@@ -249,6 +259,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"snapshot":      h.opts.SnapshotPath,
 				"subscriptions": h.opts.SubscriptionPath,
 				"mcp":           h.opts.MCPPath,
+				"search":        "/portal/api/v1/search",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -264,6 +275,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleProjectionDevices(w, r)
 	case "projection/graph":
 		h.handleProjectionGraph(w, r)
+	case "search":
+		h.handleSearch(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -306,6 +319,8 @@ func classifyRoute(path string) string {
 		return "api.projection.devices"
 	case strings.HasPrefix(path, "/api/v1/projection/graph"):
 		return "api.projection.graph"
+	case strings.HasPrefix(path, "/api/v1/search"):
+		return "api.search"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):
@@ -533,4 +548,161 @@ func matchesProjectionFilter(item ProjectionDevice, needle string) bool {
 		}
 	}
 	return false
+}
+
+func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
+	needle := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("q")))
+	limit := parseQueryLimit(r.URL.Query().Get("limit"), 25)
+	if needle == "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"query": needle,
+			"count": 0,
+			"items": []SearchResult{},
+		})
+		return
+	}
+
+	results := make([]SearchResult, 0, limit)
+	appendResult := func(item SearchResult) {
+		if limit > 0 && len(results) >= limit {
+			return
+		}
+		results = append(results, item)
+	}
+
+	if h.opts.ListRegistry != nil {
+		devices := h.opts.ListRegistry()
+		slices.SortFunc(devices, func(a, b RegistryDevice) int {
+			return cmp.Compare(int(a.Address), int(b.Address))
+		})
+		for _, device := range devices {
+			label := strings.TrimSpace(strings.Join([]string{device.Manufacturer, device.DeviceID}, " "))
+			if strings.Contains(strings.ToLower(strings.Join([]string{
+				device.Manufacturer,
+				device.DeviceID,
+				device.SerialNumber,
+				device.Software,
+				device.Hardware,
+			}, " ")), needle) {
+				address := device.Address
+				appendResult(SearchResult{
+					Layer:    "registry",
+					Kind:     "device",
+					ID:       fmt.Sprintf("reg:%02x", device.Address),
+					Title:    strings.TrimSpace(label),
+					Subtitle: fmt.Sprintf("addr=0x%02x", device.Address),
+					Address:  &address,
+				})
+			}
+			for _, plane := range device.Planes {
+				if strings.Contains(strings.ToLower(plane.Name), needle) {
+					address := device.Address
+					appendResult(SearchResult{
+						Layer:    "registry",
+						Kind:     "plane",
+						ID:       fmt.Sprintf("reg:%02x:%s", device.Address, strings.ToLower(plane.Name)),
+						Title:    fmt.Sprintf("%s plane", plane.Name),
+						Subtitle: fmt.Sprintf("addr=0x%02x", device.Address),
+						Address:  &address,
+					})
+				}
+				for _, method := range plane.Methods {
+					if strings.Contains(strings.ToLower(method), needle) {
+						address := device.Address
+						appendResult(SearchResult{
+							Layer:    "registry",
+							Kind:     "method",
+							ID:       fmt.Sprintf("reg:%02x:%s:%s", device.Address, strings.ToLower(plane.Name), strings.ToLower(method)),
+							Title:    method,
+							Subtitle: fmt.Sprintf("%s plane addr=0x%02x", plane.Name, device.Address),
+							Address:  &address,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	if h.opts.ListSemantic != nil {
+		snapshot := h.opts.ListSemantic()
+		for _, zone := range snapshot.Zones {
+			if strings.Contains(strings.ToLower(strings.Join([]string{
+				zone.ID,
+				zone.Name,
+				zone.OperatingMode,
+				zone.Preset,
+			}, " ")), needle) {
+				appendResult(SearchResult{
+					Layer:    "semantic",
+					Kind:     "zone",
+					ID:       zone.ID,
+					Title:    zone.Name,
+					Subtitle: strings.TrimSpace(strings.Join([]string{zone.OperatingMode, zone.Preset}, " / ")),
+				})
+			}
+		}
+		if snapshot.DHW != nil && strings.Contains(strings.ToLower(strings.Join([]string{
+			"dhw",
+			snapshot.DHW.OperatingMode,
+			snapshot.DHW.Preset,
+		}, " ")), needle) {
+			appendResult(SearchResult{
+				Layer:    "semantic",
+				Kind:     "dhw",
+				ID:       "dhw",
+				Title:    "Domestic Hot Water",
+				Subtitle: strings.TrimSpace(strings.Join([]string{snapshot.DHW.OperatingMode, snapshot.DHW.Preset}, " / ")),
+			})
+		}
+	}
+
+	if h.opts.ListProjections != nil {
+		items := h.opts.ListProjections()
+		slices.SortFunc(items, func(a, b ProjectionDevice) int {
+			return cmp.Compare(int(a.Address), int(b.Address))
+		})
+		for _, item := range items {
+			if strings.Contains(strings.ToLower(strings.Join([]string{
+				item.DeviceID,
+				item.DisplayName,
+				item.Manufacturer,
+			}, " ")), needle) {
+				address := item.Address
+				title := strings.TrimSpace(item.DisplayName)
+				if title == "" {
+					title = strings.TrimSpace(item.DeviceID)
+				}
+				if title == "" {
+					title = fmt.Sprintf("Projection Device 0x%02x", item.Address)
+				}
+				appendResult(SearchResult{
+					Layer:    "projection",
+					Kind:     "device",
+					ID:       fmt.Sprintf("proj:%02x", item.Address),
+					Title:    title,
+					Subtitle: fmt.Sprintf("addr=0x%02x", item.Address),
+					Address:  &address,
+				})
+			}
+			for _, projection := range item.Projections {
+				if strings.Contains(strings.ToLower(projection.Plane), needle) {
+					address := item.Address
+					appendResult(SearchResult{
+						Layer:    "projection",
+						Kind:     "plane",
+						ID:       fmt.Sprintf("proj:%02x:%s", item.Address, strings.ToLower(projection.Plane)),
+						Title:    projection.Plane,
+						Subtitle: fmt.Sprintf("addr=0x%02x nodes=%d edges=%d", item.Address, projection.NodeCount, projection.EdgeCount),
+						Address:  &address,
+					})
+				}
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"query": needle,
+		"count": len(results),
+		"items": results,
+	})
 }

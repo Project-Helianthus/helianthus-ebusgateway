@@ -194,6 +194,21 @@ body {
   color: var(--muted);
 }
 
+.pill {
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.08rem 0.45rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.muted-inline {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 @media (max-width: 900px) {
   .topbar {
     grid-template-columns: 1fr;

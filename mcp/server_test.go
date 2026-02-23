@@ -223,14 +223,16 @@ func TestServer_InitializeAndTools(t *testing.T) {
 		t.Fatalf("tools/list result type = %T; want map", res.Result)
 	}
 	tools, ok := resultMap["tools"].([]any)
-	if !ok || len(tools) < 11 {
-		t.Fatalf("tools = %#v; want at least 11 tools", resultMap["tools"])
+	if !ok || len(tools) < 13 {
+		t.Fatalf("tools = %#v; want at least 13 tools", resultMap["tools"])
 	}
 	for _, name := range []string{
 		toolRuntimeStatusGetName,
 		toolSemanticZonesGetName,
 		toolSemanticDHWGetName,
 		toolSemanticEnergyGetName,
+		toolSnapshotCaptureName,
+		toolSnapshotDropName,
 		toolDevicesV1Name,
 		toolDeviceGetV1Name,
 		toolPlanesListV1Name,
@@ -532,6 +534,154 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			t.Fatalf("energy gas.dhw.today = %v; want 1.25", dhw["today"])
 		}
 	})
+}
+
+func TestServer_SnapshotConsistencyMode(t *testing.T) {
+	plane := &testPlane{
+		name: "heating",
+		methods: []registry.Method{
+			testMethod{
+				name:     "get_status",
+				readOnly: true,
+				template: testTemplate{primary: 0xB5, secondary: 0x04},
+			},
+		},
+	}
+	reg := &testRegistry{
+		entries: map[byte]registry.DeviceEntry{
+			0x08: testEntry{
+				info: registry.DeviceInfo{
+					Address:         0x08,
+					Manufacturer:    "vaillant",
+					DeviceID:        "device-a",
+					SoftwareVersion: "1.0",
+					HardwareVersion: "7603",
+				},
+				planes: []registry.Plane{plane},
+			},
+		},
+		order: []byte{0x08},
+	}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+	server.SetStatusProvider(testStatusProvider{
+		daemon: ServiceStatus{Status: "running"},
+		adapter: ServiceStatus{
+			Status: "unknown",
+		},
+	})
+
+	capture := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+	})
+	captureEnvelope := envelopeFromResult(t, capture)
+	captureData, ok := captureEnvelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("capture data type = %T; want map", captureEnvelope["data"])
+	}
+	snapshotID, _ := captureData["snapshot_id"].(string)
+	if snapshotID == "" {
+		t.Fatal("capture snapshot_id empty")
+	}
+
+	server.SetStatusProvider(testStatusProvider{
+		daemon: ServiceStatus{Status: "changed"},
+		adapter: ServiceStatus{
+			Status: "changed",
+		},
+	})
+	reg.entries[0x08] = testEntry{
+		info: registry.DeviceInfo{
+			Address:         0x08,
+			Manufacturer:    "vaillant",
+			DeviceID:        "device-b",
+			SoftwareVersion: "2.0",
+			HardwareVersion: "7603",
+		},
+		planes: []registry.Plane{plane},
+	}
+
+	liveRuntime := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.runtime.status.get","arguments":{}}`),
+	}))
+	liveRuntimeData, _ := liveRuntime["data"].(map[string]any)
+	liveDaemon, _ := liveRuntimeData["daemon_status"].(map[string]any)
+	if status, _ := liveDaemon["status"].(string); status != "changed" {
+		t.Fatalf("live daemon status = %q; want changed", status)
+	}
+
+	snapshotRuntime := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      3,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.runtime.status.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+	}))
+	snapshotRuntimeData, _ := snapshotRuntime["data"].(map[string]any)
+	snapshotDaemon, _ := snapshotRuntimeData["daemon_status"].(map[string]any)
+	if status, _ := snapshotDaemon["status"].(string); status != "running" {
+		t.Fatalf("snapshot daemon status = %q; want running", status)
+	}
+	snapshotMeta, _ := snapshotRuntime["meta"].(map[string]any)
+	consistencyMeta, _ := snapshotMeta["consistency"].(map[string]any)
+	if mode, _ := consistencyMeta["mode"].(string); mode != "SNAPSHOT" {
+		t.Fatalf("snapshot consistency mode = %q; want SNAPSHOT", mode)
+	}
+
+	firstSnapshotDevices := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      4,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+	}))
+	secondSnapshotDevices := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      5,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+	}))
+	firstMeta, _ := firstSnapshotDevices["meta"].(map[string]any)
+	secondMeta, _ := secondSnapshotDevices["meta"].(map[string]any)
+	firstHash, _ := firstMeta["data_hash"].(string)
+	secondHash, _ := secondMeta["data_hash"].(string)
+	if firstHash == "" || secondHash == "" || firstHash != secondHash {
+		t.Fatalf("snapshot data_hash mismatch: first=%q second=%q", firstHash, secondHash)
+	}
+	firstData, _ := firstSnapshotDevices["data"].([]any)
+	if len(firstData) != 1 {
+		t.Fatalf("snapshot devices len = %d; want 1", len(firstData))
+	}
+	firstDevice, _ := firstData[0].(map[string]any)
+	if deviceID, _ := firstDevice["device_id"].(string); deviceID != "device-a" {
+		t.Fatalf("snapshot device_id = %q; want device-a", deviceID)
+	}
+
+	drop := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      6,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.drop","arguments":{"snapshot_id":"` + snapshotID + `"}}`),
+	})
+	dropEnvelope := envelopeFromResult(t, drop)
+	dropData, _ := dropEnvelope["data"].(map[string]any)
+	if dropped, _ := dropData["dropped"].(bool); !dropped {
+		t.Fatalf("snapshot drop returned dropped=%v; want true", dropData["dropped"])
+	}
+
+	missing := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      7,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+	})
+	assertToolErrorCode(t, missing, "NOT_FOUND")
 }
 
 func TestServer_RegistryReadToolsOrderingAndMetadata(t *testing.T) {
@@ -1001,6 +1151,7 @@ func TestClassifyToolError_KnownMappings(t *testing.T) {
 		{name: "retry exhausted", err: ebuserrors.ErrRetryExhausted, code: "BUS_UNAVAILABLE", retriable: true, sourceLayer: "ebusgo"},
 		{name: "deadline exceeded", err: context.DeadlineExceeded, code: "TIMEOUT", retriable: true, sourceLayer: "gateway"},
 		{name: "idempotency conflict", err: errInvokeIdempotencyConflict, code: "CONFLICT", retriable: false, sourceLayer: "gateway"},
+		{name: "snapshot not found", err: errSnapshotNotFound, code: "NOT_FOUND", retriable: false, sourceLayer: "gateway"},
 	}
 
 	for _, tc := range cases {

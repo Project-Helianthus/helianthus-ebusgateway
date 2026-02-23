@@ -65,6 +65,7 @@ type handler struct {
 	files     http.Handler
 	timeline  *timelineBuffer
 	snapshots *snapshotStore
+	sessions  *sessionStore
 }
 
 type RegistryDevice struct {
@@ -220,6 +221,30 @@ type snapshotStore struct {
 	items        []SnapshotEnvelope
 }
 
+type InvestigationSession struct {
+	ID        string       `json:"id"`
+	Name      string       `json:"name"`
+	CreatedAt string       `json:"created_at"`
+	UpdatedAt string       `json:"updated_at"`
+	State     SessionState `json:"state"`
+}
+
+type SessionState struct {
+	SearchQuery           string `json:"search_query,omitempty"`
+	TimelineCorrelation   string `json:"timeline_correlation,omitempty"`
+	ProvenanceCorrelation string `json:"provenance_correlation,omitempty"`
+	SnapshotFromID        string `json:"snapshot_from_id,omitempty"`
+	SnapshotToID          string `json:"snapshot_to_id,omitempty"`
+	SelectedLayer         string `json:"selected_layer,omitempty"`
+}
+
+type sessionStore struct {
+	mu          sync.Mutex
+	maxSessions int
+	seq         uint64
+	items       []InvestigationSession
+}
+
 func NewHandler(opts Options) http.Handler {
 	if opts.GraphQLPath == "" {
 		opts.GraphQLPath = "/graphql"
@@ -244,6 +269,7 @@ func NewHandler(opts Options) http.Handler {
 		files:     http.FileServer(http.FS(staticFS)),
 		timeline:  newTimelineBuffer(1000),
 		snapshots: newSnapshotStore(50),
+		sessions:  newSessionStore(100),
 	}
 }
 
@@ -458,6 +484,86 @@ func cloneMap(payload map[string]any) map[string]any {
 	return cloned
 }
 
+func newSessionStore(maxSessions int) *sessionStore {
+	if maxSessions <= 0 {
+		maxSessions = 100
+	}
+	return &sessionStore{
+		maxSessions: maxSessions,
+		items:       make([]InvestigationSession, 0, maxSessions),
+	}
+}
+
+func (ss *sessionStore) save(name string, state SessionState) InvestigationSession {
+	if ss == nil {
+		return InvestigationSession{}
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" {
+		trimmedName = "investigation-session"
+	}
+
+	ss.seq++
+	session := InvestigationSession{
+		ID:        fmt.Sprintf("sess-%d", ss.seq),
+		Name:      trimmedName,
+		CreatedAt: now,
+		UpdatedAt: now,
+		State: SessionState{
+			SearchQuery:           strings.TrimSpace(state.SearchQuery),
+			TimelineCorrelation:   strings.TrimSpace(state.TimelineCorrelation),
+			ProvenanceCorrelation: strings.TrimSpace(state.ProvenanceCorrelation),
+			SnapshotFromID:        strings.TrimSpace(state.SnapshotFromID),
+			SnapshotToID:          strings.TrimSpace(state.SnapshotToID),
+			SelectedLayer:         strings.TrimSpace(state.SelectedLayer),
+		},
+	}
+
+	if len(ss.items) >= ss.maxSessions {
+		copy(ss.items, ss.items[1:])
+		ss.items[len(ss.items)-1] = session
+	} else {
+		ss.items = append(ss.items, session)
+	}
+	return session
+}
+
+func (ss *sessionStore) list(limit int) []InvestigationSession {
+	if ss == nil {
+		return []InvestigationSession{}
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	out := make([]InvestigationSession, 0, limit)
+	for i := len(ss.items) - 1; i >= 0; i-- {
+		item := ss.items[i]
+		out = append(out, item)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func (ss *sessionStore) get(id string) (InvestigationSession, bool) {
+	if ss == nil {
+		return InvestigationSession{}, false
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	for i := len(ss.items) - 1; i >= 0; i-- {
+		if ss.items[i].ID == id {
+			return ss.items[i], true
+		}
+	}
+	return InvestigationSession{}, false
+}
+
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r == nil {
 		http.Error(w, "request missing", http.StatusBadRequest)
@@ -530,6 +636,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"provenance":    streamEnabled,
 				"snapshots":     streamEnabled,
 				"snapshot_diff": streamEnabled,
+				"sessions":      true,
 			},
 			"endpoints": map[string]string{
 				"graphql":       h.opts.GraphQLPath,
@@ -544,6 +651,9 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"capture":       "/portal/api/v1/snapshots/capture",
 				"retention":     "/portal/api/v1/snapshots/retention",
 				"snapshot_diff": "/portal/api/v1/snapshots/diff",
+				"sessions":      "/portal/api/v1/sessions",
+				"session_save":  "/portal/api/v1/sessions/save",
+				"session_load":  "/portal/api/v1/sessions/load",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -575,6 +685,12 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleSnapshotsRetention(w, r)
 	case "snapshots/diff":
 		h.handleSnapshotsDiff(w, r)
+	case "sessions":
+		h.handleSessionsList(w, r)
+	case "sessions/save":
+		h.handleSessionsSave(w, r)
+	case "sessions/load":
+		h.handleSessionsLoad(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -639,6 +755,12 @@ func classifyRoute(path string) string {
 		return "api.snapshots.diff"
 	case strings.HasPrefix(path, "/api/v1/snapshots"):
 		return "api.snapshots.list"
+	case strings.HasPrefix(path, "/api/v1/sessions/save"):
+		return "api.sessions.save"
+	case strings.HasPrefix(path, "/api/v1/sessions/load"):
+		return "api.sessions.load"
+	case strings.HasPrefix(path, "/api/v1/sessions"):
+		return "api.sessions.list"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):
@@ -1195,6 +1317,61 @@ func (h *handler) handleSnapshotsDiff(w http.ResponseWriter, r *http.Request) {
 		"change_count": totalChanges,
 		"count":        len(diffEntries),
 		"items":        diffEntries,
+	})
+}
+
+func (h *handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"count": 0,
+			"items": []InvestigationSession{},
+		})
+		return
+	}
+	limit := parseQueryLimit(r.URL.Query().Get("limit"), 30)
+	items := h.sessions.list(limit)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"count": len(items),
+		"items": items,
+	})
+}
+
+func (h *handler) handleSessionsSave(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		http.Error(w, "session store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	state := SessionState{
+		SearchQuery:           r.URL.Query().Get("search_query"),
+		TimelineCorrelation:   r.URL.Query().Get("timeline_correlation"),
+		ProvenanceCorrelation: r.URL.Query().Get("provenance_correlation"),
+		SnapshotFromID:        r.URL.Query().Get("snapshot_from_id"),
+		SnapshotToID:          r.URL.Query().Get("snapshot_to_id"),
+		SelectedLayer:         r.URL.Query().Get("selected_layer"),
+	}
+	saved := h.sessions.save(r.URL.Query().Get("name"), state)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session": saved,
+	})
+}
+
+func (h *handler) handleSessionsLoad(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		http.Error(w, "session store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	session, ok := h.sessions.get(id)
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session": session,
 	})
 }
 

@@ -163,6 +163,15 @@ func TestBootstrapEndpoint(t *testing.T) {
 	if endpoints["snapshot_diff"] != "/portal/api/v1/snapshots/diff" {
 		t.Fatalf("snapshot_diff endpoint=%v; want /portal/api/v1/snapshots/diff", endpoints["snapshot_diff"])
 	}
+	if endpoints["sessions"] != "/portal/api/v1/sessions" {
+		t.Fatalf("sessions endpoint=%v; want /portal/api/v1/sessions", endpoints["sessions"])
+	}
+	if endpoints["session_save"] != "/portal/api/v1/sessions/save" {
+		t.Fatalf("session_save endpoint=%v; want /portal/api/v1/sessions/save", endpoints["session_save"])
+	}
+	if endpoints["session_load"] != "/portal/api/v1/sessions/load" {
+		t.Fatalf("session_load endpoint=%v; want /portal/api/v1/sessions/load", endpoints["session_load"])
+	}
 	capabilities := payload["capabilities"].(map[string]any)
 	if capabilities["registry"] != true {
 		t.Fatalf("capabilities.registry=%v; want true", capabilities["registry"])
@@ -190,6 +199,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	}
 	if capabilities["snapshot_diff"] != true {
 		t.Fatalf("capabilities.snapshot_diff=%v; want true", capabilities["snapshot_diff"])
+	}
+	if capabilities["sessions"] != true {
+		t.Fatalf("capabilities.sessions=%v; want true", capabilities["sessions"])
 	}
 }
 
@@ -835,5 +847,67 @@ func TestSnapshotsDiff_ValidationErrors(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d; want %d for partial id params", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestSessionsSaveLoadAndList(t *testing.T) {
+	h := NewHandler(Options{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/save?name=investigation-a&search_query=service&timeline_correlation=reg-1&snapshot_from_id=snap-1&snapshot_to_id=snap-2", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var savePayload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &savePayload); err != nil {
+		t.Fatalf("save unmarshal: %v", err)
+	}
+	session := savePayload["session"].(map[string]any)
+	id := session["id"].(string)
+	if id == "" {
+		t.Fatalf("saved session id missing")
+	}
+	if session["name"] != "investigation-a" {
+		t.Fatalf("session.name=%v; want investigation-a", session["name"])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/sessions?limit=10", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var listPayload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("list unmarshal: %v", err)
+	}
+	if int(listPayload["count"].(float64)) < 1 {
+		t.Fatalf("list count=%v; want >=1", listPayload["count"])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/sessions/load?id="+id, nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("load status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var loadPayload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &loadPayload); err != nil {
+		t.Fatalf("load unmarshal: %v", err)
+	}
+	loaded := loadPayload["session"].(map[string]any)
+	if loaded["id"] != id {
+		t.Fatalf("loaded id=%v; want %s", loaded["id"], id)
+	}
+}
+
+func TestSessionsLoadValidation(t *testing.T) {
+	h := NewHandler(Options{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/load", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusBadRequest)
 	}
 }

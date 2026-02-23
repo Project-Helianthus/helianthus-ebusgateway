@@ -52,6 +52,10 @@ class PortalShell extends HTMLElement {
       clearTimeout(this.provenanceTimer);
       this.provenanceTimer = undefined;
     }
+    if (this.snapshotInterval) {
+      clearInterval(this.snapshotInterval);
+      this.snapshotInterval = undefined;
+    }
   }
 
   bindEvents() {
@@ -59,6 +63,8 @@ class PortalShell extends HTMLElement {
     const search = this.querySelector('[data-role="search-input"]');
     const correlation = this.querySelector('[data-role="timeline-correlation"]');
     const provenanceCorrelation = this.querySelector('[data-role="provenance-correlation"]');
+    const captureButton = this.querySelector('[data-role="snapshot-capture"]');
+    const retentionButton = this.querySelector('[data-role="snapshot-retention-apply"]');
     if (toggle) {
       toggle.addEventListener("click", () => {
         const current = loadTheme();
@@ -80,6 +86,16 @@ class PortalShell extends HTMLElement {
         this.scheduleProvenanceRefresh();
       });
     }
+    if (captureButton) {
+      captureButton.addEventListener("click", () => {
+        this.captureSnapshot();
+      });
+    }
+    if (retentionButton) {
+      retentionButton.addEventListener("click", () => {
+        this.updateSnapshotRetention();
+      });
+    }
   }
 
   async loadStatus() {
@@ -92,6 +108,8 @@ class PortalShell extends HTMLElement {
     const searchList = this.querySelector('[data-role="search-list"]');
     const timelineList = this.querySelector('[data-role="timeline-list"]');
     const provenanceList = this.querySelector('[data-role="provenance-list"]');
+    const snapshotsList = this.querySelector('[data-role="snapshots-list"]');
+    const retentionInput = this.querySelector('[data-role="snapshot-retention"]');
     try {
       const [healthRes, bootstrapRes] = await Promise.all([
         fetch("api/v1/health"),
@@ -105,7 +123,7 @@ class PortalShell extends HTMLElement {
       if (metaEl) {
         const caps = bootstrap.capabilities || {};
         metaEl.textContent =
-          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}, provenance=${caps.provenance}`;
+          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}, provenance=${caps.provenance}, snapshots=${caps.snapshots}`;
       }
       if (searchInput) {
         searchInput.disabled = !bootstrap.capabilities?.search;
@@ -156,6 +174,24 @@ class PortalShell extends HTMLElement {
           this.refreshProvenance();
         }, 4000);
       }
+      if (snapshotsList) {
+        snapshotsList.innerHTML = bootstrap.capabilities?.snapshots
+          ? "<li>Loading snapshot store...</li>"
+          : "<li>Snapshots unavailable: stream capability disabled.</li>";
+      }
+      if (bootstrap.capabilities?.snapshots) {
+        await this.refreshSnapshots();
+        const retention = await this.fetchSnapshotRetention();
+        if (retentionInput && retention > 0) {
+          retentionInput.value = String(retention);
+        }
+        if (this.snapshotInterval) {
+          clearInterval(this.snapshotInterval);
+        }
+        this.snapshotInterval = setInterval(() => {
+          this.refreshSnapshots();
+        }, 5000);
+      }
     } catch (err) {
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
@@ -186,6 +222,7 @@ class PortalShell extends HTMLElement {
         streamStatus.textContent = `Stream live: layer=${layer} at=${at}`;
         this.scheduleTimelineRefresh();
         this.scheduleProvenanceRefresh();
+        this.refreshSnapshots();
       } catch (err) {
         streamStatus.textContent = "Stream payload parse error";
       }
@@ -281,6 +318,87 @@ class PortalShell extends HTMLElement {
     } catch (err) {
       provenanceList.innerHTML = "<li>Provenance query failed.</li>";
       console.error("provenance query failed", err);
+    }
+  }
+
+  async fetchSnapshotRetention() {
+    try {
+      const response = await fetch("api/v1/snapshots/retention");
+      const payload = await response.json();
+      return Number(payload.max_snapshots || 0);
+    } catch (err) {
+      return 0;
+    }
+  }
+
+  async refreshSnapshots() {
+    const list = this.querySelector('[data-role="snapshots-list"]');
+    if (!list) {
+      return;
+    }
+    try {
+      const response = await fetch("api/v1/snapshots?limit=6");
+      const payload = await response.json();
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (items.length === 0) {
+        list.innerHTML = "<li>No snapshots captured yet.</li>";
+        return;
+      }
+      list.innerHTML = items
+        .map((item) => {
+          const id = escapeHtml(item.id || "n/a");
+          const label = escapeHtml(item.label || "snapshot");
+          const at = escapeHtml(item.captured_at || "n/a");
+          return `<li><span class="pill">snap</span> <strong>${id}</strong> <span class="muted-inline">${label} ${at}</span></li>`;
+        })
+        .join("");
+    } catch (err) {
+      list.innerHTML = "<li>Snapshot list query failed.</li>";
+      console.error("snapshot query failed", err);
+    }
+  }
+
+  async captureSnapshot() {
+    const labelInput = this.querySelector('[data-role="snapshot-label"]');
+    const streamStatus = this.querySelector('[data-role="stream-status"]');
+    const label = labelInput ? String(labelInput.value || "").trim() : "";
+    try {
+      const query = new URLSearchParams();
+      if (label.length > 0) {
+        query.set("label", label);
+      }
+      const response = await fetch(`api/v1/snapshots/capture?${query.toString()}`);
+      const payload = await response.json();
+      if (streamStatus) {
+        const snapID = payload.snapshot?.id || "unknown";
+        streamStatus.textContent = `Snapshot captured: ${snapID}`;
+      }
+      await this.refreshSnapshots();
+    } catch (err) {
+      if (streamStatus) {
+        streamStatus.textContent = "Snapshot capture failed";
+      }
+    }
+  }
+
+  async updateSnapshotRetention() {
+    const retentionInput = this.querySelector('[data-role="snapshot-retention"]');
+    const streamStatus = this.querySelector('[data-role="stream-status"]');
+    if (!retentionInput) {
+      return;
+    }
+    const value = String(retentionInput.value || "").trim();
+    try {
+      const response = await fetch(`api/v1/snapshots/retention?max_snapshots=${encodeURIComponent(value)}`);
+      const payload = await response.json();
+      if (streamStatus) {
+        streamStatus.textContent = `Snapshot retention=${payload.max_snapshots}`;
+      }
+      await this.refreshSnapshots();
+    } catch (err) {
+      if (streamStatus) {
+        streamStatus.textContent = "Snapshot retention update failed";
+      }
     }
   }
 
@@ -460,6 +578,18 @@ class PortalShell extends HTMLElement {
               <input class="search timeline-filter" data-role="provenance-correlation" type="search" placeholder="Filter provenance by correlation id" aria-label="Filter provenance by correlation id" />
               <ul data-role="provenance-list">
                 <li>Loading provenance capability...</li>
+              </ul>
+            </section>
+            <section class="registry-preview">
+              <h2>Snapshots</h2>
+              <div class="snapshot-controls">
+                <input class="search timeline-filter" data-role="snapshot-label" type="search" placeholder="Snapshot label (optional)" aria-label="Snapshot label" />
+                <button class="button" data-role="snapshot-capture" type="button">Capture</button>
+                <input class="search timeline-filter snapshot-retention" data-role="snapshot-retention" type="number" min="1" max="500" placeholder="Retention max" aria-label="Snapshot retention max" />
+                <button class="button" data-role="snapshot-retention-apply" type="button">Apply Retention</button>
+              </div>
+              <ul data-role="snapshots-list">
+                <li>Loading snapshots capability...</li>
               </ul>
             </section>
             <div class="meta" data-role="stream-status">Stream idle</div>

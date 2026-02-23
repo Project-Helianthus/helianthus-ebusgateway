@@ -61,9 +61,10 @@ type Options struct {
 }
 
 type handler struct {
-	opts     Options
-	files    http.Handler
-	timeline *timelineBuffer
+	opts      Options
+	files     http.Handler
+	timeline  *timelineBuffer
+	snapshots *snapshotStore
 }
 
 type RegistryDevice struct {
@@ -198,6 +199,20 @@ type timelineBuffer struct {
 	entries []StreamEventEnvelope
 }
 
+type SnapshotEnvelope struct {
+	ID         string         `json:"id"`
+	Label      string         `json:"label,omitempty"`
+	CapturedAt string         `json:"captured_at"`
+	Payload    map[string]any `json:"payload"`
+}
+
+type snapshotStore struct {
+	mu           sync.Mutex
+	maxSnapshots int
+	seq          uint64
+	items        []SnapshotEnvelope
+}
+
 func NewHandler(opts Options) http.Handler {
 	if opts.GraphQLPath == "" {
 		opts.GraphQLPath = "/graphql"
@@ -218,9 +233,10 @@ func NewHandler(opts Options) http.Handler {
 		opts.BuildID = "unknown"
 	}
 	return &handler{
-		opts:     opts,
-		files:    http.FileServer(http.FS(staticFS)),
-		timeline: newTimelineBuffer(1000),
+		opts:      opts,
+		files:     http.FileServer(http.FS(staticFS)),
+		timeline:  newTimelineBuffer(1000),
+		snapshots: newSnapshotStore(50),
 	}
 }
 
@@ -299,6 +315,99 @@ func cloneStreamEvent(event StreamEventEnvelope) StreamEventEnvelope {
 	return cloned
 }
 
+func newSnapshotStore(maxSnapshots int) *snapshotStore {
+	if maxSnapshots <= 0 {
+		maxSnapshots = 50
+	}
+	return &snapshotStore{
+		maxSnapshots: maxSnapshots,
+		items:        make([]SnapshotEnvelope, 0, maxSnapshots),
+	}
+}
+
+func (ss *snapshotStore) capture(label string, payload map[string]any) SnapshotEnvelope {
+	if ss == nil {
+		return SnapshotEnvelope{}
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.seq++
+	snapshot := SnapshotEnvelope{
+		ID:         fmt.Sprintf("snap-%d", ss.seq),
+		Label:      strings.TrimSpace(label),
+		CapturedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Payload:    cloneMap(payload),
+	}
+	if len(ss.items) >= ss.maxSnapshots {
+		copy(ss.items, ss.items[1:])
+		ss.items[len(ss.items)-1] = snapshot
+	} else {
+		ss.items = append(ss.items, snapshot)
+	}
+	return snapshot
+}
+
+func (ss *snapshotStore) list(limit int) []SnapshotEnvelope {
+	if ss == nil {
+		return []SnapshotEnvelope{}
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	items := make([]SnapshotEnvelope, 0, limit)
+	for i := len(ss.items) - 1; i >= 0; i-- {
+		items = append(items, SnapshotEnvelope{
+			ID:         ss.items[i].ID,
+			Label:      ss.items[i].Label,
+			CapturedAt: ss.items[i].CapturedAt,
+			Payload:    cloneMap(ss.items[i].Payload),
+		})
+		if limit > 0 && len(items) >= limit {
+			break
+		}
+	}
+	return items
+}
+
+func (ss *snapshotStore) setMaxSnapshots(maxSnapshots int) int {
+	if ss == nil {
+		return 0
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if maxSnapshots < 1 {
+		maxSnapshots = 1
+	}
+	if maxSnapshots > 500 {
+		maxSnapshots = 500
+	}
+	ss.maxSnapshots = maxSnapshots
+	for len(ss.items) > ss.maxSnapshots {
+		ss.items = ss.items[1:]
+	}
+	return ss.maxSnapshots
+}
+
+func (ss *snapshotStore) config() (maxSnapshots int, count int) {
+	if ss == nil {
+		return 0, 0
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.maxSnapshots, len(ss.items)
+}
+
+func cloneMap(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(payload))
+	for key, value := range payload {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r == nil {
 		http.Error(w, "request missing", http.StatusBadRequest)
@@ -369,6 +478,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"stream":     streamEnabled,
 				"timeline":   streamEnabled,
 				"provenance": streamEnabled,
+				"snapshots":  streamEnabled,
 			},
 			"endpoints": map[string]string{
 				"graphql":       h.opts.GraphQLPath,
@@ -379,6 +489,9 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"stream":        "/portal/api/v1/stream",
 				"timeline":      "/portal/api/v1/timeline/events",
 				"provenance":    "/portal/api/v1/provenance/events",
+				"snapshots":     "/portal/api/v1/snapshots",
+				"capture":       "/portal/api/v1/snapshots/capture",
+				"retention":     "/portal/api/v1/snapshots/retention",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -402,6 +515,12 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleTimelineEvents(w, r)
 	case "provenance/events":
 		h.handleProvenanceEvents(w, r)
+	case "snapshots":
+		h.handleSnapshotsList(w, r)
+	case "snapshots/capture":
+		h.handleSnapshotsCapture(w, r)
+	case "snapshots/retention":
+		h.handleSnapshotsRetention(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -458,6 +577,12 @@ func classifyRoute(path string) string {
 		return "api.timeline.events"
 	case strings.HasPrefix(path, "/api/v1/provenance/events"):
 		return "api.provenance.events"
+	case strings.HasPrefix(path, "/api/v1/snapshots/capture"):
+		return "api.snapshots.capture"
+	case strings.HasPrefix(path, "/api/v1/snapshots/retention"):
+		return "api.snapshots.retention"
+	case strings.HasPrefix(path, "/api/v1/snapshots"):
+		return "api.snapshots.list"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):
@@ -898,6 +1023,104 @@ func (h *handler) handleProvenanceEvents(w http.ResponseWriter, r *http.Request)
 		"count": len(records),
 		"items": records,
 	})
+}
+
+func (h *handler) handleSnapshotsList(w http.ResponseWriter, r *http.Request) {
+	if h.snapshots == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"count": 0,
+			"items": []SnapshotEnvelope{},
+		})
+		return
+	}
+	limit := parseQueryLimit(r.URL.Query().Get("limit"), 20)
+	items := h.snapshots.list(limit)
+	maxSnapshots, count := h.snapshots.config()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"count":         len(items),
+		"stored_count":  count,
+		"max_snapshots": maxSnapshots,
+		"items":         items,
+	})
+}
+
+func (h *handler) handleSnapshotsCapture(w http.ResponseWriter, r *http.Request) {
+	if h.snapshots == nil {
+		http.Error(w, "snapshot store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if h.opts.ListRegistry == nil && h.opts.ListSemantic == nil && h.opts.ListProjections == nil {
+		http.Error(w, "snapshot capture unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	label := strings.TrimSpace(r.URL.Query().Get("label"))
+	snapshot := h.snapshots.capture(label, h.buildSnapshotPayload())
+	maxSnapshots, count := h.snapshots.config()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"snapshot":      snapshot,
+		"stored_count":  count,
+		"max_snapshots": maxSnapshots,
+	})
+}
+
+func (h *handler) handleSnapshotsRetention(w http.ResponseWriter, r *http.Request) {
+	if h.snapshots == nil {
+		http.Error(w, "snapshot store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("max_snapshots")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			http.Error(w, "invalid max_snapshots", http.StatusBadRequest)
+			return
+		}
+		h.snapshots.setMaxSnapshots(value)
+	}
+	maxSnapshots, count := h.snapshots.config()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"max_snapshots": maxSnapshots,
+		"stored_count":  count,
+	})
+}
+
+func (h *handler) buildSnapshotPayload() map[string]any {
+	payload := map[string]any{
+		"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if h.opts.ListRegistry != nil {
+		devices := h.opts.ListRegistry()
+		payload["registry"] = map[string]any{
+			"count": len(devices),
+			"items": devices,
+		}
+	}
+	if h.opts.ListSemantic != nil {
+		semantic := h.opts.ListSemantic()
+		payload["semantic"] = semantic
+	}
+	if h.opts.ListProjections != nil {
+		projections := h.opts.ListProjections()
+		payload["projection"] = map[string]any{
+			"count": len(projections),
+			"items": projections,
+		}
+	}
+	if h.timeline != nil {
+		events := h.timeline.query(20, "", "", time.Time{})
+		provenance := make([]ProvenanceRecord, 0, len(events))
+		for _, event := range events {
+			provenance = append(provenance, toProvenanceRecord(event))
+		}
+		payload["timeline"] = map[string]any{
+			"count": len(events),
+			"items": events,
+		}
+		payload["provenance"] = map[string]any{
+			"count": len(provenance),
+			"items": provenance,
+		}
+	}
+	return payload
 }
 
 func toProvenanceRecord(event StreamEventEnvelope) ProvenanceRecord {

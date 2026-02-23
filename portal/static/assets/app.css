@@ -199,6 +199,17 @@ body {
   margin: 0 0 0.6rem;
 }
 
+.snapshot-controls {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.45rem;
+  margin-bottom: 0.65rem;
+}
+
+.snapshot-retention {
+  margin-bottom: 0;
+}
+
 .pill {
   display: inline-block;
   border: 1px solid var(--border);

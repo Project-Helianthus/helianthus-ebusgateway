@@ -151,6 +151,15 @@ func TestBootstrapEndpoint(t *testing.T) {
 	if endpoints["provenance"] != "/portal/api/v1/provenance/events" {
 		t.Fatalf("provenance endpoint=%v; want /portal/api/v1/provenance/events", endpoints["provenance"])
 	}
+	if endpoints["snapshots"] != "/portal/api/v1/snapshots" {
+		t.Fatalf("snapshots endpoint=%v; want /portal/api/v1/snapshots", endpoints["snapshots"])
+	}
+	if endpoints["capture"] != "/portal/api/v1/snapshots/capture" {
+		t.Fatalf("capture endpoint=%v; want /portal/api/v1/snapshots/capture", endpoints["capture"])
+	}
+	if endpoints["retention"] != "/portal/api/v1/snapshots/retention" {
+		t.Fatalf("retention endpoint=%v; want /portal/api/v1/snapshots/retention", endpoints["retention"])
+	}
 	capabilities := payload["capabilities"].(map[string]any)
 	if capabilities["registry"] != true {
 		t.Fatalf("capabilities.registry=%v; want true", capabilities["registry"])
@@ -172,6 +181,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	}
 	if capabilities["provenance"] != true {
 		t.Fatalf("capabilities.provenance=%v; want true", capabilities["provenance"])
+	}
+	if capabilities["snapshots"] != true {
+		t.Fatalf("capabilities.snapshots=%v; want true", capabilities["snapshots"])
 	}
 }
 
@@ -659,5 +671,61 @@ func TestProvenanceEventsEndpoint(t *testing.T) {
 	}
 	if first["confidence"] == nil {
 		t.Fatalf("confidence missing")
+	}
+}
+
+func TestSnapshotsCaptureAndRetention(t *testing.T) {
+	h := NewHandler(Options{
+		ListRegistry: func() []RegistryDevice {
+			return []RegistryDevice{{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720"}}
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/retention?max_snapshots=2", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retention status=%d; want %d", rec.Code, http.StatusOK)
+	}
+
+	for _, label := range []string{"a", "b", "c"} {
+		req = httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/capture?label="+label, nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("capture status=%d; want %d", rec.Code, http.StatusOK)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/snapshots?limit=10", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if int(payload["stored_count"].(float64)) != 2 {
+		t.Fatalf("stored_count=%v; want 2", payload["stored_count"])
+	}
+	items := payload["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("len(items)=%d; want 2", len(items))
+	}
+	first := items[0].(map[string]any)
+	if first["label"] != "c" {
+		t.Fatalf("first.label=%v; want c newest first", first["label"])
+	}
+}
+
+func TestSnapshotsCaptureUnavailableWithoutProviders(t *testing.T) {
+	h := NewHandler(Options{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/snapshots/capture", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }

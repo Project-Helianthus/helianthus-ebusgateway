@@ -43,12 +43,21 @@ class PortalShell extends HTMLElement {
       clearTimeout(this.timelineTimer);
       this.timelineTimer = undefined;
     }
+    if (this.provenanceInterval) {
+      clearInterval(this.provenanceInterval);
+      this.provenanceInterval = undefined;
+    }
+    if (this.provenanceTimer) {
+      clearTimeout(this.provenanceTimer);
+      this.provenanceTimer = undefined;
+    }
   }
 
   bindEvents() {
     const toggle = this.querySelector('[data-role="theme-toggle"]');
     const search = this.querySelector('[data-role="search-input"]');
     const correlation = this.querySelector('[data-role="timeline-correlation"]');
+    const provenanceCorrelation = this.querySelector('[data-role="provenance-correlation"]');
     if (toggle) {
       toggle.addEventListener("click", () => {
         const current = loadTheme();
@@ -65,6 +74,11 @@ class PortalShell extends HTMLElement {
         this.scheduleTimelineRefresh();
       });
     }
+    if (provenanceCorrelation) {
+      provenanceCorrelation.addEventListener("input", () => {
+        this.scheduleProvenanceRefresh();
+      });
+    }
   }
 
   async loadStatus() {
@@ -76,6 +90,7 @@ class PortalShell extends HTMLElement {
     const searchInput = this.querySelector('[data-role="search-input"]');
     const searchList = this.querySelector('[data-role="search-list"]');
     const timelineList = this.querySelector('[data-role="timeline-list"]');
+    const provenanceList = this.querySelector('[data-role="provenance-list"]');
     try {
       const [healthRes, bootstrapRes] = await Promise.all([
         fetch("api/v1/health"),
@@ -89,7 +104,7 @@ class PortalShell extends HTMLElement {
       if (metaEl) {
         const caps = bootstrap.capabilities || {};
         metaEl.textContent =
-          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}`;
+          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}, provenance=${caps.provenance}`;
       }
       if (searchInput) {
         searchInput.disabled = !bootstrap.capabilities?.search;
@@ -126,6 +141,20 @@ class PortalShell extends HTMLElement {
           this.refreshTimeline();
         }, 3000);
       }
+      if (provenanceList) {
+        provenanceList.innerHTML = bootstrap.capabilities?.provenance
+          ? "<li>Loading provenance records...</li>"
+          : "<li>Provenance unavailable: stream capability disabled.</li>";
+      }
+      if (bootstrap.capabilities?.provenance) {
+        await this.refreshProvenance();
+        if (this.provenanceInterval) {
+          clearInterval(this.provenanceInterval);
+        }
+        this.provenanceInterval = setInterval(() => {
+          this.refreshProvenance();
+        }, 4000);
+      }
     } catch (err) {
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
@@ -155,6 +184,7 @@ class PortalShell extends HTMLElement {
         const at = payload.at || "n/a";
         streamStatus.textContent = `Stream live: layer=${layer} at=${at}`;
         this.scheduleTimelineRefresh();
+        this.scheduleProvenanceRefresh();
       } catch (err) {
         streamStatus.textContent = "Stream payload parse error";
       }
@@ -206,6 +236,50 @@ class PortalShell extends HTMLElement {
     } catch (err) {
       timelineList.innerHTML = "<li>Timeline query failed.</li>";
       console.error("timeline query failed", err);
+    }
+  }
+
+  scheduleProvenanceRefresh() {
+    if (this.provenanceTimer) {
+      clearTimeout(this.provenanceTimer);
+    }
+    this.provenanceTimer = setTimeout(() => {
+      this.refreshProvenance();
+    }, 220);
+  }
+
+  async refreshProvenance() {
+    const provenanceList = this.querySelector('[data-role="provenance-list"]');
+    const provenanceCorrelation = this.querySelector('[data-role="provenance-correlation"]');
+    if (!provenanceList) {
+      return;
+    }
+    try {
+      const correlation = provenanceCorrelation ? String(provenanceCorrelation.value || "").trim() : "";
+      const query = new URLSearchParams();
+      query.set("limit", "8");
+      if (correlation.length > 0) {
+        query.set("correlation_id", correlation);
+      }
+      const response = await fetch(`api/v1/provenance/events?${query.toString()}`);
+      const payload = await response.json();
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (items.length === 0) {
+        provenanceList.innerHTML = "<li>No provenance records yet.</li>";
+        return;
+      }
+      provenanceList.innerHTML = items
+        .map((item) => {
+          const source = escapeHtml(item.source || "unknown");
+          const corr = escapeHtml(item.correlation_id || "n/a");
+          const keys = Array.isArray(item.payload_keys) ? item.payload_keys.join(",") : "";
+          const confidence = Number(item.confidence || 0).toFixed(2);
+          return `<li><span class="pill">prov</span> <strong>${corr}</strong> <span class="muted-inline">${source} keys=${escapeHtml(keys)} conf=${confidence}</span></li>`;
+        })
+        .join("");
+    } catch (err) {
+      provenanceList.innerHTML = "<li>Provenance query failed.</li>";
+      console.error("provenance query failed", err);
     }
   }
 
@@ -378,6 +452,13 @@ class PortalShell extends HTMLElement {
               <input class="search timeline-filter" data-role="timeline-correlation" type="search" placeholder="Filter by correlation id" aria-label="Filter timeline by correlation id" />
               <ul data-role="timeline-list">
                 <li>Loading timeline capability...</li>
+              </ul>
+            </section>
+            <section class="registry-preview">
+              <h2>Provenance Inspector</h2>
+              <input class="search timeline-filter" data-role="provenance-correlation" type="search" placeholder="Filter provenance by correlation id" aria-label="Filter provenance by correlation id" />
+              <ul data-role="provenance-list">
+                <li>Loading provenance capability...</li>
               </ul>
             </section>
             <div class="meta" data-role="stream-status">Stream idle</div>

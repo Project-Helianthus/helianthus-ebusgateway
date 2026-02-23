@@ -148,6 +148,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	if endpoints["timeline"] != "/portal/api/v1/timeline/events" {
 		t.Fatalf("timeline endpoint=%v; want /portal/api/v1/timeline/events", endpoints["timeline"])
 	}
+	if endpoints["provenance"] != "/portal/api/v1/provenance/events" {
+		t.Fatalf("provenance endpoint=%v; want /portal/api/v1/provenance/events", endpoints["provenance"])
+	}
 	capabilities := payload["capabilities"].(map[string]any)
 	if capabilities["registry"] != true {
 		t.Fatalf("capabilities.registry=%v; want true", capabilities["registry"])
@@ -166,6 +169,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	}
 	if capabilities["timeline"] != true {
 		t.Fatalf("capabilities.timeline=%v; want true", capabilities["timeline"])
+	}
+	if capabilities["provenance"] != true {
+		t.Fatalf("capabilities.provenance=%v; want true", capabilities["provenance"])
 	}
 }
 
@@ -610,5 +616,48 @@ func TestTimelineEventsEndpoint_InvalidSince(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d; want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestProvenanceEventsEndpoint(t *testing.T) {
+	h := NewHandler(Options{
+		ListRegistry: func() []RegistryDevice {
+			return []RegistryDevice{{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720"}}
+		},
+	})
+
+	streamReq := httptest.NewRequest(http.MethodGet, "/api/v1/stream?layers=registry&interval_ms=10&max_events_per_second=10&max_events=1", nil)
+	ctx, cancel := context.WithTimeout(streamReq.Context(), time.Second)
+	defer cancel()
+	streamReq = streamReq.WithContext(ctx)
+	streamRec := httptest.NewRecorder()
+	h.ServeHTTP(streamRec, streamReq)
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("stream status=%d; want %d", streamRec.Code, http.StatusOK)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/provenance/events?limit=5&layer=registry", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if int(payload["count"].(float64)) < 1 {
+		t.Fatalf("count=%v; want >=1", payload["count"])
+	}
+	items := payload["items"].([]any)
+	first := items[0].(map[string]any)
+	if first["layer"] != "registry" {
+		t.Fatalf("layer=%v; want registry", first["layer"])
+	}
+	if first["source"] == "" {
+		t.Fatalf("source missing")
+	}
+	if first["confidence"] == nil {
+		t.Fatalf("confidence missing")
 	}
 }

@@ -180,6 +180,18 @@ type StreamSource struct {
 	Interval int    `json:"interval_ms"`
 }
 
+type ProvenanceRecord struct {
+	CorrelationID string   `json:"correlation_id"`
+	Layer         string   `json:"layer"`
+	At            string   `json:"at"`
+	Source        string   `json:"source"`
+	Dropped       int      `json:"dropped"`
+	IntervalMS    int      `json:"interval_ms"`
+	DecodePath    []string `json:"decode_path"`
+	PayloadKeys   []string `json:"payload_keys"`
+	Confidence    float64  `json:"confidence"`
+}
+
 type timelineBuffer struct {
 	mu      sync.Mutex
 	cap     int
@@ -356,6 +368,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"search":     h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil,
 				"stream":     streamEnabled,
 				"timeline":   streamEnabled,
+				"provenance": streamEnabled,
 			},
 			"endpoints": map[string]string{
 				"graphql":       h.opts.GraphQLPath,
@@ -365,6 +378,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"search":        "/portal/api/v1/search",
 				"stream":        "/portal/api/v1/stream",
 				"timeline":      "/portal/api/v1/timeline/events",
+				"provenance":    "/portal/api/v1/provenance/events",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -386,6 +400,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleStream(w, r)
 	case "timeline/events":
 		h.handleTimelineEvents(w, r)
+	case "provenance/events":
+		h.handleProvenanceEvents(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -440,6 +456,8 @@ func classifyRoute(path string) string {
 		return "api.stream"
 	case strings.HasPrefix(path, "/api/v1/timeline/events"):
 		return "api.timeline.events"
+	case strings.HasPrefix(path, "/api/v1/provenance/events"):
+		return "api.provenance.events"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):
@@ -857,6 +875,53 @@ func (h *handler) handleTimelineEvents(w http.ResponseWriter, r *http.Request) {
 		"count": len(items),
 		"items": items,
 	})
+}
+
+func (h *handler) handleProvenanceEvents(w http.ResponseWriter, r *http.Request) {
+	if h.timeline == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"count": 0,
+			"items": []ProvenanceRecord{},
+		})
+		return
+	}
+	limit := parseQueryLimit(r.URL.Query().Get("limit"), 50)
+	layer := strings.TrimSpace(r.URL.Query().Get("layer"))
+	correlationID := strings.TrimSpace(r.URL.Query().Get("correlation_id"))
+	items := h.timeline.query(limit, layer, correlationID, time.Time{})
+
+	records := make([]ProvenanceRecord, 0, len(items))
+	for _, item := range items {
+		records = append(records, toProvenanceRecord(item))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"count": len(records),
+		"items": records,
+	})
+}
+
+func toProvenanceRecord(event StreamEventEnvelope) ProvenanceRecord {
+	keys := make([]string, 0, len(event.Payload))
+	for key := range event.Payload {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return ProvenanceRecord{
+		CorrelationID: event.CorrelationID,
+		Layer:         event.Layer,
+		At:            event.At,
+		Source:        event.Provenance.Source,
+		Dropped:       event.Provenance.Dropped,
+		IntervalMS:    event.Provenance.Interval,
+		DecodePath: []string{
+			fmt.Sprintf("source:%s", event.Provenance.Source),
+			fmt.Sprintf("layer:%s", event.Layer),
+			"gateway.portal.stream",
+			"gateway.portal.timeline",
+		},
+		PayloadKeys: keys,
+		Confidence:  0.7,
+	}
 }
 
 func (h *handler) handleStream(w http.ResponseWriter, r *http.Request) {

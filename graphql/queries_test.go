@@ -48,6 +48,15 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		Address:         0x10,
 		Manufacturer:    "vaillant",
 		DeviceID:        "device-a",
+		SerialNumber:    "serial-a",
+		SoftwareVersion: "1.0",
+		HardwareVersion: "7603",
+	})
+	gateway.Registry.Register(registry.DeviceInfo{
+		Address:         0x11,
+		Manufacturer:    "vaillant",
+		DeviceID:        "device-a",
+		SerialNumber:    "serial-a",
 		SoftwareVersion: "1.0",
 		HardwareVersion: "7603",
 	})
@@ -72,6 +81,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			query {
 				devices {
 					address
+					addresses
 					manufacturer
 					deviceId
 					planes {
@@ -110,6 +120,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		var response struct {
 			Devices []struct {
 				Address      int    `json:"address"`
+				Addresses    []int  `json:"addresses"`
 				Manufacturer string `json:"manufacturer"`
 				DeviceID     string `json:"deviceId"`
 				Planes       []struct {
@@ -153,6 +164,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		if response.Devices[0].Address != 16 || response.Devices[0].DeviceID != "device-a" {
 			t.Fatalf("device payload = %+v; want address=16 deviceId=device-a", response.Devices[0])
 		}
+		if len(response.Devices[0].Addresses) != 2 || response.Devices[0].Addresses[0] != 16 || response.Devices[0].Addresses[1] != 17 {
+			t.Fatalf("addresses = %+v; want [16 17]", response.Devices[0].Addresses)
+		}
 		if len(response.Devices[0].Planes) != 1 {
 			t.Fatalf("planes = %d; want 1", len(response.Devices[0].Planes))
 		}
@@ -191,28 +205,35 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	})
 
 	t.Run("device", func(t *testing.T) {
-		request := graphqlclient.NewRequest(`
-			query($address: Int!) {
-				device(address: $address) {
-					address
-					deviceId
+		for _, address := range []int{16, 17} {
+			request := graphqlclient.NewRequest(`
+				query($address: Int!) {
+					device(address: $address) {
+						address
+						addresses
+						deviceId
+					}
 				}
+			`)
+			request.Var("address", address)
+
+			var response struct {
+				Device struct {
+					Address   int    `json:"address"`
+					Addresses []int  `json:"addresses"`
+					DeviceID  string `json:"deviceId"`
+				} `json:"device"`
 			}
-		`)
-		request.Var("address", 16)
 
-		var response struct {
-			Device struct {
-				Address  int    `json:"address"`
-				DeviceID string `json:"deviceId"`
-			} `json:"device"`
-		}
-
-		if err := client.Run(context.Background(), request, &response); err != nil {
-			t.Fatalf("device query error = %v", err)
-		}
-		if response.Device.Address != 16 || response.Device.DeviceID != "device-a" {
-			t.Fatalf("device = %+v; want address=16 deviceId=device-a", response.Device)
+			if err := client.Run(context.Background(), request, &response); err != nil {
+				t.Fatalf("device query error = %v", err)
+			}
+			if response.Device.Address != 16 || response.Device.DeviceID != "device-a" {
+				t.Fatalf("address %d device = %+v; want address=16 deviceId=device-a", address, response.Device)
+			}
+			if len(response.Device.Addresses) != 2 || response.Device.Addresses[0] != 16 || response.Device.Addresses[1] != 17 {
+				t.Fatalf("address %d addresses = %+v; want [16 17]", address, response.Device.Addresses)
+			}
 		}
 	})
 
@@ -369,51 +390,55 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	})
 
 	t.Run("planes", func(t *testing.T) {
-		request := graphqlclient.NewRequest(`
-			query($address: Int!) {
-				planes(address: $address) {
-					name
+		for _, address := range []int{16, 17} {
+			request := graphqlclient.NewRequest(`
+				query($address: Int!) {
+					planes(address: $address) {
+						name
+					}
 				}
+			`)
+			request.Var("address", address)
+
+			var response struct {
+				Planes []struct {
+					Name string `json:"name"`
+				} `json:"planes"`
 			}
-		`)
-		request.Var("address", 16)
 
-		var response struct {
-			Planes []struct {
-				Name string `json:"name"`
-			} `json:"planes"`
-		}
-
-		if err := client.Run(context.Background(), request, &response); err != nil {
-			t.Fatalf("planes query error = %v", err)
-		}
-		if len(response.Planes) != 1 || response.Planes[0].Name != "heating" {
-			t.Fatalf("planes = %+v; want [heating]", response.Planes)
+			if err := client.Run(context.Background(), request, &response); err != nil {
+				t.Fatalf("planes query error = %v", err)
+			}
+			if len(response.Planes) != 1 || response.Planes[0].Name != "heating" {
+				t.Fatalf("address %d planes = %+v; want [heating]", address, response.Planes)
+			}
 		}
 	})
 
 	t.Run("methods", func(t *testing.T) {
-		request := graphqlclient.NewRequest(`
-			query($address: Int!, $plane: String!) {
-				methods(address: $address, plane: $plane) {
-					name
+		for _, address := range []int{16, 17} {
+			request := graphqlclient.NewRequest(`
+				query($address: Int!, $plane: String!) {
+					methods(address: $address, plane: $plane) {
+						name
+					}
 				}
+			`)
+			request.Var("address", address)
+			request.Var("plane", "heating")
+
+			var response struct {
+				Methods []struct {
+					Name string `json:"name"`
+				} `json:"methods"`
 			}
-		`)
-		request.Var("address", 16)
-		request.Var("plane", "heating")
 
-		var response struct {
-			Methods []struct {
-				Name string `json:"name"`
-			} `json:"methods"`
-		}
-
-		if err := client.Run(context.Background(), request, &response); err != nil {
-			t.Fatalf("methods query error = %v", err)
-		}
-		if len(response.Methods) != 1 || response.Methods[0].Name != "get_status" {
-			t.Fatalf("methods = %+v; want [get_status]", response.Methods)
+			if err := client.Run(context.Background(), request, &response); err != nil {
+				t.Fatalf("methods query error = %v", err)
+			}
+			if len(response.Methods) != 1 || response.Methods[0].Name != "get_status" {
+				t.Fatalf("address %d methods = %+v; want [get_status]", address, response.Methods)
+			}
 		}
 	})
 }

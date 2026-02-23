@@ -577,6 +577,21 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return int(device.Address), nil
 				},
 			},
+			"addresses": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.Int))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					addresses := normalizeDeviceAddresses(device.Address, device.Addresses)
+					values := make([]int, len(addresses))
+					for index, address := range addresses {
+						values[index] = int(address)
+					}
+					return values, nil
+				},
+			},
 			"manufacturer": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -893,11 +908,20 @@ func toAddress(value int) (byte, error) {
 
 func findDevice(devices []Device, address byte) (Device, bool) {
 	for _, device := range devices {
-		if device.Address == address {
+		if deviceHasAddress(device, address) {
 			return device, true
 		}
 	}
 	return Device{}, false
+}
+
+func deviceHasAddress(device Device, address byte) bool {
+	for _, candidate := range normalizeDeviceAddresses(device.Address, device.Addresses) {
+		if candidate == address {
+			return true
+		}
+	}
+	return false
 }
 
 func findPlane(planes []Plane, name string) (Plane, bool) {

@@ -49,6 +49,7 @@ func TestCloneSchema_PreservesDeviceMetadataFields(t *testing.T) {
 		Devices: []Device{
 			{
 				Address:       0x08,
+				Addresses:     []byte{0x08, 0x09},
 				Manufacturer:  "Vaillant",
 				DeviceID:      "dev-a",
 				DisplayName:   "FM5 Control Centre",
@@ -73,5 +74,8 @@ func TestCloneSchema_PreservesDeviceMetadataFields(t *testing.T) {
 		got.PartNumber != "0020184848" ||
 		got.Role != "controller" {
 		t.Fatalf("metadata clone mismatch: %+v", got)
+	}
+	if len(got.Addresses) != 2 || got.Addresses[0] != 0x08 || got.Addresses[1] != 0x09 {
+		t.Fatalf("addresses clone mismatch: %v", got.Addresses)
 	}
 }

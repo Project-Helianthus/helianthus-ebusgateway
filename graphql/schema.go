@@ -17,6 +17,7 @@ type Schema struct {
 
 type Device struct {
 	Address         byte
+	Addresses       []byte
 	Manufacturer    string
 	DeviceID        string
 	SerialNumber    string
@@ -101,6 +102,7 @@ func BuildSchema(reg Registry) (Schema, error) {
 
 		device := Device{
 			Address:         entry.Address(),
+			Addresses:       normalizeDeviceAddresses(entry.Address(), entry.Addresses()),
 			Manufacturer:    entry.Manufacturer(),
 			DeviceID:        entry.DeviceID(),
 			SerialNumber:    entry.SerialNumber(),
@@ -273,6 +275,25 @@ func looksLikeVaillantFunctionalModule(prefix string) bool {
 	return true
 }
 
+func normalizeDeviceAddresses(primary byte, aliases []byte) []byte {
+	out := make([]byte, 0, len(aliases)+1)
+	appendUniqueAddress := func(address byte) {
+		for _, existing := range out {
+			if existing == address {
+				return
+			}
+		}
+		out = append(out, address)
+	}
+
+	appendUniqueAddress(primary)
+	for _, address := range aliases {
+		appendUniqueAddress(address)
+	}
+
+	return out
+}
+
 func isDigits(value string) bool {
 	if value == "" {
 		return false
@@ -369,6 +390,7 @@ func cloneSchema(schema Schema) Schema {
 		}
 		devices[i] = Device{
 			Address:         device.Address,
+			Addresses:       append([]byte(nil), device.Addresses...),
 			Manufacturer:    device.Manufacturer,
 			DeviceID:        device.DeviceID,
 			SerialNumber:    device.SerialNumber,

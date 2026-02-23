@@ -2,12 +2,12 @@
   "generatedBy": "portal/web/scripts/build.mjs",
   "assets": {
     "app.js": {
-      "bytes": 36221,
-      "sha256": "49f26b68977b6182b92cb513f0b83b10f5896e497498f3b77c50f055e4422080"
+      "bytes": 37287,
+      "sha256": "61847b3d0a59081d02b5f36e4188436d5165922c8a3ca15425136c99b6dd489c"
     },
     "app.css": {
-      "bytes": 4527,
-      "sha256": "eca67d98a239679499ae42d595e9140719f25eb7640804293db7285f772d7d51"
+      "bytes": 4861,
+      "sha256": "10af55b4d78c1bde1cb61b63ef3d4926c2e851a364eb85660262937497c441b5"
     }
   }
 }

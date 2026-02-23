@@ -142,6 +142,7 @@ class PortalShell extends HTMLElement {
     const diffList = this.querySelector('[data-role="snapshot-diff-list"]');
     const sessionsList = this.querySelector('[data-role="sessions-list"]');
     const issuePreview = this.querySelector('[data-role="issue-preview"]');
+    const deprecationBanner = this.querySelector('[data-role="deprecation-banner"]');
     try {
       const [healthRes, bootstrapRes] = await Promise.all([
         fetch("api/v1/health"),
@@ -155,7 +156,7 @@ class PortalShell extends HTMLElement {
       if (metaEl) {
         const caps = bootstrap.capabilities || {};
         metaEl.textContent =
-          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}, provenance=${caps.provenance}, snapshots=${caps.snapshots}, snapshot_diff=${caps.snapshot_diff}, sessions=${caps.sessions}, issue_builder=${caps.issue_builder}`;
+          `Capabilities: registry=${caps.registry}, semantic=${caps.semantic}, projection=${caps.projection}, search=${caps.search}, stream=${caps.stream}, timeline=${caps.timeline}, provenance=${caps.provenance}, snapshots=${caps.snapshots}, snapshot_diff=${caps.snapshot_diff}, sessions=${caps.sessions}, issue_builder=${caps.issue_builder}, migration=${caps.migration}`;
       }
       if (searchInput) {
         searchInput.disabled = !bootstrap.capabilities?.search;
@@ -242,6 +243,13 @@ class PortalShell extends HTMLElement {
           ? "Issue builder ready. Fill fields and generate draft."
           : "Issue builder unavailable.";
       }
+      if (deprecationBanner) {
+        if (bootstrap.capabilities?.migration) {
+          await this.refreshDeprecationBanner(deprecationBanner);
+        } else {
+          deprecationBanner.textContent = "Migration metadata unavailable.";
+        }
+      }
     } catch (err) {
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
@@ -250,6 +258,17 @@ class PortalShell extends HTMLElement {
         metaEl.textContent = "Bootstrap fetch failed";
       }
       console.error("portal bootstrap failed", err);
+    }
+  }
+
+  async refreshDeprecationBanner(target) {
+    try {
+      const response = await fetch("api/v1/deprecation/vrc-explorer");
+      const payload = await response.json();
+      const replacement = payload.replacement?.name || "Portal";
+      target.innerHTML = `<strong>${escapeHtml(payload.component || "VRC-Explorer")} is deprecated.</strong> Use ${escapeHtml(replacement)}. <a href="${escapeHtml(payload.migration_doc || "#")}" target="_blank" rel="noreferrer">Migration guide</a>`;
+    } catch (err) {
+      target.textContent = "Deprecation metadata request failed.";
     }
   }
 
@@ -786,6 +805,7 @@ class PortalShell extends HTMLElement {
           </aside>
           <main class="main">
             <h1>Portal Overview</h1>
+            <div class="deprecation-banner" data-role="deprecation-banner">Loading deprecation policy...</div>
             <p class="hero">M0 skeleton online. Discovery and evidence workflows unlock in subsequent milestones.</p>
             <section class="cards" aria-label="Capability cards">
               <article class="card"><h3>Registry</h3><span class="badge">Coming Soon</span></article>

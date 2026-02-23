@@ -172,6 +172,12 @@ func TestBootstrapEndpoint(t *testing.T) {
 	if endpoints["session_load"] != "/portal/api/v1/sessions/load" {
 		t.Fatalf("session_load endpoint=%v; want /portal/api/v1/sessions/load", endpoints["session_load"])
 	}
+	if endpoints["issue_draft"] != "/portal/api/v1/issues/draft" {
+		t.Fatalf("issue_draft endpoint=%v; want /portal/api/v1/issues/draft", endpoints["issue_draft"])
+	}
+	if endpoints["issue_export"] != "/portal/api/v1/issues/export" {
+		t.Fatalf("issue_export endpoint=%v; want /portal/api/v1/issues/export", endpoints["issue_export"])
+	}
 	capabilities := payload["capabilities"].(map[string]any)
 	if capabilities["registry"] != true {
 		t.Fatalf("capabilities.registry=%v; want true", capabilities["registry"])
@@ -202,6 +208,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	}
 	if capabilities["sessions"] != true {
 		t.Fatalf("capabilities.sessions=%v; want true", capabilities["sessions"])
+	}
+	if capabilities["issue_builder"] != true {
+		t.Fatalf("capabilities.issue_builder=%v; want true", capabilities["issue_builder"])
 	}
 }
 
@@ -909,5 +918,52 @@ func TestSessionsLoadValidation(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d; want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestIssueDraftAndExportEndpoints(t *testing.T) {
+	h := NewHandler(Options{
+		GatewayVersion: "test-v",
+		BuildID:        "test-b",
+		ListRegistry: func() []RegistryDevice {
+			return []RegistryDevice{{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC720"}}
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/draft?title=Draft+Title&observation=Obs", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("draft status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var draft map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("draft unmarshal: %v", err)
+	}
+	if draft["title"] != "Draft Title" {
+		t.Fatalf("title=%v; want Draft Title", draft["title"])
+	}
+	if !strings.Contains(draft["markdown"].(string), "## 1) Context") {
+		t.Fatalf("markdown missing context section")
+	}
+	if _, ok := draft["evidence"].(map[string]any); !ok {
+		t.Fatalf("evidence missing or invalid")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/issues/export?title=Draft+Title", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var bundle map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &bundle); err != nil {
+		t.Fatalf("export unmarshal: %v", err)
+	}
+	if bundle["format_version"] != "helianthus-issue-bundle/v1" {
+		t.Fatalf("format_version=%v", bundle["format_version"])
+	}
+	if bundle["filename_hint"] == "" {
+		t.Fatalf("filename_hint missing")
 	}
 }

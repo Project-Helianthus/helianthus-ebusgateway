@@ -50,6 +50,31 @@ func TestHandlerAssets(t *testing.T) {
 	}
 }
 
+func TestHandlerAssets_NoMilestonePlaceholders(t *testing.T) {
+	h := NewHandler(Options{})
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, banned := range []string{
+		"Coming Soon",
+		"M0 skeleton",
+		"(M1)",
+		"(M2)",
+		"(M3)",
+		"(M5)",
+	} {
+		if strings.Contains(body, banned) {
+			t.Fatalf("asset app.js still contains banned placeholder text %q", banned)
+		}
+	}
+}
+
 func TestHandlerAssetsNotModified(t *testing.T) {
 	h := NewHandler(Options{})
 

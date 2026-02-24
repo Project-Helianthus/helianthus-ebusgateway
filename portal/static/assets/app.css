@@ -127,6 +127,17 @@ body {
   padding: 0.52rem 0.6rem;
 }
 
+.sidebar button.enabled {
+  border-style: solid;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.sidebar button.enabled:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .main {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -173,6 +184,13 @@ body {
   font-size: 0.95rem;
 }
 
+.card-meta {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.3;
+}
+
 .badge {
   display: inline-block;
   margin-top: 0.45rem;
@@ -180,6 +198,18 @@ body {
   border-radius: 999px;
   padding: 0.2rem 0.5rem;
   font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.badge.available {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.badge.unavailable {
+  border-color: color-mix(in srgb, #d96f6f 45%, var(--border));
+  background: color-mix(in srgb, #d96f6f 14%, transparent);
   color: var(--muted);
 }
 
@@ -211,6 +241,70 @@ body {
 .timeline-filter {
   width: 100%;
   margin: 0 0 0.6rem;
+}
+
+.projection-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(160px, 240px) auto;
+  gap: 0.45rem;
+  margin: 0 0 0.65rem;
+}
+
+.projection-controls.disabled {
+  opacity: 0.7;
+}
+
+.projection-graph {
+  margin-top: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+  padding: 0.6rem;
+  overflow: auto;
+}
+
+.projection-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.projection-graph-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.projection-svg {
+  width: 100%;
+  min-width: 620px;
+  height: auto;
+}
+
+.projection-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 38%, var(--border));
+  stroke-width: 1.4;
+  opacity: 0.78;
+}
+
+.projection-node rect {
+  fill: color-mix(in srgb, var(--card) 92%, var(--accent) 8%);
+  stroke: color-mix(in srgb, var(--accent) 40%, var(--border));
+  stroke-width: 1;
+}
+
+.projection-node-title {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.projection-node-subtitle {
+  fill: var(--muted);
+  font-size: 10px;
 }
 
 .snapshot-controls {
@@ -259,5 +353,13 @@ body {
 
   .content {
     grid-template-columns: 1fr;
+  }
+
+  .projection-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .projection-svg {
+    min-width: 360px;
   }
 }

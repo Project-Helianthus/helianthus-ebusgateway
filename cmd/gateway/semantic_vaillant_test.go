@@ -344,3 +344,35 @@ func TestParseB524DhwFromGrab(t *testing.T) {
 		t.Fatalf("current temp = %v; want 50", dhw.CurrentTempC)
 	}
 }
+
+func TestParseB524DhwFromGrabAcceptsRemoteReadOpcode(t *testing.T) {
+	t.Parallel()
+
+	lines := []string{
+		"f115b52406060001000300 / 010103000100 = 1",
+		"f115b52406060001000400 / 0101040000005c42 = 1",
+		"f115b52406060001000500 / 0101050000004842 = 1",
+		"f115b52406060001000d00 / 01010d000000 = 1",
+	}
+
+	dhw, ok := parseB524DhwFromGrab(lines, 0x15)
+	if !ok || dhw == nil {
+		t.Fatalf("parseB524DhwFromGrab returned nil")
+	}
+	if dhw.OperatingMode != "auto" {
+		t.Fatalf("operating mode = %q; want auto", dhw.OperatingMode)
+	}
+	if dhw.CurrentTempC == nil || *dhw.CurrentTempC != 50.0 {
+		t.Fatalf("current temp = %v; want 50", dhw.CurrentTempC)
+	}
+}
+
+func TestParseB524GrabLineRejectsUnsupportedOpcode(t *testing.T) {
+	t.Parallel()
+
+	line := "f115b52406010001000500 / 0801050000004842 = 1"
+	_, _, _, _, ok := parseB524GrabLine(line, 0x15)
+	if ok {
+		t.Fatalf("expected unsupported opcode line to be rejected")
+	}
+}

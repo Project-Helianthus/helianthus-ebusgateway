@@ -461,8 +461,9 @@ func parseB524GrabLine(line string, controller byte) (byte, byte, uint16, []byte
 	if reqBytes[2] != vaillantExtRegisterPrimary || reqBytes[3] != vaillantExtRegisterSecondary {
 		return 0, 0, 0, nil, false
 	}
+	readOpcode := reqBytes[5]
 	if reqBytes[4] != vaillantB524OpcodeRead ||
-		reqBytes[5] != vaillantB524OpcodeLocal ||
+		!isB524GrabReadOpcode(readOpcode) ||
 		reqBytes[6] != vaillantB524OpRead {
 		return 0, 0, 0, nil, false
 	}
@@ -499,11 +500,15 @@ func parseB524GrabLine(line string, controller byte) (byte, byte, uint16, []byte
 		respBytes = respBytes[1:]
 	}
 
-	payload, ok := parseB524ReadPayload(respBytes, vaillantB524OpcodeLocal, group, instance, addr)
+	payload, ok := parseB524ReadPayload(respBytes, readOpcode, group, instance, addr)
 	if !ok {
 		return 0, 0, 0, nil, false
 	}
 	return group, instance, addr, payload, true
+}
+
+func isB524GrabReadOpcode(opcode byte) bool {
+	return opcode == vaillantB524OpcodeLocal || opcode == vaillantB524OpcodeRead
 }
 
 func decodeHexField(value string) ([]byte, bool) {

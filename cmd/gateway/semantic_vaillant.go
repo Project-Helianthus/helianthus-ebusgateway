@@ -482,8 +482,8 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) {
 
 	currentPtr := p.readDhwFloat(ctx, dhwRegCurrentTemp)
 	targetPtr := p.readDhwFloat(ctx, dhwRegTargetTemp)
-	opModeRaw, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegOperationMode)
-	sfModeRaw, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegSpecialFunction)
+	opModeRaw, _ := p.readDhwUint16(ctx, dhwRegOperationMode)
+	sfModeRaw, _ := p.readDhwUint16(ctx, dhwRegSpecialFunction)
 
 	operatingMode, preset := deriveDhwModeAndPreset(opModeRaw, sfModeRaw)
 	if operatingMode == "" && preset == "" && currentPtr == nil && targetPtr == nil {
@@ -512,12 +512,25 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) {
 }
 
 func (p *vaillantSemanticPoller) readDhwFloat(ctx context.Context, addr uint16) *float64 {
-	value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, addr)
-	if !ok {
-		return nil
+	for _, opcode := range []byte{vaillantB524OpcodeLocal, vaillantB524OpcodeRead} {
+		value, ok := p.readB524Float32LE(ctx, opcode, vaillantGroupDHW, dhwInstance, addr)
+		if !ok {
+			continue
+		}
+		floatValue := value
+		return &floatValue
 	}
-	floatValue := value
-	return &floatValue
+	return nil
+}
+
+func (p *vaillantSemanticPoller) readDhwUint16(ctx context.Context, addr uint16) (*uint16, bool) {
+	for _, opcode := range []byte{vaillantB524OpcodeLocal, vaillantB524OpcodeRead} {
+		value, ok := p.readB524Uint16(ctx, opcode, vaillantGroupDHW, dhwInstance, addr)
+		if ok {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func (p *vaillantSemanticPoller) publishDHW() {

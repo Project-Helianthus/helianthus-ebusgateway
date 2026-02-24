@@ -5,6 +5,7 @@ import (
 
 	"github.com/d3vi1/helianthus-ebusgateway"
 	"github.com/d3vi1/helianthus-ebusgateway/graphql"
+	"github.com/d3vi1/helianthus-ebusgateway/mcp"
 )
 
 type runtimeStatusProvider struct {
@@ -29,6 +30,35 @@ func newRuntimeStatusProvider(cfg ebusgateway.Config) graphql.StatusProvider {
 			InitiatorAddress: formatConfiguredInitiator(cfg.ScanSource, cfg.ScanSourceAuto),
 		},
 		adapter: graphql.ServiceStatus{
+			Status:           "unknown",
+			FirmwareVersion:  "",
+			UpdatesAvailable: false,
+		},
+	}
+}
+
+type runtimeMCPStatusProvider struct {
+	daemon  mcp.ServiceStatus
+	adapter mcp.ServiceStatus
+}
+
+func (p runtimeMCPStatusProvider) DaemonStatus() mcp.ServiceStatus {
+	return p.daemon
+}
+
+func (p runtimeMCPStatusProvider) AdapterStatus() mcp.ServiceStatus {
+	return p.adapter
+}
+
+func newMCPRuntimeStatusProvider(cfg ebusgateway.Config) mcp.StatusProvider {
+	return runtimeMCPStatusProvider{
+		daemon: mcp.ServiceStatus{
+			Status:           "running",
+			FirmwareVersion:  "",
+			UpdatesAvailable: false,
+			InitiatorAddress: formatConfiguredInitiator(cfg.ScanSource, cfg.ScanSourceAuto),
+		},
+		adapter: mcp.ServiceStatus{
 			Status:           "unknown",
 			FirmwareVersion:  "",
 			UpdatesAvailable: false,

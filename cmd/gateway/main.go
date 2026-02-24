@@ -204,7 +204,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	})
 }
 
-func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub, semantic graphql.SemanticProvider) (*http.Server, mdns.Advertiser, error) {
+func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub, semanticProvider graphql.SemanticProvider) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
 	}
@@ -237,6 +237,8 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 	if err != nil {
 		return nil, nil, err
 	}
+	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg))
+	mcpServer.SetSemanticProvider(newMCPSemanticProvider(semanticProvider))
 
 	mux := http.NewServeMux()
 	mux.Handle(cfg.GraphQLPath, queryHandler)
@@ -306,10 +308,10 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 				return items
 			},
 			ListSemantic: func() portal.SemanticSnapshot {
-				if semantic == nil {
+				if semanticProvider == nil {
 					return portal.SemanticSnapshot{}
 				}
-				zones := semantic.Zones()
+				zones := semanticProvider.Zones()
 				zoneItems := make([]portal.SemanticZone, 0, len(zones))
 				for _, zone := range zones {
 					zoneItems = append(zoneItems, portal.SemanticZone{
@@ -324,7 +326,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 				}
 
 				var dhw *portal.SemanticDHW
-				if value := semantic.DHW(); value != nil {
+				if value := semanticProvider.DHW(); value != nil {
 					dhw = &portal.SemanticDHW{
 						OperatingMode: value.OperatingMode,
 						Preset:        value.Preset,
@@ -335,7 +337,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 				}
 
 				var energy *portal.SemanticEnergyTotals
-				if value := semantic.EnergyTotals(); value != nil {
+				if value := semanticProvider.EnergyTotals(); value != nil {
 					energy = &portal.SemanticEnergyTotals{
 						Gas: portal.SemanticEnergyChannel{
 							DHW:     portal.SemanticEnergySeries{Today: value.Gas.DHW.Today, Yearly: append([]float64(nil), value.Gas.DHW.Yearly...)},

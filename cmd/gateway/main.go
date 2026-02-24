@@ -21,6 +21,7 @@ import (
 	"github.com/d3vi1/helianthus-ebusgateway/portal"
 	"github.com/d3vi1/helianthus-ebusgateway/ui"
 	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
+	"github.com/d3vi1/helianthus-ebusreg/registry"
 )
 
 var (
@@ -82,7 +83,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	startDiscoveryScanLoop(ctx, cfg, gateway, builder)
 
-	server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, semanticRuntime.Provider(), hub)
+	server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, hub, semanticRuntime.Provider())
 	if err != nil {
 		return err
 	}
@@ -125,16 +126,17 @@ func applyTransportSourcePolicy(cfg *ebusgateway.Config) {
 	if cfg == nil {
 		return
 	}
-	if !cfg.ScanSourceAuto {
-		return
-	}
 
 	protocol := strings.TrimSpace(strings.ToLower(string(cfg.TransportConfig.Protocol)))
 	switch protocol {
 	case "ebusd", "ebusd-tcp":
-		cfg.ScanSource = 0x31
+		if cfg.ScanSourceAuto || cfg.ScanSource == 0xF0 {
+			cfg.ScanSource = 0x31
+		}
 	default:
-		cfg.ScanSource = 0x00
+		if cfg.ScanSourceAuto {
+			cfg.ScanSource = 0x00
+		}
 	}
 }
 
@@ -202,7 +204,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	})
 }
 
-func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, semanticProvider graphql.SemanticProvider, hub *graphql.BroadcastHub) (*http.Server, mdns.Advertiser, error) {
+func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub, semanticProvider graphql.SemanticProvider) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
 	}
@@ -267,6 +269,156 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 			MCPPath:          cfg.MCPPath,
 			GatewayVersion:   buildVersion,
 			BuildID:          buildID,
+			ListRegistry: func() []portal.RegistryDevice {
+				items := make([]portal.RegistryDevice, 0)
+				gateway.Registry.Iterate(func(entry registry.DeviceEntry) bool {
+					if entry == nil {
+						return true
+					}
+					device := portal.RegistryDevice{
+						Address:      entry.Address(),
+						Addresses:    append([]byte(nil), entry.Addresses()...),
+						Manufacturer: entry.Manufacturer(),
+						DeviceID:     entry.DeviceID(),
+						SerialNumber: entry.SerialNumber(),
+						Software:     entry.SoftwareVersion(),
+						Hardware:     entry.HardwareVersion(),
+						Planes:       make([]portal.RegistryPlane, 0),
+					}
+					for _, plane := range entry.Planes() {
+						if plane == nil {
+							continue
+						}
+						methods := plane.Methods()
+						methodNames := make([]string, 0, len(methods))
+						for _, method := range methods {
+							if method == nil {
+								continue
+							}
+							methodNames = append(methodNames, method.Name())
+						}
+						device.Planes = append(device.Planes, portal.RegistryPlane{
+							Name:    plane.Name(),
+							Methods: methodNames,
+						})
+					}
+					items = append(items, device)
+					return true
+				})
+				return items
+			},
+			ListSemantic: func() portal.SemanticSnapshot {
+				if semanticProvider == nil {
+					return portal.SemanticSnapshot{}
+				}
+				zones := semanticProvider.Zones()
+				zoneItems := make([]portal.SemanticZone, 0, len(zones))
+				for _, zone := range zones {
+					zoneItems = append(zoneItems, portal.SemanticZone{
+						ID:            zone.ID,
+						Name:          zone.Name,
+						OperatingMode: zone.OperatingMode,
+						Preset:        zone.Preset,
+						CurrentTempC:  zone.CurrentTempC,
+						TargetTempC:   zone.TargetTempC,
+						HeatingDemand: zone.HeatingDemand,
+					})
+				}
+
+				var dhw *portal.SemanticDHW
+				if value := semanticProvider.DHW(); value != nil {
+					dhw = &portal.SemanticDHW{
+						OperatingMode: value.OperatingMode,
+						Preset:        value.Preset,
+						CurrentTempC:  value.CurrentTempC,
+						TargetTempC:   value.TargetTempC,
+						HeatingDemand: value.HeatingDemand,
+					}
+				}
+
+				var energy *portal.SemanticEnergyTotals
+				if value := semanticProvider.EnergyTotals(); value != nil {
+					energy = &portal.SemanticEnergyTotals{
+						Gas: portal.SemanticEnergyChannel{
+							DHW:     portal.SemanticEnergySeries{Today: value.Gas.DHW.Today, Yearly: append([]float64(nil), value.Gas.DHW.Yearly...)},
+							Climate: portal.SemanticEnergySeries{Today: value.Gas.Climate.Today, Yearly: append([]float64(nil), value.Gas.Climate.Yearly...)},
+						},
+						Electric: portal.SemanticEnergyChannel{
+							DHW:     portal.SemanticEnergySeries{Today: value.Electric.DHW.Today, Yearly: append([]float64(nil), value.Electric.DHW.Yearly...)},
+							Climate: portal.SemanticEnergySeries{Today: value.Electric.Climate.Today, Yearly: append([]float64(nil), value.Electric.Climate.Yearly...)},
+						},
+						Solar: portal.SemanticEnergyChannel{
+							DHW:     portal.SemanticEnergySeries{Today: value.Solar.DHW.Today, Yearly: append([]float64(nil), value.Solar.DHW.Yearly...)},
+							Climate: portal.SemanticEnergySeries{Today: value.Solar.Climate.Today, Yearly: append([]float64(nil), value.Solar.Climate.Yearly...)},
+						},
+					}
+				}
+
+				return portal.SemanticSnapshot{
+					Zones:       zoneItems,
+					DHW:         dhw,
+					Energy:      energy,
+					CapturedUTC: time.Now().UTC().Format(time.RFC3339),
+				}
+			},
+			ListProjections: func() []portal.ProjectionDevice {
+				snapshot := builder.Schema()
+				items := make([]portal.ProjectionDevice, 0, len(snapshot.Devices))
+				for _, device := range snapshot.Devices {
+					summaries := make([]portal.ProjectionSummary, 0, len(device.Projections))
+					for _, projection := range device.Projections {
+						summaries = append(summaries, portal.ProjectionSummary{
+							Plane:     projection.Plane,
+							NodeCount: len(projection.Nodes),
+							EdgeCount: len(projection.Edges),
+						})
+					}
+					items = append(items, portal.ProjectionDevice{
+						Address:      device.Address,
+						DeviceID:     device.DeviceID,
+						DisplayName:  device.DisplayName,
+						Manufacturer: device.Manufacturer,
+						Projections:  summaries,
+					})
+				}
+				return items
+			},
+			GetProjection: func(address byte, plane string) (portal.ProjectionGraph, bool) {
+				snapshot := builder.Schema()
+				for _, device := range snapshot.Devices {
+					if device.Address != address {
+						continue
+					}
+					for _, projection := range device.Projections {
+						if !strings.EqualFold(projection.Plane, plane) {
+							continue
+						}
+						nodes := make([]portal.ProjectionNode, 0, len(projection.Nodes))
+						for _, node := range projection.Nodes {
+							nodes = append(nodes, portal.ProjectionNode{
+								ID:            node.ID,
+								Path:          node.Path,
+								CanonicalPath: node.CanonicalPath,
+							})
+						}
+						edges := make([]portal.ProjectionEdge, 0, len(projection.Edges))
+						for _, edge := range projection.Edges {
+							edges = append(edges, portal.ProjectionEdge{
+								ID:   edge.ID,
+								From: edge.From,
+								To:   edge.To,
+							})
+						}
+						return portal.ProjectionGraph{
+							Address: address,
+							Plane:   projection.Plane,
+							Nodes:   nodes,
+							Edges:   edges,
+						}, true
+					}
+				}
+				return portal.ProjectionGraph{}, false
+			},
 		})
 		mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))
 		mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {

@@ -78,6 +78,19 @@ func TestApplyTransportSourcePolicy_NonEbusdAutoRemainsDynamic(t *testing.T) {
 	}
 }
 
+func TestApplyTransportSourcePolicy_EbusdTCPDefaultF0PromotesToEbusdSource(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
+	cfg.ScanSource = 0xF0
+	cfg.ScanSourceAuto = false
+
+	applyTransportSourcePolicy(&cfg)
+
+	if cfg.ScanSource != 0x31 {
+		t.Fatalf("ScanSource = 0x%02x; want 0x31", cfg.ScanSource)
+	}
+}
+
 func TestBindFlags_PortalPath(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)

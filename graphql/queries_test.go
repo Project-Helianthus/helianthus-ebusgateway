@@ -291,9 +291,18 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					name
 					operatingMode
 					preset
+					hvacAction
+					allowedModes
 					currentTempC
 					targetTempC
+					currentHumidityPct
 					heatingDemand
+					specialFunction
+					circuitTypeRaw
+					zoneCircuitIndexRaw
+					zoneOperationModeRaw
+					zoneValveStatusRaw
+					zoneSpecialFunctionRaw
 				}
 				dhw {
 					operatingMode
@@ -301,26 +310,41 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					currentTempC
 					targetTempC
 					heatingDemand
+					specialFunction
+					dhwOperationModeRaw
+					dhwSpecialFunctionRaw
 				}
 			}
 		`)
 
 		var response struct {
 			Zones []struct {
-				ID            string   `json:"id"`
-				Name          string   `json:"name"`
-				OperatingMode *string  `json:"operatingMode"`
-				Preset        *string  `json:"preset"`
-				CurrentTempC  *float64 `json:"currentTempC"`
-				TargetTempC   *float64 `json:"targetTempC"`
-				HeatingDemand *float64 `json:"heatingDemand"`
+				ID                     string   `json:"id"`
+				Name                   string   `json:"name"`
+				OperatingMode          *string  `json:"operatingMode"`
+				Preset                 *string  `json:"preset"`
+				HvacAction             *string  `json:"hvacAction"`
+				AllowedModes           []string `json:"allowedModes"`
+				CurrentTempC           *float64 `json:"currentTempC"`
+				TargetTempC            *float64 `json:"targetTempC"`
+				CurrentHumidityPct     *float64 `json:"currentHumidityPct"`
+				HeatingDemand          *float64 `json:"heatingDemand"`
+				SpecialFunction        *string  `json:"specialFunction"`
+				CircuitTypeRaw         *string  `json:"circuitTypeRaw"`
+				ZoneCircuitIndexRaw    *string  `json:"zoneCircuitIndexRaw"`
+				ZoneOperationModeRaw   *string  `json:"zoneOperationModeRaw"`
+				ZoneValveStatusRaw     *string  `json:"zoneValveStatusRaw"`
+				ZoneSpecialFunctionRaw *string  `json:"zoneSpecialFunctionRaw"`
 			} `json:"zones"`
 			DHW *struct {
-				OperatingMode *string  `json:"operatingMode"`
-				Preset        *string  `json:"preset"`
-				CurrentTempC  *float64 `json:"currentTempC"`
-				TargetTempC   *float64 `json:"targetTempC"`
-				HeatingDemand *float64 `json:"heatingDemand"`
+				OperatingMode         *string  `json:"operatingMode"`
+				Preset                *string  `json:"preset"`
+				CurrentTempC          *float64 `json:"currentTempC"`
+				TargetTempC           *float64 `json:"targetTempC"`
+				HeatingDemand         *float64 `json:"heatingDemand"`
+				SpecialFunction       *string  `json:"specialFunction"`
+				DhwOperationModeRaw   *string  `json:"dhwOperationModeRaw"`
+				DhwSpecialFunctionRaw *string  `json:"dhwSpecialFunctionRaw"`
 			} `json:"dhw"`
 		}
 

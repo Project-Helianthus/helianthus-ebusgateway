@@ -75,6 +75,32 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return zone.Preset, nil
 				},
 			},
+			"hvacAction": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					zone, ok := params.Source.(Zone)
+					if !ok {
+						return nil, nil
+					}
+					if zone.HvacAction == "" {
+						return nil, nil
+					}
+					return zone.HvacAction, nil
+				},
+			},
+			"allowedModes": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.String))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					zone, ok := params.Source.(Zone)
+					if !ok {
+						return []string{}, nil
+					}
+					if len(zone.AllowedModes) == 0 {
+						return []string{"off", "auto", "heat"}, nil
+					}
+					return zone.AllowedModes, nil
+				},
+			},
 			"currentTempC": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -101,6 +127,19 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return *zone.TargetTempC, nil
 				},
 			},
+			"currentHumidityPct": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					zone, ok := params.Source.(Zone)
+					if !ok {
+						return nil, nil
+					}
+					if zone.CurrentHumidityPct == nil {
+						return nil, nil
+					}
+					return *zone.CurrentHumidityPct, nil
+				},
+			},
 			"heatingDemand": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -112,6 +151,84 @@ func buildSchemaTypes() graphqlSchemaTypes {
 						return nil, nil
 					}
 					return *zone.HeatingDemand, nil
+				},
+			},
+			"specialFunction": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					zone, ok := params.Source.(Zone)
+					if !ok {
+						return nil, nil
+					}
+					if zone.SpecialFunction == "" {
+						return nil, nil
+					}
+					return zone.SpecialFunction, nil
+				},
+			},
+			"circuitTypeRaw": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					zone, ok := params.Source.(Zone)
+					if !ok {
+						return nil, nil
+					}
+					if zone.CircuitTypeRaw == "" {
+						return nil, nil
+					}
+					return zone.CircuitTypeRaw, nil
+				},
+			},
+			"zoneCircuitIndexRaw": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					zone, ok := params.Source.(Zone)
+					if !ok {
+						return nil, nil
+					}
+					if zone.ZoneCircuitIndexRaw == "" {
+						return nil, nil
+					}
+					return zone.ZoneCircuitIndexRaw, nil
+				},
+			},
+			"zoneOperationModeRaw": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					zone, ok := params.Source.(Zone)
+					if !ok {
+						return nil, nil
+					}
+					if zone.ZoneOperationModeRaw == "" {
+						return nil, nil
+					}
+					return zone.ZoneOperationModeRaw, nil
+				},
+			},
+			"zoneValveStatusRaw": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					zone, ok := params.Source.(Zone)
+					if !ok {
+						return nil, nil
+					}
+					if zone.ZoneValveStatusRaw == "" {
+						return nil, nil
+					}
+					return zone.ZoneValveStatusRaw, nil
+				},
+			},
+			"zoneSpecialFunctionRaw": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					zone, ok := params.Source.(Zone)
+					if !ok {
+						return nil, nil
+					}
+					if zone.ZoneSpecialFunctionRaw == "" {
+						return nil, nil
+					}
+					return zone.ZoneSpecialFunctionRaw, nil
 				},
 			},
 		},
@@ -271,6 +388,45 @@ func buildSchemaTypes() graphqlSchemaTypes {
 						return nil, nil
 					}
 					return *status.HeatingDemand, nil
+				},
+			},
+			"specialFunction": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*DhwStatus)
+					if !ok {
+						return nil, nil
+					}
+					if status.SpecialFunction == "" {
+						return nil, nil
+					}
+					return status.SpecialFunction, nil
+				},
+			},
+			"dhwOperationModeRaw": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*DhwStatus)
+					if !ok {
+						return nil, nil
+					}
+					if status.DhwOperationModeRaw == "" {
+						return nil, nil
+					}
+					return status.DhwOperationModeRaw, nil
+				},
+			},
+			"dhwSpecialFunctionRaw": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*DhwStatus)
+					if !ok {
+						return nil, nil
+					}
+					if status.DhwSpecialFunctionRaw == "" {
+						return nil, nil
+					}
+					return status.DhwSpecialFunctionRaw, nil
 				},
 			},
 		},

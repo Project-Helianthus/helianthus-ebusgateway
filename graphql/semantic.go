@@ -1,21 +1,33 @@
 package graphql
 
 type Zone struct {
-	ID            string
-	Name          string
-	OperatingMode string
-	Preset        string
-	CurrentTempC  *float64
-	TargetTempC   *float64
-	HeatingDemand *float64
+	ID                     string
+	Name                   string
+	OperatingMode          string
+	Preset                 string
+	HvacAction             string
+	AllowedModes           []string
+	CurrentTempC           *float64
+	TargetTempC            *float64
+	CurrentHumidityPct     *float64
+	HeatingDemand          *float64
+	SpecialFunction        string
+	CircuitTypeRaw         string
+	ZoneCircuitIndexRaw    string
+	ZoneOperationModeRaw   string
+	ZoneValveStatusRaw     string
+	ZoneSpecialFunctionRaw string
 }
 
 type DhwStatus struct {
-	OperatingMode string
-	Preset        string
-	CurrentTempC  *float64
-	TargetTempC   *float64
-	HeatingDemand *float64
+	OperatingMode         string
+	Preset                string
+	CurrentTempC          *float64
+	TargetTempC           *float64
+	HeatingDemand         *float64
+	SpecialFunction       string
+	DhwOperationModeRaw   string
+	DhwSpecialFunctionRaw string
 }
 
 type EnergySeries struct {

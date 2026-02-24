@@ -93,6 +93,9 @@ curl -fsS http://127.0.0.1:8080/mcp \
   --data '{"jsonrpc":"2.0","id":"ready","method":"ping","params":{}}'
 ```
 
+Portal API probes and operational notes live in docs:
+https://github.com/d3vi1/helianthus-docs-ebus/blob/main/api/portal.md
+
 ## Local Smoke-Test Configuration Example
 
 Smoke mode reads YAML blocks from repo-root `AGENT-local.md`. Minimal example:
@@ -163,8 +166,6 @@ go run ./cmd/gateway -address tcp-plain://203.0.113.10:9999 -http-addr :8080
 | Area | Command |
 |---|---|
 | terminology gate (CI parity) | `if git grep -nIwiE 'm[a]ster|s[l]ave'; then echo "Found legacy terminology."; exit 1; fi` |
-| portal assets build | `./scripts/build_portal_assets.sh` |
-| portal assets drift check | `./scripts/check_portal_assets.sh` |
 | compile | `go build ./...` |
 | vet | `go vet ./...` |
 | tests (CI parity) | `go test -race -count=1 ./...` |
@@ -173,28 +174,6 @@ go run ./cmd/gateway -address tcp-plain://203.0.113.10:9999 -http-addr :8080
 | smoke entrypoint smoke-check | `EBUS_SMOKE=0 go run ./cmd/smoke` |
 | ebusd helper smoke-check | `go run ./cmd/ebusdscan -h` |
 
-## Portal Asset Build Scaffold
-
-Portal static assets are built from canonical sources under `portal/web/src` and embedded into the gateway binary under `portal/static/assets`.
-
-- Build assets: `./scripts/build_portal_assets.sh`
-- Validate generated assets are committed: `./scripts/check_portal_assets.sh`
-
-Production runtime does not require Node. Node is only needed at build time when regenerating portal assets.
-
-## Portal Observability (M0 Baseline)
-
-Portal requests emit structured log lines with:
-- `method`
-- `path`
-- `route`
-- `status`
-- `duration_ms`
-
-Portal also exports `expvar` counters/maps:
-- `portal_requests_total`
-- `portal_route_duration_ms_total`
-
 ## Link Map
 
 ### Repositories and docs
@@ -202,6 +181,7 @@ Portal also exports `expvar` counters/maps:
 - `helianthus-ebusgo`: https://github.com/d3vi1/helianthus-ebusgo
 - `helianthus-ebusreg`: https://github.com/d3vi1/helianthus-ebusreg
 - eBUS docs hub: https://github.com/d3vi1/helianthus-docs-ebus
+- Portal API and operations: https://github.com/d3vi1/helianthus-docs-ebus/blob/main/api/portal.md
 - Smoke-test documentation: https://github.com/d3vi1/helianthus-docs-ebus/blob/main/development/smoke-test.md
 - Issue tracker: https://github.com/d3vi1/helianthus-ebusgateway/issues
 

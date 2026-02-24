@@ -16,7 +16,7 @@ import (
 
 const (
 	ebusdGrabCommand               = "grab result all\n"
-	ebusdGrabFollowupReadWindow    = 350 * time.Millisecond
+	ebusdGrabFollowupReadWindow    = 2 * time.Second
 	ebusdGrabMinimumInitialTimeout = 2 * time.Second
 )
 

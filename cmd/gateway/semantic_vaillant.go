@@ -477,6 +477,15 @@ func zoneEquals(a, b graphql.Zone) bool {
 func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) {
 	controller, _ := p.snapshotZones()
 	if controller == 0 {
+		if found, ok := findDeviceAddressByPrefix(p.reg, "BASV"); ok {
+			p.mu.Lock()
+			p.controller = found
+			p.mu.Unlock()
+			controller = found
+		}
+	}
+	if controller == 0 {
+		_ = p.refreshDHWFromEbusdGrab(ctx)
 		return
 	}
 

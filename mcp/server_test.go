@@ -159,12 +159,18 @@ func (p testStatusProvider) AdapterStatus() ServiceStatus {
 }
 
 type testSemanticProvider struct {
-	zones  []Zone
-	dhw    *DhwStatus
-	energy *EnergyTotals
+	zones       []Zone
+	dhw         *DhwStatus
+	energy      *EnergyTotals
+	zonesDelay  time.Duration
+	dhwDelay    time.Duration
+	energyDelay time.Duration
 }
 
 func (p testSemanticProvider) Zones() []Zone {
+	if p.zonesDelay > 0 {
+		time.Sleep(p.zonesDelay)
+	}
 	if len(p.zones) == 0 {
 		return nil
 	}
@@ -174,6 +180,9 @@ func (p testSemanticProvider) Zones() []Zone {
 }
 
 func (p testSemanticProvider) DHW() *DhwStatus {
+	if p.dhwDelay > 0 {
+		time.Sleep(p.dhwDelay)
+	}
 	if p.dhw == nil {
 		return nil
 	}
@@ -182,6 +191,9 @@ func (p testSemanticProvider) DHW() *DhwStatus {
 }
 
 func (p testSemanticProvider) EnergyTotals() *EnergyTotals {
+	if p.energyDelay > 0 {
+		time.Sleep(p.energyDelay)
+	}
 	if p.energy == nil {
 		return nil
 	}
@@ -223,14 +235,15 @@ func TestServer_InitializeAndTools(t *testing.T) {
 		t.Fatalf("tools/list result type = %T; want map", res.Result)
 	}
 	tools, ok := resultMap["tools"].([]any)
-	if !ok || len(tools) < 13 {
-		t.Fatalf("tools = %#v; want at least 13 tools", resultMap["tools"])
+	if !ok || len(tools) < 14 {
+		t.Fatalf("tools = %#v; want at least 14 tools", resultMap["tools"])
 	}
 	for _, name := range []string{
 		toolRuntimeStatusGetName,
 		toolSemanticZonesGetName,
 		toolSemanticDHWGetName,
 		toolSemanticEnergyGetName,
+		toolSemanticSnapshotName,
 		toolSnapshotCaptureName,
 		toolSnapshotDropName,
 		toolDevicesV1Name,
@@ -532,6 +545,157 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 		if today, _ := dhw["today"].(float64); today != 1.25 {
 			t.Fatalf("energy gas.dhw.today = %v; want 1.25", dhw["today"])
+		}
+	})
+
+	t.Run("semantic snapshot default planes", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      4,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("snapshot data type = %T; want map", envelope["data"])
+		}
+		completed, ok := data["completed_planes"].([]any)
+		if !ok || len(completed) != 4 {
+			t.Fatalf("snapshot completed_planes = %#v; want 4 entries", data["completed_planes"])
+		}
+		planes, ok := data["planes"].(map[string]any)
+		if !ok {
+			t.Fatalf("snapshot planes type = %T; want map", data["planes"])
+		}
+		for _, key := range []string{"runtime_status", "zones", "dhw", "energy_totals"} {
+			if _, ok := planes[key]; !ok {
+				t.Fatalf("snapshot planes missing %q", key)
+			}
+		}
+	})
+
+	t.Run("semantic snapshot rejects unknown plane", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      5,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["unknown"]}}`),
+		})
+		assertToolErrorCode(t, res, "INVALID_ARGUMENT")
+	})
+
+	t.Run("semantic snapshot timeout atomic", func(t *testing.T) {
+		slowServer, err := NewServer(reg, &testInvoker{})
+		if err != nil {
+			t.Fatalf("NewServer error = %v", err)
+		}
+		slowServer.SetStatusProvider(testStatusProvider{
+			daemon: ServiceStatus{Status: "running"},
+			adapter: ServiceStatus{
+				Status: "connected",
+			},
+		})
+		slowServer.SetSemanticProvider(testSemanticProvider{
+			zones:      []Zone{{ID: "zone-a", Name: "Living"}},
+			dhw:        &DhwStatus{OperatingMode: "AUTO"},
+			zonesDelay: 20 * time.Millisecond,
+		})
+
+		res := doRPC(t, slowServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      6,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":10}}`),
+		})
+		assertToolErrorCode(t, res, "TIMEOUT")
+	})
+
+	t.Run("semantic snapshot timeout partial", func(t *testing.T) {
+		slowServer, err := NewServer(reg, &testInvoker{})
+		if err != nil {
+			t.Fatalf("NewServer error = %v", err)
+		}
+		slowServer.SetStatusProvider(testStatusProvider{
+			daemon: ServiceStatus{Status: "running"},
+			adapter: ServiceStatus{
+				Status: "connected",
+			},
+		})
+		slowServer.SetSemanticProvider(testSemanticProvider{
+			zones:      []Zone{{ID: "zone-a", Name: "Living"}},
+			dhw:        &DhwStatus{OperatingMode: "AUTO"},
+			zonesDelay: 20 * time.Millisecond,
+		})
+
+		res := doRPC(t, slowServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      7,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":35,"allow_partial":true}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("partial snapshot data type = %T; want map", envelope["data"])
+		}
+		completed, ok := data["completed_planes"].([]any)
+		if !ok || len(completed) == 0 {
+			t.Fatalf("partial snapshot completed_planes = %#v; want at least one", data["completed_planes"])
+		}
+		if _, ok := data["error_planes"].([]any); !ok {
+			t.Fatalf("partial snapshot error_planes type = %T; want []any", data["error_planes"])
+		}
+	})
+
+	t.Run("semantic snapshot timeout partial no duplicate plane errors", func(t *testing.T) {
+		slowServer, err := NewServer(reg, &testInvoker{})
+		if err != nil {
+			t.Fatalf("NewServer error = %v", err)
+		}
+		slowServer.SetStatusProvider(testStatusProvider{
+			daemon: ServiceStatus{Status: "running"},
+			adapter: ServiceStatus{
+				Status: "connected",
+			},
+		})
+		slowServer.SetSemanticProvider(testSemanticProvider{
+			zones:      []Zone{{ID: "zone-a", Name: "Living"}},
+			dhw:        &DhwStatus{OperatingMode: "AUTO"},
+			zonesDelay: 5 * time.Millisecond,
+		})
+
+		res := doRPC(t, slowServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      8,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":1,"allow_partial":true}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("partial snapshot data type = %T; want map", envelope["data"])
+		}
+		errorPlanes, ok := data["error_planes"].([]any)
+		if !ok {
+			t.Fatalf("partial snapshot error_planes type = %T; want []any", data["error_planes"])
+		}
+		if len(errorPlanes) != 2 {
+			t.Fatalf("partial snapshot error_planes len = %d; want 2", len(errorPlanes))
+		}
+		seen := make(map[string]int, len(errorPlanes))
+		for _, rawPlane := range errorPlanes {
+			planeErr, ok := rawPlane.(map[string]any)
+			if !ok {
+				t.Fatalf("error plane type = %T; want map", rawPlane)
+			}
+			planeName, _ := planeErr["plane"].(string)
+			seen[planeName]++
+		}
+		for _, planeName := range []string{"zones", "dhw"} {
+			if seen[planeName] != 1 {
+				t.Fatalf("plane %q error count = %d; want 1", planeName, seen[planeName])
+			}
 		}
 	})
 }

@@ -60,6 +60,7 @@ func TestToolInventoryGoldenSignatures(t *testing.T) {
 		{Name: "ebus.v1.runtime.status.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.dhw.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.energy_totals.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
+		{Name: "ebus.v1.semantic.snapshot.get", SchemaHash: "1b4e43cbbf56140aaa669a1e30b441638fe6a1336cb05ba0e61088ef69c003b3"},
 		{Name: "ebus.v1.semantic.zones.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.snapshot.capture", SchemaHash: "cd1a463c46d6264134447db17a8c3c7abe5b9a2488c6d759fea66da1f96b133e"},
 		{Name: "ebus.v1.snapshot.drop", SchemaHash: "3f2e89bf3346421daa820ec5cd5bf9b4a06815aebd32c0bd8758b90043d69f88"},
@@ -119,6 +120,7 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 		{name: "zones", tool: toolSemanticZonesGetName, args: `{}`},
 		{name: "dhw", tool: toolSemanticDHWGetName, args: `{}`},
 		{name: "energy", tool: toolSemanticEnergyGetName, args: `{}`},
+		{name: "semantic_snapshot", tool: toolSemanticSnapshotName, args: `{}`},
 		{name: "invoke", tool: toolInvokeV1Name, args: `{"address":8,"plane":"heating","method":"get_status","params":{},"intent":"READ_ONLY","allow_dangerous":false}`},
 	}
 

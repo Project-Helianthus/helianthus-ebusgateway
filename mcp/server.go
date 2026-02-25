@@ -100,6 +100,7 @@ const (
 	toolSemanticZonesGetName  = "ebus.v1.semantic.zones.get"
 	toolSemanticDHWGetName    = "ebus.v1.semantic.dhw.get"
 	toolSemanticEnergyGetName = "ebus.v1.semantic.energy_totals.get"
+	toolSemanticSnapshotName  = "ebus.v1.semantic.snapshot.get"
 	toolSnapshotCaptureName   = "ebus.v1.snapshot.capture"
 	toolSnapshotDropName      = "ebus.v1.snapshot.drop"
 	toolDevicesV1Name         = "ebus.v1.registry.devices.list"
@@ -118,6 +119,7 @@ const (
 	defaultInvokeTimeout      = 3 * time.Second
 	defaultIdempotencyTTL     = 30 * time.Second
 	defaultSnapshotTTL        = 5 * time.Minute
+	defaultSnapshotReadTTL    = 10 * time.Second
 )
 
 var errInvokePermissionDenied = errors.New("invoke permission denied")
@@ -250,6 +252,28 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolSemanticSnapshotName,
+			Description: "Get a consistent semantic snapshot across selected semantic planes.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"planes": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "string",
+							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals"},
+						},
+					},
+					"timeout_ms": map[string]any{"type": "integer", "minimum": 1},
+					"allow_partial": map[string]any{
+						"type": "boolean",
+					},
 					"consistency": consistencyInputProperty(),
 				},
 				"additionalProperties": false,
@@ -524,6 +548,16 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotEnergyTotals(snapshot), nil, consistency)), false), nil
+	case toolSemanticSnapshotName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		data, err := s.readSemanticSnapshot(ctx, call.Arguments, snapshot)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(nil, err, consistency)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(data, nil, consistency)), false), nil
 	case toolSnapshotCaptureName:
 		snapshotID, createdAt, err := s.captureSnapshot()
 		if err != nil {
@@ -1292,6 +1326,193 @@ func (s *Server) snapshotEnergyTotals(snapshot *snapshotState) *EnergyTotals {
 	copy.Electric = cloneEnergyChannel(copy.Electric)
 	copy.Solar = cloneEnergyChannel(copy.Solar)
 	return &copy
+}
+
+type semanticSnapshotOptions struct {
+	planes       []string
+	timeout      time.Duration
+	allowPartial bool
+}
+
+func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, snapshot *snapshotState) (map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	options, err := parseSemanticSnapshotOptions(args)
+	if err != nil {
+		return nil, err
+	}
+
+	deadlineCtx, cancel := context.WithTimeout(ctx, options.timeout)
+	defer cancel()
+
+	data := make(map[string]any, len(options.planes))
+	completed := make([]string, 0, len(options.planes))
+	errorPlanes := make([]map[string]any, 0)
+
+	perPlane := options.timeout / time.Duration(len(options.planes))
+	if perPlane <= 0 {
+		perPlane = options.timeout
+	}
+
+	for _, plane := range options.planes {
+		select {
+		case <-deadlineCtx.Done():
+			err := deadlineCtx.Err()
+			if options.allowPartial {
+				errorPlanes = append(errorPlanes, newSnapshotPlaneError(plane, err))
+				continue
+			}
+			return nil, err
+		default:
+		}
+
+		planeCtx, planeCancel := context.WithTimeout(deadlineCtx, perPlane)
+		value, planeErr := s.readSemanticPlane(planeCtx, plane, snapshot)
+		planeCancel()
+		if planeErr != nil {
+			if options.allowPartial {
+				errorPlanes = append(errorPlanes, newSnapshotPlaneError(plane, planeErr))
+				continue
+			}
+			return nil, planeErr
+		}
+		data[plane] = value
+		completed = append(completed, plane)
+	}
+
+	result := map[string]any{
+		"planes":           data,
+		"completed_planes": completed,
+	}
+	if options.allowPartial && len(errorPlanes) > 0 {
+		result["error_planes"] = errorPlanes
+	}
+	return result, nil
+}
+
+func parseSemanticSnapshotOptions(args map[string]any) (semanticSnapshotOptions, error) {
+	options := semanticSnapshotOptions{
+		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals"},
+		timeout:      defaultSnapshotReadTTL,
+		allowPartial: false,
+	}
+	if args == nil {
+		return options, nil
+	}
+
+	parsedPlanes, err := parseSemanticSnapshotPlanes(args["planes"])
+	if err != nil {
+		return semanticSnapshotOptions{}, err
+	}
+	if len(parsedPlanes) > 0 {
+		options.planes = parsedPlanes
+	}
+
+	if rawTimeout, ok := args["timeout_ms"]; ok {
+		timeout, err := parseInvokeTimeout(rawTimeout)
+		if err != nil {
+			return semanticSnapshotOptions{}, err
+		}
+		if timeout > 0 {
+			options.timeout = timeout
+		}
+	}
+
+	if rawPartial, ok := args["allow_partial"]; ok {
+		value, ok := rawPartial.(bool)
+		if !ok {
+			return semanticSnapshotOptions{}, fmt.Errorf("invalid allow_partial: %w", ebuserrors.ErrInvalidPayload)
+		}
+		options.allowPartial = value
+	}
+
+	return options, nil
+}
+
+func parseSemanticSnapshotPlanes(raw any) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	items, ok := raw.([]any)
+	if !ok {
+		if typed, ok := raw.([]string); ok {
+			if len(typed) == 0 {
+				return nil, nil
+			}
+			items = make([]any, 0, len(typed))
+			for _, value := range typed {
+				items = append(items, value)
+			}
+		} else {
+			return nil, fmt.Errorf("invalid planes: %w", ebuserrors.ErrInvalidPayload)
+		}
+	}
+
+	parsed := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		value, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid planes item: %w", ebuserrors.ErrInvalidPayload)
+		}
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		switch normalized {
+		case "runtime_status", "zones", "dhw", "energy_totals":
+		default:
+			return nil, fmt.Errorf("unsupported plane %q: %w", value, ebuserrors.ErrInvalidPayload)
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		parsed = append(parsed, normalized)
+	}
+	return parsed, nil
+}
+
+func (s *Server) readSemanticPlane(ctx context.Context, plane string, snapshot *snapshotState) (any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	var value any
+	switch plane {
+	case "runtime_status":
+		value = s.runtimeStatus(snapshot)
+	case "zones":
+		value = s.snapshotZones(snapshot)
+	case "dhw":
+		value = s.snapshotDHW(snapshot)
+	case "energy_totals":
+		value = s.snapshotEnergyTotals(snapshot)
+	default:
+		return nil, fmt.Errorf("unsupported plane %q: %w", plane, ebuserrors.ErrInvalidPayload)
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	return value, nil
+}
+
+func newSnapshotPlaneError(plane string, err error) map[string]any {
+	code, retriable, sourceLayer := classifyToolError(err)
+	return map[string]any{
+		"plane":        plane,
+		"code":         code,
+		"message":      err.Error(),
+		"retriable":    retriable,
+		"source_layer": sourceLayer,
+	}
 }
 
 func cloneEnergyChannel(channel EnergyChannel) EnergyChannel {

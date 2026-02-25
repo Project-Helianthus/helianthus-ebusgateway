@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -61,6 +62,7 @@ func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, g
 
 type vaillantSemanticPoller struct {
 	scheduler *ebusgateway.SemanticReadScheduler
+	tasks     *semanticTaskScheduler
 
 	reg      *registry.DeviceRegistry
 	bus      *protocol.Bus
@@ -120,6 +122,7 @@ type vaillantDhwSnapshot struct {
 func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub) *vaillantSemanticPoller {
 	return &vaillantSemanticPoller{
 		scheduler:       ebusgateway.NewSemanticReadScheduler(),
+		tasks:           newSemanticTaskScheduler(),
 		reg:             gateway.Registry,
 		bus:             gateway.Bus,
 		provider:        provider,
@@ -144,19 +147,19 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 		ctx = context.Background()
 	}
 
-	// Prime quickly so HA can create entities on first coordinator refresh.
-	go func() {
-		p.withPollLock(ctx, p.refreshDiscovery)
-		p.withPollLock(ctx, p.refreshConfig)
-		p.withPollLock(ctx, p.refreshState)
-	}()
+	go p.tasks.run(ctx)
 
-	go p.runLoop(ctx, p.discoveryInterval, p.refreshDiscovery)
-	go p.runLoop(ctx, p.configInterval, p.refreshConfig)
-	go p.runLoop(ctx, p.stateInterval, p.refreshState)
+	// Prime quickly so HA can create entities on first coordinator refresh.
+	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
+	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
+	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
+
+	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
+	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityMedium, p.refreshConfig)
+	go p.runLoop(ctx, p.stateInterval, semanticTaskPriorityHigh, p.refreshState)
 }
 
-func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Duration, fn func(context.Context)) {
+func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Duration, priority semanticTaskPriority, fn func(context.Context)) {
 	if interval <= 0 {
 		return
 	}
@@ -168,8 +171,29 @@ func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Dura
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.withPollLock(ctx, fn)
+			p.enqueueTask(priority, fn)
 		}
+	}
+}
+
+func (p *vaillantSemanticPoller) enqueueTask(priority semanticTaskPriority, fn func(context.Context)) {
+	if p == nil || fn == nil {
+		return
+	}
+	scheduler := p.tasks
+	if scheduler == nil {
+		p.withPollLock(context.Background(), fn)
+		return
+	}
+	err := scheduler.submit(priority, func(taskCtx context.Context) {
+		p.withPollLock(taskCtx, fn)
+	})
+	if errors.Is(err, errSemanticTaskQueueOverloaded) {
+		log.Printf("semantic poll scheduler overloaded: skipping task (priority=%d)", priority)
+		return
+	}
+	if err != nil {
+		log.Printf("semantic poll scheduler submit failed: %v", err)
 	}
 }
 

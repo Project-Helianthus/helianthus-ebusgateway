@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"testing"
 )
@@ -374,6 +375,81 @@ func TestZonePresenceFSM_AlternatingProbesDoNotFlapPresentZone(t *testing.T) {
 		if record == nil || record.State != zonePresencePresent {
 			t.Fatalf("presence state after hit = %+v; want PRESENT", record)
 		}
+	}
+}
+
+func TestReconcileDiscoveryPresence_SkipsMissDemotionWhenFallbackHydrates(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x03)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+
+	poller.presence[instance] = &zonePresenceRecord{
+		State:     zonePresenceSuspectResurrect,
+		HitStreak: 1,
+	}
+
+	poller.refreshFromEbusdGrabFn = func(_ context.Context) bool {
+		poller.applyZonePresenceProbes(
+			map[byte]bool{instance: true},
+			map[byte]bool{instance: true},
+		)
+		return true
+	}
+
+	source := poller.reconcileDiscoveryPresence(
+		context.Background(),
+		map[byte]bool{instance: true},
+		map[byte]bool{},
+	)
+	if source != semanticSnapshotSourceLive {
+		t.Fatalf("source = %v; want LIVE", source)
+	}
+	record := poller.presence[instance]
+	if record == nil || record.State != zonePresencePresent {
+		t.Fatalf("presence state = %+v; want PRESENT", record)
+	}
+	if _, exists := poller.zones[instance]; !exists {
+		t.Fatalf("zone should be present after fallback hydration hit reaches threshold")
+	}
+}
+
+func TestReconcileDiscoveryPresence_AppliesMissesWhenFallbackUnavailable(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x01)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+	poller.zones[instance] = &vaillantZoneSnapshot{Instance: instance, Present: true}
+	poller.presence[instance] = &zonePresenceRecord{
+		State:     zonePresencePresent,
+		HitStreak: poller.zoneHitThresholdValue(),
+	}
+	poller.refreshFromEbusdGrabFn = func(_ context.Context) bool { return false }
+
+	source := poller.reconcileDiscoveryPresence(
+		context.Background(),
+		map[byte]bool{instance: true},
+		map[byte]bool{},
+	)
+	if source != semanticSnapshotSourceCache {
+		t.Fatalf("source = %v; want CACHE", source)
+	}
+	record := poller.presence[instance]
+	if record == nil || record.State != zonePresenceSuspectMissing {
+		t.Fatalf("presence state = %+v; want SUSPECT_MISSING", record)
+	}
+	if _, exists := poller.zones[instance]; !exists {
+		t.Fatalf("zone should remain present before miss threshold")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	ebusgateway "github.com/d3vi1/helianthus-ebusgateway"
 	"github.com/d3vi1/helianthus-ebusgateway/graphql"
 )
 
@@ -260,20 +261,40 @@ func TestSourceFromEbusdGrab(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		ok   bool
-		want semanticSnapshotSource
+		name     string
+		protocol ebusgateway.TransportProtocol
+		ok       bool
+		want     semanticSnapshotSource
 	}{
-		{name: "promotes successful ebusd grab to live", ok: true, want: semanticSnapshotSourceLive},
-		{name: "keeps cache when ebusd grab failed", ok: false, want: semanticSnapshotSourceCache},
+		{
+			name:     "ebusd-tcp successful grab is live",
+			protocol: ebusgateway.TransportEbusdTCP,
+			ok:       true,
+			want:     semanticSnapshotSourceLive,
+		},
+		{
+			name:     "non-ebusd successful grab stays cache",
+			protocol: ebusgateway.TransportENH,
+			ok:       true,
+			want:     semanticSnapshotSourceCache,
+		},
+		{
+			name:     "grab failure stays cache",
+			protocol: ebusgateway.TransportEbusdTCP,
+			ok:       false,
+			want:     semanticSnapshotSourceCache,
+		},
 	}
 
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := sourceFromEbusdGrab(test.ok); got != test.want {
-				t.Fatalf("sourceFromEbusdGrab(%v) = %v; want %v", test.ok, got, test.want)
+			poller := &vaillantSemanticPoller{
+				transportConfig: ebusgateway.TransportConfig{Protocol: test.protocol},
+			}
+			if got := poller.sourceFromEbusdGrab(test.ok); got != test.want {
+				t.Fatalf("sourceFromEbusdGrab(protocol=%q, ok=%v) = %v; want %v", test.protocol, test.ok, got, test.want)
 			}
 		})
 	}

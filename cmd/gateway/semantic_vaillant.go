@@ -1202,7 +1202,7 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 		}
 	}
 	if controller == 0 {
-		return sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
+		return p.sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
 	}
 
 	attempted := make(semanticFieldSet)
@@ -1232,7 +1232,7 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 	}
 
 	if !liveReadSuccess {
-		return sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
+		return p.sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
 	}
 
 	status := &vaillantDhwSnapshot{
@@ -1259,9 +1259,12 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 	return semanticSnapshotSourceLive
 }
 
-func sourceFromEbusdGrab(ok bool) semanticSnapshotSource {
+func (p *vaillantSemanticPoller) sourceFromEbusdGrab(ok bool) semanticSnapshotSource {
 	if ok {
-		return semanticSnapshotSourceLive
+		if p != nil && p.transportConfig.Protocol == ebusgateway.TransportEbusdTCP {
+			return semanticSnapshotSourceLive
+		}
+		return semanticSnapshotSourceCache
 	}
 	return semanticSnapshotSourceCache
 }

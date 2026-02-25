@@ -57,6 +57,20 @@ func TestApplyDefaults_SetsBootLiveTimeout(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_SetsSemanticCachePath(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.SemanticCachePath != "./semantic_cache.json" {
+		t.Fatalf("expected SemanticCachePath=./semantic_cache.json by default, got %q", cfg.SemanticCachePath)
+	}
+}
+
+func TestApplyDefaults_SetsSemanticCachePath(t *testing.T) {
+	cfg := applyDefaults(Config{})
+	if cfg.SemanticCachePath != "./semantic_cache.json" {
+		t.Fatalf("expected SemanticCachePath=./semantic_cache.json after defaults, got %q", cfg.SemanticCachePath)
+	}
+}
+
 func TestDefaultConfig_SetsPortalPath(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.PortalPath != "/portal" {

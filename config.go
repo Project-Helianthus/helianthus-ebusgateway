@@ -51,6 +51,7 @@ type Config struct {
 	SemanticConfigInterval    time.Duration
 	SemanticStateInterval     time.Duration
 	SemanticRequestTimeout    time.Duration
+	SemanticCachePath         string
 	BroadcastListen           bool
 	HTTPAddr                  string
 	GraphQLPath               string
@@ -93,6 +94,7 @@ func DefaultConfig() Config {
 		SemanticConfigInterval:    5 * time.Minute,
 		SemanticStateInterval:     1 * time.Minute,
 		SemanticRequestTimeout:    2 * time.Second,
+		SemanticCachePath:         "./semantic_cache.json",
 		HTTPAddr:                  ":8080",
 		GraphQLPath:               "/graphql",
 		SnapshotPath:              "/snapshot",
@@ -142,6 +144,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.SemanticRequestTimeout == 0 {
 		cfg.SemanticRequestTimeout = 2 * time.Second
+	}
+	if cfg.SemanticCachePath == "" {
+		cfg.SemanticCachePath = "./semantic_cache.json"
 	}
 	if cfg.Transport == nil {
 		if cfg.TransportConfig.Protocol == "" {

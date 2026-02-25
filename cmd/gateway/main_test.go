@@ -116,6 +116,18 @@ func TestBindFlags_BootLiveTimeout(t *testing.T) {
 	}
 }
 
+func TestBindFlags_SemanticCachePath(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-semantic-cache-path", "/tmp/semantic-cache.json"}); err != nil {
+		t.Fatalf("parse semantic-cache-path: %v", err)
+	}
+	if cfg.SemanticCachePath != "/tmp/semantic-cache.json" {
+		t.Fatalf("SemanticCachePath = %q; want /tmp/semantic-cache.json", cfg.SemanticCachePath)
+	}
+}
+
 func TestNormalizeMountPath(t *testing.T) {
 	tests := []struct {
 		name     string

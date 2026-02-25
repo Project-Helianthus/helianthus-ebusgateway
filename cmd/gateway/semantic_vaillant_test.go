@@ -394,12 +394,12 @@ func TestReconcileDiscoveryPresence_SkipsMissDemotionWhenFallbackHydrates(t *tes
 		HitStreak: 1,
 	}
 
-	poller.refreshFromEbusdGrabFn = func(_ context.Context) bool {
+	poller.refreshFromEbusdGrabFn = func(_ context.Context) (map[byte]bool, bool) {
 		poller.applyZonePresenceProbes(
 			map[byte]bool{instance: true},
 			map[byte]bool{instance: true},
 		)
-		return true
+		return map[byte]bool{instance: true}, true
 	}
 
 	source := poller.reconcileDiscoveryPresence(
@@ -434,7 +434,7 @@ func TestReconcileDiscoveryPresence_AppliesMissesWhenFallbackUnavailable(t *test
 		State:     zonePresencePresent,
 		HitStreak: poller.zoneHitThresholdValue(),
 	}
-	poller.refreshFromEbusdGrabFn = func(_ context.Context) bool { return false }
+	poller.refreshFromEbusdGrabFn = func(_ context.Context) (map[byte]bool, bool) { return nil, false }
 
 	source := poller.reconcileDiscoveryPresence(
 		context.Background(),
@@ -450,6 +450,45 @@ func TestReconcileDiscoveryPresence_AppliesMissesWhenFallbackUnavailable(t *test
 	}
 	if _, exists := poller.zones[instance]; !exists {
 		t.Fatalf("zone should remain present before miss threshold")
+	}
+}
+
+func TestReconcileDiscoveryPresence_TracksMissesWithPartialFallback(t *testing.T) {
+	t.Parallel()
+
+	keep := byte(0x00)
+	missing := byte(0x01)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+	poller.zones[keep] = &vaillantZoneSnapshot{Instance: keep, Present: true}
+	poller.zones[missing] = &vaillantZoneSnapshot{Instance: missing, Present: true}
+	poller.presence[keep] = &zonePresenceRecord{State: zonePresencePresent, HitStreak: poller.zoneHitThresholdValue()}
+	poller.presence[missing] = &zonePresenceRecord{State: zonePresencePresent, HitStreak: poller.zoneHitThresholdValue()}
+	poller.refreshFromEbusdGrabFn = func(_ context.Context) (map[byte]bool, bool) {
+		return map[byte]bool{keep: true}, true
+	}
+
+	source := poller.reconcileDiscoveryPresence(
+		context.Background(),
+		map[byte]bool{keep: true, missing: true},
+		map[byte]bool{},
+	)
+	if source != semanticSnapshotSourceLive {
+		t.Fatalf("source = %v; want LIVE", source)
+	}
+	if _, exists := poller.zones[keep]; !exists {
+		t.Fatalf("fallback-present zone must remain present")
+	}
+	if _, exists := poller.zones[missing]; !exists {
+		t.Fatalf("missing zone must not be removed on first miss")
+	}
+	record := poller.presence[missing]
+	if record == nil || record.State != zonePresenceSuspectMissing {
+		t.Fatalf("missing zone state = %+v; want SUSPECT_MISSING", record)
 	}
 }
 

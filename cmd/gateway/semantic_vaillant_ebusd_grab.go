@@ -20,12 +20,12 @@ const (
 	ebusdGrabMinimumInitialTimeout = 2 * time.Second
 )
 
-func (p *vaillantSemanticPoller) refreshFromEbusdGrab(ctx context.Context) bool {
+func (p *vaillantSemanticPoller) refreshFromEbusdGrabWithInstances(ctx context.Context) (map[byte]bool, bool) {
 	if p == nil {
-		return false
+		return nil, false
 	}
 	if !isEbusdTCPTransport(p.transportConfig) {
-		return false
+		return nil, false
 	}
 
 	var controller byte
@@ -40,7 +40,11 @@ func (p *vaillantSemanticPoller) refreshFromEbusdGrab(ctx context.Context) bool 
 
 	zones, ok := readB524ZonesFromEbusdGrab(ctx, p.transportConfig, controller)
 	if !ok || len(zones) == 0 {
-		return false
+		return nil, false
+	}
+	hydrated := make(map[byte]bool, len(zones))
+	for instance := range zones {
+		hydrated[instance] = true
 	}
 
 	p.mu.Lock()
@@ -95,7 +99,7 @@ func (p *vaillantSemanticPoller) refreshFromEbusdGrab(ctx context.Context) bool 
 		entry.ConfigurationHeatingOperationMode = incoming.ConfigurationHeatingOperationMode
 	}
 	p.mu.Unlock()
-	return true
+	return hydrated, true
 }
 
 func isEbusdTCPTransport(cfg ebusgateway.TransportConfig) bool {

@@ -101,7 +101,7 @@ type vaillantSemanticPoller struct {
 	presence   map[byte]*zonePresenceRecord
 	dhw        *vaillantDhwSnapshot
 
-	refreshFromEbusdGrabFn func(context.Context) bool
+	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 }
 
 type zonePresenceState string
@@ -446,7 +446,19 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 
 func (p *vaillantSemanticPoller) reconcileDiscoveryPresence(ctx context.Context, checked, present map[byte]bool) semanticSnapshotSource {
 	if len(present) == 0 {
-		if p.tryRefreshFromEbusdGrab(ctx) {
+		grabPresent, ok := p.tryRefreshFromEbusdGrabWithInstances(ctx)
+		if ok {
+			if checked == nil {
+				checked = make(map[byte]bool, len(grabPresent))
+			}
+			if present == nil {
+				present = make(map[byte]bool, len(grabPresent))
+			}
+			for instance := range grabPresent {
+				checked[instance] = true
+				present[instance] = true
+			}
+			p.applyZonePresenceProbes(checked, present)
 			return semanticSnapshotSourceLive
 		}
 	}
@@ -563,13 +575,18 @@ func (p *vaillantSemanticPoller) zoneHitThresholdValue() int {
 }
 
 func (p *vaillantSemanticPoller) tryRefreshFromEbusdGrab(ctx context.Context) bool {
+	_, ok := p.tryRefreshFromEbusdGrabWithInstances(ctx)
+	return ok
+}
+
+func (p *vaillantSemanticPoller) tryRefreshFromEbusdGrabWithInstances(ctx context.Context) (map[byte]bool, bool) {
 	if p == nil {
-		return false
+		return nil, false
 	}
 	if p.refreshFromEbusdGrabFn != nil {
 		return p.refreshFromEbusdGrabFn(ctx)
 	}
-	return p.refreshFromEbusdGrab(ctx)
+	return p.refreshFromEbusdGrabWithInstances(ctx)
 }
 
 func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {

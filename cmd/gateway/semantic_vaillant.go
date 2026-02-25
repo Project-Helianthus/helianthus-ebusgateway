@@ -1334,7 +1334,11 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 		if previous != nil && p.hub != nil {
 			p.hub.PublishDHWUpdate(nil)
 		}
-		p.persistSemanticCache(source)
+		if expired {
+			p.persistSemanticSnapshot()
+		} else {
+			p.persistSemanticCache(source)
+		}
 		return
 	}
 
@@ -1361,7 +1365,14 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 }
 
 func (p *vaillantSemanticPoller) persistSemanticCache(source semanticSnapshotSource) {
-	if p == nil || source != semanticSnapshotSourceLive || p.cache == nil || p.provider == nil {
+	if p == nil || source != semanticSnapshotSourceLive {
+		return
+	}
+	p.persistSemanticSnapshot()
+}
+
+func (p *vaillantSemanticPoller) persistSemanticSnapshot() {
+	if p == nil || p.cache == nil || p.provider == nil {
 		return
 	}
 	_ = p.cache.Save(semanticCacheSnapshot{

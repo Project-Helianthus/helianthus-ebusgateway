@@ -9,6 +9,17 @@ import (
 	"github.com/d3vi1/helianthus-ebusgateway/graphql"
 )
 
+type semanticSnapshotCaptureSpy struct {
+	calls int
+	last  semanticCacheSnapshot
+}
+
+func (spy *semanticSnapshotCaptureSpy) Save(snapshot semanticCacheSnapshot) error {
+	spy.calls++
+	spy.last = snapshot
+	return nil
+}
+
 func TestBuildB524ReadSelector(t *testing.T) {
 	t.Parallel()
 
@@ -311,8 +322,10 @@ func TestVaillantSemanticPoller_DHWCacheFailureExpiresAfterTTL(t *testing.T) {
 	current := 47.2
 
 	provider := graphql.NewLiveSemanticProvider()
+	cacheSpy := &semanticSnapshotCaptureSpy{}
 	poller := &vaillantSemanticPoller{
 		provider: provider,
+		cache:    cacheSpy,
 		dhw: &vaillantDhwSnapshot{
 			OperatingMode: "auto",
 			Preset:        "schedule",
@@ -333,6 +346,12 @@ func TestVaillantSemanticPoller_DHWCacheFailureExpiresAfterTTL(t *testing.T) {
 	}
 	if poller.dhw != nil {
 		t.Fatalf("poller.dhw = %#v; want nil after TTL expiry", poller.dhw)
+	}
+	if cacheSpy.calls < 2 {
+		t.Fatalf("cache Save calls = %d; want at least 2 (live persist + expiry persist)", cacheSpy.calls)
+	}
+	if cacheSpy.last.DHW != nil {
+		t.Fatalf("cache last DHW = %#v; want nil after TTL expiry persist", cacheSpy.last.DHW)
 	}
 }
 

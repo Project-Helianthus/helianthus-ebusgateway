@@ -238,8 +238,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 
 	source := semanticSnapshotSourceLive
 	if len(present) == 0 {
-		source = semanticSnapshotSourceCache
-		_ = p.refreshFromEbusdGrab(ctx)
+		source = sourceFromEbusdGrab(p.refreshFromEbusdGrab(ctx))
 	}
 
 	p.publishZones(source)
@@ -247,6 +246,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 
 func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 	controller, zones := p.snapshotZones()
+	grabHydrated := false
 	if controller == 0 || len(zones) == 0 {
 		p.refreshDiscovery(ctx)
 		controller, zones = p.snapshotZones()
@@ -254,6 +254,7 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 	if controller == 0 || len(zones) == 0 {
 		if p.refreshFromEbusdGrab(ctx) {
 			controller, zones = p.snapshotZones()
+			grabHydrated = true
 		}
 	}
 	if controller == 0 || len(zones) == 0 {
@@ -282,7 +283,7 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 	}
 
 	source := semanticSnapshotSourceCache
-	if liveReadSuccess {
+	if liveReadSuccess || grabHydrated {
 		source = semanticSnapshotSourceLive
 	}
 	p.publishZones(source)
@@ -290,6 +291,7 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 
 func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 	controller, zones := p.snapshotZones()
+	grabHydrated := false
 	if controller == 0 || len(zones) == 0 {
 		p.refreshDiscovery(ctx)
 		controller, zones = p.snapshotZones()
@@ -297,6 +299,7 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 	if controller == 0 || len(zones) == 0 {
 		if p.refreshFromEbusdGrab(ctx) {
 			controller, zones = p.snapshotZones()
+			grabHydrated = true
 		}
 	}
 	if controller == 0 || len(zones) == 0 {
@@ -391,7 +394,7 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 	}
 
 	zoneSource := semanticSnapshotSourceCache
-	if liveReadSuccess {
+	if liveReadSuccess || grabHydrated {
 		zoneSource = semanticSnapshotSourceLive
 	}
 
@@ -523,8 +526,7 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 		}
 	}
 	if controller == 0 {
-		_ = p.refreshDHWFromEbusdGrab(ctx)
-		return semanticSnapshotSourceCache
+		return sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
 	}
 
 	liveReadSuccess := false
@@ -544,10 +546,7 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 
 	operatingMode, preset := deriveDhwModeAndPreset(opModeRaw, sfModeRaw)
 	if operatingMode == "" && preset == "" && currentPtr == nil && targetPtr == nil {
-		if p.refreshDHWFromEbusdGrab(ctx) {
-			return semanticSnapshotSourceCache
-		}
-		return semanticSnapshotSourceCache
+		return sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
 	}
 
 	status := &vaillantDhwSnapshot{
@@ -567,6 +566,13 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 	p.dhw = status
 	p.mu.Unlock()
 	if liveReadSuccess {
+		return semanticSnapshotSourceLive
+	}
+	return semanticSnapshotSourceCache
+}
+
+func sourceFromEbusdGrab(ok bool) semanticSnapshotSource {
+	if ok {
 		return semanticSnapshotSourceLive
 	}
 	return semanticSnapshotSourceCache

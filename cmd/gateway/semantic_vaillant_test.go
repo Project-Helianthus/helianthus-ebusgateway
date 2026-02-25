@@ -241,6 +241,29 @@ func TestMatchesB524ReplyInstance(t *testing.T) {
 	}
 }
 
+func TestSourceFromEbusdGrab(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ok   bool
+		want semanticSnapshotSource
+	}{
+		{name: "promotes successful ebusd grab to live", ok: true, want: semanticSnapshotSourceLive},
+		{name: "keeps cache when ebusd grab failed", ok: false, want: semanticSnapshotSourceCache},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sourceFromEbusdGrab(test.ok); got != test.want {
+				t.Fatalf("sourceFromEbusdGrab(%v) = %v; want %v", test.ok, got, test.want)
+			}
+		})
+	}
+}
+
 func TestParseB524ZonesFromGrabFiltersAbsentInstances(t *testing.T) {
 	t.Parallel()
 

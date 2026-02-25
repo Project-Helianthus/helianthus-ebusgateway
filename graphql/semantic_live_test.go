@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/d3vi1/helianthus-ebusgo/types"
+	"github.com/d3vi1/helianthus-ebusreg/router"
 )
 
 func TestLiveSemanticProvider_StartupPhaseAndEpochTransitions(t *testing.T) {
@@ -76,6 +79,65 @@ func TestSemanticRuntime_StartWithoutRouterStillRunsBootFSM(t *testing.T) {
 	runtime.Start(ctx)
 
 	waitForPhase(t, provider, SemanticStartupPhaseDegraded, 500*time.Millisecond)
+}
+
+func TestLiveSemanticProvider_ApplyBroadcastDoesNotAdvanceStartupEpochs(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+
+	event := router.BroadcastEvent{
+		Values: map[string]types.Value{
+			"wh":     {Valid: true, Value: float64(1200)},
+			"source": {Valid: true, Value: "gas"},
+			"usage":  {Valid: true, Value: "heating"},
+			"period": {Valid: true, Value: "day"},
+		},
+	}
+
+	totals, updated := provider.ApplyBroadcast(event)
+	if !updated {
+		t.Fatalf("ApplyBroadcast() updated = false; want true")
+	}
+	if totals == nil {
+		t.Fatalf("ApplyBroadcast() totals = nil; want non-nil")
+	}
+	if got := provider.StartupPhase(); got != SemanticStartupPhaseBootInit {
+		t.Fatalf("phase = %s; want %s", got, SemanticStartupPhaseBootInit)
+	}
+	cacheEpoch, liveEpoch := provider.StartupEpochs()
+	if cacheEpoch != 0 || liveEpoch != 0 {
+		t.Fatalf("epochs after energy broadcast = (%d,%d); want (0,0)", cacheEpoch, liveEpoch)
+	}
+}
+
+func TestLiveSemanticProvider_PhaseLoggerCanReadProviderState(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+	loggerEntered := make(chan struct{}, 1)
+	provider.StartBootFSM(context.Background(), 0, func(string, ...any) {
+		_ = provider.StartupPhase()
+		_, _ = provider.StartupEpochs()
+		select {
+		case loggerEntered <- struct{}{}:
+		default:
+		}
+	})
+
+	done := make(chan struct{})
+	go func() {
+		provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("SetZonesFromCache deadlocked with phase logger")
+	}
+
+	select {
+	case <-loggerEntered:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("phase logger was not invoked")
+	}
 }
 
 func waitForPhase(t *testing.T, provider *LiveSemanticProvider, want SemanticStartupPhase, timeout time.Duration) {

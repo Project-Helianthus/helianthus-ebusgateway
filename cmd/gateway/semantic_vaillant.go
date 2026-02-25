@@ -89,6 +89,8 @@ type vaillantSemanticPoller struct {
 	discoveryInterval time.Duration
 	configInterval    time.Duration
 	stateInterval     time.Duration
+	zoneMissThreshold int
+	zoneHitThreshold  int
 
 	pollMu sync.Mutex
 	readMu sync.Mutex
@@ -96,7 +98,23 @@ type vaillantSemanticPoller struct {
 	mu         sync.Mutex
 	controller byte
 	zones      map[byte]*vaillantZoneSnapshot
+	presence   map[byte]*zonePresenceRecord
 	dhw        *vaillantDhwSnapshot
+}
+
+type zonePresenceState string
+
+const (
+	zonePresenceAbsent           zonePresenceState = "ABSENT"
+	zonePresenceSuspectResurrect zonePresenceState = "SUSPECT_RESURRECT"
+	zonePresencePresent          zonePresenceState = "PRESENT"
+	zonePresenceSuspectMissing   zonePresenceState = "SUSPECT_MISSING"
+)
+
+type zonePresenceRecord struct {
+	State      zonePresenceState
+	HitStreak  int
+	MissStreak int
 }
 
 type vaillantZoneSnapshot struct {
@@ -155,8 +173,17 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		discoveryInterval: cfg.SemanticDiscoveryInterval,
 		configInterval:    cfg.SemanticConfigInterval,
 		stateInterval:     cfg.SemanticStateInterval,
+		zoneMissThreshold: cfg.SemanticZonePresenceMissThreshold,
+		zoneHitThreshold:  cfg.SemanticZonePresenceHitThreshold,
 
-		zones: make(map[byte]*vaillantZoneSnapshot),
+		zones:    make(map[byte]*vaillantZoneSnapshot),
+		presence: make(map[byte]*zonePresenceRecord),
+	}
+	if poller.zoneMissThreshold <= 0 {
+		poller.zoneMissThreshold = ebusgateway.DefaultSemanticZonePresenceMissThreshold
+	}
+	if poller.zoneHitThreshold <= 0 {
+		poller.zoneHitThreshold = ebusgateway.DefaultSemanticZonePresenceHitThreshold
 	}
 	poller.scheduler.SetCircuitBreaker(ebusgateway.SemanticReadCircuitBreakerOptions{
 		FailureBudget:      cfg.SemanticReadBreakerFailureBudget,
@@ -224,9 +251,16 @@ func (p *vaillantSemanticPoller) hydrateFromCache(snapshot semanticCacheSnapshot
 	if p.zones == nil {
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
 	}
+	if p.presence == nil {
+		p.presence = make(map[byte]*zonePresenceRecord)
+	}
 	for idx, zone := range snapshot.Zones {
 		instance := zoneInstanceFromSemanticID(zone.ID, idx)
 		p.zones[instance] = zoneSnapshotFromSemanticZone(instance, zone)
+		p.presence[instance] = &zonePresenceRecord{
+			State:     zonePresencePresent,
+			HitStreak: p.zoneHitThresholdValue(),
+		}
 	}
 	if snapshot.DHW != nil {
 		p.dhw = dhwSnapshotFromSemanticStatus(snapshot.DHW)
@@ -378,6 +412,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.mu.Lock()
 		p.controller = 0
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
+		p.presence = make(map[byte]*zonePresenceRecord)
 		p.dhw = nil
 		p.mu.Unlock()
 		p.publishZones(semanticSnapshotSourceCache)
@@ -403,21 +438,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		present[instance] = true
 	}
 
-	p.mu.Lock()
-	for instance := range present {
-		entry := p.zones[instance]
-		if entry == nil {
-			entry = &vaillantZoneSnapshot{Instance: instance}
-			p.zones[instance] = entry
-		}
-		entry.Present = true
-	}
-	for instance := range p.zones {
-		if checked[instance] && !present[instance] {
-			delete(p.zones, instance)
-		}
-	}
-	p.mu.Unlock()
+	p.applyZonePresenceProbes(checked, present)
 
 	source := semanticSnapshotSourceLive
 	if len(present) == 0 {
@@ -425,6 +446,111 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	}
 
 	p.publishZones(source)
+}
+
+func (p *vaillantSemanticPoller) applyZonePresenceProbes(checked, present map[byte]bool) {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.zones == nil {
+		p.zones = make(map[byte]*vaillantZoneSnapshot)
+	}
+	if p.presence == nil {
+		p.presence = make(map[byte]*zonePresenceRecord)
+	}
+
+	for instance := range checked {
+		if present[instance] {
+			p.markZonePresentLocked(instance)
+			continue
+		}
+		p.markZoneMissingLocked(instance)
+	}
+}
+
+func (p *vaillantSemanticPoller) markZonePresentLocked(instance byte) {
+	record := p.ensureZonePresenceRecordLocked(instance)
+	record.MissStreak = 0
+	hitThreshold := p.zoneHitThresholdValue()
+
+	switch record.State {
+	case zonePresencePresent, zonePresenceSuspectMissing:
+		record.State = zonePresencePresent
+		if record.HitStreak < hitThreshold {
+			record.HitStreak = hitThreshold
+		}
+		p.ensureZoneEntryLocked(instance)
+	default:
+		record.HitStreak++
+		if record.HitStreak >= hitThreshold {
+			record.State = zonePresencePresent
+			record.HitStreak = hitThreshold
+			p.ensureZoneEntryLocked(instance)
+		} else {
+			record.State = zonePresenceSuspectResurrect
+		}
+	}
+}
+
+func (p *vaillantSemanticPoller) markZoneMissingLocked(instance byte) {
+	record := p.ensureZonePresenceRecordLocked(instance)
+	record.HitStreak = 0
+	missThreshold := p.zoneMissThresholdValue()
+
+	switch record.State {
+	case zonePresencePresent, zonePresenceSuspectMissing:
+		record.MissStreak++
+		if record.MissStreak >= missThreshold {
+			record.MissStreak = missThreshold
+			record.State = zonePresenceAbsent
+			delete(p.zones, instance)
+			return
+		}
+		record.State = zonePresenceSuspectMissing
+	default:
+		record.MissStreak = 0
+		record.State = zonePresenceAbsent
+		delete(p.zones, instance)
+	}
+}
+
+func (p *vaillantSemanticPoller) ensureZonePresenceRecordLocked(instance byte) *zonePresenceRecord {
+	if p.presence == nil {
+		p.presence = make(map[byte]*zonePresenceRecord)
+	}
+	record := p.presence[instance]
+	if record == nil {
+		record = &zonePresenceRecord{State: zonePresenceAbsent}
+		p.presence[instance] = record
+	}
+	return record
+}
+
+func (p *vaillantSemanticPoller) ensureZoneEntryLocked(instance byte) {
+	entry := p.zones[instance]
+	if entry == nil {
+		entry = &vaillantZoneSnapshot{Instance: instance}
+		p.zones[instance] = entry
+	}
+	entry.Present = true
+}
+
+func (p *vaillantSemanticPoller) zoneMissThresholdValue() int {
+	if p == nil || p.zoneMissThreshold <= 0 {
+		return ebusgateway.DefaultSemanticZonePresenceMissThreshold
+	}
+	return p.zoneMissThreshold
+}
+
+func (p *vaillantSemanticPoller) zoneHitThresholdValue() int {
+	if p == nil || p.zoneHitThreshold <= 0 {
+		return ebusgateway.DefaultSemanticZonePresenceHitThreshold
+	}
+	return p.zoneHitThreshold
 }
 
 func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {

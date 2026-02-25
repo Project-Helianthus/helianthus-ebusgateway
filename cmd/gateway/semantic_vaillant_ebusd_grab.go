@@ -48,12 +48,11 @@ func (p *vaillantSemanticPoller) refreshFromEbusdGrab(ctx context.Context) bool 
 		p.controller = controller
 	}
 	for instance, incoming := range zones {
+		p.markZonePresentLocked(instance)
 		entry := p.zones[instance]
 		if entry == nil {
-			entry = &vaillantZoneSnapshot{Instance: instance}
-			p.zones[instance] = entry
+			continue
 		}
-		entry.Present = true
 		if strings.TrimSpace(incoming.Name) != "" {
 			entry.Name = incoming.Name
 		}

@@ -264,6 +264,119 @@ func TestSourceFromEbusdGrab(t *testing.T) {
 	}
 }
 
+func TestZonePresenceFSM_AbsenceRequiresConsecutiveMisses(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x02)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("zone should not be present after first hit when hit threshold is 2")
+	}
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	if _, exists := poller.zones[instance]; !exists {
+		t.Fatalf("zone should be present after second consecutive hit")
+	}
+
+	for miss := 1; miss <= 2; miss++ {
+		poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+		if _, exists := poller.zones[instance]; !exists {
+			t.Fatalf("zone removed too early after miss %d", miss)
+		}
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("zone should be absent after third consecutive miss")
+	}
+	record := poller.presence[instance]
+	if record == nil || record.State != zonePresenceAbsent {
+		t.Fatalf("presence state = %+v; want ABSENT", record)
+	}
+}
+
+func TestZonePresenceFSM_ResurrectionRequiresConsecutiveHits(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x01)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("zone should be absent after miss threshold")
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("zone should stay absent until hit threshold is reached")
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("single hit after miss should not resurrect zone")
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	if _, exists := poller.zones[instance]; !exists {
+		t.Fatalf("zone should resurrect after two consecutive hits")
+	}
+	record := poller.presence[instance]
+	if record == nil || record.State != zonePresencePresent {
+		t.Fatalf("presence state = %+v; want PRESENT", record)
+	}
+}
+
+func TestZonePresenceFSM_AlternatingProbesDoNotFlapPresentZone(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x00)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+
+	for iteration := 0; iteration < 6; iteration++ {
+		poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+		if _, exists := poller.zones[instance]; !exists {
+			t.Fatalf("zone disappeared on alternating miss at iteration %d", iteration)
+		}
+		record := poller.presence[instance]
+		if record == nil || record.State != zonePresenceSuspectMissing {
+			t.Fatalf("presence state after miss = %+v; want SUSPECT_MISSING", record)
+		}
+
+		poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+		if _, exists := poller.zones[instance]; !exists {
+			t.Fatalf("zone disappeared on alternating hit at iteration %d", iteration)
+		}
+		record = poller.presence[instance]
+		if record == nil || record.State != zonePresencePresent {
+			t.Fatalf("presence state after hit = %+v; want PRESENT", record)
+		}
+	}
+}
+
 func TestSemanticReadBreakerKeyIncludesOpcode(t *testing.T) {
 	t.Parallel()
 

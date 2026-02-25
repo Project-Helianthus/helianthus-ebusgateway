@@ -370,3 +370,42 @@ func TestSemanticReadScheduler_CircuitBreaker_DisabledWhenFailureBudgetZero(t *t
 		t.Fatalf("fetch calls = %d; want 3 when breaker disabled", got)
 	}
 }
+
+func TestSemanticReadScheduler_CircuitBreaker_HalfOpenProbeLimitRespected(t *testing.T) {
+	now := time.Unix(0, 0)
+	scheduler := NewSemanticReadScheduler()
+	scheduler.now = func() time.Time { return now }
+	scheduler.SetCircuitBreaker(SemanticReadCircuitBreakerOptions{
+		FailureBudget:      1,
+		OpenCooldown:       10 * time.Second,
+		HalfOpenProbeLimit: 2,
+	})
+
+	var calls int32
+	fetch := func(context.Context) ([]byte, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, errors.New("read failed")
+	}
+
+	if _, err := scheduler.Get(context.Background(), "k", 0, fetch); err == nil || errors.Is(err, ErrSemanticReadCircuitOpen) {
+		t.Fatalf("initial failure err = %v; want non-open failure", err)
+	}
+	if _, err := scheduler.Get(context.Background(), "k", 0, fetch); !errors.Is(err, ErrSemanticReadCircuitOpen) {
+		t.Fatalf("open-state err = %v; want ErrSemanticReadCircuitOpen", err)
+	}
+
+	now = now.Add(10 * time.Second)
+	if _, err := scheduler.Get(context.Background(), "k", 0, fetch); err == nil || errors.Is(err, ErrSemanticReadCircuitOpen) {
+		t.Fatalf("half-open probe #1 err = %v; want non-open failure", err)
+	}
+	if _, err := scheduler.Get(context.Background(), "k", 0, fetch); err == nil || errors.Is(err, ErrSemanticReadCircuitOpen) {
+		t.Fatalf("half-open probe #2 err = %v; want non-open failure", err)
+	}
+	if _, err := scheduler.Get(context.Background(), "k", 0, fetch); !errors.Is(err, ErrSemanticReadCircuitOpen) {
+		t.Fatalf("post-probe err = %v; want ErrSemanticReadCircuitOpen", err)
+	}
+
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("fetch calls = %d; want 3 (initial failure + 2 half-open probes)", got)
+	}
+}

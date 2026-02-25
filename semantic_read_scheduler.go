@@ -302,6 +302,9 @@ func (s *SemanticReadScheduler) recordFailureLocked(key string, entry *semanticR
 	entry.consecutiveFailures++
 	switch entry.breakerState {
 	case SemanticReadCircuitStateHalfOpen:
+		if entry.halfOpenProbesRemaining > 0 {
+			return nil
+		}
 		transition := s.transitionBreakerLocked(key, entry, SemanticReadCircuitStateOpen)
 		entry.openedAt = s.now()
 		return transition

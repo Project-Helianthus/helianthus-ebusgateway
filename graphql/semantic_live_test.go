@@ -43,6 +43,26 @@ func TestLiveSemanticProvider_StartupPhaseAndEpochTransitions(t *testing.T) {
 	}
 }
 
+func TestLiveSemanticProvider_LiveReadyRequiresLiveForPublishedStreams(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+
+	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetDHW(&DhwStatus{OperatingMode: "auto"})
+	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveWarmup {
+		t.Fatalf("phase after first DHW live = %s; want %s", got, SemanticStartupPhaseLiveWarmup)
+	}
+
+	provider.SetDHW(&DhwStatus{OperatingMode: "auto"})
+	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveWarmup {
+		t.Fatalf("phase after second DHW live with zones cache-only = %s; want %s", got, SemanticStartupPhaseLiveWarmup)
+	}
+
+	provider.SetZones([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveReady {
+		t.Fatalf("phase after zones live = %s; want %s", got, SemanticStartupPhaseLiveReady)
+	}
+}
+
 func TestLiveSemanticProvider_StartBootFSMTransitionsToDegradedOnTimeout(t *testing.T) {
 	provider := NewLiveSemanticProvider()
 	ctx, cancel := context.WithCancel(context.Background())

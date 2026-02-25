@@ -28,6 +28,13 @@ const (
 	semanticDataSourceLive
 )
 
+type semanticStreamKind uint8
+
+const (
+	semanticStreamZones semanticStreamKind = iota
+	semanticStreamDHW
+)
+
 type phaseTransitionLog struct {
 	previous   SemanticStartupPhase
 	next       SemanticStartupPhase
@@ -46,6 +53,10 @@ type LiveSemanticProvider struct {
 	phase              SemanticStartupPhase
 	cacheEpoch         uint64
 	liveEpoch          uint64
+	zonePublished      bool
+	dhwPublished       bool
+	zoneLiveSeen       bool
+	dhwLiveSeen        bool
 	bootMonitorStarted bool
 	phaseLogger        func(string, ...any)
 }
@@ -180,7 +191,11 @@ func (provider *LiveSemanticProvider) setZonesWithSource(zones []Zone, source se
 	provider.mu.Lock()
 	provider.zones = zonesCopy
 	if len(zonesCopy) > 0 {
-		transition = provider.recordEpochUpdateLocked(source, reason)
+		provider.zonePublished = true
+		if source == semanticDataSourceLive {
+			provider.zoneLiveSeen = true
+		}
+		transition = provider.recordEpochUpdateLocked(source, semanticStreamZones, reason)
 	}
 	provider.mu.Unlock()
 	provider.logPhaseTransition(transition)
@@ -207,12 +222,16 @@ func (provider *LiveSemanticProvider) setDHWWithSource(status *DhwStatus, source
 	}
 	copy := *status
 	provider.dhw = &copy
-	transition = provider.recordEpochUpdateLocked(source, reason)
+	provider.dhwPublished = true
+	if source == semanticDataSourceLive {
+		provider.dhwLiveSeen = true
+	}
+	transition = provider.recordEpochUpdateLocked(source, semanticStreamDHW, reason)
 	provider.mu.Unlock()
 	provider.logPhaseTransition(transition)
 }
 
-func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDataSource, reason string) *phaseTransitionLog {
+func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDataSource, stream semanticStreamKind, reason string) *phaseTransitionLog {
 	switch source {
 	case semanticDataSourceCache:
 		provider.cacheEpoch++
@@ -220,13 +239,31 @@ func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDat
 			return provider.transitionPhaseLocked(SemanticStartupPhaseCacheLoadedStale, reason)
 		}
 	case semanticDataSourceLive:
+		switch stream {
+		case semanticStreamZones:
+			provider.zoneLiveSeen = true
+		case semanticStreamDHW:
+			provider.dhwLiveSeen = true
+		}
 		provider.liveEpoch++
 		if provider.liveEpoch == 1 {
 			return provider.transitionPhaseLocked(SemanticStartupPhaseLiveWarmup, reason)
 		}
-		return provider.transitionPhaseLocked(SemanticStartupPhaseLiveReady, reason)
+		if provider.liveReadyCriteriaLocked() {
+			return provider.transitionPhaseLocked(SemanticStartupPhaseLiveReady, reason)
+		}
 	}
 	return nil
+}
+
+func (provider *LiveSemanticProvider) liveReadyCriteriaLocked() bool {
+	if provider.zonePublished && !provider.zoneLiveSeen {
+		return false
+	}
+	if provider.dhwPublished && !provider.dhwLiveSeen {
+		return false
+	}
+	return provider.zoneLiveSeen || provider.dhwLiveSeen
 }
 
 func (provider *LiveSemanticProvider) transitionPhaseLocked(next SemanticStartupPhase, reason string) *phaseTransitionLog {

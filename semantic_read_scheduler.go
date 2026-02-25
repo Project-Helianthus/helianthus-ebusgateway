@@ -115,9 +115,6 @@ func (s *SemanticReadScheduler) SetCircuitBreaker(options SemanticReadCircuitBre
 
 func normalizeSemanticReadCircuitBreakerOptions(options SemanticReadCircuitBreakerOptions) semanticReadCircuitBreakerConfig {
 	failureBudget := options.FailureBudget
-	if failureBudget == 0 {
-		failureBudget = DefaultSemanticReadFailureBudget
-	}
 	openCooldown := options.OpenCooldown
 	if openCooldown == 0 {
 		openCooldown = DefaultSemanticReadOpenCooldown
@@ -185,24 +182,23 @@ func (s *SemanticReadScheduler) Get(ctx context.Context, key string, maxAge time
 			}
 		}
 
-		preTransition, preSuppression, preErr = s.guardBreakerLocked(key, entry, s.now())
-		if preErr != nil {
-			s.mu.Unlock()
-			s.emitBreakerTransition(preTransition)
-			s.emitBreakerSuppression(preSuppression)
-			return nil, preErr
-		}
-
 		if entry.running {
 			done := entry.done
 			s.mu.Unlock()
-			s.emitBreakerTransition(preTransition)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-done:
 				continue
 			}
+		}
+
+		preTransition, preSuppression, preErr = s.guardBreakerLocked(key, entry, s.now())
+		if preErr != nil {
+			s.mu.Unlock()
+			s.emitBreakerTransition(preTransition)
+			s.emitBreakerSuppression(preSuppression)
+			return nil, preErr
 		}
 
 		if entry.breakerState == SemanticReadCircuitStateHalfOpen {

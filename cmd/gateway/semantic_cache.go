@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -294,7 +295,7 @@ func normalizeSemanticCacheSnapshot(snapshot semanticCacheSnapshot) semanticCach
 		out.Zones = append(out.Zones, zoneCopy)
 	}
 	slices.SortFunc(out.Zones, func(a, b graphql.Zone) int {
-		if compare := strings.Compare(a.ID, b.ID); compare != 0 {
+		if compare := compareSemanticZoneID(a.ID, b.ID); compare != 0 {
 			return compare
 		}
 		return strings.Compare(a.Name, b.Name)
@@ -327,12 +328,39 @@ func normalizeSemanticCacheZones(zones []semanticCacheZone) []semanticCacheZone 
 		out = append(out, zoneCopy)
 	}
 	slices.SortFunc(out, func(a, b semanticCacheZone) int {
-		if compare := strings.Compare(a.ID, b.ID); compare != 0 {
+		if compare := compareSemanticZoneID(a.ID, b.ID); compare != 0 {
 			return compare
 		}
 		return strings.Compare(a.Name, b.Name)
 	})
 	return out
+}
+
+func compareSemanticZoneID(left, right string) int {
+	leftOrdinal, leftOK := parseSemanticZoneOrdinal(left)
+	rightOrdinal, rightOK := parseSemanticZoneOrdinal(right)
+	if leftOK && rightOK {
+		switch {
+		case leftOrdinal < rightOrdinal:
+			return -1
+		case leftOrdinal > rightOrdinal:
+			return 1
+		}
+	}
+	return strings.Compare(left, right)
+}
+
+func parseSemanticZoneOrdinal(id string) (int, bool) {
+	id = strings.TrimSpace(strings.ToLower(id))
+	if !strings.HasPrefix(id, "zone-") {
+		return 0, false
+	}
+	ordinalRaw := strings.TrimPrefix(id, "zone-")
+	ordinal, err := strconv.Atoi(ordinalRaw)
+	if err != nil || ordinal <= 0 {
+		return 0, false
+	}
+	return ordinal, true
 }
 
 func cloneSemanticCacheDHW(status *semanticCacheDHW) *semanticCacheDHW {

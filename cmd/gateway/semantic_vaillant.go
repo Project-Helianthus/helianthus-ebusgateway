@@ -139,6 +139,8 @@ type vaillantZoneSnapshot struct {
 	ConfigurationAssociatedCircuitRaw *uint16
 	ConfigurationCircuitTypeRaw       *uint16
 	StateValveStatusRaw               *uint16
+
+	FieldFreshness map[semanticFieldKey]semanticFieldFreshness
 }
 
 type vaillantDhwSnapshot struct {
@@ -150,6 +152,8 @@ type vaillantDhwSnapshot struct {
 
 	ConfigurationDHWOperationMode string
 	StateSpecialFunction          string
+
+	FieldFreshness map[semanticFieldKey]semanticFieldFreshness
 }
 
 type semanticSnapshotSource uint8
@@ -157,6 +161,96 @@ type semanticSnapshotSource uint8
 const (
 	semanticSnapshotSourceCache semanticSnapshotSource = iota
 	semanticSnapshotSourceLive
+)
+
+type semanticFieldKey string
+
+const (
+	zoneFieldName                 semanticFieldKey = "zone.name"
+	zoneFieldOperatingMode        semanticFieldKey = "zone.operating_mode"
+	zoneFieldPreset               semanticFieldKey = "zone.preset"
+	zoneFieldHvacAction           semanticFieldKey = "zone.hvac_action"
+	zoneFieldAllowedModes         semanticFieldKey = "zone.allowed_modes"
+	zoneFieldCurrentTempC         semanticFieldKey = "zone.current_temp_c"
+	zoneFieldTargetTempC          semanticFieldKey = "zone.target_temp_c"
+	zoneFieldCurrentHumidityPct   semanticFieldKey = "zone.current_humidity_pct"
+	zoneFieldSpecialFunctionRaw   semanticFieldKey = "zone.special_function_raw"
+	zoneFieldZoneOperationModeRaw semanticFieldKey = "zone.operation_mode_raw"
+	zoneFieldZoneCircuitIndexRaw  semanticFieldKey = "zone.circuit_index_raw"
+	zoneFieldCircuitTypeRaw       semanticFieldKey = "zone.circuit_type_raw"
+	zoneFieldZoneValveStatusRaw   semanticFieldKey = "zone.valve_status_raw"
+	dhwFieldOperatingMode         semanticFieldKey = "dhw.operating_mode"
+	dhwFieldPreset                semanticFieldKey = "dhw.preset"
+	dhwFieldCurrentTempC          semanticFieldKey = "dhw.current_temp_c"
+	dhwFieldTargetTempC           semanticFieldKey = "dhw.target_temp_c"
+	dhwFieldSpecialFunctionRaw    semanticFieldKey = "dhw.special_function_raw"
+	dhwFieldDhwOperationModeRaw   semanticFieldKey = "dhw.operation_mode_raw"
+)
+
+type semanticFieldFreshness struct {
+	Source semanticSnapshotSource
+	Stale  bool
+}
+
+type semanticFieldSet map[semanticFieldKey]struct{}
+
+func newSemanticFieldSet(keys ...semanticFieldKey) semanticFieldSet {
+	set := make(semanticFieldSet, len(keys))
+	for _, key := range keys {
+		set[key] = struct{}{}
+	}
+	return set
+}
+
+func (set semanticFieldSet) has(key semanticFieldKey) bool {
+	if len(set) == 0 {
+		return false
+	}
+	_, ok := set[key]
+	return ok
+}
+
+var (
+	zoneConfigFieldSet = newSemanticFieldSet(
+		zoneFieldName,
+	)
+	zoneStateFieldSet = newSemanticFieldSet(
+		zoneFieldOperatingMode,
+		zoneFieldPreset,
+		zoneFieldHvacAction,
+		zoneFieldAllowedModes,
+		zoneFieldCurrentTempC,
+		zoneFieldTargetTempC,
+		zoneFieldCurrentHumidityPct,
+		zoneFieldZoneOperationModeRaw,
+		zoneFieldSpecialFunctionRaw,
+		zoneFieldZoneCircuitIndexRaw,
+		zoneFieldZoneValveStatusRaw,
+		zoneFieldCircuitTypeRaw,
+	)
+	zoneGrabFieldSet = newSemanticFieldSet(
+		zoneFieldName,
+		zoneFieldOperatingMode,
+		zoneFieldPreset,
+		zoneFieldHvacAction,
+		zoneFieldAllowedModes,
+		zoneFieldCurrentTempC,
+		zoneFieldTargetTempC,
+		zoneFieldCurrentHumidityPct,
+		zoneFieldZoneOperationModeRaw,
+		zoneFieldSpecialFunctionRaw,
+		zoneFieldZoneCircuitIndexRaw,
+		zoneFieldZoneValveStatusRaw,
+		zoneFieldCircuitTypeRaw,
+	)
+	dhwFieldSet = newSemanticFieldSet(
+		dhwFieldOperatingMode,
+		dhwFieldPreset,
+		dhwFieldCurrentTempC,
+		dhwFieldTargetTempC,
+		dhwFieldDhwOperationModeRaw,
+		dhwFieldSpecialFunctionRaw,
+	)
 )
 
 func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, cache semanticCachePersister) *vaillantSemanticPoller {
@@ -287,7 +381,7 @@ func zoneInstanceFromSemanticID(id string, fallbackIndex int) byte {
 }
 
 func zoneSnapshotFromSemanticZone(instance byte, zone graphql.Zone) *vaillantZoneSnapshot {
-	return &vaillantZoneSnapshot{
+	snapshot := &vaillantZoneSnapshot{
 		Instance:                          instance,
 		Present:                           true,
 		Name:                              zone.Name,
@@ -304,13 +398,15 @@ func zoneSnapshotFromSemanticZone(instance byte, zone graphql.Zone) *vaillantZon
 		ConfigurationCircuitTypeRaw:       parseUint16Token(zone.CircuitTypeRaw),
 		StateValveStatusRaw:               parseUint16Token(zone.ZoneValveStatusRaw),
 	}
+	seedZoneFreshness(snapshot, semanticSnapshotSourceCache, true)
+	return snapshot
 }
 
 func dhwSnapshotFromSemanticStatus(status *graphql.DhwStatus) *vaillantDhwSnapshot {
 	if status == nil {
 		return nil
 	}
-	return &vaillantDhwSnapshot{
+	snapshot := &vaillantDhwSnapshot{
 		OperatingMode:                 status.OperatingMode,
 		Preset:                        status.Preset,
 		CurrentTempC:                  cloneFloat64Ptr(status.CurrentTempC),
@@ -318,6 +414,8 @@ func dhwSnapshotFromSemanticStatus(status *graphql.DhwStatus) *vaillantDhwSnapsh
 		ConfigurationDHWOperationMode: status.DhwOperationModeRaw,
 		StateSpecialFunction:          status.DhwSpecialFunctionRaw,
 	}
+	seedDhwFreshness(snapshot, semanticSnapshotSourceCache, true)
+	return snapshot
 }
 
 func parseUint16Token(token string) *uint16 {
@@ -339,6 +437,197 @@ func cloneFloat64Ptr(value *float64) *float64 {
 	}
 	copyValue := *value
 	return &copyValue
+}
+
+func cloneUint16Ptr(value *uint16) *uint16 {
+	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
+}
+
+func ensureFieldFreshnessMap(entry *map[semanticFieldKey]semanticFieldFreshness) map[semanticFieldKey]semanticFieldFreshness {
+	if *entry == nil {
+		*entry = make(map[semanticFieldKey]semanticFieldFreshness)
+	}
+	return *entry
+}
+
+func setFieldFreshness(fields map[semanticFieldKey]semanticFieldFreshness, field semanticFieldKey, source semanticSnapshotSource, stale bool) {
+	if fields == nil {
+		return
+	}
+	fields[field] = semanticFieldFreshness{
+		Source: source,
+		Stale:  stale,
+	}
+}
+
+func markFieldStale(fields map[semanticFieldKey]semanticFieldFreshness, field semanticFieldKey) {
+	if fields == nil {
+		return
+	}
+	freshness, ok := fields[field]
+	if !ok {
+		return
+	}
+	freshness.Stale = true
+	fields[field] = freshness
+}
+
+func mergeStringField(target *string, incoming string, attempted bool, fields map[semanticFieldKey]semanticFieldFreshness, field semanticFieldKey, source semanticSnapshotSource) {
+	if !attempted {
+		return
+	}
+	if strings.TrimSpace(incoming) != "" {
+		*target = incoming
+		setFieldFreshness(fields, field, source, false)
+		return
+	}
+	markFieldStale(fields, field)
+}
+
+func mergeStringSliceField(target *[]string, incoming []string, attempted bool, fields map[semanticFieldKey]semanticFieldFreshness, field semanticFieldKey, source semanticSnapshotSource) {
+	if !attempted {
+		return
+	}
+	if len(incoming) > 0 {
+		*target = append([]string(nil), incoming...)
+		setFieldFreshness(fields, field, source, false)
+		return
+	}
+	markFieldStale(fields, field)
+}
+
+func mergeFloatField(target **float64, incoming *float64, attempted bool, fields map[semanticFieldKey]semanticFieldFreshness, field semanticFieldKey, source semanticSnapshotSource) {
+	if !attempted {
+		return
+	}
+	if incoming != nil {
+		*target = cloneFloat64Ptr(incoming)
+		setFieldFreshness(fields, field, source, false)
+		return
+	}
+	markFieldStale(fields, field)
+}
+
+func mergeUint16Field(target **uint16, incoming *uint16, attempted bool, fields map[semanticFieldKey]semanticFieldFreshness, field semanticFieldKey, source semanticSnapshotSource) {
+	if !attempted {
+		return
+	}
+	if incoming != nil {
+		*target = cloneUint16Ptr(incoming)
+		setFieldFreshness(fields, field, source, false)
+		return
+	}
+	markFieldStale(fields, field)
+}
+
+func mergeZoneSnapshotFields(entry *vaillantZoneSnapshot, incoming *vaillantZoneSnapshot, source semanticSnapshotSource, attempted semanticFieldSet) {
+	if entry == nil || incoming == nil {
+		return
+	}
+	fields := ensureFieldFreshnessMap(&entry.FieldFreshness)
+
+	mergeStringField(&entry.Name, incoming.Name, attempted.has(zoneFieldName), fields, zoneFieldName, source)
+	mergeStringField(&entry.OperatingMode, incoming.OperatingMode, attempted.has(zoneFieldOperatingMode), fields, zoneFieldOperatingMode, source)
+	mergeStringField(&entry.Preset, incoming.Preset, attempted.has(zoneFieldPreset), fields, zoneFieldPreset, source)
+	mergeStringField(&entry.HvacAction, incoming.HvacAction, attempted.has(zoneFieldHvacAction), fields, zoneFieldHvacAction, source)
+	mergeStringSliceField(&entry.AllowedModes, incoming.AllowedModes, attempted.has(zoneFieldAllowedModes), fields, zoneFieldAllowedModes, source)
+	mergeFloatField(&entry.CurrentTempC, incoming.CurrentTempC, attempted.has(zoneFieldCurrentTempC), fields, zoneFieldCurrentTempC, source)
+	mergeFloatField(&entry.TargetTempC, incoming.TargetTempC, attempted.has(zoneFieldTargetTempC), fields, zoneFieldTargetTempC, source)
+	mergeFloatField(&entry.HumidityPct, incoming.HumidityPct, attempted.has(zoneFieldCurrentHumidityPct), fields, zoneFieldCurrentHumidityPct, source)
+	mergeStringField(&entry.ConfigurationHeatingOperationMode, incoming.ConfigurationHeatingOperationMode, attempted.has(zoneFieldZoneOperationModeRaw), fields, zoneFieldZoneOperationModeRaw, source)
+	mergeStringField(&entry.StateSpecialFunction, incoming.StateSpecialFunction, attempted.has(zoneFieldSpecialFunctionRaw), fields, zoneFieldSpecialFunctionRaw, source)
+	mergeUint16Field(&entry.ConfigurationAssociatedCircuitRaw, incoming.ConfigurationAssociatedCircuitRaw, attempted.has(zoneFieldZoneCircuitIndexRaw), fields, zoneFieldZoneCircuitIndexRaw, source)
+	mergeUint16Field(&entry.ConfigurationCircuitTypeRaw, incoming.ConfigurationCircuitTypeRaw, attempted.has(zoneFieldCircuitTypeRaw), fields, zoneFieldCircuitTypeRaw, source)
+	mergeUint16Field(&entry.StateValveStatusRaw, incoming.StateValveStatusRaw, attempted.has(zoneFieldZoneValveStatusRaw), fields, zoneFieldZoneValveStatusRaw, source)
+}
+
+func mergeDhwSnapshotFields(entry *vaillantDhwSnapshot, incoming *vaillantDhwSnapshot, source semanticSnapshotSource, attempted semanticFieldSet) {
+	if entry == nil || incoming == nil {
+		return
+	}
+	fields := ensureFieldFreshnessMap(&entry.FieldFreshness)
+
+	mergeStringField(&entry.OperatingMode, incoming.OperatingMode, attempted.has(dhwFieldOperatingMode), fields, dhwFieldOperatingMode, source)
+	mergeStringField(&entry.Preset, incoming.Preset, attempted.has(dhwFieldPreset), fields, dhwFieldPreset, source)
+	mergeFloatField(&entry.CurrentTempC, incoming.CurrentTempC, attempted.has(dhwFieldCurrentTempC), fields, dhwFieldCurrentTempC, source)
+	mergeFloatField(&entry.TargetTempC, incoming.TargetTempC, attempted.has(dhwFieldTargetTempC), fields, dhwFieldTargetTempC, source)
+	mergeStringField(&entry.ConfigurationDHWOperationMode, incoming.ConfigurationDHWOperationMode, attempted.has(dhwFieldDhwOperationModeRaw), fields, dhwFieldDhwOperationModeRaw, source)
+	mergeStringField(&entry.StateSpecialFunction, incoming.StateSpecialFunction, attempted.has(dhwFieldSpecialFunctionRaw), fields, dhwFieldSpecialFunctionRaw, source)
+}
+
+func seedZoneFreshness(snapshot *vaillantZoneSnapshot, source semanticSnapshotSource, stale bool) {
+	if snapshot == nil {
+		return
+	}
+	fields := ensureFieldFreshnessMap(&snapshot.FieldFreshness)
+	if strings.TrimSpace(snapshot.Name) != "" {
+		setFieldFreshness(fields, zoneFieldName, source, stale)
+	}
+	if strings.TrimSpace(snapshot.OperatingMode) != "" {
+		setFieldFreshness(fields, zoneFieldOperatingMode, source, stale)
+	}
+	if strings.TrimSpace(snapshot.Preset) != "" {
+		setFieldFreshness(fields, zoneFieldPreset, source, stale)
+	}
+	if strings.TrimSpace(snapshot.HvacAction) != "" {
+		setFieldFreshness(fields, zoneFieldHvacAction, source, stale)
+	}
+	if len(snapshot.AllowedModes) > 0 {
+		setFieldFreshness(fields, zoneFieldAllowedModes, source, stale)
+	}
+	if snapshot.CurrentTempC != nil {
+		setFieldFreshness(fields, zoneFieldCurrentTempC, source, stale)
+	}
+	if snapshot.TargetTempC != nil {
+		setFieldFreshness(fields, zoneFieldTargetTempC, source, stale)
+	}
+	if snapshot.HumidityPct != nil {
+		setFieldFreshness(fields, zoneFieldCurrentHumidityPct, source, stale)
+	}
+	if strings.TrimSpace(snapshot.ConfigurationHeatingOperationMode) != "" {
+		setFieldFreshness(fields, zoneFieldZoneOperationModeRaw, source, stale)
+	}
+	if strings.TrimSpace(snapshot.StateSpecialFunction) != "" {
+		setFieldFreshness(fields, zoneFieldSpecialFunctionRaw, source, stale)
+	}
+	if snapshot.ConfigurationAssociatedCircuitRaw != nil {
+		setFieldFreshness(fields, zoneFieldZoneCircuitIndexRaw, source, stale)
+	}
+	if snapshot.ConfigurationCircuitTypeRaw != nil {
+		setFieldFreshness(fields, zoneFieldCircuitTypeRaw, source, stale)
+	}
+	if snapshot.StateValveStatusRaw != nil {
+		setFieldFreshness(fields, zoneFieldZoneValveStatusRaw, source, stale)
+	}
+}
+
+func seedDhwFreshness(snapshot *vaillantDhwSnapshot, source semanticSnapshotSource, stale bool) {
+	if snapshot == nil {
+		return
+	}
+	fields := ensureFieldFreshnessMap(&snapshot.FieldFreshness)
+	if strings.TrimSpace(snapshot.OperatingMode) != "" {
+		setFieldFreshness(fields, dhwFieldOperatingMode, source, stale)
+	}
+	if strings.TrimSpace(snapshot.Preset) != "" {
+		setFieldFreshness(fields, dhwFieldPreset, source, stale)
+	}
+	if snapshot.CurrentTempC != nil {
+		setFieldFreshness(fields, dhwFieldCurrentTempC, source, stale)
+	}
+	if snapshot.TargetTempC != nil {
+		setFieldFreshness(fields, dhwFieldTargetTempC, source, stale)
+	}
+	if strings.TrimSpace(snapshot.ConfigurationDHWOperationMode) != "" {
+		setFieldFreshness(fields, dhwFieldDhwOperationModeRaw, source, stale)
+	}
+	if strings.TrimSpace(snapshot.StateSpecialFunction) != "" {
+		setFieldFreshness(fields, dhwFieldSpecialFunctionRaw, source, stale)
+	}
 }
 
 func (p *vaillantSemanticPoller) Start(ctx context.Context) {
@@ -638,14 +927,12 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 			liveReadSuccess = true
 		}
 
-		name := composeZoneName(primaryName, prefix, suffix)
-		if strings.TrimSpace(name) == "" {
-			continue
+		incoming := &vaillantZoneSnapshot{
+			Name: composeZoneName(primaryName, prefix, suffix),
 		}
-
 		p.mu.Lock()
 		if entry := p.zones[instance]; entry != nil {
-			entry.Name = name
+			mergeZoneSnapshotFields(entry, incoming, semanticSnapshotSourceLive, zoneConfigFieldSet)
 		}
 		p.mu.Unlock()
 	}
@@ -725,41 +1012,28 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 
 		operatingMode, preset, allowedModes := deriveZoneModeAndPreset(zoneOpMode, zoneSF, circuitType, hasCircuitType)
 		hvacAction := deriveZoneHvacAction(zoneValve, circuitType, hasCircuitType)
+		incoming := &vaillantZoneSnapshot{
+			OperatingMode:                     operatingMode,
+			Preset:                            preset,
+			HvacAction:                        hvacAction,
+			AllowedModes:                      allowedModes,
+			CurrentTempC:                      currentPtr,
+			TargetTempC:                       targetPtr,
+			HumidityPct:                       humidity,
+			ConfigurationAssociatedCircuitRaw: zoneCircuitRaw,
+			ConfigurationCircuitTypeRaw:       circuitType,
+			StateValveStatusRaw:               zoneValve,
+		}
+		if zoneOpMode != nil {
+			incoming.ConfigurationHeatingOperationMode = formatUintToken(*zoneOpMode)
+		}
+		if zoneSF != nil {
+			incoming.StateSpecialFunction = formatUintToken(*zoneSF)
+		}
 
 		p.mu.Lock()
 		if entry := p.zones[instance]; entry != nil {
-			if currentPtr != nil {
-				entry.CurrentTempC = currentPtr
-			}
-			if targetPtr != nil {
-				entry.TargetTempC = targetPtr
-			}
-			if humidity != nil {
-				entry.HumidityPct = humidity
-			}
-			if operatingMode != "" {
-				entry.OperatingMode = operatingMode
-			}
-			if preset != "" {
-				entry.Preset = preset
-			}
-			if hvacAction != "" {
-				entry.HvacAction = hvacAction
-			}
-			if len(allowedModes) > 0 {
-				entry.AllowedModes = allowedModes
-			}
-			if zoneOpMode != nil {
-				entry.ConfigurationHeatingOperationMode = formatUintToken(*zoneOpMode)
-			}
-			if zoneSF != nil {
-				entry.StateSpecialFunction = formatUintToken(*zoneSF)
-			}
-			entry.ConfigurationAssociatedCircuitRaw = zoneCircuitRaw
-			entry.StateValveStatusRaw = zoneValve
-			if hasCircuitType {
-				entry.ConfigurationCircuitTypeRaw = circuitType
-			}
+			mergeZoneSnapshotFields(entry, incoming, semanticSnapshotSourceLive, zoneStateFieldSet)
 		}
 		p.mu.Unlock()
 	}
@@ -941,7 +1215,10 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 	}
 
 	p.mu.Lock()
-	p.dhw = status
+	if p.dhw == nil {
+		p.dhw = &vaillantDhwSnapshot{}
+	}
+	mergeDhwSnapshotFields(p.dhw, status, semanticSnapshotSourceLive, dhwFieldSet)
 	p.mu.Unlock()
 	if liveReadSuccess {
 		return semanticSnapshotSourceLive

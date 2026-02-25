@@ -97,6 +97,17 @@ func TestApplyDefaults_SetsSemanticReadBreakerDefaults(t *testing.T) {
 	}
 }
 
+func TestApplyDefaults_PreservesExplicitDisabledSemanticReadBreakerBudget(t *testing.T) {
+	cfg := applyDefaults(Config{
+		SemanticReadBreakerFailureBudget:      0,
+		SemanticReadBreakerOpenCooldown:       DefaultSemanticReadOpenCooldown,
+		SemanticReadBreakerHalfOpenProbeLimit: DefaultSemanticReadHalfOpenProbeLimit,
+	})
+	if cfg.SemanticReadBreakerFailureBudget != 0 {
+		t.Fatalf("expected SemanticReadBreakerFailureBudget=0 to remain disabled, got %d", cfg.SemanticReadBreakerFailureBudget)
+	}
+}
+
 func TestDefaultConfig_SetsPortalPath(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.PortalPath != "/portal" {

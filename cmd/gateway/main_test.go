@@ -150,6 +150,18 @@ func TestBindFlags_SemanticReadBreakerConfig(t *testing.T) {
 	}
 }
 
+func TestBindFlags_SemanticReadBreakerDisableWithZeroBudget(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-semantic-read-breaker-failure-budget", "0"}); err != nil {
+		t.Fatalf("parse semantic read breaker disable flag: %v", err)
+	}
+	if cfg.SemanticReadBreakerFailureBudget != 0 {
+		t.Fatalf("SemanticReadBreakerFailureBudget = %d; want 0 (disabled)", cfg.SemanticReadBreakerFailureBudget)
+	}
+}
+
 func TestNormalizeMountPath(t *testing.T) {
 	tests := []struct {
 		name     string

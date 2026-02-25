@@ -151,7 +151,9 @@ func applyDefaults(cfg Config) Config {
 	if cfg.SemanticRequestTimeout == 0 {
 		cfg.SemanticRequestTimeout = 2 * time.Second
 	}
-	if cfg.SemanticReadBreakerFailureBudget == 0 {
+	if cfg.SemanticReadBreakerFailureBudget == 0 &&
+		cfg.SemanticReadBreakerOpenCooldown == 0 &&
+		cfg.SemanticReadBreakerHalfOpenProbeLimit == 0 {
 		cfg.SemanticReadBreakerFailureBudget = DefaultSemanticReadFailureBudget
 	}
 	if cfg.SemanticReadBreakerOpenCooldown == 0 {

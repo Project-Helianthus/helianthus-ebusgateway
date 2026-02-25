@@ -281,6 +281,9 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 		}
 		p.mu.Unlock()
 	}
+	if !liveReadSuccess && p.refreshFromEbusdGrab(ctx) {
+		grabHydrated = true
+	}
 
 	source := semanticSnapshotSourceCache
 	if liveReadSuccess || grabHydrated {
@@ -391,6 +394,9 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 			}
 		}
 		p.mu.Unlock()
+	}
+	if !liveReadSuccess && p.refreshFromEbusdGrab(ctx) {
+		grabHydrated = true
 	}
 
 	zoneSource := semanticSnapshotSourceCache

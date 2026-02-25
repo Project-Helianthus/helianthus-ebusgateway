@@ -492,6 +492,41 @@ func TestReconcileDiscoveryPresence_TracksMissesWithPartialFallback(t *testing.T
 	}
 }
 
+func TestReconcileDiscoveryPresence_DoesNotDoubleCountFallbackHit(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x04)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+	poller.refreshFromEbusdGrabFn = func(_ context.Context) (map[byte]bool, bool) {
+		poller.applyZonePresenceProbes(
+			map[byte]bool{instance: true},
+			map[byte]bool{instance: true},
+		)
+		return map[byte]bool{instance: true}, true
+	}
+
+	source := poller.reconcileDiscoveryPresence(
+		context.Background(),
+		map[byte]bool{instance: true},
+		map[byte]bool{},
+	)
+	if source != semanticSnapshotSourceLive {
+		t.Fatalf("source = %v; want LIVE", source)
+	}
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("zone should not be promoted to present after a single fallback hit when threshold is 2")
+	}
+	record := poller.presence[instance]
+	if record == nil || record.State != zonePresenceSuspectResurrect || record.HitStreak != 1 {
+		t.Fatalf("presence state = %+v; want SUSPECT_RESURRECT with hit_streak=1", record)
+	}
+}
+
 func TestSemanticReadBreakerKeyIncludesOpcode(t *testing.T) {
 	t.Parallel()
 

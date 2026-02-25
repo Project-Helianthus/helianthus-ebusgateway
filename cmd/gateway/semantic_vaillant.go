@@ -458,7 +458,7 @@ func (p *vaillantSemanticPoller) reconcileDiscoveryPresence(ctx context.Context,
 				checked[instance] = true
 				present[instance] = true
 			}
-			p.applyZonePresenceProbes(checked, present)
+			p.applyZonePresenceMissesOnly(checked, present)
 			return semanticSnapshotSourceLive
 		}
 	}
@@ -487,6 +487,29 @@ func (p *vaillantSemanticPoller) applyZonePresenceProbes(checked, present map[by
 	for instance := range checked {
 		if present[instance] {
 			p.markZonePresentLocked(instance)
+			continue
+		}
+		p.markZoneMissingLocked(instance)
+	}
+}
+
+func (p *vaillantSemanticPoller) applyZonePresenceMissesOnly(checked, present map[byte]bool) {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.zones == nil {
+		p.zones = make(map[byte]*vaillantZoneSnapshot)
+	}
+	if p.presence == nil {
+		p.presence = make(map[byte]*zonePresenceRecord)
+	}
+
+	for instance := range checked {
+		if present[instance] {
 			continue
 		}
 		p.markZoneMissingLocked(instance)

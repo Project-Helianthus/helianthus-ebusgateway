@@ -57,46 +57,7 @@ func (p *vaillantSemanticPoller) refreshFromEbusdGrabWithInstances(ctx context.C
 		if entry == nil {
 			continue
 		}
-		if strings.TrimSpace(incoming.Name) != "" {
-			entry.Name = incoming.Name
-		}
-		if incoming.OperatingMode != "" {
-			entry.OperatingMode = incoming.OperatingMode
-		}
-		if incoming.Preset != "" {
-			entry.Preset = incoming.Preset
-		}
-		if incoming.CurrentTempC != nil {
-			value := *incoming.CurrentTempC
-			entry.CurrentTempC = &value
-		}
-		if incoming.TargetTempC != nil {
-			value := *incoming.TargetTempC
-			entry.TargetTempC = &value
-		}
-		if incoming.HumidityPct != nil {
-			value := *incoming.HumidityPct
-			entry.HumidityPct = &value
-		}
-		if incoming.HvacAction != "" {
-			entry.HvacAction = incoming.HvacAction
-		}
-		if incoming.OperatingMode != "" {
-			entry.OperatingMode = incoming.OperatingMode
-		}
-		if incoming.Preset != "" {
-			entry.Preset = incoming.Preset
-		}
-		if len(incoming.AllowedModes) > 0 {
-			entry.AllowedModes = append([]string(nil), incoming.AllowedModes...)
-		}
-		if incoming.StateSpecialFunction != "" {
-			entry.StateSpecialFunction = incoming.StateSpecialFunction
-		}
-		entry.ConfigurationAssociatedCircuitRaw = incoming.ConfigurationAssociatedCircuitRaw
-		entry.ConfigurationCircuitTypeRaw = incoming.ConfigurationCircuitTypeRaw
-		entry.StateValveStatusRaw = incoming.StateValveStatusRaw
-		entry.ConfigurationHeatingOperationMode = incoming.ConfigurationHeatingOperationMode
+		mergeZoneSnapshotFields(entry, incoming, semanticSnapshotSourceLive, zoneGrabFieldSet)
 	}
 	p.mu.Unlock()
 	return hydrated, true
@@ -152,7 +113,10 @@ func (p *vaillantSemanticPoller) refreshDHWFromEbusdGrab(ctx context.Context) bo
 			continue
 		}
 		p.mu.Lock()
-		p.dhw = dhw
+		if p.dhw == nil {
+			p.dhw = &vaillantDhwSnapshot{}
+		}
+		mergeDhwSnapshotFields(p.dhw, dhw, semanticSnapshotSourceLive, dhwFieldSet)
 		p.mu.Unlock()
 		return true
 	}

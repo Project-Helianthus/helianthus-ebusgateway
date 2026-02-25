@@ -265,6 +265,141 @@ func TestSourceFromEbusdGrab(t *testing.T) {
 	}
 }
 
+func TestMergeZoneSnapshotFields_PartialLiveUpdatePreservesLastKnownAndFreshness(t *testing.T) {
+	t.Parallel()
+
+	current := 21.0
+	target := 22.5
+	humidity := 44.0
+	circuitIndex := uint16(2)
+	circuitType := uint16(1)
+	valve := uint16(1)
+	entry := &vaillantZoneSnapshot{
+		Name:                              "Zone 1",
+		OperatingMode:                     "heat",
+		Preset:                            "manual",
+		HvacAction:                        "heating",
+		AllowedModes:                      []string{"off", "auto", "heat"},
+		CurrentTempC:                      &current,
+		TargetTempC:                       &target,
+		HumidityPct:                       &humidity,
+		ConfigurationHeatingOperationMode: "1",
+		StateSpecialFunction:              "0",
+		ConfigurationAssociatedCircuitRaw: &circuitIndex,
+		ConfigurationCircuitTypeRaw:       &circuitType,
+		StateValveStatusRaw:               &valve,
+	}
+	seedZoneFreshness(entry, semanticSnapshotSourceCache, true)
+
+	updatedCurrent := 21.8
+	incoming := &vaillantZoneSnapshot{
+		CurrentTempC:                      &updatedCurrent,
+		ConfigurationHeatingOperationMode: "2",
+	}
+	mergeZoneSnapshotFields(entry, incoming, semanticSnapshotSourceLive, zoneStateFieldSet)
+
+	if entry.CurrentTempC == nil || *entry.CurrentTempC != 21.8 {
+		t.Fatalf("entry.CurrentTempC = %v; want 21.8", entry.CurrentTempC)
+	}
+	if entry.TargetTempC == nil || *entry.TargetTempC != 22.5 {
+		t.Fatalf("entry.TargetTempC = %v; want preserved 22.5", entry.TargetTempC)
+	}
+	if entry.ConfigurationAssociatedCircuitRaw == nil || *entry.ConfigurationAssociatedCircuitRaw != 2 {
+		t.Fatalf("entry.ConfigurationAssociatedCircuitRaw = %v; want preserved 2", entry.ConfigurationAssociatedCircuitRaw)
+	}
+	if entry.ConfigurationHeatingOperationMode != "2" {
+		t.Fatalf("entry.ConfigurationHeatingOperationMode = %q; want 2", entry.ConfigurationHeatingOperationMode)
+	}
+
+	currentFreshness, ok := entry.FieldFreshness[zoneFieldCurrentTempC]
+	if !ok || currentFreshness.Source != semanticSnapshotSourceLive || currentFreshness.Stale {
+		t.Fatalf("current_temp freshness = %+v (ok=%v); want source=live stale=false", currentFreshness, ok)
+	}
+	targetFreshness, ok := entry.FieldFreshness[zoneFieldTargetTempC]
+	if !ok || targetFreshness.Source != semanticSnapshotSourceCache || !targetFreshness.Stale {
+		t.Fatalf("target_temp freshness = %+v (ok=%v); want source=cache stale=true", targetFreshness, ok)
+	}
+	opModeFreshness, ok := entry.FieldFreshness[zoneFieldZoneOperationModeRaw]
+	if !ok || opModeFreshness.Source != semanticSnapshotSourceLive || opModeFreshness.Stale {
+		t.Fatalf("operation_mode_raw freshness = %+v (ok=%v); want source=live stale=false", opModeFreshness, ok)
+	}
+}
+
+func TestMergeDhwSnapshotFields_PartialLiveUpdatePreservesLastKnownAndFreshness(t *testing.T) {
+	t.Parallel()
+
+	current := 48.0
+	target := 50.0
+	entry := &vaillantDhwSnapshot{
+		OperatingMode:                 "auto",
+		Preset:                        "schedule",
+		CurrentTempC:                  &current,
+		TargetTempC:                   &target,
+		ConfigurationDHWOperationMode: "1",
+		StateSpecialFunction:          "0",
+	}
+	seedDhwFreshness(entry, semanticSnapshotSourceCache, true)
+
+	updatedCurrent := 49.5
+	incoming := &vaillantDhwSnapshot{
+		CurrentTempC: &updatedCurrent,
+	}
+	mergeDhwSnapshotFields(entry, incoming, semanticSnapshotSourceLive, dhwFieldSet)
+
+	if entry.CurrentTempC == nil || *entry.CurrentTempC != 49.5 {
+		t.Fatalf("entry.CurrentTempC = %v; want 49.5", entry.CurrentTempC)
+	}
+	if entry.TargetTempC == nil || *entry.TargetTempC != 50.0 {
+		t.Fatalf("entry.TargetTempC = %v; want preserved 50.0", entry.TargetTempC)
+	}
+	if entry.OperatingMode != "auto" {
+		t.Fatalf("entry.OperatingMode = %q; want preserved auto", entry.OperatingMode)
+	}
+
+	currentFreshness, ok := entry.FieldFreshness[dhwFieldCurrentTempC]
+	if !ok || currentFreshness.Source != semanticSnapshotSourceLive || currentFreshness.Stale {
+		t.Fatalf("current_temp freshness = %+v (ok=%v); want source=live stale=false", currentFreshness, ok)
+	}
+	targetFreshness, ok := entry.FieldFreshness[dhwFieldTargetTempC]
+	if !ok || targetFreshness.Source != semanticSnapshotSourceCache || !targetFreshness.Stale {
+		t.Fatalf("target_temp freshness = %+v (ok=%v); want source=cache stale=true", targetFreshness, ok)
+	}
+}
+
+func TestZonePresenceFSM_NoRegressionWithFreshnessMetadata(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x02)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+
+	current := 20.0
+	entry := &vaillantZoneSnapshot{Instance: instance, Present: true, CurrentTempC: &current}
+	seedZoneFreshness(entry, semanticSnapshotSourceCache, true)
+	poller.zones[instance] = entry
+	poller.presence[instance] = &zonePresenceRecord{
+		State:     zonePresencePresent,
+		HitStreak: poller.zoneHitThresholdValue(),
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	if _, exists := poller.zones[instance]; !exists {
+		t.Fatalf("zone removed too early on first miss")
+	}
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	if _, exists := poller.zones[instance]; !exists {
+		t.Fatalf("zone removed too early on second miss")
+	}
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("zone should be absent after third miss")
+	}
+}
+
 func TestZonePresenceFSM_AbsenceRequiresConsecutiveMisses(t *testing.T) {
 	t.Parallel()
 

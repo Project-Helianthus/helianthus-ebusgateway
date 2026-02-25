@@ -1,6 +1,9 @@
 package ebusgateway
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestDefaultConfig_DisablesDumpUploadPath(t *testing.T) {
 	cfg := DefaultConfig()
@@ -37,6 +40,20 @@ func TestApplyDefaults_PreservesAutoScanSource(t *testing.T) {
 	})
 	if cfg.ScanSource != 0x00 {
 		t.Fatalf("expected ScanSource=0x00 for auto mode, got 0x%02x", cfg.ScanSource)
+	}
+}
+
+func TestDefaultConfig_SetsBootLiveTimeout(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.BootLiveTimeout != 2*time.Minute {
+		t.Fatalf("expected BootLiveTimeout=2m by default, got %s", cfg.BootLiveTimeout)
+	}
+}
+
+func TestApplyDefaults_SetsBootLiveTimeout(t *testing.T) {
+	cfg := applyDefaults(Config{})
+	if cfg.BootLiveTimeout != 2*time.Minute {
+		t.Fatalf("expected BootLiveTimeout=2m after defaults, got %s", cfg.BootLiveTimeout)
 	}
 }
 

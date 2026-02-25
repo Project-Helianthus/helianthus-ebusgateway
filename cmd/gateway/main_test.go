@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"testing"
+	"time"
 
 	"github.com/d3vi1/helianthus-ebusgateway"
 )
@@ -100,6 +101,18 @@ func TestBindFlags_PortalPath(t *testing.T) {
 	}
 	if cfg.PortalPath != "/portal-v2" {
 		t.Fatalf("PortalPath = %q; want /portal-v2", cfg.PortalPath)
+	}
+}
+
+func TestBindFlags_BootLiveTimeout(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-boot-live-timeout", "45s"}); err != nil {
+		t.Fatalf("parse boot-live-timeout: %v", err)
+	}
+	if cfg.BootLiveTimeout != 45*time.Second {
+		t.Fatalf("BootLiveTimeout = %s; want 45s", cfg.BootLiveTimeout)
 	}
 }
 

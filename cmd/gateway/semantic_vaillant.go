@@ -119,6 +119,13 @@ type vaillantDhwSnapshot struct {
 	StateSpecialFunction          string
 }
 
+type semanticSnapshotSource uint8
+
+const (
+	semanticSnapshotSourceCache semanticSnapshotSource = iota
+	semanticSnapshotSourceLive
+)
+
 func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub) *vaillantSemanticPoller {
 	return &vaillantSemanticPoller{
 		scheduler:       ebusgateway.NewSemanticReadScheduler(),
@@ -214,8 +221,8 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
 		p.dhw = nil
 		p.mu.Unlock()
-		p.publishZones()
-		p.publishDHW()
+		p.publishZones(semanticSnapshotSourceCache)
+		p.publishDHW(semanticSnapshotSourceCache)
 		return
 	}
 
@@ -253,15 +260,17 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	}
 	p.mu.Unlock()
 
+	source := semanticSnapshotSourceLive
 	if len(present) == 0 {
-		_ = p.refreshFromEbusdGrab(ctx)
+		source = sourceFromEbusdGrab(p.refreshFromEbusdGrab(ctx))
 	}
 
-	p.publishZones()
+	p.publishZones(source)
 }
 
 func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 	controller, zones := p.snapshotZones()
+	grabHydrated := false
 	if controller == 0 || len(zones) == 0 {
 		p.refreshDiscovery(ctx)
 		controller, zones = p.snapshotZones()
@@ -269,16 +278,21 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 	if controller == 0 || len(zones) == 0 {
 		if p.refreshFromEbusdGrab(ctx) {
 			controller, zones = p.snapshotZones()
+			grabHydrated = true
 		}
 	}
 	if controller == 0 || len(zones) == 0 {
 		return
 	}
 
+	liveReadSuccess := false
 	for _, instance := range zones {
-		primaryName := p.readB524ZoneNamePart(ctx, instance, zoneRegName)
-		prefix := p.readB524ZoneNamePart(ctx, instance, zoneRegNamePrefix)
-		suffix := p.readB524ZoneNamePart(ctx, instance, zoneRegNameSuffix)
+		primaryName, primaryOK := p.readB524ZoneNamePart(ctx, instance, zoneRegName)
+		prefix, prefixOK := p.readB524ZoneNamePart(ctx, instance, zoneRegNamePrefix)
+		suffix, suffixOK := p.readB524ZoneNamePart(ctx, instance, zoneRegNameSuffix)
+		if primaryOK || prefixOK || suffixOK {
+			liveReadSuccess = true
+		}
 
 		name := composeZoneName(primaryName, prefix, suffix)
 		if strings.TrimSpace(name) == "" {
@@ -291,12 +305,20 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 		}
 		p.mu.Unlock()
 	}
+	if !liveReadSuccess && p.refreshFromEbusdGrab(ctx) {
+		grabHydrated = true
+	}
 
-	p.publishZones()
+	source := semanticSnapshotSourceCache
+	if liveReadSuccess || grabHydrated {
+		source = semanticSnapshotSourceLive
+	}
+	p.publishZones(source)
 }
 
 func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 	controller, zones := p.snapshotZones()
+	grabHydrated := false
 	if controller == 0 || len(zones) == 0 {
 		p.refreshDiscovery(ctx)
 		controller, zones = p.snapshotZones()
@@ -304,14 +326,16 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 	if controller == 0 || len(zones) == 0 {
 		if p.refreshFromEbusdGrab(ctx) {
 			controller, zones = p.snapshotZones()
+			grabHydrated = true
 		}
 	}
 	if controller == 0 || len(zones) == 0 {
-		p.refreshDHW(ctx)
-		p.publishDHW()
+		dhwSource := p.refreshDHW(ctx)
+		p.publishDHW(dhwSource)
 		return
 	}
 
+	liveReadSuccess := false
 	for _, instance := range zones {
 		var (
 			currentPtr *float64
@@ -321,29 +345,39 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegCurrentTemp); ok {
 			current := value
 			currentPtr = &current
+			liveReadSuccess = true
 		}
 
 		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegTargetTemp); ok {
 			target := value
 			targetPtr = &target
+			liveReadSuccess = true
 		}
 		if targetPtr == nil {
 			if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegFallbackManualTemp); ok {
 				target := value
 				targetPtr = &target
+				liveReadSuccess = true
 			}
 		}
 		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegCurrentHumidity); ok {
 			currentHumidity := value
 			humidity = &currentHumidity
+			liveReadSuccess = true
 		}
 
-		zoneOpMode, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHeatingOpMode)
-		zoneSF, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegSpecialFunction)
-		zoneValve, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegValveStatus)
-		zoneCircuitRaw, _ := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegAssociatedCircuitRaw)
+		zoneOpMode, zoneOpModeOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHeatingOpMode)
+		zoneSF, zoneSFOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegSpecialFunction)
+		zoneValve, zoneValveOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegValveStatus)
+		zoneCircuitRaw, zoneCircuitRawOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegAssociatedCircuitRaw)
+		if zoneOpModeOK || zoneSFOK || zoneValveOK || zoneCircuitRawOK {
+			liveReadSuccess = true
+		}
 		circuitInstance := resolveCircuitInstance(zoneCircuitRaw, instance)
 		circuitType, hasCircuitType := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, circuitInstance, circuitRegType)
+		if hasCircuitType {
+			liveReadSuccess = true
+		}
 
 		operatingMode, preset, allowedModes := deriveZoneModeAndPreset(zoneOpMode, zoneSF, circuitType, hasCircuitType)
 		hvacAction := deriveZoneHvacAction(zoneValve, circuitType, hasCircuitType)
@@ -385,10 +419,18 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 		}
 		p.mu.Unlock()
 	}
+	if !liveReadSuccess && p.refreshFromEbusdGrab(ctx) {
+		grabHydrated = true
+	}
 
-	p.refreshDHW(ctx)
-	p.publishZones()
-	p.publishDHW()
+	zoneSource := semanticSnapshotSourceCache
+	if liveReadSuccess || grabHydrated {
+		zoneSource = semanticSnapshotSourceLive
+	}
+
+	dhwSource := p.refreshDHW(ctx)
+	p.publishZones(zoneSource)
+	p.publishDHW(dhwSource)
 }
 
 func (p *vaillantSemanticPoller) snapshotZones() (byte, []byte) {
@@ -406,7 +448,7 @@ func (p *vaillantSemanticPoller) snapshotZones() (byte, []byte) {
 	return controller, instances
 }
 
-func (p *vaillantSemanticPoller) publishZones() {
+func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 	if p.provider == nil {
 		return
 	}
@@ -451,7 +493,12 @@ func (p *vaillantSemanticPoller) publishZones() {
 	p.mu.Unlock()
 
 	previous := p.provider.Zones()
-	p.provider.SetZones(zones)
+	switch source {
+	case semanticSnapshotSourceCache:
+		p.provider.SetZonesFromCache(zones)
+	default:
+		p.provider.SetZones(zones)
+	}
 
 	if p.hub != nil {
 		prevByID := make(map[string]graphql.Zone, len(previous))
@@ -498,7 +545,7 @@ func zoneEquals(a, b graphql.Zone) bool {
 	return true
 }
 
-func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) {
+func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapshotSource {
 	controller, _ := p.snapshotZones()
 	if controller == 0 {
 		if found, ok := findDeviceAddressByPrefix(p.reg, "BASV"); ok {
@@ -509,21 +556,27 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) {
 		}
 	}
 	if controller == 0 {
-		_ = p.refreshDHWFromEbusdGrab(ctx)
-		return
+		return sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
 	}
 
+	liveReadSuccess := false
 	currentPtr := p.readDhwFloat(ctx, dhwRegCurrentTemp)
+	if currentPtr != nil {
+		liveReadSuccess = true
+	}
 	targetPtr := p.readDhwFloat(ctx, dhwRegTargetTemp)
-	opModeRaw, _ := p.readDhwUint16(ctx, dhwRegOperationMode)
-	sfModeRaw, _ := p.readDhwUint16(ctx, dhwRegSpecialFunction)
+	if targetPtr != nil {
+		liveReadSuccess = true
+	}
+	opModeRaw, opModeOK := p.readDhwUint16(ctx, dhwRegOperationMode)
+	sfModeRaw, sfModeOK := p.readDhwUint16(ctx, dhwRegSpecialFunction)
+	if opModeOK || sfModeOK {
+		liveReadSuccess = true
+	}
 
 	operatingMode, preset := deriveDhwModeAndPreset(opModeRaw, sfModeRaw)
 	if operatingMode == "" && preset == "" && currentPtr == nil && targetPtr == nil {
-		if p.refreshDHWFromEbusdGrab(ctx) {
-			return
-		}
-		return
+		return sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
 	}
 
 	status := &vaillantDhwSnapshot{
@@ -542,6 +595,17 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) {
 	p.mu.Lock()
 	p.dhw = status
 	p.mu.Unlock()
+	if liveReadSuccess {
+		return semanticSnapshotSourceLive
+	}
+	return semanticSnapshotSourceCache
+}
+
+func sourceFromEbusdGrab(ok bool) semanticSnapshotSource {
+	if ok {
+		return semanticSnapshotSourceLive
+	}
+	return semanticSnapshotSourceCache
 }
 
 func (p *vaillantSemanticPoller) readDhwFloat(ctx context.Context, addr uint16) *float64 {
@@ -566,18 +630,23 @@ func (p *vaillantSemanticPoller) readDhwUint16(ctx context.Context, addr uint16)
 	return nil, false
 }
 
-func (p *vaillantSemanticPoller) publishDHW() {
+func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 	if p.provider == nil {
 		return
 	}
 
 	p.mu.Lock()
-	source := p.dhw
+	snapshot := p.dhw
 	p.mu.Unlock()
 
 	previous := p.provider.DHW()
-	if source == nil {
-		p.provider.SetDHW(nil)
+	if snapshot == nil {
+		switch source {
+		case semanticSnapshotSourceCache:
+			p.provider.SetDHWFromCache(nil)
+		default:
+			p.provider.SetDHW(nil)
+		}
 		if previous != nil && p.hub != nil {
 			p.hub.PublishDHWUpdate(nil)
 		}
@@ -585,16 +654,21 @@ func (p *vaillantSemanticPoller) publishDHW() {
 	}
 
 	current := &graphql.DhwStatus{
-		OperatingMode:         source.OperatingMode,
-		Preset:                source.Preset,
-		CurrentTempC:          source.CurrentTempC,
-		TargetTempC:           source.TargetTempC,
-		SpecialFunction:       source.StateSpecialFunction,
-		DhwOperationModeRaw:   source.ConfigurationDHWOperationMode,
-		DhwSpecialFunctionRaw: source.StateSpecialFunction,
+		OperatingMode:         snapshot.OperatingMode,
+		Preset:                snapshot.Preset,
+		CurrentTempC:          snapshot.CurrentTempC,
+		TargetTempC:           snapshot.TargetTempC,
+		SpecialFunction:       snapshot.StateSpecialFunction,
+		DhwOperationModeRaw:   snapshot.ConfigurationDHWOperationMode,
+		DhwSpecialFunctionRaw: snapshot.StateSpecialFunction,
 	}
 
-	p.provider.SetDHW(current)
+	switch source {
+	case semanticSnapshotSourceCache:
+		p.provider.SetDHWFromCache(current)
+	default:
+		p.provider.SetDHW(current)
+	}
 	if p.hub != nil && !dhwEquals(previous, current) {
 		p.hub.PublishDHWUpdate(current)
 	}
@@ -858,12 +932,12 @@ func (p *vaillantSemanticPoller) readB524CString(ctx context.Context, opcode, gr
 	return string(trimmed), true
 }
 
-func (p *vaillantSemanticPoller) readB524ZoneNamePart(ctx context.Context, instance byte, addr uint16) string {
+func (p *vaillantSemanticPoller) readB524ZoneNamePart(ctx context.Context, instance byte, addr uint16) (string, bool) {
 	raw, ok := p.readB524CString(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, addr)
 	if !ok {
-		return ""
+		return "", false
 	}
-	return strings.TrimSpace(raw)
+	return strings.TrimSpace(raw), true
 }
 
 func (p *vaillantSemanticPoller) readB524Uint16(ctx context.Context, opcode, group, instance byte, addr uint16) (*uint16, bool) {

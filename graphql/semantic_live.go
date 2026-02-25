@@ -1,6 +1,9 @@
 package graphql
 
 import (
+	"context"
+	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -8,16 +11,123 @@ import (
 	"github.com/d3vi1/helianthus-ebusreg/router"
 )
 
+type SemanticStartupPhase string
+
+const (
+	SemanticStartupPhaseBootInit         SemanticStartupPhase = "BOOT_INIT"
+	SemanticStartupPhaseCacheLoadedStale SemanticStartupPhase = "CACHE_LOADED_STALE"
+	SemanticStartupPhaseLiveWarmup       SemanticStartupPhase = "LIVE_WARMUP"
+	SemanticStartupPhaseLiveReady        SemanticStartupPhase = "LIVE_READY"
+	SemanticStartupPhaseDegraded         SemanticStartupPhase = "DEGRADED"
+)
+
+type semanticDataSource uint8
+
+const (
+	semanticDataSourceCache semanticDataSource = iota
+	semanticDataSourceLive
+)
+
+type semanticStreamKind uint8
+
+const (
+	semanticStreamZones semanticStreamKind = iota
+	semanticStreamDHW
+)
+
+type phaseTransitionLog struct {
+	previous   SemanticStartupPhase
+	next       SemanticStartupPhase
+	reason     string
+	cacheEpoch uint64
+	liveEpoch  uint64
+}
+
 // LiveSemanticProvider maintains semantic snapshots derived from bus data.
 type LiveSemanticProvider struct {
 	mu     sync.RWMutex
 	zones  []Zone
 	dhw    *DhwStatus
 	energy *EnergyTotals
+
+	phase              SemanticStartupPhase
+	cacheEpoch         uint64
+	liveEpoch          uint64
+	zonePublished      bool
+	dhwPublished       bool
+	zoneLiveSeen       bool
+	dhwLiveSeen        bool
+	bootMonitorStarted bool
+	phaseLogger        func(string, ...any)
 }
 
 func NewLiveSemanticProvider() *LiveSemanticProvider {
-	return &LiveSemanticProvider{}
+	return &LiveSemanticProvider{
+		phase: SemanticStartupPhaseBootInit,
+	}
+}
+
+func (provider *LiveSemanticProvider) StartBootFSM(ctx context.Context, bootLiveTimeout time.Duration, logf func(string, ...any)) {
+	if provider == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	provider.mu.Lock()
+	if logf == nil {
+		logf = log.Printf
+	}
+	if provider.phaseLogger == nil {
+		provider.phaseLogger = logf
+	}
+	if provider.bootMonitorStarted {
+		provider.mu.Unlock()
+		return
+	}
+	provider.bootMonitorStarted = true
+	provider.mu.Unlock()
+
+	if bootLiveTimeout <= 0 {
+		return
+	}
+
+	go func() {
+		timer := time.NewTimer(bootLiveTimeout)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			var transition *phaseTransitionLog
+			provider.mu.Lock()
+			if provider.phase != SemanticStartupPhaseLiveReady {
+				reason := fmt.Sprintf("boot_live_timeout elapsed=%s", bootLiveTimeout)
+				transition = provider.transitionPhaseLocked(SemanticStartupPhaseDegraded, reason)
+			}
+			provider.mu.Unlock()
+			provider.logPhaseTransition(transition)
+		}
+	}()
+}
+
+func (provider *LiveSemanticProvider) StartupPhase() SemanticStartupPhase {
+	if provider == nil {
+		return SemanticStartupPhaseBootInit
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	return provider.phase
+}
+
+func (provider *LiveSemanticProvider) StartupEpochs() (cacheEpoch uint64, liveEpoch uint64) {
+	if provider == nil {
+		return 0, 0
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	return provider.cacheEpoch, provider.liveEpoch
 }
 
 func (provider *LiveSemanticProvider) Zones() []Zone {
@@ -64,20 +174,46 @@ func (provider *LiveSemanticProvider) EnergyTotals() *EnergyTotals {
 }
 
 func (provider *LiveSemanticProvider) SetZones(zones []Zone) {
+	provider.setZonesWithSource(zones, semanticDataSourceLive, "zones_live_update")
+}
+
+func (provider *LiveSemanticProvider) SetZonesFromCache(zones []Zone) {
+	provider.setZonesWithSource(zones, semanticDataSourceCache, "zones_cache_update")
+}
+
+func (provider *LiveSemanticProvider) setZonesWithSource(zones []Zone, source semanticDataSource, reason string) {
 	if provider == nil {
 		return
 	}
 	zonesCopy := make([]Zone, len(zones))
 	copy(zonesCopy, zones)
+	var transition *phaseTransitionLog
 	provider.mu.Lock()
 	provider.zones = zonesCopy
+	if len(zonesCopy) > 0 {
+		provider.zonePublished = true
+		if source == semanticDataSourceLive {
+			provider.zoneLiveSeen = true
+		}
+		transition = provider.recordEpochUpdateLocked(source, semanticStreamZones, reason)
+	}
 	provider.mu.Unlock()
+	provider.logPhaseTransition(transition)
 }
 
 func (provider *LiveSemanticProvider) SetDHW(status *DhwStatus) {
+	provider.setDHWWithSource(status, semanticDataSourceLive, "dhw_live_update")
+}
+
+func (provider *LiveSemanticProvider) SetDHWFromCache(status *DhwStatus) {
+	provider.setDHWWithSource(status, semanticDataSourceCache, "dhw_cache_update")
+}
+
+func (provider *LiveSemanticProvider) setDHWWithSource(status *DhwStatus, source semanticDataSource, reason string) {
 	if provider == nil {
 		return
 	}
+	var transition *phaseTransitionLog
 	provider.mu.Lock()
 	if status == nil {
 		provider.dhw = nil
@@ -86,7 +222,81 @@ func (provider *LiveSemanticProvider) SetDHW(status *DhwStatus) {
 	}
 	copy := *status
 	provider.dhw = &copy
+	provider.dhwPublished = true
+	if source == semanticDataSourceLive {
+		provider.dhwLiveSeen = true
+	}
+	transition = provider.recordEpochUpdateLocked(source, semanticStreamDHW, reason)
 	provider.mu.Unlock()
+	provider.logPhaseTransition(transition)
+}
+
+func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDataSource, stream semanticStreamKind, reason string) *phaseTransitionLog {
+	switch source {
+	case semanticDataSourceCache:
+		provider.cacheEpoch++
+		if provider.liveEpoch == 0 && provider.phase != SemanticStartupPhaseDegraded {
+			return provider.transitionPhaseLocked(SemanticStartupPhaseCacheLoadedStale, reason)
+		}
+	case semanticDataSourceLive:
+		switch stream {
+		case semanticStreamZones:
+			provider.zoneLiveSeen = true
+		case semanticStreamDHW:
+			provider.dhwLiveSeen = true
+		}
+		provider.liveEpoch++
+		if provider.liveEpoch == 1 {
+			return provider.transitionPhaseLocked(SemanticStartupPhaseLiveWarmup, reason)
+		}
+		if provider.liveReadyCriteriaLocked() {
+			return provider.transitionPhaseLocked(SemanticStartupPhaseLiveReady, reason)
+		}
+	}
+	return nil
+}
+
+func (provider *LiveSemanticProvider) liveReadyCriteriaLocked() bool {
+	if provider.zonePublished && !provider.zoneLiveSeen {
+		return false
+	}
+	if provider.dhwPublished && !provider.dhwLiveSeen {
+		return false
+	}
+	return provider.zoneLiveSeen || provider.dhwLiveSeen
+}
+
+func (provider *LiveSemanticProvider) transitionPhaseLocked(next SemanticStartupPhase, reason string) *phaseTransitionLog {
+	if next == "" || provider.phase == next {
+		return nil
+	}
+	previous := provider.phase
+	provider.phase = next
+	return &phaseTransitionLog{
+		previous:   previous,
+		next:       next,
+		reason:     reason,
+		cacheEpoch: provider.cacheEpoch,
+		liveEpoch:  provider.liveEpoch,
+	}
+}
+
+func (provider *LiveSemanticProvider) logPhaseTransition(transition *phaseTransitionLog) {
+	if provider == nil || transition == nil {
+		return
+	}
+	logger := provider.phaseLogger
+	if logger == nil {
+		logger = log.Printf
+	}
+	logger(
+		"semantic_startup_phase_transition from=%s to=%s reason=%q cache_epoch=%d live_epoch=%d",
+		transition.previous,
+		transition.next,
+		transition.reason,
+		transition.cacheEpoch,
+		transition.liveEpoch,
+	)
 }
 
 // ApplyBroadcast updates semantic snapshots based on router broadcasts.

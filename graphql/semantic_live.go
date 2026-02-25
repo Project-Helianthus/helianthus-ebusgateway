@@ -216,7 +216,7 @@ func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDat
 	switch source {
 	case semanticDataSourceCache:
 		provider.cacheEpoch++
-		if provider.liveEpoch == 0 {
+		if provider.liveEpoch == 0 && provider.phase != SemanticStartupPhaseDegraded {
 			return provider.transitionPhaseLocked(SemanticStartupPhaseCacheLoadedStale, reason)
 		}
 	case semanticDataSourceLive:

@@ -53,6 +53,25 @@ func TestLiveSemanticProvider_StartBootFSMTransitionsToDegradedOnTimeout(t *test
 	waitForPhase(t, provider, SemanticStartupPhaseDegraded, 500*time.Millisecond)
 }
 
+func TestLiveSemanticProvider_CacheUpdateDoesNotExitDegradedWithoutLive(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	provider.StartBootFSM(ctx, 20*time.Millisecond, func(string, ...any) {})
+	waitForPhase(t, provider, SemanticStartupPhaseDegraded, 500*time.Millisecond)
+
+	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+
+	if got := provider.StartupPhase(); got != SemanticStartupPhaseDegraded {
+		t.Fatalf("phase after cache update = %s; want %s", got, SemanticStartupPhaseDegraded)
+	}
+	cacheEpoch, liveEpoch := provider.StartupEpochs()
+	if cacheEpoch != 1 || liveEpoch != 0 {
+		t.Fatalf("epochs after degraded+cache = (%d,%d); want (1,0)", cacheEpoch, liveEpoch)
+	}
+}
+
 func TestLiveSemanticProvider_StartBootFSMDoesNotDegradeAfterLiveReady(t *testing.T) {
 	provider := NewLiveSemanticProvider()
 	ctx, cancel := context.WithCancel(context.Background())

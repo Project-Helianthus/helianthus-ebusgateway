@@ -944,7 +944,7 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 		timeout = 2 * time.Second
 	}
 
-	key := fmt.Sprintf("b524:%02x:%02x:%04x", group, instance, addr)
+	key := semanticReadBreakerKey(opcode, group, instance, addr)
 	value, err := p.scheduler.Get(ctx, key, 500*time.Millisecond, func(ctx context.Context) ([]byte, error) {
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
@@ -997,6 +997,10 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 		return nil, false
 	}
 	return value, true
+}
+
+func semanticReadBreakerKey(opcode, group, instance byte, addr uint16) string {
+	return fmt.Sprintf("b524:%02x:%02x:%02x:%04x", opcode, group, instance, addr)
 }
 
 func buildB524ReadSelector(opcode, group, instance byte, addr uint16) []byte {

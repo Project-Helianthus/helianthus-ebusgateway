@@ -52,6 +52,7 @@ type Config struct {
 	SemanticStateInterval                 time.Duration
 	SemanticRequestTimeout                time.Duration
 	SemanticReadBreakerFailureBudget      int
+	SemanticReadBreakerFailureBudgetSet   bool
 	SemanticReadBreakerOpenCooldown       time.Duration
 	SemanticReadBreakerHalfOpenProbeLimit int
 	SemanticCachePath                     string
@@ -151,9 +152,7 @@ func applyDefaults(cfg Config) Config {
 	if cfg.SemanticRequestTimeout == 0 {
 		cfg.SemanticRequestTimeout = 2 * time.Second
 	}
-	if cfg.SemanticReadBreakerFailureBudget == 0 &&
-		cfg.SemanticReadBreakerOpenCooldown == 0 &&
-		cfg.SemanticReadBreakerHalfOpenProbeLimit == 0 {
+	if !cfg.SemanticReadBreakerFailureBudgetSet && cfg.SemanticReadBreakerFailureBudget == 0 {
 		cfg.SemanticReadBreakerFailureBudget = DefaultSemanticReadFailureBudget
 	}
 	if cfg.SemanticReadBreakerOpenCooldown == 0 {

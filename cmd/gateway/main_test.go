@@ -142,6 +142,9 @@ func TestBindFlags_SemanticReadBreakerConfig(t *testing.T) {
 	if cfg.SemanticReadBreakerFailureBudget != 3 {
 		t.Fatalf("SemanticReadBreakerFailureBudget = %d; want 3", cfg.SemanticReadBreakerFailureBudget)
 	}
+	if !cfg.SemanticReadBreakerFailureBudgetSet {
+		t.Fatal("SemanticReadBreakerFailureBudgetSet = false; want true after explicit flag parse")
+	}
 	if cfg.SemanticReadBreakerOpenCooldown != 20*time.Second {
 		t.Fatalf("SemanticReadBreakerOpenCooldown = %s; want 20s", cfg.SemanticReadBreakerOpenCooldown)
 	}
@@ -159,6 +162,9 @@ func TestBindFlags_SemanticReadBreakerDisableWithZeroBudget(t *testing.T) {
 	}
 	if cfg.SemanticReadBreakerFailureBudget != 0 {
 		t.Fatalf("SemanticReadBreakerFailureBudget = %d; want 0 (disabled)", cfg.SemanticReadBreakerFailureBudget)
+	}
+	if !cfg.SemanticReadBreakerFailureBudgetSet {
+		t.Fatal("SemanticReadBreakerFailureBudgetSet = false; want true when disable flag is provided")
 	}
 }
 

@@ -99,12 +99,23 @@ func TestApplyDefaults_SetsSemanticReadBreakerDefaults(t *testing.T) {
 
 func TestApplyDefaults_PreservesExplicitDisabledSemanticReadBreakerBudget(t *testing.T) {
 	cfg := applyDefaults(Config{
-		SemanticReadBreakerFailureBudget:      0,
-		SemanticReadBreakerOpenCooldown:       DefaultSemanticReadOpenCooldown,
-		SemanticReadBreakerHalfOpenProbeLimit: DefaultSemanticReadHalfOpenProbeLimit,
+		SemanticReadBreakerFailureBudget:    0,
+		SemanticReadBreakerFailureBudgetSet: true,
 	})
 	if cfg.SemanticReadBreakerFailureBudget != 0 {
 		t.Fatalf("expected SemanticReadBreakerFailureBudget=0 to remain disabled, got %d", cfg.SemanticReadBreakerFailureBudget)
+	}
+}
+
+func TestApplyDefaults_UsesDefaultBudgetForPartialBreakerOverrides(t *testing.T) {
+	cfg := applyDefaults(Config{
+		SemanticReadBreakerOpenCooldown: 20 * time.Second,
+	})
+	if cfg.SemanticReadBreakerFailureBudget != DefaultSemanticReadFailureBudget {
+		t.Fatalf("expected SemanticReadBreakerFailureBudget=%d with partial override, got %d", DefaultSemanticReadFailureBudget, cfg.SemanticReadBreakerFailureBudget)
+	}
+	if cfg.SemanticReadBreakerOpenCooldown != 20*time.Second {
+		t.Fatalf("expected SemanticReadBreakerOpenCooldown=20s, got %s", cfg.SemanticReadBreakerOpenCooldown)
 	}
 }
 

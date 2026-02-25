@@ -117,6 +117,7 @@ func (p *vaillantSemanticPoller) refreshDHWFromEbusdGrab(ctx context.Context) bo
 			p.dhw = &vaillantDhwSnapshot{}
 		}
 		mergeDhwSnapshotFields(p.dhw, dhw, semanticSnapshotSourceLive, dhwFieldSet)
+		p.markDHWUpdatedNowLocked()
 		p.mu.Unlock()
 		return true
 	}

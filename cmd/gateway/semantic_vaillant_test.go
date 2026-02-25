@@ -4,6 +4,9 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
+
+	"github.com/d3vi1/helianthus-ebusgateway/graphql"
 )
 
 func TestBuildB524ReadSelector(t *testing.T) {
@@ -262,6 +265,74 @@ func TestSourceFromEbusdGrab(t *testing.T) {
 				t.Fatalf("sourceFromEbusdGrab(%v) = %v; want %v", test.ok, got, test.want)
 			}
 		})
+	}
+}
+
+func TestVaillantSemanticPoller_DHWTransientCacheFailurePreservesLastKnown(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 10, 8, 0, 0, 0, time.UTC)
+	current := 48.5
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		dhw: &vaillantDhwSnapshot{
+			OperatingMode: "auto",
+			Preset:        "schedule",
+			CurrentTempC:  &current,
+		},
+		dhwStaleTTL: 10 * time.Minute,
+	}
+	poller.nowFn = func() time.Time { return now }
+	poller.dhwLastUpdateAt = now
+
+	poller.publishDHW(semanticSnapshotSourceLive)
+
+	now = now.Add(5 * time.Minute)
+	poller.publishDHW(semanticSnapshotSourceCache)
+
+	dhw := provider.DHW()
+	if dhw == nil {
+		t.Fatalf("provider.DHW() = nil; want preserved last-known DHW before TTL expiry")
+	}
+	if dhw.OperatingMode != "auto" {
+		t.Fatalf("provider.DHW().OperatingMode = %q; want auto", dhw.OperatingMode)
+	}
+	if dhw.CurrentTempC == nil || *dhw.CurrentTempC != 48.5 {
+		t.Fatalf("provider.DHW().CurrentTempC = %v; want 48.5", dhw.CurrentTempC)
+	}
+}
+
+func TestVaillantSemanticPoller_DHWCacheFailureExpiresAfterTTL(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 10, 8, 0, 0, 0, time.UTC)
+	current := 47.2
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		dhw: &vaillantDhwSnapshot{
+			OperatingMode: "auto",
+			Preset:        "schedule",
+			CurrentTempC:  &current,
+		},
+		dhwStaleTTL: 10 * time.Minute,
+	}
+	poller.nowFn = func() time.Time { return now }
+	poller.dhwLastUpdateAt = now
+
+	poller.publishDHW(semanticSnapshotSourceLive)
+
+	now = now.Add(11 * time.Minute)
+	poller.publishDHW(semanticSnapshotSourceCache)
+
+	if dhw := provider.DHW(); dhw != nil {
+		t.Fatalf("provider.DHW() = %#v; want nil after TTL expiry", dhw)
+	}
+	if poller.dhw != nil {
+		t.Fatalf("poller.dhw = %#v; want nil after TTL expiry", poller.dhw)
 	}
 }
 

@@ -22,6 +22,7 @@ const (
 
 	DefaultSemanticZonePresenceMissThreshold = 3
 	DefaultSemanticZonePresenceHitThreshold  = 2
+	DefaultSemanticDHWStaleTTL               = 15 * time.Minute
 )
 
 type TransportConfig struct {
@@ -60,6 +61,7 @@ type Config struct {
 	SemanticReadBreakerHalfOpenProbeLimit int
 	SemanticZonePresenceMissThreshold     int
 	SemanticZonePresenceHitThreshold      int
+	SemanticDHWStaleTTL                   time.Duration
 	SemanticCachePath                     string
 	BroadcastListen                       bool
 	HTTPAddr                              string
@@ -108,6 +110,7 @@ func DefaultConfig() Config {
 		SemanticReadBreakerHalfOpenProbeLimit: DefaultSemanticReadHalfOpenProbeLimit,
 		SemanticZonePresenceMissThreshold:     DefaultSemanticZonePresenceMissThreshold,
 		SemanticZonePresenceHitThreshold:      DefaultSemanticZonePresenceHitThreshold,
+		SemanticDHWStaleTTL:                   DefaultSemanticDHWStaleTTL,
 		SemanticCachePath:                     "./semantic_cache.json",
 		HTTPAddr:                              ":8080",
 		GraphQLPath:                           "/graphql",
@@ -173,6 +176,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.SemanticZonePresenceHitThreshold <= 0 {
 		cfg.SemanticZonePresenceHitThreshold = DefaultSemanticZonePresenceHitThreshold
+	}
+	if cfg.SemanticDHWStaleTTL <= 0 {
+		cfg.SemanticDHWStaleTTL = DefaultSemanticDHWStaleTTL
 	}
 	if cfg.SemanticCachePath == "" {
 		cfg.SemanticCachePath = "./semantic_cache.json"

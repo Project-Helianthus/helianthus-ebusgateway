@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"expvar"
 	"fmt"
 	"log"
 	"math"
@@ -50,6 +51,11 @@ const (
 	dhwRegCurrentTemp     = uint16(0x0005) // state.current_dhw_temperature
 	dhwRegSpecialFunction = uint16(0x000D) // state.current_special_function
 	dhwInstance           = byte(0x00)
+)
+
+var (
+	semanticReadBreakerTransitionsTotal = expvar.NewMap("semantic_read_breaker_transitions_total")
+	semanticReadBreakerSuppressedTotal  = expvar.NewMap("semantic_read_breaker_suppressed_total")
 )
 
 func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub) {
@@ -134,7 +140,7 @@ const (
 )
 
 func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, cache semanticCachePersister) *vaillantSemanticPoller {
-	return &vaillantSemanticPoller{
+	poller := &vaillantSemanticPoller{
 		scheduler:       ebusgateway.NewSemanticReadScheduler(),
 		tasks:           newSemanticTaskScheduler(),
 		reg:             gateway.Registry,
@@ -152,6 +158,42 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 
 		zones: make(map[byte]*vaillantZoneSnapshot),
 	}
+	poller.scheduler.SetCircuitBreaker(ebusgateway.SemanticReadCircuitBreakerOptions{
+		FailureBudget:      cfg.SemanticReadBreakerFailureBudget,
+		OpenCooldown:       cfg.SemanticReadBreakerOpenCooldown,
+		HalfOpenProbeLimit: cfg.SemanticReadBreakerHalfOpenProbeLimit,
+		OnTransition:       poller.onSemanticReadBreakerTransition,
+		OnSuppressed:       poller.onSemanticReadBreakerSuppressed,
+	})
+	return poller
+}
+
+func (p *vaillantSemanticPoller) onSemanticReadBreakerTransition(event ebusgateway.SemanticReadCircuitBreakerTransition) {
+	if p == nil {
+		return
+	}
+	semanticReadBreakerTransitionsTotal.Add(fmt.Sprintf("%s->%s", event.From, event.To), 1)
+	log.Printf(
+		"semantic_read_breaker_transition key=%q from=%s to=%s consecutive_failures=%d",
+		event.Key,
+		event.From,
+		event.To,
+		event.ConsecutiveFailures,
+	)
+}
+
+func (p *vaillantSemanticPoller) onSemanticReadBreakerSuppressed(event ebusgateway.SemanticReadCircuitBreakerSuppression) {
+	if p == nil {
+		return
+	}
+	semanticReadBreakerSuppressedTotal.Add(string(event.State), 1)
+	log.Printf(
+		"semantic_read_breaker_suppressed key=%q state=%s retry_after=%s suppressed_total=%d",
+		event.Key,
+		event.State,
+		event.RetryAfter.Round(time.Millisecond),
+		event.SuppressedTotal,
+	)
 }
 
 func preloadSemanticCache(provider *graphql.LiveSemanticProvider, cacheStore *semanticCacheStore) (semanticCacheSnapshot, bool) {
@@ -902,7 +944,7 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 		timeout = 2 * time.Second
 	}
 
-	key := fmt.Sprintf("b524:%02x:%02x:%02x:%02x:%04x", target, opcode, group, instance, addr)
+	key := semanticReadBreakerKey(target, opcode, group, instance, addr)
 	value, err := p.scheduler.Get(ctx, key, 500*time.Millisecond, func(ctx context.Context) ([]byte, error) {
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
@@ -955,6 +997,10 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 		return nil, false
 	}
 	return value, true
+}
+
+func semanticReadBreakerKey(target, opcode, group, instance byte, addr uint16) string {
+	return fmt.Sprintf("b524:%02x:%02x:%02x:%02x:%04x", target, opcode, group, instance, addr)
 }
 
 func buildB524ReadSelector(opcode, group, instance byte, addr uint16) []byte {

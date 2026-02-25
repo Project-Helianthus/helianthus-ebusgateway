@@ -264,6 +264,21 @@ func TestSourceFromEbusdGrab(t *testing.T) {
 	}
 }
 
+func TestSemanticReadBreakerKeyIncludesOpcode(t *testing.T) {
+	t.Parallel()
+
+	localKey := semanticReadBreakerKey(0x15, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegCurrentTemp)
+	readKey := semanticReadBreakerKey(0x15, vaillantB524OpcodeRead, vaillantGroupDHW, dhwInstance, dhwRegCurrentTemp)
+	if localKey == readKey {
+		t.Fatalf("semanticReadBreakerKey must include opcode; got equal keys %q", localKey)
+	}
+
+	otherTarget := semanticReadBreakerKey(0x16, vaillantB524OpcodeRead, vaillantGroupDHW, dhwInstance, dhwRegCurrentTemp)
+	if readKey == otherTarget {
+		t.Fatalf("semanticReadBreakerKey must include target; got equal keys %q", readKey)
+	}
+}
+
 func TestParseB524ZonesFromGrabFiltersAbsentInstances(t *testing.T) {
 	t.Parallel()
 

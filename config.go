@@ -46,26 +46,30 @@ type Config struct {
 	BootLiveTimeout    time.Duration
 	// SemanticInterval is a legacy single-interval semantic polling configuration.
 	// Prefer SemanticDiscoveryInterval / SemanticConfigInterval / SemanticStateInterval.
-	SemanticInterval          time.Duration
-	SemanticDiscoveryInterval time.Duration
-	SemanticConfigInterval    time.Duration
-	SemanticStateInterval     time.Duration
-	SemanticRequestTimeout    time.Duration
-	SemanticCachePath         string
-	BroadcastListen           bool
-	HTTPAddr                  string
-	GraphQLPath               string
-	SnapshotPath              string
-	SubscriptionPath          string
-	MCPPath                   string
-	UIPath                    string
-	PortalPath                string
-	MDNSAdvertise             bool
-	MDNSInstance              string
-	DumpOutputDir             string
-	DumpUploadPath            string
-	DumpUploadURL             string
-	DumpIncludePII            bool
+	SemanticInterval                      time.Duration
+	SemanticDiscoveryInterval             time.Duration
+	SemanticConfigInterval                time.Duration
+	SemanticStateInterval                 time.Duration
+	SemanticRequestTimeout                time.Duration
+	SemanticReadBreakerFailureBudget      int
+	SemanticReadBreakerFailureBudgetSet   bool
+	SemanticReadBreakerOpenCooldown       time.Duration
+	SemanticReadBreakerHalfOpenProbeLimit int
+	SemanticCachePath                     string
+	BroadcastListen                       bool
+	HTTPAddr                              string
+	GraphQLPath                           string
+	SnapshotPath                          string
+	SubscriptionPath                      string
+	MCPPath                               string
+	UIPath                                string
+	PortalPath                            string
+	MDNSAdvertise                         bool
+	MDNSInstance                          string
+	DumpOutputDir                         string
+	DumpUploadPath                        string
+	DumpUploadURL                         string
+	DumpIncludePII                        bool
 }
 
 func DefaultConfig() Config {
@@ -86,25 +90,28 @@ func DefaultConfig() Config {
 		ScanTimeout: 3 * time.Minute,
 		// Per-request scan timeout must accommodate bus/transport latency.
 		// 150ms is too aggressive for real-world ENH over TCP setups.
-		ScanRequestTimeout:        400 * time.Millisecond,
-		ScanInterval:              30 * time.Second,
-		BootLiveTimeout:           2 * time.Minute,
-		SemanticInterval:          1 * time.Minute,
-		SemanticDiscoveryInterval: 10 * time.Minute,
-		SemanticConfigInterval:    5 * time.Minute,
-		SemanticStateInterval:     1 * time.Minute,
-		SemanticRequestTimeout:    2 * time.Second,
-		SemanticCachePath:         "./semantic_cache.json",
-		HTTPAddr:                  ":8080",
-		GraphQLPath:               "/graphql",
-		SnapshotPath:              "/snapshot",
-		SubscriptionPath:          "/graphql/subscriptions",
-		MCPPath:                   "/mcp",
-		UIPath:                    "/ui",
-		PortalPath:                "/portal",
-		MDNSAdvertise:             true,
-		MDNSInstance:              "helianthus",
-		DumpOutputDir:             "./dumps",
+		ScanRequestTimeout:                    400 * time.Millisecond,
+		ScanInterval:                          30 * time.Second,
+		BootLiveTimeout:                       2 * time.Minute,
+		SemanticInterval:                      1 * time.Minute,
+		SemanticDiscoveryInterval:             10 * time.Minute,
+		SemanticConfigInterval:                5 * time.Minute,
+		SemanticStateInterval:                 1 * time.Minute,
+		SemanticRequestTimeout:                2 * time.Second,
+		SemanticReadBreakerFailureBudget:      DefaultSemanticReadFailureBudget,
+		SemanticReadBreakerOpenCooldown:       DefaultSemanticReadOpenCooldown,
+		SemanticReadBreakerHalfOpenProbeLimit: DefaultSemanticReadHalfOpenProbeLimit,
+		SemanticCachePath:                     "./semantic_cache.json",
+		HTTPAddr:                              ":8080",
+		GraphQLPath:                           "/graphql",
+		SnapshotPath:                          "/snapshot",
+		SubscriptionPath:                      "/graphql/subscriptions",
+		MCPPath:                               "/mcp",
+		UIPath:                                "/ui",
+		PortalPath:                            "/portal",
+		MDNSAdvertise:                         true,
+		MDNSInstance:                          "helianthus",
+		DumpOutputDir:                         "./dumps",
 	}
 }
 
@@ -144,6 +151,15 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.SemanticRequestTimeout == 0 {
 		cfg.SemanticRequestTimeout = 2 * time.Second
+	}
+	if !cfg.SemanticReadBreakerFailureBudgetSet && cfg.SemanticReadBreakerFailureBudget == 0 {
+		cfg.SemanticReadBreakerFailureBudget = DefaultSemanticReadFailureBudget
+	}
+	if cfg.SemanticReadBreakerOpenCooldown == 0 {
+		cfg.SemanticReadBreakerOpenCooldown = DefaultSemanticReadOpenCooldown
+	}
+	if cfg.SemanticReadBreakerHalfOpenProbeLimit == 0 {
+		cfg.SemanticReadBreakerHalfOpenProbeLimit = DefaultSemanticReadHalfOpenProbeLimit
 	}
 	if cfg.SemanticCachePath == "" {
 		cfg.SemanticCachePath = "./semantic_cache.json"

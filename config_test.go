@@ -71,6 +71,54 @@ func TestApplyDefaults_SetsSemanticCachePath(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_SetsSemanticReadBreakerDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.SemanticReadBreakerFailureBudget != DefaultSemanticReadFailureBudget {
+		t.Fatalf("expected SemanticReadBreakerFailureBudget=%d by default, got %d", DefaultSemanticReadFailureBudget, cfg.SemanticReadBreakerFailureBudget)
+	}
+	if cfg.SemanticReadBreakerOpenCooldown != DefaultSemanticReadOpenCooldown {
+		t.Fatalf("expected SemanticReadBreakerOpenCooldown=%s by default, got %s", DefaultSemanticReadOpenCooldown, cfg.SemanticReadBreakerOpenCooldown)
+	}
+	if cfg.SemanticReadBreakerHalfOpenProbeLimit != DefaultSemanticReadHalfOpenProbeLimit {
+		t.Fatalf("expected SemanticReadBreakerHalfOpenProbeLimit=%d by default, got %d", DefaultSemanticReadHalfOpenProbeLimit, cfg.SemanticReadBreakerHalfOpenProbeLimit)
+	}
+}
+
+func TestApplyDefaults_SetsSemanticReadBreakerDefaults(t *testing.T) {
+	cfg := applyDefaults(Config{})
+	if cfg.SemanticReadBreakerFailureBudget != DefaultSemanticReadFailureBudget {
+		t.Fatalf("expected SemanticReadBreakerFailureBudget=%d after defaults, got %d", DefaultSemanticReadFailureBudget, cfg.SemanticReadBreakerFailureBudget)
+	}
+	if cfg.SemanticReadBreakerOpenCooldown != DefaultSemanticReadOpenCooldown {
+		t.Fatalf("expected SemanticReadBreakerOpenCooldown=%s after defaults, got %s", DefaultSemanticReadOpenCooldown, cfg.SemanticReadBreakerOpenCooldown)
+	}
+	if cfg.SemanticReadBreakerHalfOpenProbeLimit != DefaultSemanticReadHalfOpenProbeLimit {
+		t.Fatalf("expected SemanticReadBreakerHalfOpenProbeLimit=%d after defaults, got %d", DefaultSemanticReadHalfOpenProbeLimit, cfg.SemanticReadBreakerHalfOpenProbeLimit)
+	}
+}
+
+func TestApplyDefaults_PreservesExplicitDisabledSemanticReadBreakerBudget(t *testing.T) {
+	cfg := applyDefaults(Config{
+		SemanticReadBreakerFailureBudget:    0,
+		SemanticReadBreakerFailureBudgetSet: true,
+	})
+	if cfg.SemanticReadBreakerFailureBudget != 0 {
+		t.Fatalf("expected SemanticReadBreakerFailureBudget=0 to remain disabled, got %d", cfg.SemanticReadBreakerFailureBudget)
+	}
+}
+
+func TestApplyDefaults_UsesDefaultBudgetForPartialBreakerOverrides(t *testing.T) {
+	cfg := applyDefaults(Config{
+		SemanticReadBreakerOpenCooldown: 20 * time.Second,
+	})
+	if cfg.SemanticReadBreakerFailureBudget != DefaultSemanticReadFailureBudget {
+		t.Fatalf("expected SemanticReadBreakerFailureBudget=%d with partial override, got %d", DefaultSemanticReadFailureBudget, cfg.SemanticReadBreakerFailureBudget)
+	}
+	if cfg.SemanticReadBreakerOpenCooldown != 20*time.Second {
+		t.Fatalf("expected SemanticReadBreakerOpenCooldown=20s, got %s", cfg.SemanticReadBreakerOpenCooldown)
+	}
+}
+
 func TestDefaultConfig_SetsPortalPath(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.PortalPath != "/portal" {

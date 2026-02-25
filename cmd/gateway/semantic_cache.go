@@ -20,8 +20,9 @@ const (
 )
 
 type semanticCacheSnapshot struct {
-	Zones []graphql.Zone
-	DHW   *graphql.DhwStatus
+	Zones       []graphql.Zone
+	DHW         *graphql.DhwStatus
+	PersistedAt time.Time
 }
 
 type semanticCachePersister interface {
@@ -197,8 +198,9 @@ func migrateSemanticCacheV1ToV2(cacheV1 semanticCacheV1, migratedAt time.Time) s
 
 func semanticCacheV2ToSnapshot(cacheV2 semanticCacheV2) semanticCacheSnapshot {
 	out := semanticCacheSnapshot{
-		Zones: make([]graphql.Zone, 0, len(cacheV2.Zones)),
-		DHW:   nil,
+		Zones:       make([]graphql.Zone, 0, len(cacheV2.Zones)),
+		DHW:         nil,
+		PersistedAt: cacheV2.Metadata.PersistedAt,
 	}
 	for _, zone := range normalizeSemanticCacheZones(cacheV2.Zones) {
 		out.Zones = append(out.Zones, graphql.Zone{

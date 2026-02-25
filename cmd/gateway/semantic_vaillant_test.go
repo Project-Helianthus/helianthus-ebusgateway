@@ -376,6 +376,72 @@ func TestVaillantSemanticPoller_DHWCacheFailureExpiresAfterTTL(t *testing.T) {
 	}
 }
 
+func TestVaillantSemanticPoller_HydrateFromCacheSeedsDHWStalenessFromPersistedAt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 10, 8, 0, 0, 0, time.UTC)
+	current := 45.0
+
+	provider := graphql.NewLiveSemanticProvider()
+	cacheSpy := &semanticSnapshotCaptureSpy{}
+	poller := &vaillantSemanticPoller{
+		provider:    provider,
+		cache:       cacheSpy,
+		dhwStaleTTL: 15 * time.Minute,
+	}
+	poller.nowFn = func() time.Time { return now }
+
+	// Hydrate from a cache that was persisted 20 minutes ago — already past the 15m TTL.
+	poller.hydrateFromCache(semanticCacheSnapshot{
+		DHW: &graphql.DhwStatus{
+			OperatingMode: "auto",
+			Preset:        "schedule",
+			CurrentTempC:  &current,
+		},
+		PersistedAt: now.Add(-20 * time.Minute),
+	})
+
+	// The poller should have seeded dhwLastUpdateAt from PersistedAt, not now().
+	if poller.dhwLastUpdateAt.Equal(now) {
+		t.Fatalf("dhwLastUpdateAt = now; want PersistedAt (20m ago)")
+	}
+
+	// First cache-sourced publish should expire the DHW immediately since age > TTL.
+	poller.publishDHW(semanticSnapshotSourceCache)
+
+	if dhw := provider.DHW(); dhw != nil {
+		t.Fatalf("provider.DHW() = %#v; want nil — cache was already past TTL at hydration", dhw)
+	}
+	if poller.dhw != nil {
+		t.Fatalf("poller.dhw = %#v; want nil after immediate TTL expiry", poller.dhw)
+	}
+}
+
+func TestVaillantSemanticPoller_HydrateFromCacheFallsBackToNowWhenPersistedAtZero(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 10, 8, 0, 0, 0, time.UTC)
+	current := 45.0
+
+	poller := &vaillantSemanticPoller{
+		provider:    graphql.NewLiveSemanticProvider(),
+		dhwStaleTTL: 15 * time.Minute,
+	}
+	poller.nowFn = func() time.Time { return now }
+
+	// Hydrate with zero PersistedAt — should fall back to now().
+	poller.hydrateFromCache(semanticCacheSnapshot{
+		DHW: &graphql.DhwStatus{
+			OperatingMode: "auto",
+			CurrentTempC:  &current,
+		},
+	})
+
+	if !poller.dhwLastUpdateAt.Equal(now) {
+		t.Fatalf("dhwLastUpdateAt = %v; want %v (fallback to now when PersistedAt is zero)", poller.dhwLastUpdateAt, now)
+	}
+}
+
 func TestMergeZoneSnapshotFields_PartialLiveUpdatePreservesLastKnownAndFreshness(t *testing.T) {
 	t.Parallel()
 

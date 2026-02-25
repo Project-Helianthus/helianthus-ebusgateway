@@ -368,7 +368,11 @@ func (p *vaillantSemanticPoller) hydrateFromCache(snapshot semanticCacheSnapshot
 	}
 	if snapshot.DHW != nil {
 		p.dhw = dhwSnapshotFromSemanticStatus(snapshot.DHW)
-		p.markDHWUpdatedNowLocked()
+		if !snapshot.PersistedAt.IsZero() {
+			p.dhwLastUpdateAt = snapshot.PersistedAt.UTC()
+		} else {
+			p.markDHWUpdatedNowLocked()
+		}
 	}
 }
 

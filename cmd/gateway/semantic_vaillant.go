@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +57,12 @@ func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, g
 		return
 	}
 
-	poller := newVaillantSemanticPoller(cfg, gateway, provider, hub)
+	cacheStore := newSemanticCacheStore(cfg.SemanticCachePath, log.Printf)
+	cacheSnapshot, cacheLoaded := preloadSemanticCache(provider, cacheStore)
+	poller := newVaillantSemanticPoller(cfg, gateway, provider, hub, cacheStore)
+	if cacheLoaded {
+		poller.hydrateFromCache(cacheSnapshot)
+	}
 	poller.Start(ctx)
 }
 
@@ -68,6 +74,7 @@ type vaillantSemanticPoller struct {
 	bus      *protocol.Bus
 	provider *graphql.LiveSemanticProvider
 	hub      *graphql.BroadcastHub
+	cache    semanticCachePersister
 
 	transportConfig ebusgateway.TransportConfig
 
@@ -126,7 +133,7 @@ const (
 	semanticSnapshotSourceLive
 )
 
-func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub) *vaillantSemanticPoller {
+func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, cache semanticCachePersister) *vaillantSemanticPoller {
 	return &vaillantSemanticPoller{
 		scheduler:       ebusgateway.NewSemanticReadScheduler(),
 		tasks:           newSemanticTaskScheduler(),
@@ -134,6 +141,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		bus:             gateway.Bus,
 		provider:        provider,
 		hub:             hub,
+		cache:           cache,
 		transportConfig: cfg.TransportConfig,
 		source:          cfg.ScanSource,
 
@@ -144,6 +152,115 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 
 		zones: make(map[byte]*vaillantZoneSnapshot),
 	}
+}
+
+func preloadSemanticCache(provider *graphql.LiveSemanticProvider, cacheStore *semanticCacheStore) (semanticCacheSnapshot, bool) {
+	if provider == nil || cacheStore == nil {
+		return semanticCacheSnapshot{}, false
+	}
+	snapshot, ok := cacheStore.Load()
+	if !ok {
+		return semanticCacheSnapshot{}, false
+	}
+	if len(snapshot.Zones) > 0 {
+		provider.SetZonesFromCache(snapshot.Zones)
+	}
+	if snapshot.DHW != nil {
+		provider.SetDHWFromCache(snapshot.DHW)
+	}
+	return snapshot, true
+}
+
+func (p *vaillantSemanticPoller) hydrateFromCache(snapshot semanticCacheSnapshot) {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.zones == nil {
+		p.zones = make(map[byte]*vaillantZoneSnapshot)
+	}
+	for idx, zone := range snapshot.Zones {
+		instance := zoneInstanceFromSemanticID(zone.ID, idx)
+		p.zones[instance] = zoneSnapshotFromSemanticZone(instance, zone)
+	}
+	if snapshot.DHW != nil {
+		p.dhw = dhwSnapshotFromSemanticStatus(snapshot.DHW)
+	}
+}
+
+func zoneInstanceFromSemanticID(id string, fallbackIndex int) byte {
+	trimmed := strings.TrimSpace(strings.ToLower(id))
+	if strings.HasPrefix(trimmed, "zone-") {
+		ordinalRaw := strings.TrimPrefix(trimmed, "zone-")
+		if ordinal, err := strconv.Atoi(ordinalRaw); err == nil && ordinal > 0 && ordinal <= 256 {
+			return byte(ordinal - 1)
+		}
+	}
+	if fallbackIndex < 0 {
+		return 0
+	}
+	if fallbackIndex > 255 {
+		return 255
+	}
+	return byte(fallbackIndex)
+}
+
+func zoneSnapshotFromSemanticZone(instance byte, zone graphql.Zone) *vaillantZoneSnapshot {
+	return &vaillantZoneSnapshot{
+		Instance:                          instance,
+		Present:                           true,
+		Name:                              zone.Name,
+		OperatingMode:                     zone.OperatingMode,
+		Preset:                            zone.Preset,
+		HvacAction:                        zone.HvacAction,
+		AllowedModes:                      append([]string(nil), zone.AllowedModes...),
+		CurrentTempC:                      cloneFloat64Ptr(zone.CurrentTempC),
+		TargetTempC:                       cloneFloat64Ptr(zone.TargetTempC),
+		HumidityPct:                       cloneFloat64Ptr(zone.CurrentHumidityPct),
+		ConfigurationHeatingOperationMode: zone.ZoneOperationModeRaw,
+		StateSpecialFunction:              zone.ZoneSpecialFunctionRaw,
+		ConfigurationAssociatedCircuitRaw: parseUint16Token(zone.ZoneCircuitIndexRaw),
+		ConfigurationCircuitTypeRaw:       parseUint16Token(zone.CircuitTypeRaw),
+		StateValveStatusRaw:               parseUint16Token(zone.ZoneValveStatusRaw),
+	}
+}
+
+func dhwSnapshotFromSemanticStatus(status *graphql.DhwStatus) *vaillantDhwSnapshot {
+	if status == nil {
+		return nil
+	}
+	return &vaillantDhwSnapshot{
+		OperatingMode:                 status.OperatingMode,
+		Preset:                        status.Preset,
+		CurrentTempC:                  cloneFloat64Ptr(status.CurrentTempC),
+		TargetTempC:                   cloneFloat64Ptr(status.TargetTempC),
+		ConfigurationDHWOperationMode: status.DhwOperationModeRaw,
+		StateSpecialFunction:          status.DhwSpecialFunctionRaw,
+	}
+}
+
+func parseUint16Token(token string) *uint16 {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+	value, err := strconv.ParseUint(token, 10, 16)
+	if err != nil {
+		return nil
+	}
+	out := uint16(value)
+	return &out
+}
+
+func cloneFloat64Ptr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
 }
 
 func (p *vaillantSemanticPoller) Start(ctx context.Context) {
@@ -493,6 +610,9 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 	p.mu.Unlock()
 
 	previous := p.provider.Zones()
+	if source == semanticSnapshotSourceCache && len(zones) == 0 && len(previous) > 0 {
+		return
+	}
 	switch source {
 	case semanticSnapshotSourceCache:
 		p.provider.SetZonesFromCache(zones)
@@ -511,6 +631,7 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 			}
 		}
 	}
+	p.persistSemanticCache(source)
 }
 
 func zoneEquals(a, b graphql.Zone) bool {
@@ -641,6 +762,9 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 
 	previous := p.provider.DHW()
 	if snapshot == nil {
+		if source == semanticSnapshotSourceCache && previous != nil {
+			return
+		}
 		switch source {
 		case semanticSnapshotSourceCache:
 			p.provider.SetDHWFromCache(nil)
@@ -650,6 +774,7 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 		if previous != nil && p.hub != nil {
 			p.hub.PublishDHWUpdate(nil)
 		}
+		p.persistSemanticCache(source)
 		return
 	}
 
@@ -672,6 +797,17 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 	if p.hub != nil && !dhwEquals(previous, current) {
 		p.hub.PublishDHWUpdate(current)
 	}
+	p.persistSemanticCache(source)
+}
+
+func (p *vaillantSemanticPoller) persistSemanticCache(source semanticSnapshotSource) {
+	if p == nil || source != semanticSnapshotSourceLive || p.cache == nil || p.provider == nil {
+		return
+	}
+	_ = p.cache.Save(semanticCacheSnapshot{
+		Zones: p.provider.Zones(),
+		DHW:   p.provider.DHW(),
+	})
 }
 
 func dhwEquals(a, b *graphql.DhwStatus) bool {

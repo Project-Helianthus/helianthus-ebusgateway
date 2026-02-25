@@ -162,6 +162,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.DurationVar(&cfg.SemanticConfigInterval, "semantic-config-interval", cfg.SemanticConfigInterval, "semantic config polling interval")
 	fs.DurationVar(&cfg.SemanticStateInterval, "semantic-state-interval", cfg.SemanticStateInterval, "semantic state polling interval")
 	fs.DurationVar(&cfg.SemanticRequestTimeout, "semantic-request-timeout", cfg.SemanticRequestTimeout, "semantic per-request timeout")
+	fs.StringVar(&cfg.SemanticCachePath, "semantic-cache-path", cfg.SemanticCachePath, "semantic cache file path for startup preload and live persistence")
 	fs.Func("semantic-interval", "DEPRECATED: semantic state polling interval", func(value string) error {
 		duration, err := time.ParseDuration(value)
 		if err != nil {

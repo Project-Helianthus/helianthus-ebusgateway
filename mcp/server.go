@@ -1361,7 +1361,7 @@ func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, 
 			err := deadlineCtx.Err()
 			if options.allowPartial {
 				errorPlanes = append(errorPlanes, newSnapshotPlaneError(plane, err))
-				break
+				continue
 			}
 			return nil, err
 		default:

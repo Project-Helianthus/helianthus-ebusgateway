@@ -74,11 +74,6 @@ func TestSemanticTaskScheduler_RunPriorityOrder(t *testing.T) {
 	defer cancel()
 
 	out := make(chan string, 3)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		scheduler.run(ctx)
-	}()
 
 	if err := scheduler.submit(semanticTaskPriorityLow, func(context.Context) { out <- "low" }); err != nil {
 		t.Fatalf("submit low error = %v", err)
@@ -90,7 +85,21 @@ func TestSemanticTaskScheduler_RunPriorityOrder(t *testing.T) {
 		t.Fatalf("submit medium error = %v", err)
 	}
 
-	got := []string{<-out, <-out, <-out}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		scheduler.run(ctx)
+	}()
+
+	got := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		select {
+		case item := <-out:
+			got = append(got, item)
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for scheduled task output")
+		}
+	}
 	want := []string{"high", "medium", "low"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("run order = %v; want %v", got, want)

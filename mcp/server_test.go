@@ -647,6 +647,57 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			t.Fatalf("partial snapshot error_planes type = %T; want []any", data["error_planes"])
 		}
 	})
+
+	t.Run("semantic snapshot timeout partial no duplicate plane errors", func(t *testing.T) {
+		slowServer, err := NewServer(reg, &testInvoker{})
+		if err != nil {
+			t.Fatalf("NewServer error = %v", err)
+		}
+		slowServer.SetStatusProvider(testStatusProvider{
+			daemon: ServiceStatus{Status: "running"},
+			adapter: ServiceStatus{
+				Status: "connected",
+			},
+		})
+		slowServer.SetSemanticProvider(testSemanticProvider{
+			zones:      []Zone{{ID: "zone-a", Name: "Living"}},
+			dhw:        &DhwStatus{OperatingMode: "AUTO"},
+			zonesDelay: 5 * time.Millisecond,
+		})
+
+		res := doRPC(t, slowServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      8,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":1,"allow_partial":true}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("partial snapshot data type = %T; want map", envelope["data"])
+		}
+		errorPlanes, ok := data["error_planes"].([]any)
+		if !ok {
+			t.Fatalf("partial snapshot error_planes type = %T; want []any", data["error_planes"])
+		}
+		if len(errorPlanes) != 2 {
+			t.Fatalf("partial snapshot error_planes len = %d; want 2", len(errorPlanes))
+		}
+		seen := make(map[string]int, len(errorPlanes))
+		for _, rawPlane := range errorPlanes {
+			planeErr, ok := rawPlane.(map[string]any)
+			if !ok {
+				t.Fatalf("error plane type = %T; want map", rawPlane)
+			}
+			planeName, _ := planeErr["plane"].(string)
+			seen[planeName]++
+		}
+		for _, planeName := range []string{"zones", "dhw"} {
+			if seen[planeName] != 1 {
+				t.Fatalf("plane %q error count = %d; want 1", planeName, seen[planeName])
+			}
+		}
+	})
 }
 
 func TestServer_SnapshotConsistencyMode(t *testing.T) {

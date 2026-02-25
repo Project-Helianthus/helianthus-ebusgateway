@@ -201,33 +201,33 @@ func semanticCacheV2ToSnapshot(cacheV2 semanticCacheV2) semanticCacheSnapshot {
 	}
 	for _, zone := range normalizeSemanticCacheZones(cacheV2.Zones) {
 		out.Zones = append(out.Zones, graphql.Zone{
-			ID:                   zone.ID,
-			Name:                 zone.Name,
-			OperatingMode:        zone.OperatingMode,
-			Preset:               zone.Preset,
-			HvacAction:           zone.HvacAction,
-			AllowedModes:         append([]string(nil), zone.AllowedModes...),
-			CurrentTempC:         cloneFloatPtr(zone.CurrentTempC),
-			TargetTempC:          cloneFloatPtr(zone.TargetTempC),
-			CurrentHumidityPct:   cloneFloatPtr(zone.CurrentHumidityPct),
-			HeatingDemand:        cloneFloatPtr(zone.HeatingDemand),
-			SpecialFunction:      zone.SpecialFunction,
-			CircuitTypeRaw:       zone.CircuitTypeRaw,
-			ZoneCircuitIndexRaw:  zone.ZoneCircuitIndexRaw,
-			ZoneOperationModeRaw: zone.ZoneOperationModeRaw,
-			ZoneValveStatusRaw:   zone.ZoneValveStatusRaw,
+			ID:                     zone.ID,
+			Name:                   zone.Name,
+			OperatingMode:          zone.OperatingMode,
+			Preset:                 zone.Preset,
+			HvacAction:             zone.HvacAction,
+			AllowedModes:           append([]string(nil), zone.AllowedModes...),
+			CurrentTempC:           cloneFloatPtr(zone.CurrentTempC),
+			TargetTempC:            cloneFloatPtr(zone.TargetTempC),
+			CurrentHumidityPct:     cloneFloatPtr(zone.CurrentHumidityPct),
+			HeatingDemand:          cloneFloatPtr(zone.HeatingDemand),
+			SpecialFunction:        zone.SpecialFunction,
+			CircuitTypeRaw:         zone.CircuitTypeRaw,
+			ZoneCircuitIndexRaw:    zone.ZoneCircuitIndexRaw,
+			ZoneOperationModeRaw:   zone.ZoneOperationModeRaw,
+			ZoneValveStatusRaw:     zone.ZoneValveStatusRaw,
 			ZoneSpecialFunctionRaw: zone.ZoneSpecialFuncRaw,
 		})
 	}
 	if cacheV2.DHW != nil {
 		out.DHW = &graphql.DhwStatus{
-			OperatingMode:       cacheV2.DHW.OperatingMode,
-			Preset:              cacheV2.DHW.Preset,
-			CurrentTempC:        cloneFloatPtr(cacheV2.DHW.CurrentTempC),
-			TargetTempC:         cloneFloatPtr(cacheV2.DHW.TargetTempC),
-			HeatingDemand:       cloneFloatPtr(cacheV2.DHW.HeatingDemand),
-			SpecialFunction:     cacheV2.DHW.SpecialFunction,
-			DhwOperationModeRaw: cacheV2.DHW.DHWOperationModeRaw,
+			OperatingMode:         cacheV2.DHW.OperatingMode,
+			Preset:                cacheV2.DHW.Preset,
+			CurrentTempC:          cloneFloatPtr(cacheV2.DHW.CurrentTempC),
+			TargetTempC:           cloneFloatPtr(cacheV2.DHW.TargetTempC),
+			HeatingDemand:         cloneFloatPtr(cacheV2.DHW.HeatingDemand),
+			SpecialFunction:       cacheV2.DHW.SpecialFunction,
+			DhwOperationModeRaw:   cacheV2.DHW.DHWOperationModeRaw,
 			DhwSpecialFunctionRaw: cacheV2.DHW.DHWSpecialFuncRaw,
 		}
 	}
@@ -301,13 +301,13 @@ func normalizeSemanticCacheSnapshot(snapshot semanticCacheSnapshot) semanticCach
 	})
 	if snapshot.DHW != nil {
 		out.DHW = &graphql.DhwStatus{
-			OperatingMode:       snapshot.DHW.OperatingMode,
-			Preset:              snapshot.DHW.Preset,
-			CurrentTempC:        cloneFloatPtr(snapshot.DHW.CurrentTempC),
-			TargetTempC:         cloneFloatPtr(snapshot.DHW.TargetTempC),
-			HeatingDemand:       cloneFloatPtr(snapshot.DHW.HeatingDemand),
-			SpecialFunction:     snapshot.DHW.SpecialFunction,
-			DhwOperationModeRaw: snapshot.DHW.DhwOperationModeRaw,
+			OperatingMode:         snapshot.DHW.OperatingMode,
+			Preset:                snapshot.DHW.Preset,
+			CurrentTempC:          cloneFloatPtr(snapshot.DHW.CurrentTempC),
+			TargetTempC:           cloneFloatPtr(snapshot.DHW.TargetTempC),
+			HeatingDemand:         cloneFloatPtr(snapshot.DHW.HeatingDemand),
+			SpecialFunction:       snapshot.DHW.SpecialFunction,
+			DhwOperationModeRaw:   snapshot.DHW.DhwOperationModeRaw,
 			DhwSpecialFunctionRaw: snapshot.DHW.DhwSpecialFunctionRaw,
 		}
 	}

@@ -513,6 +513,9 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 	p.mu.Unlock()
 
 	previous := p.provider.Zones()
+	if source == semanticSnapshotSourceCache && len(zones) == 0 && len(previous) > 0 {
+		return
+	}
 	switch source {
 	case semanticSnapshotSourceCache:
 		p.provider.SetZonesFromCache(zones)
@@ -662,6 +665,9 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 
 	previous := p.provider.DHW()
 	if snapshot == nil {
+		if source == semanticSnapshotSourceCache && previous != nil {
+			return
+		}
 		switch source {
 		case semanticSnapshotSourceCache:
 			p.provider.SetDHWFromCache(nil)

@@ -294,6 +294,47 @@ func TestVaillantSemanticPoller_PersistsOnlyOnLivePublish(t *testing.T) {
 	}
 }
 
+func TestVaillantSemanticPoller_CachePublishKeepsPreloadedSnapshotWhenEmpty(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	current := 48.2
+	target := 50.0
+	preloadedZones := []graphql.Zone{
+		{
+			ID:            "zone-1",
+			Name:          "Living Room",
+			OperatingMode: "heat",
+			Preset:        "manual",
+		},
+	}
+	preloadedDHW := &graphql.DhwStatus{
+		OperatingMode: "auto",
+		Preset:        "schedule",
+		CurrentTempC:  &current,
+		TargetTempC:   &target,
+	}
+	provider.SetZonesFromCache(preloadedZones)
+	provider.SetDHWFromCache(preloadedDHW)
+
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		cache:    &semanticCachePersisterSpy{},
+		zones:    map[byte]*vaillantZoneSnapshot{},
+		dhw:      nil,
+	}
+
+	poller.publishZones(semanticSnapshotSourceCache)
+	poller.publishDHW(semanticSnapshotSourceCache)
+
+	zones := provider.Zones()
+	if len(zones) != 1 || zones[0].ID != "zone-1" {
+		t.Fatalf("provider.Zones() = %#v; want preloaded zone-1 preserved", zones)
+	}
+	dhw := provider.DHW()
+	if dhw == nil || dhw.OperatingMode != "auto" {
+		t.Fatalf("provider.DHW() = %#v; want preloaded DHW preserved", dhw)
+	}
+}
+
 type semanticCachePersisterSpy struct {
 	calls int
 }

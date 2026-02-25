@@ -91,17 +91,20 @@ type vaillantSemanticPoller struct {
 	stateInterval     time.Duration
 	zoneMissThreshold int
 	zoneHitThreshold  int
+	dhwStaleTTL       time.Duration
 
 	pollMu sync.Mutex
 	readMu sync.Mutex
 
-	mu         sync.Mutex
-	controller byte
-	zones      map[byte]*vaillantZoneSnapshot
-	presence   map[byte]*zonePresenceRecord
-	dhw        *vaillantDhwSnapshot
+	mu              sync.Mutex
+	controller      byte
+	zones           map[byte]*vaillantZoneSnapshot
+	presence        map[byte]*zonePresenceRecord
+	dhw             *vaillantDhwSnapshot
+	dhwLastUpdateAt time.Time
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
+	nowFn                  func() time.Time
 }
 
 type zonePresenceState string
@@ -271,15 +274,20 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		stateInterval:     cfg.SemanticStateInterval,
 		zoneMissThreshold: cfg.SemanticZonePresenceMissThreshold,
 		zoneHitThreshold:  cfg.SemanticZonePresenceHitThreshold,
+		dhwStaleTTL:       cfg.SemanticDHWStaleTTL,
 
 		zones:    make(map[byte]*vaillantZoneSnapshot),
 		presence: make(map[byte]*zonePresenceRecord),
+		nowFn:    time.Now,
 	}
 	if poller.zoneMissThreshold <= 0 {
 		poller.zoneMissThreshold = ebusgateway.DefaultSemanticZonePresenceMissThreshold
 	}
 	if poller.zoneHitThreshold <= 0 {
 		poller.zoneHitThreshold = ebusgateway.DefaultSemanticZonePresenceHitThreshold
+	}
+	if poller.dhwStaleTTL <= 0 {
+		poller.dhwStaleTTL = ebusgateway.DefaultSemanticDHWStaleTTL
 	}
 	poller.scheduler.SetCircuitBreaker(ebusgateway.SemanticReadCircuitBreakerOptions{
 		FailureBudget:      cfg.SemanticReadBreakerFailureBudget,
@@ -360,6 +368,11 @@ func (p *vaillantSemanticPoller) hydrateFromCache(snapshot semanticCacheSnapshot
 	}
 	if snapshot.DHW != nil {
 		p.dhw = dhwSnapshotFromSemanticStatus(snapshot.DHW)
+		if !snapshot.PersistedAt.IsZero() {
+			p.dhwLastUpdateAt = snapshot.PersistedAt.UTC()
+		} else {
+			p.markDHWUpdatedNowLocked()
+		}
 	}
 }
 
@@ -705,6 +718,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
 		p.presence = make(map[byte]*zonePresenceRecord)
 		p.dhw = nil
+		p.dhwLastUpdateAt = time.Time{}
 		p.mu.Unlock()
 		p.publishZones(semanticSnapshotSourceCache)
 		p.publishDHW(semanticSnapshotSourceCache)
@@ -884,6 +898,20 @@ func (p *vaillantSemanticPoller) zoneHitThresholdValue() int {
 		return ebusgateway.DefaultSemanticZonePresenceHitThreshold
 	}
 	return p.zoneHitThreshold
+}
+
+func (p *vaillantSemanticPoller) now() time.Time {
+	if p == nil || p.nowFn == nil {
+		return time.Now()
+	}
+	return p.nowFn()
+}
+
+func (p *vaillantSemanticPoller) markDHWUpdatedNowLocked() {
+	if p == nil {
+		return
+	}
+	p.dhwLastUpdateAt = p.now()
 }
 
 func (p *vaillantSemanticPoller) tryRefreshFromEbusdGrab(ctx context.Context) bool {
@@ -1178,34 +1206,45 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 		}
 	}
 	if controller == 0 {
-		return sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
+		return p.sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
 	}
 
+	attempted := make(semanticFieldSet)
 	liveReadSuccess := false
 	currentPtr := p.readDhwFloat(ctx, dhwRegCurrentTemp)
 	if currentPtr != nil {
 		liveReadSuccess = true
+		attempted[dhwFieldCurrentTempC] = struct{}{}
 	}
 	targetPtr := p.readDhwFloat(ctx, dhwRegTargetTemp)
 	if targetPtr != nil {
 		liveReadSuccess = true
+		attempted[dhwFieldTargetTempC] = struct{}{}
 	}
 	opModeRaw, opModeOK := p.readDhwUint16(ctx, dhwRegOperationMode)
 	sfModeRaw, sfModeOK := p.readDhwUint16(ctx, dhwRegSpecialFunction)
 	if opModeOK || sfModeOK {
 		liveReadSuccess = true
+		attempted[dhwFieldOperatingMode] = struct{}{}
+		attempted[dhwFieldPreset] = struct{}{}
+	}
+	if opModeOK {
+		attempted[dhwFieldDhwOperationModeRaw] = struct{}{}
+	}
+	if sfModeOK {
+		attempted[dhwFieldSpecialFunctionRaw] = struct{}{}
 	}
 
-	operatingMode, preset := deriveDhwModeAndPreset(opModeRaw, sfModeRaw)
-	if operatingMode == "" && preset == "" && currentPtr == nil && targetPtr == nil {
-		return sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
+	if !liveReadSuccess {
+		return p.sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
 	}
 
 	status := &vaillantDhwSnapshot{
-		OperatingMode: operatingMode,
-		Preset:        preset,
-		CurrentTempC:  currentPtr,
-		TargetTempC:   targetPtr,
+		CurrentTempC: currentPtr,
+		TargetTempC:  targetPtr,
+	}
+	if attempted.has(dhwFieldOperatingMode) || attempted.has(dhwFieldPreset) {
+		status.OperatingMode, status.Preset = deriveDhwModeAndPreset(opModeRaw, sfModeRaw)
 	}
 	if opModeRaw != nil {
 		status.ConfigurationDHWOperationMode = formatUintToken(*opModeRaw)
@@ -1218,17 +1257,18 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 	if p.dhw == nil {
 		p.dhw = &vaillantDhwSnapshot{}
 	}
-	mergeDhwSnapshotFields(p.dhw, status, semanticSnapshotSourceLive, dhwFieldSet)
+	mergeDhwSnapshotFields(p.dhw, status, semanticSnapshotSourceLive, attempted)
+	p.markDHWUpdatedNowLocked()
 	p.mu.Unlock()
-	if liveReadSuccess {
-		return semanticSnapshotSourceLive
-	}
-	return semanticSnapshotSourceCache
+	return semanticSnapshotSourceLive
 }
 
-func sourceFromEbusdGrab(ok bool) semanticSnapshotSource {
+func (p *vaillantSemanticPoller) sourceFromEbusdGrab(ok bool) semanticSnapshotSource {
 	if ok {
-		return semanticSnapshotSourceLive
+		if p != nil && p.transportConfig.Protocol == ebusgateway.TransportEbusdTCP {
+			return semanticSnapshotSourceLive
+		}
+		return semanticSnapshotSourceCache
 	}
 	return semanticSnapshotSourceCache
 }
@@ -1255,18 +1295,41 @@ func (p *vaillantSemanticPoller) readDhwUint16(ctx context.Context, addr uint16)
 	return nil, false
 }
 
+func (p *vaillantSemanticPoller) expireDHWIfStaleLocked(source semanticSnapshotSource) bool {
+	if p == nil || source != semanticSnapshotSourceCache {
+		return false
+	}
+	if p.dhw == nil || p.dhwStaleTTL <= 0 || p.dhwLastUpdateAt.IsZero() {
+		return false
+	}
+	age := p.now().Sub(p.dhwLastUpdateAt)
+	if age < p.dhwStaleTTL {
+		return false
+	}
+	log.Printf(
+		"semantic_dhw_expired ttl=%s age=%s last_update_utc=%s",
+		p.dhwStaleTTL.Round(time.Second),
+		age.Round(time.Second),
+		p.dhwLastUpdateAt.UTC().Format(time.RFC3339),
+	)
+	p.dhw = nil
+	p.dhwLastUpdateAt = time.Time{}
+	return true
+}
+
 func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 	if p.provider == nil {
 		return
 	}
 
 	p.mu.Lock()
+	expired := p.expireDHWIfStaleLocked(source)
 	snapshot := p.dhw
 	p.mu.Unlock()
 
 	previous := p.provider.DHW()
 	if snapshot == nil {
-		if source == semanticSnapshotSourceCache && previous != nil {
+		if source == semanticSnapshotSourceCache && previous != nil && !expired {
 			return
 		}
 		switch source {
@@ -1278,7 +1341,11 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 		if previous != nil && p.hub != nil {
 			p.hub.PublishDHWUpdate(nil)
 		}
-		p.persistSemanticCache(source)
+		if expired {
+			p.persistSemanticSnapshot()
+		} else {
+			p.persistSemanticCache(source)
+		}
 		return
 	}
 
@@ -1305,7 +1372,14 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 }
 
 func (p *vaillantSemanticPoller) persistSemanticCache(source semanticSnapshotSource) {
-	if p == nil || source != semanticSnapshotSourceLive || p.cache == nil || p.provider == nil {
+	if p == nil || source != semanticSnapshotSourceLive {
+		return
+	}
+	p.persistSemanticSnapshot()
+}
+
+func (p *vaillantSemanticPoller) persistSemanticSnapshot() {
+	if p == nil || p.cache == nil || p.provider == nil {
 		return
 	}
 	_ = p.cache.Save(semanticCacheSnapshot{

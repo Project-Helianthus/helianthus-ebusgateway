@@ -4,7 +4,22 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
+
+	ebusgateway "github.com/d3vi1/helianthus-ebusgateway"
+	"github.com/d3vi1/helianthus-ebusgateway/graphql"
 )
+
+type semanticSnapshotCaptureSpy struct {
+	calls int
+	last  semanticCacheSnapshot
+}
+
+func (spy *semanticSnapshotCaptureSpy) Save(snapshot semanticCacheSnapshot) error {
+	spy.calls++
+	spy.last = snapshot
+	return nil
+}
 
 func TestBuildB524ReadSelector(t *testing.T) {
 	t.Parallel()
@@ -246,22 +261,184 @@ func TestSourceFromEbusdGrab(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		ok   bool
-		want semanticSnapshotSource
+		name     string
+		protocol ebusgateway.TransportProtocol
+		ok       bool
+		want     semanticSnapshotSource
 	}{
-		{name: "promotes successful ebusd grab to live", ok: true, want: semanticSnapshotSourceLive},
-		{name: "keeps cache when ebusd grab failed", ok: false, want: semanticSnapshotSourceCache},
+		{
+			name:     "ebusd-tcp successful grab is live",
+			protocol: ebusgateway.TransportEbusdTCP,
+			ok:       true,
+			want:     semanticSnapshotSourceLive,
+		},
+		{
+			name:     "non-ebusd successful grab stays cache",
+			protocol: ebusgateway.TransportENH,
+			ok:       true,
+			want:     semanticSnapshotSourceCache,
+		},
+		{
+			name:     "grab failure stays cache",
+			protocol: ebusgateway.TransportEbusdTCP,
+			ok:       false,
+			want:     semanticSnapshotSourceCache,
+		},
 	}
 
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := sourceFromEbusdGrab(test.ok); got != test.want {
-				t.Fatalf("sourceFromEbusdGrab(%v) = %v; want %v", test.ok, got, test.want)
+			poller := &vaillantSemanticPoller{
+				transportConfig: ebusgateway.TransportConfig{Protocol: test.protocol},
+			}
+			if got := poller.sourceFromEbusdGrab(test.ok); got != test.want {
+				t.Fatalf("sourceFromEbusdGrab(protocol=%q, ok=%v) = %v; want %v", test.protocol, test.ok, got, test.want)
 			}
 		})
+	}
+}
+
+func TestVaillantSemanticPoller_DHWTransientCacheFailurePreservesLastKnown(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 10, 8, 0, 0, 0, time.UTC)
+	current := 48.5
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		dhw: &vaillantDhwSnapshot{
+			OperatingMode: "auto",
+			Preset:        "schedule",
+			CurrentTempC:  &current,
+		},
+		dhwStaleTTL: 10 * time.Minute,
+	}
+	poller.nowFn = func() time.Time { return now }
+	poller.dhwLastUpdateAt = now
+
+	poller.publishDHW(semanticSnapshotSourceLive)
+
+	now = now.Add(5 * time.Minute)
+	poller.publishDHW(semanticSnapshotSourceCache)
+
+	dhw := provider.DHW()
+	if dhw == nil {
+		t.Fatalf("provider.DHW() = nil; want preserved last-known DHW before TTL expiry")
+	}
+	if dhw.OperatingMode != "auto" {
+		t.Fatalf("provider.DHW().OperatingMode = %q; want auto", dhw.OperatingMode)
+	}
+	if dhw.CurrentTempC == nil || *dhw.CurrentTempC != 48.5 {
+		t.Fatalf("provider.DHW().CurrentTempC = %v; want 48.5", dhw.CurrentTempC)
+	}
+}
+
+func TestVaillantSemanticPoller_DHWCacheFailureExpiresAfterTTL(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 10, 8, 0, 0, 0, time.UTC)
+	current := 47.2
+
+	provider := graphql.NewLiveSemanticProvider()
+	cacheSpy := &semanticSnapshotCaptureSpy{}
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		cache:    cacheSpy,
+		dhw: &vaillantDhwSnapshot{
+			OperatingMode: "auto",
+			Preset:        "schedule",
+			CurrentTempC:  &current,
+		},
+		dhwStaleTTL: 10 * time.Minute,
+	}
+	poller.nowFn = func() time.Time { return now }
+	poller.dhwLastUpdateAt = now
+
+	poller.publishDHW(semanticSnapshotSourceLive)
+
+	now = now.Add(11 * time.Minute)
+	poller.publishDHW(semanticSnapshotSourceCache)
+
+	if dhw := provider.DHW(); dhw != nil {
+		t.Fatalf("provider.DHW() = %#v; want nil after TTL expiry", dhw)
+	}
+	if poller.dhw != nil {
+		t.Fatalf("poller.dhw = %#v; want nil after TTL expiry", poller.dhw)
+	}
+	if cacheSpy.calls < 2 {
+		t.Fatalf("cache Save calls = %d; want at least 2 (live persist + expiry persist)", cacheSpy.calls)
+	}
+	if cacheSpy.last.DHW != nil {
+		t.Fatalf("cache last DHW = %#v; want nil after TTL expiry persist", cacheSpy.last.DHW)
+	}
+}
+
+func TestVaillantSemanticPoller_HydrateFromCacheSeedsDHWStalenessFromPersistedAt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 10, 8, 0, 0, 0, time.UTC)
+	current := 45.0
+
+	provider := graphql.NewLiveSemanticProvider()
+	cacheSpy := &semanticSnapshotCaptureSpy{}
+	poller := &vaillantSemanticPoller{
+		provider:    provider,
+		cache:       cacheSpy,
+		dhwStaleTTL: 15 * time.Minute,
+	}
+	poller.nowFn = func() time.Time { return now }
+
+	// Hydrate from a cache that was persisted 20 minutes ago — already past the 15m TTL.
+	poller.hydrateFromCache(semanticCacheSnapshot{
+		DHW: &graphql.DhwStatus{
+			OperatingMode: "auto",
+			Preset:        "schedule",
+			CurrentTempC:  &current,
+		},
+		PersistedAt: now.Add(-20 * time.Minute),
+	})
+
+	// The poller should have seeded dhwLastUpdateAt from PersistedAt, not now().
+	if poller.dhwLastUpdateAt.Equal(now) {
+		t.Fatalf("dhwLastUpdateAt = now; want PersistedAt (20m ago)")
+	}
+
+	// First cache-sourced publish should expire the DHW immediately since age > TTL.
+	poller.publishDHW(semanticSnapshotSourceCache)
+
+	if dhw := provider.DHW(); dhw != nil {
+		t.Fatalf("provider.DHW() = %#v; want nil — cache was already past TTL at hydration", dhw)
+	}
+	if poller.dhw != nil {
+		t.Fatalf("poller.dhw = %#v; want nil after immediate TTL expiry", poller.dhw)
+	}
+}
+
+func TestVaillantSemanticPoller_HydrateFromCacheFallsBackToNowWhenPersistedAtZero(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 10, 8, 0, 0, 0, time.UTC)
+	current := 45.0
+
+	poller := &vaillantSemanticPoller{
+		provider:    graphql.NewLiveSemanticProvider(),
+		dhwStaleTTL: 15 * time.Minute,
+	}
+	poller.nowFn = func() time.Time { return now }
+
+	// Hydrate with zero PersistedAt — should fall back to now().
+	poller.hydrateFromCache(semanticCacheSnapshot{
+		DHW: &graphql.DhwStatus{
+			OperatingMode: "auto",
+			CurrentTempC:  &current,
+		},
+	})
+
+	if !poller.dhwLastUpdateAt.Equal(now) {
+		t.Fatalf("dhwLastUpdateAt = %v; want %v (fallback to now when PersistedAt is zero)", poller.dhwLastUpdateAt, now)
 	}
 }
 

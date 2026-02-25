@@ -186,6 +186,18 @@ func TestBindFlags_SemanticZonePresenceThresholds(t *testing.T) {
 	}
 }
 
+func TestBindFlags_SemanticDHWStaleTTL(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-semantic-dhw-stale-ttl", "25m"}); err != nil {
+		t.Fatalf("parse semantic-dhw-stale-ttl: %v", err)
+	}
+	if cfg.SemanticDHWStaleTTL != 25*time.Minute {
+		t.Fatalf("SemanticDHWStaleTTL = %s; want 25m", cfg.SemanticDHWStaleTTL)
+	}
+}
+
 func TestNormalizeMountPath(t *testing.T) {
 	tests := []struct {
 		name     string

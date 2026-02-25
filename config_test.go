@@ -152,6 +152,29 @@ func TestApplyDefaults_PreservesExplicitSemanticZonePresenceThresholds(t *testin
 	}
 }
 
+func TestDefaultConfig_SetsSemanticDHWStaleTTL(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.SemanticDHWStaleTTL != DefaultSemanticDHWStaleTTL {
+		t.Fatalf("expected SemanticDHWStaleTTL=%s by default, got %s", DefaultSemanticDHWStaleTTL, cfg.SemanticDHWStaleTTL)
+	}
+}
+
+func TestApplyDefaults_SetsSemanticDHWStaleTTL(t *testing.T) {
+	cfg := applyDefaults(Config{})
+	if cfg.SemanticDHWStaleTTL != DefaultSemanticDHWStaleTTL {
+		t.Fatalf("expected SemanticDHWStaleTTL=%s after defaults, got %s", DefaultSemanticDHWStaleTTL, cfg.SemanticDHWStaleTTL)
+	}
+}
+
+func TestApplyDefaults_PreservesExplicitSemanticDHWStaleTTL(t *testing.T) {
+	cfg := applyDefaults(Config{
+		SemanticDHWStaleTTL: 42 * time.Minute,
+	})
+	if cfg.SemanticDHWStaleTTL != 42*time.Minute {
+		t.Fatalf("expected SemanticDHWStaleTTL=42m, got %s", cfg.SemanticDHWStaleTTL)
+	}
+}
+
 func TestDefaultConfig_SetsPortalPath(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.PortalPath != "/portal" {

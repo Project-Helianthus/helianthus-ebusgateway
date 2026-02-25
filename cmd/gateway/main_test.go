@@ -168,6 +168,24 @@ func TestBindFlags_SemanticReadBreakerDisableWithZeroBudget(t *testing.T) {
 	}
 }
 
+func TestBindFlags_SemanticZonePresenceThresholds(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{
+		"-semantic-zone-presence-miss-threshold", "4",
+		"-semantic-zone-presence-hit-threshold", "3",
+	}); err != nil {
+		t.Fatalf("parse semantic zone presence threshold flags: %v", err)
+	}
+	if cfg.SemanticZonePresenceMissThreshold != 4 {
+		t.Fatalf("SemanticZonePresenceMissThreshold = %d; want 4", cfg.SemanticZonePresenceMissThreshold)
+	}
+	if cfg.SemanticZonePresenceHitThreshold != 3 {
+		t.Fatalf("SemanticZonePresenceHitThreshold = %d; want 3", cfg.SemanticZonePresenceHitThreshold)
+	}
+}
+
 func TestNormalizeMountPath(t *testing.T) {
 	tests := []struct {
 		name     string

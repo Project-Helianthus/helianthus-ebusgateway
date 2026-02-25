@@ -119,6 +119,39 @@ func TestApplyDefaults_UsesDefaultBudgetForPartialBreakerOverrides(t *testing.T)
 	}
 }
 
+func TestDefaultConfig_SetsSemanticZonePresenceThresholdDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.SemanticZonePresenceMissThreshold != DefaultSemanticZonePresenceMissThreshold {
+		t.Fatalf("expected SemanticZonePresenceMissThreshold=%d by default, got %d", DefaultSemanticZonePresenceMissThreshold, cfg.SemanticZonePresenceMissThreshold)
+	}
+	if cfg.SemanticZonePresenceHitThreshold != DefaultSemanticZonePresenceHitThreshold {
+		t.Fatalf("expected SemanticZonePresenceHitThreshold=%d by default, got %d", DefaultSemanticZonePresenceHitThreshold, cfg.SemanticZonePresenceHitThreshold)
+	}
+}
+
+func TestApplyDefaults_SetsSemanticZonePresenceThresholdDefaults(t *testing.T) {
+	cfg := applyDefaults(Config{})
+	if cfg.SemanticZonePresenceMissThreshold != DefaultSemanticZonePresenceMissThreshold {
+		t.Fatalf("expected SemanticZonePresenceMissThreshold=%d after defaults, got %d", DefaultSemanticZonePresenceMissThreshold, cfg.SemanticZonePresenceMissThreshold)
+	}
+	if cfg.SemanticZonePresenceHitThreshold != DefaultSemanticZonePresenceHitThreshold {
+		t.Fatalf("expected SemanticZonePresenceHitThreshold=%d after defaults, got %d", DefaultSemanticZonePresenceHitThreshold, cfg.SemanticZonePresenceHitThreshold)
+	}
+}
+
+func TestApplyDefaults_PreservesExplicitSemanticZonePresenceThresholds(t *testing.T) {
+	cfg := applyDefaults(Config{
+		SemanticZonePresenceMissThreshold: 5,
+		SemanticZonePresenceHitThreshold:  4,
+	})
+	if cfg.SemanticZonePresenceMissThreshold != 5 {
+		t.Fatalf("expected SemanticZonePresenceMissThreshold=5, got %d", cfg.SemanticZonePresenceMissThreshold)
+	}
+	if cfg.SemanticZonePresenceHitThreshold != 4 {
+		t.Fatalf("expected SemanticZonePresenceHitThreshold=4, got %d", cfg.SemanticZonePresenceHitThreshold)
+	}
+}
+
 func TestDefaultConfig_SetsPortalPath(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.PortalPath != "/portal" {

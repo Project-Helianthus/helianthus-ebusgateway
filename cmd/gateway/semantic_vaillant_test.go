@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"testing"
 )
@@ -261,6 +262,268 @@ func TestSourceFromEbusdGrab(t *testing.T) {
 				t.Fatalf("sourceFromEbusdGrab(%v) = %v; want %v", test.ok, got, test.want)
 			}
 		})
+	}
+}
+
+func TestZonePresenceFSM_AbsenceRequiresConsecutiveMisses(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x02)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("zone should not be present after first hit when hit threshold is 2")
+	}
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	if _, exists := poller.zones[instance]; !exists {
+		t.Fatalf("zone should be present after second consecutive hit")
+	}
+
+	for miss := 1; miss <= 2; miss++ {
+		poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+		if _, exists := poller.zones[instance]; !exists {
+			t.Fatalf("zone removed too early after miss %d", miss)
+		}
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("zone should be absent after third consecutive miss")
+	}
+	record := poller.presence[instance]
+	if record == nil || record.State != zonePresenceAbsent {
+		t.Fatalf("presence state = %+v; want ABSENT", record)
+	}
+}
+
+func TestZonePresenceFSM_ResurrectionRequiresConsecutiveHits(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x01)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("zone should be absent after miss threshold")
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("zone should stay absent until hit threshold is reached")
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("single hit after miss should not resurrect zone")
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	if _, exists := poller.zones[instance]; !exists {
+		t.Fatalf("zone should resurrect after two consecutive hits")
+	}
+	record := poller.presence[instance]
+	if record == nil || record.State != zonePresencePresent {
+		t.Fatalf("presence state = %+v; want PRESENT", record)
+	}
+}
+
+func TestZonePresenceFSM_AlternatingProbesDoNotFlapPresentZone(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x00)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+	poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+
+	for iteration := 0; iteration < 6; iteration++ {
+		poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{})
+		if _, exists := poller.zones[instance]; !exists {
+			t.Fatalf("zone disappeared on alternating miss at iteration %d", iteration)
+		}
+		record := poller.presence[instance]
+		if record == nil || record.State != zonePresenceSuspectMissing {
+			t.Fatalf("presence state after miss = %+v; want SUSPECT_MISSING", record)
+		}
+
+		poller.applyZonePresenceProbes(map[byte]bool{instance: true}, map[byte]bool{instance: true})
+		if _, exists := poller.zones[instance]; !exists {
+			t.Fatalf("zone disappeared on alternating hit at iteration %d", iteration)
+		}
+		record = poller.presence[instance]
+		if record == nil || record.State != zonePresencePresent {
+			t.Fatalf("presence state after hit = %+v; want PRESENT", record)
+		}
+	}
+}
+
+func TestReconcileDiscoveryPresence_SkipsMissDemotionWhenFallbackHydrates(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x03)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+
+	poller.presence[instance] = &zonePresenceRecord{
+		State:     zonePresenceSuspectResurrect,
+		HitStreak: 1,
+	}
+
+	poller.refreshFromEbusdGrabFn = func(_ context.Context) (map[byte]bool, bool) {
+		poller.applyZonePresenceProbes(
+			map[byte]bool{instance: true},
+			map[byte]bool{instance: true},
+		)
+		return map[byte]bool{instance: true}, true
+	}
+
+	source := poller.reconcileDiscoveryPresence(
+		context.Background(),
+		map[byte]bool{instance: true},
+		map[byte]bool{},
+	)
+	if source != semanticSnapshotSourceLive {
+		t.Fatalf("source = %v; want LIVE", source)
+	}
+	record := poller.presence[instance]
+	if record == nil || record.State != zonePresencePresent {
+		t.Fatalf("presence state = %+v; want PRESENT", record)
+	}
+	if _, exists := poller.zones[instance]; !exists {
+		t.Fatalf("zone should be present after fallback hydration hit reaches threshold")
+	}
+}
+
+func TestReconcileDiscoveryPresence_AppliesMissesWhenFallbackUnavailable(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x01)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+	poller.zones[instance] = &vaillantZoneSnapshot{Instance: instance, Present: true}
+	poller.presence[instance] = &zonePresenceRecord{
+		State:     zonePresencePresent,
+		HitStreak: poller.zoneHitThresholdValue(),
+	}
+	poller.refreshFromEbusdGrabFn = func(_ context.Context) (map[byte]bool, bool) { return nil, false }
+
+	source := poller.reconcileDiscoveryPresence(
+		context.Background(),
+		map[byte]bool{instance: true},
+		map[byte]bool{},
+	)
+	if source != semanticSnapshotSourceCache {
+		t.Fatalf("source = %v; want CACHE", source)
+	}
+	record := poller.presence[instance]
+	if record == nil || record.State != zonePresenceSuspectMissing {
+		t.Fatalf("presence state = %+v; want SUSPECT_MISSING", record)
+	}
+	if _, exists := poller.zones[instance]; !exists {
+		t.Fatalf("zone should remain present before miss threshold")
+	}
+}
+
+func TestReconcileDiscoveryPresence_TracksMissesWithPartialFallback(t *testing.T) {
+	t.Parallel()
+
+	keep := byte(0x00)
+	missing := byte(0x01)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+	poller.zones[keep] = &vaillantZoneSnapshot{Instance: keep, Present: true}
+	poller.zones[missing] = &vaillantZoneSnapshot{Instance: missing, Present: true}
+	poller.presence[keep] = &zonePresenceRecord{State: zonePresencePresent, HitStreak: poller.zoneHitThresholdValue()}
+	poller.presence[missing] = &zonePresenceRecord{State: zonePresencePresent, HitStreak: poller.zoneHitThresholdValue()}
+	poller.refreshFromEbusdGrabFn = func(_ context.Context) (map[byte]bool, bool) {
+		return map[byte]bool{keep: true}, true
+	}
+
+	source := poller.reconcileDiscoveryPresence(
+		context.Background(),
+		map[byte]bool{keep: true, missing: true},
+		map[byte]bool{},
+	)
+	if source != semanticSnapshotSourceLive {
+		t.Fatalf("source = %v; want LIVE", source)
+	}
+	if _, exists := poller.zones[keep]; !exists {
+		t.Fatalf("fallback-present zone must remain present")
+	}
+	if _, exists := poller.zones[missing]; !exists {
+		t.Fatalf("missing zone must not be removed on first miss")
+	}
+	record := poller.presence[missing]
+	if record == nil || record.State != zonePresenceSuspectMissing {
+		t.Fatalf("missing zone state = %+v; want SUSPECT_MISSING", record)
+	}
+}
+
+func TestReconcileDiscoveryPresence_DoesNotDoubleCountFallbackHit(t *testing.T) {
+	t.Parallel()
+
+	instance := byte(0x04)
+	poller := &vaillantSemanticPoller{
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+	}
+	poller.refreshFromEbusdGrabFn = func(_ context.Context) (map[byte]bool, bool) {
+		poller.applyZonePresenceProbes(
+			map[byte]bool{instance: true},
+			map[byte]bool{instance: true},
+		)
+		return map[byte]bool{instance: true}, true
+	}
+
+	source := poller.reconcileDiscoveryPresence(
+		context.Background(),
+		map[byte]bool{instance: true},
+		map[byte]bool{},
+	)
+	if source != semanticSnapshotSourceLive {
+		t.Fatalf("source = %v; want LIVE", source)
+	}
+	if _, exists := poller.zones[instance]; exists {
+		t.Fatalf("zone should not be promoted to present after a single fallback hit when threshold is 2")
+	}
+	record := poller.presence[instance]
+	if record == nil || record.State != zonePresenceSuspectResurrect || record.HitStreak != 1 {
+		t.Fatalf("presence state = %+v; want SUSPECT_RESURRECT with hit_streak=1", record)
 	}
 }
 

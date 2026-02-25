@@ -19,6 +19,9 @@ const (
 	TransportUDPPlain TransportProtocol = "udp-plain"
 	TransportTCPPlain TransportProtocol = "tcp-plain"
 	TransportEbusdTCP TransportProtocol = "ebusd-tcp"
+
+	DefaultSemanticZonePresenceMissThreshold = 3
+	DefaultSemanticZonePresenceHitThreshold  = 2
 )
 
 type TransportConfig struct {
@@ -55,6 +58,8 @@ type Config struct {
 	SemanticReadBreakerFailureBudgetSet   bool
 	SemanticReadBreakerOpenCooldown       time.Duration
 	SemanticReadBreakerHalfOpenProbeLimit int
+	SemanticZonePresenceMissThreshold     int
+	SemanticZonePresenceHitThreshold      int
 	SemanticCachePath                     string
 	BroadcastListen                       bool
 	HTTPAddr                              string
@@ -101,6 +106,8 @@ func DefaultConfig() Config {
 		SemanticReadBreakerFailureBudget:      DefaultSemanticReadFailureBudget,
 		SemanticReadBreakerOpenCooldown:       DefaultSemanticReadOpenCooldown,
 		SemanticReadBreakerHalfOpenProbeLimit: DefaultSemanticReadHalfOpenProbeLimit,
+		SemanticZonePresenceMissThreshold:     DefaultSemanticZonePresenceMissThreshold,
+		SemanticZonePresenceHitThreshold:      DefaultSemanticZonePresenceHitThreshold,
 		SemanticCachePath:                     "./semantic_cache.json",
 		HTTPAddr:                              ":8080",
 		GraphQLPath:                           "/graphql",
@@ -160,6 +167,12 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.SemanticReadBreakerHalfOpenProbeLimit == 0 {
 		cfg.SemanticReadBreakerHalfOpenProbeLimit = DefaultSemanticReadHalfOpenProbeLimit
+	}
+	if cfg.SemanticZonePresenceMissThreshold <= 0 {
+		cfg.SemanticZonePresenceMissThreshold = DefaultSemanticZonePresenceMissThreshold
+	}
+	if cfg.SemanticZonePresenceHitThreshold <= 0 {
+		cfg.SemanticZonePresenceHitThreshold = DefaultSemanticZonePresenceHitThreshold
 	}
 	if cfg.SemanticCachePath == "" {
 		cfg.SemanticCachePath = "./semantic_cache.json"

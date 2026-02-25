@@ -2,15 +2,18 @@ package graphql
 
 import (
 	"context"
+	"time"
 
 	"github.com/d3vi1/helianthus-ebusreg/router"
 )
 
 // SemanticRuntime bridges router broadcasts into semantic snapshots and subscriptions.
 type SemanticRuntime struct {
-	router   *router.BusEventRouter
-	provider *LiveSemanticProvider
-	hub      *BroadcastHub
+	router          *router.BusEventRouter
+	provider        *LiveSemanticProvider
+	hub             *BroadcastHub
+	bootLiveTimeout time.Duration
+	phaseLogger     func(string, ...any)
 }
 
 func NewSemanticRuntime(router *router.BusEventRouter, provider *LiveSemanticProvider, hub *BroadcastHub) *SemanticRuntime {
@@ -18,9 +21,10 @@ func NewSemanticRuntime(router *router.BusEventRouter, provider *LiveSemanticPro
 		provider = NewLiveSemanticProvider()
 	}
 	return &SemanticRuntime{
-		router:   router,
-		provider: provider,
-		hub:      hub,
+		router:          router,
+		provider:        provider,
+		hub:             hub,
+		bootLiveTimeout: 2 * time.Minute,
 	}
 }
 
@@ -40,12 +44,32 @@ func (runtime *SemanticRuntime) Provider() *LiveSemanticProvider {
 	return runtime.provider
 }
 
+func (runtime *SemanticRuntime) SetBootLiveTimeout(timeout time.Duration) {
+	if runtime == nil {
+		return
+	}
+	runtime.bootLiveTimeout = timeout
+}
+
+func (runtime *SemanticRuntime) SetPhaseLogger(logf func(string, ...any)) {
+	if runtime == nil {
+		return
+	}
+	runtime.phaseLogger = logf
+}
+
 func (runtime *SemanticRuntime) Start(ctx context.Context) {
-	if runtime == nil || runtime.router == nil {
+	if runtime == nil {
 		return
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if runtime.provider != nil {
+		runtime.provider.StartBootFSM(ctx, runtime.bootLiveTimeout, runtime.phaseLogger)
+	}
+	if runtime.router == nil {
+		return
 	}
 	go runtime.run(ctx)
 }

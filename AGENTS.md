@@ -54,3 +54,8 @@ No temporary/junk tool may remain in the showroom surface.
 - Breaking changes in `ebus.v1.*` require a new major namespace.
 - Parity drift MCP vs GraphQL fails CI.
 - MCP tool inventory must pass classification enforcement (`go test ./mcp -run TestToolClassificationPolicy`), and any unclassified tool fails the gate.
+
+### Heat-source modeling boundary
+- Treat `scan` as cross-device discovery, not as a class-specific heat-source plane.
+- Keep `HEAT_SOURCE` and `REGULATOR` semantic domains isolated; cross-domain register access must be denied explicitly.
+- Architecture updates for heat-source design must be mirrored in `helianthus-docs-ebus` and be reusable for equivalent VWZ-class implementation.

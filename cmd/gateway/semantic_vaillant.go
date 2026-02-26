@@ -1892,6 +1892,15 @@ func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, data []byte)
 		return 0, false
 	}
 
+	return decodeB516ResponseKWh(payload)
+}
+
+// decodeB516ResponseKWh extracts the energy value from a B5.16 response payload.
+// The last 4 bytes are IEEE 754 float32 LE representing Wh; the result is kWh.
+func decodeB516ResponseKWh(payload []byte) (float64, bool) {
+	if len(payload) < 4 {
+		return 0, false
+	}
 	raw := payload[len(payload)-4:]
 	bits := uint32(raw[0]) | uint32(raw[1])<<8 | uint32(raw[2])<<16 | uint32(raw[3])<<24
 	value := float64(math.Float32frombits(bits))

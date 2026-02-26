@@ -1808,13 +1808,13 @@ func TestBuildB516DayPayload(t *testing.T) {
 func TestReadB516Value_Float32Decode(t *testing.T) {
 	t.Parallel()
 
-	// Test the float32 LE decode logic that readB516Value uses internally.
-	// We test decodeFloat32LE (same pattern) since readB516Value requires a
-	// real protocol.Bus which is not easily mockable.
+	// Test the production decode path used by readB516Value:
+	// decodeB516ResponseKWh extracts last 4 bytes as float32 LE (Wh) → kWh.
 
 	tests := []struct {
 		name    string
 		whValue float32 // input in Wh (what the device returns)
+		prefix  []byte  // optional prefix bytes before the float32 (simulates full response)
 		wantKwh float64 // expected output in kWh
 		wantOk  bool
 	}{
@@ -1836,22 +1836,29 @@ func TestReadB516Value_Float32Decode(t *testing.T) {
 			wantKwh: 9876.543,
 			wantOk:  true,
 		},
+		{
+			name:    "with_prefix_bytes",
+			whValue: 5000.0,
+			prefix:  []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11},
+			wantKwh: 5.0,
+			wantOk:  true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Encode the float32 value as 4 bytes LE (simulating device response).
 			raw := make([]byte, 4)
 			binary.LittleEndian.PutUint32(raw, math.Float32bits(tt.whValue))
+			// Prepend prefix bytes to simulate a full response payload.
+			payload := append(tt.prefix, raw...)
 
-			value, ok := decodeFloat32LE(raw)
-			if !ok {
-				t.Fatalf("decodeFloat32LE(%x) returned ok=false; want ok=true", raw)
+			kwh, ok := decodeB516ResponseKWh(payload)
+			if ok != tt.wantOk {
+				t.Fatalf("decodeB516ResponseKWh(%x) ok=%v; want %v", payload, ok, tt.wantOk)
 			}
-			kwh := value / 1000.0
-			if math.Abs(kwh-tt.wantKwh) > 0.01 {
-				t.Fatalf("decodeFloat32LE(%x)/1000 = %f; want %f", raw, kwh, tt.wantKwh)
+			if ok && math.Abs(kwh-tt.wantKwh) > 0.01 {
+				t.Fatalf("decodeB516ResponseKWh(%x) = %f kWh; want %f", payload, kwh, tt.wantKwh)
 			}
-			_ = ok == tt.wantOk
 		})
 	}
 
@@ -1859,9 +1866,9 @@ func TestReadB516Value_Float32Decode(t *testing.T) {
 	t.Run("nan", func(t *testing.T) {
 		raw := make([]byte, 4)
 		binary.LittleEndian.PutUint32(raw, math.Float32bits(float32(math.NaN())))
-		_, ok := decodeFloat32LE(raw)
+		_, ok := decodeB516ResponseKWh(raw)
 		if ok {
-			t.Fatal("decodeFloat32LE(NaN) returned ok=true; want ok=false")
+			t.Fatal("decodeB516ResponseKWh(NaN) returned ok=true; want ok=false")
 		}
 	})
 
@@ -1869,17 +1876,17 @@ func TestReadB516Value_Float32Decode(t *testing.T) {
 	t.Run("inf", func(t *testing.T) {
 		raw := make([]byte, 4)
 		binary.LittleEndian.PutUint32(raw, math.Float32bits(float32(math.Inf(1))))
-		_, ok := decodeFloat32LE(raw)
+		_, ok := decodeB516ResponseKWh(raw)
 		if ok {
-			t.Fatal("decodeFloat32LE(+Inf) returned ok=true; want ok=false")
+			t.Fatal("decodeB516ResponseKWh(+Inf) returned ok=true; want ok=false")
 		}
 	})
 
 	// Short payload must be rejected.
 	t.Run("short_payload", func(t *testing.T) {
-		_, ok := decodeFloat32LE([]byte{0x01, 0x02})
+		_, ok := decodeB516ResponseKWh([]byte{0x01, 0x02})
 		if ok {
-			t.Fatal("decodeFloat32LE(2 bytes) returned ok=true; want ok=false")
+			t.Fatal("decodeB516ResponseKWh(2 bytes) returned ok=true; want ok=false")
 		}
 	})
 }

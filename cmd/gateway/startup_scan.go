@@ -221,7 +221,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			cancel()
 
 			if total > 0 && targetConfig != nil {
-				enrichSerialsFromEbusd(scanCtx, gateway.Registry, *targetConfig)
+				enrichSerialsFromEbusd(ctx, gateway.Registry, *targetConfig)
 			}
 
 			if total > 0 && total != previousTotal {

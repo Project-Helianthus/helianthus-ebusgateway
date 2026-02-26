@@ -52,7 +52,10 @@ func resolveBroadcastTransport(ctx context.Context, cfg Config) (transport.RawTr
 		ctx = context.Background()
 	}
 
-	config := cfg.TransportConfig
+	config, err := normalizeTransportConfig(cfg.TransportConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("broadcast transport config: %w", err)
+	}
 	if config.Network == "" {
 		return nil, nil, fmt.Errorf("broadcast transport missing network: %w", ebuserrors.ErrInvalidPayload)
 	}

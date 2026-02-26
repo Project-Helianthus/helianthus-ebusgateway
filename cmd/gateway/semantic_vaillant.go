@@ -720,19 +720,26 @@ func (p *vaillantSemanticPoller) withPollLock(ctx context.Context, fn func(conte
 }
 
 func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
+	// Regulator capability is always recomputed, even when BASV is missing.
+	regCap := p.findRegulatorCapability()
+
 	controller, ok := findDeviceAddressByPrefix(p.reg, "BASV")
 	if !ok {
 		p.mu.Lock()
+		prev := p.regulatorCapability
 		p.controller = 0
+		p.regulatorCapability = regCap
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
 		p.presence = make(map[byte]*zonePresenceRecord)
 		p.mu.Unlock()
+		if regCap != prev {
+			log.Printf("semantic_regulator_capability capability=%s", regCap.String())
+		}
 		p.publishZones(semanticSnapshotSourceCache)
 		p.publishDHW(semanticSnapshotSourceCache)
 		return
 	}
 
-	regCap := p.findRegulatorCapability()
 	p.mu.Lock()
 	prev := p.regulatorCapability
 	p.controller = controller

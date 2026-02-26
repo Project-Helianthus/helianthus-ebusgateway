@@ -1307,6 +1307,48 @@ func TestVaillantSemanticPoller_RefreshDiscoverySetsRegulatorCapability(t *testi
 	}
 }
 
+func TestVaillantSemanticPoller_RefreshDiscoveryNoBasvSetsRegulatorCapability(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	// Registry with ONLY a regulator — no BASV boiler. refreshDiscovery should
+	// still update regulatorCapability even when early-returning due to missing BASV.
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x60, Manufacturer: "Vaillant", DeviceID: "VRC430", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
+	)
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		reg:               reg,
+		provider:          provider,
+		catalog:           catalog,
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+		dhwStaleTTL:       10 * time.Minute,
+	}
+	poller.nowFn = func() time.Time { return time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC) }
+
+	poller.refreshDiscovery(context.Background())
+
+	poller.mu.Lock()
+	gotController := poller.controller
+	gotCap := poller.regulatorCapability
+	poller.mu.Unlock()
+
+	if gotController != 0 {
+		t.Fatalf("controller = 0x%02x; want 0 (no BASV found)", gotController)
+	}
+	if gotCap != productids.ControllerPresent {
+		t.Fatalf("regulatorCapability = %s; want ControllerPresent (regulator in registry even without BASV)", gotCap)
+	}
+}
+
 func TestExtractPartNumberFromSerial(t *testing.T) {
 	t.Parallel()
 

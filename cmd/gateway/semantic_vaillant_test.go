@@ -442,6 +442,151 @@ func TestVaillantSemanticPoller_HydrateFromCacheFallsBackToNowWhenPersistedAtZer
 	}
 }
 
+func TestVaillantSemanticPoller_DiscoveryLossTTLExpiresDHW(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 11, 9, 0, 0, 0, time.UTC)
+	current := 49.1
+
+	provider := graphql.NewLiveSemanticProvider()
+	cacheSpy := &semanticSnapshotCaptureSpy{}
+	poller := &vaillantSemanticPoller{
+		provider:    provider,
+		cache:       cacheSpy,
+		dhwStaleTTL: 10 * time.Minute,
+		dhw: &vaillantDhwSnapshot{
+			OperatingMode: "auto",
+			Preset:        "schedule",
+			CurrentTempC:  &current,
+		},
+	}
+	poller.nowFn = func() time.Time { return now }
+	poller.dhwLastUpdateAt = now
+
+	poller.publishDHW(semanticSnapshotSourceLive)
+
+	now = now.Add(5 * time.Minute)
+	poller.refreshDiscovery(context.Background())
+	if dhw := provider.DHW(); dhw == nil {
+		t.Fatalf("provider.DHW() = nil; want DHW preserved before TTL expiry")
+	}
+
+	now = now.Add(6 * time.Minute)
+	poller.refreshDiscovery(context.Background())
+
+	if dhw := provider.DHW(); dhw != nil {
+		t.Fatalf("provider.DHW() = %#v; want nil after TTL expiry on discovery loss", dhw)
+	}
+	if poller.dhw != nil {
+		t.Fatalf("poller.dhw = %#v; want nil after TTL expiry on discovery loss", poller.dhw)
+	}
+	if cacheSpy.calls < 2 {
+		t.Fatalf("cache Save calls = %d; want at least 2 (live persist + expiry persist)", cacheSpy.calls)
+	}
+	if cacheSpy.last.DHW != nil {
+		t.Fatalf("cache last DHW = %#v; want nil after TTL expiry persist", cacheSpy.last.DHW)
+	}
+}
+
+func TestVaillantSemanticPoller_DiscoveryLossPreservesDHWBeforeTTL(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 11, 10, 0, 0, 0, time.UTC)
+	current := 47.8
+
+	provider := graphql.NewLiveSemanticProvider()
+	cacheSpy := &semanticSnapshotCaptureSpy{}
+	poller := &vaillantSemanticPoller{
+		provider:    provider,
+		cache:       cacheSpy,
+		dhwStaleTTL: 15 * time.Minute,
+		dhw: &vaillantDhwSnapshot{
+			OperatingMode: "auto",
+			Preset:        "schedule",
+			CurrentTempC:  &current,
+		},
+	}
+	poller.nowFn = func() time.Time { return now }
+	poller.dhwLastUpdateAt = now
+
+	poller.publishDHW(semanticSnapshotSourceLive)
+
+	now = now.Add(14 * time.Minute)
+	poller.refreshDiscovery(context.Background())
+
+	dhw := provider.DHW()
+	if dhw == nil {
+		t.Fatalf("provider.DHW() = nil; want DHW preserved before TTL expiry")
+	}
+	if dhw.OperatingMode != "auto" {
+		t.Fatalf("provider.DHW().OperatingMode = %q; want auto", dhw.OperatingMode)
+	}
+	if dhw.CurrentTempC == nil || *dhw.CurrentTempC != 47.8 {
+		t.Fatalf("provider.DHW().CurrentTempC = %v; want 47.8", dhw.CurrentTempC)
+	}
+	if poller.dhw == nil {
+		t.Fatalf("poller.dhw = nil; want preserved snapshot before TTL expiry")
+	}
+	if cacheSpy.last.DHW == nil {
+		t.Fatalf("cache last DHW = nil; want last persisted live DHW snapshot")
+	}
+}
+
+func TestVaillantSemanticPoller_DiscoveryFlapDuringStartup(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 11, 11, 0, 0, 0, time.UTC)
+	current := 46.6
+	cached := &graphql.DhwStatus{
+		OperatingMode: "auto",
+		Preset:        "schedule",
+		CurrentTempC:  &current,
+	}
+
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetDHWFromCache(cached)
+	if got := provider.StartupPhase(); got != graphql.SemanticStartupPhaseCacheLoadedStale {
+		t.Fatalf("phase after cache load = %s; want %s", got, graphql.SemanticStartupPhaseCacheLoadedStale)
+	}
+
+	poller := &vaillantSemanticPoller{
+		provider:    provider,
+		dhwStaleTTL: 30 * time.Minute,
+	}
+	poller.nowFn = func() time.Time { return now }
+	poller.hydrateFromCache(semanticCacheSnapshot{
+		DHW:         cached,
+		PersistedAt: now.Add(-5 * time.Minute),
+	})
+
+	poller.refreshDiscovery(context.Background())
+	if got := provider.StartupPhase(); got != graphql.SemanticStartupPhaseCacheLoadedStale {
+		t.Fatalf("phase after cache-phase discovery flap = %s; want %s", got, graphql.SemanticStartupPhaseCacheLoadedStale)
+	}
+	if dhw := provider.DHW(); dhw == nil {
+		t.Fatalf("provider.DHW() = nil; want preserved cached DHW during CACHE_LOADED_STALE discovery flap")
+	}
+
+	now = now.Add(1 * time.Minute)
+	poller.publishDHW(semanticSnapshotSourceLive)
+	if got := provider.StartupPhase(); got != graphql.SemanticStartupPhaseLiveWarmup {
+		t.Fatalf("phase after first live DHW publish = %s; want %s", got, graphql.SemanticStartupPhaseLiveWarmup)
+	}
+
+	now = now.Add(1 * time.Minute)
+	poller.refreshDiscovery(context.Background())
+	if got := provider.StartupPhase(); got != graphql.SemanticStartupPhaseLiveWarmup {
+		t.Fatalf("phase after warmup discovery flap = %s; want %s", got, graphql.SemanticStartupPhaseLiveWarmup)
+	}
+	dhw := provider.DHW()
+	if dhw == nil {
+		t.Fatalf("provider.DHW() = nil; want preserved DHW during LIVE_WARMUP discovery flap")
+	}
+	if dhw.CurrentTempC == nil || *dhw.CurrentTempC != 46.6 {
+		t.Fatalf("provider.DHW().CurrentTempC = %v; want 46.6", dhw.CurrentTempC)
+	}
+}
+
 func TestMergeZoneSnapshotFields_PartialLiveUpdatePreservesLastKnownAndFreshness(t *testing.T) {
 	t.Parallel()
 

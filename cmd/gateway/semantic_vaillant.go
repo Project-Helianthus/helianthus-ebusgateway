@@ -717,8 +717,6 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.controller = 0
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
 		p.presence = make(map[byte]*zonePresenceRecord)
-		p.dhw = nil
-		p.dhwLastUpdateAt = time.Time{}
 		p.mu.Unlock()
 		p.publishZones(semanticSnapshotSourceCache)
 		p.publishDHW(semanticSnapshotSourceCache)

@@ -771,7 +771,7 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 		p.regAbsenceState = regulatorAbsenceGrace
 		p.regAbsenceSince = now
 	case prevAbsence == regulatorAbsenceGrace:
-		if !p.regAbsenceSince.IsZero() && now.Sub(p.regAbsenceSince) > p.regulatorAbsenceGrace {
+		if !p.regAbsenceSince.IsZero() && now.Sub(p.regAbsenceSince) >= p.regulatorAbsenceGrace {
 			p.regAbsenceState = regulatorAbsent
 		}
 	}

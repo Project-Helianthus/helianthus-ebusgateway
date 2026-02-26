@@ -1489,8 +1489,8 @@ func TestRegulatorRedetection_GraceToAbsent(t *testing.T) {
 	}
 	poller.mu.Unlock()
 
-	// Advance time past grace window.
-	now = now.Add(2 * time.Minute) // now 6 min past absence start
+	// Advance time to exactly grace boundary (5 min).
+	now = now.Add(1 * time.Minute) // now exactly 5 min past absence start
 	poller.nowFn = func() time.Time { return now }
 
 	poller.refreshRegulatorCapability(context.Background())
@@ -1499,7 +1499,7 @@ func TestRegulatorRedetection_GraceToAbsent(t *testing.T) {
 	poller.mu.Unlock()
 
 	if state != regulatorAbsent {
-		t.Fatalf("state after grace expiry = %s; want ABSENT", state)
+		t.Fatalf("state at exact grace boundary = %s; want ABSENT", state)
 	}
 }
 

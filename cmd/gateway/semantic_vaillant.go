@@ -1954,7 +1954,6 @@ func semanticReadBreakerKey(target, opcode, group, instance byte, addr uint16) s
 
 func buildB524ReadSelector(opcode, group, instance byte, addr uint16) []byte {
 	return []byte{
-		vaillantB524OpcodeRead,
 		opcode,
 		vaillantB524OpRead,
 		group,

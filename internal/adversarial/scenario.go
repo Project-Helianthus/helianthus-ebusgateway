@@ -17,15 +17,21 @@ type Scenario struct {
 // ScenarioThresholds contains the pass/fail criteria that are evaluated
 // after an adverse event has been injected and the gateway attempts
 // recovery.
+//
+// All counter-based thresholds (MinLiveEpoch, MaxCollisions) are evaluated
+// as deltas from a baseline snapshot taken at scenario start. The runner
+// must capture expvar values before injecting the adverse event and compute
+// the delta at evaluation time. This prevents monotonic counter accumulation
+// across scenarios from producing false passes or fails.
 type ScenarioThresholds struct {
 	// MaxRecoveryTime is the maximum wall-clock time allowed to reach
 	// LIVE_READY after the adverse event is injected.
 	MaxRecoveryTime time.Duration `json:"max_recovery_time"`
 
-	// MinLiveEpoch is the minimum live_epoch expvar value that the
-	// gateway must report after recovery. A value of 2 means the
-	// gateway booted, reached LIVE_READY, experienced the adverse
-	// event, and reached LIVE_READY again.
+	// MinLiveEpoch is the minimum delta in the semantic_live_epoch
+	// expvar counter during this scenario. A value of 2 means the
+	// gateway must have incremented live_epoch at least twice since
+	// the baseline snapshot (i.e. recovered and resumed live data).
 	MinLiveEpoch int `json:"min_live_epoch"`
 
 	// RequireZones indicates whether heating zone data must be present
@@ -37,8 +43,9 @@ type ScenarioThresholds struct {
 	// cause DHW to expire, so this is not always required.
 	RequireDHW bool `json:"require_dhw"`
 
-	// MaxCollisions is the maximum number of eBUS arbitration
-	// collisions allowed during the entire scenario duration.
+	// MaxCollisions is the maximum delta in the
+	// semantic_bus_collisions_total expvar counter allowed during
+	// this scenario's duration.
 	MaxCollisions int `json:"max_collisions"`
 }
 

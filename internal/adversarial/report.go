@@ -18,13 +18,15 @@ type AdversarialReport struct {
 }
 
 // ReportSummary aggregates the outcome counts across all scenarios in a
-// single adversarial run.
+// single adversarial run. The invariant Total == Passed+Failed+XFailed+Blocked+Unknown
+// always holds.
 type ReportSummary struct {
 	Total   int `json:"total"`
 	Passed  int `json:"passed"`
 	Failed  int `json:"failed"`
 	XFailed int `json:"xfailed"`
 	Blocked int `json:"blocked"`
+	Unknown int `json:"unknown"`
 }
 
 // GenerateReport builds an AdversarialReport from a slice of verdicts,
@@ -41,6 +43,8 @@ func GenerateReport(verdicts []ScenarioVerdict) AdversarialReport {
 			summary.XFailed++
 		case OutcomeBlockedInfra:
 			summary.Blocked++
+		default:
+			summary.Unknown++
 		}
 	}
 

@@ -25,7 +25,7 @@ func DefaultScenarios() []Scenario {
 			ID:          "ADV-02",
 			Name:        "Bus reset mid-flight",
 			Description: "eBUS adapter is power-cycled while gateway is polling",
-			Duration:    2 * time.Minute,
+			Duration:    3 * time.Minute,
 			Thresholds: ScenarioThresholds{
 				MaxRecoveryTime: 120 * time.Second,
 				MinLiveEpoch:    2,
@@ -51,7 +51,7 @@ func DefaultScenarios() []Scenario {
 			ID:          "ADV-04",
 			Name:        "Cache corruption boot path",
 			Description: "Gateway boots with corrupted/truncated semantic_cache.json",
-			Duration:    2 * time.Minute,
+			Duration:    3 * time.Minute,
 			Thresholds: ScenarioThresholds{
 				MaxRecoveryTime: 120 * time.Second,
 				MinLiveEpoch:    2,

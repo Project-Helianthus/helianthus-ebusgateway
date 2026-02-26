@@ -207,6 +207,32 @@ func TestWriteReport_CreatesParentDir(t *testing.T) {
 	}
 }
 
+func TestGenerateReport_UnknownOutcome(t *testing.T) {
+	t.Parallel()
+
+	verdicts := []ScenarioVerdict{
+		{ScenarioID: "ADV-01", Name: "pass", Outcome: OutcomePass, Duration: "1m0s"},
+		{ScenarioID: "ADV-02", Name: "bogus", Outcome: "bogus_outcome", Duration: "1m0s"},
+	}
+
+	report := GenerateReport(verdicts)
+
+	if report.Summary.Total != 2 {
+		t.Fatalf("summary.total = %d; want 2", report.Summary.Total)
+	}
+	if report.Summary.Passed != 1 {
+		t.Fatalf("summary.passed = %d; want 1", report.Summary.Passed)
+	}
+	if report.Summary.Unknown != 1 {
+		t.Fatalf("summary.unknown = %d; want 1", report.Summary.Unknown)
+	}
+	// Invariant: total == passed+failed+xfailed+blocked+unknown
+	sum := report.Summary.Passed + report.Summary.Failed + report.Summary.XFailed + report.Summary.Blocked + report.Summary.Unknown
+	if sum != report.Summary.Total {
+		t.Fatalf("sum of buckets %d != total %d", sum, report.Summary.Total)
+	}
+}
+
 func TestScenarioVerdict_JSONOmitsEmpty(t *testing.T) {
 	t.Parallel()
 

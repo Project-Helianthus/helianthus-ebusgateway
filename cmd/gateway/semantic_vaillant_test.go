@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
 
 	ebusgateway "github.com/d3vi1/helianthus-ebusgateway"
 	"github.com/d3vi1/helianthus-ebusgateway/graphql"
+	"github.com/d3vi1/helianthus-ebusreg/registry"
+	"github.com/d3vi1/helianthus-ebusreg/vaillant/productids"
 )
 
 type semanticSnapshotCaptureSpy struct {
@@ -1132,5 +1135,221 @@ func TestParseB524GrabLineRejectsUnsupportedOpcode(t *testing.T) {
 	_, _, _, _, ok := parseB524GrabLine(line, 0x15)
 	if ok {
 		t.Fatalf("expected unsupported opcode line to be rejected")
+	}
+}
+
+// --- Regulator detection tests (issue #193) ---
+
+func newTestRegistry(devices ...registry.DeviceInfo) *registry.DeviceRegistry {
+	reg := registry.NewDeviceRegistry(nil)
+	for _, d := range devices {
+		reg.Register(d)
+	}
+	return reg
+}
+
+func TestVaillantSemanticPoller_RegulatorDetectionPresent(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	// 0020028521 = Vaillant calorMATIC 430f VRC 430f (Regulator)
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+		registry.DeviceInfo{Address: 0x60, Manufacturer: "Vaillant", DeviceID: "VRC430", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
+	)
+
+	poller := &vaillantSemanticPoller{
+		reg:     reg,
+		catalog: catalog,
+	}
+
+	got := poller.findRegulatorCapability()
+	if got != productids.ControllerPresent {
+		t.Fatalf("findRegulatorCapability() = %s; want ControllerPresent", got)
+	}
+}
+
+func TestVaillantSemanticPoller_RegulatorDetectionNone(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	// 0010002315 = Vaillant atmoCOMPACT (Boiler) — not a regulator
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+	)
+
+	poller := &vaillantSemanticPoller{
+		reg:     reg,
+		catalog: catalog,
+	}
+
+	got := poller.findRegulatorCapability()
+	if got != productids.ControllerNone {
+		t.Fatalf("findRegulatorCapability() = %s; want ControllerNone", got)
+	}
+}
+
+func TestVaillantSemanticPoller_RegulatorDetectionUnknown(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	// Device with no serial number — cannot extract part number, so unknown.
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV"},
+	)
+
+	poller := &vaillantSemanticPoller{
+		reg:     reg,
+		catalog: catalog,
+	}
+
+	got := poller.findRegulatorCapability()
+	if got != productids.ControllerUnknown {
+		t.Fatalf("findRegulatorCapability() = %s; want ControllerUnknown", got)
+	}
+}
+
+func TestVaillantSemanticPoller_RegulatorDetectionCatalogError(t *testing.T) {
+	t.Parallel()
+
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
+	)
+
+	poller := &vaillantSemanticPoller{
+		reg:        reg,
+		catalogErr: fmt.Errorf("simulated catalog load error"),
+	}
+
+	got := poller.findRegulatorCapability()
+	if got != productids.ControllerUnknown {
+		t.Fatalf("findRegulatorCapability() = %s; want ControllerUnknown on catalog error", got)
+	}
+}
+
+func TestVaillantSemanticPoller_RegulatorDetectionMixedKnownAndUnknown(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	// One device with a known boiler part number, one with no serial.
+	// Any unknown device should make the overall result ControllerUnknown.
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+		registry.DeviceInfo{Address: 0x60, Manufacturer: "Vaillant", DeviceID: "UI"},
+	)
+
+	poller := &vaillantSemanticPoller{
+		reg:     reg,
+		catalog: catalog,
+	}
+
+	got := poller.findRegulatorCapability()
+	if got != productids.ControllerUnknown {
+		t.Fatalf("findRegulatorCapability() = %s; want ControllerUnknown when any device has unknown classification", got)
+	}
+}
+
+func TestVaillantSemanticPoller_RefreshDiscoverySetsRegulatorCapability(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	// Registry with a boiler (BASV prefix) and a regulator device.
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+		registry.DeviceInfo{Address: 0x60, Manufacturer: "Vaillant", DeviceID: "VRC430", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
+	)
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		reg:               reg,
+		provider:          provider,
+		catalog:           catalog,
+		zones:             make(map[byte]*vaillantZoneSnapshot),
+		presence:          make(map[byte]*zonePresenceRecord),
+		zoneMissThreshold: 3,
+		zoneHitThreshold:  2,
+		dhwStaleTTL:       10 * time.Minute,
+	}
+	poller.nowFn = func() time.Time { return time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC) }
+
+	poller.refreshDiscovery(context.Background())
+
+	poller.mu.Lock()
+	gotController := poller.controller
+	gotCap := poller.regulatorCapability
+	poller.mu.Unlock()
+
+	if gotController != 0x15 {
+		t.Fatalf("controller = 0x%02x; want 0x15 (BASV boiler)", gotController)
+	}
+	if gotCap != productids.ControllerPresent {
+		t.Fatalf("regulatorCapability = %s; want ControllerPresent", gotCap)
+	}
+}
+
+func TestExtractPartNumberFromSerial(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		serial string
+		want   string
+	}{
+		{
+			name:   "standard Vaillant serial",
+			serial: "21-22-09-0020184848-0082-005409-N4",
+			want:   "0020184848",
+		},
+		{
+			name:   "empty serial",
+			serial: "",
+			want:   "",
+		},
+		{
+			name:   "serial without dashes",
+			serial: "212209002018484800820054",
+			want:   "0020184848",
+		},
+		{
+			name:   "short serial",
+			serial: "21-22",
+			want:   "",
+		},
+		{
+			name:   "non-digit part number field",
+			serial: "21-22-09-ABCDEFGHIJ-0082-005409-N4",
+			want:   "",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := extractPartNumberFromSerial(test.serial)
+			if got != test.want {
+				t.Fatalf("extractPartNumberFromSerial(%q) = %q; want %q", test.serial, got, test.want)
+			}
+		})
 	}
 }

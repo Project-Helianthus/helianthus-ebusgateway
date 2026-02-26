@@ -54,6 +54,14 @@ const (
 	dhwInstance           = byte(0x00)
 )
 
+type regulatorAbsenceState string
+
+const (
+	regulatorPresent      regulatorAbsenceState = "PRESENT"
+	regulatorAbsenceGrace regulatorAbsenceState = "ABSENCE_GRACE"
+	regulatorAbsent       regulatorAbsenceState = "ABSENT"
+)
+
 var (
 	semanticReadBreakerTransitionsTotal = expvar.NewMap("semantic_read_breaker_transitions_total")
 	semanticReadBreakerSuppressedTotal  = expvar.NewMap("semantic_read_breaker_suppressed_total")
@@ -100,13 +108,18 @@ type vaillantSemanticPoller struct {
 	catalog    productids.Catalog
 	catalogErr error
 
-	mu                  sync.Mutex
-	controller          byte
-	regulatorCapability productids.ControllerCapability
-	zones               map[byte]*vaillantZoneSnapshot
-	presence            map[byte]*zonePresenceRecord
-	dhw                 *vaillantDhwSnapshot
-	dhwLastUpdateAt     time.Time
+	mu                       sync.Mutex
+	controller               byte
+	regulatorCapability      productids.ControllerCapability
+	regAbsenceState          regulatorAbsenceState
+	regAbsenceSince          time.Time
+	registryDeviceCount      int
+	regulatorRecheckInterval time.Duration
+	regulatorAbsenceGrace    time.Duration
+	zones                    map[byte]*vaillantZoneSnapshot
+	presence                 map[byte]*zonePresenceRecord
+	dhw                      *vaillantDhwSnapshot
+	dhwLastUpdateAt          time.Time
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	nowFn                  func() time.Time
@@ -285,6 +298,10 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		catalog:    catalog,
 		catalogErr: catalogErr,
 
+		regulatorRecheckInterval: cfg.SemanticRegulatorRecheckInterval,
+		regulatorAbsenceGrace:    cfg.SemanticRegulatorAbsenceGrace,
+		regAbsenceState:          regulatorPresent,
+
 		zones:    make(map[byte]*vaillantZoneSnapshot),
 		presence: make(map[byte]*zonePresenceRecord),
 		nowFn:    time.Now,
@@ -297,6 +314,12 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 	}
 	if poller.dhwStaleTTL <= 0 {
 		poller.dhwStaleTTL = ebusgateway.DefaultSemanticDHWStaleTTL
+	}
+	if poller.regulatorRecheckInterval <= 0 {
+		poller.regulatorRecheckInterval = ebusgateway.DefaultSemanticRegulatorRecheckInterval
+	}
+	if poller.regulatorAbsenceGrace <= 0 {
+		poller.regulatorAbsenceGrace = ebusgateway.DefaultSemanticRegulatorAbsenceGrace
 	}
 	poller.scheduler.SetCircuitBreaker(ebusgateway.SemanticReadCircuitBreakerOptions{
 		FailureBudget:      cfg.SemanticReadBreakerFailureBudget,
@@ -667,6 +690,7 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
 
+	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
 	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityMedium, p.refreshConfig)
 	go p.runLoop(ctx, p.stateInterval, semanticTaskPriorityHigh, p.refreshState)
@@ -717,6 +741,58 @@ func (p *vaillantSemanticPoller) withPollLock(ctx context.Context, fn func(conte
 	p.pollMu.Lock()
 	defer p.pollMu.Unlock()
 	fn(ctx)
+}
+
+func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
+	if p == nil || p.reg == nil {
+		return
+	}
+
+	regCap := p.findRegulatorCapability()
+	deviceCount := countRegistryDevices(p.reg)
+	now := p.now()
+
+	p.mu.Lock()
+	prevCap := p.regulatorCapability
+	prevAbsence := p.regAbsenceState
+	prevDeviceCount := p.registryDeviceCount
+	p.regulatorCapability = regCap
+	p.registryDeviceCount = deviceCount
+
+	// Absence grace FSM transitions.
+	switch {
+	case regCap == productids.ControllerPresent:
+		if p.regAbsenceState != regulatorPresent {
+			p.regAbsenceState = regulatorPresent
+			p.regAbsenceSince = time.Time{}
+		}
+	case prevAbsence == regulatorPresent:
+		// Was present, now not present — enter grace window.
+		p.regAbsenceState = regulatorAbsenceGrace
+		p.regAbsenceSince = now
+	case prevAbsence == regulatorAbsenceGrace:
+		if !p.regAbsenceSince.IsZero() && now.Sub(p.regAbsenceSince) > p.regulatorAbsenceGrace {
+			p.regAbsenceState = regulatorAbsent
+		}
+	}
+	newAbsence := p.regAbsenceState
+	p.mu.Unlock()
+
+	// Log capability changes.
+	if regCap != prevCap {
+		log.Printf("semantic_regulator_capability capability=%s", regCap.String())
+	}
+
+	// Log absence state transitions.
+	if newAbsence != prevAbsence {
+		log.Printf("semantic_regulator_absence state=%s capability=%s", newAbsence, regCap.String())
+	}
+
+	// If device count changed, enqueue an immediate full discovery refresh.
+	if deviceCount != prevDeviceCount && prevDeviceCount > 0 {
+		log.Printf("semantic_regulator_recheck inventory_change prev=%d curr=%d", prevDeviceCount, deviceCount)
+		p.enqueueTask(semanticTaskPriorityLow, p.refreshDiscovery)
+	}
 }
 
 func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {

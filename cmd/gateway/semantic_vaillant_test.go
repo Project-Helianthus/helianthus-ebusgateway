@@ -1395,3 +1395,281 @@ func TestExtractPartNumberFromSerial(t *testing.T) {
 		})
 	}
 }
+
+func TestRegulatorRedetection_PresentToAbsentGrace(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	// Start with a regulator present (VRC430).
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+		registry.DeviceInfo{Address: 0x60, Manufacturer: "Vaillant", DeviceID: "VRC430", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
+	)
+
+	now := time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC)
+	poller := &vaillantSemanticPoller{
+		reg:                      reg,
+		catalog:                  catalog,
+		regulatorRecheckInterval: 60 * time.Second,
+		regulatorAbsenceGrace:    5 * time.Minute,
+		regAbsenceState:          regulatorPresent,
+		regulatorCapability:      productids.ControllerPresent,
+		registryDeviceCount:      2,
+		zones:                    make(map[byte]*vaillantZoneSnapshot),
+		presence:                 make(map[byte]*zonePresenceRecord),
+		nowFn:                    func() time.Time { return now },
+	}
+
+	// Confirm initial state is present.
+	poller.refreshRegulatorCapability(context.Background())
+	poller.mu.Lock()
+	if poller.regAbsenceState != regulatorPresent {
+		t.Fatalf("initial state = %s; want PRESENT", poller.regAbsenceState)
+	}
+	poller.mu.Unlock()
+
+	// Remove the regulator from registry (simulate device disappearance).
+	regNew := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+	)
+	poller.reg = regNew
+
+	poller.refreshRegulatorCapability(context.Background())
+	poller.mu.Lock()
+	state := poller.regAbsenceState
+	absenceSince := poller.regAbsenceSince
+	poller.mu.Unlock()
+
+	if state != regulatorAbsenceGrace {
+		t.Fatalf("state after regulator removal = %s; want ABSENCE_GRACE", state)
+	}
+	if absenceSince.IsZero() {
+		t.Fatal("regAbsenceSince should be set after entering grace")
+	}
+}
+
+func TestRegulatorRedetection_GraceToAbsent(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	// Registry with only the boiler (no regulator).
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+	)
+
+	graceDuration := 5 * time.Minute
+	now := time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC)
+	poller := &vaillantSemanticPoller{
+		reg:                      reg,
+		catalog:                  catalog,
+		regulatorRecheckInterval: 60 * time.Second,
+		regulatorAbsenceGrace:    graceDuration,
+		regAbsenceState:          regulatorAbsenceGrace,
+		regAbsenceSince:          now.Add(-4 * time.Minute), // 4 min into grace
+		regulatorCapability:      productids.ControllerNone,
+		registryDeviceCount:      1,
+		zones:                    make(map[byte]*vaillantZoneSnapshot),
+		presence:                 make(map[byte]*zonePresenceRecord),
+		nowFn:                    func() time.Time { return now },
+	}
+
+	// Still within grace window — should stay in grace.
+	poller.refreshRegulatorCapability(context.Background())
+	poller.mu.Lock()
+	if poller.regAbsenceState != regulatorAbsenceGrace {
+		t.Fatalf("state at 4min = %s; want ABSENCE_GRACE", poller.regAbsenceState)
+	}
+	poller.mu.Unlock()
+
+	// Advance time past grace window.
+	now = now.Add(2 * time.Minute) // now 6 min past absence start
+	poller.nowFn = func() time.Time { return now }
+
+	poller.refreshRegulatorCapability(context.Background())
+	poller.mu.Lock()
+	state := poller.regAbsenceState
+	poller.mu.Unlock()
+
+	if state != regulatorAbsent {
+		t.Fatalf("state after grace expiry = %s; want ABSENT", state)
+	}
+}
+
+func TestRegulatorRedetection_AbsentToPresent(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	// Start with absent state, then re-add regulator.
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+	)
+
+	now := time.Date(2026, time.February, 26, 12, 10, 0, 0, time.UTC)
+	poller := &vaillantSemanticPoller{
+		reg:                      reg,
+		catalog:                  catalog,
+		regulatorRecheckInterval: 60 * time.Second,
+		regulatorAbsenceGrace:    5 * time.Minute,
+		regAbsenceState:          regulatorAbsent,
+		regAbsenceSince:          now.Add(-10 * time.Minute),
+		regulatorCapability:      productids.ControllerNone,
+		registryDeviceCount:      1,
+		zones:                    make(map[byte]*vaillantZoneSnapshot),
+		presence:                 make(map[byte]*zonePresenceRecord),
+		nowFn:                    func() time.Time { return now },
+	}
+
+	// Verify it stays absent when no regulator.
+	poller.refreshRegulatorCapability(context.Background())
+	poller.mu.Lock()
+	if poller.regAbsenceState != regulatorAbsent {
+		t.Fatalf("state without regulator = %s; want ABSENT", poller.regAbsenceState)
+	}
+	poller.mu.Unlock()
+
+	// Re-add the regulator.
+	poller.reg = newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+		registry.DeviceInfo{Address: 0x60, Manufacturer: "Vaillant", DeviceID: "VRC430", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
+	)
+
+	poller.refreshRegulatorCapability(context.Background())
+	poller.mu.Lock()
+	state := poller.regAbsenceState
+	absenceSince := poller.regAbsenceSince
+	poller.mu.Unlock()
+
+	if state != regulatorPresent {
+		t.Fatalf("state after re-adding regulator = %s; want PRESENT", state)
+	}
+	if !absenceSince.IsZero() {
+		t.Fatal("regAbsenceSince should be cleared after recovery to present")
+	}
+}
+
+func TestRegulatorRedetection_InventoryTrigger(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+		registry.DeviceInfo{Address: 0x60, Manufacturer: "Vaillant", DeviceID: "VRC430", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
+	)
+
+	now := time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC)
+	poller := &vaillantSemanticPoller{
+		reg:                      reg,
+		catalog:                  catalog,
+		regulatorRecheckInterval: 60 * time.Second,
+		regulatorAbsenceGrace:    5 * time.Minute,
+		regAbsenceState:          regulatorPresent,
+		regulatorCapability:      productids.ControllerPresent,
+		registryDeviceCount:      2,
+		zones:                    make(map[byte]*vaillantZoneSnapshot),
+		presence:                 make(map[byte]*zonePresenceRecord),
+		nowFn:                    func() time.Time { return now },
+	}
+
+	// No change — same count. Device count should remain 2.
+	poller.refreshRegulatorCapability(context.Background())
+	poller.mu.Lock()
+	if poller.registryDeviceCount != 2 {
+		t.Fatalf("registryDeviceCount = %d; want 2", poller.registryDeviceCount)
+	}
+	poller.mu.Unlock()
+
+	// Now add a third device — count changes from 2 to 3.
+	regNew := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+		registry.DeviceInfo{Address: 0x60, Manufacturer: "Vaillant", DeviceID: "VRC430", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
+		registry.DeviceInfo{Address: 0x70, Manufacturer: "Vaillant", DeviceID: "UI", SerialNumber: "21-22-09-0020099999-0082-005409-N4"},
+	)
+	poller.reg = regNew
+
+	// Use a task scheduler so enqueueTask doesn't panic.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	taskScheduler := newSemanticTaskScheduler()
+	go taskScheduler.run(ctx)
+	poller.tasks = taskScheduler
+
+	poller.refreshRegulatorCapability(context.Background())
+
+	poller.mu.Lock()
+	newCount := poller.registryDeviceCount
+	poller.mu.Unlock()
+
+	if newCount != 3 {
+		t.Fatalf("registryDeviceCount after add = %d; want 3", newCount)
+	}
+
+	// Verify inventory tracking works — count went from 2 to 3.
+	// The enqueueTask call to refreshDiscovery is triggered by the
+	// deviceCount != prevDeviceCount condition. We verify the count
+	// tracking which is the necessary precondition for the trigger.
+}
+
+func TestRefreshRegulatorCapability_NoChangeNoLog(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
+		registry.DeviceInfo{Address: 0x60, Manufacturer: "Vaillant", DeviceID: "VRC430", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
+	)
+
+	now := time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC)
+	poller := &vaillantSemanticPoller{
+		reg:                      reg,
+		catalog:                  catalog,
+		regulatorRecheckInterval: 60 * time.Second,
+		regulatorAbsenceGrace:    5 * time.Minute,
+		regAbsenceState:          regulatorPresent,
+		regulatorCapability:      productids.ControllerPresent,
+		registryDeviceCount:      2,
+		zones:                    make(map[byte]*vaillantZoneSnapshot),
+		presence:                 make(map[byte]*zonePresenceRecord),
+		nowFn:                    func() time.Time { return now },
+	}
+
+	// Call multiple times — no state transition should occur.
+	for i := 0; i < 5; i++ {
+		poller.refreshRegulatorCapability(context.Background())
+	}
+
+	poller.mu.Lock()
+	state := poller.regAbsenceState
+	cap := poller.regulatorCapability
+	count := poller.registryDeviceCount
+	poller.mu.Unlock()
+
+	if state != regulatorPresent {
+		t.Fatalf("state after repeated calls = %s; want PRESENT", state)
+	}
+	if cap != productids.ControllerPresent {
+		t.Fatalf("capability after repeated calls = %s; want ControllerPresent", cap)
+	}
+	if count != 2 {
+		t.Fatalf("registryDeviceCount after repeated calls = %d; want 2", count)
+	}
+}

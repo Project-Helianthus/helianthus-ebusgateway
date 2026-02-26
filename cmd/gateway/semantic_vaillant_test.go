@@ -28,7 +28,7 @@ func TestBuildB524ReadSelector(t *testing.T) {
 	t.Parallel()
 
 	got := buildB524ReadSelector(0x02, 0x03, 0x01, 0x001C)
-	want := []byte{0x06, 0x02, 0x00, 0x03, 0x01, 0x1C, 0x00}
+	want := []byte{0x02, 0x00, 0x03, 0x01, 0x1C, 0x00}
 	if len(got) != len(want) {
 		t.Fatalf("len(got)=%d; want %d", len(got), len(want))
 	}

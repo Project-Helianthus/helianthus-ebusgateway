@@ -64,8 +64,14 @@ const (
 )
 
 var (
-	semanticReadBreakerTransitionsTotal = expvar.NewMap("semantic_read_breaker_transitions_total")
-	semanticReadBreakerSuppressedTotal  = expvar.NewMap("semantic_read_breaker_suppressed_total")
+	semanticReadBreakerTransitionsTotal  = expvar.NewMap("semantic_read_breaker_transitions_total")
+	semanticReadBreakerSuppressedTotal   = expvar.NewMap("semantic_read_breaker_suppressed_total")
+	semanticZonePresenceTransitionsTotal = expvar.NewMap("semantic_zone_presence_transitions_total")
+	semanticZoneCount                    = expvar.NewInt("semantic_zone_count")
+	semanticDHWStaleExpiryTotal          = expvar.NewInt("semantic_dhw_stale_expiry_total")
+	semanticDHWUpdatesTotal              = expvar.NewInt("semantic_dhw_updates_total")
+	semanticRegulatorState               = expvar.NewString("semantic_regulator_state")
+	semanticRegulatorTransitionsTotal    = expvar.NewMap("semantic_regulator_transitions_total")
 )
 
 func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub) {
@@ -327,6 +333,8 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 	if poller.regulatorAbsenceGrace <= 0 {
 		poller.regulatorAbsenceGrace = ebusgateway.DefaultSemanticRegulatorAbsenceGrace
 	}
+	semanticZoneCount.Set(0)
+	semanticRegulatorState.Set(string(poller.regAbsenceState))
 	poller.scheduler.SetCircuitBreaker(ebusgateway.SemanticReadCircuitBreakerOptions{
 		FailureBudget:      cfg.SemanticReadBreakerFailureBudget,
 		OpenCooldown:       cfg.SemanticReadBreakerOpenCooldown,
@@ -412,6 +420,7 @@ func (p *vaillantSemanticPoller) hydrateFromCache(snapshot semanticCacheSnapshot
 			p.markDHWUpdatedNowLocked()
 		}
 	}
+	semanticZoneCount.Set(int64(len(p.zones)))
 }
 
 func zoneInstanceFromSemanticID(id string, fallbackIndex int) byte {
@@ -785,6 +794,7 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 	}
 	newAbsence := p.regAbsenceState
 	p.mu.Unlock()
+	semanticRegulatorState.Set(string(newAbsence))
 
 	// Log capability changes.
 	if regCap != prevCap {
@@ -793,6 +803,8 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 
 	// Log absence state transitions.
 	if newAbsence != prevAbsence {
+		semanticRegulatorTransitionsTotal.Add(fmt.Sprintf("%s->%s", prevAbsence, newAbsence), 1)
+		log.Printf("semantic_regulator_transition from=%s to=%s capability=%s", prevAbsence, newAbsence, regCap.String())
 		log.Printf("semantic_regulator_absence state=%s capability=%s", newAbsence, regCap.String())
 	}
 
@@ -815,6 +827,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.regulatorCapability = regCap
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
 		p.presence = make(map[byte]*zonePresenceRecord)
+		semanticZoneCount.Set(0)
 		p.mu.Unlock()
 		if regCap != prev {
 			log.Printf("semantic_regulator_capability capability=%s", regCap.String())
@@ -925,6 +938,7 @@ func (p *vaillantSemanticPoller) applyZonePresenceMissesOnly(checked, present ma
 
 func (p *vaillantSemanticPoller) markZonePresentLocked(instance byte) {
 	record := p.ensureZonePresenceRecordLocked(instance)
+	previousState := record.State
 	record.MissStreak = 0
 	hitThreshold := p.zoneHitThresholdValue()
 
@@ -945,10 +959,13 @@ func (p *vaillantSemanticPoller) markZonePresentLocked(instance byte) {
 			record.State = zonePresenceSuspectResurrect
 		}
 	}
+	p.recordZonePresenceTransitionLocked(instance, previousState, record.State, record.HitStreak, record.MissStreak)
+	semanticZoneCount.Set(int64(len(p.zones)))
 }
 
 func (p *vaillantSemanticPoller) markZoneMissingLocked(instance byte) {
 	record := p.ensureZonePresenceRecordLocked(instance)
+	previousState := record.State
 	record.HitStreak = 0
 	missThreshold := p.zoneMissThresholdValue()
 
@@ -959,6 +976,8 @@ func (p *vaillantSemanticPoller) markZoneMissingLocked(instance byte) {
 			record.MissStreak = missThreshold
 			record.State = zonePresenceAbsent
 			delete(p.zones, instance)
+			p.recordZonePresenceTransitionLocked(instance, previousState, record.State, record.HitStreak, record.MissStreak)
+			semanticZoneCount.Set(int64(len(p.zones)))
 			return
 		}
 		record.State = zonePresenceSuspectMissing
@@ -967,6 +986,8 @@ func (p *vaillantSemanticPoller) markZoneMissingLocked(instance byte) {
 		record.State = zonePresenceAbsent
 		delete(p.zones, instance)
 	}
+	p.recordZonePresenceTransitionLocked(instance, previousState, record.State, record.HitStreak, record.MissStreak)
+	semanticZoneCount.Set(int64(len(p.zones)))
 }
 
 func (p *vaillantSemanticPoller) ensureZonePresenceRecordLocked(instance byte) *zonePresenceRecord {
@@ -1016,6 +1037,8 @@ func (p *vaillantSemanticPoller) markDHWUpdatedNowLocked() {
 		return
 	}
 	p.dhwLastUpdateAt = p.now()
+	semanticDHWUpdatesTotal.Add(1)
+	log.Printf("semantic_dhw_update last_update_utc=%s", p.dhwLastUpdateAt.UTC().Format(time.RFC3339))
 }
 
 func (p *vaillantSemanticPoller) tryRefreshFromEbusdGrab(ctx context.Context) bool {
@@ -1516,6 +1539,7 @@ func (p *vaillantSemanticPoller) expireDHWIfStaleLocked(source semanticSnapshotS
 	if age < p.dhwStaleTTL {
 		return false
 	}
+	semanticDHWStaleExpiryTotal.Add(1)
 	log.Printf(
 		"semantic_dhw_expired ttl=%s age=%s last_update_utc=%s",
 		p.dhwStaleTTL.Round(time.Second),
@@ -1525,6 +1549,22 @@ func (p *vaillantSemanticPoller) expireDHWIfStaleLocked(source semanticSnapshotS
 	p.dhw = nil
 	p.dhwLastUpdateAt = time.Time{}
 	return true
+}
+
+func (p *vaillantSemanticPoller) recordZonePresenceTransitionLocked(instance byte, previous, next zonePresenceState, hitStreak, missStreak int) {
+	if previous == next {
+		return
+	}
+	semanticZonePresenceTransitionsTotal.Add(fmt.Sprintf("%s->%s", previous, next), 1)
+	log.Printf(
+		"semantic_zone_presence_transition instance=%d from=%s to=%s hit_streak=%d miss_streak=%d zone_count=%d",
+		instance,
+		previous,
+		next,
+		hitStreak,
+		missStreak,
+		len(p.zones),
+	)
 }
 
 func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {

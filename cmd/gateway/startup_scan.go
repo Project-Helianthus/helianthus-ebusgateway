@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"expvar"
 	"fmt"
 	"log"
 	"net"
@@ -66,6 +67,10 @@ type statsBus struct {
 	stats scanStats
 }
 
+var (
+	semanticBusCollisionsTotal = expvar.NewInt("semantic_bus_collisions_total")
+)
+
 func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
 	if b == nil || b.bus == nil {
 		return nil, fmt.Errorf("scan stats bus missing")
@@ -81,6 +86,8 @@ func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Fr
 		b.stats.timeouts++
 	case errors.Is(err, ebuserrors.ErrBusCollision):
 		b.stats.collisions++
+		semanticBusCollisionsTotal.Add(1)
+		log.Printf("semantic_bus_collision total=%d", semanticBusCollisionsTotal.Value())
 	case errors.Is(err, ebuserrors.ErrNACK):
 		b.stats.nacks++
 	case errors.Is(err, ebuserrors.ErrCRCMismatch):

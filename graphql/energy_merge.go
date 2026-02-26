@@ -23,11 +23,23 @@ type energyDataPoint struct {
 }
 
 // energyMergeKey uniquely identifies an energy data point.
+// Usage is canonicalized: "heating" and "cooling" both map to "climate".
 type energyMergeKey struct {
 	Channel  string // "gas", "electricity", "solar"
-	Usage    string // "hot_water", "heating", "cooling"
+	Usage    string // "hot_water", "climate" (canonicalized from heating/cooling)
 	Period   string // "day", "year"
 	YearKind string // "" for day, "previous"/"current" for year
+}
+
+// canonicalizeUsage maps raw usage strings to canonical merge key values.
+// "heating" and "cooling" both target the same Climate series.
+func canonicalizeUsage(usage string) string {
+	switch usage {
+	case "heating", "cooling":
+		return "climate"
+	default:
+		return usage
+	}
 }
 
 // energyMergeStore holds all tracked energy data points, indexed by a composite key.
@@ -44,8 +56,9 @@ type energyMergeKey struct {
 //	| register        | register       | no              | reject (monotonic)                  |
 //	| register        | broadcast      | any             | reject (broadcast never overwrites) |
 type energyMergeStore struct {
-	mu     sync.RWMutex
-	points map[energyMergeKey]energyDataPoint
+	mu       sync.RWMutex
+	points   map[energyMergeKey]energyDataPoint
+	revision uint64
 }
 
 func newEnergyMergeStore() *energyMergeStore {
@@ -56,7 +69,10 @@ func newEnergyMergeStore() *energyMergeStore {
 
 // Apply attempts to merge an incoming energy value into the store.
 // Returns true if the value was accepted according to the merge rules.
+// The key's Usage is canonicalized internally.
 func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source EnergyDataSource, ingestAt time.Time) bool {
+	key.Usage = canonicalizeUsage(key.Usage)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -64,6 +80,7 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 	if !exists {
 		// No existing point: accept any source.
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
+		s.revision++
 		return true
 	}
 
@@ -74,6 +91,7 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 	case existing.Source == EnergySourceBroadcast && source == EnergySourceRegister:
 		// Register always wins over broadcast, regardless of timestamp.
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
+		s.revision++
 		return true
 	default:
 		// Same source: enforce monotonic ingest timestamp.
@@ -81,8 +99,16 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 			return false
 		}
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
+		s.revision++
 		return true
 	}
+}
+
+// Revision returns the current store revision. Each accepted Apply increments it.
+func (s *energyMergeStore) Revision() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revision
 }
 
 // Snapshot builds an EnergyTotals from all current points in the store.
@@ -101,7 +127,7 @@ func (s *energyMergeStore) Snapshot() *EnergyTotals {
 		if channel == nil {
 			continue
 		}
-		series := selectUsageSeries(channel, key.Usage)
+		series := mergeSelectUsage(channel, key.Usage)
 		if series == nil {
 			continue
 		}
@@ -123,6 +149,21 @@ func (s *energyMergeStore) Snapshot() *EnergyTotals {
 	}
 
 	return totals
+}
+
+// mergeSelectUsage returns a pointer to the EnergySeries for the canonical usage.
+func mergeSelectUsage(channel *EnergyChannel, usage string) *EnergySeries {
+	if channel == nil {
+		return nil
+	}
+	switch usage {
+	case "hot_water":
+		return &channel.DHW
+	case "climate":
+		return &channel.Climate
+	default:
+		return nil
+	}
 }
 
 // mergeSelectChannel returns a pointer to the EnergyChannel for the given

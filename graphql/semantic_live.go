@@ -50,7 +50,8 @@ type LiveSemanticProvider struct {
 	dhw    *DhwStatus
 	energy *EnergyTotals
 
-	energyMerge *energyMergeStore
+	energyMerge    *energyMergeStore
+	energyRevision uint64
 
 	phase              SemanticStartupPhase
 	cacheEpoch         uint64
@@ -376,14 +377,24 @@ func (provider *LiveSemanticProvider) applyEnergy(values map[string]types.Value,
 		return false
 	}
 
+	if provider.energyMerge == nil {
+		return false
+	}
+
 	if !provider.energyMerge.Apply(key, kwh, EnergySourceBroadcast, now) {
 		return false
 	}
 
-	// Rebuild the snapshot from the merge store and update the provider.
+	// Rebuild the snapshot from the merge store and publish atomically.
+	// Only publish if our revision is still the latest (prevents stale overwrites
+	// from concurrent callers).
+	rev := provider.energyMerge.Revision()
 	snapshot := provider.energyMerge.Snapshot()
 	provider.mu.Lock()
-	provider.energy = snapshot
+	if rev >= provider.energyRevision {
+		provider.energy = snapshot
+		provider.energyRevision = rev
+	}
 	provider.mu.Unlock()
 	return true
 }

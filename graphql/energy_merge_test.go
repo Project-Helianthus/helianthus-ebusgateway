@@ -35,8 +35,10 @@ func TestEnergyMerge_RegisterOverwritesBroadcast(t *testing.T) {
 		t.Fatal("register should overwrite broadcast")
 	}
 
+	// Key is canonicalized: "heating" → "climate"
+	canonKey := energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}
 	store.mu.RLock()
-	point := store.points[key]
+	point := store.points[canonKey]
 	store.mu.RUnlock()
 
 	if point.Value != 2.0 {
@@ -58,8 +60,9 @@ func TestEnergyMerge_BroadcastNeverOverwritesRegister(t *testing.T) {
 		t.Fatal("broadcast should never overwrite register")
 	}
 
+	canonKey := energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}
 	store.mu.RLock()
-	point := store.points[key]
+	point := store.points[canonKey]
 	store.mu.RUnlock()
 
 	if point.Value != 1.0 {
@@ -88,8 +91,9 @@ func TestEnergyMerge_MonotonicBroadcast(t *testing.T) {
 		t.Fatal("same-timestamp broadcast should be rejected (monotonic: must be strictly newer)")
 	}
 
+	canonKey := energyMergeKey{Channel: "electricity", Usage: "hot_water", Period: "year", YearKind: "current"}
 	store.mu.RLock()
-	point := store.points[key]
+	point := store.points[canonKey]
 	store.mu.RUnlock()
 
 	if point.Value != 20.0 {
@@ -113,8 +117,9 @@ func TestEnergyMerge_MonotonicRegister(t *testing.T) {
 		t.Fatal("older register should be rejected (monotonic)")
 	}
 
+	canonKey := energyMergeKey{Channel: "solar", Usage: "climate", Period: "day"}
 	store.mu.RLock()
-	point := store.points[key]
+	point := store.points[canonKey]
 	store.mu.RUnlock()
 
 	if point.Value != 200.0 {
@@ -134,8 +139,9 @@ func TestEnergyMerge_RegisterOverwritesBroadcastRegardlessOfTime(t *testing.T) {
 		t.Fatal("register should overwrite broadcast even with older timestamp")
 	}
 
+	canonKey := energyMergeKey{Channel: "gas", Usage: "hot_water", Period: "year", YearKind: "previous"}
 	store.mu.RLock()
-	point := store.points[key]
+	point := store.points[canonKey]
 	store.mu.RUnlock()
 
 	if point.Value != 10.0 {
@@ -201,8 +207,10 @@ func TestEnergyMerge_SnapshotReturnsNilWhenEmpty(t *testing.T) {
 }
 
 func TestEnergyMerge_AllChannelUsagePeriodCombinations(t *testing.T) {
+	// Canonical usages after canonicalization: "hot_water", "climate".
+	// 3 channels x 2 canonical usages x 3 periods = 18 canonical keys.
 	channels := []string{"gas", "electricity", "solar"}
-	usages := []string{"hot_water", "heating"}
+	usages := []string{"hot_water", "climate"}
 	type periodSpec struct {
 		period   string
 		yearKind string
@@ -213,7 +221,6 @@ func TestEnergyMerge_AllChannelUsagePeriodCombinations(t *testing.T) {
 		{period: "year", yearKind: "current"},
 	}
 
-	// 3 channels x 2 usages x 3 periods = 18 combinations.
 	store := newEnergyMergeStore()
 	expectedCount := 0
 
@@ -246,13 +253,11 @@ func TestEnergyMerge_AllChannelUsagePeriodCombinations(t *testing.T) {
 		t.Fatalf("store has %d points; want 18", gotCount)
 	}
 
-	// Verify snapshot produces non-nil totals with data in all channels.
 	totals := store.Snapshot()
 	if totals == nil {
 		t.Fatal("Snapshot() = nil after 18 inserts")
 	}
 
-	// Verify each channel has non-zero data.
 	checkChannel := func(name string, ch EnergyChannel) {
 		t.Helper()
 		if ch.DHW.Today == 0 && ch.Climate.Today == 0 &&
@@ -263,4 +268,34 @@ func TestEnergyMerge_AllChannelUsagePeriodCombinations(t *testing.T) {
 	checkChannel("Gas", totals.Gas)
 	checkChannel("Electric", totals.Electric)
 	checkChannel("Solar", totals.Solar)
+}
+
+func TestEnergyMerge_HeatingCoolingCanonicalizedToClimate(t *testing.T) {
+	store := newEnergyMergeStore()
+
+	// "heating" and "cooling" both map to "climate" — they share the same merge slot.
+	keyHeating := energyMergeKey{Channel: "gas", Usage: "heating", Period: "day"}
+	keyCooling := energyMergeKey{Channel: "gas", Usage: "cooling", Period: "day"}
+
+	if !store.Apply(keyHeating, 10.0, EnergySourceBroadcast, t0) {
+		t.Fatal("first heating broadcast should be accepted")
+	}
+
+	// Cooling with a newer timestamp overwrites the same slot (same canonical key).
+	if !store.Apply(keyCooling, 20.0, EnergySourceBroadcast, t1) {
+		t.Fatal("cooling broadcast with newer timestamp should overwrite heating (same canonical key)")
+	}
+
+	canonKey := energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}
+	store.mu.RLock()
+	point := store.points[canonKey]
+	count := len(store.points)
+	store.mu.RUnlock()
+
+	if count != 1 {
+		t.Fatalf("store has %d points; want 1 (heating and cooling share canonical key)", count)
+	}
+	if point.Value != 20.0 {
+		t.Fatalf("value = %f; want 20.0 (latest write)", point.Value)
+	}
 }

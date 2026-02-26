@@ -520,31 +520,41 @@ func enrichSerialsFromEbusd(ctx context.Context, reg *registry.DeviceRegistry, c
 		return
 	}
 
-	// Build a lookup of ebusd serials by address.
-	ebusdSerials := make(map[byte]string, len(rows))
+	// Build a lookup of ebusd rows by address for identity matching.
+	ebusdByAddr := make(map[byte]ebusdScanResultRow, len(rows))
 	for _, row := range rows {
 		if row.SerialNumber != "" {
-			ebusdSerials[row.Address] = row.SerialNumber
+			ebusdByAddr[row.Address] = row
 		}
 	}
-	if len(ebusdSerials) == 0 {
+	if len(ebusdByAddr) == 0 {
 		return
 	}
 
-	// Collect devices needing enrichment.
+	// Collect devices needing enrichment, verifying identity fields match.
 	type candidate struct {
 		address      byte
 		manufacturer string
 		deviceID     string
 		swVersion    string
 		hwVersion    string
+		serial       string
 	}
 	var candidates []candidate
 	reg.Iterate(func(entry registry.DeviceEntry) bool {
 		if entry.SerialNumber() != "" {
 			return true
 		}
-		if _, ok := ebusdSerials[entry.Address()]; !ok {
+		row, ok := ebusdByAddr[entry.Address()]
+		if !ok {
+			return true
+		}
+		// Verify identity fields match to prevent stale cache misassignment.
+		if !strings.EqualFold(entry.Manufacturer(), row.Manufacturer) {
+			return true
+		}
+		if entry.DeviceID() != "" && row.DeviceID != "" &&
+			!strings.EqualFold(entry.DeviceID(), row.DeviceID) {
 			return true
 		}
 		candidates = append(candidates, candidate{
@@ -553,6 +563,7 @@ func enrichSerialsFromEbusd(ctx context.Context, reg *registry.DeviceRegistry, c
 			deviceID:     entry.DeviceID(),
 			swVersion:    entry.SoftwareVersion(),
 			hwVersion:    entry.HardwareVersion(),
+			serial:       row.SerialNumber,
 		})
 		return true
 	})
@@ -563,14 +574,13 @@ func enrichSerialsFromEbusd(ctx context.Context, reg *registry.DeviceRegistry, c
 
 	enriched := 0
 	for _, c := range candidates {
-		serial := ebusdSerials[c.address]
 		reg.Register(registry.DeviceInfo{
 			Address:         c.address,
 			Manufacturer:    c.manufacturer,
 			DeviceID:        c.deviceID,
 			SoftwareVersion: c.swVersion,
 			HardwareVersion: c.hwVersion,
-			SerialNumber:    serial,
+			SerialNumber:    c.serial,
 		})
 		enriched++
 	}

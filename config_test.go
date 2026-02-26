@@ -175,6 +175,29 @@ func TestApplyDefaults_PreservesExplicitSemanticDHWStaleTTL(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_SetsSemanticEnergyInterval(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.SemanticEnergyInterval != DefaultSemanticEnergyInterval {
+		t.Fatalf("expected SemanticEnergyInterval=%s by default, got %s", DefaultSemanticEnergyInterval, cfg.SemanticEnergyInterval)
+	}
+}
+
+func TestApplyDefaults_SetsSemanticEnergyInterval(t *testing.T) {
+	cfg := applyDefaults(Config{})
+	if cfg.SemanticEnergyInterval != DefaultSemanticEnergyInterval {
+		t.Fatalf("expected SemanticEnergyInterval=%s after defaults, got %s", DefaultSemanticEnergyInterval, cfg.SemanticEnergyInterval)
+	}
+}
+
+func TestApplyDefaults_PreservesExplicitSemanticEnergyInterval(t *testing.T) {
+	cfg := applyDefaults(Config{
+		SemanticEnergyInterval: 12 * time.Minute,
+	})
+	if cfg.SemanticEnergyInterval != 12*time.Minute {
+		t.Fatalf("expected SemanticEnergyInterval=12m, got %s", cfg.SemanticEnergyInterval)
+	}
+}
+
 func TestDefaultConfig_SetsPortalPath(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.PortalPath != "/portal" {

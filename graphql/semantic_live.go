@@ -319,6 +319,16 @@ func (provider *LiveSemanticProvider) ApplyBroadcast(event router.BroadcastEvent
 	return provider.EnergyTotals(), true
 }
 
+// ApplyEnergyFromRegister updates semantic energy snapshots from register reads.
+// Returns true when the merge store accepted the value.
+func (provider *LiveSemanticProvider) ApplyEnergyFromRegister(key EnergyMergeKey, kwh float64) bool {
+	if provider == nil || provider.energyMerge == nil {
+		return false
+	}
+	now := time.Now()
+	return provider.applyEnergyPoint(key, kwh, EnergySourceRegister, now)
+}
+
 func (provider *LiveSemanticProvider) applyEnergy(values map[string]types.Value, now time.Time) bool {
 	wh, ok := floatValue(values, "wh")
 	if !ok {
@@ -377,11 +387,14 @@ func (provider *LiveSemanticProvider) applyEnergy(values map[string]types.Value,
 		return false
 	}
 
-	if provider.energyMerge == nil {
+	return provider.applyEnergyPoint(key, kwh, EnergySourceBroadcast, now)
+}
+
+func (provider *LiveSemanticProvider) applyEnergyPoint(key energyMergeKey, kwh float64, source EnergyDataSource, now time.Time) bool {
+	if provider == nil || provider.energyMerge == nil {
 		return false
 	}
-
-	if !provider.energyMerge.Apply(key, kwh, EnergySourceBroadcast, now) {
+	if !provider.energyMerge.Apply(key, kwh, source, now) {
 		return false
 	}
 
@@ -397,20 +410,6 @@ func (provider *LiveSemanticProvider) applyEnergy(values map[string]types.Value,
 	}
 	provider.mu.Unlock()
 	return true
-}
-
-func selectUsageSeries(channel *EnergyChannel, usage string) *EnergySeries {
-	if channel == nil {
-		return nil
-	}
-	switch usage {
-	case "hot_water":
-		return &channel.DHW
-	case "heating", "cooling":
-		return &channel.Climate
-	default:
-		return nil
-	}
 }
 
 func matchesToday(values map[string]types.Value, now time.Time) bool {

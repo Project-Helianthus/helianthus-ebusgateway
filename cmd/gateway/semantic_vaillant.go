@@ -24,6 +24,7 @@ import (
 const (
 	vaillantExtRegisterPrimary   = byte(0xB5)
 	vaillantExtRegisterSecondary = byte(0x24)
+	vaillantEnergyRegSecondary   = byte(0x16)
 	vaillantB524OpcodeRead       = byte(0x06)
 	vaillantB524OpcodeLocal      = byte(0x02)
 	vaillantB524OpRead           = byte(0x00)
@@ -98,6 +99,7 @@ type vaillantSemanticPoller struct {
 	discoveryInterval time.Duration
 	configInterval    time.Duration
 	stateInterval     time.Duration
+	energyInterval    time.Duration
 	zoneMissThreshold int
 	zoneHitThreshold  int
 	dhwStaleTTL       time.Duration
@@ -291,6 +293,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		discoveryInterval: cfg.SemanticDiscoveryInterval,
 		configInterval:    cfg.SemanticConfigInterval,
 		stateInterval:     cfg.SemanticStateInterval,
+		energyInterval:    cfg.SemanticEnergyInterval,
 		zoneMissThreshold: cfg.SemanticZonePresenceMissThreshold,
 		zoneHitThreshold:  cfg.SemanticZonePresenceHitThreshold,
 		dhwStaleTTL:       cfg.SemanticDHWStaleTTL,
@@ -314,6 +317,9 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 	}
 	if poller.dhwStaleTTL <= 0 {
 		poller.dhwStaleTTL = ebusgateway.DefaultSemanticDHWStaleTTL
+	}
+	if poller.energyInterval <= 0 {
+		poller.energyInterval = ebusgateway.DefaultSemanticEnergyInterval
 	}
 	if poller.regulatorRecheckInterval <= 0 {
 		poller.regulatorRecheckInterval = ebusgateway.DefaultSemanticRegulatorRecheckInterval
@@ -689,11 +695,13 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
 
 	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
 	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityMedium, p.refreshConfig)
 	go p.runLoop(ctx, p.stateInterval, semanticTaskPriorityHigh, p.refreshState)
+	go p.runLoop(ctx, p.energyInterval, semanticTaskPriorityMedium, p.refreshEnergy)
 }
 
 func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Duration, priority semanticTaskPriority, fn func(context.Context)) {
@@ -1291,6 +1299,112 @@ func zoneEquals(a, b graphql.Zone) bool {
 	return true
 }
 
+func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
+	if p == nil || p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	controller := p.controller
+	regCap := p.regulatorCapability
+	p.mu.Unlock()
+	if controller == 0 || regCap != productids.ControllerPresent {
+		return
+	}
+	if !p.controllerSupportsEnergyReads(controller) {
+		return
+	}
+
+	var readFailures int
+	for _, period := range []byte{0, 1, 2} {
+		for _, source := range []byte{0, 1, 2} {
+			for _, usage := range []byte{0, 1} {
+				key, ok := b516EnergyMergeKey(period, source, usage)
+				if !ok {
+					continue
+				}
+
+				wh, ok := p.readB516Value(ctx, period, source, usage)
+				if !ok {
+					readFailures++
+					continue
+				}
+				kwh := float64(wh) / 1000.0
+				p.provider.ApplyEnergyFromRegister(key, kwh)
+			}
+		}
+	}
+	if readFailures > 0 {
+		log.Printf("semantic energy register refresh partial controller=0x%02x failures=%d total=18", controller, readFailures)
+	}
+}
+
+func (p *vaillantSemanticPoller) controllerSupportsEnergyReads(controller byte) bool {
+	if p == nil || p.reg == nil || controller == 0 {
+		return false
+	}
+	entry, ok := p.reg.Lookup(controller)
+	if !ok {
+		// Unknown controller details: attempt reads and rely on read failure handling.
+		return true
+	}
+	for _, plane := range entry.Planes() {
+		if plane == nil {
+			continue
+		}
+		for _, method := range plane.Methods() {
+			if method == nil || method.Name() != "get_energy_stats" {
+				continue
+			}
+			template := method.Template()
+			if template == nil {
+				continue
+			}
+			if template.Primary() == vaillantExtRegisterPrimary && template.Secondary() == vaillantEnergyRegSecondary {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func b516EnergyMergeKey(period, source, usage byte) (graphql.EnergyMergeKey, bool) {
+	var key graphql.EnergyMergeKey
+	switch period {
+	case 0:
+		key.Period = "day"
+	case 1:
+		key.Period = "year"
+		key.YearKind = "current"
+	case 2:
+		key.Period = "year"
+		key.YearKind = "previous"
+	default:
+		return graphql.EnergyMergeKey{}, false
+	}
+
+	switch source {
+	case 0:
+		key.Channel = "gas"
+	case 1:
+		key.Channel = "electricity"
+	case 2:
+		key.Channel = "solar"
+	default:
+		return graphql.EnergyMergeKey{}, false
+	}
+
+	switch usage {
+	case 0:
+		key.Usage = "climate"
+	case 1:
+		key.Usage = "hot_water"
+	default:
+		return graphql.EnergyMergeKey{}, false
+	}
+	return key, true
+}
+
 func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapshotSource {
 	controller, _ := p.snapshotZones()
 	if controller == 0 {
@@ -1649,6 +1763,73 @@ func isAllDigits(value string) bool {
 		}
 	}
 	return true
+}
+
+func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, period, sourceCode, usage byte) (uint16, bool) {
+	if p == nil || p.bus == nil {
+		return 0, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	source := p.source
+	target := p.controller
+	timeout := p.requestTimeout
+	p.mu.Unlock()
+	if target == 0 {
+		return 0, false
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	key := fmt.Sprintf("b516:%02x:%02x:%02x:%02x", target, period, sourceCode, usage)
+	payload, err := p.scheduler.Get(ctx, key, 500*time.Millisecond, func(ctx context.Context) ([]byte, error) {
+		var lastErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			p.readMu.Lock()
+			reqCtx, cancel := context.WithTimeout(ctx, timeout)
+			request := protocol.Frame{
+				Source:    source,
+				Target:    target,
+				Primary:   vaillantExtRegisterPrimary,
+				Secondary: vaillantEnergyRegSecondary,
+				Data:      []byte{period, sourceCode, usage},
+			}
+			response, err := p.bus.Send(reqCtx, request)
+			cancel()
+			p.readMu.Unlock()
+
+			if err != nil {
+				lastErr = err
+			} else if response == nil {
+				lastErr = fmt.Errorf("b516 read returned nil response")
+			} else if len(response.Data) < 2 {
+				lastErr = fmt.Errorf("b516 read returned short payload len=%d", len(response.Data))
+			} else {
+				return response.Data, nil
+			}
+
+			if attempt < 2 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(75 * time.Millisecond):
+				}
+			}
+		}
+		if lastErr == nil {
+			lastErr = fmt.Errorf("b516 read failed")
+		}
+		return nil, lastErr
+	})
+	if err != nil || len(payload) < 2 {
+		return 0, false
+	}
+
+	return binary.LittleEndian.Uint16(payload[len(payload)-2:]), true
 }
 
 func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {

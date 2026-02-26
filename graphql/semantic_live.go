@@ -50,6 +50,9 @@ type LiveSemanticProvider struct {
 	dhw    *DhwStatus
 	energy *EnergyTotals
 
+	energyMerge    *energyMergeStore
+	energyRevision uint64
+
 	phase              SemanticStartupPhase
 	cacheEpoch         uint64
 	liveEpoch          uint64
@@ -63,7 +66,8 @@ type LiveSemanticProvider struct {
 
 func NewLiveSemanticProvider() *LiveSemanticProvider {
 	return &LiveSemanticProvider{
-		phase: SemanticStartupPhaseBootInit,
+		phase:       SemanticStartupPhaseBootInit,
+		energyMerge: newEnergyMergeStore(),
 	}
 }
 
@@ -333,66 +337,66 @@ func (provider *LiveSemanticProvider) applyEnergy(values map[string]types.Value,
 		return false
 	}
 
-	var channel *EnergyChannel
-	provider.mu.Lock()
-	if provider.energy == nil {
-		provider.energy = &EnergyTotals{}
-	}
+	// Validate channel name.
 	switch source {
-	case "gas":
-		channel = &provider.energy.Gas
-	case "electricity":
-		channel = &provider.energy.Electric
-	case "solar":
-		channel = &provider.energy.Solar
+	case "gas", "electricity", "solar":
 	default:
-		provider.mu.Unlock()
 		return false
 	}
 
-	series := selectUsageSeries(channel, usage)
-	if series == nil {
-		provider.mu.Unlock()
+	// Validate usage name.
+	switch usage {
+	case "hot_water", "heating", "cooling":
+	default:
 		return false
 	}
 
-	updated := false
 	kwh := wh / 1000.0
 
+	// Build merge key and apply through the merge store.
+	// The merge store has its own mutex; do NOT hold provider.mu here.
+	var key energyMergeKey
 	switch period {
 	case "day":
 		if !matchesToday(values, now) {
-			provider.mu.Unlock()
 			return false
 		}
-		series.Today = kwh
-		updated = true
+		key = energyMergeKey{Channel: source, Usage: usage, Period: "day"}
 	case "year":
 		yearKind, ok := stringValue(values, "year_kind")
 		if !ok {
-			provider.mu.Unlock()
 			return false
 		}
-		index := -1
 		switch yearKind {
-		case "previous":
-			index = 0
-		case "current":
-			index = 1
-		}
-		if index < 0 {
-			provider.mu.Unlock()
+		case "previous", "current":
+		default:
 			return false
 		}
-		if len(series.Yearly) < 2 {
-			series.Yearly = make([]float64, 2)
-		}
-		series.Yearly[index] = kwh
-		updated = true
+		key = energyMergeKey{Channel: source, Usage: usage, Period: "year", YearKind: yearKind}
+	default:
+		return false
 	}
 
+	if provider.energyMerge == nil {
+		return false
+	}
+
+	if !provider.energyMerge.Apply(key, kwh, EnergySourceBroadcast, now) {
+		return false
+	}
+
+	// Rebuild the snapshot from the merge store and publish atomically.
+	// Only publish if our revision is still the latest (prevents stale overwrites
+	// from concurrent callers).
+	rev := provider.energyMerge.Revision()
+	snapshot := provider.energyMerge.Snapshot()
+	provider.mu.Lock()
+	if rev >= provider.energyRevision {
+		provider.energy = snapshot
+		provider.energyRevision = rev
+	}
 	provider.mu.Unlock()
-	return updated
+	return true
 }
 
 func selectUsageSeries(channel *EnergyChannel, usage string) *EnergySeries {

@@ -18,6 +18,7 @@ import (
 	"github.com/d3vi1/helianthus-ebusgateway/graphql"
 	"github.com/d3vi1/helianthus-ebusgo/protocol"
 	"github.com/d3vi1/helianthus-ebusreg/registry"
+	"github.com/d3vi1/helianthus-ebusreg/vaillant/productids"
 )
 
 const (
@@ -96,12 +97,16 @@ type vaillantSemanticPoller struct {
 	pollMu sync.Mutex
 	readMu sync.Mutex
 
-	mu              sync.Mutex
-	controller      byte
-	zones           map[byte]*vaillantZoneSnapshot
-	presence        map[byte]*zonePresenceRecord
-	dhw             *vaillantDhwSnapshot
-	dhwLastUpdateAt time.Time
+	catalog    productids.Catalog
+	catalogErr error
+
+	mu                  sync.Mutex
+	controller          byte
+	regulatorCapability productids.ControllerCapability
+	zones               map[byte]*vaillantZoneSnapshot
+	presence            map[byte]*zonePresenceRecord
+	dhw                 *vaillantDhwSnapshot
+	dhwLastUpdateAt     time.Time
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	nowFn                  func() time.Time
@@ -257,6 +262,7 @@ var (
 )
 
 func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, cache semanticCachePersister) *vaillantSemanticPoller {
+	catalog, catalogErr := productids.LoadCatalog()
 	poller := &vaillantSemanticPoller{
 		scheduler:       ebusgateway.NewSemanticReadScheduler(),
 		tasks:           newSemanticTaskScheduler(),
@@ -275,6 +281,9 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		zoneMissThreshold: cfg.SemanticZonePresenceMissThreshold,
 		zoneHitThreshold:  cfg.SemanticZonePresenceHitThreshold,
 		dhwStaleTTL:       cfg.SemanticDHWStaleTTL,
+
+		catalog:    catalog,
+		catalogErr: catalogErr,
 
 		zones:    make(map[byte]*vaillantZoneSnapshot),
 		presence: make(map[byte]*zonePresenceRecord),
@@ -711,21 +720,34 @@ func (p *vaillantSemanticPoller) withPollLock(ctx context.Context, fn func(conte
 }
 
 func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
+	// Regulator capability is always recomputed, even when BASV is missing.
+	regCap := p.findRegulatorCapability()
+
 	controller, ok := findDeviceAddressByPrefix(p.reg, "BASV")
 	if !ok {
 		p.mu.Lock()
+		prev := p.regulatorCapability
 		p.controller = 0
+		p.regulatorCapability = regCap
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
 		p.presence = make(map[byte]*zonePresenceRecord)
 		p.mu.Unlock()
+		if regCap != prev {
+			log.Printf("semantic_regulator_capability capability=%s", regCap.String())
+		}
 		p.publishZones(semanticSnapshotSourceCache)
 		p.publishDHW(semanticSnapshotSourceCache)
 		return
 	}
 
 	p.mu.Lock()
+	prev := p.regulatorCapability
 	p.controller = controller
+	p.regulatorCapability = regCap
 	p.mu.Unlock()
+	if regCap != prev {
+		log.Printf("semantic_regulator_capability capability=%s", regCap.String())
+	}
 
 	present := make(map[byte]bool, 4)
 	checked := make(map[byte]bool, 11)
@@ -1424,6 +1446,9 @@ func floatPtrEquals(a, b *float64) bool {
 	return *a == *b
 }
 
+// Deprecated: findDeviceAddressByPrefix uses a naming heuristic (device ID prefix match).
+// For regulator detection, use findRegulatorCapability which relies on the product_ids catalog.
+// Retained for boiler controller lookup (BASV prefix) until a catalog-based replacement is added.
 func findDeviceAddressByPrefix(reg *registry.DeviceRegistry, wantedPrefix string) (byte, bool) {
 	if reg == nil {
 		return 0, false
@@ -1455,6 +1480,99 @@ func normalizeDeviceID(value string) string {
 	normalized = strings.ReplaceAll(normalized, "-", "")
 	normalized = strings.ReplaceAll(normalized, " ", "")
 	return normalized
+}
+
+// findRegulatorCapability iterates all devices in the registry and determines
+// the regulator capability strictly from the product_ids catalog classification.
+// Returns ControllerPresent if any Vaillant device has role=="Regulator",
+// ControllerNone if all Vaillant devices have known non-regulator roles,
+// ControllerUnknown if any device has an unknown classification or no serial.
+func (p *vaillantSemanticPoller) findRegulatorCapability() productids.ControllerCapability {
+	if p == nil || p.reg == nil || p.catalogErr != nil {
+		return productids.ControllerUnknown
+	}
+
+	foundPresent := false
+	hasUnknown := false
+	hasAnyDevice := false
+	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry == nil {
+			return true
+		}
+		if !strings.EqualFold(entry.Manufacturer(), "Vaillant") {
+			return true
+		}
+		hasAnyDevice = true
+		partNumber := extractPartNumberFromSerial(entry.SerialNumber())
+		cap := p.catalog.ControllerCapability(partNumber)
+		switch cap {
+		case productids.ControllerPresent:
+			foundPresent = true
+			return false // stop iteration
+		case productids.ControllerUnknown:
+			hasUnknown = true
+		}
+		return true
+	})
+
+	if foundPresent {
+		return productids.ControllerPresent
+	}
+	if !hasAnyDevice {
+		return productids.ControllerUnknown
+	}
+	if hasUnknown {
+		return productids.ControllerUnknown
+	}
+	return productids.ControllerNone
+}
+
+// extractPartNumberFromSerial extracts a 10-digit Vaillant part number from a
+// device serial number string. The logic mirrors graphql.extractVaillantPartNumber.
+func extractPartNumberFromSerial(serial string) string {
+	serial = strings.TrimSpace(serial)
+	if serial == "" {
+		return ""
+	}
+
+	// Try dash-separated format: "YY-WW-CC-PPPPPPPPPP-SSSS-RRRRRR-XX"
+	parts := strings.Split(serial, "-")
+	if len(parts) >= 4 {
+		partNumber := strings.TrimSpace(parts[3])
+		if len(partNumber) == 10 && isAllDigits(partNumber) {
+			return partNumber
+		}
+	}
+
+	// Fallback: strip non-alphanumeric, take digits 6..16.
+	compact := make([]byte, 0, len(serial))
+	for i := 0; i < len(serial); i++ {
+		ch := serial[i]
+		if (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
+			compact = append(compact, ch)
+		}
+	}
+	if len(compact) >= 16 {
+		candidate := string(compact[6:16])
+		if len(candidate) == 10 && isAllDigits(candidate) {
+			return candidate
+		}
+	}
+
+	return ""
+}
+
+// isAllDigits returns true if the string is non-empty and contains only ASCII digits.
+func isAllDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {

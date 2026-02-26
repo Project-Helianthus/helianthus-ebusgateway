@@ -220,6 +220,10 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			)
 			cancel()
 
+			if total > 0 && targetConfig != nil {
+				enrichSerialsFromEbusd(scanCtx, gateway.Registry, *targetConfig)
+			}
+
 			if total > 0 && total != previousTotal {
 				previousTotal = total
 				gateway.RefreshRouterPlanes()
@@ -500,4 +504,76 @@ func enrichVaillantIdentity(ctx context.Context, gw *ebusgateway.Gateway, cfg eb
 	}
 
 	log.Printf("startup scan enrich: done, %d/%d enriched", enriched, len(candidates))
+}
+
+// enrichSerialsFromEbusd fills in missing serial numbers from ebusd's scan
+// result.  ebusd performs its own B5.09 identity reads and caches the results;
+// this function extracts those serials and applies them to devices in the
+// registry that the gateway's own B5.09 reads failed to populate.
+func enrichSerialsFromEbusd(ctx context.Context, reg *registry.DeviceRegistry, cfg ebusgateway.TransportConfig) {
+	if reg == nil {
+		return
+	}
+
+	rows, err := ebusdScanResultRows(ctx, cfg)
+	if err != nil || len(rows) == 0 {
+		return
+	}
+
+	// Build a lookup of ebusd serials by address.
+	ebusdSerials := make(map[byte]string, len(rows))
+	for _, row := range rows {
+		if row.SerialNumber != "" {
+			ebusdSerials[row.Address] = row.SerialNumber
+		}
+	}
+	if len(ebusdSerials) == 0 {
+		return
+	}
+
+	// Collect devices needing enrichment.
+	type candidate struct {
+		address      byte
+		manufacturer string
+		deviceID     string
+		swVersion    string
+		hwVersion    string
+	}
+	var candidates []candidate
+	reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry.SerialNumber() != "" {
+			return true
+		}
+		if _, ok := ebusdSerials[entry.Address()]; !ok {
+			return true
+		}
+		candidates = append(candidates, candidate{
+			address:      entry.Address(),
+			manufacturer: entry.Manufacturer(),
+			deviceID:     entry.DeviceID(),
+			swVersion:    entry.SoftwareVersion(),
+			hwVersion:    entry.HardwareVersion(),
+		})
+		return true
+	})
+
+	if len(candidates) == 0 {
+		return
+	}
+
+	enriched := 0
+	for _, c := range candidates {
+		serial := ebusdSerials[c.address]
+		reg.Register(registry.DeviceInfo{
+			Address:         c.address,
+			Manufacturer:    c.manufacturer,
+			DeviceID:        c.deviceID,
+			SoftwareVersion: c.swVersion,
+			HardwareVersion: c.hwVersion,
+			SerialNumber:    serial,
+		})
+		enriched++
+	}
+
+	log.Printf("startup scan ebusd enrich: %d/%d device(s) got serial from ebusd scan result", enriched, len(candidates))
 }

@@ -55,6 +55,44 @@ const (
 	dhwInstance           = byte(0x00)
 )
 
+// B5.16 source values (Y field in protocol)
+const (
+	b516SourceSolar      = byte(0x01)
+	b516SourceElectrical = byte(0x03)
+	b516SourceGas        = byte(0x04)
+)
+
+// B5.16 usage values (Z field in protocol)
+const (
+	b516UsageHeating  = byte(0x03)
+	b516UsageHotWater = byte(0x04)
+)
+
+func buildB516YearPayload(source, usage, yearQ byte) []byte {
+	return []byte{0x10, 0x03, 0xFF, 0xFF, source, usage, 0x00, 0x30 | yearQ}
+}
+
+func buildB516DayPayload(source, usage byte, month, day int) []byte {
+	var wBase, qBase byte
+	if month <= 7 {
+		wBase = byte(month * 2)
+		qBase = 2
+	} else {
+		wBase = byte((month - 8) * 2)
+		qBase = 3
+	}
+	var v, dOffset byte
+	if day <= 15 {
+		v = byte(day)
+		dOffset = 0
+	} else {
+		v = byte(day - 16)
+		dOffset = 1
+	}
+	w := wBase + dOffset
+	return []byte{0x10, 0x01, 0xFF, 0xFF, source, usage, (w << 4) | v, 0x30 | qBase}
+}
+
 type regulatorAbsenceState string
 
 const (
@@ -1322,6 +1360,22 @@ func zoneEquals(a, b graphql.Zone) bool {
 	return true
 }
 
+type b516Query struct {
+	source   byte   // Y field (protocol)
+	usage    byte   // Z field (protocol)
+	channel  string // EnergyMergeKey.Channel
+	usageKey string // EnergyMergeKey.Usage
+}
+
+var b516Queries = []b516Query{
+	{b516SourceGas, b516UsageHeating, "gas", "climate"},
+	{b516SourceGas, b516UsageHotWater, "gas", "hot_water"},
+	{b516SourceElectrical, b516UsageHeating, "electricity", "climate"},
+	{b516SourceElectrical, b516UsageHotWater, "electricity", "hot_water"},
+	{b516SourceSolar, b516UsageHeating, "solar", "climate"},
+	{b516SourceSolar, b516UsageHotWater, "solar", "hot_water"},
+}
+
 func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 	if p == nil || p.provider == nil {
 		return
@@ -1338,23 +1392,29 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 		return
 	}
 
+	now := time.Now()
 	var readFailures int
-	for _, period := range []byte{0, 1, 2} {
-		for _, source := range []byte{0, 1, 2} {
-			for _, usage := range []byte{0, 1} {
-				key, ok := b516EnergyMergeKey(period, source, usage)
-				if !ok {
-					continue
-				}
-
-				wh, ok := p.readB516Value(ctx, period, source, usage)
-				if !ok {
-					readFailures++
-					continue
-				}
-				kwh := float64(wh) / 1000.0
-				p.provider.ApplyEnergyFromRegister(key, kwh)
-			}
+	for _, q := range b516Queries {
+		// Year current (Q=2)
+		if kwh, ok := p.readB516Value(ctx, buildB516YearPayload(q.source, q.usage, 0x02)); ok {
+			key := graphql.EnergyMergeKey{Channel: q.channel, Usage: q.usageKey, Period: "year", YearKind: "current"}
+			p.provider.ApplyEnergyFromRegister(key, kwh)
+		} else {
+			readFailures++
+		}
+		// Year previous (Q=0)
+		if kwh, ok := p.readB516Value(ctx, buildB516YearPayload(q.source, q.usage, 0x00)); ok {
+			key := graphql.EnergyMergeKey{Channel: q.channel, Usage: q.usageKey, Period: "year", YearKind: "previous"}
+			p.provider.ApplyEnergyFromRegister(key, kwh)
+		} else {
+			readFailures++
+		}
+		// Day today
+		if kwh, ok := p.readB516Value(ctx, buildB516DayPayload(q.source, q.usage, int(now.Month()), now.Day())); ok {
+			key := graphql.EnergyMergeKey{Channel: q.channel, Usage: q.usageKey, Period: "day"}
+			p.provider.ApplyEnergyFromRegister(key, kwh)
+		} else {
+			readFailures++
 		}
 	}
 	if readFailures > 0 {
@@ -1389,43 +1449,6 @@ func (p *vaillantSemanticPoller) controllerSupportsEnergyReads(controller byte) 
 		}
 	}
 	return false
-}
-
-func b516EnergyMergeKey(period, source, usage byte) (graphql.EnergyMergeKey, bool) {
-	var key graphql.EnergyMergeKey
-	switch period {
-	case 0:
-		key.Period = "day"
-	case 1:
-		key.Period = "year"
-		key.YearKind = "current"
-	case 2:
-		key.Period = "year"
-		key.YearKind = "previous"
-	default:
-		return graphql.EnergyMergeKey{}, false
-	}
-
-	switch source {
-	case 0:
-		key.Channel = "gas"
-	case 1:
-		key.Channel = "electricity"
-	case 2:
-		key.Channel = "solar"
-	default:
-		return graphql.EnergyMergeKey{}, false
-	}
-
-	switch usage {
-	case 0:
-		key.Usage = "climate"
-	case 1:
-		key.Usage = "hot_water"
-	default:
-		return graphql.EnergyMergeKey{}, false
-	}
-	return key, true
 }
 
 func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapshotSource {
@@ -1805,7 +1828,7 @@ func isAllDigits(value string) bool {
 	return true
 }
 
-func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, period, sourceCode, usage byte) (uint16, bool) {
+func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, data []byte) (float64, bool) {
 	if p == nil || p.bus == nil {
 		return 0, false
 	}
@@ -1825,7 +1848,7 @@ func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, period, sour
 		timeout = 2 * time.Second
 	}
 
-	key := fmt.Sprintf("b516:%02x:%02x:%02x:%02x", target, period, sourceCode, usage)
+	key := fmt.Sprintf("b516:%02x:%x", target, data)
 	payload, err := p.scheduler.Get(ctx, key, 500*time.Millisecond, func(ctx context.Context) ([]byte, error) {
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
@@ -1836,7 +1859,7 @@ func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, period, sour
 				Target:    target,
 				Primary:   vaillantExtRegisterPrimary,
 				Secondary: vaillantEnergyRegSecondary,
-				Data:      []byte{period, sourceCode, usage},
+				Data:      data,
 			}
 			response, err := p.bus.Send(reqCtx, request)
 			cancel()
@@ -1846,7 +1869,7 @@ func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, period, sour
 				lastErr = err
 			} else if response == nil {
 				lastErr = fmt.Errorf("b516 read returned nil response")
-			} else if len(response.Data) < 2 {
+			} else if len(response.Data) < 4 {
 				lastErr = fmt.Errorf("b516 read returned short payload len=%d", len(response.Data))
 			} else {
 				return response.Data, nil
@@ -1865,11 +1888,17 @@ func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, period, sour
 		}
 		return nil, lastErr
 	})
-	if err != nil || len(payload) < 2 {
+	if err != nil || len(payload) < 4 {
 		return 0, false
 	}
 
-	return binary.LittleEndian.Uint16(payload[len(payload)-2:]), true
+	raw := payload[len(payload)-4:]
+	bits := uint32(raw[0]) | uint32(raw[1])<<8 | uint32(raw[2])<<16 | uint32(raw[3])<<24
+	value := float64(math.Float32frombits(bits))
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+	return value / 1000.0, true
 }
 
 func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {

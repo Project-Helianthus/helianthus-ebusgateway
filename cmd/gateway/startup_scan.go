@@ -206,6 +206,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			}
 			if imported > 0 {
 				log.Printf("startup scan fallback: imported %d device(s) from ebusd scan result", imported)
+				enrichVaillantIdentity(ctx, gateway, cfg)
 			}
 			log.Printf("startup scan: pass=%d device(s), total=%d", len(devices), total)
 			log.Printf(
@@ -447,7 +448,7 @@ func enrichVaillantIdentity(ctx context.Context, gw *ebusgateway.Gateway, cfg eb
 		if entry.SerialNumber() != "" {
 			return true
 		}
-		if entry.Manufacturer() != "Vaillant" {
+		if !strings.EqualFold(entry.Manufacturer(), "Vaillant") {
 			return true
 		}
 		candidates = append(candidates, candidate{
@@ -485,8 +486,7 @@ func enrichVaillantIdentity(ctx context.Context, gw *ebusgateway.Gateway, cfg eb
 		}
 
 		// Re-register the device with the discovered serial number.
-		// Register merges fields: empty fields keep their existing values,
-		// so we only need to supply the address and the new serial.
+		// All original fields are preserved to avoid data loss.
 		gw.Registry.Register(registry.DeviceInfo{
 			Address:         c.address,
 			Manufacturer:    c.manufacturer,

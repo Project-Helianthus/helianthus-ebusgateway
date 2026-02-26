@@ -4,6 +4,8 @@ github.com/d3vi1/helianthus-ebusgo v0.0.0-20260223231720-cfb45d6fc8c2 h1:AbkF6nB
 github.com/d3vi1/helianthus-ebusgo v0.0.0-20260223231720-cfb45d6fc8c2/go.mod h1:WVYXygxQrRS/FMsQm9h04pQbJp6zoVyY4scq1ps3OS8=
 github.com/d3vi1/helianthus-ebusreg v0.0.0-20260226010038-ad503214d698 h1:PlOfpDIu/SgYlYmJ8iv2ABT4mm77DHMcBkstLEE9Iuw=
 github.com/d3vi1/helianthus-ebusreg v0.0.0-20260226010038-ad503214d698/go.mod h1:W9ZtSpWXmA60YD5PeGKmL9CO93Eqj48iugtgslAFkf0=
+github.com/d3vi1/helianthus-ebusreg v0.0.0-20260226233716-16b589f86133 h1:I7aVTbCoke4OqYj/JqHP6eKQlDuzKGTXEIsrt/AVh4Y=
+github.com/d3vi1/helianthus-ebusreg v0.0.0-20260226233716-16b589f86133/go.mod h1:W9ZtSpWXmA60YD5PeGKmL9CO93Eqj48iugtgslAFkf0=
 github.com/gorilla/websocket v1.5.1 h1:gmztn0JnHVt9JZquRuzLw3g4wouNVzKL15iLr/zn/QY=
 github.com/gorilla/websocket v1.5.1/go.mod h1:x3kM2JMyaluk02fnUJpQuwD2dCS5NDG2ZHL0uE0tcaY=
 github.com/grandcat/zeroconf v1.0.0 h1:uHhahLBKqwWBV6WZUDAT71044vwOTL+McW0mBJvo6kE=

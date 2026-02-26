@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"expvar"
 	"fmt"
 	"log"
 	"sync"
@@ -43,6 +44,13 @@ type phaseTransitionLog struct {
 	liveEpoch  uint64
 }
 
+var (
+	semanticStartupPhaseTransitionsTotal = expvar.NewMap("semantic_startup_phase_transitions_total")
+	semanticStartupCurrentPhase          = expvar.NewString("semantic_startup_current_phase")
+	semanticCacheEpoch                   = expvar.NewInt("semantic_cache_epoch")
+	semanticLiveEpoch                    = expvar.NewInt("semantic_live_epoch")
+)
+
 // LiveSemanticProvider maintains semantic snapshots derived from bus data.
 type LiveSemanticProvider struct {
 	mu     sync.RWMutex
@@ -65,6 +73,10 @@ type LiveSemanticProvider struct {
 }
 
 func NewLiveSemanticProvider() *LiveSemanticProvider {
+	semanticStartupCurrentPhase.Set(string(SemanticStartupPhaseBootInit))
+	semanticCacheEpoch.Set(0)
+	semanticLiveEpoch.Set(0)
+
 	return &LiveSemanticProvider{
 		phase:       SemanticStartupPhaseBootInit,
 		energyMerge: newEnergyMergeStore(),
@@ -239,6 +251,7 @@ func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDat
 	switch source {
 	case semanticDataSourceCache:
 		provider.cacheEpoch++
+		semanticCacheEpoch.Set(int64(provider.cacheEpoch))
 		if provider.liveEpoch == 0 && provider.phase != SemanticStartupPhaseDegraded {
 			return provider.transitionPhaseLocked(SemanticStartupPhaseCacheLoadedStale, reason)
 		}
@@ -250,6 +263,7 @@ func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDat
 			provider.dhwLiveSeen = true
 		}
 		provider.liveEpoch++
+		semanticLiveEpoch.Set(int64(provider.liveEpoch))
 		if provider.liveEpoch == 1 {
 			return provider.transitionPhaseLocked(SemanticStartupPhaseLiveWarmup, reason)
 		}
@@ -276,6 +290,8 @@ func (provider *LiveSemanticProvider) transitionPhaseLocked(next SemanticStartup
 	}
 	previous := provider.phase
 	provider.phase = next
+	semanticStartupPhaseTransitionsTotal.Add(fmt.Sprintf("%s->%s", previous, next), 1)
+	semanticStartupCurrentPhase.Set(string(next))
 	return &phaseTransitionLog{
 		previous:   previous,
 		next:       next,

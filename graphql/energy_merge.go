@@ -1,6 +1,8 @@
 package graphql
 
 import (
+	"expvar"
+	"log"
 	"sync"
 	"time"
 )
@@ -13,6 +15,11 @@ const (
 	EnergySourceBroadcast EnergyDataSource = iota
 	// EnergySourceRegister is a high-confidence source from direct register reads.
 	EnergySourceRegister
+)
+
+var (
+	semanticEnergyMergesTotal     = expvar.NewMap("semantic_energy_merges_total")
+	semanticEnergyRejectionsTotal = expvar.NewMap("semantic_energy_rejections_total")
 )
 
 // energyDataPoint tracks a single energy value with its source and ingest time.
@@ -75,6 +82,7 @@ func newEnergyMergeStore() *energyMergeStore {
 // The key's Usage is canonicalized internally.
 func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source EnergyDataSource, ingestAt time.Time) bool {
 	key.Usage = canonicalizeUsage(key.Usage)
+	sourceLabel := energySourceLabel(source)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -84,26 +92,45 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 		// No existing point: accept any source.
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
 		s.revision++
+		semanticEnergyMergesTotal.Add(sourceLabel, 1)
+		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
 		return true
 	}
 
 	switch {
 	case existing.Source == EnergySourceRegister && source == EnergySourceBroadcast:
 		// Broadcast never overwrites register.
+		semanticEnergyRejectionsTotal.Add("source_downgrade", 1)
+		log.Printf("semantic_energy_merge_reject reason=source_downgrade source=%s existing_source=%s", sourceLabel, energySourceLabel(existing.Source))
 		return false
 	case existing.Source == EnergySourceBroadcast && source == EnergySourceRegister:
 		// Register always wins over broadcast, regardless of timestamp.
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
 		s.revision++
+		semanticEnergyMergesTotal.Add(sourceLabel, 1)
+		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
 		return true
 	default:
 		// Same source: enforce monotonic ingest timestamp.
 		if !ingestAt.After(existing.IngestAt) {
+			semanticEnergyRejectionsTotal.Add("monotonic", 1)
+			log.Printf("semantic_energy_merge_reject reason=monotonic source=%s", sourceLabel)
 			return false
 		}
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
 		s.revision++
+		semanticEnergyMergesTotal.Add(sourceLabel, 1)
+		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
 		return true
+	}
+}
+
+func energySourceLabel(source EnergyDataSource) string {
+	switch source {
+	case EnergySourceRegister:
+		return "register"
+	default:
+		return "broadcast"
 	}
 }
 

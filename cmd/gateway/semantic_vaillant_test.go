@@ -303,6 +303,39 @@ func TestSourceFromEbusdGrab(t *testing.T) {
 	}
 }
 
+func TestRefreshEnergy_NilController(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider:            provider,
+		regulatorCapability: productids.ControllerPresent,
+	}
+
+	poller.refreshEnergy(context.Background())
+
+	if totals := provider.EnergyTotals(); totals != nil {
+		t.Fatalf("EnergyTotals() = %#v; want nil for nil controller", totals)
+	}
+}
+
+func TestRefreshEnergy_NoRegulator(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider:            provider,
+		controller:          0x15,
+		regulatorCapability: productids.ControllerNone,
+	}
+
+	poller.refreshEnergy(context.Background())
+
+	if totals := provider.EnergyTotals(); totals != nil {
+		t.Fatalf("EnergyTotals() = %#v; want nil without regulator", totals)
+	}
+}
+
 func TestVaillantSemanticPoller_DHWTransientCacheFailurePreservesLastKnown(t *testing.T) {
 	t.Parallel()
 

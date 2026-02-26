@@ -3,6 +3,9 @@ package graphql
 import (
 	"testing"
 	"time"
+
+	"github.com/d3vi1/helianthus-ebusgo/types"
+	"github.com/d3vi1/helianthus-ebusreg/router"
 )
 
 var (
@@ -297,5 +300,58 @@ func TestEnergyMerge_HeatingCoolingCanonicalizedToClimate(t *testing.T) {
 	}
 	if point.Value != 20.0 {
 		t.Fatalf("value = %f; want 20.0 (latest write)", point.Value)
+	}
+}
+
+func TestApplyEnergyFromRegister(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+	key := EnergyMergeKey{
+		Channel: "gas",
+		Usage:   "climate",
+		Period:  "day",
+	}
+
+	if !provider.ApplyEnergyFromRegister(key, 1.25) {
+		t.Fatal("ApplyEnergyFromRegister() = false; want true")
+	}
+
+	totals := provider.EnergyTotals()
+	if totals == nil {
+		t.Fatal("EnergyTotals() = nil; want non-nil")
+	}
+	if totals.Gas.Climate.Today != 1.25 {
+		t.Fatalf("Gas.Climate.Today = %f; want 1.25", totals.Gas.Climate.Today)
+	}
+}
+
+func TestApplyEnergyFromRegister_OverwritesBroadcast(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+	_, updated := provider.ApplyBroadcast(router.BroadcastEvent{
+		Values: map[string]types.Value{
+			"wh":     {Valid: true, Value: float64(1000)},
+			"source": {Valid: true, Value: "gas"},
+			"usage":  {Valid: true, Value: "heating"},
+			"period": {Valid: true, Value: "day"},
+		},
+	})
+	if !updated {
+		t.Fatal("ApplyBroadcast() updated = false; want true")
+	}
+
+	key := EnergyMergeKey{
+		Channel: "gas",
+		Usage:   "climate",
+		Period:  "day",
+	}
+	if !provider.ApplyEnergyFromRegister(key, 2.5) {
+		t.Fatal("ApplyEnergyFromRegister() = false; want true")
+	}
+
+	totals := provider.EnergyTotals()
+	if totals == nil {
+		t.Fatal("EnergyTotals() = nil; want non-nil")
+	}
+	if totals.Gas.Climate.Today != 2.5 {
+		t.Fatalf("Gas.Climate.Today = %f; want 2.5", totals.Gas.Climate.Today)
 	}
 }

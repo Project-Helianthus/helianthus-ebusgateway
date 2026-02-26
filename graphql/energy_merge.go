@@ -31,6 +31,9 @@ type energyMergeKey struct {
 	YearKind string // "" for day, "previous"/"current" for year
 }
 
+// EnergyMergeKey is the external key contract for register/broadcast energy merge inputs.
+type EnergyMergeKey = energyMergeKey
+
 // canonicalizeUsage maps raw usage strings to canonical merge key values.
 // "heating" and "cooling" both target the same Climate series.
 func canonicalizeUsage(usage string) string {

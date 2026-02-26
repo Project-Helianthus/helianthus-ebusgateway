@@ -23,6 +23,7 @@ const (
 	DefaultSemanticZonePresenceMissThreshold = 3
 	DefaultSemanticZonePresenceHitThreshold  = 2
 	DefaultSemanticDHWStaleTTL               = 15 * time.Minute
+	DefaultSemanticEnergyInterval            = 5 * time.Minute
 	DefaultSemanticRegulatorRecheckInterval  = 60 * time.Second
 	DefaultSemanticRegulatorAbsenceGrace     = 5 * time.Minute
 )
@@ -56,6 +57,7 @@ type Config struct {
 	SemanticDiscoveryInterval             time.Duration
 	SemanticConfigInterval                time.Duration
 	SemanticStateInterval                 time.Duration
+	SemanticEnergyInterval                time.Duration
 	SemanticRequestTimeout                time.Duration
 	SemanticReadBreakerFailureBudget      int
 	SemanticReadBreakerFailureBudgetSet   bool
@@ -108,6 +110,7 @@ func DefaultConfig() Config {
 		SemanticDiscoveryInterval:             10 * time.Minute,
 		SemanticConfigInterval:                5 * time.Minute,
 		SemanticStateInterval:                 1 * time.Minute,
+		SemanticEnergyInterval:                DefaultSemanticEnergyInterval,
 		SemanticRequestTimeout:                2 * time.Second,
 		SemanticReadBreakerFailureBudget:      DefaultSemanticReadFailureBudget,
 		SemanticReadBreakerOpenCooldown:       DefaultSemanticReadOpenCooldown,
@@ -164,6 +167,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.SemanticDiscoveryInterval == 0 {
 		cfg.SemanticDiscoveryInterval = 10 * time.Minute
+	}
+	if cfg.SemanticEnergyInterval <= 0 {
+		cfg.SemanticEnergyInterval = DefaultSemanticEnergyInterval
 	}
 	if cfg.SemanticRequestTimeout == 0 {
 		cfg.SemanticRequestTimeout = 2 * time.Second

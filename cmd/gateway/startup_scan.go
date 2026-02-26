@@ -157,6 +157,8 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 					log.Printf("startup scan preload: imported=%d total=%d (ebusd-tcp)", imported, total)
 					cancel()
 
+					enrichVaillantIdentity(ctx, gateway, cfg)
+
 					if total > 0 && total != previousTotal {
 						previousTotal = total
 						gateway.RefreshRouterPlanes()
@@ -415,4 +417,87 @@ func parseEbusdScanResultLine(line string) (ebusdScanResultRow, bool) {
 func dialContext(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
 	dialer := net.Dialer{Timeout: timeout}
 	return dialer.DialContext(ctx, network, address)
+}
+
+// enrichVaillantIdentity iterates registered Vaillant devices that lack a
+// serial number and attempts a B5.09 identity read for each.  This fills in
+// serial numbers that the ebusd-tcp preload cannot provide (ebusd's
+// "scan result" only returns the 07 04 identification, not the Vaillant-
+// specific B5.09 chunks).  Failures are logged but never block startup.
+func enrichVaillantIdentity(ctx context.Context, gw *ebusgateway.Gateway, cfg ebusgateway.Config) {
+	if gw == nil || gw.Bus == nil || gw.Registry == nil {
+		return
+	}
+
+	const enrichTimeout = 30 * time.Second
+	enrichCtx, cancel := context.WithTimeout(ctx, enrichTimeout)
+	defer cancel()
+
+	// Collect Vaillant devices that need enrichment before iterating,
+	// so that we don't hold the registry read-lock while sending frames.
+	type candidate struct {
+		address      byte
+		manufacturer string
+		deviceID     string
+		swVersion    string
+		hwVersion    string
+	}
+	var candidates []candidate
+	gw.Registry.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry.SerialNumber() != "" {
+			return true
+		}
+		if entry.Manufacturer() != "Vaillant" {
+			return true
+		}
+		candidates = append(candidates, candidate{
+			address:      entry.Address(),
+			manufacturer: entry.Manufacturer(),
+			deviceID:     entry.DeviceID(),
+			swVersion:    entry.SoftwareVersion(),
+			hwVersion:    entry.HardwareVersion(),
+		})
+		return true
+	})
+
+	if len(candidates) == 0 {
+		return
+	}
+
+	log.Printf("startup scan enrich: %d Vaillant device(s) missing serial, attempting B5.09 reads", len(candidates))
+
+	scanBus := &timeoutBus{bus: gw.Bus, timeout: cfg.ScanRequestTimeout}
+	enriched := 0
+	for _, c := range candidates {
+		if enrichCtx.Err() != nil {
+			log.Printf("startup scan enrich: timeout reached, %d/%d enriched", enriched, len(candidates))
+			break
+		}
+
+		serial, ok, err := registry.ReadVaillantScanID(enrichCtx, scanBus, cfg.ScanSource, c.address)
+		if err != nil {
+			log.Printf("startup scan enrich: B5.09 read for 0x%02X failed: %v", c.address, err)
+			continue
+		}
+		if !ok || serial == "" {
+			log.Printf("startup scan enrich: B5.09 read for 0x%02X returned no serial", c.address)
+			continue
+		}
+
+		// Re-register the device with the discovered serial number.
+		// Register merges fields: empty fields keep their existing values,
+		// so we only need to supply the address and the new serial.
+		gw.Registry.Register(registry.DeviceInfo{
+			Address:         c.address,
+			Manufacturer:    c.manufacturer,
+			DeviceID:        c.deviceID,
+			SoftwareVersion: c.swVersion,
+			HardwareVersion: c.hwVersion,
+			SerialNumber:    serial,
+		})
+		enriched++
+		log.Printf("startup scan enrich: 0x%02X serial=%s", c.address, serial)
+	}
+
+	log.Printf("startup scan enrich: done, %d/%d enriched", enriched, len(candidates))
 }

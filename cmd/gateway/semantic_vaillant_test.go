@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -1704,5 +1707,219 @@ func TestRefreshRegulatorCapability_NoChangeNoLog(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("registryDeviceCount after repeated calls = %d; want 2", count)
+	}
+}
+
+func TestBuildB516YearPayload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source byte
+		usage  byte
+		yearQ  byte
+		want   []byte
+	}{
+		{
+			name:   "gas/heating/current",
+			source: b516SourceGas,
+			usage:  b516UsageHeating,
+			yearQ:  0x02,
+			want:   []byte{0x10, 0x03, 0xFF, 0xFF, 0x04, 0x03, 0x00, 0x32},
+		},
+		{
+			name:   "gas/hot_water/previous",
+			source: b516SourceGas,
+			usage:  b516UsageHotWater,
+			yearQ:  0x00,
+			want:   []byte{0x10, 0x03, 0xFF, 0xFF, 0x04, 0x04, 0x00, 0x30},
+		},
+		{
+			name:   "electrical/heating/current",
+			source: b516SourceElectrical,
+			usage:  b516UsageHeating,
+			yearQ:  0x02,
+			want:   []byte{0x10, 0x03, 0xFF, 0xFF, 0x03, 0x03, 0x00, 0x32},
+		},
+		{
+			name:   "solar/hot_water/previous",
+			source: b516SourceSolar,
+			usage:  b516UsageHotWater,
+			yearQ:  0x00,
+			want:   []byte{0x10, 0x03, 0xFF, 0xFF, 0x01, 0x04, 0x00, 0x30},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildB516YearPayload(tt.source, tt.usage, tt.yearQ)
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("buildB516YearPayload(0x%02x, 0x%02x, 0x%02x) = %x; want %x", tt.source, tt.usage, tt.yearQ, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildB516DayPayload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source byte
+		usage  byte
+		month  int
+		day    int
+		want   []byte
+	}{
+		{
+			name:   "jan_1",
+			source: b516SourceGas,
+			usage:  b516UsageHeating,
+			month:  1,
+			day:    1,
+			want:   []byte{0x10, 0x01, 0xFF, 0xFF, 0x04, 0x03, 0x21, 0x32},
+		},
+		{
+			name:   "aug_16",
+			source: b516SourceGas,
+			usage:  b516UsageHeating,
+			month:  8,
+			day:    16,
+			want:   []byte{0x10, 0x01, 0xFF, 0xFF, 0x04, 0x03, 0x10, 0x33},
+		},
+		{
+			name:   "dec_31",
+			source: b516SourceGas,
+			usage:  b516UsageHeating,
+			month:  12,
+			day:    31,
+			want:   []byte{0x10, 0x01, 0xFF, 0xFF, 0x04, 0x03, 0x9F, 0x33},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildB516DayPayload(tt.source, tt.usage, tt.month, tt.day)
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("buildB516DayPayload(0x%02x, 0x%02x, %d, %d) = %x; want %x", tt.source, tt.usage, tt.month, tt.day, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadB516Value_Float32Decode(t *testing.T) {
+	t.Parallel()
+
+	// Test the production decode path used by readB516Value:
+	// decodeB516ResponseKWh extracts last 4 bytes as float32 LE (Wh) → kWh.
+
+	tests := []struct {
+		name    string
+		whValue float32 // input in Wh (what the device returns)
+		prefix  []byte  // optional prefix bytes before the float32 (simulates full response)
+		wantKwh float64 // expected output in kWh
+		wantOk  bool
+	}{
+		{
+			name:    "12345_wh",
+			whValue: 12345.0,
+			wantKwh: 12.345,
+			wantOk:  true,
+		},
+		{
+			name:    "zero",
+			whValue: 0.0,
+			wantKwh: 0.0,
+			wantOk:  true,
+		},
+		{
+			name:    "large_value",
+			whValue: 9876543.0,
+			wantKwh: 9876.543,
+			wantOk:  true,
+		},
+		{
+			name:    "with_prefix_bytes",
+			whValue: 5000.0,
+			prefix:  []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11},
+			wantKwh: 5.0,
+			wantOk:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Encode the float32 value as 4 bytes LE (simulating device response).
+			raw := make([]byte, 4)
+			binary.LittleEndian.PutUint32(raw, math.Float32bits(tt.whValue))
+			// Prepend prefix bytes to simulate a full response payload.
+			payload := append(tt.prefix, raw...)
+
+			kwh, ok := decodeB516ResponseKWh(payload)
+			if ok != tt.wantOk {
+				t.Fatalf("decodeB516ResponseKWh(%x) ok=%v; want %v", payload, ok, tt.wantOk)
+			}
+			if ok && math.Abs(kwh-tt.wantKwh) > 0.01 {
+				t.Fatalf("decodeB516ResponseKWh(%x) = %f kWh; want %f", payload, kwh, tt.wantKwh)
+			}
+		})
+	}
+
+	// NaN must be rejected.
+	t.Run("nan", func(t *testing.T) {
+		raw := make([]byte, 4)
+		binary.LittleEndian.PutUint32(raw, math.Float32bits(float32(math.NaN())))
+		_, ok := decodeB516ResponseKWh(raw)
+		if ok {
+			t.Fatal("decodeB516ResponseKWh(NaN) returned ok=true; want ok=false")
+		}
+	})
+
+	// +Inf must be rejected.
+	t.Run("inf", func(t *testing.T) {
+		raw := make([]byte, 4)
+		binary.LittleEndian.PutUint32(raw, math.Float32bits(float32(math.Inf(1))))
+		_, ok := decodeB516ResponseKWh(raw)
+		if ok {
+			t.Fatal("decodeB516ResponseKWh(+Inf) returned ok=true; want ok=false")
+		}
+	})
+
+	// Short payload must be rejected.
+	t.Run("short_payload", func(t *testing.T) {
+		_, ok := decodeB516ResponseKWh([]byte{0x01, 0x02})
+		if ok {
+			t.Fatal("decodeB516ResponseKWh(2 bytes) returned ok=true; want ok=false")
+		}
+	})
+}
+
+func TestB516Queries_Coverage(t *testing.T) {
+	t.Parallel()
+
+	// Verify b516Queries covers all 6 expected source/usage combinations.
+	type pair struct {
+		channel string
+		usage   string
+	}
+	expected := map[pair]bool{
+		{"gas", "climate"}:           false,
+		{"gas", "hot_water"}:         false,
+		{"electricity", "climate"}:   false,
+		{"electricity", "hot_water"}: false,
+		{"solar", "climate"}:         false,
+		{"solar", "hot_water"}:       false,
+	}
+	for _, q := range b516Queries {
+		p := pair{q.channel, q.usageKey}
+		if _, ok := expected[p]; !ok {
+			t.Fatalf("unexpected query in b516Queries: channel=%q usage=%q", q.channel, q.usageKey)
+		}
+		expected[p] = true
+	}
+	for p, seen := range expected {
+		if !seen {
+			t.Fatalf("missing query in b516Queries: channel=%q usage=%q", p.channel, p.usage)
+		}
+	}
+	if len(b516Queries) != 6 {
+		t.Fatalf("len(b516Queries) = %d; want 6", len(b516Queries))
 	}
 }

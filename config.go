@@ -23,6 +23,8 @@ const (
 	DefaultSemanticZonePresenceMissThreshold = 3
 	DefaultSemanticZonePresenceHitThreshold  = 2
 	DefaultSemanticDHWStaleTTL               = 15 * time.Minute
+	DefaultSemanticRegulatorRecheckInterval  = 60 * time.Second
+	DefaultSemanticRegulatorAbsenceGrace     = 5 * time.Minute
 )
 
 type TransportConfig struct {
@@ -62,6 +64,8 @@ type Config struct {
 	SemanticZonePresenceMissThreshold     int
 	SemanticZonePresenceHitThreshold      int
 	SemanticDHWStaleTTL                   time.Duration
+	SemanticRegulatorRecheckInterval      time.Duration
+	SemanticRegulatorAbsenceGrace         time.Duration
 	SemanticCachePath                     string
 	BroadcastListen                       bool
 	HTTPAddr                              string
@@ -111,6 +115,8 @@ func DefaultConfig() Config {
 		SemanticZonePresenceMissThreshold:     DefaultSemanticZonePresenceMissThreshold,
 		SemanticZonePresenceHitThreshold:      DefaultSemanticZonePresenceHitThreshold,
 		SemanticDHWStaleTTL:                   DefaultSemanticDHWStaleTTL,
+		SemanticRegulatorRecheckInterval:      DefaultSemanticRegulatorRecheckInterval,
+		SemanticRegulatorAbsenceGrace:         DefaultSemanticRegulatorAbsenceGrace,
 		SemanticCachePath:                     "./semantic_cache.json",
 		HTTPAddr:                              ":8080",
 		GraphQLPath:                           "/graphql",
@@ -179,6 +185,12 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.SemanticDHWStaleTTL <= 0 {
 		cfg.SemanticDHWStaleTTL = DefaultSemanticDHWStaleTTL
+	}
+	if cfg.SemanticRegulatorRecheckInterval <= 0 {
+		cfg.SemanticRegulatorRecheckInterval = DefaultSemanticRegulatorRecheckInterval
+	}
+	if cfg.SemanticRegulatorAbsenceGrace <= 0 {
+		cfg.SemanticRegulatorAbsenceGrace = DefaultSemanticRegulatorAbsenceGrace
 	}
 	if cfg.SemanticCachePath == "" {
 		cfg.SemanticCachePath = "./semantic_cache.json"

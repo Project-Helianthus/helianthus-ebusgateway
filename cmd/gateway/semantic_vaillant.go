@@ -24,7 +24,6 @@ import (
 const (
 	vaillantExtRegisterPrimary   = byte(0xB5)
 	vaillantExtRegisterSecondary = byte(0x24)
-	vaillantEnergyRegSecondary   = byte(0x16)
 	vaillantB524OpcodeRead       = byte(0x06)
 	vaillantB524OpcodeLocal      = byte(0x02)
 	vaillantB524OpRead           = byte(0x00)
@@ -1979,7 +1978,11 @@ func (p *vaillantSemanticPoller) readB524Uint32LE(ctx context.Context, opcode, g
 	if !ok || len(raw) < 4 {
 		return 0, false
 	}
-	return binary.LittleEndian.Uint32(raw[:4]), true
+	v := binary.LittleEndian.Uint32(raw[:4])
+	if v == 0xFFFFFFFF {
+		return 0, false
+	}
+	return v, true
 }
 
 func resolveCircuitInstance(associatedCircuit *uint16, zoneInstance byte) byte {

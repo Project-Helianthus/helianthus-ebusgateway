@@ -647,7 +647,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"snapshot_view": streamEnabled,
 				"sessions":      true,
 				"issue_builder": true,
-				"migration":     true,
+				"migration":     false,
 			},
 			"endpoints": map[string]string{
 				"graphql":       h.opts.GraphQLPath,
@@ -668,7 +668,6 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"session_load":  "/portal/api/v1/sessions/load",
 				"issue_draft":   "/portal/api/v1/issues/draft",
 				"issue_export":  "/portal/api/v1/issues/export",
-				"vrc_migration": "/portal/api/v1/deprecation/vrc-explorer",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -712,8 +711,6 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleIssueDraft(w, r)
 	case "issues/export":
 		h.handleIssueExport(w, r)
-	case "deprecation/vrc-explorer":
-		h.handleVRCExplorerDeprecation(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -790,8 +787,6 @@ func classifyRoute(path string) string {
 		return "api.issues.draft"
 	case strings.HasPrefix(path, "/api/v1/issues/export"):
 		return "api.issues.export"
-	case strings.HasPrefix(path, "/api/v1/deprecation/vrc-explorer"):
-		return "api.deprecation.vrc_explorer"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):
@@ -1442,31 +1437,6 @@ func (h *handler) handleIssueExport(w http.ResponseWriter, r *http.Request) {
 		"filename_hint":  sanitizeFilename(draft.Title) + ".json",
 	}
 	writeJSON(w, http.StatusOK, bundle)
-}
-
-func (h *handler) handleVRCExplorerDeprecation(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"component":      "VRC-Explorer",
-		"status":         "deprecated",
-		"effective_from": "2026-02-24",
-		"freeze_mode":    true,
-		"replacement": map[string]any{
-			"name": "Helianthus Portal",
-			"path": "/portal",
-		},
-		"migration_doc": "https://github.com/d3vi1/helianthus-docs-ebus/blob/main/development/vrc-explorer-migration.md",
-		"feature_mapping": []map[string]string{
-			{"vrc_explorer": "live register browsing", "portal": "registry + projection + timeline panels"},
-			{"vrc_explorer": "manual evidence notes", "portal": "sessions + issue draft builder"},
-			{"vrc_explorer": "state snapshots", "portal": "snapshot capture/diff/retention"},
-		},
-		"deprecation_gates": []string{
-			"portal_read_path_stable",
-			"snapshot_diff_available",
-			"issue_export_bundle_available",
-			"migration_guide_published",
-		},
-	})
 }
 
 func (h *handler) buildIssueDraft(r *http.Request) IssueDraft {

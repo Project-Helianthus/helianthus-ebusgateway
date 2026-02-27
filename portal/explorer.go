@@ -172,6 +172,9 @@ func (es *explorerStore) getResults(offset, limit int) []ExplorerRegisterResult 
 		return nil
 	}
 	results := es.current.Results
+	if offset < 0 {
+		offset = 0
+	}
 	if offset >= len(results) {
 		return nil
 	}
@@ -521,7 +524,7 @@ func (es *explorerStore) readB524GroupDescriptor(ctx context.Context, target, so
 	// Extract float32 from response data.
 	data := resp.Data
 	// Parse the B524 reply payload to get the register data.
-	payload := extractB524Payload(data)
+	payload := extractB524Payload(data, group, 0x0000)
 	if len(payload) < 4 {
 		return 0, fmt.Errorf("payload too short: %d bytes", len(payload))
 	}
@@ -589,7 +592,7 @@ func (es *explorerStore) readB524Register(ctx context.Context, target, source, o
 		return result
 	}
 
-	payload := extractB524Payload(resp.Data)
+	payload := extractB524Payload(resp.Data, group, addr)
 	if len(payload) == 0 {
 		result.Error = "no data in response"
 		return result
@@ -652,8 +655,11 @@ func (es *explorerStore) readB509Register(ctx context.Context, target, source by
 }
 
 // extractB524Payload extracts register data from a B524 response.
-// Handles both 5-byte header (instance+group+addr_lo+addr_hi+data) and 4-byte header (kind+group+addr_lo+addr_hi+data).
-func extractB524Payload(data []byte) []byte {
+// Mirrors the logic from parseB524ReadPayload in semantic_vaillant.go:
+// - 5-byte header: [instance, group, addr_lo, addr_hi, ...data] when len >= 5 and group/addr match at positions [2],[3:4]
+// - 4-byte header: [kind, group, addr_lo, addr_hi, ...data] when group/addr match at positions [1],[2:3]
+// The group and addr parameters are from the original request, used to detect the header format.
+func extractB524Payload(data []byte, group byte, addr uint16) []byte {
 	if len(data) == 0 {
 		return nil
 	}
@@ -663,12 +669,31 @@ func extractB524Payload(data []byte) []byte {
 	if len(data) < 4 {
 		return nil
 	}
+
+	// Try 5-byte header format: [instance, group, addr_lo, addr_hi, ...data]
 	if len(data) >= 5 {
-		// 5-byte header: [instance, group, addr_lo, addr_hi, ...data]
-		return data[5:]
+		replyGroup := data[2]
+		replyAddr := uint16(data[3]) | uint16(data[4])<<8
+		if replyGroup == group && replyAddr == addr {
+			if len(data) <= 5 {
+				return nil
+			}
+			return data[5:]
+		}
 	}
-	// 4-byte header: [kind, group, addr_lo, addr_hi, ...data]
-	return data[4:]
+
+	// Try 4-byte header format: [kind, group, addr_lo, addr_hi, ...data]
+	replyGroup := data[1]
+	replyAddr := uint16(data[2]) | uint16(data[3])<<8
+	if replyGroup == group && replyAddr == addr {
+		if len(data) <= 4 {
+			return nil
+		}
+		return data[4:]
+	}
+
+	// No header match — return raw data as-is (best effort).
+	return data
 }
 
 // singleB524Read performs a single synchronous B524 read.
@@ -797,11 +822,16 @@ func (h *handler) handleExplorerStream(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Send initial state.
+	// Send initial state and exit early if already terminal.
 	state := h.explorer.getState()
 	data, _ := json.Marshal(state)
 	fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()
+
+	switch state.Phase {
+	case ExplorerPhaseDone, ExplorerPhaseCancelled, ExplorerPhaseError, ExplorerPhaseIdle:
+		return
+	}
 
 	for {
 		select {
@@ -895,14 +925,22 @@ func (h *handler) routeExplorer(w http.ResponseWriter, r *http.Request, path str
 			w.Header().Set("Allow", strings.Join([]string{http.MethodGet, http.MethodDelete}, ", "))
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	case "scans/current/results":
-		h.handleExplorerGetResults(w, r)
-	case "scans/current/stream":
-		h.handleExplorerStream(w, r)
-	case "read/b524":
-		h.handleExplorerSingleB524(w, r)
-	case "read/b509":
-		h.handleExplorerSingleB509(w, r)
+	case "scans/current/results", "scans/current/stream", "read/b524", "read/b509":
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return true
+		}
+		switch sub {
+		case "scans/current/results":
+			h.handleExplorerGetResults(w, r)
+		case "scans/current/stream":
+			h.handleExplorerStream(w, r)
+		case "read/b524":
+			h.handleExplorerSingleB524(w, r)
+		case "read/b509":
+			h.handleExplorerSingleB509(w, r)
+		}
 	default:
 		http.NotFound(w, r)
 	}

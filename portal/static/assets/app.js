@@ -55,6 +55,54 @@ function formatAddress(value) {
   return `0x${number.toString(16).padStart(2, "0")}`;
 }
 
+function autosizeProjectionNode(gEl, opts = {}) {
+  const padX = opts.padX ?? 10;
+  const padY = opts.padY ?? 8;
+  const minWidth = opts.minWidth ?? 0;
+  const minHeight = opts.minHeight ?? 0;
+  const rect = gEl.querySelector("rect");
+  if (!rect) return null;
+  const texts = gEl.querySelectorAll("text");
+  if (texts.length === 0) return null;
+  try {
+    let bMinX = Infinity;
+    let bMinY = Infinity;
+    let bMaxX = -Infinity;
+    let bMaxY = -Infinity;
+    for (const t of texts) {
+      const bb = t.getBBox();
+      if (bb.x < bMinX) bMinX = bb.x;
+      if (bb.y < bMinY) bMinY = bb.y;
+      if (bb.x + bb.width > bMaxX) bMaxX = bb.x + bb.width;
+      if (bb.y + bb.height > bMaxY) bMaxY = bb.y + bb.height;
+    }
+    const w = Math.max(minWidth, bMaxX - bMinX + 2 * padX);
+    const h = Math.max(minHeight, bMaxY - bMinY + 2 * padY);
+    rect.setAttribute("x", String(bMinX - padX));
+    rect.setAttribute("y", String(bMinY - padY));
+    rect.setAttribute("width", String(w));
+    rect.setAttribute("height", String(h));
+    return { x: bMinX - padX, y: bMinY - padY, width: w, height: h };
+  } catch (_) {
+    return null;
+  }
+}
+
+function autosizeAllProjectionNodes(rootOrSelector, opts = {}) {
+  const container =
+    typeof rootOrSelector === "string"
+      ? document.querySelector(rootOrSelector)
+      : rootOrSelector;
+  if (!container) return new Map();
+  const results = new Map();
+  container.querySelectorAll("g.projection-node").forEach((g) => {
+    const result = autosizeProjectionNode(g, opts);
+    const id = g.getAttribute("data-node-id");
+    if (result && id) results.set(id, result);
+  });
+  return results;
+}
+
 class PortalShell extends HTMLElement {
   connectedCallback() {
     this.render();
@@ -88,6 +136,19 @@ class PortalShell extends HTMLElement {
       clearInterval(this.snapshotInterval);
       this.snapshotInterval = undefined;
     }
+    if (this._projectionAutosizeRAF) {
+      cancelAnimationFrame(this._projectionAutosizeRAF);
+      this._projectionAutosizeRAF = 0;
+    }
+    if (this._projectionObserver) {
+      this._projectionObserver.disconnect();
+      this._projectionObserver = null;
+    }
+    if (this._projectionResizeHandler) {
+      window.removeEventListener("resize", this._projectionResizeHandler);
+      this._projectionResizeHandler = null;
+    }
+    this._projectionGraphTarget = null;
   }
 
   bindEvents() {
@@ -1176,7 +1237,7 @@ class PortalShell extends HTMLElement {
       ids.forEach((id, rowIndex) => {
         const x = paddingX + columnIndex * colGap;
         const y = paddingY + rowIndex * rowGap;
-        positions.set(id, { x, y });
+        positions.set(id, { x, y, col: columnIndex });
       });
     });
 
@@ -1192,7 +1253,7 @@ class PortalShell extends HTMLElement {
       const endY = to.y + 20;
       const cx1 = startX + 56;
       const cx2 = endX - 56;
-      return `<path d="M ${startX} ${startY} C ${cx1} ${startY}, ${cx2} ${endY}, ${endX} ${endY}" class="projection-edge" />`;
+      return `<path data-from="${escapeHtml(String(edge.from || ""))}" data-to="${escapeHtml(String(edge.to || ""))}" d="M ${startX} ${startY} C ${cx1} ${startY}, ${cx2} ${endY}, ${endX} ${endY}" class="projection-edge" />`;
     }).join("");
 
     const nodeMarkup = [...positions.entries()].map(([id, pos]) => {
@@ -1200,8 +1261,8 @@ class PortalShell extends HTMLElement {
       const pathText = String(node.path || node.canonical_path || id);
       const segments = pathText.split("/").filter(Boolean);
       const title = segments.length > 0 ? segments[segments.length - 1] : pathText;
-      const subtitle = pathText.length > 38 ? `${pathText.slice(0, 35)}...` : pathText;
-      return `<g class="projection-node" transform="translate(${pos.x},${pos.y})">
+      const subtitle = pathText;
+      return `<g class="projection-node" data-node-id="${escapeHtml(id)}" data-col="${pos.col}" transform="translate(${pos.x},${pos.y})">
         <rect width="154" height="40" rx="10" ry="10"></rect>
         <text x="10" y="16" class="projection-node-title">${escapeHtml(title)}</text>
         <text x="10" y="31" class="projection-node-subtitle">${escapeHtml(subtitle)}</text>
@@ -1219,6 +1280,126 @@ class PortalShell extends HTMLElement {
         ${nodeMarkup}
       </svg>
     `;
+    this._setupProjectionAutosize(target);
+  }
+
+  _setupProjectionAutosize(target) {
+    if (this._projectionObserver) {
+      this._projectionObserver.disconnect();
+      this._projectionObserver = null;
+    }
+    this._projectionGraphTarget = target;
+    this._scheduleProjectionAutosize(target);
+    const svg = target.querySelector("svg.projection-svg");
+    if (!svg) return;
+    this._projectionObserver = new MutationObserver(() => {
+      this._scheduleProjectionAutosize(this._projectionGraphTarget);
+    });
+    this._projectionObserver.observe(svg, {
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+    if (!this._projectionResizeHandler) {
+      let resizeTimer;
+      this._projectionResizeHandler = () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          if (this._projectionGraphTarget) {
+            this._scheduleProjectionAutosize(this._projectionGraphTarget);
+          }
+        }, 150);
+      };
+      window.addEventListener("resize", this._projectionResizeHandler);
+    }
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => {
+        if (this._projectionGraphTarget) {
+          this._scheduleProjectionAutosize(this._projectionGraphTarget);
+        }
+      });
+    }
+  }
+
+  _scheduleProjectionAutosize(target) {
+    if (!target) return;
+    if (this._projectionAutosizeRAF) {
+      cancelAnimationFrame(this._projectionAutosizeRAF);
+    }
+    this._projectionAutosizeRAF = requestAnimationFrame(() => {
+      this._projectionAutosizeRAF = requestAnimationFrame(() => {
+        this._projectionAutosizeRAF = 0;
+        this._runProjectionAutosize(target);
+      });
+    });
+  }
+
+  _runProjectionAutosize(target) {
+    const svg = target.querySelector("svg.projection-svg");
+    if (!svg) return;
+    const sizes = autosizeAllProjectionNodes(svg);
+    if (!sizes || sizes.size === 0) return;
+
+    const colMaxWidth = new Map();
+    svg.querySelectorAll("g.projection-node").forEach((g) => {
+      const col = parseInt(g.getAttribute("data-col") || "0", 10);
+      const nodeId = g.getAttribute("data-node-id");
+      const size = sizes.get(nodeId);
+      const w = size ? size.width : 154;
+      colMaxWidth.set(col, Math.max(colMaxWidth.get(col) || 0, w));
+    });
+
+    const interColGap = 66;
+    const paddingX = 70;
+    const paddingY = 60;
+    const orderedCols = [...colMaxWidth.keys()].sort((a, b) => a - b);
+    const colX = new Map();
+    let xCursor = paddingX;
+    orderedCols.forEach((col) => {
+      colX.set(col, xCursor);
+      xCursor += colMaxWidth.get(col) + interColGap;
+    });
+
+    const nodePositions = new Map();
+    svg.querySelectorAll("g.projection-node").forEach((g) => {
+      const col = parseInt(g.getAttribute("data-col") || "0", 10);
+      const nodeId = g.getAttribute("data-node-id");
+      const size = sizes.get(nodeId);
+      const newX = colX.get(col) || paddingX;
+      const transform = g.getAttribute("transform") || "";
+      const match = transform.match(/translate\(\s*[\d.eE+-]+\s*,\s*([\d.eE+-]+)\s*\)/);
+      const currentY = match ? parseFloat(match[1]) : 0;
+      g.setAttribute("transform", `translate(${newX},${currentY})`);
+      const rw = size ? size.width : 154;
+      const ry = size ? size.y : 0;
+      const rh = size ? size.height : 40;
+      nodePositions.set(nodeId, { x: newX, y: currentY, rectX: size ? size.x : 0, rectY: ry, rectW: rw, rectH: rh });
+    });
+
+    svg.querySelectorAll("path.projection-edge").forEach((path) => {
+      const fromId = path.getAttribute("data-from");
+      const toId = path.getAttribute("data-to");
+      const from = nodePositions.get(fromId);
+      const to = nodePositions.get(toId);
+      if (!from || !to) return;
+      const startX = from.x + from.rectX + from.rectW;
+      const startY = from.y + from.rectY + from.rectH / 2;
+      const endX = to.x + to.rectX;
+      const endY = to.y + to.rectY + to.rectH / 2;
+      const cx1 = startX + 56;
+      const cx2 = endX - 56;
+      path.setAttribute("d", `M ${startX} ${startY} C ${cx1} ${startY}, ${cx2} ${endY}, ${endX} ${endY}`);
+    });
+
+    const lastCol = orderedCols.length > 0 ? orderedCols[orderedCols.length - 1] : 0;
+    const totalW = (colX.get(lastCol) || 0) + (colMaxWidth.get(lastCol) || 0) + paddingX;
+    let maxBottom = 0;
+    nodePositions.forEach(({ y, rectY, rectH }) => {
+      const bottom = y + rectY + rectH;
+      if (bottom > maxBottom) maxBottom = bottom;
+    });
+    const totalH = maxBottom + paddingY;
+    svg.setAttribute("viewBox", `0 0 ${totalW} ${totalH}`);
   }
 
   render() {

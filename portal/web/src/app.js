@@ -447,7 +447,11 @@ class PortalShell extends HTMLElement {
           const layer = escapeHtml(item.layer || "unknown");
           const corr = escapeHtml(item.correlation_id || "n/a");
           const at = escapeHtml(item.at || "n/a");
-          return `<li><span class="pill">${layer}</span> <strong>${corr}</strong> <span class="muted-inline">${at}</span></li>`;
+          const hasPayload = item.payload && Object.keys(item.payload).length > 0;
+          const payloadBlock = hasPayload
+            ? `<details><summary>payload</summary><pre style="max-height:200px;overflow:auto;font-size:0.85em">${escapeHtml(JSON.stringify(item.payload, null, 2))}</pre></details>`
+            : "";
+          return `<li><span class="pill">${layer}</span> <strong>${corr}</strong> <span class="muted-inline">${at}</span>${payloadBlock}</li>`;
         })
         .join("");
     } catch (err) {
@@ -491,7 +495,10 @@ class PortalShell extends HTMLElement {
           const corr = escapeHtml(item.correlation_id || "n/a");
           const keys = Array.isArray(item.payload_keys) ? item.payload_keys.join(",") : "";
           const confidence = Number(item.confidence || 0).toFixed(2);
-          return `<li><span class="pill">prov</span> <strong>${corr}</strong> <span class="muted-inline">${source} keys=${escapeHtml(keys)} conf=${confidence}</span></li>`;
+          const decodePath = Array.isArray(item.decode_path) && item.decode_path.length > 0
+            ? ` path=${escapeHtml(item.decode_path.join(" → "))}`
+            : "";
+          return `<li><span class="pill">prov</span> <strong>${corr}</strong> <span class="muted-inline">${source} keys=${escapeHtml(keys)} conf=${confidence}${decodePath}</span></li>`;
         })
         .join("");
     } catch (err) {
@@ -528,9 +535,15 @@ class PortalShell extends HTMLElement {
           const id = escapeHtml(item.id || "n/a");
           const label = escapeHtml(item.label || "snapshot");
           const at = escapeHtml(item.captured_at || "n/a");
-          return `<li><span class="pill">snap</span> <strong>${id}</strong> <span class="muted-inline">${label} ${at}</span></li>`;
+          return `<li><span class="pill">snap</span> <a href="#" class="snapshot-view-link" data-snapshot-id="${id}"><strong>${id}</strong></a> <span class="muted-inline">${label} ${at}</span></li>`;
         })
         .join("");
+      list.querySelectorAll(".snapshot-view-link").forEach((link) => {
+        link.addEventListener("click", (e) => {
+          e.preventDefault();
+          this.viewSnapshot(link.dataset.snapshotId);
+        });
+      });
 
       const fromInput = this.querySelector('[data-role="snapshot-diff-from"]');
       const toInput = this.querySelector('[data-role="snapshot-diff-to"]');
@@ -543,6 +556,39 @@ class PortalShell extends HTMLElement {
     } catch (err) {
       list.innerHTML = "<li>Snapshot list query failed.</li>";
       console.error("snapshot query failed", err);
+    }
+  }
+
+  async viewSnapshot(id) {
+    const list = this.querySelector('[data-role="snapshots-list"]');
+    if (!list) {
+      return;
+    }
+    const existing = list.querySelector(`[data-snapshot-content="${id}"]`);
+    if (existing) {
+      existing.remove();
+      return;
+    }
+    try {
+      const response = await fetch(`api/v1/snapshots/view?id=${encodeURIComponent(id)}`);
+      if (!response.ok) {
+        return;
+      }
+      const snapshot = await response.json();
+      const link = list.querySelector(`[data-snapshot-id="${id}"]`);
+      if (!link) {
+        return;
+      }
+      const li = link.closest("li");
+      if (!li) {
+        return;
+      }
+      const detail = document.createElement("li");
+      detail.setAttribute("data-snapshot-content", id);
+      detail.innerHTML = `<details open><summary>Snapshot ${escapeHtml(id)} payload</summary><pre style="max-height:300px;overflow:auto;font-size:0.85em">${escapeHtml(JSON.stringify(snapshot.payload, null, 2))}</pre></details>`;
+      li.after(detail);
+    } catch (err) {
+      console.error("snapshot view failed", err);
     }
   }
 
@@ -836,9 +882,12 @@ class PortalShell extends HTMLElement {
       listEl.innerHTML = items
         .map((item) => {
           const addr = Number(item.address).toString(16).padStart(2, "0");
-          const model = item.device_id || "unknown";
-          const vendor = item.manufacturer || "unknown";
-          return `<li><strong>0x${addr}</strong> ${vendor} ${model}</li>`;
+          const label = escapeHtml(item.display_name || item.device_id || "unknown");
+          const vendor = escapeHtml(item.manufacturer || "unknown");
+          const role = item.role ? ` role=${escapeHtml(item.role)}` : "";
+          const sw = item.software_version ? ` sw=${escapeHtml(item.software_version)}` : "";
+          const hw = item.hardware_version ? ` hw=${escapeHtml(item.hardware_version)}` : "";
+          return `<li><strong>0x${addr}</strong> ${vendor} ${label}<span class="muted-inline">${role}${sw}${hw}</span></li>`;
         })
         .join("");
     } catch (err) {
@@ -871,12 +920,29 @@ class PortalShell extends HTMLElement {
         });
       }
       if (dhw) {
-        rows.push(`<li><strong>DHW</strong> <span class="muted-inline">mode=${escapeHtml(dhw.operating_mode || "unknown")} current=${escapeHtml(formatTemperature(dhw.current_temp_c))} target=${escapeHtml(formatTemperature(dhw.target_temp_c))}</span></li>`);
+        const dhwPreset = dhw.preset ? ` preset=${escapeHtml(dhw.preset)}` : "";
+        const dhwDemand = dhw.heating_demand != null ? ` demand=${escapeHtml(formatPercent(dhw.heating_demand))}` : "";
+        rows.push(`<li><strong>DHW</strong> <span class="muted-inline">mode=${escapeHtml(dhw.operating_mode || "unknown")}${dhwPreset} current=${escapeHtml(formatTemperature(dhw.current_temp_c))} target=${escapeHtml(formatTemperature(dhw.target_temp_c))}${dhwDemand}</span></li>`);
       }
       if (payload.energy_totals) {
+        const et = payload.energy_totals;
         rows.push(
-          `<li><strong>Energy today</strong> <span class="muted-inline">gas climate=${escapeHtml(formatFixed(payload.energy_totals?.gas?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(payload.energy_totals?.gas?.dhw?.today, 2))}</span></li>`,
+          `<li><strong>Energy today (gas)</strong> <span class="muted-inline">climate=${escapeHtml(formatFixed(et.gas?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.gas?.dhw?.today, 2))}</span></li>`,
         );
+        const elecClimate = et.electric?.climate?.today || 0;
+        const elecDHW = et.electric?.dhw?.today || 0;
+        if (elecClimate > 0 || elecDHW > 0) {
+          rows.push(
+            `<li><strong>Energy today (electric)</strong> <span class="muted-inline">climate=${escapeHtml(formatFixed(elecClimate, 2))} dhw=${escapeHtml(formatFixed(elecDHW, 2))}</span></li>`,
+          );
+        }
+        const solarClimate = et.solar?.climate?.today || 0;
+        const solarDHW = et.solar?.dhw?.today || 0;
+        if (solarClimate > 0 || solarDHW > 0) {
+          rows.push(
+            `<li><strong>Energy today (solar)</strong> <span class="muted-inline">climate=${escapeHtml(formatFixed(solarClimate, 2))} dhw=${escapeHtml(formatFixed(solarDHW, 2))}</span></li>`,
+          );
+        }
       }
       listEl.innerHTML = rows.join("");
     } catch (err) {

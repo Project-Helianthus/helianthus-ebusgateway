@@ -73,6 +73,8 @@ type RegistryDevice struct {
 	Addresses    []byte          `json:"addresses,omitempty"`
 	Manufacturer string          `json:"manufacturer"`
 	DeviceID     string          `json:"device_id"`
+	DisplayName  string          `json:"display_name,omitempty"`
+	Role         string          `json:"role,omitempty"`
 	SerialNumber string          `json:"serial_number,omitempty"`
 	Software     string          `json:"software_version"`
 	Hardware     string          `json:"hardware_version"`
@@ -642,6 +644,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"provenance":    streamEnabled,
 				"snapshots":     streamEnabled,
 				"snapshot_diff": streamEnabled,
+				"snapshot_view": streamEnabled,
 				"sessions":      true,
 				"issue_builder": true,
 				"migration":     true,
@@ -659,6 +662,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"capture":       "/portal/api/v1/snapshots/capture",
 				"retention":     "/portal/api/v1/snapshots/retention",
 				"snapshot_diff": "/portal/api/v1/snapshots/diff",
+				"snapshot_view": "/portal/api/v1/snapshots/view",
 				"sessions":      "/portal/api/v1/sessions",
 				"session_save":  "/portal/api/v1/sessions/save",
 				"session_load":  "/portal/api/v1/sessions/load",
@@ -694,6 +698,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleSnapshotsCapture(w, r)
 	case "snapshots/retention":
 		h.handleSnapshotsRetention(w, r)
+	case "snapshots/view":
+		h.handleSnapshotView(w, r)
 	case "snapshots/diff":
 		h.handleSnapshotsDiff(w, r)
 	case "sessions":
@@ -768,6 +774,8 @@ func classifyRoute(path string) string {
 		return "api.snapshots.capture"
 	case strings.HasPrefix(path, "/api/v1/snapshots/retention"):
 		return "api.snapshots.retention"
+	case strings.HasPrefix(path, "/api/v1/snapshots/view"):
+		return "api.snapshots.view"
 	case strings.HasPrefix(path, "/api/v1/snapshots/diff"):
 		return "api.snapshots.diff"
 	case strings.HasPrefix(path, "/api/v1/snapshots"):
@@ -894,6 +902,8 @@ func matchesDeviceFilter(device RegistryDevice, needle string) bool {
 	candidate := strings.ToLower(strings.Join([]string{
 		device.Manufacturer,
 		device.DeviceID,
+		device.DisplayName,
+		device.Role,
 		device.SerialNumber,
 		device.Software,
 		device.Hardware,
@@ -1243,6 +1253,24 @@ func (h *handler) handleSnapshotsList(w http.ResponseWriter, r *http.Request) {
 		"max_snapshots": maxSnapshots,
 		"items":         items,
 	})
+}
+
+func (h *handler) handleSnapshotView(w http.ResponseWriter, r *http.Request) {
+	if h.snapshots == nil {
+		http.Error(w, "snapshot store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		http.Error(w, "missing id parameter", http.StatusBadRequest)
+		return
+	}
+	snapshot, ok := h.snapshots.getByID(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (h *handler) handleSnapshotsCapture(w http.ResponseWriter, r *http.Request) {

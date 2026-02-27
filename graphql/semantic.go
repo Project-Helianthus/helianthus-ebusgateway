@@ -46,10 +46,34 @@ type EnergyTotals struct {
 	Solar    EnergyChannel
 }
 
+type BoilerState struct {
+	FlowTemperatureC         *float64
+	ReturnTemperatureC       *float64
+	CentralHeatingPumpActive *bool
+	DhwTemperatureC          *float64
+	DhwTargetTemperatureC    *float64
+}
+
+type BoilerConfig struct {
+	DhwOperatingMode *string
+}
+
+type BoilerDiagnostics struct {
+	HeatingStatusRaw *int
+	DhwStatusRaw     *int
+}
+
+type BoilerStatus struct {
+	State       BoilerState
+	Config      BoilerConfig
+	Diagnostics BoilerDiagnostics
+}
+
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
 	EnergyTotals() *EnergyTotals
+	BoilerStatus() *BoilerStatus
 }
 
 type staticSemanticProvider struct{}
@@ -63,5 +87,9 @@ func (staticSemanticProvider) DHW() *DhwStatus {
 }
 
 func (staticSemanticProvider) EnergyTotals() *EnergyTotals {
+	return nil
+}
+
+func (staticSemanticProvider) BoilerStatus() *BoilerStatus {
 	return nil
 }

@@ -76,10 +76,34 @@ type EnergyTotals struct {
 	Solar    EnergyChannel `json:"solar"`
 }
 
+type BoilerState struct {
+	FlowTemperatureC         *float64 `json:"flow_temperature_c,omitempty"`
+	ReturnTemperatureC       *float64 `json:"return_temperature_c,omitempty"`
+	CentralHeatingPumpActive *bool    `json:"central_heating_pump_active,omitempty"`
+	DhwTemperatureC          *float64 `json:"dhw_temperature_c,omitempty"`
+	DhwTargetTemperatureC    *float64 `json:"dhw_target_temperature_c,omitempty"`
+}
+
+type BoilerConfig struct {
+	DhwOperatingMode *string `json:"dhw_operating_mode,omitempty"`
+}
+
+type BoilerDiagnostics struct {
+	HeatingStatusRaw *int `json:"heating_status_raw,omitempty"`
+	DhwStatusRaw     *int `json:"dhw_status_raw,omitempty"`
+}
+
+type BoilerStatus struct {
+	State       *BoilerState       `json:"state,omitempty"`
+	Config      *BoilerConfig      `json:"config,omitempty"`
+	Diagnostics *BoilerDiagnostics `json:"diagnostics,omitempty"`
+}
+
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
 	EnergyTotals() *EnergyTotals
+	BoilerStatus() *BoilerStatus
 }
 
 type Server struct {
@@ -99,8 +123,9 @@ const (
 	toolRuntimeStatusGetName  = "ebus.v1.runtime.status.get"
 	toolSemanticZonesGetName  = "ebus.v1.semantic.zones.get"
 	toolSemanticDHWGetName    = "ebus.v1.semantic.dhw.get"
-	toolSemanticEnergyGetName = "ebus.v1.semantic.energy_totals.get"
-	toolSemanticSnapshotName  = "ebus.v1.semantic.snapshot.get"
+	toolSemanticEnergyGetName  = "ebus.v1.semantic.energy_totals.get"
+	toolSemanticBoilerGetName  = "ebus.v1.semantic.boiler_status.get"
+	toolSemanticSnapshotName   = "ebus.v1.semantic.snapshot.get"
 	toolSnapshotCaptureName   = "ebus.v1.snapshot.capture"
 	toolSnapshotDropName      = "ebus.v1.snapshot.drop"
 	toolDevicesV1Name         = "ebus.v1.registry.devices.list"
@@ -158,6 +183,10 @@ func (staticSemanticProvider) EnergyTotals() *EnergyTotals {
 	return nil
 }
 
+func (staticSemanticProvider) BoilerStatus() *BoilerStatus {
+	return nil
+}
+
 type idempotencyEntry struct {
 	signature string
 	result    any
@@ -185,6 +214,7 @@ type snapshotState struct {
 	zones   []Zone
 	dhw     *DhwStatus
 	energy  *EnergyTotals
+	boiler  *BoilerStatus
 	devices []deviceInfo
 }
 
@@ -258,6 +288,17 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			},
 		},
 		{
+			Name:        toolSemanticBoilerGetName,
+			Description: "Get semantic boiler status snapshot (flow/return temps, pump, DHW temps, diagnostics).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
 			Name:        toolSemanticSnapshotName,
 			Description: "Get a consistent semantic snapshot across selected semantic planes.",
 			InputSchema: map[string]any{
@@ -267,7 +308,7 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 						"type": "array",
 						"items": map[string]any{
 							"type": "string",
-							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals"},
+							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status"},
 						},
 					},
 					"timeout_ms": map[string]any{"type": "integer", "minimum": 1},
@@ -548,6 +589,12 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotEnergyTotals(snapshot), nil, consistency)), false), nil
+	case toolSemanticBoilerGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotBoilerStatus(snapshot), nil, consistency)), false), nil
 	case toolSemanticSnapshotName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -714,6 +761,7 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		zones:     s.snapshotZones(nil),
 		dhw:       s.snapshotDHW(nil),
 		energy:    s.snapshotEnergyTotals(nil),
+		boiler:    s.snapshotBoilerStatus(nil),
 		devices:   s.listDevices(nil),
 	}
 
@@ -785,6 +833,10 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		value.Solar = cloneEnergyChannel(value.Solar)
 		energyCopy = &value
 	}
+	var boilerCopy *BoilerStatus
+	if snapshot.boiler != nil {
+		boilerCopy = cloneMCPBoilerStatus(snapshot.boiler)
+	}
 	return snapshotState{
 		id:        snapshot.id,
 		createdAt: snapshot.createdAt,
@@ -793,6 +845,7 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		zones:     cloneZones(snapshot.zones),
 		dhw:       dhwCopy,
 		energy:    energyCopy,
+		boiler:    boilerCopy,
 		devices:   cloneDeviceInfoList(snapshot.devices),
 	}
 }
@@ -1328,6 +1381,43 @@ func (s *Server) snapshotEnergyTotals(snapshot *snapshotState) *EnergyTotals {
 	return &copy
 }
 
+func (s *Server) snapshotBoilerStatus(snapshot *snapshotState) *BoilerStatus {
+	if snapshot != nil {
+		if snapshot.boiler == nil {
+			return nil
+		}
+		return cloneMCPBoilerStatus(snapshot.boiler)
+	}
+	if s == nil || s.semantic == nil {
+		return nil
+	}
+	source := s.semantic.BoilerStatus()
+	if source == nil {
+		return nil
+	}
+	return cloneMCPBoilerStatus(source)
+}
+
+func cloneMCPBoilerStatus(status *BoilerStatus) *BoilerStatus {
+	if status == nil {
+		return nil
+	}
+	cp := *status
+	if cp.State != nil {
+		s := *cp.State
+		cp.State = &s
+	}
+	if cp.Config != nil {
+		c := *cp.Config
+		cp.Config = &c
+	}
+	if cp.Diagnostics != nil {
+		d := *cp.Diagnostics
+		cp.Diagnostics = &d
+	}
+	return &cp
+}
+
 type semanticSnapshotOptions struct {
 	planes       []string
 	timeout      time.Duration
@@ -1393,7 +1483,7 @@ func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, 
 
 func parseSemanticSnapshotOptions(args map[string]any) (semanticSnapshotOptions, error) {
 	options := semanticSnapshotOptions{
-		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals"},
+		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status"},
 		timeout:      defaultSnapshotReadTTL,
 		allowPartial: false,
 	}
@@ -1459,7 +1549,7 @@ func parseSemanticSnapshotPlanes(raw any) ([]string, error) {
 		}
 		normalized := strings.ToLower(strings.TrimSpace(value))
 		switch normalized {
-		case "runtime_status", "zones", "dhw", "energy_totals":
+		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status":
 		default:
 			return nil, fmt.Errorf("unsupported plane %q: %w", value, ebuserrors.ErrInvalidPayload)
 		}
@@ -1492,6 +1582,8 @@ func (s *Server) readSemanticPlane(ctx context.Context, plane string, snapshot *
 		value = s.snapshotDHW(snapshot)
 	case "energy_totals":
 		value = s.snapshotEnergyTotals(snapshot)
+	case "boiler_status":
+		value = s.snapshotBoilerStatus(snapshot)
 	default:
 		return nil, fmt.Errorf("unsupported plane %q: %w", plane, ebuserrors.ErrInvalidPayload)
 	}

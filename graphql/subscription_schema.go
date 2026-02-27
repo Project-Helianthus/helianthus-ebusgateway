@@ -160,6 +160,22 @@ func buildSubscriptionType(hub *BroadcastHub, types graphqlSchemaTypes) *graphql
 					return params.Source, nil
 				},
 			},
+			"boilerStatusUpdate": &graphqlgo.Field{
+				Type: types.boilerStatusType,
+				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
+					ctx := params.Context
+					if ctx == nil {
+						ctx = context.Background()
+					}
+					return hub.SubscribeBoiler(ctx)
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if params.Source == nil {
+						return nil, fmt.Errorf("graphql subscription missing boiler status payload: %w", ebuserrors.ErrInvalidPayload)
+					}
+					return params.Source, nil
+				},
+			},
 		},
 	})
 }

@@ -116,6 +116,7 @@ type vaillantSemanticPoller struct {
 	configInterval    time.Duration
 	stateInterval     time.Duration
 	energyInterval    time.Duration
+	boilerInterval    time.Duration
 	zoneMissThreshold int
 	zoneHitThreshold  int
 	dhwStaleTTL       time.Duration
@@ -138,6 +139,9 @@ type vaillantSemanticPoller struct {
 	presence                 map[byte]*zonePresenceRecord
 	dhw                      *vaillantDhwSnapshot
 	dhwLastUpdateAt          time.Time
+	boilerAddr               byte
+	boilerAddrFound          bool
+	boiler                   *vaillantBoilerSnapshot
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	nowFn                  func() time.Time
@@ -310,6 +314,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		configInterval:    cfg.SemanticConfigInterval,
 		stateInterval:     cfg.SemanticStateInterval,
 		energyInterval:    cfg.SemanticEnergyInterval,
+		boilerInterval:    30 * time.Second,
 		zoneMissThreshold: cfg.SemanticZonePresenceMissThreshold,
 		zoneHitThreshold:  cfg.SemanticZonePresenceHitThreshold,
 		dhwStaleTTL:       cfg.SemanticDHWStaleTTL,
@@ -429,6 +434,9 @@ func (p *vaillantSemanticPoller) hydrateFromCache(snapshot semanticCacheSnapshot
 		} else {
 			p.markDHWUpdatedNowLocked()
 		}
+	}
+	if snapshot.Boiler != nil {
+		p.boiler = boilerSnapshotFromGraphQL(snapshot.Boiler)
 	}
 	semanticZoneCount.Set(int64(len(p.zones)))
 }
@@ -715,12 +723,14 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
 	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshBoilerStatus)
 
 	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
 	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityMedium, p.refreshConfig)
 	go p.runLoop(ctx, p.stateInterval, semanticTaskPriorityHigh, p.refreshState)
 	go p.runLoop(ctx, p.energyInterval, semanticTaskPriorityMedium, p.refreshEnergy)
+	go p.runLoop(ctx, p.boilerInterval, semanticTaskPriorityHigh, p.refreshBoilerStatus)
 }
 
 func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Duration, priority semanticTaskPriority, fn func(context.Context)) {
@@ -1579,6 +1589,351 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 	p.persistSemanticCache(source)
 }
 
+// --- Boiler status ---
+
+const (
+	vaillantB504Primary   = byte(0xB5)
+	vaillantB504Secondary = byte(0x04)
+	vaillantB504OpParams  = byte(0x09) // get_parameters
+	vaillantB504OpStatus  = byte(0x0D) // get_status
+
+	data2bReplacementRaw = int16(-32768) // 0x8000 — replacement value for DATA2b
+	data1bReplacement    = int8(-128)    // 0x80 — replacement value for DATA1b
+)
+
+type vaillantBoilerSnapshot struct {
+	FlowTemperatureC         *float64
+	ReturnTemperatureC       *float64
+	CentralHeatingPumpActive *bool
+	DhwTemperatureC          *float64
+	DhwTargetTemperatureC    *float64
+	DhwOperatingMode         *int
+	HeatingStatusRaw         *int
+	DhwStatusRaw             *int
+}
+
+// findBoilerAddress discovers the boiler device address from the registry
+// using the product catalog role classification.
+func (p *vaillantSemanticPoller) findBoilerAddress() (byte, bool) {
+	p.mu.Lock()
+	if p.boilerAddrFound {
+		addr := p.boilerAddr
+		p.mu.Unlock()
+		return addr, true
+	}
+	p.mu.Unlock()
+
+	if p.reg == nil || p.catalogErr != nil {
+		return 0, false
+	}
+
+	var found bool
+	var addr byte
+	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry == nil {
+			return true
+		}
+		if !strings.EqualFold(entry.Manufacturer(), "Vaillant") {
+			return true
+		}
+		partNumber := extractPartNumberFromSerial(entry.SerialNumber())
+		if partNumber == "" {
+			return true
+		}
+		record, ok := p.catalog.ByPartNumber[partNumber]
+		if !ok {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(record.Role), "Boiler") {
+			addr = entry.Address()
+			found = true
+			return false
+		}
+		return true
+	})
+
+	if found {
+		p.mu.Lock()
+		p.boilerAddr = addr
+		p.boilerAddrFound = true
+		p.mu.Unlock()
+	}
+	return addr, found
+}
+
+// readB504Value sends a B504 frame to the target with the given opcode and
+// returns the raw response bytes. Uses the same retry/circuit-breaker pattern
+// as readB524Value.
+func (p *vaillantSemanticPoller) readB504Value(ctx context.Context, target, opcode byte) ([]byte, bool) {
+	source := p.source
+	if source == 0 {
+		return nil, false
+	}
+	if target == 0 {
+		return nil, false
+	}
+
+	key := fmt.Sprintf("b504:%02x:%02x", target, opcode)
+	value, err := p.scheduler.Get(ctx, key, 500*time.Millisecond, func(ctx context.Context) ([]byte, error) {
+		var lastErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			p.readMu.Lock()
+
+			reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			request := protocol.Frame{
+				Source:    source,
+				Target:    target,
+				Primary:   vaillantB504Primary,
+				Secondary: vaillantB504Secondary,
+				Data:      []byte{opcode},
+			}
+			response, err := p.bus.Send(reqCtx, request)
+			cancel()
+			p.readMu.Unlock()
+
+			if err != nil {
+				lastErr = err
+			} else if response == nil {
+				lastErr = fmt.Errorf("b504 read returned nil response")
+			} else if len(response.Data) == 0 {
+				lastErr = fmt.Errorf("b504 read returned empty response")
+			} else {
+				return response.Data, nil
+			}
+
+			if attempt < 2 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(75 * time.Millisecond):
+				}
+			}
+		}
+		if lastErr == nil {
+			lastErr = fmt.Errorf("b504 read failed")
+		}
+		return nil, lastErr
+	})
+	if err != nil {
+		return nil, false
+	}
+	return value, true
+}
+
+// decodeDATA2b decodes a 2-byte little-endian signed value with resolution 1/256.
+func decodeDATA2b(data []byte) (float64, bool) {
+	if len(data) < 2 {
+		return 0, false
+	}
+	raw := int16(data[0]) | int16(data[1])<<8
+	if raw == data2bReplacementRaw {
+		return 0, false
+	}
+	return float64(raw) / 256.0, true
+}
+
+// decodeDATA1b decodes a 1-byte signed value. Returns false if replacement value.
+func decodeDATA1b(b byte) (int, bool) {
+	raw := int8(b)
+	if raw == data1bReplacement {
+		return 0, false
+	}
+	return int(raw), true
+}
+
+// refreshBoilerStatus reads B504 operational data from the boiler device.
+func (p *vaillantSemanticPoller) refreshBoilerStatus(ctx context.Context) {
+	if p == nil {
+		return
+	}
+
+	addr, ok := p.findBoilerAddress()
+	if !ok {
+		return
+	}
+
+	snapshot := &vaillantBoilerSnapshot{}
+
+	// Read heating get_parameters (op=0x09): [flow_temp:DATA2b, return_temp:DATA2b, pump_status:DATA1b]
+	if data, ok := p.readB504Value(ctx, addr, vaillantB504OpParams); ok && len(data) >= 5 {
+		if flow, ok := decodeDATA2b(data[0:2]); ok {
+			snapshot.FlowTemperatureC = &flow
+		}
+		if ret, ok := decodeDATA2b(data[2:4]); ok {
+			snapshot.ReturnTemperatureC = &ret
+		}
+		if pump, ok := decodeDATA1b(data[4]); ok {
+			active := pump != 0
+			snapshot.CentralHeatingPumpActive = &active
+		}
+	}
+
+	// Read heating get_status (op=0x0D): [status:DATA1b]
+	if data, ok := p.readB504Value(ctx, addr, vaillantB504OpStatus); ok && len(data) >= 1 {
+		if status, ok := decodeDATA1b(data[0]); ok {
+			snapshot.HeatingStatusRaw = &status
+		}
+	}
+
+	// DHW data comes from B524 extended registers on the controller, not B504 on the
+	// boiler. The boiler's B504 op=0x09 returns heating parameters only. DHW temp is
+	// already polled via the existing refreshDHW path on the regulator. We don't
+	// duplicate it here — the BoilerStatus.State.DhwTemperatureC will be nil until
+	// we verify that B504 to the boiler also returns DHW data (it might not).
+
+	p.mu.Lock()
+	p.boiler = snapshot
+	p.mu.Unlock()
+
+	p.publishBoilerStatus(semanticSnapshotSourceLive)
+}
+
+func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSource) {
+	if p == nil || p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	snapshot := p.boiler
+	p.mu.Unlock()
+
+	previous := p.provider.BoilerStatus()
+
+	if snapshot == nil {
+		if previous != nil {
+			switch source {
+			case semanticSnapshotSourceCache:
+				p.provider.SetBoilerStatusFromCache(nil)
+			default:
+				p.provider.SetBoilerStatus(nil)
+			}
+		}
+		return
+	}
+
+	current := &graphql.BoilerStatus{
+		State: graphql.BoilerState{
+			FlowTemperatureC:         snapshot.FlowTemperatureC,
+			ReturnTemperatureC:       snapshot.ReturnTemperatureC,
+			CentralHeatingPumpActive: snapshot.CentralHeatingPumpActive,
+			DhwTemperatureC:          snapshot.DhwTemperatureC,
+			DhwTargetTemperatureC:    snapshot.DhwTargetTemperatureC,
+		},
+		Config: graphql.BoilerConfig{},
+		Diagnostics: graphql.BoilerDiagnostics{
+			HeatingStatusRaw: snapshot.HeatingStatusRaw,
+			DhwStatusRaw:     snapshot.DhwStatusRaw,
+		},
+	}
+	if snapshot.DhwOperatingMode != nil {
+		mode := decodeDhwMode(*snapshot.DhwOperatingMode)
+		current.Config.DhwOperatingMode = &mode
+	}
+
+	switch source {
+	case semanticSnapshotSourceCache:
+		p.provider.SetBoilerStatusFromCache(current)
+	default:
+		p.provider.SetBoilerStatus(current)
+	}
+	if p.hub != nil && !boilerStatusEquals(previous, current) {
+		p.hub.PublishBoilerStatusUpdate(current)
+	}
+	p.persistSemanticCache(source)
+}
+
+func decodeDhwMode(raw int) string {
+	switch raw {
+	case 0:
+		return "OFF"
+	case 1:
+		return "ON"
+	case 2:
+		return "AUTO"
+	default:
+		return fmt.Sprintf("UNKNOWN(%d)", raw)
+	}
+}
+
+func boilerStatusEquals(a, b *graphql.BoilerStatus) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if !floatPtrEquals(a.State.FlowTemperatureC, b.State.FlowTemperatureC) {
+		return false
+	}
+	if !floatPtrEquals(a.State.ReturnTemperatureC, b.State.ReturnTemperatureC) {
+		return false
+	}
+	if !boolPtrEquals(a.State.CentralHeatingPumpActive, b.State.CentralHeatingPumpActive) {
+		return false
+	}
+	if !floatPtrEquals(a.State.DhwTemperatureC, b.State.DhwTemperatureC) {
+		return false
+	}
+	if !floatPtrEquals(a.State.DhwTargetTemperatureC, b.State.DhwTargetTemperatureC) {
+		return false
+	}
+	if !stringPtrEquals(a.Config.DhwOperatingMode, b.Config.DhwOperatingMode) {
+		return false
+	}
+	if !intPtrEquals(a.Diagnostics.HeatingStatusRaw, b.Diagnostics.HeatingStatusRaw) {
+		return false
+	}
+	if !intPtrEquals(a.Diagnostics.DhwStatusRaw, b.Diagnostics.DhwStatusRaw) {
+		return false
+	}
+	return true
+}
+
+func boolPtrEquals(a, b *bool) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func stringPtrEquals(a, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func intPtrEquals(a, b *int) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func boilerSnapshotFromGraphQL(status *graphql.BoilerStatus) *vaillantBoilerSnapshot {
+	if status == nil {
+		return nil
+	}
+	return &vaillantBoilerSnapshot{
+		FlowTemperatureC:         status.State.FlowTemperatureC,
+		ReturnTemperatureC:       status.State.ReturnTemperatureC,
+		CentralHeatingPumpActive: status.State.CentralHeatingPumpActive,
+		DhwTemperatureC:          status.State.DhwTemperatureC,
+		DhwTargetTemperatureC:    status.State.DhwTargetTemperatureC,
+		HeatingStatusRaw:         status.Diagnostics.HeatingStatusRaw,
+		DhwStatusRaw:             status.Diagnostics.DhwStatusRaw,
+	}
+}
+
 func (p *vaillantSemanticPoller) persistSemanticCache(source semanticSnapshotSource) {
 	if p == nil || source != semanticSnapshotSourceLive {
 		return
@@ -1591,8 +1946,9 @@ func (p *vaillantSemanticPoller) persistSemanticSnapshot() {
 		return
 	}
 	_ = p.cache.Save(semanticCacheSnapshot{
-		Zones: p.provider.Zones(),
-		DHW:   p.provider.DHW(),
+		Zones:  p.provider.Zones(),
+		DHW:    p.provider.DHW(),
+		Boiler: p.provider.BoilerStatus(),
 	})
 }
 

@@ -68,6 +68,57 @@ func (adapter mcpSemanticProviderAdapter) EnergyTotals() *mcp.EnergyTotals {
 	}
 }
 
+func (adapter mcpSemanticProviderAdapter) BoilerStatus() *mcp.BoilerStatus {
+	if adapter.provider == nil {
+		return nil
+	}
+	status := adapter.provider.BoilerStatus()
+	if status == nil {
+		return nil
+	}
+	out := &mcp.BoilerStatus{
+		State: &mcp.BoilerState{
+			FlowTemperatureC:         cloneFloatPtr(status.State.FlowTemperatureC),
+			ReturnTemperatureC:       cloneFloatPtr(status.State.ReturnTemperatureC),
+			CentralHeatingPumpActive: cloneBoolPtr(status.State.CentralHeatingPumpActive),
+			DhwTemperatureC:          cloneFloatPtr(status.State.DhwTemperatureC),
+			DhwTargetTemperatureC:    cloneFloatPtr(status.State.DhwTargetTemperatureC),
+		},
+		Config: &mcp.BoilerConfig{
+			DhwOperatingMode: cloneStringPtr(status.Config.DhwOperatingMode),
+		},
+		Diagnostics: &mcp.BoilerDiagnostics{
+			HeatingStatusRaw: cloneIntPtr(status.Diagnostics.HeatingStatusRaw),
+			DhwStatusRaw:     cloneIntPtr(status.Diagnostics.DhwStatusRaw),
+		},
+	}
+	return out
+}
+
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cp := *value
+	return &cp
+}
+
+func cloneStringPtr(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cp := *value
+	return &cp
+}
+
+func cloneIntPtr(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cp := *value
+	return &cp
+}
+
 func mapEnergyChannel(channel graphql.EnergyChannel) mcp.EnergyChannel {
 	return mcp.EnergyChannel{
 		DHW:     mapEnergySeries(channel.DHW),

@@ -21,7 +21,7 @@ import (
 
 type mockExplorerBus struct {
 	mu       sync.Mutex
-	handler  func(protocol.Frame) (*protocol.Frame, error)
+	handler  func(context.Context, protocol.Frame) (*protocol.Frame, error)
 	requests []protocol.Frame
 }
 
@@ -31,7 +31,7 @@ func (m *mockExplorerBus) Send(ctx context.Context, frame protocol.Frame) (*prot
 	handler := m.handler
 	m.mu.Unlock()
 	if handler != nil {
-		return handler(frame)
+		return handler(ctx, frame)
 	}
 	return nil, fmt.Errorf("no handler configured")
 }
@@ -242,11 +242,15 @@ func TestExplorerResults_NegativeOffset(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want %d (should not panic on negative offset)", rec.Code, http.StatusOK)
 	}
+	payload := explorerJSON(t, rec)
+	if int(payload["count"].(float64)) != 0 {
+		t.Fatalf("count = %v; want 0 (no results in idle scan)", payload["count"])
+	}
 }
 
 func TestExplorerSingleB524Read(t *testing.T) {
 	bus := &mockExplorerBus{
-		handler: func(frame protocol.Frame) (*protocol.Frame, error) {
+		handler: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
 			if frame.Primary != 0xB5 || frame.Secondary != 0x24 {
 				return nil, fmt.Errorf("unexpected frame: %02x.%02x", frame.Primary, frame.Secondary)
 			}
@@ -304,7 +308,7 @@ func TestExplorerSingleB524Read(t *testing.T) {
 
 func TestExplorerSingleB509Read(t *testing.T) {
 	bus := &mockExplorerBus{
-		handler: func(frame protocol.Frame) (*protocol.Frame, error) {
+		handler: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
 			if frame.Primary != 0xB5 || frame.Secondary != 0x09 {
 				return nil, fmt.Errorf("unexpected frame: %02x.%02x", frame.Primary, frame.Secondary)
 			}
@@ -336,7 +340,7 @@ func TestExplorerSingleB509Read(t *testing.T) {
 
 func TestExplorerSingleB524Read_BusError(t *testing.T) {
 	bus := &mockExplorerBus{
-		handler: func(frame protocol.Frame) (*protocol.Frame, error) {
+		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {
 			return nil, fmt.Errorf("bus timeout")
 		},
 	}
@@ -378,10 +382,8 @@ func TestExplorerSingleB509Read_MissingAddr(t *testing.T) {
 }
 
 func TestExplorerB509ScanLifecycle(t *testing.T) {
-	callCount := 0
 	bus := &mockExplorerBus{
-		handler: func(frame protocol.Frame) (*protocol.Frame, error) {
-			callCount++
+		handler: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
 			return &protocol.Frame{
 				Source:    frame.Target,
 				Target:    frame.Source,
@@ -440,7 +442,7 @@ func TestExplorerB509ScanLifecycle(t *testing.T) {
 
 func TestExplorerB524ScanLifecycle(t *testing.T) {
 	bus := &mockExplorerBus{
-		handler: func(frame protocol.Frame) (*protocol.Frame, error) {
+		handler: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
 			if frame.Primary != 0xB5 || frame.Secondary != 0x24 {
 				return nil, fmt.Errorf("unexpected frame")
 			}
@@ -551,11 +553,11 @@ func TestExplorerB524ScanLifecycle(t *testing.T) {
 }
 
 func TestExplorerScanAlreadyRunning(t *testing.T) {
-	// Bus that never returns (blocks until context cancelled).
+	// Bus that blocks until context is cancelled (no goroutine leak).
 	bus := &mockExplorerBus{
-		handler: func(frame protocol.Frame) (*protocol.Frame, error) {
-			time.Sleep(10 * time.Second)
-			return nil, fmt.Errorf("timeout")
+		handler: func(ctx context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
 		},
 	}
 	h := explorerHandler(bus)

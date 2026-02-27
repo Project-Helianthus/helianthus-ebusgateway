@@ -564,17 +564,24 @@ class PortalShell extends HTMLElement {
     if (!list) {
       return;
     }
+    if (this._snapshotViewPending) {
+      return;
+    }
     const existing = list.querySelector(`[data-snapshot-content="${id}"]`);
     if (existing) {
       existing.remove();
       return;
     }
+    this._snapshotViewPending = true;
     try {
       const response = await fetch(`api/v1/snapshots/view?id=${encodeURIComponent(id)}`);
       if (!response.ok) {
         return;
       }
       const snapshot = await response.json();
+      if (list.querySelector(`[data-snapshot-content="${id}"]`)) {
+        return;
+      }
       const link = list.querySelector(`[data-snapshot-id="${id}"]`);
       if (!link) {
         return;
@@ -589,6 +596,8 @@ class PortalShell extends HTMLElement {
       li.after(detail);
     } catch (err) {
       console.error("snapshot view failed", err);
+    } finally {
+      this._snapshotViewPending = false;
     }
   }
 

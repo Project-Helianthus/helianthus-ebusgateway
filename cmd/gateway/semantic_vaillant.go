@@ -156,7 +156,6 @@ type vaillantSemanticPoller struct {
 
 	mu                       sync.Mutex
 	controller               byte
-	energyDevice             byte
 	regulatorCapability      productids.ControllerCapability
 	regAbsenceState          regulatorAbsenceState
 	regAbsenceSince          time.Time
@@ -1385,12 +1384,12 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 	// Discover energy target: BAI device (boiler) for B5.16 reads.
 	energyTarget, ok := findDeviceAddressByPrefix(p.reg, "BAI")
 	if !ok {
+		log.Printf("semantic energy register skip: no BAI device discovered")
 		return
 	}
 
 	p.mu.Lock()
 	regCap := p.regulatorCapability
-	p.energyDevice = energyTarget
 	p.mu.Unlock()
 
 	if regCap != productids.ControllerPresent {

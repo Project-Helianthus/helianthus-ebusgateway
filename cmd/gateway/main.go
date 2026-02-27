@@ -290,6 +290,11 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 			GatewayVersion:   buildVersion,
 			BuildID:          buildID,
 			ListRegistry: func() []portal.RegistryDevice {
+				schemaSnapshot := builder.Schema()
+				schemaByAddr := make(map[byte]graphql.Device, len(schemaSnapshot.Devices))
+				for _, sd := range schemaSnapshot.Devices {
+					schemaByAddr[sd.Address] = sd
+				}
 				items := make([]portal.RegistryDevice, 0)
 				gateway.Registry.Iterate(func(entry registry.DeviceEntry) bool {
 					if entry == nil {
@@ -304,6 +309,10 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 						Software:     entry.SoftwareVersion(),
 						Hardware:     entry.HardwareVersion(),
 						Planes:       make([]portal.RegistryPlane, 0),
+					}
+					if sd, ok := schemaByAddr[entry.Address()]; ok {
+						device.DisplayName = sd.DisplayName
+						device.Role = sd.Role
 					}
 					for _, plane := range entry.Planes() {
 						if plane == nil {

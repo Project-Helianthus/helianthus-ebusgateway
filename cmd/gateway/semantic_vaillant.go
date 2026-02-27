@@ -1385,35 +1385,6 @@ func (p *vaillantSemanticPoller) refreshEnergy(_ context.Context) {
 	// until B5.24 VRC register reads are implemented.
 }
 
-func (p *vaillantSemanticPoller) deviceSupportsEnergyReads(addr byte) bool {
-	if p == nil || p.reg == nil || addr == 0 {
-		return false
-	}
-	entry, ok := p.reg.Lookup(addr)
-	if !ok {
-		// Unknown device details: attempt reads and rely on read failure handling.
-		return true
-	}
-	for _, plane := range entry.Planes() {
-		if plane == nil {
-			continue
-		}
-		for _, method := range plane.Methods() {
-			if method == nil || method.Name() != "get_energy_stats" {
-				continue
-			}
-			template := method.Template()
-			if template == nil {
-				continue
-			}
-			if template.Primary() == vaillantExtRegisterPrimary && template.Secondary() == vaillantEnergyRegSecondary {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapshotSource {
 	controller, _ := p.snapshotZones()
 	if controller == 0 {
@@ -1789,69 +1760,6 @@ func isAllDigits(value string) bool {
 		}
 	}
 	return true
-}
-
-func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, target byte, data []byte) (float64, bool) {
-	if p == nil || p.bus == nil || target == 0 {
-		return 0, false
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	p.mu.Lock()
-	source := p.source
-	timeout := p.requestTimeout
-	p.mu.Unlock()
-	if timeout <= 0 {
-		timeout = 2 * time.Second
-	}
-
-	key := fmt.Sprintf("b516:%02x:%x", target, data)
-	payload, err := p.scheduler.Get(ctx, key, 500*time.Millisecond, func(ctx context.Context) ([]byte, error) {
-		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			p.readMu.Lock()
-			reqCtx, cancel := context.WithTimeout(ctx, timeout)
-			request := protocol.Frame{
-				Source:    source,
-				Target:    target,
-				Primary:   vaillantExtRegisterPrimary,
-				Secondary: vaillantEnergyRegSecondary,
-				Data:      data,
-			}
-			response, err := p.bus.Send(reqCtx, request)
-			cancel()
-			p.readMu.Unlock()
-
-			if err != nil {
-				lastErr = err
-			} else if response == nil {
-				lastErr = fmt.Errorf("b516 read returned nil response")
-			} else if len(response.Data) < 4 {
-				lastErr = fmt.Errorf("b516 read returned short payload len=%d", len(response.Data))
-			} else {
-				return response.Data, nil
-			}
-
-			if attempt < 2 {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(75 * time.Millisecond):
-				}
-			}
-		}
-		if lastErr == nil {
-			lastErr = fmt.Errorf("b516 read failed")
-		}
-		return nil, lastErr
-	})
-	if err != nil || len(payload) < 4 {
-		return 0, false
-	}
-
-	return decodeB516ResponseKWh(payload)
 }
 
 // decodeB516ResponseKWh extracts the energy value from a B5.16 response payload.

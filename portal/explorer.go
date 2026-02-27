@@ -318,7 +318,10 @@ func (es *explorerStore) runB524Scan(ctx context.Context, req ExplorerScanReques
 		gr := ExplorerGroupResult{
 			Group:    group,
 			GroupHex: fmt.Sprintf("%02x", group),
-			Value:    val,
+		}
+		// NaN/Inf are not JSON-serializable; store 0 instead.
+		if err == nil && !math.IsNaN(float64(val)) && !math.IsInf(float64(val), 0) {
+			gr.Value = val
 		}
 		if err != nil {
 			// Error reading = group doesn't exist or bus error.
@@ -604,7 +607,10 @@ func (es *explorerStore) readB524Register(ctx context.Context, target, source, o
 	// Default float interpretation (LE float32 if 4+ bytes).
 	if len(payload) >= 4 {
 		bits := uint32(payload[0]) | uint32(payload[1])<<8 | uint32(payload[2])<<16 | uint32(payload[3])<<24
-		result.DefaultFloat = float64(math.Float32frombits(bits))
+		f := float64(math.Float32frombits(bits))
+		if !math.IsNaN(f) && !math.IsInf(f, 0) {
+			result.DefaultFloat = f
+		}
 	}
 
 	return result
@@ -648,7 +654,10 @@ func (es *explorerStore) readB509Register(ctx context.Context, target, source by
 
 	if len(resp.Data) >= 4 {
 		bits := uint32(resp.Data[0]) | uint32(resp.Data[1])<<8 | uint32(resp.Data[2])<<16 | uint32(resp.Data[3])<<24
-		result.DefaultFloat = float64(math.Float32frombits(bits))
+		f := float64(math.Float32frombits(bits))
+		if !math.IsNaN(f) && !math.IsInf(f, 0) {
+			result.DefaultFloat = f
+		}
 	}
 
 	return result

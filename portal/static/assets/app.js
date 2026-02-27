@@ -55,6 +55,38 @@ function formatAddress(value) {
   return `0x${number.toString(16).padStart(2, "0")}`;
 }
 
+function explorerDecode(rawHex, rawLen, type) {
+  if (!rawHex || rawLen === 0) return "";
+  const bytes = new Uint8Array(rawHex.match(/.{1,2}/g).map((b) => parseInt(b, 16)));
+  const view = new DataView(bytes.buffer);
+  try {
+    switch (type) {
+      case "exp":
+        return rawLen >= 4 ? view.getFloat32(0, true).toFixed(4) : "n/a (<4B)";
+      case "ulg":
+        return rawLen >= 4 ? String(view.getUint32(0, true)) : "n/a (<4B)";
+      case "uin":
+        return rawLen >= 2 ? String(view.getUint16(0, true)) : "n/a (<2B)";
+      case "sin":
+        return rawLen >= 2 ? String(view.getInt16(0, true)) : "n/a (<2B)";
+      case "uch":
+        return rawLen >= 1 ? String(view.getUint8(0)) : "n/a";
+      case "sch":
+        return rawLen >= 1 ? String(view.getInt8(0)) : "n/a";
+      case "str": {
+        const decoder = new TextDecoder("utf-8", { fatal: false });
+        const text = decoder.decode(bytes);
+        return text.replace(/\0.*$/, "");
+      }
+      case "hex":
+      default:
+        return rawHex;
+    }
+  } catch {
+    return rawHex;
+  }
+}
+
 function autosizeProjectionNode(gEl, opts = {}) {
   const padX = opts.padX ?? 10;
   const padY = opts.padY ?? 8;
@@ -149,6 +181,14 @@ class PortalShell extends HTMLElement {
       this._projectionResizeHandler = null;
     }
     this._projectionGraphTarget = null;
+    if (this._explorerPollTimer) {
+      clearInterval(this._explorerPollTimer);
+      this._explorerPollTimer = undefined;
+    }
+    if (this._explorerSSE) {
+      this._explorerSSE.close();
+      this._explorerSSE = undefined;
+    }
   }
 
   bindEvents() {
@@ -247,6 +287,7 @@ class PortalShell extends HTMLElement {
         this.activateSection(targetID);
       });
     });
+    this.bindExplorerEvents();
   }
 
   activateSection(targetID) {
@@ -254,6 +295,7 @@ class PortalShell extends HTMLElement {
       "section-registry": ["section-registry"],
       "section-semantic": ["section-semantic"],
       "section-projection": ["section-projection"],
+      "section-explorer": ["section-explorer"],
       "section-timeline": ["section-timeline", "section-provenance"],
       "section-snapshots": ["section-snapshots", "section-snapshot-diff", "section-sessions"],
       "section-issue-builder": ["section-issue-builder"],
@@ -391,6 +433,9 @@ class PortalShell extends HTMLElement {
           ? "Issue builder ready. Fill fields and generate draft."
           : "Issue builder unavailable.";
       }
+      if (capabilities.explorer) {
+        this.initExplorer();
+      }
     } catch (err) {
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
@@ -407,6 +452,7 @@ class PortalShell extends HTMLElement {
     this.setNavState("registry", cap.registry);
     this.setNavState("semantic", cap.semantic);
     this.setNavState("projection", cap.projection);
+    this.setNavState("explorer", cap.explorer);
     this.setNavState("timeline", cap.timeline || cap.provenance);
     this.setNavState("snapshots", cap.snapshots || cap.snapshot_diff);
     this.setNavState("issue-builder", cap.issue_builder);
@@ -1402,6 +1448,252 @@ class PortalShell extends HTMLElement {
     svg.setAttribute("viewBox", `0 0 ${totalW} ${totalH}`);
   }
 
+  // --- Explorer ---
+
+  bindExplorerEvents() {
+    const kindSelect = this.querySelector('[data-role="explorer-kind"]');
+    const scanButton = this.querySelector('[data-role="explorer-scan"]');
+    const cancelButton = this.querySelector('[data-role="explorer-cancel"]');
+    const quickReadButton = this.querySelector('[data-role="explorer-quick-read"]');
+    const typeSelect = this.querySelector('[data-role="explorer-type-select"]');
+    if (kindSelect) {
+      kindSelect.addEventListener("change", () => {
+        const b524Opts = this.querySelector('[data-role="explorer-b524-opts"]');
+        const b509Opts = this.querySelector('[data-role="explorer-b509-opts"]');
+        const opcodeSelect = this.querySelector('[data-role="explorer-opcode"]');
+        const quickDiv = this.querySelector('[data-role="explorer-quick"]');
+        if (kindSelect.value === "b509") {
+          if (b524Opts) b524Opts.style.display = "none";
+          if (b509Opts) b509Opts.style.display = "";
+          if (opcodeSelect) opcodeSelect.style.display = "none";
+          if (quickDiv) quickDiv.style.display = "none";
+        } else {
+          if (b524Opts) b524Opts.style.display = "";
+          if (b509Opts) b509Opts.style.display = "none";
+          if (opcodeSelect) opcodeSelect.style.display = "";
+          if (quickDiv) quickDiv.style.display = "";
+        }
+      });
+    }
+    if (scanButton) {
+      scanButton.addEventListener("click", () => {
+        this.startExplorerScan();
+      });
+    }
+    if (cancelButton) {
+      cancelButton.addEventListener("click", () => {
+        this.cancelExplorerScan();
+      });
+    }
+    if (quickReadButton) {
+      quickReadButton.addEventListener("click", () => {
+        this.explorerQuickRead();
+      });
+    }
+    if (typeSelect) {
+      typeSelect.addEventListener("change", () => {
+        this.recastExplorerResults();
+      });
+    }
+  }
+
+  async initExplorer() {
+    const deviceSelect = this.querySelector('[data-role="explorer-device"]');
+    if (!deviceSelect) return;
+    try {
+      const res = await fetch("api/v1/registry/devices");
+      const payload = await res.json();
+      const devices = Array.isArray(payload.devices) ? payload.devices : [];
+      deviceSelect.innerHTML = '<option value="">Select device...</option>' +
+        devices.map((d) => {
+          const addr = formatAddress(d.address);
+          const name = escapeHtml(d.display_name || d.device_id || "unknown");
+          return `<option value="${d.address}">${addr} ${name}</option>`;
+        }).join("");
+    } catch (err) {
+      console.error("explorer: failed to load devices", err);
+    }
+    const quickDiv = this.querySelector('[data-role="explorer-quick"]');
+    if (quickDiv) quickDiv.style.display = "";
+  }
+
+  async startExplorerScan() {
+    const deviceSelect = this.querySelector('[data-role="explorer-device"]');
+    const kindSelect = this.querySelector('[data-role="explorer-kind"]');
+    const opcodeSelect = this.querySelector('[data-role="explorer-opcode"]');
+    const statusEl = this.querySelector('[data-role="explorer-status"]');
+    const scanButton = this.querySelector('[data-role="explorer-scan"]');
+    const cancelButton = this.querySelector('[data-role="explorer-cancel"]');
+    if (!deviceSelect || !deviceSelect.value) {
+      if (statusEl) statusEl.textContent = "Select a device first";
+      return;
+    }
+    const kind = kindSelect ? kindSelect.value : "b524";
+    const body = {
+      kind: kind,
+      target: parseInt(deviceSelect.value, 10),
+    };
+    if (kind === "b524") {
+      body.opcode = parseInt(opcodeSelect ? opcodeSelect.value : "02", 16);
+      body.group_min = parseInt(this.querySelector('[data-role="explorer-group-min"]')?.value || "0", 16);
+      body.group_max = parseInt(this.querySelector('[data-role="explorer-group-max"]')?.value || "10", 16);
+      body.instance_max = parseInt(this.querySelector('[data-role="explorer-instance-max"]')?.value || "a", 16);
+      body.register_max = parseInt(this.querySelector('[data-role="explorer-register-max"]')?.value || "20", 16);
+    } else {
+      body.b509_addr_min = parseInt(this.querySelector('[data-role="explorer-b509-min"]')?.value || "0", 16);
+      body.b509_addr_max = parseInt(this.querySelector('[data-role="explorer-b509-max"]')?.value || "ff", 16);
+    }
+    try {
+      if (scanButton) scanButton.disabled = true;
+      if (cancelButton) cancelButton.disabled = false;
+      if (statusEl) statusEl.textContent = "Starting scan...";
+      const res = await fetch("api/v1/explorer/scans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        if (statusEl) statusEl.textContent = `Error: ${text}`;
+        if (scanButton) scanButton.disabled = false;
+        if (cancelButton) cancelButton.disabled = true;
+        return;
+      }
+      this.startExplorerPolling();
+    } catch (err) {
+      if (statusEl) statusEl.textContent = `Error: ${err.message}`;
+      if (scanButton) scanButton.disabled = false;
+      if (cancelButton) cancelButton.disabled = true;
+    }
+  }
+
+  async cancelExplorerScan() {
+    const statusEl = this.querySelector('[data-role="explorer-status"]');
+    try {
+      await fetch("api/v1/explorer/scans/current", { method: "DELETE" });
+      if (statusEl) statusEl.textContent = "Cancelled";
+    } catch (err) {
+      if (statusEl) statusEl.textContent = `Cancel error: ${err.message}`;
+    }
+  }
+
+  startExplorerPolling() {
+    this.stopExplorerPolling();
+    this._explorerPollTimer = setInterval(() => {
+      this.pollExplorerState();
+    }, 500);
+    this.pollExplorerState();
+  }
+
+  stopExplorerPolling() {
+    if (this._explorerPollTimer) {
+      clearInterval(this._explorerPollTimer);
+      this._explorerPollTimer = undefined;
+    }
+  }
+
+  async pollExplorerState() {
+    const progressDiv = this.querySelector('[data-role="explorer-progress"]');
+    const progressFill = this.querySelector('[data-role="explorer-progress-fill"]');
+    const progressText = this.querySelector('[data-role="explorer-progress-text"]');
+    const statusEl = this.querySelector('[data-role="explorer-status"]');
+    const scanButton = this.querySelector('[data-role="explorer-scan"]');
+    const cancelButton = this.querySelector('[data-role="explorer-cancel"]');
+    const groupsDiv = this.querySelector('[data-role="explorer-groups"]');
+    const groupsBody = this.querySelector('[data-role="explorer-groups-body"]');
+    const resultsDiv = this.querySelector('[data-role="explorer-results"]');
+    const resultsBody = this.querySelector('[data-role="explorer-results-body"]');
+    const resultCount = this.querySelector('[data-role="explorer-result-count"]');
+    try {
+      const res = await fetch("api/v1/explorer/scans/current");
+      const state = await res.json();
+      const phase = state.phase || "idle";
+      const progress = state.progress || {};
+      const pct = progress.percent || 0;
+      if (progressDiv) progressDiv.style.display = phase === "idle" ? "none" : "";
+      if (progressFill) progressFill.style.width = `${pct}%`;
+      if (progressText) progressText.textContent = `${pct}% — ${escapeHtml(progress.description || phase)}`;
+      if (statusEl) statusEl.textContent = `${phase} (${state.completed_reads || 0}/${state.total_reads || 0})`;
+      // Groups
+      const groups = state.groups || [];
+      if (groups.length > 0 && groupsDiv && groupsBody) {
+        groupsDiv.style.display = "";
+        groupsBody.innerHTML = groups.map((g) => {
+          return `<tr><td>0x${escapeHtml(g.group_hex)}</td><td>${g.exists ? "yes" : "no"}</td><td>${g.instanced ? "yes" : "-"}</td><td>${formatFixed(g.value, 2)}</td></tr>`;
+        }).join("");
+      }
+      // Results
+      this._explorerResults = state.results || [];
+      if (this._explorerResults.length > 0 && resultsDiv) {
+        resultsDiv.style.display = "";
+        if (resultCount) resultCount.textContent = `(${this._explorerResults.length} registers)`;
+        this.renderExplorerResults();
+      }
+      // Terminal state
+      const terminal = phase === "done" || phase === "cancelled" || phase === "error";
+      if (terminal) {
+        this.stopExplorerPolling();
+        if (scanButton) scanButton.disabled = false;
+        if (cancelButton) cancelButton.disabled = true;
+        if (phase === "error") {
+          if (statusEl) statusEl.textContent = `Error: ${state.error || "unknown"}`;
+        }
+      }
+    } catch (err) {
+      console.error("explorer poll error", err);
+    }
+  }
+
+  renderExplorerResults() {
+    const resultsBody = this.querySelector('[data-role="explorer-results-body"]');
+    if (!resultsBody || !this._explorerResults) return;
+    const typeSelect = this.querySelector('[data-role="explorer-type-select"]');
+    const type = typeSelect ? typeSelect.value : "exp";
+    resultsBody.innerHTML = this._explorerResults.map((r) => {
+      const decoded = r.error ? escapeHtml(r.error) : explorerDecode(r.raw_hex, r.raw_len, type);
+      const cls = r.error ? ' class="explorer-error"' : "";
+      return `<tr${cls}><td>0x${escapeHtml(String(r.group).padStart(2, "0"))}</td><td>0x${escapeHtml(String(r.instance).padStart(2, "0"))}</td><td>${escapeHtml(r.addr_hex)}</td><td>${escapeHtml(r.raw_hex || "")}</td><td>${decoded}</td><td>${r.raw_len}</td></tr>`;
+    }).join("");
+  }
+
+  recastExplorerResults() {
+    this.renderExplorerResults();
+  }
+
+  async explorerQuickRead() {
+    const deviceSelect = this.querySelector('[data-role="explorer-device"]');
+    const opcodeSelect = this.querySelector('[data-role="explorer-opcode"]');
+    const resultEl = this.querySelector('[data-role="explorer-quick-result"]');
+    const kindSelect = this.querySelector('[data-role="explorer-kind"]');
+    if (!deviceSelect || !deviceSelect.value) {
+      if (resultEl) resultEl.textContent = "Select a device first";
+      return;
+    }
+    const kind = kindSelect ? kindSelect.value : "b524";
+    const target = deviceSelect.value;
+    const opcode = opcodeSelect ? opcodeSelect.value : "02";
+    const group = this.querySelector('[data-role="explorer-quick-group"]')?.value || "00";
+    const instance = this.querySelector('[data-role="explorer-quick-instance"]')?.value || "00";
+    const addr = this.querySelector('[data-role="explorer-quick-addr"]')?.value || "0000";
+    try {
+      if (resultEl) resultEl.textContent = "Reading...";
+      const params = new URLSearchParams({ target, opcode, group, instance, addr });
+      const endpoint = kind === "b509" ? "api/v1/explorer/read/b509" : "api/v1/explorer/read/b524";
+      const res = await fetch(`${endpoint}?${params.toString()}`);
+      const data = await res.json();
+      if (data.error) {
+        if (resultEl) resultEl.textContent = `Error: ${data.error}`;
+      } else {
+        const typeSelect = this.querySelector('[data-role="explorer-type-select"]');
+        const type = typeSelect ? typeSelect.value : "exp";
+        const decoded = explorerDecode(data.raw_hex, data.raw_len, type);
+        if (resultEl) resultEl.textContent = `${data.raw_hex} → ${decoded} (${data.raw_len}B)`;
+      }
+    } catch (err) {
+      if (resultEl) resultEl.textContent = `Error: ${err.message}`;
+    }
+  }
+
   render() {
     this.innerHTML = `
       <div class="shell">
@@ -1420,6 +1712,7 @@ class PortalShell extends HTMLElement {
             <button data-role="nav-registry" data-nav-target="section-registry" disabled><span class="nav-bullet"></span> Registry</button>
             <button data-role="nav-semantic" data-nav-target="section-semantic" disabled><span class="nav-bullet"></span> Semantic</button>
             <button data-role="nav-projection" data-nav-target="section-projection" disabled><span class="nav-bullet"></span> Projection</button>
+            <button data-role="nav-explorer" data-nav-target="section-explorer" disabled><span class="nav-bullet"></span> Explorer</button>
             <button data-role="nav-timeline" data-nav-target="section-timeline" disabled><span class="nav-bullet"></span> Timeline</button>
             <button data-role="nav-snapshots" data-nav-target="section-snapshots" disabled><span class="nav-bullet"></span> Snapshots</button>
             <button data-role="nav-issue-builder" data-nav-target="section-issue-builder" disabled><span class="nav-bullet"></span> Issue Builder</button>
@@ -1455,6 +1748,79 @@ class PortalShell extends HTMLElement {
               </ul>
               <div class="projection-graph" data-role="projection-graph">
                 <p class="projection-empty">Projection graph will appear here.</p>
+              </div>
+            </section>
+            <section id="section-explorer" class="registry-preview">
+              <h2>Register Explorer</h2>
+              <div class="explorer-controls">
+                <div class="explorer-row">
+                  <select class="select" data-role="explorer-device" aria-label="Explorer device">
+                    <option value="">Select device...</option>
+                  </select>
+                  <select class="select" data-role="explorer-kind" aria-label="Scan kind">
+                    <option value="b524">B5.24 Extended Registers</option>
+                    <option value="b509">B5.09 Registers</option>
+                  </select>
+                  <select class="select" data-role="explorer-opcode" aria-label="Opcode">
+                    <option value="02">0x02 Local</option>
+                    <option value="06">0x06 Remote</option>
+                  </select>
+                </div>
+                <div class="explorer-row" data-role="explorer-b524-opts">
+                  <label class="explorer-label">GG <input class="search explorer-input" data-role="explorer-group-min" type="text" value="00" size="3" /></label>
+                  <label class="explorer-label">– <input class="search explorer-input" data-role="explorer-group-max" type="text" value="10" size="3" /></label>
+                  <label class="explorer-label">II max <input class="search explorer-input" data-role="explorer-instance-max" type="text" value="0a" size="3" /></label>
+                  <label class="explorer-label">RR max <input class="search explorer-input" data-role="explorer-register-max" type="text" value="0020" size="5" /></label>
+                </div>
+                <div class="explorer-row" data-role="explorer-b509-opts" style="display:none">
+                  <label class="explorer-label">Addr min <input class="search explorer-input" data-role="explorer-b509-min" type="text" value="0000" size="5" /></label>
+                  <label class="explorer-label">– max <input class="search explorer-input" data-role="explorer-b509-max" type="text" value="00ff" size="5" /></label>
+                </div>
+                <div class="explorer-row">
+                  <button class="button" data-role="explorer-scan" type="button">Start Scan</button>
+                  <button class="button" data-role="explorer-cancel" type="button" disabled>Cancel</button>
+                  <span class="muted-inline" data-role="explorer-status">Ready</span>
+                </div>
+              </div>
+              <div class="explorer-progress" data-role="explorer-progress" style="display:none">
+                <div class="explorer-progress-bar"><div class="explorer-progress-fill" data-role="explorer-progress-fill"></div></div>
+                <span class="muted-inline" data-role="explorer-progress-text">0%</span>
+              </div>
+              <div data-role="explorer-groups" style="display:none">
+                <h3>Discovered Groups</h3>
+                <table class="explorer-table">
+                  <thead><tr><th>Group</th><th>Exists</th><th>Instanced</th><th>Value</th></tr></thead>
+                  <tbody data-role="explorer-groups-body"></tbody>
+                </table>
+              </div>
+              <div data-role="explorer-results" style="display:none">
+                <h3>Register Results <span class="muted-inline" data-role="explorer-result-count"></span></h3>
+                <div class="explorer-row">
+                  <label class="explorer-label">Type <select class="select" data-role="explorer-type-select">
+                    <option value="hex">HEX</option>
+                    <option value="exp" selected>EXP (float32)</option>
+                    <option value="ulg">ULG (uint32)</option>
+                    <option value="uin">UIN (uint16)</option>
+                    <option value="sin">SIN (int16)</option>
+                    <option value="uch">UCH (uint8)</option>
+                    <option value="sch">SCH (int8)</option>
+                    <option value="str">STR (string)</option>
+                  </select></label>
+                </div>
+                <table class="explorer-table">
+                  <thead><tr><th>Group</th><th>Inst</th><th>Addr</th><th>Raw</th><th>Decoded</th><th>Len</th></tr></thead>
+                  <tbody data-role="explorer-results-body"></tbody>
+                </table>
+              </div>
+              <div data-role="explorer-quick" style="display:none">
+                <h3>Quick Read</h3>
+                <div class="explorer-row">
+                  <label class="explorer-label">GG <input class="search explorer-input" data-role="explorer-quick-group" type="text" value="00" size="3" /></label>
+                  <label class="explorer-label">II <input class="search explorer-input" data-role="explorer-quick-instance" type="text" value="00" size="3" /></label>
+                  <label class="explorer-label">RR <input class="search explorer-input" data-role="explorer-quick-addr" type="text" value="0000" size="5" /></label>
+                  <button class="button" data-role="explorer-quick-read" type="button">Read</button>
+                  <span class="muted-inline" data-role="explorer-quick-result"></span>
+                </div>
               </div>
             </section>
             <section id="section-search" class="registry-preview">

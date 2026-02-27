@@ -310,6 +310,88 @@ body {
   font-size: 0.85rem;
 }
 
+.explorer-controls {
+  margin-bottom: 0.65rem;
+}
+
+.explorer-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  margin-bottom: 0.45rem;
+}
+
+.explorer-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.explorer-input {
+  width: auto;
+  max-width: 5rem;
+  font-family: "IBM Plex Mono", "Fira Code", monospace;
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+.explorer-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 0.65rem;
+}
+
+.explorer-progress-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.explorer-progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+  width: 0%;
+}
+
+.explorer-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  font-family: "IBM Plex Mono", "Fira Code", monospace;
+  margin-top: 0.45rem;
+}
+
+.explorer-table th,
+.explorer-table td {
+  padding: 0.3rem 0.55rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.explorer-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.explorer-table tr:hover td {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.explorer-error td {
+  color: var(--warn);
+}
+
 @media (max-width: 900px) {
   .topbar {
     grid-template-columns: 1fr;

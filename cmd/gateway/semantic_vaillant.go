@@ -742,13 +742,14 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
+	// Energy data arrives via broadcasts; no initial prime or periodic polling needed.
+	// Active register polling disabled: BAI devices return 0 for B5.16 energy reads
+	// and poison the merge store, blocking broadcast values from the VRC controller.
 
 	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
 	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityMedium, p.refreshConfig)
 	go p.runLoop(ctx, p.stateInterval, semanticTaskPriorityHigh, p.refreshState)
-	go p.runLoop(ctx, p.energyInterval, semanticTaskPriorityMedium, p.refreshEnergy)
 }
 
 func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Duration, priority semanticTaskPriority, fn func(context.Context)) {
@@ -1376,86 +1377,12 @@ var b516Queries = []b516Query{
 	{b516SourceSolar, b516UsageHotWater, "solar", "hot_water"},
 }
 
-func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
-	if p == nil || p.provider == nil {
-		return
-	}
-
-	// Discover energy target: BAI device (boiler) for B5.16 reads.
-	energyTarget, ok := findDeviceAddressByPrefix(p.reg, "BAI")
-	if !ok {
-		log.Printf("semantic energy register skip: no BAI device discovered")
-		return
-	}
-
-	p.mu.Lock()
-	regCap := p.regulatorCapability
-	p.mu.Unlock()
-
-	if regCap != productids.ControllerPresent {
-		return
-	}
-	if !p.deviceSupportsEnergyReads(energyTarget) {
-		return
-	}
-
-	now := time.Now()
-	var readFailures int
-	for _, q := range b516Queries {
-		// Year current (Q=2)
-		if kwh, ok := p.readB516Value(ctx, energyTarget, buildB516YearPayload(q.source, q.usage, 0x02)); ok {
-			key := graphql.EnergyMergeKey{Channel: q.channel, Usage: q.usageKey, Period: "year", YearKind: "current"}
-			p.provider.ApplyEnergyFromRegister(key, kwh)
-		} else {
-			readFailures++
-		}
-		// Year previous (Q=0)
-		if kwh, ok := p.readB516Value(ctx, energyTarget, buildB516YearPayload(q.source, q.usage, 0x00)); ok {
-			key := graphql.EnergyMergeKey{Channel: q.channel, Usage: q.usageKey, Period: "year", YearKind: "previous"}
-			p.provider.ApplyEnergyFromRegister(key, kwh)
-		} else {
-			readFailures++
-		}
-		// Day today
-		if kwh, ok := p.readB516Value(ctx, energyTarget, buildB516DayPayload(q.source, q.usage, int(now.Month()), now.Day())); ok {
-			key := graphql.EnergyMergeKey{Channel: q.channel, Usage: q.usageKey, Period: "day"}
-			p.provider.ApplyEnergyFromRegister(key, kwh)
-		} else {
-			readFailures++
-		}
-	}
-	if readFailures > 0 {
-		log.Printf("semantic energy register refresh partial target=0x%02x failures=%d total=18", energyTarget, readFailures)
-	}
-}
-
-func (p *vaillantSemanticPoller) deviceSupportsEnergyReads(addr byte) bool {
-	if p == nil || p.reg == nil || addr == 0 {
-		return false
-	}
-	entry, ok := p.reg.Lookup(addr)
-	if !ok {
-		// Unknown device details: attempt reads and rely on read failure handling.
-		return true
-	}
-	for _, plane := range entry.Planes() {
-		if plane == nil {
-			continue
-		}
-		for _, method := range plane.Methods() {
-			if method == nil || method.Name() != "get_energy_stats" {
-				continue
-			}
-			template := method.Template()
-			if template == nil {
-				continue
-			}
-			if template.Primary() == vaillantExtRegisterPrimary && template.Secondary() == vaillantEnergyRegSecondary {
-				return true
-			}
-		}
-	}
-	return false
+func (p *vaillantSemanticPoller) refreshEnergy(_ context.Context) {
+	// Energy data arrives via bus broadcasts from the VRC controller.
+	// B5.16 register reads to BAI devices return 0 (boilers don't store
+	// cumulative energy) and would poison the merge store, permanently
+	// blocking broadcast values. Active register polling is disabled
+	// until B5.24 VRC register reads are implemented.
 }
 
 func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapshotSource {
@@ -1833,69 +1760,6 @@ func isAllDigits(value string) bool {
 		}
 	}
 	return true
-}
-
-func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, target byte, data []byte) (float64, bool) {
-	if p == nil || p.bus == nil || target == 0 {
-		return 0, false
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	p.mu.Lock()
-	source := p.source
-	timeout := p.requestTimeout
-	p.mu.Unlock()
-	if timeout <= 0 {
-		timeout = 2 * time.Second
-	}
-
-	key := fmt.Sprintf("b516:%02x:%x", target, data)
-	payload, err := p.scheduler.Get(ctx, key, 500*time.Millisecond, func(ctx context.Context) ([]byte, error) {
-		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			p.readMu.Lock()
-			reqCtx, cancel := context.WithTimeout(ctx, timeout)
-			request := protocol.Frame{
-				Source:    source,
-				Target:    target,
-				Primary:   vaillantExtRegisterPrimary,
-				Secondary: vaillantEnergyRegSecondary,
-				Data:      data,
-			}
-			response, err := p.bus.Send(reqCtx, request)
-			cancel()
-			p.readMu.Unlock()
-
-			if err != nil {
-				lastErr = err
-			} else if response == nil {
-				lastErr = fmt.Errorf("b516 read returned nil response")
-			} else if len(response.Data) < 4 {
-				lastErr = fmt.Errorf("b516 read returned short payload len=%d", len(response.Data))
-			} else {
-				return response.Data, nil
-			}
-
-			if attempt < 2 {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(75 * time.Millisecond):
-				}
-			}
-		}
-		if lastErr == nil {
-			lastErr = fmt.Errorf("b516 read failed")
-		}
-		return nil, lastErr
-	})
-	if err != nil || len(payload) < 4 {
-		return 0, false
-	}
-
-	return decodeB516ResponseKWh(payload)
 }
 
 // decodeB516ResponseKWh extracts the energy value from a B5.16 response payload.

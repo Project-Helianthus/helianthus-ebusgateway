@@ -1649,7 +1649,7 @@ class PortalShell extends HTMLElement {
     const typeSelect = this.querySelector('[data-role="explorer-type-select"]');
     const type = typeSelect ? typeSelect.value : "exp";
     resultsBody.innerHTML = this._explorerResults.map((r) => {
-      const decoded = r.error ? escapeHtml(r.error) : explorerDecode(r.raw_hex, r.raw_len, type);
+      const decoded = r.error ? escapeHtml(r.error) : escapeHtml(explorerDecode(r.raw_hex, r.raw_len, type));
       const cls = r.error ? ' class="explorer-error"' : "";
       return `<tr${cls}><td>0x${escapeHtml(String(r.group).padStart(2, "0"))}</td><td>0x${escapeHtml(String(r.instance).padStart(2, "0"))}</td><td>${escapeHtml(r.addr_hex)}</td><td>${escapeHtml(r.raw_hex || "")}</td><td>${decoded}</td><td>${r.raw_len}</td></tr>`;
     }).join("");

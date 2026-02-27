@@ -453,6 +453,8 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 				}
 				return portal.ProjectionGraph{}, false
 			},
+			ExplorerBus:    gateway.Bus,
+			ExplorerSource: cfg.ScanSource,
 		})
 		mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))
 		mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {

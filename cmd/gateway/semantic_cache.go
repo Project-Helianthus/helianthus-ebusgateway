@@ -333,6 +333,7 @@ func normalizeSemanticCacheSnapshot(snapshot semanticCacheSnapshot) semanticCach
 			DhwSpecialFunctionRaw: snapshot.DHW.DhwSpecialFunctionRaw,
 		}
 	}
+	out.Boiler = snapshot.Boiler
 	return out
 }
 

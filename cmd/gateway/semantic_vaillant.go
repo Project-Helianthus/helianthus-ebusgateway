@@ -402,6 +402,9 @@ func preloadSemanticCache(provider *graphql.LiveSemanticProvider, cacheStore *se
 	if snapshot.DHW != nil {
 		provider.SetDHWFromCache(snapshot.DHW)
 	}
+	if snapshot.Boiler != nil {
+		provider.SetBoilerStatusFromCache(snapshot.Boiler)
+	}
 	return snapshot, true
 }
 
@@ -1775,11 +1778,17 @@ func (p *vaillantSemanticPoller) refreshBoilerStatus(ctx context.Context) {
 		}
 	}
 
-	// DHW data comes from B524 extended registers on the controller, not B504 on the
-	// boiler. The boiler's B504 op=0x09 returns heating parameters only. DHW temp is
-	// already polled via the existing refreshDHW path on the regulator. We don't
-	// duplicate it here — the BoilerStatus.State.DhwTemperatureC will be nil until
-	// we verify that B504 to the boiler also returns DHW data (it might not).
+	// DHW get_status uses the same wire frame as heating get_status (B504 op=0x0D to the
+	// same target). The returned byte is device-global status, not plane-specific. We
+	// assign it to HeatingStatusRaw only. DhwStatusRaw left nil until we have evidence
+	// of a separate DHW status byte (or decode specific bit flags from the combined status).
+
+	// Only update if we got at least some data — avoid wiping good state on transient bus errors.
+	if snapshot.FlowTemperatureC == nil && snapshot.ReturnTemperatureC == nil &&
+		snapshot.CentralHeatingPumpActive == nil && snapshot.HeatingStatusRaw == nil &&
+		snapshot.DhwStatusRaw == nil {
+		return
+	}
 
 	p.mu.Lock()
 	p.boiler = snapshot

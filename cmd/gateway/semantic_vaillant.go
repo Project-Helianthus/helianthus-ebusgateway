@@ -55,43 +55,16 @@ const (
 	dhwInstance           = byte(0x00)
 )
 
-// B5.16 source values (Y field in protocol)
+// B5.24 energy registers (VRC 720f TSP 15.720, group=0, instance=0).
+// energy4 type = ULG (unsigned 32-bit LE) in kWh.
 const (
-	b516SourceSolar      = byte(0x01)
-	b516SourceElectrical = byte(0x03)
-	b516SourceGas        = byte(0x04)
+	energyRegFuelSumHc    = uint16(0x0056) // PrFuelSumHc: total gas consumption heating
+	energyRegEnergySumHc  = uint16(0x0057) // PrEnergySumHc: total electricity consumption heating
+	energyRegEnergySumHwc = uint16(0x0058) // PrEnergySumHwc: total electricity consumption hot water
+	energyRegFuelSumHwc   = uint16(0x0059) // PrFuelSumHwc: total gas consumption hot water
+	energyGroup           = byte(0x00)
+	energyInstance        = byte(0x00)
 )
-
-// B5.16 usage values (Z field in protocol)
-const (
-	b516UsageHeating  = byte(0x03)
-	b516UsageHotWater = byte(0x04)
-)
-
-func buildB516YearPayload(source, usage, yearQ byte) []byte {
-	return []byte{0x10, 0x03, 0xFF, 0xFF, source, usage, 0x00, 0x30 | yearQ}
-}
-
-func buildB516DayPayload(source, usage byte, month, day int) []byte {
-	var wBase, qBase byte
-	if month <= 7 {
-		wBase = byte(month * 2)
-		qBase = 2
-	} else {
-		wBase = byte((month - 8) * 2)
-		qBase = 3
-	}
-	var v, dOffset byte
-	if day <= 15 {
-		v = byte(day)
-		dOffset = 0
-	} else {
-		v = byte(day - 16)
-		dOffset = 1
-	}
-	w := wBase + dOffset
-	return []byte{0x10, 0x01, 0xFF, 0xFF, source, usage, (w << 4) | v, 0x30 | qBase}
-}
 
 type regulatorAbsenceState string
 
@@ -742,14 +715,13 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
-	// Energy data arrives via broadcasts; no initial prime or periodic polling needed.
-	// Active register polling disabled: BAI devices return 0 for B5.16 energy reads
-	// and poison the merge store, blocking broadcast values from the VRC controller.
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
 
 	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
 	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityMedium, p.refreshConfig)
 	go p.runLoop(ctx, p.stateInterval, semanticTaskPriorityHigh, p.refreshState)
+	go p.runLoop(ctx, p.energyInterval, semanticTaskPriorityMedium, p.refreshEnergy)
 }
 
 func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Duration, priority semanticTaskPriority, fn func(context.Context)) {
@@ -1361,28 +1333,58 @@ func zoneEquals(a, b graphql.Zone) bool {
 	return true
 }
 
-type b516Query struct {
-	source   byte   // Y field (protocol)
-	usage    byte   // Z field (protocol)
-	channel  string // EnergyMergeKey.Channel
-	usageKey string // EnergyMergeKey.Usage
+type b524EnergyQuery struct {
+	addr    uint16 // B5.24 register address
+	channel string // EnergyMergeKey.Channel
+	usage   string // EnergyMergeKey.Usage
 }
 
-var b516Queries = []b516Query{
-	{b516SourceGas, b516UsageHeating, "gas", "climate"},
-	{b516SourceGas, b516UsageHotWater, "gas", "hot_water"},
-	{b516SourceElectrical, b516UsageHeating, "electricity", "climate"},
-	{b516SourceElectrical, b516UsageHotWater, "electricity", "hot_water"},
-	{b516SourceSolar, b516UsageHeating, "solar", "climate"},
-	{b516SourceSolar, b516UsageHotWater, "solar", "hot_water"},
+var b524EnergyQueries = []b524EnergyQuery{
+	{energyRegFuelSumHc, "gas", "climate"},
+	{energyRegFuelSumHwc, "gas", "hot_water"},
+	{energyRegEnergySumHc, "electricity", "climate"},
+	{energyRegEnergySumHwc, "electricity", "hot_water"},
 }
 
-func (p *vaillantSemanticPoller) refreshEnergy(_ context.Context) {
-	// Energy data arrives via bus broadcasts from the VRC controller.
-	// B5.16 register reads to BAI devices return 0 (boilers don't store
-	// cumulative energy) and would poison the merge store, permanently
-	// blocking broadcast values. Active register polling is disabled
-	// until B5.24 VRC register reads are implemented.
+func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
+	if p == nil || p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
+	if controller == 0 {
+		return
+	}
+
+	accepted, failed := 0, 0
+	for _, q := range b524EnergyQueries {
+		val, ok := p.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, energyGroup, energyInstance, q.addr)
+		if !ok {
+			failed++
+			continue
+		}
+		kwh := float64(val)
+
+		// Write all-time total as year/current.
+		if p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
+			Channel: q.channel, Usage: q.usage, Period: "year", YearKind: "current",
+		}, kwh) {
+			accepted++
+		}
+		// Lock day and year/previous with register-priority 0 to prevent
+		// broadcast double-counting (all-time total already includes them).
+		p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
+			Channel: q.channel, Usage: q.usage, Period: "year", YearKind: "previous",
+		}, 0)
+		p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
+			Channel: q.channel, Usage: q.usage, Period: "day", YearKind: "",
+		}, 0)
+	}
+	if accepted > 0 || failed > 0 {
+		log.Printf("semantic energy b524: accepted=%d failed=%d", accepted, failed)
+	}
 }
 
 func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapshotSource {
@@ -1762,21 +1764,6 @@ func isAllDigits(value string) bool {
 	return true
 }
 
-// decodeB516ResponseKWh extracts the energy value from a B5.16 response payload.
-// The last 4 bytes are IEEE 754 float32 LE representing Wh; the result is kWh.
-func decodeB516ResponseKWh(payload []byte) (float64, bool) {
-	if len(payload) < 4 {
-		return 0, false
-	}
-	raw := payload[len(payload)-4:]
-	bits := uint32(raw[0]) | uint32(raw[1])<<8 | uint32(raw[2])<<16 | uint32(raw[3])<<24
-	value := float64(math.Float32frombits(bits))
-	if math.IsNaN(value) || math.IsInf(value, 0) {
-		return 0, false
-	}
-	return value / 1000.0, true
-}
-
 func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {
 	if p == nil || p.bus == nil {
 		return nil, false
@@ -1985,6 +1972,14 @@ func (p *vaillantSemanticPoller) readB524Uint16(ctx context.Context, opcode, gro
 		return nil, false
 	}
 	return &parsed, true
+}
+
+func (p *vaillantSemanticPoller) readB524Uint32LE(ctx context.Context, opcode, group, instance byte, addr uint16) (uint32, bool) {
+	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
+	if !ok || len(raw) < 4 {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint32(raw[:4]), true
 }
 
 func resolveCircuitInstance(associatedCircuit *uint16, zoneInstance byte) byte {

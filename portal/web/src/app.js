@@ -191,12 +191,13 @@ class PortalShell extends HTMLElement {
     const sectionMap = {
       "section-registry": ["section-registry"],
       "section-semantic": ["section-semantic"],
-      "section-projection": ["section-projection", "section-search"],
+      "section-projection": ["section-projection"],
       "section-timeline": ["section-timeline", "section-provenance"],
       "section-snapshots": ["section-snapshots", "section-snapshot-diff", "section-sessions"],
       "section-issue-builder": ["section-issue-builder"],
     };
     const visible = new Set(sectionMap[targetID] || [targetID]);
+    visible.add("section-search");
     this.querySelectorAll("main .registry-preview").forEach((section) => {
       const id = section.id || section.getAttribute("data-section");
       section.style.display = visible.has(id) ? "" : "none";
@@ -872,11 +873,14 @@ class PortalShell extends HTMLElement {
       }
       listEl.innerHTML = items
         .map((item) => {
-          const slave = Number(item.address);
-          const master = slave - 5;
-          const slaveHex = slave.toString(16).padStart(2, "0");
-          const masterHex = master >= 0 ? master.toString(16).padStart(2, "0") : null;
-          const addrStr = masterHex ? `0x${masterHex}(M) / 0x${slaveHex}(S)` : `0x${slaveHex}`;
+          const addrs = (Array.isArray(item.addresses) && item.addresses.length > 0) ? item.addresses : [item.address];
+          const sorted = addrs.map(Number).sort((a, b) => a - b);
+          let addrStr;
+          if (sorted.length === 2 && sorted[1] - sorted[0] === 5) {
+            addrStr = `0x${sorted[0].toString(16).padStart(2, "0")}(M) / 0x${sorted[1].toString(16).padStart(2, "0")}(S)`;
+          } else {
+            addrStr = sorted.map((a) => `0x${a.toString(16).padStart(2, "0")}`).join(" / ");
+          }
           const label = escapeHtml(item.display_name || item.device_id || "unknown");
           const vendor = escapeHtml(item.manufacturer || "unknown");
           const role = item.role ? ` role=${escapeHtml(item.role)}` : "";

@@ -69,8 +69,8 @@ type handler struct {
 }
 
 type RegistryDevice struct {
-	Address      byte            `json:"address"`
-	Addresses    []byte          `json:"addresses,omitempty"`
+	Address      int             `json:"address"`
+	Addresses    []int           `json:"addresses,omitempty"`
 	Manufacturer string          `json:"manufacturer"`
 	DeviceID     string          `json:"device_id"`
 	DisplayName  string          `json:"display_name,omitempty"`
@@ -166,7 +166,7 @@ type SearchResult struct {
 	ID       string `json:"id"`
 	Title    string `json:"title"`
 	Subtitle string `json:"subtitle,omitempty"`
-	Address  *byte  `json:"address,omitempty"`
+	Address  *int   `json:"address,omitempty"`
 }
 
 type StreamEventEnvelope struct {
@@ -1135,7 +1135,6 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 				item.DisplayName,
 				item.Manufacturer,
 			}, " ")), needle) {
-				address := item.Address
 				title := strings.TrimSpace(item.DisplayName)
 				if title == "" {
 					title = strings.TrimSpace(item.DeviceID)
@@ -1143,25 +1142,26 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 				if title == "" {
 					title = fmt.Sprintf("Projection Device 0x%02x", item.Address)
 				}
+				projAddr := int(item.Address)
 				appendResult(SearchResult{
 					Layer:    "projection",
 					Kind:     "device",
 					ID:       fmt.Sprintf("proj:%02x", item.Address),
 					Title:    title,
 					Subtitle: fmt.Sprintf("addr=0x%02x", item.Address),
-					Address:  &address,
+					Address:  &projAddr,
 				})
 			}
 			for _, projection := range item.Projections {
 				if strings.Contains(strings.ToLower(projection.Plane), needle) {
-					address := item.Address
+					planeAddr := int(item.Address)
 					appendResult(SearchResult{
 						Layer:    "projection",
 						Kind:     "plane",
 						ID:       fmt.Sprintf("proj:%02x:%s", item.Address, strings.ToLower(projection.Plane)),
 						Title:    projection.Plane,
 						Subtitle: fmt.Sprintf("addr=0x%02x nodes=%d edges=%d", item.Address, projection.NodeCount, projection.EdgeCount),
-						Address:  &address,
+						Address:  &planeAddr,
 					})
 				}
 			}

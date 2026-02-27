@@ -300,9 +300,14 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 					if entry == nil {
 						return true
 					}
+					rawAddrs := entry.Addresses()
+					intAddrs := make([]int, len(rawAddrs))
+					for i, a := range rawAddrs {
+						intAddrs[i] = int(a)
+					}
 					device := portal.RegistryDevice{
-						Address:      entry.Address(),
-						Addresses:    append([]byte(nil), entry.Addresses()...),
+						Address:      int(entry.Address()),
+						Addresses:    intAddrs,
 						Manufacturer: entry.Manufacturer(),
 						DeviceID:     entry.DeviceID(),
 						SerialNumber: entry.SerialNumber(),

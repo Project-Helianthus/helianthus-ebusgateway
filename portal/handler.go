@@ -58,6 +58,8 @@ type Options struct {
 	ListSemantic     func() SemanticSnapshot
 	ListProjections  func() []ProjectionDevice
 	GetProjection    func(address byte, plane string) (ProjectionGraph, bool)
+	ExplorerBus      ExplorerBus // nil disables explorer
+	ExplorerSource   byte        // default eBUS source address (0xF0 if zero)
 }
 
 type handler struct {
@@ -66,6 +68,7 @@ type handler struct {
 	timeline  *timelineBuffer
 	snapshots *snapshotStore
 	sessions  *sessionStore
+	explorer  *explorerStore
 }
 
 type RegistryDevice struct {
@@ -272,13 +275,17 @@ func NewHandler(opts Options) http.Handler {
 	if opts.BuildID == "" {
 		opts.BuildID = "unknown"
 	}
-	return &handler{
+	h := &handler{
 		opts:      opts,
 		files:     http.FileServer(http.FS(staticFS)),
 		timeline:  newTimelineBuffer(1000),
 		snapshots: newSnapshotStore(50),
 		sessions:  newSessionStore(100),
 	}
+	if opts.ExplorerBus != nil {
+		h.explorer = newExplorerStore(opts.ExplorerBus, opts.ExplorerSource)
+	}
+	return h
 }
 
 func newTimelineBuffer(capacity int) *timelineBuffer {
@@ -617,6 +624,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string) {
 	w.Header().Set("Cache-Control", "no-store")
+
+	// Explorer routes support POST/DELETE, must be checked before the GET-only guard.
+	trimmed := strings.Trim(path, "/")
+	if h.explorer != nil && h.routeExplorer(w, r, trimmed) {
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -648,26 +662,33 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"sessions":      true,
 				"issue_builder": true,
 				"migration":     false,
+				"explorer":      h.explorer != nil,
 			},
 			"endpoints": map[string]string{
-				"graphql":       h.opts.GraphQLPath,
-				"snapshot":      h.opts.SnapshotPath,
-				"subscriptions": h.opts.SubscriptionPath,
-				"mcp":           h.opts.MCPPath,
-				"search":        "/portal/api/v1/search",
-				"stream":        "/portal/api/v1/stream",
-				"timeline":      "/portal/api/v1/timeline/events",
-				"provenance":    "/portal/api/v1/provenance/events",
-				"snapshots":     "/portal/api/v1/snapshots",
-				"capture":       "/portal/api/v1/snapshots/capture",
-				"retention":     "/portal/api/v1/snapshots/retention",
-				"snapshot_diff": "/portal/api/v1/snapshots/diff",
-				"snapshot_view": "/portal/api/v1/snapshots/view",
-				"sessions":      "/portal/api/v1/sessions",
-				"session_save":  "/portal/api/v1/sessions/save",
-				"session_load":  "/portal/api/v1/sessions/load",
-				"issue_draft":   "/portal/api/v1/issues/draft",
-				"issue_export":  "/portal/api/v1/issues/export",
+				"graphql":               h.opts.GraphQLPath,
+				"snapshot":              h.opts.SnapshotPath,
+				"subscriptions":         h.opts.SubscriptionPath,
+				"mcp":                   h.opts.MCPPath,
+				"search":                "/portal/api/v1/search",
+				"stream":                "/portal/api/v1/stream",
+				"timeline":              "/portal/api/v1/timeline/events",
+				"provenance":            "/portal/api/v1/provenance/events",
+				"snapshots":             "/portal/api/v1/snapshots",
+				"capture":               "/portal/api/v1/snapshots/capture",
+				"retention":             "/portal/api/v1/snapshots/retention",
+				"snapshot_diff":         "/portal/api/v1/snapshots/diff",
+				"snapshot_view":         "/portal/api/v1/snapshots/view",
+				"sessions":              "/portal/api/v1/sessions",
+				"session_save":          "/portal/api/v1/sessions/save",
+				"session_load":          "/portal/api/v1/sessions/load",
+				"issue_draft":           "/portal/api/v1/issues/draft",
+				"issue_export":          "/portal/api/v1/issues/export",
+				"explorer_scans":        "/portal/api/v1/explorer/scans",
+				"explorer_scan_current": "/portal/api/v1/explorer/scans/current",
+				"explorer_scan_results": "/portal/api/v1/explorer/scans/current/results",
+				"explorer_scan_stream":  "/portal/api/v1/explorer/scans/current/stream",
+				"explorer_read_b524":    "/portal/api/v1/explorer/read/b524",
+				"explorer_read_b509":    "/portal/api/v1/explorer/read/b509",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -787,6 +808,8 @@ func classifyRoute(path string) string {
 		return "api.issues.draft"
 	case strings.HasPrefix(path, "/api/v1/issues/export"):
 		return "api.issues.export"
+	case strings.HasPrefix(path, "/api/v1/explorer/"):
+		return "api.explorer"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):

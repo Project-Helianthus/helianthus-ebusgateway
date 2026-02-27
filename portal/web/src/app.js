@@ -182,11 +182,27 @@ class PortalShell extends HTMLElement {
         if (!targetID) {
           return;
         }
-        const section = this.querySelector(`#${targetID}`);
-        if (section) {
-          section.scrollIntoView({ behavior: "smooth", block: "start" });
-        }
+        this.activateSection(targetID);
       });
+    });
+  }
+
+  activateSection(targetID) {
+    const sectionMap = {
+      "section-registry": ["section-registry"],
+      "section-semantic": ["section-semantic"],
+      "section-projection": ["section-projection", "section-search"],
+      "section-timeline": ["section-timeline", "section-provenance"],
+      "section-snapshots": ["section-snapshots", "section-snapshot-diff", "section-sessions"],
+      "section-issue-builder": ["section-issue-builder"],
+    };
+    const visible = new Set(sectionMap[targetID] || [targetID]);
+    this.querySelectorAll("main .registry-preview").forEach((section) => {
+      const id = section.id || section.getAttribute("data-section");
+      section.style.display = visible.has(id) ? "" : "none";
+    });
+    this.querySelectorAll("[data-nav-target]").forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-nav-target") === targetID);
     });
   }
 
@@ -205,7 +221,6 @@ class PortalShell extends HTMLElement {
     const diffList = this.querySelector('[data-role="snapshot-diff-list"]');
     const sessionsList = this.querySelector('[data-role="sessions-list"]');
     const issuePreview = this.querySelector('[data-role="issue-preview"]');
-    const deprecationBanner = this.querySelector('[data-role="deprecation-banner"]');
     try {
       const [healthRes, bootstrapRes] = await Promise.all([
         fetch("api/v1/health"),
@@ -218,6 +233,10 @@ class PortalShell extends HTMLElement {
       }
       const capabilities = bootstrap.capabilities || {};
       this.applyCapabilityState(capabilities);
+      const firstEnabled = this.querySelector("[data-nav-target]:not([disabled])");
+      if (firstEnabled) {
+        this.activateSection(firstEnabled.getAttribute("data-nav-target"));
+      }
       if (metaEl) {
         const caps = capabilities;
         const enabled = Object.keys(caps).filter((key) => caps[key]).length;
@@ -309,13 +328,6 @@ class PortalShell extends HTMLElement {
           ? "Issue builder ready. Fill fields and generate draft."
           : "Issue builder unavailable.";
       }
-      if (deprecationBanner) {
-        if (capabilities.migration) {
-          await this.refreshDeprecationBanner(deprecationBanner);
-        } else {
-          deprecationBanner.textContent = "Migration metadata unavailable.";
-        }
-      }
     } catch (err) {
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
@@ -329,36 +341,12 @@ class PortalShell extends HTMLElement {
 
   applyCapabilityState(capabilities) {
     const cap = capabilities || {};
-    this.setCapabilityCard("registry", cap.registry, "Device registry and planes");
-    this.setCapabilityCard("semantic", cap.semantic, "Zones, DHW and energy snapshots");
-    this.setCapabilityCard("projection", cap.projection, "Plane graphs and topology links");
-    this.setCapabilityCard("timeline", cap.timeline, "Live stream timeline events");
-    this.setCapabilityCard("snapshots", cap.snapshots && cap.snapshot_diff, "Capture, retention and diff");
-    this.setCapabilityCard("issue_builder", cap.issue_builder, "Evidence draft and export bundle");
-
     this.setNavState("registry", cap.registry);
     this.setNavState("semantic", cap.semantic);
     this.setNavState("projection", cap.projection);
     this.setNavState("timeline", cap.timeline || cap.provenance);
     this.setNavState("snapshots", cap.snapshots || cap.snapshot_diff);
     this.setNavState("issue-builder", cap.issue_builder);
-  }
-
-  setCapabilityCard(capability, enabled, detail) {
-    const card = this.querySelector(`[data-capability="${capability}"]`);
-    if (!card) {
-      return;
-    }
-    const badge = card.querySelector(".badge");
-    if (badge) {
-      badge.textContent = enabled ? "Available" : "Unavailable";
-      badge.classList.toggle("available", Boolean(enabled));
-      badge.classList.toggle("unavailable", !enabled);
-    }
-    const meta = card.querySelector(".card-meta");
-    if (meta) {
-      meta.textContent = enabled ? detail : `${detail} (not exposed by this gateway)`;
-    }
   }
 
   setNavState(name, enabled) {
@@ -368,16 +356,10 @@ class PortalShell extends HTMLElement {
     }
     button.disabled = !enabled;
     button.classList.toggle("enabled", Boolean(enabled));
-  }
-
-  async refreshDeprecationBanner(target) {
-    try {
-      const response = await fetch("api/v1/deprecation/vrc-explorer");
-      const payload = await response.json();
-      const replacement = payload.replacement?.name || "Portal";
-      target.innerHTML = `<strong>${escapeHtml(payload.component || "VRC-Explorer")} is deprecated.</strong> Use ${escapeHtml(replacement)}. <a href="${escapeHtml(payload.migration_doc || "#")}" target="_blank" rel="noreferrer">Migration guide</a>`;
-    } catch (err) {
-      target.textContent = "Deprecation metadata request failed.";
+    const bullet = button.querySelector(".nav-bullet");
+    if (bullet) {
+      bullet.classList.toggle("available", Boolean(enabled));
+      bullet.classList.toggle("unavailable", !enabled);
     }
   }
 
@@ -890,13 +872,17 @@ class PortalShell extends HTMLElement {
       }
       listEl.innerHTML = items
         .map((item) => {
-          const addr = Number(item.address).toString(16).padStart(2, "0");
+          const slave = Number(item.address);
+          const master = slave - 5;
+          const slaveHex = slave.toString(16).padStart(2, "0");
+          const masterHex = master >= 0 ? master.toString(16).padStart(2, "0") : null;
+          const addrStr = masterHex ? `0x${masterHex}(M) / 0x${slaveHex}(S)` : `0x${slaveHex}`;
           const label = escapeHtml(item.display_name || item.device_id || "unknown");
           const vendor = escapeHtml(item.manufacturer || "unknown");
           const role = item.role ? ` role=${escapeHtml(item.role)}` : "";
           const sw = item.software_version ? ` sw=${escapeHtml(item.software_version)}` : "";
           const hw = item.hardware_version ? ` hw=${escapeHtml(item.hardware_version)}` : "";
-          return `<li><strong>0x${addr}</strong> ${vendor} ${label}<span class="muted-inline">${role}${sw}${hw}</span></li>`;
+          return `<li><strong>${addrStr}</strong> ${vendor} ${label}<span class="muted-inline">${role}${sw}${hw}</span></li>`;
         })
         .join("");
     } catch (err) {
@@ -1245,49 +1231,16 @@ class PortalShell extends HTMLElement {
         <div class="content">
           <aside class="sidebar" aria-label="Portal sections">
             <h2>Views</h2>
-            <button data-role="nav-registry" data-nav-target="section-registry" disabled>Registry</button>
-            <button data-role="nav-semantic" data-nav-target="section-semantic" disabled>Semantic</button>
-            <button data-role="nav-projection" data-nav-target="section-projection" disabled>Projection</button>
-            <button data-role="nav-timeline" data-nav-target="section-timeline" disabled>Timeline</button>
-            <button data-role="nav-snapshots" data-nav-target="section-snapshots" disabled>Snapshots</button>
-            <button data-role="nav-issue-builder" data-nav-target="section-issue-builder" disabled>Issue Builder</button>
+            <button data-role="nav-registry" data-nav-target="section-registry" disabled><span class="nav-bullet"></span> Registry</button>
+            <button data-role="nav-semantic" data-nav-target="section-semantic" disabled><span class="nav-bullet"></span> Semantic</button>
+            <button data-role="nav-projection" data-nav-target="section-projection" disabled><span class="nav-bullet"></span> Projection</button>
+            <button data-role="nav-timeline" data-nav-target="section-timeline" disabled><span class="nav-bullet"></span> Timeline</button>
+            <button data-role="nav-snapshots" data-nav-target="section-snapshots" disabled><span class="nav-bullet"></span> Snapshots</button>
+            <button data-role="nav-issue-builder" data-nav-target="section-issue-builder" disabled><span class="nav-bullet"></span> Issue Builder</button>
           </aside>
           <main class="main">
             <h1>Portal Overview</h1>
-            <div class="deprecation-banner" data-role="deprecation-banner">Loading deprecation policy...</div>
             <p class="hero">Explore registry, semantic state, projection topology and evidence workflows from one gateway-native surface.</p>
-            <section class="cards" aria-label="Capability cards">
-              <article class="card" data-capability="registry">
-                <h3>Registry</h3>
-                <span class="badge">Checking...</span>
-                <p class="card-meta">Device discovery and callable planes.</p>
-              </article>
-              <article class="card" data-capability="semantic">
-                <h3>Semantic</h3>
-                <span class="badge">Checking...</span>
-                <p class="card-meta">Zones, DHW and energy snapshots.</p>
-              </article>
-              <article class="card" data-capability="projection">
-                <h3>Projection</h3>
-                <span class="badge">Checking...</span>
-                <p class="card-meta">Plane topology and canonical paths.</p>
-              </article>
-              <article class="card" data-capability="timeline">
-                <h3>Timeline</h3>
-                <span class="badge">Checking...</span>
-                <p class="card-meta">Correlated stream events and provenance.</p>
-              </article>
-              <article class="card" data-capability="snapshots">
-                <h3>Snapshots</h3>
-                <span class="badge">Checking...</span>
-                <p class="card-meta">Capture, retention controls and diff.</p>
-              </article>
-              <article class="card" data-capability="issue_builder">
-                <h3>Issue Builder</h3>
-                <span class="badge">Checking...</span>
-                <p class="card-meta">Export evidence-first issue bundles.</p>
-              </article>
-            </section>
             <section id="section-registry" class="registry-preview">
               <h2>Registry Preview</h2>
               <ul data-role="registry-list">
@@ -1318,7 +1271,7 @@ class PortalShell extends HTMLElement {
                 <p class="projection-empty">Projection graph will appear here.</p>
               </div>
             </section>
-            <section class="registry-preview">
+            <section id="section-search" class="registry-preview">
               <h2>Search Results</h2>
               <ul data-role="search-list">
                 <li>Loading search capability...</li>
@@ -1331,7 +1284,7 @@ class PortalShell extends HTMLElement {
                 <li>Loading timeline capability...</li>
               </ul>
             </section>
-            <section class="registry-preview">
+            <section id="section-provenance" class="registry-preview">
               <h2>Provenance Inspector</h2>
               <input class="search timeline-filter" data-role="provenance-correlation" type="search" placeholder="Filter provenance by correlation id" aria-label="Filter provenance by correlation id" />
               <ul data-role="provenance-list">
@@ -1350,7 +1303,7 @@ class PortalShell extends HTMLElement {
                 <li>Loading snapshots capability...</li>
               </ul>
             </section>
-            <section class="registry-preview">
+            <section id="section-snapshot-diff" class="registry-preview">
               <h2>Snapshot Diff</h2>
               <div class="snapshot-controls">
                 <input class="search timeline-filter" data-role="snapshot-diff-from" type="search" placeholder="from_id (optional)" aria-label="Snapshot diff from id" />
@@ -1361,7 +1314,7 @@ class PortalShell extends HTMLElement {
                 <li>Loading snapshot diff capability...</li>
               </ul>
             </section>
-            <section class="registry-preview">
+            <section id="section-sessions" class="registry-preview">
               <h2>Sessions</h2>
               <div class="snapshot-controls">
                 <input class="search timeline-filter" data-role="session-name" type="search" placeholder="Session name" aria-label="Session name" />

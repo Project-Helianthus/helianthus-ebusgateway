@@ -203,9 +203,6 @@ func TestBootstrapEndpoint(t *testing.T) {
 	if endpoints["issue_export"] != "/portal/api/v1/issues/export" {
 		t.Fatalf("issue_export endpoint=%v; want /portal/api/v1/issues/export", endpoints["issue_export"])
 	}
-	if endpoints["vrc_migration"] != "/portal/api/v1/deprecation/vrc-explorer" {
-		t.Fatalf("vrc_migration endpoint=%v; want /portal/api/v1/deprecation/vrc-explorer", endpoints["vrc_migration"])
-	}
 	capabilities := payload["capabilities"].(map[string]any)
 	if capabilities["registry"] != true {
 		t.Fatalf("capabilities.registry=%v; want true", capabilities["registry"])
@@ -240,8 +237,8 @@ func TestBootstrapEndpoint(t *testing.T) {
 	if capabilities["issue_builder"] != true {
 		t.Fatalf("capabilities.issue_builder=%v; want true", capabilities["issue_builder"])
 	}
-	if capabilities["migration"] != true {
-		t.Fatalf("capabilities.migration=%v; want true", capabilities["migration"])
+	if capabilities["migration"] != false {
+		t.Fatalf("capabilities.migration=%v; want false", capabilities["migration"])
 	}
 }
 
@@ -999,22 +996,12 @@ func TestIssueDraftAndExportEndpoints(t *testing.T) {
 	}
 }
 
-func TestVRCExplorerDeprecationEndpoint(t *testing.T) {
+func TestVRCExplorerDeprecationEndpointRemoved(t *testing.T) {
 	h := NewHandler(Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/deprecation/vrc-explorer", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if payload["status"] != "deprecated" {
-		t.Fatalf("status=%v; want deprecated", payload["status"])
-	}
-	if payload["component"] != "VRC-Explorer" {
-		t.Fatalf("component=%v; want VRC-Explorer", payload["component"])
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d; want %d (endpoint should be removed)", rec.Code, http.StatusNotFound)
 	}
 }

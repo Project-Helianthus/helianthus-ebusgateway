@@ -1381,14 +1381,21 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 		return
 	}
 
-	p.mu.Lock()
-	controller := p.controller
-	regCap := p.regulatorCapability
-	p.mu.Unlock()
-	if controller == 0 || regCap != productids.ControllerPresent {
+	// Discover energy target: BAI device (boiler) for B5.16 reads.
+	energyTarget, ok := findDeviceAddressByPrefix(p.reg, "BAI")
+	if !ok {
+		log.Printf("semantic energy register skip: no BAI device discovered")
 		return
 	}
-	if !p.controllerSupportsEnergyReads(controller) {
+
+	p.mu.Lock()
+	regCap := p.regulatorCapability
+	p.mu.Unlock()
+
+	if regCap != productids.ControllerPresent {
+		return
+	}
+	if !p.deviceSupportsEnergyReads(energyTarget) {
 		return
 	}
 
@@ -1396,21 +1403,21 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 	var readFailures int
 	for _, q := range b516Queries {
 		// Year current (Q=2)
-		if kwh, ok := p.readB516Value(ctx, buildB516YearPayload(q.source, q.usage, 0x02)); ok {
+		if kwh, ok := p.readB516Value(ctx, energyTarget, buildB516YearPayload(q.source, q.usage, 0x02)); ok {
 			key := graphql.EnergyMergeKey{Channel: q.channel, Usage: q.usageKey, Period: "year", YearKind: "current"}
 			p.provider.ApplyEnergyFromRegister(key, kwh)
 		} else {
 			readFailures++
 		}
 		// Year previous (Q=0)
-		if kwh, ok := p.readB516Value(ctx, buildB516YearPayload(q.source, q.usage, 0x00)); ok {
+		if kwh, ok := p.readB516Value(ctx, energyTarget, buildB516YearPayload(q.source, q.usage, 0x00)); ok {
 			key := graphql.EnergyMergeKey{Channel: q.channel, Usage: q.usageKey, Period: "year", YearKind: "previous"}
 			p.provider.ApplyEnergyFromRegister(key, kwh)
 		} else {
 			readFailures++
 		}
 		// Day today
-		if kwh, ok := p.readB516Value(ctx, buildB516DayPayload(q.source, q.usage, int(now.Month()), now.Day())); ok {
+		if kwh, ok := p.readB516Value(ctx, energyTarget, buildB516DayPayload(q.source, q.usage, int(now.Month()), now.Day())); ok {
 			key := graphql.EnergyMergeKey{Channel: q.channel, Usage: q.usageKey, Period: "day"}
 			p.provider.ApplyEnergyFromRegister(key, kwh)
 		} else {
@@ -1418,17 +1425,17 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 		}
 	}
 	if readFailures > 0 {
-		log.Printf("semantic energy register refresh partial controller=0x%02x failures=%d total=18", controller, readFailures)
+		log.Printf("semantic energy register refresh partial target=0x%02x failures=%d total=18", energyTarget, readFailures)
 	}
 }
 
-func (p *vaillantSemanticPoller) controllerSupportsEnergyReads(controller byte) bool {
-	if p == nil || p.reg == nil || controller == 0 {
+func (p *vaillantSemanticPoller) deviceSupportsEnergyReads(addr byte) bool {
+	if p == nil || p.reg == nil || addr == 0 {
 		return false
 	}
-	entry, ok := p.reg.Lookup(controller)
+	entry, ok := p.reg.Lookup(addr)
 	if !ok {
-		// Unknown controller details: attempt reads and rely on read failure handling.
+		// Unknown device details: attempt reads and rely on read failure handling.
 		return true
 	}
 	for _, plane := range entry.Planes() {
@@ -1828,8 +1835,8 @@ func isAllDigits(value string) bool {
 	return true
 }
 
-func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, data []byte) (float64, bool) {
-	if p == nil || p.bus == nil {
+func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, target byte, data []byte) (float64, bool) {
+	if p == nil || p.bus == nil || target == 0 {
 		return 0, false
 	}
 	if ctx == nil {
@@ -1838,12 +1845,8 @@ func (p *vaillantSemanticPoller) readB516Value(ctx context.Context, data []byte)
 
 	p.mu.Lock()
 	source := p.source
-	target := p.controller
 	timeout := p.requestTimeout
 	p.mu.Unlock()
-	if target == 0 {
-		return 0, false
-	}
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}

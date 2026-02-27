@@ -56,6 +56,7 @@ function formatAddress(value) {
 
 function explorerDecode(rawHex, rawLen, type) {
   if (!rawHex || rawLen === 0) return "";
+  if (rawHex.length % 2 !== 0) return rawHex;
   const bytes = new Uint8Array(rawHex.match(/.{1,2}/g).map((b) => parseInt(b, 16)));
   const view = new DataView(bytes.buffer);
   try {
@@ -1507,7 +1508,7 @@ class PortalShell extends HTMLElement {
         devices.map((d) => {
           const addr = formatAddress(d.address);
           const name = escapeHtml(d.display_name || d.device_id || "unknown");
-          return `<option value="${d.address}">${addr} ${name}</option>`;
+          return `<option value="${escapeHtml(String(d.address))}">${addr} ${name}</option>`;
         }).join("");
     } catch (err) {
       console.error("explorer: failed to load devices", err);
@@ -1527,6 +1528,14 @@ class PortalShell extends HTMLElement {
       if (statusEl) statusEl.textContent = "Select a device first";
       return;
     }
+    // Clear stale state from previous scan.
+    this._explorerResults = [];
+    const groupsDiv = this.querySelector('[data-role="explorer-groups"]');
+    const resultsDiv = this.querySelector('[data-role="explorer-results"]');
+    const progressDiv = this.querySelector('[data-role="explorer-progress"]');
+    if (groupsDiv) groupsDiv.style.display = "none";
+    if (resultsDiv) resultsDiv.style.display = "none";
+    if (progressDiv) progressDiv.style.display = "none";
     const kind = kindSelect ? kindSelect.value : "b524";
     const body = {
       kind: kind,
@@ -1578,6 +1587,7 @@ class PortalShell extends HTMLElement {
 
   startExplorerPolling() {
     this.stopExplorerPolling();
+    this._explorerPollFails = 0;
     this._explorerPollTimer = setInterval(() => {
       this.pollExplorerState();
     }, 500);
@@ -1606,6 +1616,7 @@ class PortalShell extends HTMLElement {
     try {
       const res = await fetch("api/v1/explorer/scans/current");
       const state = await res.json();
+      this._explorerPollFails = 0;
       const phase = state.phase || "idle";
       const progress = state.progress || {};
       const pct = progress.percent || 0;
@@ -1639,7 +1650,17 @@ class PortalShell extends HTMLElement {
         }
       }
     } catch (err) {
+      this._explorerPollFails = (this._explorerPollFails || 0) + 1;
       console.error("explorer poll error", err);
+      if (this._explorerPollFails >= 10) {
+        this.stopExplorerPolling();
+        const statusEl = this.querySelector('[data-role="explorer-status"]');
+        const scanButton = this.querySelector('[data-role="explorer-scan"]');
+        const cancelButton = this.querySelector('[data-role="explorer-cancel"]');
+        if (statusEl) statusEl.textContent = "Poll failed (gateway unreachable)";
+        if (scanButton) scanButton.disabled = false;
+        if (cancelButton) cancelButton.disabled = true;
+      }
     }
   }
 
@@ -1651,7 +1672,7 @@ class PortalShell extends HTMLElement {
     resultsBody.innerHTML = this._explorerResults.map((r) => {
       const decoded = r.error ? escapeHtml(r.error) : escapeHtml(explorerDecode(r.raw_hex, r.raw_len, type));
       const cls = r.error ? ' class="explorer-error"' : "";
-      return `<tr${cls}><td>0x${escapeHtml(String(r.group).padStart(2, "0"))}</td><td>0x${escapeHtml(String(r.instance).padStart(2, "0"))}</td><td>${escapeHtml(r.addr_hex)}</td><td>${escapeHtml(r.raw_hex || "")}</td><td>${decoded}</td><td>${r.raw_len}</td></tr>`;
+      return `<tr${cls}><td>0x${escapeHtml(Number(r.group).toString(16).padStart(2, "0"))}</td><td>0x${escapeHtml(Number(r.instance).toString(16).padStart(2, "0"))}</td><td>${escapeHtml(r.addr_hex)}</td><td>${escapeHtml(r.raw_hex || "")}</td><td>${decoded}</td><td>${r.raw_len}</td></tr>`;
     }).join("");
   }
 

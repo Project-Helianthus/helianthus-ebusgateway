@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/d3vi1/helianthus-ebusreg/registry"
 )
 
 func TestProjectionSnapshotHandler_Success(t *testing.T) {

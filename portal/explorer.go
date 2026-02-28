@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/d3vi1/helianthus-ebusgo/protocol"
 )
 
 // ExplorerBus is the interface for sending frames on the eBUS.

@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
-	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
-	"github.com/Project-Helianthus/helianthus-ebusreg/router"
-	"github.com/Project-Helianthus/helianthus-ebusreg/schema"
+	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
+	"github.com/d3vi1/helianthus-ebusgo/protocol"
+	"github.com/d3vi1/helianthus-ebusreg/registry"
+	"github.com/d3vi1/helianthus-ebusreg/router"
+	"github.com/d3vi1/helianthus-ebusreg/schema"
 )
 
 type testRegistry struct {

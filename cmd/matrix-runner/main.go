@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/matrix"
+	"github.com/d3vi1/helianthus-ebusgateway/internal/matrix"
 )
 
 func main() {

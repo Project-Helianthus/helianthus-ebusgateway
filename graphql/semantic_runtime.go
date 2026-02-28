@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusreg/router"
+	"github.com/d3vi1/helianthus-ebusreg/router"
 )
 
 // SemanticRuntime bridges router broadcasts into semantic snapshots and subscriptions.

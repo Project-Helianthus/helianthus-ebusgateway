@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
-	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
+	"github.com/d3vi1/helianthus-ebusreg/registry"
+	"github.com/d3vi1/helianthus-ebusreg/vaillant/productids"
 )
 
 func TestObservability_ZonePresenceTransitionIncrementsCounter(t *testing.T) {

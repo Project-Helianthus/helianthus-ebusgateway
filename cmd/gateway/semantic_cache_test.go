@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/d3vi1/helianthus-ebusgateway/graphql"
 )
 
 func TestSemanticCacheStoreLoad_MissLogsMarker(t *testing.T) {

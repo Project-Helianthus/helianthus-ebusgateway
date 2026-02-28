@@ -14,14 +14,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/ui"
-	vaillantproviders "github.com/Project-Helianthus/helianthus-ebusreg/providers/vaillant"
-	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/d3vi1/helianthus-ebusgateway"
+	"github.com/d3vi1/helianthus-ebusgateway/graphql"
+	"github.com/d3vi1/helianthus-ebusgateway/mcp"
+	"github.com/d3vi1/helianthus-ebusgateway/mdns"
+	"github.com/d3vi1/helianthus-ebusgateway/portal"
+	"github.com/d3vi1/helianthus-ebusgateway/ui"
+	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
+	"github.com/d3vi1/helianthus-ebusreg/registry"
 )
 
 var (

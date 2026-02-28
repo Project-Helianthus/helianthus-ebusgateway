@@ -3,7 +3,7 @@ package graphql
 import (
 	"testing"
 
-	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/d3vi1/helianthus-ebusreg/registry"
 )
 
 func TestBuildSchema_VaillantMatchIsCaseInsensitive(t *testing.T) {

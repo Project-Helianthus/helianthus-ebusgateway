@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgo/types"
-	"github.com/Project-Helianthus/helianthus-ebusreg/router"
+	"github.com/d3vi1/helianthus-ebusgo/types"
+	"github.com/d3vi1/helianthus-ebusreg/router"
 )
 
 var (

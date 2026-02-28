@@ -18,19 +18,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      GOPRIVATE: github.com/d3vi1/*
-      GONOSUMDB: github.com/d3vi1/*
+      GOPRIVATE: github.com/Project-Helianthus/*
+      GONOSUMDB: github.com/Project-Helianthus/*
       GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
       - run: |
-          TOKEN="${{ secrets.GH_TOKEN }}"
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.GIT_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.REPO_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PAT }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PRIVATE_REPO_TOKEN }}"; fi
+          TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
@@ -46,19 +40,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      GOPRIVATE: github.com/d3vi1/*
-      GONOSUMDB: github.com/d3vi1/*
+      GOPRIVATE: github.com/Project-Helianthus/*
+      GONOSUMDB: github.com/Project-Helianthus/*
       GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
       - run: |
-          TOKEN="${{ secrets.GH_TOKEN }}"
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.GIT_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.REPO_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PAT }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PRIVATE_REPO_TOKEN }}"; fi
+          TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
@@ -69,19 +57,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     env:
-      GOPRIVATE: github.com/d3vi1/*
-      GONOSUMDB: github.com/d3vi1/*
+      GOPRIVATE: github.com/Project-Helianthus/*
+      GONOSUMDB: github.com/Project-Helianthus/*
       GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
       - run: |
-          TOKEN="${{ secrets.GH_TOKEN }}"
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.GIT_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.REPO_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PAT }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PRIVATE_REPO_TOKEN }}"; fi
+          TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5

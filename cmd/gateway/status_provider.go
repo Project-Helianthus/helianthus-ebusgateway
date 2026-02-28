@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/d3vi1/helianthus-ebusgateway"
+	"github.com/d3vi1/helianthus-ebusgateway/graphql"
+	"github.com/d3vi1/helianthus-ebusgateway/mcp"
 )
 
 type runtimeStatusProvider struct {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/d3vi1/helianthus-ebusgateway"
 )
 
 func TestBindFlags_SourceAddrAuto(t *testing.T) {

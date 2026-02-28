@@ -203,11 +203,11 @@ func TestInvokeMutation_Integration(t *testing.T) {
 		t.Fatalf("responseSchema.Encode error = %v", err)
 	}
 
-	// eBUS slave response on the wire is NN DATA... CRC (no QQ/ZZ/PB/SB header).
-	slaveResponse := append([]byte{byte(len(responsePayload))}, responsePayload...)
-	crc := protocol.CRC(slaveResponse)
+	// eBUS target response on the wire is NN DATA... CRC (no QQ/ZZ/PB/SB header).
+	targetResponse := append([]byte{byte(len(responsePayload))}, responsePayload...)
+	crc := protocol.CRC(targetResponse)
 	inbound := []readEvent{{value: protocol.SymbolAck}}
-	for _, b := range slaveResponse {
+	for _, b := range targetResponse {
 		inbound = append(inbound, readEvent{value: b})
 	}
 	inbound = append(inbound, readEvent{value: crc})

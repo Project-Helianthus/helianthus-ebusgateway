@@ -28,6 +28,8 @@ jobs:
       - run: |
           TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
+          echo "machine github.com login x-access-token password ${TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
         with:
@@ -52,6 +54,8 @@ jobs:
       - run: |
           TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
+          echo "machine github.com login x-access-token password ${TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
         with:
@@ -71,6 +75,8 @@ jobs:
       - run: |
           TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
+          echo "machine github.com login x-access-token password ${TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
         with:

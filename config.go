@@ -5,10 +5,10 @@ import (
 	"net"
 	"time"
 
-	"github.com/d3vi1/helianthus-ebusgo/protocol"
-	"github.com/d3vi1/helianthus-ebusgo/transport"
-	vaillantproviders "github.com/d3vi1/helianthus-ebusreg/providers/vaillant"
-	"github.com/d3vi1/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+	vaillantproviders "github.com/Project-Helianthus/helianthus-ebusreg/providers/vaillant"
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
 type TransportProtocol string

@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
-	"github.com/d3vi1/helianthus-ebusgo/types"
-	"github.com/d3vi1/helianthus-ebusreg/registry"
-	"github.com/d3vi1/helianthus-ebusreg/schema"
-	"github.com/d3vi1/helianthus-ebusreg/vaillant/productids"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
+	"github.com/Project-Helianthus/helianthus-ebusgo/types"
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusreg/schema"
+	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
 
 type Schema struct {

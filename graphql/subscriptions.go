@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"sync"
 
-	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
-	"github.com/d3vi1/helianthus-ebusgo/protocol"
-	"github.com/d3vi1/helianthus-ebusreg/registry"
-	"github.com/d3vi1/helianthus-ebusreg/router"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
 
 // broadcastBufferSize buffers bursts so router broadcasts never block on slow clients.

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/d3vi1/helianthus-ebusgateway"
-	"github.com/d3vi1/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 )
 
 func main() {

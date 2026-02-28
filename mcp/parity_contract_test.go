@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/d3vi1/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
 type toolSchemaSignature struct {

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	ebusgateway "github.com/d3vi1/helianthus-ebusgateway"
-	"github.com/d3vi1/helianthus-ebusgateway/graphql"
-	"github.com/d3vi1/helianthus-ebusreg/registry"
-	"github.com/d3vi1/helianthus-ebusreg/vaillant/productids"
+	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
 
 type semanticSnapshotCaptureSpy struct {

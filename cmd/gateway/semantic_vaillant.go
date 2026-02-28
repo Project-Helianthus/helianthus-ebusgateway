@@ -521,19 +521,6 @@ func dhwSnapshotFromSemanticStatus(status *graphql.DhwStatus) *vaillantDhwSnapsh
 	return snapshot
 }
 
-func parseUint16Token(token string) *uint16 {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return nil
-	}
-	value, err := strconv.ParseUint(token, 10, 16)
-	if err != nil {
-		return nil
-	}
-	out := uint16(value)
-	return &out
-}
-
 func cloneFloat64Ptr(value *float64) *float64 {
 	if value == nil {
 		return nil
@@ -1635,8 +1622,6 @@ const (
 
 	// system_flow_temperature — float32 LE (°C)
 	regulatorRegSystemFlowTemp = uint16(0x004B)
-	// system_water_pressure — float32 LE (bar)
-	regulatorRegSystemWaterPressure = uint16(0x0039)
 
 	// Heating circuit registers (group 0x02)
 	circuitRegFlowTemp    = uint16(0x0008) // heating_circuit_flow_temperature — float32 LE (°C)

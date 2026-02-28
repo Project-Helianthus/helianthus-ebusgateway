@@ -2,5 +2,5 @@ AGENT-local.md
 results-matrix-ha/
 portal/web/node_modules/
 
-gateway
-helianthus-gateway-arm64
+/gateway
+/helianthus-gateway-arm64

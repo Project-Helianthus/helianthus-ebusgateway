@@ -36,12 +36,6 @@ func (m *mockExplorerBus) Send(ctx context.Context, frame protocol.Frame) (*prot
 	return nil, fmt.Errorf("no handler configured")
 }
 
-func (m *mockExplorerBus) requestCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.requests)
-}
-
 // --- Helpers ---
 
 func explorerHandler(bus ExplorerBus) http.Handler {

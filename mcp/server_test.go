@@ -162,6 +162,7 @@ type testSemanticProvider struct {
 	zones       []Zone
 	dhw         *DhwStatus
 	energy      *EnergyTotals
+	boiler      *BoilerStatus
 	zonesDelay  time.Duration
 	dhwDelay    time.Duration
 	energyDelay time.Duration
@@ -187,6 +188,14 @@ func (p testSemanticProvider) DHW() *DhwStatus {
 		return nil
 	}
 	copy := *p.dhw
+	return &copy
+}
+
+func (p testSemanticProvider) BoilerStatus() *BoilerStatus {
+	if p.boiler == nil {
+		return nil
+	}
+	copy := *p.boiler
 	return &copy
 }
 
@@ -235,14 +244,15 @@ func TestServer_InitializeAndTools(t *testing.T) {
 		t.Fatalf("tools/list result type = %T; want map", res.Result)
 	}
 	tools, ok := resultMap["tools"].([]any)
-	if !ok || len(tools) < 14 {
-		t.Fatalf("tools = %#v; want at least 14 tools", resultMap["tools"])
+	if !ok || len(tools) < 15 {
+		t.Fatalf("tools = %#v; want at least 15 tools", resultMap["tools"])
 	}
 	for _, name := range []string{
 		toolRuntimeStatusGetName,
 		toolSemanticZonesGetName,
 		toolSemanticDHWGetName,
 		toolSemanticEnergyGetName,
+		toolSemanticBoilerGetName,
 		toolSemanticSnapshotName,
 		toolSnapshotCaptureName,
 		toolSnapshotDropName,
@@ -561,14 +571,14 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			t.Fatalf("snapshot data type = %T; want map", envelope["data"])
 		}
 		completed, ok := data["completed_planes"].([]any)
-		if !ok || len(completed) != 4 {
-			t.Fatalf("snapshot completed_planes = %#v; want 4 entries", data["completed_planes"])
+		if !ok || len(completed) != 5 {
+			t.Fatalf("snapshot completed_planes = %#v; want 5 entries", data["completed_planes"])
 		}
 		planes, ok := data["planes"].(map[string]any)
 		if !ok {
 			t.Fatalf("snapshot planes type = %T; want map", data["planes"])
 		}
-		for _, key := range []string{"runtime_status", "zones", "dhw", "energy_totals"} {
+		for _, key := range []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status"} {
 			if _, ok := planes[key]; !ok {
 				t.Fatalf("snapshot planes missing %q", key)
 			}

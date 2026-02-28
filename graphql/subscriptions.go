@@ -45,6 +45,7 @@ type BroadcastHub struct {
 	zoneSubs    map[uint64]*broadcastSubscriber
 	dhwSubs     map[uint64]*broadcastSubscriber
 	energySubs  map[uint64]*broadcastSubscriber
+	boilerSubs  map[uint64]*broadcastSubscriber
 	nextID      uint64
 	onChange    func()
 }
@@ -56,6 +57,7 @@ func NewBroadcastHub(onChange func()) *BroadcastHub {
 		zoneSubs:    make(map[uint64]*broadcastSubscriber),
 		dhwSubs:     make(map[uint64]*broadcastSubscriber),
 		energySubs:  make(map[uint64]*broadcastSubscriber),
+		boilerSubs:  make(map[uint64]*broadcastSubscriber),
 		onChange:    onChange,
 	}
 }
@@ -199,6 +201,17 @@ func (hub *BroadcastHub) PublishEnergyUpdate(totals *EnergyTotals) {
 		return
 	}
 	hub.publishSemantic(hub.energySubs, totals)
+}
+
+func (hub *BroadcastHub) SubscribeBoiler(ctx context.Context) (chan interface{}, error) {
+	return hub.subscribeSemantic(ctx, hub.boilerSubs)
+}
+
+func (hub *BroadcastHub) PublishBoilerStatusUpdate(status *BoilerStatus) {
+	if status == nil {
+		return
+	}
+	hub.publishSemantic(hub.boilerSubs, status)
 }
 
 func (hub *BroadcastHub) subscribeSemantic(ctx context.Context, subscribers map[uint64]*broadcastSubscriber) (chan interface{}, error) {

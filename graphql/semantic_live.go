@@ -34,6 +34,7 @@ type semanticStreamKind uint8
 const (
 	semanticStreamZones semanticStreamKind = iota
 	semanticStreamDHW
+	semanticStreamBoiler
 )
 
 type phaseTransitionLog struct {
@@ -57,6 +58,7 @@ type LiveSemanticProvider struct {
 	zones  []Zone
 	dhw    *DhwStatus
 	energy *EnergyTotals
+	boiler *BoilerStatus
 
 	energyMerge    *energyMergeStore
 	energyRevision uint64
@@ -66,8 +68,10 @@ type LiveSemanticProvider struct {
 	liveEpoch          uint64
 	zonePublished      bool
 	dhwPublished       bool
+	boilerPublished    bool
 	zoneLiveSeen       bool
 	dhwLiveSeen        bool
+	boilerLiveSeen     bool
 	bootMonitorStarted bool
 	phaseLogger        func(string, ...any)
 }
@@ -247,6 +251,99 @@ func (provider *LiveSemanticProvider) setDHWWithSource(status *DhwStatus, source
 	provider.logPhaseTransition(transition)
 }
 
+func (provider *LiveSemanticProvider) BoilerStatus() *BoilerStatus {
+	if provider == nil {
+		return nil
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	if provider.boiler == nil {
+		return nil
+	}
+	cp := *provider.boiler
+	cp.State = cloneBoilerState(cp.State)
+	cp.Config = cloneBoilerConfig(cp.Config)
+	cp.Diagnostics = cloneBoilerDiagnostics(cp.Diagnostics)
+	return &cp
+}
+
+func (provider *LiveSemanticProvider) SetBoilerStatus(status *BoilerStatus) {
+	provider.setBoilerStatusWithSource(status, semanticDataSourceLive, "boiler_live_update")
+}
+
+func (provider *LiveSemanticProvider) SetBoilerStatusFromCache(status *BoilerStatus) {
+	provider.setBoilerStatusWithSource(status, semanticDataSourceCache, "boiler_cache_update")
+}
+
+func (provider *LiveSemanticProvider) setBoilerStatusWithSource(status *BoilerStatus, source semanticDataSource, reason string) {
+	if provider == nil {
+		return
+	}
+	var transition *phaseTransitionLog
+	provider.mu.Lock()
+	if status == nil {
+		provider.boiler = nil
+		provider.mu.Unlock()
+		return
+	}
+	cp := *status
+	cp.State = cloneBoilerState(cp.State)
+	cp.Config = cloneBoilerConfig(cp.Config)
+	cp.Diagnostics = cloneBoilerDiagnostics(cp.Diagnostics)
+	provider.boiler = &cp
+	provider.boilerPublished = true
+	if source == semanticDataSourceLive {
+		provider.boilerLiveSeen = true
+	}
+	transition = provider.recordEpochUpdateLocked(source, semanticStreamBoiler, reason)
+	provider.mu.Unlock()
+	provider.logPhaseTransition(transition)
+}
+
+func cloneBoilerState(state BoilerState) BoilerState {
+	if state.FlowTemperatureC != nil {
+		v := *state.FlowTemperatureC
+		state.FlowTemperatureC = &v
+	}
+	if state.ReturnTemperatureC != nil {
+		v := *state.ReturnTemperatureC
+		state.ReturnTemperatureC = &v
+	}
+	if state.CentralHeatingPumpActive != nil {
+		v := *state.CentralHeatingPumpActive
+		state.CentralHeatingPumpActive = &v
+	}
+	if state.DhwTemperatureC != nil {
+		v := *state.DhwTemperatureC
+		state.DhwTemperatureC = &v
+	}
+	if state.DhwTargetTemperatureC != nil {
+		v := *state.DhwTargetTemperatureC
+		state.DhwTargetTemperatureC = &v
+	}
+	return state
+}
+
+func cloneBoilerConfig(config BoilerConfig) BoilerConfig {
+	if config.DhwOperatingMode != nil {
+		v := *config.DhwOperatingMode
+		config.DhwOperatingMode = &v
+	}
+	return config
+}
+
+func cloneBoilerDiagnostics(diag BoilerDiagnostics) BoilerDiagnostics {
+	if diag.HeatingStatusRaw != nil {
+		v := *diag.HeatingStatusRaw
+		diag.HeatingStatusRaw = &v
+	}
+	if diag.DhwStatusRaw != nil {
+		v := *diag.DhwStatusRaw
+		diag.DhwStatusRaw = &v
+	}
+	return diag
+}
+
 func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDataSource, stream semanticStreamKind, reason string) *phaseTransitionLog {
 	switch source {
 	case semanticDataSourceCache:
@@ -261,6 +358,8 @@ func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDat
 			provider.zoneLiveSeen = true
 		case semanticStreamDHW:
 			provider.dhwLiveSeen = true
+		case semanticStreamBoiler:
+			provider.boilerLiveSeen = true
 		}
 		provider.liveEpoch++
 		semanticLiveEpoch.Set(int64(provider.liveEpoch))
@@ -281,7 +380,10 @@ func (provider *LiveSemanticProvider) liveReadyCriteriaLocked() bool {
 	if provider.dhwPublished && !provider.dhwLiveSeen {
 		return false
 	}
-	return provider.zoneLiveSeen || provider.dhwLiveSeen
+	if provider.boilerPublished && !provider.boilerLiveSeen {
+		return false
+	}
+	return provider.zoneLiveSeen || provider.dhwLiveSeen || provider.boilerLiveSeen
 }
 
 func (provider *LiveSemanticProvider) transitionPhaseLocked(next SemanticStartupPhase, reason string) *phaseTransitionLog {

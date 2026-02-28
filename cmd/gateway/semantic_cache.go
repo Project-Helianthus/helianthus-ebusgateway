@@ -22,6 +22,7 @@ const (
 type semanticCacheSnapshot struct {
 	Zones       []graphql.Zone
 	DHW         *graphql.DhwStatus
+	Boiler      *graphql.BoilerStatus
 	PersistedAt time.Time
 }
 
@@ -45,10 +46,22 @@ type semanticCacheV1 struct {
 }
 
 type semanticCacheV2 struct {
-	SchemaVersion int                   `json:"schema_version"`
-	Metadata      semanticCacheMetadata `json:"metadata"`
-	Zones         []semanticCacheZone   `json:"zones,omitempty"`
-	DHW           *semanticCacheDHW     `json:"dhw,omitempty"`
+	SchemaVersion int                    `json:"schema_version"`
+	Metadata      semanticCacheMetadata  `json:"metadata"`
+	Zones         []semanticCacheZone    `json:"zones,omitempty"`
+	DHW           *semanticCacheDHW      `json:"dhw,omitempty"`
+	Boiler        *semanticCacheBoiler   `json:"boiler,omitempty"`
+}
+
+type semanticCacheBoiler struct {
+	FlowTemperatureC         *float64 `json:"flow_temperature_c,omitempty"`
+	ReturnTemperatureC       *float64 `json:"return_temperature_c,omitempty"`
+	CentralHeatingPumpActive *bool    `json:"central_heating_pump_active,omitempty"`
+	DhwTemperatureC          *float64 `json:"dhw_temperature_c,omitempty"`
+	DhwTargetTemperatureC    *float64 `json:"dhw_target_temperature_c,omitempty"`
+	DhwOperatingMode         *string  `json:"dhw_operating_mode,omitempty"`
+	HeatingStatusRaw         *int     `json:"heating_status_raw,omitempty"`
+	DhwStatusRaw             *int     `json:"dhw_status_raw,omitempty"`
 }
 
 type semanticCacheMetadata struct {
@@ -234,6 +247,9 @@ func semanticCacheV2ToSnapshot(cacheV2 semanticCacheV2) semanticCacheSnapshot {
 			DhwSpecialFunctionRaw: cacheV2.DHW.DHWSpecialFuncRaw,
 		}
 	}
+	if cacheV2.Boiler != nil {
+		out.Boiler = cacheBoilerToGraphQL(cacheV2.Boiler)
+	}
 	return out
 }
 
@@ -278,6 +294,9 @@ func semanticCacheSnapshotToV2(snapshot semanticCacheSnapshot, persistedAt time.
 			DHWSpecialFuncRaw:   normalizedSnapshot.DHW.DhwSpecialFunctionRaw,
 		}
 	}
+	if normalizedSnapshot.Boiler != nil {
+		cacheV2.Boiler = graphQLBoilerToCache(normalizedSnapshot.Boiler)
+	}
 	return cacheV2
 }
 
@@ -314,6 +333,7 @@ func normalizeSemanticCacheSnapshot(snapshot semanticCacheSnapshot) semanticCach
 			DhwSpecialFunctionRaw: snapshot.DHW.DhwSpecialFunctionRaw,
 		}
 	}
+	out.Boiler = snapshot.Boiler
 	return out
 }
 
@@ -379,6 +399,53 @@ func cloneSemanticCacheDHW(status *semanticCacheDHW) *semanticCacheDHW {
 		DHWOperationModeRaw: status.DHWOperationModeRaw,
 		DHWSpecialFuncRaw:   status.DHWSpecialFuncRaw,
 	}
+}
+
+func cacheBoilerToGraphQL(cache *semanticCacheBoiler) *graphql.BoilerStatus {
+	if cache == nil {
+		return nil
+	}
+	out := &graphql.BoilerStatus{
+		State: graphql.BoilerState{
+			FlowTemperatureC:         cloneFloatPtr(cache.FlowTemperatureC),
+			ReturnTemperatureC:       cloneFloatPtr(cache.ReturnTemperatureC),
+			DhwTemperatureC:          cloneFloatPtr(cache.DhwTemperatureC),
+			DhwTargetTemperatureC:    cloneFloatPtr(cache.DhwTargetTemperatureC),
+		},
+		Diagnostics: graphql.BoilerDiagnostics{
+			HeatingStatusRaw: cloneIntPtr(cache.HeatingStatusRaw),
+			DhwStatusRaw:     cloneIntPtr(cache.DhwStatusRaw),
+		},
+	}
+	if cache.CentralHeatingPumpActive != nil {
+		v := *cache.CentralHeatingPumpActive
+		out.State.CentralHeatingPumpActive = &v
+	}
+	if cache.DhwOperatingMode != nil {
+		v := *cache.DhwOperatingMode
+		out.Config.DhwOperatingMode = &v
+	}
+	return out
+}
+
+func graphQLBoilerToCache(status *graphql.BoilerStatus) *semanticCacheBoiler {
+	if status == nil {
+		return nil
+	}
+	out := &semanticCacheBoiler{
+		FlowTemperatureC:    cloneFloatPtr(status.State.FlowTemperatureC),
+		ReturnTemperatureC:  cloneFloatPtr(status.State.ReturnTemperatureC),
+		DhwTemperatureC:     cloneFloatPtr(status.State.DhwTemperatureC),
+		DhwTargetTemperatureC: cloneFloatPtr(status.State.DhwTargetTemperatureC),
+		DhwOperatingMode:    cloneStringPtr(status.Config.DhwOperatingMode),
+		HeatingStatusRaw:    cloneIntPtr(status.Diagnostics.HeatingStatusRaw),
+		DhwStatusRaw:        cloneIntPtr(status.Diagnostics.DhwStatusRaw),
+	}
+	if status.State.CentralHeatingPumpActive != nil {
+		v := *status.State.CentralHeatingPumpActive
+		out.CentralHeatingPumpActive = &v
+	}
+	return out
 }
 
 func writeSemanticCacheFileAtomic(path string, payload []byte) error {

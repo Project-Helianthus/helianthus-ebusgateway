@@ -23,6 +23,7 @@ type graphqlSchemaTypes struct {
 	zoneType           *graphqlgo.Object
 	dhwType            *graphqlgo.Object
 	energyTotals       *graphqlgo.Object
+	boilerStatusType   *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {
@@ -427,6 +428,164 @@ func buildSchemaTypes() graphqlSchemaTypes {
 						return nil, nil
 					}
 					return status.DhwSpecialFunctionRaw, nil
+				},
+			},
+		},
+	})
+
+	boilerStateType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "BoilerState",
+		Fields: graphqlgo.Fields{
+			"flowTemperatureC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(BoilerState)
+					if !ok {
+						return nil, nil
+					}
+					if state.FlowTemperatureC == nil {
+						return nil, nil
+					}
+					return *state.FlowTemperatureC, nil
+				},
+			},
+			"returnTemperatureC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(BoilerState)
+					if !ok {
+						return nil, nil
+					}
+					if state.ReturnTemperatureC == nil {
+						return nil, nil
+					}
+					return *state.ReturnTemperatureC, nil
+				},
+			},
+			"centralHeatingPumpActive": &graphqlgo.Field{
+				Type: graphqlgo.Boolean,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(BoilerState)
+					if !ok {
+						return nil, nil
+					}
+					if state.CentralHeatingPumpActive == nil {
+						return nil, nil
+					}
+					return *state.CentralHeatingPumpActive, nil
+				},
+			},
+			"dhwTemperatureC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(BoilerState)
+					if !ok {
+						return nil, nil
+					}
+					if state.DhwTemperatureC == nil {
+						return nil, nil
+					}
+					return *state.DhwTemperatureC, nil
+				},
+			},
+			"dhwTargetTemperatureC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(BoilerState)
+					if !ok {
+						return nil, nil
+					}
+					if state.DhwTargetTemperatureC == nil {
+						return nil, nil
+					}
+					return *state.DhwTargetTemperatureC, nil
+				},
+			},
+		},
+	})
+
+	boilerConfigType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "BoilerConfig",
+		Fields: graphqlgo.Fields{
+			"dhwOperatingMode": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(BoilerConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.DhwOperatingMode == nil {
+						return nil, nil
+					}
+					return *config.DhwOperatingMode, nil
+				},
+			},
+		},
+	})
+
+	boilerDiagnosticsType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "BoilerDiagnostics",
+		Fields: graphqlgo.Fields{
+			"heatingStatusRaw": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					diag, ok := params.Source.(BoilerDiagnostics)
+					if !ok {
+						return nil, nil
+					}
+					if diag.HeatingStatusRaw == nil {
+						return nil, nil
+					}
+					return *diag.HeatingStatusRaw, nil
+				},
+			},
+			"dhwStatusRaw": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					diag, ok := params.Source.(BoilerDiagnostics)
+					if !ok {
+						return nil, nil
+					}
+					if diag.DhwStatusRaw == nil {
+						return nil, nil
+					}
+					return *diag.DhwStatusRaw, nil
+				},
+			},
+		},
+	})
+
+	boilerStatusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "BoilerStatus",
+		Fields: graphqlgo.Fields{
+			"state": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(boilerStateType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*BoilerStatus)
+					if !ok || status == nil {
+						return BoilerState{}, nil
+					}
+					return status.State, nil
+				},
+			},
+			"config": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(boilerConfigType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*BoilerStatus)
+					if !ok || status == nil {
+						return BoilerConfig{}, nil
+					}
+					return status.Config, nil
+				},
+			},
+			"diagnostics": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(boilerDiagnosticsType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*BoilerStatus)
+					if !ok || status == nil {
+						return BoilerDiagnostics{}, nil
+					}
+					return status.Diagnostics, nil
 				},
 			},
 		},
@@ -910,6 +1069,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		zoneType:           zoneType,
 		dhwType:            dhwType,
 		energyTotals:       energyTotalsType,
+		boilerStatusType:   boilerStatusType,
 	}
 }
 
@@ -945,6 +1105,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				Type: types.energyTotals,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().EnergyTotals(), nil
+				},
+			},
+			"boilerStatus": &graphqlgo.Field{
+				Type: types.boilerStatusType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().BoilerStatus(), nil
 				},
 			},
 			"devices": &graphqlgo.Field{

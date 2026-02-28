@@ -498,6 +498,10 @@ func encodeCircuitTypeRaw(circuitType string) uint16 {
 	case "mixed":
 		return 2
 	default:
+		var n uint16
+		if _, err := fmt.Sscanf(circuitType, "unknown_%d", &n); err == nil {
+			return n
+		}
 		return 0
 	}
 }

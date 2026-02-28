@@ -42,22 +42,46 @@ type StatusProvider interface {
 	AdapterStatus() ServiceStatus
 }
 
+type ZoneState struct {
+	CurrentTempC       *float64 `json:"current_temp_c,omitempty"`
+	CurrentHumidityPct *float64 `json:"current_humidity_pct,omitempty"`
+	HvacAction         string   `json:"hvac_action,omitempty"`
+	SpecialFunction    string   `json:"special_function,omitempty"`
+	HeatingDemandPct   *float64 `json:"heating_demand_pct,omitempty"`
+	ValvePositionPct   *float64 `json:"valve_position_pct,omitempty"`
+}
+
+type ZoneConfig struct {
+	OperatingMode     string   `json:"operating_mode"`
+	Preset            string   `json:"preset"`
+	TargetTempC       *float64 `json:"target_temp_c,omitempty"`
+	AllowedModes      []string `json:"allowed_modes,omitempty"`
+	CircuitType       string   `json:"circuit_type,omitempty"`
+	AssociatedCircuit *int     `json:"associated_circuit,omitempty"`
+}
+
 type Zone struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
+	ID     string     `json:"id"`
+	Name   string     `json:"name"`
+	State  ZoneState  `json:"state"`
+	Config ZoneConfig `json:"config"`
+}
+
+type DhwState struct {
+	CurrentTempC     *float64 `json:"current_temp_c,omitempty"`
+	SpecialFunction  string   `json:"special_function,omitempty"`
+	HeatingDemandPct *float64 `json:"heating_demand_pct,omitempty"`
+}
+
+type DhwConfig struct {
 	OperatingMode string   `json:"operating_mode"`
 	Preset        string   `json:"preset"`
-	CurrentTempC  *float64 `json:"current_temp_c,omitempty"`
 	TargetTempC   *float64 `json:"target_temp_c,omitempty"`
-	HeatingDemand *float64 `json:"heating_demand,omitempty"`
 }
 
 type DhwStatus struct {
-	OperatingMode string   `json:"operating_mode"`
-	Preset        string   `json:"preset"`
-	CurrentTempC  *float64 `json:"current_temp_c,omitempty"`
-	TargetTempC   *float64 `json:"target_temp_c,omitempty"`
-	HeatingDemand *float64 `json:"heating_demand,omitempty"`
+	State  DhwState  `json:"state"`
+	Config DhwConfig `json:"config"`
 }
 
 type EnergySeries struct {

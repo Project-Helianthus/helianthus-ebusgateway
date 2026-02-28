@@ -461,24 +461,45 @@ func zoneInstanceFromSemanticID(id string, fallbackIndex int) byte {
 
 func zoneSnapshotFromSemanticZone(instance byte, zone graphql.Zone) *vaillantZoneSnapshot {
 	snapshot := &vaillantZoneSnapshot{
-		Instance:                          instance,
-		Present:                           true,
-		Name:                              zone.Name,
-		OperatingMode:                     zone.OperatingMode,
-		Preset:                            zone.Preset,
-		HvacAction:                        zone.HvacAction,
-		AllowedModes:                      append([]string(nil), zone.AllowedModes...),
-		CurrentTempC:                      cloneFloat64Ptr(zone.CurrentTempC),
-		TargetTempC:                       cloneFloat64Ptr(zone.TargetTempC),
-		HumidityPct:                       cloneFloat64Ptr(zone.CurrentHumidityPct),
-		ConfigurationHeatingOperationMode: zone.ZoneOperationModeRaw,
-		StateSpecialFunction:              zone.ZoneSpecialFunctionRaw,
-		ConfigurationAssociatedCircuitRaw: parseUint16Token(zone.ZoneCircuitIndexRaw),
-		ConfigurationCircuitTypeRaw:       parseUint16Token(zone.CircuitTypeRaw),
-		StateValveStatusRaw:               parseUint16Token(zone.ZoneValveStatusRaw),
+		Instance:         instance,
+		Present:          true,
+		Name:             zone.Name,
+		OperatingMode:    zone.Config.OperatingMode,
+		Preset:           zone.Config.Preset,
+		HvacAction:       zone.State.HvacAction,
+		AllowedModes:     append([]string(nil), zone.Config.AllowedModes...),
+		CurrentTempC:     cloneFloat64Ptr(zone.State.CurrentTempC),
+		TargetTempC:      cloneFloat64Ptr(zone.Config.TargetTempC),
+		HumidityPct:      cloneFloat64Ptr(zone.State.CurrentHumidityPct),
+		StateSpecialFunction: zone.State.SpecialFunction,
+	}
+	if zone.Config.AssociatedCircuit != nil {
+		v := uint16(*zone.Config.AssociatedCircuit)
+		snapshot.ConfigurationAssociatedCircuitRaw = &v
+	}
+	if zone.Config.CircuitType != "" {
+		v := encodeCircuitTypeRaw(zone.Config.CircuitType)
+		snapshot.ConfigurationCircuitTypeRaw = &v
+	}
+	if zone.State.ValvePositionPct != nil {
+		v := uint16(*zone.State.ValvePositionPct * 655.35)
+		snapshot.StateValveStatusRaw = &v
 	}
 	seedZoneFreshness(snapshot, semanticSnapshotSourceCache, true)
 	return snapshot
+}
+
+func encodeCircuitTypeRaw(circuitType string) uint16 {
+	switch circuitType {
+	case "radiator":
+		return 0
+	case "underfloor":
+		return 1
+	case "mixed":
+		return 2
+	default:
+		return 0
+	}
 }
 
 func dhwSnapshotFromSemanticStatus(status *graphql.DhwStatus) *vaillantDhwSnapshot {
@@ -486,12 +507,11 @@ func dhwSnapshotFromSemanticStatus(status *graphql.DhwStatus) *vaillantDhwSnapsh
 		return nil
 	}
 	snapshot := &vaillantDhwSnapshot{
-		OperatingMode:                 status.OperatingMode,
-		Preset:                        status.Preset,
-		CurrentTempC:                  cloneFloat64Ptr(status.CurrentTempC),
-		TargetTempC:                   cloneFloat64Ptr(status.TargetTempC),
-		ConfigurationDHWOperationMode: status.DhwOperationModeRaw,
-		StateSpecialFunction:          status.DhwSpecialFunctionRaw,
+		OperatingMode:        status.Config.OperatingMode,
+		Preset:               status.Config.Preset,
+		CurrentTempC:         cloneFloat64Ptr(status.State.CurrentTempC),
+		TargetTempC:          cloneFloat64Ptr(status.Config.TargetTempC),
+		StateSpecialFunction: status.State.SpecialFunction,
 	}
 	seedDhwFreshness(snapshot, semanticSnapshotSourceCache, true)
 	return snapshot
@@ -1266,21 +1286,23 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 		}
 
 		zone := graphql.Zone{
-			ID:                     fmt.Sprintf("zone-%d", instance+1),
-			Name:                   name,
-			OperatingMode:          entry.OperatingMode,
-			Preset:                 entry.Preset,
-			HvacAction:             entry.HvacAction,
-			AllowedModes:           append([]string(nil), entry.AllowedModes...),
-			CurrentTempC:           entry.CurrentTempC,
-			TargetTempC:            entry.TargetTempC,
-			CurrentHumidityPct:     entry.HumidityPct,
-			SpecialFunction:        entry.StateSpecialFunction,
-			CircuitTypeRaw:         optionalUintToken(entry.ConfigurationCircuitTypeRaw),
-			ZoneCircuitIndexRaw:    optionalUintToken(entry.ConfigurationAssociatedCircuitRaw),
-			ZoneOperationModeRaw:   entry.ConfigurationHeatingOperationMode,
-			ZoneValveStatusRaw:     optionalUintToken(entry.StateValveStatusRaw),
-			ZoneSpecialFunctionRaw: entry.StateSpecialFunction,
+			ID:   fmt.Sprintf("zone-%d", instance+1),
+			Name: name,
+			State: graphql.ZoneState{
+				CurrentTempC:       entry.CurrentTempC,
+				CurrentHumidityPct: entry.HumidityPct,
+				HvacAction:         entry.HvacAction,
+				SpecialFunction:    entry.StateSpecialFunction,
+				ValvePositionPct:   decodeValvePositionPct(entry.StateValveStatusRaw),
+			},
+			Config: graphql.ZoneConfig{
+				OperatingMode:     entry.OperatingMode,
+				Preset:            entry.Preset,
+				TargetTempC:       entry.TargetTempC,
+				AllowedModes:      append([]string(nil), entry.AllowedModes...),
+				CircuitType:       decodeCircuitType(entry.ConfigurationCircuitTypeRaw),
+				AssociatedCircuit: decodeAssociatedCircuit(entry.ConfigurationAssociatedCircuitRaw),
+			},
 		}
 		zones = append(zones, zone)
 	}
@@ -1315,29 +1337,36 @@ func zoneEquals(a, b graphql.Zone) bool {
 	if a.ID != b.ID || a.Name != b.Name {
 		return false
 	}
-	if a.OperatingMode != b.OperatingMode || a.Preset != b.Preset {
+	// State comparison
+	if a.State.HvacAction != b.State.HvacAction || a.State.SpecialFunction != b.State.SpecialFunction {
 		return false
 	}
-	if a.HvacAction != b.HvacAction || a.SpecialFunction != b.SpecialFunction {
+	if !floatPtrEquals(a.State.CurrentTempC, b.State.CurrentTempC) {
 		return false
 	}
-	if a.CircuitTypeRaw != b.CircuitTypeRaw ||
-		a.ZoneCircuitIndexRaw != b.ZoneCircuitIndexRaw ||
-		a.ZoneOperationModeRaw != b.ZoneOperationModeRaw ||
-		a.ZoneValveStatusRaw != b.ZoneValveStatusRaw ||
-		a.ZoneSpecialFunctionRaw != b.ZoneSpecialFunctionRaw {
+	if !floatPtrEquals(a.State.CurrentHumidityPct, b.State.CurrentHumidityPct) {
 		return false
 	}
-	if !slices.Equal(a.AllowedModes, b.AllowedModes) {
+	if !floatPtrEquals(a.State.HeatingDemandPct, b.State.HeatingDemandPct) {
 		return false
 	}
-	if !floatPtrEquals(a.CurrentTempC, b.CurrentTempC) {
+	if !floatPtrEquals(a.State.ValvePositionPct, b.State.ValvePositionPct) {
 		return false
 	}
-	if !floatPtrEquals(a.TargetTempC, b.TargetTempC) {
+	// Config comparison
+	if a.Config.OperatingMode != b.Config.OperatingMode || a.Config.Preset != b.Config.Preset {
 		return false
 	}
-	if !floatPtrEquals(a.CurrentHumidityPct, b.CurrentHumidityPct) {
+	if !floatPtrEquals(a.Config.TargetTempC, b.Config.TargetTempC) {
+		return false
+	}
+	if !slices.Equal(a.Config.AllowedModes, b.Config.AllowedModes) {
+		return false
+	}
+	if a.Config.CircuitType != b.Config.CircuitType {
+		return false
+	}
+	if !intPtrEquals(a.Config.AssociatedCircuit, b.Config.AssociatedCircuit) {
 		return false
 	}
 	return true
@@ -1569,13 +1598,15 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 	}
 
 	current := &graphql.DhwStatus{
-		OperatingMode:         snapshot.OperatingMode,
-		Preset:                snapshot.Preset,
-		CurrentTempC:          snapshot.CurrentTempC,
-		TargetTempC:           snapshot.TargetTempC,
-		SpecialFunction:       snapshot.StateSpecialFunction,
-		DhwOperationModeRaw:   snapshot.ConfigurationDHWOperationMode,
-		DhwSpecialFunctionRaw: snapshot.StateSpecialFunction,
+		State: graphql.DhwState{
+			CurrentTempC:    snapshot.CurrentTempC,
+			SpecialFunction: snapshot.StateSpecialFunction,
+		},
+		Config: graphql.DhwConfig{
+			OperatingMode: snapshot.OperatingMode,
+			Preset:        snapshot.Preset,
+			TargetTempC:   snapshot.TargetTempC,
+		},
 	}
 
 	switch source {
@@ -1851,25 +1882,54 @@ func dhwEquals(a, b *graphql.DhwStatus) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	if a.OperatingMode != b.OperatingMode || a.Preset != b.Preset {
+	if a.Config.OperatingMode != b.Config.OperatingMode || a.Config.Preset != b.Config.Preset {
 		return false
 	}
-	if a.SpecialFunction != b.SpecialFunction ||
-		a.DhwOperationModeRaw != b.DhwOperationModeRaw ||
-		a.DhwSpecialFunctionRaw != b.DhwSpecialFunctionRaw {
+	if a.State.SpecialFunction != b.State.SpecialFunction {
 		return false
 	}
-	if !floatPtrEquals(a.CurrentTempC, b.CurrentTempC) || !floatPtrEquals(a.TargetTempC, b.TargetTempC) {
+	if !floatPtrEquals(a.State.CurrentTempC, b.State.CurrentTempC) {
+		return false
+	}
+	if !floatPtrEquals(a.Config.TargetTempC, b.Config.TargetTempC) {
+		return false
+	}
+	if !floatPtrEquals(a.State.HeatingDemandPct, b.State.HeatingDemandPct) {
 		return false
 	}
 	return true
 }
 
-func optionalUintToken(value *uint16) string {
-	if value == nil {
+func decodeValvePositionPct(raw *uint16) *float64 {
+	if raw == nil {
+		return nil
+	}
+	pct := float64(*raw) / 655.35
+	return &pct
+}
+
+func decodeCircuitType(raw *uint16) string {
+	if raw == nil {
 		return ""
 	}
-	return formatUintToken(*value)
+	switch *raw {
+	case 0:
+		return "radiator"
+	case 1:
+		return "underfloor"
+	case 2:
+		return "mixed"
+	default:
+		return fmt.Sprintf("unknown_%d", *raw)
+	}
+}
+
+func decodeAssociatedCircuit(raw *uint16) *int {
+	if raw == nil {
+		return nil
+	}
+	v := int(*raw)
+	return &v
 }
 
 func floatPtrEquals(a, b *float64) bool {

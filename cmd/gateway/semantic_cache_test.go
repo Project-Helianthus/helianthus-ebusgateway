@@ -30,7 +30,7 @@ func TestSemanticCacheStoreLoad_HitLogsMarker(t *testing.T) {
 	targetTemp := 22.5
 	if err := store.Save(semanticCacheSnapshot{
 		Zones: []graphql.Zone{
-			{ID: "zone-1", Name: "Zone 1", TargetTempC: &targetTemp},
+			{ID: "zone-1", Name: "Zone 1", Config: graphql.ZoneConfig{TargetTempC: &targetTemp}},
 		},
 	}); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -79,7 +79,7 @@ func TestSemanticCacheStoreLoad_UnknownSchemaVersionLogsInvalid(t *testing.T) {
 	logs.requireContains(t, "unknown_schema_version")
 }
 
-func TestSemanticCacheStoreLoad_MigratesV1ToV2(t *testing.T) {
+func TestSemanticCacheStoreLoad_DiscardsV1(t *testing.T) {
 	logs := &semanticCacheTestLogs{}
 	path := filepath.Join(t.TempDir(), "semantic-cache.json")
 	legacyV1 := `{
@@ -94,37 +94,25 @@ func TestSemanticCacheStoreLoad_MigratesV1ToV2(t *testing.T) {
 	}
 
 	store := newSemanticCacheStore(path, logs.Printf)
-	snapshot, ok := store.Load()
-	if !ok {
-		t.Fatalf("Load() ok = false; want true")
+	if _, ok := store.Load(); ok {
+		t.Fatalf("Load() ok = true; want false for discarded V1 cache")
 	}
-	if len(snapshot.Zones) != 2 {
-		t.Fatalf("len(snapshot.Zones) = %d; want 2", len(snapshot.Zones))
-	}
-	if snapshot.Zones[0].ID != "zone-1" {
-		t.Fatalf("snapshot.Zones[0].ID = %q; want zone-1 (deterministic order)", snapshot.Zones[0].ID)
-	}
-	if snapshot.DHW == nil || snapshot.DHW.OperatingMode != "auto" {
-		t.Fatalf("snapshot.DHW = %#v; want operating_mode=auto", snapshot.DHW)
+	logs.requireContains(t, "semantic_cache_discarded")
+}
+
+func TestSemanticCacheStoreLoad_DiscardsV2(t *testing.T) {
+	logs := &semanticCacheTestLogs{}
+	path := filepath.Join(t.TempDir(), "semantic-cache.json")
+	legacyV2 := `{"schema_version":2,"metadata":{},"zones":[{"id":"zone-1","name":"Zone 1"}]}`
+	if err := os.WriteFile(path, []byte(legacyV2), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	persistedPayload, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile() migrated path error = %v", err)
+	store := newSemanticCacheStore(path, logs.Printf)
+	if _, ok := store.Load(); ok {
+		t.Fatalf("Load() ok = true; want false for discarded V2 cache")
 	}
-	var persisted semanticCacheV2
-	if err := json.Unmarshal(persistedPayload, &persisted); err != nil {
-		t.Fatalf("Unmarshal(migrated) error = %v", err)
-	}
-	if persisted.SchemaVersion != semanticCacheSchemaVersionV2 {
-		t.Fatalf("persisted.SchemaVersion = %d; want %d", persisted.SchemaVersion, semanticCacheSchemaVersionV2)
-	}
-	if persisted.Metadata.MigratedFrom != semanticCacheSchemaVersionV1 {
-		t.Fatalf("persisted.Metadata.MigratedFrom = %d; want %d", persisted.Metadata.MigratedFrom, semanticCacheSchemaVersionV1)
-	}
-	logs.requireContains(t, "semantic_cache_migrated")
-	logs.requireContains(t, "semantic_cache_write")
-	logs.requireContains(t, "semantic_cache_hit")
+	logs.requireContains(t, "semantic_cache_discarded")
 }
 
 func TestSemanticCacheStoreSave_SortsZonesAndAllowedModes(t *testing.T) {
@@ -134,9 +122,9 @@ func TestSemanticCacheStoreSave_SortsZonesAndAllowedModes(t *testing.T) {
 
 	if err := store.Save(semanticCacheSnapshot{
 		Zones: []graphql.Zone{
-			{ID: "zone-10", Name: "Zone 10", AllowedModes: []string{"heat", "off"}},
-			{ID: "zone-2", Name: "Zone 2", AllowedModes: []string{"off", "heat"}},
-			{ID: "zone-1", Name: "Zone 1", AllowedModes: []string{"heat", "auto"}},
+			{ID: "zone-10", Name: "Zone 10", Config: graphql.ZoneConfig{AllowedModes: []string{"heat", "off"}}},
+			{ID: "zone-2", Name: "Zone 2", Config: graphql.ZoneConfig{AllowedModes: []string{"off", "heat"}}},
+			{ID: "zone-1", Name: "Zone 1", Config: graphql.ZoneConfig{AllowedModes: []string{"heat", "auto"}}},
 		},
 	}); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -146,7 +134,7 @@ func TestSemanticCacheStoreSave_SortsZonesAndAllowedModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
-	var persisted semanticCacheV2
+	var persisted semanticCacheV3
 	if err := json.Unmarshal(payload, &persisted); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
@@ -156,13 +144,13 @@ func TestSemanticCacheStoreSave_SortsZonesAndAllowedModes(t *testing.T) {
 	if persisted.Zones[0].ID != "zone-1" || persisted.Zones[1].ID != "zone-2" || persisted.Zones[2].ID != "zone-10" {
 		t.Fatalf("zone order = [%s %s %s]; want [zone-1 zone-2 zone-10]", persisted.Zones[0].ID, persisted.Zones[1].ID, persisted.Zones[2].ID)
 	}
-	if got := strings.Join(persisted.Zones[0].AllowedModes, ","); got != "auto,heat" {
+	if got := strings.Join(persisted.Zones[0].Config.AllowedModes, ","); got != "auto,heat" {
 		t.Fatalf("allowed_modes zone-1 = %q; want auto,heat", got)
 	}
-	if got := strings.Join(persisted.Zones[1].AllowedModes, ","); got != "heat,off" {
+	if got := strings.Join(persisted.Zones[1].Config.AllowedModes, ","); got != "heat,off" {
 		t.Fatalf("allowed_modes zone-2 = %q; want heat,off", got)
 	}
-	if got := strings.Join(persisted.Zones[2].AllowedModes, ","); got != "heat,off" {
+	if got := strings.Join(persisted.Zones[2].Config.AllowedModes, ","); got != "heat,off" {
 		t.Fatalf("allowed_modes zone-10 = %q; want heat,off", got)
 	}
 }
@@ -236,8 +224,8 @@ func TestPreloadSemanticCache_AppliesSnapshotAsStale(t *testing.T) {
 
 	current := 49.0
 	if err := store.Save(semanticCacheSnapshot{
-		Zones: []graphql.Zone{{ID: "zone-1", Name: "Zone 1", OperatingMode: "heat"}},
-		DHW:   &graphql.DhwStatus{OperatingMode: "auto", CurrentTempC: &current},
+		Zones: []graphql.Zone{{ID: "zone-1", Name: "Zone 1", Config: graphql.ZoneConfig{OperatingMode: "heat"}}},
+		DHW:   &graphql.DhwStatus{Config: graphql.DhwConfig{OperatingMode: "auto"}, State: graphql.DhwState{CurrentTempC: &current}},
 	}); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -251,7 +239,7 @@ func TestPreloadSemanticCache_AppliesSnapshotAsStale(t *testing.T) {
 	if zones := provider.Zones(); len(zones) != 1 || zones[0].ID != "zone-1" {
 		t.Fatalf("provider.Zones() = %#v; want zone-1", zones)
 	}
-	if dhw := provider.DHW(); dhw == nil || dhw.OperatingMode != "auto" {
+	if dhw := provider.DHW(); dhw == nil || dhw.Config.OperatingMode != "auto" {
 		t.Fatalf("provider.DHW() = %#v; want non-nil auto", dhw)
 	}
 }
@@ -304,17 +292,23 @@ func TestVaillantSemanticPoller_CachePublishKeepsPreloadedSnapshotWhenEmpty(t *t
 	target := 50.0
 	preloadedZones := []graphql.Zone{
 		{
-			ID:            "zone-1",
-			Name:          "Living Room",
-			OperatingMode: "heat",
-			Preset:        "manual",
+			ID:   "zone-1",
+			Name: "Living Room",
+			Config: graphql.ZoneConfig{
+				OperatingMode: "heat",
+				Preset:        "manual",
+			},
 		},
 	}
 	preloadedDHW := &graphql.DhwStatus{
-		OperatingMode: "auto",
-		Preset:        "schedule",
-		CurrentTempC:  &current,
-		TargetTempC:   &target,
+		Config: graphql.DhwConfig{
+			OperatingMode: "auto",
+			Preset:        "schedule",
+			TargetTempC:   &target,
+		},
+		State: graphql.DhwState{
+			CurrentTempC: &current,
+		},
 	}
 	provider.SetZonesFromCache(preloadedZones)
 	provider.SetDHWFromCache(preloadedDHW)
@@ -334,7 +328,7 @@ func TestVaillantSemanticPoller_CachePublishKeepsPreloadedSnapshotWhenEmpty(t *t
 		t.Fatalf("provider.Zones() = %#v; want preloaded zone-1 preserved", zones)
 	}
 	dhw := provider.DHW()
-	if dhw == nil || dhw.OperatingMode != "auto" {
+	if dhw == nil || dhw.Config.OperatingMode != "auto" {
 		t.Fatalf("provider.DHW() = %#v; want preloaded DHW preserved", dhw)
 	}
 }
@@ -344,27 +338,34 @@ func TestVaillantSemanticPoller_HydrateFromCache_SeedsInternalState(t *testing.T
 	target := 22.0
 	dhwCurrent := 48.2
 	dhwTarget := 50.0
+	assocCircuit := 2
 	snapshot := semanticCacheSnapshot{
 		Zones: []graphql.Zone{
 			{
-				ID:                  "zone-2",
-				Name:                "Etaj",
-				OperatingMode:       "heat",
-				Preset:              "manual",
-				AllowedModes:        []string{"off", "auto", "heat"},
-				CurrentTempC:        &current,
-				TargetTempC:         &target,
-				ZoneCircuitIndexRaw: "2",
-				CircuitTypeRaw:      "1",
-				ZoneValveStatusRaw:  "1",
+				ID:   "zone-2",
+				Name: "Etaj",
+				State: graphql.ZoneState{
+					CurrentTempC: &current,
+				},
+				Config: graphql.ZoneConfig{
+					OperatingMode:     "heat",
+					Preset:            "manual",
+					AllowedModes:      []string{"off", "auto", "heat"},
+					TargetTempC:       &target,
+					CircuitType:       "underfloor",
+					AssociatedCircuit: &assocCircuit,
+				},
 			},
 		},
 		DHW: &graphql.DhwStatus{
-			OperatingMode:       "auto",
-			Preset:              "schedule",
-			CurrentTempC:        &dhwCurrent,
-			TargetTempC:         &dhwTarget,
-			DhwOperationModeRaw: "1",
+			Config: graphql.DhwConfig{
+				OperatingMode: "auto",
+				Preset:        "schedule",
+				TargetTempC:   &dhwTarget,
+			},
+			State: graphql.DhwState{
+				CurrentTempC: &dhwCurrent,
+			},
 		},
 	}
 

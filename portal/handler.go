@@ -96,22 +96,46 @@ type SemanticSnapshot struct {
 	CapturedUTC string                `json:"captured_utc"`
 }
 
+type SemanticZoneState struct {
+	CurrentTempC       *float64 `json:"current_temp_c,omitempty"`
+	CurrentHumidityPct *float64 `json:"current_humidity_pct,omitempty"`
+	HvacAction         string   `json:"hvac_action,omitempty"`
+	SpecialFunction    string   `json:"special_function,omitempty"`
+	HeatingDemandPct   *float64 `json:"heating_demand_pct,omitempty"`
+	ValvePositionPct   *float64 `json:"valve_position_pct,omitempty"`
+}
+
+type SemanticZoneConfig struct {
+	OperatingMode     string   `json:"operating_mode,omitempty"`
+	Preset            string   `json:"preset,omitempty"`
+	TargetTempC       *float64 `json:"target_temp_c,omitempty"`
+	AllowedModes      []string `json:"allowed_modes,omitempty"`
+	CircuitType       string   `json:"circuit_type,omitempty"`
+	AssociatedCircuit *int     `json:"associated_circuit,omitempty"`
+}
+
 type SemanticZone struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
+	ID     string             `json:"id"`
+	Name   string             `json:"name"`
+	State  SemanticZoneState  `json:"state"`
+	Config SemanticZoneConfig `json:"config"`
+}
+
+type SemanticDhwState struct {
+	CurrentTempC     *float64 `json:"current_temp_c,omitempty"`
+	SpecialFunction  string   `json:"special_function,omitempty"`
+	HeatingDemandPct *float64 `json:"heating_demand_pct,omitempty"`
+}
+
+type SemanticDhwConfig struct {
 	OperatingMode string   `json:"operating_mode,omitempty"`
 	Preset        string   `json:"preset,omitempty"`
-	CurrentTempC  *float64 `json:"current_temp_c,omitempty"`
 	TargetTempC   *float64 `json:"target_temp_c,omitempty"`
-	HeatingDemand *float64 `json:"heating_demand,omitempty"`
 }
 
 type SemanticDHW struct {
-	OperatingMode string   `json:"operating_mode,omitempty"`
-	Preset        string   `json:"preset,omitempty"`
-	CurrentTempC  *float64 `json:"current_temp_c,omitempty"`
-	TargetTempC   *float64 `json:"target_temp_c,omitempty"`
-	HeatingDemand *float64 `json:"heating_demand,omitempty"`
+	State  SemanticDhwState  `json:"state"`
+	Config SemanticDhwConfig `json:"config"`
 }
 
 type SemanticEnergyTotals struct {
@@ -1120,29 +1144,29 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(strings.ToLower(strings.Join([]string{
 				zone.ID,
 				zone.Name,
-				zone.OperatingMode,
-				zone.Preset,
+				zone.Config.OperatingMode,
+				zone.Config.Preset,
 			}, " ")), needle) {
 				appendResult(SearchResult{
 					Layer:    "semantic",
 					Kind:     "zone",
 					ID:       zone.ID,
 					Title:    zone.Name,
-					Subtitle: strings.TrimSpace(strings.Join([]string{zone.OperatingMode, zone.Preset}, " / ")),
+					Subtitle: strings.TrimSpace(strings.Join([]string{zone.Config.OperatingMode, zone.Config.Preset}, " / ")),
 				})
 			}
 		}
 		if snapshot.DHW != nil && strings.Contains(strings.ToLower(strings.Join([]string{
 			"dhw",
-			snapshot.DHW.OperatingMode,
-			snapshot.DHW.Preset,
+			snapshot.DHW.Config.OperatingMode,
+			snapshot.DHW.Config.Preset,
 		}, " ")), needle) {
 			appendResult(SearchResult{
 				Layer:    "semantic",
 				Kind:     "dhw",
 				ID:       "dhw",
 				Title:    "Domestic Hot Water",
-				Subtitle: strings.TrimSpace(strings.Join([]string{snapshot.DHW.OperatingMode, snapshot.DHW.Preset}, " / ")),
+				Subtitle: strings.TrimSpace(strings.Join([]string{snapshot.DHW.Config.OperatingMode, snapshot.DHW.Config.Preset}, " / ")),
 			})
 		}
 	}

@@ -374,10 +374,10 @@ func TestSemanticSnapshotEndpoint(t *testing.T) {
 		ListSemantic: func() SemanticSnapshot {
 			return SemanticSnapshot{
 				Zones: []SemanticZone{
-					{ID: "zone_1", Name: "Living", CurrentTempC: &current},
+					{ID: "zone_1", Name: "Living", State: SemanticZoneState{CurrentTempC: &current}},
 				},
 				DHW: &SemanticDHW{
-					OperatingMode: "auto",
+					Config: SemanticDhwConfig{OperatingMode: "auto"},
 				},
 				CapturedUTC: "2026-02-23T22:00:00Z",
 			}
@@ -519,9 +519,9 @@ func TestSearchEndpoint(t *testing.T) {
 		ListSemantic: func() SemanticSnapshot {
 			return SemanticSnapshot{
 				Zones: []SemanticZone{
-					{ID: "zone_1", Name: "Living", OperatingMode: "auto", CurrentTempC: &current},
+					{ID: "zone_1", Name: "Living", Config: SemanticZoneConfig{OperatingMode: "auto"}, State: SemanticZoneState{CurrentTempC: &current}},
 				},
-				DHW: &SemanticDHW{OperatingMode: "auto"},
+				DHW: &SemanticDHW{Config: SemanticDhwConfig{OperatingMode: "auto"}},
 			}
 		},
 		ListProjections: func() []ProjectionDevice {

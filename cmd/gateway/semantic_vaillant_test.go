@@ -364,11 +364,11 @@ func TestVaillantSemanticPoller_DHWTransientCacheFailurePreservesLastKnown(t *te
 	if dhw == nil {
 		t.Fatalf("provider.DHW() = nil; want preserved last-known DHW before TTL expiry")
 	}
-	if dhw.OperatingMode != "auto" {
-		t.Fatalf("provider.DHW().OperatingMode = %q; want auto", dhw.OperatingMode)
+	if dhw.Config.OperatingMode != "auto" {
+		t.Fatalf("provider.DHW().Config.OperatingMode = %q; want auto", dhw.Config.OperatingMode)
 	}
-	if dhw.CurrentTempC == nil || *dhw.CurrentTempC != 48.5 {
-		t.Fatalf("provider.DHW().CurrentTempC = %v; want 48.5", dhw.CurrentTempC)
+	if dhw.State.CurrentTempC == nil || *dhw.State.CurrentTempC != 48.5 {
+		t.Fatalf("provider.DHW().State.CurrentTempC = %v; want 48.5", dhw.State.CurrentTempC)
 	}
 }
 
@@ -430,9 +430,13 @@ func TestVaillantSemanticPoller_HydrateFromCacheSeedsDHWStalenessFromPersistedAt
 	// Hydrate from a cache that was persisted 20 minutes ago — already past the 15m TTL.
 	poller.hydrateFromCache(semanticCacheSnapshot{
 		DHW: &graphql.DhwStatus{
-			OperatingMode: "auto",
-			Preset:        "schedule",
-			CurrentTempC:  &current,
+			Config: graphql.DhwConfig{
+				OperatingMode: "auto",
+				Preset:        "schedule",
+			},
+			State: graphql.DhwState{
+				CurrentTempC: &current,
+			},
 		},
 		PersistedAt: now.Add(-20 * time.Minute),
 	})
@@ -468,8 +472,12 @@ func TestVaillantSemanticPoller_HydrateFromCacheFallsBackToNowWhenPersistedAtZer
 	// Hydrate with zero PersistedAt — should fall back to now().
 	poller.hydrateFromCache(semanticCacheSnapshot{
 		DHW: &graphql.DhwStatus{
-			OperatingMode: "auto",
-			CurrentTempC:  &current,
+			Config: graphql.DhwConfig{
+				OperatingMode: "auto",
+			},
+			State: graphql.DhwState{
+				CurrentTempC: &current,
+			},
 		},
 	})
 
@@ -554,11 +562,11 @@ func TestVaillantSemanticPoller_DiscoveryLossPreservesDHWBeforeTTL(t *testing.T)
 	if dhw == nil {
 		t.Fatalf("provider.DHW() = nil; want DHW preserved before TTL expiry")
 	}
-	if dhw.OperatingMode != "auto" {
-		t.Fatalf("provider.DHW().OperatingMode = %q; want auto", dhw.OperatingMode)
+	if dhw.Config.OperatingMode != "auto" {
+		t.Fatalf("provider.DHW().Config.OperatingMode = %q; want auto", dhw.Config.OperatingMode)
 	}
-	if dhw.CurrentTempC == nil || *dhw.CurrentTempC != 47.8 {
-		t.Fatalf("provider.DHW().CurrentTempC = %v; want 47.8", dhw.CurrentTempC)
+	if dhw.State.CurrentTempC == nil || *dhw.State.CurrentTempC != 47.8 {
+		t.Fatalf("provider.DHW().State.CurrentTempC = %v; want 47.8", dhw.State.CurrentTempC)
 	}
 	if poller.dhw == nil {
 		t.Fatalf("poller.dhw = nil; want preserved snapshot before TTL expiry")
@@ -574,9 +582,13 @@ func TestVaillantSemanticPoller_DiscoveryFlapDuringStartup(t *testing.T) {
 	now := time.Date(2026, time.January, 11, 11, 0, 0, 0, time.UTC)
 	current := 46.6
 	cached := &graphql.DhwStatus{
-		OperatingMode: "auto",
-		Preset:        "schedule",
-		CurrentTempC:  &current,
+		Config: graphql.DhwConfig{
+			OperatingMode: "auto",
+			Preset:        "schedule",
+		},
+		State: graphql.DhwState{
+			CurrentTempC: &current,
+		},
 	}
 
 	provider := graphql.NewLiveSemanticProvider()
@@ -618,8 +630,8 @@ func TestVaillantSemanticPoller_DiscoveryFlapDuringStartup(t *testing.T) {
 	if dhw == nil {
 		t.Fatalf("provider.DHW() = nil; want preserved DHW during LIVE_WARMUP discovery flap")
 	}
-	if dhw.CurrentTempC == nil || *dhw.CurrentTempC != 46.6 {
-		t.Fatalf("provider.DHW().CurrentTempC = %v; want 46.6", dhw.CurrentTempC)
+	if dhw.State.CurrentTempC == nil || *dhw.State.CurrentTempC != 46.6 {
+		t.Fatalf("provider.DHW().State.CurrentTempC = %v; want 46.6", dhw.State.CurrentTempC)
 	}
 }
 

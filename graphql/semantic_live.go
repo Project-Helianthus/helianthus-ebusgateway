@@ -160,7 +160,9 @@ func (provider *LiveSemanticProvider) Zones() []Zone {
 		return nil
 	}
 	zones := make([]Zone, len(provider.zones))
-	copy(zones, provider.zones)
+	for i, z := range provider.zones {
+		zones[i] = cloneZone(z)
+	}
 	return zones
 }
 
@@ -173,8 +175,8 @@ func (provider *LiveSemanticProvider) DHW() *DhwStatus {
 	if provider.dhw == nil {
 		return nil
 	}
-	copy := *provider.dhw
-	return &copy
+	cp := cloneDhwStatus(provider.dhw)
+	return cp
 }
 
 func (provider *LiveSemanticProvider) EnergyTotals() *EnergyTotals {
@@ -206,7 +208,9 @@ func (provider *LiveSemanticProvider) setZonesWithSource(zones []Zone, source se
 		return
 	}
 	zonesCopy := make([]Zone, len(zones))
-	copy(zonesCopy, zones)
+	for i, z := range zones {
+		zonesCopy[i] = cloneZone(z)
+	}
 	var transition *phaseTransitionLog
 	provider.mu.Lock()
 	provider.zones = zonesCopy
@@ -240,8 +244,8 @@ func (provider *LiveSemanticProvider) setDHWWithSource(status *DhwStatus, source
 		provider.mu.Unlock()
 		return
 	}
-	copy := *status
-	provider.dhw = &copy
+	cp := cloneDhwStatus(status)
+	provider.dhw = cp
 	provider.dhwPublished = true
 	if source == semanticDataSourceLive {
 		provider.dhwLiveSeen = true
@@ -630,6 +634,83 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 		series.Yearly = copySlice
 	}
 	return series
+}
+
+func cloneZone(z Zone) Zone {
+	out := z
+	out.State = cloneZoneState(z.State)
+	out.Config = cloneZoneConfig(z.Config)
+	return out
+}
+
+func cloneZoneState(s ZoneState) ZoneState {
+	out := s
+	if s.CurrentTempC != nil {
+		v := *s.CurrentTempC
+		out.CurrentTempC = &v
+	}
+	if s.CurrentHumidityPct != nil {
+		v := *s.CurrentHumidityPct
+		out.CurrentHumidityPct = &v
+	}
+	if s.HeatingDemandPct != nil {
+		v := *s.HeatingDemandPct
+		out.HeatingDemandPct = &v
+	}
+	if s.ValvePositionPct != nil {
+		v := *s.ValvePositionPct
+		out.ValvePositionPct = &v
+	}
+	return out
+}
+
+func cloneZoneConfig(c ZoneConfig) ZoneConfig {
+	out := c
+	if c.TargetTempC != nil {
+		v := *c.TargetTempC
+		out.TargetTempC = &v
+	}
+	if len(c.AllowedModes) > 0 {
+		out.AllowedModes = make([]string, len(c.AllowedModes))
+		copy(out.AllowedModes, c.AllowedModes)
+	}
+	if c.AssociatedCircuit != nil {
+		v := *c.AssociatedCircuit
+		out.AssociatedCircuit = &v
+	}
+	return out
+}
+
+func cloneDhwStatus(s *DhwStatus) *DhwStatus {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	out.State = cloneDhwState(s.State)
+	out.Config = cloneDhwConfig(s.Config)
+	return &out
+}
+
+func cloneDhwState(s DhwState) DhwState {
+	out := s
+	if s.CurrentTempC != nil {
+		v := *s.CurrentTempC
+		out.CurrentTempC = &v
+	}
+	if s.HeatingDemandPct != nil {
+		v := *s.HeatingDemandPct
+		out.HeatingDemandPct = &v
+	}
+	return out
+}
+
+func cloneDhwConfig(c DhwConfig) DhwConfig {
+	out := c
+	if c.TargetTempC != nil {
+		v := *c.TargetTempC
+		out.TargetTempC = &v
+	}
+	return out
 }
 
 var _ SemanticProvider = (*LiveSemanticProvider)(nil)

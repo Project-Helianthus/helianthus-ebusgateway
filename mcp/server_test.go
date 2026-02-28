@@ -479,12 +479,14 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 	}
 	server.SetSemanticProvider(testSemanticProvider{
 		zones: []Zone{
-			{ID: "zone-b", Name: "Bedroom", OperatingMode: "AUTO", Preset: "COMFORT"},
-			{ID: "zone-a", Name: "Living", OperatingMode: "AUTO", Preset: "COMFORT"},
+			{ID: "zone-b", Name: "Bedroom", Config: ZoneConfig{OperatingMode: "AUTO", Preset: "COMFORT"}},
+			{ID: "zone-a", Name: "Living", Config: ZoneConfig{OperatingMode: "AUTO", Preset: "COMFORT"}},
 		},
 		dhw: &DhwStatus{
-			OperatingMode: "AUTO",
-			Preset:        "ECO",
+			Config: DhwConfig{
+				OperatingMode: "AUTO",
+				Preset:        "ECO",
+			},
 		},
 		energy: &EnergyTotals{
 			Gas: EnergyChannel{
@@ -528,8 +530,9 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		if !ok {
 			t.Fatalf("dhw data type = %T; want map", envelope["data"])
 		}
-		if preset, _ := data["preset"].(string); preset != "ECO" {
-			t.Fatalf("dhw preset = %q; want ECO", preset)
+		config, _ := data["config"].(map[string]any)
+		if preset, _ := config["preset"].(string); preset != "ECO" {
+			t.Fatalf("dhw config.preset = %q; want ECO", preset)
 		}
 	})
 
@@ -608,7 +611,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		})
 		slowServer.SetSemanticProvider(testSemanticProvider{
 			zones:      []Zone{{ID: "zone-a", Name: "Living"}},
-			dhw:        &DhwStatus{OperatingMode: "AUTO"},
+			dhw:        &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO"}},
 			zonesDelay: 20 * time.Millisecond,
 		})
 
@@ -634,7 +637,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		})
 		slowServer.SetSemanticProvider(testSemanticProvider{
 			zones:      []Zone{{ID: "zone-a", Name: "Living"}},
-			dhw:        &DhwStatus{OperatingMode: "AUTO"},
+			dhw:        &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO"}},
 			zonesDelay: 20 * time.Millisecond,
 		})
 
@@ -671,7 +674,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		})
 		slowServer.SetSemanticProvider(testSemanticProvider{
 			zones:      []Zone{{ID: "zone-a", Name: "Living"}},
-			dhw:        &DhwStatus{OperatingMode: "AUTO"},
+			dhw:        &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO"}},
 			zonesDelay: 5 * time.Millisecond,
 		})
 

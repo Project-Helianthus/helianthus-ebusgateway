@@ -108,7 +108,7 @@ func TestBroadcastHub_SemanticUpdates(t *testing.T) {
 	}
 
 	hub.PublishZoneUpdate(Zone{ID: "zone-1", Name: "Zone 1"})
-	hub.PublishDHWUpdate(&DhwStatus{OperatingMode: "auto"})
+	hub.PublishDHWUpdate(&DhwStatus{Config: DhwConfig{OperatingMode: "auto"}})
 	hub.PublishEnergyUpdate(&EnergyTotals{})
 
 	select {
@@ -124,7 +124,7 @@ func TestBroadcastHub_SemanticUpdates(t *testing.T) {
 	select {
 	case value := <-dhwCh:
 		status, ok := value.(*DhwStatus)
-		if !ok || status.OperatingMode != "auto" {
+		if !ok || status.Config.OperatingMode != "auto" {
 			t.Fatalf("dhw = %#v; want operatingMode=auto", value)
 		}
 	case <-time.After(2 * time.Second):

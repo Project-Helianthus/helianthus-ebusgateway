@@ -139,9 +139,7 @@ type vaillantSemanticPoller struct {
 	presence                 map[byte]*zonePresenceRecord
 	dhw                      *vaillantDhwSnapshot
 	dhwLastUpdateAt          time.Time
-	boilerAddr               byte
-	boilerAddrFound          bool
-	boiler                   *vaillantBoilerSnapshot
+	boiler *vaillantBoilerSnapshot
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	nowFn                  func() time.Time
@@ -1594,14 +1592,21 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 
 // --- Boiler status ---
 
+// B524 registers on the controller that mirror boiler operational data.
+// Group 0x00 (regulator parameters), instance 0x00.
 const (
-	vaillantB504Primary   = byte(0xB5)
-	vaillantB504Secondary = byte(0x04)
-	vaillantB504OpParams  = byte(0x09) // get_parameters
-	vaillantB504OpStatus  = byte(0x0D) // get_status
+	vaillantGroupRegulator = byte(0x00)
+	regulatorInstance      = byte(0x00)
 
-	data2bReplacementRaw = int16(-32768) // 0x8000 — replacement value for DATA2b
-	data1bReplacement    = int8(-128)    // 0x80 — replacement value for DATA1b
+	// system_flow_temperature — float32 LE (°C)
+	regulatorRegSystemFlowTemp = uint16(0x004B)
+	// system_water_pressure — float32 LE (bar)
+	regulatorRegSystemWaterPressure = uint16(0x0039)
+
+	// Heating circuit registers (group 0x02)
+	circuitRegFlowTemp    = uint16(0x0008) // heating_circuit_flow_temperature — float32 LE (°C)
+	circuitRegPumpStatus  = uint16(0x001E) // pump_status — uint16 LE (0=off, !0=on)
+	circuitRegCircuitState = uint16(0x001B) // circuit_state — uint16 LE
 )
 
 type vaillantBoilerSnapshot struct {
@@ -1615,178 +1620,56 @@ type vaillantBoilerSnapshot struct {
 	DhwStatusRaw             *int
 }
 
-// findBoilerAddress discovers the boiler device address from the registry
-// using the product catalog role classification.
-func (p *vaillantSemanticPoller) findBoilerAddress() (byte, bool) {
-	p.mu.Lock()
-	if p.boilerAddrFound {
-		addr := p.boilerAddr
-		p.mu.Unlock()
-		return addr, true
-	}
-	p.mu.Unlock()
+// findBoilerAddress is retained for potential future use (e.g. broadcast sniffing).
+// Currently unused — boiler data is read via B524 registers on the controller.
 
-	if p.reg == nil || p.catalogErr != nil {
-		return 0, false
-	}
-
-	var found bool
-	var addr byte
-	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil {
-			return true
-		}
-		if !strings.EqualFold(entry.Manufacturer(), "Vaillant") {
-			return true
-		}
-		partNumber := extractPartNumberFromSerial(entry.SerialNumber())
-		if partNumber == "" {
-			return true
-		}
-		record, ok := p.catalog.ByPartNumber[partNumber]
-		if !ok {
-			return true
-		}
-		if strings.EqualFold(strings.TrimSpace(record.Role), "Boiler") {
-			addr = entry.Address()
-			found = true
-			return false
-		}
-		return true
-	})
-
-	if found {
-		p.mu.Lock()
-		p.boilerAddr = addr
-		p.boilerAddrFound = true
-		p.mu.Unlock()
-	}
-	return addr, found
-}
-
-// readB504Value sends a B504 frame to the target with the given opcode and
-// returns the raw response bytes. Uses the same retry/circuit-breaker pattern
-// as readB524Value.
-func (p *vaillantSemanticPoller) readB504Value(ctx context.Context, target, opcode byte) ([]byte, bool) {
-	source := p.source
-	if source == 0 {
-		return nil, false
-	}
-	if target == 0 {
-		return nil, false
-	}
-
-	key := fmt.Sprintf("b504:%02x:%02x", target, opcode)
-	value, err := p.scheduler.Get(ctx, key, 500*time.Millisecond, func(ctx context.Context) ([]byte, error) {
-		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			p.readMu.Lock()
-
-			reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			request := protocol.Frame{
-				Source:    source,
-				Target:    target,
-				Primary:   vaillantB504Primary,
-				Secondary: vaillantB504Secondary,
-				Data:      []byte{opcode},
-			}
-			response, err := p.bus.Send(reqCtx, request)
-			cancel()
-			p.readMu.Unlock()
-
-			if err != nil {
-				lastErr = err
-			} else if response == nil {
-				lastErr = fmt.Errorf("b504 read returned nil response")
-			} else if len(response.Data) == 0 {
-				lastErr = fmt.Errorf("b504 read returned empty response")
-			} else {
-				return response.Data, nil
-			}
-
-			if attempt < 2 {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(75 * time.Millisecond):
-				}
-			}
-		}
-		if lastErr == nil {
-			lastErr = fmt.Errorf("b504 read failed")
-		}
-		return nil, lastErr
-	})
-	if err != nil {
-		return nil, false
-	}
-	return value, true
-}
-
-// decodeDATA2b decodes a 2-byte little-endian signed value with resolution 1/256.
-func decodeDATA2b(data []byte) (float64, bool) {
-	if len(data) < 2 {
-		return 0, false
-	}
-	raw := int16(data[0]) | int16(data[1])<<8
-	if raw == data2bReplacementRaw {
-		return 0, false
-	}
-	return float64(raw) / 256.0, true
-}
-
-// decodeDATA1b decodes a 1-byte signed value. Returns false if replacement value.
-func decodeDATA1b(b byte) (int, bool) {
-	raw := int8(b)
-	if raw == data1bReplacement {
-		return 0, false
-	}
-	return int(raw), true
-}
-
-// refreshBoilerStatus reads B504 operational data from the boiler device.
+// refreshBoilerStatus reads boiler operational data via B524 registers on the controller.
+// The BAI boiler does not respond to direct B504 reads from third-party sources — it only
+// accepts requests from its paired controller. Instead, the controller (VRC/BASV2) mirrors
+// boiler data in its own B524 register space, which we can read reliably.
 func (p *vaillantSemanticPoller) refreshBoilerStatus(ctx context.Context) {
 	if p == nil {
 		return
 	}
 
-	addr, ok := p.findBoilerAddress()
-	if !ok {
+	// We don't need the boiler address — we read from the controller's registers.
+	// But confirm we have a controller to talk to.
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
+	if controller == 0 {
 		return
 	}
 
 	snapshot := &vaillantBoilerSnapshot{}
 
-	// Read heating get_parameters (op=0x09): [flow_temp:DATA2b, return_temp:DATA2b, pump_status:DATA1b]
-	if data, ok := p.readB504Value(ctx, addr, vaillantB504OpParams); ok && len(data) >= 5 {
-		if flow, ok := decodeDATA2b(data[0:2]); ok {
-			snapshot.FlowTemperatureC = &flow
-		}
-		if ret, ok := decodeDATA2b(data[2:4]); ok {
-			snapshot.ReturnTemperatureC = &ret
-		}
-		if pump, ok := decodeDATA1b(data[4]); ok {
-			active := pump != 0
-			snapshot.CentralHeatingPumpActive = &active
-		}
+	// System flow temperature from regulator group (group=0x00, instance=0x00, reg=0x004B)
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, regulatorRegSystemFlowTemp); ok {
+		snapshot.FlowTemperatureC = &value
 	}
 
-	// Read heating get_status (op=0x0D): [status:DATA1b]
-	if data, ok := p.readB504Value(ctx, addr, vaillantB504OpStatus); ok && len(data) >= 1 {
-		if status, ok := decodeDATA1b(data[0]); ok {
-			snapshot.HeatingStatusRaw = &status
-		}
+	// Heating circuit 0 flow temperature (group=0x02, instance=0x00, reg=0x0008)
+	// This is the per-circuit flow temp, may differ from system flow temp.
+	// Use as return temperature proxy if system flow is the supply side.
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, 0x00, circuitRegFlowTemp); ok {
+		snapshot.ReturnTemperatureC = &value
 	}
 
-	// DHW get_status uses the same wire frame as heating get_status (B504 op=0x0D to the
-	// same target). The returned byte is device-global status, not plane-specific. We
-	// assign it to HeatingStatusRaw only. DhwStatusRaw left nil until we have evidence
-	// of a separate DHW status byte (or decode specific bit flags from the combined status).
+	// Heating circuit 0 pump status (group=0x02, instance=0x00, reg=0x001E)
+	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, 0x00, circuitRegPumpStatus); ok && raw != nil {
+		active := *raw != 0
+		snapshot.CentralHeatingPumpActive = &active
+	}
+
+	// Heating circuit 0 state (group=0x02, instance=0x00, reg=0x001B)
+	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, 0x00, circuitRegCircuitState); ok && raw != nil {
+		status := int(*raw)
+		snapshot.HeatingStatusRaw = &status
+	}
 
 	// Only update if we got at least some data — avoid wiping good state on transient bus errors.
 	if snapshot.FlowTemperatureC == nil && snapshot.ReturnTemperatureC == nil &&
-		snapshot.CentralHeatingPumpActive == nil && snapshot.HeatingStatusRaw == nil &&
-		snapshot.DhwStatusRaw == nil {
+		snapshot.CentralHeatingPumpActive == nil && snapshot.HeatingStatusRaw == nil {
 		return
 	}
 

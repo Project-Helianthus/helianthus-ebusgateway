@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/d3vi1/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway"
 )
 
 const (

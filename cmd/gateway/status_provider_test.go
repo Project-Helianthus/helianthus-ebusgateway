@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/d3vi1/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway"
 )
 
 func TestFormatConfiguredInitiator(t *testing.T) {

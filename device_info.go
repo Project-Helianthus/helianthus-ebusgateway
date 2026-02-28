@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	ebuserrors "github.com/d3vi1/helianthus-ebusgo/errors"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 )
 
 func decodeDeviceInfoPayload(payload []byte) (map[string]string, error) {

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/d3vi1/helianthus-ebusgateway/internal/ebusdscan"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/ebusdscan"
 )
 
 const defaultCommandPort = 8888

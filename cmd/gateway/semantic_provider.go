@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/d3vi1/helianthus-ebusgateway/graphql"
-	"github.com/d3vi1/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
 type mcpSemanticProviderAdapter struct {

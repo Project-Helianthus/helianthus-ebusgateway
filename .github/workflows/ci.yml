@@ -23,6 +23,8 @@ jobs:
       GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - run: |
           TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
@@ -45,6 +47,8 @@ jobs:
       GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - run: |
           TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
@@ -62,6 +66,8 @@ jobs:
       GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - run: |
           TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi

@@ -614,7 +614,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasPrefix(path, "/assets/") {
-		recorder.Header().Set("Cache-Control", "public, max-age=3600")
+		recorder.Header().Set("Cache-Control", "no-cache")
 		if applyAssetETag(recorder, r, path) {
 			return
 		}

@@ -671,3 +671,83 @@ func TestExplorerStartScan_InvalidJSON(t *testing.T) {
 		t.Fatalf("status = %d; want %d", rec.Code, http.StatusBadRequest)
 	}
 }
+
+func TestExplorerSendWithRetry_RetriesOnError(t *testing.T) {
+	var attempts int
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, fmt.Errorf("bus arbitration lost")
+			}
+			return &protocol.Frame{Data: []byte{0x01, 0x02}}, nil
+		},
+	}
+
+	frame := protocol.Frame{Primary: 0xB5, Secondary: 0x24}
+	resp, err := explorerSendWithRetry(context.Background(), bus, frame)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d; want 3", attempts)
+	}
+}
+
+func TestExplorerSendWithRetry_AllFail(t *testing.T) {
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+			return nil, fmt.Errorf("bus timeout")
+		},
+	}
+
+	frame := protocol.Frame{Primary: 0xB5, Secondary: 0x24}
+	_, err := explorerSendWithRetry(context.Background(), bus, frame)
+	if err == nil {
+		t.Fatal("expected error after all retries exhausted")
+	}
+	if !strings.Contains(err.Error(), "bus timeout") {
+		t.Fatalf("error = %q; want contains 'bus timeout'", err)
+	}
+}
+
+func TestExplorerSendWithRetry_NilResponse(t *testing.T) {
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+			return nil, nil
+		},
+	}
+
+	frame := protocol.Frame{Primary: 0xB5, Secondary: 0x24}
+	_, err := explorerSendWithRetry(context.Background(), bus, frame)
+	if err == nil {
+		t.Fatal("expected error for nil response")
+	}
+	if !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("error = %q; want contains 'empty response'", err)
+	}
+}
+
+func TestExplorerSendWithRetry_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var attempts int
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+			attempts++
+			cancel()
+			return nil, fmt.Errorf("bus error")
+		},
+	}
+
+	frame := protocol.Frame{Primary: 0xB5, Secondary: 0x24}
+	_, err := explorerSendWithRetry(ctx, bus, frame)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if attempts > 2 {
+		t.Fatalf("attempts = %d; want <= 2 (should stop on cancelled context)", attempts)
+	}
+}

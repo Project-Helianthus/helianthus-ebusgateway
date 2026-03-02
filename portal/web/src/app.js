@@ -54,6 +54,11 @@ function formatAddress(value) {
   return `0x${number.toString(16).padStart(2, "0")}`;
 }
 
+function isValidHex(str, maxNibbles) {
+  if (!str || str.length === 0 || str.length > maxNibbles) return false;
+  return /^[0-9a-fA-F]+$/.test(str);
+}
+
 function explorerDecode(rawHex, rawLen, type) {
   if (!rawHex || rawLen === 0) return "";
   if (rawHex.length % 2 !== 0) return rawHex;
@@ -492,7 +497,6 @@ class PortalShell extends HTMLElement {
         this.scheduleTimelineRefresh();
         this.scheduleProvenanceRefresh();
         this.refreshSnapshots();
-        this.runSnapshotDiff();
       } catch (err) {
         streamStatus.textContent = "Stream payload parse error";
       }
@@ -1542,14 +1546,28 @@ class PortalShell extends HTMLElement {
       target: parseInt(deviceSelect.value, 10),
     };
     if (kind === "b524") {
+      const gMinRaw = this.querySelector('[data-role="explorer-group-min"]')?.value || "0";
+      const gMaxRaw = this.querySelector('[data-role="explorer-group-max"]')?.value || "10";
+      const iMaxRaw = this.querySelector('[data-role="explorer-instance-max"]')?.value || "a";
+      const rMaxRaw = this.querySelector('[data-role="explorer-register-max"]')?.value || "20";
+      if (!isValidHex(gMinRaw, 2) || !isValidHex(gMaxRaw, 2) || !isValidHex(iMaxRaw, 2) || !isValidHex(rMaxRaw, 4)) {
+        if (statusEl) statusEl.textContent = "Invalid hex value in scan parameters";
+        return;
+      }
       body.opcode = parseInt(opcodeSelect ? opcodeSelect.value : "02", 16);
-      body.group_min = parseInt(this.querySelector('[data-role="explorer-group-min"]')?.value || "0", 16);
-      body.group_max = parseInt(this.querySelector('[data-role="explorer-group-max"]')?.value || "10", 16);
-      body.instance_max = parseInt(this.querySelector('[data-role="explorer-instance-max"]')?.value || "a", 16);
-      body.register_max = parseInt(this.querySelector('[data-role="explorer-register-max"]')?.value || "20", 16);
+      body.group_min = parseInt(gMinRaw, 16);
+      body.group_max = parseInt(gMaxRaw, 16);
+      body.instance_max = parseInt(iMaxRaw, 16);
+      body.register_max = parseInt(rMaxRaw, 16);
     } else {
-      body.b509_addr_min = parseInt(this.querySelector('[data-role="explorer-b509-min"]')?.value || "0", 16);
-      body.b509_addr_max = parseInt(this.querySelector('[data-role="explorer-b509-max"]')?.value || "ff", 16);
+      const bMinRaw = this.querySelector('[data-role="explorer-b509-min"]')?.value || "0";
+      const bMaxRaw = this.querySelector('[data-role="explorer-b509-max"]')?.value || "ff";
+      if (!isValidHex(bMinRaw, 4) || !isValidHex(bMaxRaw, 4)) {
+        if (statusEl) statusEl.textContent = "Invalid hex value in address range";
+        return;
+      }
+      body.b509_addr_min = parseInt(bMinRaw, 16);
+      body.b509_addr_max = parseInt(bMaxRaw, 16);
     }
     try {
       if (scanButton) scanButton.disabled = true;
@@ -1695,6 +1713,11 @@ class PortalShell extends HTMLElement {
     const group = this.querySelector('[data-role="explorer-quick-group"]')?.value || "00";
     const instance = this.querySelector('[data-role="explorer-quick-instance"]')?.value || "00";
     const addr = this.querySelector('[data-role="explorer-quick-addr"]')?.value || "0000";
+    if (kind === "b524") {
+      if (!isValidHex(group, 2)) { if (resultEl) resultEl.textContent = "Invalid hex in GG field"; return; }
+      if (!isValidHex(instance, 2)) { if (resultEl) resultEl.textContent = "Invalid hex in II field"; return; }
+    }
+    if (!isValidHex(addr, 4)) { if (resultEl) resultEl.textContent = "Invalid hex in RR/Addr field"; return; }
     try {
       if (resultEl) resultEl.textContent = "Reading...";
       const params = new URLSearchParams({ target, opcode, group, instance, addr });

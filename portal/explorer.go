@@ -513,14 +513,11 @@ func (es *explorerStore) readB524GroupDescriptor(ctx context.Context, target, so
 		Data:      []byte{opcode, 0x00, group, 0x00, 0x00, 0x00},
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	resp, err := es.bus.Send(ctx, frame)
+	resp, err := explorerSendWithRetry(ctx, es.bus, frame)
 	if err != nil {
 		return 0, err
 	}
-	if resp == nil || len(resp.Data) < 4 {
+	if len(resp.Data) < 4 {
 		return 0, fmt.Errorf("empty or short response")
 	}
 
@@ -547,14 +544,11 @@ func (es *explorerStore) probeInstance(ctx context.Context, target, source, opco
 		Data:      []byte{opcode, 0x00, group, instance, 0x00, 0x00},
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	resp, err := es.bus.Send(ctx, frame)
+	resp, err := explorerSendWithRetry(ctx, es.bus, frame)
 	if err != nil {
 		return false
 	}
-	if resp == nil || len(resp.Data) == 0 {
+	if len(resp.Data) == 0 {
 		return false
 	}
 	// A non-error response with data indicates the instance exists.
@@ -582,16 +576,9 @@ func (es *explorerStore) readB524Register(ctx context.Context, target, source, o
 		Data:      []byte{opcode, 0x00, group, instance, byte(addr), byte(addr >> 8)},
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	resp, err := es.bus.Send(ctx, frame)
+	resp, err := explorerSendWithRetry(ctx, es.bus, frame)
 	if err != nil {
 		result.Error = err.Error()
-		return result
-	}
-	if resp == nil {
-		result.Error = "empty response"
 		return result
 	}
 
@@ -631,16 +618,9 @@ func (es *explorerStore) readB509Register(ctx context.Context, target, source by
 		Data:      []byte{0x0D, byte(addr >> 8), byte(addr)},
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	resp, err := es.bus.Send(ctx, frame)
+	resp, err := explorerSendWithRetry(ctx, es.bus, frame)
 	if err != nil {
 		result.Error = err.Error()
-		return result
-	}
-	if resp == nil {
-		result.Error = "empty response"
 		return result
 	}
 
@@ -957,6 +937,40 @@ func (h *handler) routeExplorer(w http.ResponseWriter, r *http.Request, path str
 }
 
 // --- Helpers ---
+
+const (
+	explorerReadTimeout  = 5 * time.Second
+	explorerMaxAttempts  = 3
+	explorerRetryBackoff = 75 * time.Millisecond
+)
+
+// explorerSendWithRetry sends a frame on the bus with retry logic.
+// Mirrors the retry pattern from semantic_vaillant.go readB524Value.
+func explorerSendWithRetry(ctx context.Context, bus ExplorerBus, frame protocol.Frame) (*protocol.Frame, error) {
+	var lastErr error
+	for attempt := 0; attempt < explorerMaxAttempts; attempt++ {
+		reqCtx, cancel := context.WithTimeout(ctx, explorerReadTimeout)
+		resp, err := bus.Send(reqCtx, frame)
+		cancel()
+
+		if err != nil {
+			lastErr = err
+		} else if resp == nil {
+			lastErr = fmt.Errorf("empty response")
+		} else {
+			return resp, nil
+		}
+
+		if attempt < explorerMaxAttempts-1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(explorerRetryBackoff):
+			}
+		}
+	}
+	return nil, lastErr
+}
 
 func parseHexByte(s string) (byte, error) {
 	s = strings.TrimPrefix(s, "0x")

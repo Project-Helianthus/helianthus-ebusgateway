@@ -1713,9 +1713,11 @@ class PortalShell extends HTMLElement {
     const group = this.querySelector('[data-role="explorer-quick-group"]')?.value || "00";
     const instance = this.querySelector('[data-role="explorer-quick-instance"]')?.value || "00";
     const addr = this.querySelector('[data-role="explorer-quick-addr"]')?.value || "0000";
-    if (!isValidHex(group, 2)) { if (resultEl) resultEl.textContent = "Invalid hex in GG field"; return; }
-    if (!isValidHex(instance, 2)) { if (resultEl) resultEl.textContent = "Invalid hex in II field"; return; }
-    if (!isValidHex(addr, 4)) { if (resultEl) resultEl.textContent = "Invalid hex in RR field"; return; }
+    if (kind === "b524") {
+      if (!isValidHex(group, 2)) { if (resultEl) resultEl.textContent = "Invalid hex in GG field"; return; }
+      if (!isValidHex(instance, 2)) { if (resultEl) resultEl.textContent = "Invalid hex in II field"; return; }
+    }
+    if (!isValidHex(addr, 4)) { if (resultEl) resultEl.textContent = "Invalid hex in RR/Addr field"; return; }
     try {
       if (resultEl) resultEl.textContent = "Reading...";
       const params = new URLSearchParams({ target, opcode, group, instance, addr });

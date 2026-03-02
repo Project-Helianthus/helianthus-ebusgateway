@@ -714,6 +714,23 @@ func TestExplorerSendWithRetry_AllFail(t *testing.T) {
 	}
 }
 
+func TestExplorerSendWithRetry_NilResponse(t *testing.T) {
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+			return nil, nil
+		},
+	}
+
+	frame := protocol.Frame{Primary: 0xB5, Secondary: 0x24}
+	_, err := explorerSendWithRetry(context.Background(), bus, frame)
+	if err == nil {
+		t.Fatal("expected error for nil response")
+	}
+	if !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("error = %q; want contains 'empty response'", err)
+	}
+}
+
 func TestExplorerSendWithRetry_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var attempts int

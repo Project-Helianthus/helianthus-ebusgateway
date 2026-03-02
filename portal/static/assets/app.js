@@ -1504,7 +1504,7 @@ class PortalShell extends HTMLElement {
     try {
       const res = await fetch("api/v1/registry/devices");
       const payload = await res.json();
-      const devices = Array.isArray(payload.devices) ? payload.devices : [];
+      const devices = Array.isArray(payload.items) ? payload.items : [];
       deviceSelect.innerHTML = '<option value="">Select device...</option>' +
         devices.map((d) => {
           const addr = formatAddress(d.address);

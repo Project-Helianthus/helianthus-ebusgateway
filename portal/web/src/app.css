@@ -207,23 +207,11 @@ body {
 }
 
 .projection-controls {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(160px, 240px) auto;
-  gap: 0.45rem;
   margin: 0 0 0.65rem;
 }
 
 .projection-controls.disabled {
   opacity: 0.7;
-}
-
-.projection-graph {
-  margin-top: 0.8rem;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--panel) 84%, transparent);
-  padding: 0.6rem;
-  overflow: auto;
 }
 
 .projection-empty {
@@ -232,7 +220,11 @@ body {
   font-size: 0.85rem;
 }
 
-.projection-graph-meta {
+.projection-uml-grid {
+  margin-top: 0.8rem;
+}
+
+.projection-uml-meta {
   display: flex;
   align-items: center;
   gap: 0.45rem;
@@ -240,34 +232,50 @@ body {
   flex-wrap: wrap;
 }
 
-.projection-svg {
-  width: 100%;
-  min-width: 620px;
-  height: auto;
+.uml-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
 }
 
-.projection-edge {
-  fill: none;
-  stroke: color-mix(in srgb, var(--accent) 38%, var(--border));
-  stroke-width: 1.4;
-  opacity: 0.78;
+.uml-box {
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card) 92%, var(--accent) 8%);
+  min-width: 200px;
+  max-width: 300px;
 }
 
-.projection-node rect {
-  fill: color-mix(in srgb, var(--card) 92%, var(--accent) 8%);
-  stroke: color-mix(in srgb, var(--accent) 40%, var(--border));
-  stroke-width: 1;
+.uml-header {
+  padding: 0.45rem 0.65rem;
+  font-weight: 700;
+  text-align: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+  font-size: 0.85rem;
 }
 
-.projection-node-title {
-  fill: var(--text);
-  font-size: 11px;
+.uml-body {
+  margin: 0;
+  padding: 0.35rem 0;
+  list-style: none;
+}
+
+.uml-method {
+  padding: 0.18rem 0.65rem;
+  font-size: 0.82rem;
+  font-family: "IBM Plex Mono", "Fira Code", monospace;
+  color: var(--text);
+}
+
+.uml-method:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.uml-method-prefix {
+  color: var(--accent);
   font-weight: 600;
-}
-
-.projection-node-subtitle {
-  fill: var(--muted);
-  font-size: 10px;
+  margin-right: 0.3rem;
 }
 
 .snapshot-controls {
@@ -400,11 +408,4 @@ body {
     grid-template-columns: 1fr;
   }
 
-  .projection-controls {
-    grid-template-columns: 1fr;
-  }
-
-  .projection-svg {
-    min-width: 360px;
-  }
 }

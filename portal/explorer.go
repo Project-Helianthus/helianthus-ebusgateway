@@ -726,6 +726,12 @@ func (es *explorerStore) singleB509Read(ctx context.Context, target, source byte
 
 // readScanID reads the device serial via B5.09 ScanID frames (QQ=0x24..0x27).
 // Mirrors readVaillantScanID from ebusreg/registry/scan.go but uses explorerSendWithRetry.
+//
+// Some devices (e.g. BAI boiler) return 9 bytes where Data[0] is a 0x00 status
+// byte and Data[1:9] holds 8 serial bytes.  Other devices (e.g. BASV2 controller)
+// return 9 bytes of raw serial data with no status prefix.  We try the status-byte
+// interpretation first; if it doesn't yield a formatted serial we fall back to
+// the full-9-byte interpretation.
 func (es *explorerStore) readScanID(ctx context.Context, target, source byte) ExplorerScanIDResult {
 	if source == 0 {
 		source = es.source
@@ -736,7 +742,12 @@ func (es *explorerStore) readScanID(ctx context.Context, target, source byte) Ex
 		Chunks: make([]string, 0, 4),
 	}
 
-	raw := make([]byte, 0, 32)
+	// Collect raw 9-byte responses for each chunk.
+	type chunkResp struct {
+		data []byte
+		err  string
+	}
+	chunks := make([]chunkResp, 0, 4)
 	var errs []string
 	for qq := byte(0x24); qq <= byte(0x27); qq++ {
 		frame := protocol.Frame{
@@ -748,50 +759,82 @@ func (es *explorerStore) readScanID(ctx context.Context, target, source byte) Ex
 		}
 		resp, err := explorerSendWithRetry(ctx, es.bus, frame)
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("chunk 0x%02x: %v", qq, err))
+			msg := fmt.Sprintf("chunk 0x%02x: %v", qq, err)
+			errs = append(errs, msg)
+			chunks = append(chunks, chunkResp{err: msg})
 			result.Chunks = append(result.Chunks, "")
-			raw = append(raw, make([]byte, 8)...)
 			continue
 		}
-		if len(resp.Data) < 1 {
-			errs = append(errs, fmt.Sprintf("chunk 0x%02x: empty response", qq))
+		if len(resp.Data) == 0 {
+			msg := fmt.Sprintf("chunk 0x%02x: empty response", qq)
+			errs = append(errs, msg)
+			chunks = append(chunks, chunkResp{err: msg})
 			result.Chunks = append(result.Chunks, "")
-			raw = append(raw, make([]byte, 8)...)
 			continue
 		}
-		if resp.Data[0] != 0x00 {
-			errs = append(errs, fmt.Sprintf("chunk 0x%02x: status=0x%02x (%d bytes)", qq, resp.Data[0], len(resp.Data)))
-			result.Chunks = append(result.Chunks, hex.EncodeToString(resp.Data))
-			raw = append(raw, make([]byte, 8)...)
+		result.Chunks = append(result.Chunks, hex.EncodeToString(resp.Data))
+		chunks = append(chunks, chunkResp{data: resp.Data})
+	}
+
+	// Try status-byte interpretation: Data[0]==0x00 → Data[1:9] are serial bytes.
+	statusRaw := make([]byte, 0, 32)
+	statusOK := true
+	for _, c := range chunks {
+		if c.err != "" || len(c.data) != 9 || c.data[0] != 0x00 {
+			statusOK = false
+			break
+		}
+		statusRaw = append(statusRaw, c.data[1:]...)
+	}
+	if statusOK {
+		serial := formatScanIDSerial(string(trimScanIDPadding(statusRaw)))
+		if serial != "" {
+			result.Serial = serial
+			return result
+		}
+	}
+
+	// Fallback: no status byte — all 9 bytes per chunk are serial data.
+	fullRaw := make([]byte, 0, 36)
+	for _, c := range chunks {
+		if c.err != "" {
+			fullRaw = append(fullRaw, make([]byte, 9)...)
 			continue
 		}
-		if len(resp.Data) != 9 {
-			errs = append(errs, fmt.Sprintf("chunk 0x%02x: expected 9 bytes, got %d", qq, len(resp.Data)))
-			result.Chunks = append(result.Chunks, hex.EncodeToString(resp.Data))
-			raw = append(raw, make([]byte, 8)...)
-			continue
-		}
-		chunk := resp.Data[1:]
-		result.Chunks = append(result.Chunks, hex.EncodeToString(chunk))
-		raw = append(raw, chunk...)
+		fullRaw = append(fullRaw, c.data...)
+	}
+	trimmed := trimScanIDPadding(fullRaw)
+	serial := formatScanIDSerial(string(trimmed))
+	if serial != "" {
+		result.Serial = serial
 	}
 	if len(errs) > 0 {
 		result.Error = strings.Join(errs, "; ")
 	}
+	return result
+}
 
-	// Trim trailing NUL/space/0xFF padding.
-	end := len(raw)
-	for end > 0 {
-		last := raw[end-1]
-		if last == 0x00 || last == 0x20 || last == 0xFF {
+// trimScanIDPadding strips leading and trailing NUL/space/0xFF bytes.
+func trimScanIDPadding(data []byte) []byte {
+	start := 0
+	for start < len(data) {
+		b := data[start]
+		if b == 0x00 || b == 0x20 || b == 0xFF {
+			start++
+			continue
+		}
+		break
+	}
+	end := len(data)
+	for end > start {
+		b := data[end-1]
+		if b == 0x00 || b == 0x20 || b == 0xFF {
 			end--
 			continue
 		}
 		break
 	}
-	trimmed := string(raw[:end])
-	result.Serial = formatScanIDSerial(trimmed)
-	return result
+	return data[start:end]
 }
 
 // formatScanIDSerial formats a raw Vaillant serial string.

@@ -93,54 +93,6 @@ function explorerDecode(rawHex, rawLen, type) {
   }
 }
 
-function autosizeProjectionNode(gEl, opts = {}) {
-  const padX = opts.padX ?? 10;
-  const padY = opts.padY ?? 8;
-  const minWidth = opts.minWidth ?? 0;
-  const minHeight = opts.minHeight ?? 0;
-  const rect = gEl.querySelector("rect");
-  if (!rect) return null;
-  const texts = gEl.querySelectorAll("text");
-  if (texts.length === 0) return null;
-  try {
-    let bMinX = Infinity;
-    let bMinY = Infinity;
-    let bMaxX = -Infinity;
-    let bMaxY = -Infinity;
-    for (const t of texts) {
-      const bb = t.getBBox();
-      if (bb.x < bMinX) bMinX = bb.x;
-      if (bb.y < bMinY) bMinY = bb.y;
-      if (bb.x + bb.width > bMaxX) bMaxX = bb.x + bb.width;
-      if (bb.y + bb.height > bMaxY) bMaxY = bb.y + bb.height;
-    }
-    const w = Math.max(minWidth, bMaxX - bMinX + 2 * padX);
-    const h = Math.max(minHeight, bMaxY - bMinY + 2 * padY);
-    rect.setAttribute("x", String(bMinX - padX));
-    rect.setAttribute("y", String(bMinY - padY));
-    rect.setAttribute("width", String(w));
-    rect.setAttribute("height", String(h));
-    return { x: bMinX - padX, y: bMinY - padY, width: w, height: h };
-  } catch (_) {
-    return null;
-  }
-}
-
-function autosizeAllProjectionNodes(rootOrSelector, opts = {}) {
-  const container =
-    typeof rootOrSelector === "string"
-      ? document.querySelector(rootOrSelector)
-      : rootOrSelector;
-  if (!container) return new Map();
-  const results = new Map();
-  container.querySelectorAll("g.projection-node").forEach((g) => {
-    const result = autosizeProjectionNode(g, opts);
-    const id = g.getAttribute("data-node-id");
-    if (result && id) results.set(id, result);
-  });
-  return results;
-}
-
 class PortalShell extends HTMLElement {
   connectedCallback() {
     this.render();
@@ -174,19 +126,6 @@ class PortalShell extends HTMLElement {
       clearInterval(this.snapshotInterval);
       this.snapshotInterval = undefined;
     }
-    if (this._projectionAutosizeRAF) {
-      cancelAnimationFrame(this._projectionAutosizeRAF);
-      this._projectionAutosizeRAF = 0;
-    }
-    if (this._projectionObserver) {
-      this._projectionObserver.disconnect();
-      this._projectionObserver = null;
-    }
-    if (this._projectionResizeHandler) {
-      window.removeEventListener("resize", this._projectionResizeHandler);
-      this._projectionResizeHandler = null;
-    }
-    this._projectionGraphTarget = null;
     if (this._explorerPollTimer) {
       clearInterval(this._explorerPollTimer);
       this._explorerPollTimer = undefined;
@@ -210,8 +149,6 @@ class PortalShell extends HTMLElement {
     const issueDraftButton = this.querySelector('[data-role="issue-draft-run"]');
     const issueExportButton = this.querySelector('[data-role="issue-export-run"]');
     const projectionDeviceSelect = this.querySelector('[data-role="projection-device-select"]');
-    const projectionPlaneSelect = this.querySelector('[data-role="projection-plane-select"]');
-    const projectionLoadButton = this.querySelector('[data-role="projection-load"]');
     if (toggle) {
       toggle.addEventListener("click", () => {
         const current = loadTheme();
@@ -270,18 +207,7 @@ class PortalShell extends HTMLElement {
     }
     if (projectionDeviceSelect) {
       projectionDeviceSelect.addEventListener("change", () => {
-        this.refreshProjectionPlaneOptions();
-        this.loadSelectedProjectionGraph();
-      });
-    }
-    if (projectionPlaneSelect) {
-      projectionPlaneSelect.addEventListener("change", () => {
-        this.loadSelectedProjectionGraph();
-      });
-    }
-    if (projectionLoadButton) {
-      projectionLoadButton.addEventListener("click", () => {
-        this.loadSelectedProjectionGraph();
+        this.loadAllProjectionPlanes();
       });
     }
     this.querySelectorAll("[data-nav-target]").forEach((button) => {
@@ -1064,9 +990,8 @@ class PortalShell extends HTMLElement {
   }
 
   async loadProjectionPreview(listEl) {
-    const graphEl = this.querySelector('[data-role="projection-graph"]');
+    const gridEl = this.querySelector('[data-role="projection-uml-grid"]');
     const controls = this.querySelector('[data-role="projection-controls"]');
-    const loadButton = this.querySelector('[data-role="projection-load"]');
     try {
       const response = await fetch("api/v1/projection/devices?limit=30");
       const payload = await response.json();
@@ -1077,33 +1002,31 @@ class PortalShell extends HTMLElement {
         if (controls) {
           controls.classList.add("disabled");
         }
-        if (loadButton) {
-          loadButton.disabled = true;
+        if (gridEl) {
+          gridEl.innerHTML = `<p class="projection-empty">Projection graph unavailable. No device projections published yet.</p>`;
         }
-        this.renderProjectionState(graphEl, "Projection graph unavailable. No device projections published yet.");
         return;
       }
       listEl.innerHTML = items
         .map((item) => {
-          const projectionCount = Array.isArray(item.projections) ? item.projections.length : 0;
+          const nonEmpty = Array.isArray(item.projections)
+            ? item.projections.filter((p) => (p.edge_count || 0) > 0)
+            : [];
           const label = item.display_name || item.device_id || formatAddress(item.address);
-          const planes = Array.isArray(item.projections)
-            ? item.projections.map((projection) => projection.plane).filter(Boolean).join(", ")
-            : "";
-          return `<li><strong>${escapeHtml(label)}</strong> <span class="muted-inline">addr=${escapeHtml(formatAddress(item.address))} projections=${projectionCount}${planes ? ` planes=${escapeHtml(planes)}` : ""}</span></li>`;
+          const planes = nonEmpty.map((p) => p.plane).filter(Boolean).join(", ");
+          return `<li><strong>${escapeHtml(label)}</strong> <span class="muted-inline">addr=${escapeHtml(formatAddress(item.address))} planes=${nonEmpty.length}${planes ? ` (${escapeHtml(planes)})` : ""}</span></li>`;
         })
         .join("");
       this.populateProjectionDeviceOptions();
       if (controls) {
         controls.classList.remove("disabled");
       }
-      if (loadButton) {
-        loadButton.disabled = false;
-      }
-      await this.loadSelectedProjectionGraph();
+      await this.loadAllProjectionPlanes();
     } catch (err) {
       listEl.innerHTML = "<li>Projection preview unavailable.</li>";
-      this.renderProjectionState(graphEl, "Projection preview request failed.");
+      if (gridEl) {
+        gridEl.innerHTML = `<p class="projection-empty">Projection preview request failed.</p>`;
+      }
       console.error("projection preview failed", err);
     }
   }
@@ -1117,7 +1040,6 @@ class PortalShell extends HTMLElement {
     if (items.length === 0) {
       deviceSelect.innerHTML = "<option value=\"\">No devices</option>";
       deviceSelect.disabled = true;
-      this.refreshProjectionPlaneOptions();
       return;
     }
     deviceSelect.disabled = false;
@@ -1127,330 +1049,99 @@ class PortalShell extends HTMLElement {
         return `<option value="${escapeHtml(String(item.address))}">${escapeHtml(`${label} (${formatAddress(item.address)})`)}</option>`;
       })
       .join("");
-    this.refreshProjectionPlaneOptions();
   }
 
-  refreshProjectionPlaneOptions() {
+  async loadAllProjectionPlanes() {
+    const gridEl = this.querySelector('[data-role="projection-uml-grid"]');
     const deviceSelect = this.querySelector('[data-role="projection-device-select"]');
-    const planeSelect = this.querySelector('[data-role="projection-plane-select"]');
-    if (!deviceSelect || !planeSelect) {
-      return;
-    }
-    const address = Number(deviceSelect.value);
-    const items = Array.isArray(this.projectionDevices) ? this.projectionDevices : [];
-    const current = items.find((item) => Number(item.address) === address) || null;
-    const planes = current && Array.isArray(current.projections)
-      ? current.projections.map((projection) => projection.plane).filter(Boolean)
-      : [];
-    if (planes.length === 0) {
-      planeSelect.innerHTML = "<option value=\"\">No planes</option>";
-      planeSelect.disabled = true;
-      return;
-    }
-    planeSelect.disabled = false;
-    planeSelect.innerHTML = planes
-      .map((plane) => `<option value="${escapeHtml(plane)}">${escapeHtml(plane)}</option>`)
-      .join("");
-  }
-
-  async loadSelectedProjectionGraph() {
-    const graphEl = this.querySelector('[data-role="projection-graph"]');
-    const deviceSelect = this.querySelector('[data-role="projection-device-select"]');
-    const planeSelect = this.querySelector('[data-role="projection-plane-select"]');
-    if (!graphEl || !deviceSelect || !planeSelect) {
+    if (!gridEl || !deviceSelect) {
       return;
     }
     const addressRaw = String(deviceSelect.value || "").trim();
-    const plane = String(planeSelect.value || "").trim();
-    if (!addressRaw || !plane) {
-      this.renderProjectionState(graphEl, "Pick device and plane to load graph.");
+    if (!addressRaw) {
+      gridEl.innerHTML = `<p class="projection-empty">Select a device to view projection planes.</p>`;
       return;
     }
-    const query = new URLSearchParams();
-    query.set("address", addressRaw);
-    query.set("plane", plane);
+    const items = Array.isArray(this.projectionDevices) ? this.projectionDevices : [];
+    const device = items.find((item) => String(item.address) === addressRaw) || null;
+    if (!device) {
+      gridEl.innerHTML = `<p class="projection-empty">Device not found.</p>`;
+      return;
+    }
+    const nonEmpty = Array.isArray(device.projections)
+      ? device.projections.filter((p) => (p.edge_count || 0) > 0)
+      : [];
+    if (nonEmpty.length === 0) {
+      gridEl.innerHTML = `<p class="projection-empty">No non-empty projection planes for this device.</p>`;
+      return;
+    }
+    gridEl.innerHTML = `<p class="projection-empty">Loading ${nonEmpty.length} plane(s)...</p>`;
     try {
-      const response = await fetch(`api/v1/projection/graph?${query.toString()}`);
-      if (!response.ok) {
-        this.renderProjectionState(graphEl, `Projection graph request failed (${response.status}).`);
-        return;
-      }
-      const payload = await response.json();
-      this.renderProjectionGraph(graphEl, payload);
+      const fetches = nonEmpty.map((p) => {
+        const query = new URLSearchParams();
+        query.set("address", addressRaw);
+        query.set("plane", p.plane);
+        return fetch(`api/v1/projection/graph?${query.toString()}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null);
+      });
+      const graphs = await Promise.all(fetches);
+      const results = nonEmpty
+        .map((p, i) => ({ plane: p.plane, graph: graphs[i] }))
+        .filter((r) => r.graph);
+      this.renderProjectionUML(gridEl, device, results);
     } catch (err) {
-      this.renderProjectionState(graphEl, "Projection graph request failed.");
-      console.error("projection graph failed", err);
+      gridEl.innerHTML = `<p class="projection-empty">Projection graph request failed.</p>`;
+      console.error("projection planes failed", err);
     }
   }
 
-  renderProjectionState(target, text) {
+  renderProjectionUML(target, device, planeResults) {
     if (!target) {
       return;
     }
-    target.innerHTML = `<p class="projection-empty">${escapeHtml(text || "Projection graph unavailable.")}</p>`;
-  }
-
-  renderProjectionGraph(target, payload) {
-    if (!target) {
+    if (planeResults.length === 0) {
+      target.innerHTML = `<p class="projection-empty">No projection data returned.</p>`;
       return;
     }
-    const nodes = Array.isArray(payload?.nodes) ? payload.nodes : [];
-    const edges = Array.isArray(payload?.edges) ? payload.edges : [];
-    if (nodes.length === 0) {
-      this.renderProjectionState(target, "No projection nodes for selected plane.");
-      return;
-    }
+    const label = device.display_name || device.device_id || formatAddress(device.address);
+    const metaHtml = `<div class="projection-uml-meta">
+      <span class="pill">${escapeHtml(label)}</span>
+      <span class="muted-inline">addr=${escapeHtml(formatAddress(device.address))}</span>
+      <span class="muted-inline">${planeResults.length} plane(s)</span>
+    </div>`;
 
-    const nodeByID = new Map();
-    nodes.forEach((node) => {
-      const id = String(node.id || "");
-      if (id) {
-        nodeByID.set(id, node);
+    const boxesHtml = planeResults.map((result) => {
+      const nodes = Array.isArray(result.graph?.nodes) ? result.graph.nodes : [];
+      const methods = [];
+      for (const node of nodes) {
+        const pathText = String(node.path || node.canonical_path || node.id || "");
+        const segments = pathText.split("/").filter(Boolean);
+        if (segments.length === 0) continue;
+        const last = segments[segments.length - 1];
+        const atIndex = last.indexOf("@");
+        if (atIndex < 0) continue;
+        const kind = last.substring(0, atIndex);
+        const name = last.substring(atIndex + 1);
+        if (kind === "device" || kind === "addr") continue;
+        methods.push({ kind, name });
       }
-    });
+      if (methods.length === 0) return "";
+      const methodsHtml = methods
+        .map((m) => {
+          const prefix = m.kind === "register"
+            ? `<span class="uml-method-prefix">register</span>`
+            : `<span class="uml-method-prefix">+</span>`;
+          return `<li class="uml-method">${prefix}${escapeHtml(m.name)}</li>`;
+        })
+        .join("");
+      return `<div class="uml-box">
+        <div class="uml-header">\u00AB${escapeHtml(result.plane)}\u00BB</div>
+        <ul class="uml-body">${methodsHtml}</ul>
+      </div>`;
+    }).filter(Boolean).join("");
 
-    const validEdges = edges.filter((edge) => nodeByID.has(String(edge.from || "")) && nodeByID.has(String(edge.to || "")));
-    const incoming = new Map();
-    const outgoing = new Map();
-    nodeByID.forEach((_, id) => {
-      incoming.set(id, 0);
-      outgoing.set(id, []);
-    });
-    validEdges.forEach((edge) => {
-      const from = String(edge.from || "");
-      const to = String(edge.to || "");
-      incoming.set(to, (incoming.get(to) || 0) + 1);
-      outgoing.get(from).push(to);
-    });
-
-    const roots = [];
-    incoming.forEach((count, id) => {
-      if (count === 0) {
-        roots.push(id);
-      }
-    });
-    if (roots.length === 0 && nodes[0]?.id) {
-      roots.push(String(nodes[0].id));
-    }
-
-    const depth = new Map();
-    const queue = [...roots];
-    roots.forEach((id) => depth.set(id, 0));
-    while (queue.length > 0) {
-      const current = queue.shift();
-      const nextDepth = (depth.get(current) || 0) + 1;
-      const neighbors = outgoing.get(current) || [];
-      neighbors.forEach((next) => {
-        if (!depth.has(next) || nextDepth < depth.get(next)) {
-          depth.set(next, nextDepth);
-          queue.push(next);
-        }
-      });
-    }
-    let maxDepth = 0;
-    depth.forEach((value) => {
-      if (value > maxDepth) {
-        maxDepth = value;
-      }
-    });
-    nodeByID.forEach((_, id) => {
-      if (!depth.has(id)) {
-        maxDepth += 1;
-        depth.set(id, maxDepth);
-      }
-    });
-
-    const columns = new Map();
-    depth.forEach((value, id) => {
-      if (!columns.has(value)) {
-        columns.set(value, []);
-      }
-      columns.get(value).push(id);
-    });
-    const orderedDepths = [...columns.keys()].sort((a, b) => a - b);
-    orderedDepths.forEach((columnDepth) => {
-      columns.get(columnDepth).sort((left, right) => left.localeCompare(right));
-    });
-
-    const colGap = 220;
-    const rowGap = 84;
-    const paddingX = 70;
-    const paddingY = 60;
-    const maxRows = orderedDepths.reduce((acc, columnDepth) => {
-      return Math.max(acc, columns.get(columnDepth).length);
-    }, 1);
-    const width = paddingX * 2 + Math.max(1, orderedDepths.length - 1) * colGap + 190;
-    const height = paddingY * 2 + Math.max(1, maxRows - 1) * rowGap + 70;
-
-    const positions = new Map();
-    orderedDepths.forEach((columnDepth, columnIndex) => {
-      const ids = columns.get(columnDepth);
-      ids.forEach((id, rowIndex) => {
-        const x = paddingX + columnIndex * colGap;
-        const y = paddingY + rowIndex * rowGap;
-        positions.set(id, { x, y, col: columnIndex });
-      });
-    });
-
-    const edgeMarkup = validEdges.map((edge) => {
-      const from = positions.get(String(edge.from || ""));
-      const to = positions.get(String(edge.to || ""));
-      if (!from || !to) {
-        return "";
-      }
-      const startX = from.x + 154;
-      const startY = from.y + 20;
-      const endX = to.x;
-      const endY = to.y + 20;
-      const cx1 = startX + 56;
-      const cx2 = endX - 56;
-      return `<path data-from="${escapeHtml(String(edge.from || ""))}" data-to="${escapeHtml(String(edge.to || ""))}" d="M ${startX} ${startY} C ${cx1} ${startY}, ${cx2} ${endY}, ${endX} ${endY}" class="projection-edge" />`;
-    }).join("");
-
-    const nodeMarkup = [...positions.entries()].map(([id, pos]) => {
-      const node = nodeByID.get(id) || {};
-      const pathText = String(node.path || node.canonical_path || id);
-      const segments = pathText.split("/").filter(Boolean);
-      const title = segments.length > 0 ? segments[segments.length - 1] : pathText;
-      const subtitle = pathText;
-      return `<g class="projection-node" data-node-id="${escapeHtml(id)}" data-col="${pos.col}" transform="translate(${pos.x},${pos.y})">
-        <rect width="154" height="40" rx="10" ry="10"></rect>
-        <text x="10" y="16" class="projection-node-title">${escapeHtml(title)}</text>
-        <text x="10" y="31" class="projection-node-subtitle">${escapeHtml(subtitle)}</text>
-      </g>`;
-    }).join("");
-
-    target.innerHTML = `
-      <div class="projection-graph-meta">
-        <span class="pill">nodes ${nodes.length}</span>
-        <span class="pill">edges ${validEdges.length}</span>
-        <span class="muted-inline">plane=${escapeHtml(payload?.plane || "unknown")} address=${escapeHtml(formatAddress(payload?.address))}</span>
-      </div>
-      <svg class="projection-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Projection graph">
-        ${edgeMarkup}
-        ${nodeMarkup}
-      </svg>
-    `;
-    this._setupProjectionAutosize(target);
-  }
-
-  _setupProjectionAutosize(target) {
-    if (this._projectionObserver) {
-      this._projectionObserver.disconnect();
-      this._projectionObserver = null;
-    }
-    this._projectionGraphTarget = target;
-    this._scheduleProjectionAutosize(target);
-    const svg = target.querySelector("svg.projection-svg");
-    if (!svg) return;
-    this._projectionObserver = new MutationObserver(() => {
-      this._scheduleProjectionAutosize(this._projectionGraphTarget);
-    });
-    this._projectionObserver.observe(svg, {
-      characterData: true,
-      childList: true,
-      subtree: true,
-    });
-    if (!this._projectionResizeHandler) {
-      let resizeTimer;
-      this._projectionResizeHandler = () => {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-          if (this._projectionGraphTarget) {
-            this._scheduleProjectionAutosize(this._projectionGraphTarget);
-          }
-        }, 150);
-      };
-      window.addEventListener("resize", this._projectionResizeHandler);
-    }
-    if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(() => {
-        if (this._projectionGraphTarget) {
-          this._scheduleProjectionAutosize(this._projectionGraphTarget);
-        }
-      });
-    }
-  }
-
-  _scheduleProjectionAutosize(target) {
-    if (!target) return;
-    if (this._projectionAutosizeRAF) {
-      cancelAnimationFrame(this._projectionAutosizeRAF);
-    }
-    this._projectionAutosizeRAF = requestAnimationFrame(() => {
-      this._projectionAutosizeRAF = requestAnimationFrame(() => {
-        this._projectionAutosizeRAF = 0;
-        this._runProjectionAutosize(target);
-      });
-    });
-  }
-
-  _runProjectionAutosize(target) {
-    const svg = target.querySelector("svg.projection-svg");
-    if (!svg) return;
-    const sizes = autosizeAllProjectionNodes(svg);
-    if (!sizes || sizes.size === 0) return;
-
-    const colMaxWidth = new Map();
-    svg.querySelectorAll("g.projection-node").forEach((g) => {
-      const col = parseInt(g.getAttribute("data-col") || "0", 10);
-      const nodeId = g.getAttribute("data-node-id");
-      const size = sizes.get(nodeId);
-      const w = size ? size.width : 154;
-      colMaxWidth.set(col, Math.max(colMaxWidth.get(col) || 0, w));
-    });
-
-    const interColGap = 66;
-    const paddingX = 70;
-    const paddingY = 60;
-    const orderedCols = [...colMaxWidth.keys()].sort((a, b) => a - b);
-    const colX = new Map();
-    let xCursor = paddingX;
-    orderedCols.forEach((col) => {
-      colX.set(col, xCursor);
-      xCursor += colMaxWidth.get(col) + interColGap;
-    });
-
-    const nodePositions = new Map();
-    svg.querySelectorAll("g.projection-node").forEach((g) => {
-      const col = parseInt(g.getAttribute("data-col") || "0", 10);
-      const nodeId = g.getAttribute("data-node-id");
-      const size = sizes.get(nodeId);
-      const newX = colX.get(col) || paddingX;
-      const transform = g.getAttribute("transform") || "";
-      const match = transform.match(/translate\(\s*[\d.eE+-]+\s*,\s*([\d.eE+-]+)\s*\)/);
-      const currentY = match ? parseFloat(match[1]) : 0;
-      g.setAttribute("transform", `translate(${newX},${currentY})`);
-      const rw = size ? size.width : 154;
-      const ry = size ? size.y : 0;
-      const rh = size ? size.height : 40;
-      nodePositions.set(nodeId, { x: newX, y: currentY, rectX: size ? size.x : 0, rectY: ry, rectW: rw, rectH: rh });
-    });
-
-    svg.querySelectorAll("path.projection-edge").forEach((path) => {
-      const fromId = path.getAttribute("data-from");
-      const toId = path.getAttribute("data-to");
-      const from = nodePositions.get(fromId);
-      const to = nodePositions.get(toId);
-      if (!from || !to) return;
-      const startX = from.x + from.rectX + from.rectW;
-      const startY = from.y + from.rectY + from.rectH / 2;
-      const endX = to.x + to.rectX;
-      const endY = to.y + to.rectY + to.rectH / 2;
-      const cx1 = startX + 56;
-      const cx2 = endX - 56;
-      path.setAttribute("d", `M ${startX} ${startY} C ${cx1} ${startY}, ${cx2} ${endY}, ${endX} ${endY}`);
-    });
-
-    const lastCol = orderedCols.length > 0 ? orderedCols[orderedCols.length - 1] : 0;
-    const totalW = (colX.get(lastCol) || 0) + (colMaxWidth.get(lastCol) || 0) + paddingX;
-    let maxBottom = 0;
-    nodePositions.forEach(({ y, rectY, rectH }) => {
-      const bottom = y + rectY + rectH;
-      if (bottom > maxBottom) maxBottom = bottom;
-    });
-    const totalH = maxBottom + paddingY;
-    svg.setAttribute("viewBox", `0 0 ${totalW} ${totalH}`);
+    target.innerHTML = `${metaHtml}<div class="uml-grid">${boxesHtml}</div>`;
   }
 
   // --- Explorer ---
@@ -1498,6 +1189,12 @@ class PortalShell extends HTMLElement {
     if (typeSelect) {
       typeSelect.addEventListener("change", () => {
         this.recastExplorerResults();
+      });
+    }
+    const scanIDButton = this.querySelector('[data-role="explorer-b509-scanid"]');
+    if (scanIDButton) {
+      scanIDButton.addEventListener("click", () => {
+        this.explorerReadSerial();
       });
     }
   }
@@ -1561,6 +1258,8 @@ class PortalShell extends HTMLElement {
       body.instance_max = parseInt(iMaxRaw, 16);
       body.register_max = parseInt(rMaxRaw, 16);
     } else {
+      const b509OpcodeSelect = this.querySelector('[data-role="explorer-b509-opcode"]');
+      body.opcode = parseInt(b509OpcodeSelect ? b509OpcodeSelect.value : "0d", 16);
       const bMinRaw = this.querySelector('[data-role="explorer-b509-min"]')?.value || "0";
       const bMaxRaw = this.querySelector('[data-role="explorer-b509-max"]')?.value || "ff";
       if (!isValidHex(bMinRaw, 4) || !isValidHex(bMaxRaw, 4)) {
@@ -1738,6 +1437,28 @@ class PortalShell extends HTMLElement {
     }
   }
 
+  async explorerReadSerial() {
+    const deviceSelect = this.querySelector('[data-role="explorer-device"]');
+    const resultEl = this.querySelector('[data-role="explorer-serial-result"]');
+    if (!deviceSelect || !deviceSelect.value) {
+      if (resultEl) resultEl.textContent = "Select a device first";
+      return;
+    }
+    const targetHex = parseInt(deviceSelect.value, 10).toString(16).padStart(2, "0");
+    try {
+      if (resultEl) resultEl.textContent = "Reading...";
+      const res = await fetch(`api/v1/explorer/read/scanid?target=${targetHex}`);
+      const data = await res.json();
+      if (data.error) {
+        if (resultEl) resultEl.textContent = `Error: ${data.error}`;
+      } else {
+        if (resultEl) resultEl.textContent = data.serial || "(empty)";
+      }
+    } catch (err) {
+      if (resultEl) resultEl.textContent = `Error: ${err.message}`;
+    }
+  }
+
   render() {
     this.innerHTML = `
       <div class="shell">
@@ -1782,16 +1503,12 @@ class PortalShell extends HTMLElement {
                 <select class="select" data-role="projection-device-select" aria-label="Projection device" disabled>
                   <option value="">No projection devices</option>
                 </select>
-                <select class="select" data-role="projection-plane-select" aria-label="Projection plane" disabled>
-                  <option value="">No planes</option>
-                </select>
-                <button class="button" data-role="projection-load" type="button" disabled>Load Graph</button>
               </div>
               <ul data-role="projection-list">
                 <li>Loading projection summary...</li>
               </ul>
-              <div class="projection-graph" data-role="projection-graph">
-                <p class="projection-empty">Projection graph will appear here.</p>
+              <div class="projection-uml-grid" data-role="projection-uml-grid">
+                <p class="projection-empty">Select a device to view projection planes.</p>
               </div>
             </section>
             <section id="section-explorer" class="registry-preview">
@@ -1817,8 +1534,14 @@ class PortalShell extends HTMLElement {
                   <label class="explorer-label">RR max <input class="search explorer-input" data-role="explorer-register-max" type="text" value="0020" size="5" /></label>
                 </div>
                 <div class="explorer-row" data-role="explorer-b509-opts" style="display:none">
+                  <select class="select" data-role="explorer-b509-opcode" aria-label="B509 opcode">
+                    <option value="0d">0x0D Read</option>
+                    <option value="29">0x29 Passive</option>
+                  </select>
                   <label class="explorer-label">Addr min <input class="search explorer-input" data-role="explorer-b509-min" type="text" value="0000" size="5" /></label>
                   <label class="explorer-label">– max <input class="search explorer-input" data-role="explorer-b509-max" type="text" value="00ff" size="5" /></label>
+                  <button class="button" data-role="explorer-b509-scanid" type="button">Read Serial</button>
+                  <span class="muted-inline" data-role="explorer-serial-result"></span>
                 </div>
                 <div class="explorer-row">
                   <button class="button" data-role="explorer-scan" type="button">Start Scan</button>

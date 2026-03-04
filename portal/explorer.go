@@ -43,7 +43,7 @@ type ExplorerScanRequest struct {
 	Kind        string `json:"kind"`          // "b524" or "b509"
 	Target      byte   `json:"target"`        // device address
 	Source      byte   `json:"source"`        // source address (0 = default)
-	Opcode      byte   `json:"opcode"`        // B524 opcode (0x02 local, 0x06 remote)
+	Opcode      byte   `json:"opcode"`        // B524: 0x02 local, 0x06 remote; B509: 0x0D read, 0x29 passive
 	GroupMin    byte   `json:"group_min"`     // B524: first group to scan
 	GroupMax    byte   `json:"group_max"`     // B524: last group to scan
 	InstanceMax byte   `json:"instance_max"`  // B524: max instance per group
@@ -97,6 +97,15 @@ type ExplorerProgress struct {
 	CurrentAddr     uint16 `json:"current_addr"`
 	Percent         int    `json:"percent"`
 	Description     string `json:"description"`
+}
+
+// ExplorerScanIDResult holds the result of a ScanID serial read.
+type ExplorerScanIDResult struct {
+	Target byte     `json:"target"`
+	Source byte     `json:"source"`
+	Chunks []string `json:"chunks"`
+	Serial string   `json:"serial"`
+	Error  string   `json:"error,omitempty"`
 }
 
 type explorerStore struct {
@@ -256,6 +265,10 @@ func (es *explorerStore) startB509Scan(req ExplorerScanRequest) error {
 	if source == 0 {
 		source = es.source
 	}
+	opcode := req.Opcode
+	if opcode == 0 {
+		opcode = 0x0D
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	es.cancel = cancel
@@ -265,12 +278,13 @@ func (es *explorerStore) startB509Scan(req ExplorerScanRequest) error {
 		Kind:       ExplorerKindB509,
 		Target:     req.Target,
 		Source:     source,
+		Opcode:     opcode,
 		StartedUTC: time.Now().UTC().Format(time.RFC3339),
 		Results:    make([]ExplorerRegisterResult, 0),
 	}
 	es.current = state
 
-	go es.runB509Scan(ctx, req, state, source)
+	go es.runB509Scan(ctx, req, state, source, opcode)
 	return nil
 }
 
@@ -450,7 +464,7 @@ func (es *explorerStore) runB524Scan(ctx context.Context, req ExplorerScanReques
 	}
 }
 
-func (es *explorerStore) runB509Scan(ctx context.Context, req ExplorerScanRequest, state *ExplorerScanState, source byte) {
+func (es *explorerStore) runB509Scan(ctx context.Context, req ExplorerScanRequest, state *ExplorerScanState, source, opcode byte) {
 	defer func() {
 		es.mu.Lock()
 		if state.Phase != ExplorerPhaseCancelled {
@@ -485,7 +499,7 @@ func (es *explorerStore) runB509Scan(ctx context.Context, req ExplorerScanReques
 		}
 
 		addr := uint16(a)
-		result := es.readB509Register(ctx, req.Target, source, addr)
+		result := es.readB509Register(ctx, req.Target, source, addr, opcode)
 
 		es.mu.Lock()
 		state.Results = append(state.Results, result)
@@ -604,18 +618,21 @@ func (es *explorerStore) readB524Register(ctx context.Context, target, source, o
 }
 
 // readB509Register reads a single B509 register.
-func (es *explorerStore) readB509Register(ctx context.Context, target, source byte, addr uint16) ExplorerRegisterResult {
+func (es *explorerStore) readB509Register(ctx context.Context, target, source byte, addr uint16, opcode byte) ExplorerRegisterResult {
 	result := ExplorerRegisterResult{
 		Addr:    addr,
 		AddrHex: fmt.Sprintf("%04x", addr),
 	}
 
+	if opcode == 0 {
+		opcode = 0x0D
+	}
 	frame := protocol.Frame{
 		Source:    source,
 		Target:    target,
 		Primary:   0xB5,
 		Secondary: 0x09,
-		Data:      []byte{0x0D, byte(addr >> 8), byte(addr)},
+		Data:      []byte{opcode, byte(addr >> 8), byte(addr)},
 	}
 
 	resp, err := explorerSendWithRetry(ctx, es.bus, frame)
@@ -697,11 +714,92 @@ func (es *explorerStore) singleB524Read(ctx context.Context, target, source, opc
 }
 
 // singleB509Read performs a single synchronous B509 read.
-func (es *explorerStore) singleB509Read(ctx context.Context, target, source byte, addr uint16) ExplorerRegisterResult {
+func (es *explorerStore) singleB509Read(ctx context.Context, target, source byte, addr uint16, opcode byte) ExplorerRegisterResult {
 	if source == 0 {
 		source = es.source
 	}
-	return es.readB509Register(ctx, target, source, addr)
+	if opcode == 0 {
+		opcode = 0x0D
+	}
+	return es.readB509Register(ctx, target, source, addr, opcode)
+}
+
+// readScanID reads the device serial via B5.09 ScanID frames (QQ=0x24..0x27).
+// Mirrors readVaillantScanID from ebusreg/registry/scan.go but uses explorerSendWithRetry.
+func (es *explorerStore) readScanID(ctx context.Context, target, source byte) ExplorerScanIDResult {
+	if source == 0 {
+		source = es.source
+	}
+	result := ExplorerScanIDResult{
+		Target: target,
+		Source: source,
+		Chunks: make([]string, 0, 4),
+	}
+
+	raw := make([]byte, 0, 32)
+	for qq := byte(0x24); qq <= byte(0x27); qq++ {
+		frame := protocol.Frame{
+			Source:    source,
+			Target:    target,
+			Primary:   0xB5,
+			Secondary: 0x09,
+			Data:      []byte{qq},
+		}
+		resp, err := explorerSendWithRetry(ctx, es.bus, frame)
+		if err != nil {
+			result.Error = fmt.Sprintf("chunk 0x%02x: %v", qq, err)
+			return result
+		}
+		if len(resp.Data) != 9 || resp.Data[0] != 0x00 {
+			result.Error = fmt.Sprintf("chunk 0x%02x: unexpected response (%d bytes)", qq, len(resp.Data))
+			return result
+		}
+		chunk := resp.Data[1:]
+		result.Chunks = append(result.Chunks, hex.EncodeToString(chunk))
+		raw = append(raw, chunk...)
+	}
+
+	// Trim trailing NUL/space/0xFF padding.
+	end := len(raw)
+	for end > 0 {
+		last := raw[end-1]
+		if last == 0x00 || last == 0x20 || last == 0xFF {
+			end--
+			continue
+		}
+		break
+	}
+	trimmed := string(raw[:end])
+	result.Serial = formatScanIDSerial(trimmed)
+	return result
+}
+
+// formatScanIDSerial formats a raw Vaillant serial string.
+// Mirrors formatVaillantSerial from ebusreg/registry/scan.go.
+func formatScanIDSerial(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if len(raw) < 28 {
+		return raw
+	}
+	candidate := raw[:28]
+	for i := 0; i < 26; i++ {
+		if candidate[i] < '0' || candidate[i] > '9' {
+			return raw
+		}
+	}
+	return fmt.Sprintf(
+		"%s-%s-%s-%s-%s-%s-%s",
+		candidate[0:2],
+		candidate[2:4],
+		candidate[4:6],
+		candidate[6:16],
+		candidate[16:20],
+		candidate[20:26],
+		candidate[26:28],
+	)
 }
 
 // --- HTTP Handlers ---
@@ -881,12 +979,29 @@ func (h *handler) handleExplorerSingleB509(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	source, _ := parseHexByte(q.Get("source"))
+	opcode, _ := parseHexByte(q.Get("opcode"))
 	addr, err := parseHexUint16(q.Get("addr"))
 	if err != nil {
 		http.Error(w, "invalid addr", http.StatusBadRequest)
 		return
 	}
-	result := h.explorer.singleB509Read(r.Context(), target, source, addr)
+	result := h.explorer.singleB509Read(r.Context(), target, source, addr, opcode)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *handler) handleExplorerScanID(w http.ResponseWriter, r *http.Request) {
+	if h.explorer == nil {
+		http.Error(w, "explorer not available", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	target, err := parseHexByte(q.Get("target"))
+	if err != nil {
+		http.Error(w, "target address required", http.StatusBadRequest)
+		return
+	}
+	source, _ := parseHexByte(q.Get("source"))
+	result := h.explorer.readScanID(r.Context(), target, source)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -914,7 +1029,7 @@ func (h *handler) routeExplorer(w http.ResponseWriter, r *http.Request, path str
 			w.Header().Set("Allow", strings.Join([]string{http.MethodGet, http.MethodDelete}, ", "))
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	case "scans/current/results", "scans/current/stream", "read/b524", "read/b509":
+	case "scans/current/results", "scans/current/stream", "read/b524", "read/b509", "read/scanid":
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -929,6 +1044,8 @@ func (h *handler) routeExplorer(w http.ResponseWriter, r *http.Request, path str
 			h.handleExplorerSingleB524(w, r)
 		case "read/b509":
 			h.handleExplorerSingleB509(w, r)
+		case "read/scanid":
+			h.handleExplorerScanID(w, r)
 		}
 	default:
 		http.NotFound(w, r)

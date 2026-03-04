@@ -973,6 +973,49 @@ func TestExplorerScanID_Formatted(t *testing.T) {
 	}
 }
 
+func TestExplorerScanID_NoStatusByte(t *testing.T) {
+	// Simulate BASV2-style response: all 9 bytes are serial data (no status prefix).
+	// Chunk 0x24 first byte happens to be 0x00 (NUL padding), rest are ASCII.
+	// Full serial across 36 bytes: NUL + "21213400202621480082014267N7" + 0xFF padding.
+	chunkData := [][]byte{
+		{0x00, '2', '1', '2', '1', '3', '4', '0', '0'}, // 0x24: NUL + "21213400"
+		{'2', '0', '2', '6', '2', '1', '4', '8', '0'},   // 0x25: "202621480"
+		{'0', '8', '2', '0', '1', '4', '2', '6', '7'},   // 0x26: "082014267"
+		{'N', '7', 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, // 0x27: "N7" + padding
+	}
+
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			idx := int(frame.Data[0]) - 0x24
+			return &protocol.Frame{
+				Source:    frame.Target,
+				Target:    frame.Source,
+				Primary:   0xB5,
+				Secondary: 0x09,
+				Data:      chunkData[idx],
+			}, nil
+		},
+	}
+	h := explorerHandler(bus)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/read/scanid?target=15", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	payload := explorerJSON(t, rec)
+	serialResult, _ := payload["serial"].(string)
+	// Chunk 0x24 has Data[0]==0x00 but chunks 0x25-0x27 don't, so status-byte path
+	// fails.  Fallback concatenates all 36 bytes, trims NUL/0xFF → "21213400202621480082014267N7".
+	expected := "21-21-34-0020262148-0082-014267-N7"
+	if serialResult != expected {
+		t.Fatalf("serial = %q; want %q", serialResult, expected)
+	}
+	// Error field should be empty (all chunks returned valid data).
+	errMsg, _ := payload["error"].(string)
+	if errMsg != "" {
+		t.Fatalf("unexpected error: %q", errMsg)
+	}
+}
+
 func TestExplorerScanID_BusError(t *testing.T) {
 	bus := &mockExplorerBus{
 		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {

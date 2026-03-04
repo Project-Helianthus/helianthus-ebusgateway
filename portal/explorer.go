@@ -737,6 +737,7 @@ func (es *explorerStore) readScanID(ctx context.Context, target, source byte) Ex
 	}
 
 	raw := make([]byte, 0, 32)
+	var errs []string
 	for qq := byte(0x24); qq <= byte(0x27); qq++ {
 		frame := protocol.Frame{
 			Source:    source,
@@ -747,16 +748,35 @@ func (es *explorerStore) readScanID(ctx context.Context, target, source byte) Ex
 		}
 		resp, err := explorerSendWithRetry(ctx, es.bus, frame)
 		if err != nil {
-			result.Error = fmt.Sprintf("chunk 0x%02x: %v", qq, err)
-			return result
+			errs = append(errs, fmt.Sprintf("chunk 0x%02x: %v", qq, err))
+			result.Chunks = append(result.Chunks, "")
+			raw = append(raw, make([]byte, 8)...)
+			continue
 		}
-		if len(resp.Data) != 9 || resp.Data[0] != 0x00 {
-			result.Error = fmt.Sprintf("chunk 0x%02x: unexpected response (%d bytes)", qq, len(resp.Data))
-			return result
+		if len(resp.Data) < 1 {
+			errs = append(errs, fmt.Sprintf("chunk 0x%02x: empty response", qq))
+			result.Chunks = append(result.Chunks, "")
+			raw = append(raw, make([]byte, 8)...)
+			continue
+		}
+		if resp.Data[0] != 0x00 {
+			errs = append(errs, fmt.Sprintf("chunk 0x%02x: status=0x%02x (%d bytes)", qq, resp.Data[0], len(resp.Data)))
+			result.Chunks = append(result.Chunks, hex.EncodeToString(resp.Data))
+			raw = append(raw, make([]byte, 8)...)
+			continue
+		}
+		if len(resp.Data) != 9 {
+			errs = append(errs, fmt.Sprintf("chunk 0x%02x: expected 9 bytes, got %d", qq, len(resp.Data)))
+			result.Chunks = append(result.Chunks, hex.EncodeToString(resp.Data))
+			raw = append(raw, make([]byte, 8)...)
+			continue
 		}
 		chunk := resp.Data[1:]
 		result.Chunks = append(result.Chunks, hex.EncodeToString(chunk))
 		raw = append(raw, chunk...)
+	}
+	if len(errs) > 0 {
+		result.Error = strings.Join(errs, "; ")
 	}
 
 	// Trim trailing NUL/space/0xFF padding.

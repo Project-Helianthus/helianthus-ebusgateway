@@ -200,6 +200,7 @@ func TestExplorerReadOnlyEndpoints_MethodEnforcement(t *testing.T) {
 		"/api/v1/explorer/scans/current/stream",
 		"/api/v1/explorer/read/b524",
 		"/api/v1/explorer/read/b509",
+		"/api/v1/explorer/read/scanid",
 	}
 	for _, path := range readEndpoints {
 		req := httptest.NewRequest(http.MethodPost, path, nil)
@@ -669,5 +670,402 @@ func TestExplorerStartScan_InvalidJSON(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d; want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestExplorerSendWithRetry_RetriesOnError(t *testing.T) {
+	var attempts int
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, fmt.Errorf("bus arbitration lost")
+			}
+			return &protocol.Frame{Data: []byte{0x01, 0x02}}, nil
+		},
+	}
+
+	frame := protocol.Frame{Primary: 0xB5, Secondary: 0x24}
+	resp, err := explorerSendWithRetry(context.Background(), bus, frame)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d; want 3", attempts)
+	}
+}
+
+func TestExplorerSendWithRetry_AllFail(t *testing.T) {
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+			return nil, fmt.Errorf("bus timeout")
+		},
+	}
+
+	frame := protocol.Frame{Primary: 0xB5, Secondary: 0x24}
+	_, err := explorerSendWithRetry(context.Background(), bus, frame)
+	if err == nil {
+		t.Fatal("expected error after all retries exhausted")
+	}
+	if !strings.Contains(err.Error(), "bus timeout") {
+		t.Fatalf("error = %q; want contains 'bus timeout'", err)
+	}
+}
+
+func TestExplorerSendWithRetry_NilResponse(t *testing.T) {
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+			return nil, nil
+		},
+	}
+
+	frame := protocol.Frame{Primary: 0xB5, Secondary: 0x24}
+	_, err := explorerSendWithRetry(context.Background(), bus, frame)
+	if err == nil {
+		t.Fatal("expected error for nil response")
+	}
+	if !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("error = %q; want contains 'empty response'", err)
+	}
+}
+
+func TestExplorerSendWithRetry_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var attempts int
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+			attempts++
+			cancel()
+			return nil, fmt.Errorf("bus error")
+		},
+	}
+
+	frame := protocol.Frame{Primary: 0xB5, Secondary: 0x24}
+	_, err := explorerSendWithRetry(ctx, bus, frame)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if attempts > 2 {
+		t.Fatalf("attempts = %d; want <= 2 (should stop on cancelled context)", attempts)
+	}
+}
+
+func TestExplorerSingleB509Read_0x29Opcode(t *testing.T) {
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if frame.Primary != 0xB5 || frame.Secondary != 0x09 {
+				return nil, fmt.Errorf("unexpected frame: %02x.%02x", frame.Primary, frame.Secondary)
+			}
+			// Verify opcode is 0x29.
+			if frame.Data[0] != 0x29 {
+				return nil, fmt.Errorf("unexpected opcode: 0x%02x; want 0x29", frame.Data[0])
+			}
+			return &protocol.Frame{
+				Source:    frame.Target,
+				Target:    frame.Source,
+				Primary:   0xB5,
+				Secondary: 0x09,
+				Data:      []byte{0x11, 0x22, 0x33, 0x44},
+			}, nil
+		},
+	}
+	h := explorerHandler(bus)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/read/b509?target=15&opcode=29&addr=0028", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+	}
+	payload := explorerJSON(t, rec)
+	if payload["raw_hex"] != "11223344" {
+		t.Fatalf("raw_hex = %v; want 11223344", payload["raw_hex"])
+	}
+
+	// Verify the bus received the correct opcode.
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	for _, r := range bus.requests {
+		if r.Primary == 0xB5 && r.Secondary == 0x09 {
+			if r.Data[0] != 0x29 {
+				t.Fatalf("bus frame opcode = 0x%02x; want 0x29", r.Data[0])
+			}
+		}
+	}
+}
+
+func TestExplorerB509Scan_0x29Opcode(t *testing.T) {
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if frame.Primary != 0xB5 || frame.Secondary != 0x09 {
+				return nil, fmt.Errorf("unexpected frame: %02x.%02x", frame.Primary, frame.Secondary)
+			}
+			if frame.Data[0] != 0x29 {
+				return nil, fmt.Errorf("unexpected opcode: 0x%02x; want 0x29", frame.Data[0])
+			}
+			return &protocol.Frame{
+				Source:    frame.Target,
+				Target:    frame.Source,
+				Primary:   0xB5,
+				Secondary: 0x09,
+				Data:      []byte{0x01, 0x02, 0x03, 0x04},
+			}, nil
+		},
+	}
+	h := explorerHandler(bus)
+
+	// opcode 41 decimal = 0x29
+	body := `{"kind":"b509","target":21,"opcode":41,"b509_addr_min":0,"b509_addr_max":1}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/explorer/scans", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d; want %d; body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	// Wait for completion.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		req = httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current", nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		p := explorerJSON(t, rec)
+		phase := p["phase"].(string)
+		if phase == "done" {
+			break
+		}
+		if phase == "error" || phase == "cancelled" {
+			t.Fatalf("scan ended with phase=%s error=%v", phase, p["error"])
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Verify results: 2 addresses (0x0000, 0x0001).
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current/results?offset=0&limit=100", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	payload := explorerJSON(t, rec)
+	count := int(payload["count"].(float64))
+	if count != 2 {
+		t.Fatalf("result count = %d; want 2", count)
+	}
+
+	// Verify opcode in scan state.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	state := explorerJSON(t, rec)
+	if int(state["opcode"].(float64)) != 0x29 {
+		t.Fatalf("scan state opcode = %v; want 41 (0x29)", state["opcode"])
+	}
+}
+
+func TestExplorerScanID_Success(t *testing.T) {
+	// Build 4 chunks of 8 ASCII bytes each = "2112345678901234567890123456AB"
+	serial := "2112345678901234567890123456AB"
+	chunks := [][]byte{
+		[]byte(serial[0:8]),
+		[]byte(serial[8:16]),
+		[]byte(serial[16:24]),
+		[]byte(serial[24:28]),
+	}
+	// Pad chunk 3 to 8 bytes.
+	for len(chunks[3]) < 8 {
+		chunks[3] = append(chunks[3], 0x00)
+	}
+
+	callIdx := 0
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if frame.Primary != 0xB5 || frame.Secondary != 0x09 {
+				return nil, fmt.Errorf("unexpected frame")
+			}
+			qq := frame.Data[0]
+			idx := int(qq) - 0x24
+			if idx < 0 || idx >= 4 {
+				return nil, fmt.Errorf("unexpected QQ: 0x%02x", qq)
+			}
+			resp := make([]byte, 9)
+			resp[0] = 0x00 // status OK
+			copy(resp[1:], chunks[idx])
+			callIdx++
+			return &protocol.Frame{
+				Source:    frame.Target,
+				Target:    frame.Source,
+				Primary:   0xB5,
+				Secondary: 0x09,
+				Data:      resp,
+			}, nil
+		},
+	}
+	h := explorerHandler(bus)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/read/scanid?target=15", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+	}
+	payload := explorerJSON(t, rec)
+	if payload["error"] != nil && payload["error"] != "" {
+		t.Fatalf("unexpected error: %v", payload["error"])
+	}
+	serialResult, ok := payload["serial"].(string)
+	if !ok || serialResult == "" {
+		t.Fatalf("serial missing or empty: %v", payload["serial"])
+	}
+	// The serial "2112345678901234567890123456AB" should be formatted:
+	// "21-12-34-5678901234-5678-901234-56"
+	// Note: last 2 chars are "AB" but digits-only check fails at position 26 ('A').
+	// So it returns raw string.
+	// Let's use all-digit serial instead.
+	t.Logf("serial = %q", serialResult)
+	chunks2 := payload["chunks"].([]any)
+	if len(chunks2) != 4 {
+		t.Fatalf("chunks count = %d; want 4", len(chunks2))
+	}
+}
+
+func TestExplorerScanID_Formatted(t *testing.T) {
+	// All-digit 28-char serial that gets formatted.
+	serial := "2112345678901234567890123456"
+	// Pad to 32 bytes.
+	padded := serial + "    " // 4 spaces (will be trimmed)
+	chunks := [][]byte{
+		[]byte(padded[0:8]),
+		[]byte(padded[8:16]),
+		[]byte(padded[16:24]),
+		[]byte(padded[24:32]),
+	}
+
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			qq := frame.Data[0]
+			idx := int(qq) - 0x24
+			resp := make([]byte, 9)
+			resp[0] = 0x00
+			copy(resp[1:], chunks[idx])
+			return &protocol.Frame{
+				Source:    frame.Target,
+				Target:    frame.Source,
+				Primary:   0xB5,
+				Secondary: 0x09,
+				Data:      resp,
+			}, nil
+		},
+	}
+	h := explorerHandler(bus)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/read/scanid?target=15", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	payload := explorerJSON(t, rec)
+	serialResult := payload["serial"].(string)
+	// Expected: "21-12-34-5678901234-5678-901234-56"
+	expected := "21-12-34-5678901234-5678-901234-56"
+	if serialResult != expected {
+		t.Fatalf("serial = %q; want %q", serialResult, expected)
+	}
+}
+
+func TestExplorerScanID_NoStatusByte(t *testing.T) {
+	// Simulate BASV2-style response: all 9 bytes are serial data (no status prefix).
+	// Chunk 0x24 first byte happens to be 0x00 (NUL padding), rest are ASCII.
+	// Full serial across 36 bytes: NUL + "21213400202621480082014267N7" + 0xFF padding.
+	chunkData := [][]byte{
+		{0x00, '2', '1', '2', '1', '3', '4', '0', '0'}, // 0x24: NUL + "21213400"
+		{'2', '0', '2', '6', '2', '1', '4', '8', '0'},   // 0x25: "202621480"
+		{'0', '8', '2', '0', '1', '4', '2', '6', '7'},   // 0x26: "082014267"
+		{'N', '7', 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, // 0x27: "N7" + padding
+	}
+
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			idx := int(frame.Data[0]) - 0x24
+			return &protocol.Frame{
+				Source:    frame.Target,
+				Target:    frame.Source,
+				Primary:   0xB5,
+				Secondary: 0x09,
+				Data:      chunkData[idx],
+			}, nil
+		},
+	}
+	h := explorerHandler(bus)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/read/scanid?target=15", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	payload := explorerJSON(t, rec)
+	serialResult, _ := payload["serial"].(string)
+	// Chunk 0x24 has Data[0]==0x00 but chunks 0x25-0x27 don't, so status-byte path
+	// fails.  Fallback concatenates all 36 bytes, trims NUL/0xFF → "21213400202621480082014267N7".
+	expected := "21-21-34-0020262148-0082-014267-N7"
+	if serialResult != expected {
+		t.Fatalf("serial = %q; want %q", serialResult, expected)
+	}
+	// Error field should be empty (all chunks returned valid data).
+	errMsg, _ := payload["error"].(string)
+	if errMsg != "" {
+		t.Fatalf("unexpected error: %q", errMsg)
+	}
+}
+
+func TestExplorerScanID_BusError(t *testing.T) {
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+			return nil, fmt.Errorf("bus timeout")
+		},
+	}
+	h := explorerHandler(bus)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/read/scanid?target=15", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+	}
+	payload := explorerJSON(t, rec)
+	errMsg, _ := payload["error"].(string)
+	if errMsg == "" {
+		t.Fatal("expected error in response")
+	}
+	if !strings.Contains(errMsg, "bus timeout") {
+		t.Fatalf("error = %q; want contains 'bus timeout'", errMsg)
+	}
+}
+
+func TestExplorerScanID_MissingTarget(t *testing.T) {
+	h := explorerHandler(&mockExplorerBus{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/read/scanid", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestFormatScanIDSerial(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"short", "short"},
+		{"2112345678901234567890123456", "21-12-34-5678901234-5678-901234-56"},
+		{"21123456789012345678901234XX", "21-12-34-5678901234-5678-901234-XX"}, // digits in first 26, last 2 are any chars
+		{"211234567890123456789012345678extra", "21-12-34-5678901234-5678-901234-56"},
+	}
+	for _, tc := range tests {
+		got := formatScanIDSerial(tc.input)
+		if got != tc.want {
+			t.Errorf("formatScanIDSerial(%q) = %q; want %q", tc.input, got, tc.want)
+		}
 	}
 }

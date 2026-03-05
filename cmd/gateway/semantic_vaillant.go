@@ -1622,7 +1622,6 @@ const (
 
 	// system_flow_temperature — float32 LE (°C)
 	regulatorRegSystemFlowTemp = uint16(0x004B)
-
 	// Heating circuit registers (group 0x02)
 	circuitRegFlowTemp    = uint16(0x0008) // heating_circuit_flow_temperature — float32 LE (°C)
 	circuitRegPumpStatus  = uint16(0x001E) // pump_status — uint16 LE (0=off, !0=on)

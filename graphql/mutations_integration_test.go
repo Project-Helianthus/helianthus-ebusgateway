@@ -108,34 +108,40 @@ type readEvent struct {
 	err   error
 }
 
+// scriptedTransport uses separate echo and inbound queues to correctly
+// model eBUS wire behaviour: every written byte is echoed back before
+// the target's response bytes are consumed.
 type scriptedTransport struct {
-	mu     sync.Mutex
-	reads  []readEvent
-	writes [][]byte
+	mu      sync.Mutex
+	echo    []readEvent
+	inbound []readEvent
+	writes  [][]byte
 }
 
 func (s *scriptedTransport) ReadByte() (byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.reads) == 0 {
-		return 0, ebuserrors.ErrTimeout
+	if len(s.echo) > 0 {
+		ev := s.echo[0]
+		s.echo = s.echo[1:]
+		return ev.value, ev.err
 	}
-	ev := s.reads[0]
-	s.reads = s.reads[1:]
-	return ev.value, ev.err
+	if len(s.inbound) > 0 {
+		ev := s.inbound[0]
+		s.inbound = s.inbound[1:]
+		return ev.value, ev.err
+	}
+	return 0, ebuserrors.ErrTimeout
 }
 
 func (s *scriptedTransport) Write(payload []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Direct eBUS transport expects echoed bytes after each write.
-	echo := make([]readEvent, len(payload))
-	for i, b := range payload {
-		echo[i] = readEvent{value: b}
-	}
-	s.reads = append(echo, s.reads...)
 	copyPayload := append([]byte(nil), payload...)
 	s.writes = append(s.writes, copyPayload)
+	for _, b := range payload {
+		s.echo = append(s.echo, readEvent{value: b})
+	}
 	return len(payload), nil
 }
 
@@ -197,23 +203,15 @@ func TestInvokeMutation_Integration(t *testing.T) {
 		t.Fatalf("responseSchema.Encode error = %v", err)
 	}
 
-	responseSegment := append([]byte{
-		plane.target,
-		plane.source,
-		method.Template().Primary(),
-		method.Template().Secondary(),
-		byte(len(responsePayload)),
-	}, responsePayload...)
-	crc := protocol.CRC(responseSegment)
-	transport := &scriptedTransport{
-		reads: []readEvent{
-			{value: protocol.SymbolAck},
-		},
+	// eBUS target response on the wire is NN DATA... CRC (no QQ/ZZ/PB/SB header).
+	targetResponse := append([]byte{byte(len(responsePayload))}, responsePayload...)
+	crc := protocol.CRC(targetResponse)
+	inbound := []readEvent{{value: protocol.SymbolAck}}
+	for _, b := range targetResponse {
+		inbound = append(inbound, readEvent{value: b})
 	}
-	for _, b := range responseSegment {
-		transport.reads = append(transport.reads, readEvent{value: b})
-	}
-	transport.reads = append(transport.reads, readEvent{value: crc})
+	inbound = append(inbound, readEvent{value: crc})
+	transport := &scriptedTransport{inbound: inbound}
 
 	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
 		Transport: transport,

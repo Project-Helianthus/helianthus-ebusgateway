@@ -35,6 +35,7 @@ const (
 	semanticStreamZones semanticStreamKind = iota
 	semanticStreamDHW
 	semanticStreamBoiler
+	semanticStreamCircuits
 )
 
 type phaseTransitionLog struct {
@@ -54,11 +55,12 @@ var (
 
 // LiveSemanticProvider maintains semantic snapshots derived from bus data.
 type LiveSemanticProvider struct {
-	mu     sync.RWMutex
-	zones  []Zone
-	dhw    *DhwStatus
-	energy *EnergyTotals
-	boiler *BoilerStatus
+	mu       sync.RWMutex
+	zones    []Zone
+	dhw      *DhwStatus
+	circuits []CircuitStatus
+	energy   *EnergyTotals
+	boiler   *BoilerStatus
 
 	energyMerge    *energyMergeStore
 	energyRevision uint64
@@ -69,9 +71,11 @@ type LiveSemanticProvider struct {
 	zonePublished      bool
 	dhwPublished       bool
 	boilerPublished    bool
+	circuitPublished   bool
 	zoneLiveSeen       bool
 	dhwLiveSeen        bool
 	boilerLiveSeen     bool
+	circuitLiveSeen    bool
 	bootMonitorStarted bool
 	phaseLogger        func(string, ...any)
 }
@@ -179,6 +183,22 @@ func (provider *LiveSemanticProvider) DHW() *DhwStatus {
 	return cp
 }
 
+func (provider *LiveSemanticProvider) Circuits() []CircuitStatus {
+	if provider == nil {
+		return nil
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	if len(provider.circuits) == 0 {
+		return nil
+	}
+	out := make([]CircuitStatus, len(provider.circuits))
+	for i, status := range provider.circuits {
+		out[i] = cloneCircuitStatus(status)
+	}
+	return out
+}
+
 func (provider *LiveSemanticProvider) EnergyTotals() *EnergyTotals {
 	if provider == nil {
 		return nil
@@ -251,6 +271,38 @@ func (provider *LiveSemanticProvider) setDHWWithSource(status *DhwStatus, source
 		provider.dhwLiveSeen = true
 	}
 	transition = provider.recordEpochUpdateLocked(source, semanticStreamDHW, reason)
+	provider.mu.Unlock()
+	provider.logPhaseTransition(transition)
+}
+
+func (provider *LiveSemanticProvider) SetCircuits(circuits []CircuitStatus) {
+	provider.setCircuitsWithSource(circuits, semanticDataSourceLive, "circuits_live_update")
+}
+
+func (provider *LiveSemanticProvider) SetCircuitsFromCache(circuits []CircuitStatus) {
+	provider.setCircuitsWithSource(circuits, semanticDataSourceCache, "circuits_cache_update")
+}
+
+func (provider *LiveSemanticProvider) setCircuitsWithSource(circuits []CircuitStatus, source semanticDataSource, reason string) {
+	if provider == nil {
+		return
+	}
+
+	circuitsCopy := make([]CircuitStatus, len(circuits))
+	for i, status := range circuits {
+		circuitsCopy[i] = cloneCircuitStatus(status)
+	}
+
+	var transition *phaseTransitionLog
+	provider.mu.Lock()
+	provider.circuits = circuitsCopy
+	if len(circuitsCopy) > 0 {
+		provider.circuitPublished = true
+		if source == semanticDataSourceLive {
+			provider.circuitLiveSeen = true
+		}
+		transition = provider.recordEpochUpdateLocked(source, semanticStreamCircuits, reason)
+	}
 	provider.mu.Unlock()
 	provider.logPhaseTransition(transition)
 }
@@ -364,6 +416,8 @@ func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDat
 			provider.dhwLiveSeen = true
 		case semanticStreamBoiler:
 			provider.boilerLiveSeen = true
+		case semanticStreamCircuits:
+			provider.circuitLiveSeen = true
 		}
 		provider.liveEpoch++
 		semanticLiveEpoch.Set(int64(provider.liveEpoch))
@@ -387,7 +441,10 @@ func (provider *LiveSemanticProvider) liveReadyCriteriaLocked() bool {
 	if provider.boilerPublished && !provider.boilerLiveSeen {
 		return false
 	}
-	return provider.zoneLiveSeen || provider.dhwLiveSeen || provider.boilerLiveSeen
+	if provider.circuitPublished && !provider.circuitLiveSeen {
+		return false
+	}
+	return provider.zoneLiveSeen || provider.dhwLiveSeen || provider.boilerLiveSeen || provider.circuitLiveSeen
 }
 
 func (provider *LiveSemanticProvider) transitionPhaseLocked(next SemanticStartupPhase, reason string) *phaseTransitionLog {
@@ -711,6 +768,157 @@ func cloneDhwConfig(c DhwConfig) DhwConfig {
 		out.TargetTempC = &v
 	}
 	return out
+}
+
+func cloneCircuitStatus(status CircuitStatus) CircuitStatus {
+	out := status
+	out.State = cloneCircuitState(status.State)
+	out.Config = cloneCircuitConfig(status.Config)
+	return out
+}
+
+func cloneCircuitState(state CircuitState) CircuitState {
+	out := state
+	if state.PumpActive != nil {
+		v := *state.PumpActive
+		out.PumpActive = &v
+	}
+	if state.MixerPositionPct != nil {
+		v := *state.MixerPositionPct
+		out.MixerPositionPct = &v
+	}
+	if state.FlowTemperatureC != nil {
+		v := *state.FlowTemperatureC
+		out.FlowTemperatureC = &v
+	}
+	if state.FlowSetpointC != nil {
+		v := *state.FlowSetpointC
+		out.FlowSetpointC = &v
+	}
+	if state.CalcFlowTempC != nil {
+		v := *state.CalcFlowTempC
+		out.CalcFlowTempC = &v
+	}
+	if state.Humidity != nil {
+		v := *state.Humidity
+		out.Humidity = &v
+	}
+	if state.DewPoint != nil {
+		v := *state.DewPoint
+		out.DewPoint = &v
+	}
+	if state.PumpHours != nil {
+		v := *state.PumpHours
+		out.PumpHours = &v
+	}
+	if state.PumpStarts != nil {
+		v := *state.PumpStarts
+		out.PumpStarts = &v
+	}
+	return out
+}
+
+func cloneCircuitConfig(config CircuitConfig) CircuitConfig {
+	out := config
+	if config.HeatingCurve != nil {
+		v := *config.HeatingCurve
+		out.HeatingCurve = &v
+	}
+	if config.FlowTempMaxC != nil {
+		v := *config.FlowTempMaxC
+		out.FlowTempMaxC = &v
+	}
+	if config.FlowTempMinC != nil {
+		v := *config.FlowTempMinC
+		out.FlowTempMinC = &v
+	}
+	if config.SummerLimitC != nil {
+		v := *config.SummerLimitC
+		out.SummerLimitC = &v
+	}
+	if config.FrostProtC != nil {
+		v := *config.FrostProtC
+		out.FrostProtC = &v
+	}
+	if config.CoolingEnabled != nil {
+		v := *config.CoolingEnabled
+		out.CoolingEnabled = &v
+	}
+	return out
+}
+
+func equalCircuitStatuses(left []CircuitStatus, right []CircuitStatus) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if !equalCircuitStatus(left[i], right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func equalCircuitStatus(left CircuitStatus, right CircuitStatus) bool {
+	if left.Index != right.Index ||
+		left.CircuitType != right.CircuitType ||
+		left.HasMixer != right.HasMixer {
+		return false
+	}
+	if !equalCircuitState(left.State, right.State) {
+		return false
+	}
+	return equalCircuitConfig(left.Config, right.Config)
+}
+
+func equalCircuitState(left CircuitState, right CircuitState) bool {
+	if !equalBoolPointer(left.PumpActive, right.PumpActive) ||
+		!equalFloat64Pointer(left.MixerPositionPct, right.MixerPositionPct) ||
+		!equalFloat64Pointer(left.FlowTemperatureC, right.FlowTemperatureC) ||
+		!equalFloat64Pointer(left.FlowSetpointC, right.FlowSetpointC) ||
+		!equalFloat64Pointer(left.CalcFlowTempC, right.CalcFlowTempC) ||
+		left.CircuitState != right.CircuitState ||
+		!equalFloat64Pointer(left.Humidity, right.Humidity) ||
+		!equalFloat64Pointer(left.DewPoint, right.DewPoint) ||
+		!equalFloat64Pointer(left.PumpHours, right.PumpHours) ||
+		!equalIntPointer(left.PumpStarts, right.PumpStarts) {
+		return false
+	}
+	return true
+}
+
+func equalCircuitConfig(left CircuitConfig, right CircuitConfig) bool {
+	if !equalFloat64Pointer(left.HeatingCurve, right.HeatingCurve) ||
+		!equalFloat64Pointer(left.FlowTempMaxC, right.FlowTempMaxC) ||
+		!equalFloat64Pointer(left.FlowTempMinC, right.FlowTempMinC) ||
+		!equalFloat64Pointer(left.SummerLimitC, right.SummerLimitC) ||
+		!equalFloat64Pointer(left.FrostProtC, right.FrostProtC) ||
+		left.RoomTempControl != right.RoomTempControl ||
+		!equalBoolPointer(left.CoolingEnabled, right.CoolingEnabled) {
+		return false
+	}
+	return true
+}
+
+func equalFloat64Pointer(left *float64, right *float64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func equalBoolPointer(left *bool, right *bool) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func equalIntPointer(left *int, right *int) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 var _ SemanticProvider = (*LiveSemanticProvider)(nil)

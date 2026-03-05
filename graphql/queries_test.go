@@ -318,6 +318,32 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						targetTempC
 					}
 				}
+				circuits {
+					index
+					circuitType
+					hasMixer
+					state {
+						pumpActive
+						mixerPositionPct
+						flowTemperatureC
+						flowSetpointC
+						calcFlowTempC
+						circuitState
+						humidity
+						dewPoint
+						pumpHours
+						pumpStarts
+					}
+					config {
+						heatingCurve
+						flowTempMaxC
+						flowTempMinC
+						summerLimitC
+						frostProtC
+						roomTempControl
+						coolingEnabled
+					}
+				}
 			}
 		`)
 
@@ -354,6 +380,32 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					TargetTempC   *float64 `json:"targetTempC"`
 				} `json:"config"`
 			} `json:"dhw"`
+			Circuits []struct {
+				Index       int    `json:"index"`
+				CircuitType string `json:"circuitType"`
+				HasMixer    bool   `json:"hasMixer"`
+				State       struct {
+					PumpActive       *bool    `json:"pumpActive"`
+					MixerPositionPct *float64 `json:"mixerPositionPct"`
+					FlowTemperatureC *float64 `json:"flowTemperatureC"`
+					FlowSetpointC    *float64 `json:"flowSetpointC"`
+					CalcFlowTempC    *float64 `json:"calcFlowTempC"`
+					CircuitState     *string  `json:"circuitState"`
+					Humidity         *float64 `json:"humidity"`
+					DewPoint         *float64 `json:"dewPoint"`
+					PumpHours        *float64 `json:"pumpHours"`
+					PumpStarts       *int     `json:"pumpStarts"`
+				} `json:"state"`
+				Config struct {
+					HeatingCurve    *float64 `json:"heatingCurve"`
+					FlowTempMaxC    *float64 `json:"flowTempMaxC"`
+					FlowTempMinC    *float64 `json:"flowTempMinC"`
+					SummerLimitC    *float64 `json:"summerLimitC"`
+					FrostProtC      *float64 `json:"frostProtC"`
+					RoomTempControl *string  `json:"roomTempControl"`
+					CoolingEnabled  *bool    `json:"coolingEnabled"`
+				} `json:"config"`
+			} `json:"circuits"`
 		}
 
 		if err := client.Run(context.Background(), request, &response); err != nil {
@@ -364,6 +416,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if response.DHW != nil {
 			t.Fatalf("dhw expected nil with static provider")
+		}
+		if len(response.Circuits) != 0 {
+			t.Fatalf("circuits = %d; want 0", len(response.Circuits))
 		}
 	})
 

@@ -59,6 +59,7 @@ func TestToolInventoryGoldenSignatures(t *testing.T) {
 		{Name: "ebus.v1.rpc.invoke", SchemaHash: "163d33b397ffcb2e1374d6d7dc388352d7b565726577c3d0e710b4c2dc78cdb9"},
 		{Name: "ebus.v1.runtime.status.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.boiler_status.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
+		{Name: "ebus.v1.semantic.circuits.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.dhw.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.energy_totals.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.snapshot.get", SchemaHash: "4cf56348ac467debdb3da54b5e18f88d2de4d58d542ab8dc6aab00fbab4ed9c0"},
@@ -103,9 +104,10 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 	}
 	server.SetStatusProvider(testStatusProvider{daemon: ServiceStatus{Status: "running"}, adapter: ServiceStatus{Status: "connected"}})
 	server.SetSemanticProvider(testSemanticProvider{
-		zones:  []Zone{{ID: "zone-a", Name: "Living", Config: ZoneConfig{OperatingMode: "AUTO", Preset: "COMFORT"}}},
-		dhw:    &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO", Preset: "ECO"}},
-		energy: &EnergyTotals{Gas: EnergyChannel{DHW: EnergySeries{Today: 1.25}}},
+		zones:    []Zone{{ID: "zone-a", Name: "Living", Config: ZoneConfig{OperatingMode: "AUTO", Preset: "COMFORT"}}},
+		circuits: []CircuitStatus{{Index: 0, CircuitType: "heating"}},
+		dhw:      &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO", Preset: "ECO"}},
+		energy:   &EnergyTotals{Gas: EnergyChannel{DHW: EnergySeries{Today: 1.25}}},
 	})
 
 	cases := []struct {
@@ -119,6 +121,7 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 		{name: "planes", tool: toolPlanesListV1Name, args: `{"address":8}`},
 		{name: "methods", tool: toolMethodsListV1Name, args: `{"address":8,"plane":"heating"}`},
 		{name: "zones", tool: toolSemanticZonesGetName, args: `{}`},
+		{name: "circuits", tool: toolSemanticCircuitsGetName, args: `{}`},
 		{name: "dhw", tool: toolSemanticDHWGetName, args: `{}`},
 		{name: "energy", tool: toolSemanticEnergyGetName, args: `{}`},
 		{name: "semantic_snapshot", tool: toolSemanticSnapshotName, args: `{}`},

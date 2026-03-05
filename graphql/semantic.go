@@ -42,6 +42,37 @@ type DhwStatus struct {
 	Config DhwConfig
 }
 
+type CircuitState struct {
+	PumpActive       *bool
+	MixerPositionPct *float64
+	FlowTemperatureC *float64
+	FlowSetpointC    *float64
+	CalcFlowTempC    *float64
+	CircuitState     string
+	Humidity         *float64
+	DewPoint         *float64
+	PumpHours        *float64
+	PumpStarts       *int
+}
+
+type CircuitConfig struct {
+	HeatingCurve    *float64
+	FlowTempMaxC    *float64
+	FlowTempMinC    *float64
+	SummerLimitC    *float64
+	FrostProtC      *float64
+	RoomTempControl string
+	CoolingEnabled  *bool
+}
+
+type CircuitStatus struct {
+	Index       int
+	CircuitType string
+	HasMixer    bool
+	State       CircuitState
+	Config      CircuitConfig
+}
+
 type EnergySeries struct {
 	Today  float64
 	Yearly []float64
@@ -84,6 +115,7 @@ type BoilerStatus struct {
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
+	Circuits() []CircuitStatus
 	EnergyTotals() *EnergyTotals
 	BoilerStatus() *BoilerStatus
 }
@@ -95,6 +127,10 @@ func (staticSemanticProvider) Zones() []Zone {
 }
 
 func (staticSemanticProvider) DHW() *DhwStatus {
+	return nil
+}
+
+func (staticSemanticProvider) Circuits() []CircuitStatus {
 	return nil
 }
 

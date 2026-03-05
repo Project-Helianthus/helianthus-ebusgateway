@@ -713,6 +713,74 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 	})
 }
 
+func TestServer_ToolsCallBoilerStatus_ReducedShape(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+	flow := 52.5
+	ret := 47.0
+	pump := true
+	heatingStatus := 2
+	server.SetSemanticProvider(testSemanticProvider{
+		boiler: &BoilerStatus{
+			State: &BoilerState{
+				FlowTemperatureC:         &flow,
+				ReturnTemperatureC:       &ret,
+				CentralHeatingPumpActive: &pump,
+			},
+			Diagnostics: &BoilerDiagnostics{
+				HeatingStatusRaw: &heatingStatus,
+			},
+		},
+	})
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.semantic.boiler_status.get","arguments":{}}`),
+	})
+	envelope := envelopeFromResult(t, res)
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("boiler data type = %T; want map", envelope["data"])
+	}
+	if _, ok := data["config"]; ok {
+		t.Fatalf("boiler data unexpectedly contains config: %#v", data["config"])
+	}
+	state, ok := data["state"].(map[string]any)
+	if !ok {
+		t.Fatalf("boiler state type = %T; want map", data["state"])
+	}
+	if got, _ := state["flow_temperature_c"].(float64); got != flow {
+		t.Fatalf("boiler state.flow_temperature_c = %v; want %v", state["flow_temperature_c"], flow)
+	}
+	if got, _ := state["return_temperature_c"].(float64); got != ret {
+		t.Fatalf("boiler state.return_temperature_c = %v; want %v", state["return_temperature_c"], ret)
+	}
+	if got, _ := state["central_heating_pump_active"].(bool); got != pump {
+		t.Fatalf("boiler state.central_heating_pump_active = %v; want %v", state["central_heating_pump_active"], pump)
+	}
+	if _, ok := state["dhw_temperature_c"]; ok {
+		t.Fatalf("boiler state unexpectedly contains dhw_temperature_c")
+	}
+	if _, ok := state["dhw_target_temperature_c"]; ok {
+		t.Fatalf("boiler state unexpectedly contains dhw_target_temperature_c")
+	}
+	diagnostics, ok := data["diagnostics"].(map[string]any)
+	if !ok {
+		t.Fatalf("boiler diagnostics type = %T; want map", data["diagnostics"])
+	}
+	if got, _ := diagnostics["heating_status_raw"].(float64); int(got) != heatingStatus {
+		t.Fatalf("boiler diagnostics.heating_status_raw = %v; want %d", diagnostics["heating_status_raw"], heatingStatus)
+	}
+	if _, ok := diagnostics["dhw_status_raw"]; ok {
+		t.Fatalf("boiler diagnostics unexpectedly contains dhw_status_raw")
+	}
+}
+
 func TestServer_SnapshotConsistencyMode(t *testing.T) {
 	plane := &testPlane{
 		name: "heating",

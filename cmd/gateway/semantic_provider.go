@@ -97,29 +97,15 @@ func (adapter mcpSemanticProviderAdapter) BoilerStatus() *mcp.BoilerStatus {
 			FlowTemperatureC:         cloneFloatPtr(status.State.FlowTemperatureC),
 			ReturnTemperatureC:       cloneFloatPtr(status.State.ReturnTemperatureC),
 			CentralHeatingPumpActive: cloneBoolPtr(status.State.CentralHeatingPumpActive),
-			DhwTemperatureC:          cloneFloatPtr(status.State.DhwTemperatureC),
-			DhwTargetTemperatureC:    cloneFloatPtr(status.State.DhwTargetTemperatureC),
-		},
-		Config: &mcp.BoilerConfig{
-			DhwOperatingMode: cloneStringPtr(status.Config.DhwOperatingMode),
 		},
 		Diagnostics: &mcp.BoilerDiagnostics{
 			HeatingStatusRaw: cloneIntPtr(status.Diagnostics.HeatingStatusRaw),
-			DhwStatusRaw:     cloneIntPtr(status.Diagnostics.DhwStatusRaw),
 		},
 	}
 	return out
 }
 
 func cloneBoolPtr(value *bool) *bool {
-	if value == nil {
-		return nil
-	}
-	cp := *value
-	return &cp
-}
-
-func cloneStringPtr(value *string) *string {
 	if value == nil {
 		return nil
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/types"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/schema"
+	graphqlgo "github.com/graphql-go/graphql"
 )
 
 type schemaTemplate struct {
@@ -185,6 +186,69 @@ func TestNormalizeInvokeResult_ConstraintFields(t *testing.T) {
 	}
 	if normalized["value"] != nil {
 		t.Fatalf("value = %#v; want nil for invalid source value", normalized["value"])
+	}
+}
+
+func TestSetBoilerConfigMutation_UnsupportedInReducedProfile(t *testing.T) {
+	queryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "Query",
+		Fields: graphqlgo.Fields{
+			"noop": &graphqlgo.Field{Type: graphqlgo.String},
+		},
+	})
+	mutationType := buildMutationType(nil, nil)
+	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
+		Query:    queryType,
+		Mutation: mutationType,
+	})
+	if err != nil {
+		t.Fatalf("NewSchema error = %v", err)
+	}
+
+	result := graphqlgo.Do(graphqlgo.Params{
+		Schema: schema,
+		RequestString: `mutation {
+			setBoilerConfig(dhwOperatingMode: "AUTO") {
+				ok
+				error {
+					code
+					category
+					message
+				}
+				result
+			}
+		}`,
+	})
+	if len(result.Errors) > 0 {
+		t.Fatalf("mutation errors = %+v", result.Errors)
+	}
+
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("result data type = %T; want map", result.Data)
+	}
+	payload, ok := data["setBoilerConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("setBoilerConfig payload type = %T; want map", data["setBoilerConfig"])
+	}
+	if got, _ := payload["ok"].(bool); got {
+		t.Fatalf("setBoilerConfig ok = %v; want false", got)
+	}
+	errPayload, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("setBoilerConfig error type = %T; want map", payload["error"])
+	}
+	if code, _ := errPayload["code"].(string); code != boilerConfigUnsupportedCode {
+		t.Fatalf("setBoilerConfig error.code = %q; want %q", code, boilerConfigUnsupportedCode)
+	}
+	if category, _ := errPayload["category"].(string); category != boilerConfigUnsupportedCategory {
+		t.Fatalf("setBoilerConfig error.category = %q; want %q", category, boilerConfigUnsupportedCategory)
+	}
+	if message, _ := errPayload["message"].(string); message == "" {
+		t.Fatalf("setBoilerConfig error.message empty")
+	}
+	if payload["result"] != nil {
+		t.Fatalf("setBoilerConfig result = %#v; want nil", payload["result"])
 	}
 }
 

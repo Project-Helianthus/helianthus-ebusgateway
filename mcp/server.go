@@ -104,22 +104,14 @@ type BoilerState struct {
 	FlowTemperatureC         *float64 `json:"flow_temperature_c,omitempty"`
 	ReturnTemperatureC       *float64 `json:"return_temperature_c,omitempty"`
 	CentralHeatingPumpActive *bool    `json:"central_heating_pump_active,omitempty"`
-	DhwTemperatureC          *float64 `json:"dhw_temperature_c,omitempty"`
-	DhwTargetTemperatureC    *float64 `json:"dhw_target_temperature_c,omitempty"`
-}
-
-type BoilerConfig struct {
-	DhwOperatingMode *string `json:"dhw_operating_mode,omitempty"`
 }
 
 type BoilerDiagnostics struct {
 	HeatingStatusRaw *int `json:"heating_status_raw,omitempty"`
-	DhwStatusRaw     *int `json:"dhw_status_raw,omitempty"`
 }
 
 type BoilerStatus struct {
 	State       *BoilerState       `json:"state,omitempty"`
-	Config      *BoilerConfig      `json:"config,omitempty"`
 	Diagnostics *BoilerDiagnostics `json:"diagnostics,omitempty"`
 }
 
@@ -313,7 +305,7 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 		},
 		{
 			Name:        toolSemanticBoilerGetName,
-			Description: "Get semantic boiler status snapshot (flow/return temps, pump, DHW temps, diagnostics).",
+			Description: "Get semantic boiler status snapshot (flow/return temps, pump, diagnostics).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1430,10 +1422,6 @@ func cloneMCPBoilerStatus(status *BoilerStatus) *BoilerStatus {
 	if cp.State != nil {
 		s := *cp.State
 		cp.State = &s
-	}
-	if cp.Config != nil {
-		c := *cp.Config
-		cp.Config = &c
 	}
 	if cp.Diagnostics != nil {
 		d := *cp.Diagnostics

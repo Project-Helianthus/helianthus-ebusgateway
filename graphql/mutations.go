@@ -38,6 +38,11 @@ type InvokeError struct {
 	Category string
 }
 
+const (
+	boilerConfigUnsupportedCode     = "UNSUPPORTED_SOURCE"
+	boilerConfigUnsupportedCategory = "UNSUPPORTED"
+)
+
 type paramSchemaProvider interface {
 	ParamSchema() schema.Schema
 }
@@ -181,8 +186,28 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker) *graphqlgo.Obje
 					return result, nil
 				},
 			},
+			"setBoilerConfig": &graphqlgo.Field{
+				Type: resultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"dhwOperatingMode": &graphqlgo.ArgumentConfig{Type: graphqlgo.String},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return boilerConfigUnsupportedResult(), nil
+				},
+			},
 		},
 	})
+}
+
+func boilerConfigUnsupportedResult() InvokeResult {
+	return InvokeResult{
+		Ok: false,
+		Error: &InvokeError{
+			Message:  "boiler config source B509 is unsupported in reduced profile",
+			Code:     boilerConfigUnsupportedCode,
+			Category: boilerConfigUnsupportedCategory,
+		},
+	}
 }
 
 func invokeResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker) (InvokeResult, error) {

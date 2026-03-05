@@ -487,51 +487,6 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return *state.CentralHeatingPumpActive, nil
 				},
 			},
-			"dhwTemperatureC": &graphqlgo.Field{
-				Type: graphqlgo.Float,
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					state, ok := params.Source.(BoilerState)
-					if !ok {
-						return nil, nil
-					}
-					if state.DhwTemperatureC == nil {
-						return nil, nil
-					}
-					return *state.DhwTemperatureC, nil
-				},
-			},
-			"dhwTargetTemperatureC": &graphqlgo.Field{
-				Type: graphqlgo.Float,
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					state, ok := params.Source.(BoilerState)
-					if !ok {
-						return nil, nil
-					}
-					if state.DhwTargetTemperatureC == nil {
-						return nil, nil
-					}
-					return *state.DhwTargetTemperatureC, nil
-				},
-			},
-		},
-	})
-
-	boilerConfigType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
-		Name: "BoilerConfig",
-		Fields: graphqlgo.Fields{
-			"dhwOperatingMode": &graphqlgo.Field{
-				Type: graphqlgo.String,
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					config, ok := params.Source.(BoilerConfig)
-					if !ok {
-						return nil, nil
-					}
-					if config.DhwOperatingMode == nil {
-						return nil, nil
-					}
-					return *config.DhwOperatingMode, nil
-				},
-			},
 		},
 	})
 
@@ -551,19 +506,6 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return *diag.HeatingStatusRaw, nil
 				},
 			},
-			"dhwStatusRaw": &graphqlgo.Field{
-				Type: graphqlgo.Int,
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					diag, ok := params.Source.(BoilerDiagnostics)
-					if !ok {
-						return nil, nil
-					}
-					if diag.DhwStatusRaw == nil {
-						return nil, nil
-					}
-					return *diag.DhwStatusRaw, nil
-				},
-			},
 		},
 	})
 
@@ -578,16 +520,6 @@ func buildSchemaTypes() graphqlSchemaTypes {
 						return BoilerState{}, nil
 					}
 					return status.State, nil
-				},
-			},
-			"config": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(boilerConfigType),
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					status, ok := params.Source.(*BoilerStatus)
-					if !ok || status == nil {
-						return BoilerConfig{}, nil
-					}
-					return status.Config, nil
 				},
 			},
 			"diagnostics": &graphqlgo.Field{

@@ -756,6 +756,10 @@ func (p *vaillantSemanticPoller) boilerStatusTierSchedules() []boilerStatusTierS
 
 func (p *vaillantSemanticPoller) boilerStatusTierTask(tier boilerStatusTier) func(context.Context) {
 	return func(ctx context.Context) {
+		if tier == boilerStatusTierFast {
+			p.refreshBoilerStatus(ctx)
+			return
+		}
 		p.refreshBoilerStatusTier(ctx, tier)
 	}
 }

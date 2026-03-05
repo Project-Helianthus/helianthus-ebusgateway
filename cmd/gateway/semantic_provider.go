@@ -113,6 +113,14 @@ func cloneBoolPtr(value *bool) *bool {
 	return &cp
 }
 
+func cloneStringPtr(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cp := *value
+	return &cp
+}
+
 func cloneIntPtr(value *int) *int {
 	if value == nil {
 		return nil

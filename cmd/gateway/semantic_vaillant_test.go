@@ -303,6 +303,135 @@ func TestSourceFromEbusdGrab(t *testing.T) {
 	}
 }
 
+func TestNewVaillantSemanticPoller_BoilerTierCadence(t *testing.T) {
+	t.Parallel()
+
+	poller := newVaillantSemanticPoller(
+		ebusgateway.Config{},
+		&ebusgateway.Gateway{},
+		graphql.NewLiveSemanticProvider(),
+		nil,
+		nil,
+	)
+
+	schedules := poller.boilerStatusTierSchedules()
+	if len(schedules) != 3 {
+		t.Fatalf("len(boilerStatusTierSchedules) = %d; want 3", len(schedules))
+	}
+
+	byTier := make(map[boilerStatusTier]boilerStatusTierSchedule, len(schedules))
+	for _, schedule := range schedules {
+		byTier[schedule.tier] = schedule
+	}
+
+	tests := []struct {
+		tier     boilerStatusTier
+		interval time.Duration
+		priority semanticTaskPriority
+	}{
+		{tier: boilerStatusTierFast, interval: 30 * time.Second, priority: semanticTaskPriorityHigh},
+		{tier: boilerStatusTierMedium, interval: 5 * time.Minute, priority: semanticTaskPriorityMedium},
+		{tier: boilerStatusTierSlow, interval: 10 * time.Minute, priority: semanticTaskPriorityLow},
+	}
+	for _, test := range tests {
+		schedule, ok := byTier[test.tier]
+		if !ok {
+			t.Fatalf("missing tier schedule: %v", test.tier)
+		}
+		if schedule.interval != test.interval {
+			t.Fatalf("tier %v interval = %s; want %s", test.tier, schedule.interval, test.interval)
+		}
+		if schedule.priority != test.priority {
+			t.Fatalf("tier %v priority = %v; want %v", test.tier, schedule.priority, test.priority)
+		}
+	}
+}
+
+func TestBoilerStatusRegisterDefinitionsForTier_NoReturnTemperatureMapping(t *testing.T) {
+	t.Parallel()
+
+	for _, tier := range []boilerStatusTier{
+		boilerStatusTierFast,
+		boilerStatusTierMedium,
+		boilerStatusTierSlow,
+	} {
+		for _, register := range boilerStatusRegisterDefinitionsForTier(tier) {
+			if register.group == vaillantGroupCircuits && register.addr == uint16(0x0008) {
+				t.Fatalf("tier %v maps GG=0x02 RR=0x0008; closed decision forbids using this as boiler return temperature", tier)
+			}
+		}
+	}
+}
+
+func TestMergeBoilerSnapshotNonDestructive_PartialUpdatePreservesLastKnown(t *testing.T) {
+	t.Parallel()
+
+	flow := 61.5
+	returnTemp := 45.0
+	pump := true
+	heatingStatus := 3
+	updatedPump := false
+
+	merged := mergeBoilerSnapshotNonDestructive(
+		&vaillantBoilerSnapshot{
+			FlowTemperatureC:         &flow,
+			ReturnTemperatureC:       &returnTemp,
+			CentralHeatingPumpActive: &pump,
+			HeatingStatusRaw:         &heatingStatus,
+		},
+		&vaillantBoilerSnapshot{
+			CentralHeatingPumpActive: &updatedPump,
+		},
+	)
+
+	if merged == nil {
+		t.Fatal("merged snapshot is nil")
+	}
+	if merged.FlowTemperatureC == nil || *merged.FlowTemperatureC != 61.5 {
+		t.Fatalf("merged.FlowTemperatureC = %v; want preserved 61.5", merged.FlowTemperatureC)
+	}
+	if merged.CentralHeatingPumpActive == nil || *merged.CentralHeatingPumpActive {
+		t.Fatalf("merged.CentralHeatingPumpActive = %v; want updated false", merged.CentralHeatingPumpActive)
+	}
+	if merged.HeatingStatusRaw == nil || *merged.HeatingStatusRaw != 3 {
+		t.Fatalf("merged.HeatingStatusRaw = %v; want preserved 3", merged.HeatingStatusRaw)
+	}
+	if merged.ReturnTemperatureC != nil {
+		t.Fatalf("merged.ReturnTemperatureC = %v; want nil (closed decision)", merged.ReturnTemperatureC)
+	}
+}
+
+func TestRefreshBoilerStatusTier_NoSuccessfulReadsPreservesSnapshot(t *testing.T) {
+	t.Parallel()
+
+	flow := 63.0
+	pump := true
+	heatingStatus := 4
+	poller := &vaillantSemanticPoller{
+		controller: 0x15,
+		boiler: &vaillantBoilerSnapshot{
+			FlowTemperatureC:         &flow,
+			CentralHeatingPumpActive: &pump,
+			HeatingStatusRaw:         &heatingStatus,
+		},
+	}
+
+	poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
+
+	if poller.boiler == nil {
+		t.Fatal("poller.boiler = nil; want preserved last-known snapshot")
+	}
+	if poller.boiler.FlowTemperatureC == nil || *poller.boiler.FlowTemperatureC != 63.0 {
+		t.Fatalf("poller.boiler.FlowTemperatureC = %v; want preserved 63.0", poller.boiler.FlowTemperatureC)
+	}
+	if poller.boiler.CentralHeatingPumpActive == nil || !*poller.boiler.CentralHeatingPumpActive {
+		t.Fatalf("poller.boiler.CentralHeatingPumpActive = %v; want preserved true", poller.boiler.CentralHeatingPumpActive)
+	}
+	if poller.boiler.HeatingStatusRaw == nil || *poller.boiler.HeatingStatusRaw != 4 {
+		t.Fatalf("poller.boiler.HeatingStatusRaw = %v; want preserved 4", poller.boiler.HeatingStatusRaw)
+	}
+}
+
 func TestRefreshEnergy_NilController(t *testing.T) {
 	t.Parallel()
 

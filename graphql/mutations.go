@@ -38,6 +38,11 @@ type InvokeError struct {
 	Category string
 }
 
+type BoilerConfigMutationResult struct {
+	Success bool
+	Error   string
+}
+
 type paramSchemaProvider interface {
 	ParamSchema() schema.Schema
 }
@@ -159,6 +164,32 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker) *graphqlgo.Obje
 		},
 	})
 
+	boilerConfigResultType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "BoilerConfigMutationResult",
+		Fields: graphqlgo.Fields{
+			"success": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					result, ok := boilerConfigResultFromSource(params)
+					if !ok {
+						return false, nil
+					}
+					return result.Success, nil
+				},
+			},
+			"error": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					result, ok := boilerConfigResultFromSource(params)
+					if !ok || result.Error == "" {
+						return nil, nil
+					}
+					return result.Error, nil
+				},
+			},
+		},
+	})
+
 	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Mutation",
 		Fields: graphqlgo.Fields{
@@ -181,8 +212,25 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker) *graphqlgo.Obje
 					return result, nil
 				},
 			},
+			"setBoilerConfig": &graphqlgo.Field{
+				Type: boilerConfigResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return boilerConfigUnsupportedResult(), nil
+				},
+			},
 		},
 	})
+}
+
+func boilerConfigUnsupportedResult() BoilerConfigMutationResult {
+	return BoilerConfigMutationResult{
+		Success: false,
+		Error:   "unsupported source: B509 writes are disabled in reduced profile",
+	}
 }
 
 func invokeResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker) (InvokeResult, error) {
@@ -495,6 +543,20 @@ func invokeErrorFromSource(params graphqlgo.ResolveParams) (InvokeError, bool) {
 		return *value, true
 	default:
 		return InvokeError{}, false
+	}
+}
+
+func boilerConfigResultFromSource(params graphqlgo.ResolveParams) (BoilerConfigMutationResult, bool) {
+	switch value := params.Source.(type) {
+	case BoilerConfigMutationResult:
+		return value, true
+	case *BoilerConfigMutationResult:
+		if value == nil {
+			return BoilerConfigMutationResult{}, false
+		}
+		return *value, true
+	default:
+		return BoilerConfigMutationResult{}, false
 	}
 }
 

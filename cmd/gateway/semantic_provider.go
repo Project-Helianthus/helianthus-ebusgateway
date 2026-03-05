@@ -97,15 +97,9 @@ func (adapter mcpSemanticProviderAdapter) BoilerStatus() *mcp.BoilerStatus {
 			FlowTemperatureC:         cloneFloatPtr(status.State.FlowTemperatureC),
 			ReturnTemperatureC:       cloneFloatPtr(status.State.ReturnTemperatureC),
 			CentralHeatingPumpActive: cloneBoolPtr(status.State.CentralHeatingPumpActive),
-			DhwTemperatureC:          cloneFloatPtr(status.State.DhwTemperatureC),
-			DhwTargetTemperatureC:    cloneFloatPtr(status.State.DhwTargetTemperatureC),
-		},
-		Config: &mcp.BoilerConfig{
-			DhwOperatingMode: cloneStringPtr(status.Config.DhwOperatingMode),
 		},
 		Diagnostics: &mcp.BoilerDiagnostics{
 			HeatingStatusRaw: cloneIntPtr(status.Diagnostics.HeatingStatusRaw),
-			DhwStatusRaw:     cloneIntPtr(status.Diagnostics.DhwStatusRaw),
 		},
 	}
 	return out

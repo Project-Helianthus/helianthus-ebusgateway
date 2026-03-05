@@ -24,6 +24,10 @@ import (
 const (
 	vaillantExtRegisterPrimary   = byte(0xB5)
 	vaillantExtRegisterSecondary = byte(0x24)
+	vaillantB509Primary          = byte(0xB5)
+	vaillantB509Secondary        = byte(0x09)
+	vaillantB509OpcodeRead       = byte(0x0D)
+	vaillantB509OpcodeWrite      = byte(0x0E)
 	vaillantB524OpcodeRead       = byte(0x06)
 	vaillantB524OpcodeLocal      = byte(0x02)
 	vaillantB524OpRead           = byte(0x00)
@@ -129,6 +133,7 @@ type vaillantSemanticPoller struct {
 
 	mu                       sync.Mutex
 	controller               byte
+	boilerAddress            byte
 	regulatorCapability      productids.ControllerCapability
 	regAbsenceState          regulatorAbsenceState
 	regAbsenceSince          time.Time
@@ -850,12 +855,15 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	// Regulator capability is always recomputed, even when BASV is missing.
 	regCap := p.findRegulatorCapability()
+	boilerAddress := p.findBoilerAddress()
 
 	controller, ok := findDeviceAddressByPrefix(p.reg, "BASV")
 	if !ok {
 		p.mu.Lock()
 		prev := p.regulatorCapability
+		prevBoilerAddress := p.boilerAddress
 		p.controller = 0
+		p.boilerAddress = boilerAddress
 		p.regulatorCapability = regCap
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
 		p.presence = make(map[byte]*zonePresenceRecord)
@@ -864,6 +872,9 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		if regCap != prev {
 			log.Printf("semantic_regulator_capability capability=%s", regCap.String())
 		}
+		if boilerAddress != prevBoilerAddress && boilerAddress != 0 && boilerAddress != 0x08 {
+			log.Printf("semantic_boiler_discovery address=0x%02x source=nonstandard", boilerAddress)
+		}
 		p.publishZones(semanticSnapshotSourceCache)
 		p.publishDHW(semanticSnapshotSourceCache)
 		return
@@ -871,11 +882,16 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 
 	p.mu.Lock()
 	prev := p.regulatorCapability
+	prevBoilerAddress := p.boilerAddress
 	p.controller = controller
+	p.boilerAddress = boilerAddress
 	p.regulatorCapability = regCap
 	p.mu.Unlock()
 	if regCap != prev {
 		log.Printf("semantic_regulator_capability capability=%s", regCap.String())
+	}
+	if boilerAddress != prevBoilerAddress && boilerAddress != 0 && boilerAddress != 0x08 {
+		log.Printf("semantic_boiler_discovery address=0x%02x source=nonstandard", boilerAddress)
 	}
 
 	present := make(map[byte]bool, 4)
@@ -1958,6 +1974,42 @@ func findDeviceAddressByPrefix(reg *registry.DeviceRegistry, wantedPrefix string
 	return addr, found
 }
 
+func (p *vaillantSemanticPoller) findBoilerAddress() byte {
+	if p == nil || p.reg == nil {
+		return 0
+	}
+
+	selected := byte(0)
+	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry == nil || !isBoilerDeviceCandidate(entry) {
+			return true
+		}
+		addr := entry.Address()
+		if addr == 0x08 {
+			selected = addr
+			return false
+		}
+		if selected == 0 || addr < selected {
+			selected = addr
+		}
+		return true
+	})
+	return selected
+}
+
+func isBoilerDeviceCandidate(entry registry.DeviceEntry) bool {
+	if entry == nil {
+		return false
+	}
+	normalizedID := normalizeDeviceID(entry.DeviceID())
+	if strings.HasPrefix(normalizedID, "BAI") {
+		return true
+	}
+	// Best-effort fallback for boiler-family boards when the product-family byte
+	// is not directly exposed by the registry contract.
+	return strings.HasPrefix(normalizedID, "BMU")
+}
+
 func normalizeDeviceID(value string) string {
 	normalized := strings.ToUpper(strings.TrimSpace(value))
 	normalized = strings.ReplaceAll(normalized, "_", "")
@@ -2059,6 +2111,126 @@ func isAllDigits(value string) bool {
 	return true
 }
 
+func (p *vaillantSemanticPoller) readB509Value(ctx context.Context, target byte, addr uint16) ([]byte, bool) {
+	if p == nil || p.bus == nil || target == 0 {
+		return nil, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	source := p.source
+	timeout := p.requestTimeout
+	p.mu.Unlock()
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	key := semanticReadB509Key(target, addr)
+	value, err := p.scheduler.Get(ctx, key, 500*time.Millisecond, func(ctx context.Context) ([]byte, error) {
+		var lastErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			p.readMu.Lock()
+			reqCtx, cancel := context.WithTimeout(ctx, timeout)
+			request := protocol.Frame{
+				Source:    source,
+				Target:    target,
+				Primary:   vaillantB509Primary,
+				Secondary: vaillantB509Secondary,
+				Data:      buildB509ReadSelector(addr),
+			}
+			response, err := p.bus.Send(reqCtx, request)
+			cancel()
+			p.readMu.Unlock()
+
+			if err != nil {
+				lastErr = err
+			} else if response == nil {
+				lastErr = fmt.Errorf("b509 read returned nil response")
+			} else if payload, ok := parseB509ReadPayload(response.Data, addr); ok {
+				return payload, nil
+			} else {
+				lastErr = fmt.Errorf("b509 read failed: target=0x%02x addr=0x%04x", target, addr)
+			}
+
+			if attempt < 2 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(75 * time.Millisecond):
+				}
+			}
+		}
+		if lastErr == nil {
+			lastErr = fmt.Errorf("b509 read failed")
+		}
+		return nil, lastErr
+	})
+	if err != nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func (p *vaillantSemanticPoller) writeB509Value(ctx context.Context, target byte, addr uint16, value []byte) error {
+	if p == nil || p.bus == nil {
+		return fmt.Errorf("b509 write unavailable")
+	}
+	if target == 0 {
+		return fmt.Errorf("b509 write target is zero")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	source := p.source
+	timeout := p.requestTimeout
+	p.mu.Unlock()
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		p.readMu.Lock()
+		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		request := protocol.Frame{
+			Source:    source,
+			Target:    target,
+			Primary:   vaillantB509Primary,
+			Secondary: vaillantB509Secondary,
+			Data:      buildB509WriteSelector(addr, value),
+		}
+		response, err := p.bus.Send(reqCtx, request)
+		cancel()
+		p.readMu.Unlock()
+
+		if err != nil {
+			lastErr = err
+		} else if response == nil {
+			lastErr = fmt.Errorf("b509 write returned nil response")
+		} else if parseB509WriteAck(response.Data, addr) {
+			return nil
+		} else {
+			lastErr = fmt.Errorf("b509 write ack invalid: target=0x%02x addr=0x%04x", target, addr)
+		}
+
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(75 * time.Millisecond):
+			}
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("b509 write failed")
+	}
+	return lastErr
+}
+
 func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {
 	if p == nil || p.bus == nil {
 		return nil, false
@@ -2138,6 +2310,83 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 func semanticReadBreakerKey(target, opcode, group, instance byte, addr uint16) string {
 	return fmt.Sprintf("b524:%02x:%02x:%02x:%02x:%04x", target, opcode, group, instance, addr)
 }
+
+func semanticReadB509Key(target byte, addr uint16) string {
+	return fmt.Sprintf("b509:%02x:%04x", target, addr)
+}
+
+func buildB509ReadSelector(addr uint16) []byte {
+	return []byte{
+		vaillantB509OpcodeRead,
+		byte(addr >> 8),
+		byte(addr),
+	}
+}
+
+func buildB509WriteSelector(addr uint16, value []byte) []byte {
+	data := make([]byte, 0, 3+len(value))
+	data = append(data, vaillantB509OpcodeWrite, byte(addr>>8), byte(addr))
+	data = append(data, value...)
+	return data
+}
+
+func parseB509ReadPayload(payload []byte, addr uint16) ([]byte, bool) {
+	if len(payload) == 0 {
+		return nil, false
+	}
+	if len(payload) == 1 && payload[0] == 0x00 {
+		return nil, false
+	}
+
+	addrHi := byte(addr >> 8)
+	addrLo := byte(addr)
+
+	if len(payload) >= 3 && payload[0] == vaillantB509OpcodeRead && payload[1] == addrHi && payload[2] == addrLo {
+		if len(payload) == 3 {
+			return nil, false
+		}
+		return payload[3:], true
+	}
+	if len(payload) >= 2 && payload[0] == addrHi && payload[1] == addrLo {
+		if len(payload) == 2 {
+			return nil, false
+		}
+		return payload[2:], true
+	}
+	return payload, true
+}
+
+func parseB509WriteAck(payload []byte, addr uint16) bool {
+	if len(payload) == 0 {
+		return true
+	}
+	if len(payload) == 1 {
+		return payload[0] != 0x00
+	}
+
+	addrHi := byte(addr >> 8)
+	addrLo := byte(addr)
+
+	if len(payload) >= 3 && payload[0] == vaillantB509OpcodeWrite && payload[1] == addrHi && payload[2] == addrLo {
+		if len(payload) == 3 {
+			return true
+		}
+		return payload[3] != 0x00
+	}
+	if len(payload) >= 2 && payload[0] == addrHi && payload[1] == addrLo {
+		if len(payload) == 2 {
+			return true
+		}
+		return payload[2] != 0x00
+	}
+	return payload[0] != 0x00
+}
+
+var (
+	// Reserved for GW-2 wiring; keep implementations linked and lint-clean.
+	_ = (*vaillantSemanticPoller).readB509Value
+	_ = (*vaillantSemanticPoller).writeB509Value
+)
 
 func buildB524ReadSelector(opcode, group, instance byte, addr uint16) []byte {
 	return []byte{

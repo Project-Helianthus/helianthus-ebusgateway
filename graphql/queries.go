@@ -25,6 +25,7 @@ type graphqlSchemaTypes struct {
 	circuitStatusType  *graphqlgo.Object
 	energyTotals       *graphqlgo.Object
 	boilerStatusType   *graphqlgo.Object
+	systemStatusType   *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {
@@ -774,6 +775,240 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		},
 	})
 
+	systemStateType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "SystemState",
+		Fields: graphqlgo.Fields{
+			"systemOff": &graphqlgo.Field{
+				Type: graphqlgo.Boolean,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(SystemState)
+					if !ok || state.SystemOff == nil {
+						return nil, nil
+					}
+					return *state.SystemOff, nil
+				},
+			},
+			"systemWaterPressure": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(SystemState)
+					if !ok || state.SystemWaterPressure == nil {
+						return nil, nil
+					}
+					return *state.SystemWaterPressure, nil
+				},
+			},
+			"systemFlowTemperature": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(SystemState)
+					if !ok || state.SystemFlowTemperature == nil {
+						return nil, nil
+					}
+					return *state.SystemFlowTemperature, nil
+				},
+			},
+			"outdoorTemperature": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(SystemState)
+					if !ok || state.OutdoorTemperature == nil {
+						return nil, nil
+					}
+					return *state.OutdoorTemperature, nil
+				},
+			},
+			"outdoorTemperatureAvg24h": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(SystemState)
+					if !ok || state.OutdoorTemperatureAvg24h == nil {
+						return nil, nil
+					}
+					return *state.OutdoorTemperatureAvg24h, nil
+				},
+			},
+			"maintenanceDue": &graphqlgo.Field{
+				Type: graphqlgo.Boolean,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(SystemState)
+					if !ok || state.MaintenanceDue == nil {
+						return nil, nil
+					}
+					return *state.MaintenanceDue, nil
+				},
+			},
+			"hwcCylinderTemperatureTop": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(SystemState)
+					if !ok || state.HwcCylinderTemperatureTop == nil {
+						return nil, nil
+					}
+					return *state.HwcCylinderTemperatureTop, nil
+				},
+			},
+			"hwcCylinderTemperatureBottom": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(SystemState)
+					if !ok || state.HwcCylinderTemperatureBottom == nil {
+						return nil, nil
+					}
+					return *state.HwcCylinderTemperatureBottom, nil
+				},
+			},
+		},
+	})
+
+	systemConfigType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "SystemConfig",
+		Fields: graphqlgo.Fields{
+			"adaptiveHeatingCurve": &graphqlgo.Field{
+				Type: graphqlgo.Boolean,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.AdaptiveHeatingCurve == nil {
+						return nil, nil
+					}
+					return *config.AdaptiveHeatingCurve, nil
+				},
+			},
+			"alternativePoint": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.AlternativePoint == nil {
+						return nil, nil
+					}
+					return *config.AlternativePoint, nil
+				},
+			},
+			"heatingCircuitBivalencePoint": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.HeatingCircuitBivalencePoint == nil {
+						return nil, nil
+					}
+					return *config.HeatingCircuitBivalencePoint, nil
+				},
+			},
+			"dhwBivalencePoint": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.DhwBivalencePoint == nil {
+						return nil, nil
+					}
+					return *config.DhwBivalencePoint, nil
+				},
+			},
+			"hcEmergencyTemperature": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.HcEmergencyTemperature == nil {
+						return nil, nil
+					}
+					return *config.HcEmergencyTemperature, nil
+				},
+			},
+			"hwcMaxFlowTempDesired": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.HwcMaxFlowTempDesired == nil {
+						return nil, nil
+					}
+					return *config.HwcMaxFlowTempDesired, nil
+				},
+			},
+			"maxRoomHumidity": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.MaxRoomHumidity == nil {
+						return nil, nil
+					}
+					return *config.MaxRoomHumidity, nil
+				},
+			},
+		},
+	})
+
+	systemPropertiesType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "SystemProperties",
+		Fields: graphqlgo.Fields{
+			"systemScheme": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					props, ok := params.Source.(SystemProperties)
+					if !ok || props.SystemScheme == nil {
+						return nil, nil
+					}
+					return *props.SystemScheme, nil
+				},
+			},
+			"moduleConfigurationVR71": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					props, ok := params.Source.(SystemProperties)
+					if !ok || props.ModuleConfigurationVR71 == nil {
+						return nil, nil
+					}
+					return *props.ModuleConfigurationVR71, nil
+				},
+			},
+			"vr71CircuitStartIndex": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					props, ok := params.Source.(SystemProperties)
+					if !ok || props.Vr71CircuitStartIndex == nil {
+						return nil, nil
+					}
+					return *props.Vr71CircuitStartIndex, nil
+				},
+			},
+		},
+	})
+
+	systemStatusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "SystemStatus",
+		Fields: graphqlgo.Fields{
+			"state": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(systemStateType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*SystemStatus)
+					if !ok || status == nil {
+						return SystemState{}, nil
+					}
+					return status.State, nil
+				},
+			},
+			"config": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(systemConfigType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*SystemStatus)
+					if !ok || status == nil {
+						return SystemConfig{}, nil
+					}
+					return status.Config, nil
+				},
+			},
+			"properties": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(systemPropertiesType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*SystemStatus)
+					if !ok || status == nil {
+						return SystemProperties{}, nil
+					}
+					return status.Properties, nil
+				},
+			},
+		},
+	})
+
 	statusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "ServiceStatus",
 		Fields: graphqlgo.Fields{
@@ -1254,6 +1489,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		circuitStatusType:  circuitStatusType,
 		energyTotals:       energyTotalsType,
 		boilerStatusType:   boilerStatusType,
+		systemStatusType:   systemStatusType,
 	}
 }
 
@@ -1311,6 +1547,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				Type: types.boilerStatusType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().BoilerStatus(), nil
+				},
+			},
+			"system": &graphqlgo.Field{
+				Type: types.systemStatusType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().System(), nil
 				},
 			},
 			"devices": &graphqlgo.Field{

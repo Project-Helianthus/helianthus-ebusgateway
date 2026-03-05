@@ -17,6 +17,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
@@ -165,6 +166,7 @@ type vaillantSemanticPoller struct {
 	dhw                      *vaillantDhwSnapshot
 	dhwLastUpdateAt          time.Time
 	boiler                   *vaillantBoilerSnapshot
+	system                   *vaillantSystemSnapshot
 	circuits                 map[byte]*vaillantCircuitSnapshot
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
@@ -831,6 +833,7 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
 	p.enqueueTask(semanticTaskPriorityMedium, p.refreshCircuits)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshSystem)
 	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
 	for _, schedule := range p.boilerStatusTierSchedules() {
 		p.enqueueTask(schedule.priority, p.boilerStatusTierTask(schedule.tier))
@@ -841,6 +844,7 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityMedium, p.refreshConfig)
 	go p.runLoop(ctx, p.stateInterval, semanticTaskPriorityHigh, p.refreshState)
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshCircuits)
+	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshSystem)
 	go p.runLoop(ctx, p.energyInterval, semanticTaskPriorityMedium, p.refreshEnergy)
 	for _, schedule := range p.boilerStatusTierSchedules() {
 		go p.runLoop(ctx, schedule.interval, schedule.priority, p.boilerStatusTierTask(schedule.tier))
@@ -2189,8 +2193,28 @@ const (
 	vaillantGroupRegulator = byte(0x00)
 	regulatorInstance      = byte(0x00)
 
-	// system_flow_temperature — float32 LE (°C)
-	regulatorRegSystemFlowTemp = uint16(0x004B)
+	// System state registers (GG=0x00, II=0x00).
+	systemRegSystemOff                    = uint16(0x0007)
+	systemRegSystemWaterPressure          = uint16(0x0039)
+	systemRegSystemFlowTemperature        = uint16(0x004B)
+	systemRegOutdoorTemperature           = uint16(0x0073)
+	systemRegOutdoorTemperatureAvg24h     = uint16(0x0095)
+	systemRegMaintenanceDue               = uint16(0x0096)
+	systemRegHwcCylinderTemperatureTop    = uint16(0x009D)
+	systemRegHwcCylinderTemperatureBottom = uint16(0x009E)
+
+	// System config registers (GG=0x00, II=0x00).
+	systemRegAdaptiveHeatingCurve         = uint16(0x0014)
+	systemRegAlternativePoint             = uint16(0x0022)
+	systemRegHeatingCircuitBivalencePoint = uint16(0x0023)
+	systemRegDhwBivalencePoint            = uint16(0x0001)
+	systemRegHcEmergencyTemperature       = uint16(0x0026)
+	systemRegHwcMaxFlowTempDesired        = uint16(0x0046)
+	systemRegMaxRoomHumidity              = uint16(0x000E)
+
+	// System properties registers (GG=0x00, II=0x00).
+	systemRegSystemScheme            = uint16(0x0036)
+	systemRegModuleConfigurationVR71 = uint16(0x002F)
 )
 
 type vaillantBoilerSnapshot struct {
@@ -2202,6 +2226,31 @@ type vaillantBoilerSnapshot struct {
 	DhwOperatingMode         *int
 	HeatingStatusRaw         *int
 	DhwStatusRaw             *int
+}
+
+type vaillantSystemSnapshot struct {
+	// State
+	SystemOff                    *bool
+	SystemWaterPressure          *float64
+	SystemFlowTemperature        *float64
+	OutdoorTemperature           *float64
+	OutdoorTemperatureAvg24h     *float64
+	MaintenanceDue               *bool
+	HwcCylinderTemperatureTop    *float64
+	HwcCylinderTemperatureBottom *float64
+
+	// Config
+	AdaptiveHeatingCurve         *bool
+	AlternativePoint             *float64
+	HeatingCircuitBivalencePoint *float64
+	DhwBivalencePoint            *float64
+	HcEmergencyTemperature       *float64
+	HwcMaxFlowTempDesired        *float64
+	MaxRoomHumidity              *uint16
+
+	// Properties
+	SystemScheme            *uint16
+	ModuleConfigurationVR71 *uint16
 }
 
 type boilerStatusField uint8
@@ -2242,7 +2291,7 @@ func boilerStatusRegisterDefinitionsForTier(tier boilerStatusTier) []boilerStatu
 				opcode:   vaillantB524OpcodeLocal,
 				group:    vaillantGroupRegulator,
 				instance: regulatorInstance,
-				addr:     regulatorRegSystemFlowTemp,
+				addr:     systemRegSystemFlowTemperature,
 			},
 			{
 				field:    boilerStatusFieldPumpActive,
@@ -2400,6 +2449,318 @@ func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSour
 		p.hub.PublishBoilerStatusUpdate(current)
 	}
 	p.persistSemanticCache(source)
+}
+
+func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
+	if controller == 0 {
+		return
+	}
+
+	snapshot := &vaillantSystemSnapshot{}
+	updated := false
+
+	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegSystemOff); ok && raw != nil {
+		value := *raw != 0
+		snapshot.SystemOff = &value
+		updated = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegSystemWaterPressure); ok {
+		snapshot.SystemWaterPressure = &value
+		updated = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegSystemFlowTemperature); ok {
+		snapshot.SystemFlowTemperature = &value
+		updated = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegOutdoorTemperature); ok {
+		snapshot.OutdoorTemperature = &value
+		updated = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegOutdoorTemperatureAvg24h); ok {
+		snapshot.OutdoorTemperatureAvg24h = &value
+		updated = true
+	}
+	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegMaintenanceDue); ok && raw != nil {
+		value := *raw != 0
+		snapshot.MaintenanceDue = &value
+		updated = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegHwcCylinderTemperatureTop); ok {
+		snapshot.HwcCylinderTemperatureTop = &value
+		updated = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegHwcCylinderTemperatureBottom); ok {
+		snapshot.HwcCylinderTemperatureBottom = &value
+		updated = true
+	}
+
+	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegAdaptiveHeatingCurve); ok && raw != nil {
+		value := *raw != 0
+		snapshot.AdaptiveHeatingCurve = &value
+		updated = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegAlternativePoint); ok {
+		snapshot.AlternativePoint = &value
+		updated = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegHeatingCircuitBivalencePoint); ok {
+		snapshot.HeatingCircuitBivalencePoint = &value
+		updated = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegDhwBivalencePoint); ok {
+		snapshot.DhwBivalencePoint = &value
+		updated = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegHcEmergencyTemperature); ok {
+		snapshot.HcEmergencyTemperature = &value
+		updated = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegHwcMaxFlowTempDesired); ok {
+		snapshot.HwcMaxFlowTempDesired = &value
+		updated = true
+	}
+	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegMaxRoomHumidity); ok && raw != nil {
+		snapshot.MaxRoomHumidity = cloneUint16Ptr(raw)
+		updated = true
+	}
+
+	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegSystemScheme); ok && raw != nil {
+		snapshot.SystemScheme = cloneUint16Ptr(raw)
+		updated = true
+	}
+	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegModuleConfigurationVR71); ok && raw != nil {
+		snapshot.ModuleConfigurationVR71 = cloneUint16Ptr(raw)
+		updated = true
+	}
+
+	if !updated {
+		return
+	}
+
+	p.mu.Lock()
+	p.system = mergeSystemSnapshotNonDestructive(p.system, snapshot)
+	p.mu.Unlock()
+
+	p.publishSystem(semanticSnapshotSourceLive)
+}
+
+func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
+	if p == nil || p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	snapshot := cloneSystemSnapshot(p.system)
+	p.mu.Unlock()
+
+	previous := p.provider.System()
+	if snapshot == nil {
+		switch source {
+		case semanticSnapshotSourceCache:
+			p.provider.SetSystemFromCache(nil)
+		default:
+			p.provider.SetSystem(nil)
+		}
+		return
+	}
+
+	current := &graphql.SystemStatus{
+		State: graphql.SystemState{
+			SystemOff:                    cloneBoilerBoolPtr(snapshot.SystemOff),
+			SystemWaterPressure:          cloneFloat64Ptr(snapshot.SystemWaterPressure),
+			SystemFlowTemperature:        cloneFloat64Ptr(snapshot.SystemFlowTemperature),
+			OutdoorTemperature:           cloneFloat64Ptr(snapshot.OutdoorTemperature),
+			OutdoorTemperatureAvg24h:     cloneFloat64Ptr(snapshot.OutdoorTemperatureAvg24h),
+			MaintenanceDue:               cloneBoilerBoolPtr(snapshot.MaintenanceDue),
+			HwcCylinderTemperatureTop:    cloneFloat64Ptr(snapshot.HwcCylinderTemperatureTop),
+			HwcCylinderTemperatureBottom: cloneFloat64Ptr(snapshot.HwcCylinderTemperatureBottom),
+		},
+		Config: graphql.SystemConfig{
+			AdaptiveHeatingCurve:         cloneBoilerBoolPtr(snapshot.AdaptiveHeatingCurve),
+			AlternativePoint:             cloneFloat64Ptr(snapshot.AlternativePoint),
+			HeatingCircuitBivalencePoint: cloneFloat64Ptr(snapshot.HeatingCircuitBivalencePoint),
+			DhwBivalencePoint:            cloneFloat64Ptr(snapshot.DhwBivalencePoint),
+			HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
+			HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
+			MaxRoomHumidity:              uint16ToIntPtr(snapshot.MaxRoomHumidity),
+		},
+		Properties: graphql.SystemProperties{
+			SystemScheme:            uint16ToIntPtr(snapshot.SystemScheme),
+			ModuleConfigurationVR71: uint16ToIntPtr(snapshot.ModuleConfigurationVR71),
+			Vr71CircuitStartIndex:   deriveVR71CircuitStartIndex(snapshot.SystemScheme, snapshot.ModuleConfigurationVR71),
+		},
+	}
+
+	switch source {
+	case semanticSnapshotSourceCache:
+		p.provider.SetSystemFromCache(current)
+	default:
+		p.provider.SetSystem(current)
+	}
+
+	if p.hub != nil && !systemStatusEquals(previous, current) {
+		publisher := reflect.ValueOf(p.hub).MethodByName("PublishSystemUpdate")
+		if publisher.IsValid() && publisher.Type().NumIn() == 1 {
+			arg := reflect.ValueOf(current)
+			paramType := publisher.Type().In(0)
+			switch {
+			case arg.Type().AssignableTo(paramType):
+				publisher.Call([]reflect.Value{arg})
+			case arg.Type().ConvertibleTo(paramType):
+				publisher.Call([]reflect.Value{arg.Convert(paramType)})
+			}
+		}
+	}
+
+	p.persistSemanticCache(source)
+}
+
+func mergeSystemSnapshotNonDestructive(existing, incoming *vaillantSystemSnapshot) *vaillantSystemSnapshot {
+	merged := cloneSystemSnapshot(existing)
+	if merged == nil {
+		merged = &vaillantSystemSnapshot{}
+	}
+	if incoming == nil {
+		return merged
+	}
+
+	if incoming.SystemOff != nil {
+		merged.SystemOff = cloneBoilerBoolPtr(incoming.SystemOff)
+	}
+	if incoming.SystemWaterPressure != nil {
+		merged.SystemWaterPressure = cloneFloat64Ptr(incoming.SystemWaterPressure)
+	}
+	if incoming.SystemFlowTemperature != nil {
+		merged.SystemFlowTemperature = cloneFloat64Ptr(incoming.SystemFlowTemperature)
+	}
+	if incoming.OutdoorTemperature != nil {
+		merged.OutdoorTemperature = cloneFloat64Ptr(incoming.OutdoorTemperature)
+	}
+	if incoming.OutdoorTemperatureAvg24h != nil {
+		merged.OutdoorTemperatureAvg24h = cloneFloat64Ptr(incoming.OutdoorTemperatureAvg24h)
+	}
+	if incoming.MaintenanceDue != nil {
+		merged.MaintenanceDue = cloneBoilerBoolPtr(incoming.MaintenanceDue)
+	}
+	if incoming.HwcCylinderTemperatureTop != nil {
+		merged.HwcCylinderTemperatureTop = cloneFloat64Ptr(incoming.HwcCylinderTemperatureTop)
+	}
+	if incoming.HwcCylinderTemperatureBottom != nil {
+		merged.HwcCylinderTemperatureBottom = cloneFloat64Ptr(incoming.HwcCylinderTemperatureBottom)
+	}
+	if incoming.AdaptiveHeatingCurve != nil {
+		merged.AdaptiveHeatingCurve = cloneBoilerBoolPtr(incoming.AdaptiveHeatingCurve)
+	}
+	if incoming.AlternativePoint != nil {
+		merged.AlternativePoint = cloneFloat64Ptr(incoming.AlternativePoint)
+	}
+	if incoming.HeatingCircuitBivalencePoint != nil {
+		merged.HeatingCircuitBivalencePoint = cloneFloat64Ptr(incoming.HeatingCircuitBivalencePoint)
+	}
+	if incoming.DhwBivalencePoint != nil {
+		merged.DhwBivalencePoint = cloneFloat64Ptr(incoming.DhwBivalencePoint)
+	}
+	if incoming.HcEmergencyTemperature != nil {
+		merged.HcEmergencyTemperature = cloneFloat64Ptr(incoming.HcEmergencyTemperature)
+	}
+	if incoming.HwcMaxFlowTempDesired != nil {
+		merged.HwcMaxFlowTempDesired = cloneFloat64Ptr(incoming.HwcMaxFlowTempDesired)
+	}
+	if incoming.MaxRoomHumidity != nil {
+		merged.MaxRoomHumidity = cloneUint16Ptr(incoming.MaxRoomHumidity)
+	}
+	if incoming.SystemScheme != nil {
+		merged.SystemScheme = cloneUint16Ptr(incoming.SystemScheme)
+	}
+	if incoming.ModuleConfigurationVR71 != nil {
+		merged.ModuleConfigurationVR71 = cloneUint16Ptr(incoming.ModuleConfigurationVR71)
+	}
+	return merged
+}
+
+func cloneSystemSnapshot(snapshot *vaillantSystemSnapshot) *vaillantSystemSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return &vaillantSystemSnapshot{
+		SystemOff:                    cloneBoilerBoolPtr(snapshot.SystemOff),
+		SystemWaterPressure:          cloneFloat64Ptr(snapshot.SystemWaterPressure),
+		SystemFlowTemperature:        cloneFloat64Ptr(snapshot.SystemFlowTemperature),
+		OutdoorTemperature:           cloneFloat64Ptr(snapshot.OutdoorTemperature),
+		OutdoorTemperatureAvg24h:     cloneFloat64Ptr(snapshot.OutdoorTemperatureAvg24h),
+		MaintenanceDue:               cloneBoilerBoolPtr(snapshot.MaintenanceDue),
+		HwcCylinderTemperatureTop:    cloneFloat64Ptr(snapshot.HwcCylinderTemperatureTop),
+		HwcCylinderTemperatureBottom: cloneFloat64Ptr(snapshot.HwcCylinderTemperatureBottom),
+		AdaptiveHeatingCurve:         cloneBoilerBoolPtr(snapshot.AdaptiveHeatingCurve),
+		AlternativePoint:             cloneFloat64Ptr(snapshot.AlternativePoint),
+		HeatingCircuitBivalencePoint: cloneFloat64Ptr(snapshot.HeatingCircuitBivalencePoint),
+		DhwBivalencePoint:            cloneFloat64Ptr(snapshot.DhwBivalencePoint),
+		HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
+		HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
+		MaxRoomHumidity:              cloneUint16Ptr(snapshot.MaxRoomHumidity),
+		SystemScheme:                 cloneUint16Ptr(snapshot.SystemScheme),
+		ModuleConfigurationVR71:      cloneUint16Ptr(snapshot.ModuleConfigurationVR71),
+	}
+}
+
+func uint16ToIntPtr(value *uint16) *int {
+	if value == nil {
+		return nil
+	}
+	v := int(*value)
+	return &v
+}
+
+func deriveVR71CircuitStartIndex(systemScheme, moduleConfigurationVR71 *uint16) *int {
+	if systemScheme == nil || moduleConfigurationVR71 == nil {
+		return nil
+	}
+	if *moduleConfigurationVR71 <= 2 {
+		v := -1
+		return &v
+	}
+	if *systemScheme < 1 || *systemScheme > 16 {
+		v := -1
+		return &v
+	}
+	// GG=0x00 docs expose the registers and valid ranges but no per-scheme ownership
+	// map, so we conservatively place FM5-managed circuits after regulator circuit 0.
+	v := 1
+	return &v
+}
+
+func systemStatusEquals(a, b *graphql.SystemStatus) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return boolPtrEquals(a.State.SystemOff, b.State.SystemOff) &&
+		floatPtrEquals(a.State.SystemWaterPressure, b.State.SystemWaterPressure) &&
+		floatPtrEquals(a.State.SystemFlowTemperature, b.State.SystemFlowTemperature) &&
+		floatPtrEquals(a.State.OutdoorTemperature, b.State.OutdoorTemperature) &&
+		floatPtrEquals(a.State.OutdoorTemperatureAvg24h, b.State.OutdoorTemperatureAvg24h) &&
+		boolPtrEquals(a.State.MaintenanceDue, b.State.MaintenanceDue) &&
+		floatPtrEquals(a.State.HwcCylinderTemperatureTop, b.State.HwcCylinderTemperatureTop) &&
+		floatPtrEquals(a.State.HwcCylinderTemperatureBottom, b.State.HwcCylinderTemperatureBottom) &&
+		boolPtrEquals(a.Config.AdaptiveHeatingCurve, b.Config.AdaptiveHeatingCurve) &&
+		floatPtrEquals(a.Config.AlternativePoint, b.Config.AlternativePoint) &&
+		floatPtrEquals(a.Config.HeatingCircuitBivalencePoint, b.Config.HeatingCircuitBivalencePoint) &&
+		floatPtrEquals(a.Config.DhwBivalencePoint, b.Config.DhwBivalencePoint) &&
+		floatPtrEquals(a.Config.HcEmergencyTemperature, b.Config.HcEmergencyTemperature) &&
+		floatPtrEquals(a.Config.HwcMaxFlowTempDesired, b.Config.HwcMaxFlowTempDesired) &&
+		intPtrEquals(a.Config.MaxRoomHumidity, b.Config.MaxRoomHumidity) &&
+		intPtrEquals(a.Properties.SystemScheme, b.Properties.SystemScheme) &&
+		intPtrEquals(a.Properties.ModuleConfigurationVR71, b.Properties.ModuleConfigurationVR71) &&
+		intPtrEquals(a.Properties.Vr71CircuitStartIndex, b.Properties.Vr71CircuitStartIndex)
 }
 
 func decodeDhwMode(raw int) string {
@@ -3403,4 +3764,40 @@ func composeZoneName(primary, prefix, suffix string) string {
 		parts = append(parts, suffix)
 	}
 	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {
+	if adapter.provider == nil {
+		return nil
+	}
+	status := adapter.provider.System()
+	if status == nil {
+		return nil
+	}
+	return &mcp.SystemStatus{
+		State: &mcp.SystemState{
+			SystemOff:                    cloneBoolPtr(status.State.SystemOff),
+			SystemWaterPressure:          cloneFloatPtr(status.State.SystemWaterPressure),
+			SystemFlowTemperature:        cloneFloatPtr(status.State.SystemFlowTemperature),
+			OutdoorTemperature:           cloneFloatPtr(status.State.OutdoorTemperature),
+			OutdoorTemperatureAvg24h:     cloneFloatPtr(status.State.OutdoorTemperatureAvg24h),
+			MaintenanceDue:               cloneBoolPtr(status.State.MaintenanceDue),
+			HwcCylinderTemperatureTop:    cloneFloatPtr(status.State.HwcCylinderTemperatureTop),
+			HwcCylinderTemperatureBottom: cloneFloatPtr(status.State.HwcCylinderTemperatureBottom),
+		},
+		Config: &mcp.SystemConfig{
+			AdaptiveHeatingCurve:         cloneBoolPtr(status.Config.AdaptiveHeatingCurve),
+			AlternativePoint:             cloneFloatPtr(status.Config.AlternativePoint),
+			HeatingCircuitBivalencePoint: cloneFloatPtr(status.Config.HeatingCircuitBivalencePoint),
+			DhwBivalencePoint:            cloneFloatPtr(status.Config.DhwBivalencePoint),
+			HcEmergencyTemperature:       cloneFloatPtr(status.Config.HcEmergencyTemperature),
+			HwcMaxFlowTempDesired:        cloneFloatPtr(status.Config.HwcMaxFlowTempDesired),
+			MaxRoomHumidity:              cloneIntPtr(status.Config.MaxRoomHumidity),
+		},
+		Properties: &mcp.SystemProperties{
+			SystemScheme:            cloneIntPtr(status.Properties.SystemScheme),
+			ModuleConfigurationVR71: cloneIntPtr(status.Properties.ModuleConfigurationVR71),
+			VR71CircuitStartIndex:   cloneIntPtr(status.Properties.Vr71CircuitStartIndex),
+		},
+	}
 }

@@ -432,6 +432,165 @@ func TestRefreshBoilerStatusTier_NoSuccessfulReadsPreservesSnapshot(t *testing.T
 	}
 }
 
+func TestDeriveVR71CircuitStartIndex(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		scheme  *uint16
+		module  *uint16
+		wantNil bool
+		want    int
+	}{
+		{
+			name:    "nil inputs",
+			scheme:  nil,
+			module:  nil,
+			wantNil: true,
+		},
+		{
+			name:    "no fm5 profiles",
+			scheme:  uint16Ptr(8),
+			module:  uint16Ptr(2),
+			wantNil: false,
+			want:    -1,
+		},
+		{
+			name:    "invalid scheme",
+			scheme:  uint16Ptr(0),
+			module:  uint16Ptr(4),
+			wantNil: false,
+			want:    -1,
+		},
+		{
+			name:    "extended fm5 profile",
+			scheme:  uint16Ptr(8),
+			module:  uint16Ptr(4),
+			wantNil: false,
+			want:    1,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := deriveVR71CircuitStartIndex(test.scheme, test.module)
+			if test.wantNil {
+				if got != nil {
+					t.Fatalf("deriveVR71CircuitStartIndex(...) = %v; want nil", got)
+				}
+				return
+			}
+			if got == nil || *got != test.want {
+				t.Fatalf("deriveVR71CircuitStartIndex(...) = %v; want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestMergeSystemSnapshotNonDestructive_PartialUpdatePreservesLastKnown(t *testing.T) {
+	t.Parallel()
+
+	pressure := 1.4
+	flow := 35.2
+	scheme := uint16(8)
+	module := uint16(2)
+	maxHumidity := uint16(70)
+	updatedOutdoor := 4.5
+
+	merged := mergeSystemSnapshotNonDestructive(
+		&vaillantSystemSnapshot{
+			SystemWaterPressure:     &pressure,
+			SystemFlowTemperature:   &flow,
+			SystemScheme:            &scheme,
+			ModuleConfigurationVR71: &module,
+			MaxRoomHumidity:         &maxHumidity,
+		},
+		&vaillantSystemSnapshot{
+			OutdoorTemperature: &updatedOutdoor,
+		},
+	)
+
+	if merged == nil {
+		t.Fatal("merged snapshot is nil")
+	}
+	if merged.OutdoorTemperature == nil || *merged.OutdoorTemperature != 4.5 {
+		t.Fatalf("merged.OutdoorTemperature = %v; want updated 4.5", merged.OutdoorTemperature)
+	}
+	if merged.SystemWaterPressure == nil || *merged.SystemWaterPressure != 1.4 {
+		t.Fatalf("merged.SystemWaterPressure = %v; want preserved 1.4", merged.SystemWaterPressure)
+	}
+	if merged.SystemFlowTemperature == nil || *merged.SystemFlowTemperature != 35.2 {
+		t.Fatalf("merged.SystemFlowTemperature = %v; want preserved 35.2", merged.SystemFlowTemperature)
+	}
+	if merged.SystemScheme == nil || *merged.SystemScheme != 8 {
+		t.Fatalf("merged.SystemScheme = %v; want preserved 8", merged.SystemScheme)
+	}
+	if merged.ModuleConfigurationVR71 == nil || *merged.ModuleConfigurationVR71 != 2 {
+		t.Fatalf("merged.ModuleConfigurationVR71 = %v; want preserved 2", merged.ModuleConfigurationVR71)
+	}
+	if merged.MaxRoomHumidity == nil || *merged.MaxRoomHumidity != 70 {
+		t.Fatalf("merged.MaxRoomHumidity = %v; want preserved 70", merged.MaxRoomHumidity)
+	}
+}
+
+func TestRefreshSystem_NoSuccessfulReadsPreservesSnapshot(t *testing.T) {
+	t.Parallel()
+
+	pressure := 1.7
+	scheme := uint16(8)
+	module := uint16(2)
+	poller := &vaillantSemanticPoller{
+		controller: 0x15,
+		system: &vaillantSystemSnapshot{
+			SystemWaterPressure:     &pressure,
+			SystemScheme:            &scheme,
+			ModuleConfigurationVR71: &module,
+		},
+	}
+
+	poller.refreshSystem(context.Background())
+
+	if poller.system == nil {
+		t.Fatal("poller.system = nil; want preserved last-known snapshot")
+	}
+	if poller.system.SystemWaterPressure == nil || *poller.system.SystemWaterPressure != 1.7 {
+		t.Fatalf("poller.system.SystemWaterPressure = %v; want preserved 1.7", poller.system.SystemWaterPressure)
+	}
+	if poller.system.SystemScheme == nil || *poller.system.SystemScheme != 8 {
+		t.Fatalf("poller.system.SystemScheme = %v; want preserved 8", poller.system.SystemScheme)
+	}
+	if poller.system.ModuleConfigurationVR71 == nil || *poller.system.ModuleConfigurationVR71 != 2 {
+		t.Fatalf("poller.system.ModuleConfigurationVR71 = %v; want preserved 2", poller.system.ModuleConfigurationVR71)
+	}
+}
+
+func TestPublishSystem_DerivesVR71CircuitStartIndex(t *testing.T) {
+	t.Parallel()
+
+	scheme := uint16(8)
+	module := uint16(2)
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		system: &vaillantSystemSnapshot{
+			SystemScheme:            &scheme,
+			ModuleConfigurationVR71: &module,
+		},
+	}
+
+	poller.publishSystem(semanticSnapshotSourceLive)
+
+	status := provider.System()
+	if status == nil {
+		t.Fatal("provider.System() = nil; want published system status")
+	}
+	if status.Properties.Vr71CircuitStartIndex == nil || *status.Properties.Vr71CircuitStartIndex != -1 {
+		t.Fatalf("provider.System().Properties.Vr71CircuitStartIndex = %v; want -1", status.Properties.Vr71CircuitStartIndex)
+	}
+}
+
 func TestMergeCircuitSnapshotNonDestructive_PartialUpdatePreservesLastKnown(t *testing.T) {
 	t.Parallel()
 

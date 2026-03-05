@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,7 +50,24 @@ const (
 	zoneRegAssociatedCircuitRaw = uint16(0x0013) // configuration.associated_circuit_index
 	zoneRegCurrentHumidity      = uint16(0x0028) // state.current_room_humidity
 
-	circuitRegType = uint16(0x0002) // configuration.heating_circuit_type / mixer_circuit_type_external
+	circuitRegType            = uint16(0x0002) // configuration.heating_circuit_type / mixer_circuit_type_external
+	circuitRegCoolingEnabled  = uint16(0x0006) // cooling_enabled
+	circuitRegFlowSetpoint    = uint16(0x0007) // flow_setpoint
+	circuitRegFlowTemp        = uint16(0x0008) // flow_temperature (VF[x])
+	circuitRegHeatingCurve    = uint16(0x000F) // heating_curve
+	circuitRegFlowTempMax     = uint16(0x0010) // flow_temperature_max
+	circuitRegFlowTempMin     = uint16(0x0012) // flow_temperature_min
+	circuitRegSummerLimit     = uint16(0x0014) // summer_limit
+	circuitRegRoomTempControl = uint16(0x0015) // room_temperature_control_mode
+	circuitRegCircuitState    = uint16(0x001B) // circuit_state
+	circuitRegFrostProtection = uint16(0x001D) // frost_protection_threshold
+	circuitRegPumpStatus      = uint16(0x001E) // pump_status
+	circuitRegCalcFlowTemp    = uint16(0x0020) // calculated_flow_temperature
+	circuitRegMixerPosition   = uint16(0x0021) // mixer_position_pct
+	circuitRegHumidity        = uint16(0x0022) // room_humidity_pct
+	circuitRegDewPoint        = uint16(0x0023) // dew_point_temperature
+	circuitRegPumpHours       = uint16(0x0024) // pump_operating_hours
+	circuitRegPumpStarts      = uint16(0x0025) // pump_starts
 
 	dhwRegOperationMode   = uint16(0x0003) // configuration.domestic_hot_water.operation_mode
 	dhwRegTargetTemp      = uint16(0x0004) // configuration.domestic_hot_water.tapping_setpoint
@@ -147,6 +165,7 @@ type vaillantSemanticPoller struct {
 	dhw                      *vaillantDhwSnapshot
 	dhwLastUpdateAt          time.Time
 	boiler                   *vaillantBoilerSnapshot
+	circuits                 map[byte]*vaillantCircuitSnapshot
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	nowFn                  func() time.Time
@@ -202,6 +221,30 @@ type vaillantDhwSnapshot struct {
 	StateSpecialFunction          string
 
 	FieldFreshness map[semanticFieldKey]semanticFieldFreshness
+}
+
+type vaillantCircuitSnapshot struct {
+	Instance byte
+	Active   bool
+
+	CircuitTypeRaw     *uint16
+	CoolingEnabledRaw  *uint16
+	FlowSetpointC      *float64
+	FlowTemperatureC   *float64
+	HeatingCurve       *float64
+	FlowTempMaxC       *float64
+	FlowTempMinC       *float64
+	SummerLimitC       *float64
+	RoomTempControlRaw *uint16
+	CircuitStateRaw    *uint16
+	FrostProtectionC   *float64
+	PumpStatusRaw      *uint16
+	CalcFlowTempC      *float64
+	MixerPositionPct   *float64
+	HumidityPct        *float64
+	DewPointC          *float64
+	PumpHoursRaw       *uint32
+	PumpStartsRaw      *uint32
 }
 
 type semanticSnapshotSource uint8
@@ -349,6 +392,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 
 		zones:    make(map[byte]*vaillantZoneSnapshot),
 		presence: make(map[byte]*zonePresenceRecord),
+		circuits: make(map[byte]*vaillantCircuitSnapshot),
 		nowFn:    time.Now,
 	}
 	if poller.zoneMissThreshold <= 0 {
@@ -553,6 +597,14 @@ func cloneFloat64Ptr(value *float64) *float64 {
 }
 
 func cloneUint16Ptr(value *uint16) *uint16 {
+	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
+}
+
+func cloneUint32Ptr(value *uint32) *uint32 {
 	if value == nil {
 		return nil
 	}
@@ -778,6 +830,7 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshCircuits)
 	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
 	for _, schedule := range p.boilerStatusTierSchedules() {
 		p.enqueueTask(schedule.priority, p.boilerStatusTierTask(schedule.tier))
@@ -787,6 +840,7 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityMedium, p.refreshConfig)
 	go p.runLoop(ctx, p.stateInterval, semanticTaskPriorityHigh, p.refreshState)
+	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshCircuits)
 	go p.runLoop(ctx, p.energyInterval, semanticTaskPriorityMedium, p.refreshEnergy)
 	for _, schedule := range p.boilerStatusTierSchedules() {
 		go p.runLoop(ctx, schedule.interval, schedule.priority, p.boilerStatusTierTask(schedule.tier))
@@ -910,6 +964,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.regulatorCapability = regCap
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
 		p.presence = make(map[byte]*zonePresenceRecord)
+		p.circuits = make(map[byte]*vaillantCircuitSnapshot)
 		semanticZoneCount.Set(0)
 		p.mu.Unlock()
 		if regCap != prev {
@@ -920,6 +975,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		}
 		p.publishZones(semanticSnapshotSourceCache)
 		p.publishDHW(semanticSnapshotSourceCache)
+		p.publishCircuits(semanticSnapshotSourceCache)
 		return
 	}
 
@@ -1671,6 +1727,460 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 	p.persistSemanticCache(source)
 }
 
+func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	controllerPresent := p.controller != 0
+	p.mu.Unlock()
+	if !controllerPresent {
+		return
+	}
+
+	discovered := make(map[byte]*uint16, 4)
+	inactive := make(map[byte]struct{})
+	probeSuccess := false
+
+	for instance := byte(0x00); instance <= 0x0A; instance++ {
+		circuitTypeRaw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegType)
+		if !ok || circuitTypeRaw == nil {
+			continue
+		}
+		probeSuccess = true
+		switch *circuitTypeRaw {
+		case 0x0000, 0x00FF, 0xFFFF:
+			inactive[instance] = struct{}{}
+		default:
+			discovered[instance] = cloneUint16Ptr(circuitTypeRaw)
+		}
+	}
+	if !probeSuccess {
+		return
+	}
+
+	updates := make(map[byte]*vaillantCircuitSnapshot, len(discovered))
+	anyRead := false
+	for instance, circuitTypeRaw := range discovered {
+		snapshot := &vaillantCircuitSnapshot{
+			Instance:       instance,
+			Active:         true,
+			CircuitTypeRaw: cloneUint16Ptr(circuitTypeRaw),
+		}
+		anyRead = true
+
+		if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegCoolingEnabled); ok && raw != nil {
+			snapshot.CoolingEnabledRaw = cloneUint16Ptr(raw)
+			anyRead = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegFlowSetpoint); ok {
+			v := value
+			snapshot.FlowSetpointC = &v
+			anyRead = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegFlowTemp); ok {
+			v := value
+			snapshot.FlowTemperatureC = &v
+			anyRead = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegHeatingCurve); ok {
+			v := value
+			snapshot.HeatingCurve = &v
+			anyRead = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegFlowTempMax); ok {
+			v := value
+			snapshot.FlowTempMaxC = &v
+			anyRead = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegFlowTempMin); ok {
+			v := value
+			snapshot.FlowTempMinC = &v
+			anyRead = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegSummerLimit); ok {
+			v := value
+			snapshot.SummerLimitC = &v
+			anyRead = true
+		}
+		if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegRoomTempControl); ok && raw != nil {
+			snapshot.RoomTempControlRaw = cloneUint16Ptr(raw)
+			anyRead = true
+		}
+		if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegCircuitState); ok && raw != nil {
+			snapshot.CircuitStateRaw = cloneUint16Ptr(raw)
+			anyRead = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegFrostProtection); ok {
+			v := value
+			snapshot.FrostProtectionC = &v
+			anyRead = true
+		}
+		if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegPumpStatus); ok && raw != nil {
+			snapshot.PumpStatusRaw = cloneUint16Ptr(raw)
+			anyRead = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegCalcFlowTemp); ok {
+			v := value
+			snapshot.CalcFlowTempC = &v
+			anyRead = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegMixerPosition); ok {
+			v := value
+			snapshot.MixerPositionPct = &v
+			anyRead = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegHumidity); ok {
+			v := value
+			snapshot.HumidityPct = &v
+			anyRead = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegDewPoint); ok {
+			v := value
+			snapshot.DewPointC = &v
+			anyRead = true
+		}
+		if value, ok := p.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegPumpHours); ok {
+			v := value
+			snapshot.PumpHoursRaw = &v
+			anyRead = true
+		}
+		if value, ok := p.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegPumpStarts); ok {
+			v := value
+			snapshot.PumpStartsRaw = &v
+			anyRead = true
+		}
+
+		updates[instance] = snapshot
+	}
+
+	p.mu.Lock()
+	if p.circuits == nil {
+		p.circuits = make(map[byte]*vaillantCircuitSnapshot)
+	}
+	for instance := range inactive {
+		delete(p.circuits, instance)
+	}
+	for instance, incoming := range updates {
+		p.circuits[instance] = mergeCircuitSnapshotNonDestructive(p.circuits[instance], incoming)
+	}
+	p.mu.Unlock()
+
+	source := semanticSnapshotSourceCache
+	if anyRead || len(inactive) > 0 {
+		source = semanticSnapshotSourceLive
+	}
+	p.publishCircuits(source)
+}
+
+func mergeCircuitSnapshotNonDestructive(existing, incoming *vaillantCircuitSnapshot) *vaillantCircuitSnapshot {
+	merged := cloneCircuitSnapshot(existing)
+	if merged == nil {
+		merged = &vaillantCircuitSnapshot{}
+	}
+	if incoming == nil {
+		return merged
+	}
+
+	merged.Instance = incoming.Instance
+	merged.Active = merged.Active || incoming.Active
+	if incoming.CircuitTypeRaw != nil {
+		merged.CircuitTypeRaw = cloneUint16Ptr(incoming.CircuitTypeRaw)
+	}
+	if incoming.CoolingEnabledRaw != nil {
+		merged.CoolingEnabledRaw = cloneUint16Ptr(incoming.CoolingEnabledRaw)
+	}
+	if incoming.FlowSetpointC != nil {
+		merged.FlowSetpointC = cloneFloat64Ptr(incoming.FlowSetpointC)
+	}
+	if incoming.FlowTemperatureC != nil {
+		merged.FlowTemperatureC = cloneFloat64Ptr(incoming.FlowTemperatureC)
+	}
+	if incoming.HeatingCurve != nil {
+		merged.HeatingCurve = cloneFloat64Ptr(incoming.HeatingCurve)
+	}
+	if incoming.FlowTempMaxC != nil {
+		merged.FlowTempMaxC = cloneFloat64Ptr(incoming.FlowTempMaxC)
+	}
+	if incoming.FlowTempMinC != nil {
+		merged.FlowTempMinC = cloneFloat64Ptr(incoming.FlowTempMinC)
+	}
+	if incoming.SummerLimitC != nil {
+		merged.SummerLimitC = cloneFloat64Ptr(incoming.SummerLimitC)
+	}
+	if incoming.RoomTempControlRaw != nil {
+		merged.RoomTempControlRaw = cloneUint16Ptr(incoming.RoomTempControlRaw)
+	}
+	if incoming.CircuitStateRaw != nil {
+		merged.CircuitStateRaw = cloneUint16Ptr(incoming.CircuitStateRaw)
+	}
+	if incoming.FrostProtectionC != nil {
+		merged.FrostProtectionC = cloneFloat64Ptr(incoming.FrostProtectionC)
+	}
+	if incoming.PumpStatusRaw != nil {
+		merged.PumpStatusRaw = cloneUint16Ptr(incoming.PumpStatusRaw)
+	}
+	if incoming.CalcFlowTempC != nil {
+		merged.CalcFlowTempC = cloneFloat64Ptr(incoming.CalcFlowTempC)
+	}
+	if incoming.MixerPositionPct != nil {
+		merged.MixerPositionPct = cloneFloat64Ptr(incoming.MixerPositionPct)
+	}
+	if incoming.HumidityPct != nil {
+		merged.HumidityPct = cloneFloat64Ptr(incoming.HumidityPct)
+	}
+	if incoming.DewPointC != nil {
+		merged.DewPointC = cloneFloat64Ptr(incoming.DewPointC)
+	}
+	if incoming.PumpHoursRaw != nil {
+		merged.PumpHoursRaw = cloneUint32Ptr(incoming.PumpHoursRaw)
+	}
+	if incoming.PumpStartsRaw != nil {
+		merged.PumpStartsRaw = cloneUint32Ptr(incoming.PumpStartsRaw)
+	}
+	return merged
+}
+
+func cloneCircuitSnapshot(snapshot *vaillantCircuitSnapshot) *vaillantCircuitSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return &vaillantCircuitSnapshot{
+		Instance:           snapshot.Instance,
+		Active:             snapshot.Active,
+		CircuitTypeRaw:     cloneUint16Ptr(snapshot.CircuitTypeRaw),
+		CoolingEnabledRaw:  cloneUint16Ptr(snapshot.CoolingEnabledRaw),
+		FlowSetpointC:      cloneFloat64Ptr(snapshot.FlowSetpointC),
+		FlowTemperatureC:   cloneFloat64Ptr(snapshot.FlowTemperatureC),
+		HeatingCurve:       cloneFloat64Ptr(snapshot.HeatingCurve),
+		FlowTempMaxC:       cloneFloat64Ptr(snapshot.FlowTempMaxC),
+		FlowTempMinC:       cloneFloat64Ptr(snapshot.FlowTempMinC),
+		SummerLimitC:       cloneFloat64Ptr(snapshot.SummerLimitC),
+		RoomTempControlRaw: cloneUint16Ptr(snapshot.RoomTempControlRaw),
+		CircuitStateRaw:    cloneUint16Ptr(snapshot.CircuitStateRaw),
+		FrostProtectionC:   cloneFloat64Ptr(snapshot.FrostProtectionC),
+		PumpStatusRaw:      cloneUint16Ptr(snapshot.PumpStatusRaw),
+		CalcFlowTempC:      cloneFloat64Ptr(snapshot.CalcFlowTempC),
+		MixerPositionPct:   cloneFloat64Ptr(snapshot.MixerPositionPct),
+		HumidityPct:        cloneFloat64Ptr(snapshot.HumidityPct),
+		DewPointC:          cloneFloat64Ptr(snapshot.DewPointC),
+		PumpHoursRaw:       cloneUint32Ptr(snapshot.PumpHoursRaw),
+		PumpStartsRaw:      cloneUint32Ptr(snapshot.PumpStartsRaw),
+	}
+}
+
+func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) {
+	if p == nil || p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	instances := make([]byte, 0, len(p.circuits))
+	for instance := range p.circuits {
+		instances = append(instances, instance)
+	}
+	slices.Sort(instances)
+	snapshots := make([]*vaillantCircuitSnapshot, 0, len(instances))
+	for _, instance := range instances {
+		entry := p.circuits[instance]
+		if entry == nil || !entry.Active {
+			continue
+		}
+		snapshots = append(snapshots, cloneCircuitSnapshot(entry))
+	}
+	p.mu.Unlock()
+
+	out := make([]graphql.CircuitStatus, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if snapshot == nil {
+			continue
+		}
+		status := graphql.CircuitStatus{
+			Index:       int(snapshot.Instance),
+			CircuitType: decodeHeatingCircuitTypeToken(snapshot.CircuitTypeRaw),
+			HasMixer:    snapshot.MixerPositionPct != nil,
+			State: graphql.CircuitState{
+				PumpActive:       decodeUint16Bool(snapshot.PumpStatusRaw),
+				MixerPositionPct: cloneFloat64Ptr(snapshot.MixerPositionPct),
+				FlowTemperatureC: cloneFloat64Ptr(snapshot.FlowTemperatureC),
+				FlowSetpointC:    cloneFloat64Ptr(snapshot.FlowSetpointC),
+				CalcFlowTempC:    cloneFloat64Ptr(snapshot.CalcFlowTempC),
+				CircuitState:     decodeCircuitStateToken(snapshot.CircuitStateRaw),
+				Humidity:         cloneFloat64Ptr(snapshot.HumidityPct),
+				DewPoint:         cloneFloat64Ptr(snapshot.DewPointC),
+				PumpHours:        decodeUint32Float64(snapshot.PumpHoursRaw),
+				PumpStarts:       decodeUint32Int(snapshot.PumpStartsRaw),
+			},
+			Config: graphql.CircuitConfig{
+				HeatingCurve:    cloneFloat64Ptr(snapshot.HeatingCurve),
+				FlowTempMaxC:    cloneFloat64Ptr(snapshot.FlowTempMaxC),
+				FlowTempMinC:    cloneFloat64Ptr(snapshot.FlowTempMinC),
+				SummerLimitC:    cloneFloat64Ptr(snapshot.SummerLimitC),
+				FrostProtC:      cloneFloat64Ptr(snapshot.FrostProtectionC),
+				RoomTempControl: decodeRoomTempControlToken(snapshot.RoomTempControlRaw),
+				CoolingEnabled:  decodeUint16Bool(snapshot.CoolingEnabledRaw),
+			},
+		}
+		out = append(out, status)
+	}
+
+	previous := p.provider.Circuits()
+	if source == semanticSnapshotSourceCache && len(out) == 0 && len(previous) > 0 {
+		return
+	}
+	switch source {
+	case semanticSnapshotSourceCache:
+		p.provider.SetCircuitsFromCache(out)
+	default:
+		p.provider.SetCircuits(out)
+	}
+	if p.hub != nil && !circuitsEqual(previous, out) {
+		publisher := reflect.ValueOf(p.hub).MethodByName("PublishCircuitsUpdate")
+		if publisher.IsValid() && publisher.Type().NumIn() == 1 {
+			arg := reflect.ValueOf(out)
+			paramType := publisher.Type().In(0)
+			switch {
+			case arg.Type().AssignableTo(paramType):
+				publisher.Call([]reflect.Value{arg})
+			case arg.Type().ConvertibleTo(paramType):
+				publisher.Call([]reflect.Value{arg.Convert(paramType)})
+			}
+		}
+	}
+	p.persistSemanticCache(source)
+}
+
+func circuitsEqual(a, b []graphql.CircuitStatus) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		left := a[i]
+		right := b[i]
+		if left.Index != right.Index || left.CircuitType != right.CircuitType || left.HasMixer != right.HasMixer {
+			return false
+		}
+		if !boolPtrEquals(left.State.PumpActive, right.State.PumpActive) {
+			return false
+		}
+		if !floatPtrEquals(left.State.MixerPositionPct, right.State.MixerPositionPct) {
+			return false
+		}
+		if !floatPtrEquals(left.State.FlowTemperatureC, right.State.FlowTemperatureC) {
+			return false
+		}
+		if !floatPtrEquals(left.State.FlowSetpointC, right.State.FlowSetpointC) {
+			return false
+		}
+		if !floatPtrEquals(left.State.CalcFlowTempC, right.State.CalcFlowTempC) {
+			return false
+		}
+		if left.State.CircuitState != right.State.CircuitState {
+			return false
+		}
+		if !floatPtrEquals(left.State.Humidity, right.State.Humidity) {
+			return false
+		}
+		if !floatPtrEquals(left.State.DewPoint, right.State.DewPoint) {
+			return false
+		}
+		if !floatPtrEquals(left.State.PumpHours, right.State.PumpHours) {
+			return false
+		}
+		if !intPtrEquals(left.State.PumpStarts, right.State.PumpStarts) {
+			return false
+		}
+		if !floatPtrEquals(left.Config.HeatingCurve, right.Config.HeatingCurve) {
+			return false
+		}
+		if !floatPtrEquals(left.Config.FlowTempMaxC, right.Config.FlowTempMaxC) {
+			return false
+		}
+		if !floatPtrEquals(left.Config.FlowTempMinC, right.Config.FlowTempMinC) {
+			return false
+		}
+		if !floatPtrEquals(left.Config.SummerLimitC, right.Config.SummerLimitC) {
+			return false
+		}
+		if !floatPtrEquals(left.Config.FrostProtC, right.Config.FrostProtC) {
+			return false
+		}
+		if left.Config.RoomTempControl != right.Config.RoomTempControl {
+			return false
+		}
+		if !boolPtrEquals(left.Config.CoolingEnabled, right.Config.CoolingEnabled) {
+			return false
+		}
+	}
+	return true
+}
+
+func decodeHeatingCircuitTypeToken(raw *uint16) string {
+	if raw == nil {
+		return ""
+	}
+	switch *raw {
+	case 1:
+		return "heating"
+	case 2:
+		return "fixed_value"
+	case 3:
+		return "dhw"
+	case 4:
+		return "return_increase"
+	default:
+		return fmt.Sprintf("unknown_%d", *raw)
+	}
+}
+
+func decodeRoomTempControlToken(raw *uint16) string {
+	if raw == nil {
+		return ""
+	}
+	switch *raw {
+	case 0:
+		return "off"
+	case 1:
+		return "modulating"
+	case 2:
+		return "thermostat"
+	default:
+		return fmt.Sprintf("unknown_%d", *raw)
+	}
+}
+
+func decodeCircuitStateToken(raw *uint16) string {
+	if raw == nil {
+		return ""
+	}
+	return formatUintToken(*raw)
+}
+
+func decodeUint16Bool(raw *uint16) *bool {
+	if raw == nil {
+		return nil
+	}
+	parsed := *raw != 0
+	return &parsed
+}
+
+func decodeUint32Float64(raw *uint32) *float64 {
+	if raw == nil {
+		return nil
+	}
+	parsed := float64(*raw)
+	return &parsed
+}
+
+func decodeUint32Int(raw *uint32) *int {
+	if raw == nil {
+		return nil
+	}
+	parsed := int(*raw)
+	return &parsed
+}
+
 // --- Boiler status ---
 
 // B524 registers on the controller that mirror boiler operational data.
@@ -1681,11 +2191,6 @@ const (
 
 	// system_flow_temperature — float32 LE (°C)
 	regulatorRegSystemFlowTemp = uint16(0x004B)
-	// Heating circuit registers (group 0x02).
-	// Closed decision: GG=0x02 RR=0x0008 is circuit flow temperature (VF[x]),
-	// not boiler return temperature. Do not map it to boiler return temperature.
-	circuitRegPumpStatus   = uint16(0x001E) // pump_status — uint16 LE (0=off, !0=on)
-	circuitRegCircuitState = uint16(0x001B) // circuit_state — uint16 LE
 )
 
 type vaillantBoilerSnapshot struct {

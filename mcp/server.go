@@ -115,9 +115,41 @@ type BoilerStatus struct {
 	Diagnostics *BoilerDiagnostics `json:"diagnostics,omitempty"`
 }
 
+type CircuitState struct {
+	PumpActive       *bool    `json:"pump_active,omitempty"`
+	MixerPositionPct *float64 `json:"mixer_position_pct,omitempty"`
+	FlowTemperatureC *float64 `json:"flow_temperature_c,omitempty"`
+	FlowSetpointC    *float64 `json:"flow_setpoint_c,omitempty"`
+	CalcFlowTempC    *float64 `json:"calc_flow_temp_c,omitempty"`
+	CircuitState     string   `json:"circuit_state,omitempty"`
+	Humidity         *float64 `json:"humidity,omitempty"`
+	DewPoint         *float64 `json:"dew_point,omitempty"`
+	PumpHours        *float64 `json:"pump_hours,omitempty"`
+	PumpStarts       *int     `json:"pump_starts,omitempty"`
+}
+
+type CircuitConfig struct {
+	HeatingCurve    *float64 `json:"heating_curve,omitempty"`
+	FlowTempMaxC    *float64 `json:"flow_temp_max_c,omitempty"`
+	FlowTempMinC    *float64 `json:"flow_temp_min_c,omitempty"`
+	SummerLimitC    *float64 `json:"summer_limit_c,omitempty"`
+	FrostProtC      *float64 `json:"frost_prot_c,omitempty"`
+	RoomTempControl string   `json:"room_temp_control,omitempty"`
+	CoolingEnabled  *bool    `json:"cooling_enabled,omitempty"`
+}
+
+type CircuitStatus struct {
+	Index       int           `json:"index"`
+	CircuitType string        `json:"circuit_type"`
+	HasMixer    bool          `json:"has_mixer"`
+	State       CircuitState  `json:"state"`
+	Config      CircuitConfig `json:"config"`
+}
+
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
+	Circuits() []CircuitStatus
 	EnergyTotals() *EnergyTotals
 	BoilerStatus() *BoilerStatus
 }
@@ -136,31 +168,32 @@ type Server struct {
 }
 
 const (
-	toolRuntimeStatusGetName  = "ebus.v1.runtime.status.get"
-	toolSemanticZonesGetName  = "ebus.v1.semantic.zones.get"
-	toolSemanticDHWGetName    = "ebus.v1.semantic.dhw.get"
-	toolSemanticEnergyGetName = "ebus.v1.semantic.energy_totals.get"
-	toolSemanticBoilerGetName = "ebus.v1.semantic.boiler_status.get"
-	toolSemanticSnapshotName  = "ebus.v1.semantic.snapshot.get"
-	toolSnapshotCaptureName   = "ebus.v1.snapshot.capture"
-	toolSnapshotDropName      = "ebus.v1.snapshot.drop"
-	toolDevicesV1Name         = "ebus.v1.registry.devices.list"
-	toolDeviceGetV1Name       = "ebus.v1.registry.devices.get"
-	toolPlanesListV1Name      = "ebus.v1.registry.planes.list"
-	toolMethodsListV1Name     = "ebus.v1.registry.methods.list"
-	toolInvokeV1Name          = "ebus.v1.rpc.invoke"
-	toolDevicesLegacyName     = "ebus.devices"
-	toolInvokeLegacyName      = "ebus.invoke"
-	methodMutabilityUnknown   = "unknown"
-	methodMutabilityReadOnly  = "read_only"
-	methodMutabilityMutating  = "mutating"
-	methodDangerUnknown       = "unknown"
-	methodDangerSafe          = "safe"
-	methodDangerDangerous     = "dangerous"
-	defaultInvokeTimeout      = 3 * time.Second
-	defaultIdempotencyTTL     = 30 * time.Second
-	defaultSnapshotTTL        = 5 * time.Minute
-	defaultSnapshotReadTTL    = 10 * time.Second
+	toolRuntimeStatusGetName    = "ebus.v1.runtime.status.get"
+	toolSemanticZonesGetName    = "ebus.v1.semantic.zones.get"
+	toolSemanticCircuitsGetName = "ebus.v1.semantic.circuits.get"
+	toolSemanticDHWGetName      = "ebus.v1.semantic.dhw.get"
+	toolSemanticEnergyGetName   = "ebus.v1.semantic.energy_totals.get"
+	toolSemanticBoilerGetName   = "ebus.v1.semantic.boiler_status.get"
+	toolSemanticSnapshotName    = "ebus.v1.semantic.snapshot.get"
+	toolSnapshotCaptureName     = "ebus.v1.snapshot.capture"
+	toolSnapshotDropName        = "ebus.v1.snapshot.drop"
+	toolDevicesV1Name           = "ebus.v1.registry.devices.list"
+	toolDeviceGetV1Name         = "ebus.v1.registry.devices.get"
+	toolPlanesListV1Name        = "ebus.v1.registry.planes.list"
+	toolMethodsListV1Name       = "ebus.v1.registry.methods.list"
+	toolInvokeV1Name            = "ebus.v1.rpc.invoke"
+	toolDevicesLegacyName       = "ebus.devices"
+	toolInvokeLegacyName        = "ebus.invoke"
+	methodMutabilityUnknown     = "unknown"
+	methodMutabilityReadOnly    = "read_only"
+	methodMutabilityMutating    = "mutating"
+	methodDangerUnknown         = "unknown"
+	methodDangerSafe            = "safe"
+	methodDangerDangerous       = "dangerous"
+	defaultInvokeTimeout        = 3 * time.Second
+	defaultIdempotencyTTL       = 30 * time.Second
+	defaultSnapshotTTL          = 5 * time.Minute
+	defaultSnapshotReadTTL      = 10 * time.Second
 )
 
 var errInvokePermissionDenied = errors.New("invoke permission denied")
@@ -195,6 +228,10 @@ func (staticSemanticProvider) DHW() *DhwStatus {
 	return nil
 }
 
+func (staticSemanticProvider) Circuits() []CircuitStatus {
+	return nil
+}
+
 func (staticSemanticProvider) EnergyTotals() *EnergyTotals {
 	return nil
 }
@@ -226,12 +263,13 @@ type snapshotState struct {
 	createdAt time.Time
 	expiresAt time.Time
 
-	runtime map[string]any
-	zones   []Zone
-	dhw     *DhwStatus
-	energy  *EnergyTotals
-	boiler  *BoilerStatus
-	devices []deviceInfo
+	runtime  map[string]any
+	zones    []Zone
+	circuits []CircuitStatus
+	dhw      *DhwStatus
+	energy   *EnergyTotals
+	boiler   *BoilerStatus
+	devices  []deviceInfo
 }
 
 func consistencyInputProperty() map[string]any {
@@ -282,6 +320,17 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			},
 		},
 		{
+			Name:        toolSemanticCircuitsGetName,
+			Description: "Get semantic heating circuits snapshot.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
 			Name:        toolSemanticDHWGetName,
 			Description: "Get semantic domestic hot water snapshot.",
 			InputSchema: map[string]any{
@@ -320,13 +369,13 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"planes": map[string]any{
-						"type": "array",
-						"items": map[string]any{
-							"type": "string",
-							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status"},
+						"planes": map[string]any{
+							"type": "array",
+							"items": map[string]any{
+								"type": "string",
+								"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "circuits"},
+							},
 						},
-					},
 					"timeout_ms": map[string]any{"type": "integer", "minimum": 1},
 					"allow_partial": map[string]any{
 						"type": "boolean",
@@ -593,6 +642,13 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		}
 		zones := s.snapshotZones(snapshot)
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(zones, nil, consistency)), false), nil
+	case toolSemanticCircuitsGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		circuits := s.snapshotCircuits(snapshot)
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(circuits, nil, consistency)), false), nil
 	case toolSemanticDHWGetName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -775,6 +831,7 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		expiresAt: now.Add(defaultSnapshotTTL),
 		runtime:   s.runtimeStatus(nil),
 		zones:     s.snapshotZones(nil),
+		circuits:  s.snapshotCircuits(nil),
 		dhw:       s.snapshotDHW(nil),
 		energy:    s.snapshotEnergyTotals(nil),
 		boiler:    s.snapshotBoilerStatus(nil),
@@ -859,6 +916,7 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		expiresAt: snapshot.expiresAt,
 		runtime:   cloneMap(snapshot.runtime),
 		zones:     cloneZones(snapshot.zones),
+		circuits:  cloneCircuits(snapshot.circuits),
 		dhw:       dhwCopy,
 		energy:    energyCopy,
 		boiler:    boilerCopy,
@@ -1150,6 +1208,82 @@ func cloneZones(source []Zone) []Zone {
 	return out
 }
 
+func cloneCircuits(source []CircuitStatus) []CircuitStatus {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make([]CircuitStatus, len(source))
+	for i, status := range source {
+		out[i] = cloneCircuitStatus(status)
+	}
+	return out
+}
+
+func cloneCircuitStatus(source CircuitStatus) CircuitStatus {
+	out := source
+	if source.State.PumpActive != nil {
+		v := *source.State.PumpActive
+		out.State.PumpActive = &v
+	}
+	if source.State.MixerPositionPct != nil {
+		v := *source.State.MixerPositionPct
+		out.State.MixerPositionPct = &v
+	}
+	if source.State.FlowTemperatureC != nil {
+		v := *source.State.FlowTemperatureC
+		out.State.FlowTemperatureC = &v
+	}
+	if source.State.FlowSetpointC != nil {
+		v := *source.State.FlowSetpointC
+		out.State.FlowSetpointC = &v
+	}
+	if source.State.CalcFlowTempC != nil {
+		v := *source.State.CalcFlowTempC
+		out.State.CalcFlowTempC = &v
+	}
+	if source.State.Humidity != nil {
+		v := *source.State.Humidity
+		out.State.Humidity = &v
+	}
+	if source.State.DewPoint != nil {
+		v := *source.State.DewPoint
+		out.State.DewPoint = &v
+	}
+	if source.State.PumpHours != nil {
+		v := *source.State.PumpHours
+		out.State.PumpHours = &v
+	}
+	if source.State.PumpStarts != nil {
+		v := *source.State.PumpStarts
+		out.State.PumpStarts = &v
+	}
+	if source.Config.HeatingCurve != nil {
+		v := *source.Config.HeatingCurve
+		out.Config.HeatingCurve = &v
+	}
+	if source.Config.FlowTempMaxC != nil {
+		v := *source.Config.FlowTempMaxC
+		out.Config.FlowTempMaxC = &v
+	}
+	if source.Config.FlowTempMinC != nil {
+		v := *source.Config.FlowTempMinC
+		out.Config.FlowTempMinC = &v
+	}
+	if source.Config.SummerLimitC != nil {
+		v := *source.Config.SummerLimitC
+		out.Config.SummerLimitC = &v
+	}
+	if source.Config.FrostProtC != nil {
+		v := *source.Config.FrostProtC
+		out.Config.FrostProtC = &v
+	}
+	if source.Config.CoolingEnabled != nil {
+		v := *source.Config.CoolingEnabled
+		out.Config.CoolingEnabled = &v
+	}
+	return out
+}
+
 func cloneMethodInfoList(source []methodInfo) []methodInfo {
 	if len(source) == 0 {
 		return nil
@@ -1353,6 +1487,27 @@ func (s *Server) snapshotZones(snapshot *snapshotState) []Zone {
 	return out
 }
 
+func (s *Server) snapshotCircuits(snapshot *snapshotState) []CircuitStatus {
+	if snapshot != nil {
+		return cloneCircuits(snapshot.circuits)
+	}
+	if s == nil || s.semantic == nil {
+		return nil
+	}
+	circuits := s.semantic.Circuits()
+	if len(circuits) == 0 {
+		return nil
+	}
+	out := cloneCircuits(circuits)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Index != out[j].Index {
+			return out[i].Index < out[j].Index
+		}
+		return out[i].CircuitType < out[j].CircuitType
+	})
+	return out
+}
+
 func (s *Server) snapshotDHW(snapshot *snapshotState) *DhwStatus {
 	if snapshot != nil {
 		if snapshot.dhw == nil {
@@ -1495,7 +1650,7 @@ func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, 
 
 func parseSemanticSnapshotOptions(args map[string]any) (semanticSnapshotOptions, error) {
 	options := semanticSnapshotOptions{
-		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status"},
+		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "circuits"},
 		timeout:      defaultSnapshotReadTTL,
 		allowPartial: false,
 	}
@@ -1561,7 +1716,7 @@ func parseSemanticSnapshotPlanes(raw any) ([]string, error) {
 		}
 		normalized := strings.ToLower(strings.TrimSpace(value))
 		switch normalized {
-		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status":
+		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "circuits":
 		default:
 			return nil, fmt.Errorf("unsupported plane %q: %w", value, ebuserrors.ErrInvalidPayload)
 		}
@@ -1596,6 +1751,8 @@ func (s *Server) readSemanticPlane(ctx context.Context, plane string, snapshot *
 		value = s.snapshotEnergyTotals(snapshot)
 	case "boiler_status":
 		value = s.snapshotBoilerStatus(snapshot)
+	case "circuits":
+		value = s.snapshotCircuits(snapshot)
 	default:
 		return nil, fmt.Errorf("unsupported plane %q: %w", plane, ebuserrors.ErrInvalidPayload)
 	}

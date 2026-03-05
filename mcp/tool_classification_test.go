@@ -36,21 +36,22 @@ func TestToolClassificationPolicy(t *testing.T) {
 	}
 
 	classification := map[string]toolClass{
-		toolRuntimeStatusGetName:  toolClassCoreStable,
-		toolSemanticZonesGetName:  toolClassCoreStable,
-		toolSemanticDHWGetName:    toolClassCoreStable,
-		toolSemanticEnergyGetName: toolClassCoreStable,
-		toolSemanticBoilerGetName: toolClassCoreStable,
-		toolSemanticSnapshotName:  toolClassCoreStable,
-		toolSnapshotCaptureName:   toolClassCoreStable,
-		toolSnapshotDropName:      toolClassCoreStable,
-		toolDevicesV1Name:         toolClassCoreStable,
-		toolDeviceGetV1Name:       toolClassCoreStable,
-		toolPlanesListV1Name:      toolClassCoreStable,
-		toolMethodsListV1Name:     toolClassCoreStable,
-		toolInvokeV1Name:          toolClassCoreStable,
-		toolDevicesLegacyName:     toolClassLegacy,
-		toolInvokeLegacyName:      toolClassLegacy,
+		toolRuntimeStatusGetName:    toolClassCoreStable,
+		toolSemanticZonesGetName:    toolClassCoreStable,
+		toolSemanticCircuitsGetName: toolClassCoreStable,
+		toolSemanticDHWGetName:      toolClassCoreStable,
+		toolSemanticEnergyGetName:   toolClassCoreStable,
+		toolSemanticBoilerGetName:   toolClassCoreStable,
+		toolSemanticSnapshotName:    toolClassCoreStable,
+		toolSnapshotCaptureName:     toolClassCoreStable,
+		toolSnapshotDropName:        toolClassCoreStable,
+		toolDevicesV1Name:           toolClassCoreStable,
+		toolDeviceGetV1Name:         toolClassCoreStable,
+		toolPlanesListV1Name:        toolClassCoreStable,
+		toolMethodsListV1Name:       toolClassCoreStable,
+		toolInvokeV1Name:            toolClassCoreStable,
+		toolDevicesLegacyName:       toolClassLegacy,
+		toolInvokeLegacyName:        toolClassLegacy,
 	}
 
 	experimentalCount := 0

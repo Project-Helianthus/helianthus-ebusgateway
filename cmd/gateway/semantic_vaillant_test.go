@@ -432,6 +432,154 @@ func TestRefreshBoilerStatusTier_NoSuccessfulReadsPreservesSnapshot(t *testing.T
 	}
 }
 
+func TestMergeCircuitSnapshotNonDestructive_PartialUpdatePreservesLastKnown(t *testing.T) {
+	t.Parallel()
+
+	circuitType := uint16(1)
+	coolingEnabled := uint16(1)
+	flowTemp := 41.5
+	flowSetpoint := 44.0
+	mixer := 67.0
+	pumpStarts := uint32(120)
+	updatedFlow := 42.25
+	updatedPump := uint16(0)
+
+	merged := mergeCircuitSnapshotNonDestructive(
+		&vaillantCircuitSnapshot{
+			Instance:          0x01,
+			Active:            true,
+			CircuitTypeRaw:    &circuitType,
+			CoolingEnabledRaw: &coolingEnabled,
+			FlowTemperatureC:  &flowTemp,
+			FlowSetpointC:     &flowSetpoint,
+			MixerPositionPct:  &mixer,
+			PumpStartsRaw:     &pumpStarts,
+		},
+		&vaillantCircuitSnapshot{
+			Instance:         0x01,
+			Active:           true,
+			FlowTemperatureC: &updatedFlow,
+			PumpStatusRaw:    &updatedPump,
+		},
+	)
+
+	if merged == nil {
+		t.Fatal("merged snapshot is nil")
+	}
+	if merged.FlowTemperatureC == nil || *merged.FlowTemperatureC != 42.25 {
+		t.Fatalf("merged.FlowTemperatureC = %v; want updated 42.25", merged.FlowTemperatureC)
+	}
+	if merged.FlowSetpointC == nil || *merged.FlowSetpointC != 44.0 {
+		t.Fatalf("merged.FlowSetpointC = %v; want preserved 44.0", merged.FlowSetpointC)
+	}
+	if merged.PumpStatusRaw == nil || *merged.PumpStatusRaw != 0 {
+		t.Fatalf("merged.PumpStatusRaw = %v; want updated 0", merged.PumpStatusRaw)
+	}
+	if merged.CoolingEnabledRaw == nil || *merged.CoolingEnabledRaw != 1 {
+		t.Fatalf("merged.CoolingEnabledRaw = %v; want preserved 1", merged.CoolingEnabledRaw)
+	}
+	if merged.PumpStartsRaw == nil || *merged.PumpStartsRaw != 120 {
+		t.Fatalf("merged.PumpStartsRaw = %v; want preserved 120", merged.PumpStartsRaw)
+	}
+	if merged.CircuitTypeRaw == nil || *merged.CircuitTypeRaw != 1 {
+		t.Fatalf("merged.CircuitTypeRaw = %v; want preserved 1", merged.CircuitTypeRaw)
+	}
+}
+
+func TestRefreshCircuits_NoSuccessfulReadsPreservesSnapshot(t *testing.T) {
+	t.Parallel()
+
+	circuitType := uint16(1)
+	flow := 35.0
+	cooling := uint16(1)
+	poller := &vaillantSemanticPoller{
+		controller: 0x15,
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: {
+				Instance:          0x00,
+				Active:            true,
+				CircuitTypeRaw:    &circuitType,
+				FlowTemperatureC:  &flow,
+				CoolingEnabledRaw: &cooling,
+			},
+		},
+	}
+
+	poller.refreshCircuits(context.Background())
+
+	entry, ok := poller.circuits[0x00]
+	if !ok || entry == nil {
+		t.Fatal("circuit snapshot missing after refresh with no successful reads")
+	}
+	if entry.FlowTemperatureC == nil || *entry.FlowTemperatureC != 35.0 {
+		t.Fatalf("entry.FlowTemperatureC = %v; want preserved 35.0", entry.FlowTemperatureC)
+	}
+	if entry.CircuitTypeRaw == nil || *entry.CircuitTypeRaw != 1 {
+		t.Fatalf("entry.CircuitTypeRaw = %v; want preserved 1", entry.CircuitTypeRaw)
+	}
+	if entry.CoolingEnabledRaw == nil || *entry.CoolingEnabledRaw != 1 {
+		t.Fatalf("entry.CoolingEnabledRaw = %v; want preserved 1", entry.CoolingEnabledRaw)
+	}
+}
+
+func TestDecodeHeatingCircuitTypeToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  *uint16
+		want string
+	}{
+		{name: "nil", raw: nil, want: ""},
+		{name: "heating", raw: uint16Ptr(1), want: "heating"},
+		{name: "fixed_value", raw: uint16Ptr(2), want: "fixed_value"},
+		{name: "dhw", raw: uint16Ptr(3), want: "dhw"},
+		{name: "return_increase", raw: uint16Ptr(4), want: "return_increase"},
+		{name: "unknown", raw: uint16Ptr(9), want: "unknown_9"},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := decodeHeatingCircuitTypeToken(test.raw); got != test.want {
+				t.Fatalf("decodeHeatingCircuitTypeToken(%v) = %q; want %q", test.raw, got, test.want)
+			}
+		})
+	}
+}
+
+func TestDecodeRoomTempControlToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  *uint16
+		want string
+	}{
+		{name: "nil", raw: nil, want: ""},
+		{name: "off", raw: uint16Ptr(0), want: "off"},
+		{name: "modulating", raw: uint16Ptr(1), want: "modulating"},
+		{name: "thermostat", raw: uint16Ptr(2), want: "thermostat"},
+		{name: "unknown", raw: uint16Ptr(7), want: "unknown_7"},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := decodeRoomTempControlToken(test.raw); got != test.want {
+				t.Fatalf("decodeRoomTempControlToken(%v) = %q; want %q", test.raw, got, test.want)
+			}
+		})
+	}
+}
+
+func uint16Ptr(value uint16) *uint16 {
+	v := value
+	return &v
+}
+
 func TestRefreshEnergy_NilController(t *testing.T) {
 	t.Parallel()
 

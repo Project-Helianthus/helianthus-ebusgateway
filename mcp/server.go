@@ -369,13 +369,13 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"planes": map[string]any{
-						"type": "array",
-						"items": map[string]any{
-							"type": "string",
-							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status"},
+						"planes": map[string]any{
+							"type": "array",
+							"items": map[string]any{
+								"type": "string",
+								"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "circuits"},
+							},
 						},
-					},
 					"timeout_ms": map[string]any{"type": "integer", "minimum": 1},
 					"allow_partial": map[string]any{
 						"type": "boolean",
@@ -1650,7 +1650,7 @@ func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, 
 
 func parseSemanticSnapshotOptions(args map[string]any) (semanticSnapshotOptions, error) {
 	options := semanticSnapshotOptions{
-		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status"},
+		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "circuits"},
 		timeout:      defaultSnapshotReadTTL,
 		allowPartial: false,
 	}
@@ -1716,7 +1716,7 @@ func parseSemanticSnapshotPlanes(raw any) ([]string, error) {
 		}
 		normalized := strings.ToLower(strings.TrimSpace(value))
 		switch normalized {
-		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status":
+		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "circuits":
 		default:
 			return nil, fmt.Errorf("unsupported plane %q: %w", value, ebuserrors.ErrInvalidPayload)
 		}
@@ -1751,6 +1751,8 @@ func (s *Server) readSemanticPlane(ctx context.Context, plane string, snapshot *
 		value = s.snapshotEnergyTotals(snapshot)
 	case "boiler_status":
 		value = s.snapshotBoilerStatus(snapshot)
+	case "circuits":
+		value = s.snapshotCircuits(snapshot)
 	default:
 		return nil, fmt.Errorf("unsupported plane %q: %w", plane, ebuserrors.ErrInvalidPayload)
 	}

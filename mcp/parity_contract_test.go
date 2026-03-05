@@ -62,7 +62,7 @@ func TestToolInventoryGoldenSignatures(t *testing.T) {
 		{Name: "ebus.v1.semantic.circuits.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.dhw.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.energy_totals.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.snapshot.get", SchemaHash: "4cf56348ac467debdb3da54b5e18f88d2de4d58d542ab8dc6aab00fbab4ed9c0"},
+		{Name: "ebus.v1.semantic.snapshot.get", SchemaHash: "f40827c9c88a3e7e1e5588a409e0282e27fefa5df9a29eb74a911c8ad75aeb4c"},
 		{Name: "ebus.v1.semantic.zones.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.snapshot.capture", SchemaHash: "cd1a463c46d6264134447db17a8c3c7abe5b9a2488c6d759fea66da1f96b133e"},
 		{Name: "ebus.v1.snapshot.drop", SchemaHash: "3f2e89bf3346421daa820ec5cd5bf9b4a06815aebd32c0bd8758b90043d69f88"},

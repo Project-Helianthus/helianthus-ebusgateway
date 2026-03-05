@@ -606,7 +606,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 	})
 
-	t.Run("semantic snapshot default planes", func(t *testing.T) {
+		t.Run("semantic snapshot default planes", func(t *testing.T) {
 		res := doRPC(t, server.Handler(), rpcRequest{
 			JSONRPC: "2.0",
 			ID:      4,
@@ -618,32 +618,53 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		if !ok {
 			t.Fatalf("snapshot data type = %T; want map", envelope["data"])
 		}
-		completed, ok := data["completed_planes"].([]any)
-		if !ok || len(completed) != 5 {
-			t.Fatalf("snapshot completed_planes = %#v; want 5 entries", data["completed_planes"])
-		}
+			completed, ok := data["completed_planes"].([]any)
+			if !ok || len(completed) != 6 {
+				t.Fatalf("snapshot completed_planes = %#v; want 6 entries", data["completed_planes"])
+			}
 		planes, ok := data["planes"].(map[string]any)
 		if !ok {
 			t.Fatalf("snapshot planes type = %T; want map", data["planes"])
 		}
-		for _, key := range []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status"} {
-			if _, ok := planes[key]; !ok {
-				t.Fatalf("snapshot planes missing %q", key)
+			for _, key := range []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "circuits"} {
+				if _, ok := planes[key]; !ok {
+					t.Fatalf("snapshot planes missing %q", key)
+				}
 			}
-		}
-	})
-
-	t.Run("semantic snapshot rejects unknown plane", func(t *testing.T) {
-		res := doRPC(t, server.Handler(), rpcRequest{
-			JSONRPC: "2.0",
-			ID:      5,
-			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["unknown"]}}`),
 		})
+
+		t.Run("semantic snapshot supports circuits plane", func(t *testing.T) {
+			res := doRPC(t, server.Handler(), rpcRequest{
+				JSONRPC: "2.0",
+				ID:      5,
+				Method:  "tools/call",
+				Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["circuits"]}}`),
+			})
+			envelope := envelopeFromResult(t, res)
+			data, ok := envelope["data"].(map[string]any)
+			if !ok {
+				t.Fatalf("snapshot data type = %T; want map", envelope["data"])
+			}
+			planes, ok := data["planes"].(map[string]any)
+			if !ok {
+				t.Fatalf("snapshot planes type = %T; want map", data["planes"])
+			}
+			if _, ok := planes["circuits"]; !ok {
+				t.Fatalf("snapshot planes missing circuits: %#v", planes)
+			}
+		})
+
+		t.Run("semantic snapshot rejects unknown plane", func(t *testing.T) {
+			res := doRPC(t, server.Handler(), rpcRequest{
+				JSONRPC: "2.0",
+				ID:      6,
+				Method:  "tools/call",
+				Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["unknown"]}}`),
+			})
 		assertToolErrorCode(t, res, "INVALID_ARGUMENT")
 	})
 
-	t.Run("semantic snapshot timeout atomic", func(t *testing.T) {
+		t.Run("semantic snapshot timeout atomic", func(t *testing.T) {
 		slowServer, err := NewServer(reg, &testInvoker{})
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
@@ -660,16 +681,16 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			zonesDelay: 20 * time.Millisecond,
 		})
 
-		res := doRPC(t, slowServer.Handler(), rpcRequest{
-			JSONRPC: "2.0",
-			ID:      6,
-			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":10}}`),
-		})
+			res := doRPC(t, slowServer.Handler(), rpcRequest{
+				JSONRPC: "2.0",
+				ID:      7,
+				Method:  "tools/call",
+				Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":10}}`),
+			})
 		assertToolErrorCode(t, res, "TIMEOUT")
 	})
 
-	t.Run("semantic snapshot timeout partial", func(t *testing.T) {
+		t.Run("semantic snapshot timeout partial", func(t *testing.T) {
 		slowServer, err := NewServer(reg, &testInvoker{})
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
@@ -686,12 +707,12 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			zonesDelay: 20 * time.Millisecond,
 		})
 
-		res := doRPC(t, slowServer.Handler(), rpcRequest{
-			JSONRPC: "2.0",
-			ID:      7,
-			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":35,"allow_partial":true}}`),
-		})
+			res := doRPC(t, slowServer.Handler(), rpcRequest{
+				JSONRPC: "2.0",
+				ID:      8,
+				Method:  "tools/call",
+				Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":35,"allow_partial":true}}`),
+			})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
 		if !ok {
@@ -706,7 +727,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 	})
 
-	t.Run("semantic snapshot timeout partial no duplicate plane errors", func(t *testing.T) {
+		t.Run("semantic snapshot timeout partial no duplicate plane errors", func(t *testing.T) {
 		slowServer, err := NewServer(reg, &testInvoker{})
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
@@ -723,12 +744,12 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			zonesDelay: 5 * time.Millisecond,
 		})
 
-		res := doRPC(t, slowServer.Handler(), rpcRequest{
-			JSONRPC: "2.0",
-			ID:      8,
-			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":1,"allow_partial":true}}`),
-		})
+			res := doRPC(t, slowServer.Handler(), rpcRequest{
+				JSONRPC: "2.0",
+				ID:      9,
+				Method:  "tools/call",
+				Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":1,"allow_partial":true}}`),
+			})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
 		if !ok {

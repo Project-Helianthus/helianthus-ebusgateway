@@ -2,11 +2,16 @@ package graphql
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"reflect"
+	"sort"
 	"strconv"
+	"strings"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/types"
@@ -41,6 +46,57 @@ type InvokeError struct {
 type BoilerConfigMutationResult struct {
 	Success bool
 	Error   string
+}
+
+type ConfigMutationResult struct {
+	Success bool
+	Error   string
+}
+
+type configValueType int
+
+const (
+	configValueFloat32 configValueType = iota
+	configValueUint16
+	configValueBoolU8
+	configValueEnumU16
+)
+
+type configFieldSpec struct {
+	group     byte
+	addr      uint16
+	valueType configValueType
+	min       float64
+	max       float64
+	enum      map[string]uint16
+}
+
+const (
+	mutationControllerFallbackAddr = byte(0x15)
+	mutationSourceAddr             = byte(0x31)
+	mutationB524OpcodeLocal        = byte(0x02)
+	mutationSystemPlane            = "system"
+	mutationSetExtRegisterMethod   = "set_ext_register"
+	mutationGetExtRegisterMethod   = "get_ext_register"
+)
+
+var circuitConfigFieldSpecs = map[string]configFieldSpec{
+	"heatingCurve":    {group: 0x02, addr: 0x000F, valueType: configValueFloat32, min: 0.1, max: 4.0},
+	"flowTempMaxC":    {group: 0x02, addr: 0x0010, valueType: configValueFloat32, min: 15.0, max: 80.0},
+	"flowTempMinC":    {group: 0x02, addr: 0x0012, valueType: configValueFloat32, min: 5.0, max: 30.0},
+	"summerLimitC":    {group: 0x02, addr: 0x0014, valueType: configValueFloat32, min: 15.0, max: 30.0},
+	"frostProtC":      {group: 0x02, addr: 0x001D, valueType: configValueFloat32, min: -20.0, max: 10.0},
+	"roomTempControl": {group: 0x02, addr: 0x0015, valueType: configValueEnumU16, enum: map[string]uint16{"off": 0, "modulating": 1, "thermostat": 2}},
+	"coolingEnabled":  {group: 0x02, addr: 0x0006, valueType: configValueBoolU8},
+}
+
+var systemConfigFieldSpecs = map[string]configFieldSpec{
+	"dhwBivalencePointC":   {group: 0x00, addr: 0x0001, valueType: configValueFloat32, min: -20.0, max: 50.0},
+	"maxRoomHumidityPct":   {group: 0x00, addr: 0x000E, valueType: configValueUint16, min: 30, max: 80},
+	"adaptiveHeatingCurve": {group: 0x00, addr: 0x0014, valueType: configValueBoolU8},
+	"hcBivalencePointC":    {group: 0x00, addr: 0x0023, valueType: configValueFloat32, min: -20.0, max: 30.0},
+	"hcEmergencyTempC":     {group: 0x00, addr: 0x0026, valueType: configValueFloat32, min: 20.0, max: 80.0},
+	"hwcMaxFlowTempC":      {group: 0x00, addr: 0x0046, valueType: configValueFloat32, min: 15.0, max: 80.0},
 }
 
 type paramSchemaProvider interface {
@@ -190,6 +246,32 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker) *graphqlgo.Obje
 		},
 	})
 
+	configResultType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ConfigMutationResult",
+		Fields: graphqlgo.Fields{
+			"success": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					result, ok := configResultFromSource(params)
+					if !ok {
+						return false, nil
+					}
+					return result.Success, nil
+				},
+			},
+			"error": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					result, ok := configResultFromSource(params)
+					if !ok || result.Error == "" {
+						return nil, nil
+					}
+					return result.Error, nil
+				},
+			},
+		},
+	})
+
 	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Mutation",
 		Fields: graphqlgo.Fields{
@@ -222,6 +304,27 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker) *graphqlgo.Obje
 					return boilerConfigUnsupportedResult(), nil
 				},
 			},
+			"setCircuitConfig": &graphqlgo.Field{
+				Type: configResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"index": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return setCircuitConfigResolve(params, registry, invoker), nil
+				},
+			},
+			"setSystemConfig": &graphqlgo.Field{
+				Type: configResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return setSystemConfigResolve(params, registry, invoker), nil
+				},
+			},
 		},
 	})
 }
@@ -231,6 +334,423 @@ func boilerConfigUnsupportedResult() BoilerConfigMutationResult {
 		Success: false,
 		Error:   "unsupported source: B509 writes are disabled in reduced profile",
 	}
+}
+
+func setCircuitConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker) ConfigMutationResult {
+	instance, err := parseConfigInstance(params.Args["index"])
+	if err != nil {
+		return configMutationError(err)
+	}
+	fieldName, _ := params.Args["field"].(string)
+	fieldValue, _ := params.Args["value"].(string)
+	spec, err := resolveConfigFieldSpec("circuit", fieldName, circuitConfigFieldSpecs)
+	if err != nil {
+		return configMutationError(err)
+	}
+	return applyConfigMutation(params.Context, registry, invoker, spec, instance, fieldValue)
+}
+
+func setSystemConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker) ConfigMutationResult {
+	fieldName, _ := params.Args["field"].(string)
+	fieldValue, _ := params.Args["value"].(string)
+	spec, err := resolveConfigFieldSpec("system", fieldName, systemConfigFieldSpecs)
+	if err != nil {
+		return configMutationError(err)
+	}
+	return applyConfigMutation(params.Context, registry, invoker, spec, 0x00, fieldValue)
+}
+
+func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, spec configFieldSpec, instance byte, rawValue string) ConfigMutationResult {
+	if registry == nil || invoker == nil {
+		return configMutationError(fmt.Errorf("config mutation missing dependencies: %w", ebuserrors.ErrInvalidPayload))
+	}
+
+	data, err := encodeConfigValue(spec, rawValue)
+	if err != nil {
+		return configMutationError(err)
+	}
+
+	plane, err := resolveControllerSystemPlane(registry)
+	if err != nil {
+		return configMutationError(err)
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	writeParams := map[string]any{
+		"source":   mutationSourceAddr,
+		"opcode":   mutationB524OpcodeLocal,
+		"group":    spec.group,
+		"instance": instance,
+		"addr":     spec.addr,
+		"data":     data,
+	}
+	if _, err := invoker.Invoke(ctx, plane, mutationSetExtRegisterMethod, writeParams); err != nil {
+		return configMutationError(fmt.Errorf("set_ext_register failed: %w", err))
+	}
+
+	readParams := map[string]any{
+		"source":   mutationSourceAddr,
+		"opcode":   mutationB524OpcodeLocal,
+		"group":    spec.group,
+		"instance": instance,
+		"addr":     spec.addr,
+	}
+	readResult, err := invoker.Invoke(ctx, plane, mutationGetExtRegisterMethod, readParams)
+	if err != nil {
+		return configMutationError(fmt.Errorf("get_ext_register failed: %w", err))
+	}
+
+	readValue, err := extractExtRegisterValue(readResult)
+	if err != nil {
+		return configMutationError(fmt.Errorf("write confirm failed: %w", err))
+	}
+	if err := confirmDecodableReadback(spec, readValue); err != nil {
+		return configMutationError(fmt.Errorf("write confirm failed: %w", err))
+	}
+	if !configReadbackMatchesWrite(spec, data, readValue) {
+		return configMutationError(fmt.Errorf("write confirm failed: read-back mismatch: %w", ebuserrors.ErrInvalidPayload))
+	}
+
+	return ConfigMutationResult{Success: true}
+}
+
+func configMutationError(err error) ConfigMutationResult {
+	if err == nil {
+		return ConfigMutationResult{Success: false, Error: "config mutation failed"}
+	}
+	return ConfigMutationResult{Success: false, Error: err.Error()}
+}
+
+func parseConfigInstance(raw any) (byte, error) {
+	index, ok := raw.(int)
+	if !ok {
+		return 0, fmt.Errorf("invalid circuit index: %w", ebuserrors.ErrInvalidPayload)
+	}
+	if index < 0 || index > 0xFF {
+		return 0, fmt.Errorf("circuit index out of range: %w", ebuserrors.ErrInvalidPayload)
+	}
+	return byte(index), nil
+}
+
+func resolveConfigFieldSpec(scope, fieldName string, specs map[string]configFieldSpec) (configFieldSpec, error) {
+	if spec, ok := specs[fieldName]; ok {
+		return spec, nil
+	}
+	allowed := make([]string, 0, len(specs))
+	for key := range specs {
+		allowed = append(allowed, key)
+	}
+	sort.Strings(allowed)
+	return configFieldSpec{}, fmt.Errorf("unknown %s field %q (allowed: %s): %w", scope, fieldName, strings.Join(allowed, ", "), ebuserrors.ErrInvalidPayload)
+}
+
+func encodeConfigValue(spec configFieldSpec, raw string) ([]byte, error) {
+	switch spec.valueType {
+	case configValueFloat32:
+		value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid float value %q: %w", raw, ebuserrors.ErrInvalidPayload)
+		}
+		if value < spec.min || value > spec.max {
+			return nil, fmt.Errorf("value %.4g out of range [%.4g, %.4g]: %w", value, spec.min, spec.max, ebuserrors.ErrInvalidPayload)
+		}
+		payload := make([]byte, 4)
+		binary.LittleEndian.PutUint32(payload, math.Float32bits(float32(value)))
+		return payload, nil
+	case configValueUint16:
+		value, err := parseIntegerString(strings.TrimSpace(raw))
+		if err != nil {
+			return nil, fmt.Errorf("invalid integer value %q: %w", raw, ebuserrors.ErrInvalidPayload)
+		}
+		if float64(value) < spec.min || float64(value) > spec.max {
+			return nil, fmt.Errorf("value %d out of range [%.0f, %.0f]: %w", value, spec.min, spec.max, ebuserrors.ErrInvalidPayload)
+		}
+		payload := make([]byte, 2)
+		binary.LittleEndian.PutUint16(payload, uint16(value))
+		return payload, nil
+	case configValueBoolU8:
+		parsed, ok := parseBoolString(raw)
+		if !ok {
+			return nil, fmt.Errorf("invalid boolean value %q (expected true/false): %w", raw, ebuserrors.ErrInvalidPayload)
+		}
+		if parsed {
+			return []byte{1}, nil
+		}
+		return []byte{0}, nil
+	case configValueEnumU16:
+		key := strings.ToLower(strings.TrimSpace(raw))
+		if spec.enum == nil {
+			return nil, fmt.Errorf("missing enum mapping: %w", ebuserrors.ErrInvalidPayload)
+		}
+		mapped, ok := spec.enum[key]
+		if !ok {
+			return nil, fmt.Errorf("invalid enum value %q (allowed: %s): %w", raw, strings.Join(sortedEnumKeys(spec.enum), ", "), ebuserrors.ErrInvalidPayload)
+		}
+		payload := make([]byte, 2)
+		binary.LittleEndian.PutUint16(payload, mapped)
+		return payload, nil
+	default:
+		return nil, fmt.Errorf("unsupported value encoding: %w", ebuserrors.ErrInvalidPayload)
+	}
+}
+
+func parseBoolString(raw string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true", "1", "on", "yes":
+		return true, true
+	case "false", "0", "off", "no":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func parseIntegerString(raw string) (int, error) {
+	if raw == "" {
+		return 0, fmt.Errorf("empty integer")
+	}
+	if strings.ContainsAny(raw, ".eE") {
+		value, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return 0, err
+		}
+		if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value {
+			return 0, fmt.Errorf("not an integer")
+		}
+		return int(value), nil
+	}
+	return strconv.Atoi(raw)
+}
+
+func sortedEnumKeys(values map[string]uint16) []string {
+	out := make([]string, 0, len(values))
+	for key := range values {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func resolveControllerSystemPlane(reg InvokeRegistry) (router.Plane, error) {
+	entry, err := findControllerEntry(reg)
+	if err != nil {
+		return nil, err
+	}
+
+	plane, ok := findRegistryPlane(entry.Planes(), mutationSystemPlane)
+	if !ok {
+		return nil, fmt.Errorf("controller missing system plane: %w", ebuserrors.ErrInvalidPayload)
+	}
+
+	if _, ok := findRegistryMethod(plane.Methods(), mutationSetExtRegisterMethod); !ok {
+		return nil, fmt.Errorf("controller missing method %q: %w", mutationSetExtRegisterMethod, ebuserrors.ErrInvalidPayload)
+	}
+	if _, ok := findRegistryMethod(plane.Methods(), mutationGetExtRegisterMethod); !ok {
+		return nil, fmt.Errorf("controller missing method %q: %w", mutationGetExtRegisterMethod, ebuserrors.ErrInvalidPayload)
+	}
+
+	routerPlane, ok := plane.(router.Plane)
+	if !ok {
+		return nil, fmt.Errorf("controller system plane not routable: %w", ebuserrors.ErrInvalidPayload)
+	}
+	return routerPlane, nil
+}
+
+func findControllerEntry(reg InvokeRegistry) (registry.DeviceEntry, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("registry missing: %w", ebuserrors.ErrInvalidPayload)
+	}
+
+	type iterativeRegistry interface {
+		Iterate(func(registry.DeviceEntry) bool)
+	}
+	if iter, ok := reg.(iterativeRegistry); ok {
+		var controller registry.DeviceEntry
+		iter.Iterate(func(entry registry.DeviceEntry) bool {
+			if entry == nil {
+				return true
+			}
+			if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(entry.DeviceID())), "BASV") {
+				controller = entry
+				return false
+			}
+			return true
+		})
+		if controller != nil {
+			return controller, nil
+		}
+	}
+
+	if fallback, ok := reg.Lookup(mutationControllerFallbackAddr); ok && fallback != nil {
+		return fallback, nil
+	}
+	return nil, fmt.Errorf("controller BASV2 not found: %w", ebuserrors.ErrInvalidPayload)
+}
+
+func extractExtRegisterValue(result any) ([]byte, error) {
+	switch typed := result.(type) {
+	case map[string]types.Value:
+		value, ok := typed["value"]
+		if !ok || !value.Valid {
+			return nil, fmt.Errorf("read result missing value: %w", ebuserrors.ErrInvalidPayload)
+		}
+		bytes, ok := toByteSlice(value.Value)
+		if !ok || len(bytes) == 0 {
+			return nil, fmt.Errorf("read value missing payload bytes: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return bytes, nil
+	case map[string]any:
+		value, ok := typed["value"]
+		if !ok || value == nil {
+			return nil, fmt.Errorf("read result missing value: %w", ebuserrors.ErrInvalidPayload)
+		}
+		bytes, ok := toByteSlice(value)
+		if !ok || len(bytes) == 0 {
+			return nil, fmt.Errorf("read value missing payload bytes: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return bytes, nil
+	default:
+		return nil, fmt.Errorf("unexpected read result type %T: %w", result, ebuserrors.ErrInvalidPayload)
+	}
+}
+
+func toByteSlice(value any) ([]byte, bool) {
+	switch typed := value.(type) {
+	case []byte:
+		out := make([]byte, len(typed))
+		copy(out, typed)
+		return out, true
+	case string:
+		decoded, err := hex.DecodeString(strings.TrimSpace(typed))
+		if err != nil || len(decoded) == 0 {
+			return nil, false
+		}
+		return decoded, true
+	case []any:
+		out := make([]byte, len(typed))
+		for i, entry := range typed {
+			number, ok := toByte(entry)
+			if !ok {
+				return nil, false
+			}
+			out[i] = number
+		}
+		return out, true
+	default:
+		rv := reflect.ValueOf(value)
+		if !rv.IsValid() {
+			return nil, false
+		}
+		if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+			return nil, false
+		}
+		out := make([]byte, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			number, ok := toByte(rv.Index(i).Interface())
+			if !ok {
+				return nil, false
+			}
+			out[i] = number
+		}
+		return out, true
+	}
+}
+
+func toByte(value any) (byte, bool) {
+	switch typed := value.(type) {
+	case byte:
+		return typed, true
+	case int:
+		if typed < 0 || typed > 0xFF {
+			return 0, false
+		}
+		return byte(typed), true
+	case int64:
+		if typed < 0 || typed > 0xFF {
+			return 0, false
+		}
+		return byte(typed), true
+	case float64:
+		if typed < 0 || typed > 0xFF || math.Trunc(typed) != typed {
+			return 0, false
+		}
+		return byte(typed), true
+	default:
+		return 0, false
+	}
+}
+
+func confirmDecodableReadback(spec configFieldSpec, payload []byte) error {
+	switch spec.valueType {
+	case configValueFloat32:
+		if len(payload) < 4 {
+			return fmt.Errorf("float32 payload too short: %w", ebuserrors.ErrInvalidPayload)
+		}
+		raw := binary.LittleEndian.Uint32(payload[:4])
+		value := float64(math.Float32frombits(raw))
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("float32 payload invalid: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return nil
+	case configValueUint16:
+		_, ok := decodePayloadUint16(payload)
+		if !ok {
+			return fmt.Errorf("uint16 payload invalid: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return nil
+	case configValueBoolU8:
+		if len(payload) < 1 {
+			return fmt.Errorf("bool payload too short: %w", ebuserrors.ErrInvalidPayload)
+		}
+		if payload[0] > 1 {
+			return fmt.Errorf("bool payload out of range: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return nil
+	case configValueEnumU16:
+		value, ok := decodePayloadUint16(payload)
+		if !ok {
+			return fmt.Errorf("enum payload invalid: %w", ebuserrors.ErrInvalidPayload)
+		}
+		for _, candidate := range spec.enum {
+			if value == candidate {
+				return nil
+			}
+		}
+		return fmt.Errorf("enum payload unknown value %d: %w", value, ebuserrors.ErrInvalidPayload)
+	default:
+		return fmt.Errorf("unsupported readback decode: %w", ebuserrors.ErrInvalidPayload)
+	}
+}
+
+func configReadbackMatchesWrite(spec configFieldSpec, written, readback []byte) bool {
+	switch spec.valueType {
+	case configValueFloat32:
+		if len(written) < 4 || len(readback) < 4 {
+			return false
+		}
+		return binary.LittleEndian.Uint32(readback[:4]) == binary.LittleEndian.Uint32(written[:4])
+	case configValueUint16, configValueEnumU16:
+		want, okWant := decodePayloadUint16(written)
+		got, okGot := decodePayloadUint16(readback)
+		return okWant && okGot && want == got
+	case configValueBoolU8:
+		return len(written) > 0 && len(readback) > 0 && (readback[0] == 0 || readback[0] == 1) && readback[0] == written[0]
+	default:
+		return false
+	}
+}
+
+func decodePayloadUint16(payload []byte) (uint16, bool) {
+	if len(payload) == 0 {
+		return 0, false
+	}
+	if len(payload) == 1 {
+		return uint16(payload[0]), true
+	}
+	return binary.LittleEndian.Uint16(payload[:2]), true
 }
 
 func invokeResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker) (InvokeResult, error) {
@@ -557,6 +1077,20 @@ func boilerConfigResultFromSource(params graphqlgo.ResolveParams) (BoilerConfigM
 		return *value, true
 	default:
 		return BoilerConfigMutationResult{}, false
+	}
+}
+
+func configResultFromSource(params graphqlgo.ResolveParams) (ConfigMutationResult, bool) {
+	switch value := params.Source.(type) {
+	case ConfigMutationResult:
+		return value, true
+	case *ConfigMutationResult:
+		if value == nil {
+			return ConfigMutationResult{}, false
+		}
+		return *value, true
+	default:
+		return ConfigMutationResult{}, false
 	}
 }
 

@@ -18,20 +18,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      GOPRIVATE: github.com/d3vi1/*
-      GONOSUMDB: github.com/d3vi1/*
+      GOPRIVATE: github.com/Project-Helianthus/*
+      GONOSUMDB: github.com/Project-Helianthus/*
       GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - run: |
-          TOKEN="${{ secrets.GH_TOKEN }}"
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.GIT_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.REPO_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PAT }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PRIVATE_REPO_TOKEN }}"; fi
+          TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
+          echo "machine github.com login x-access-token password ${TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
         with:
@@ -46,20 +44,18 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      GOPRIVATE: github.com/d3vi1/*
-      GONOSUMDB: github.com/d3vi1/*
+      GOPRIVATE: github.com/Project-Helianthus/*
+      GONOSUMDB: github.com/Project-Helianthus/*
       GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - run: |
-          TOKEN="${{ secrets.GH_TOKEN }}"
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.GIT_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.REPO_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PAT }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PRIVATE_REPO_TOKEN }}"; fi
+          TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
+          echo "machine github.com login x-access-token password ${TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
         with:
@@ -69,20 +65,18 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     env:
-      GOPRIVATE: github.com/d3vi1/*
-      GONOSUMDB: github.com/d3vi1/*
+      GOPRIVATE: github.com/Project-Helianthus/*
+      GONOSUMDB: github.com/Project-Helianthus/*
       GOPROXY: direct
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - run: |
-          TOKEN="${{ secrets.GH_TOKEN }}"
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.GIT_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.REPO_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.D3VI1_READ_TOKEN }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PAT }}"; fi
-          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PRIVATE_REPO_TOKEN }}"; fi
+          TOKEN="${{ secrets.REPO_READ_TOKEN }}"
           if [ -z "$TOKEN" ]; then TOKEN="${{ github.token }}"; fi
+          echo "machine github.com login x-access-token password ${TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
           git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/setup-go@v5
         with:

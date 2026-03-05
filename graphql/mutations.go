@@ -52,6 +52,7 @@ func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *
 	}
 
 	types := buildSchemaTypes()
+	addEnergyTotalsToDevice(types.deviceType, types.energyTotals, builder)
 	queryType := buildQueryType(builder, types)
 
 	var mutationType *graphqlgo.Object

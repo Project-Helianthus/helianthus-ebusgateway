@@ -103,8 +103,8 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 	}
 	server.SetStatusProvider(testStatusProvider{daemon: ServiceStatus{Status: "running"}, adapter: ServiceStatus{Status: "connected"}})
 	server.SetSemanticProvider(testSemanticProvider{
-		zones:  []Zone{{ID: "zone-a", Name: "Living", OperatingMode: "AUTO", Preset: "COMFORT"}},
-		dhw:    &DhwStatus{OperatingMode: "AUTO", Preset: "ECO"},
+		zones:  []Zone{{ID: "zone-a", Name: "Living", Config: ZoneConfig{OperatingMode: "AUTO", Preset: "COMFORT"}}},
+		dhw:    &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO", Preset: "ECO"}},
 		energy: &EnergyTotals{Gas: EnergyChannel{DHW: EnergySeries{Today: 1.25}}},
 	})
 

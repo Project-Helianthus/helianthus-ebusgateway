@@ -349,24 +349,40 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 				zoneItems := make([]portal.SemanticZone, 0, len(zones))
 				for _, zone := range zones {
 					zoneItems = append(zoneItems, portal.SemanticZone{
-						ID:            zone.ID,
-						Name:          zone.Name,
-						OperatingMode: zone.OperatingMode,
-						Preset:        zone.Preset,
-						CurrentTempC:  zone.CurrentTempC,
-						TargetTempC:   zone.TargetTempC,
-						HeatingDemand: zone.HeatingDemand,
+						ID:   zone.ID,
+						Name: zone.Name,
+						State: portal.SemanticZoneState{
+							CurrentTempC:       zone.State.CurrentTempC,
+							CurrentHumidityPct: zone.State.CurrentHumidityPct,
+							HvacAction:         zone.State.HvacAction,
+							SpecialFunction:    zone.State.SpecialFunction,
+							HeatingDemandPct:   zone.State.HeatingDemandPct,
+							ValvePositionPct:   zone.State.ValvePositionPct,
+						},
+						Config: portal.SemanticZoneConfig{
+							OperatingMode:     zone.Config.OperatingMode,
+							Preset:            zone.Config.Preset,
+							TargetTempC:       zone.Config.TargetTempC,
+							AllowedModes:      zone.Config.AllowedModes,
+							CircuitType:       zone.Config.CircuitType,
+							AssociatedCircuit: zone.Config.AssociatedCircuit,
+						},
 					})
 				}
 
 				var dhw *portal.SemanticDHW
 				if value := semanticProvider.DHW(); value != nil {
 					dhw = &portal.SemanticDHW{
-						OperatingMode: value.OperatingMode,
-						Preset:        value.Preset,
-						CurrentTempC:  value.CurrentTempC,
-						TargetTempC:   value.TargetTempC,
-						HeatingDemand: value.HeatingDemand,
+						State: portal.SemanticDhwState{
+							CurrentTempC:     value.State.CurrentTempC,
+							SpecialFunction:  value.State.SpecialFunction,
+							HeatingDemandPct: value.State.HeatingDemandPct,
+						},
+						Config: portal.SemanticDhwConfig{
+							OperatingMode: value.Config.OperatingMode,
+							Preset:        value.Config.Preset,
+							TargetTempC:   value.Config.TargetTempC,
+						},
 					}
 				}
 

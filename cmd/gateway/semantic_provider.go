@@ -24,13 +24,24 @@ func (adapter mcpSemanticProviderAdapter) Zones() []mcp.Zone {
 	out := make([]mcp.Zone, len(zones))
 	for i, zone := range zones {
 		out[i] = mcp.Zone{
-			ID:            zone.ID,
-			Name:          zone.Name,
-			OperatingMode: zone.OperatingMode,
-			Preset:        zone.Preset,
-			CurrentTempC:  cloneFloatPtr(zone.CurrentTempC),
-			TargetTempC:   cloneFloatPtr(zone.TargetTempC),
-			HeatingDemand: cloneFloatPtr(zone.HeatingDemand),
+			ID:   zone.ID,
+			Name: zone.Name,
+			State: mcp.ZoneState{
+				CurrentTempC:       cloneFloatPtr(zone.State.CurrentTempC),
+				CurrentHumidityPct: cloneFloatPtr(zone.State.CurrentHumidityPct),
+				HvacAction:         zone.State.HvacAction,
+				SpecialFunction:    zone.State.SpecialFunction,
+				HeatingDemandPct:   cloneFloatPtr(zone.State.HeatingDemandPct),
+				ValvePositionPct:   cloneFloatPtr(zone.State.ValvePositionPct),
+			},
+			Config: mcp.ZoneConfig{
+				OperatingMode:     zone.Config.OperatingMode,
+				Preset:            zone.Config.Preset,
+				TargetTempC:       cloneFloatPtr(zone.Config.TargetTempC),
+				AllowedModes:      append([]string(nil), zone.Config.AllowedModes...),
+				CircuitType:       zone.Config.CircuitType,
+				AssociatedCircuit: cloneIntPtr(zone.Config.AssociatedCircuit),
+			},
 		}
 	}
 	return out
@@ -45,11 +56,16 @@ func (adapter mcpSemanticProviderAdapter) DHW() *mcp.DhwStatus {
 		return nil
 	}
 	return &mcp.DhwStatus{
-		OperatingMode: status.OperatingMode,
-		Preset:        status.Preset,
-		CurrentTempC:  cloneFloatPtr(status.CurrentTempC),
-		TargetTempC:   cloneFloatPtr(status.TargetTempC),
-		HeatingDemand: cloneFloatPtr(status.HeatingDemand),
+		State: mcp.DhwState{
+			CurrentTempC:     cloneFloatPtr(status.State.CurrentTempC),
+			SpecialFunction:  status.State.SpecialFunction,
+			HeatingDemandPct: cloneFloatPtr(status.State.HeatingDemandPct),
+		},
+		Config: mcp.DhwConfig{
+			OperatingMode: status.Config.OperatingMode,
+			Preset:        status.Config.Preset,
+			TargetTempC:   cloneFloatPtr(status.Config.TargetTempC),
+		},
 	}
 }
 
@@ -139,6 +155,6 @@ func cloneFloatPtr(value *float64) *float64 {
 	if value == nil {
 		return nil
 	}
-	copy := *value
-	return &copy
+	cp := *value
+	return &cp
 }

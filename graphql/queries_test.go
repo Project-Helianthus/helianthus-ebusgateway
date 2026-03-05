@@ -289,62 +289,70 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				zones {
 					id
 					name
-					operatingMode
-					preset
-					hvacAction
-					allowedModes
-					currentTempC
-					targetTempC
-					currentHumidityPct
-					heatingDemand
-					specialFunction
-					circuitTypeRaw
-					zoneCircuitIndexRaw
-					zoneOperationModeRaw
-					zoneValveStatusRaw
-					zoneSpecialFunctionRaw
+					state {
+						currentTempC
+						currentHumidityPct
+						hvacAction
+						specialFunction
+						heatingDemandPct
+						valvePositionPct
+					}
+					config {
+						operatingMode
+						preset
+						targetTempC
+						allowedModes
+						circuitType
+						associatedCircuit
+					}
 				}
 				dhw {
-					operatingMode
-					preset
-					currentTempC
-					targetTempC
-					heatingDemand
-					specialFunction
-					dhwOperationModeRaw
-					dhwSpecialFunctionRaw
+					state {
+						currentTempC
+						specialFunction
+						heatingDemandPct
+					}
+					config {
+						operatingMode
+						preset
+						targetTempC
+					}
 				}
 			}
 		`)
 
 		var response struct {
 			Zones []struct {
-				ID                     string   `json:"id"`
-				Name                   string   `json:"name"`
-				OperatingMode          *string  `json:"operatingMode"`
-				Preset                 *string  `json:"preset"`
-				HvacAction             *string  `json:"hvacAction"`
-				AllowedModes           []string `json:"allowedModes"`
-				CurrentTempC           *float64 `json:"currentTempC"`
-				TargetTempC            *float64 `json:"targetTempC"`
-				CurrentHumidityPct     *float64 `json:"currentHumidityPct"`
-				HeatingDemand          *float64 `json:"heatingDemand"`
-				SpecialFunction        *string  `json:"specialFunction"`
-				CircuitTypeRaw         *string  `json:"circuitTypeRaw"`
-				ZoneCircuitIndexRaw    *string  `json:"zoneCircuitIndexRaw"`
-				ZoneOperationModeRaw   *string  `json:"zoneOperationModeRaw"`
-				ZoneValveStatusRaw     *string  `json:"zoneValveStatusRaw"`
-				ZoneSpecialFunctionRaw *string  `json:"zoneSpecialFunctionRaw"`
+				ID    string `json:"id"`
+				Name  string `json:"name"`
+				State struct {
+					CurrentTempC       *float64 `json:"currentTempC"`
+					CurrentHumidityPct *float64 `json:"currentHumidityPct"`
+					HvacAction         *string  `json:"hvacAction"`
+					SpecialFunction    *string  `json:"specialFunction"`
+					HeatingDemandPct   *float64 `json:"heatingDemandPct"`
+					ValvePositionPct   *float64 `json:"valvePositionPct"`
+				} `json:"state"`
+				Config struct {
+					OperatingMode     *string  `json:"operatingMode"`
+					Preset            *string  `json:"preset"`
+					TargetTempC       *float64 `json:"targetTempC"`
+					AllowedModes      []string `json:"allowedModes"`
+					CircuitType       *string  `json:"circuitType"`
+					AssociatedCircuit *int     `json:"associatedCircuit"`
+				} `json:"config"`
 			} `json:"zones"`
 			DHW *struct {
-				OperatingMode         *string  `json:"operatingMode"`
-				Preset                *string  `json:"preset"`
-				CurrentTempC          *float64 `json:"currentTempC"`
-				TargetTempC           *float64 `json:"targetTempC"`
-				HeatingDemand         *float64 `json:"heatingDemand"`
-				SpecialFunction       *string  `json:"specialFunction"`
-				DhwOperationModeRaw   *string  `json:"dhwOperationModeRaw"`
-				DhwSpecialFunctionRaw *string  `json:"dhwSpecialFunctionRaw"`
+				State struct {
+					CurrentTempC     *float64 `json:"currentTempC"`
+					SpecialFunction  *string  `json:"specialFunction"`
+					HeatingDemandPct *float64 `json:"heatingDemandPct"`
+				} `json:"state"`
+				Config struct {
+					OperatingMode *string  `json:"operatingMode"`
+					Preset        *string  `json:"preset"`
+					TargetTempC   *float64 `json:"targetTempC"`
+				} `json:"config"`
 			} `json:"dhw"`
 		}
 
@@ -359,57 +367,47 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 	})
 
-	t.Run("energy_totals", func(t *testing.T) {
+	t.Run("energy_totals_on_device", func(t *testing.T) {
 		request := graphqlclient.NewRequest(`
 			query {
-				energyTotals {
-					gas { dhw { today yearly } climate { today yearly } }
-					electric { dhw { today yearly } climate { today yearly } }
-					solar { dhw { today yearly } climate { today yearly } }
+				devices {
+					address
+					role
+					energyTotals {
+						gas { dhw { today yearly } climate { today yearly } }
+						electric { dhw { today yearly } climate { today yearly } }
+						solar { dhw { today yearly } climate { today yearly } }
+					}
 				}
 			}
 		`)
 
 		var response struct {
-			EnergyTotals *struct {
-				Gas struct {
-					DHW struct {
-						Today  float64   `json:"today"`
-						Yearly []float64 `json:"yearly"`
-					} `json:"dhw"`
-					Climate struct {
-						Today  float64   `json:"today"`
-						Yearly []float64 `json:"yearly"`
-					} `json:"climate"`
-				} `json:"gas"`
-				Electric struct {
-					DHW struct {
-						Today  float64   `json:"today"`
-						Yearly []float64 `json:"yearly"`
-					} `json:"dhw"`
-					Climate struct {
-						Today  float64   `json:"today"`
-						Yearly []float64 `json:"yearly"`
-					} `json:"climate"`
-				} `json:"electric"`
-				Solar struct {
-					DHW struct {
-						Today  float64   `json:"today"`
-						Yearly []float64 `json:"yearly"`
-					} `json:"dhw"`
-					Climate struct {
-						Today  float64   `json:"today"`
-						Yearly []float64 `json:"yearly"`
-					} `json:"climate"`
-				} `json:"solar"`
-			} `json:"energyTotals"`
+			Devices []struct {
+				Address      int     `json:"address"`
+				Role         *string `json:"role"`
+				EnergyTotals *struct {
+					Gas struct {
+						DHW struct {
+							Today  float64   `json:"today"`
+							Yearly []float64 `json:"yearly"`
+						} `json:"dhw"`
+						Climate struct {
+							Today  float64   `json:"today"`
+							Yearly []float64 `json:"yearly"`
+						} `json:"climate"`
+					} `json:"gas"`
+				} `json:"energyTotals"`
+			} `json:"devices"`
 		}
 
 		if err := client.Run(context.Background(), request, &response); err != nil {
-			t.Fatalf("energyTotals query error = %v", err)
+			t.Fatalf("energyTotals on device query error = %v", err)
 		}
-		if response.EnergyTotals != nil {
-			t.Fatalf("energyTotals expected nil with static provider")
+		for _, dev := range response.Devices {
+			if dev.EnergyTotals != nil {
+				t.Fatalf("device %d energyTotals expected nil with no semantic provider", dev.Address)
+			}
 		}
 	})
 

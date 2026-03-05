@@ -208,14 +208,9 @@ func TestSetBoilerConfigMutation_UnsupportedInReducedProfile(t *testing.T) {
 	result := graphqlgo.Do(graphqlgo.Params{
 		Schema: schema,
 		RequestString: `mutation {
-			setBoilerConfig(dhwOperatingMode: "AUTO") {
-				ok
-				error {
-					code
-					category
-					message
-				}
-				result
+			setBoilerConfig(field: "flowsetHcMaxC", value: "55") {
+				success
+				error
 			}
 		}`,
 	})
@@ -231,24 +226,12 @@ func TestSetBoilerConfigMutation_UnsupportedInReducedProfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("setBoilerConfig payload type = %T; want map", data["setBoilerConfig"])
 	}
-	if got, _ := payload["ok"].(bool); got {
-		t.Fatalf("setBoilerConfig ok = %v; want false", got)
+	if got, _ := payload["success"].(bool); got {
+		t.Fatalf("setBoilerConfig success = %v; want false", got)
 	}
-	errPayload, ok := payload["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("setBoilerConfig error type = %T; want map", payload["error"])
-	}
-	if code, _ := errPayload["code"].(string); code != boilerConfigUnsupportedCode {
-		t.Fatalf("setBoilerConfig error.code = %q; want %q", code, boilerConfigUnsupportedCode)
-	}
-	if category, _ := errPayload["category"].(string); category != boilerConfigUnsupportedCategory {
-		t.Fatalf("setBoilerConfig error.category = %q; want %q", category, boilerConfigUnsupportedCategory)
-	}
-	if message, _ := errPayload["message"].(string); message == "" {
-		t.Fatalf("setBoilerConfig error.message empty")
-	}
-	if payload["result"] != nil {
-		t.Fatalf("setBoilerConfig result = %#v; want nil", payload["result"])
+	errMessage, _ := payload["error"].(string)
+	if errMessage == "" {
+		t.Fatalf("setBoilerConfig error message empty")
 	}
 }
 

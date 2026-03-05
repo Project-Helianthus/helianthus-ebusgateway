@@ -69,6 +69,46 @@ func (adapter mcpSemanticProviderAdapter) DHW() *mcp.DhwStatus {
 	}
 }
 
+func (adapter mcpSemanticProviderAdapter) Circuits() []mcp.CircuitStatus {
+	if adapter.provider == nil {
+		return nil
+	}
+	circuits := adapter.provider.Circuits()
+	if len(circuits) == 0 {
+		return nil
+	}
+	out := make([]mcp.CircuitStatus, len(circuits))
+	for i, circuit := range circuits {
+		out[i] = mcp.CircuitStatus{
+			Index:       circuit.Index,
+			CircuitType: circuit.CircuitType,
+			HasMixer:    circuit.HasMixer,
+			State: mcp.CircuitState{
+				PumpActive:       cloneBoolPtr(circuit.State.PumpActive),
+				MixerPositionPct: cloneFloatPtr(circuit.State.MixerPositionPct),
+				FlowTemperatureC: cloneFloatPtr(circuit.State.FlowTemperatureC),
+				FlowSetpointC:    cloneFloatPtr(circuit.State.FlowSetpointC),
+				CalcFlowTempC:    cloneFloatPtr(circuit.State.CalcFlowTempC),
+				CircuitState:     circuit.State.CircuitState,
+				Humidity:         cloneFloatPtr(circuit.State.Humidity),
+				DewPoint:         cloneFloatPtr(circuit.State.DewPoint),
+				PumpHours:        cloneFloatPtr(circuit.State.PumpHours),
+				PumpStarts:       cloneIntPtr(circuit.State.PumpStarts),
+			},
+			Config: mcp.CircuitConfig{
+				HeatingCurve:    cloneFloatPtr(circuit.Config.HeatingCurve),
+				FlowTempMaxC:    cloneFloatPtr(circuit.Config.FlowTempMaxC),
+				FlowTempMinC:    cloneFloatPtr(circuit.Config.FlowTempMinC),
+				SummerLimitC:    cloneFloatPtr(circuit.Config.SummerLimitC),
+				FrostProtC:      cloneFloatPtr(circuit.Config.FrostProtC),
+				RoomTempControl: circuit.Config.RoomTempControl,
+				CoolingEnabled:  cloneBoolPtr(circuit.Config.CoolingEnabled),
+			},
+		}
+	}
+	return out
+}
+
 func (adapter mcpSemanticProviderAdapter) EnergyTotals() *mcp.EnergyTotals {
 	if adapter.provider == nil {
 		return nil

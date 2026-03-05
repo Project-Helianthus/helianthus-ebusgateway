@@ -179,10 +179,28 @@ type CircuitStatus struct {
 	Config      CircuitConfig `json:"config"`
 }
 
+type RadioDevice struct {
+	Group                int      `json:"group"`
+	Instance             int      `json:"instance"`
+	SlotMode             string   `json:"slot_mode"`
+	DeviceConnected      *bool    `json:"device_connected,omitempty"`
+	DeviceClassAddress   *int     `json:"device_class_address,omitempty"`
+	DeviceModel          string   `json:"device_model,omitempty"`
+	FirmwareVersion      *string  `json:"firmware_version,omitempty"`
+	HardwareIdentifier   *int     `json:"hardware_identifier,omitempty"`
+	RemoteControlAddress *int     `json:"remote_control_address,omitempty"`
+	DevicePaired         *bool    `json:"device_paired,omitempty"`
+	ReceptionStrength    *int     `json:"reception_strength,omitempty"`
+	ZoneAssignment       *int     `json:"zone_assignment,omitempty"`
+	RoomTemperatureC     *float64 `json:"room_temperature_c,omitempty"`
+	RoomHumidityPct      *float64 `json:"room_humidity_pct,omitempty"`
+}
+
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
 	Circuits() []CircuitStatus
+	RadioDevices() []RadioDevice
 	EnergyTotals() *EnergyTotals
 	BoilerStatus() *BoilerStatus
 	System() *SystemStatus
@@ -205,6 +223,7 @@ const (
 	toolRuntimeStatusGetName    = "ebus.v1.runtime.status.get"
 	toolSemanticZonesGetName    = "ebus.v1.semantic.zones.get"
 	toolSemanticCircuitsGetName = "ebus.v1.semantic.circuits.get"
+	toolSemanticRadioGetName    = "ebus.v1.semantic.radio_devices.get"
 	toolSemanticDHWGetName      = "ebus.v1.semantic.dhw.get"
 	toolSemanticEnergyGetName   = "ebus.v1.semantic.energy_totals.get"
 	toolSemanticBoilerGetName   = "ebus.v1.semantic.boiler_status.get"
@@ -267,6 +286,10 @@ func (staticSemanticProvider) Circuits() []CircuitStatus {
 	return nil
 }
 
+func (staticSemanticProvider) RadioDevices() []RadioDevice {
+	return nil
+}
+
 func (staticSemanticProvider) EnergyTotals() *EnergyTotals {
 	return nil
 }
@@ -305,6 +328,7 @@ type snapshotState struct {
 	runtime  map[string]any
 	zones    []Zone
 	circuits []CircuitStatus
+	radio    []RadioDevice
 	dhw      *DhwStatus
 	energy   *EnergyTotals
 	boiler   *BoilerStatus
@@ -371,6 +395,17 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			},
 		},
 		{
+			Name:        toolSemanticRadioGetName,
+			Description: "Get semantic remote-slot radio devices snapshot.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
 			Name:        toolSemanticDHWGetName,
 			Description: "Get semantic domestic hot water snapshot.",
 			InputSchema: map[string]any{
@@ -424,7 +459,7 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 						"type": "array",
 						"items": map[string]any{
 							"type": "string",
-							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits"},
+							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices"},
 						},
 					},
 					"timeout_ms": map[string]any{"type": "integer", "minimum": 1},
@@ -700,6 +735,13 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		}
 		circuits := s.snapshotCircuits(snapshot)
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(circuits, nil, consistency)), false), nil
+	case toolSemanticRadioGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		radio := s.snapshotRadioDevices(snapshot)
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(radio, nil, consistency)), false), nil
 	case toolSemanticDHWGetName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -889,6 +931,7 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		runtime:   s.runtimeStatus(nil),
 		zones:     s.snapshotZones(nil),
 		circuits:  s.snapshotCircuits(nil),
+		radio:     s.snapshotRadioDevices(nil),
 		dhw:       s.snapshotDHW(nil),
 		energy:    s.snapshotEnergyTotals(nil),
 		boiler:    s.snapshotBoilerStatus(nil),
@@ -979,6 +1022,7 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		runtime:   cloneMap(snapshot.runtime),
 		zones:     cloneZones(snapshot.zones),
 		circuits:  cloneCircuits(snapshot.circuits),
+		radio:     cloneRadioDevices(snapshot.radio),
 		dhw:       dhwCopy,
 		energy:    energyCopy,
 		boiler:    boilerCopy,
@@ -1347,6 +1391,62 @@ func cloneCircuitStatus(source CircuitStatus) CircuitStatus {
 	return out
 }
 
+func cloneRadioDevices(source []RadioDevice) []RadioDevice {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make([]RadioDevice, len(source))
+	for i, device := range source {
+		out[i] = cloneRadioDevice(device)
+	}
+	return out
+}
+
+func cloneRadioDevice(source RadioDevice) RadioDevice {
+	out := source
+	if source.DeviceConnected != nil {
+		v := *source.DeviceConnected
+		out.DeviceConnected = &v
+	}
+	if source.DeviceClassAddress != nil {
+		v := *source.DeviceClassAddress
+		out.DeviceClassAddress = &v
+	}
+	if source.FirmwareVersion != nil {
+		v := *source.FirmwareVersion
+		out.FirmwareVersion = &v
+	}
+	if source.HardwareIdentifier != nil {
+		v := *source.HardwareIdentifier
+		out.HardwareIdentifier = &v
+	}
+	if source.RemoteControlAddress != nil {
+		v := *source.RemoteControlAddress
+		out.RemoteControlAddress = &v
+	}
+	if source.DevicePaired != nil {
+		v := *source.DevicePaired
+		out.DevicePaired = &v
+	}
+	if source.ReceptionStrength != nil {
+		v := *source.ReceptionStrength
+		out.ReceptionStrength = &v
+	}
+	if source.ZoneAssignment != nil {
+		v := *source.ZoneAssignment
+		out.ZoneAssignment = &v
+	}
+	if source.RoomTemperatureC != nil {
+		v := *source.RoomTemperatureC
+		out.RoomTemperatureC = &v
+	}
+	if source.RoomHumidityPct != nil {
+		v := *source.RoomHumidityPct
+		out.RoomHumidityPct = &v
+	}
+	return out
+}
+
 func cloneMethodInfoList(source []methodInfo) []methodInfo {
 	if len(source) == 0 {
 		return nil
@@ -1567,6 +1667,30 @@ func (s *Server) snapshotCircuits(snapshot *snapshotState) []CircuitStatus {
 			return out[i].Index < out[j].Index
 		}
 		return out[i].CircuitType < out[j].CircuitType
+	})
+	return out
+}
+
+func (s *Server) snapshotRadioDevices(snapshot *snapshotState) []RadioDevice {
+	if snapshot != nil {
+		return cloneRadioDevices(snapshot.radio)
+	}
+	if s == nil || s.semantic == nil {
+		return nil
+	}
+	devices := s.semantic.RadioDevices()
+	if len(devices) == 0 {
+		return nil
+	}
+	out := cloneRadioDevices(devices)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Group != out[j].Group {
+			return out[i].Group < out[j].Group
+		}
+		if out[i].Instance != out[j].Instance {
+			return out[i].Instance < out[j].Instance
+		}
+		return out[i].DeviceModel < out[j].DeviceModel
 	})
 	return out
 }
@@ -1822,7 +1946,7 @@ func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, 
 
 func parseSemanticSnapshotOptions(args map[string]any) (semanticSnapshotOptions, error) {
 	options := semanticSnapshotOptions{
-		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits"},
+		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices"},
 		timeout:      defaultSnapshotReadTTL,
 		allowPartial: false,
 	}
@@ -1888,7 +2012,7 @@ func parseSemanticSnapshotPlanes(raw any) ([]string, error) {
 		}
 		normalized := strings.ToLower(strings.TrimSpace(value))
 		switch normalized {
-		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits":
+		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices":
 		default:
 			return nil, fmt.Errorf("unsupported plane %q: %w", value, ebuserrors.ErrInvalidPayload)
 		}
@@ -1927,6 +2051,8 @@ func (s *Server) readSemanticPlane(ctx context.Context, plane string, snapshot *
 		value = s.snapshotSystem(snapshot)
 	case "circuits":
 		value = s.snapshotCircuits(snapshot)
+	case "radio_devices":
+		value = s.snapshotRadioDevices(snapshot)
 	default:
 		return nil, fmt.Errorf("unsupported plane %q: %w", plane, ebuserrors.ErrInvalidPayload)
 	}

@@ -36,6 +36,7 @@ const (
 	semanticStreamDHW
 	semanticStreamBoiler
 	semanticStreamCircuits
+	semanticStreamRadioDevices
 )
 
 type phaseTransitionLog struct {
@@ -59,6 +60,7 @@ type LiveSemanticProvider struct {
 	zones    []Zone
 	dhw      *DhwStatus
 	circuits []CircuitStatus
+	radio    []RadioDevice
 	energy   *EnergyTotals
 	boiler   *BoilerStatus
 
@@ -72,10 +74,12 @@ type LiveSemanticProvider struct {
 	dhwPublished       bool
 	boilerPublished    bool
 	circuitPublished   bool
+	radioPublished     bool
 	zoneLiveSeen       bool
 	dhwLiveSeen        bool
 	boilerLiveSeen     bool
 	circuitLiveSeen    bool
+	radioLiveSeen      bool
 	bootMonitorStarted bool
 	phaseLogger        func(string, ...any)
 }
@@ -199,6 +203,22 @@ func (provider *LiveSemanticProvider) Circuits() []CircuitStatus {
 	return out
 }
 
+func (provider *LiveSemanticProvider) RadioDevices() []RadioDevice {
+	if provider == nil {
+		return nil
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	if len(provider.radio) == 0 {
+		return nil
+	}
+	out := make([]RadioDevice, len(provider.radio))
+	for i, device := range provider.radio {
+		out[i] = cloneRadioDevice(device)
+	}
+	return out
+}
+
 func (provider *LiveSemanticProvider) EnergyTotals() *EnergyTotals {
 	if provider == nil {
 		return nil
@@ -309,6 +329,45 @@ func (provider *LiveSemanticProvider) setCircuitsWithSource(circuits []CircuitSt
 			provider.circuitLiveSeen = true
 		}
 		transition = provider.recordEpochUpdateLocked(source, semanticStreamCircuits, reason)
+	}
+	provider.mu.Unlock()
+	provider.logPhaseTransition(transition)
+}
+
+func (provider *LiveSemanticProvider) SetRadioDevices(devices []RadioDevice) {
+	provider.setRadioDevicesWithSource(devices, semanticDataSourceLive, "radio_devices_live_update")
+}
+
+func (provider *LiveSemanticProvider) SetRadioDevicesFromCache(devices []RadioDevice) {
+	provider.setRadioDevicesWithSource(devices, semanticDataSourceCache, "radio_devices_cache_update")
+}
+
+func (provider *LiveSemanticProvider) setRadioDevicesWithSource(devices []RadioDevice, source semanticDataSource, reason string) {
+	if provider == nil {
+		return
+	}
+
+	devicesCopy := make([]RadioDevice, len(devices))
+	for i, device := range devices {
+		devicesCopy[i] = cloneRadioDevice(device)
+	}
+
+	var transition *phaseTransitionLog
+	provider.mu.Lock()
+	if equalRadioDevices(provider.radio, devicesCopy) {
+		if source == semanticDataSourceLive && len(devicesCopy) > 0 {
+			provider.radioLiveSeen = true
+		}
+		provider.mu.Unlock()
+		return
+	}
+	provider.radio = devicesCopy
+	if len(devicesCopy) > 0 {
+		provider.radioPublished = true
+		if source == semanticDataSourceLive {
+			provider.radioLiveSeen = true
+		}
+		transition = provider.recordEpochUpdateLocked(source, semanticStreamRadioDevices, reason)
 	}
 	provider.mu.Unlock()
 	provider.logPhaseTransition(transition)
@@ -425,6 +484,8 @@ func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDat
 			provider.boilerLiveSeen = true
 		case semanticStreamCircuits:
 			provider.circuitLiveSeen = true
+		case semanticStreamRadioDevices:
+			provider.radioLiveSeen = true
 		}
 		provider.liveEpoch++
 		semanticLiveEpoch.Set(int64(provider.liveEpoch))
@@ -451,7 +512,10 @@ func (provider *LiveSemanticProvider) liveReadyCriteriaLocked() bool {
 	if provider.circuitPublished && !provider.circuitLiveSeen {
 		return false
 	}
-	return provider.zoneLiveSeen || provider.dhwLiveSeen || provider.boilerLiveSeen || provider.circuitLiveSeen
+	if provider.radioPublished && !provider.radioLiveSeen {
+		return false
+	}
+	return provider.zoneLiveSeen || provider.dhwLiveSeen || provider.boilerLiveSeen || provider.circuitLiveSeen || provider.radioLiveSeen
 }
 
 func (provider *LiveSemanticProvider) transitionPhaseLocked(next SemanticStartupPhase, reason string) *phaseTransitionLog {
@@ -854,6 +918,80 @@ func cloneCircuitConfig(config CircuitConfig) CircuitConfig {
 	return out
 }
 
+func cloneRadioDevice(device RadioDevice) RadioDevice {
+	out := device
+	if device.DeviceConnected != nil {
+		v := *device.DeviceConnected
+		out.DeviceConnected = &v
+	}
+	if device.DeviceClassAddress != nil {
+		v := *device.DeviceClassAddress
+		out.DeviceClassAddress = &v
+	}
+	if device.FirmwareVersion != nil {
+		v := *device.FirmwareVersion
+		out.FirmwareVersion = &v
+	}
+	if device.HardwareIdentifier != nil {
+		v := *device.HardwareIdentifier
+		out.HardwareIdentifier = &v
+	}
+	if device.RemoteControlAddress != nil {
+		v := *device.RemoteControlAddress
+		out.RemoteControlAddress = &v
+	}
+	if device.DevicePaired != nil {
+		v := *device.DevicePaired
+		out.DevicePaired = &v
+	}
+	if device.ReceptionStrength != nil {
+		v := *device.ReceptionStrength
+		out.ReceptionStrength = &v
+	}
+	if device.ZoneAssignment != nil {
+		v := *device.ZoneAssignment
+		out.ZoneAssignment = &v
+	}
+	if device.RoomTemperatureC != nil {
+		v := *device.RoomTemperatureC
+		out.RoomTemperatureC = &v
+	}
+	if device.RoomHumidityPct != nil {
+		v := *device.RoomHumidityPct
+		out.RoomHumidityPct = &v
+	}
+	return out
+}
+
+func equalRadioDevices(left []RadioDevice, right []RadioDevice) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if !equalRadioDevice(left[i], right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func equalRadioDevice(left RadioDevice, right RadioDevice) bool {
+	return left.Group == right.Group &&
+		left.Instance == right.Instance &&
+		left.SlotMode == right.SlotMode &&
+		equalBoolPointer(left.DeviceConnected, right.DeviceConnected) &&
+		equalIntPointer(left.DeviceClassAddress, right.DeviceClassAddress) &&
+		left.DeviceModel == right.DeviceModel &&
+		equalStringPointer(left.FirmwareVersion, right.FirmwareVersion) &&
+		equalIntPointer(left.HardwareIdentifier, right.HardwareIdentifier) &&
+		equalIntPointer(left.RemoteControlAddress, right.RemoteControlAddress) &&
+		equalBoolPointer(left.DevicePaired, right.DevicePaired) &&
+		equalIntPointer(left.ReceptionStrength, right.ReceptionStrength) &&
+		equalIntPointer(left.ZoneAssignment, right.ZoneAssignment) &&
+		equalFloat64Pointer(left.RoomTemperatureC, right.RoomTemperatureC) &&
+		equalFloat64Pointer(left.RoomHumidityPct, right.RoomHumidityPct)
+}
+
 func equalCircuitStatuses(left []CircuitStatus, right []CircuitStatus) bool {
 	if len(left) != len(right) {
 		return false
@@ -922,6 +1060,13 @@ func equalBoolPointer(left *bool, right *bool) bool {
 }
 
 func equalIntPointer(left *int, right *int) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func equalStringPointer(left *string, right *string) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}

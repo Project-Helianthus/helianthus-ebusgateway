@@ -109,6 +109,36 @@ func (adapter mcpSemanticProviderAdapter) Circuits() []mcp.CircuitStatus {
 	return out
 }
 
+func (adapter mcpSemanticProviderAdapter) RadioDevices() []mcp.RadioDevice {
+	if adapter.provider == nil {
+		return nil
+	}
+	devices := adapter.provider.RadioDevices()
+	if len(devices) == 0 {
+		return nil
+	}
+	out := make([]mcp.RadioDevice, len(devices))
+	for i, device := range devices {
+		out[i] = mcp.RadioDevice{
+			Group:                device.Group,
+			Instance:             device.Instance,
+			SlotMode:             device.SlotMode,
+			DeviceConnected:      cloneBoolPtr(device.DeviceConnected),
+			DeviceClassAddress:   cloneIntPtr(device.DeviceClassAddress),
+			DeviceModel:          device.DeviceModel,
+			FirmwareVersion:      cloneStringPtr(device.FirmwareVersion),
+			HardwareIdentifier:   cloneIntPtr(device.HardwareIdentifier),
+			RemoteControlAddress: cloneIntPtr(device.RemoteControlAddress),
+			DevicePaired:         cloneBoolPtr(device.DevicePaired),
+			ReceptionStrength:    cloneIntPtr(device.ReceptionStrength),
+			ZoneAssignment:       cloneIntPtr(device.ZoneAssignment),
+			RoomTemperatureC:     cloneFloatPtr(device.RoomTemperatureC),
+			RoomHumidityPct:      cloneFloatPtr(device.RoomHumidityPct),
+		}
+	}
+	return out
+}
+
 func (adapter mcpSemanticProviderAdapter) EnergyTotals() *mcp.EnergyTotals {
 	if adapter.provider == nil {
 		return nil

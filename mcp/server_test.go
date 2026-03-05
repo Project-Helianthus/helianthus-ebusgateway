@@ -162,6 +162,9 @@ type testSemanticProvider struct {
 	zones         []Zone
 	circuits      []CircuitStatus
 	radio         []RadioDevice
+	fm5Mode       Fm5SemanticMode
+	solar         *SolarStatus
+	cylinders     []CylinderStatus
 	dhw           *DhwStatus
 	energy        *EnergyTotals
 	boiler        *BoilerStatus
@@ -214,6 +217,21 @@ func (p testSemanticProvider) RadioDevices() []RadioDevice {
 		return nil
 	}
 	return cloneRadioDevices(p.radio)
+}
+
+func (p testSemanticProvider) FM5SemanticMode() Fm5SemanticMode {
+	if p.fm5Mode == "" {
+		return Fm5SemanticModeAbsent
+	}
+	return p.fm5Mode
+}
+
+func (p testSemanticProvider) Solar() *SolarStatus {
+	return cloneMCPSolarStatus(p.solar)
+}
+
+func (p testSemanticProvider) Cylinders() []CylinderStatus {
+	return cloneCylinders(p.cylinders)
 }
 
 func (p testSemanticProvider) BoilerStatus() *BoilerStatus {
@@ -276,14 +294,17 @@ func TestServer_InitializeAndTools(t *testing.T) {
 		t.Fatalf("tools/list result type = %T; want map", res.Result)
 	}
 	tools, ok := resultMap["tools"].([]any)
-	if !ok || len(tools) < 18 {
-		t.Fatalf("tools = %#v; want at least 18 tools", resultMap["tools"])
+	if !ok || len(tools) < 21 {
+		t.Fatalf("tools = %#v; want at least 21 tools", resultMap["tools"])
 	}
 	for _, name := range []string{
 		toolRuntimeStatusGetName,
 		toolSemanticZonesGetName,
 		toolSemanticCircuitsGetName,
 		toolSemanticRadioGetName,
+		toolSemanticFM5ModeGetName,
+		toolSemanticSolarGetName,
+		toolSemanticCylindersGetName,
 		toolSemanticDHWGetName,
 		toolSemanticEnergyGetName,
 		toolSemanticBoilerGetName,
@@ -525,6 +546,15 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			{Group: 0x0A, Instance: 1, DeviceModel: "VR92"},
 			{Group: 0x09, Instance: 1, DeviceModel: "VRC720"},
 		},
+		fm5Mode: Fm5SemanticModeInterpreted,
+		solar: &SolarStatus{
+			CollectorTemperatureC: floatPtr(72.5),
+			PumpActive:            boolPtr(true),
+		},
+		cylinders: []CylinderStatus{
+			{Index: 0, TemperatureC: floatPtr(48.0)},
+			{Index: 1, TemperatureC: floatPtr(46.0)},
+		},
 		dhw: &DhwStatus{
 			Config: DhwConfig{
 				OperatingMode: "AUTO",
@@ -627,6 +657,58 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 	})
 
+	t.Run("fm5 mode payload", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      22,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_mode.get","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		mode, ok := envelope["data"].(string)
+		if !ok {
+			t.Fatalf("fm5 mode type = %T; want string", envelope["data"])
+		}
+		if mode != string(Fm5SemanticModeInterpreted) {
+			t.Fatalf("fm5 mode = %q; want %q", mode, Fm5SemanticModeInterpreted)
+		}
+	})
+
+	t.Run("solar payload", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      23,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.solar.get","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("solar data type = %T; want map", envelope["data"])
+		}
+		if got, _ := data["collector_temperature_c"].(float64); got != 72.5 {
+			t.Fatalf("solar collector_temperature_c = %v; want 72.5", data["collector_temperature_c"])
+		}
+	})
+
+	t.Run("cylinders payload", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      24,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.cylinders.get","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].([]any)
+		if !ok || len(data) != 2 {
+			t.Fatalf("cylinders data = %#v; want 2 entries", envelope["data"])
+		}
+		first, _ := data[0].(map[string]any)
+		if idx, _ := first["index"].(float64); int(idx) != 0 {
+			t.Fatalf("first cylinder index = %v; want 0", first["index"])
+		}
+	})
+
 	t.Run("dhw payload", func(t *testing.T) {
 		res := doRPC(t, server.Handler(), rpcRequest{
 			JSONRPC: "2.0",
@@ -704,14 +786,14 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			t.Fatalf("snapshot data type = %T; want map", envelope["data"])
 		}
 		completed, ok := data["completed_planes"].([]any)
-		if !ok || len(completed) != 8 {
-			t.Fatalf("snapshot completed_planes = %#v; want 8 entries", data["completed_planes"])
+		if !ok || len(completed) != 11 {
+			t.Fatalf("snapshot completed_planes = %#v; want 11 entries", data["completed_planes"])
 		}
 		planes, ok := data["planes"].(map[string]any)
 		if !ok {
 			t.Fatalf("snapshot planes type = %T; want map", data["planes"])
 		}
-		for _, key := range []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices"} {
+		for _, key := range []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders"} {
 			if _, ok := planes[key]; !ok {
 				t.Fatalf("snapshot planes missing %q", key)
 			}

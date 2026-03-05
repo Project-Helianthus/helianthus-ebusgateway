@@ -5,6 +5,7 @@ import (
 	"expvar"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,13 +57,16 @@ var (
 
 // LiveSemanticProvider maintains semantic snapshots derived from bus data.
 type LiveSemanticProvider struct {
-	mu       sync.RWMutex
-	zones    []Zone
-	dhw      *DhwStatus
-	circuits []CircuitStatus
-	radio    []RadioDevice
-	energy   *EnergyTotals
-	boiler   *BoilerStatus
+	mu        sync.RWMutex
+	zones     []Zone
+	dhw       *DhwStatus
+	circuits  []CircuitStatus
+	radio     []RadioDevice
+	fm5Mode   Fm5SemanticMode
+	solar     *SolarStatus
+	cylinders []CylinderStatus
+	energy    *EnergyTotals
+	boiler    *BoilerStatus
 
 	energyMerge    *energyMergeStore
 	energyRevision uint64
@@ -91,6 +95,7 @@ func NewLiveSemanticProvider() *LiveSemanticProvider {
 
 	return &LiveSemanticProvider{
 		phase:       SemanticStartupPhaseBootInit,
+		fm5Mode:     Fm5SemanticModeAbsent,
 		energyMerge: newEnergyMergeStore(),
 	}
 }
@@ -217,6 +222,85 @@ func (provider *LiveSemanticProvider) RadioDevices() []RadioDevice {
 		out[i] = cloneRadioDevice(device)
 	}
 	return out
+}
+
+func (provider *LiveSemanticProvider) FM5SemanticMode() Fm5SemanticMode {
+	if provider == nil {
+		return Fm5SemanticModeAbsent
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	if provider.fm5Mode == "" {
+		return Fm5SemanticModeAbsent
+	}
+	return provider.fm5Mode
+}
+
+func (provider *LiveSemanticProvider) Solar() *SolarStatus {
+	if provider == nil {
+		return nil
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	return cloneSolarStatus(provider.solar)
+}
+
+func (provider *LiveSemanticProvider) Cylinders() []CylinderStatus {
+	if provider == nil {
+		return nil
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	if len(provider.cylinders) == 0 {
+		return nil
+	}
+	return cloneCylinderStatuses(provider.cylinders)
+}
+
+func (provider *LiveSemanticProvider) SetFM5SemanticMode(mode Fm5SemanticMode) {
+	if provider == nil {
+		return
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if strings.TrimSpace(string(mode)) == "" {
+		mode = Fm5SemanticModeAbsent
+	}
+	provider.fm5Mode = mode
+}
+
+func (provider *LiveSemanticProvider) SetFM5SemanticModeFromCache(mode Fm5SemanticMode) {
+	provider.SetFM5SemanticMode(mode)
+}
+
+func (provider *LiveSemanticProvider) SetSolar(status *SolarStatus) {
+	if provider == nil {
+		return
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	provider.solar = cloneSolarStatus(status)
+}
+
+func (provider *LiveSemanticProvider) SetSolarFromCache(status *SolarStatus) {
+	provider.SetSolar(status)
+}
+
+func (provider *LiveSemanticProvider) SetCylinders(cylinders []CylinderStatus) {
+	if provider == nil {
+		return
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(cylinders) == 0 {
+		provider.cylinders = nil
+		return
+	}
+	provider.cylinders = cloneCylinderStatuses(cylinders)
+}
+
+func (provider *LiveSemanticProvider) SetCylindersFromCache(cylinders []CylinderStatus) {
+	provider.SetCylinders(cylinders)
 }
 
 func (provider *LiveSemanticProvider) EnergyTotals() *EnergyTotals {
@@ -959,6 +1043,74 @@ func cloneRadioDevice(device RadioDevice) RadioDevice {
 	if device.RoomHumidityPct != nil {
 		v := *device.RoomHumidityPct
 		out.RoomHumidityPct = &v
+	}
+	return out
+}
+
+func cloneSolarStatus(status *SolarStatus) *SolarStatus {
+	if status == nil {
+		return nil
+	}
+	out := *status
+	if status.CollectorTemperatureC != nil {
+		v := *status.CollectorTemperatureC
+		out.CollectorTemperatureC = &v
+	}
+	if status.ReturnTemperatureC != nil {
+		v := *status.ReturnTemperatureC
+		out.ReturnTemperatureC = &v
+	}
+	if status.PumpActive != nil {
+		v := *status.PumpActive
+		out.PumpActive = &v
+	}
+	if status.CurrentYield != nil {
+		v := *status.CurrentYield
+		out.CurrentYield = &v
+	}
+	if status.PumpHours != nil {
+		v := *status.PumpHours
+		out.PumpHours = &v
+	}
+	if status.SolarEnabled != nil {
+		v := *status.SolarEnabled
+		out.SolarEnabled = &v
+	}
+	if status.FunctionMode != nil {
+		v := *status.FunctionMode
+		out.FunctionMode = &v
+	}
+	return &out
+}
+
+func cloneCylinderStatus(status CylinderStatus) CylinderStatus {
+	out := status
+	if status.TemperatureC != nil {
+		v := *status.TemperatureC
+		out.TemperatureC = &v
+	}
+	if status.MaxSetpointC != nil {
+		v := *status.MaxSetpointC
+		out.MaxSetpointC = &v
+	}
+	if status.ChargeHysteresisC != nil {
+		v := *status.ChargeHysteresisC
+		out.ChargeHysteresisC = &v
+	}
+	if status.ChargeOffsetC != nil {
+		v := *status.ChargeOffsetC
+		out.ChargeOffsetC = &v
+	}
+	return out
+}
+
+func cloneCylinderStatuses(cylinders []CylinderStatus) []CylinderStatus {
+	if len(cylinders) == 0 {
+		return nil
+	}
+	out := make([]CylinderStatus, len(cylinders))
+	for i := range cylinders {
+		out[i] = cloneCylinderStatus(cylinders[i])
 	}
 	return out
 }

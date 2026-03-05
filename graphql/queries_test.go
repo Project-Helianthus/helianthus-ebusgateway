@@ -344,10 +344,10 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						coolingEnabled
 					}
 				}
-				radioDevices {
-					group
-					instance
-					slotMode
+					radioDevices {
+						group
+						instance
+						slotMode
 					deviceConnected
 					deviceClassAddress
 					deviceModel
@@ -357,12 +357,29 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					devicePaired
 					receptionStrength
 					zoneAssignment
-					roomTemperatureC
-					roomHumidityPct
-				}
-				system {
-					state {
-						systemOff
+						roomTemperatureC
+						roomHumidityPct
+					}
+					fm5SemanticMode
+					solar {
+						collectorTemperatureC
+						returnTemperatureC
+						pumpActive
+						currentYield
+						pumpHours
+						solarEnabled
+						functionMode
+					}
+					cylinders {
+						index
+						temperatureC
+						maxSetpointC
+						chargeHysteresisC
+						chargeOffsetC
+					}
+					system {
+						state {
+							systemOff
 						systemWaterPressure
 						systemFlowTemperature
 						outdoorTemperature
@@ -464,6 +481,23 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				RoomTemperatureC     *float64 `json:"roomTemperatureC"`
 				RoomHumidityPct      *float64 `json:"roomHumidityPct"`
 			} `json:"radioDevices"`
+			FM5SemanticMode string `json:"fm5SemanticMode"`
+			Solar           *struct {
+				CollectorTemperatureC *float64 `json:"collectorTemperatureC"`
+				ReturnTemperatureC    *float64 `json:"returnTemperatureC"`
+				PumpActive            *bool    `json:"pumpActive"`
+				CurrentYield          *float64 `json:"currentYield"`
+				PumpHours             *float64 `json:"pumpHours"`
+				SolarEnabled          *bool    `json:"solarEnabled"`
+				FunctionMode          *bool    `json:"functionMode"`
+			} `json:"solar"`
+			Cylinders []struct {
+				Index             int      `json:"index"`
+				TemperatureC      *float64 `json:"temperatureC"`
+				MaxSetpointC      *float64 `json:"maxSetpointC"`
+				ChargeHysteresisC *float64 `json:"chargeHysteresisC"`
+				ChargeOffsetC     *float64 `json:"chargeOffsetC"`
+			} `json:"cylinders"`
 			System *struct {
 				State struct {
 					SystemOff                    *bool    `json:"systemOff"`
@@ -506,6 +540,15 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if len(response.RadioDevices) != 0 {
 			t.Fatalf("radioDevices = %d; want 0", len(response.RadioDevices))
+		}
+		if response.FM5SemanticMode != "ABSENT" {
+			t.Fatalf("fm5SemanticMode = %q; want ABSENT", response.FM5SemanticMode)
+		}
+		if response.Solar != nil {
+			t.Fatalf("solar expected nil with static provider")
+		}
+		if len(response.Cylinders) != 0 {
+			t.Fatalf("cylinders = %d; want 0", len(response.Cylinders))
 		}
 		if response.System != nil {
 			t.Fatalf("system expected nil with static provider")

@@ -34,12 +34,14 @@ const (
 	vaillantB524OpcodeLocal      = byte(0x02)
 	vaillantB524OpRead           = byte(0x00)
 
-	vaillantGroupDHW      = byte(0x01)
-	vaillantGroupCircuits = byte(0x02)
-	vaillantGroupZones    = byte(0x03)
-	vaillantGroupRadio09  = byte(0x09)
-	vaillantGroupRadio10  = byte(0x0A)
-	vaillantGroupRadio0C  = byte(0x0C)
+	vaillantGroupDHW       = byte(0x01)
+	vaillantGroupCircuits  = byte(0x02)
+	vaillantGroupZones     = byte(0x03)
+	vaillantGroupSolar     = byte(0x04)
+	vaillantGroupCylinders = byte(0x05)
+	vaillantGroupRadio09   = byte(0x09)
+	vaillantGroupRadio10   = byte(0x0A)
+	vaillantGroupRadio0C   = byte(0x0C)
 
 	zoneRegName                 = uint16(0x0016)
 	zoneRegNamePrefix           = uint16(0x0017)
@@ -89,6 +91,21 @@ const (
 	radioRegReceptionStrength    = uint16(0x001F)
 	radioRegHardwareIdentifier   = uint16(0x0023)
 	radioRegZoneAssignment       = uint16(0x0025)
+
+	solarInstance = byte(0x00)
+
+	solarRegEnabled       = uint16(0x0001)
+	solarRegFunctionMode  = uint16(0x0002)
+	solarRegCollectorTemp = uint16(0x0003)
+	solarRegReturnTemp    = uint16(0x0007)
+	solarRegPumpActive    = uint16(0x0008)
+	solarRegCurrentYield  = uint16(0x0009)
+	solarRegPumpHours     = uint16(0x000B)
+
+	cylinderRegMaxSetpoint      = uint16(0x0001)
+	cylinderRegChargeHysteresis = uint16(0x0002)
+	cylinderRegChargeOffset     = uint16(0x0003)
+	cylinderRegTemperature      = uint16(0x0004)
 )
 
 // B5.24 energy registers (VRC 720f TSP 15.720, group=0, instance=0).
@@ -183,6 +200,9 @@ type vaillantSemanticPoller struct {
 	system                   *vaillantSystemSnapshot
 	circuits                 map[byte]*vaillantCircuitSnapshot
 	radioDevices             map[radioDeviceKey]*vaillantRadioDeviceSnapshot
+	fm5Mode                  graphql.Fm5SemanticMode
+	solar                    *vaillantSolarSnapshot
+	solarCylinders           map[byte]*vaillantCylinderSnapshot
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	nowFn                  func() time.Time
@@ -284,6 +304,24 @@ type vaillantRadioDeviceSnapshot struct {
 	ZoneAssignment       *uint8
 	RoomTemperatureC     *float64
 	RoomHumidityPct      *float64
+}
+
+type vaillantSolarSnapshot struct {
+	CollectorTemperatureC *float64
+	ReturnTemperatureC    *float64
+	PumpActive            *bool
+	CurrentYield          *float64
+	PumpHours             *uint32
+	SolarEnabled          *bool
+	FunctionMode          *bool
+}
+
+type vaillantCylinderSnapshot struct {
+	Instance         byte
+	TemperatureC     *float64
+	MaxSetpointC     *float64
+	ChargeHysteresis *float64
+	ChargeOffset     *float64
 }
 
 type semanticSnapshotSource uint8
@@ -428,12 +466,14 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		regulatorRecheckInterval: cfg.SemanticRegulatorRecheckInterval,
 		regulatorAbsenceGrace:    cfg.SemanticRegulatorAbsenceGrace,
 		regAbsenceState:          regulatorPresent,
+		fm5Mode:                  graphql.Fm5SemanticModeAbsent,
 
-		zones:        make(map[byte]*vaillantZoneSnapshot),
-		presence:     make(map[byte]*zonePresenceRecord),
-		circuits:     make(map[byte]*vaillantCircuitSnapshot),
-		radioDevices: make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
-		nowFn:        time.Now,
+		zones:          make(map[byte]*vaillantZoneSnapshot),
+		presence:       make(map[byte]*zonePresenceRecord),
+		circuits:       make(map[byte]*vaillantCircuitSnapshot),
+		radioDevices:   make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		solarCylinders: make(map[byte]*vaillantCylinderSnapshot),
+		nowFn:          time.Now,
 	}
 	if poller.zoneMissThreshold <= 0 {
 		poller.zoneMissThreshold = ebusgateway.DefaultSemanticZonePresenceMissThreshold
@@ -1018,6 +1058,9 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.presence = make(map[byte]*zonePresenceRecord)
 		p.circuits = make(map[byte]*vaillantCircuitSnapshot)
 		p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+		p.fm5Mode = graphql.Fm5SemanticModeAbsent
+		p.solar = nil
+		p.solarCylinders = make(map[byte]*vaillantCylinderSnapshot)
 		semanticZoneCount.Set(0)
 		p.mu.Unlock()
 		if regCap != prev {
@@ -1030,6 +1073,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.publishDHW(semanticSnapshotSourceCache)
 		p.publishCircuits(semanticSnapshotSourceCache)
 		p.publishRadioDevices(semanticSnapshotSourceCache)
+		p.refreshFM5Semantic(ctx)
 		return
 	}
 
@@ -1554,6 +1598,7 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 	controller := p.controller
 	p.mu.Unlock()
 	if controller == 0 {
+		p.refreshFM5Semantic(ctx)
 		return
 	}
 
@@ -2599,6 +2644,7 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 	p.mu.Unlock()
 
 	p.publishSystem(semanticSnapshotSourceLive)
+	p.refreshFM5Semantic(ctx)
 }
 
 func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
@@ -2672,6 +2718,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 	p.mu.Unlock()
 
 	p.publishRadioDevices(semanticSnapshotSourceLive)
+	p.refreshFM5Semantic(ctx)
 }
 
 func (p *vaillantSemanticPoller) publishRadioDevices(source semanticSnapshotSource) {
@@ -2841,6 +2888,397 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 	p.persistSemanticCache(source)
 }
 
+func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
+	if p == nil || p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	controller := p.controller
+	var moduleConfig *uint16
+	if p.system != nil {
+		moduleConfig = cloneUint16Ptr(p.system.ModuleConfigurationVR71)
+	}
+	radioSnapshots := make([]*vaillantRadioDeviceSnapshot, 0, len(p.radioDevices))
+	for _, snapshot := range p.radioDevices {
+		if snapshot == nil {
+			continue
+		}
+		radioSnapshots = append(radioSnapshots, cloneRadioSnapshot(snapshot))
+	}
+	p.mu.Unlock()
+
+	hasFM5Evidence := hasFM5EvidenceFromRadioSnapshots(radioSnapshots) || p.hasFM5RegistryEvidence()
+	fm5GateSatisfied := moduleConfig != nil && *moduleConfig <= 2
+
+	var incomingSolar *vaillantSolarSnapshot
+	incomingCylinders := make(map[byte]*vaillantCylinderSnapshot)
+	solarReadable := false
+	cylindersReadable := false
+	if controller != 0 && fm5GateSatisfied {
+		incomingSolar, solarReadable = p.readSolarSnapshot(ctx)
+		incomingCylinders, cylindersReadable = p.readCylinderSnapshots(ctx)
+	}
+
+	nextMode := deriveFM5SemanticMode(controller != 0, fm5GateSatisfied, solarReadable, cylindersReadable, hasFM5Evidence)
+
+	p.mu.Lock()
+	p.fm5Mode = nextMode
+	switch nextMode {
+	case graphql.Fm5SemanticModeInterpreted:
+		p.solar = mergeSolarSnapshotNonDestructive(p.solar, incomingSolar)
+		p.solarCylinders = mergeCylinderSnapshotMapNonDestructive(p.solarCylinders, incomingCylinders)
+	default:
+		p.solar = nil
+		p.solarCylinders = make(map[byte]*vaillantCylinderSnapshot)
+	}
+	p.mu.Unlock()
+
+	p.publishFM5Semantic(semanticSnapshotSourceLive)
+}
+
+func deriveFM5SemanticMode(controllerReachable, fm5GateSatisfied, solarReadable, cylindersReadable, hasEvidence bool) graphql.Fm5SemanticMode {
+	if controllerReachable && fm5GateSatisfied && solarReadable && cylindersReadable {
+		return graphql.Fm5SemanticModeInterpreted
+	}
+	if hasEvidence {
+		return graphql.Fm5SemanticModeGPIOOnly
+	}
+	return graphql.Fm5SemanticModeAbsent
+}
+
+func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSource) {
+	if p == nil || p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	mode := p.fm5Mode
+	if mode == "" {
+		mode = graphql.Fm5SemanticModeAbsent
+	}
+	solarSnapshot := cloneSolarSnapshot(p.solar)
+	cylindersSnapshot := cloneCylinderSnapshotsMap(p.solarCylinders)
+	p.mu.Unlock()
+
+	switch source {
+	case semanticSnapshotSourceCache:
+		p.provider.SetFM5SemanticModeFromCache(mode)
+	default:
+		p.provider.SetFM5SemanticMode(mode)
+	}
+
+	if mode != graphql.Fm5SemanticModeInterpreted {
+		switch source {
+		case semanticSnapshotSourceCache:
+			p.provider.SetSolarFromCache(nil)
+			p.provider.SetCylindersFromCache(nil)
+		default:
+			p.provider.SetSolar(nil)
+			p.provider.SetCylinders(nil)
+		}
+		return
+	}
+
+	var solar *graphql.SolarStatus
+	if solarSnapshot != nil {
+		solar = &graphql.SolarStatus{
+			CollectorTemperatureC: cloneFloat64Ptr(solarSnapshot.CollectorTemperatureC),
+			ReturnTemperatureC:    cloneFloat64Ptr(solarSnapshot.ReturnTemperatureC),
+			PumpActive:            cloneBoilerBoolPtr(solarSnapshot.PumpActive),
+			CurrentYield:          cloneFloat64Ptr(solarSnapshot.CurrentYield),
+			PumpHours:             decodeUint32Float64(solarSnapshot.PumpHours),
+			SolarEnabled:          cloneBoilerBoolPtr(solarSnapshot.SolarEnabled),
+			FunctionMode:          cloneBoilerBoolPtr(solarSnapshot.FunctionMode),
+		}
+	}
+
+	instances := make([]byte, 0, len(cylindersSnapshot))
+	for instance := range cylindersSnapshot {
+		instances = append(instances, instance)
+	}
+	slices.Sort(instances)
+	cylinders := make([]graphql.CylinderStatus, 0, len(instances))
+	for _, instance := range instances {
+		snapshot := cylindersSnapshot[instance]
+		if snapshot == nil {
+			continue
+		}
+		cylinders = append(cylinders, graphql.CylinderStatus{
+			Index:             int(snapshot.Instance),
+			TemperatureC:      cloneFloat64Ptr(snapshot.TemperatureC),
+			MaxSetpointC:      cloneFloat64Ptr(snapshot.MaxSetpointC),
+			ChargeHysteresisC: cloneFloat64Ptr(snapshot.ChargeHysteresis),
+			ChargeOffsetC:     cloneFloat64Ptr(snapshot.ChargeOffset),
+		})
+	}
+
+	switch source {
+	case semanticSnapshotSourceCache:
+		p.provider.SetSolarFromCache(solar)
+		p.provider.SetCylindersFromCache(cylinders)
+	default:
+		p.provider.SetSolar(solar)
+		p.provider.SetCylinders(cylinders)
+	}
+}
+
+func (p *vaillantSemanticPoller) readSolarSnapshot(ctx context.Context) (*vaillantSolarSnapshot, bool) {
+	if p == nil {
+		return nil, false
+	}
+	incoming := &vaillantSolarSnapshot{}
+	readAny := false
+
+	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegEnabled); ok {
+		readAny = true
+		incoming.SolarEnabled = decodeB524BoolFromRaw(raw)
+	}
+	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegFunctionMode); ok {
+		readAny = true
+		incoming.FunctionMode = decodeB524BoolFromRaw(raw)
+	}
+	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegCollectorTemp); ok {
+		readAny = true
+		incoming.CollectorTemperatureC = decodeB524Float32FromRaw(raw)
+	}
+	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegReturnTemp); ok {
+		readAny = true
+		incoming.ReturnTemperatureC = decodeB524Float32FromRaw(raw)
+	}
+	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegPumpActive); ok {
+		readAny = true
+		incoming.PumpActive = decodeB524BoolFromRaw(raw)
+	}
+	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegCurrentYield); ok {
+		readAny = true
+		incoming.CurrentYield = decodeB524Float32FromRaw(raw)
+	}
+	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegPumpHours); ok {
+		readAny = true
+		incoming.PumpHours = decodeB524Uint32FromRaw(raw)
+	}
+
+	if !readAny {
+		return nil, false
+	}
+	return incoming, true
+}
+
+func (p *vaillantSemanticPoller) readCylinderSnapshots(ctx context.Context) (map[byte]*vaillantCylinderSnapshot, bool) {
+	if p == nil {
+		return nil, false
+	}
+	out := make(map[byte]*vaillantCylinderSnapshot, 2)
+	readAny := false
+	for instance := byte(0x00); instance <= 0x01; instance++ {
+		incoming := &vaillantCylinderSnapshot{Instance: instance}
+		instanceRead := false
+
+		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupCylinders, instance, cylinderRegMaxSetpoint); ok {
+			instanceRead = true
+			readAny = true
+			incoming.MaxSetpointC = decodeB524Float32FromRaw(raw)
+		}
+		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupCylinders, instance, cylinderRegChargeHysteresis); ok {
+			instanceRead = true
+			readAny = true
+			incoming.ChargeHysteresis = decodeB524Float32FromRaw(raw)
+		}
+		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupCylinders, instance, cylinderRegChargeOffset); ok {
+			instanceRead = true
+			readAny = true
+			incoming.ChargeOffset = decodeB524Float32FromRaw(raw)
+		}
+		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupCylinders, instance, cylinderRegTemperature); ok {
+			instanceRead = true
+			readAny = true
+			incoming.TemperatureC = decodeB524Float32FromRaw(raw)
+		}
+		if instanceRead {
+			out[instance] = incoming
+		}
+	}
+	if !readAny {
+		return nil, false
+	}
+	return out, true
+}
+
+func hasFM5EvidenceFromRadioSnapshots(snapshots []*vaillantRadioDeviceSnapshot) bool {
+	for _, snapshot := range snapshots {
+		if snapshot == nil {
+			continue
+		}
+		if hasRemoteIdentityEvidence(snapshot.DeviceClassAddress, snapshot.FirmwareVersion, snapshot.HardwareIdentifier) {
+			return true
+		}
+		if snapshot.DeviceClassAddress != nil && *snapshot.DeviceClassAddress == 0x26 {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(snapshot.DeviceModel), "VR71/FM5") {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *vaillantSemanticPoller) hasFM5RegistryEvidence() bool {
+	if p == nil || p.reg == nil {
+		return false
+	}
+	found := false
+	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry == nil {
+			return true
+		}
+		deviceID := normalizeDeviceID(entry.DeviceID())
+		if strings.HasPrefix(deviceID, "VR71") || strings.HasPrefix(deviceID, "FM5") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func mergeSolarSnapshotNonDestructive(existing, incoming *vaillantSolarSnapshot) *vaillantSolarSnapshot {
+	merged := cloneSolarSnapshot(existing)
+	if merged == nil {
+		merged = &vaillantSolarSnapshot{}
+	}
+	if incoming == nil {
+		return merged
+	}
+	if incoming.CollectorTemperatureC != nil {
+		merged.CollectorTemperatureC = cloneFloat64Ptr(incoming.CollectorTemperatureC)
+	}
+	if incoming.ReturnTemperatureC != nil {
+		merged.ReturnTemperatureC = cloneFloat64Ptr(incoming.ReturnTemperatureC)
+	}
+	if incoming.PumpActive != nil {
+		merged.PumpActive = cloneBoilerBoolPtr(incoming.PumpActive)
+	}
+	if incoming.CurrentYield != nil {
+		merged.CurrentYield = cloneFloat64Ptr(incoming.CurrentYield)
+	}
+	if incoming.PumpHours != nil {
+		merged.PumpHours = cloneUint32Ptr(incoming.PumpHours)
+	}
+	if incoming.SolarEnabled != nil {
+		merged.SolarEnabled = cloneBoilerBoolPtr(incoming.SolarEnabled)
+	}
+	if incoming.FunctionMode != nil {
+		merged.FunctionMode = cloneBoilerBoolPtr(incoming.FunctionMode)
+	}
+	return merged
+}
+
+func cloneSolarSnapshot(snapshot *vaillantSolarSnapshot) *vaillantSolarSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return &vaillantSolarSnapshot{
+		CollectorTemperatureC: cloneFloat64Ptr(snapshot.CollectorTemperatureC),
+		ReturnTemperatureC:    cloneFloat64Ptr(snapshot.ReturnTemperatureC),
+		PumpActive:            cloneBoilerBoolPtr(snapshot.PumpActive),
+		CurrentYield:          cloneFloat64Ptr(snapshot.CurrentYield),
+		PumpHours:             cloneUint32Ptr(snapshot.PumpHours),
+		SolarEnabled:          cloneBoilerBoolPtr(snapshot.SolarEnabled),
+		FunctionMode:          cloneBoilerBoolPtr(snapshot.FunctionMode),
+	}
+}
+
+func mergeCylinderSnapshotNonDestructive(existing, incoming *vaillantCylinderSnapshot) *vaillantCylinderSnapshot {
+	merged := cloneCylinderSnapshot(existing)
+	if merged == nil {
+		merged = &vaillantCylinderSnapshot{}
+	}
+	if incoming == nil {
+		return merged
+	}
+	merged.Instance = incoming.Instance
+	if incoming.TemperatureC != nil {
+		merged.TemperatureC = cloneFloat64Ptr(incoming.TemperatureC)
+	}
+	if incoming.MaxSetpointC != nil {
+		merged.MaxSetpointC = cloneFloat64Ptr(incoming.MaxSetpointC)
+	}
+	if incoming.ChargeHysteresis != nil {
+		merged.ChargeHysteresis = cloneFloat64Ptr(incoming.ChargeHysteresis)
+	}
+	if incoming.ChargeOffset != nil {
+		merged.ChargeOffset = cloneFloat64Ptr(incoming.ChargeOffset)
+	}
+	return merged
+}
+
+func mergeCylinderSnapshotMapNonDestructive(existing, incoming map[byte]*vaillantCylinderSnapshot) map[byte]*vaillantCylinderSnapshot {
+	merged := cloneCylinderSnapshotsMap(existing)
+	if merged == nil {
+		merged = make(map[byte]*vaillantCylinderSnapshot)
+	}
+	for instance, snapshot := range incoming {
+		merged[instance] = mergeCylinderSnapshotNonDestructive(merged[instance], snapshot)
+	}
+	return merged
+}
+
+func cloneCylinderSnapshot(snapshot *vaillantCylinderSnapshot) *vaillantCylinderSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return &vaillantCylinderSnapshot{
+		Instance:         snapshot.Instance,
+		TemperatureC:     cloneFloat64Ptr(snapshot.TemperatureC),
+		MaxSetpointC:     cloneFloat64Ptr(snapshot.MaxSetpointC),
+		ChargeHysteresis: cloneFloat64Ptr(snapshot.ChargeHysteresis),
+		ChargeOffset:     cloneFloat64Ptr(snapshot.ChargeOffset),
+	}
+}
+
+func cloneCylinderSnapshotsMap(source map[byte]*vaillantCylinderSnapshot) map[byte]*vaillantCylinderSnapshot {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make(map[byte]*vaillantCylinderSnapshot, len(source))
+	for instance, snapshot := range source {
+		out[instance] = cloneCylinderSnapshot(snapshot)
+	}
+	return out
+}
+
+func decodeB524BoolFromRaw(raw []byte) *bool {
+	if len(raw) == 0 || raw[0] == 0xFF || raw[0] > 1 {
+		return nil
+	}
+	value := raw[0] == 1
+	return &value
+}
+
+func decodeB524Float32FromRaw(raw []byte) *float64 {
+	if len(raw) < 4 {
+		return nil
+	}
+	bits := binary.LittleEndian.Uint32(raw[:4])
+	value := float64(math.Float32frombits(bits))
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil
+	}
+	return &value
+}
+
+func decodeB524Uint32FromRaw(raw []byte) *uint32 {
+	if len(raw) < 4 {
+		return nil
+	}
+	value := binary.LittleEndian.Uint32(raw[:4])
+	if value == 0xFFFFFFFF {
+		return nil
+	}
+	return &value
+}
+
 func mergeSystemSnapshotNonDestructive(existing, incoming *vaillantSystemSnapshot) *vaillantSystemSnapshot {
 	merged := cloneSystemSnapshot(existing)
 	if merged == nil {
@@ -2949,17 +3387,19 @@ func deriveVR71CircuitStartIndex(systemScheme, moduleConfigurationVR71 *uint16) 
 	if systemScheme == nil || moduleConfigurationVR71 == nil {
 		return nil
 	}
-	if *moduleConfigurationVR71 <= 2 {
-		v := -1
-		return &v
-	}
 	if *systemScheme < 1 || *systemScheme > 16 {
 		v := -1
 		return &v
 	}
-	// GG=0x00 docs expose the registers and valid ranges but no per-scheme ownership
-	// map, so we conservatively place FM5-managed circuits after regulator circuit 0.
-	v := 1
+	// FM5 interpreted profile is gated by module_configuration_vr71<=2.
+	// Keep this helper consistent with FM5 mode semantics: a valid interpreted
+	// profile yields FM5-managed circuits after regulator circuit 0.
+	if *moduleConfigurationVR71 <= 2 {
+		v := 1
+		return &v
+	}
+	// Profiles outside interpreted FM5 mode do not expose a stable start index.
+	v := -1
 	return &v
 }
 

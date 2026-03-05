@@ -24,6 +24,9 @@ type graphqlSchemaTypes struct {
 	dhwType            *graphqlgo.Object
 	circuitStatusType  *graphqlgo.Object
 	radioDeviceType    *graphqlgo.Object
+	fm5SemanticMode    *graphqlgo.Enum
+	solarStatusType    *graphqlgo.Object
+	cylinderStatusType *graphqlgo.Object
 	energyTotals       *graphqlgo.Object
 	boilerStatusType   *graphqlgo.Object
 	systemStatusType   *graphqlgo.Object
@@ -835,6 +838,147 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		},
 	})
 
+	fm5SemanticModeType := graphqlgo.NewEnum(graphqlgo.EnumConfig{
+		Name: "Fm5SemanticMode",
+		Values: graphqlgo.EnumValueConfigMap{
+			string(Fm5SemanticModeInterpreted): &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticModeInterpreted)},
+			string(Fm5SemanticModeGPIOOnly):    &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticModeGPIOOnly)},
+			string(Fm5SemanticModeAbsent):      &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticModeAbsent)},
+		},
+	})
+
+	solarStatusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "SolarStatus",
+		Fields: graphqlgo.Fields{
+			"collectorTemperatureC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*SolarStatus)
+					if !ok || status == nil || status.CollectorTemperatureC == nil {
+						return nil, nil
+					}
+					return *status.CollectorTemperatureC, nil
+				},
+			},
+			"returnTemperatureC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*SolarStatus)
+					if !ok || status == nil || status.ReturnTemperatureC == nil {
+						return nil, nil
+					}
+					return *status.ReturnTemperatureC, nil
+				},
+			},
+			"pumpActive": &graphqlgo.Field{
+				Type: graphqlgo.Boolean,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*SolarStatus)
+					if !ok || status == nil || status.PumpActive == nil {
+						return nil, nil
+					}
+					return *status.PumpActive, nil
+				},
+			},
+			"currentYield": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*SolarStatus)
+					if !ok || status == nil || status.CurrentYield == nil {
+						return nil, nil
+					}
+					return *status.CurrentYield, nil
+				},
+			},
+			"pumpHours": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*SolarStatus)
+					if !ok || status == nil || status.PumpHours == nil {
+						return nil, nil
+					}
+					return *status.PumpHours, nil
+				},
+			},
+			"solarEnabled": &graphqlgo.Field{
+				Type: graphqlgo.Boolean,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*SolarStatus)
+					if !ok || status == nil || status.SolarEnabled == nil {
+						return nil, nil
+					}
+					return *status.SolarEnabled, nil
+				},
+			},
+			"functionMode": &graphqlgo.Field{
+				Type: graphqlgo.Boolean,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*SolarStatus)
+					if !ok || status == nil || status.FunctionMode == nil {
+						return nil, nil
+					}
+					return *status.FunctionMode, nil
+				},
+			},
+		},
+	})
+
+	cylinderStatusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "CylinderStatus",
+		Fields: graphqlgo.Fields{
+			"index": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(CylinderStatus)
+					if !ok {
+						return nil, nil
+					}
+					return status.Index, nil
+				},
+			},
+			"temperatureC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(CylinderStatus)
+					if !ok || status.TemperatureC == nil {
+						return nil, nil
+					}
+					return *status.TemperatureC, nil
+				},
+			},
+			"maxSetpointC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(CylinderStatus)
+					if !ok || status.MaxSetpointC == nil {
+						return nil, nil
+					}
+					return *status.MaxSetpointC, nil
+				},
+			},
+			"chargeHysteresisC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(CylinderStatus)
+					if !ok || status.ChargeHysteresisC == nil {
+						return nil, nil
+					}
+					return *status.ChargeHysteresisC, nil
+				},
+			},
+			"chargeOffsetC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(CylinderStatus)
+					if !ok || status.ChargeOffsetC == nil {
+						return nil, nil
+					}
+					return *status.ChargeOffsetC, nil
+				},
+			},
+		},
+	})
+
 	boilerStateType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "BoilerState",
 		Fields: graphqlgo.Fields{
@@ -1638,6 +1782,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		dhwType:            dhwType,
 		circuitStatusType:  circuitStatusType,
 		radioDeviceType:    radioDeviceType,
+		fm5SemanticMode:    fm5SemanticModeType,
+		solarStatusType:    solarStatusType,
+		cylinderStatusType: cylinderStatusType,
 		energyTotals:       energyTotalsType,
 		boilerStatusType:   boilerStatusType,
 		systemStatusType:   systemStatusType,
@@ -1698,6 +1845,32 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.radioDeviceType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().RadioDevices(), nil
+				},
+			},
+			"fm5SemanticMode": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.fm5SemanticMode),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					mode := builder.semanticProvider().FM5SemanticMode()
+					if mode == "" {
+						mode = Fm5SemanticModeAbsent
+					}
+					return string(mode), nil
+				},
+			},
+			"solar": &graphqlgo.Field{
+				Type: types.solarStatusType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().Solar(), nil
+				},
+			},
+			"cylinders": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.cylinderStatusType))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					values := builder.semanticProvider().Cylinders()
+					if len(values) == 0 {
+						return []CylinderStatus{}, nil
+					}
+					return values, nil
 				},
 			},
 			"boilerStatus": &graphqlgo.Field{

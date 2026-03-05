@@ -62,7 +62,8 @@ func TestToolInventoryGoldenSignatures(t *testing.T) {
 		{Name: "ebus.v1.semantic.circuits.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.dhw.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.energy_totals.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
-		{Name: "ebus.v1.semantic.snapshot.get", SchemaHash: "f40827c9c88a3e7e1e5588a409e0282e27fefa5df9a29eb74a911c8ad75aeb4c"},
+		{Name: "ebus.v1.semantic.snapshot.get", SchemaHash: "e6745bdfa1087e491d72b1ac350bfd6c0026c53f72d1141a6414d3f7ca6975d9"},
+		{Name: "ebus.v1.semantic.system.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.zones.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.snapshot.capture", SchemaHash: "cd1a463c46d6264134447db17a8c3c7abe5b9a2488c6d759fea66da1f96b133e"},
 		{Name: "ebus.v1.snapshot.drop", SchemaHash: "3f2e89bf3346421daa820ec5cd5bf9b4a06815aebd32c0bd8758b90043d69f88"},
@@ -108,6 +109,7 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 		circuits: []CircuitStatus{{Index: 0, CircuitType: "heating"}},
 		dhw:      &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO", Preset: "ECO"}},
 		energy:   &EnergyTotals{Gas: EnergyChannel{DHW: EnergySeries{Today: 1.25}}},
+		system:   &SystemStatus{Properties: &SystemProperties{SystemScheme: intPtr(8), ModuleConfigurationVR71: intPtr(2), VR71CircuitStartIndex: intPtr(-1)}},
 	})
 
 	cases := []struct {
@@ -124,6 +126,7 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 		{name: "circuits", tool: toolSemanticCircuitsGetName, args: `{}`},
 		{name: "dhw", tool: toolSemanticDHWGetName, args: `{}`},
 		{name: "energy", tool: toolSemanticEnergyGetName, args: `{}`},
+		{name: "system", tool: toolSemanticSystemGetName, args: `{}`},
 		{name: "semantic_snapshot", tool: toolSemanticSnapshotName, args: `{}`},
 		{name: "invoke", tool: toolInvokeV1Name, args: `{"address":8,"plane":"heating","method":"get_status","params":{},"intent":"READ_ONLY","allow_dangerous":false}`},
 	}

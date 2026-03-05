@@ -115,6 +115,39 @@ type BoilerStatus struct {
 	Diagnostics *BoilerDiagnostics `json:"diagnostics,omitempty"`
 }
 
+type SystemState struct {
+	SystemOff                    *bool    `json:"system_off,omitempty"`
+	SystemWaterPressure          *float64 `json:"system_water_pressure,omitempty"`
+	SystemFlowTemperature        *float64 `json:"system_flow_temperature,omitempty"`
+	OutdoorTemperature           *float64 `json:"outdoor_temperature,omitempty"`
+	OutdoorTemperatureAvg24h     *float64 `json:"outdoor_temperature_avg24h,omitempty"`
+	MaintenanceDue               *bool    `json:"maintenance_due,omitempty"`
+	HwcCylinderTemperatureTop    *float64 `json:"hwc_cylinder_temperature_top,omitempty"`
+	HwcCylinderTemperatureBottom *float64 `json:"hwc_cylinder_temperature_bottom,omitempty"`
+}
+
+type SystemConfig struct {
+	AdaptiveHeatingCurve         *bool    `json:"adaptive_heating_curve,omitempty"`
+	AlternativePoint             *float64 `json:"alternative_point,omitempty"`
+	HeatingCircuitBivalencePoint *float64 `json:"heating_circuit_bivalence_point,omitempty"`
+	DhwBivalencePoint            *float64 `json:"dhw_bivalence_point,omitempty"`
+	HcEmergencyTemperature       *float64 `json:"hc_emergency_temperature,omitempty"`
+	HwcMaxFlowTempDesired        *float64 `json:"hwc_max_flow_temp_desired,omitempty"`
+	MaxRoomHumidity              *int     `json:"max_room_humidity,omitempty"`
+}
+
+type SystemProperties struct {
+	SystemScheme            *int `json:"system_scheme,omitempty"`
+	ModuleConfigurationVR71 *int `json:"module_configuration_vr71,omitempty"`
+	VR71CircuitStartIndex   *int `json:"vr71_circuit_start_index,omitempty"`
+}
+
+type SystemStatus struct {
+	State      *SystemState      `json:"state,omitempty"`
+	Config     *SystemConfig     `json:"config,omitempty"`
+	Properties *SystemProperties `json:"properties,omitempty"`
+}
+
 type CircuitState struct {
 	PumpActive       *bool    `json:"pump_active,omitempty"`
 	MixerPositionPct *float64 `json:"mixer_position_pct,omitempty"`
@@ -152,6 +185,7 @@ type SemanticProvider interface {
 	Circuits() []CircuitStatus
 	EnergyTotals() *EnergyTotals
 	BoilerStatus() *BoilerStatus
+	System() *SystemStatus
 }
 
 type Server struct {
@@ -174,6 +208,7 @@ const (
 	toolSemanticDHWGetName      = "ebus.v1.semantic.dhw.get"
 	toolSemanticEnergyGetName   = "ebus.v1.semantic.energy_totals.get"
 	toolSemanticBoilerGetName   = "ebus.v1.semantic.boiler_status.get"
+	toolSemanticSystemGetName   = "ebus.v1.semantic.system.get"
 	toolSemanticSnapshotName    = "ebus.v1.semantic.snapshot.get"
 	toolSnapshotCaptureName     = "ebus.v1.snapshot.capture"
 	toolSnapshotDropName        = "ebus.v1.snapshot.drop"
@@ -240,6 +275,10 @@ func (staticSemanticProvider) BoilerStatus() *BoilerStatus {
 	return nil
 }
 
+func (staticSemanticProvider) System() *SystemStatus {
+	return nil
+}
+
 type idempotencyEntry struct {
 	signature string
 	result    any
@@ -269,6 +308,7 @@ type snapshotState struct {
 	dhw      *DhwStatus
 	energy   *EnergyTotals
 	boiler   *BoilerStatus
+	system   *SystemStatus
 	devices  []deviceInfo
 }
 
@@ -364,18 +404,29 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			},
 		},
 		{
+			Name:        toolSemanticSystemGetName,
+			Description: "Get semantic system status snapshot (outdoor temp, water pressure, flow temp, maintenance, config).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
 			Name:        toolSemanticSnapshotName,
 			Description: "Get a consistent semantic snapshot across selected semantic planes.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-						"planes": map[string]any{
-							"type": "array",
-							"items": map[string]any{
-								"type": "string",
-								"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "circuits"},
-							},
+					"planes": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "string",
+							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits"},
 						},
+					},
 					"timeout_ms": map[string]any{"type": "integer", "minimum": 1},
 					"allow_partial": map[string]any{
 						"type": "boolean",
@@ -667,6 +718,12 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotBoilerStatus(snapshot), nil, consistency)), false), nil
+	case toolSemanticSystemGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotSystem(snapshot), nil, consistency)), false), nil
 	case toolSemanticSnapshotName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -835,6 +892,7 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		dhw:       s.snapshotDHW(nil),
 		energy:    s.snapshotEnergyTotals(nil),
 		boiler:    s.snapshotBoilerStatus(nil),
+		system:    s.snapshotSystem(nil),
 		devices:   s.listDevices(nil),
 	}
 
@@ -910,6 +968,10 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 	if snapshot.boiler != nil {
 		boilerCopy = cloneMCPBoilerStatus(snapshot.boiler)
 	}
+	var systemCopy *SystemStatus
+	if snapshot.system != nil {
+		systemCopy = cloneMCPSystemStatus(snapshot.system)
+	}
 	return snapshotState{
 		id:        snapshot.id,
 		createdAt: snapshot.createdAt,
@@ -920,6 +982,7 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		dhw:       dhwCopy,
 		energy:    energyCopy,
 		boiler:    boilerCopy,
+		system:    systemCopy,
 		devices:   cloneDeviceInfoList(snapshot.devices),
 	}
 }
@@ -1569,6 +1632,23 @@ func (s *Server) snapshotBoilerStatus(snapshot *snapshotState) *BoilerStatus {
 	return cloneMCPBoilerStatus(source)
 }
 
+func (s *Server) snapshotSystem(snapshot *snapshotState) *SystemStatus {
+	if snapshot != nil {
+		if snapshot.system == nil {
+			return nil
+		}
+		return cloneMCPSystemStatus(snapshot.system)
+	}
+	if s == nil || s.semantic == nil {
+		return nil
+	}
+	source := s.semantic.System()
+	if source == nil {
+		return nil
+	}
+	return cloneMCPSystemStatus(source)
+}
+
 func cloneMCPBoilerStatus(status *BoilerStatus) *BoilerStatus {
 	if status == nil {
 		return nil
@@ -1581,6 +1661,98 @@ func cloneMCPBoilerStatus(status *BoilerStatus) *BoilerStatus {
 	if cp.Diagnostics != nil {
 		d := *cp.Diagnostics
 		cp.Diagnostics = &d
+	}
+	return &cp
+}
+
+func cloneMCPSystemStatus(status *SystemStatus) *SystemStatus {
+	if status == nil {
+		return nil
+	}
+	cp := *status
+	if cp.State != nil {
+		state := *cp.State
+		if state.SystemOff != nil {
+			v := *state.SystemOff
+			state.SystemOff = &v
+		}
+		if state.SystemWaterPressure != nil {
+			v := *state.SystemWaterPressure
+			state.SystemWaterPressure = &v
+		}
+		if state.SystemFlowTemperature != nil {
+			v := *state.SystemFlowTemperature
+			state.SystemFlowTemperature = &v
+		}
+		if state.OutdoorTemperature != nil {
+			v := *state.OutdoorTemperature
+			state.OutdoorTemperature = &v
+		}
+		if state.OutdoorTemperatureAvg24h != nil {
+			v := *state.OutdoorTemperatureAvg24h
+			state.OutdoorTemperatureAvg24h = &v
+		}
+		if state.MaintenanceDue != nil {
+			v := *state.MaintenanceDue
+			state.MaintenanceDue = &v
+		}
+		if state.HwcCylinderTemperatureTop != nil {
+			v := *state.HwcCylinderTemperatureTop
+			state.HwcCylinderTemperatureTop = &v
+		}
+		if state.HwcCylinderTemperatureBottom != nil {
+			v := *state.HwcCylinderTemperatureBottom
+			state.HwcCylinderTemperatureBottom = &v
+		}
+		cp.State = &state
+	}
+	if cp.Config != nil {
+		config := *cp.Config
+		if config.AdaptiveHeatingCurve != nil {
+			v := *config.AdaptiveHeatingCurve
+			config.AdaptiveHeatingCurve = &v
+		}
+		if config.AlternativePoint != nil {
+			v := *config.AlternativePoint
+			config.AlternativePoint = &v
+		}
+		if config.HeatingCircuitBivalencePoint != nil {
+			v := *config.HeatingCircuitBivalencePoint
+			config.HeatingCircuitBivalencePoint = &v
+		}
+		if config.DhwBivalencePoint != nil {
+			v := *config.DhwBivalencePoint
+			config.DhwBivalencePoint = &v
+		}
+		if config.HcEmergencyTemperature != nil {
+			v := *config.HcEmergencyTemperature
+			config.HcEmergencyTemperature = &v
+		}
+		if config.HwcMaxFlowTempDesired != nil {
+			v := *config.HwcMaxFlowTempDesired
+			config.HwcMaxFlowTempDesired = &v
+		}
+		if config.MaxRoomHumidity != nil {
+			v := *config.MaxRoomHumidity
+			config.MaxRoomHumidity = &v
+		}
+		cp.Config = &config
+	}
+	if cp.Properties != nil {
+		properties := *cp.Properties
+		if properties.SystemScheme != nil {
+			v := *properties.SystemScheme
+			properties.SystemScheme = &v
+		}
+		if properties.ModuleConfigurationVR71 != nil {
+			v := *properties.ModuleConfigurationVR71
+			properties.ModuleConfigurationVR71 = &v
+		}
+		if properties.VR71CircuitStartIndex != nil {
+			v := *properties.VR71CircuitStartIndex
+			properties.VR71CircuitStartIndex = &v
+		}
+		cp.Properties = &properties
 	}
 	return &cp
 }
@@ -1650,7 +1822,7 @@ func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, 
 
 func parseSemanticSnapshotOptions(args map[string]any) (semanticSnapshotOptions, error) {
 	options := semanticSnapshotOptions{
-		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "circuits"},
+		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits"},
 		timeout:      defaultSnapshotReadTTL,
 		allowPartial: false,
 	}
@@ -1716,7 +1888,7 @@ func parseSemanticSnapshotPlanes(raw any) ([]string, error) {
 		}
 		normalized := strings.ToLower(strings.TrimSpace(value))
 		switch normalized {
-		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "circuits":
+		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits":
 		default:
 			return nil, fmt.Errorf("unsupported plane %q: %w", value, ebuserrors.ErrInvalidPayload)
 		}
@@ -1751,6 +1923,8 @@ func (s *Server) readSemanticPlane(ctx context.Context, plane string, snapshot *
 		value = s.snapshotEnergyTotals(snapshot)
 	case "boiler_status":
 		value = s.snapshotBoilerStatus(snapshot)
+	case "system":
+		value = s.snapshotSystem(snapshot)
 	case "circuits":
 		value = s.snapshotCircuits(snapshot)
 	default:

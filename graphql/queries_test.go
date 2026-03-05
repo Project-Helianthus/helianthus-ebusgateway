@@ -344,6 +344,32 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						coolingEnabled
 					}
 				}
+				system {
+					state {
+						systemOff
+						systemWaterPressure
+						systemFlowTemperature
+						outdoorTemperature
+						outdoorTemperatureAvg24h
+						maintenanceDue
+						hwcCylinderTemperatureTop
+						hwcCylinderTemperatureBottom
+					}
+					config {
+						adaptiveHeatingCurve
+						alternativePoint
+						heatingCircuitBivalencePoint
+						dhwBivalencePoint
+						hcEmergencyTemperature
+						hwcMaxFlowTempDesired
+						maxRoomHumidity
+					}
+					properties {
+						systemScheme
+						moduleConfigurationVR71
+						vr71CircuitStartIndex
+					}
+				}
 			}
 		`)
 
@@ -406,6 +432,32 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					CoolingEnabled  *bool    `json:"coolingEnabled"`
 				} `json:"config"`
 			} `json:"circuits"`
+			System *struct {
+				State struct {
+					SystemOff                    *bool    `json:"systemOff"`
+					SystemWaterPressure          *float64 `json:"systemWaterPressure"`
+					SystemFlowTemperature        *float64 `json:"systemFlowTemperature"`
+					OutdoorTemperature           *float64 `json:"outdoorTemperature"`
+					OutdoorTemperatureAvg24h     *float64 `json:"outdoorTemperatureAvg24h"`
+					MaintenanceDue               *bool    `json:"maintenanceDue"`
+					HwcCylinderTemperatureTop    *float64 `json:"hwcCylinderTemperatureTop"`
+					HwcCylinderTemperatureBottom *float64 `json:"hwcCylinderTemperatureBottom"`
+				} `json:"state"`
+				Config struct {
+					AdaptiveHeatingCurve         *bool    `json:"adaptiveHeatingCurve"`
+					AlternativePoint             *float64 `json:"alternativePoint"`
+					HeatingCircuitBivalencePoint *float64 `json:"heatingCircuitBivalencePoint"`
+					DhwBivalencePoint            *float64 `json:"dhwBivalencePoint"`
+					HcEmergencyTemperature       *float64 `json:"hcEmergencyTemperature"`
+					HwcMaxFlowTempDesired        *float64 `json:"hwcMaxFlowTempDesired"`
+					MaxRoomHumidity              *int     `json:"maxRoomHumidity"`
+				} `json:"config"`
+				Properties struct {
+					SystemScheme            *int `json:"systemScheme"`
+					ModuleConfigurationVR71 *int `json:"moduleConfigurationVR71"`
+					Vr71CircuitStartIndex   *int `json:"vr71CircuitStartIndex"`
+				} `json:"properties"`
+			} `json:"system"`
 		}
 
 		if err := client.Run(context.Background(), request, &response); err != nil {
@@ -419,6 +471,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if len(response.Circuits) != 0 {
 			t.Fatalf("circuits = %d; want 0", len(response.Circuits))
+		}
+		if response.System != nil {
+			t.Fatalf("system expected nil with static provider")
 		}
 	})
 

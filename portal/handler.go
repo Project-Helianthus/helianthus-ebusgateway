@@ -713,7 +713,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"explorer_scan_stream":  "/portal/api/v1/explorer/scans/current/stream",
 				"explorer_read_b524":    "/portal/api/v1/explorer/read/b524",
 				"explorer_read_b509":    "/portal/api/v1/explorer/read/b509",
-				"explorer_read_scanid": "/portal/api/v1/explorer/read/scanid",
+				"explorer_read_scanid":  "/portal/api/v1/explorer/read/scanid",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,

@@ -139,7 +139,7 @@ type vaillantSemanticPoller struct {
 	presence                 map[byte]*zonePresenceRecord
 	dhw                      *vaillantDhwSnapshot
 	dhwLastUpdateAt          time.Time
-	boiler *vaillantBoilerSnapshot
+	boiler                   *vaillantBoilerSnapshot
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	nowFn                  func() time.Time
@@ -461,16 +461,16 @@ func zoneInstanceFromSemanticID(id string, fallbackIndex int) byte {
 
 func zoneSnapshotFromSemanticZone(instance byte, zone graphql.Zone) *vaillantZoneSnapshot {
 	snapshot := &vaillantZoneSnapshot{
-		Instance:         instance,
-		Present:          true,
-		Name:             zone.Name,
-		OperatingMode:    zone.Config.OperatingMode,
-		Preset:           zone.Config.Preset,
-		HvacAction:       zone.State.HvacAction,
-		AllowedModes:     append([]string(nil), zone.Config.AllowedModes...),
-		CurrentTempC:     cloneFloat64Ptr(zone.State.CurrentTempC),
-		TargetTempC:      cloneFloat64Ptr(zone.Config.TargetTempC),
-		HumidityPct:      cloneFloat64Ptr(zone.State.CurrentHumidityPct),
+		Instance:             instance,
+		Present:              true,
+		Name:                 zone.Name,
+		OperatingMode:        zone.Config.OperatingMode,
+		Preset:               zone.Config.Preset,
+		HvacAction:           zone.State.HvacAction,
+		AllowedModes:         append([]string(nil), zone.Config.AllowedModes...),
+		CurrentTempC:         cloneFloat64Ptr(zone.State.CurrentTempC),
+		TargetTempC:          cloneFloat64Ptr(zone.Config.TargetTempC),
+		HumidityPct:          cloneFloat64Ptr(zone.State.CurrentHumidityPct),
 		StateSpecialFunction: zone.State.SpecialFunction,
 	}
 	if zone.Config.AssociatedCircuit != nil {
@@ -1623,8 +1623,8 @@ const (
 	// system_flow_temperature — float32 LE (°C)
 	regulatorRegSystemFlowTemp = uint16(0x004B)
 	// Heating circuit registers (group 0x02)
-	circuitRegFlowTemp    = uint16(0x0008) // heating_circuit_flow_temperature — float32 LE (°C)
-	circuitRegPumpStatus  = uint16(0x001E) // pump_status — uint16 LE (0=off, !0=on)
+	circuitRegFlowTemp     = uint16(0x0008) // heating_circuit_flow_temperature — float32 LE (°C)
+	circuitRegPumpStatus   = uint16(0x001E) // pump_status — uint16 LE (0=off, !0=on)
 	circuitRegCircuitState = uint16(0x001B) // circuit_state — uint16 LE
 )
 

@@ -114,16 +114,18 @@ type vaillantSemanticPoller struct {
 
 	transportConfig ebusgateway.TransportConfig
 
-	source            byte
-	requestTimeout    time.Duration
-	discoveryInterval time.Duration
-	configInterval    time.Duration
-	stateInterval     time.Duration
-	energyInterval    time.Duration
-	boilerInterval    time.Duration
-	zoneMissThreshold int
-	zoneHitThreshold  int
-	dhwStaleTTL       time.Duration
+	source               byte
+	requestTimeout       time.Duration
+	discoveryInterval    time.Duration
+	configInterval       time.Duration
+	stateInterval        time.Duration
+	energyInterval       time.Duration
+	boilerFastInterval   time.Duration
+	boilerMediumInterval time.Duration
+	boilerSlowInterval   time.Duration
+	zoneMissThreshold    int
+	zoneHitThreshold     int
+	dhwStaleTTL          time.Duration
 
 	pollMu sync.Mutex
 	readMu sync.Mutex
@@ -256,6 +258,20 @@ func (set semanticFieldSet) has(key semanticFieldKey) bool {
 	return ok
 }
 
+type boilerStatusTier uint8
+
+const (
+	boilerStatusTierFast boilerStatusTier = iota
+	boilerStatusTierMedium
+	boilerStatusTierSlow
+)
+
+type boilerStatusTierSchedule struct {
+	tier     boilerStatusTier
+	interval time.Duration
+	priority semanticTaskPriority
+}
+
 var (
 	zoneConfigFieldSet = newSemanticFieldSet(
 		zoneFieldName,
@@ -312,15 +328,17 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		transportConfig: cfg.TransportConfig,
 		source:          cfg.ScanSource,
 
-		requestTimeout:    cfg.SemanticRequestTimeout,
-		discoveryInterval: cfg.SemanticDiscoveryInterval,
-		configInterval:    cfg.SemanticConfigInterval,
-		stateInterval:     cfg.SemanticStateInterval,
-		energyInterval:    cfg.SemanticEnergyInterval,
-		boilerInterval:    30 * time.Second,
-		zoneMissThreshold: cfg.SemanticZonePresenceMissThreshold,
-		zoneHitThreshold:  cfg.SemanticZonePresenceHitThreshold,
-		dhwStaleTTL:       cfg.SemanticDHWStaleTTL,
+		requestTimeout:       cfg.SemanticRequestTimeout,
+		discoveryInterval:    cfg.SemanticDiscoveryInterval,
+		configInterval:       cfg.SemanticConfigInterval,
+		stateInterval:        cfg.SemanticStateInterval,
+		energyInterval:       cfg.SemanticEnergyInterval,
+		boilerFastInterval:   30 * time.Second,
+		boilerMediumInterval: 5 * time.Minute,
+		boilerSlowInterval:   10 * time.Minute,
+		zoneMissThreshold:    cfg.SemanticZonePresenceMissThreshold,
+		zoneHitThreshold:     cfg.SemanticZonePresenceHitThreshold,
+		dhwStaleTTL:          cfg.SemanticDHWStaleTTL,
 
 		catalog:    catalog,
 		catalogErr: catalogErr,
@@ -725,6 +743,23 @@ func seedDhwFreshness(snapshot *vaillantDhwSnapshot, source semanticSnapshotSour
 	}
 }
 
+func (p *vaillantSemanticPoller) boilerStatusTierSchedules() []boilerStatusTierSchedule {
+	if p == nil {
+		return nil
+	}
+	return []boilerStatusTierSchedule{
+		{tier: boilerStatusTierFast, interval: p.boilerFastInterval, priority: semanticTaskPriorityHigh},
+		{tier: boilerStatusTierMedium, interval: p.boilerMediumInterval, priority: semanticTaskPriorityMedium},
+		{tier: boilerStatusTierSlow, interval: p.boilerSlowInterval, priority: semanticTaskPriorityLow},
+	}
+}
+
+func (p *vaillantSemanticPoller) boilerStatusTierTask(tier boilerStatusTier) func(context.Context) {
+	return func(ctx context.Context) {
+		p.refreshBoilerStatusTier(ctx, tier)
+	}
+}
+
 func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	if p == nil {
 		return
@@ -740,14 +775,18 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
 	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshBoilerStatus)
+	for _, schedule := range p.boilerStatusTierSchedules() {
+		p.enqueueTask(schedule.priority, p.boilerStatusTierTask(schedule.tier))
+	}
 
 	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
 	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityMedium, p.refreshConfig)
 	go p.runLoop(ctx, p.stateInterval, semanticTaskPriorityHigh, p.refreshState)
 	go p.runLoop(ctx, p.energyInterval, semanticTaskPriorityMedium, p.refreshEnergy)
-	go p.runLoop(ctx, p.boilerInterval, semanticTaskPriorityHigh, p.refreshBoilerStatus)
+	for _, schedule := range p.boilerStatusTierSchedules() {
+		go p.runLoop(ctx, schedule.interval, schedule.priority, p.boilerStatusTierTask(schedule.tier))
+	}
 }
 
 func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Duration, priority semanticTaskPriority, fn func(context.Context)) {
@@ -1638,8 +1677,9 @@ const (
 
 	// system_flow_temperature — float32 LE (°C)
 	regulatorRegSystemFlowTemp = uint16(0x004B)
-	// Heating circuit registers (group 0x02)
-	circuitRegFlowTemp     = uint16(0x0008) // heating_circuit_flow_temperature — float32 LE (°C)
+	// Heating circuit registers (group 0x02).
+	// Closed decision: GG=0x02 RR=0x0008 is circuit flow temperature (VF[x]),
+	// not boiler return temperature. Do not map it to boiler return temperature.
 	circuitRegPumpStatus   = uint16(0x001E) // pump_status — uint16 LE (0=off, !0=on)
 	circuitRegCircuitState = uint16(0x001B) // circuit_state — uint16 LE
 )
@@ -1655,14 +1695,81 @@ type vaillantBoilerSnapshot struct {
 	DhwStatusRaw             *int
 }
 
+type boilerStatusField uint8
+
+const (
+	boilerStatusFieldFlowTemperature boilerStatusField = iota
+	boilerStatusFieldPumpActive
+	boilerStatusFieldHeatingStatusRaw
+)
+
+type boilerStatusRegisterDecoder uint8
+
+const (
+	boilerStatusRegisterDecoderFloat32 boilerStatusRegisterDecoder = iota
+	boilerStatusRegisterDecoderUint16Bool
+	boilerStatusRegisterDecoderUint16Int
+)
+
+type boilerStatusRegisterDefinition struct {
+	field    boilerStatusField
+	decoder  boilerStatusRegisterDecoder
+	opcode   byte
+	group    byte
+	instance byte
+	addr     uint16
+}
+
 // findBoilerAddress is retained for potential future use (e.g. broadcast sniffing).
 // Currently unused — boiler data is read via B524 registers on the controller.
+
+func boilerStatusRegisterDefinitionsForTier(tier boilerStatusTier) []boilerStatusRegisterDefinition {
+	switch tier {
+	case boilerStatusTierFast:
+		return []boilerStatusRegisterDefinition{
+			{
+				field:    boilerStatusFieldFlowTemperature,
+				decoder:  boilerStatusRegisterDecoderFloat32,
+				opcode:   vaillantB524OpcodeLocal,
+				group:    vaillantGroupRegulator,
+				instance: regulatorInstance,
+				addr:     regulatorRegSystemFlowTemp,
+			},
+			{
+				field:    boilerStatusFieldPumpActive,
+				decoder:  boilerStatusRegisterDecoderUint16Bool,
+				opcode:   vaillantB524OpcodeLocal,
+				group:    vaillantGroupCircuits,
+				instance: 0x00,
+				addr:     circuitRegPumpStatus,
+			},
+			{
+				field:    boilerStatusFieldHeatingStatusRaw,
+				decoder:  boilerStatusRegisterDecoderUint16Int,
+				opcode:   vaillantB524OpcodeLocal,
+				group:    vaillantGroupCircuits,
+				instance: 0x00,
+				addr:     circuitRegCircuitState,
+			},
+		}
+	case boilerStatusTierMedium, boilerStatusTierSlow:
+		// Reduced profile: scaffolding only. Additional mappings are added once
+		// authoritative B524 semantics are promoted for boiler_status.
+		return nil
+	default:
+		return nil
+	}
+}
 
 // refreshBoilerStatus reads boiler operational data via B524 registers on the controller.
 // The BAI boiler does not respond to direct B504 reads from third-party sources — it only
 // accepts requests from its paired controller. Instead, the controller (VRC/BASV2) mirrors
 // boiler data in its own B524 register space, which we can read reliably.
 func (p *vaillantSemanticPoller) refreshBoilerStatus(ctx context.Context) {
+	p.refreshBoilerStatusTier(ctx, boilerStatusTierFast)
+}
+
+func (p *vaillantSemanticPoller) refreshBoilerStatusTier(ctx context.Context, tier boilerStatusTier) {
 	if p == nil {
 		return
 	}
@@ -1676,40 +1783,57 @@ func (p *vaillantSemanticPoller) refreshBoilerStatus(ctx context.Context) {
 		return
 	}
 
+	registers := boilerStatusRegisterDefinitionsForTier(tier)
+	if len(registers) == 0 {
+		return
+	}
+
 	snapshot := &vaillantBoilerSnapshot{}
-
-	// System flow temperature from regulator group (group=0x00, instance=0x00, reg=0x004B)
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, regulatorRegSystemFlowTemp); ok {
-		snapshot.FlowTemperatureC = &value
+	updated := false
+	for _, register := range registers {
+		switch register.decoder {
+		case boilerStatusRegisterDecoderFloat32:
+			value, ok := p.readB524Float32LE(ctx, register.opcode, register.group, register.instance, register.addr)
+			if !ok {
+				continue
+			}
+			updated = true
+			switch register.field {
+			case boilerStatusFieldFlowTemperature:
+				snapshot.FlowTemperatureC = &value
+			}
+		case boilerStatusRegisterDecoderUint16Bool:
+			raw, ok := p.readB524Uint16(ctx, register.opcode, register.group, register.instance, register.addr)
+			if !ok || raw == nil {
+				continue
+			}
+			updated = true
+			switch register.field {
+			case boilerStatusFieldPumpActive:
+				active := *raw != 0
+				snapshot.CentralHeatingPumpActive = &active
+			}
+		case boilerStatusRegisterDecoderUint16Int:
+			raw, ok := p.readB524Uint16(ctx, register.opcode, register.group, register.instance, register.addr)
+			if !ok || raw == nil {
+				continue
+			}
+			updated = true
+			switch register.field {
+			case boilerStatusFieldHeatingStatusRaw:
+				status := int(*raw)
+				snapshot.HeatingStatusRaw = &status
+			}
+		}
 	}
 
-	// Heating circuit 0 flow temperature (group=0x02, instance=0x00, reg=0x0008)
-	// This is the per-circuit flow temp, may differ from system flow temp.
-	// Use as return temperature proxy if system flow is the supply side.
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, 0x00, circuitRegFlowTemp); ok {
-		snapshot.ReturnTemperatureC = &value
-	}
-
-	// Heating circuit 0 pump status (group=0x02, instance=0x00, reg=0x001E)
-	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, 0x00, circuitRegPumpStatus); ok && raw != nil {
-		active := *raw != 0
-		snapshot.CentralHeatingPumpActive = &active
-	}
-
-	// Heating circuit 0 state (group=0x02, instance=0x00, reg=0x001B)
-	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, 0x00, circuitRegCircuitState); ok && raw != nil {
-		status := int(*raw)
-		snapshot.HeatingStatusRaw = &status
-	}
-
-	// Only update if we got at least some data — avoid wiping good state on transient bus errors.
-	if snapshot.FlowTemperatureC == nil && snapshot.ReturnTemperatureC == nil &&
-		snapshot.CentralHeatingPumpActive == nil && snapshot.HeatingStatusRaw == nil {
+	// Preserve last-known values on transient/partial failures.
+	if !updated {
 		return
 	}
 
 	p.mu.Lock()
-	p.boiler = snapshot
+	p.boiler = mergeBoilerSnapshotNonDestructive(p.boiler, snapshot)
 	p.mu.Unlock()
 
 	p.publishBoilerStatus(semanticSnapshotSourceLive)
@@ -1846,19 +1970,85 @@ func intPtrEquals(a, b *int) bool {
 	return *a == *b
 }
 
+func mergeBoilerSnapshotNonDestructive(existing, incoming *vaillantBoilerSnapshot) *vaillantBoilerSnapshot {
+	merged := cloneBoilerSnapshot(existing)
+	if merged == nil {
+		merged = &vaillantBoilerSnapshot{}
+	}
+	if incoming != nil {
+		if incoming.FlowTemperatureC != nil {
+			merged.FlowTemperatureC = cloneFloat64Ptr(incoming.FlowTemperatureC)
+		}
+		if incoming.CentralHeatingPumpActive != nil {
+			merged.CentralHeatingPumpActive = cloneBoilerBoolPtr(incoming.CentralHeatingPumpActive)
+		}
+		if incoming.DhwTemperatureC != nil {
+			merged.DhwTemperatureC = cloneFloat64Ptr(incoming.DhwTemperatureC)
+		}
+		if incoming.DhwTargetTemperatureC != nil {
+			merged.DhwTargetTemperatureC = cloneFloat64Ptr(incoming.DhwTargetTemperatureC)
+		}
+		if incoming.DhwOperatingMode != nil {
+			merged.DhwOperatingMode = cloneBoilerIntPtr(incoming.DhwOperatingMode)
+		}
+		if incoming.HeatingStatusRaw != nil {
+			merged.HeatingStatusRaw = cloneBoilerIntPtr(incoming.HeatingStatusRaw)
+		}
+		if incoming.DhwStatusRaw != nil {
+			merged.DhwStatusRaw = cloneBoilerIntPtr(incoming.DhwStatusRaw)
+		}
+	}
+
+	// Closed decision: do not map GG=0x02 RR=0x0008 as boiler return temperature.
+	// Keep return temperature unset in B524-derived snapshots.
+	merged.ReturnTemperatureC = nil
+	return merged
+}
+
+func cloneBoilerSnapshot(snapshot *vaillantBoilerSnapshot) *vaillantBoilerSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return &vaillantBoilerSnapshot{
+		FlowTemperatureC:         cloneFloat64Ptr(snapshot.FlowTemperatureC),
+		ReturnTemperatureC:       cloneFloat64Ptr(snapshot.ReturnTemperatureC),
+		CentralHeatingPumpActive: cloneBoilerBoolPtr(snapshot.CentralHeatingPumpActive),
+		DhwTemperatureC:          cloneFloat64Ptr(snapshot.DhwTemperatureC),
+		DhwTargetTemperatureC:    cloneFloat64Ptr(snapshot.DhwTargetTemperatureC),
+		DhwOperatingMode:         cloneBoilerIntPtr(snapshot.DhwOperatingMode),
+		HeatingStatusRaw:         cloneBoilerIntPtr(snapshot.HeatingStatusRaw),
+		DhwStatusRaw:             cloneBoilerIntPtr(snapshot.DhwStatusRaw),
+	}
+}
+
+func cloneBoilerBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneBoilerIntPtr(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 func boilerSnapshotFromGraphQL(status *graphql.BoilerStatus) *vaillantBoilerSnapshot {
 	if status == nil {
 		return nil
 	}
-	return &vaillantBoilerSnapshot{
-		FlowTemperatureC:         status.State.FlowTemperatureC,
-		ReturnTemperatureC:       status.State.ReturnTemperatureC,
-		CentralHeatingPumpActive: status.State.CentralHeatingPumpActive,
-		DhwTemperatureC:          status.State.DhwTemperatureC,
-		DhwTargetTemperatureC:    status.State.DhwTargetTemperatureC,
-		HeatingStatusRaw:         status.Diagnostics.HeatingStatusRaw,
-		DhwStatusRaw:             status.Diagnostics.DhwStatusRaw,
-	}
+	return mergeBoilerSnapshotNonDestructive(nil, &vaillantBoilerSnapshot{
+		FlowTemperatureC:         cloneFloat64Ptr(status.State.FlowTemperatureC),
+		CentralHeatingPumpActive: cloneBoilerBoolPtr(status.State.CentralHeatingPumpActive),
+		DhwTemperatureC:          cloneFloat64Ptr(status.State.DhwTemperatureC),
+		DhwTargetTemperatureC:    cloneFloat64Ptr(status.State.DhwTargetTemperatureC),
+		HeatingStatusRaw:         cloneBoilerIntPtr(status.Diagnostics.HeatingStatusRaw),
+		DhwStatusRaw:             cloneBoilerIntPtr(status.Diagnostics.DhwStatusRaw),
+	})
 }
 
 func (p *vaillantSemanticPoller) persistSemanticCache(source semanticSnapshotSource) {

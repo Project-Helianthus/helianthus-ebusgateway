@@ -139,6 +139,61 @@ func (adapter mcpSemanticProviderAdapter) RadioDevices() []mcp.RadioDevice {
 	return out
 }
 
+func (adapter mcpSemanticProviderAdapter) FM5SemanticMode() mcp.Fm5SemanticMode {
+	if adapter.provider == nil {
+		return mcp.Fm5SemanticModeAbsent
+	}
+	mode := adapter.provider.FM5SemanticMode()
+	switch mode {
+	case graphql.Fm5SemanticModeInterpreted:
+		return mcp.Fm5SemanticModeInterpreted
+	case graphql.Fm5SemanticModeGPIOOnly:
+		return mcp.Fm5SemanticModeGPIOOnly
+	default:
+		return mcp.Fm5SemanticModeAbsent
+	}
+}
+
+func (adapter mcpSemanticProviderAdapter) Solar() *mcp.SolarStatus {
+	if adapter.provider == nil {
+		return nil
+	}
+	status := adapter.provider.Solar()
+	if status == nil {
+		return nil
+	}
+	return &mcp.SolarStatus{
+		CollectorTemperatureC: cloneFloatPtr(status.CollectorTemperatureC),
+		ReturnTemperatureC:    cloneFloatPtr(status.ReturnTemperatureC),
+		PumpActive:            cloneBoolPtr(status.PumpActive),
+		CurrentYield:          cloneFloatPtr(status.CurrentYield),
+		PumpHours:             cloneFloatPtr(status.PumpHours),
+		SolarEnabled:          cloneBoolPtr(status.SolarEnabled),
+		FunctionMode:          cloneBoolPtr(status.FunctionMode),
+	}
+}
+
+func (adapter mcpSemanticProviderAdapter) Cylinders() []mcp.CylinderStatus {
+	if adapter.provider == nil {
+		return nil
+	}
+	cylinders := adapter.provider.Cylinders()
+	if len(cylinders) == 0 {
+		return nil
+	}
+	out := make([]mcp.CylinderStatus, len(cylinders))
+	for i, cylinder := range cylinders {
+		out[i] = mcp.CylinderStatus{
+			Index:             cylinder.Index,
+			TemperatureC:      cloneFloatPtr(cylinder.TemperatureC),
+			MaxSetpointC:      cloneFloatPtr(cylinder.MaxSetpointC),
+			ChargeHysteresisC: cloneFloatPtr(cylinder.ChargeHysteresisC),
+			ChargeOffsetC:     cloneFloatPtr(cylinder.ChargeOffsetC),
+		}
+	}
+	return out
+}
+
 func (adapter mcpSemanticProviderAdapter) EnergyTotals() *mcp.EnergyTotals {
 	if adapter.provider == nil {
 		return nil

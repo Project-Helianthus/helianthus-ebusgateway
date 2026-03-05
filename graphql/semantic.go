@@ -92,6 +92,32 @@ type RadioDevice struct {
 	RoomHumidityPct      *float64
 }
 
+type Fm5SemanticMode string
+
+const (
+	Fm5SemanticModeInterpreted Fm5SemanticMode = "INTERPRETED"
+	Fm5SemanticModeGPIOOnly    Fm5SemanticMode = "GPIO_ONLY"
+	Fm5SemanticModeAbsent      Fm5SemanticMode = "ABSENT"
+)
+
+type SolarStatus struct {
+	CollectorTemperatureC *float64
+	ReturnTemperatureC    *float64
+	PumpActive            *bool
+	CurrentYield          *float64
+	PumpHours             *float64
+	SolarEnabled          *bool
+	FunctionMode          *bool
+}
+
+type CylinderStatus struct {
+	Index             int
+	TemperatureC      *float64
+	MaxSetpointC      *float64
+	ChargeHysteresisC *float64
+	ChargeOffsetC     *float64
+}
+
 type EnergySeries struct {
 	Today  float64
 	Yearly []float64
@@ -169,6 +195,9 @@ type SemanticProvider interface {
 	DHW() *DhwStatus
 	Circuits() []CircuitStatus
 	RadioDevices() []RadioDevice
+	FM5SemanticMode() Fm5SemanticMode
+	Solar() *SolarStatus
+	Cylinders() []CylinderStatus
 	EnergyTotals() *EnergyTotals
 	BoilerStatus() *BoilerStatus
 	System() *SystemStatus
@@ -189,6 +218,18 @@ func (staticSemanticProvider) Circuits() []CircuitStatus {
 }
 
 func (staticSemanticProvider) RadioDevices() []RadioDevice {
+	return nil
+}
+
+func (staticSemanticProvider) FM5SemanticMode() Fm5SemanticMode {
+	return Fm5SemanticModeAbsent
+}
+
+func (staticSemanticProvider) Solar() *SolarStatus {
+	return nil
+}
+
+func (staticSemanticProvider) Cylinders() []CylinderStatus {
 	return nil
 }
 

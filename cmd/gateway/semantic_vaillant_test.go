@@ -536,11 +536,11 @@ func TestDeriveVR71CircuitStartIndex(t *testing.T) {
 			wantNil: true,
 		},
 		{
-			name:    "no fm5 profiles",
+			name:    "interpreted fm5 profile",
 			scheme:  uint16Ptr(8),
 			module:  uint16Ptr(2),
 			wantNil: false,
-			want:    -1,
+			want:    1,
 		},
 		{
 			name:    "invalid scheme",
@@ -550,11 +550,11 @@ func TestDeriveVR71CircuitStartIndex(t *testing.T) {
 			want:    -1,
 		},
 		{
-			name:    "extended fm5 profile",
+			name:    "non interpreted fm5 profile",
 			scheme:  uint16Ptr(8),
 			module:  uint16Ptr(4),
 			wantNil: false,
-			want:    1,
+			want:    -1,
 		},
 	}
 
@@ -571,6 +571,65 @@ func TestDeriveVR71CircuitStartIndex(t *testing.T) {
 			}
 			if got == nil || *got != test.want {
 				t.Fatalf("deriveVR71CircuitStartIndex(...) = %v; want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestDeriveFM5SemanticModeTransitions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		controllerReachable bool
+		fm5GateSatisfied    bool
+		solarReadable       bool
+		cylindersReadable   bool
+		hasEvidence         bool
+		want                graphql.Fm5SemanticMode
+	}{
+		{
+			name:                "interpreted",
+			controllerReachable: true,
+			fm5GateSatisfied:    true,
+			solarReadable:       true,
+			cylindersReadable:   true,
+			hasEvidence:         true,
+			want:                graphql.Fm5SemanticModeInterpreted,
+		},
+		{
+			name:                "gpio only",
+			controllerReachable: false,
+			fm5GateSatisfied:    false,
+			solarReadable:       false,
+			cylindersReadable:   false,
+			hasEvidence:         true,
+			want:                graphql.Fm5SemanticModeGPIOOnly,
+		},
+		{
+			name:                "absent",
+			controllerReachable: false,
+			fm5GateSatisfied:    false,
+			solarReadable:       false,
+			cylindersReadable:   false,
+			hasEvidence:         false,
+			want:                graphql.Fm5SemanticModeAbsent,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := deriveFM5SemanticMode(
+				test.controllerReachable,
+				test.fm5GateSatisfied,
+				test.solarReadable,
+				test.cylindersReadable,
+				test.hasEvidence,
+			)
+			if got != test.want {
+				t.Fatalf("deriveFM5SemanticMode(...) = %s; want %s", got, test.want)
 			}
 		})
 	}
@@ -673,8 +732,8 @@ func TestPublishSystem_DerivesVR71CircuitStartIndex(t *testing.T) {
 	if status == nil {
 		t.Fatal("provider.System() = nil; want published system status")
 	}
-	if status.Properties.Vr71CircuitStartIndex == nil || *status.Properties.Vr71CircuitStartIndex != -1 {
-		t.Fatalf("provider.System().Properties.Vr71CircuitStartIndex = %v; want -1", status.Properties.Vr71CircuitStartIndex)
+	if status.Properties.Vr71CircuitStartIndex == nil || *status.Properties.Vr71CircuitStartIndex != 1 {
+		t.Fatalf("provider.System().Properties.Vr71CircuitStartIndex = %v; want 1", status.Properties.Vr71CircuitStartIndex)
 	}
 }
 

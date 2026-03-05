@@ -206,6 +206,62 @@ func TestLiveSemanticProvider_PhaseLoggerCanReadProviderState(t *testing.T) {
 	}
 }
 
+func TestLiveSemanticProvider_FM5SolarAndCylinders(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+
+	if got := provider.FM5SemanticMode(); got != Fm5SemanticModeAbsent {
+		t.Fatalf("FM5SemanticMode() = %s; want %s", got, Fm5SemanticModeAbsent)
+	}
+	if provider.Solar() != nil {
+		t.Fatal("Solar() expected nil by default")
+	}
+	if len(provider.Cylinders()) != 0 {
+		t.Fatalf("Cylinders() len = %d; want 0", len(provider.Cylinders()))
+	}
+
+	collector := 71.5
+	pumpActive := true
+	cylTemp := 48.0
+	provider.SetFM5SemanticMode(Fm5SemanticModeInterpreted)
+	provider.SetSolar(&SolarStatus{
+		CollectorTemperatureC: &collector,
+		PumpActive:            &pumpActive,
+	})
+	provider.SetCylinders([]CylinderStatus{
+		{Index: 0, TemperatureC: &cylTemp},
+	})
+
+	if got := provider.FM5SemanticMode(); got != Fm5SemanticModeInterpreted {
+		t.Fatalf("FM5SemanticMode() = %s; want %s", got, Fm5SemanticModeInterpreted)
+	}
+	solar := provider.Solar()
+	if solar == nil || solar.CollectorTemperatureC == nil || *solar.CollectorTemperatureC != 71.5 {
+		t.Fatalf("Solar() = %#v; want collector 71.5", solar)
+	}
+	if solar.PumpActive == nil || !*solar.PumpActive {
+		t.Fatalf("Solar().PumpActive = %#v; want true", solar.PumpActive)
+	}
+	cylinders := provider.Cylinders()
+	if len(cylinders) != 1 || cylinders[0].Index != 0 {
+		t.Fatalf("Cylinders() = %#v; want index 0", cylinders)
+	}
+	if cylinders[0].TemperatureC == nil || *cylinders[0].TemperatureC != 48.0 {
+		t.Fatalf("Cylinders()[0].TemperatureC = %#v; want 48.0", cylinders[0].TemperatureC)
+	}
+
+	// Ensure getters return cloned snapshots.
+	*solar.CollectorTemperatureC = 10
+	*cylinders[0].TemperatureC = 10
+	latestSolar := provider.Solar()
+	if latestSolar == nil || latestSolar.CollectorTemperatureC == nil || *latestSolar.CollectorTemperatureC != 71.5 {
+		t.Fatalf("provider solar mutated through getter: %#v", latestSolar)
+	}
+	latestCylinders := provider.Cylinders()
+	if len(latestCylinders) != 1 || latestCylinders[0].TemperatureC == nil || *latestCylinders[0].TemperatureC != 48.0 {
+		t.Fatalf("provider cylinders mutated through getter: %#v", latestCylinders)
+	}
+}
+
 func waitForPhase(t *testing.T, provider *LiveSemanticProvider, want SemanticStartupPhase, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

@@ -196,11 +196,40 @@ type RadioDevice struct {
 	RoomHumidityPct      *float64 `json:"room_humidity_pct,omitempty"`
 }
 
+type Fm5SemanticMode string
+
+const (
+	Fm5SemanticModeInterpreted Fm5SemanticMode = "INTERPRETED"
+	Fm5SemanticModeGPIOOnly    Fm5SemanticMode = "GPIO_ONLY"
+	Fm5SemanticModeAbsent      Fm5SemanticMode = "ABSENT"
+)
+
+type SolarStatus struct {
+	CollectorTemperatureC *float64 `json:"collector_temperature_c,omitempty"`
+	ReturnTemperatureC    *float64 `json:"return_temperature_c,omitempty"`
+	PumpActive            *bool    `json:"pump_active,omitempty"`
+	CurrentYield          *float64 `json:"current_yield,omitempty"`
+	PumpHours             *float64 `json:"pump_hours,omitempty"`
+	SolarEnabled          *bool    `json:"solar_enabled,omitempty"`
+	FunctionMode          *bool    `json:"function_mode,omitempty"`
+}
+
+type CylinderStatus struct {
+	Index             int      `json:"index"`
+	TemperatureC      *float64 `json:"temperature_c,omitempty"`
+	MaxSetpointC      *float64 `json:"max_setpoint_c,omitempty"`
+	ChargeHysteresisC *float64 `json:"charge_hysteresis_c,omitempty"`
+	ChargeOffsetC     *float64 `json:"charge_offset_c,omitempty"`
+}
+
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
 	Circuits() []CircuitStatus
 	RadioDevices() []RadioDevice
+	FM5SemanticMode() Fm5SemanticMode
+	Solar() *SolarStatus
+	Cylinders() []CylinderStatus
 	EnergyTotals() *EnergyTotals
 	BoilerStatus() *BoilerStatus
 	System() *SystemStatus
@@ -220,34 +249,37 @@ type Server struct {
 }
 
 const (
-	toolRuntimeStatusGetName    = "ebus.v1.runtime.status.get"
-	toolSemanticZonesGetName    = "ebus.v1.semantic.zones.get"
-	toolSemanticCircuitsGetName = "ebus.v1.semantic.circuits.get"
-	toolSemanticRadioGetName    = "ebus.v1.semantic.radio_devices.get"
-	toolSemanticDHWGetName      = "ebus.v1.semantic.dhw.get"
-	toolSemanticEnergyGetName   = "ebus.v1.semantic.energy_totals.get"
-	toolSemanticBoilerGetName   = "ebus.v1.semantic.boiler_status.get"
-	toolSemanticSystemGetName   = "ebus.v1.semantic.system.get"
-	toolSemanticSnapshotName    = "ebus.v1.semantic.snapshot.get"
-	toolSnapshotCaptureName     = "ebus.v1.snapshot.capture"
-	toolSnapshotDropName        = "ebus.v1.snapshot.drop"
-	toolDevicesV1Name           = "ebus.v1.registry.devices.list"
-	toolDeviceGetV1Name         = "ebus.v1.registry.devices.get"
-	toolPlanesListV1Name        = "ebus.v1.registry.planes.list"
-	toolMethodsListV1Name       = "ebus.v1.registry.methods.list"
-	toolInvokeV1Name            = "ebus.v1.rpc.invoke"
-	toolDevicesLegacyName       = "ebus.devices"
-	toolInvokeLegacyName        = "ebus.invoke"
-	methodMutabilityUnknown     = "unknown"
-	methodMutabilityReadOnly    = "read_only"
-	methodMutabilityMutating    = "mutating"
-	methodDangerUnknown         = "unknown"
-	methodDangerSafe            = "safe"
-	methodDangerDangerous       = "dangerous"
-	defaultInvokeTimeout        = 3 * time.Second
-	defaultIdempotencyTTL       = 30 * time.Second
-	defaultSnapshotTTL          = 5 * time.Minute
-	defaultSnapshotReadTTL      = 10 * time.Second
+	toolRuntimeStatusGetName     = "ebus.v1.runtime.status.get"
+	toolSemanticZonesGetName     = "ebus.v1.semantic.zones.get"
+	toolSemanticCircuitsGetName  = "ebus.v1.semantic.circuits.get"
+	toolSemanticRadioGetName     = "ebus.v1.semantic.radio_devices.get"
+	toolSemanticFM5ModeGetName   = "ebus.v1.semantic.fm5_mode.get"
+	toolSemanticSolarGetName     = "ebus.v1.semantic.solar.get"
+	toolSemanticCylindersGetName = "ebus.v1.semantic.cylinders.get"
+	toolSemanticDHWGetName       = "ebus.v1.semantic.dhw.get"
+	toolSemanticEnergyGetName    = "ebus.v1.semantic.energy_totals.get"
+	toolSemanticBoilerGetName    = "ebus.v1.semantic.boiler_status.get"
+	toolSemanticSystemGetName    = "ebus.v1.semantic.system.get"
+	toolSemanticSnapshotName     = "ebus.v1.semantic.snapshot.get"
+	toolSnapshotCaptureName      = "ebus.v1.snapshot.capture"
+	toolSnapshotDropName         = "ebus.v1.snapshot.drop"
+	toolDevicesV1Name            = "ebus.v1.registry.devices.list"
+	toolDeviceGetV1Name          = "ebus.v1.registry.devices.get"
+	toolPlanesListV1Name         = "ebus.v1.registry.planes.list"
+	toolMethodsListV1Name        = "ebus.v1.registry.methods.list"
+	toolInvokeV1Name             = "ebus.v1.rpc.invoke"
+	toolDevicesLegacyName        = "ebus.devices"
+	toolInvokeLegacyName         = "ebus.invoke"
+	methodMutabilityUnknown      = "unknown"
+	methodMutabilityReadOnly     = "read_only"
+	methodMutabilityMutating     = "mutating"
+	methodDangerUnknown          = "unknown"
+	methodDangerSafe             = "safe"
+	methodDangerDangerous        = "dangerous"
+	defaultInvokeTimeout         = 3 * time.Second
+	defaultIdempotencyTTL        = 30 * time.Second
+	defaultSnapshotTTL           = 5 * time.Minute
+	defaultSnapshotReadTTL       = 10 * time.Second
 )
 
 var errInvokePermissionDenied = errors.New("invoke permission denied")
@@ -290,6 +322,18 @@ func (staticSemanticProvider) RadioDevices() []RadioDevice {
 	return nil
 }
 
+func (staticSemanticProvider) FM5SemanticMode() Fm5SemanticMode {
+	return Fm5SemanticModeAbsent
+}
+
+func (staticSemanticProvider) Solar() *SolarStatus {
+	return nil
+}
+
+func (staticSemanticProvider) Cylinders() []CylinderStatus {
+	return nil
+}
+
 func (staticSemanticProvider) EnergyTotals() *EnergyTotals {
 	return nil
 }
@@ -325,15 +369,18 @@ type snapshotState struct {
 	createdAt time.Time
 	expiresAt time.Time
 
-	runtime  map[string]any
-	zones    []Zone
-	circuits []CircuitStatus
-	radio    []RadioDevice
-	dhw      *DhwStatus
-	energy   *EnergyTotals
-	boiler   *BoilerStatus
-	system   *SystemStatus
-	devices  []deviceInfo
+	runtime   map[string]any
+	zones     []Zone
+	circuits  []CircuitStatus
+	radio     []RadioDevice
+	fm5Mode   Fm5SemanticMode
+	solar     *SolarStatus
+	cylinders []CylinderStatus
+	dhw       *DhwStatus
+	energy    *EnergyTotals
+	boiler    *BoilerStatus
+	system    *SystemStatus
+	devices   []deviceInfo
 }
 
 func consistencyInputProperty() map[string]any {
@@ -406,6 +453,39 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			},
 		},
 		{
+			Name:        toolSemanticFM5ModeGetName,
+			Description: "Get semantic FM5 mode snapshot.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolSemanticSolarGetName,
+			Description: "Get semantic solar snapshot (interpreted mode only).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolSemanticCylindersGetName,
+			Description: "Get semantic cylinders snapshot (interpreted mode only).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
 			Name:        toolSemanticDHWGetName,
 			Description: "Get semantic domestic hot water snapshot.",
 			InputSchema: map[string]any{
@@ -459,7 +539,7 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 						"type": "array",
 						"items": map[string]any{
 							"type": "string",
-							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices"},
+							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders"},
 						},
 					},
 					"timeout_ms": map[string]any{"type": "integer", "minimum": 1},
@@ -742,6 +822,25 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		}
 		radio := s.snapshotRadioDevices(snapshot)
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(radio, nil, consistency)), false), nil
+	case toolSemanticFM5ModeGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		mode := s.snapshotFM5Mode(snapshot)
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(mode, nil, consistency)), false), nil
+	case toolSemanticSolarGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotSolar(snapshot), nil, consistency)), false), nil
+	case toolSemanticCylindersGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotCylinders(snapshot), nil, consistency)), false), nil
 	case toolSemanticDHWGetName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -932,6 +1031,9 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		zones:     s.snapshotZones(nil),
 		circuits:  s.snapshotCircuits(nil),
 		radio:     s.snapshotRadioDevices(nil),
+		fm5Mode:   s.snapshotFM5Mode(nil),
+		solar:     s.snapshotSolar(nil),
+		cylinders: s.snapshotCylinders(nil),
 		dhw:       s.snapshotDHW(nil),
 		energy:    s.snapshotEnergyTotals(nil),
 		boiler:    s.snapshotBoilerStatus(nil),
@@ -1015,6 +1117,11 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 	if snapshot.system != nil {
 		systemCopy = cloneMCPSystemStatus(snapshot.system)
 	}
+	var solarCopy *SolarStatus
+	if snapshot.solar != nil {
+		solarCopy = cloneMCPSolarStatus(snapshot.solar)
+	}
+	cylindersCopy := cloneCylinders(snapshot.cylinders)
 	return snapshotState{
 		id:        snapshot.id,
 		createdAt: snapshot.createdAt,
@@ -1023,6 +1130,9 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		zones:     cloneZones(snapshot.zones),
 		circuits:  cloneCircuits(snapshot.circuits),
 		radio:     cloneRadioDevices(snapshot.radio),
+		fm5Mode:   snapshot.fm5Mode,
+		solar:     solarCopy,
+		cylinders: cylindersCopy,
 		dhw:       dhwCopy,
 		energy:    energyCopy,
 		boiler:    boilerCopy,
@@ -1695,6 +1805,58 @@ func (s *Server) snapshotRadioDevices(snapshot *snapshotState) []RadioDevice {
 	return out
 }
 
+func (s *Server) snapshotFM5Mode(snapshot *snapshotState) Fm5SemanticMode {
+	if snapshot != nil {
+		if snapshot.fm5Mode == "" {
+			return Fm5SemanticModeAbsent
+		}
+		return snapshot.fm5Mode
+	}
+	if s == nil || s.semantic == nil {
+		return Fm5SemanticModeAbsent
+	}
+	mode := s.semantic.FM5SemanticMode()
+	if mode == "" {
+		return Fm5SemanticModeAbsent
+	}
+	return mode
+}
+
+func (s *Server) snapshotSolar(snapshot *snapshotState) *SolarStatus {
+	if snapshot != nil {
+		if snapshot.solar == nil {
+			return nil
+		}
+		return cloneMCPSolarStatus(snapshot.solar)
+	}
+	if s == nil || s.semantic == nil {
+		return nil
+	}
+	source := s.semantic.Solar()
+	if source == nil {
+		return nil
+	}
+	return cloneMCPSolarStatus(source)
+}
+
+func (s *Server) snapshotCylinders(snapshot *snapshotState) []CylinderStatus {
+	if snapshot != nil {
+		return cloneCylinders(snapshot.cylinders)
+	}
+	if s == nil || s.semantic == nil {
+		return nil
+	}
+	cylinders := s.semantic.Cylinders()
+	if len(cylinders) == 0 {
+		return nil
+	}
+	out := cloneCylinders(cylinders)
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Index < out[j].Index
+	})
+	return out
+}
+
 func (s *Server) snapshotDHW(snapshot *snapshotState) *DhwStatus {
 	if snapshot != nil {
 		if snapshot.dhw == nil {
@@ -1787,6 +1949,74 @@ func cloneMCPBoilerStatus(status *BoilerStatus) *BoilerStatus {
 		cp.Diagnostics = &d
 	}
 	return &cp
+}
+
+func cloneMCPSolarStatus(status *SolarStatus) *SolarStatus {
+	if status == nil {
+		return nil
+	}
+	cp := *status
+	if cp.CollectorTemperatureC != nil {
+		v := *cp.CollectorTemperatureC
+		cp.CollectorTemperatureC = &v
+	}
+	if cp.ReturnTemperatureC != nil {
+		v := *cp.ReturnTemperatureC
+		cp.ReturnTemperatureC = &v
+	}
+	if cp.PumpActive != nil {
+		v := *cp.PumpActive
+		cp.PumpActive = &v
+	}
+	if cp.CurrentYield != nil {
+		v := *cp.CurrentYield
+		cp.CurrentYield = &v
+	}
+	if cp.PumpHours != nil {
+		v := *cp.PumpHours
+		cp.PumpHours = &v
+	}
+	if cp.SolarEnabled != nil {
+		v := *cp.SolarEnabled
+		cp.SolarEnabled = &v
+	}
+	if cp.FunctionMode != nil {
+		v := *cp.FunctionMode
+		cp.FunctionMode = &v
+	}
+	return &cp
+}
+
+func cloneCylinder(status CylinderStatus) CylinderStatus {
+	out := status
+	if out.TemperatureC != nil {
+		v := *out.TemperatureC
+		out.TemperatureC = &v
+	}
+	if out.MaxSetpointC != nil {
+		v := *out.MaxSetpointC
+		out.MaxSetpointC = &v
+	}
+	if out.ChargeHysteresisC != nil {
+		v := *out.ChargeHysteresisC
+		out.ChargeHysteresisC = &v
+	}
+	if out.ChargeOffsetC != nil {
+		v := *out.ChargeOffsetC
+		out.ChargeOffsetC = &v
+	}
+	return out
+}
+
+func cloneCylinders(values []CylinderStatus) []CylinderStatus {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]CylinderStatus, len(values))
+	for i := range values {
+		out[i] = cloneCylinder(values[i])
+	}
+	return out
 }
 
 func cloneMCPSystemStatus(status *SystemStatus) *SystemStatus {
@@ -1946,7 +2176,7 @@ func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, 
 
 func parseSemanticSnapshotOptions(args map[string]any) (semanticSnapshotOptions, error) {
 	options := semanticSnapshotOptions{
-		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices"},
+		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders"},
 		timeout:      defaultSnapshotReadTTL,
 		allowPartial: false,
 	}
@@ -2012,7 +2242,7 @@ func parseSemanticSnapshotPlanes(raw any) ([]string, error) {
 		}
 		normalized := strings.ToLower(strings.TrimSpace(value))
 		switch normalized {
-		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices":
+		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders":
 		default:
 			return nil, fmt.Errorf("unsupported plane %q: %w", value, ebuserrors.ErrInvalidPayload)
 		}
@@ -2053,6 +2283,12 @@ func (s *Server) readSemanticPlane(ctx context.Context, plane string, snapshot *
 		value = s.snapshotCircuits(snapshot)
 	case "radio_devices":
 		value = s.snapshotRadioDevices(snapshot)
+	case "fm5_mode":
+		value = s.snapshotFM5Mode(snapshot)
+	case "solar":
+		value = s.snapshotSolar(snapshot)
+	case "cylinders":
+		value = s.snapshotCylinders(snapshot)
 	default:
 		return nil, fmt.Errorf("unsupported plane %q: %w", plane, ebuserrors.ErrInvalidPayload)
 	}

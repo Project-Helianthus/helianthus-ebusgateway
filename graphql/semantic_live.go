@@ -295,6 +295,13 @@ func (provider *LiveSemanticProvider) setCircuitsWithSource(circuits []CircuitSt
 
 	var transition *phaseTransitionLog
 	provider.mu.Lock()
+	if equalCircuitStatuses(provider.circuits, circuitsCopy) {
+		if source == semanticDataSourceLive && len(circuitsCopy) > 0 {
+			provider.circuitLiveSeen = true
+		}
+		provider.mu.Unlock()
+		return
+	}
 	provider.circuits = circuitsCopy
 	if len(circuitsCopy) > 0 {
 		provider.circuitPublished = true

@@ -73,7 +73,7 @@ type configFieldSpec struct {
 
 const (
 	mutationControllerFallbackAddr = byte(0x15)
-	mutationSourceAddr             = byte(0x10)
+	mutationSourceAddr             = byte(0x31)
 	mutationB524OpcodeLocal        = byte(0x02)
 	mutationSystemPlane            = "system"
 	mutationSetExtRegisterMethod   = "set_ext_register"
@@ -410,6 +410,9 @@ func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker I
 	if err := confirmDecodableReadback(spec, readValue); err != nil {
 		return configMutationError(fmt.Errorf("write confirm failed: %w", err))
 	}
+	if !configReadbackMatchesWrite(spec, data, readValue) {
+		return configMutationError(fmt.Errorf("write confirm failed: read-back mismatch: %w", ebuserrors.ErrInvalidPayload))
+	}
 
 	return ConfigMutationResult{Success: true}
 }
@@ -458,7 +461,7 @@ func encodeConfigValue(spec configFieldSpec, raw string) ([]byte, error) {
 		binary.LittleEndian.PutUint32(payload, math.Float32bits(float32(value)))
 		return payload, nil
 	case configValueUint16:
-		value, err := strconv.Atoi(strings.TrimSpace(raw))
+		value, err := parseIntegerString(strings.TrimSpace(raw))
 		if err != nil {
 			return nil, fmt.Errorf("invalid integer value %q: %w", raw, ebuserrors.ErrInvalidPayload)
 		}
@@ -503,6 +506,23 @@ func parseBoolString(raw string) (bool, bool) {
 	default:
 		return false, false
 	}
+}
+
+func parseIntegerString(raw string) (int, error) {
+	if raw == "" {
+		return 0, fmt.Errorf("empty integer")
+	}
+	if strings.ContainsAny(raw, ".eE") {
+		value, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return 0, err
+		}
+		if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value {
+			return 0, fmt.Errorf("not an integer")
+		}
+		return int(value), nil
+	}
+	return strconv.Atoi(raw)
 }
 
 func sortedEnumKeys(values map[string]uint16) []string {
@@ -702,6 +722,24 @@ func confirmDecodableReadback(spec configFieldSpec, payload []byte) error {
 		return fmt.Errorf("enum payload unknown value %d: %w", value, ebuserrors.ErrInvalidPayload)
 	default:
 		return fmt.Errorf("unsupported readback decode: %w", ebuserrors.ErrInvalidPayload)
+	}
+}
+
+func configReadbackMatchesWrite(spec configFieldSpec, written, readback []byte) bool {
+	switch spec.valueType {
+	case configValueFloat32:
+		if len(written) < 4 || len(readback) < 4 {
+			return false
+		}
+		return binary.LittleEndian.Uint32(readback[:4]) == binary.LittleEndian.Uint32(written[:4])
+	case configValueUint16, configValueEnumU16:
+		want, okWant := decodePayloadUint16(written)
+		got, okGot := decodePayloadUint16(readback)
+		return okWant && okGot && want == got
+	case configValueBoolU8:
+		return len(written) > 0 && len(readback) > 0 && (readback[0] == 0 || readback[0] == 1) && readback[0] == written[0]
+	default:
+		return false
 	}
 }
 

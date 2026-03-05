@@ -292,8 +292,8 @@ func TestSetCircuitConfigMutation_Success(t *testing.T) {
 	if got := first.Params["opcode"]; got != byte(0x02) {
 		t.Fatalf("first call opcode = %#v; want 0x02", got)
 	}
-	if got := first.Params["source"]; got != byte(0x10) {
-		t.Fatalf("first call source = %#v; want 0x10", got)
+	if got := first.Params["source"]; got != byte(0x31) {
+		t.Fatalf("first call source = %#v; want 0x31", got)
 	}
 	dataBytes, ok := first.Params["data"].([]byte)
 	if !ok || !bytes.Equal(dataBytes, []byte{0x00, 0x00, 0xC0, 0x3F}) {
@@ -359,6 +359,50 @@ func TestSetSystemConfigMutation_Success(t *testing.T) {
 	dataBytes, ok := first.Params["data"].([]byte)
 	if !ok || !bytes.Equal(dataBytes, []byte{0x01}) {
 		t.Fatalf("first call data = %v; want [01]", first.Params["data"])
+	}
+}
+
+func TestSetSystemConfigMutation_IntegerLikeFloatString(t *testing.T) {
+	registry := mutationTestRegistry{
+		entries: map[byte]registry.DeviceEntry{
+			0x15: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod),
+		},
+		order: []byte{0x15},
+	}
+	invoker := &mutationTestInvoker{
+		responses: []any{
+			map[string]types.Value{},
+			map[string]types.Value{
+				"value": {Value: []byte{0x37, 0x00}, Valid: true}, // 55
+			},
+		},
+	}
+
+	data := executeMutation(t, buildMutationSchema(t, registry, invoker), `mutation {
+		setSystemConfig(field: "maxRoomHumidityPct", value: "55.0") {
+			success
+			error
+		}
+	}`)
+
+	payload, ok := data["setSystemConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("setSystemConfig payload type = %T; want map", data["setSystemConfig"])
+	}
+	if got, _ := payload["success"].(bool); !got {
+		t.Fatalf("setSystemConfig success = %v; want true", got)
+	}
+
+	if len(invoker.calls) != 2 {
+		t.Fatalf("invoker calls = %d; want 2", len(invoker.calls))
+	}
+	first := invoker.calls[0]
+	if got := first.Params["addr"]; got != uint16(0x000E) {
+		t.Fatalf("first call addr = %#v; want 0x000E", got)
+	}
+	dataBytes, ok := first.Params["data"].([]byte)
+	if !ok || !bytes.Equal(dataBytes, []byte{0x37, 0x00}) {
+		t.Fatalf("first call data = %v; want [37 00]", first.Params["data"])
 	}
 }
 
@@ -494,19 +538,19 @@ func TestSetCircuitConfigMutation_ReadbackConfirmFailure(t *testing.T) {
 		responses: []any{
 			map[string]types.Value{},
 			map[string]types.Value{
-				"value": {Value: []byte{}, Valid: true},
+				"value": {Value: []byte{0x00, 0x00, 0x40, 0x40}, Valid: true}, // 3.0 (mismatch)
 			},
 		},
 	}
 	data := executeMutation(t, buildMutationSchema(t, registry, invoker), `mutation {
-		setCircuitConfig(index: 2, field: "flowTempMaxC", value: "55") { success error }
+		setCircuitConfig(index: 2, field: "heatingCurve", value: "1.5") { success error }
 	}`)
 	payload, _ := data["setCircuitConfig"].(map[string]any)
 	if got, _ := payload["success"].(bool); got {
 		t.Fatalf("setCircuitConfig success = %v; want false", got)
 	}
-	if errMessage, _ := payload["error"].(string); !strings.Contains(errMessage, "write confirm failed") {
-		t.Fatalf("setCircuitConfig error = %q; want write confirm failed", errMessage)
+	if errMessage, _ := payload["error"].(string); !strings.Contains(errMessage, "read-back mismatch") {
+		t.Fatalf("setCircuitConfig error = %q; want read-back mismatch", errMessage)
 	}
 	if len(invoker.calls) != 2 {
 		t.Fatalf("invoker calls = %d; want 2", len(invoker.calls))

@@ -39,6 +39,7 @@ func TestToolClassificationPolicy(t *testing.T) {
 		toolRuntimeStatusGetName:    toolClassCoreStable,
 		toolSemanticZonesGetName:    toolClassCoreStable,
 		toolSemanticCircuitsGetName: toolClassCoreStable,
+		toolSemanticRadioGetName:    toolClassCoreStable,
 		toolSemanticDHWGetName:      toolClassCoreStable,
 		toolSemanticEnergyGetName:   toolClassCoreStable,
 		toolSemanticBoilerGetName:   toolClassCoreStable,

@@ -161,12 +161,14 @@ func (p testStatusProvider) AdapterStatus() ServiceStatus {
 type testSemanticProvider struct {
 	zones         []Zone
 	circuits      []CircuitStatus
+	radio         []RadioDevice
 	dhw           *DhwStatus
 	energy        *EnergyTotals
 	boiler        *BoilerStatus
 	system        *SystemStatus
 	zonesDelay    time.Duration
 	circuitsDelay time.Duration
+	radioDelay    time.Duration
 	dhwDelay      time.Duration
 	energyDelay   time.Duration
 }
@@ -202,6 +204,16 @@ func (p testSemanticProvider) Circuits() []CircuitStatus {
 		return nil
 	}
 	return cloneCircuits(p.circuits)
+}
+
+func (p testSemanticProvider) RadioDevices() []RadioDevice {
+	if p.radioDelay > 0 {
+		time.Sleep(p.radioDelay)
+	}
+	if len(p.radio) == 0 {
+		return nil
+	}
+	return cloneRadioDevices(p.radio)
 }
 
 func (p testSemanticProvider) BoilerStatus() *BoilerStatus {
@@ -264,13 +276,14 @@ func TestServer_InitializeAndTools(t *testing.T) {
 		t.Fatalf("tools/list result type = %T; want map", res.Result)
 	}
 	tools, ok := resultMap["tools"].([]any)
-	if !ok || len(tools) < 17 {
-		t.Fatalf("tools = %#v; want at least 17 tools", resultMap["tools"])
+	if !ok || len(tools) < 18 {
+		t.Fatalf("tools = %#v; want at least 18 tools", resultMap["tools"])
 	}
 	for _, name := range []string{
 		toolRuntimeStatusGetName,
 		toolSemanticZonesGetName,
 		toolSemanticCircuitsGetName,
+		toolSemanticRadioGetName,
 		toolSemanticDHWGetName,
 		toolSemanticEnergyGetName,
 		toolSemanticBoilerGetName,
@@ -508,6 +521,10 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			{Index: 1, CircuitType: "fixed_value"},
 			{Index: 0, CircuitType: "heating"},
 		},
+		radio: []RadioDevice{
+			{Group: 0x0A, Instance: 1, DeviceModel: "VR92"},
+			{Group: 0x09, Instance: 1, DeviceModel: "VRC720"},
+		},
 		dhw: &DhwStatus{
 			Config: DhwConfig{
 				OperatingMode: "AUTO",
@@ -588,6 +605,28 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 	})
 
+	t.Run("radio payload sorted", func(t *testing.T) {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      21,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.radio_devices.get","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].([]any)
+		if !ok || len(data) != 2 {
+			t.Fatalf("radio data = %#v; want 2 entries", envelope["data"])
+		}
+		first, _ := data[0].(map[string]any)
+		second, _ := data[1].(map[string]any)
+		if group, _ := first["group"].(float64); int(group) != 0x09 {
+			t.Fatalf("first radio group = %v; want 0x09", first["group"])
+		}
+		if group, _ := second["group"].(float64); int(group) != 0x0A {
+			t.Fatalf("second radio group = %v; want 0x0A", second["group"])
+		}
+	})
+
 	t.Run("dhw payload", func(t *testing.T) {
 		res := doRPC(t, server.Handler(), rpcRequest{
 			JSONRPC: "2.0",
@@ -665,14 +704,14 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			t.Fatalf("snapshot data type = %T; want map", envelope["data"])
 		}
 		completed, ok := data["completed_planes"].([]any)
-		if !ok || len(completed) != 7 {
-			t.Fatalf("snapshot completed_planes = %#v; want 7 entries", data["completed_planes"])
+		if !ok || len(completed) != 8 {
+			t.Fatalf("snapshot completed_planes = %#v; want 8 entries", data["completed_planes"])
 		}
 		planes, ok := data["planes"].(map[string]any)
 		if !ok {
 			t.Fatalf("snapshot planes type = %T; want map", data["planes"])
 		}
-		for _, key := range []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits"} {
+		for _, key := range []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices"} {
 			if _, ok := planes[key]; !ok {
 				t.Fatalf("snapshot planes missing %q", key)
 			}

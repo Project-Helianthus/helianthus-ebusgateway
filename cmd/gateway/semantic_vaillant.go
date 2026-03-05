@@ -37,6 +37,9 @@ const (
 	vaillantGroupDHW      = byte(0x01)
 	vaillantGroupCircuits = byte(0x02)
 	vaillantGroupZones    = byte(0x03)
+	vaillantGroupRadio09  = byte(0x09)
+	vaillantGroupRadio10  = byte(0x0A)
+	vaillantGroupRadio0C  = byte(0x0C)
 
 	zoneRegName                 = uint16(0x0016)
 	zoneRegNamePrefix           = uint16(0x0017)
@@ -75,6 +78,17 @@ const (
 	dhwRegCurrentTemp     = uint16(0x0005) // state.current_dhw_temperature
 	dhwRegSpecialFunction = uint16(0x000D) // state.current_special_function
 	dhwInstance           = byte(0x00)
+
+	radioRegDeviceConnected      = uint16(0x0001)
+	radioRegDeviceClassAddress   = uint16(0x0002)
+	radioRegDeviceFirmware       = uint16(0x0004)
+	radioRegRoomHumidity         = uint16(0x0007)
+	radioRegRoomTemperature      = uint16(0x000F)
+	radioRegRemoteControlAddress = uint16(0x0019)
+	radioRegDevicePaired         = uint16(0x001E)
+	radioRegReceptionStrength    = uint16(0x001F)
+	radioRegHardwareIdentifier   = uint16(0x0023)
+	radioRegZoneAssignment       = uint16(0x0025)
 )
 
 // B5.24 energy registers (VRC 720f TSP 15.720, group=0, instance=0).
@@ -168,6 +182,7 @@ type vaillantSemanticPoller struct {
 	boiler                   *vaillantBoilerSnapshot
 	system                   *vaillantSystemSnapshot
 	circuits                 map[byte]*vaillantCircuitSnapshot
+	radioDevices             map[radioDeviceKey]*vaillantRadioDeviceSnapshot
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	nowFn                  func() time.Time
@@ -247,6 +262,28 @@ type vaillantCircuitSnapshot struct {
 	DewPointC          *float64
 	PumpHoursRaw       *uint32
 	PumpStartsRaw      *uint32
+}
+
+type radioDeviceKey struct {
+	Group    byte
+	Instance byte
+}
+
+type vaillantRadioDeviceSnapshot struct {
+	Group                byte
+	Instance             byte
+	SlotMode             string
+	DeviceConnected      *bool
+	DeviceClassAddress   *uint8
+	DeviceModel          string
+	FirmwareVersion      *string
+	HardwareIdentifier   *uint16
+	RemoteControlAddress *uint8
+	DevicePaired         *bool
+	ReceptionStrength    *uint8
+	ZoneAssignment       *uint8
+	RoomTemperatureC     *float64
+	RoomHumidityPct      *float64
 }
 
 type semanticSnapshotSource uint8
@@ -392,10 +429,11 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		regulatorAbsenceGrace:    cfg.SemanticRegulatorAbsenceGrace,
 		regAbsenceState:          regulatorPresent,
 
-		zones:    make(map[byte]*vaillantZoneSnapshot),
-		presence: make(map[byte]*zonePresenceRecord),
-		circuits: make(map[byte]*vaillantCircuitSnapshot),
-		nowFn:    time.Now,
+		zones:        make(map[byte]*vaillantZoneSnapshot),
+		presence:     make(map[byte]*zonePresenceRecord),
+		circuits:     make(map[byte]*vaillantCircuitSnapshot),
+		radioDevices: make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		nowFn:        time.Now,
 	}
 	if poller.zoneMissThreshold <= 0 {
 		poller.zoneMissThreshold = ebusgateway.DefaultSemanticZonePresenceMissThreshold
@@ -599,6 +637,14 @@ func cloneFloat64Ptr(value *float64) *float64 {
 }
 
 func cloneUint16Ptr(value *uint16) *uint16 {
+	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
+}
+
+func cloneUint8Ptr(value *uint8) *uint8 {
 	if value == nil {
 		return nil
 	}
@@ -834,6 +880,7 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
 	p.enqueueTask(semanticTaskPriorityMedium, p.refreshCircuits)
 	p.enqueueTask(semanticTaskPriorityMedium, p.refreshSystem)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshRadioDevices)
 	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
 	for _, schedule := range p.boilerStatusTierSchedules() {
 		p.enqueueTask(schedule.priority, p.boilerStatusTierTask(schedule.tier))
@@ -845,6 +892,7 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	go p.runLoop(ctx, p.stateInterval, semanticTaskPriorityHigh, p.refreshState)
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshCircuits)
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshSystem)
+	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshRadioDevices)
 	go p.runLoop(ctx, p.energyInterval, semanticTaskPriorityMedium, p.refreshEnergy)
 	for _, schedule := range p.boilerStatusTierSchedules() {
 		go p.runLoop(ctx, schedule.interval, schedule.priority, p.boilerStatusTierTask(schedule.tier))
@@ -969,6 +1017,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
 		p.presence = make(map[byte]*zonePresenceRecord)
 		p.circuits = make(map[byte]*vaillantCircuitSnapshot)
+		p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
 		semanticZoneCount.Set(0)
 		p.mu.Unlock()
 		if regCap != prev {
@@ -980,6 +1029,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.publishZones(semanticSnapshotSourceCache)
 		p.publishDHW(semanticSnapshotSourceCache)
 		p.publishCircuits(semanticSnapshotSourceCache)
+		p.publishRadioDevices(semanticSnapshotSourceCache)
 		return
 	}
 
@@ -2551,6 +2601,175 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 	p.publishSystem(semanticSnapshotSourceLive)
 }
 
+func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
+	if controller == 0 {
+		return
+	}
+
+	discovered := make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+	readAny := false
+	for _, group := range []byte{vaillantGroupRadio09, vaillantGroupRadio10, vaillantGroupRadio0C} {
+		for instance := byte(0x00); instance <= 0x0A; instance++ {
+			connectedRaw := p.readB524U8(ctx, vaillantB524OpcodeRead, group, instance, radioRegDeviceConnected)
+			if connectedRaw == nil {
+				continue
+			}
+			readAny = true
+
+			connected := *connectedRaw == 1
+			classAddress := p.readB524U8(ctx, vaillantB524OpcodeRead, group, instance, radioRegDeviceClassAddress)
+			firmware := p.readB524Firmware(ctx, vaillantB524OpcodeRead, group, instance, radioRegDeviceFirmware)
+			hardware := p.readB524U16(ctx, vaillantB524OpcodeRead, group, instance, radioRegHardwareIdentifier)
+
+			slotMode := "active"
+			include := false
+			switch group {
+			case vaillantGroupRadio09, vaillantGroupRadio10:
+				include = connected
+			case vaillantGroupRadio0C:
+				include = connected || hasRemoteIdentityEvidence(classAddress, firmware, hardware)
+				if !connected {
+					slotMode = "inventory"
+				}
+			}
+			if !include {
+				continue
+			}
+
+			device := &vaillantRadioDeviceSnapshot{
+				Group:                group,
+				Instance:             instance,
+				SlotMode:             slotMode,
+				DeviceConnected:      cloneBoilerBoolPtr(&connected),
+				DeviceClassAddress:   cloneUint8Ptr(classAddress),
+				DeviceModel:          decodeRadioDeviceModel(classAddress),
+				FirmwareVersion:      cloneStringPtr(firmware),
+				HardwareIdentifier:   cloneUint16Ptr(hardware),
+				RemoteControlAddress: p.readB524U8(ctx, vaillantB524OpcodeRead, group, instance, radioRegRemoteControlAddress),
+				DevicePaired:         p.readB524Bool(ctx, vaillantB524OpcodeRead, group, instance, radioRegDevicePaired),
+				ReceptionStrength:    p.readB524U8(ctx, vaillantB524OpcodeRead, group, instance, radioRegReceptionStrength),
+				ZoneAssignment:       p.readB524U8(ctx, vaillantB524OpcodeRead, group, instance, radioRegZoneAssignment),
+				RoomTemperatureC:     p.readB524F32(ctx, vaillantB524OpcodeRead, group, instance, radioRegRoomTemperature),
+				RoomHumidityPct:      p.readB524F32(ctx, vaillantB524OpcodeRead, group, instance, radioRegRoomHumidity),
+			}
+			discovered[radioDeviceKey{Group: group, Instance: instance}] = device
+		}
+	}
+
+	if !readAny {
+		return
+	}
+
+	p.mu.Lock()
+	p.radioDevices = discovered
+	p.mu.Unlock()
+
+	p.publishRadioDevices(semanticSnapshotSourceLive)
+}
+
+func (p *vaillantSemanticPoller) publishRadioDevices(source semanticSnapshotSource) {
+	if p == nil || p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	keys := make([]radioDeviceKey, 0, len(p.radioDevices))
+	for key := range p.radioDevices {
+		keys = append(keys, key)
+	}
+	slices.SortFunc(keys, func(a, b radioDeviceKey) int {
+		if a.Group != b.Group {
+			if a.Group < b.Group {
+				return -1
+			}
+			return 1
+		}
+		if a.Instance < b.Instance {
+			return -1
+		}
+		if a.Instance > b.Instance {
+			return 1
+		}
+		return 0
+	})
+	snapshots := make([]*vaillantRadioDeviceSnapshot, 0, len(keys))
+	for _, key := range keys {
+		snapshot := p.radioDevices[key]
+		if snapshot == nil {
+			continue
+		}
+		snapshots = append(snapshots, cloneRadioSnapshot(snapshot))
+	}
+	p.mu.Unlock()
+
+	out := make([]graphql.RadioDevice, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if snapshot == nil {
+			continue
+		}
+		out = append(out, graphql.RadioDevice{
+			Group:                int(snapshot.Group),
+			Instance:             int(snapshot.Instance),
+			SlotMode:             snapshot.SlotMode,
+			DeviceConnected:      cloneBoilerBoolPtr(snapshot.DeviceConnected),
+			DeviceClassAddress:   uint8ToIntPtr(snapshot.DeviceClassAddress),
+			DeviceModel:          snapshot.DeviceModel,
+			FirmwareVersion:      cloneStringPtr(snapshot.FirmwareVersion),
+			HardwareIdentifier:   uint16ToIntPtr(snapshot.HardwareIdentifier),
+			RemoteControlAddress: uint8ToIntPtr(snapshot.RemoteControlAddress),
+			DevicePaired:         cloneBoilerBoolPtr(snapshot.DevicePaired),
+			ReceptionStrength:    uint8ToIntPtr(snapshot.ReceptionStrength),
+			ZoneAssignment:       uint8ToIntPtr(snapshot.ZoneAssignment),
+			RoomTemperatureC:     cloneFloat64Ptr(snapshot.RoomTemperatureC),
+			RoomHumidityPct:      cloneFloat64Ptr(snapshot.RoomHumidityPct),
+		})
+	}
+
+	previous := p.provider.RadioDevices()
+	if source == semanticSnapshotSourceCache && len(out) == 0 && len(previous) > 0 {
+		return
+	}
+	switch source {
+	case semanticSnapshotSourceCache:
+		p.provider.SetRadioDevicesFromCache(out)
+	default:
+		p.provider.SetRadioDevices(out)
+	}
+	if p.hub != nil && !radioDevicesEqual(previous, out) {
+		p.hub.PublishRadioDevicesUpdate(out)
+	}
+	p.persistSemanticCache(source)
+}
+
+func cloneRadioSnapshot(snapshot *vaillantRadioDeviceSnapshot) *vaillantRadioDeviceSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return &vaillantRadioDeviceSnapshot{
+		Group:                snapshot.Group,
+		Instance:             snapshot.Instance,
+		SlotMode:             snapshot.SlotMode,
+		DeviceConnected:      cloneBoilerBoolPtr(snapshot.DeviceConnected),
+		DeviceClassAddress:   cloneUint8Ptr(snapshot.DeviceClassAddress),
+		DeviceModel:          snapshot.DeviceModel,
+		FirmwareVersion:      cloneStringPtr(snapshot.FirmwareVersion),
+		HardwareIdentifier:   cloneUint16Ptr(snapshot.HardwareIdentifier),
+		RemoteControlAddress: cloneUint8Ptr(snapshot.RemoteControlAddress),
+		DevicePaired:         cloneBoilerBoolPtr(snapshot.DevicePaired),
+		ReceptionStrength:    cloneUint8Ptr(snapshot.ReceptionStrength),
+		ZoneAssignment:       cloneUint8Ptr(snapshot.ZoneAssignment),
+		RoomTemperatureC:     cloneFloat64Ptr(snapshot.RoomTemperatureC),
+		RoomHumidityPct:      cloneFloat64Ptr(snapshot.RoomHumidityPct),
+	}
+}
+
 func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 	if p == nil || p.provider == nil {
 		return
@@ -2718,6 +2937,14 @@ func uint16ToIntPtr(value *uint16) *int {
 	return &v
 }
 
+func uint8ToIntPtr(value *uint8) *int {
+	if value == nil {
+		return nil
+	}
+	v := int(*value)
+	return &v
+}
+
 func deriveVR71CircuitStartIndex(systemScheme, moduleConfigurationVR71 *uint16) *int {
 	if systemScheme == nil || moduleConfigurationVR71 == nil {
 		return nil
@@ -2761,6 +2988,53 @@ func systemStatusEquals(a, b *graphql.SystemStatus) bool {
 		intPtrEquals(a.Properties.SystemScheme, b.Properties.SystemScheme) &&
 		intPtrEquals(a.Properties.ModuleConfigurationVR71, b.Properties.ModuleConfigurationVR71) &&
 		intPtrEquals(a.Properties.Vr71CircuitStartIndex, b.Properties.Vr71CircuitStartIndex)
+}
+
+func radioDevicesEqual(a, b []graphql.RadioDevice) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		left := a[i]
+		right := b[i]
+		if left.Group != right.Group || left.Instance != right.Instance || left.SlotMode != right.SlotMode {
+			return false
+		}
+		if !boolPtrEquals(left.DeviceConnected, right.DeviceConnected) {
+			return false
+		}
+		if !intPtrEquals(left.DeviceClassAddress, right.DeviceClassAddress) {
+			return false
+		}
+		if left.DeviceModel != right.DeviceModel {
+			return false
+		}
+		if !stringPtrEquals(left.FirmwareVersion, right.FirmwareVersion) {
+			return false
+		}
+		if !intPtrEquals(left.HardwareIdentifier, right.HardwareIdentifier) {
+			return false
+		}
+		if !intPtrEquals(left.RemoteControlAddress, right.RemoteControlAddress) {
+			return false
+		}
+		if !boolPtrEquals(left.DevicePaired, right.DevicePaired) {
+			return false
+		}
+		if !intPtrEquals(left.ReceptionStrength, right.ReceptionStrength) {
+			return false
+		}
+		if !intPtrEquals(left.ZoneAssignment, right.ZoneAssignment) {
+			return false
+		}
+		if !floatPtrEquals(left.RoomTemperatureC, right.RoomTemperatureC) {
+			return false
+		}
+		if !floatPtrEquals(left.RoomHumidityPct, right.RoomHumidityPct) {
+			return false
+		}
+	}
+	return true
 }
 
 func decodeDhwMode(raw int) string {
@@ -3543,6 +3817,69 @@ func (p *vaillantSemanticPoller) readB524Float32LE(ctx context.Context, opcode, 
 	return value, true
 }
 
+func (p *vaillantSemanticPoller) readB524U8(ctx context.Context, opcode, group, instance byte, addr uint16) *uint8 {
+	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	if raw[0] == 0xFF {
+		return nil
+	}
+	v := raw[0]
+	return &v
+}
+
+func (p *vaillantSemanticPoller) readB524U16(ctx context.Context, opcode, group, instance byte, addr uint16) *uint16 {
+	v, ok := p.readB524Uint16(ctx, opcode, group, instance, addr)
+	if !ok || v == nil {
+		return nil
+	}
+	if *v == 0xFFFF {
+		return nil
+	}
+	return v
+}
+
+func (p *vaillantSemanticPoller) readB524F32(ctx context.Context, opcode, group, instance byte, addr uint16) *float64 {
+	v, ok := p.readB524Float32LE(ctx, opcode, group, instance, addr)
+	if !ok {
+		return nil
+	}
+	return &v
+}
+
+func (p *vaillantSemanticPoller) readB524Bool(ctx context.Context, opcode, group, instance byte, addr uint16) *bool {
+	v := p.readB524U8(ctx, opcode, group, instance, addr)
+	if v == nil {
+		return nil
+	}
+	if *v > 1 {
+		return nil
+	}
+	value := *v == 1
+	return &value
+}
+
+func (p *vaillantSemanticPoller) readB524Firmware(ctx context.Context, opcode, group, instance byte, addr uint16) *string {
+	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
+	if !ok {
+		return nil
+	}
+	return decodeB524FirmwareVersion(raw)
+}
+
+func decodeB524FirmwareVersion(raw []byte) *string {
+	if len(raw) < 3 {
+		return nil
+	}
+	major, minor, patch := raw[0], raw[1], raw[2]
+	if major == 0xFF && minor == 0xFF && patch == 0xFF {
+		return nil
+	}
+	v := fmt.Sprintf("%02d.%02d.%02d", major, minor, patch)
+	return &v
+}
+
 func (p *vaillantSemanticPoller) readB524CString(ctx context.Context, opcode, group, instance byte, addr uint16) (string, bool) {
 	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
 	if !ok || len(raw) == 0 {
@@ -3712,6 +4049,35 @@ func deriveZoneAllowedModes(circuitType *uint16, hasCircuitType bool) []string {
 	default:
 		return []string{"off", "auto", "heat"}
 	}
+}
+
+func decodeRadioDeviceModel(classAddress *uint8) string {
+	if classAddress == nil {
+		return ""
+	}
+	switch *classAddress {
+	case 0x15:
+		return "VRC720"
+	case 0x26:
+		return "VR71/FM5"
+	case 0x35:
+		return "VR92"
+	default:
+		return fmt.Sprintf("Unknown (0x%02X)", *classAddress)
+	}
+}
+
+func hasRemoteIdentityEvidence(classAddress *uint8, firmware *string, hardware *uint16) bool {
+	if classAddress != nil && *classAddress == 0x26 {
+		return true
+	}
+	if firmware != nil && strings.TrimSpace(*firmware) != "" {
+		return true
+	}
+	if hardware != nil && *hardware != 0 && *hardware != 0xFFFF {
+		return true
+	}
+	return false
 }
 
 func deriveZoneHvacAction(valveStatus, circuitType *uint16, hasCircuitType bool) string {

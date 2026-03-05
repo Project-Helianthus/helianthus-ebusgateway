@@ -235,6 +235,93 @@ func TestDecodeB524Uint16(t *testing.T) {
 	}
 }
 
+func TestDecodeB524FirmwareVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload []byte
+		wantNil bool
+		want    string
+	}{
+		{name: "short payload", payload: []byte{0x08, 0x05}, wantNil: true},
+		{name: "ff ff ff is absent", payload: []byte{0xFF, 0xFF, 0xFF}, wantNil: true},
+		{name: "formats byte decimal", payload: []byte{0x08, 0x05, 0x00}, want: "08.05.00"},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := decodeB524FirmwareVersion(test.payload)
+			if test.wantNil {
+				if got != nil {
+					t.Fatalf("decodeB524FirmwareVersion(%v) = %q; want nil", test.payload, *got)
+				}
+				return
+			}
+			if got == nil || *got != test.want {
+				t.Fatalf("decodeB524FirmwareVersion(%v) = %v; want %q", test.payload, got, test.want)
+			}
+		})
+	}
+}
+
+func TestDecodeRadioDeviceModel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		class *uint8
+		want  string
+	}{
+		{name: "nil class", class: nil, want: ""},
+		{name: "vrc720", class: uint8Ptr(0x15), want: "VRC720"},
+		{name: "vr71 fm5", class: uint8Ptr(0x26), want: "VR71/FM5"},
+		{name: "vr92", class: uint8Ptr(0x35), want: "VR92"},
+		{name: "unknown class", class: uint8Ptr(0x44), want: "Unknown (0x44)"},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := decodeRadioDeviceModel(test.class); got != test.want {
+				t.Fatalf("decodeRadioDeviceModel(%v) = %q; want %q", test.class, got, test.want)
+			}
+		})
+	}
+}
+
+func TestHasRemoteIdentityEvidence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		classAddress *uint8
+		firmware     *string
+		hardware     *uint16
+		want         bool
+	}{
+		{name: "vr71 class implies identity", classAddress: uint8Ptr(0x26), want: true},
+		{name: "firmware implies identity", firmware: stringPtr("01.00.00"), want: true},
+		{name: "hardware implies identity", hardware: uint16Ptr(0x5904), want: true},
+		{name: "zero hardware no identity", hardware: uint16Ptr(0), want: false},
+		{name: "ffff hardware no identity", hardware: uint16Ptr(0xFFFF), want: false},
+		{name: "no evidence", want: false},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := hasRemoteIdentityEvidence(test.classAddress, test.firmware, test.hardware); got != test.want {
+				t.Fatalf("hasRemoteIdentityEvidence(...) = %v; want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestMatchesB524ReplyInstance(t *testing.T) {
 	t.Parallel()
 
@@ -735,6 +822,16 @@ func TestDecodeRoomTempControlToken(t *testing.T) {
 }
 
 func uint16Ptr(value uint16) *uint16 {
+	v := value
+	return &v
+}
+
+func uint8Ptr(value uint8) *uint8 {
+	v := value
+	return &v
+}
+
+func stringPtr(value string) *string {
 	v := value
 	return &v
 }

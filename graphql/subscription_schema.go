@@ -176,6 +176,22 @@ func buildSubscriptionType(hub *BroadcastHub, types graphqlSchemaTypes) *graphql
 					return params.Source, nil
 				},
 			},
+			"radioDevicesUpdate": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.radioDeviceType))),
+				Subscribe: func(params graphqlgo.ResolveParams) (any, error) {
+					ctx := params.Context
+					if ctx == nil {
+						ctx = context.Background()
+					}
+					return hub.SubscribeRadioDevices(ctx)
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if params.Source == nil {
+						return nil, fmt.Errorf("graphql subscription missing radio devices payload: %w", ebuserrors.ErrInvalidPayload)
+					}
+					return params.Source, nil
+				},
+			},
 		},
 	})
 }

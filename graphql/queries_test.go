@@ -344,6 +344,22 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						coolingEnabled
 					}
 				}
+				radioDevices {
+					group
+					instance
+					slotMode
+					deviceConnected
+					deviceClassAddress
+					deviceModel
+					firmwareVersion
+					hardwareIdentifier
+					remoteControlAddress
+					devicePaired
+					receptionStrength
+					zoneAssignment
+					roomTemperatureC
+					roomHumidityPct
+				}
 				system {
 					state {
 						systemOff
@@ -432,6 +448,22 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					CoolingEnabled  *bool    `json:"coolingEnabled"`
 				} `json:"config"`
 			} `json:"circuits"`
+			RadioDevices []struct {
+				Group                int      `json:"group"`
+				Instance             int      `json:"instance"`
+				SlotMode             string   `json:"slotMode"`
+				DeviceConnected      *bool    `json:"deviceConnected"`
+				DeviceClassAddress   *int     `json:"deviceClassAddress"`
+				DeviceModel          *string  `json:"deviceModel"`
+				FirmwareVersion      *string  `json:"firmwareVersion"`
+				HardwareIdentifier   *int     `json:"hardwareIdentifier"`
+				RemoteControlAddress *int     `json:"remoteControlAddress"`
+				DevicePaired         *bool    `json:"devicePaired"`
+				ReceptionStrength    *int     `json:"receptionStrength"`
+				ZoneAssignment       *int     `json:"zoneAssignment"`
+				RoomTemperatureC     *float64 `json:"roomTemperatureC"`
+				RoomHumidityPct      *float64 `json:"roomHumidityPct"`
+			} `json:"radioDevices"`
 			System *struct {
 				State struct {
 					SystemOff                    *bool    `json:"systemOff"`
@@ -471,6 +503,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if len(response.Circuits) != 0 {
 			t.Fatalf("circuits = %d; want 0", len(response.Circuits))
+		}
+		if len(response.RadioDevices) != 0 {
+			t.Fatalf("radioDevices = %d; want 0", len(response.RadioDevices))
 		}
 		if response.System != nil {
 			t.Fatalf("system expected nil with static provider")

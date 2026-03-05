@@ -46,6 +46,7 @@ type BroadcastHub struct {
 	dhwSubs     map[uint64]*broadcastSubscriber
 	energySubs  map[uint64]*broadcastSubscriber
 	boilerSubs  map[uint64]*broadcastSubscriber
+	radioSubs   map[uint64]*broadcastSubscriber
 	nextID      uint64
 	onChange    func()
 }
@@ -58,6 +59,7 @@ func NewBroadcastHub(onChange func()) *BroadcastHub {
 		dhwSubs:     make(map[uint64]*broadcastSubscriber),
 		energySubs:  make(map[uint64]*broadcastSubscriber),
 		boilerSubs:  make(map[uint64]*broadcastSubscriber),
+		radioSubs:   make(map[uint64]*broadcastSubscriber),
 		onChange:    onChange,
 	}
 }
@@ -207,11 +209,23 @@ func (hub *BroadcastHub) SubscribeBoiler(ctx context.Context) (chan interface{},
 	return hub.subscribeSemantic(ctx, hub.boilerSubs)
 }
 
+func (hub *BroadcastHub) SubscribeRadioDevices(ctx context.Context) (chan interface{}, error) {
+	return hub.subscribeSemantic(ctx, hub.radioSubs)
+}
+
 func (hub *BroadcastHub) PublishBoilerStatusUpdate(status *BoilerStatus) {
 	if status == nil {
 		return
 	}
 	hub.publishSemantic(hub.boilerSubs, status)
+}
+
+func (hub *BroadcastHub) PublishRadioDevicesUpdate(devices []RadioDevice) {
+	out := make([]RadioDevice, len(devices))
+	for i, device := range devices {
+		out[i] = cloneRadioDevice(device)
+	}
+	hub.publishSemantic(hub.radioSubs, out)
 }
 
 func (hub *BroadcastHub) subscribeSemantic(ctx context.Context, subscribers map[uint64]*broadcastSubscriber) (chan interface{}, error) {

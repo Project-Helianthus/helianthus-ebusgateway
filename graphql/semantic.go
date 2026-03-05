@@ -75,6 +75,23 @@ type CircuitStatus struct {
 	Config      CircuitConfig
 }
 
+type RadioDevice struct {
+	Group                int
+	Instance             int
+	SlotMode             string
+	DeviceConnected      *bool
+	DeviceClassAddress   *int
+	DeviceModel          string
+	FirmwareVersion      *string
+	HardwareIdentifier   *int
+	RemoteControlAddress *int
+	DevicePaired         *bool
+	ReceptionStrength    *int
+	ZoneAssignment       *int
+	RoomTemperatureC     *float64
+	RoomHumidityPct      *float64
+}
+
 type EnergySeries struct {
 	Today  float64
 	Yearly []float64
@@ -151,6 +168,7 @@ type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
 	Circuits() []CircuitStatus
+	RadioDevices() []RadioDevice
 	EnergyTotals() *EnergyTotals
 	BoilerStatus() *BoilerStatus
 	System() *SystemStatus
@@ -167,6 +185,10 @@ func (staticSemanticProvider) DHW() *DhwStatus {
 }
 
 func (staticSemanticProvider) Circuits() []CircuitStatus {
+	return nil
+}
+
+func (staticSemanticProvider) RadioDevices() []RadioDevice {
 	return nil
 }
 

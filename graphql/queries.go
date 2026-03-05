@@ -23,6 +23,7 @@ type graphqlSchemaTypes struct {
 	zoneType           *graphqlgo.Object
 	dhwType            *graphqlgo.Object
 	circuitStatusType  *graphqlgo.Object
+	radioDeviceType    *graphqlgo.Object
 	energyTotals       *graphqlgo.Object
 	boilerStatusType   *graphqlgo.Object
 	systemStatusType   *graphqlgo.Object
@@ -680,6 +681,155 @@ func buildSchemaTypes() graphqlSchemaTypes {
 						return CircuitConfig{}, nil
 					}
 					return status.Config, nil
+				},
+			},
+		},
+	})
+
+	radioDeviceType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "RadioDevice",
+		Fields: graphqlgo.Fields{
+			"group": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok {
+						return nil, nil
+					}
+					return device.Group, nil
+				},
+			},
+			"instance": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok {
+						return nil, nil
+					}
+					return device.Instance, nil
+				},
+			},
+			"slotMode": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok {
+						return nil, nil
+					}
+					if device.SlotMode == "" {
+						return "active", nil
+					}
+					return device.SlotMode, nil
+				},
+			},
+			"deviceConnected": &graphqlgo.Field{
+				Type: graphqlgo.Boolean,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok || device.DeviceConnected == nil {
+						return nil, nil
+					}
+					return *device.DeviceConnected, nil
+				},
+			},
+			"deviceClassAddress": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok || device.DeviceClassAddress == nil {
+						return nil, nil
+					}
+					return *device.DeviceClassAddress, nil
+				},
+			},
+			"deviceModel": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok || device.DeviceModel == "" {
+						return nil, nil
+					}
+					return device.DeviceModel, nil
+				},
+			},
+			"firmwareVersion": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok || device.FirmwareVersion == nil {
+						return nil, nil
+					}
+					return *device.FirmwareVersion, nil
+				},
+			},
+			"hardwareIdentifier": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok || device.HardwareIdentifier == nil {
+						return nil, nil
+					}
+					return *device.HardwareIdentifier, nil
+				},
+			},
+			"remoteControlAddress": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok || device.RemoteControlAddress == nil {
+						return nil, nil
+					}
+					return *device.RemoteControlAddress, nil
+				},
+			},
+			"devicePaired": &graphqlgo.Field{
+				Type: graphqlgo.Boolean,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok || device.DevicePaired == nil {
+						return nil, nil
+					}
+					return *device.DevicePaired, nil
+				},
+			},
+			"receptionStrength": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok || device.ReceptionStrength == nil {
+						return nil, nil
+					}
+					return *device.ReceptionStrength, nil
+				},
+			},
+			"zoneAssignment": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok || device.ZoneAssignment == nil {
+						return nil, nil
+					}
+					return *device.ZoneAssignment, nil
+				},
+			},
+			"roomTemperatureC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok || device.RoomTemperatureC == nil {
+						return nil, nil
+					}
+					return *device.RoomTemperatureC, nil
+				},
+			},
+			"roomHumidityPct": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(RadioDevice)
+					if !ok || device.RoomHumidityPct == nil {
+						return nil, nil
+					}
+					return *device.RoomHumidityPct, nil
 				},
 			},
 		},
@@ -1487,6 +1637,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		zoneType:           zoneType,
 		dhwType:            dhwType,
 		circuitStatusType:  circuitStatusType,
+		radioDeviceType:    radioDeviceType,
 		energyTotals:       energyTotalsType,
 		boilerStatusType:   boilerStatusType,
 		systemStatusType:   systemStatusType,
@@ -1541,6 +1692,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.circuitStatusType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().Circuits(), nil
+				},
+			},
+			"radioDevices": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.radioDeviceType))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().RadioDevices(), nil
 				},
 			},
 			"boilerStatus": &graphqlgo.Field{

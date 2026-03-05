@@ -975,7 +975,9 @@ func (h *handler) handleExplorerStream(w http.ResponseWriter, r *http.Request) {
 	// Send initial state and exit early if already terminal.
 	state := h.explorer.getState()
 	data, _ := json.Marshal(state)
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+		return
+	}
 	flusher.Flush()
 
 	switch state.Phase {
@@ -990,7 +992,9 @@ func (h *handler) handleExplorerStream(w http.ResponseWriter, r *http.Request) {
 		case <-ch:
 			state := h.explorer.getState()
 			data, _ := json.Marshal(state)
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return
+			}
 			flusher.Flush()
 
 			// Stop streaming once scan is terminal.

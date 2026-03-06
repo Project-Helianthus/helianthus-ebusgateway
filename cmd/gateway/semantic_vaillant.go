@@ -138,9 +138,9 @@ var (
 	semanticRegulatorTransitionsTotal    = expvar.NewMap("semantic_regulator_transitions_total")
 )
 
-func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub) {
+func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub) *vaillantSemanticPoller {
 	if gateway == nil || gateway.Bus == nil || gateway.Registry == nil || provider == nil {
-		return
+		return nil
 	}
 
 	cacheStore := newSemanticCacheStore(cfg.SemanticCachePath, log.Printf)
@@ -150,6 +150,7 @@ func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, g
 		poller.hydrateFromCache(cacheSnapshot)
 	}
 	poller.Start(ctx)
+	return poller
 }
 
 type vaillantSemanticPoller struct {
@@ -916,6 +917,46 @@ func (p *vaillantSemanticPoller) boilerStatusTierTask(tier boilerStatusTier) fun
 	}
 }
 
+func (p *vaillantSemanticPoller) enqueueBoilerStatusPriming(ctx context.Context) {
+	if p == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if p.tasks == nil {
+		for _, schedule := range p.boilerStatusTierSchedules() {
+			p.boilerStatusTierTask(schedule.tier)(ctx)
+		}
+		return
+	}
+	for _, schedule := range p.boilerStatusTierSchedules() {
+		p.enqueueTask(schedule.priority, p.boilerStatusTierTask(schedule.tier))
+	}
+}
+
+func (p *vaillantSemanticPoller) enqueueControllerSemanticPriming(ctx context.Context) {
+	if p == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if p.tasks == nil {
+		p.refreshConfig(ctx)
+		p.refreshCircuits(ctx)
+		p.refreshSystem(ctx)
+		p.refreshRadioDevices(ctx)
+		p.refreshEnergy(ctx)
+		return
+	}
+	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshCircuits)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshSystem)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshRadioDevices)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
+}
+
 func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	if p == nil {
 		return
@@ -926,17 +967,9 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 
 	go p.tasks.run(ctx)
 
-	// Prime quickly so HA can create entities on first coordinator refresh.
+	// Discovery owns downstream controller/boiler priming and avoids duplicate startup bursts.
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
-	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshCircuits)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshSystem)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshRadioDevices)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
-	for _, schedule := range p.boilerStatusTierSchedules() {
-		p.enqueueTask(schedule.priority, p.boilerStatusTierTask(schedule.tier))
-	}
 
 	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
 	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
@@ -974,7 +1007,7 @@ func (p *vaillantSemanticPoller) enqueueTask(priority semanticTaskPriority, fn f
 	}
 	scheduler := p.tasks
 	if scheduler == nil {
-		p.withPollLock(context.Background(), fn)
+		fn(context.Background())
 		return
 	}
 	err := scheduler.submit(priority, func(taskCtx context.Context) {
@@ -1062,6 +1095,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	if !ok {
 		p.mu.Lock()
 		prev := p.regulatorCapability
+		prevController := p.controller
 		prevBoilerAddress := p.boilerAddress
 		p.controller = 0
 		p.boilerAddress = boilerAddress
@@ -1078,8 +1112,14 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		if regCap != prev {
 			log.Printf("semantic_regulator_capability capability=%s", regCap.String())
 		}
+		if prevController != 0 {
+			log.Printf("semantic_controller_discovery address=0x00 source=missing")
+		}
 		if boilerAddress != prevBoilerAddress && boilerAddress != 0 && boilerAddress != 0x08 {
 			log.Printf("semantic_boiler_discovery address=0x%02x source=nonstandard", boilerAddress)
+		}
+		if boilerAddress != prevBoilerAddress && boilerAddress != 0 {
+			p.enqueueBoilerStatusPriming(ctx)
 		}
 		p.publishZones(semanticSnapshotSourceCache)
 		p.publishDHW(semanticSnapshotSourceCache)
@@ -1091,6 +1131,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 
 	p.mu.Lock()
 	prev := p.regulatorCapability
+	prevController := p.controller
 	prevBoilerAddress := p.boilerAddress
 	p.controller = controller
 	p.boilerAddress = boilerAddress
@@ -1099,8 +1140,15 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	if regCap != prev {
 		log.Printf("semantic_regulator_capability capability=%s", regCap.String())
 	}
+	if controller != prevController && controller != 0 {
+		log.Printf("semantic_controller_discovery address=0x%02x", controller)
+		p.enqueueControllerSemanticPriming(ctx)
+	}
 	if boilerAddress != prevBoilerAddress && boilerAddress != 0 && boilerAddress != 0x08 {
 		log.Printf("semantic_boiler_discovery address=0x%02x source=nonstandard", boilerAddress)
+	}
+	if boilerAddress != prevBoilerAddress && boilerAddress != 0 {
+		p.enqueueBoilerStatusPriming(ctx)
 	}
 
 	present := make(map[byte]bool, 4)
@@ -2332,17 +2380,82 @@ const (
 	// System properties registers (GG=0x00, II=0x00).
 	systemRegSystemScheme            = uint16(0x0036)
 	systemRegModuleConfigurationVR71 = uint16(0x002F)
+
+	// Boiler B509 direct registers on BAI00.
+	boilerB509RegWaterPressure         = uint16(0x0200)
+	boilerB509RegFlameActive           = uint16(0x0500)
+	boilerB509RegPartloadHcKW          = uint16(0x0704)
+	boilerB509RegPartloadHwcKW         = uint16(0x0804)
+	boilerB509RegFlowsetHcMaxC         = uint16(0x0E04)
+	boilerB509RegFlowsetHcMaxCFallback = uint16(0xA500)
+	boilerB509RegFlowsetHwcMaxC        = uint16(0x0F04)
+	boilerB509RegPumpHours             = uint16(0x1400)
+	boilerB509RegFlowTemperature       = uint16(0x1800)
+	boilerB509RegFanHours              = uint16(0x1B00)
+	boilerB509RegDeactivationsIFC      = uint16(0x1F00)
+	boilerB509RegDeactivationsLimit    = uint16(0x2000)
+	boilerB509RegDhwHours              = uint16(0x2200)
+	boilerB509RegDhwStarts             = uint16(0x2300)
+	boilerB509RegTargetFanSpeedRpm     = uint16(0x2400)
+	boilerB509RegCentralHeatingHours   = uint16(0x2800)
+	boilerB509RegCentralHeatingStarts  = uint16(0x2900)
+	boilerB509RegModulationPct         = uint16(0x2E00)
+	boilerB509RegFlowTempDesiredC      = uint16(0x3900)
+	boilerB509RegExternalPumpActive    = uint16(0x3F00)
+	boilerB509RegCentralHeatingPump    = uint16(0x4400)
+	boilerB509RegDiverterValvePosition = uint16(0x5400)
+	boilerB509RegDhwWaterFlowLpm       = uint16(0x5500)
+	boilerB509RegDhwDemandActive       = uint16(0x5800)
+	boilerB509RegCirculationPumpActive = uint16(0x7B00)
+	boilerB509RegFanSpeedRpm           = uint16(0x8300)
+	boilerB509RegStorageLoadPumpPct    = uint16(0x9E00)
+	boilerB509RegIonisationVoltageUa   = uint16(0xA400)
+	boilerB509RegStateNumber           = uint16(0xAB00)
+	boilerB509RegGasValveActive        = uint16(0xBB00)
+	boilerB509RegHeatingSwitchActive   = uint16(0xF203)
+	boilerB509RegDhwTempDesiredC       = uint16(0xEA03)
+	boilerB509RegPrimaryCircuitFlowLpm = uint16(0xFB00)
 )
 
 type vaillantBoilerSnapshot struct {
 	FlowTemperatureC         *float64
 	ReturnTemperatureC       *float64
 	CentralHeatingPumpActive *bool
+	WaterPressureBar         *float64
+	ExternalPumpActive       *bool
+	CirculationPumpActive    *bool
+	GasValveActive           *bool
+	FlameActive              *bool
+	DiverterValvePositionPct *float64
+	FanSpeedRpm              *int
+	TargetFanSpeedRpm        *int
+	IonisationVoltageUa      *float64
+	DhwWaterFlowLpm          *float64
+	DhwDemandActive          *bool
+	HeatingSwitchActive      *bool
+	StorageLoadPumpPct       *float64
+	ModulationPct            *float64
+	PrimaryCircuitFlowLpm    *float64
+	FlowTempDesiredC         *float64
+	DhwTempDesiredC          *float64
+	StateNumber              *int
 	DhwTemperatureC          *float64
 	DhwTargetTemperatureC    *float64
 	DhwOperatingMode         *int
+	FlowsetHcMaxC            *float64
+	FlowsetHwcMaxC           *float64
+	PartloadHcKW             *float64
+	PartloadHwcKW            *float64
 	HeatingStatusRaw         *int
 	DhwStatusRaw             *int
+	CentralHeatingHours      *float64
+	DhwHours                 *float64
+	CentralHeatingStarts     *int
+	DhwStarts                *int
+	PumpHours                *float64
+	FanHours                 *float64
+	DeactivationsIFC         *int
+	DeactivationsTemplimiter *int
 }
 
 type vaillantSystemSnapshot struct {
@@ -2449,22 +2562,42 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusTier(ctx context.Context, ti
 		return
 	}
 
-	// We don't need the boiler address — we read from the controller's registers.
-	// But confirm we have a controller to talk to.
 	p.mu.Lock()
 	controller := p.controller
+	boilerAddress := p.boilerAddress
 	p.mu.Unlock()
-	if controller == 0 {
-		return
-	}
-
-	registers := boilerStatusRegisterDefinitionsForTier(tier)
-	if len(registers) == 0 {
+	if controller == 0 && boilerAddress == 0 {
 		return
 	}
 
 	snapshot := &vaillantBoilerSnapshot{}
 	updated := false
+	if controller != 0 {
+		updated = p.refreshBoilerStatusB524(ctx, tier, snapshot) || updated
+	}
+	if boilerAddress != 0 {
+		updated = p.refreshBoilerStatusB509(ctx, boilerAddress, tier, snapshot) || updated
+	}
+
+	// Preserve last-known values on transient/partial failures.
+	if !updated {
+		return
+	}
+
+	p.mu.Lock()
+	p.boiler = mergeBoilerSnapshotNonDestructive(p.boiler, snapshot)
+	p.mu.Unlock()
+
+	p.publishBoilerStatus(semanticSnapshotSourceLive)
+}
+
+func (p *vaillantSemanticPoller) refreshBoilerStatusB524(ctx context.Context, tier boilerStatusTier, snapshot *vaillantBoilerSnapshot) bool {
+	if p == nil || snapshot == nil {
+		return false
+	}
+
+	updated := false
+	registers := boilerStatusRegisterDefinitionsForTier(tier)
 	for _, register := range registers {
 		switch register.decoder {
 		case boilerStatusRegisterDecoderFloat32:
@@ -2502,16 +2635,166 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusTier(ctx context.Context, ti
 		}
 	}
 
-	// Preserve last-known values on transient/partial failures.
-	if !updated {
-		return
+	if tier != boilerStatusTierFast {
+		return updated
 	}
 
-	p.mu.Lock()
-	p.boiler = mergeBoilerSnapshotNonDestructive(p.boiler, snapshot)
-	p.mu.Unlock()
+	if value := p.readDhwFloat(ctx, dhwRegCurrentTemp); value != nil {
+		snapshot.DhwTemperatureC = value
+		updated = true
+	}
+	if value := p.readDhwFloat(ctx, dhwRegTargetTemp); value != nil {
+		snapshot.DhwTargetTemperatureC = value
+		updated = true
+	}
+	if raw, ok := p.readDhwUint16(ctx, dhwRegOperationMode); ok && raw != nil {
+		value := int(*raw)
+		snapshot.DhwOperatingMode = &value
+		updated = true
+	}
+	return updated
+}
 
-	p.publishBoilerStatus(semanticSnapshotSourceLive)
+func (p *vaillantSemanticPoller) refreshBoilerStatusB509(ctx context.Context, boilerAddress byte, tier boilerStatusTier, snapshot *vaillantBoilerSnapshot) bool {
+	if p == nil || snapshot == nil || boilerAddress == 0 {
+		return false
+	}
+
+	updated := false
+	switch tier {
+	case boilerStatusTierFast:
+		if value := p.readB509DATA2c(ctx, boilerAddress, boilerB509RegFlowTemperature); value != nil {
+			snapshot.FlowTemperatureC = value
+			updated = true
+		}
+		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegCentralHeatingPump); value != nil {
+			snapshot.CentralHeatingPumpActive = value
+			updated = true
+		}
+		if value := p.readB509DATA2b(ctx, boilerAddress, boilerB509RegWaterPressure); value != nil {
+			snapshot.WaterPressureBar = value
+			updated = true
+		}
+		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegFlameActive); value != nil {
+			snapshot.FlameActive = value
+			updated = true
+		}
+		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegGasValveActive); value != nil {
+			snapshot.GasValveActive = value
+			updated = true
+		}
+		if value := p.readB509UINInt(ctx, boilerAddress, boilerB509RegFanSpeedRpm); value != nil {
+			snapshot.FanSpeedRpm = value
+			updated = true
+		}
+		if value := p.readB509SINScaled(ctx, boilerAddress, boilerB509RegModulationPct, 10); value != nil {
+			snapshot.ModulationPct = value
+			updated = true
+		}
+		if value := p.readB509UCHInt(ctx, boilerAddress, boilerB509RegStateNumber); value != nil {
+			snapshot.StateNumber = value
+			updated = true
+		}
+		if value := p.readB509UCHFloat(ctx, boilerAddress, boilerB509RegDiverterValvePosition); value != nil {
+			snapshot.DiverterValvePositionPct = value
+			updated = true
+		}
+		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegDhwDemandActive); value != nil {
+			snapshot.DhwDemandActive = value
+			updated = true
+		}
+		if value := p.readB509UIN100(ctx, boilerAddress, boilerB509RegDhwWaterFlowLpm); value != nil {
+			snapshot.DhwWaterFlowLpm = value
+			updated = true
+		}
+	case boilerStatusTierMedium:
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "flowsetHcMaxC"); value != nil {
+			snapshot.FlowsetHcMaxC = value
+			updated = true
+		}
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "flowsetHwcMaxC"); value != nil {
+			snapshot.FlowsetHwcMaxC = value
+			updated = true
+		}
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "partloadHcKW"); value != nil {
+			snapshot.PartloadHcKW = value
+			updated = true
+		}
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "partloadHwcKW"); value != nil {
+			snapshot.PartloadHwcKW = value
+			updated = true
+		}
+		if value := p.readB509Percent0(ctx, boilerAddress, boilerB509RegStorageLoadPumpPct); value != nil {
+			snapshot.StorageLoadPumpPct = value
+			updated = true
+		}
+		if value := p.readB509DATA2c(ctx, boilerAddress, boilerB509RegFlowTempDesiredC); value != nil {
+			snapshot.FlowTempDesiredC = value
+			updated = true
+		}
+		if value := p.readB509DATA2c(ctx, boilerAddress, boilerB509RegDhwTempDesiredC); value != nil {
+			snapshot.DhwTempDesiredC = value
+			updated = true
+		}
+		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegCirculationPumpActive); value != nil {
+			snapshot.CirculationPumpActive = value
+			updated = true
+		}
+		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegExternalPumpActive); value != nil {
+			snapshot.ExternalPumpActive = value
+			updated = true
+		}
+		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegHeatingSwitchActive); value != nil {
+			snapshot.HeatingSwitchActive = value
+			updated = true
+		}
+		if value := p.readB509UINInt(ctx, boilerAddress, boilerB509RegTargetFanSpeedRpm); value != nil {
+			snapshot.TargetFanSpeedRpm = value
+			updated = true
+		}
+		if value := p.readB509SINScaled(ctx, boilerAddress, boilerB509RegIonisationVoltageUa, 10); value != nil {
+			snapshot.IonisationVoltageUa = value
+			updated = true
+		}
+		if value := p.readB509UIN100(ctx, boilerAddress, boilerB509RegPrimaryCircuitFlowLpm); value != nil {
+			snapshot.PrimaryCircuitFlowLpm = value
+			updated = true
+		}
+	case boilerStatusTierSlow:
+		if value := p.readB509Hoursum2(ctx, boilerAddress, boilerB509RegCentralHeatingHours); value != nil {
+			snapshot.CentralHeatingHours = value
+			updated = true
+		}
+		if value := p.readB509Hoursum2(ctx, boilerAddress, boilerB509RegDhwHours); value != nil {
+			snapshot.DhwHours = value
+			updated = true
+		}
+		if value := p.readB509UINInt(ctx, boilerAddress, boilerB509RegCentralHeatingStarts); value != nil {
+			snapshot.CentralHeatingStarts = value
+			updated = true
+		}
+		if value := p.readB509UINInt(ctx, boilerAddress, boilerB509RegDhwStarts); value != nil {
+			snapshot.DhwStarts = value
+			updated = true
+		}
+		if value := p.readB509Hoursum2(ctx, boilerAddress, boilerB509RegPumpHours); value != nil {
+			snapshot.PumpHours = value
+			updated = true
+		}
+		if value := p.readB509Hoursum2(ctx, boilerAddress, boilerB509RegFanHours); value != nil {
+			snapshot.FanHours = value
+			updated = true
+		}
+		if value := p.readB509UCHInt(ctx, boilerAddress, boilerB509RegDeactivationsIFC); value != nil {
+			snapshot.DeactivationsIFC = value
+			updated = true
+		}
+		if value := p.readB509UCHInt(ctx, boilerAddress, boilerB509RegDeactivationsLimit); value != nil {
+			snapshot.DeactivationsTemplimiter = value
+			updated = true
+		}
+	}
+	return updated
 }
 
 func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSource) {
@@ -2542,13 +2825,44 @@ func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSour
 			FlowTemperatureC:         snapshot.FlowTemperatureC,
 			ReturnTemperatureC:       snapshot.ReturnTemperatureC,
 			CentralHeatingPumpActive: snapshot.CentralHeatingPumpActive,
+			WaterPressureBar:         snapshot.WaterPressureBar,
+			ExternalPumpActive:       snapshot.ExternalPumpActive,
+			CirculationPumpActive:    snapshot.CirculationPumpActive,
+			GasValveActive:           snapshot.GasValveActive,
+			FlameActive:              snapshot.FlameActive,
+			DiverterValvePositionPct: snapshot.DiverterValvePositionPct,
+			FanSpeedRpm:              snapshot.FanSpeedRpm,
+			TargetFanSpeedRpm:        snapshot.TargetFanSpeedRpm,
+			IonisationVoltageUa:      snapshot.IonisationVoltageUa,
+			DhwWaterFlowLpm:          snapshot.DhwWaterFlowLpm,
+			DhwDemandActive:          snapshot.DhwDemandActive,
+			HeatingSwitchActive:      snapshot.HeatingSwitchActive,
+			StorageLoadPumpPct:       snapshot.StorageLoadPumpPct,
+			ModulationPct:            snapshot.ModulationPct,
+			PrimaryCircuitFlowLpm:    snapshot.PrimaryCircuitFlowLpm,
+			FlowTempDesiredC:         snapshot.FlowTempDesiredC,
+			DhwTempDesiredC:          snapshot.DhwTempDesiredC,
+			StateNumber:              snapshot.StateNumber,
 			DhwTemperatureC:          snapshot.DhwTemperatureC,
 			DhwTargetTemperatureC:    snapshot.DhwTargetTemperatureC,
 		},
-		Config: graphql.BoilerConfig{},
+		Config: graphql.BoilerConfig{
+			FlowsetHcMaxC:  snapshot.FlowsetHcMaxC,
+			FlowsetHwcMaxC: snapshot.FlowsetHwcMaxC,
+			PartloadHcKW:   snapshot.PartloadHcKW,
+			PartloadHwcKW:  snapshot.PartloadHwcKW,
+		},
 		Diagnostics: graphql.BoilerDiagnostics{
-			HeatingStatusRaw: snapshot.HeatingStatusRaw,
-			DhwStatusRaw:     snapshot.DhwStatusRaw,
+			HeatingStatusRaw:         snapshot.HeatingStatusRaw,
+			DhwStatusRaw:             snapshot.DhwStatusRaw,
+			CentralHeatingHours:      snapshot.CentralHeatingHours,
+			DhwHours:                 snapshot.DhwHours,
+			CentralHeatingStarts:     snapshot.CentralHeatingStarts,
+			DhwStarts:                snapshot.DhwStarts,
+			PumpHours:                snapshot.PumpHours,
+			FanHours:                 snapshot.FanHours,
+			DeactivationsIFC:         snapshot.DeactivationsIFC,
+			DeactivationsTemplimiter: snapshot.DeactivationsTemplimiter,
 		},
 	}
 	if snapshot.DhwOperatingMode != nil {
@@ -3513,37 +3827,7 @@ func decodeDhwMode(raw int) string {
 }
 
 func boilerStatusEquals(a, b *graphql.BoilerStatus) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	if !floatPtrEquals(a.State.FlowTemperatureC, b.State.FlowTemperatureC) {
-		return false
-	}
-	if !floatPtrEquals(a.State.ReturnTemperatureC, b.State.ReturnTemperatureC) {
-		return false
-	}
-	if !boolPtrEquals(a.State.CentralHeatingPumpActive, b.State.CentralHeatingPumpActive) {
-		return false
-	}
-	if !floatPtrEquals(a.State.DhwTemperatureC, b.State.DhwTemperatureC) {
-		return false
-	}
-	if !floatPtrEquals(a.State.DhwTargetTemperatureC, b.State.DhwTargetTemperatureC) {
-		return false
-	}
-	if !stringPtrEquals(a.Config.DhwOperatingMode, b.Config.DhwOperatingMode) {
-		return false
-	}
-	if !intPtrEquals(a.Diagnostics.HeatingStatusRaw, b.Diagnostics.HeatingStatusRaw) {
-		return false
-	}
-	if !intPtrEquals(a.Diagnostics.DhwStatusRaw, b.Diagnostics.DhwStatusRaw) {
-		return false
-	}
-	return true
+	return reflect.DeepEqual(a, b)
 }
 
 func boolPtrEquals(a, b *bool) bool {
@@ -3588,6 +3872,60 @@ func mergeBoilerSnapshotNonDestructive(existing, incoming *vaillantBoilerSnapsho
 		if incoming.CentralHeatingPumpActive != nil {
 			merged.CentralHeatingPumpActive = cloneBoilerBoolPtr(incoming.CentralHeatingPumpActive)
 		}
+		if incoming.WaterPressureBar != nil {
+			merged.WaterPressureBar = cloneFloat64Ptr(incoming.WaterPressureBar)
+		}
+		if incoming.ExternalPumpActive != nil {
+			merged.ExternalPumpActive = cloneBoilerBoolPtr(incoming.ExternalPumpActive)
+		}
+		if incoming.CirculationPumpActive != nil {
+			merged.CirculationPumpActive = cloneBoilerBoolPtr(incoming.CirculationPumpActive)
+		}
+		if incoming.GasValveActive != nil {
+			merged.GasValveActive = cloneBoilerBoolPtr(incoming.GasValveActive)
+		}
+		if incoming.FlameActive != nil {
+			merged.FlameActive = cloneBoilerBoolPtr(incoming.FlameActive)
+		}
+		if incoming.DiverterValvePositionPct != nil {
+			merged.DiverterValvePositionPct = cloneFloat64Ptr(incoming.DiverterValvePositionPct)
+		}
+		if incoming.FanSpeedRpm != nil {
+			merged.FanSpeedRpm = cloneBoilerIntPtr(incoming.FanSpeedRpm)
+		}
+		if incoming.TargetFanSpeedRpm != nil {
+			merged.TargetFanSpeedRpm = cloneBoilerIntPtr(incoming.TargetFanSpeedRpm)
+		}
+		if incoming.IonisationVoltageUa != nil {
+			merged.IonisationVoltageUa = cloneFloat64Ptr(incoming.IonisationVoltageUa)
+		}
+		if incoming.DhwWaterFlowLpm != nil {
+			merged.DhwWaterFlowLpm = cloneFloat64Ptr(incoming.DhwWaterFlowLpm)
+		}
+		if incoming.DhwDemandActive != nil {
+			merged.DhwDemandActive = cloneBoilerBoolPtr(incoming.DhwDemandActive)
+		}
+		if incoming.HeatingSwitchActive != nil {
+			merged.HeatingSwitchActive = cloneBoilerBoolPtr(incoming.HeatingSwitchActive)
+		}
+		if incoming.StorageLoadPumpPct != nil {
+			merged.StorageLoadPumpPct = cloneFloat64Ptr(incoming.StorageLoadPumpPct)
+		}
+		if incoming.ModulationPct != nil {
+			merged.ModulationPct = cloneFloat64Ptr(incoming.ModulationPct)
+		}
+		if incoming.PrimaryCircuitFlowLpm != nil {
+			merged.PrimaryCircuitFlowLpm = cloneFloat64Ptr(incoming.PrimaryCircuitFlowLpm)
+		}
+		if incoming.FlowTempDesiredC != nil {
+			merged.FlowTempDesiredC = cloneFloat64Ptr(incoming.FlowTempDesiredC)
+		}
+		if incoming.DhwTempDesiredC != nil {
+			merged.DhwTempDesiredC = cloneFloat64Ptr(incoming.DhwTempDesiredC)
+		}
+		if incoming.StateNumber != nil {
+			merged.StateNumber = cloneBoilerIntPtr(incoming.StateNumber)
+		}
 		if incoming.DhwTemperatureC != nil {
 			merged.DhwTemperatureC = cloneFloat64Ptr(incoming.DhwTemperatureC)
 		}
@@ -3597,11 +3935,47 @@ func mergeBoilerSnapshotNonDestructive(existing, incoming *vaillantBoilerSnapsho
 		if incoming.DhwOperatingMode != nil {
 			merged.DhwOperatingMode = cloneBoilerIntPtr(incoming.DhwOperatingMode)
 		}
+		if incoming.FlowsetHcMaxC != nil {
+			merged.FlowsetHcMaxC = cloneFloat64Ptr(incoming.FlowsetHcMaxC)
+		}
+		if incoming.FlowsetHwcMaxC != nil {
+			merged.FlowsetHwcMaxC = cloneFloat64Ptr(incoming.FlowsetHwcMaxC)
+		}
+		if incoming.PartloadHcKW != nil {
+			merged.PartloadHcKW = cloneFloat64Ptr(incoming.PartloadHcKW)
+		}
+		if incoming.PartloadHwcKW != nil {
+			merged.PartloadHwcKW = cloneFloat64Ptr(incoming.PartloadHwcKW)
+		}
 		if incoming.HeatingStatusRaw != nil {
 			merged.HeatingStatusRaw = cloneBoilerIntPtr(incoming.HeatingStatusRaw)
 		}
 		if incoming.DhwStatusRaw != nil {
 			merged.DhwStatusRaw = cloneBoilerIntPtr(incoming.DhwStatusRaw)
+		}
+		if incoming.CentralHeatingHours != nil {
+			merged.CentralHeatingHours = cloneFloat64Ptr(incoming.CentralHeatingHours)
+		}
+		if incoming.DhwHours != nil {
+			merged.DhwHours = cloneFloat64Ptr(incoming.DhwHours)
+		}
+		if incoming.CentralHeatingStarts != nil {
+			merged.CentralHeatingStarts = cloneBoilerIntPtr(incoming.CentralHeatingStarts)
+		}
+		if incoming.DhwStarts != nil {
+			merged.DhwStarts = cloneBoilerIntPtr(incoming.DhwStarts)
+		}
+		if incoming.PumpHours != nil {
+			merged.PumpHours = cloneFloat64Ptr(incoming.PumpHours)
+		}
+		if incoming.FanHours != nil {
+			merged.FanHours = cloneFloat64Ptr(incoming.FanHours)
+		}
+		if incoming.DeactivationsIFC != nil {
+			merged.DeactivationsIFC = cloneBoilerIntPtr(incoming.DeactivationsIFC)
+		}
+		if incoming.DeactivationsTemplimiter != nil {
+			merged.DeactivationsTemplimiter = cloneBoilerIntPtr(incoming.DeactivationsTemplimiter)
 		}
 	}
 
@@ -3619,11 +3993,41 @@ func cloneBoilerSnapshot(snapshot *vaillantBoilerSnapshot) *vaillantBoilerSnapsh
 		FlowTemperatureC:         cloneFloat64Ptr(snapshot.FlowTemperatureC),
 		ReturnTemperatureC:       cloneFloat64Ptr(snapshot.ReturnTemperatureC),
 		CentralHeatingPumpActive: cloneBoilerBoolPtr(snapshot.CentralHeatingPumpActive),
+		WaterPressureBar:         cloneFloat64Ptr(snapshot.WaterPressureBar),
+		ExternalPumpActive:       cloneBoilerBoolPtr(snapshot.ExternalPumpActive),
+		CirculationPumpActive:    cloneBoilerBoolPtr(snapshot.CirculationPumpActive),
+		GasValveActive:           cloneBoilerBoolPtr(snapshot.GasValveActive),
+		FlameActive:              cloneBoilerBoolPtr(snapshot.FlameActive),
+		DiverterValvePositionPct: cloneFloat64Ptr(snapshot.DiverterValvePositionPct),
+		FanSpeedRpm:              cloneBoilerIntPtr(snapshot.FanSpeedRpm),
+		TargetFanSpeedRpm:        cloneBoilerIntPtr(snapshot.TargetFanSpeedRpm),
+		IonisationVoltageUa:      cloneFloat64Ptr(snapshot.IonisationVoltageUa),
+		DhwWaterFlowLpm:          cloneFloat64Ptr(snapshot.DhwWaterFlowLpm),
+		DhwDemandActive:          cloneBoilerBoolPtr(snapshot.DhwDemandActive),
+		HeatingSwitchActive:      cloneBoilerBoolPtr(snapshot.HeatingSwitchActive),
+		StorageLoadPumpPct:       cloneFloat64Ptr(snapshot.StorageLoadPumpPct),
+		ModulationPct:            cloneFloat64Ptr(snapshot.ModulationPct),
+		PrimaryCircuitFlowLpm:    cloneFloat64Ptr(snapshot.PrimaryCircuitFlowLpm),
+		FlowTempDesiredC:         cloneFloat64Ptr(snapshot.FlowTempDesiredC),
+		DhwTempDesiredC:          cloneFloat64Ptr(snapshot.DhwTempDesiredC),
+		StateNumber:              cloneBoilerIntPtr(snapshot.StateNumber),
 		DhwTemperatureC:          cloneFloat64Ptr(snapshot.DhwTemperatureC),
 		DhwTargetTemperatureC:    cloneFloat64Ptr(snapshot.DhwTargetTemperatureC),
 		DhwOperatingMode:         cloneBoilerIntPtr(snapshot.DhwOperatingMode),
+		FlowsetHcMaxC:            cloneFloat64Ptr(snapshot.FlowsetHcMaxC),
+		FlowsetHwcMaxC:           cloneFloat64Ptr(snapshot.FlowsetHwcMaxC),
+		PartloadHcKW:             cloneFloat64Ptr(snapshot.PartloadHcKW),
+		PartloadHwcKW:            cloneFloat64Ptr(snapshot.PartloadHwcKW),
 		HeatingStatusRaw:         cloneBoilerIntPtr(snapshot.HeatingStatusRaw),
 		DhwStatusRaw:             cloneBoilerIntPtr(snapshot.DhwStatusRaw),
+		CentralHeatingHours:      cloneFloat64Ptr(snapshot.CentralHeatingHours),
+		DhwHours:                 cloneFloat64Ptr(snapshot.DhwHours),
+		CentralHeatingStarts:     cloneBoilerIntPtr(snapshot.CentralHeatingStarts),
+		DhwStarts:                cloneBoilerIntPtr(snapshot.DhwStarts),
+		PumpHours:                cloneFloat64Ptr(snapshot.PumpHours),
+		FanHours:                 cloneFloat64Ptr(snapshot.FanHours),
+		DeactivationsIFC:         cloneBoilerIntPtr(snapshot.DeactivationsIFC),
+		DeactivationsTemplimiter: cloneBoilerIntPtr(snapshot.DeactivationsTemplimiter),
 	}
 }
 
@@ -3649,12 +4053,63 @@ func boilerSnapshotFromGraphQL(status *graphql.BoilerStatus) *vaillantBoilerSnap
 	}
 	return mergeBoilerSnapshotNonDestructive(nil, &vaillantBoilerSnapshot{
 		FlowTemperatureC:         cloneFloat64Ptr(status.State.FlowTemperatureC),
+		ReturnTemperatureC:       cloneFloat64Ptr(status.State.ReturnTemperatureC),
 		CentralHeatingPumpActive: cloneBoilerBoolPtr(status.State.CentralHeatingPumpActive),
+		WaterPressureBar:         cloneFloat64Ptr(status.State.WaterPressureBar),
+		ExternalPumpActive:       cloneBoilerBoolPtr(status.State.ExternalPumpActive),
+		CirculationPumpActive:    cloneBoilerBoolPtr(status.State.CirculationPumpActive),
+		GasValveActive:           cloneBoilerBoolPtr(status.State.GasValveActive),
+		FlameActive:              cloneBoilerBoolPtr(status.State.FlameActive),
+		DiverterValvePositionPct: cloneFloat64Ptr(status.State.DiverterValvePositionPct),
+		FanSpeedRpm:              cloneBoilerIntPtr(status.State.FanSpeedRpm),
+		TargetFanSpeedRpm:        cloneBoilerIntPtr(status.State.TargetFanSpeedRpm),
+		IonisationVoltageUa:      cloneFloat64Ptr(status.State.IonisationVoltageUa),
+		DhwWaterFlowLpm:          cloneFloat64Ptr(status.State.DhwWaterFlowLpm),
+		DhwDemandActive:          cloneBoilerBoolPtr(status.State.DhwDemandActive),
+		HeatingSwitchActive:      cloneBoilerBoolPtr(status.State.HeatingSwitchActive),
+		StorageLoadPumpPct:       cloneFloat64Ptr(status.State.StorageLoadPumpPct),
+		ModulationPct:            cloneFloat64Ptr(status.State.ModulationPct),
+		PrimaryCircuitFlowLpm:    cloneFloat64Ptr(status.State.PrimaryCircuitFlowLpm),
+		FlowTempDesiredC:         cloneFloat64Ptr(status.State.FlowTempDesiredC),
+		DhwTempDesiredC:          cloneFloat64Ptr(status.State.DhwTempDesiredC),
+		StateNumber:              cloneBoilerIntPtr(status.State.StateNumber),
 		DhwTemperatureC:          cloneFloat64Ptr(status.State.DhwTemperatureC),
 		DhwTargetTemperatureC:    cloneFloat64Ptr(status.State.DhwTargetTemperatureC),
+		DhwOperatingMode:         cloneBoilerModeIntPtr(status.Config.DhwOperatingMode),
+		FlowsetHcMaxC:            cloneFloat64Ptr(status.Config.FlowsetHcMaxC),
+		FlowsetHwcMaxC:           cloneFloat64Ptr(status.Config.FlowsetHwcMaxC),
+		PartloadHcKW:             cloneFloat64Ptr(status.Config.PartloadHcKW),
+		PartloadHwcKW:            cloneFloat64Ptr(status.Config.PartloadHwcKW),
 		HeatingStatusRaw:         cloneBoilerIntPtr(status.Diagnostics.HeatingStatusRaw),
 		DhwStatusRaw:             cloneBoilerIntPtr(status.Diagnostics.DhwStatusRaw),
+		CentralHeatingHours:      cloneFloat64Ptr(status.Diagnostics.CentralHeatingHours),
+		DhwHours:                 cloneFloat64Ptr(status.Diagnostics.DhwHours),
+		CentralHeatingStarts:     cloneBoilerIntPtr(status.Diagnostics.CentralHeatingStarts),
+		DhwStarts:                cloneBoilerIntPtr(status.Diagnostics.DhwStarts),
+		PumpHours:                cloneFloat64Ptr(status.Diagnostics.PumpHours),
+		FanHours:                 cloneFloat64Ptr(status.Diagnostics.FanHours),
+		DeactivationsIFC:         cloneBoilerIntPtr(status.Diagnostics.DeactivationsIFC),
+		DeactivationsTemplimiter: cloneBoilerIntPtr(status.Diagnostics.DeactivationsTemplimiter),
 	})
+}
+
+func cloneBoilerModeIntPtr(mode *string) *int {
+	if mode == nil {
+		return nil
+	}
+	switch strings.ToUpper(strings.TrimSpace(*mode)) {
+	case "OFF":
+		value := 0
+		return &value
+	case "ON":
+		value := 1
+		return &value
+	case "AUTO":
+		value := 2
+		return &value
+	default:
+		return nil
+	}
 }
 
 func (p *vaillantSemanticPoller) persistSemanticCache(source semanticSnapshotSource) {
@@ -4041,6 +4496,313 @@ func (p *vaillantSemanticPoller) writeB509Value(ctx context.Context, target byte
 	return lastErr
 }
 
+type boilerConfigFieldSpec struct {
+	addrs []uint16
+	min   float64
+	max   float64
+	codec boilerConfigCodec
+}
+
+type boilerConfigCodec uint8
+
+const (
+	boilerConfigCodecTempDATA2c boilerConfigCodec = iota
+	boilerConfigCodecUCH
+)
+
+var boilerConfigFieldSpecs = map[string]boilerConfigFieldSpec{
+	"flowsetHcMaxC":  {addrs: []uint16{boilerB509RegFlowsetHcMaxC, boilerB509RegFlowsetHcMaxCFallback}, min: 20, max: 80, codec: boilerConfigCodecTempDATA2c},
+	"flowsetHwcMaxC": {addrs: []uint16{boilerB509RegFlowsetHwcMaxC}, min: 30, max: 65, codec: boilerConfigCodecTempDATA2c},
+	"partloadHcKW":   {addrs: []uint16{boilerB509RegPartloadHcKW}, min: 0, max: 40, codec: boilerConfigCodecUCH},
+	"partloadHwcKW":  {addrs: []uint16{boilerB509RegPartloadHwcKW}, min: 0, max: 40, codec: boilerConfigCodecUCH},
+}
+
+func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName string, rawValue string) graphql.BoilerConfigMutationResult {
+	if p == nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler config writer unavailable"}
+	}
+
+	spec, ok := boilerConfigFieldSpecs[fieldName]
+	if !ok {
+		keys := make([]string, 0, len(boilerConfigFieldSpecs))
+		for key := range boilerConfigFieldSpecs {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		return graphql.BoilerConfigMutationResult{
+			Success: false,
+			Error:   fmt.Sprintf("unknown boiler field %q (allowed: %s)", fieldName, strings.Join(keys, ", ")),
+		}
+	}
+
+	value, err := parseBoilerConfigValue(rawValue, spec)
+	if err != nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: err.Error()}
+	}
+
+	p.mu.Lock()
+	boilerAddress := p.boilerAddress
+	p.mu.Unlock()
+	if boilerAddress == 0 {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: "unsupported source: boiler B509 address unavailable"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	payload, normalizedValue, err := encodeBoilerConfigPayload(fieldName, spec, value)
+	if err != nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: err.Error()}
+	}
+	addr := p.resolveB509BoilerConfigAddr(ctx, boilerAddress, spec)
+	if err := p.writeB509Value(ctx, boilerAddress, addr, payload); err != nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
+	}
+	readback, ok := p.readB509Value(ctx, boilerAddress, addr)
+	if !ok || len(readback) < len(payload) {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: "b509 write confirm failed: read-back unavailable"}
+	}
+	if !slices.Equal(readback[:len(payload)], payload) {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: "b509 write confirm failed: read-back mismatch"}
+	}
+
+	p.mu.Lock()
+	p.boiler = boilerSnapshotWithConfigValue(p.boiler, fieldName, normalizedValue)
+	p.mu.Unlock()
+
+	p.publishBoilerStatus(semanticSnapshotSourceLive)
+	return graphql.BoilerConfigMutationResult{Success: true}
+}
+
+func parseBoilerConfigValue(rawValue string, spec boilerConfigFieldSpec) (float64, error) {
+	value, err := strconv.ParseFloat(strings.TrimSpace(rawValue), 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid boiler value %q: %v", rawValue, err)
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, fmt.Errorf("invalid boiler value %q: finite number required", rawValue)
+	}
+	if value < spec.min || value > spec.max {
+		return 0, fmt.Errorf("value %.4g out of range [%.4g, %.4g]", value, spec.min, spec.max)
+	}
+	return value, nil
+}
+
+func boilerSnapshotWithConfigValue(existing *vaillantBoilerSnapshot, fieldName string, value float64) *vaillantBoilerSnapshot {
+	snapshot := cloneBoilerSnapshot(existing)
+	if snapshot == nil {
+		snapshot = &vaillantBoilerSnapshot{}
+	}
+
+	switch fieldName {
+	case "flowsetHcMaxC":
+		snapshot.FlowsetHcMaxC = cloneFloat64Ptr(&value)
+	case "flowsetHwcMaxC":
+		snapshot.FlowsetHwcMaxC = cloneFloat64Ptr(&value)
+	case "partloadHcKW":
+		snapshot.PartloadHcKW = cloneFloat64Ptr(&value)
+	case "partloadHwcKW":
+		snapshot.PartloadHwcKW = cloneFloat64Ptr(&value)
+	}
+
+	return snapshot
+}
+
+func encodeBoilerConfigPayload(fieldName string, spec boilerConfigFieldSpec, value float64) ([]byte, float64, error) {
+	switch spec.codec {
+	case boilerConfigCodecTempDATA2c:
+		payload := encodeTempDATA2c(value)
+		normalizedValue, ok := decodeDATA2c(payload)
+		if !ok {
+			return nil, 0, fmt.Errorf("invalid boiler value %.4g for %s: data2c normalization failed", value, fieldName)
+		}
+		return payload, normalizedValue, nil
+	case boilerConfigCodecUCH:
+		payload, ok := encodeUCH(value)
+		if !ok {
+			return nil, 0, fmt.Errorf("invalid boiler value %.4g for %s: whole-number kW required", value, fieldName)
+		}
+		return payload, float64(payload[0]), nil
+	default:
+		return nil, 0, fmt.Errorf("unsupported boiler field codec for %s", fieldName)
+	}
+}
+
+func (p *vaillantSemanticPoller) readB509BoilerConfigFloat(ctx context.Context, target byte, fieldName string) *float64 {
+	spec, ok := boilerConfigFieldSpecs[fieldName]
+	if !ok {
+		return nil
+	}
+	for _, addr := range spec.addrs {
+		raw, ok := p.readB509Value(ctx, target, addr)
+		if !ok {
+			continue
+		}
+		value, ok := decodeBoilerConfigRaw(spec, raw)
+		if !ok {
+			continue
+		}
+		return &value
+	}
+	return nil
+}
+
+func (p *vaillantSemanticPoller) resolveB509BoilerConfigAddr(ctx context.Context, target byte, spec boilerConfigFieldSpec) uint16 {
+	for _, addr := range spec.addrs {
+		raw, ok := p.readB509Value(ctx, target, addr)
+		if !ok {
+			continue
+		}
+		if _, ok := decodeBoilerConfigRaw(spec, raw); ok {
+			return addr
+		}
+	}
+	if len(spec.addrs) == 0 {
+		return 0
+	}
+	return spec.addrs[0]
+}
+
+func decodeBoilerConfigRaw(spec boilerConfigFieldSpec, raw []byte) (float64, bool) {
+	switch spec.codec {
+	case boilerConfigCodecTempDATA2c:
+		return decodeDATA2c(raw)
+	case boilerConfigCodecUCH:
+		value, ok := decodeUCH(raw)
+		return float64(value), ok
+	default:
+		return 0, false
+	}
+}
+
+func (p *vaillantSemanticPoller) readB509DATA2b(ctx context.Context, target byte, addr uint16) *float64 {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok {
+		return nil
+	}
+	value, ok := decodeDATA2b(raw)
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
+func (p *vaillantSemanticPoller) readB509DATA2c(ctx context.Context, target byte, addr uint16) *float64 {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok {
+		return nil
+	}
+	value, ok := decodeDATA2c(raw)
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
+func (p *vaillantSemanticPoller) readB509OnOff(ctx context.Context, target byte, addr uint16) *bool {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok {
+		return nil
+	}
+	value, ok := decodeOnOff(raw)
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
+func (p *vaillantSemanticPoller) readB509UINInt(ctx context.Context, target byte, addr uint16) *int {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok {
+		return nil
+	}
+	value, ok := decodeUIN(raw)
+	if !ok {
+		return nil
+	}
+	out := int(value)
+	return &out
+}
+
+func (p *vaillantSemanticPoller) readB509SINScaled(ctx context.Context, target byte, addr uint16, divisor float64) *float64 {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok {
+		return nil
+	}
+	value, ok := decodeSIN(raw)
+	if !ok {
+		return nil
+	}
+	out := float64(value)
+	if divisor != 0 {
+		out /= divisor
+	}
+	return &out
+}
+
+func (p *vaillantSemanticPoller) readB509UIN100(ctx context.Context, target byte, addr uint16) *float64 {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok {
+		return nil
+	}
+	value, ok := decodeUIN100(raw)
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
+func (p *vaillantSemanticPoller) readB509Percent0(ctx context.Context, target byte, addr uint16) *float64 {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok {
+		return nil
+	}
+	value, ok := decodePercent0(raw)
+	if !ok {
+		return nil
+	}
+	out := float64(value)
+	return &out
+}
+
+func (p *vaillantSemanticPoller) readB509Hoursum2(ctx context.Context, target byte, addr uint16) *float64 {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok {
+		return nil
+	}
+	value, ok := decodeHoursum2(raw)
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
+func (p *vaillantSemanticPoller) readB509UCHInt(ctx context.Context, target byte, addr uint16) *int {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok {
+		return nil
+	}
+	value, ok := decodeUCH(raw)
+	if !ok {
+		return nil
+	}
+	out := int(value)
+	return &out
+}
+
+func (p *vaillantSemanticPoller) readB509UCHFloat(ctx context.Context, target byte, addr uint16) *float64 {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok {
+		return nil
+	}
+	value, ok := decodeUCH(raw)
+	if !ok {
+		return nil
+	}
+	out := float64(value)
+	return &out
+}
+
 func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {
 	if p == nil || p.bus == nil {
 		return nil, false
@@ -4142,9 +4904,6 @@ func buildB509WriteSelector(addr uint16, value []byte) []byte {
 
 func parseB509ReadPayload(payload []byte, addr uint16) ([]byte, bool) {
 	if len(payload) == 0 {
-		return nil, false
-	}
-	if len(payload) == 1 && payload[0] == 0x00 {
 		return nil, false
 	}
 

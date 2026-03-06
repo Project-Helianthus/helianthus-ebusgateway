@@ -10,6 +10,7 @@ type Builder struct {
 	changes  <-chan struct{}
 	status   StatusProvider
 	semantic SemanticProvider
+	boiler   BoilerConfigWriter
 
 	mu       sync.RWMutex
 	schema   Schema
@@ -137,4 +138,23 @@ func (b *Builder) semanticProvider() SemanticProvider {
 		return staticSemanticProvider{}
 	}
 	return provider
+}
+
+func (b *Builder) SetBoilerConfigWriter(writer BoilerConfigWriter) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.boiler = writer
+	b.mu.Unlock()
+}
+
+func (b *Builder) boilerConfigWriter() BoilerConfigWriter {
+	if b == nil {
+		return nil
+	}
+	b.mu.RLock()
+	writer := b.boiler
+	b.mu.RUnlock()
+	return writer
 }

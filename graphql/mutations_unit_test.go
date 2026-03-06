@@ -66,6 +66,22 @@ func (template buildTemplate) Build(params map[string]any) ([]byte, error) {
 	}
 }
 
+type mockBoilerWriter struct {
+	result BoilerConfigMutationResult
+	calls  []struct {
+		field string
+		value string
+	}
+}
+
+func (writer *mockBoilerWriter) SetBoilerConfig(_ context.Context, fieldName string, rawValue string) BoilerConfigMutationResult {
+	writer.calls = append(writer.calls, struct {
+		field string
+		value string
+	}{field: fieldName, value: rawValue})
+	return writer.result
+}
+
 func TestValidateInvokeParams_SchemaCoercion(t *testing.T) {
 	method := mockMethod{
 		name:     "set_level",
@@ -200,7 +216,7 @@ func TestSetBoilerConfigMutation_UnsupportedInReducedProfile(t *testing.T) {
 			"noop": &graphqlgo.Field{Type: graphqlgo.String},
 		},
 	})
-	mutationType := buildMutationType(nil, nil)
+	mutationType := buildMutationType(nil, nil, nil)
 	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
 		Query:    queryType,
 		Mutation: mutationType,
@@ -255,7 +271,7 @@ func TestSetCircuitConfigMutation_Success(t *testing.T) {
 		},
 	}
 
-	data := executeMutation(t, buildMutationSchema(t, registry, invoker), `mutation {
+	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
 		setCircuitConfig(index: 1, field: "heatingCurve", value: "1.5") {
 			success
 			error
@@ -309,6 +325,36 @@ func TestSetCircuitConfigMutation_Success(t *testing.T) {
 	}
 }
 
+func TestSetBoilerConfigMutation_DelegatesToWriter(t *testing.T) {
+	writer := &mockBoilerWriter{
+		result: BoilerConfigMutationResult{Success: true},
+	}
+
+	data := executeMutation(t, buildMutationSchema(t, nil, nil, writer), `mutation {
+		setBoilerConfig(field: "flowsetHcMaxC", value: "55") {
+			success
+			error
+		}
+	}`)
+
+	payload, ok := data["setBoilerConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("setBoilerConfig payload type = %T; want map", data["setBoilerConfig"])
+	}
+	if got, _ := payload["success"].(bool); !got {
+		t.Fatalf("setBoilerConfig success = %v; want true", got)
+	}
+	if got := payload["error"]; got != nil {
+		t.Fatalf("setBoilerConfig error = %#v; want nil", got)
+	}
+	if len(writer.calls) != 1 {
+		t.Fatalf("writer calls = %d; want 1", len(writer.calls))
+	}
+	if writer.calls[0].field != "flowsetHcMaxC" || writer.calls[0].value != "55" {
+		t.Fatalf("writer call = %#v; want flowsetHcMaxC/55", writer.calls[0])
+	}
+}
+
 func TestSetSystemConfigMutation_Success(t *testing.T) {
 	registry := mutationTestRegistry{
 		entries: map[byte]registry.DeviceEntry{
@@ -325,7 +371,7 @@ func TestSetSystemConfigMutation_Success(t *testing.T) {
 		},
 	}
 
-	data := executeMutation(t, buildMutationSchema(t, registry, invoker), `mutation {
+	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
 		setSystemConfig(field: "adaptiveHeatingCurve", value: "true") {
 			success
 			error
@@ -378,7 +424,7 @@ func TestSetSystemConfigMutation_IntegerLikeFloatString(t *testing.T) {
 		},
 	}
 
-	data := executeMutation(t, buildMutationSchema(t, registry, invoker), `mutation {
+	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
 		setSystemConfig(field: "maxRoomHumidityPct", value: "55.0") {
 			success
 			error
@@ -444,7 +490,7 @@ func TestSetCircuitConfigMutation_ValidationFailures(t *testing.T) {
 				order: []byte{0x15},
 			}
 			invoker := &mutationTestInvoker{}
-			data := executeMutation(t, buildMutationSchema(t, registry, invoker), test.query)
+			data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), test.query)
 
 			payload, ok := data["setCircuitConfig"].(map[string]any)
 			if !ok {
@@ -473,7 +519,7 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 			order: []byte{0x15},
 		}
 		invoker := &mutationTestInvoker{}
-		data := executeMutation(t, buildMutationSchema(t, registry, invoker), `mutation {
+		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
 			setSystemConfig(field: "adaptiveHeatingCurve", value: "maybe") { success error }
 		}`)
 		payload, _ := data["setSystemConfig"].(map[string]any)
@@ -491,7 +537,7 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 	t.Run("missing controller", func(t *testing.T) {
 		registry := mutationTestRegistry{}
 		invoker := &mutationTestInvoker{}
-		data := executeMutation(t, buildMutationSchema(t, registry, invoker), `mutation {
+		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
 			setSystemConfig(field: "adaptiveHeatingCurve", value: "true") { success error }
 		}`)
 		payload, _ := data["setSystemConfig"].(map[string]any)
@@ -511,7 +557,7 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 			order: []byte{0x15},
 		}
 		invoker := &mutationTestInvoker{}
-		data := executeMutation(t, buildMutationSchema(t, registry, invoker), `mutation {
+		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
 			setSystemConfig(field: "adaptiveHeatingCurve", value: "true") { success error }
 		}`)
 		payload, _ := data["setSystemConfig"].(map[string]any)
@@ -542,7 +588,7 @@ func TestSetCircuitConfigMutation_ReadbackConfirmFailure(t *testing.T) {
 			},
 		},
 	}
-	data := executeMutation(t, buildMutationSchema(t, registry, invoker), `mutation {
+	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
 		setCircuitConfig(index: 2, field: "heatingCurve", value: "1.5") { success error }
 	}`)
 	payload, _ := data["setCircuitConfig"].(map[string]any)
@@ -557,7 +603,7 @@ func TestSetCircuitConfigMutation_ReadbackConfirmFailure(t *testing.T) {
 	}
 }
 
-func buildMutationSchema(t *testing.T, registry InvokeRegistry, invoker Invoker) graphqlgo.Schema {
+func buildMutationSchema(t *testing.T, registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter) graphqlgo.Schema {
 	t.Helper()
 	queryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Query",
@@ -565,7 +611,7 @@ func buildMutationSchema(t *testing.T, registry InvokeRegistry, invoker Invoker)
 			"noop": &graphqlgo.Field{Type: graphqlgo.String},
 		},
 	})
-	mutationType := buildMutationType(registry, invoker)
+	mutationType := buildMutationType(registry, invoker, boilerWriter)
 	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
 		Query:    queryType,
 		Mutation: mutationType,

@@ -206,3 +206,27 @@ func TestEncodeTempDATA2c(t *testing.T) {
 		}
 	}
 }
+
+func TestEncodeUCH(t *testing.T) {
+	tests := []struct {
+		name string
+		in   float64
+		want []byte
+		ok   bool
+	}{
+		{name: "whole number", in: 18, want: []byte{0x12}, ok: true},
+		{name: "zero", in: 0, want: []byte{0x00}, ok: true},
+		{name: "fraction rejected", in: 18.5, ok: false},
+		{name: "negative rejected", in: -1, ok: false},
+		{name: "overflow rejected", in: 256, ok: false},
+	}
+	for _, tc := range tests {
+		got, ok := encodeUCH(tc.in)
+		if ok != tc.ok {
+			t.Fatalf("%s: ok=%v want %v", tc.name, ok, tc.ok)
+		}
+		if tc.ok && !bytes.Equal(got, tc.want) {
+			t.Fatalf("%s: got=%v want=%v", tc.name, got, tc.want)
+		}
+	}
+}

@@ -4518,18 +4518,9 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 		}
 	}
 
-	value, err := strconv.ParseFloat(strings.TrimSpace(rawValue), 64)
+	value, err := parseBoilerConfigValue(rawValue, spec)
 	if err != nil {
-		return graphql.BoilerConfigMutationResult{
-			Success: false,
-			Error:   fmt.Sprintf("invalid boiler value %q: %v", rawValue, err),
-		}
-	}
-	if value < spec.min || value > spec.max {
-		return graphql.BoilerConfigMutationResult{
-			Success: false,
-			Error:   fmt.Sprintf("value %.4g out of range [%.4g, %.4g]", value, spec.min, spec.max),
-		}
+		return graphql.BoilerConfigMutationResult{Success: false, Error: err.Error()}
 	}
 
 	p.mu.Lock()
@@ -4559,29 +4550,56 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 	}
 
 	p.mu.Lock()
-	if p.boiler == nil {
-		p.boiler = &vaillantBoilerSnapshot{}
-	}
-	switch fieldName {
-	case "flowsetHcMaxC":
-		p.boiler.FlowsetHcMaxC = cloneFloat64Ptr(&normalizedValue)
-	case "flowsetHwcMaxC":
-		p.boiler.FlowsetHwcMaxC = cloneFloat64Ptr(&normalizedValue)
-	case "partloadHcKW":
-		p.boiler.PartloadHcKW = cloneFloat64Ptr(&normalizedValue)
-	case "partloadHwcKW":
-		p.boiler.PartloadHwcKW = cloneFloat64Ptr(&normalizedValue)
-	}
+	p.boiler = boilerSnapshotWithConfigValue(p.boiler, fieldName, normalizedValue)
 	p.mu.Unlock()
 
 	p.publishBoilerStatus(semanticSnapshotSourceLive)
 	return graphql.BoilerConfigMutationResult{Success: true}
 }
 
+func parseBoilerConfigValue(rawValue string, spec boilerConfigFieldSpec) (float64, error) {
+	value, err := strconv.ParseFloat(strings.TrimSpace(rawValue), 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid boiler value %q: %v", rawValue, err)
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, fmt.Errorf("invalid boiler value %q: finite number required", rawValue)
+	}
+	if value < spec.min || value > spec.max {
+		return 0, fmt.Errorf("value %.4g out of range [%.4g, %.4g]", value, spec.min, spec.max)
+	}
+	return value, nil
+}
+
+func boilerSnapshotWithConfigValue(existing *vaillantBoilerSnapshot, fieldName string, value float64) *vaillantBoilerSnapshot {
+	snapshot := cloneBoilerSnapshot(existing)
+	if snapshot == nil {
+		snapshot = &vaillantBoilerSnapshot{}
+	}
+
+	switch fieldName {
+	case "flowsetHcMaxC":
+		snapshot.FlowsetHcMaxC = cloneFloat64Ptr(&value)
+	case "flowsetHwcMaxC":
+		snapshot.FlowsetHwcMaxC = cloneFloat64Ptr(&value)
+	case "partloadHcKW":
+		snapshot.PartloadHcKW = cloneFloat64Ptr(&value)
+	case "partloadHwcKW":
+		snapshot.PartloadHwcKW = cloneFloat64Ptr(&value)
+	}
+
+	return snapshot
+}
+
 func encodeBoilerConfigPayload(fieldName string, spec boilerConfigFieldSpec, value float64) ([]byte, float64, error) {
 	switch spec.codec {
 	case boilerConfigCodecTempDATA2c:
-		return encodeTempDATA2c(value), value, nil
+		payload := encodeTempDATA2c(value)
+		normalizedValue, ok := decodeDATA2c(payload)
+		if !ok {
+			return nil, 0, fmt.Errorf("invalid boiler value %.4g for %s: data2c normalization failed", value, fieldName)
+		}
+		return payload, normalizedValue, nil
 	case boilerConfigCodecUCH:
 		payload, ok := encodeUCH(value)
 		if !ok {

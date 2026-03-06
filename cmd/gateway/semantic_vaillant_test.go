@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -260,6 +261,14 @@ func TestEncodeBoilerConfigPayload(t *testing.T) {
 			wantValue:   59,
 		},
 		{
+			name:        "temperature field normalizes to wire precision",
+			fieldName:   "flowsetHcMaxC",
+			spec:        boilerConfigFieldSpecs["flowsetHcMaxC"],
+			value:       55.1,
+			wantPayload: []byte{0x71, 0x03},
+			wantValue:   55.0625,
+		},
+		{
 			name:        "partload field uses UCH",
 			fieldName:   "partloadHcKW",
 			spec:        boilerConfigFieldSpecs["partloadHcKW"],
@@ -301,6 +310,92 @@ func TestEncodeBoilerConfigPayload(t *testing.T) {
 				t.Fatalf("encodeBoilerConfigPayload(%q, %.4g) value = %.4g; want %.4g", test.fieldName, test.value, normalizedValue, test.wantValue)
 			}
 		})
+	}
+}
+
+func TestParseBoilerConfigValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		rawValue  string
+		spec      boilerConfigFieldSpec
+		wantValue float64
+		wantErr   string
+	}{
+		{
+			name:      "accepts finite in-range value",
+			rawValue:  "59",
+			spec:      boilerConfigFieldSpecs["flowsetHwcMaxC"],
+			wantValue: 59,
+		},
+		{
+			name:     "rejects nan",
+			rawValue: "NaN",
+			spec:     boilerConfigFieldSpecs["flowsetHcMaxC"],
+			wantErr:  "finite number required",
+		},
+		{
+			name:     "rejects infinity",
+			rawValue: "+Inf",
+			spec:     boilerConfigFieldSpecs["flowsetHcMaxC"],
+			wantErr:  "finite number required",
+		},
+		{
+			name:     "rejects out of range value",
+			rawValue: "85",
+			spec:     boilerConfigFieldSpecs["flowsetHcMaxC"],
+			wantErr:  "out of range",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			value, err := parseBoilerConfigValue(test.rawValue, test.spec)
+			if test.wantErr != "" {
+				if err == nil {
+					t.Fatalf("parseBoilerConfigValue(%q) error = nil; want %q", test.rawValue, test.wantErr)
+				}
+				if !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("parseBoilerConfigValue(%q) error = %q; want substring %q", test.rawValue, err.Error(), test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseBoilerConfigValue(%q) error = %v", test.rawValue, err)
+			}
+			if value != test.wantValue {
+				t.Fatalf("parseBoilerConfigValue(%q) value = %.4g; want %.4g", test.rawValue, value, test.wantValue)
+			}
+		})
+	}
+}
+
+func TestBoilerSnapshotWithConfigValue_ClonesExistingSnapshot(t *testing.T) {
+	t.Parallel()
+
+	existingHc := 75.0
+	existingPartload := 18.0
+	existing := &vaillantBoilerSnapshot{
+		FlowsetHcMaxC: cloneFloat64Ptr(&existingHc),
+		PartloadHcKW:  cloneFloat64Ptr(&existingPartload),
+	}
+
+	updated := boilerSnapshotWithConfigValue(existing, "flowsetHcMaxC", 55.0625)
+	if updated == existing {
+		t.Fatal("boilerSnapshotWithConfigValue returned the original snapshot pointer")
+	}
+	if existing.FlowsetHcMaxC == nil || *existing.FlowsetHcMaxC != 75 {
+		t.Fatalf("existing FlowsetHcMaxC = %v; want 75", existing.FlowsetHcMaxC)
+	}
+	if updated.FlowsetHcMaxC == nil || math.Abs(*updated.FlowsetHcMaxC-55.0625) > 0 {
+		t.Fatalf("updated FlowsetHcMaxC = %v; want 55.0625", updated.FlowsetHcMaxC)
+	}
+	if updated.PartloadHcKW == nil || *updated.PartloadHcKW != 18 {
+		t.Fatalf("updated PartloadHcKW = %v; want 18", updated.PartloadHcKW)
 	}
 }
 

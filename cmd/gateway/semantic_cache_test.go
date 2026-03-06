@@ -338,7 +338,8 @@ func TestVaillantSemanticPoller_HydrateFromCache_SeedsInternalState(t *testing.T
 	target := 22.0
 	dhwCurrent := 48.2
 	dhwTarget := 50.0
-	assocCircuit := 2
+	assocCircuit := 1
+	roomTemperatureZoneMapping := 2
 	snapshot := semanticCacheSnapshot{
 		Zones: []graphql.Zone{
 			{
@@ -348,12 +349,13 @@ func TestVaillantSemanticPoller_HydrateFromCache_SeedsInternalState(t *testing.T
 					CurrentTempC: &current,
 				},
 				Config: graphql.ZoneConfig{
-					OperatingMode:     "heat",
-					Preset:            "manual",
-					AllowedModes:      []string{"off", "auto", "heat"},
-					TargetTempC:       &target,
-					CircuitType:       "underfloor",
-					AssociatedCircuit: &assocCircuit,
+					OperatingMode:              "heat",
+					Preset:                     "manual",
+					AllowedModes:               []string{"off", "auto", "heat"},
+					TargetTempC:                &target,
+					CircuitType:                "underfloor",
+					AssociatedCircuit:          &assocCircuit,
+					RoomTemperatureZoneMapping: &roomTemperatureZoneMapping,
 				},
 			},
 		},
@@ -381,8 +383,11 @@ func TestVaillantSemanticPoller_HydrateFromCache_SeedsInternalState(t *testing.T
 	if zone.Name != "Etaj" || zone.OperatingMode != "heat" || zone.Preset != "manual" {
 		t.Fatalf("hydrated zone = %#v; unexpected core fields", zone)
 	}
-	if zone.ConfigurationAssociatedCircuitRaw == nil || *zone.ConfigurationAssociatedCircuitRaw != 2 {
-		t.Fatalf("hydrated zone circuit index = %#v; want 2", zone.ConfigurationAssociatedCircuitRaw)
+	if zone.ConfigurationAssociatedCircuitRaw == nil || *zone.ConfigurationAssociatedCircuitRaw != 1 {
+		t.Fatalf("hydrated zone circuit index = %#v; want 1", zone.ConfigurationAssociatedCircuitRaw)
+	}
+	if zone.ConfigurationRoomTemperatureZoneMappingRaw == nil || *zone.ConfigurationRoomTemperatureZoneMappingRaw != 2 {
+		t.Fatalf("hydrated zone room mapping = %#v; want 2", zone.ConfigurationRoomTemperatureZoneMappingRaw)
 	}
 	if poller.dhw == nil || poller.dhw.OperatingMode != "auto" || poller.dhw.Preset != "schedule" {
 		t.Fatalf("poller.dhw = %#v; want hydrated dhw state", poller.dhw)

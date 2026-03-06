@@ -12,12 +12,13 @@ type ZoneState struct {
 }
 
 type ZoneConfig struct {
-	OperatingMode     string
-	Preset            string
-	TargetTempC       *float64
-	AllowedModes      []string
-	CircuitType       string
-	AssociatedCircuit *int
+	OperatingMode              string
+	Preset                     string
+	TargetTempC                *float64
+	AllowedModes               []string
+	CircuitType                string
+	AssociatedCircuit          *int
+	RoomTemperatureZoneMapping *int
 }
 
 type Zone struct {

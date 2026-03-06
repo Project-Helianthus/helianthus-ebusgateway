@@ -198,6 +198,19 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return *config.AssociatedCircuit, nil
 				},
 			},
+			"roomTemperatureZoneMapping": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(ZoneConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.RoomTemperatureZoneMapping == nil {
+						return nil, nil
+					}
+					return *config.RoomTemperatureZoneMapping, nil
+				},
+			},
 		},
 	})
 

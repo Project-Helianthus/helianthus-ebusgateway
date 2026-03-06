@@ -360,12 +360,13 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 							ValvePositionPct:   zone.State.ValvePositionPct,
 						},
 						Config: portal.SemanticZoneConfig{
-							OperatingMode:     zone.Config.OperatingMode,
-							Preset:            zone.Config.Preset,
-							TargetTempC:       zone.Config.TargetTempC,
-							AllowedModes:      zone.Config.AllowedModes,
-							CircuitType:       zone.Config.CircuitType,
-							AssociatedCircuit: zone.Config.AssociatedCircuit,
+							OperatingMode:              zone.Config.OperatingMode,
+							Preset:                     zone.Config.Preset,
+							TargetTempC:                zone.Config.TargetTempC,
+							AllowedModes:               zone.Config.AllowedModes,
+							CircuitType:                zone.Config.CircuitType,
+							AssociatedCircuit:          zone.Config.AssociatedCircuit,
+							RoomTemperatureZoneMapping: zone.Config.RoomTemperatureZoneMapping,
 						},
 					})
 				}

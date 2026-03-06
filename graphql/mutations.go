@@ -48,6 +48,10 @@ type BoilerConfigMutationResult struct {
 	Error   string
 }
 
+type BoilerConfigWriter interface {
+	SetBoilerConfig(ctx context.Context, fieldName string, rawValue string) BoilerConfigMutationResult
+}
+
 type ConfigMutationResult struct {
 	Success bool
 	Error   string
@@ -118,7 +122,7 @@ func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *
 
 	var mutationType *graphqlgo.Object
 	if registry != nil && invoker != nil {
-		mutationType = buildMutationType(registry, invoker)
+		mutationType = buildMutationType(registry, invoker, builder.boilerConfigWriter())
 	}
 
 	var subscriptionType *graphqlgo.Object
@@ -146,7 +150,7 @@ func NewInvokeHandler(builder *Builder, registry InvokeRegistry, invoker Invoker
 	}), nil
 }
 
-func buildMutationType(registry InvokeRegistry, invoker Invoker) *graphqlgo.Object {
+func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter) *graphqlgo.Object {
 	jsonScalar := jsonScalarType()
 	errorType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "InvokeError",
@@ -301,6 +305,11 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker) *graphqlgo.Obje
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if boilerWriter != nil {
+						fieldName, _ := params.Args["field"].(string)
+						fieldValue, _ := params.Args["value"].(string)
+						return boilerWriter.SetBoilerConfig(params.Context, fieldName, fieldValue), nil
+					}
 					return boilerConfigUnsupportedResult(), nil
 				},
 			},

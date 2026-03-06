@@ -139,17 +139,47 @@ type BoilerState struct {
 	FlowTemperatureC         *float64
 	ReturnTemperatureC       *float64
 	CentralHeatingPumpActive *bool
+	WaterPressureBar         *float64
+	ExternalPumpActive       *bool
+	CirculationPumpActive    *bool
+	GasValveActive           *bool
+	FlameActive              *bool
+	DiverterValvePositionPct *float64
+	FanSpeedRpm              *int
+	TargetFanSpeedRpm        *int
+	IonisationVoltageUa      *float64
+	DhwWaterFlowLpm          *float64
+	DhwDemandActive          *bool
+	HeatingSwitchActive      *bool
+	StorageLoadPumpPct       *float64
+	ModulationPct            *float64
+	PrimaryCircuitFlowLpm    *float64
+	FlowTempDesiredC         *float64
+	DhwTempDesiredC          *float64
+	StateNumber              *int
 	DhwTemperatureC          *float64
 	DhwTargetTemperatureC    *float64
 }
 
 type BoilerConfig struct {
 	DhwOperatingMode *string
+	FlowsetHcMaxC    *float64
+	FlowsetHwcMaxC   *float64
+	PartloadHcKW     *float64
+	PartloadHwcKW    *float64
 }
 
 type BoilerDiagnostics struct {
-	HeatingStatusRaw *int
-	DhwStatusRaw     *int
+	HeatingStatusRaw         *int
+	DhwStatusRaw             *int
+	CentralHeatingHours      *float64
+	DhwHours                 *float64
+	CentralHeatingStarts     *int
+	DhwStarts                *int
+	PumpHours                *float64
+	FanHours                 *float64
+	DeactivationsIFC         *int
+	DeactivationsTemplimiter *int
 }
 
 type BoilerStatus struct {

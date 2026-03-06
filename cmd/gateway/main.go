@@ -76,7 +76,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
-	startVaillantSemanticPolling(ctx, cfg, gateway, semanticRuntime.Provider(), hub)
+	semanticPoller := startVaillantSemanticPolling(ctx, cfg, gateway, semanticRuntime.Provider(), hub)
+	if semanticPoller != nil {
+		builder.SetBoilerConfigWriter(semanticPoller)
+	}
 
 	if err := builder.Start(ctx); err != nil {
 		return err

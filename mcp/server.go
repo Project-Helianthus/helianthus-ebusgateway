@@ -105,14 +105,52 @@ type BoilerState struct {
 	FlowTemperatureC         *float64 `json:"flow_temperature_c,omitempty"`
 	ReturnTemperatureC       *float64 `json:"return_temperature_c,omitempty"`
 	CentralHeatingPumpActive *bool    `json:"central_heating_pump_active,omitempty"`
+	WaterPressureBar         *float64 `json:"water_pressure_bar,omitempty"`
+	ExternalPumpActive       *bool    `json:"external_pump_active,omitempty"`
+	CirculationPumpActive    *bool    `json:"circulation_pump_active,omitempty"`
+	GasValveActive           *bool    `json:"gas_valve_active,omitempty"`
+	FlameActive              *bool    `json:"flame_active,omitempty"`
+	DiverterValvePositionPct *float64 `json:"diverter_valve_position_pct,omitempty"`
+	FanSpeedRpm              *int     `json:"fan_speed_rpm,omitempty"`
+	TargetFanSpeedRpm        *int     `json:"target_fan_speed_rpm,omitempty"`
+	IonisationVoltageUa      *float64 `json:"ionisation_voltage_ua,omitempty"`
+	DhwWaterFlowLpm          *float64 `json:"dhw_water_flow_lpm,omitempty"`
+	DhwDemandActive          *bool    `json:"dhw_demand_active,omitempty"`
+	HeatingSwitchActive      *bool    `json:"heating_switch_active,omitempty"`
+	StorageLoadPumpPct       *float64 `json:"storage_load_pump_pct,omitempty"`
+	ModulationPct            *float64 `json:"modulation_pct,omitempty"`
+	PrimaryCircuitFlowLpm    *float64 `json:"primary_circuit_flow_lpm,omitempty"`
+	FlowTempDesiredC         *float64 `json:"flow_temp_desired_c,omitempty"`
+	DhwTempDesiredC          *float64 `json:"dhw_temp_desired_c,omitempty"`
+	StateNumber              *int     `json:"state_number,omitempty"`
+	DhwTemperatureC          *float64 `json:"dhw_temperature_c,omitempty"`
+	DhwTargetTemperatureC    *float64 `json:"dhw_target_temperature_c,omitempty"`
+}
+
+type BoilerConfig struct {
+	DhwOperatingMode *string  `json:"dhw_operating_mode,omitempty"`
+	FlowsetHcMaxC    *float64 `json:"flowset_hc_max_c,omitempty"`
+	FlowsetHwcMaxC   *float64 `json:"flowset_hwc_max_c,omitempty"`
+	PartloadHcKW     *float64 `json:"partload_hc_kw,omitempty"`
+	PartloadHwcKW    *float64 `json:"partload_hwc_kw,omitempty"`
 }
 
 type BoilerDiagnostics struct {
-	HeatingStatusRaw *int `json:"heating_status_raw,omitempty"`
+	HeatingStatusRaw         *int     `json:"heating_status_raw,omitempty"`
+	DhwStatusRaw             *int     `json:"dhw_status_raw,omitempty"`
+	CentralHeatingHours      *float64 `json:"central_heating_hours,omitempty"`
+	DhwHours                 *float64 `json:"dhw_hours,omitempty"`
+	CentralHeatingStarts     *int     `json:"central_heating_starts,omitempty"`
+	DhwStarts                *int     `json:"dhw_starts,omitempty"`
+	PumpHours                *float64 `json:"pump_hours,omitempty"`
+	FanHours                 *float64 `json:"fan_hours,omitempty"`
+	DeactivationsIFC         *int     `json:"deactivations_ifc,omitempty"`
+	DeactivationsTemplimiter *int     `json:"deactivations_templimiter,omitempty"`
 }
 
 type BoilerStatus struct {
 	State       *BoilerState       `json:"state,omitempty"`
+	Config      *BoilerConfig      `json:"config,omitempty"`
 	Diagnostics *BoilerDiagnostics `json:"diagnostics,omitempty"`
 }
 
@@ -1943,13 +1981,87 @@ func cloneMCPBoilerStatus(status *BoilerStatus) *BoilerStatus {
 	cp := *status
 	if cp.State != nil {
 		s := *cp.State
+		s.FlowTemperatureC = cloneFloatPointer(s.FlowTemperatureC)
+		s.ReturnTemperatureC = cloneFloatPointer(s.ReturnTemperatureC)
+		s.CentralHeatingPumpActive = cloneBoolPointer(s.CentralHeatingPumpActive)
+		s.WaterPressureBar = cloneFloatPointer(s.WaterPressureBar)
+		s.ExternalPumpActive = cloneBoolPointer(s.ExternalPumpActive)
+		s.CirculationPumpActive = cloneBoolPointer(s.CirculationPumpActive)
+		s.GasValveActive = cloneBoolPointer(s.GasValveActive)
+		s.FlameActive = cloneBoolPointer(s.FlameActive)
+		s.DiverterValvePositionPct = cloneFloatPointer(s.DiverterValvePositionPct)
+		s.FanSpeedRpm = cloneIntPointer(s.FanSpeedRpm)
+		s.TargetFanSpeedRpm = cloneIntPointer(s.TargetFanSpeedRpm)
+		s.IonisationVoltageUa = cloneFloatPointer(s.IonisationVoltageUa)
+		s.DhwWaterFlowLpm = cloneFloatPointer(s.DhwWaterFlowLpm)
+		s.DhwDemandActive = cloneBoolPointer(s.DhwDemandActive)
+		s.HeatingSwitchActive = cloneBoolPointer(s.HeatingSwitchActive)
+		s.StorageLoadPumpPct = cloneFloatPointer(s.StorageLoadPumpPct)
+		s.ModulationPct = cloneFloatPointer(s.ModulationPct)
+		s.PrimaryCircuitFlowLpm = cloneFloatPointer(s.PrimaryCircuitFlowLpm)
+		s.FlowTempDesiredC = cloneFloatPointer(s.FlowTempDesiredC)
+		s.DhwTempDesiredC = cloneFloatPointer(s.DhwTempDesiredC)
+		s.StateNumber = cloneIntPointer(s.StateNumber)
+		s.DhwTemperatureC = cloneFloatPointer(s.DhwTemperatureC)
+		s.DhwTargetTemperatureC = cloneFloatPointer(s.DhwTargetTemperatureC)
 		cp.State = &s
+	}
+	if cp.Config != nil {
+		c := *cp.Config
+		c.DhwOperatingMode = cloneStringPointer(c.DhwOperatingMode)
+		c.FlowsetHcMaxC = cloneFloatPointer(c.FlowsetHcMaxC)
+		c.FlowsetHwcMaxC = cloneFloatPointer(c.FlowsetHwcMaxC)
+		c.PartloadHcKW = cloneFloatPointer(c.PartloadHcKW)
+		c.PartloadHwcKW = cloneFloatPointer(c.PartloadHwcKW)
+		cp.Config = &c
 	}
 	if cp.Diagnostics != nil {
 		d := *cp.Diagnostics
+		d.HeatingStatusRaw = cloneIntPointer(d.HeatingStatusRaw)
+		d.DhwStatusRaw = cloneIntPointer(d.DhwStatusRaw)
+		d.CentralHeatingHours = cloneFloatPointer(d.CentralHeatingHours)
+		d.DhwHours = cloneFloatPointer(d.DhwHours)
+		d.CentralHeatingStarts = cloneIntPointer(d.CentralHeatingStarts)
+		d.DhwStarts = cloneIntPointer(d.DhwStarts)
+		d.PumpHours = cloneFloatPointer(d.PumpHours)
+		d.FanHours = cloneFloatPointer(d.FanHours)
+		d.DeactivationsIFC = cloneIntPointer(d.DeactivationsIFC)
+		d.DeactivationsTemplimiter = cloneIntPointer(d.DeactivationsTemplimiter)
 		cp.Diagnostics = &d
 	}
 	return &cp
+}
+
+func cloneBoolPointer(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	v := *value
+	return &v
+}
+
+func cloneFloatPointer(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	v := *value
+	return &v
+}
+
+func cloneIntPointer(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	v := *value
+	return &v
+}
+
+func cloneStringPointer(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	v := *value
+	return &v
 }
 
 func cloneMCPSolarStatus(status *SolarStatus) *SolarStatus {

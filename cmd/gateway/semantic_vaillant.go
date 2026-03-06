@@ -3435,7 +3435,7 @@ func (p *vaillantSemanticPoller) readCylinderSnapshots(ctx context.Context) (map
 			readAny = true
 			incoming.TemperatureC = decodeB524Float32FromRaw(raw)
 		}
-		if instanceRead && hasLiveCylinderEvidence(incoming) {
+		if instanceRead {
 			out[instance] = incoming
 		}
 	}

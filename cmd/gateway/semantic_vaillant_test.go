@@ -1382,6 +1382,39 @@ func TestPublishFM5Semantic_SkipsConfigOnlyCylinderWithoutTemperature(t *testing
 	}
 }
 
+func TestMergeCylinderSnapshotMapNonDestructive_PreservesTemperatureWhileRefreshingConfig(t *testing.T) {
+	t.Parallel()
+
+	oldTemp := 49.0
+	oldSetpoint := 55.0
+	newSetpoint := 60.0
+	existing := map[byte]*vaillantCylinderSnapshot{
+		0x00: {
+			Instance:     0x00,
+			TemperatureC: &oldTemp,
+			MaxSetpointC: &oldSetpoint,
+		},
+	}
+	incoming := map[byte]*vaillantCylinderSnapshot{
+		0x00: {
+			Instance:     0x00,
+			MaxSetpointC: &newSetpoint,
+		},
+	}
+
+	merged := mergeCylinderSnapshotMapNonDestructive(existing, incoming)
+	snapshot := merged[0x00]
+	if snapshot == nil {
+		t.Fatal("merged[0x00] = nil; want preserved cylinder snapshot")
+	}
+	if snapshot.TemperatureC == nil || *snapshot.TemperatureC != oldTemp {
+		t.Fatalf("merged temperature = %#v; want preserved %v", snapshot.TemperatureC, oldTemp)
+	}
+	if snapshot.MaxSetpointC == nil || *snapshot.MaxSetpointC != newSetpoint {
+		t.Fatalf("merged max setpoint = %#v; want refreshed %v", snapshot.MaxSetpointC, newSetpoint)
+	}
+}
+
 func TestVaillantSemanticPoller_DHWTransientCacheFailurePreservesLastKnown(t *testing.T) {
 	t.Parallel()
 

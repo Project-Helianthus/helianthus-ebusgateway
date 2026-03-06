@@ -2204,6 +2204,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return builder.semanticProvider().DHW(), nil
 				},
 			},
+			"energyTotals": &graphqlgo.Field{
+				Type: types.energyTotals,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().EnergyTotals(), nil
+				},
+			},
 			"circuits": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.circuitStatusType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

@@ -1,6 +1,9 @@
 package main
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"math"
+)
 
 func decodeDATA2c(b []byte) (float64, bool) {
 	if len(b) < 2 {
@@ -67,6 +70,17 @@ func decodePercent0(b []byte) (uint8, bool) {
 		return 0, false
 	}
 	return b[0], true
+}
+
+func encodeUCH(v float64) ([]byte, bool) {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return nil, false
+	}
+	rounded := math.Round(v)
+	if math.Abs(v-rounded) > 1e-9 || rounded < 0 || rounded > math.MaxUint8 {
+		return nil, false
+	}
+	return []byte{byte(rounded)}, true
 }
 
 func encodeTempDATA2c(v float64) []byte {

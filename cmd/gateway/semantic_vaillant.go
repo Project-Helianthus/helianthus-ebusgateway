@@ -917,6 +917,26 @@ func (p *vaillantSemanticPoller) boilerStatusTierTask(tier boilerStatusTier) fun
 	}
 }
 
+func (p *vaillantSemanticPoller) enqueueBoilerStatusPriming() {
+	if p == nil {
+		return
+	}
+	for _, schedule := range p.boilerStatusTierSchedules() {
+		p.enqueueTask(schedule.priority, p.boilerStatusTierTask(schedule.tier))
+	}
+}
+
+func (p *vaillantSemanticPoller) enqueueControllerSemanticPriming() {
+	if p == nil {
+		return
+	}
+	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshCircuits)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshSystem)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshRadioDevices)
+	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
+}
+
 func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	if p == nil {
 		return
@@ -931,13 +951,8 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshCircuits)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshSystem)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshRadioDevices)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
-	for _, schedule := range p.boilerStatusTierSchedules() {
-		p.enqueueTask(schedule.priority, p.boilerStatusTierTask(schedule.tier))
-	}
+	p.enqueueControllerSemanticPriming()
+	p.enqueueBoilerStatusPriming()
 
 	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
 	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
@@ -1063,6 +1078,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	if !ok {
 		p.mu.Lock()
 		prev := p.regulatorCapability
+		prevController := p.controller
 		prevBoilerAddress := p.boilerAddress
 		p.controller = 0
 		p.boilerAddress = boilerAddress
@@ -1079,8 +1095,14 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		if regCap != prev {
 			log.Printf("semantic_regulator_capability capability=%s", regCap.String())
 		}
+		if prevController != 0 {
+			log.Printf("semantic_controller_discovery address=0x00 source=missing")
+		}
 		if boilerAddress != prevBoilerAddress && boilerAddress != 0 && boilerAddress != 0x08 {
 			log.Printf("semantic_boiler_discovery address=0x%02x source=nonstandard", boilerAddress)
+		}
+		if boilerAddress != prevBoilerAddress && boilerAddress != 0 {
+			p.enqueueBoilerStatusPriming()
 		}
 		p.publishZones(semanticSnapshotSourceCache)
 		p.publishDHW(semanticSnapshotSourceCache)
@@ -1092,6 +1114,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 
 	p.mu.Lock()
 	prev := p.regulatorCapability
+	prevController := p.controller
 	prevBoilerAddress := p.boilerAddress
 	p.controller = controller
 	p.boilerAddress = boilerAddress
@@ -1100,8 +1123,15 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	if regCap != prev {
 		log.Printf("semantic_regulator_capability capability=%s", regCap.String())
 	}
+	if controller != prevController && controller != 0 {
+		log.Printf("semantic_controller_discovery address=0x%02x", controller)
+		p.enqueueControllerSemanticPriming()
+	}
 	if boilerAddress != prevBoilerAddress && boilerAddress != 0 && boilerAddress != 0x08 {
 		log.Printf("semantic_boiler_discovery address=0x%02x source=nonstandard", boilerAddress)
+	}
+	if boilerAddress != prevBoilerAddress && boilerAddress != 0 {
+		p.enqueueBoilerStatusPriming()
 	}
 
 	present := make(map[byte]bool, 4)
@@ -2340,6 +2370,7 @@ const (
 	boilerB509RegPartloadHcKW          = uint16(0x0704)
 	boilerB509RegPartloadHwcKW         = uint16(0x0804)
 	boilerB509RegFlowsetHcMaxC         = uint16(0x0E04)
+	boilerB509RegFlowsetHcMaxCFallback = uint16(0xA500)
 	boilerB509RegFlowsetHwcMaxC        = uint16(0x0F04)
 	boilerB509RegPumpHours             = uint16(0x1400)
 	boilerB509RegFlowTemperature       = uint16(0x1800)
@@ -2660,19 +2691,19 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB509(ctx context.Context, bo
 			updated = true
 		}
 	case boilerStatusTierMedium:
-		if value := p.readB509DATA2c(ctx, boilerAddress, boilerB509RegFlowsetHcMaxC); value != nil {
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "flowsetHcMaxC"); value != nil {
 			snapshot.FlowsetHcMaxC = value
 			updated = true
 		}
-		if value := p.readB509DATA2c(ctx, boilerAddress, boilerB509RegFlowsetHwcMaxC); value != nil {
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "flowsetHwcMaxC"); value != nil {
 			snapshot.FlowsetHwcMaxC = value
 			updated = true
 		}
-		if value := p.readB509DATA2c(ctx, boilerAddress, boilerB509RegPartloadHcKW); value != nil {
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "partloadHcKW"); value != nil {
 			snapshot.PartloadHcKW = value
 			updated = true
 		}
-		if value := p.readB509DATA2c(ctx, boilerAddress, boilerB509RegPartloadHwcKW); value != nil {
+		if value := p.readB509BoilerConfigFloat(ctx, boilerAddress, "partloadHwcKW"); value != nil {
 			snapshot.PartloadHwcKW = value
 			updated = true
 		}
@@ -4449,16 +4480,24 @@ func (p *vaillantSemanticPoller) writeB509Value(ctx context.Context, target byte
 }
 
 type boilerConfigFieldSpec struct {
-	addr uint16
-	min  float64
-	max  float64
+	addrs []uint16
+	min   float64
+	max   float64
+	codec boilerConfigCodec
 }
 
+type boilerConfigCodec uint8
+
+const (
+	boilerConfigCodecTempDATA2c boilerConfigCodec = iota
+	boilerConfigCodecUCH
+)
+
 var boilerConfigFieldSpecs = map[string]boilerConfigFieldSpec{
-	"flowsetHcMaxC":  {addr: boilerB509RegFlowsetHcMaxC, min: 20, max: 80},
-	"flowsetHwcMaxC": {addr: boilerB509RegFlowsetHwcMaxC, min: 30, max: 65},
-	"partloadHcKW":   {addr: boilerB509RegPartloadHcKW, min: 0, max: 40},
-	"partloadHwcKW":  {addr: boilerB509RegPartloadHwcKW, min: 0, max: 40},
+	"flowsetHcMaxC":  {addrs: []uint16{boilerB509RegFlowsetHcMaxC, boilerB509RegFlowsetHcMaxCFallback}, min: 20, max: 80, codec: boilerConfigCodecTempDATA2c},
+	"flowsetHwcMaxC": {addrs: []uint16{boilerB509RegFlowsetHwcMaxC}, min: 30, max: 65, codec: boilerConfigCodecTempDATA2c},
+	"partloadHcKW":   {addrs: []uint16{boilerB509RegPartloadHcKW}, min: 0, max: 40, codec: boilerConfigCodecUCH},
+	"partloadHwcKW":  {addrs: []uint16{boilerB509RegPartloadHwcKW}, min: 0, max: 40, codec: boilerConfigCodecUCH},
 }
 
 func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName string, rawValue string) graphql.BoilerConfigMutationResult {
@@ -4503,11 +4542,15 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 		ctx = context.Background()
 	}
 
-	payload := encodeTempDATA2c(value)
-	if err := p.writeB509Value(ctx, boilerAddress, spec.addr, payload); err != nil {
+	payload, normalizedValue, err := encodeBoilerConfigPayload(fieldName, spec, value)
+	if err != nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: err.Error()}
+	}
+	addr := p.resolveB509BoilerConfigAddr(ctx, boilerAddress, spec)
+	if err := p.writeB509Value(ctx, boilerAddress, addr, payload); err != nil {
 		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
 	}
-	readback, ok := p.readB509Value(ctx, boilerAddress, spec.addr)
+	readback, ok := p.readB509Value(ctx, boilerAddress, addr)
 	if !ok || len(readback) < len(payload) {
 		return graphql.BoilerConfigMutationResult{Success: false, Error: "b509 write confirm failed: read-back unavailable"}
 	}
@@ -4521,18 +4564,80 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 	}
 	switch fieldName {
 	case "flowsetHcMaxC":
-		p.boiler.FlowsetHcMaxC = cloneFloat64Ptr(&value)
+		p.boiler.FlowsetHcMaxC = cloneFloat64Ptr(&normalizedValue)
 	case "flowsetHwcMaxC":
-		p.boiler.FlowsetHwcMaxC = cloneFloat64Ptr(&value)
+		p.boiler.FlowsetHwcMaxC = cloneFloat64Ptr(&normalizedValue)
 	case "partloadHcKW":
-		p.boiler.PartloadHcKW = cloneFloat64Ptr(&value)
+		p.boiler.PartloadHcKW = cloneFloat64Ptr(&normalizedValue)
 	case "partloadHwcKW":
-		p.boiler.PartloadHwcKW = cloneFloat64Ptr(&value)
+		p.boiler.PartloadHwcKW = cloneFloat64Ptr(&normalizedValue)
 	}
 	p.mu.Unlock()
 
 	p.publishBoilerStatus(semanticSnapshotSourceLive)
 	return graphql.BoilerConfigMutationResult{Success: true}
+}
+
+func encodeBoilerConfigPayload(fieldName string, spec boilerConfigFieldSpec, value float64) ([]byte, float64, error) {
+	switch spec.codec {
+	case boilerConfigCodecTempDATA2c:
+		return encodeTempDATA2c(value), value, nil
+	case boilerConfigCodecUCH:
+		payload, ok := encodeUCH(value)
+		if !ok {
+			return nil, 0, fmt.Errorf("invalid boiler value %.4g for %s: whole-number kW required", value, fieldName)
+		}
+		return payload, float64(payload[0]), nil
+	default:
+		return nil, 0, fmt.Errorf("unsupported boiler field codec for %s", fieldName)
+	}
+}
+
+func (p *vaillantSemanticPoller) readB509BoilerConfigFloat(ctx context.Context, target byte, fieldName string) *float64 {
+	spec, ok := boilerConfigFieldSpecs[fieldName]
+	if !ok {
+		return nil
+	}
+	for _, addr := range spec.addrs {
+		raw, ok := p.readB509Value(ctx, target, addr)
+		if !ok {
+			continue
+		}
+		value, ok := decodeBoilerConfigRaw(spec, raw)
+		if !ok {
+			continue
+		}
+		return &value
+	}
+	return nil
+}
+
+func (p *vaillantSemanticPoller) resolveB509BoilerConfigAddr(ctx context.Context, target byte, spec boilerConfigFieldSpec) uint16 {
+	for _, addr := range spec.addrs {
+		raw, ok := p.readB509Value(ctx, target, addr)
+		if !ok {
+			continue
+		}
+		if _, ok := decodeBoilerConfigRaw(spec, raw); ok {
+			return addr
+		}
+	}
+	if len(spec.addrs) == 0 {
+		return 0
+	}
+	return spec.addrs[0]
+}
+
+func decodeBoilerConfigRaw(spec boilerConfigFieldSpec, raw []byte) (float64, bool) {
+	switch spec.codec {
+	case boilerConfigCodecTempDATA2c:
+		return decodeDATA2c(raw)
+	case boilerConfigCodecUCH:
+		value, ok := decodeUCH(raw)
+		return float64(value), ok
+	default:
+		return 0, false
+	}
 }
 
 func (p *vaillantSemanticPoller) readB509DATA2b(ctx context.Context, target byte, addr uint16) *float64 {
@@ -4764,9 +4869,6 @@ func buildB509WriteSelector(addr uint16, value []byte) []byte {
 
 func parseB509ReadPayload(payload []byte, addr uint16) ([]byte, bool) {
 	if len(payload) == 0 {
-		return nil, false
-	}
-	if len(payload) == 1 && payload[0] == 0x00 {
 		return nil, false
 	}
 

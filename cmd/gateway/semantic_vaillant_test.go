@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -158,6 +159,206 @@ func TestParseB524ReadPayload(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseB509ReadPayload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload []byte
+		addr    uint16
+		want    []byte
+		ok      bool
+	}{
+		{
+			name:    "accepts single byte zero payload",
+			payload: []byte{0x00},
+			addr:    0x4400,
+			want:    []byte{0x00},
+			ok:      true,
+		},
+		{
+			name:    "accepts single byte nonzero payload",
+			payload: []byte{0x01},
+			addr:    0x7B00,
+			want:    []byte{0x01},
+			ok:      true,
+		},
+		{
+			name:    "strips opcode header",
+			payload: []byte{0x0D, 0x44, 0x00, 0x00},
+			addr:    0x4400,
+			want:    []byte{0x00},
+			ok:      true,
+		},
+		{
+			name:    "strips compact address header",
+			payload: []byte{0x44, 0x00, 0x00},
+			addr:    0x4400,
+			want:    []byte{0x00},
+			ok:      true,
+		},
+		{
+			name:    "rejects empty payload",
+			payload: nil,
+			addr:    0x4400,
+			ok:      false,
+		},
+		{
+			name:    "rejects header only opcode payload",
+			payload: []byte{0x0D, 0x44, 0x00},
+			addr:    0x4400,
+			ok:      false,
+		},
+		{
+			name:    "rejects header only compact payload",
+			payload: []byte{0x44, 0x00},
+			addr:    0x4400,
+			ok:      false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := parseB509ReadPayload(test.payload, test.addr)
+			if ok != test.ok {
+				t.Fatalf("ok = %v; want %v", ok, test.ok)
+			}
+			if !test.ok {
+				return
+			}
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("parseB509ReadPayload(%x, 0x%04x) = %x; want %x", test.payload, test.addr, got, test.want)
+			}
+		})
+	}
+}
+
+func TestEncodeBoilerConfigPayload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		fieldName   string
+		spec        boilerConfigFieldSpec
+		value       float64
+		wantPayload []byte
+		wantValue   float64
+		wantErr     string
+	}{
+		{
+			name:        "temperature field uses DATA2c",
+			fieldName:   "flowsetHwcMaxC",
+			spec:        boilerConfigFieldSpecs["flowsetHwcMaxC"],
+			value:       59,
+			wantPayload: []byte{0xB0, 0x03},
+			wantValue:   59,
+		},
+		{
+			name:        "partload field uses UCH",
+			fieldName:   "partloadHcKW",
+			spec:        boilerConfigFieldSpecs["partloadHcKW"],
+			value:       18,
+			wantPayload: []byte{0x12},
+			wantValue:   18,
+		},
+		{
+			name:      "fractional partload rejected",
+			fieldName: "partloadHwcKW",
+			spec:      boilerConfigFieldSpecs["partloadHwcKW"],
+			value:     18.5,
+			wantErr:   "whole-number kW required",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			payload, normalizedValue, err := encodeBoilerConfigPayload(test.fieldName, test.spec, test.value)
+			if test.wantErr != "" {
+				if err == nil {
+					t.Fatalf("encodeBoilerConfigPayload(%q, %.4g) error = nil; want %q", test.fieldName, test.value, test.wantErr)
+				}
+				if !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("encodeBoilerConfigPayload(%q, %.4g) error = %q; want substring %q", test.fieldName, test.value, err.Error(), test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("encodeBoilerConfigPayload(%q, %.4g) error = %v", test.fieldName, test.value, err)
+			}
+			if !slices.Equal(payload, test.wantPayload) {
+				t.Fatalf("encodeBoilerConfigPayload(%q, %.4g) payload = %x; want %x", test.fieldName, test.value, payload, test.wantPayload)
+			}
+			if normalizedValue != test.wantValue {
+				t.Fatalf("encodeBoilerConfigPayload(%q, %.4g) value = %.4g; want %.4g", test.fieldName, test.value, normalizedValue, test.wantValue)
+			}
+		})
+	}
+}
+
+func TestDecodeBoilerConfigRaw(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		spec      boilerConfigFieldSpec
+		raw       []byte
+		wantValue float64
+		wantOK    bool
+	}{
+		{
+			name:      "temperature register decodes data2c",
+			spec:      boilerConfigFieldSpecs["flowsetHwcMaxC"],
+			raw:       []byte{0xB0, 0x03},
+			wantValue: 59,
+			wantOK:    true,
+		},
+		{
+			name:      "power register decodes uch",
+			spec:      boilerConfigFieldSpecs["partloadHwcKW"],
+			raw:       []byte{0x16},
+			wantValue: 22,
+			wantOK:    true,
+		},
+		{
+			name:   "temperature register rejects one byte payload",
+			spec:   boilerConfigFieldSpecs["flowsetHcMaxC"],
+			raw:    []byte{0xF0},
+			wantOK: false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			value, ok := decodeBoilerConfigRaw(test.spec, test.raw)
+			if ok != test.wantOK {
+				t.Fatalf("decodeBoilerConfigRaw(%q, %x) ok = %v; want %v", test.name, test.raw, ok, test.wantOK)
+			}
+			if ok && value != test.wantValue {
+				t.Fatalf("decodeBoilerConfigRaw(%q, %x) value = %.4g; want %.4g", test.name, test.raw, value, test.wantValue)
+			}
+		})
+	}
+}
+
+func TestFlowsetHcMaxSpecIncludesFallbackAddress(t *testing.T) {
+	t.Parallel()
+
+	spec := boilerConfigFieldSpecs["flowsetHcMaxC"]
+	want := []uint16{boilerB509RegFlowsetHcMaxC, boilerB509RegFlowsetHcMaxCFallback}
+	if !slices.Equal(spec.addrs, want) {
+		t.Fatalf("flowsetHcMaxC addrs = %#v; want %#v", spec.addrs, want)
 	}
 }
 
@@ -431,6 +632,86 @@ func TestNewVaillantSemanticPoller_BoilerTierCadence(t *testing.T) {
 		if schedule.priority != test.priority {
 			t.Fatalf("tier %v priority = %v; want %v", test.tier, schedule.priority, test.priority)
 		}
+	}
+}
+
+func TestRefreshDiscovery_PrimesBoilerTiersWhenBoilerAppears(t *testing.T) {
+	t.Parallel()
+
+	taskScheduler := newSemanticTaskScheduler()
+	poller := &vaillantSemanticPoller{
+		reg:            newTestRegistry(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"}),
+		tasks:          taskScheduler,
+		zones:          make(map[byte]*vaillantZoneSnapshot),
+		presence:       make(map[byte]*zonePresenceRecord),
+		circuits:       make(map[byte]*vaillantCircuitSnapshot),
+		radioDevices:   make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		solarCylinders: make(map[byte]*vaillantCylinderSnapshot),
+	}
+
+	poller.refreshDiscovery(context.Background())
+
+	poller.mu.Lock()
+	boilerAddress := poller.boilerAddress
+	poller.mu.Unlock()
+	if boilerAddress != 0x08 {
+		t.Fatalf("boilerAddress = 0x%02x; want 0x08", boilerAddress)
+	}
+
+	taskScheduler.mu.Lock()
+	queueLen := len(taskScheduler.queue)
+	taskScheduler.mu.Unlock()
+	if queueLen != len(poller.boilerStatusTierSchedules()) {
+		t.Fatalf("queued boiler tasks = %d; want %d", queueLen, len(poller.boilerStatusTierSchedules()))
+	}
+
+	poller.refreshDiscovery(context.Background())
+
+	taskScheduler.mu.Lock()
+	queueLen = len(taskScheduler.queue)
+	taskScheduler.mu.Unlock()
+	if queueLen != len(poller.boilerStatusTierSchedules()) {
+		t.Fatalf("queued boiler tasks after unchanged discovery = %d; want unchanged %d", queueLen, len(poller.boilerStatusTierSchedules()))
+	}
+}
+
+func TestRefreshDiscovery_PrimesControllerSemanticTasksWhenControllerAppears(t *testing.T) {
+	t.Parallel()
+
+	taskScheduler := newSemanticTaskScheduler()
+	poller := &vaillantSemanticPoller{
+		reg:            newTestRegistry(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV"}),
+		tasks:          taskScheduler,
+		zones:          make(map[byte]*vaillantZoneSnapshot),
+		presence:       make(map[byte]*zonePresenceRecord),
+		circuits:       make(map[byte]*vaillantCircuitSnapshot),
+		radioDevices:   make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		solarCylinders: make(map[byte]*vaillantCylinderSnapshot),
+	}
+
+	poller.refreshDiscovery(context.Background())
+
+	poller.mu.Lock()
+	controller := poller.controller
+	poller.mu.Unlock()
+	if controller != 0x15 {
+		t.Fatalf("controller = 0x%02x; want 0x15", controller)
+	}
+
+	taskScheduler.mu.Lock()
+	queueLen := len(taskScheduler.queue)
+	taskScheduler.mu.Unlock()
+	if queueLen != 5 {
+		t.Fatalf("queued controller tasks = %d; want 5", queueLen)
+	}
+
+	poller.refreshDiscovery(context.Background())
+
+	taskScheduler.mu.Lock()
+	queueLen = len(taskScheduler.queue)
+	taskScheduler.mu.Unlock()
+	if queueLen != 5 {
+		t.Fatalf("queued controller tasks after unchanged discovery = %d; want unchanged 5", queueLen)
 	}
 }
 

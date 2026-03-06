@@ -74,6 +74,13 @@ function formatInteger(value) {
   return String(Math.round(number));
 }
 
+function formatSeriesYearly(values, digits = 2) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return "n/a";
+  }
+  return values.map((value) => formatFixed(value, digits)).join(", ");
+}
+
 function formatAddress(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -1031,13 +1038,13 @@ class PortalShell extends HTMLElement {
       if (payload.energy_totals) {
         const et = payload.energy_totals;
         rows.push(
-          `<li><strong>Energy today (gas)</strong> <span class="muted-inline">climate=${escapeHtml(formatFixed(et.gas?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.gas?.dhw?.today, 2))}</span></li>`,
+          `<li><strong>Energy (gas)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.gas?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.gas?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.gas?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.gas?.dhw?.yearly))}]</span></li>`,
         );
         rows.push(
-          `<li><strong>Energy today (electric)</strong> <span class="muted-inline">climate=${escapeHtml(formatFixed(et.electric?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.electric?.dhw?.today, 2))}</span></li>`,
+          `<li><strong>Energy (electric)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.electric?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.electric?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.electric?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.electric?.dhw?.yearly))}]</span></li>`,
         );
         rows.push(
-          `<li><strong>Energy today (solar)</strong> <span class="muted-inline">climate=${escapeHtml(formatFixed(et.solar?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.solar?.dhw?.today, 2))}</span></li>`,
+          `<li><strong>Energy (solar)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.solar?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.solar?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.solar?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.solar?.dhw?.yearly))}]</span></li>`,
         );
       }
       if (circuits.length > 0) {

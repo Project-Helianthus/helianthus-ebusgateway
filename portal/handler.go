@@ -1319,6 +1319,7 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		if snapshot.DHW != nil && strings.Contains(strings.ToLower(strings.Join([]string{
 			"dhw",
+			"domestic hot water",
 			snapshot.DHW.Config.OperatingMode,
 			snapshot.DHW.Config.Preset,
 		}, " ")), needle) {
@@ -1328,6 +1329,100 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 				ID:       "dhw",
 				Title:    "Domestic Hot Water",
 				Subtitle: strings.TrimSpace(strings.Join([]string{snapshot.DHW.Config.OperatingMode, snapshot.DHW.Config.Preset}, " / ")),
+			})
+		}
+		if snapshot.Energy != nil && semanticSearchMatch(needle, "energy", "gas", "electric", "solar", "dhw", "climate") {
+			appendResult(SearchResult{
+				Layer:    "semantic",
+				Kind:     "energy",
+				ID:       "energy",
+				Title:    "Energy Totals",
+				Subtitle: "gas / electric / solar",
+			})
+		}
+		if snapshot.BoilerStatus != nil && semanticSearchMatch(needle, "boiler", derefString(snapshot.BoilerStatus.Config.DhwOperatingMode)) {
+			appendResult(SearchResult{
+				Layer:    "semantic",
+				Kind:     "boiler",
+				ID:       "boiler",
+				Title:    "Boiler",
+				Subtitle: strings.TrimSpace(strings.Join([]string{"dhw_mode=" + defaultText(derefString(snapshot.BoilerStatus.Config.DhwOperatingMode), "n/a")}, "")),
+			})
+		}
+		if snapshot.System != nil && semanticSearchMatch(needle, "system", semanticIntString(snapshot.System.Properties.SystemScheme), semanticIntString(snapshot.System.Properties.ModuleConfigurationVR71)) {
+			appendResult(SearchResult{
+				Layer:    "semantic",
+				Kind:     "system",
+				ID:       "system",
+				Title:    "System",
+				Subtitle: fmt.Sprintf("scheme=%s", defaultText(semanticIntString(snapshot.System.Properties.SystemScheme), "n/a")),
+			})
+		}
+		for _, circuit := range snapshot.Circuits {
+			if !semanticSearchMatch(needle, "circuit", semanticInt(circuit.Index), circuit.CircuitType, circuit.State.CircuitState, circuit.Config.RoomTempControl) {
+				continue
+			}
+			appendResult(SearchResult{
+				Layer:    "semantic",
+				Kind:     "circuit",
+				ID:       fmt.Sprintf("circuit:%d", circuit.Index),
+				Title:    fmt.Sprintf("Circuit %d", circuit.Index),
+				Subtitle: strings.TrimSpace(strings.Join([]string{circuit.CircuitType, circuit.State.CircuitState}, " / ")),
+			})
+		}
+		for _, device := range snapshot.RadioDevices {
+			fields := []string{
+				"radio",
+				device.DeviceModel,
+				device.SlotMode,
+				semanticIntString(device.ZoneAssignment),
+				derefString(device.FirmwareVersion),
+			}
+			if !semanticSearchMatch(needle, fields...) {
+				continue
+			}
+			title := strings.TrimSpace(device.DeviceModel)
+			if title == "" {
+				title = fmt.Sprintf("Radio %d/%d", device.Group, device.Instance)
+			} else {
+				title = "Radio " + title
+			}
+			appendResult(SearchResult{
+				Layer:    "semantic",
+				Kind:     "radio",
+				ID:       fmt.Sprintf("radio:%d:%d", device.Group, device.Instance),
+				Title:    title,
+				Subtitle: fmt.Sprintf("slot=%s zone=%s", defaultText(device.SlotMode, "n/a"), defaultText(semanticIntString(device.ZoneAssignment), "n/a")),
+			})
+		}
+		if semanticSearchMatch(needle, "fm5", snapshot.FM5Mode) {
+			appendResult(SearchResult{
+				Layer:    "semantic",
+				Kind:     "fm5",
+				ID:       "fm5",
+				Title:    "FM5",
+				Subtitle: defaultText(snapshot.FM5Mode, "n/a"),
+			})
+		}
+		if snapshot.Solar != nil && semanticSearchMatch(needle, "solar", semanticBoolString(snapshot.Solar.SolarEnabled), semanticBoolString(snapshot.Solar.PumpActive)) {
+			appendResult(SearchResult{
+				Layer:    "semantic",
+				Kind:     "solar",
+				ID:       "solar",
+				Title:    "Solar",
+				Subtitle: fmt.Sprintf("collector=%s", defaultText(semanticFloatString(snapshot.Solar.CollectorTemperatureC, 1), "n/a")),
+			})
+		}
+		for _, cylinder := range snapshot.Cylinders {
+			if !semanticSearchMatch(needle, "cylinder", semanticInt(cylinder.Index)) {
+				continue
+			}
+			appendResult(SearchResult{
+				Layer:    "semantic",
+				Kind:     "cylinder",
+				ID:       fmt.Sprintf("cylinder:%d", cylinder.Index),
+				Title:    fmt.Sprintf("Cylinder %d", cylinder.Index),
+				Subtitle: fmt.Sprintf("temp=%s", defaultText(semanticFloatString(cylinder.TemperatureC, 1), "n/a")),
 			})
 		}
 	}
@@ -1381,6 +1476,48 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		"count": len(results),
 		"items": results,
 	})
+}
+
+func semanticSearchMatch(needle string, fields ...string) bool {
+	if needle == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(strings.Join(fields, " ")), needle)
+}
+
+func semanticInt(value int) string {
+	return strconv.Itoa(value)
+}
+
+func semanticIntString(value *int) string {
+	if value == nil {
+		return ""
+	}
+	return strconv.Itoa(*value)
+}
+
+func semanticFloatString(value *float64, digits int) string {
+	if value == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*value, 'f', digits, 64)
+}
+
+func semanticBoolString(value *bool) string {
+	if value == nil {
+		return ""
+	}
+	if *value {
+		return "true"
+	}
+	return "false"
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (h *handler) handleTimelineEvents(w http.ResponseWriter, r *http.Request) {

@@ -820,6 +820,95 @@ func TestSearchEndpoint_EmptyQuery(t *testing.T) {
 	}
 }
 
+func TestSearchEndpoint_SemanticFamilyCoverage(t *testing.T) {
+	dhwOperatingMode := "AUTO"
+	systemScheme := 1
+	zoneAssignment := 2
+	firmwareVersion := "09.03"
+	solarEnabled := false
+	solarCollector := 138.7
+	cylinderTemperature := 58.1
+
+	h := NewHandler(Options{
+		ListSemantic: func() SemanticSnapshot {
+			return SemanticSnapshot{
+				Energy: &SemanticEnergyTotals{},
+				BoilerStatus: &SemanticBoilerStatus{
+					Config: SemanticBoilerConfig{
+						DhwOperatingMode: &dhwOperatingMode,
+					},
+				},
+				System: &SemanticSystemStatus{
+					Properties: SemanticSystemProperties{
+						SystemScheme: &systemScheme,
+					},
+				},
+				Circuits: []SemanticCircuit{
+					{Index: 1, CircuitType: "heating", State: SemanticCircuitState{CircuitState: "active"}, Config: SemanticCircuitConfig{RoomTempControl: "thermostat"}},
+				},
+				RadioDevices: []SemanticRadioDevice{
+					{Group: 0, Instance: 1, DeviceModel: "VR92", SlotMode: "THERMOSTAT", ZoneAssignment: &zoneAssignment, FirmwareVersion: &firmwareVersion},
+				},
+				FM5Mode: "INTERPRETED",
+				Solar: &SemanticSolarStatus{
+					CollectorTemperatureC: &solarCollector,
+					SolarEnabled:          &solarEnabled,
+				},
+				Cylinders: []SemanticCylinder{
+					{Index: 0, TemperatureC: &cylinderTemperature},
+				},
+			}
+		},
+	})
+
+	testCases := []struct {
+		query     string
+		wantKind  string
+		wantTitle string
+	}{
+		{query: "boiler", wantKind: "boiler", wantTitle: "Boiler"},
+		{query: "system", wantKind: "system", wantTitle: "System"},
+		{query: "solar", wantKind: "solar", wantTitle: "Solar"},
+		{query: "energy", wantKind: "energy", wantTitle: "Energy Totals"},
+		{query: "circuit", wantKind: "circuit", wantTitle: "Circuit 1"},
+		{query: "vr92", wantKind: "radio", wantTitle: "Radio VR92"},
+		{query: "fm5", wantKind: "fm5", wantTitle: "FM5"},
+		{query: "cylinder", wantKind: "cylinder", wantTitle: "Cylinder 0"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.query, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q="+tc.query+"&limit=20", nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+			}
+
+			var payload map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			items := payload["items"].([]any)
+			if len(items) == 0 {
+				t.Fatalf("expected at least one search result for %q", tc.query)
+			}
+
+			found := false
+			for _, item := range items {
+				entry := item.(map[string]any)
+				if entry["layer"] == "semantic" && entry["kind"] == tc.wantKind && entry["title"] == tc.wantTitle {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("missing semantic result kind=%q title=%q in %v", tc.wantKind, tc.wantTitle, items)
+			}
+		})
+	}
+}
+
 func TestStreamEndpoint(t *testing.T) {
 	h := NewHandler(Options{
 		ListRegistry: func() []RegistryDevice {

@@ -370,14 +370,68 @@ func TestRegistryDevicesEndpoint_Filter(t *testing.T) {
 
 func TestSemanticSnapshotEndpoint(t *testing.T) {
 	current := 43.5
+	target := 45.0
+	flowTemperature := 54.2
+	dhwOperatingMode := "auto"
+	systemFlowTemperature := 31.4
+	adaptiveHeatingCurve := true
+	systemScheme := 8
+	pumpActive := true
+	flowSetpoint := 35.0
+	heatingCurve := 0.8
 	h := NewHandler(Options{
 		ListSemantic: func() SemanticSnapshot {
 			return SemanticSnapshot{
 				Zones: []SemanticZone{
-					{ID: "zone_1", Name: "Living", State: SemanticZoneState{CurrentTempC: &current}},
+					{
+						ID:   "zone_1",
+						Name: "Living",
+						State: SemanticZoneState{
+							CurrentTempC: &current,
+						},
+						Config: SemanticZoneConfig{
+							TargetTempC: &target,
+						},
+					},
 				},
 				DHW: &SemanticDHW{
+					State: SemanticDhwState{
+						CurrentTempC: &current,
+					},
 					Config: SemanticDhwConfig{OperatingMode: "auto"},
+				},
+				BoilerStatus: &SemanticBoilerStatus{
+					State: SemanticBoilerState{
+						FlowTemperatureC: &flowTemperature,
+					},
+					Config: SemanticBoilerConfig{
+						DhwOperatingMode: &dhwOperatingMode,
+					},
+				},
+				System: &SemanticSystemStatus{
+					State: SemanticSystemState{
+						SystemFlowTemperature: &systemFlowTemperature,
+					},
+					Config: SemanticSystemConfig{
+						AdaptiveHeatingCurve: &adaptiveHeatingCurve,
+					},
+					Properties: SemanticSystemProperties{
+						SystemScheme: &systemScheme,
+					},
+				},
+				Circuits: []SemanticCircuit{
+					{
+						Index:       1,
+						CircuitType: "DIRECT",
+						HasMixer:    false,
+						State: SemanticCircuitState{
+							PumpActive:    &pumpActive,
+							FlowSetpointC: &flowSetpoint,
+						},
+						Config: SemanticCircuitConfig{
+							HeatingCurve: &heatingCurve,
+						},
+					},
 				},
 				CapturedUTC: "2026-02-23T22:00:00Z",
 			}
@@ -400,6 +454,74 @@ func TestSemanticSnapshotEndpoint(t *testing.T) {
 	zones := payload["zones"].([]any)
 	if len(zones) != 1 {
 		t.Fatalf("zones=%d; want 1", len(zones))
+	}
+	zone := zones[0].(map[string]any)
+	if zone["name"] != "Living" {
+		t.Fatalf("zone.name=%v; want Living", zone["name"])
+	}
+	zoneState := zone["state"].(map[string]any)
+	if zoneState["current_temp_c"] != current {
+		t.Fatalf("zone.state.current_temp_c=%v; want %v", zoneState["current_temp_c"], current)
+	}
+	zoneConfig := zone["config"].(map[string]any)
+	if zoneConfig["target_temp_c"] != target {
+		t.Fatalf("zone.config.target_temp_c=%v; want %v", zoneConfig["target_temp_c"], target)
+	}
+	dhw := payload["dhw"].(map[string]any)
+	dhwState := dhw["state"].(map[string]any)
+	if dhwState["current_temp_c"] != current {
+		t.Fatalf("dhw.state.current_temp_c=%v; want %v", dhwState["current_temp_c"], current)
+	}
+	dhwConfig := dhw["config"].(map[string]any)
+	if dhwConfig["operating_mode"] != "auto" {
+		t.Fatalf("dhw.config.operating_mode=%v; want auto", dhwConfig["operating_mode"])
+	}
+	boiler := payload["boiler_status"].(map[string]any)
+	boilerState := boiler["state"].(map[string]any)
+	if boilerState["flow_temperature_c"] != flowTemperature {
+		t.Fatalf("boiler.state.flow_temperature_c=%v; want %v", boilerState["flow_temperature_c"], flowTemperature)
+	}
+	boilerConfig := boiler["config"].(map[string]any)
+	if boilerConfig["dhw_operating_mode"] != dhwOperatingMode {
+		t.Fatalf("boiler.config.dhw_operating_mode=%v; want %v", boilerConfig["dhw_operating_mode"], dhwOperatingMode)
+	}
+	system := payload["system"].(map[string]any)
+	systemState := system["state"].(map[string]any)
+	if systemState["system_flow_temperature"] != systemFlowTemperature {
+		t.Fatalf("system.state.system_flow_temperature=%v; want %v", systemState["system_flow_temperature"], systemFlowTemperature)
+	}
+	systemConfig := system["config"].(map[string]any)
+	if systemConfig["adaptive_heating_curve"] != adaptiveHeatingCurve {
+		t.Fatalf("system.config.adaptive_heating_curve=%v; want %v", systemConfig["adaptive_heating_curve"], adaptiveHeatingCurve)
+	}
+	systemProperties := system["properties"].(map[string]any)
+	if int(systemProperties["system_scheme"].(float64)) != systemScheme {
+		t.Fatalf("system.properties.system_scheme=%v; want %d", systemProperties["system_scheme"], systemScheme)
+	}
+	circuits := payload["circuits"].([]any)
+	if len(circuits) != 1 {
+		t.Fatalf("circuits=%d; want 1", len(circuits))
+	}
+	circuit := circuits[0].(map[string]any)
+	if int(circuit["index"].(float64)) != 1 {
+		t.Fatalf("circuit.index=%v; want 1", circuit["index"])
+	}
+	if circuit["circuit_type"] != "DIRECT" {
+		t.Fatalf("circuit.circuit_type=%v; want DIRECT", circuit["circuit_type"])
+	}
+	if circuit["has_mixer"] != false {
+		t.Fatalf("circuit.has_mixer=%v; want false", circuit["has_mixer"])
+	}
+	circuitState := circuit["state"].(map[string]any)
+	if circuitState["pump_active"] != pumpActive {
+		t.Fatalf("circuit.state.pump_active=%v; want %v", circuitState["pump_active"], pumpActive)
+	}
+	if circuitState["flow_setpoint_c"] != flowSetpoint {
+		t.Fatalf("circuit.state.flow_setpoint_c=%v; want %v", circuitState["flow_setpoint_c"], flowSetpoint)
+	}
+	circuitConfig := circuit["config"].(map[string]any)
+	if circuitConfig["heating_curve"] != heatingCurve {
+		t.Fatalf("circuit.config.heating_curve=%v; want %v", circuitConfig["heating_curve"], heatingCurve)
 	}
 }
 

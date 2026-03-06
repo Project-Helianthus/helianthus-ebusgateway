@@ -90,10 +90,13 @@ type RegistryPlane struct {
 }
 
 type SemanticSnapshot struct {
-	Zones       []SemanticZone        `json:"zones"`
-	DHW         *SemanticDHW          `json:"dhw,omitempty"`
-	Energy      *SemanticEnergyTotals `json:"energy_totals,omitempty"`
-	CapturedUTC string                `json:"captured_utc"`
+	Zones        []SemanticZone        `json:"zones"`
+	DHW          *SemanticDHW          `json:"dhw,omitempty"`
+	Energy       *SemanticEnergyTotals `json:"energy_totals,omitempty"`
+	BoilerStatus *SemanticBoilerStatus `json:"boiler_status,omitempty"`
+	System       *SemanticSystemStatus `json:"system,omitempty"`
+	Circuits     []SemanticCircuit     `json:"circuits,omitempty"`
+	CapturedUTC  string                `json:"captured_utc"`
 }
 
 type SemanticZoneState struct {
@@ -153,6 +156,123 @@ type SemanticEnergyChannel struct {
 type SemanticEnergySeries struct {
 	Today  float64   `json:"today"`
 	Yearly []float64 `json:"yearly,omitempty"`
+}
+
+type SemanticBoilerState struct {
+	FlowTemperatureC         *float64 `json:"flow_temperature_c,omitempty"`
+	ReturnTemperatureC       *float64 `json:"return_temperature_c,omitempty"`
+	CentralHeatingPumpActive *bool    `json:"central_heating_pump_active,omitempty"`
+	WaterPressureBar         *float64 `json:"water_pressure_bar,omitempty"`
+	ExternalPumpActive       *bool    `json:"external_pump_active,omitempty"`
+	CirculationPumpActive    *bool    `json:"circulation_pump_active,omitempty"`
+	GasValveActive           *bool    `json:"gas_valve_active,omitempty"`
+	FlameActive              *bool    `json:"flame_active,omitempty"`
+	DiverterValvePositionPct *float64 `json:"diverter_valve_position_pct,omitempty"`
+	FanSpeedRpm              *int     `json:"fan_speed_rpm,omitempty"`
+	TargetFanSpeedRpm        *int     `json:"target_fan_speed_rpm,omitempty"`
+	IonisationVoltageUa      *float64 `json:"ionisation_voltage_ua,omitempty"`
+	DhwWaterFlowLpm          *float64 `json:"dhw_water_flow_lpm,omitempty"`
+	DhwDemandActive          *bool    `json:"dhw_demand_active,omitempty"`
+	HeatingSwitchActive      *bool    `json:"heating_switch_active,omitempty"`
+	StorageLoadPumpPct       *float64 `json:"storage_load_pump_pct,omitempty"`
+	ModulationPct            *float64 `json:"modulation_pct,omitempty"`
+	PrimaryCircuitFlowLpm    *float64 `json:"primary_circuit_flow_lpm,omitempty"`
+	FlowTempDesiredC         *float64 `json:"flow_temp_desired_c,omitempty"`
+	DhwTempDesiredC          *float64 `json:"dhw_temp_desired_c,omitempty"`
+	StateNumber              *int     `json:"state_number,omitempty"`
+	DhwTemperatureC          *float64 `json:"dhw_temperature_c,omitempty"`
+	DhwTargetTemperatureC    *float64 `json:"dhw_target_temperature_c,omitempty"`
+}
+
+type SemanticBoilerConfig struct {
+	DhwOperatingMode *string  `json:"dhw_operating_mode,omitempty"`
+	FlowsetHcMaxC    *float64 `json:"flowset_hc_max_c,omitempty"`
+	FlowsetHwcMaxC   *float64 `json:"flowset_hwc_max_c,omitempty"`
+	PartloadHcKW     *float64 `json:"partload_hc_kw,omitempty"`
+	PartloadHwcKW    *float64 `json:"partload_hwc_kw,omitempty"`
+}
+
+type SemanticBoilerDiagnostics struct {
+	HeatingStatusRaw         *int     `json:"heating_status_raw,omitempty"`
+	DhwStatusRaw             *int     `json:"dhw_status_raw,omitempty"`
+	CentralHeatingHours      *float64 `json:"central_heating_hours,omitempty"`
+	DhwHours                 *float64 `json:"dhw_hours,omitempty"`
+	CentralHeatingStarts     *int     `json:"central_heating_starts,omitempty"`
+	DhwStarts                *int     `json:"dhw_starts,omitempty"`
+	PumpHours                *float64 `json:"pump_hours,omitempty"`
+	FanHours                 *float64 `json:"fan_hours,omitempty"`
+	DeactivationsIFC         *int     `json:"deactivations_ifc,omitempty"`
+	DeactivationsTemplimiter *int     `json:"deactivations_templimiter,omitempty"`
+}
+
+type SemanticBoilerStatus struct {
+	State       SemanticBoilerState       `json:"state"`
+	Config      SemanticBoilerConfig      `json:"config"`
+	Diagnostics SemanticBoilerDiagnostics `json:"diagnostics"`
+}
+
+type SemanticSystemState struct {
+	SystemOff                    *bool    `json:"system_off,omitempty"`
+	SystemWaterPressure          *float64 `json:"system_water_pressure,omitempty"`
+	SystemFlowTemperature        *float64 `json:"system_flow_temperature,omitempty"`
+	OutdoorTemperature           *float64 `json:"outdoor_temperature,omitempty"`
+	OutdoorTemperatureAvg24h     *float64 `json:"outdoor_temperature_avg24h,omitempty"`
+	MaintenanceDue               *bool    `json:"maintenance_due,omitempty"`
+	HwcCylinderTemperatureTop    *float64 `json:"hwc_cylinder_temperature_top,omitempty"`
+	HwcCylinderTemperatureBottom *float64 `json:"hwc_cylinder_temperature_bottom,omitempty"`
+}
+
+type SemanticSystemConfig struct {
+	AdaptiveHeatingCurve         *bool    `json:"adaptive_heating_curve,omitempty"`
+	AlternativePoint             *float64 `json:"alternative_point,omitempty"`
+	HeatingCircuitBivalencePoint *float64 `json:"heating_circuit_bivalence_point,omitempty"`
+	DhwBivalencePoint            *float64 `json:"dhw_bivalence_point,omitempty"`
+	HcEmergencyTemperature       *float64 `json:"hc_emergency_temperature,omitempty"`
+	HwcMaxFlowTempDesired        *float64 `json:"hwc_max_flow_temp_desired,omitempty"`
+	MaxRoomHumidity              *int     `json:"max_room_humidity,omitempty"`
+}
+
+type SemanticSystemProperties struct {
+	SystemScheme            *int `json:"system_scheme,omitempty"`
+	ModuleConfigurationVR71 *int `json:"module_configuration_vr71,omitempty"`
+	Vr71CircuitStartIndex   *int `json:"vr71_circuit_start_index,omitempty"`
+}
+
+type SemanticSystemStatus struct {
+	State      SemanticSystemState      `json:"state"`
+	Config     SemanticSystemConfig     `json:"config"`
+	Properties SemanticSystemProperties `json:"properties"`
+}
+
+type SemanticCircuitState struct {
+	PumpActive       *bool    `json:"pump_active,omitempty"`
+	MixerPositionPct *float64 `json:"mixer_position_pct,omitempty"`
+	FlowTemperatureC *float64 `json:"flow_temperature_c,omitempty"`
+	FlowSetpointC    *float64 `json:"flow_setpoint_c,omitempty"`
+	CalcFlowTempC    *float64 `json:"calc_flow_temp_c,omitempty"`
+	CircuitState     string   `json:"circuit_state,omitempty"`
+	Humidity         *float64 `json:"humidity,omitempty"`
+	DewPoint         *float64 `json:"dew_point,omitempty"`
+	PumpHours        *float64 `json:"pump_hours,omitempty"`
+	PumpStarts       *int     `json:"pump_starts,omitempty"`
+}
+
+type SemanticCircuitConfig struct {
+	HeatingCurve    *float64 `json:"heating_curve,omitempty"`
+	FlowTempMaxC    *float64 `json:"flow_temp_max_c,omitempty"`
+	FlowTempMinC    *float64 `json:"flow_temp_min_c,omitempty"`
+	SummerLimitC    *float64 `json:"summer_limit_c,omitempty"`
+	FrostProtC      *float64 `json:"frost_prot_c,omitempty"`
+	RoomTempControl string   `json:"room_temp_control,omitempty"`
+	CoolingEnabled  *bool    `json:"cooling_enabled,omitempty"`
+}
+
+type SemanticCircuit struct {
+	Index       int                   `json:"index"`
+	CircuitType string                `json:"circuit_type,omitempty"`
+	HasMixer    bool                  `json:"has_mixer"`
+	State       SemanticCircuitState  `json:"state"`
+	Config      SemanticCircuitConfig `json:"config"`
 }
 
 type ProjectionDevice struct {

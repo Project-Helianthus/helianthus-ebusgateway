@@ -1304,6 +1304,117 @@ func TestRefreshEnergy_NoRegulator(t *testing.T) {
 	}
 }
 
+func TestRefreshEnergy_ReadFailurePreservesLastKnown(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider:   provider,
+		controller: 0x15,
+	}
+
+	provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
+		Channel: "gas",
+		Usage:   "hot_water",
+		Period:  "day",
+	}, 3.5)
+	provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
+		Channel:  "gas",
+		Usage:    "hot_water",
+		Period:   "year",
+		YearKind: "current",
+	}, 240.0)
+
+	before := provider.EnergyTotals()
+	if before == nil {
+		t.Fatal("EnergyTotals() before refresh = nil; want seeded totals")
+	}
+
+	poller.refreshEnergy(context.Background())
+
+	after := provider.EnergyTotals()
+	if after == nil {
+		t.Fatal("EnergyTotals() after failed refresh = nil; want preserved last-known totals")
+	}
+	if after.Gas.DHW.Today != before.Gas.DHW.Today {
+		t.Fatalf("Gas.DHW.Today after failed refresh = %v; want preserved %v", after.Gas.DHW.Today, before.Gas.DHW.Today)
+	}
+	if len(after.Gas.DHW.Yearly) != len(before.Gas.DHW.Yearly) || after.Gas.DHW.Yearly[1] != before.Gas.DHW.Yearly[1] {
+		t.Fatalf("Gas.DHW.Yearly after failed refresh = %#v; want preserved %#v", after.Gas.DHW.Yearly, before.Gas.DHW.Yearly)
+	}
+}
+
+func TestPublishFM5Semantic_SkipsConfigOnlyCylinderWithoutTemperature(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	temp := 48.0
+	maxSetpoint := 60.0
+	chargeOffset := 5.0
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+		solarCylinders: map[byte]*vaillantCylinderSnapshot{
+			0x00: {
+				Instance:         0x00,
+				TemperatureC:     &temp,
+				MaxSetpointC:     &maxSetpoint,
+				ChargeHysteresis: &chargeOffset,
+			},
+			0x01: {
+				Instance:     0x01,
+				MaxSetpointC: &maxSetpoint,
+			},
+		},
+	}
+
+	poller.publishFM5Semantic(semanticSnapshotSourceLive)
+
+	cylinders := provider.Cylinders()
+	if len(cylinders) != 1 {
+		t.Fatalf("provider.Cylinders() len = %d; want 1 live-evidenced cylinder", len(cylinders))
+	}
+	if cylinders[0].Index != 0 {
+		t.Fatalf("provider.Cylinders()[0].Index = %d; want 0", cylinders[0].Index)
+	}
+	if cylinders[0].TemperatureC == nil || *cylinders[0].TemperatureC != temp {
+		t.Fatalf("provider.Cylinders()[0].TemperatureC = %#v; want %v", cylinders[0].TemperatureC, temp)
+	}
+}
+
+func TestMergeCylinderSnapshotMapNonDestructive_PreservesTemperatureWhileRefreshingConfig(t *testing.T) {
+	t.Parallel()
+
+	oldTemp := 49.0
+	oldSetpoint := 55.0
+	newSetpoint := 60.0
+	existing := map[byte]*vaillantCylinderSnapshot{
+		0x00: {
+			Instance:     0x00,
+			TemperatureC: &oldTemp,
+			MaxSetpointC: &oldSetpoint,
+		},
+	}
+	incoming := map[byte]*vaillantCylinderSnapshot{
+		0x00: {
+			Instance:     0x00,
+			MaxSetpointC: &newSetpoint,
+		},
+	}
+
+	merged := mergeCylinderSnapshotMapNonDestructive(existing, incoming)
+	snapshot := merged[0x00]
+	if snapshot == nil {
+		t.Fatal("merged[0x00] = nil; want preserved cylinder snapshot")
+	}
+	if snapshot.TemperatureC == nil || *snapshot.TemperatureC != oldTemp {
+		t.Fatalf("merged temperature = %#v; want preserved %v", snapshot.TemperatureC, oldTemp)
+	}
+	if snapshot.MaxSetpointC == nil || *snapshot.MaxSetpointC != newSetpoint {
+		t.Fatalf("merged max setpoint = %#v; want refreshed %v", snapshot.MaxSetpointC, newSetpoint)
+	}
+}
+
 func TestVaillantSemanticPoller_DHWTransientCacheFailurePreservesLastKnown(t *testing.T) {
 	t.Parallel()
 

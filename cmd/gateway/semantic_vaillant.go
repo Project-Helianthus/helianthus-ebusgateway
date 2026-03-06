@@ -3337,7 +3337,7 @@ func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSourc
 	cylinders := make([]graphql.CylinderStatus, 0, len(instances))
 	for _, instance := range instances {
 		snapshot := cylindersSnapshot[instance]
-		if snapshot == nil {
+		if snapshot == nil || !hasLiveCylinderEvidence(snapshot) {
 			continue
 		}
 		cylinders = append(cylinders, graphql.CylinderStatus{
@@ -3357,6 +3357,10 @@ func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSourc
 		p.provider.SetSolar(solar)
 		p.provider.SetCylinders(cylinders)
 	}
+}
+
+func hasLiveCylinderEvidence(snapshot *vaillantCylinderSnapshot) bool {
+	return snapshot != nil && snapshot.TemperatureC != nil
 }
 
 func (p *vaillantSemanticPoller) readSolarSnapshot(ctx context.Context) (*vaillantSolarSnapshot, bool) {

@@ -96,6 +96,10 @@ type SemanticSnapshot struct {
 	BoilerStatus *SemanticBoilerStatus `json:"boiler_status,omitempty"`
 	System       *SemanticSystemStatus `json:"system,omitempty"`
 	Circuits     []SemanticCircuit     `json:"circuits,omitempty"`
+	RadioDevices []SemanticRadioDevice `json:"radio_devices,omitempty"`
+	FM5Mode      string                `json:"fm5_semantic_mode,omitempty"`
+	Solar        *SemanticSolarStatus  `json:"solar,omitempty"`
+	Cylinders    []SemanticCylinder    `json:"cylinders,omitempty"`
 	CapturedUTC  string                `json:"captured_utc"`
 }
 
@@ -273,6 +277,41 @@ type SemanticCircuit struct {
 	HasMixer    bool                  `json:"has_mixer"`
 	State       SemanticCircuitState  `json:"state"`
 	Config      SemanticCircuitConfig `json:"config"`
+}
+
+type SemanticRadioDevice struct {
+	Group                int      `json:"group"`
+	Instance             int      `json:"instance"`
+	SlotMode             string   `json:"slot_mode,omitempty"`
+	DeviceConnected      *bool    `json:"device_connected,omitempty"`
+	DeviceClassAddress   *int     `json:"device_class_address,omitempty"`
+	DeviceModel          string   `json:"device_model,omitempty"`
+	FirmwareVersion      *string  `json:"firmware_version,omitempty"`
+	HardwareIdentifier   *int     `json:"hardware_identifier,omitempty"`
+	RemoteControlAddress *int     `json:"remote_control_address,omitempty"`
+	DevicePaired         *bool    `json:"device_paired,omitempty"`
+	ReceptionStrength    *int     `json:"reception_strength,omitempty"`
+	ZoneAssignment       *int     `json:"zone_assignment,omitempty"`
+	RoomTemperatureC     *float64 `json:"room_temperature_c,omitempty"`
+	RoomHumidityPct      *float64 `json:"room_humidity_pct,omitempty"`
+}
+
+type SemanticSolarStatus struct {
+	CollectorTemperatureC *float64 `json:"collector_temperature_c,omitempty"`
+	ReturnTemperatureC    *float64 `json:"return_temperature_c,omitempty"`
+	PumpActive            *bool    `json:"pump_active,omitempty"`
+	CurrentYield          *float64 `json:"current_yield,omitempty"`
+	PumpHours             *float64 `json:"pump_hours,omitempty"`
+	SolarEnabled          *bool    `json:"solar_enabled,omitempty"`
+	FunctionMode          *bool    `json:"function_mode,omitempty"`
+}
+
+type SemanticCylinder struct {
+	Index             int      `json:"index"`
+	TemperatureC      *float64 `json:"temperature_c,omitempty"`
+	MaxSetpointC      *float64 `json:"max_setpoint_c,omitempty"`
+	ChargeHysteresisC *float64 `json:"charge_hysteresis_c,omitempty"`
+	ChargeOffsetC     *float64 `json:"charge_offset_c,omitempty"`
 }
 
 type ProjectionDevice struct {

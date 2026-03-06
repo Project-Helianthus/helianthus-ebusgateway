@@ -355,6 +355,10 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 					BoilerStatus: mapPortalBoilerStatus(semanticProvider.BoilerStatus()),
 					System:       mapPortalSystemStatus(semanticProvider.System()),
 					Circuits:     mapPortalCircuits(semanticProvider.Circuits()),
+					RadioDevices: mapPortalRadioDevices(semanticProvider.RadioDevices()),
+					FM5Mode:      string(semanticProvider.FM5SemanticMode()),
+					Solar:        mapPortalSolarStatus(semanticProvider.Solar()),
+					Cylinders:    mapPortalCylinders(semanticProvider.Cylinders()),
 					CapturedUTC:  time.Now().UTC().Format(time.RFC3339),
 				}
 			},
@@ -674,6 +678,64 @@ func mapPortalCircuits(circuits []graphql.CircuitStatus) []portal.SemanticCircui
 				RoomTempControl: circuit.Config.RoomTempControl,
 				CoolingEnabled:  cloneBoolPtr(circuit.Config.CoolingEnabled),
 			},
+		})
+	}
+	return items
+}
+
+func mapPortalRadioDevices(devices []graphql.RadioDevice) []portal.SemanticRadioDevice {
+	if len(devices) == 0 {
+		return nil
+	}
+	items := make([]portal.SemanticRadioDevice, 0, len(devices))
+	for _, device := range devices {
+		items = append(items, portal.SemanticRadioDevice{
+			Group:                device.Group,
+			Instance:             device.Instance,
+			SlotMode:             device.SlotMode,
+			DeviceConnected:      cloneBoolPtr(device.DeviceConnected),
+			DeviceClassAddress:   cloneIntPtr(device.DeviceClassAddress),
+			DeviceModel:          device.DeviceModel,
+			FirmwareVersion:      cloneStringPtr(device.FirmwareVersion),
+			HardwareIdentifier:   cloneIntPtr(device.HardwareIdentifier),
+			RemoteControlAddress: cloneIntPtr(device.RemoteControlAddress),
+			DevicePaired:         cloneBoolPtr(device.DevicePaired),
+			ReceptionStrength:    cloneIntPtr(device.ReceptionStrength),
+			ZoneAssignment:       cloneIntPtr(device.ZoneAssignment),
+			RoomTemperatureC:     cloneFloatPtr(device.RoomTemperatureC),
+			RoomHumidityPct:      cloneFloatPtr(device.RoomHumidityPct),
+		})
+	}
+	return items
+}
+
+func mapPortalSolarStatus(status *graphql.SolarStatus) *portal.SemanticSolarStatus {
+	if status == nil {
+		return nil
+	}
+	return &portal.SemanticSolarStatus{
+		CollectorTemperatureC: cloneFloatPtr(status.CollectorTemperatureC),
+		ReturnTemperatureC:    cloneFloatPtr(status.ReturnTemperatureC),
+		PumpActive:            cloneBoolPtr(status.PumpActive),
+		CurrentYield:          cloneFloatPtr(status.CurrentYield),
+		PumpHours:             cloneFloatPtr(status.PumpHours),
+		SolarEnabled:          cloneBoolPtr(status.SolarEnabled),
+		FunctionMode:          cloneBoolPtr(status.FunctionMode),
+	}
+}
+
+func mapPortalCylinders(cylinders []graphql.CylinderStatus) []portal.SemanticCylinder {
+	if len(cylinders) == 0 {
+		return nil
+	}
+	items := make([]portal.SemanticCylinder, 0, len(cylinders))
+	for _, cylinder := range cylinders {
+		items = append(items, portal.SemanticCylinder{
+			Index:             cylinder.Index,
+			TemperatureC:      cloneFloatPtr(cylinder.TemperatureC),
+			MaxSetpointC:      cloneFloatPtr(cylinder.MaxSetpointC),
+			ChargeHysteresisC: cloneFloatPtr(cylinder.ChargeHysteresisC),
+			ChargeOffsetC:     cloneFloatPtr(cylinder.ChargeOffsetC),
 		})
 	}
 	return items

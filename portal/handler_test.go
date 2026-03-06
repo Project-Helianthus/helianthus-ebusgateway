@@ -543,6 +543,121 @@ func TestSemanticSnapshotEndpoint_DefaultWhenMissingProvider(t *testing.T) {
 	}
 }
 
+func TestSemanticSnapshotEndpoint_ExtensionFamilies(t *testing.T) {
+	deviceConnected := true
+	devicePaired := true
+	deviceClassAddress := 0x15
+	firmwareVersion := "09.03"
+	hardwareIdentifier := 4711
+	remoteControlAddress := 0x01
+	receptionStrength := 88
+	zoneAssignment := 2
+	roomTemperature := 22.5
+	roomHumidity := 44.0
+	solarCollectorTemperature := 62.5
+	solarReturnTemperature := 45.1
+	solarPumpActive := true
+	solarYield := 3.4
+	solarPumpHours := 104.0
+	solarEnabled := true
+	solarFunctionMode := false
+	cylinderTemperature := 49.5
+	cylinderMaxSetpoint := 59.0
+	cylinderChargeHysteresis := 5.0
+	cylinderChargeOffset := 2.0
+
+	h := NewHandler(Options{
+		ListSemantic: func() SemanticSnapshot {
+			return SemanticSnapshot{
+				RadioDevices: []SemanticRadioDevice{
+					{
+						Group:                0,
+						Instance:             1,
+						SlotMode:             "THERMOSTAT",
+						DeviceConnected:      &deviceConnected,
+						DeviceClassAddress:   &deviceClassAddress,
+						DeviceModel:          "VR92",
+						FirmwareVersion:      &firmwareVersion,
+						HardwareIdentifier:   &hardwareIdentifier,
+						RemoteControlAddress: &remoteControlAddress,
+						DevicePaired:         &devicePaired,
+						ReceptionStrength:    &receptionStrength,
+						ZoneAssignment:       &zoneAssignment,
+						RoomTemperatureC:     &roomTemperature,
+						RoomHumidityPct:      &roomHumidity,
+					},
+				},
+				FM5Mode: "INTERPRETED",
+				Solar: &SemanticSolarStatus{
+					CollectorTemperatureC: &solarCollectorTemperature,
+					ReturnTemperatureC:    &solarReturnTemperature,
+					PumpActive:            &solarPumpActive,
+					CurrentYield:          &solarYield,
+					PumpHours:             &solarPumpHours,
+					SolarEnabled:          &solarEnabled,
+					FunctionMode:          &solarFunctionMode,
+				},
+				Cylinders: []SemanticCylinder{
+					{
+						Index:             1,
+						TemperatureC:      &cylinderTemperature,
+						MaxSetpointC:      &cylinderMaxSetpoint,
+						ChargeHysteresisC: &cylinderChargeHysteresis,
+						ChargeOffsetC:     &cylinderChargeOffset,
+					},
+				},
+				CapturedUTC: "2026-02-23T22:05:00Z",
+			}
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/semantic/snapshot", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload["fm5_semantic_mode"] != "INTERPRETED" {
+		t.Fatalf("fm5_semantic_mode=%v; want INTERPRETED", payload["fm5_semantic_mode"])
+	}
+	radioDevices := payload["radio_devices"].([]any)
+	if len(radioDevices) != 1 {
+		t.Fatalf("radio_devices=%d; want 1", len(radioDevices))
+	}
+	radio := radioDevices[0].(map[string]any)
+	if radio["device_model"] != "VR92" {
+		t.Fatalf("radio.device_model=%v; want VR92", radio["device_model"])
+	}
+	if radio["slot_mode"] != "THERMOSTAT" {
+		t.Fatalf("radio.slot_mode=%v; want THERMOSTAT", radio["slot_mode"])
+	}
+	if int(radio["zone_assignment"].(float64)) != zoneAssignment {
+		t.Fatalf("radio.zone_assignment=%v; want %d", radio["zone_assignment"], zoneAssignment)
+	}
+	solar := payload["solar"].(map[string]any)
+	if solar["collector_temperature_c"] != solarCollectorTemperature {
+		t.Fatalf("solar.collector_temperature_c=%v; want %v", solar["collector_temperature_c"], solarCollectorTemperature)
+	}
+	if solar["pump_active"] != solarPumpActive {
+		t.Fatalf("solar.pump_active=%v; want %v", solar["pump_active"], solarPumpActive)
+	}
+	cylinders := payload["cylinders"].([]any)
+	if len(cylinders) != 1 {
+		t.Fatalf("cylinders=%d; want 1", len(cylinders))
+	}
+	cylinder := cylinders[0].(map[string]any)
+	if int(cylinder["index"].(float64)) != 1 {
+		t.Fatalf("cylinder.index=%v; want 1", cylinder["index"])
+	}
+	if cylinder["temperature_c"] != cylinderTemperature {
+		t.Fatalf("cylinder.temperature_c=%v; want %v", cylinder["temperature_c"], cylinderTemperature)
+	}
+}
+
 func TestProjectionDevicesEndpoint(t *testing.T) {
 	h := NewHandler(Options{
 		ListProjections: func() []ProjectionDevice {

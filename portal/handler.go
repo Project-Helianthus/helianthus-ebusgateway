@@ -106,12 +106,13 @@ type SemanticZoneState struct {
 }
 
 type SemanticZoneConfig struct {
-	OperatingMode     string   `json:"operating_mode,omitempty"`
-	Preset            string   `json:"preset,omitempty"`
-	TargetTempC       *float64 `json:"target_temp_c,omitempty"`
-	AllowedModes      []string `json:"allowed_modes,omitempty"`
-	CircuitType       string   `json:"circuit_type,omitempty"`
-	AssociatedCircuit *int     `json:"associated_circuit,omitempty"`
+	OperatingMode              string   `json:"operating_mode,omitempty"`
+	Preset                     string   `json:"preset,omitempty"`
+	TargetTempC                *float64 `json:"target_temp_c,omitempty"`
+	AllowedModes               []string `json:"allowed_modes,omitempty"`
+	CircuitType                string   `json:"circuit_type,omitempty"`
+	AssociatedCircuit          *int     `json:"associated_circuit,omitempty"`
+	RoomTemperatureZoneMapping *int     `json:"room_temperature_zone_mapping,omitempty"`
 }
 
 type SemanticZone struct {

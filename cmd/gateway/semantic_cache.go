@@ -71,12 +71,13 @@ type semanticCacheZoneState struct {
 }
 
 type semanticCacheZoneConfig struct {
-	OperatingMode     string   `json:"operating_mode,omitempty"`
-	Preset            string   `json:"preset,omitempty"`
-	TargetTempC       *float64 `json:"target_temp_c,omitempty"`
-	AllowedModes      []string `json:"allowed_modes,omitempty"`
-	CircuitType       string   `json:"circuit_type,omitempty"`
-	AssociatedCircuit *int     `json:"associated_circuit,omitempty"`
+	OperatingMode              string   `json:"operating_mode,omitempty"`
+	Preset                     string   `json:"preset,omitempty"`
+	TargetTempC                *float64 `json:"target_temp_c,omitempty"`
+	AllowedModes               []string `json:"allowed_modes,omitempty"`
+	CircuitType                string   `json:"circuit_type,omitempty"`
+	AssociatedCircuit          *int     `json:"associated_circuit,omitempty"`
+	RoomTemperatureZoneMapping *int     `json:"room_temperature_zone_mapping,omitempty"`
 }
 
 type semanticCacheDHWV3 struct {
@@ -214,12 +215,13 @@ func semanticCacheV3ToSnapshot(cacheV3 semanticCacheV3) semanticCacheSnapshot {
 				ValvePositionPct:   cloneFloatPtr(zone.State.ValvePositionPct),
 			},
 			Config: graphql.ZoneConfig{
-				OperatingMode:     zone.Config.OperatingMode,
-				Preset:            zone.Config.Preset,
-				TargetTempC:       cloneFloatPtr(zone.Config.TargetTempC),
-				AllowedModes:      append([]string(nil), zone.Config.AllowedModes...),
-				CircuitType:       zone.Config.CircuitType,
-				AssociatedCircuit: cloneIntPtr(zone.Config.AssociatedCircuit),
+				OperatingMode:              zone.Config.OperatingMode,
+				Preset:                     zone.Config.Preset,
+				TargetTempC:                cloneFloatPtr(zone.Config.TargetTempC),
+				AllowedModes:               append([]string(nil), zone.Config.AllowedModes...),
+				CircuitType:                zone.Config.CircuitType,
+				AssociatedCircuit:          cloneIntPtr(zone.Config.AssociatedCircuit),
+				RoomTemperatureZoneMapping: cloneIntPtr(zone.Config.RoomTemperatureZoneMapping),
 			},
 		})
 	}
@@ -265,12 +267,13 @@ func semanticCacheSnapshotToV3(snapshot semanticCacheSnapshot, persistedAt time.
 				ValvePositionPct:   cloneFloatPtr(zone.State.ValvePositionPct),
 			},
 			Config: semanticCacheZoneConfig{
-				OperatingMode:     zone.Config.OperatingMode,
-				Preset:            zone.Config.Preset,
-				TargetTempC:       cloneFloatPtr(zone.Config.TargetTempC),
-				AllowedModes:      append([]string(nil), zone.Config.AllowedModes...),
-				CircuitType:       zone.Config.CircuitType,
-				AssociatedCircuit: cloneIntPtr(zone.Config.AssociatedCircuit),
+				OperatingMode:              zone.Config.OperatingMode,
+				Preset:                     zone.Config.Preset,
+				TargetTempC:                cloneFloatPtr(zone.Config.TargetTempC),
+				AllowedModes:               append([]string(nil), zone.Config.AllowedModes...),
+				CircuitType:                zone.Config.CircuitType,
+				AssociatedCircuit:          cloneIntPtr(zone.Config.AssociatedCircuit),
+				RoomTemperatureZoneMapping: cloneIntPtr(zone.Config.RoomTemperatureZoneMapping),
 			},
 		})
 	}
@@ -310,12 +313,13 @@ func normalizeSemanticCacheSnapshot(snapshot semanticCacheSnapshot) semanticCach
 			ValvePositionPct:   cloneFloatPtr(zone.State.ValvePositionPct),
 		}
 		zoneCopy.Config = graphql.ZoneConfig{
-			OperatingMode:     zone.Config.OperatingMode,
-			Preset:            zone.Config.Preset,
-			TargetTempC:       cloneFloatPtr(zone.Config.TargetTempC),
-			AllowedModes:      append([]string(nil), zone.Config.AllowedModes...),
-			CircuitType:       zone.Config.CircuitType,
-			AssociatedCircuit: cloneIntPtr(zone.Config.AssociatedCircuit),
+			OperatingMode:              zone.Config.OperatingMode,
+			Preset:                     zone.Config.Preset,
+			TargetTempC:                cloneFloatPtr(zone.Config.TargetTempC),
+			AllowedModes:               append([]string(nil), zone.Config.AllowedModes...),
+			CircuitType:                zone.Config.CircuitType,
+			AssociatedCircuit:          cloneIntPtr(zone.Config.AssociatedCircuit),
+			RoomTemperatureZoneMapping: cloneIntPtr(zone.Config.RoomTemperatureZoneMapping),
 		}
 		slices.Sort(zoneCopy.Config.AllowedModes)
 		out.Zones = append(out.Zones, zoneCopy)
@@ -356,6 +360,7 @@ func normalizeSemanticCacheZonesV3(zones []semanticCacheZoneV3) []semanticCacheZ
 		zoneCopy.Config.AllowedModes = append([]string(nil), zone.Config.AllowedModes...)
 		slices.Sort(zoneCopy.Config.AllowedModes)
 		zoneCopy.Config.AssociatedCircuit = cloneIntPtr(zone.Config.AssociatedCircuit)
+		zoneCopy.Config.RoomTemperatureZoneMapping = cloneIntPtr(zone.Config.RoomTemperatureZoneMapping)
 		out = append(out, zoneCopy)
 	}
 	slices.SortFunc(out, func(a, b semanticCacheZoneV3) int {

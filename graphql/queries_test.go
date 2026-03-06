@@ -75,6 +75,8 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	defer server.Close()
 
 	client := graphqlclient.NewClient(server.URL)
+	semantic := NewLiveSemanticProvider()
+	builder.SetSemanticProvider(semantic)
 
 	t.Run("devices", func(t *testing.T) {
 		request := graphqlclient.NewRequest(`
@@ -284,6 +286,23 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	})
 
 	t.Run("zones_dhw", func(t *testing.T) {
+		associatedCircuit := 1
+		roomTemperatureZoneMapping := 2
+		semantic.SetZones([]Zone{
+			{
+				ID:   "zone-2",
+				Name: "Etaj",
+				Config: ZoneConfig{
+					OperatingMode:              "heat",
+					Preset:                     "manual",
+					AllowedModes:               []string{"off", "auto", "heat"},
+					CircuitType:                "underfloor",
+					AssociatedCircuit:          &associatedCircuit,
+					RoomTemperatureZoneMapping: &roomTemperatureZoneMapping,
+				},
+			},
+		})
+
 		request := graphqlclient.NewRequest(`
 			query {
 				zones {
@@ -304,6 +323,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						allowedModes
 						circuitType
 						associatedCircuit
+						roomTemperatureZoneMapping
 					}
 				}
 				dhw {
@@ -419,12 +439,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					ValvePositionPct   *float64 `json:"valvePositionPct"`
 				} `json:"state"`
 				Config struct {
-					OperatingMode     *string  `json:"operatingMode"`
-					Preset            *string  `json:"preset"`
-					TargetTempC       *float64 `json:"targetTempC"`
-					AllowedModes      []string `json:"allowedModes"`
-					CircuitType       *string  `json:"circuitType"`
-					AssociatedCircuit *int     `json:"associatedCircuit"`
+					OperatingMode              *string  `json:"operatingMode"`
+					Preset                     *string  `json:"preset"`
+					TargetTempC                *float64 `json:"targetTempC"`
+					AllowedModes               []string `json:"allowedModes"`
+					CircuitType                *string  `json:"circuitType"`
+					AssociatedCircuit          *int     `json:"associatedCircuit"`
+					RoomTemperatureZoneMapping *int     `json:"roomTemperatureZoneMapping"`
 				} `json:"config"`
 			} `json:"zones"`
 			DHW *struct {
@@ -529,8 +550,14 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		if err := client.Run(context.Background(), request, &response); err != nil {
 			t.Fatalf("zones/dhw query error = %v", err)
 		}
-		if len(response.Zones) != 0 {
-			t.Fatalf("zones = %d; want 0", len(response.Zones))
+		if len(response.Zones) != 1 {
+			t.Fatalf("zones = %d; want 1", len(response.Zones))
+		}
+		if response.Zones[0].Config.AssociatedCircuit == nil || *response.Zones[0].Config.AssociatedCircuit != 1 {
+			t.Fatalf("associatedCircuit = %#v; want 1", response.Zones[0].Config.AssociatedCircuit)
+		}
+		if response.Zones[0].Config.RoomTemperatureZoneMapping == nil || *response.Zones[0].Config.RoomTemperatureZoneMapping != 2 {
+			t.Fatalf("roomTemperatureZoneMapping = %#v; want 2", response.Zones[0].Config.RoomTemperatureZoneMapping)
 		}
 		if response.DHW != nil {
 			t.Fatalf("dhw expected nil with static provider")

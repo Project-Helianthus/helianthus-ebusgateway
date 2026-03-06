@@ -193,14 +193,14 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 		suffix  string
 	}
 	type zoneState struct {
-		snapshot                   *vaillantZoneSnapshot
-		nameParts                  zoneNameParts
-		hasIndex                   bool
-		indexPresent               bool
-		configurationOperationMode *uint16
-		stateSpecialFunction       *uint16
-		stateValveStatus           *uint16
-		configurationCircuitRaw    *uint16
+		snapshot                      *vaillantZoneSnapshot
+		nameParts                     zoneNameParts
+		hasIndex                      bool
+		indexPresent                  bool
+		configurationOperationMode    *uint16
+		stateSpecialFunction          *uint16
+		stateValveStatus              *uint16
+		roomTemperatureZoneMappingRaw *uint16
 	}
 
 	states := make(map[byte]*zoneState)
@@ -269,11 +269,11 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 				state.stateValveStatus = &typed
 				snapshot.StateValveStatusRaw = &typed
 			}
-		case zoneRegAssociatedCircuitRaw:
+		case zoneRegRoomTemperatureZoneMappingRaw:
 			if value, ok := decodeB524Uint16(payload); ok {
 				typed := value
-				state.configurationCircuitRaw = &typed
-				snapshot.ConfigurationAssociatedCircuitRaw = &typed
+				state.roomTemperatureZoneMappingRaw = &typed
+				snapshot.ConfigurationRoomTemperatureZoneMappingRaw = &typed
 			}
 		case zoneRegCurrentTemp:
 			if value, ok := decodeFloat32LE(payload); ok {
@@ -304,7 +304,11 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 		if state == nil || state.snapshot == nil {
 			continue
 		}
-		circuitInstance := resolveCircuitInstance(state.configurationCircuitRaw, instance)
+		circuitInstance := resolveAssociatedCircuitInstance(state.roomTemperatureZoneMappingRaw, instance)
+		if state.roomTemperatureZoneMappingRaw != nil {
+			typed := uint16(circuitInstance)
+			state.snapshot.ConfigurationAssociatedCircuitRaw = &typed
+		}
 		circuitType, hasCircuitType := circuitTypeByInstance[circuitInstance]
 		if hasCircuitType && circuitType != nil {
 			state.snapshot.ConfigurationCircuitTypeRaw = circuitType

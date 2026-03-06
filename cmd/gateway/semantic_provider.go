@@ -35,12 +35,13 @@ func (adapter mcpSemanticProviderAdapter) Zones() []mcp.Zone {
 				ValvePositionPct:   cloneFloatPtr(zone.State.ValvePositionPct),
 			},
 			Config: mcp.ZoneConfig{
-				OperatingMode:     zone.Config.OperatingMode,
-				Preset:            zone.Config.Preset,
-				TargetTempC:       cloneFloatPtr(zone.Config.TargetTempC),
-				AllowedModes:      append([]string(nil), zone.Config.AllowedModes...),
-				CircuitType:       zone.Config.CircuitType,
-				AssociatedCircuit: cloneIntPtr(zone.Config.AssociatedCircuit),
+				OperatingMode:              zone.Config.OperatingMode,
+				Preset:                     zone.Config.Preset,
+				TargetTempC:                cloneFloatPtr(zone.Config.TargetTempC),
+				AllowedModes:               append([]string(nil), zone.Config.AllowedModes...),
+				CircuitType:                zone.Config.CircuitType,
+				AssociatedCircuit:          cloneIntPtr(zone.Config.AssociatedCircuit),
+				RoomTemperatureZoneMapping: cloneIntPtr(zone.Config.RoomTemperatureZoneMapping),
 			},
 		}
 	}

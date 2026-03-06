@@ -43,18 +43,18 @@ const (
 	vaillantGroupRadio10   = byte(0x0A)
 	vaillantGroupRadio0C   = byte(0x0C)
 
-	zoneRegName                 = uint16(0x0016)
-	zoneRegNamePrefix           = uint16(0x0017)
-	zoneRegNameSuffix           = uint16(0x0018)
-	zoneRegIndex                = uint16(0x001C)
-	zoneRegHeatingOpMode        = uint16(0x0006) // configuration.heating.operation_mode
-	zoneRegCurrentTemp          = uint16(0x000F) // state.current_room_temperature
-	zoneRegTargetTemp           = uint16(0x0022) // configuration.heating.desired_setpoint
-	zoneRegFallbackManualTemp   = uint16(0x0014) // configuration.heating.manual_mode_setpoint
-	zoneRegSpecialFunction      = uint16(0x000E) // state.current_special_function
-	zoneRegValveStatus          = uint16(0x0012) // state.valve_status
-	zoneRegAssociatedCircuitRaw = uint16(0x0013) // configuration.associated_circuit_index
-	zoneRegCurrentHumidity      = uint16(0x0028) // state.current_room_humidity
+	zoneRegName                          = uint16(0x0016)
+	zoneRegNamePrefix                    = uint16(0x0017)
+	zoneRegNameSuffix                    = uint16(0x0018)
+	zoneRegIndex                         = uint16(0x001C)
+	zoneRegHeatingOpMode                 = uint16(0x0006) // configuration.heating.operation_mode
+	zoneRegCurrentTemp                   = uint16(0x000F) // state.current_room_temperature
+	zoneRegTargetTemp                    = uint16(0x0022) // configuration.heating.desired_setpoint
+	zoneRegFallbackManualTemp            = uint16(0x0014) // configuration.heating.manual_mode_setpoint
+	zoneRegSpecialFunction               = uint16(0x000E) // state.current_special_function
+	zoneRegValveStatus                   = uint16(0x0012) // state.valve_status
+	zoneRegRoomTemperatureZoneMappingRaw = uint16(0x0013) // configuration.room_temperature_zone_mapping
+	zoneRegCurrentHumidity               = uint16(0x0028) // state.current_room_humidity
 
 	circuitRegType            = uint16(0x0002) // configuration.heating_circuit_type / mixer_circuit_type_external
 	circuitRegCoolingEnabled  = uint16(0x0006) // cooling_enabled
@@ -238,11 +238,12 @@ type vaillantZoneSnapshot struct {
 	TargetTempC  *float64
 	HumidityPct  *float64
 
-	ConfigurationHeatingOperationMode string
-	StateSpecialFunction              string
-	ConfigurationAssociatedCircuitRaw *uint16
-	ConfigurationCircuitTypeRaw       *uint16
-	StateValveStatusRaw               *uint16
+	ConfigurationHeatingOperationMode          string
+	StateSpecialFunction                       string
+	ConfigurationRoomTemperatureZoneMappingRaw *uint16
+	ConfigurationAssociatedCircuitRaw          *uint16
+	ConfigurationCircuitTypeRaw                *uint16
+	StateValveStatusRaw                        *uint16
 
 	FieldFreshness map[semanticFieldKey]semanticFieldFreshness
 }
@@ -334,25 +335,26 @@ const (
 type semanticFieldKey string
 
 const (
-	zoneFieldName                 semanticFieldKey = "zone.name"
-	zoneFieldOperatingMode        semanticFieldKey = "zone.operating_mode"
-	zoneFieldPreset               semanticFieldKey = "zone.preset"
-	zoneFieldHvacAction           semanticFieldKey = "zone.hvac_action"
-	zoneFieldAllowedModes         semanticFieldKey = "zone.allowed_modes"
-	zoneFieldCurrentTempC         semanticFieldKey = "zone.current_temp_c"
-	zoneFieldTargetTempC          semanticFieldKey = "zone.target_temp_c"
-	zoneFieldCurrentHumidityPct   semanticFieldKey = "zone.current_humidity_pct"
-	zoneFieldSpecialFunctionRaw   semanticFieldKey = "zone.special_function_raw"
-	zoneFieldZoneOperationModeRaw semanticFieldKey = "zone.operation_mode_raw"
-	zoneFieldZoneCircuitIndexRaw  semanticFieldKey = "zone.circuit_index_raw"
-	zoneFieldCircuitTypeRaw       semanticFieldKey = "zone.circuit_type_raw"
-	zoneFieldZoneValveStatusRaw   semanticFieldKey = "zone.valve_status_raw"
-	dhwFieldOperatingMode         semanticFieldKey = "dhw.operating_mode"
-	dhwFieldPreset                semanticFieldKey = "dhw.preset"
-	dhwFieldCurrentTempC          semanticFieldKey = "dhw.current_temp_c"
-	dhwFieldTargetTempC           semanticFieldKey = "dhw.target_temp_c"
-	dhwFieldSpecialFunctionRaw    semanticFieldKey = "dhw.special_function_raw"
-	dhwFieldDhwOperationModeRaw   semanticFieldKey = "dhw.operation_mode_raw"
+	zoneFieldName                          semanticFieldKey = "zone.name"
+	zoneFieldOperatingMode                 semanticFieldKey = "zone.operating_mode"
+	zoneFieldPreset                        semanticFieldKey = "zone.preset"
+	zoneFieldHvacAction                    semanticFieldKey = "zone.hvac_action"
+	zoneFieldAllowedModes                  semanticFieldKey = "zone.allowed_modes"
+	zoneFieldCurrentTempC                  semanticFieldKey = "zone.current_temp_c"
+	zoneFieldTargetTempC                   semanticFieldKey = "zone.target_temp_c"
+	zoneFieldCurrentHumidityPct            semanticFieldKey = "zone.current_humidity_pct"
+	zoneFieldSpecialFunctionRaw            semanticFieldKey = "zone.special_function_raw"
+	zoneFieldZoneOperationModeRaw          semanticFieldKey = "zone.operation_mode_raw"
+	zoneFieldRoomTemperatureZoneMappingRaw semanticFieldKey = "zone.room_temperature_zone_mapping_raw"
+	zoneFieldZoneCircuitIndexRaw           semanticFieldKey = "zone.circuit_index_raw"
+	zoneFieldCircuitTypeRaw                semanticFieldKey = "zone.circuit_type_raw"
+	zoneFieldZoneValveStatusRaw            semanticFieldKey = "zone.valve_status_raw"
+	dhwFieldOperatingMode                  semanticFieldKey = "dhw.operating_mode"
+	dhwFieldPreset                         semanticFieldKey = "dhw.preset"
+	dhwFieldCurrentTempC                   semanticFieldKey = "dhw.current_temp_c"
+	dhwFieldTargetTempC                    semanticFieldKey = "dhw.target_temp_c"
+	dhwFieldSpecialFunctionRaw             semanticFieldKey = "dhw.special_function_raw"
+	dhwFieldDhwOperationModeRaw            semanticFieldKey = "dhw.operation_mode_raw"
 )
 
 type semanticFieldFreshness struct {
@@ -406,6 +408,7 @@ var (
 		zoneFieldCurrentHumidityPct,
 		zoneFieldZoneOperationModeRaw,
 		zoneFieldSpecialFunctionRaw,
+		zoneFieldRoomTemperatureZoneMappingRaw,
 		zoneFieldZoneCircuitIndexRaw,
 		zoneFieldZoneValveStatusRaw,
 		zoneFieldCircuitTypeRaw,
@@ -421,6 +424,7 @@ var (
 		zoneFieldCurrentHumidityPct,
 		zoneFieldZoneOperationModeRaw,
 		zoneFieldSpecialFunctionRaw,
+		zoneFieldRoomTemperatureZoneMappingRaw,
 		zoneFieldZoneCircuitIndexRaw,
 		zoneFieldZoneValveStatusRaw,
 		zoneFieldCircuitTypeRaw,
@@ -624,6 +628,10 @@ func zoneSnapshotFromSemanticZone(instance byte, zone graphql.Zone) *vaillantZon
 		v := uint16(*zone.Config.AssociatedCircuit)
 		snapshot.ConfigurationAssociatedCircuitRaw = &v
 	}
+	if zone.Config.RoomTemperatureZoneMapping != nil {
+		v := uint16(*zone.Config.RoomTemperatureZoneMapping)
+		snapshot.ConfigurationRoomTemperatureZoneMappingRaw = &v
+	}
 	if zone.Config.CircuitType != "" {
 		v := encodeCircuitTypeRaw(zone.Config.CircuitType)
 		snapshot.ConfigurationCircuitTypeRaw = &v
@@ -793,6 +801,7 @@ func mergeZoneSnapshotFields(entry *vaillantZoneSnapshot, incoming *vaillantZone
 	mergeFloatField(&entry.HumidityPct, incoming.HumidityPct, attempted.has(zoneFieldCurrentHumidityPct), fields, zoneFieldCurrentHumidityPct, source)
 	mergeStringField(&entry.ConfigurationHeatingOperationMode, incoming.ConfigurationHeatingOperationMode, attempted.has(zoneFieldZoneOperationModeRaw), fields, zoneFieldZoneOperationModeRaw, source)
 	mergeStringField(&entry.StateSpecialFunction, incoming.StateSpecialFunction, attempted.has(zoneFieldSpecialFunctionRaw), fields, zoneFieldSpecialFunctionRaw, source)
+	mergeUint16Field(&entry.ConfigurationRoomTemperatureZoneMappingRaw, incoming.ConfigurationRoomTemperatureZoneMappingRaw, attempted.has(zoneFieldRoomTemperatureZoneMappingRaw), fields, zoneFieldRoomTemperatureZoneMappingRaw, source)
 	mergeUint16Field(&entry.ConfigurationAssociatedCircuitRaw, incoming.ConfigurationAssociatedCircuitRaw, attempted.has(zoneFieldZoneCircuitIndexRaw), fields, zoneFieldZoneCircuitIndexRaw, source)
 	mergeUint16Field(&entry.ConfigurationCircuitTypeRaw, incoming.ConfigurationCircuitTypeRaw, attempted.has(zoneFieldCircuitTypeRaw), fields, zoneFieldCircuitTypeRaw, source)
 	mergeUint16Field(&entry.StateValveStatusRaw, incoming.StateValveStatusRaw, attempted.has(zoneFieldZoneValveStatusRaw), fields, zoneFieldZoneValveStatusRaw, source)
@@ -846,6 +855,9 @@ func seedZoneFreshness(snapshot *vaillantZoneSnapshot, source semanticSnapshotSo
 	}
 	if strings.TrimSpace(snapshot.StateSpecialFunction) != "" {
 		setFieldFreshness(fields, zoneFieldSpecialFunctionRaw, source, stale)
+	}
+	if snapshot.ConfigurationRoomTemperatureZoneMappingRaw != nil {
+		setFieldFreshness(fields, zoneFieldRoomTemperatureZoneMappingRaw, source, stale)
 	}
 	if snapshot.ConfigurationAssociatedCircuitRaw != nil {
 		setFieldFreshness(fields, zoneFieldZoneCircuitIndexRaw, source, stale)
@@ -1400,29 +1412,35 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 		zoneOpMode, zoneOpModeOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHeatingOpMode)
 		zoneSF, zoneSFOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegSpecialFunction)
 		zoneValve, zoneValveOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegValveStatus)
-		zoneCircuitRaw, zoneCircuitRawOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegAssociatedCircuitRaw)
-		if zoneOpModeOK || zoneSFOK || zoneValveOK || zoneCircuitRawOK {
+		zoneRoomTemperatureZoneMappingRaw, zoneRoomTemperatureZoneMappingRawOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegRoomTemperatureZoneMappingRaw)
+		if zoneOpModeOK || zoneSFOK || zoneValveOK || zoneRoomTemperatureZoneMappingRawOK {
 			liveReadSuccess = true
 		}
-		circuitInstance := resolveCircuitInstance(zoneCircuitRaw, instance)
+		circuitInstance := resolveAssociatedCircuitInstance(zoneRoomTemperatureZoneMappingRaw, instance)
 		circuitType, hasCircuitType := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, circuitInstance, circuitRegType)
 		if hasCircuitType {
 			liveReadSuccess = true
+		}
+		var associatedCircuitRaw *uint16
+		if zoneRoomTemperatureZoneMappingRaw != nil {
+			value := uint16(circuitInstance)
+			associatedCircuitRaw = &value
 		}
 
 		operatingMode, preset, allowedModes := deriveZoneModeAndPreset(zoneOpMode, zoneSF, circuitType, hasCircuitType)
 		hvacAction := deriveZoneHvacAction(zoneValve, circuitType, hasCircuitType)
 		incoming := &vaillantZoneSnapshot{
-			OperatingMode:                     operatingMode,
-			Preset:                            preset,
-			HvacAction:                        hvacAction,
-			AllowedModes:                      allowedModes,
-			CurrentTempC:                      currentPtr,
-			TargetTempC:                       targetPtr,
-			HumidityPct:                       humidity,
-			ConfigurationAssociatedCircuitRaw: zoneCircuitRaw,
-			ConfigurationCircuitTypeRaw:       circuitType,
-			StateValveStatusRaw:               zoneValve,
+			OperatingMode: operatingMode,
+			Preset:        preset,
+			HvacAction:    hvacAction,
+			AllowedModes:  allowedModes,
+			CurrentTempC:  currentPtr,
+			TargetTempC:   targetPtr,
+			HumidityPct:   humidity,
+			ConfigurationRoomTemperatureZoneMappingRaw: zoneRoomTemperatureZoneMappingRaw,
+			ConfigurationAssociatedCircuitRaw:          associatedCircuitRaw,
+			ConfigurationCircuitTypeRaw:                circuitType,
+			StateValveStatusRaw:                        zoneValve,
 		}
 		if zoneOpMode != nil {
 			incoming.ConfigurationHeatingOperationMode = formatUintToken(*zoneOpMode)
@@ -1500,12 +1518,13 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 				ValvePositionPct:   decodeValvePositionPct(entry.StateValveStatusRaw),
 			},
 			Config: graphql.ZoneConfig{
-				OperatingMode:     entry.OperatingMode,
-				Preset:            entry.Preset,
-				TargetTempC:       entry.TargetTempC,
-				AllowedModes:      append([]string(nil), entry.AllowedModes...),
-				CircuitType:       decodeCircuitType(entry.ConfigurationCircuitTypeRaw),
-				AssociatedCircuit: decodeAssociatedCircuit(entry.ConfigurationAssociatedCircuitRaw),
+				OperatingMode:              entry.OperatingMode,
+				Preset:                     entry.Preset,
+				TargetTempC:                entry.TargetTempC,
+				AllowedModes:               append([]string(nil), entry.AllowedModes...),
+				CircuitType:                decodeCircuitType(entry.ConfigurationCircuitTypeRaw),
+				AssociatedCircuit:          decodeAssociatedCircuit(entry.ConfigurationAssociatedCircuitRaw),
+				RoomTemperatureZoneMapping: decodeRoomTemperatureZoneMapping(entry.ConfigurationRoomTemperatureZoneMappingRaw),
 			},
 		}
 		zones = append(zones, zone)
@@ -1571,6 +1590,9 @@ func zoneEquals(a, b graphql.Zone) bool {
 		return false
 	}
 	if !intPtrEquals(a.Config.AssociatedCircuit, b.Config.AssociatedCircuit) {
+		return false
+	}
+	if !intPtrEquals(a.Config.RoomTemperatureZoneMapping, b.Config.RoomTemperatureZoneMapping) {
 		return false
 	}
 	return true
@@ -3706,6 +3728,20 @@ func decodeAssociatedCircuit(raw *uint16) *int {
 	if raw == nil {
 		return nil
 	}
+	if *raw == 0xFF || *raw == 0xFFFF {
+		return nil
+	}
+	v := int(*raw)
+	return &v
+}
+
+func decodeRoomTemperatureZoneMapping(raw *uint16) *int {
+	if raw == nil {
+		return nil
+	}
+	if *raw == 0xFF || *raw == 0xFFFF {
+		return nil
+	}
 	v := int(*raw)
 	return &v
 }
@@ -4367,17 +4403,17 @@ func (p *vaillantSemanticPoller) readB524Uint32LE(ctx context.Context, opcode, g
 	return v, true
 }
 
-func resolveCircuitInstance(associatedCircuit *uint16, zoneInstance byte) byte {
-	if associatedCircuit == nil {
+func resolveAssociatedCircuitInstance(roomTemperatureZoneMapping *uint16, zoneInstance byte) byte {
+	if roomTemperatureZoneMapping == nil {
 		return zoneInstance
 	}
-	value := *associatedCircuit
+	value := *roomTemperatureZoneMapping
 	switch value {
-	case 0xFF, 0xFFFF:
+	case 0xFF, 0xFFFF, 0:
 		return zoneInstance
 	default:
-		if value <= 0x1F {
-			return byte(value)
+		if value >= 1 && value <= 0x20 {
+			return byte(value - 1)
 		}
 		return zoneInstance
 	}

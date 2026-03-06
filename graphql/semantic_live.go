@@ -890,6 +890,10 @@ func cloneZoneConfig(c ZoneConfig) ZoneConfig {
 		v := *c.AssociatedCircuit
 		out.AssociatedCircuit = &v
 	}
+	if c.RoomTemperatureZoneMapping != nil {
+		v := *c.RoomTemperatureZoneMapping
+		out.RoomTemperatureZoneMapping = &v
+	}
 	return out
 }
 

@@ -1233,6 +1233,7 @@ func TestMergeZoneSnapshotFields_PartialLiveUpdatePreservesLastKnownAndFreshness
 	current := 21.0
 	target := 22.5
 	humidity := 44.0
+	roomTemperatureZoneMapping := uint16(2)
 	circuitIndex := uint16(2)
 	circuitType := uint16(1)
 	valve := uint16(1)
@@ -1247,9 +1248,10 @@ func TestMergeZoneSnapshotFields_PartialLiveUpdatePreservesLastKnownAndFreshness
 		HumidityPct:                       &humidity,
 		ConfigurationHeatingOperationMode: "1",
 		StateSpecialFunction:              "0",
-		ConfigurationAssociatedCircuitRaw: &circuitIndex,
-		ConfigurationCircuitTypeRaw:       &circuitType,
-		StateValveStatusRaw:               &valve,
+		ConfigurationRoomTemperatureZoneMappingRaw: &roomTemperatureZoneMapping,
+		ConfigurationAssociatedCircuitRaw:          &circuitIndex,
+		ConfigurationCircuitTypeRaw:                &circuitType,
+		StateValveStatusRaw:                        &valve,
 	}
 	seedZoneFreshness(entry, semanticSnapshotSourceCache, true)
 
@@ -1269,6 +1271,9 @@ func TestMergeZoneSnapshotFields_PartialLiveUpdatePreservesLastKnownAndFreshness
 	if entry.ConfigurationAssociatedCircuitRaw == nil || *entry.ConfigurationAssociatedCircuitRaw != 2 {
 		t.Fatalf("entry.ConfigurationAssociatedCircuitRaw = %v; want preserved 2", entry.ConfigurationAssociatedCircuitRaw)
 	}
+	if entry.ConfigurationRoomTemperatureZoneMappingRaw == nil || *entry.ConfigurationRoomTemperatureZoneMappingRaw != 2 {
+		t.Fatalf("entry.ConfigurationRoomTemperatureZoneMappingRaw = %v; want preserved 2", entry.ConfigurationRoomTemperatureZoneMappingRaw)
+	}
 	if entry.ConfigurationHeatingOperationMode != "2" {
 		t.Fatalf("entry.ConfigurationHeatingOperationMode = %q; want 2", entry.ConfigurationHeatingOperationMode)
 	}
@@ -1284,6 +1289,47 @@ func TestMergeZoneSnapshotFields_PartialLiveUpdatePreservesLastKnownAndFreshness
 	opModeFreshness, ok := entry.FieldFreshness[zoneFieldZoneOperationModeRaw]
 	if !ok || opModeFreshness.Source != semanticSnapshotSourceLive || opModeFreshness.Stale {
 		t.Fatalf("operation_mode_raw freshness = %+v (ok=%v); want source=live stale=false", opModeFreshness, ok)
+	}
+	roomMappingFreshness, ok := entry.FieldFreshness[zoneFieldRoomTemperatureZoneMappingRaw]
+	if !ok || roomMappingFreshness.Source != semanticSnapshotSourceCache || !roomMappingFreshness.Stale {
+		t.Fatalf("room_temperature_zone_mapping_raw freshness = %+v (ok=%v); want source=cache stale=true", roomMappingFreshness, ok)
+	}
+}
+
+func TestVaillantSemanticPoller_PublishZones_SeparatesRoomTemperatureZoneMappingFromAssociatedCircuit(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	roomTemperatureZoneMapping := uint16(2)
+	associatedCircuit := uint16(resolveAssociatedCircuitInstance(&roomTemperatureZoneMapping, 1))
+
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		zones: map[byte]*vaillantZoneSnapshot{
+			0x01: {
+				Instance:      0x01,
+				Present:       true,
+				Name:          "Etaj",
+				OperatingMode: "heat",
+				Preset:        "manual",
+				AllowedModes:  []string{"off", "auto", "heat"},
+				ConfigurationRoomTemperatureZoneMappingRaw: &roomTemperatureZoneMapping,
+				ConfigurationAssociatedCircuitRaw:          &associatedCircuit,
+			},
+		},
+	}
+
+	poller.publishZones(semanticSnapshotSourceLive)
+
+	zones := provider.Zones()
+	if len(zones) != 1 {
+		t.Fatalf("len(provider.Zones()) = %d; want 1", len(zones))
+	}
+	if zones[0].Config.RoomTemperatureZoneMapping == nil || *zones[0].Config.RoomTemperatureZoneMapping != 2 {
+		t.Fatalf("roomTemperatureZoneMapping = %#v; want 2", zones[0].Config.RoomTemperatureZoneMapping)
+	}
+	if zones[0].Config.AssociatedCircuit == nil || *zones[0].Config.AssociatedCircuit != 1 {
+		t.Fatalf("associatedCircuit = %#v; want 1", zones[0].Config.AssociatedCircuit)
 	}
 }
 

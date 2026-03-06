@@ -47,6 +47,34 @@ function formatPercent(value) {
   return `${number.toFixed(0)}%`;
 }
 
+function formatToggle(value) {
+  if (value === true) {
+    return "on";
+  }
+  if (value === false) {
+    return "off";
+  }
+  return "n/a";
+}
+
+function formatYesNo(value) {
+  if (value === true) {
+    return "yes";
+  }
+  if (value === false) {
+    return "no";
+  }
+  return "n/a";
+}
+
+function formatInteger(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "n/a";
+  }
+  return String(Math.round(number));
+}
+
 function formatAddress(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -939,6 +967,9 @@ class PortalShell extends HTMLElement {
       const response = await fetch("api/v1/semantic/snapshot");
       const payload = await response.json();
       const zones = Array.isArray(payload.zones) ? payload.zones : [];
+      const circuits = Array.isArray(payload.circuits) ? payload.circuits : [];
+      const radioDevices = Array.isArray(payload.radio_devices) ? payload.radio_devices : [];
+      const cylinders = Array.isArray(payload.cylinders) ? payload.cylinders : [];
       const dhw = payload.dhw;
       const rows = [];
       rows.push(`<li><strong>Zones detected:</strong> ${zones.length}</li>`);
@@ -946,41 +977,92 @@ class PortalShell extends HTMLElement {
         rows.push("<li>No semantic zones available.</li>");
       } else {
         zones.forEach((zone) => {
+          const state = zone.state || {};
+          const config = zone.config || {};
           const name = escapeHtml(zone.name || zone.id || "zone");
-          const mode = escapeHtml(zone.operating_mode || "unknown");
-          const preset = escapeHtml(zone.preset || "n/a");
-          const current = formatTemperature(zone.current_temp_c);
-          const target = formatTemperature(zone.target_temp_c);
-          const demand = formatPercent(zone.heating_demand);
+          const mode = escapeHtml(config.operating_mode || "n/a");
+          const preset = escapeHtml(config.preset || "n/a");
+          const current = formatTemperature(state.current_temp_c);
+          const target = formatTemperature(config.target_temp_c);
+          const demand = formatPercent(state.heating_demand_pct);
+          const hvacAction = escapeHtml(state.hvac_action || "n/a");
+          const circuitType = escapeHtml(config.circuit_type || "n/a");
           rows.push(
-            `<li><strong>${name}</strong> <span class="muted-inline">mode=${mode} preset=${preset} current=${escapeHtml(current)} target=${escapeHtml(target)} demand=${escapeHtml(demand)}</span></li>`,
+            `<li><strong>${name}</strong> <span class="muted-inline">mode=${mode} preset=${preset} current=${escapeHtml(current)} target=${escapeHtml(target)} demand=${escapeHtml(demand)} hvac=${hvacAction} circuit=${circuitType}</span></li>`,
           );
         });
       }
       if (dhw) {
-        const dhwPreset = dhw.preset ? ` preset=${escapeHtml(dhw.preset)}` : "";
-        const dhwDemand = dhw.heating_demand != null ? ` demand=${escapeHtml(formatPercent(dhw.heating_demand))}` : "";
-        rows.push(`<li><strong>DHW</strong> <span class="muted-inline">mode=${escapeHtml(dhw.operating_mode || "unknown")}${dhwPreset} current=${escapeHtml(formatTemperature(dhw.current_temp_c))} target=${escapeHtml(formatTemperature(dhw.target_temp_c))}${dhwDemand}</span></li>`);
+        const dhwState = dhw.state || {};
+        const dhwConfig = dhw.config || {};
+        const dhwPreset = dhwConfig.preset ? ` preset=${escapeHtml(dhwConfig.preset)}` : "";
+        const dhwDemand = dhwState.heating_demand_pct != null
+          ? ` demand=${escapeHtml(formatPercent(dhwState.heating_demand_pct))}`
+          : "";
+        const specialFunction = dhwState.special_function
+          ? ` special=${escapeHtml(dhwState.special_function)}`
+          : "";
+        rows.push(`<li><strong>DHW</strong> <span class="muted-inline">mode=${escapeHtml(dhwConfig.operating_mode || "n/a")}${dhwPreset} current=${escapeHtml(formatTemperature(dhwState.current_temp_c))} target=${escapeHtml(formatTemperature(dhwConfig.target_temp_c))}${dhwDemand}${specialFunction}</span></li>`);
+      }
+      if (payload.boiler_status) {
+        const boilerState = payload.boiler_status.state || {};
+        const boilerConfig = payload.boiler_status.config || {};
+        const boilerPressure = formatFixed(boilerState.water_pressure_bar, 2);
+        rows.push(
+          `<li><strong>Boiler</strong> <span class="muted-inline">flow=${escapeHtml(formatTemperature(boilerState.flow_temperature_c))} return=${escapeHtml(formatTemperature(boilerState.return_temperature_c))} pressure=${escapeHtml(boilerPressure === "n/a" ? boilerPressure : `${boilerPressure}bar`)} flame=${escapeHtml(formatToggle(boilerState.flame_active))} dhw_mode=${escapeHtml(boilerConfig.dhw_operating_mode || "n/a")}</span></li>`,
+        );
+      }
+      if (payload.system) {
+        const systemState = payload.system.state || {};
+        const systemConfig = payload.system.config || {};
+        const systemPressure = formatFixed(systemState.system_water_pressure, 2);
+        rows.push(
+          `<li><strong>System</strong> <span class="muted-inline">flow=${escapeHtml(formatTemperature(systemState.system_flow_temperature))} pressure=${escapeHtml(systemPressure === "n/a" ? systemPressure : `${systemPressure}bar`)} outdoor=${escapeHtml(formatTemperature(systemState.outdoor_temperature))} maintenance=${escapeHtml(formatYesNo(systemState.maintenance_due))} adaptive=${escapeHtml(formatYesNo(systemConfig.adaptive_heating_curve))}</span></li>`,
+        );
+      }
+      if (payload.fm5_semantic_mode) {
+        rows.push(`<li><strong>FM5</strong> <span class="muted-inline">mode=${escapeHtml(payload.fm5_semantic_mode)}</span></li>`);
+      }
+      if (payload.solar) {
+        const solar = payload.solar || {};
+        rows.push(
+          `<li><strong>Solar</strong> <span class="muted-inline">collector=${escapeHtml(formatTemperature(solar.collector_temperature_c))} return=${escapeHtml(formatTemperature(solar.return_temperature_c))} pump=${escapeHtml(formatToggle(solar.pump_active))} yield=${escapeHtml(formatFixed(solar.current_yield, 2))}</span></li>`,
+        );
       }
       if (payload.energy_totals) {
         const et = payload.energy_totals;
         rows.push(
           `<li><strong>Energy today (gas)</strong> <span class="muted-inline">climate=${escapeHtml(formatFixed(et.gas?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.gas?.dhw?.today, 2))}</span></li>`,
         );
-        const elecClimate = et.electric?.climate?.today || 0;
-        const elecDHW = et.electric?.dhw?.today || 0;
-        if (elecClimate > 0 || elecDHW > 0) {
+        rows.push(
+          `<li><strong>Energy today (electric)</strong> <span class="muted-inline">climate=${escapeHtml(formatFixed(et.electric?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.electric?.dhw?.today, 2))}</span></li>`,
+        );
+        rows.push(
+          `<li><strong>Energy today (solar)</strong> <span class="muted-inline">climate=${escapeHtml(formatFixed(et.solar?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.solar?.dhw?.today, 2))}</span></li>`,
+        );
+      }
+      if (circuits.length > 0) {
+        circuits.forEach((circuit) => {
+          const state = circuit.state || {};
+          const config = circuit.config || {};
           rows.push(
-            `<li><strong>Energy today (electric)</strong> <span class="muted-inline">climate=${escapeHtml(formatFixed(elecClimate, 2))} dhw=${escapeHtml(formatFixed(elecDHW, 2))}</span></li>`,
+            `<li><strong>Circuit ${escapeHtml(formatInteger(circuit.index))}</strong> <span class="muted-inline">type=${escapeHtml(circuit.circuit_type || "n/a")} mixer=${escapeHtml(formatYesNo(circuit.has_mixer))} flow=${escapeHtml(formatTemperature(state.flow_temperature_c))} setpoint=${escapeHtml(formatTemperature(state.flow_setpoint_c))} pump=${escapeHtml(formatToggle(state.pump_active))} curve=${escapeHtml(formatFixed(config.heating_curve, 2))}</span></li>`,
           );
-        }
-        const solarClimate = et.solar?.climate?.today || 0;
-        const solarDHW = et.solar?.dhw?.today || 0;
-        if (solarClimate > 0 || solarDHW > 0) {
+        });
+      }
+      if (radioDevices.length > 0) {
+        radioDevices.forEach((device) => {
           rows.push(
-            `<li><strong>Energy today (solar)</strong> <span class="muted-inline">climate=${escapeHtml(formatFixed(solarClimate, 2))} dhw=${escapeHtml(formatFixed(solarDHW, 2))}</span></li>`,
+            `<li><strong>Radio ${escapeHtml(device.device_model || `group-${formatInteger(device.group)}-${formatInteger(device.instance)}`)}</strong> <span class="muted-inline">slot=${escapeHtml(device.slot_mode || "n/a")} connected=${escapeHtml(formatYesNo(device.device_connected))} zone=${escapeHtml(formatInteger(device.zone_assignment))} temp=${escapeHtml(formatTemperature(device.room_temperature_c))} humidity=${escapeHtml(formatPercent(device.room_humidity_pct))}</span></li>`,
           );
-        }
+        });
+      }
+      if (cylinders.length > 0) {
+        cylinders.forEach((cylinder) => {
+          rows.push(
+            `<li><strong>Cylinder ${escapeHtml(formatInteger(cylinder.index))}</strong> <span class="muted-inline">temp=${escapeHtml(formatTemperature(cylinder.temperature_c))} max=${escapeHtml(formatTemperature(cylinder.max_setpoint_c))} hysteresis=${escapeHtml(formatTemperature(cylinder.charge_hysteresis_c))} offset=${escapeHtml(formatTemperature(cylinder.charge_offset_c))}</span></li>`,
+          );
+        });
       }
       listEl.innerHTML = rows.join("");
     } catch (err) {

@@ -10,6 +10,20 @@ import (
 	"time"
 )
 
+var canonicalPortalSemanticKeys = []string{
+	"zones",
+	"dhw",
+	"energy_totals",
+	"boiler_status",
+	"system",
+	"circuits",
+	"radio_devices",
+	"fm5_semantic_mode",
+	"solar",
+	"cylinders",
+	"captured_utc",
+}
+
 func TestHandlerIndex(t *testing.T) {
 	h := NewHandler(Options{GraphQLPath: "/graphql"})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -655,6 +669,64 @@ func TestSemanticSnapshotEndpoint_ExtensionFamilies(t *testing.T) {
 	}
 	if cylinder["temperature_c"] != cylinderTemperature {
 		t.Fatalf("cylinder.temperature_c=%v; want %v", cylinder["temperature_c"], cylinderTemperature)
+	}
+}
+
+func TestSemanticSnapshotEndpoint_CanonicalFamilyInventory(t *testing.T) {
+	dhwMode := "AUTO"
+	systemScheme := 1
+	zoneAssignment := 2
+	solarEnabled := false
+	solarCollector := 120.5
+	cylinderTemperature := 58.1
+
+	h := NewHandler(Options{
+		ListSemantic: func() SemanticSnapshot {
+			return SemanticSnapshot{
+				Zones:  []SemanticZone{{ID: "zone-1", Name: "Parter"}},
+				DHW:    &SemanticDHW{Config: SemanticDhwConfig{OperatingMode: "heat"}},
+				Energy: &SemanticEnergyTotals{},
+				BoilerStatus: &SemanticBoilerStatus{
+					Config: SemanticBoilerConfig{DhwOperatingMode: &dhwMode},
+				},
+				System: &SemanticSystemStatus{
+					Properties: SemanticSystemProperties{SystemScheme: &systemScheme},
+				},
+				Circuits: []SemanticCircuit{
+					{Index: 0, CircuitType: "heating"},
+				},
+				RadioDevices: []SemanticRadioDevice{
+					{Group: 0, Instance: 1, DeviceModel: "VR92", ZoneAssignment: &zoneAssignment},
+				},
+				FM5Mode: "INTERPRETED",
+				Solar: &SemanticSolarStatus{
+					CollectorTemperatureC: &solarCollector,
+					SolarEnabled:          &solarEnabled,
+				},
+				Cylinders: []SemanticCylinder{
+					{Index: 0, TemperatureC: &cylinderTemperature},
+				},
+				CapturedUTC: "2026-02-23T23:00:00Z",
+			}
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/semantic/snapshot", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	for _, key := range canonicalPortalSemanticKeys {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("semantic snapshot missing key %q: %#v", key, payload)
+		}
 	}
 }
 

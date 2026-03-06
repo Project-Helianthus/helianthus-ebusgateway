@@ -14,6 +14,19 @@ import (
 	graphqlclient "github.com/machinebox/graphql"
 )
 
+var canonicalSemanticRootFields = []string{
+	"zones",
+	"dhw",
+	"energyTotals",
+	"circuits",
+	"radioDevices",
+	"fm5SemanticMode",
+	"solar",
+	"cylinders",
+	"boilerStatus",
+	"system",
+}
+
 func TestQueryResolvers_Integration(t *testing.T) {
 	provider := mockProvider{
 		planes: []registry.Plane{
@@ -317,18 +330,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			got[field.Name] = true
 		}
 
-		for _, name := range []string{
-			"zones",
-			"dhw",
-			"energyTotals",
-			"circuits",
-			"radioDevices",
-			"fm5SemanticMode",
-			"solar",
-			"cylinders",
-			"boilerStatus",
-			"system",
-		} {
+		for _, name := range canonicalSemanticRootFields {
 			if !got[name] {
 				t.Fatalf("query root missing %q in introspection: %#v", name, got)
 			}

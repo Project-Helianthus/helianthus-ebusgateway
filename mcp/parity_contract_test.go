@@ -14,6 +14,20 @@ type toolSchemaSignature struct {
 	SchemaHash string `json:"schema_hash"`
 }
 
+var canonicalSemanticSnapshotPlanes = []string{
+	"runtime_status",
+	"zones",
+	"dhw",
+	"energy_totals",
+	"boiler_status",
+	"system",
+	"circuits",
+	"radio_devices",
+	"fm5_mode",
+	"solar",
+	"cylinders",
+}
+
 func TestToolInventoryGoldenSignatures(t *testing.T) {
 	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
 	server, err := NewServer(reg, &testInvoker{})
@@ -85,6 +99,7 @@ func TestToolInventoryGoldenSignatures(t *testing.T) {
 }
 
 func TestParityMatrixReadAndInvoke(t *testing.T) {
+	boilerMode := "AUTO"
 	plane := &testPlane{
 		name: "heating",
 		methods: []registry.Method{
@@ -119,6 +134,7 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 		},
 		dhw:    &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO", Preset: "ECO"}},
 		energy: &EnergyTotals{Gas: EnergyChannel{DHW: EnergySeries{Today: 1.25}}},
+		boiler: &BoilerStatus{Config: &BoilerConfig{DhwOperatingMode: &boilerMode}},
 		system: &SystemStatus{Properties: &SystemProperties{SystemScheme: intPtr(8), ModuleConfigurationVR71: intPtr(2), VR71CircuitStartIndex: intPtr(-1)}},
 	})
 
@@ -140,6 +156,7 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 		{name: "cylinders", tool: toolSemanticCylindersGetName, args: `{}`},
 		{name: "dhw", tool: toolSemanticDHWGetName, args: `{}`},
 		{name: "energy", tool: toolSemanticEnergyGetName, args: `{}`},
+		{name: "boiler", tool: toolSemanticBoilerGetName, args: `{}`},
 		{name: "system", tool: toolSemanticSystemGetName, args: `{}`},
 		{name: "semantic_snapshot", tool: toolSemanticSnapshotName, args: `{}`},
 		{name: "invoke", tool: toolInvokeV1Name, args: `{"address":8,"plane":"heating","method":"get_status","params":{},"intent":"READ_ONLY","allow_dangerous":false}`},
@@ -166,6 +183,21 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 			}
 			if hash, _ := meta["data_hash"].(string); hash == "" {
 				t.Fatalf("tool %s data_hash empty", tc.tool)
+			}
+			if tc.tool == toolSemanticSnapshotName {
+				data, ok := envelope["data"].(map[string]any)
+				if !ok {
+					t.Fatalf("semantic snapshot data type = %T; want map", envelope["data"])
+				}
+				planes, ok := data["planes"].(map[string]any)
+				if !ok {
+					t.Fatalf("semantic snapshot planes type = %T; want map", data["planes"])
+				}
+				for _, plane := range canonicalSemanticSnapshotPlanes {
+					if _, ok := planes[plane]; !ok {
+						t.Fatalf("semantic snapshot missing plane %q: %#v", plane, planes)
+					}
+				}
 			}
 		})
 	}

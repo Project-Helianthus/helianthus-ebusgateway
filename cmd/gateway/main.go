@@ -348,71 +348,14 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 				if semanticProvider == nil {
 					return portal.SemanticSnapshot{}
 				}
-				zones := semanticProvider.Zones()
-				zoneItems := make([]portal.SemanticZone, 0, len(zones))
-				for _, zone := range zones {
-					zoneItems = append(zoneItems, portal.SemanticZone{
-						ID:   zone.ID,
-						Name: zone.Name,
-						State: portal.SemanticZoneState{
-							CurrentTempC:       zone.State.CurrentTempC,
-							CurrentHumidityPct: zone.State.CurrentHumidityPct,
-							HvacAction:         zone.State.HvacAction,
-							SpecialFunction:    zone.State.SpecialFunction,
-							HeatingDemandPct:   zone.State.HeatingDemandPct,
-							ValvePositionPct:   zone.State.ValvePositionPct,
-						},
-						Config: portal.SemanticZoneConfig{
-							OperatingMode:              zone.Config.OperatingMode,
-							Preset:                     zone.Config.Preset,
-							TargetTempC:                zone.Config.TargetTempC,
-							AllowedModes:               zone.Config.AllowedModes,
-							CircuitType:                zone.Config.CircuitType,
-							AssociatedCircuit:          zone.Config.AssociatedCircuit,
-							RoomTemperatureZoneMapping: zone.Config.RoomTemperatureZoneMapping,
-						},
-					})
-				}
-
-				var dhw *portal.SemanticDHW
-				if value := semanticProvider.DHW(); value != nil {
-					dhw = &portal.SemanticDHW{
-						State: portal.SemanticDhwState{
-							CurrentTempC:     value.State.CurrentTempC,
-							SpecialFunction:  value.State.SpecialFunction,
-							HeatingDemandPct: value.State.HeatingDemandPct,
-						},
-						Config: portal.SemanticDhwConfig{
-							OperatingMode: value.Config.OperatingMode,
-							Preset:        value.Config.Preset,
-							TargetTempC:   value.Config.TargetTempC,
-						},
-					}
-				}
-
-				var energy *portal.SemanticEnergyTotals
-				if value := semanticProvider.EnergyTotals(); value != nil {
-					energy = &portal.SemanticEnergyTotals{
-						Gas: portal.SemanticEnergyChannel{
-							DHW:     portal.SemanticEnergySeries{Today: value.Gas.DHW.Today, Yearly: append([]float64(nil), value.Gas.DHW.Yearly...)},
-							Climate: portal.SemanticEnergySeries{Today: value.Gas.Climate.Today, Yearly: append([]float64(nil), value.Gas.Climate.Yearly...)},
-						},
-						Electric: portal.SemanticEnergyChannel{
-							DHW:     portal.SemanticEnergySeries{Today: value.Electric.DHW.Today, Yearly: append([]float64(nil), value.Electric.DHW.Yearly...)},
-							Climate: portal.SemanticEnergySeries{Today: value.Electric.Climate.Today, Yearly: append([]float64(nil), value.Electric.Climate.Yearly...)},
-						},
-						Solar: portal.SemanticEnergyChannel{
-							DHW:     portal.SemanticEnergySeries{Today: value.Solar.DHW.Today, Yearly: append([]float64(nil), value.Solar.DHW.Yearly...)},
-							Climate: portal.SemanticEnergySeries{Today: value.Solar.Climate.Today, Yearly: append([]float64(nil), value.Solar.Climate.Yearly...)},
-						},
-					}
-				}
-
 				return portal.SemanticSnapshot{
-					Zones:       zoneItems,
-					DHW:         dhw,
-					Energy:      energy,
-					CapturedUTC: time.Now().UTC().Format(time.RFC3339),
+					Zones:        mapPortalZones(semanticProvider.Zones()),
+					DHW:          mapPortalDHW(semanticProvider.DHW()),
+					Energy:       mapPortalEnergyTotals(semanticProvider.EnergyTotals()),
+					BoilerStatus: mapPortalBoilerStatus(semanticProvider.BoilerStatus()),
+					System:       mapPortalSystemStatus(semanticProvider.System()),
+					Circuits:     mapPortalCircuits(semanticProvider.Circuits()),
+					CapturedUTC:  time.Now().UTC().Format(time.RFC3339),
 				}
 			},
 			ListProjections: func() []portal.ProjectionDevice {
@@ -539,4 +482,199 @@ func normalizeMountPath(path string, fallback string) string {
 		return fallback
 	}
 	return normalized
+}
+
+func mapPortalZones(zones []graphql.Zone) []portal.SemanticZone {
+	if len(zones) == 0 {
+		return nil
+	}
+	items := make([]portal.SemanticZone, 0, len(zones))
+	for _, zone := range zones {
+		items = append(items, portal.SemanticZone{
+			ID:   zone.ID,
+			Name: zone.Name,
+			State: portal.SemanticZoneState{
+				CurrentTempC:       cloneFloatPtr(zone.State.CurrentTempC),
+				CurrentHumidityPct: cloneFloatPtr(zone.State.CurrentHumidityPct),
+				HvacAction:         zone.State.HvacAction,
+				SpecialFunction:    zone.State.SpecialFunction,
+				HeatingDemandPct:   cloneFloatPtr(zone.State.HeatingDemandPct),
+				ValvePositionPct:   cloneFloatPtr(zone.State.ValvePositionPct),
+			},
+			Config: portal.SemanticZoneConfig{
+				OperatingMode:              zone.Config.OperatingMode,
+				Preset:                     zone.Config.Preset,
+				TargetTempC:                cloneFloatPtr(zone.Config.TargetTempC),
+				AllowedModes:               append([]string(nil), zone.Config.AllowedModes...),
+				CircuitType:                zone.Config.CircuitType,
+				AssociatedCircuit:          cloneIntPtr(zone.Config.AssociatedCircuit),
+				RoomTemperatureZoneMapping: cloneIntPtr(zone.Config.RoomTemperatureZoneMapping),
+			},
+		})
+	}
+	return items
+}
+
+func mapPortalDHW(status *graphql.DhwStatus) *portal.SemanticDHW {
+	if status == nil {
+		return nil
+	}
+	return &portal.SemanticDHW{
+		State: portal.SemanticDhwState{
+			CurrentTempC:     cloneFloatPtr(status.State.CurrentTempC),
+			SpecialFunction:  status.State.SpecialFunction,
+			HeatingDemandPct: cloneFloatPtr(status.State.HeatingDemandPct),
+		},
+		Config: portal.SemanticDhwConfig{
+			OperatingMode: status.Config.OperatingMode,
+			Preset:        status.Config.Preset,
+			TargetTempC:   cloneFloatPtr(status.Config.TargetTempC),
+		},
+	}
+}
+
+func mapPortalEnergyTotals(value *graphql.EnergyTotals) *portal.SemanticEnergyTotals {
+	if value == nil {
+		return nil
+	}
+	return &portal.SemanticEnergyTotals{
+		Gas:      mapPortalEnergyChannel(value.Gas),
+		Electric: mapPortalEnergyChannel(value.Electric),
+		Solar:    mapPortalEnergyChannel(value.Solar),
+	}
+}
+
+func mapPortalEnergyChannel(channel graphql.EnergyChannel) portal.SemanticEnergyChannel {
+	return portal.SemanticEnergyChannel{
+		DHW:     mapPortalEnergySeries(channel.DHW),
+		Climate: mapPortalEnergySeries(channel.Climate),
+	}
+}
+
+func mapPortalEnergySeries(series graphql.EnergySeries) portal.SemanticEnergySeries {
+	out := portal.SemanticEnergySeries{Today: series.Today}
+	if len(series.Yearly) > 0 {
+		out.Yearly = append([]float64(nil), series.Yearly...)
+	}
+	return out
+}
+
+func mapPortalBoilerStatus(status *graphql.BoilerStatus) *portal.SemanticBoilerStatus {
+	if status == nil {
+		return nil
+	}
+	return &portal.SemanticBoilerStatus{
+		State: portal.SemanticBoilerState{
+			FlowTemperatureC:         cloneFloatPtr(status.State.FlowTemperatureC),
+			ReturnTemperatureC:       cloneFloatPtr(status.State.ReturnTemperatureC),
+			CentralHeatingPumpActive: cloneBoolPtr(status.State.CentralHeatingPumpActive),
+			WaterPressureBar:         cloneFloatPtr(status.State.WaterPressureBar),
+			ExternalPumpActive:       cloneBoolPtr(status.State.ExternalPumpActive),
+			CirculationPumpActive:    cloneBoolPtr(status.State.CirculationPumpActive),
+			GasValveActive:           cloneBoolPtr(status.State.GasValveActive),
+			FlameActive:              cloneBoolPtr(status.State.FlameActive),
+			DiverterValvePositionPct: cloneFloatPtr(status.State.DiverterValvePositionPct),
+			FanSpeedRpm:              cloneIntPtr(status.State.FanSpeedRpm),
+			TargetFanSpeedRpm:        cloneIntPtr(status.State.TargetFanSpeedRpm),
+			IonisationVoltageUa:      cloneFloatPtr(status.State.IonisationVoltageUa),
+			DhwWaterFlowLpm:          cloneFloatPtr(status.State.DhwWaterFlowLpm),
+			DhwDemandActive:          cloneBoolPtr(status.State.DhwDemandActive),
+			HeatingSwitchActive:      cloneBoolPtr(status.State.HeatingSwitchActive),
+			StorageLoadPumpPct:       cloneFloatPtr(status.State.StorageLoadPumpPct),
+			ModulationPct:            cloneFloatPtr(status.State.ModulationPct),
+			PrimaryCircuitFlowLpm:    cloneFloatPtr(status.State.PrimaryCircuitFlowLpm),
+			FlowTempDesiredC:         cloneFloatPtr(status.State.FlowTempDesiredC),
+			DhwTempDesiredC:          cloneFloatPtr(status.State.DhwTempDesiredC),
+			StateNumber:              cloneIntPtr(status.State.StateNumber),
+			DhwTemperatureC:          cloneFloatPtr(status.State.DhwTemperatureC),
+			DhwTargetTemperatureC:    cloneFloatPtr(status.State.DhwTargetTemperatureC),
+		},
+		Config: portal.SemanticBoilerConfig{
+			DhwOperatingMode: cloneStringPtr(status.Config.DhwOperatingMode),
+			FlowsetHcMaxC:    cloneFloatPtr(status.Config.FlowsetHcMaxC),
+			FlowsetHwcMaxC:   cloneFloatPtr(status.Config.FlowsetHwcMaxC),
+			PartloadHcKW:     cloneFloatPtr(status.Config.PartloadHcKW),
+			PartloadHwcKW:    cloneFloatPtr(status.Config.PartloadHwcKW),
+		},
+		Diagnostics: portal.SemanticBoilerDiagnostics{
+			HeatingStatusRaw:         cloneIntPtr(status.Diagnostics.HeatingStatusRaw),
+			DhwStatusRaw:             cloneIntPtr(status.Diagnostics.DhwStatusRaw),
+			CentralHeatingHours:      cloneFloatPtr(status.Diagnostics.CentralHeatingHours),
+			DhwHours:                 cloneFloatPtr(status.Diagnostics.DhwHours),
+			CentralHeatingStarts:     cloneIntPtr(status.Diagnostics.CentralHeatingStarts),
+			DhwStarts:                cloneIntPtr(status.Diagnostics.DhwStarts),
+			PumpHours:                cloneFloatPtr(status.Diagnostics.PumpHours),
+			FanHours:                 cloneFloatPtr(status.Diagnostics.FanHours),
+			DeactivationsIFC:         cloneIntPtr(status.Diagnostics.DeactivationsIFC),
+			DeactivationsTemplimiter: cloneIntPtr(status.Diagnostics.DeactivationsTemplimiter),
+		},
+	}
+}
+
+func mapPortalSystemStatus(status *graphql.SystemStatus) *portal.SemanticSystemStatus {
+	if status == nil {
+		return nil
+	}
+	return &portal.SemanticSystemStatus{
+		State: portal.SemanticSystemState{
+			SystemOff:                    cloneBoolPtr(status.State.SystemOff),
+			SystemWaterPressure:          cloneFloatPtr(status.State.SystemWaterPressure),
+			SystemFlowTemperature:        cloneFloatPtr(status.State.SystemFlowTemperature),
+			OutdoorTemperature:           cloneFloatPtr(status.State.OutdoorTemperature),
+			OutdoorTemperatureAvg24h:     cloneFloatPtr(status.State.OutdoorTemperatureAvg24h),
+			MaintenanceDue:               cloneBoolPtr(status.State.MaintenanceDue),
+			HwcCylinderTemperatureTop:    cloneFloatPtr(status.State.HwcCylinderTemperatureTop),
+			HwcCylinderTemperatureBottom: cloneFloatPtr(status.State.HwcCylinderTemperatureBottom),
+		},
+		Config: portal.SemanticSystemConfig{
+			AdaptiveHeatingCurve:         cloneBoolPtr(status.Config.AdaptiveHeatingCurve),
+			AlternativePoint:             cloneFloatPtr(status.Config.AlternativePoint),
+			HeatingCircuitBivalencePoint: cloneFloatPtr(status.Config.HeatingCircuitBivalencePoint),
+			DhwBivalencePoint:            cloneFloatPtr(status.Config.DhwBivalencePoint),
+			HcEmergencyTemperature:       cloneFloatPtr(status.Config.HcEmergencyTemperature),
+			HwcMaxFlowTempDesired:        cloneFloatPtr(status.Config.HwcMaxFlowTempDesired),
+			MaxRoomHumidity:              cloneIntPtr(status.Config.MaxRoomHumidity),
+		},
+		Properties: portal.SemanticSystemProperties{
+			SystemScheme:            cloneIntPtr(status.Properties.SystemScheme),
+			ModuleConfigurationVR71: cloneIntPtr(status.Properties.ModuleConfigurationVR71),
+			Vr71CircuitStartIndex:   cloneIntPtr(status.Properties.Vr71CircuitStartIndex),
+		},
+	}
+}
+
+func mapPortalCircuits(circuits []graphql.CircuitStatus) []portal.SemanticCircuit {
+	if len(circuits) == 0 {
+		return nil
+	}
+	items := make([]portal.SemanticCircuit, 0, len(circuits))
+	for _, circuit := range circuits {
+		items = append(items, portal.SemanticCircuit{
+			Index:       circuit.Index,
+			CircuitType: circuit.CircuitType,
+			HasMixer:    circuit.HasMixer,
+			State: portal.SemanticCircuitState{
+				PumpActive:       cloneBoolPtr(circuit.State.PumpActive),
+				MixerPositionPct: cloneFloatPtr(circuit.State.MixerPositionPct),
+				FlowTemperatureC: cloneFloatPtr(circuit.State.FlowTemperatureC),
+				FlowSetpointC:    cloneFloatPtr(circuit.State.FlowSetpointC),
+				CalcFlowTempC:    cloneFloatPtr(circuit.State.CalcFlowTempC),
+				CircuitState:     circuit.State.CircuitState,
+				Humidity:         cloneFloatPtr(circuit.State.Humidity),
+				DewPoint:         cloneFloatPtr(circuit.State.DewPoint),
+				PumpHours:        cloneFloatPtr(circuit.State.PumpHours),
+				PumpStarts:       cloneIntPtr(circuit.State.PumpStarts),
+			},
+			Config: portal.SemanticCircuitConfig{
+				HeatingCurve:    cloneFloatPtr(circuit.Config.HeatingCurve),
+				FlowTempMaxC:    cloneFloatPtr(circuit.Config.FlowTempMaxC),
+				FlowTempMinC:    cloneFloatPtr(circuit.Config.FlowTempMinC),
+				SummerLimitC:    cloneFloatPtr(circuit.Config.SummerLimitC),
+				FrostProtC:      cloneFloatPtr(circuit.Config.FrostProtC),
+				RoomTempControl: circuit.Config.RoomTempControl,
+				CoolingEnabled:  cloneBoolPtr(circuit.Config.CoolingEnabled),
+			},
+		})
+	}
+	return items
 }

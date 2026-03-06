@@ -917,8 +917,17 @@ func (p *vaillantSemanticPoller) boilerStatusTierTask(tier boilerStatusTier) fun
 	}
 }
 
-func (p *vaillantSemanticPoller) enqueueBoilerStatusPriming() {
+func (p *vaillantSemanticPoller) enqueueBoilerStatusPriming(ctx context.Context) {
 	if p == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if p.tasks == nil {
+		for _, schedule := range p.boilerStatusTierSchedules() {
+			p.boilerStatusTierTask(schedule.tier)(ctx)
+		}
 		return
 	}
 	for _, schedule := range p.boilerStatusTierSchedules() {
@@ -926,8 +935,19 @@ func (p *vaillantSemanticPoller) enqueueBoilerStatusPriming() {
 	}
 }
 
-func (p *vaillantSemanticPoller) enqueueControllerSemanticPriming() {
+func (p *vaillantSemanticPoller) enqueueControllerSemanticPriming(ctx context.Context) {
 	if p == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if p.tasks == nil {
+		p.refreshConfig(ctx)
+		p.refreshCircuits(ctx)
+		p.refreshSystem(ctx)
+		p.refreshRadioDevices(ctx)
+		p.refreshEnergy(ctx)
 		return
 	}
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
@@ -947,12 +967,9 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 
 	go p.tasks.run(ctx)
 
-	// Prime quickly so HA can create entities on first coordinator refresh.
+	// Discovery owns downstream controller/boiler priming and avoids duplicate startup bursts.
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
-	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
-	p.enqueueControllerSemanticPriming()
-	p.enqueueBoilerStatusPriming()
 
 	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
 	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
@@ -990,7 +1007,7 @@ func (p *vaillantSemanticPoller) enqueueTask(priority semanticTaskPriority, fn f
 	}
 	scheduler := p.tasks
 	if scheduler == nil {
-		p.withPollLock(context.Background(), fn)
+		fn(context.Background())
 		return
 	}
 	err := scheduler.submit(priority, func(taskCtx context.Context) {
@@ -1102,7 +1119,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 			log.Printf("semantic_boiler_discovery address=0x%02x source=nonstandard", boilerAddress)
 		}
 		if boilerAddress != prevBoilerAddress && boilerAddress != 0 {
-			p.enqueueBoilerStatusPriming()
+			p.enqueueBoilerStatusPriming(ctx)
 		}
 		p.publishZones(semanticSnapshotSourceCache)
 		p.publishDHW(semanticSnapshotSourceCache)
@@ -1125,13 +1142,13 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	}
 	if controller != prevController && controller != 0 {
 		log.Printf("semantic_controller_discovery address=0x%02x", controller)
-		p.enqueueControllerSemanticPriming()
+		p.enqueueControllerSemanticPriming(ctx)
 	}
 	if boilerAddress != prevBoilerAddress && boilerAddress != 0 && boilerAddress != 0x08 {
 		log.Printf("semantic_boiler_discovery address=0x%02x source=nonstandard", boilerAddress)
 	}
 	if boilerAddress != prevBoilerAddress && boilerAddress != 0 {
-		p.enqueueBoilerStatusPriming()
+		p.enqueueBoilerStatusPriming(ctx)
 	}
 
 	present := make(map[byte]bool, 4)

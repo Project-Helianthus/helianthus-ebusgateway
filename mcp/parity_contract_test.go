@@ -125,7 +125,7 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 	server.SetStatusProvider(testStatusProvider{daemon: ServiceStatus{Status: "running"}, adapter: ServiceStatus{Status: "connected"}})
 	server.SetSemanticProvider(testSemanticProvider{
 		zones:    []Zone{{ID: "zone-a", Name: "Living", Config: ZoneConfig{OperatingMode: "AUTO", Preset: "COMFORT"}}},
-		circuits: []CircuitStatus{{Index: 0, CircuitType: "heating"}},
+		circuits: []CircuitStatus{{Index: 0, CircuitType: "heating", ManagingDevice: ManagingDevice{Role: "FUNCTION_MODULE", DeviceID: stringPtr("VR_71"), Address: intPtr(0x26)}}},
 		radio:    []RadioDevice{{Group: 0x09, Instance: 1, DeviceModel: "VRC720"}},
 		fm5Mode:  Fm5SemanticModeInterpreted,
 		solar:    &SolarStatus{CollectorTemperatureC: floatPtr(70)},
@@ -135,7 +135,7 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 		dhw:    &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO", Preset: "ECO"}},
 		energy: &EnergyTotals{Gas: EnergyChannel{DHW: EnergySeries{Today: 1.25}}},
 		boiler: &BoilerStatus{Config: &BoilerConfig{DhwOperatingMode: &boilerMode}},
-		system: &SystemStatus{Properties: &SystemProperties{SystemScheme: intPtr(8), ModuleConfigurationVR71: intPtr(2), VR71CircuitStartIndex: intPtr(-1)}},
+		system: &SystemStatus{Properties: &SystemProperties{SystemScheme: intPtr(8), ModuleConfigurationVR71: intPtr(2)}},
 	})
 
 	cases := []struct {

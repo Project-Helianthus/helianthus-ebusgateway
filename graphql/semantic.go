@@ -68,12 +68,27 @@ type CircuitConfig struct {
 	CoolingEnabled  *bool
 }
 
+type ManagingDeviceRole string
+
+const (
+	ManagingDeviceRoleRegulator      ManagingDeviceRole = "REGULATOR"
+	ManagingDeviceRoleFunctionModule ManagingDeviceRole = "FUNCTION_MODULE"
+	ManagingDeviceRoleUnknown        ManagingDeviceRole = "UNKNOWN"
+)
+
+type ManagingDevice struct {
+	Role     ManagingDeviceRole
+	DeviceID *string
+	Address  *int
+}
+
 type CircuitStatus struct {
-	Index       int
-	CircuitType string
-	HasMixer    bool
-	State       CircuitState
-	Config      CircuitConfig
+	Index          int
+	CircuitType    string
+	HasMixer       bool
+	State          CircuitState
+	Config         CircuitConfig
+	ManagingDevice ManagingDevice
 }
 
 type RadioDevice struct {
@@ -218,7 +233,6 @@ type SystemConfig struct {
 type SystemProperties struct {
 	SystemScheme            *int
 	ModuleConfigurationVR71 *int
-	Vr71CircuitStartIndex   *int
 }
 
 type SemanticProvider interface {
@@ -399,10 +413,6 @@ func cloneSystemProperties(properties SystemProperties) SystemProperties {
 	if properties.ModuleConfigurationVR71 != nil {
 		v := *properties.ModuleConfigurationVR71
 		properties.ModuleConfigurationVR71 = &v
-	}
-	if properties.Vr71CircuitStartIndex != nil {
-		v := *properties.Vr71CircuitStartIndex
-		properties.Vr71CircuitStartIndex = &v
 	}
 	return properties
 }

@@ -239,7 +239,6 @@ type SemanticSystemConfig struct {
 type SemanticSystemProperties struct {
 	SystemScheme            *int `json:"system_scheme,omitempty"`
 	ModuleConfigurationVR71 *int `json:"module_configuration_vr71,omitempty"`
-	Vr71CircuitStartIndex   *int `json:"vr71_circuit_start_index,omitempty"`
 }
 
 type SemanticSystemStatus struct {
@@ -271,12 +270,19 @@ type SemanticCircuitConfig struct {
 	CoolingEnabled  *bool    `json:"cooling_enabled,omitempty"`
 }
 
+type SemanticManagingDevice struct {
+	Role     string  `json:"role"`
+	DeviceID *string `json:"device_id,omitempty"`
+	Address  *int    `json:"address,omitempty"`
+}
+
 type SemanticCircuit struct {
-	Index       int                   `json:"index"`
-	CircuitType string                `json:"circuit_type,omitempty"`
-	HasMixer    bool                  `json:"has_mixer"`
-	State       SemanticCircuitState  `json:"state"`
-	Config      SemanticCircuitConfig `json:"config"`
+	Index          int                    `json:"index"`
+	CircuitType    string                 `json:"circuit_type,omitempty"`
+	HasMixer       bool                   `json:"has_mixer"`
+	State          SemanticCircuitState   `json:"state"`
+	Config         SemanticCircuitConfig  `json:"config"`
+	ManagingDevice SemanticManagingDevice `json:"managing_device"`
 }
 
 type SemanticRadioDevice struct {

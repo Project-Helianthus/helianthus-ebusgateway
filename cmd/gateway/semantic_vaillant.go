@@ -2146,6 +2146,8 @@ func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) 
 
 	p.mu.Lock()
 	instances := make([]byte, 0, len(p.circuits))
+	systemSnapshot := cloneSystemSnapshot(p.system)
+	fm5Mode := p.fm5Mode
 	for instance := range p.circuits {
 		instances = append(instances, instance)
 	}
@@ -2190,6 +2192,7 @@ func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) 
 				RoomTempControl: decodeRoomTempControlToken(snapshot.RoomTempControlRaw),
 				CoolingEnabled:  decodeUint16Bool(snapshot.CoolingEnabledRaw),
 			},
+			ManagingDevice: deriveCircuitManagingDevice(systemSnapshot, fm5Mode),
 		}
 		out = append(out, status)
 	}
@@ -3196,7 +3199,6 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 		Properties: graphql.SystemProperties{
 			SystemScheme:            uint16ToIntPtr(snapshot.SystemScheme),
 			ModuleConfigurationVR71: uint16ToIntPtr(snapshot.ModuleConfigurationVR71),
-			Vr71CircuitStartIndex:   deriveVR71CircuitStartIndex(snapshot.SystemScheme, snapshot.ModuleConfigurationVR71),
 		},
 	}
 
@@ -3357,6 +3359,8 @@ func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSourc
 		p.provider.SetSolar(solar)
 		p.provider.SetCylinders(cylinders)
 	}
+
+	p.publishCircuits(source)
 }
 
 func hasLiveCylinderEvidence(snapshot *vaillantCylinderSnapshot) bool {
@@ -3723,24 +3727,25 @@ func uint8ToIntPtr(value *uint8) *int {
 	return &v
 }
 
-func deriveVR71CircuitStartIndex(systemScheme, moduleConfigurationVR71 *uint16) *int {
-	if systemScheme == nil || moduleConfigurationVR71 == nil {
-		return nil
+const (
+	circuitManagingDeviceVR71ID      = "VR_71"
+	circuitManagingDeviceVR71Address = 0x26
+)
+
+func deriveCircuitManagingDevice(system *vaillantSystemSnapshot, fm5Mode graphql.Fm5SemanticMode) graphql.ManagingDevice {
+	if system != nil &&
+		system.SystemScheme != nil && *system.SystemScheme == 1 &&
+		system.ModuleConfigurationVR71 != nil && *system.ModuleConfigurationVR71 == 2 &&
+		fm5Mode == graphql.Fm5SemanticModeInterpreted {
+		deviceID := circuitManagingDeviceVR71ID
+		address := circuitManagingDeviceVR71Address
+		return graphql.ManagingDevice{
+			Role:     graphql.ManagingDeviceRoleFunctionModule,
+			DeviceID: &deviceID,
+			Address:  &address,
+		}
 	}
-	if *systemScheme < 1 || *systemScheme > 16 {
-		v := -1
-		return &v
-	}
-	// FM5 interpreted profile is gated by module_configuration_vr71<=2.
-	// Keep this helper consistent with FM5 mode semantics: a valid interpreted
-	// profile yields FM5-managed circuits after regulator circuit 0.
-	if *moduleConfigurationVR71 <= 2 {
-		v := 1
-		return &v
-	}
-	// Profiles outside interpreted FM5 mode do not expose a stable start index.
-	v := -1
-	return &v
+	return graphql.ManagingDevice{Role: graphql.ManagingDeviceRoleUnknown}
 }
 
 func systemStatusEquals(a, b *graphql.SystemStatus) bool {
@@ -3766,8 +3771,7 @@ func systemStatusEquals(a, b *graphql.SystemStatus) bool {
 		floatPtrEquals(a.Config.HwcMaxFlowTempDesired, b.Config.HwcMaxFlowTempDesired) &&
 		intPtrEquals(a.Config.MaxRoomHumidity, b.Config.MaxRoomHumidity) &&
 		intPtrEquals(a.Properties.SystemScheme, b.Properties.SystemScheme) &&
-		intPtrEquals(a.Properties.ModuleConfigurationVR71, b.Properties.ModuleConfigurationVR71) &&
-		intPtrEquals(a.Properties.Vr71CircuitStartIndex, b.Properties.Vr71CircuitStartIndex)
+		intPtrEquals(a.Properties.ModuleConfigurationVR71, b.Properties.ModuleConfigurationVR71)
 }
 
 func radioDevicesEqual(a, b []graphql.RadioDevice) bool {
@@ -5402,7 +5406,6 @@ func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {
 		Properties: &mcp.SystemProperties{
 			SystemScheme:            cloneIntPtr(status.Properties.SystemScheme),
 			ModuleConfigurationVR71: cloneIntPtr(status.Properties.ModuleConfigurationVR71),
-			VR71CircuitStartIndex:   cloneIntPtr(status.Properties.Vr71CircuitStartIndex),
 		},
 	}
 }

@@ -1053,6 +1053,23 @@ func cloneCircuitStatus(status CircuitStatus) CircuitStatus {
 	out := status
 	out.State = cloneCircuitState(status.State)
 	out.Config = cloneCircuitConfig(status.Config)
+	out.ManagingDevice = cloneManagingDevice(status.ManagingDevice)
+	return out
+}
+
+func cloneManagingDevice(device ManagingDevice) ManagingDevice {
+	out := device
+	if device.Role == "" {
+		out.Role = ManagingDeviceRoleUnknown
+	}
+	if device.DeviceID != nil {
+		v := *device.DeviceID
+		out.DeviceID = &v
+	}
+	if device.Address != nil {
+		v := *device.Address
+		out.Address = &v
+	}
 	return out
 }
 

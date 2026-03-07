@@ -539,8 +539,8 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			{ID: "zone-a", Name: "Living", Config: ZoneConfig{OperatingMode: "AUTO", Preset: "COMFORT"}},
 		},
 		circuits: []CircuitStatus{
-			{Index: 1, CircuitType: "fixed_value"},
-			{Index: 0, CircuitType: "heating"},
+			{Index: 1, CircuitType: "fixed_value", ManagingDevice: ManagingDevice{Role: "UNKNOWN"}},
+			{Index: 0, CircuitType: "heating", ManagingDevice: ManagingDevice{Role: "FUNCTION_MODULE", DeviceID: stringPtr("VR_71"), Address: intPtr(0x26)}},
 		},
 		radio: []RadioDevice{
 			{Group: 0x0A, Instance: 1, DeviceModel: "VR92"},
@@ -580,7 +580,6 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			Properties: &SystemProperties{
 				SystemScheme:            intPtr(8),
 				ModuleConfigurationVR71: intPtr(2),
-				VR71CircuitStartIndex:   intPtr(-1),
 			},
 		},
 	})
@@ -626,6 +625,16 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 		if circuitType, _ := first["circuit_type"].(string); circuitType != "heating" {
 			t.Fatalf("first circuit type = %q; want heating", circuitType)
+		}
+		managing, ok := first["managing_device"].(map[string]any)
+		if !ok {
+			t.Fatalf("first circuit managing_device type = %T; want map", first["managing_device"])
+		}
+		if role, _ := managing["role"].(string); role != "FUNCTION_MODULE" {
+			t.Fatalf("first circuit managing_device.role = %q; want FUNCTION_MODULE", role)
+		}
+		if deviceID, _ := managing["device_id"].(string); deviceID != "VR_71" {
+			t.Fatalf("first circuit managing_device.device_id = %q; want VR_71", deviceID)
 		}
 		if index, _ := second["index"].(float64); int(index) != 1 {
 			t.Fatalf("second circuit index = %v; want 1", second["index"])
@@ -768,8 +777,8 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		if !ok {
 			t.Fatalf("system properties type = %T; want map", data["properties"])
 		}
-		if got, _ := props["vr71_circuit_start_index"].(float64); int(got) != -1 {
-			t.Fatalf("system properties.vr71_circuit_start_index = %v; want -1", props["vr71_circuit_start_index"])
+		if _, exists := props["vr71_circuit_start_index"]; exists {
+			t.Fatalf("system properties unexpectedly contain vr71_circuit_start_index: %#v", props["vr71_circuit_start_index"])
 		}
 	})
 
@@ -1657,6 +1666,11 @@ func floatPtr(value float64) *float64 {
 }
 
 func intPtr(value int) *int {
+	v := value
+	return &v
+}
+
+func stringPtr(value string) *string {
 	v := value
 	return &v
 }

@@ -178,7 +178,6 @@ type SystemConfig struct {
 type SystemProperties struct {
 	SystemScheme            *int `json:"system_scheme,omitempty"`
 	ModuleConfigurationVR71 *int `json:"module_configuration_vr71,omitempty"`
-	VR71CircuitStartIndex   *int `json:"vr71_circuit_start_index,omitempty"`
 }
 
 type SystemStatus struct {
@@ -210,12 +209,19 @@ type CircuitConfig struct {
 	CoolingEnabled  *bool    `json:"cooling_enabled,omitempty"`
 }
 
+type ManagingDevice struct {
+	Role     string  `json:"role"`
+	DeviceID *string `json:"device_id,omitempty"`
+	Address  *int    `json:"address,omitempty"`
+}
+
 type CircuitStatus struct {
-	Index       int           `json:"index"`
-	CircuitType string        `json:"circuit_type"`
-	HasMixer    bool          `json:"has_mixer"`
-	State       CircuitState  `json:"state"`
-	Config      CircuitConfig `json:"config"`
+	Index          int            `json:"index"`
+	CircuitType    string         `json:"circuit_type"`
+	HasMixer       bool           `json:"has_mixer"`
+	State          CircuitState   `json:"state"`
+	Config         CircuitConfig  `json:"config"`
+	ManagingDevice ManagingDevice `json:"managing_device"`
 }
 
 type RadioDevice struct {
@@ -1537,6 +1543,17 @@ func cloneCircuitStatus(source CircuitStatus) CircuitStatus {
 		v := *source.Config.CoolingEnabled
 		out.Config.CoolingEnabled = &v
 	}
+	if out.ManagingDevice.Role == "" {
+		out.ManagingDevice.Role = "UNKNOWN"
+	}
+	if source.ManagingDevice.DeviceID != nil {
+		v := *source.ManagingDevice.DeviceID
+		out.ManagingDevice.DeviceID = &v
+	}
+	if source.ManagingDevice.Address != nil {
+		v := *source.ManagingDevice.Address
+		out.ManagingDevice.Address = &v
+	}
 	return out
 }
 
@@ -2214,10 +2231,6 @@ func cloneMCPSystemStatus(status *SystemStatus) *SystemStatus {
 		if properties.ModuleConfigurationVR71 != nil {
 			v := *properties.ModuleConfigurationVR71
 			properties.ModuleConfigurationVR71 = &v
-		}
-		if properties.VR71CircuitStartIndex != nil {
-			v := *properties.VR71CircuitStartIndex
-			properties.VR71CircuitStartIndex = &v
 		}
 		cp.Properties = &properties
 	}

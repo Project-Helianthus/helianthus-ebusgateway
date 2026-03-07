@@ -3325,6 +3325,7 @@ func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSourc
 			p.provider.SetSolar(nil)
 			p.provider.SetCylinders(nil)
 		}
+		p.publishCircuits(source)
 		return
 	}
 

@@ -1474,6 +1474,53 @@ func TestPublishFM5Semantic_SkipsConfigOnlyCylinderWithoutTemperature(t *testing
 	}
 }
 
+func TestPublishFM5Semantic_DowngradeRehydratesCircuitOwnershipToUnknown(t *testing.T) {
+	t.Parallel()
+
+	circuitType := uint16(1)
+	scheme := uint16(1)
+	module := uint16(2)
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+		system: &vaillantSystemSnapshot{
+			SystemScheme:            &scheme,
+			ModuleConfigurationVR71: &module,
+		},
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: {
+				Instance:       0x00,
+				Active:         true,
+				CircuitTypeRaw: &circuitType,
+			},
+		},
+	}
+
+	poller.publishCircuits(semanticSnapshotSourceLive)
+
+	initial := provider.Circuits()
+	if len(initial) != 1 || initial[0].ManagingDevice.Role != graphql.ManagingDeviceRoleFunctionModule {
+		t.Fatalf("initial circuit ownership = %#v; want FUNCTION_MODULE before downgrade", initial)
+	}
+
+	poller.mu.Lock()
+	poller.fm5Mode = graphql.Fm5SemanticModeGPIOOnly
+	poller.mu.Unlock()
+	poller.publishFM5Semantic(semanticSnapshotSourceLive)
+
+	status := provider.Circuits()
+	if len(status) != 1 {
+		t.Fatalf("provider.Circuits() = %d entries; want 1", len(status))
+	}
+	if status[0].ManagingDevice.Role != graphql.ManagingDeviceRoleUnknown {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice.Role = %q; want %q", status[0].ManagingDevice.Role, graphql.ManagingDeviceRoleUnknown)
+	}
+	if status[0].ManagingDevice.DeviceID != nil || status[0].ManagingDevice.Address != nil {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice = %#v; want nil identity on downgrade", status[0].ManagingDevice)
+	}
+}
+
 func TestMergeCylinderSnapshotMapNonDestructive_PreservesTemperatureWhileRefreshingConfig(t *testing.T) {
 	t.Parallel()
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -415,6 +416,11 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						roomTempControl
 						coolingEnabled
 					}
+					managingDevice {
+						role
+						deviceId
+						address
+					}
 				}
 					radioDevices {
 						group
@@ -472,7 +478,6 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					properties {
 						systemScheme
 						moduleConfigurationVR71
-						vr71CircuitStartIndex
 					}
 				}
 			}
@@ -537,6 +542,11 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					RoomTempControl *string  `json:"roomTempControl"`
 					CoolingEnabled  *bool    `json:"coolingEnabled"`
 				} `json:"config"`
+				ManagingDevice struct {
+					Role     string  `json:"role"`
+					DeviceID *string `json:"deviceId"`
+					Address  *int    `json:"address"`
+				} `json:"managingDevice"`
 			} `json:"circuits"`
 			RadioDevices []struct {
 				Group                int      `json:"group"`
@@ -594,7 +604,6 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				Properties struct {
 					SystemScheme            *int `json:"systemScheme"`
 					ModuleConfigurationVR71 *int `json:"moduleConfigurationVR71"`
-					Vr71CircuitStartIndex   *int `json:"vr71CircuitStartIndex"`
 				} `json:"properties"`
 			} `json:"system"`
 		}
@@ -631,6 +640,80 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if response.System != nil {
 			t.Fatalf("system expected nil with static provider")
+		}
+	})
+
+	t.Run("circuits expose explicit managing device", func(t *testing.T) {
+		deviceID := "VR_71"
+		semantic.SetCircuits([]CircuitStatus{{
+			Index:       0,
+			CircuitType: "heating",
+			ManagingDevice: ManagingDevice{
+				Role:     ManagingDeviceRoleFunctionModule,
+				DeviceID: &deviceID,
+				Address:  intPtr(0x26),
+			},
+		}})
+		defer semantic.SetCircuits(nil)
+
+		request := graphqlclient.NewRequest(`
+			query {
+				circuits {
+					index
+					managingDevice {
+						role
+						deviceId
+						address
+					}
+				}
+			}
+		`)
+
+		var response struct {
+			Circuits []struct {
+				Index          int `json:"index"`
+				ManagingDevice struct {
+					Role     string  `json:"role"`
+					DeviceID *string `json:"deviceId"`
+					Address  *int    `json:"address"`
+				} `json:"managingDevice"`
+			} `json:"circuits"`
+		}
+		if err := client.Run(context.Background(), request, &response); err != nil {
+			t.Fatalf("circuits query error = %v", err)
+		}
+		if len(response.Circuits) != 1 {
+			t.Fatalf("circuits = %d; want 1", len(response.Circuits))
+		}
+		if response.Circuits[0].ManagingDevice.Role != string(ManagingDeviceRoleFunctionModule) {
+			t.Fatalf("managingDevice.role = %q; want %q", response.Circuits[0].ManagingDevice.Role, ManagingDeviceRoleFunctionModule)
+		}
+		if response.Circuits[0].ManagingDevice.DeviceID == nil || *response.Circuits[0].ManagingDevice.DeviceID != "VR_71" {
+			t.Fatalf("managingDevice.deviceId = %#v; want VR_71", response.Circuits[0].ManagingDevice.DeviceID)
+		}
+		if response.Circuits[0].ManagingDevice.Address == nil || *response.Circuits[0].ManagingDevice.Address != 0x26 {
+			t.Fatalf("managingDevice.address = %#v; want 0x26", response.Circuits[0].ManagingDevice.Address)
+		}
+	})
+
+	t.Run("removed vr71CircuitStartIndex field errors", func(t *testing.T) {
+		request := graphqlclient.NewRequest(`
+			query {
+				system {
+					properties {
+						vr71CircuitStartIndex
+					}
+				}
+			}
+		`)
+
+		var response any
+		err := client.Run(context.Background(), request, &response)
+		if err == nil {
+			t.Fatal("query error = nil; want missing-field error")
+		}
+		if !strings.Contains(err.Error(), "vr71CircuitStartIndex") {
+			t.Fatalf("query error = %v; want mention of vr71CircuitStartIndex", err)
 		}
 	})
 
@@ -889,4 +972,9 @@ func schemaSelector(name string) schema.SchemaSelector {
 			},
 		},
 	}
+}
+
+func intPtr(value int) *int {
+	v := value
+	return &v
 }

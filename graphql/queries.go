@@ -646,6 +646,51 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		},
 	})
 
+	managingDeviceRoleType := graphqlgo.NewEnum(graphqlgo.EnumConfig{
+		Name: "ManagingDeviceRole",
+		Values: graphqlgo.EnumValueConfigMap{
+			"REGULATOR":       &graphqlgo.EnumValueConfig{Value: string(ManagingDeviceRoleRegulator)},
+			"FUNCTION_MODULE": &graphqlgo.EnumValueConfig{Value: string(ManagingDeviceRoleFunctionModule)},
+			"UNKNOWN":         &graphqlgo.EnumValueConfig{Value: string(ManagingDeviceRoleUnknown)},
+		},
+	})
+
+	circuitManagingDeviceType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "CircuitManagingDevice",
+		Fields: graphqlgo.Fields{
+			"role": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(managingDeviceRoleType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(ManagingDevice)
+					if !ok || device.Role == "" {
+						return string(ManagingDeviceRoleUnknown), nil
+					}
+					return string(device.Role), nil
+				},
+			},
+			"deviceId": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(ManagingDevice)
+					if !ok || device.DeviceID == nil {
+						return nil, nil
+					}
+					return *device.DeviceID, nil
+				},
+			},
+			"address": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := params.Source.(ManagingDevice)
+					if !ok || device.Address == nil {
+						return nil, nil
+					}
+					return *device.Address, nil
+				},
+			},
+		},
+	})
+
 	circuitStatusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "CircuitStatus",
 		Fields: graphqlgo.Fields{
@@ -697,6 +742,16 @@ func buildSchemaTypes() graphqlSchemaTypes {
 						return CircuitConfig{}, nil
 					}
 					return status.Config, nil
+				},
+			},
+			"managingDevice": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(circuitManagingDeviceType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(CircuitStatus)
+					if !ok {
+						return ManagingDevice{Role: ManagingDeviceRoleUnknown}, nil
+					}
+					return status.ManagingDevice, nil
 				},
 			},
 		},
@@ -1621,16 +1676,6 @@ func buildSchemaTypes() graphqlSchemaTypes {
 						return nil, nil
 					}
 					return *props.ModuleConfigurationVR71, nil
-				},
-			},
-			"vr71CircuitStartIndex": &graphqlgo.Field{
-				Type: graphqlgo.Int,
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					props, ok := params.Source.(SystemProperties)
-					if !ok || props.Vr71CircuitStartIndex == nil {
-						return nil, nil
-					}
-					return *props.Vr71CircuitStartIndex, nil
 				},
 			},
 		},

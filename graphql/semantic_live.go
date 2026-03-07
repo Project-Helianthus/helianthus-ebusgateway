@@ -1053,6 +1053,23 @@ func cloneCircuitStatus(status CircuitStatus) CircuitStatus {
 	out := status
 	out.State = cloneCircuitState(status.State)
 	out.Config = cloneCircuitConfig(status.Config)
+	out.ManagingDevice = cloneManagingDevice(status.ManagingDevice)
+	return out
+}
+
+func cloneManagingDevice(device ManagingDevice) ManagingDevice {
+	out := device
+	if device.Role == "" {
+		out.Role = ManagingDeviceRoleUnknown
+	}
+	if device.DeviceID != nil {
+		v := *device.DeviceID
+		out.DeviceID = &v
+	}
+	if device.Address != nil {
+		v := *device.Address
+		out.Address = &v
+	}
 	return out
 }
 
@@ -1289,7 +1306,16 @@ func equalCircuitStatus(left CircuitStatus, right CircuitStatus) bool {
 	if !equalCircuitState(left.State, right.State) {
 		return false
 	}
-	return equalCircuitConfig(left.Config, right.Config)
+	if !equalCircuitConfig(left.Config, right.Config) {
+		return false
+	}
+	return equalManagingDevice(left.ManagingDevice, right.ManagingDevice)
+}
+
+func equalManagingDevice(left ManagingDevice, right ManagingDevice) bool {
+	return left.Role == right.Role &&
+		equalStringPointer(left.DeviceID, right.DeviceID) &&
+		equalIntPointer(left.Address, right.Address)
 }
 
 func equalCircuitState(left CircuitState, right CircuitState) bool {

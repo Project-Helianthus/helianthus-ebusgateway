@@ -642,7 +642,6 @@ func mapPortalSystemStatus(status *graphql.SystemStatus) *portal.SemanticSystemS
 		Properties: portal.SemanticSystemProperties{
 			SystemScheme:            cloneIntPtr(status.Properties.SystemScheme),
 			ModuleConfigurationVR71: cloneIntPtr(status.Properties.ModuleConfigurationVR71),
-			Vr71CircuitStartIndex:   cloneIntPtr(status.Properties.Vr71CircuitStartIndex),
 		},
 	}
 }
@@ -677,6 +676,11 @@ func mapPortalCircuits(circuits []graphql.CircuitStatus) []portal.SemanticCircui
 				FrostProtC:      cloneFloatPtr(circuit.Config.FrostProtC),
 				RoomTempControl: circuit.Config.RoomTempControl,
 				CoolingEnabled:  cloneBoolPtr(circuit.Config.CoolingEnabled),
+			},
+			ManagingDevice: portal.SemanticManagingDevice{
+				Role:     string(circuit.ManagingDevice.Role),
+				DeviceID: cloneStringPtr(circuit.ManagingDevice.DeviceID),
+				Address:  cloneIntPtr(circuit.ManagingDevice.Address),
 			},
 		})
 	}

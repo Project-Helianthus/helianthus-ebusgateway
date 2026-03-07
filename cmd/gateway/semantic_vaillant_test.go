@@ -895,42 +895,33 @@ func TestRefreshBoilerStatusTier_NoSuccessfulReadsPreservesSnapshot(t *testing.T
 	}
 }
 
-func TestDeriveVR71CircuitStartIndex(t *testing.T) {
+func TestDeriveCircuitManagingDevice(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		scheme  *uint16
-		module  *uint16
-		wantNil bool
-		want    int
+		name     string
+		system   *vaillantSystemSnapshot
+		fm5Mode  graphql.Fm5SemanticMode
+		wantRole graphql.ManagingDeviceRole
+		wantID   *string
+		wantAddr *int
 	}{
 		{
-			name:    "nil inputs",
-			scheme:  nil,
-			module:  nil,
-			wantNil: true,
+			name:     "unknown without proven topology",
+			system:   nil,
+			fm5Mode:  graphql.Fm5SemanticModeAbsent,
+			wantRole: graphql.ManagingDeviceRoleUnknown,
 		},
 		{
-			name:    "interpreted fm5 profile",
-			scheme:  uint16Ptr(8),
-			module:  uint16Ptr(2),
-			wantNil: false,
-			want:    1,
-		},
-		{
-			name:    "invalid scheme",
-			scheme:  uint16Ptr(0),
-			module:  uint16Ptr(4),
-			wantNil: false,
-			want:    -1,
-		},
-		{
-			name:    "non interpreted fm5 profile",
-			scheme:  uint16Ptr(8),
-			module:  uint16Ptr(4),
-			wantNil: false,
-			want:    -1,
+			name: "proven topology emits VR71 function module ownership",
+			system: &vaillantSystemSnapshot{
+				SystemScheme:            uint16Ptr(1),
+				ModuleConfigurationVR71: uint16Ptr(2),
+			},
+			fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+			wantRole: graphql.ManagingDeviceRoleFunctionModule,
+			wantID:   stringPtr(circuitManagingDeviceVR71ID),
+			wantAddr: intPtr(circuitManagingDeviceVR71Address),
 		},
 	}
 
@@ -938,15 +929,15 @@ func TestDeriveVR71CircuitStartIndex(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got := deriveVR71CircuitStartIndex(test.scheme, test.module)
-			if test.wantNil {
-				if got != nil {
-					t.Fatalf("deriveVR71CircuitStartIndex(...) = %v; want nil", got)
-				}
-				return
+			got := deriveCircuitManagingDevice(test.system, test.fm5Mode)
+			if got.Role != test.wantRole {
+				t.Fatalf("deriveCircuitManagingDevice(...).Role = %q; want %q", got.Role, test.wantRole)
 			}
-			if got == nil || *got != test.want {
-				t.Fatalf("deriveVR71CircuitStartIndex(...) = %v; want %d", got, test.want)
+			if !stringPtrEquals(got.DeviceID, test.wantID) {
+				t.Fatalf("deriveCircuitManagingDevice(...).DeviceID = %v; want %v", got.DeviceID, test.wantID)
+			}
+			if !intPtrEquals(got.Address, test.wantAddr) {
+				t.Fatalf("deriveCircuitManagingDevice(...).Address = %v; want %v", got.Address, test.wantAddr)
 			}
 		})
 	}
@@ -1088,28 +1079,124 @@ func TestRefreshSystem_NoSuccessfulReadsPreservesSnapshot(t *testing.T) {
 	}
 }
 
-func TestPublishSystem_DerivesVR71CircuitStartIndex(t *testing.T) {
+func TestPublishCircuits_UsesExplicitManagingDeviceForProvenTopology(t *testing.T) {
 	t.Parallel()
 
-	scheme := uint16(8)
+	scheme := uint16(1)
 	module := uint16(2)
+	circuitType := uint16(1)
 	provider := graphql.NewLiveSemanticProvider()
 	poller := &vaillantSemanticPoller{
 		provider: provider,
+		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
 		system: &vaillantSystemSnapshot{
 			SystemScheme:            &scheme,
 			ModuleConfigurationVR71: &module,
 		},
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: {
+				Instance:       0x00,
+				Active:         true,
+				CircuitTypeRaw: &circuitType,
+			},
+		},
 	}
 
+	poller.publishCircuits(semanticSnapshotSourceLive)
+
+	status := provider.Circuits()
+	if len(status) != 1 {
+		t.Fatalf("provider.Circuits() = %d entries; want 1", len(status))
+	}
+	if status[0].ManagingDevice.Role != graphql.ManagingDeviceRoleFunctionModule {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice.Role = %q; want %q", status[0].ManagingDevice.Role, graphql.ManagingDeviceRoleFunctionModule)
+	}
+	if !stringPtrEquals(status[0].ManagingDevice.DeviceID, stringPtr(circuitManagingDeviceVR71ID)) {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice.DeviceID = %v; want %q", status[0].ManagingDevice.DeviceID, circuitManagingDeviceVR71ID)
+	}
+	if !intPtrEquals(status[0].ManagingDevice.Address, intPtr(circuitManagingDeviceVR71Address)) {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice.Address = %v; want %d", status[0].ManagingDevice.Address, circuitManagingDeviceVR71Address)
+	}
+}
+
+func TestPublishCircuits_UsesUnknownManagingDeviceForUnprovenTopology(t *testing.T) {
+	t.Parallel()
+
+	scheme := uint16(8)
+	module := uint16(2)
+	circuitType := uint16(1)
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+		system: &vaillantSystemSnapshot{
+			SystemScheme:            &scheme,
+			ModuleConfigurationVR71: &module,
+		},
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: {
+				Instance:       0x00,
+				Active:         true,
+				CircuitTypeRaw: &circuitType,
+			},
+		},
+	}
+
+	poller.publishCircuits(semanticSnapshotSourceLive)
+
+	status := provider.Circuits()
+	if len(status) != 1 {
+		t.Fatalf("provider.Circuits() = %d entries; want 1", len(status))
+	}
+	if status[0].ManagingDevice.Role != graphql.ManagingDeviceRoleUnknown {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice.Role = %q; want %q", status[0].ManagingDevice.Role, graphql.ManagingDeviceRoleUnknown)
+	}
+	if status[0].ManagingDevice.DeviceID != nil {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice.DeviceID = %v; want nil", status[0].ManagingDevice.DeviceID)
+	}
+	if status[0].ManagingDevice.Address != nil {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice.Address = %v; want nil", status[0].ManagingDevice.Address)
+	}
+}
+
+func TestPublishSystem_RehydratesCircuitOwnershipAfterSystemArrives(t *testing.T) {
+	t.Parallel()
+
+	circuitType := uint16(1)
+	scheme := uint16(1)
+	module := uint16(2)
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: {
+				Instance:       0x00,
+				Active:         true,
+				CircuitTypeRaw: &circuitType,
+			},
+		},
+	}
+
+	poller.publishCircuits(semanticSnapshotSourceLive)
+
+	initial := provider.Circuits()
+	if len(initial) != 1 || initial[0].ManagingDevice.Role != graphql.ManagingDeviceRoleUnknown {
+		t.Fatalf("initial circuit ownership = %#v; want UNKNOWN before system arrives", initial)
+	}
+
+	poller.system = &vaillantSystemSnapshot{
+		SystemScheme:            &scheme,
+		ModuleConfigurationVR71: &module,
+	}
 	poller.publishSystem(semanticSnapshotSourceLive)
 
-	status := provider.System()
-	if status == nil {
-		t.Fatal("provider.System() = nil; want published system status")
+	status := provider.Circuits()
+	if len(status) != 1 {
+		t.Fatalf("provider.Circuits() = %d entries; want 1", len(status))
 	}
-	if status.Properties.Vr71CircuitStartIndex == nil || *status.Properties.Vr71CircuitStartIndex != 1 {
-		t.Fatalf("provider.System().Properties.Vr71CircuitStartIndex = %v; want 1", status.Properties.Vr71CircuitStartIndex)
+	if status[0].ManagingDevice.Role != graphql.ManagingDeviceRoleFunctionModule {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice.Role = %q; want %q", status[0].ManagingDevice.Role, graphql.ManagingDeviceRoleFunctionModule)
 	}
 }
 
@@ -1271,6 +1358,11 @@ func stringPtr(value string) *string {
 	return &v
 }
 
+func intPtr(value int) *int {
+	v := value
+	return &v
+}
+
 func TestRefreshEnergy_NilController(t *testing.T) {
 	t.Parallel()
 
@@ -1379,6 +1471,53 @@ func TestPublishFM5Semantic_SkipsConfigOnlyCylinderWithoutTemperature(t *testing
 	}
 	if cylinders[0].TemperatureC == nil || *cylinders[0].TemperatureC != temp {
 		t.Fatalf("provider.Cylinders()[0].TemperatureC = %#v; want %v", cylinders[0].TemperatureC, temp)
+	}
+}
+
+func TestPublishFM5Semantic_DowngradeRehydratesCircuitOwnershipToUnknown(t *testing.T) {
+	t.Parallel()
+
+	circuitType := uint16(1)
+	scheme := uint16(1)
+	module := uint16(2)
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+		system: &vaillantSystemSnapshot{
+			SystemScheme:            &scheme,
+			ModuleConfigurationVR71: &module,
+		},
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: {
+				Instance:       0x00,
+				Active:         true,
+				CircuitTypeRaw: &circuitType,
+			},
+		},
+	}
+
+	poller.publishCircuits(semanticSnapshotSourceLive)
+
+	initial := provider.Circuits()
+	if len(initial) != 1 || initial[0].ManagingDevice.Role != graphql.ManagingDeviceRoleFunctionModule {
+		t.Fatalf("initial circuit ownership = %#v; want FUNCTION_MODULE before downgrade", initial)
+	}
+
+	poller.mu.Lock()
+	poller.fm5Mode = graphql.Fm5SemanticModeGPIOOnly
+	poller.mu.Unlock()
+	poller.publishFM5Semantic(semanticSnapshotSourceLive)
+
+	status := provider.Circuits()
+	if len(status) != 1 {
+		t.Fatalf("provider.Circuits() = %d entries; want 1", len(status))
+	}
+	if status[0].ManagingDevice.Role != graphql.ManagingDeviceRoleUnknown {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice.Role = %q; want %q", status[0].ManagingDevice.Role, graphql.ManagingDeviceRoleUnknown)
+	}
+	if status[0].ManagingDevice.DeviceID != nil || status[0].ManagingDevice.Address != nil {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice = %#v; want nil identity on downgrade", status[0].ManagingDevice)
 	}
 }
 

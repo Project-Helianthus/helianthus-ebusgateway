@@ -105,6 +105,11 @@ func (adapter mcpSemanticProviderAdapter) Circuits() []mcp.CircuitStatus {
 				RoomTempControl: circuit.Config.RoomTempControl,
 				CoolingEnabled:  cloneBoolPtr(circuit.Config.CoolingEnabled),
 			},
+			ManagingDevice: mcp.ManagingDevice{
+				Role:     string(circuit.ManagingDevice.Role),
+				DeviceID: cloneStringPtr(circuit.ManagingDevice.DeviceID),
+				Address:  cloneIntPtr(circuit.ManagingDevice.Address),
+			},
 		}
 	}
 	return out

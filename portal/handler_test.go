@@ -445,6 +445,11 @@ func TestSemanticSnapshotEndpoint(t *testing.T) {
 						Config: SemanticCircuitConfig{
 							HeatingCurve: &heatingCurve,
 						},
+						ManagingDevice: SemanticManagingDevice{
+							Role:     "FUNCTION_MODULE",
+							DeviceID: stringPtr("VR_71"),
+							Address:  intPtr(0x26),
+						},
 					},
 				},
 				CapturedUTC: "2026-02-23T22:00:00Z",
@@ -536,6 +541,13 @@ func TestSemanticSnapshotEndpoint(t *testing.T) {
 	circuitConfig := circuit["config"].(map[string]any)
 	if circuitConfig["heating_curve"] != heatingCurve {
 		t.Fatalf("circuit.config.heating_curve=%v; want %v", circuitConfig["heating_curve"], heatingCurve)
+	}
+	managingDevice := circuit["managing_device"].(map[string]any)
+	if managingDevice["role"] != "FUNCTION_MODULE" {
+		t.Fatalf("circuit.managing_device.role=%v; want FUNCTION_MODULE", managingDevice["role"])
+	}
+	if managingDevice["device_id"] != "VR_71" {
+		t.Fatalf("circuit.managing_device.device_id=%v; want VR_71", managingDevice["device_id"])
 	}
 }
 
@@ -1402,4 +1414,14 @@ func TestVRCExplorerDeprecationEndpointRemoved(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d; want %d (endpoint should be removed)", rec.Code, http.StatusNotFound)
 	}
+}
+
+func stringPtr(value string) *string {
+	v := value
+	return &v
+}
+
+func intPtr(value int) *int {
+	v := value
+	return &v
 }

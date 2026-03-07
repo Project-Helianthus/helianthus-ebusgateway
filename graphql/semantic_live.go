@@ -1306,7 +1306,16 @@ func equalCircuitStatus(left CircuitStatus, right CircuitStatus) bool {
 	if !equalCircuitState(left.State, right.State) {
 		return false
 	}
-	return equalCircuitConfig(left.Config, right.Config)
+	if !equalCircuitConfig(left.Config, right.Config) {
+		return false
+	}
+	return equalManagingDevice(left.ManagingDevice, right.ManagingDevice)
+}
+
+func equalManagingDevice(left ManagingDevice, right ManagingDevice) bool {
+	return left.Role == right.Role &&
+		equalStringPointer(left.DeviceID, right.DeviceID) &&
+		equalIntPointer(left.Address, right.Address)
 }
 
 func equalCircuitState(left CircuitState, right CircuitState) bool {

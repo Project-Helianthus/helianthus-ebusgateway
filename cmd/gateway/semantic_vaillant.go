@@ -2284,6 +2284,15 @@ func circuitsEqual(a, b []graphql.CircuitStatus) bool {
 		if !boolPtrEquals(left.Config.CoolingEnabled, right.Config.CoolingEnabled) {
 			return false
 		}
+		if left.ManagingDevice.Role != right.ManagingDevice.Role {
+			return false
+		}
+		if !stringPtrEquals(left.ManagingDevice.DeviceID, right.ManagingDevice.DeviceID) {
+			return false
+		}
+		if !intPtrEquals(left.ManagingDevice.Address, right.ManagingDevice.Address) {
+			return false
+		}
 	}
 	return true
 }
@@ -3224,6 +3233,7 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 	}
 
 	p.persistSemanticCache(source)
+	p.publishCircuits(source)
 }
 
 func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {

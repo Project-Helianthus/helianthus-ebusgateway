@@ -1159,6 +1159,47 @@ func TestPublishCircuits_UsesUnknownManagingDeviceForUnprovenTopology(t *testing
 	}
 }
 
+func TestPublishSystem_RehydratesCircuitOwnershipAfterSystemArrives(t *testing.T) {
+	t.Parallel()
+
+	circuitType := uint16(1)
+	scheme := uint16(1)
+	module := uint16(2)
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		fm5Mode:  graphql.Fm5SemanticModeInterpreted,
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: {
+				Instance:       0x00,
+				Active:         true,
+				CircuitTypeRaw: &circuitType,
+			},
+		},
+	}
+
+	poller.publishCircuits(semanticSnapshotSourceLive)
+
+	initial := provider.Circuits()
+	if len(initial) != 1 || initial[0].ManagingDevice.Role != graphql.ManagingDeviceRoleUnknown {
+		t.Fatalf("initial circuit ownership = %#v; want UNKNOWN before system arrives", initial)
+	}
+
+	poller.system = &vaillantSystemSnapshot{
+		SystemScheme:            &scheme,
+		ModuleConfigurationVR71: &module,
+	}
+	poller.publishSystem(semanticSnapshotSourceLive)
+
+	status := provider.Circuits()
+	if len(status) != 1 {
+		t.Fatalf("provider.Circuits() = %d entries; want 1", len(status))
+	}
+	if status[0].ManagingDevice.Role != graphql.ManagingDeviceRoleFunctionModule {
+		t.Fatalf("provider.Circuits()[0].ManagingDevice.Role = %q; want %q", status[0].ManagingDevice.Role, graphql.ManagingDeviceRoleFunctionModule)
+	}
+}
+
 func TestMergeCircuitSnapshotNonDestructive_PartialUpdatePreservesLastKnown(t *testing.T) {
 	t.Parallel()
 

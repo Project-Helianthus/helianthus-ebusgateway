@@ -75,9 +75,9 @@ const (
 	circuitRegPumpHours       = uint16(0x0024) // pump_operating_hours
 	circuitRegPumpStarts      = uint16(0x0025) // pump_starts
 
-	CircuitStateStandby = "STANDBY"
-	CircuitStateHeating = "HEATING"
-	CircuitStateCooling = "COOLING"
+	CircuitStateStandby = "standby"
+	CircuitStateHeating = "heating"
+	CircuitStateCooling = "cooling"
 
 	dhwRegOperationMode   = uint16(0x0003) // configuration.domestic_hot_water.operation_mode
 	dhwRegTargetTemp      = uint16(0x0004) // configuration.domestic_hot_water.tapping_setpoint
@@ -2366,7 +2366,7 @@ func decodeCircuitStateToken(raw *uint16) string {
 	if name, ok := circuitStateNames[*raw]; ok {
 		return name
 	}
-	return fmt.Sprintf("UNKNOWN(%d)", *raw)
+	return fmt.Sprintf("unknown_%d", *raw)
 }
 
 func decodeUint16Bool(raw *uint16) *bool {

@@ -1351,9 +1351,9 @@ func TestCircuitState_DecodesKnownValues(t *testing.T) {
 		raw  uint16
 		want string
 	}{
-		{0, "STANDBY"},
-		{1, "HEATING"},
-		{2, "COOLING"},
+		{0, "standby"},
+		{1, "heating"},
+		{2, "cooling"},
 	}
 	for _, tt := range tests {
 		raw := tt.raw
@@ -1367,7 +1367,7 @@ func TestCircuitState_DecodesKnownValues(t *testing.T) {
 func TestCircuitState_ReturnsUnknownForUnmappedValue(t *testing.T) {
 	raw := uint16(99)
 	got := decodeCircuitStateToken(&raw)
-	want := "UNKNOWN(99)"
+	want := "unknown_99"
 	if got != want {
 		t.Errorf("decodeCircuitStateToken(%d) = %q; want %q", raw, got, want)
 	}

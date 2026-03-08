@@ -26,6 +26,7 @@ var canonicalSemanticRootFields = []string{
 	"cylinders",
 	"boilerStatus",
 	"system",
+	"schedules",
 }
 
 func TestQueryResolvers_Integration(t *testing.T) {
@@ -480,6 +481,33 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						moduleConfigurationVR71
 					}
 				}
+				schedules {
+					programs {
+						zone
+						hc
+						config {
+							maxSlots
+							timeResolution
+							minDuration
+							hasTemperature
+							tempSlots
+							minTempC
+							maxTempC
+						}
+						slotsUsed
+						days {
+							weekday
+							slots {
+								startHour
+								startMinute
+								endHour
+								endMinute
+								temperatureC
+								temperatureRaw
+							}
+						}
+					}
+				}
 			}
 		`)
 
@@ -606,6 +634,12 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					ModuleConfigurationVR71 *int `json:"moduleConfigurationVR71"`
 				} `json:"properties"`
 			} `json:"system"`
+			Schedules *struct {
+				Programs []struct {
+					Zone int    `json:"zone"`
+					HC   string `json:"hc"`
+				} `json:"programs"`
+			} `json:"schedules"`
 		}
 
 		if err := client.Run(context.Background(), request, &response); err != nil {
@@ -640,6 +674,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if response.System != nil {
 			t.Fatalf("system expected nil with static provider")
+		}
+		if response.Schedules != nil {
+			t.Fatalf("schedules expected nil with static provider")
 		}
 	})
 
@@ -905,6 +942,148 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			if len(response.Methods) != 1 || response.Methods[0].Name != "get_status" {
 				t.Fatalf("address %d methods = %+v; want [get_status]", address, response.Methods)
 			}
+		}
+	})
+
+	t.Run("schedules_populated", func(t *testing.T) {
+		tempC := 22.5
+		tempRaw := 225
+		minTemp := 5.0
+		maxTemp := 30.0
+		semantic.SetSchedules(&ScheduleStatus{
+			Programs: []ScheduleProgram{
+				{
+					Zone: 0,
+					HC:   "heating",
+					Config: &ScheduleConfig{
+						MaxSlots:       12,
+						TimeResolution: 10,
+						MinDuration:    5,
+						HasTemperature: true,
+						TempSlots:      12,
+						MinTempC:       &minTemp,
+						MaxTempC:       &maxTemp,
+					},
+					SlotsUsed: []int{1, 0, 1, 1, 1, 1, 1},
+					Days: []ScheduleDayProgram{
+						{
+							Weekday: "monday",
+							Slots: []ScheduleTimerSlot{
+								{
+									StartHour:      0,
+									StartMinute:    0,
+									EndHour:        24,
+									EndMinute:      0,
+									TemperatureC:   &tempC,
+									TemperatureRaw: &tempRaw,
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+		defer semantic.SetSchedules(nil)
+
+		request := graphqlclient.NewRequest(`
+			query {
+				schedules {
+					programs {
+						zone
+						hc
+						config {
+							maxSlots
+							timeResolution
+							minDuration
+							hasTemperature
+							tempSlots
+							minTempC
+							maxTempC
+						}
+						slotsUsed
+						days {
+							weekday
+							slots {
+								startHour
+								startMinute
+								endHour
+								endMinute
+								temperatureC
+								temperatureRaw
+							}
+						}
+					}
+				}
+			}
+		`)
+
+		var response struct {
+			Schedules *struct {
+				Programs []struct {
+					Zone   int    `json:"zone"`
+					HC     string `json:"hc"`
+					Config *struct {
+						MaxSlots       int      `json:"maxSlots"`
+						TimeResolution int      `json:"timeResolution"`
+						MinDuration    int      `json:"minDuration"`
+						HasTemperature bool     `json:"hasTemperature"`
+						TempSlots      int      `json:"tempSlots"`
+						MinTempC       *float64 `json:"minTempC"`
+						MaxTempC       *float64 `json:"maxTempC"`
+					} `json:"config"`
+					SlotsUsed []int `json:"slotsUsed"`
+					Days      []struct {
+						Weekday string `json:"weekday"`
+						Slots   []struct {
+							StartHour      int      `json:"startHour"`
+							StartMinute    int      `json:"startMinute"`
+							EndHour        int      `json:"endHour"`
+							EndMinute      int      `json:"endMinute"`
+							TemperatureC   *float64 `json:"temperatureC"`
+							TemperatureRaw *int     `json:"temperatureRaw"`
+						} `json:"slots"`
+					} `json:"days"`
+				} `json:"programs"`
+			} `json:"schedules"`
+		}
+
+		if err := client.Run(context.Background(), request, &response); err != nil {
+			t.Fatalf("schedules query error = %v", err)
+		}
+		if response.Schedules == nil {
+			t.Fatalf("schedules = nil; want non-nil")
+		}
+		if len(response.Schedules.Programs) != 1 {
+			t.Fatalf("programs = %d; want 1", len(response.Schedules.Programs))
+		}
+		prog := response.Schedules.Programs[0]
+		if prog.Zone != 0 || prog.HC != "heating" {
+			t.Fatalf("program zone=%d hc=%q; want 0/heating", prog.Zone, prog.HC)
+		}
+		if prog.Config == nil || prog.Config.MaxSlots != 12 {
+			t.Fatalf("config maxSlots = %v; want 12", prog.Config)
+		}
+		if prog.Config.MinTempC == nil || *prog.Config.MinTempC != 5.0 {
+			t.Fatalf("config minTempC = %v; want 5.0", prog.Config.MinTempC)
+		}
+		if len(prog.SlotsUsed) != 7 || prog.SlotsUsed[0] != 1 || prog.SlotsUsed[1] != 0 {
+			t.Fatalf("slotsUsed = %v; want [1 0 1 1 1 1 1]", prog.SlotsUsed)
+		}
+		if len(prog.Days) != 1 || prog.Days[0].Weekday != "monday" {
+			t.Fatalf("days = %+v; want [monday]", prog.Days)
+		}
+		if len(prog.Days[0].Slots) != 1 {
+			t.Fatalf("monday slots = %d; want 1", len(prog.Days[0].Slots))
+		}
+		slot := prog.Days[0].Slots[0]
+		if slot.StartHour != 0 || slot.EndHour != 24 {
+			t.Fatalf("slot hours = %d-%d; want 0-24", slot.StartHour, slot.EndHour)
+		}
+		if slot.TemperatureC == nil || *slot.TemperatureC != 22.5 {
+			t.Fatalf("slot temperatureC = %v; want 22.5", slot.TemperatureC)
+		}
+		if slot.TemperatureRaw == nil || *slot.TemperatureRaw != 225 {
+			t.Fatalf("slot temperatureRaw = %v; want 225", slot.TemperatureRaw)
 		}
 	})
 }

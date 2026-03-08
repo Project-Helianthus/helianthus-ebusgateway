@@ -1346,6 +1346,40 @@ func TestDecodeRoomTempControlToken(t *testing.T) {
 	}
 }
 
+func TestCircuitState_DecodesKnownValues(t *testing.T) {
+	tests := []struct {
+		raw  uint16
+		want string
+	}{
+		{0, "STANDBY"},
+		{1, "HEATING"},
+		{2, "COOLING"},
+	}
+	for _, tt := range tests {
+		raw := tt.raw
+		got := decodeCircuitStateToken(&raw)
+		if got != tt.want {
+			t.Errorf("decodeCircuitStateToken(%d) = %q; want %q", tt.raw, got, tt.want)
+		}
+	}
+}
+
+func TestCircuitState_ReturnsUnknownForUnmappedValue(t *testing.T) {
+	raw := uint16(99)
+	got := decodeCircuitStateToken(&raw)
+	want := "UNKNOWN(99)"
+	if got != want {
+		t.Errorf("decodeCircuitStateToken(%d) = %q; want %q", raw, got, want)
+	}
+}
+
+func TestCircuitState_NilReturnsEmpty(t *testing.T) {
+	got := decodeCircuitStateToken(nil)
+	if got != "" {
+		t.Errorf("decodeCircuitStateToken(nil) = %q; want empty", got)
+	}
+}
+
 func uint16Ptr(value uint16) *uint16 {
 	v := value
 	return &v

@@ -75,6 +75,10 @@ const (
 	circuitRegPumpHours       = uint16(0x0024) // pump_operating_hours
 	circuitRegPumpStarts      = uint16(0x0025) // pump_starts
 
+	CircuitStateStandby = "STANDBY"
+	CircuitStateHeating = "HEATING"
+	CircuitStateCooling = "COOLING"
+
 	dhwRegOperationMode   = uint16(0x0003) // configuration.domestic_hot_water.operation_mode
 	dhwRegTargetTemp      = uint16(0x0004) // configuration.domestic_hot_water.tapping_setpoint
 	dhwRegCurrentTemp     = uint16(0x0005) // state.current_dhw_temperature
@@ -2349,11 +2353,20 @@ func decodeRoomTempControlToken(raw *uint16) string {
 	}
 }
 
+var circuitStateNames = map[uint16]string{
+	0: CircuitStateStandby,
+	1: CircuitStateHeating,
+	2: CircuitStateCooling,
+}
+
 func decodeCircuitStateToken(raw *uint16) string {
 	if raw == nil {
 		return ""
 	}
-	return formatUintToken(*raw)
+	if name, ok := circuitStateNames[*raw]; ok {
+		return name
+	}
+	return fmt.Sprintf("UNKNOWN(%d)", *raw)
 }
 
 func decodeUint16Bool(raw *uint16) *bool {

@@ -268,6 +268,42 @@ type CylinderStatus struct {
 	ChargeOffsetC     *float64 `json:"charge_offset_c,omitempty"`
 }
 
+type ScheduleTimerSlot struct {
+	StartHour      int      `json:"start_hour"`
+	StartMinute    int      `json:"start_minute"`
+	EndHour        int      `json:"end_hour"`
+	EndMinute      int      `json:"end_minute"`
+	TemperatureC   *float64 `json:"temperature_c,omitempty"`
+	TemperatureRaw *int     `json:"temperature_raw,omitempty"`
+}
+
+type ScheduleDayProgram struct {
+	Weekday string              `json:"weekday"`
+	Slots   []ScheduleTimerSlot `json:"slots"`
+}
+
+type ScheduleConfig struct {
+	MaxSlots       int      `json:"max_slots"`
+	TimeResolution int      `json:"time_resolution"`
+	MinDuration    int      `json:"min_duration"`
+	HasTemperature bool     `json:"has_temperature"`
+	TempSlots      int      `json:"temp_slots"`
+	MinTempC       *float64 `json:"min_temp_c,omitempty"`
+	MaxTempC       *float64 `json:"max_temp_c,omitempty"`
+}
+
+type ScheduleProgram struct {
+	Zone      int                  `json:"zone"`
+	HC        string               `json:"hc"`
+	Config    *ScheduleConfig      `json:"config,omitempty"`
+	SlotsUsed []int                `json:"slots_used,omitempty"`
+	Days      []ScheduleDayProgram `json:"days,omitempty"`
+}
+
+type ScheduleStatus struct {
+	Programs []ScheduleProgram `json:"programs"`
+}
+
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
@@ -279,6 +315,7 @@ type SemanticProvider interface {
 	EnergyTotals() *EnergyTotals
 	BoilerStatus() *BoilerStatus
 	System() *SystemStatus
+	Schedules() *ScheduleStatus
 }
 
 type Server struct {
@@ -306,6 +343,7 @@ const (
 	toolSemanticEnergyGetName    = "ebus.v1.semantic.energy_totals.get"
 	toolSemanticBoilerGetName    = "ebus.v1.semantic.boiler_status.get"
 	toolSemanticSystemGetName    = "ebus.v1.semantic.system.get"
+	toolSemanticSchedulesGetName = "ebus.v1.semantic.schedules.get"
 	toolSemanticSnapshotName     = "ebus.v1.semantic.snapshot.get"
 	toolSnapshotCaptureName      = "ebus.v1.snapshot.capture"
 	toolSnapshotDropName         = "ebus.v1.snapshot.drop"
@@ -392,6 +430,10 @@ func (staticSemanticProvider) System() *SystemStatus {
 	return nil
 }
 
+func (staticSemanticProvider) Schedules() *ScheduleStatus {
+	return nil
+}
+
 type idempotencyEntry struct {
 	signature string
 	result    any
@@ -426,6 +468,7 @@ type snapshotState struct {
 	energy    *EnergyTotals
 	boiler    *BoilerStatus
 	system    *SystemStatus
+	schedules *ScheduleStatus
 	devices   []deviceInfo
 }
 
@@ -576,6 +619,17 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			},
 		},
 		{
+			Name:        toolSemanticSchedulesGetName,
+			Description: "Get semantic weekly timer schedules snapshot (B555 protocol).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
 			Name:        toolSemanticSnapshotName,
 			Description: "Get a consistent semantic snapshot across selected semantic planes.",
 			InputSchema: map[string]any{
@@ -585,7 +639,7 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 						"type": "array",
 						"items": map[string]any{
 							"type": "string",
-							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders"},
+							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders", "schedules"},
 						},
 					},
 					"timeout_ms": map[string]any{"type": "integer", "minimum": 1},
@@ -911,6 +965,12 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotSystem(snapshot), nil, consistency)), false), nil
+	case toolSemanticSchedulesGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotSchedules(snapshot), nil, consistency)), false), nil
 	case toolSemanticSnapshotName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -1084,6 +1144,7 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		energy:    s.snapshotEnergyTotals(nil),
 		boiler:    s.snapshotBoilerStatus(nil),
 		system:    s.snapshotSystem(nil),
+		schedules: s.snapshotSchedules(nil),
 		devices:   s.listDevices(nil),
 	}
 
@@ -1163,6 +1224,10 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 	if snapshot.system != nil {
 		systemCopy = cloneMCPSystemStatus(snapshot.system)
 	}
+	var schedulesCopy *ScheduleStatus
+	if snapshot.schedules != nil {
+		schedulesCopy = cloneMCPScheduleStatus(snapshot.schedules)
+	}
 	var solarCopy *SolarStatus
 	if snapshot.solar != nil {
 		solarCopy = cloneMCPSolarStatus(snapshot.solar)
@@ -1183,6 +1248,7 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		energy:    energyCopy,
 		boiler:    boilerCopy,
 		system:    systemCopy,
+		schedules: schedulesCopy,
 		devices:   cloneDeviceInfoList(snapshot.devices),
 	}
 }
@@ -1992,6 +2058,76 @@ func (s *Server) snapshotSystem(snapshot *snapshotState) *SystemStatus {
 	return cloneMCPSystemStatus(source)
 }
 
+func (s *Server) snapshotSchedules(snapshot *snapshotState) *ScheduleStatus {
+	if snapshot != nil {
+		if snapshot.schedules == nil {
+			return nil
+		}
+		return cloneMCPScheduleStatus(snapshot.schedules)
+	}
+	if s == nil || s.semantic == nil {
+		return nil
+	}
+	source := s.semantic.Schedules()
+	if source == nil {
+		return nil
+	}
+	return cloneMCPScheduleStatus(source)
+}
+
+func cloneMCPScheduleStatus(status *ScheduleStatus) *ScheduleStatus {
+	if status == nil {
+		return nil
+	}
+	cp := ScheduleStatus{}
+	if len(status.Programs) > 0 {
+		cp.Programs = make([]ScheduleProgram, len(status.Programs))
+		for i, prog := range status.Programs {
+			out := prog
+			if prog.Config != nil {
+				cfgCopy := *prog.Config
+				if prog.Config.MinTempC != nil {
+					v := *prog.Config.MinTempC
+					cfgCopy.MinTempC = &v
+				}
+				if prog.Config.MaxTempC != nil {
+					v := *prog.Config.MaxTempC
+					cfgCopy.MaxTempC = &v
+				}
+				out.Config = &cfgCopy
+			}
+			if len(prog.SlotsUsed) > 0 {
+				out.SlotsUsed = make([]int, len(prog.SlotsUsed))
+				copy(out.SlotsUsed, prog.SlotsUsed)
+			}
+			if len(prog.Days) > 0 {
+				out.Days = make([]ScheduleDayProgram, len(prog.Days))
+				for j, day := range prog.Days {
+					dayCopy := day
+					if len(day.Slots) > 0 {
+						dayCopy.Slots = make([]ScheduleTimerSlot, len(day.Slots))
+						for k, slot := range day.Slots {
+							slotCopy := slot
+							if slot.TemperatureC != nil {
+								v := *slot.TemperatureC
+								slotCopy.TemperatureC = &v
+							}
+							if slot.TemperatureRaw != nil {
+								v := *slot.TemperatureRaw
+								slotCopy.TemperatureRaw = &v
+							}
+							dayCopy.Slots[k] = slotCopy
+						}
+					}
+					out.Days[j] = dayCopy
+				}
+			}
+			cp.Programs[i] = out
+		}
+	}
+	return &cp
+}
+
 func cloneMCPBoilerStatus(status *BoilerStatus) *BoilerStatus {
 	if status == nil {
 		return nil
@@ -2303,7 +2439,7 @@ func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, 
 
 func parseSemanticSnapshotOptions(args map[string]any) (semanticSnapshotOptions, error) {
 	options := semanticSnapshotOptions{
-		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders"},
+		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders", "schedules"},
 		timeout:      defaultSnapshotReadTTL,
 		allowPartial: false,
 	}
@@ -2369,7 +2505,7 @@ func parseSemanticSnapshotPlanes(raw any) ([]string, error) {
 		}
 		normalized := strings.ToLower(strings.TrimSpace(value))
 		switch normalized {
-		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders":
+		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders", "schedules":
 		default:
 			return nil, fmt.Errorf("unsupported plane %q: %w", value, ebuserrors.ErrInvalidPayload)
 		}
@@ -2416,6 +2552,8 @@ func (s *Server) readSemanticPlane(ctx context.Context, plane string, snapshot *
 		value = s.snapshotSolar(snapshot)
 	case "cylinders":
 		value = s.snapshotCylinders(snapshot)
+	case "schedules":
+		value = s.snapshotSchedules(snapshot)
 	default:
 		return nil, fmt.Errorf("unsupported plane %q: %w", plane, ebuserrors.ErrInvalidPayload)
 	}

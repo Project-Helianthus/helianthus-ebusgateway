@@ -236,6 +236,42 @@ type SystemProperties struct {
 	ModuleConfigurationVR71 *int
 }
 
+type ScheduleTimerSlot struct {
+	StartHour      int
+	StartMinute    int
+	EndHour        int
+	EndMinute      int
+	TemperatureC   *float64
+	TemperatureRaw *int
+}
+
+type ScheduleDayProgram struct {
+	Weekday string
+	Slots   []ScheduleTimerSlot
+}
+
+type ScheduleConfig struct {
+	MaxSlots       int
+	TimeResolution int
+	MinDuration    int
+	HasTemperature bool
+	TempSlots      int
+	MinTempC       *float64
+	MaxTempC       *float64
+}
+
+type ScheduleProgram struct {
+	Zone      int
+	HC        string
+	Config    *ScheduleConfig
+	SlotsUsed []int
+	Days      []ScheduleDayProgram
+}
+
+type ScheduleStatus struct {
+	Programs []ScheduleProgram
+}
+
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
@@ -247,6 +283,7 @@ type SemanticProvider interface {
 	EnergyTotals() *EnergyTotals
 	BoilerStatus() *BoilerStatus
 	System() *SystemStatus
+	Schedules() *ScheduleStatus
 }
 
 type staticSemanticProvider struct{}
@@ -291,6 +328,10 @@ func (staticSemanticProvider) System() *SystemStatus {
 	return nil
 }
 
+func (staticSemanticProvider) Schedules() *ScheduleStatus {
+	return nil
+}
+
 var liveSystemSnapshots sync.Map
 
 func (provider *LiveSemanticProvider) System() *SystemStatus {
@@ -325,6 +366,38 @@ func (provider *LiveSemanticProvider) SetSystem(status *SystemStatus) {
 
 func (provider *LiveSemanticProvider) SetSystemFromCache(status *SystemStatus) {
 	provider.SetSystem(status)
+}
+
+var liveScheduleSnapshots sync.Map
+
+func (provider *LiveSemanticProvider) Schedules() *ScheduleStatus {
+	if provider == nil {
+		return nil
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	stored, ok := liveScheduleSnapshots.Load(provider)
+	if !ok || stored == nil {
+		return nil
+	}
+	status, ok := stored.(*ScheduleStatus)
+	if !ok || status == nil {
+		return nil
+	}
+	return cloneScheduleStatus(status)
+}
+
+func (provider *LiveSemanticProvider) SetSchedules(status *ScheduleStatus) {
+	if provider == nil {
+		return
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if status == nil {
+		liveScheduleSnapshots.Delete(provider)
+		return
+	}
+	liveScheduleSnapshots.Store(provider, cloneScheduleStatus(status))
 }
 
 func cloneSystemStatus(status *SystemStatus) *SystemStatus {
@@ -404,6 +477,71 @@ func cloneSystemConfig(config SystemConfig) SystemConfig {
 		config.MaxRoomHumidity = &v
 	}
 	return config
+}
+
+func cloneScheduleStatus(status *ScheduleStatus) *ScheduleStatus {
+	if status == nil {
+		return nil
+	}
+	cp := ScheduleStatus{}
+	if len(status.Programs) > 0 {
+		cp.Programs = make([]ScheduleProgram, len(status.Programs))
+		for i, prog := range status.Programs {
+			cp.Programs[i] = cloneScheduleProgram(prog)
+		}
+	}
+	return &cp
+}
+
+func cloneScheduleProgram(prog ScheduleProgram) ScheduleProgram {
+	out := prog
+	if prog.Config != nil {
+		cfgCopy := *prog.Config
+		if prog.Config.MinTempC != nil {
+			v := *prog.Config.MinTempC
+			cfgCopy.MinTempC = &v
+		}
+		if prog.Config.MaxTempC != nil {
+			v := *prog.Config.MaxTempC
+			cfgCopy.MaxTempC = &v
+		}
+		out.Config = &cfgCopy
+	}
+	if len(prog.SlotsUsed) > 0 {
+		out.SlotsUsed = make([]int, len(prog.SlotsUsed))
+		copy(out.SlotsUsed, prog.SlotsUsed)
+	}
+	if len(prog.Days) > 0 {
+		out.Days = make([]ScheduleDayProgram, len(prog.Days))
+		for i, day := range prog.Days {
+			out.Days[i] = cloneScheduleDayProgram(day)
+		}
+	}
+	return out
+}
+
+func cloneScheduleDayProgram(day ScheduleDayProgram) ScheduleDayProgram {
+	out := day
+	if len(day.Slots) > 0 {
+		out.Slots = make([]ScheduleTimerSlot, len(day.Slots))
+		for i, slot := range day.Slots {
+			out.Slots[i] = cloneScheduleTimerSlot(slot)
+		}
+	}
+	return out
+}
+
+func cloneScheduleTimerSlot(slot ScheduleTimerSlot) ScheduleTimerSlot {
+	out := slot
+	if slot.TemperatureC != nil {
+		v := *slot.TemperatureC
+		out.TemperatureC = &v
+	}
+	if slot.TemperatureRaw != nil {
+		v := *slot.TemperatureRaw
+		out.TemperatureRaw = &v
+	}
+	return out
 }
 
 func cloneSystemProperties(properties SystemProperties) SystemProperties {

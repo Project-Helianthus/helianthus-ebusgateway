@@ -316,6 +316,63 @@ func mapEnergySeries(series graphql.EnergySeries) mcp.EnergySeries {
 	return out
 }
 
+func (adapter mcpSemanticProviderAdapter) Schedules() *mcp.ScheduleStatus {
+	if adapter.provider == nil {
+		return nil
+	}
+	status := adapter.provider.Schedules()
+	if status == nil {
+		return nil
+	}
+	out := &mcp.ScheduleStatus{}
+	if len(status.Programs) > 0 {
+		out.Programs = make([]mcp.ScheduleProgram, len(status.Programs))
+		for i, prog := range status.Programs {
+			mp := mcp.ScheduleProgram{
+				Zone: prog.Zone,
+				HC:   prog.HC,
+			}
+			if prog.Config != nil {
+				mp.Config = &mcp.ScheduleConfig{
+					MaxSlots:       prog.Config.MaxSlots,
+					TimeResolution: prog.Config.TimeResolution,
+					MinDuration:    prog.Config.MinDuration,
+					HasTemperature: prog.Config.HasTemperature,
+					TempSlots:      prog.Config.TempSlots,
+					MinTempC:       cloneFloatPtr(prog.Config.MinTempC),
+					MaxTempC:       cloneFloatPtr(prog.Config.MaxTempC),
+				}
+			}
+			if len(prog.SlotsUsed) > 0 {
+				mp.SlotsUsed = make([]int, len(prog.SlotsUsed))
+				copy(mp.SlotsUsed, prog.SlotsUsed)
+			}
+			if len(prog.Days) > 0 {
+				mp.Days = make([]mcp.ScheduleDayProgram, len(prog.Days))
+				for j, day := range prog.Days {
+					md := mcp.ScheduleDayProgram{Weekday: day.Weekday}
+					if len(day.Slots) > 0 {
+						md.Slots = make([]mcp.ScheduleTimerSlot, len(day.Slots))
+						for k, slot := range day.Slots {
+							md.Slots[k] = mcp.ScheduleTimerSlot{
+								StartHour:      slot.StartHour,
+								StartMinute:    slot.StartMinute,
+								EndHour:        slot.EndHour,
+								EndMinute:      slot.EndMinute,
+								TemperatureC:   cloneFloatPtr(slot.TemperatureC),
+								TemperatureRaw: cloneIntPtr(slot.TemperatureRaw),
+							}
+						}
+					}
+					mp.Days[j] = md
+				}
+			}
+			out.Programs[i] = mp
+		}
+	}
+	return out
+}
+
 func cloneFloatPtr(value *float64) *float64 {
 	if value == nil {
 		return nil

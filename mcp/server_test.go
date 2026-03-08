@@ -169,6 +169,7 @@ type testSemanticProvider struct {
 	energy        *EnergyTotals
 	boiler        *BoilerStatus
 	system        *SystemStatus
+	schedules     *ScheduleStatus
 	zonesDelay    time.Duration
 	circuitsDelay time.Duration
 	radioDelay    time.Duration
@@ -247,6 +248,13 @@ func (p testSemanticProvider) System() *SystemStatus {
 		return nil
 	}
 	return cloneMCPSystemStatus(p.system)
+}
+
+func (p testSemanticProvider) Schedules() *ScheduleStatus {
+	if p.schedules == nil {
+		return nil
+	}
+	return cloneMCPScheduleStatus(p.schedules)
 }
 
 func (p testSemanticProvider) EnergyTotals() *EnergyTotals {
@@ -795,8 +803,8 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			t.Fatalf("snapshot data type = %T; want map", envelope["data"])
 		}
 		completed, ok := data["completed_planes"].([]any)
-		if !ok || len(completed) != 11 {
-			t.Fatalf("snapshot completed_planes = %#v; want 11 entries", data["completed_planes"])
+		if !ok || len(completed) != 12 {
+			t.Fatalf("snapshot completed_planes = %#v; want 12 entries", data["completed_planes"])
 		}
 		planes, ok := data["planes"].(map[string]any)
 		if !ok {

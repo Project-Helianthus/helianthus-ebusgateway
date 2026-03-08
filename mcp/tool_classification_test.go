@@ -47,6 +47,7 @@ func TestToolClassificationPolicy(t *testing.T) {
 		toolSemanticEnergyGetName:    toolClassCoreStable,
 		toolSemanticBoilerGetName:    toolClassCoreStable,
 		toolSemanticSystemGetName:    toolClassCoreStable,
+		toolSemanticSchedulesGetName: toolClassCoreStable,
 		toolSemanticSnapshotName:     toolClassCoreStable,
 		toolSnapshotCaptureName:      toolClassCoreStable,
 		toolSnapshotDropName:         toolClassCoreStable,

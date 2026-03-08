@@ -112,6 +112,33 @@ const (
 	cylinderRegTemperature      = uint16(0x0004)
 )
 
+// B5.55 timer/schedule protocol constants.
+const (
+	vaillantB555Primary   = byte(0xB5)
+	vaillantB555Secondary = byte(0x55)
+
+	b555OpcodeConfigRead = byte(0xA3)
+	b555OpcodeSlotsRead  = byte(0xA4)
+	b555OpcodeTimerRead  = byte(0xA5)
+
+	b555HCHeating  = byte(0x00)
+	b555HCCooling  = byte(0x01)
+	b555HCDHW      = byte(0x02)
+	b555HCCC       = byte(0x03)
+	b555HCSilent   = byte(0x04)
+	b555ZoneDHW    = byte(0xFF) // zone-agnostic selector for DHW/CC/Silent
+)
+
+var b555WeekdayNames = [7]string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+
+var b555HCNames = map[byte]string{
+	b555HCHeating: "heating",
+	b555HCCooling: "cooling",
+	b555HCDHW:     "dhw",
+	b555HCCC:      "circulation",
+	b555HCSilent:  "silent",
+}
+
 // B5.24 energy registers (VRC 720f TSP 15.720, group=0, instance=0).
 // energy4 type = ULG (unsigned 32-bit LE) in kWh.
 const (
@@ -185,6 +212,7 @@ type vaillantSemanticPoller struct {
 	configInterval       time.Duration
 	stateInterval        time.Duration
 	energyInterval       time.Duration
+	scheduleInterval     time.Duration
 	boilerFastInterval   time.Duration
 	boilerMediumInterval time.Duration
 	boilerSlowInterval   time.Duration
@@ -492,6 +520,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		configInterval:       cfg.SemanticConfigInterval,
 		stateInterval:        cfg.SemanticStateInterval,
 		energyInterval:       cfg.SemanticEnergyInterval,
+		scheduleInterval:     10 * time.Minute,
 		boilerFastInterval:   30 * time.Second,
 		boilerMediumInterval: 5 * time.Minute,
 		boilerSlowInterval:   10 * time.Minute,
@@ -1013,6 +1042,7 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshSystem)
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshRadioDevices)
 	go p.runLoop(ctx, p.energyInterval, semanticTaskPriorityMedium, p.refreshEnergy)
+	go p.runLoop(ctx, p.scheduleInterval, semanticTaskPriorityLow, p.refreshSchedules)
 	for _, schedule := range p.boilerStatusTierSchedules() {
 		go p.runLoop(ctx, schedule.interval, schedule.priority, p.boilerStatusTierTask(schedule.tier))
 	}
@@ -5566,6 +5596,235 @@ func composeZoneName(primary, prefix, suffix string) string {
 		parts = append(parts, suffix)
 	}
 	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+// readB555Frame sends a B555 frame and returns the responder payload.
+func (p *vaillantSemanticPoller) readB555Frame(ctx context.Context, data []byte) ([]byte, bool) {
+	if p == nil || p.bus == nil {
+		return nil, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	source := p.source
+	target := p.controller
+	timeout := p.requestTimeout
+	p.mu.Unlock()
+
+	if target == 0 {
+		return nil, false
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	p.readMu.Lock()
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	request := protocol.Frame{
+		Source:    source,
+		Target:    target,
+		Primary:   vaillantB555Primary,
+		Secondary: vaillantB555Secondary,
+		Data:      data,
+	}
+	response, err := p.bus.Send(reqCtx, request)
+	cancel()
+	p.readMu.Unlock()
+
+	if err != nil || response == nil {
+		return nil, false
+	}
+	return response.Data, true
+}
+
+// readB555Config reads a B555 A3 config response for a zone+HC.
+func (p *vaillantSemanticPoller) readB555Config(ctx context.Context, zone, hc byte) *graphql.ScheduleConfig {
+	data, ok := p.readB555Frame(ctx, []byte{b555OpcodeConfigRead, zone, hc})
+	if !ok || len(data) < 9 {
+		return nil
+	}
+	status := data[0]
+	if status != 0x00 {
+		return nil
+	}
+	cfg := &graphql.ScheduleConfig{
+		MaxSlots:       int(data[1]),
+		TimeResolution: int(data[2]),
+		MinDuration:    int(data[3]),
+		HasTemperature: data[4] != 0,
+		TempSlots:      int(data[5]),
+	}
+	// A3 layout: status(1)+max_slots(1)+time_res(1)+min_dur(1)+has_temp(1)+temp_slots(1)+min_temp(1)+max_temp(1)+pad(1) = 9 bytes
+	// min_temp and max_temp are UCH (whole °C), sentinel 0xFF = unavailable.
+	if data[6] != 0xFF {
+		v := float64(data[6])
+		cfg.MinTempC = &v
+	}
+	if data[7] != 0xFF {
+		v := float64(data[7])
+		cfg.MaxTempC = &v
+	}
+	return cfg
+}
+
+// readB555Slots reads B555 A4 slots-per-day response for a zone+HC.
+func (p *vaillantSemanticPoller) readB555Slots(ctx context.Context, zone, hc byte) ([]int, bool) {
+	data, ok := p.readB555Frame(ctx, []byte{b555OpcodeSlotsRead, zone, hc})
+	if !ok || len(data) < 9 {
+		return nil, false
+	}
+	status := data[0]
+	if status != 0x00 {
+		return nil, false
+	}
+	// A4 layout: status(1)+Mon(1)+Tue(1)+Wed(1)+Thu(1)+Fri(1)+Sat(1)+Sun(1)+pad(1) = 9 bytes
+	slots := make([]int, 7)
+	for i := 0; i < 7 && i+1 < len(data); i++ {
+		slots[i] = int(data[i+1])
+	}
+	return slots, true
+}
+
+// readB555Timer reads a single timer slot from B555 A5.
+func (p *vaillantSemanticPoller) readB555Timer(ctx context.Context, zone, hc, weekday, slotIdx byte) *graphql.ScheduleTimerSlot {
+	data, ok := p.readB555Frame(ctx, []byte{b555OpcodeTimerRead, zone, hc, weekday, slotIdx})
+	if !ok || len(data) < 7 {
+		return nil
+	}
+	status := data[0]
+	if status != 0x00 {
+		return nil
+	}
+	slot := &graphql.ScheduleTimerSlot{
+		StartHour:   int(data[1]),
+		StartMinute: int(data[2]),
+		EndHour:     int(data[3]),
+		EndMinute:   int(data[4]),
+	}
+	tempRaw := uint16(data[5]) | uint16(data[6])<<8
+	if tempRaw != 0xFFFF {
+		v := float64(tempRaw) / 10.0
+		slot.TemperatureC = &v
+		rawInt := int(tempRaw)
+		slot.TemperatureRaw = &rawInt
+	}
+	return slot
+}
+
+// b555ProgramSpec defines a (zone, hc) combination to poll.
+type b555ProgramSpec struct {
+	zone byte
+	hc   byte
+}
+
+// refreshSchedules polls B555 timer schedules and publishes to the semantic provider.
+func (p *vaillantSemanticPoller) refreshSchedules(ctx context.Context) {
+	if p == nil || p.bus == nil || p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
+	if controller == 0 {
+		return
+	}
+
+	// Define which (zone, HC) combinations to poll.
+	// Per-zone programs: zone 0-2 × heating/cooling
+	// Zone-agnostic programs: 0xFF × DHW/CC/Silent
+	specs := []b555ProgramSpec{
+		{zone: 0x00, hc: b555HCHeating},
+		{zone: 0x01, hc: b555HCHeating},
+		{zone: 0x02, hc: b555HCHeating},
+		{zone: 0x00, hc: b555HCCooling},
+		{zone: 0x01, hc: b555HCCooling},
+		{zone: 0x02, hc: b555HCCooling},
+		{zone: b555ZoneDHW, hc: b555HCDHW},
+		{zone: b555ZoneDHW, hc: b555HCCC},
+		{zone: b555ZoneDHW, hc: b555HCSilent},
+	}
+
+	var programs []graphql.ScheduleProgram
+
+	for _, spec := range specs {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Step 1: Read config (A3)
+		cfg := p.readB555Config(ctx, spec.zone, spec.hc)
+		if cfg == nil {
+			continue
+		}
+
+		hcName := b555HCNames[spec.hc]
+		if hcName == "" {
+			hcName = fmt.Sprintf("unknown_%d", spec.hc)
+		}
+		zoneIdx := int(spec.zone)
+		if spec.zone == b555ZoneDHW {
+			zoneIdx = 255
+		}
+
+		prog := graphql.ScheduleProgram{
+			Zone:   zoneIdx,
+			HC:     hcName,
+			Config: cfg,
+		}
+
+		// Step 2: Read slots per day (A4)
+		slotsPerDay, ok := p.readB555Slots(ctx, spec.zone, spec.hc)
+		if ok {
+			prog.SlotsUsed = slotsPerDay
+		}
+
+		// Step 3: Read timer entries (A5) for each day/slot
+		maxSlots := cfg.MaxSlots
+		if maxSlots <= 0 {
+			maxSlots = 3
+		}
+
+		days := make([]graphql.ScheduleDayProgram, 7)
+		for dd := byte(0); dd < 7; dd++ {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			day := graphql.ScheduleDayProgram{
+				Weekday: b555WeekdayNames[dd],
+			}
+
+			slotCount := maxSlots
+			if ok && int(dd) < len(slotsPerDay) && slotsPerDay[dd] < slotCount {
+				slotCount = slotsPerDay[dd]
+			}
+
+			for ss := 0; ss < slotCount; ss++ {
+				slot := p.readB555Timer(ctx, spec.zone, spec.hc, dd, byte(ss))
+				if slot == nil {
+					break
+				}
+				day.Slots = append(day.Slots, *slot)
+			}
+			days[dd] = day
+		}
+		prog.Days = days
+
+		programs = append(programs, prog)
+	}
+
+	if len(programs) > 0 {
+		p.provider.SetSchedules(&graphql.ScheduleStatus{
+			Programs: programs,
+		})
+	}
 }
 
 func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {

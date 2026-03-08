@@ -1,9 +1,7 @@
 github.com/Project-Helianthus/helianthus-ebusgo v0.0.0-20260228114515-463da768cb9f h1:mBTY1wIlBqiS43yvPKfj8bH0klxtv1g2NFeza7gTPWs=
 github.com/Project-Helianthus/helianthus-ebusgo v0.0.0-20260228114515-463da768cb9f/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
-github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260308024753-a0eb51c7c727 h1:OMtWNGq/TWjo/6fgzxFYPBZVYCCdOXMjb0SDHA+I2qk=
-github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260308024753-a0eb51c7c727/go.mod h1:FrDhh/Q0KQhP+11jGrQFJLur/kLjAA2mQ7UjJYthOlE=
-github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260308133434-a4dd8f3e0af1 h1:+UIwSdvIUVnZJEV4oSvNlTtHw9s4V/NgZg57/kC99yI=
-github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260308133434-a4dd8f3e0af1/go.mod h1:FrDhh/Q0KQhP+11jGrQFJLur/kLjAA2mQ7UjJYthOlE=
+github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260308222957-ffe0bbc91386 h1:LB2qsODNxkORRsnKJ5HrTAwJ2UmEIlN9+Rlr6SHx06c=
+github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260308222957-ffe0bbc91386/go.mod h1:FrDhh/Q0KQhP+11jGrQFJLur/kLjAA2mQ7UjJYthOlE=
 github.com/cenkalti/backoff v2.2.1+incompatible h1:tNowT99t7UNflLxfYYSlKYsBpXdEet03Pg2g16Swow4=
 github.com/cenkalti/backoff v2.2.1+incompatible/go.mod h1:90ReRw6GdpyfrHakVjL/QHaoyV4aDUVVkXQJJJ3NXXM=
 github.com/gorilla/websocket v1.5.1 h1:gmztn0JnHVt9JZquRuzLw3g4wouNVzKL15iLr/zn/QY=

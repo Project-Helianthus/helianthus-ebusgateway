@@ -782,6 +782,9 @@ func TestRefreshDiscovery_PrimesControllerSemanticTasksWhenControllerAppears(t *
 		circuits:       make(map[byte]*vaillantCircuitSnapshot),
 		radioDevices:   make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
 		solarCylinders: make(map[byte]*vaillantCylinderSnapshot),
+		b524ProbeFn: func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+			return target == 0x15
+		},
 	}
 
 	poller.refreshDiscovery(context.Background())
@@ -2582,7 +2585,7 @@ func TestVaillantSemanticPoller_RefreshDiscoverySetsRegulatorCapability(t *testi
 		t.Fatalf("LoadCatalog() error: %v", err)
 	}
 
-	// Registry with a boiler (BASV prefix) and a regulator device.
+	// Registry with a B524-capable controller and a regulator device.
 	reg := newTestRegistry(
 		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV", SerialNumber: "21-22-09-0010002460-0082-005409-N4"},
 		registry.DeviceInfo{Address: 0x60, Manufacturer: "Vaillant", DeviceID: "VRC430", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
@@ -2598,6 +2601,9 @@ func TestVaillantSemanticPoller_RefreshDiscoverySetsRegulatorCapability(t *testi
 		zoneMissThreshold: 3,
 		zoneHitThreshold:  2,
 		dhwStaleTTL:       10 * time.Minute,
+		b524ProbeFn: func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+			return target == 0x15
+		},
 	}
 	poller.nowFn = func() time.Time { return time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC) }
 
@@ -2609,7 +2615,7 @@ func TestVaillantSemanticPoller_RefreshDiscoverySetsRegulatorCapability(t *testi
 	poller.mu.Unlock()
 
 	if gotController != 0x15 {
-		t.Fatalf("controller = 0x%02x; want 0x15 (BASV boiler)", gotController)
+		t.Fatalf("controller = 0x%02x; want 0x15 (B524 root)", gotController)
 	}
 	if gotCap != productids.ControllerPresent {
 		t.Fatalf("regulatorCapability = %s; want ControllerPresent", gotCap)
@@ -2624,8 +2630,8 @@ func TestVaillantSemanticPoller_RefreshDiscoveryNoBasvSetsRegulatorCapability(t 
 		t.Fatalf("LoadCatalog() error: %v", err)
 	}
 
-	// Registry with ONLY a regulator — no BASV boiler. refreshDiscovery should
-	// still update regulatorCapability even when early-returning due to missing BASV.
+	// Registry with ONLY a regulator — no B524-capable device. refreshDiscovery should
+	// still update regulatorCapability even when no B524 root is discovered.
 	reg := newTestRegistry(
 		registry.DeviceInfo{Address: 0x60, Manufacturer: "Vaillant", DeviceID: "VRC430", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
 	)
@@ -2651,7 +2657,7 @@ func TestVaillantSemanticPoller_RefreshDiscoveryNoBasvSetsRegulatorCapability(t 
 	poller.mu.Unlock()
 
 	if gotController != 0 {
-		t.Fatalf("controller = 0x%02x; want 0 (no BASV found)", gotController)
+		t.Fatalf("controller = 0x%02x; want 0 (no B524 root found)", gotController)
 	}
 	if gotCap != productids.ControllerPresent {
 		t.Fatalf("regulatorCapability = %s; want ControllerPresent (regulator in registry even without BASV)", gotCap)
@@ -3010,5 +3016,307 @@ func TestB524EnergyQueries_Coverage(t *testing.T) {
 	}
 	if len(b524EnergyQueries) != 4 {
 		t.Fatalf("len(b524EnergyQueries) = %d; want 4", len(b524EnergyQueries))
+	}
+}
+
+func TestIsB524ProbeCoherent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload []byte
+		group   byte
+		addr    uint16
+		want    bool
+	}{
+		{
+			name:    "4-byte header matching group and addr",
+			payload: []byte{0x01, 0x03, 0x1C, 0x00},
+			group:   0x03,
+			addr:    0x001C,
+			want:    true,
+		},
+		{
+			name:    "5-byte header matching group and addr",
+			payload: []byte{0x01, 0x01, 0x03, 0x1C, 0x00},
+			group:   0x03,
+			addr:    0x001C,
+			want:    true,
+		},
+		{
+			name:    "full response with value bytes",
+			payload: []byte{0x01, 0x01, 0x03, 0x1C, 0x00, 0x42, 0x43},
+			group:   0x03,
+			addr:    0x001C,
+			want:    true,
+		},
+		{
+			name:    "short payload rejected",
+			payload: []byte{0x01, 0x03, 0x1C},
+			group:   0x03,
+			addr:    0x001C,
+			want:    false,
+		},
+		{
+			name:    "empty payload rejected",
+			payload: nil,
+			group:   0x03,
+			addr:    0x001C,
+			want:    false,
+		},
+		{
+			name:    "group mismatch rejected",
+			payload: []byte{0x01, 0x02, 0x1C, 0x00},
+			group:   0x03,
+			addr:    0x001C,
+			want:    false,
+		},
+		{
+			name:    "addr mismatch rejected",
+			payload: []byte{0x01, 0x03, 0x1D, 0x00},
+			group:   0x03,
+			addr:    0x001C,
+			want:    false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isB524ProbeCoherent(test.payload, test.group, test.addr); got != test.want {
+				t.Fatalf("isB524ProbeCoherent(%x, 0x%02x, 0x%04x) = %v; want %v", test.payload, test.group, test.addr, got, test.want)
+			}
+		})
+	}
+}
+
+// mockB524Probe returns a probe function that records calls and responds
+// based on a coherence map keyed by target address.
+func mockB524Probe(coherent map[byte]bool, probed *[]byte) func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+	return func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+		if probed != nil {
+			found := false
+			for _, p := range *probed {
+				if p == target {
+					found = true
+					break
+				}
+			}
+			if !found {
+				*probed = append(*probed, target)
+			}
+		}
+		return coherent[target]
+	}
+}
+
+func newTestPoller(reg *registry.DeviceRegistry) *vaillantSemanticPoller {
+	return &vaillantSemanticPoller{
+		reg:            reg,
+		source:         0x71,
+		requestTimeout: 2 * time.Second,
+		nowFn:          time.Now,
+	}
+}
+
+func TestCapabilityFirstDiscovery_FindsRootWithSingleCandidate(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x15: true}, nil)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v", err)
+	}
+	if addr != 0x15 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x15", addr)
+	}
+}
+
+func TestCapabilityFirstDiscovery_Prefers0x15WhenCoherent(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+	reg.Register(registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"})
+
+	var probed []byte
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: true, 0x15: true, 0x26: true}, &probed)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v", err)
+	}
+	if addr != 0x15 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x15 (D1-ordered preference)", addr)
+	}
+	// 0x15 should be probed first and discovery should stop there
+	if len(probed) != 1 || probed[0] != 0x15 {
+		t.Fatalf("probed = %v; want [0x15] (stop-at-first)", probed)
+	}
+}
+
+func TestCapabilityFirstDiscovery_FallsBackWhen0x15NonCoherent(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+	reg.Register(registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"})
+
+	var probed []byte
+	// 0x15 non-coherent, 0x26 coherent
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: false, 0x15: false, 0x26: true}, &probed)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v", err)
+	}
+	if addr != 0x26 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x26 (fallback after 0x15 fails)", addr)
+	}
+	// Should probe 0x15 first, then 0x08, then 0x26 (ascending after 0x15)
+	if len(probed) < 2 {
+		t.Fatalf("probed = %v; want at least [0x15, ...0x26]", probed)
+	}
+	if probed[0] != 0x15 {
+		t.Fatalf("probed[0] = 0x%02x; want 0x15 (probed first per D1)", probed[0])
+	}
+}
+
+func TestCapabilityFirstDiscovery_RejectsShortResponse(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+
+	// Probe function that simulates short response (< 4 bytes) → non-coherent
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x15: false}, nil)
+
+	_, err := poller.discoverB524Root(context.Background())
+	if err == nil {
+		t.Fatal("discoverB524Root should return error when all responses are short/non-coherent")
+	}
+	if !strings.Contains(err.Error(), "no coherent responder") {
+		t.Fatalf("error = %q; want substring 'no coherent responder'", err.Error())
+	}
+}
+
+func TestCapabilityFirstDiscovery_ReturnsDefinitiveWhenNoneQualify(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: false, 0x15: false}, nil)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err == nil {
+		t.Fatal("discoverB524Root should return error when no candidate qualifies")
+	}
+	if addr != 0 {
+		t.Fatalf("discoverB524Root addr = 0x%02x; want 0 on failure", addr)
+	}
+	if !strings.Contains(err.Error(), "no coherent responder") {
+		t.Fatalf("error = %q; want substring 'no coherent responder'", err.Error())
+	}
+}
+
+func TestCapabilityFirstDiscovery_SucceedsWhenEnrichmentFails(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	// Register device with unknown identity (no known family prefix)
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Unknown", DeviceID: "XYZABC"})
+
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x15: true}, nil)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v; discovery should succeed regardless of enrichment", err)
+	}
+	if addr != 0x15 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x15", addr)
+	}
+
+	// Enrichment should return empty family but not nil
+	enrichment := poller.enrichRegulatorIdentity(addr)
+	if enrichment == nil {
+		t.Fatal("enrichRegulatorIdentity should return non-nil for registered device")
+	}
+	if enrichment.family != "" {
+		t.Fatalf("enrichment.family = %q; want empty for unknown device", enrichment.family)
+	}
+}
+
+func TestCapabilityFirstDiscovery_SkipsNonCoherentDevice(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+
+	var probed []byte
+	// 0x08 responds but non-coherent (e.g., boiler, not a B524 controller)
+	// 0x15 responds coherently
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: false, 0x15: true}, &probed)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v", err)
+	}
+	if addr != 0x15 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x15", addr)
+	}
+	// Both should be probed (0x15 first per D1, then stop)
+	if len(probed) != 1 || probed[0] != 0x15 {
+		t.Fatalf("probed = %v; want [0x15] (0x15 probed first, coherent, stop)", probed)
+	}
+}
+
+func TestEnrichRegulatorIdentity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		deviceID   string
+		wantFamily string
+	}{
+		{name: "BASV2 family", deviceID: "BASV2_xx", wantFamily: "BASV2"},
+		{name: "BASS2 family", deviceID: "BASS2_yy", wantFamily: "BASS2"},
+		{name: "CTLV2 family", deviceID: "CTLV2_zz", wantFamily: "CTLV2"},
+		{name: "unknown family", deviceID: "XYZABC", wantFamily: ""},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			reg := registry.NewDeviceRegistry(nil)
+			reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: test.deviceID})
+
+			poller := newTestPoller(reg)
+			enrichment := poller.enrichRegulatorIdentity(0x15)
+			if enrichment == nil {
+				t.Fatal("enrichRegulatorIdentity returned nil")
+			}
+			if enrichment.family != test.wantFamily {
+				t.Fatalf("enrichment.family = %q; want %q", enrichment.family, test.wantFamily)
+			}
+		})
 	}
 }

@@ -28,15 +28,9 @@ func (p *vaillantSemanticPoller) refreshFromEbusdGrabWithInstances(ctx context.C
 		return nil, false
 	}
 
-	var controller byte
 	p.mu.Lock()
-	controller = p.controller
+	controller := p.controller
 	p.mu.Unlock()
-	if controller == 0 {
-		if found, ok := findDeviceAddressByPrefix(p.reg, "BASV"); ok {
-			controller = found
-		}
-	}
 
 	zones, ok := readB524ZonesFromEbusdGrab(ctx, p.transportConfig, controller)
 	if !ok || len(zones) == 0 {
@@ -92,15 +86,9 @@ func (p *vaillantSemanticPoller) refreshDHWFromEbusdGrab(ctx context.Context) bo
 	if !isEbusdTCPTransport(p.transportConfig) {
 		return false
 	}
-	var controller byte
 	p.mu.Lock()
-	controller = p.controller
+	controller := p.controller
 	p.mu.Unlock()
-	if controller == 0 {
-		if found, ok := findDeviceAddressByPrefix(p.reg, "BASV"); ok {
-			controller = found
-		}
-	}
 
 	candidates := ebusdScanTargetCandidates(p.transportConfig)
 	for _, candidate := range candidates {

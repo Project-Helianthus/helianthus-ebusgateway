@@ -1033,6 +1033,7 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	// Discovery owns downstream controller/boiler priming and avoids duplicate startup bursts.
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
+	p.enqueueTask(semanticTaskPriorityLow, p.refreshSchedules)
 
 	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
 	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)

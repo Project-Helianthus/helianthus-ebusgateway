@@ -30,6 +30,7 @@ type graphqlSchemaTypes struct {
 	energyTotals       *graphqlgo.Object
 	boilerStatusType   *graphqlgo.Object
 	systemStatusType   *graphqlgo.Object
+	scheduleStatusType *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {
@@ -2191,6 +2192,246 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		},
 	})
 
+	scheduleTimerSlotType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ScheduleTimerSlot",
+		Fields: graphqlgo.Fields{
+			"startHour": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					slot, ok := params.Source.(ScheduleTimerSlot)
+					if !ok {
+						return nil, nil
+					}
+					return slot.StartHour, nil
+				},
+			},
+			"startMinute": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					slot, ok := params.Source.(ScheduleTimerSlot)
+					if !ok {
+						return nil, nil
+					}
+					return slot.StartMinute, nil
+				},
+			},
+			"endHour": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					slot, ok := params.Source.(ScheduleTimerSlot)
+					if !ok {
+						return nil, nil
+					}
+					return slot.EndHour, nil
+				},
+			},
+			"endMinute": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					slot, ok := params.Source.(ScheduleTimerSlot)
+					if !ok {
+						return nil, nil
+					}
+					return slot.EndMinute, nil
+				},
+			},
+			"temperatureC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					slot, ok := params.Source.(ScheduleTimerSlot)
+					if !ok || slot.TemperatureC == nil {
+						return nil, nil
+					}
+					return *slot.TemperatureC, nil
+				},
+			},
+			"temperatureRaw": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					slot, ok := params.Source.(ScheduleTimerSlot)
+					if !ok || slot.TemperatureRaw == nil {
+						return nil, nil
+					}
+					return *slot.TemperatureRaw, nil
+				},
+			},
+		},
+	})
+
+	scheduleDayProgramType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ScheduleDayProgram",
+		Fields: graphqlgo.Fields{
+			"weekday": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					day, ok := params.Source.(ScheduleDayProgram)
+					if !ok {
+						return nil, nil
+					}
+					return day.Weekday, nil
+				},
+			},
+			"slots": &graphqlgo.Field{
+				Type: graphqlgo.NewList(graphqlgo.NewNonNull(scheduleTimerSlotType)),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					day, ok := params.Source.(ScheduleDayProgram)
+					if !ok {
+						return nil, nil
+					}
+					return day.Slots, nil
+				},
+			},
+		},
+	})
+
+	scheduleConfigType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ScheduleConfig",
+		Fields: graphqlgo.Fields{
+			"maxSlots": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					cfg, ok := params.Source.(*ScheduleConfig)
+					if !ok || cfg == nil {
+						return nil, nil
+					}
+					return cfg.MaxSlots, nil
+				},
+			},
+			"timeResolution": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					cfg, ok := params.Source.(*ScheduleConfig)
+					if !ok || cfg == nil {
+						return nil, nil
+					}
+					return cfg.TimeResolution, nil
+				},
+			},
+			"minDuration": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					cfg, ok := params.Source.(*ScheduleConfig)
+					if !ok || cfg == nil {
+						return nil, nil
+					}
+					return cfg.MinDuration, nil
+				},
+			},
+			"hasTemperature": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					cfg, ok := params.Source.(*ScheduleConfig)
+					if !ok || cfg == nil {
+						return nil, nil
+					}
+					return cfg.HasTemperature, nil
+				},
+			},
+			"tempSlots": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					cfg, ok := params.Source.(*ScheduleConfig)
+					if !ok || cfg == nil {
+						return nil, nil
+					}
+					return cfg.TempSlots, nil
+				},
+			},
+			"minTempC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					cfg, ok := params.Source.(*ScheduleConfig)
+					if !ok || cfg == nil || cfg.MinTempC == nil {
+						return nil, nil
+					}
+					return *cfg.MinTempC, nil
+				},
+			},
+			"maxTempC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					cfg, ok := params.Source.(*ScheduleConfig)
+					if !ok || cfg == nil || cfg.MaxTempC == nil {
+						return nil, nil
+					}
+					return *cfg.MaxTempC, nil
+				},
+			},
+		},
+	})
+
+	scheduleProgramType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ScheduleProgram",
+		Fields: graphqlgo.Fields{
+			"zone": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					prog, ok := params.Source.(ScheduleProgram)
+					if !ok {
+						return nil, nil
+					}
+					return prog.Zone, nil
+				},
+			},
+			"hc": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					prog, ok := params.Source.(ScheduleProgram)
+					if !ok {
+						return nil, nil
+					}
+					return prog.HC, nil
+				},
+			},
+			"config": &graphqlgo.Field{
+				Type: scheduleConfigType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					prog, ok := params.Source.(ScheduleProgram)
+					if !ok {
+						return nil, nil
+					}
+					return prog.Config, nil
+				},
+			},
+			"slotsUsed": &graphqlgo.Field{
+				Type: graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.Int)),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					prog, ok := params.Source.(ScheduleProgram)
+					if !ok {
+						return nil, nil
+					}
+					return prog.SlotsUsed, nil
+				},
+			},
+			"days": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(scheduleDayProgramType))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					prog, ok := params.Source.(ScheduleProgram)
+					if !ok {
+						return nil, nil
+					}
+					return prog.Days, nil
+				},
+			},
+		},
+	})
+
+	scheduleStatusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ScheduleStatus",
+		Fields: graphqlgo.Fields{
+			"programs": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(scheduleProgramType))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*ScheduleStatus)
+					if !ok || status == nil {
+						return nil, nil
+					}
+					return status.Programs, nil
+				},
+			},
+		},
+	})
+
 	return graphqlSchemaTypes{
 		fieldType:          fieldType,
 		responseType:       responseType,
@@ -2212,6 +2453,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		energyTotals:       energyTotalsType,
 		boilerStatusType:   boilerStatusType,
 		systemStatusType:   systemStatusType,
+		scheduleStatusType: scheduleStatusType,
 	}
 }
 
@@ -2313,6 +2555,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				Type: types.systemStatusType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().System(), nil
+				},
+			},
+			"schedules": &graphqlgo.Field{
+				Type: types.scheduleStatusType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().Schedules(), nil
 				},
 			},
 			"devices": &graphqlgo.Field{

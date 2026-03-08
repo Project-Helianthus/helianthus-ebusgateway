@@ -5071,10 +5071,8 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 		timeout = 2 * time.Second
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	p.readMu.Lock()
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	response, err := p.bus.Send(reqCtx, protocol.Frame{
 		Source:    source,
 		Target:    target,
@@ -5082,6 +5080,7 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 		Secondary: vaillantExtRegisterSecondary,
 		Data:      buildB524ReadSelector(opcode, group, instance, addr),
 	})
+	cancel()
 	p.readMu.Unlock()
 
 	if err != nil {

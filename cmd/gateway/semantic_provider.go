@@ -309,6 +309,10 @@ func mapEnergySeries(series graphql.EnergySeries) mcp.EnergySeries {
 		out.Yearly = make([]float64, len(series.Yearly))
 		copy(out.Yearly, series.Yearly)
 	}
+	if len(series.Monthly) > 0 {
+		out.Monthly = make([]float64, len(series.Monthly))
+		copy(out.Monthly, series.Monthly)
+	}
 	return out
 }
 

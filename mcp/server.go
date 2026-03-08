@@ -86,8 +86,9 @@ type DhwStatus struct {
 }
 
 type EnergySeries struct {
-	Today  float64   `json:"today"`
-	Yearly []float64 `json:"yearly"`
+	Today   float64   `json:"today"`
+	Yearly  []float64 `json:"yearly"`
+	Monthly []float64 `json:"monthly"`
 }
 
 type EnergyChannel struct {

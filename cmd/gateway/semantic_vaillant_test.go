@@ -3026,30 +3026,43 @@ func TestRefreshRegulatorCapability_NoChangeNoLog(t *testing.T) {
 func TestB524EnergyQueries_Coverage(t *testing.T) {
 	t.Parallel()
 
-	type pair struct {
-		channel string
-		usage   string
+	type tuple struct {
+		channel  string
+		usage    string
+		period   string
+		yearKind string
 	}
-	expected := map[pair]bool{
-		{"gas", "climate"}:           false,
-		{"gas", "hot_water"}:         false,
-		{"electricity", "climate"}:   false,
-		{"electricity", "hot_water"}: false,
+	expected := map[tuple]bool{
+		// All-time totals.
+		{"gas", "climate", "year", "current"}:           false,
+		{"gas", "hot_water", "year", "current"}:         false,
+		{"electricity", "climate", "year", "current"}:   false,
+		{"electricity", "hot_water", "year", "current"}: false,
+		// Monthly: this month.
+		{"gas", "climate", "month", "current"}:           false,
+		{"gas", "hot_water", "month", "current"}:         false,
+		{"electricity", "climate", "month", "current"}:   false,
+		{"electricity", "hot_water", "month", "current"}: false,
+		// Monthly: last month.
+		{"gas", "climate", "month", "previous"}:           false,
+		{"gas", "hot_water", "month", "previous"}:         false,
+		{"electricity", "climate", "month", "previous"}:   false,
+		{"electricity", "hot_water", "month", "previous"}: false,
 	}
 	for _, q := range b524EnergyQueries {
-		p := pair{q.channel, q.usage}
-		if _, ok := expected[p]; !ok {
-			t.Fatalf("unexpected query in b524EnergyQueries: channel=%q usage=%q", q.channel, q.usage)
+		tup := tuple{q.channel, q.usage, q.period, q.yearKind}
+		if _, ok := expected[tup]; !ok {
+			t.Fatalf("unexpected query in b524EnergyQueries: %+v", tup)
 		}
-		expected[p] = true
+		expected[tup] = true
 	}
-	for p, seen := range expected {
+	for tup, seen := range expected {
 		if !seen {
-			t.Fatalf("missing query in b524EnergyQueries: channel=%q usage=%q", p.channel, p.usage)
+			t.Fatalf("missing query in b524EnergyQueries: %+v", tup)
 		}
 	}
-	if len(b524EnergyQueries) != 4 {
-		t.Fatalf("len(b524EnergyQueries) = %d; want 4", len(b524EnergyQueries))
+	if len(b524EnergyQueries) != 12 {
+		t.Fatalf("len(b524EnergyQueries) = %d; want 12", len(b524EnergyQueries))
 	}
 }
 

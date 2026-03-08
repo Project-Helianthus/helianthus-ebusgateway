@@ -283,6 +283,16 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return series.Yearly, nil
 				},
 			},
+			"monthly": &graphqlgo.Field{
+				Type: graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.Float)),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					series, ok := params.Source.(EnergySeries)
+					if !ok {
+						return nil, nil
+					}
+					return series.Monthly, nil
+				},
+			},
 		},
 	})
 

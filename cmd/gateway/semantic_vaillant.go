@@ -206,7 +206,27 @@ type vaillantSemanticPoller struct {
 	solarCylinders           map[byte]*vaillantCylinderSnapshot
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
+	b524ProbeFn            func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
 	nowFn                  func() time.Time
+}
+
+type regulatorEnrichment struct {
+	family   string
+	deviceID string
+}
+
+type b524ProbeSpec struct {
+	opcode   byte
+	group    byte
+	instance byte
+	addr     uint16
+}
+
+// b524CapabilityProbes lists registers from different GG groups used for
+// multi-register coherency verification during capability-first discovery.
+var b524CapabilityProbes = []b524ProbeSpec{
+	{opcode: vaillantB524OpcodeLocal, group: 0x00, instance: 0x00, addr: 0x0001},
+	{opcode: vaillantB524OpcodeLocal, group: vaillantGroupDHW, instance: dhwInstance, addr: dhwRegOperationMode},
 }
 
 type zonePresenceState string
@@ -1087,12 +1107,13 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 }
 
 func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
-	// Regulator capability is always recomputed, even when BASV is missing.
+	// Regulator capability is always recomputed, even when no B524 root is found.
 	regCap := p.findRegulatorCapability()
 	boilerAddress := p.findBoilerAddress()
 
-	controller, ok := findDeviceAddressByPrefix(p.reg, "BASV")
-	if !ok {
+	controller, discoveryErr := p.discoverB524Root(ctx)
+	if discoveryErr != nil {
+		log.Printf("semantic_b524_root: %v", discoveryErr)
 		p.mu.Lock()
 		prev := p.regulatorCapability
 		prevController := p.controller
@@ -1113,7 +1134,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 			log.Printf("semantic_regulator_capability capability=%s", regCap.String())
 		}
 		if prevController != 0 {
-			log.Printf("semantic_controller_discovery address=0x00 source=missing")
+			log.Printf("semantic_controller_discovery address=0x00 source=no_coherent_responder")
 		}
 		if boilerAddress != prevBoilerAddress && boilerAddress != 0 && boilerAddress != 0x08 {
 			log.Printf("semantic_boiler_discovery address=0x%02x source=nonstandard", boilerAddress)
@@ -1127,6 +1148,11 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.publishRadioDevices(semanticSnapshotSourceCache)
 		p.refreshFM5Semantic(ctx)
 		return
+	}
+
+	if enrichment := p.enrichRegulatorIdentity(controller); enrichment != nil {
+		log.Printf("semantic_controller_enrichment address=0x%02x family=%s device=%s",
+			controller, enrichment.family, enrichment.deviceID)
 	}
 
 	p.mu.Lock()
@@ -1703,14 +1729,6 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 
 func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapshotSource {
 	controller, _ := p.snapshotZones()
-	if controller == 0 {
-		if found, ok := findDeviceAddressByPrefix(p.reg, "BASV"); ok {
-			p.mu.Lock()
-			p.controller = found
-			p.mu.Unlock()
-			controller = found
-		}
-	}
 	if controller == 0 {
 		return p.sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
 	}
@@ -4230,34 +4248,6 @@ func floatPtrEquals(a, b *float64) bool {
 	return *a == *b
 }
 
-// Deprecated: findDeviceAddressByPrefix uses a naming heuristic (device ID prefix match).
-// For regulator detection, use findRegulatorCapability which relies on the product_ids catalog.
-// Retained for boiler controller lookup (BASV prefix) until a catalog-based replacement is added.
-func findDeviceAddressByPrefix(reg *registry.DeviceRegistry, wantedPrefix string) (byte, bool) {
-	if reg == nil {
-		return 0, false
-	}
-	wantedPrefix = normalizeDeviceID(wantedPrefix)
-	if wantedPrefix == "" {
-		return 0, false
-	}
-
-	var addr byte
-	var found bool
-	reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil {
-			return true
-		}
-		if strings.HasPrefix(normalizeDeviceID(entry.DeviceID()), wantedPrefix) {
-			addr = entry.Address()
-			found = true
-			return false
-		}
-		return true
-	})
-	return addr, found
-}
-
 func (p *vaillantSemanticPoller) findBoilerAddress() byte {
 	if p == nil || p.reg == nil {
 		return 0
@@ -5046,6 +5036,161 @@ func parseB524ReadPayload(payload []byte, opcode, group, instance byte, addr uin
 		return nil, false
 	}
 	return payload[4:], true
+}
+
+// isB524ProbeCoherent checks if a B524 read response proves the target
+// understands B524 register reads. Unlike parseB524ReadPayload, this accepts
+// header-only responses (no value bytes) as coherent — the device returned a
+// valid B524 structure which proves capability.
+func isB524ProbeCoherent(payload []byte, group byte, addr uint16) bool {
+	if len(payload) < 4 {
+		return false
+	}
+	if len(payload) >= 5 {
+		if payload[2] == group && (uint16(payload[3])|uint16(payload[4])<<8) == addr {
+			return true
+		}
+	}
+	return payload[1] == group && (uint16(payload[2])|uint16(payload[3])<<8) == addr
+}
+
+// probeB524Register sends a single B524 read request to target and checks
+// if the response is coherent. Uses one-shot Bus.Send (no retry, no circuit
+// breaker) per discovery probe contract.
+func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+	if p == nil || p.bus == nil {
+		return false
+	}
+
+	p.mu.Lock()
+	source := p.source
+	timeout := p.requestTimeout
+	p.mu.Unlock()
+
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	p.readMu.Lock()
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	response, err := p.bus.Send(reqCtx, protocol.Frame{
+		Source:    source,
+		Target:    target,
+		Primary:   vaillantExtRegisterPrimary,
+		Secondary: vaillantExtRegisterSecondary,
+		Data:      buildB524ReadSelector(opcode, group, instance, addr),
+	})
+	cancel()
+	p.readMu.Unlock()
+
+	if err != nil {
+		return false
+	}
+	if response == nil {
+		return false
+	}
+	return isB524ProbeCoherent(response.Data, group, addr)
+}
+
+// discoverB524Root finds the B524 semantic root by probing candidates with
+// multi-register coherency checks. Iterates D1-ordered: 0x15 first (common
+// regulator address), then ascending. Stops at first coherent candidate.
+func (p *vaillantSemanticPoller) discoverB524Root(ctx context.Context) (byte, error) {
+	if p == nil || p.reg == nil {
+		return 0, fmt.Errorf("gateway.discoverB524Root: nil poller or registry")
+	}
+
+	probeFn := p.b524ProbeFn
+	if probeFn == nil {
+		probeFn = p.probeB524Register
+	}
+
+	var candidates []byte
+	has0x15 := false
+	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry == nil {
+			return true
+		}
+		addr := entry.Address()
+		if addr == 0x15 {
+			has0x15 = true
+		}
+		candidates = append(candidates, addr)
+		return true
+	})
+
+	if len(candidates) == 0 {
+		return 0, fmt.Errorf("gateway.discoverB524Root: no devices in registry")
+	}
+
+	slices.Sort(candidates)
+	candidates = slices.Compact(candidates)
+
+	if has0x15 {
+		ordered := make([]byte, 0, len(candidates))
+		ordered = append(ordered, 0x15)
+		for _, c := range candidates {
+			if c != 0x15 {
+				ordered = append(ordered, c)
+			}
+		}
+		candidates = ordered
+	}
+
+	for _, addr := range candidates {
+		coherent := true
+		for _, probe := range b524CapabilityProbes {
+			if !probeFn(ctx, addr, probe.opcode, probe.group, probe.instance, probe.addr) {
+				coherent = false
+				break
+			}
+		}
+		if coherent {
+			log.Printf("semantic_b524_root_discovery address=0x%02x probed=%d", addr, len(candidates))
+			return addr, nil
+		}
+	}
+
+	addrs := make([]string, len(candidates))
+	for i, c := range candidates {
+		addrs[i] = fmt.Sprintf("0x%02x", c)
+	}
+	return 0, fmt.Errorf("gateway.discoverB524Root: no coherent responder among [%s]", strings.Join(addrs, ", "))
+}
+
+// enrichRegulatorIdentity returns enrichment metadata for the B524 root device.
+// Unknown identity is acceptable and does not block discovery.
+func (p *vaillantSemanticPoller) enrichRegulatorIdentity(addr byte) *regulatorEnrichment {
+	if p == nil || p.reg == nil {
+		return nil
+	}
+
+	var entry registry.DeviceEntry
+	p.reg.Iterate(func(e registry.DeviceEntry) bool {
+		if e != nil && e.Address() == addr {
+			entry = e
+			return false
+		}
+		return true
+	})
+	if entry == nil {
+		return nil
+	}
+
+	deviceID := normalizeDeviceID(entry.DeviceID())
+	families := []string{"BASV2", "BASS2", "CTLV2", "CTLS2", "E7C00"}
+	var family string
+	for _, f := range families {
+		if strings.HasPrefix(deviceID, f) {
+			family = f
+			break
+		}
+	}
+
+	return &regulatorEnrichment{
+		family:   family,
+		deviceID: entry.DeviceID(),
+	}
 }
 
 func matchesB524ReplyInstance(replyInstance, requestedInstance byte) bool {

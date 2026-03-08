@@ -135,8 +135,9 @@ type CylinderStatus struct {
 }
 
 type EnergySeries struct {
-	Today  float64
-	Yearly []float64
+	Today   float64
+	Yearly  []float64
+	Monthly []float64
 }
 
 type EnergyChannel struct {

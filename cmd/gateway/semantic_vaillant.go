@@ -119,8 +119,18 @@ const (
 	energyRegEnergySumHc  = uint16(0x0057) // PrEnergySumHc: total electricity consumption heating
 	energyRegEnergySumHwc = uint16(0x0058) // PrEnergySumHwc: total electricity consumption hot water
 	energyRegFuelSumHwc   = uint16(0x0059) // PrFuelSumHwc: total gas consumption hot water
-	energyGroup           = byte(0x00)
-	energyInstance        = byte(0x00)
+
+	energyRegFuelSumHcThisMonth    = uint16(0x004E) // PrFuelSumHcThisMonth: gas heating this month
+	energyRegEnergySumHcThisMonth  = uint16(0x004F) // PrEnergySumHcThisMonth: electricity heating this month
+	energyRegEnergySumHwcThisMonth = uint16(0x0050) // PrEnergySumHwcThisMonth: electricity hot water this month
+	energyRegFuelSumHwcThisMonth   = uint16(0x0051) // PrFuelSumHwcThisMonth: gas hot water this month
+	energyRegFuelSumHcLastMonth    = uint16(0x0052) // PrFuelSumHcLastMonth: gas heating last month
+	energyRegEnergySumHcLastMonth  = uint16(0x0053) // PrEnergySumHcLastMonth: electricity heating last month
+	energyRegEnergySumHwcLastMonth = uint16(0x0054) // PrEnergySumHwcLastMonth: electricity hot water last month
+	energyRegFuelSumHwcLastMonth   = uint16(0x0055) // PrFuelSumHwcLastMonth: gas hot water last month
+
+	energyGroup    = byte(0x00)
+	energyInstance = byte(0x00)
 )
 
 type regulatorAbsenceState string
@@ -1677,16 +1687,29 @@ func zoneEquals(a, b graphql.Zone) bool {
 }
 
 type b524EnergyQuery struct {
-	addr    uint16 // B5.24 register address
-	channel string // EnergyMergeKey.Channel
-	usage   string // EnergyMergeKey.Usage
+	addr     uint16 // B5.24 register address
+	channel  string // EnergyMergeKey.Channel
+	usage    string // EnergyMergeKey.Usage
+	period   string // EnergyMergeKey.Period ("year", "month")
+	yearKind string // EnergyMergeKey.YearKind ("current", "previous")
 }
 
 var b524EnergyQueries = []b524EnergyQuery{
-	{energyRegFuelSumHc, "gas", "climate"},
-	{energyRegFuelSumHwc, "gas", "hot_water"},
-	{energyRegEnergySumHc, "electricity", "climate"},
-	{energyRegEnergySumHwc, "electricity", "hot_water"},
+	// All-time totals (mapped as year/current).
+	{energyRegFuelSumHc, "gas", "climate", "year", "current"},
+	{energyRegFuelSumHwc, "gas", "hot_water", "year", "current"},
+	{energyRegEnergySumHc, "electricity", "climate", "year", "current"},
+	{energyRegEnergySumHwc, "electricity", "hot_water", "year", "current"},
+	// Monthly: this month (month/current).
+	{energyRegFuelSumHcThisMonth, "gas", "climate", "month", "current"},
+	{energyRegFuelSumHwcThisMonth, "gas", "hot_water", "month", "current"},
+	{energyRegEnergySumHcThisMonth, "electricity", "climate", "month", "current"},
+	{energyRegEnergySumHwcThisMonth, "electricity", "hot_water", "month", "current"},
+	// Monthly: last month (month/previous).
+	{energyRegFuelSumHcLastMonth, "gas", "climate", "month", "previous"},
+	{energyRegFuelSumHwcLastMonth, "gas", "hot_water", "month", "previous"},
+	{energyRegEnergySumHcLastMonth, "electricity", "climate", "month", "previous"},
+	{energyRegEnergySumHwcLastMonth, "electricity", "hot_water", "month", "previous"},
 }
 
 func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
@@ -1711,20 +1734,21 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 		}
 		kwh := float64(val)
 
-		// Write all-time total as year/current.
 		if p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-			Channel: q.channel, Usage: q.usage, Period: "year", YearKind: "current",
+			Channel: q.channel, Usage: q.usage, Period: q.period, YearKind: q.yearKind,
 		}, kwh) {
 			accepted++
 		}
-		// Lock day and year/previous with register-priority 0 to prevent
-		// broadcast double-counting (all-time total already includes them).
-		p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-			Channel: q.channel, Usage: q.usage, Period: "year", YearKind: "previous",
-		}, 0)
-		p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-			Channel: q.channel, Usage: q.usage, Period: "day", YearKind: "",
-		}, 0)
+		// For all-time totals, lock day and year/previous with register-priority 0
+		// to prevent broadcast double-counting (all-time total already includes them).
+		if q.period == "year" && q.yearKind == "current" {
+			p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
+				Channel: q.channel, Usage: q.usage, Period: "year", YearKind: "previous",
+			}, 0)
+			p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
+				Channel: q.channel, Usage: q.usage, Period: "day", YearKind: "",
+			}, 0)
+		}
 	}
 	if accepted > 0 || failed > 0 {
 		log.Printf("semantic energy b524: accepted=%d failed=%d", accepted, failed)

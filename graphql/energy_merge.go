@@ -34,8 +34,8 @@ type energyDataPoint struct {
 type energyMergeKey struct {
 	Channel  string // "gas", "electricity", "solar"
 	Usage    string // "hot_water", "climate" (canonicalized from heating/cooling)
-	Period   string // "day", "year"
-	YearKind string // "" for day, "previous"/"current" for year
+	Period   string // "day", "year", "month"
+	YearKind string // "" for day, "previous"/"current" for year/month
 }
 
 // EnergyMergeKey is the external key contract for register/broadcast energy merge inputs.
@@ -174,6 +174,16 @@ func (s *energyMergeStore) Snapshot() *EnergyTotals {
 				series.Yearly[0] = point.Value
 			case "current":
 				series.Yearly[1] = point.Value
+			}
+		case "month":
+			if len(series.Monthly) < 2 {
+				series.Monthly = make([]float64, 2)
+			}
+			switch key.YearKind {
+			case "previous":
+				series.Monthly[0] = point.Value
+			case "current":
+				series.Monthly[1] = point.Value
 			}
 		}
 	}

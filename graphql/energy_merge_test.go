@@ -202,6 +202,43 @@ func TestEnergyMerge_SnapshotBuildsCorrectTotals(t *testing.T) {
 	}
 }
 
+func TestEnergyMerge_SnapshotBuildsMonthlySeries(t *testing.T) {
+	store := newEnergyMergeStore()
+
+	// Gas climate: this month = 284, last month = 266.
+	store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "month", YearKind: "current"}, 284.0, EnergySourceRegister, t0)
+	store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "month", YearKind: "previous"}, 266.0, EnergySourceRegister, t0)
+
+	// Electricity hot_water: this month = 5, last month = 3.
+	store.Apply(energyMergeKey{Channel: "electricity", Usage: "hot_water", Period: "month", YearKind: "current"}, 5.0, EnergySourceRegister, t0)
+	store.Apply(energyMergeKey{Channel: "electricity", Usage: "hot_water", Period: "month", YearKind: "previous"}, 3.0, EnergySourceRegister, t0)
+
+	totals := store.Snapshot()
+	if totals == nil {
+		t.Fatal("Snapshot() = nil; want non-nil")
+	}
+
+	if len(totals.Gas.Climate.Monthly) < 2 {
+		t.Fatalf("Gas.Climate.Monthly len = %d; want >= 2", len(totals.Gas.Climate.Monthly))
+	}
+	if totals.Gas.Climate.Monthly[0] != 266.0 {
+		t.Fatalf("Gas.Climate.Monthly[0] = %f; want 266.0 (previous)", totals.Gas.Climate.Monthly[0])
+	}
+	if totals.Gas.Climate.Monthly[1] != 284.0 {
+		t.Fatalf("Gas.Climate.Monthly[1] = %f; want 284.0 (current)", totals.Gas.Climate.Monthly[1])
+	}
+
+	if len(totals.Electric.DHW.Monthly) < 2 {
+		t.Fatalf("Electric.DHW.Monthly len = %d; want >= 2", len(totals.Electric.DHW.Monthly))
+	}
+	if totals.Electric.DHW.Monthly[0] != 3.0 {
+		t.Fatalf("Electric.DHW.Monthly[0] = %f; want 3.0 (previous)", totals.Electric.DHW.Monthly[0])
+	}
+	if totals.Electric.DHW.Monthly[1] != 5.0 {
+		t.Fatalf("Electric.DHW.Monthly[1] = %f; want 5.0 (current)", totals.Electric.DHW.Monthly[1])
+	}
+}
+
 func TestEnergyMerge_SnapshotReturnsNilWhenEmpty(t *testing.T) {
 	store := newEnergyMergeStore()
 	if snap := store.Snapshot(); snap != nil {
@@ -211,7 +248,7 @@ func TestEnergyMerge_SnapshotReturnsNilWhenEmpty(t *testing.T) {
 
 func TestEnergyMerge_AllChannelUsagePeriodCombinations(t *testing.T) {
 	// Canonical usages after canonicalization: "hot_water", "climate".
-	// 3 channels x 2 canonical usages x 3 periods = 18 canonical keys.
+	// 3 channels x 2 canonical usages x 5 period variants = 30 canonical keys.
 	channels := []string{"gas", "electricity", "solar"}
 	usages := []string{"hot_water", "climate"}
 	type periodSpec struct {
@@ -222,6 +259,8 @@ func TestEnergyMerge_AllChannelUsagePeriodCombinations(t *testing.T) {
 		{period: "day", yearKind: ""},
 		{period: "year", yearKind: "previous"},
 		{period: "year", yearKind: "current"},
+		{period: "month", yearKind: "current"},
+		{period: "month", yearKind: "previous"},
 	}
 
 	store := newEnergyMergeStore()
@@ -244,21 +283,21 @@ func TestEnergyMerge_AllChannelUsagePeriodCombinations(t *testing.T) {
 		}
 	}
 
-	if expectedCount != 18 {
-		t.Fatalf("expected 18 combinations; got %d", expectedCount)
+	if expectedCount != 30 {
+		t.Fatalf("expected 30 combinations; got %d", expectedCount)
 	}
 
 	store.mu.RLock()
 	gotCount := len(store.points)
 	store.mu.RUnlock()
 
-	if gotCount != 18 {
-		t.Fatalf("store has %d points; want 18", gotCount)
+	if gotCount != 30 {
+		t.Fatalf("store has %d points; want 30", gotCount)
 	}
 
 	totals := store.Snapshot()
 	if totals == nil {
-		t.Fatal("Snapshot() = nil after 18 inserts")
+		t.Fatal("Snapshot() = nil after 30 inserts")
 	}
 
 	checkChannel := func(name string, ch EnergyChannel) {
@@ -266,6 +305,12 @@ func TestEnergyMerge_AllChannelUsagePeriodCombinations(t *testing.T) {
 		if ch.DHW.Today == 0 && ch.Climate.Today == 0 &&
 			len(ch.DHW.Yearly) == 0 && len(ch.Climate.Yearly) == 0 {
 			t.Fatalf("channel %s has no data in snapshot", name)
+		}
+		if len(ch.DHW.Monthly) < 2 {
+			t.Fatalf("channel %s DHW.Monthly len = %d; want >= 2", name, len(ch.DHW.Monthly))
+		}
+		if len(ch.Climate.Monthly) < 2 {
+			t.Fatalf("channel %s Climate.Monthly len = %d; want >= 2", name, len(ch.Climate.Monthly))
 		}
 	}
 	checkChannel("Gas", totals.Gas)

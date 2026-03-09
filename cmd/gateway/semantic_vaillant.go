@@ -55,6 +55,10 @@ const (
 	zoneRegValveStatus                   = uint16(0x0012) // state.valve_status
 	zoneRegRoomTemperatureZoneMappingRaw = uint16(0x0013) // configuration.room_temperature_zone_mapping
 	zoneRegCurrentHumidity               = uint16(0x0028) // state.current_room_humidity
+	zoneRegQuickVetoTemp                 = uint16(0x0008) // configuration.quick_veto.temperature (f32 LE)
+	zoneRegQuickVetoEndTime              = uint16(0x001E) // state.quick_veto.end_time (HH:MM:SS)
+	zoneRegQuickVetoEndDate              = uint16(0x0024) // state.quick_veto.end_date (DD.MM.YY)
+	zoneRegQuickVetoDuration             = uint16(0x0026) // configuration.quick_veto.duration_hours (f32 LE)
 
 	circuitRegType            = uint16(0x0002) // configuration.heating_circuit_type / mixer_circuit_type_external
 	circuitRegCoolingEnabled  = uint16(0x0006) // cooling_enabled
@@ -308,6 +312,11 @@ type vaillantZoneSnapshot struct {
 	ConfigurationCircuitTypeRaw                *uint16
 	StateValveStatusRaw                        *uint16
 
+	QuickVetoTempC     *float64
+	QuickVetoDurationH *float64
+	QuickVetoEndTime   string // "HH:MM" or "" if no veto
+	QuickVetoEndDate   string // "YYYY-MM-DD" or "" if no veto
+
 	FieldFreshness map[semanticFieldKey]semanticFieldFreshness
 }
 
@@ -412,6 +421,10 @@ const (
 	zoneFieldZoneCircuitIndexRaw           semanticFieldKey = "zone.circuit_index_raw"
 	zoneFieldCircuitTypeRaw                semanticFieldKey = "zone.circuit_type_raw"
 	zoneFieldZoneValveStatusRaw            semanticFieldKey = "zone.valve_status_raw"
+	zoneFieldQuickVetoTempC                semanticFieldKey = "zone.quick_veto_temp_c"
+	zoneFieldQuickVetoDurationH            semanticFieldKey = "zone.quick_veto_duration_h"
+	zoneFieldQuickVetoEndTime              semanticFieldKey = "zone.quick_veto_end_time"
+	zoneFieldQuickVetoEndDate              semanticFieldKey = "zone.quick_veto_end_date"
 	dhwFieldOperatingMode                  semanticFieldKey = "dhw.operating_mode"
 	dhwFieldPreset                         semanticFieldKey = "dhw.preset"
 	dhwFieldCurrentTempC                   semanticFieldKey = "dhw.current_temp_c"
@@ -475,6 +488,10 @@ var (
 		zoneFieldZoneCircuitIndexRaw,
 		zoneFieldZoneValveStatusRaw,
 		zoneFieldCircuitTypeRaw,
+		zoneFieldQuickVetoTempC,
+		zoneFieldQuickVetoDurationH,
+		zoneFieldQuickVetoEndTime,
+		zoneFieldQuickVetoEndDate,
 	)
 	zoneGrabFieldSet = newSemanticFieldSet(
 		zoneFieldName,
@@ -491,6 +508,10 @@ var (
 		zoneFieldZoneCircuitIndexRaw,
 		zoneFieldZoneValveStatusRaw,
 		zoneFieldCircuitTypeRaw,
+		zoneFieldQuickVetoTempC,
+		zoneFieldQuickVetoDurationH,
+		zoneFieldQuickVetoEndTime,
+		zoneFieldQuickVetoEndDate,
 	)
 	dhwFieldSet = newSemanticFieldSet(
 		dhwFieldOperatingMode,
@@ -704,6 +725,9 @@ func zoneSnapshotFromSemanticZone(instance byte, zone graphql.Zone) *vaillantZon
 		v := uint16(*zone.State.ValvePositionPct * 655.35)
 		snapshot.StateValveStatusRaw = &v
 	}
+	snapshot.QuickVetoTempC = cloneFloat64Ptr(zone.Config.QuickVetoSetpointC)
+	snapshot.QuickVetoDurationH = cloneFloat64Ptr(zone.Config.QuickVetoDurationH)
+	snapshot.QuickVetoEndDate = zone.Config.QuickVetoExpiry
 	seedZoneFreshness(snapshot, semanticSnapshotSourceCache, true)
 	return snapshot
 }
@@ -869,6 +893,10 @@ func mergeZoneSnapshotFields(entry *vaillantZoneSnapshot, incoming *vaillantZone
 	mergeUint16Field(&entry.ConfigurationAssociatedCircuitRaw, incoming.ConfigurationAssociatedCircuitRaw, attempted.has(zoneFieldZoneCircuitIndexRaw), fields, zoneFieldZoneCircuitIndexRaw, source)
 	mergeUint16Field(&entry.ConfigurationCircuitTypeRaw, incoming.ConfigurationCircuitTypeRaw, attempted.has(zoneFieldCircuitTypeRaw), fields, zoneFieldCircuitTypeRaw, source)
 	mergeUint16Field(&entry.StateValveStatusRaw, incoming.StateValveStatusRaw, attempted.has(zoneFieldZoneValveStatusRaw), fields, zoneFieldZoneValveStatusRaw, source)
+	mergeFloatField(&entry.QuickVetoTempC, incoming.QuickVetoTempC, attempted.has(zoneFieldQuickVetoTempC), fields, zoneFieldQuickVetoTempC, source)
+	mergeFloatField(&entry.QuickVetoDurationH, incoming.QuickVetoDurationH, attempted.has(zoneFieldQuickVetoDurationH), fields, zoneFieldQuickVetoDurationH, source)
+	mergeStringField(&entry.QuickVetoEndTime, incoming.QuickVetoEndTime, attempted.has(zoneFieldQuickVetoEndTime), fields, zoneFieldQuickVetoEndTime, source)
+	mergeStringField(&entry.QuickVetoEndDate, incoming.QuickVetoEndDate, attempted.has(zoneFieldQuickVetoEndDate), fields, zoneFieldQuickVetoEndDate, source)
 }
 
 func mergeDhwSnapshotFields(entry *vaillantDhwSnapshot, incoming *vaillantDhwSnapshot, source semanticSnapshotSource, attempted semanticFieldSet) {
@@ -931,6 +959,18 @@ func seedZoneFreshness(snapshot *vaillantZoneSnapshot, source semanticSnapshotSo
 	}
 	if snapshot.StateValveStatusRaw != nil {
 		setFieldFreshness(fields, zoneFieldZoneValveStatusRaw, source, stale)
+	}
+	if snapshot.QuickVetoTempC != nil {
+		setFieldFreshness(fields, zoneFieldQuickVetoTempC, source, stale)
+	}
+	if snapshot.QuickVetoDurationH != nil {
+		setFieldFreshness(fields, zoneFieldQuickVetoDurationH, source, stale)
+	}
+	if snapshot.QuickVetoEndTime != "" {
+		setFieldFreshness(fields, zoneFieldQuickVetoEndTime, source, stale)
+	}
+	if snapshot.QuickVetoEndDate != "" {
+		setFieldFreshness(fields, zoneFieldQuickVetoEndDate, source, stale)
 	}
 }
 
@@ -1528,6 +1568,28 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 			liveReadSuccess = true
 		}
 
+		var qvTempPtr, qvDurPtr *float64
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegQuickVetoTemp); ok {
+			v := value
+			qvTempPtr = &v
+			liveReadSuccess = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegQuickVetoDuration); ok {
+			v := value
+			qvDurPtr = &v
+			liveReadSuccess = true
+		}
+		var qvEndTime, qvEndDate string
+		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegQuickVetoEndTime); ok && len(raw) >= 2 {
+			qvEndTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
+			liveReadSuccess = true
+		}
+		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegQuickVetoEndDate); ok && len(raw) >= 3 {
+			year := 2000 + int(raw[2])
+			qvEndDate = fmt.Sprintf("%04d-%02d-%02d", year, raw[1], raw[0])
+			liveReadSuccess = true
+		}
+
 		zoneOpMode, zoneOpModeOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHeatingOpMode)
 		zoneSF, zoneSFOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegSpecialFunction)
 		zoneValve, zoneValveOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegValveStatus)
@@ -1549,13 +1611,17 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 		operatingMode, preset, allowedModes := deriveZoneModeAndPreset(zoneOpMode, zoneSF, circuitType, hasCircuitType)
 		hvacAction := deriveZoneHvacAction(zoneValve, circuitType, hasCircuitType)
 		incoming := &vaillantZoneSnapshot{
-			OperatingMode: operatingMode,
-			Preset:        preset,
-			HvacAction:    hvacAction,
-			AllowedModes:  allowedModes,
-			CurrentTempC:  currentPtr,
-			TargetTempC:   targetPtr,
-			HumidityPct:   humidity,
+			OperatingMode:      operatingMode,
+			Preset:             preset,
+			HvacAction:         hvacAction,
+			AllowedModes:       allowedModes,
+			CurrentTempC:       currentPtr,
+			TargetTempC:        targetPtr,
+			HumidityPct:        humidity,
+			QuickVetoTempC:     qvTempPtr,
+			QuickVetoDurationH: qvDurPtr,
+			QuickVetoEndTime:   qvEndTime,
+			QuickVetoEndDate:   qvEndDate,
 			ConfigurationRoomTemperatureZoneMappingRaw: zoneRoomTemperatureZoneMappingRaw,
 			ConfigurationAssociatedCircuitRaw:          associatedCircuitRaw,
 			ConfigurationCircuitTypeRaw:                circuitType,
@@ -1626,6 +1692,11 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 			name = fmt.Sprintf("Zone %d", instance+1)
 		}
 
+		quickVetoActive := entry.Preset == "quickveto"
+		var qvExpiry string
+		if quickVetoActive && entry.QuickVetoEndDate != "" && entry.QuickVetoEndTime != "" {
+			qvExpiry = entry.QuickVetoEndDate + "T" + entry.QuickVetoEndTime
+		}
 		zone := graphql.Zone{
 			ID:   fmt.Sprintf("zone-%d", instance+1),
 			Name: name,
@@ -1644,6 +1715,10 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 				CircuitType:                decodeCircuitType(entry.ConfigurationCircuitTypeRaw),
 				AssociatedCircuit:          decodeAssociatedCircuit(entry.ConfigurationAssociatedCircuitRaw),
 				RoomTemperatureZoneMapping: decodeRoomTemperatureZoneMapping(entry.ConfigurationRoomTemperatureZoneMappingRaw),
+				QuickVeto:                  quickVetoActive,
+				QuickVetoSetpointC:         entry.QuickVetoTempC,
+				QuickVetoDurationH:         entry.QuickVetoDurationH,
+				QuickVetoExpiry:            qvExpiry,
 			},
 		}
 		zones = append(zones, zone)

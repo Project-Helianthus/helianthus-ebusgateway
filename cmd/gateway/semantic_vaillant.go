@@ -1653,11 +1653,15 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 		var holidayStartDate, holidayEndDate, holidayStartTime, holidayEndTime string
 		var holidaySetpointPtr *float64
 		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidayStartDate); ok && len(raw) >= 3 {
-			holidayStartDate = fmt.Sprintf("%04d-%02d-%02d", 2000+int(raw[2]), raw[1], raw[0])
+			if date := decodeB524DateSuppressSentinel(raw); date != "" {
+				holidayStartDate = date
+			}
 			liveReadSuccess = true
 		}
 		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidayEndDate); ok && len(raw) >= 3 {
-			holidayEndDate = fmt.Sprintf("%04d-%02d-%02d", 2000+int(raw[2]), raw[1], raw[0])
+			if date := decodeB524DateSuppressSentinel(raw); date != "" {
+				holidayEndDate = date
+			}
 			liveReadSuccess = true
 		}
 		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidaySetpoint); ok {
@@ -2007,12 +2011,16 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 
 	var dhwHolidayStartDate, dhwHolidayEndDate string
 	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegHolidayStartDate); ok && len(raw) >= 3 {
-		dhwHolidayStartDate = fmt.Sprintf("%04d-%02d-%02d", 2000+int(raw[2]), raw[1], raw[0])
+		if date := decodeB524DateSuppressSentinel(raw); date != "" {
+			dhwHolidayStartDate = date
+		}
 		liveReadSuccess = true
 		attempted[dhwFieldHolidayStartDate] = struct{}{}
 	}
 	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegHolidayEndDate); ok && len(raw) >= 3 {
-		dhwHolidayEndDate = fmt.Sprintf("%04d-%02d-%02d", 2000+int(raw[2]), raw[1], raw[0])
+		if date := decodeB524DateSuppressSentinel(raw); date != "" {
+			dhwHolidayEndDate = date
+		}
 		liveReadSuccess = true
 		attempted[dhwFieldHolidayEndDate] = struct{}{}
 	}
@@ -4472,6 +4480,17 @@ func decodeValvePositionPct(raw *uint16) *float64 {
 	}
 	pct := float64(*raw) / 655.35
 	return &pct
+}
+
+func decodeB524DateSuppressSentinel(raw []byte) string {
+	if len(raw) < 3 {
+		return ""
+	}
+	day, month, year := int(raw[0]), int(raw[1]), 2000+int(raw[2])
+	if year == 2015 && month == 1 && day == 1 {
+		return ""
+	}
+	return fmt.Sprintf("%04d-%02d-%02d", year, month, day)
 }
 
 func decodeCircuitType(raw *uint16) string {

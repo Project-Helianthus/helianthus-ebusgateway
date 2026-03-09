@@ -212,6 +212,55 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return *config.RoomTemperatureZoneMapping, nil
 				},
 			},
+			"quickVeto": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(ZoneConfig)
+					if !ok {
+						return false, nil
+					}
+					return config.QuickVeto, nil
+				},
+			},
+			"quickVetoSetpoint": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(ZoneConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.QuickVetoSetpointC == nil {
+						return nil, nil
+					}
+					return *config.QuickVetoSetpointC, nil
+				},
+			},
+			"quickVetoDuration": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(ZoneConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.QuickVetoDurationH == nil {
+						return nil, nil
+					}
+					return *config.QuickVetoDurationH, nil
+				},
+			},
+			"quickVetoExpiry": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(ZoneConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.QuickVetoExpiry == "" {
+						return nil, nil
+					}
+					return config.QuickVetoExpiry, nil
+				},
+			},
 		},
 	})
 

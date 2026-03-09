@@ -59,6 +59,10 @@ type ZoneConfig struct {
 	CircuitType                string   `json:"circuit_type,omitempty"`
 	AssociatedCircuit          *int     `json:"associated_circuit,omitempty"`
 	RoomTemperatureZoneMapping *int     `json:"room_temperature_zone_mapping,omitempty"`
+	QuickVeto                  bool     `json:"quick_veto"`
+	QuickVetoSetpointC         *float64 `json:"quick_veto_setpoint_c,omitempty"`
+	QuickVetoDurationH         *float64 `json:"quick_veto_duration_h,omitempty"`
+	QuickVetoExpiry            string   `json:"quick_veto_expiry,omitempty"`
 }
 
 type Zone struct {

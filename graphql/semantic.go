@@ -19,6 +19,10 @@ type ZoneConfig struct {
 	CircuitType                string
 	AssociatedCircuit          *int
 	RoomTemperatureZoneMapping *int
+	QuickVeto                  bool
+	QuickVetoSetpointC         *float64
+	QuickVetoDurationH         *float64
+	QuickVetoExpiry            string
 }
 
 type Zone struct {

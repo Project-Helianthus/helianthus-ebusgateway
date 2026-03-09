@@ -94,6 +94,13 @@ var circuitConfigFieldSpecs = map[string]configFieldSpec{
 	"coolingEnabled":  {group: 0x02, addr: 0x0006, valueType: configValueBoolU8},
 }
 
+var zoneConfigFieldSpecs = map[string]configFieldSpec{
+	"operatingMode":        {group: 0x03, addr: 0x0006, valueType: configValueEnumU16, enum: map[string]uint16{"off": 0, "auto": 1, "manual": 2}},
+	"quickVetoTemperature": {group: 0x03, addr: 0x0008, valueType: configValueFloat32, min: 5.0, max: 30.0},
+	"quickVetoDuration":    {group: 0x03, addr: 0x0026, valueType: configValueFloat32, min: 0.5, max: 12.0},
+	"desiredSetpoint":      {group: 0x03, addr: 0x0022, valueType: configValueFloat32, min: 5.0, max: 30.0},
+}
+
 var systemConfigFieldSpecs = map[string]configFieldSpec{
 	"dhwBivalencePointC":   {group: 0x00, addr: 0x0001, valueType: configValueFloat32, min: -20.0, max: 50.0},
 	"maxRoomHumidityPct":   {group: 0x00, addr: 0x000E, valueType: configValueUint16, min: 30, max: 80},
@@ -334,6 +341,17 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return setSystemConfigResolve(params, registry, invoker), nil
 				},
 			},
+			"setZoneConfig": &graphqlgo.Field{
+				Type: configResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"index": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return setZoneConfigResolve(params, registry, invoker), nil
+				},
+			},
 		},
 	})
 }
@@ -367,6 +385,20 @@ func setSystemConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegis
 		return configMutationError(err)
 	}
 	return applyConfigMutation(params.Context, registry, invoker, spec, 0x00, fieldValue)
+}
+
+func setZoneConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker) ConfigMutationResult {
+	instance, err := parseConfigInstance(params.Args["index"])
+	if err != nil {
+		return configMutationError(err)
+	}
+	fieldName, _ := params.Args["field"].(string)
+	fieldValue, _ := params.Args["value"].(string)
+	spec, err := resolveConfigFieldSpec("zone", fieldName, zoneConfigFieldSpecs)
+	if err != nil {
+		return configMutationError(err)
+	}
+	return applyConfigMutation(params.Context, registry, invoker, spec, instance, fieldValue)
 }
 
 func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, spec configFieldSpec, instance byte, rawValue string) ConfigMutationResult {

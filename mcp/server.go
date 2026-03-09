@@ -1211,7 +1211,10 @@ func (s *Server) handleSetZoneTimeProgram(ctx context.Context, args map[string]a
 	if !ok {
 		return nil, fmt.Errorf("zone must be an integer")
 	}
-	zone := int(zoneFloat)
+	zone, exact := intFromFloat(zoneFloat)
+	if !exact {
+		return nil, fmt.Errorf("zone must be an integer, got %v", zoneFloat)
+	}
 
 	weekdayRaw, ok := args["weekday"]
 	if !ok {
@@ -1221,7 +1224,10 @@ func (s *Server) handleSetZoneTimeProgram(ctx context.Context, args map[string]a
 	if !ok {
 		return nil, fmt.Errorf("weekday must be an integer")
 	}
-	weekday := int(weekdayFloat)
+	weekday, exact := intFromFloat(weekdayFloat)
+	if !exact {
+		return nil, fmt.Errorf("weekday must be an integer, got %v", weekdayFloat)
+	}
 
 	slotsRaw, ok := args["slots"]
 	if !ok {
@@ -1257,7 +1263,10 @@ func (s *Server) handleSetDhwTimeProgram(ctx context.Context, args map[string]an
 	if !ok {
 		return nil, fmt.Errorf("weekday must be an integer")
 	}
-	weekday := int(weekdayFloat)
+	weekday, exact := intFromFloat(weekdayFloat)
+	if !exact {
+		return nil, fmt.Errorf("weekday must be an integer, got %v", weekdayFloat)
+	}
 
 	slotsRaw, ok := args["slots"]
 	if !ok {
@@ -1284,32 +1293,55 @@ func (s *Server) handleSetDhwTimeProgram(ctx context.Context, args map[string]an
 	return s.scheduleWriter.SetDhwTimeProgram(ctx, weekday, slots)
 }
 
+// intFromFloat converts a float64 to int, returning false if the value has a
+// fractional part. This prevents silent truncation of values like 1.9 → 1.
+func intFromFloat(v float64) (int, bool) {
+	i := int(v)
+	return i, v == float64(i)
+}
+
 func parseTimeProgramSlot(m map[string]any, tempRequired bool) (TimeProgramSlot, error) {
 	var slot TimeProgramSlot
 
-	startHour, ok := m["start_hour"].(float64)
+	startHourF, ok := m["start_hour"].(float64)
 	if !ok {
 		return slot, fmt.Errorf("start_hour is required")
 	}
-	slot.StartHour = int(startHour)
+	sh, exact := intFromFloat(startHourF)
+	if !exact {
+		return slot, fmt.Errorf("start_hour must be an integer, got %v", startHourF)
+	}
+	slot.StartHour = sh
 
-	startMinute, ok := m["start_minute"].(float64)
+	startMinuteF, ok := m["start_minute"].(float64)
 	if !ok {
 		return slot, fmt.Errorf("start_minute is required")
 	}
-	slot.StartMinute = int(startMinute)
+	sm, exact := intFromFloat(startMinuteF)
+	if !exact {
+		return slot, fmt.Errorf("start_minute must be an integer, got %v", startMinuteF)
+	}
+	slot.StartMinute = sm
 
-	endHour, ok := m["end_hour"].(float64)
+	endHourF, ok := m["end_hour"].(float64)
 	if !ok {
 		return slot, fmt.Errorf("end_hour is required")
 	}
-	slot.EndHour = int(endHour)
+	eh, exact := intFromFloat(endHourF)
+	if !exact {
+		return slot, fmt.Errorf("end_hour must be an integer, got %v", endHourF)
+	}
+	slot.EndHour = eh
 
-	endMinute, ok := m["end_minute"].(float64)
+	endMinuteF, ok := m["end_minute"].(float64)
 	if !ok {
 		return slot, fmt.Errorf("end_minute is required")
 	}
-	slot.EndMinute = int(endMinute)
+	em, exact := intFromFloat(endMinuteF)
+	if !exact {
+		return slot, fmt.Errorf("end_minute must be an integer, got %v", endMinuteF)
+	}
+	slot.EndMinute = em
 
 	if tempVal, ok := m["temperature_c"]; ok && tempVal != nil {
 		tempFloat, ok := tempVal.(float64)

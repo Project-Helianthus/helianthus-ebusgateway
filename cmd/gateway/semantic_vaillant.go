@@ -5949,6 +5949,9 @@ func (p *vaillantSemanticPoller) setZoneTimeProgram(ctx context.Context, zone in
 	if weekday < 0 || weekday > 6 {
 		return &mcp.TimeProgramWriteResult{Success: false, Error: "weekday must be 0-6"}, nil
 	}
+	if len(slots) == 0 {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: "slots array must not be empty"}, nil
+	}
 
 	cfg := p.readB555Config(ctx, byte(zone), b555HCHeating)
 	if cfg == nil {
@@ -6043,6 +6046,9 @@ func (p *vaillantSemanticPoller) setDhwTimeProgram(ctx context.Context, weekday 
 	}
 	if weekday < 0 || weekday > 6 {
 		return &mcp.TimeProgramWriteResult{Success: false, Error: "weekday must be 0-6"}, nil
+	}
+	if len(slots) == 0 {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: "slots array must not be empty"}, nil
 	}
 
 	cfg := p.readB555Config(ctx, b555ZoneDHW, b555HCDHW)

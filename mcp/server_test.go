@@ -1993,6 +1993,227 @@ func TestScheduleWriteZoneMissingTemp(t *testing.T) {
 	}
 }
 
+func TestScheduleWriteZoneRejectsFloatWeekday(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	writer := &testScheduleWriter{
+		zoneResult: &TimeProgramWriteResult{Success: true},
+	}
+	server.SetScheduleWriter(writer)
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: json.RawMessage(`{"name":"` + toolSemanticSchedulesSetZoneName + `","arguments":{"zone":0,"weekday":1.5,"slots":[{"start_hour":6,"start_minute":0,"end_hour":22,"end_minute":0,"temperature_c":21.5}]}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("unexpected rpc error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T; want map", res.Result)
+	}
+	if isError, _ := resultMap["isError"].(bool); !isError {
+		t.Fatalf("expected isError=true for fractional weekday")
+	}
+}
+
+func TestScheduleWriteZoneRejectsFloatZone(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	writer := &testScheduleWriter{
+		zoneResult: &TimeProgramWriteResult{Success: true},
+	}
+	server.SetScheduleWriter(writer)
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: json.RawMessage(`{"name":"` + toolSemanticSchedulesSetZoneName + `","arguments":{"zone":1.9,"weekday":0,"slots":[{"start_hour":6,"start_minute":0,"end_hour":22,"end_minute":0,"temperature_c":21.5}]}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("unexpected rpc error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T; want map", res.Result)
+	}
+	if isError, _ := resultMap["isError"].(bool); !isError {
+		t.Fatalf("expected isError=true for fractional zone")
+	}
+}
+
+func TestScheduleWriteZoneRejectsFloatHour(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	writer := &testScheduleWriter{
+		zoneResult: &TimeProgramWriteResult{Success: true},
+	}
+	server.SetScheduleWriter(writer)
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: json.RawMessage(`{"name":"` + toolSemanticSchedulesSetZoneName + `","arguments":{"zone":0,"weekday":0,"slots":[{"start_hour":6.5,"start_minute":0,"end_hour":22,"end_minute":0,"temperature_c":21.5}]}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("unexpected rpc error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T; want map", res.Result)
+	}
+	if isError, _ := resultMap["isError"].(bool); !isError {
+		t.Fatalf("expected isError=true for fractional start_hour")
+	}
+}
+
+func TestScheduleWriteDhwRejectsFloatWeekday(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	writer := &testScheduleWriter{
+		dhwResult: &TimeProgramWriteResult{Success: true},
+	}
+	server.SetScheduleWriter(writer)
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: json.RawMessage(`{"name":"` + toolSemanticSchedulesSetDhwName + `","arguments":{"weekday":2.7,"slots":[{"start_hour":6,"start_minute":0,"end_hour":22,"end_minute":0}]}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("unexpected rpc error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T; want map", res.Result)
+	}
+	if isError, _ := resultMap["isError"].(bool); !isError {
+		t.Fatalf("expected isError=true for fractional weekday in DHW")
+	}
+}
+
+func TestScheduleWriteZoneEmptySlots(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	writer := &testScheduleWriter{
+		zoneResult: &TimeProgramWriteResult{Success: false, Error: "slots array must not be empty"},
+	}
+	server.SetScheduleWriter(writer)
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: json.RawMessage(`{"name":"` + toolSemanticSchedulesSetZoneName + `","arguments":{"zone":0,"weekday":0,"slots":[]}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("unexpected rpc error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T; want map", res.Result)
+	}
+	if isError, _ := resultMap["isError"].(bool); !isError {
+		t.Fatalf("expected isError=true for empty slots")
+	}
+}
+
+func TestScheduleWriteDhwEmptySlots(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	writer := &testScheduleWriter{
+		dhwResult: &TimeProgramWriteResult{Success: false, Error: "slots array must not be empty"},
+	}
+	server.SetScheduleWriter(writer)
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: json.RawMessage(`{"name":"` + toolSemanticSchedulesSetDhwName + `","arguments":{"weekday":0,"slots":[]}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("unexpected rpc error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T; want map", res.Result)
+	}
+	if isError, _ := resultMap["isError"].(bool); !isError {
+		t.Fatalf("expected isError=true for empty slots in DHW")
+	}
+}
+
+func TestParseTimeProgramSlotRejectsFloatMinute(t *testing.T) {
+	m := map[string]any{
+		"start_hour":    float64(6),
+		"start_minute":  float64(30.5),
+		"end_hour":      float64(22),
+		"end_minute":    float64(0),
+		"temperature_c": float64(21.5),
+	}
+	_, err := parseTimeProgramSlot(m, true)
+	if err == nil {
+		t.Fatal("expected error for fractional start_minute")
+	}
+}
+
+func TestParseTimeProgramSlotRejectsFloatEndMinute(t *testing.T) {
+	m := map[string]any{
+		"start_hour":    float64(6),
+		"start_minute":  float64(0),
+		"end_hour":      float64(22),
+		"end_minute":    float64(15.3),
+		"temperature_c": float64(21.5),
+	}
+	_, err := parseTimeProgramSlot(m, true)
+	if err == nil {
+		t.Fatal("expected error for fractional end_minute")
+	}
+}
+
+func TestIntFromFloat(t *testing.T) {
+	tests := []struct {
+		in      float64
+		wantInt int
+		wantOK  bool
+	}{
+		{0.0, 0, true},
+		{1.0, 1, true},
+		{6.0, 6, true},
+		{22.5, 22, false},
+		{1.9, 1, false},
+		{-1.0, -1, true},
+		{3.000000000000001, 3, false},
+	}
+	for _, tt := range tests {
+		i, ok := intFromFloat(tt.in)
+		if ok != tt.wantOK {
+			t.Errorf("intFromFloat(%v): ok=%v; want %v", tt.in, ok, tt.wantOK)
+		}
+		if ok && i != tt.wantInt {
+			t.Errorf("intFromFloat(%v): i=%d; want %d", tt.in, i, tt.wantInt)
+		}
+	}
+}
+
 func TestParseTimeProgramSlotTempRequired(t *testing.T) {
 	m := map[string]any{
 		"start_hour":   float64(6),

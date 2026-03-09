@@ -23,6 +23,11 @@ type ZoneConfig struct {
 	QuickVetoSetpointC         *float64
 	QuickVetoDurationH         *float64
 	QuickVetoExpiry            string
+	HolidayStartDate           string
+	HolidayEndDate             string
+	HolidaySetpointC           *float64
+	HolidayStartTime           string
+	HolidayEndTime             string
 }
 
 type Zone struct {
@@ -39,9 +44,11 @@ type DhwState struct {
 }
 
 type DhwConfig struct {
-	OperatingMode string
-	Preset        string
-	TargetTempC   *float64
+	OperatingMode    string
+	Preset           string
+	TargetTempC      *float64
+	HolidayStartDate string
+	HolidayEndDate   string
 }
 
 type DhwStatus struct {

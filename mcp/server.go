@@ -63,6 +63,11 @@ type ZoneConfig struct {
 	QuickVetoSetpointC         *float64 `json:"quick_veto_setpoint_c,omitempty"`
 	QuickVetoDurationH         *float64 `json:"quick_veto_duration_h,omitempty"`
 	QuickVetoExpiry            string   `json:"quick_veto_expiry,omitempty"`
+	HolidayStartDate           string   `json:"holiday_start_date,omitempty"`
+	HolidayEndDate             string   `json:"holiday_end_date,omitempty"`
+	HolidaySetpointC           *float64 `json:"holiday_setpoint_c,omitempty"`
+	HolidayStartTime           string   `json:"holiday_start_time,omitempty"`
+	HolidayEndTime             string   `json:"holiday_end_time,omitempty"`
 }
 
 type Zone struct {
@@ -79,9 +84,11 @@ type DhwState struct {
 }
 
 type DhwConfig struct {
-	OperatingMode string   `json:"operating_mode"`
-	Preset        string   `json:"preset"`
-	TargetTempC   *float64 `json:"target_temp_c,omitempty"`
+	OperatingMode    string   `json:"operating_mode"`
+	Preset           string   `json:"preset"`
+	TargetTempC      *float64 `json:"target_temp_c,omitempty"`
+	HolidayStartDate string   `json:"holiday_start_date,omitempty"`
+	HolidayEndDate   string   `json:"holiday_end_date,omitempty"`
 }
 
 type DhwStatus struct {

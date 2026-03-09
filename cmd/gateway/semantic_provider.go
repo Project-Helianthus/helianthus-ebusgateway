@@ -46,6 +46,11 @@ func (adapter mcpSemanticProviderAdapter) Zones() []mcp.Zone {
 				QuickVetoSetpointC:         cloneFloatPtr(zone.Config.QuickVetoSetpointC),
 				QuickVetoDurationH:         cloneFloatPtr(zone.Config.QuickVetoDurationH),
 				QuickVetoExpiry:            zone.Config.QuickVetoExpiry,
+				HolidayStartDate:           zone.Config.HolidayStartDate,
+				HolidayEndDate:             zone.Config.HolidayEndDate,
+				HolidaySetpointC:           cloneFloatPtr(zone.Config.HolidaySetpointC),
+				HolidayStartTime:           zone.Config.HolidayStartTime,
+				HolidayEndTime:             zone.Config.HolidayEndTime,
 			},
 		}
 	}
@@ -67,9 +72,11 @@ func (adapter mcpSemanticProviderAdapter) DHW() *mcp.DhwStatus {
 			HeatingDemandPct: cloneFloatPtr(status.State.HeatingDemandPct),
 		},
 		Config: mcp.DhwConfig{
-			OperatingMode: status.Config.OperatingMode,
-			Preset:        status.Config.Preset,
-			TargetTempC:   cloneFloatPtr(status.Config.TargetTempC),
+			OperatingMode:    status.Config.OperatingMode,
+			Preset:           status.Config.Preset,
+			TargetTempC:      cloneFloatPtr(status.Config.TargetTempC),
+			HolidayStartDate: status.Config.HolidayStartDate,
+			HolidayEndDate:   status.Config.HolidayEndDate,
 		},
 	}
 }

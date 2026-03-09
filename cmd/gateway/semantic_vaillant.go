@@ -59,6 +59,11 @@ const (
 	zoneRegQuickVetoEndTime              = uint16(0x001E) // state.quick_veto.end_time (HH:MM:SS)
 	zoneRegQuickVetoEndDate              = uint16(0x0024) // state.quick_veto.end_date (DD.MM.YY)
 	zoneRegQuickVetoDuration             = uint16(0x0026) // configuration.quick_veto.duration_hours (f32 LE)
+	zoneRegHolidayStartDate              = uint16(0x0003) // configuration.holiday.start_date (DD.MM.YY)
+	zoneRegHolidayEndDate                = uint16(0x0004) // configuration.holiday.end_date (DD.MM.YY)
+	zoneRegHolidaySetpoint               = uint16(0x0005) // configuration.holiday.setpoint (f32 LE)
+	zoneRegHolidayEndTime                = uint16(0x0020) // configuration.holiday.end_time (HH:MM)
+	zoneRegHolidayStartTime              = uint16(0x0021) // configuration.holiday.start_time (HH:MM)
 
 	circuitRegType            = uint16(0x0002) // configuration.heating_circuit_type / mixer_circuit_type_external
 	circuitRegCoolingEnabled  = uint16(0x0006) // cooling_enabled
@@ -83,11 +88,13 @@ const (
 	CircuitStateHeating = "heating"
 	CircuitStateCooling = "cooling"
 
-	dhwRegOperationMode   = uint16(0x0003) // configuration.domestic_hot_water.operation_mode
-	dhwRegTargetTemp      = uint16(0x0004) // configuration.domestic_hot_water.tapping_setpoint
-	dhwRegCurrentTemp     = uint16(0x0005) // state.current_dhw_temperature
-	dhwRegSpecialFunction = uint16(0x000D) // state.current_special_function
-	dhwInstance           = byte(0x00)
+	dhwRegOperationMode    = uint16(0x0003) // configuration.domestic_hot_water.operation_mode
+	dhwRegTargetTemp       = uint16(0x0004) // configuration.domestic_hot_water.tapping_setpoint
+	dhwRegCurrentTemp      = uint16(0x0005) // state.current_dhw_temperature
+	dhwRegSpecialFunction  = uint16(0x000D) // state.current_special_function
+	dhwRegHolidayStartDate = uint16(0x0009) // configuration.holiday.start_date (DD.MM.YY)
+	dhwRegHolidayEndDate   = uint16(0x000A) // configuration.holiday.end_date (DD.MM.YY)
+	dhwInstance            = byte(0x00)
 
 	radioRegDeviceConnected      = uint16(0x0001)
 	radioRegDeviceClassAddress   = uint16(0x0002)
@@ -125,12 +132,12 @@ const (
 	b555OpcodeSlotsRead  = byte(0xA4)
 	b555OpcodeTimerRead  = byte(0xA5)
 
-	b555HCHeating  = byte(0x00)
-	b555HCCooling  = byte(0x01)
-	b555HCDHW      = byte(0x02)
-	b555HCCC       = byte(0x03)
-	b555HCSilent   = byte(0x04)
-	b555ZoneDHW    = byte(0xFF) // zone-agnostic selector for DHW/CC/Silent
+	b555HCHeating = byte(0x00)
+	b555HCCooling = byte(0x01)
+	b555HCDHW     = byte(0x02)
+	b555HCCC      = byte(0x03)
+	b555HCSilent  = byte(0x04)
+	b555ZoneDHW   = byte(0xFF) // zone-agnostic selector for DHW/CC/Silent
 )
 
 var b555WeekdayNames = [7]string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
@@ -317,6 +324,12 @@ type vaillantZoneSnapshot struct {
 	QuickVetoEndTime   string // "HH:MM" or "" if no veto
 	QuickVetoEndDate   string // "YYYY-MM-DD" or "" if no veto
 
+	HolidayStartDate string   // "YYYY-MM-DD" or ""
+	HolidayEndDate   string   // "YYYY-MM-DD" or ""
+	HolidaySetpointC *float64 // configured setpoint during holiday
+	HolidayStartTime string   // "HH:MM" or ""
+	HolidayEndTime   string   // "HH:MM" or ""
+
 	FieldFreshness map[semanticFieldKey]semanticFieldFreshness
 }
 
@@ -329,6 +342,9 @@ type vaillantDhwSnapshot struct {
 
 	ConfigurationDHWOperationMode string
 	StateSpecialFunction          string
+
+	HolidayStartDate string // "YYYY-MM-DD" or ""
+	HolidayEndDate   string // "YYYY-MM-DD" or ""
 
 	FieldFreshness map[semanticFieldKey]semanticFieldFreshness
 }
@@ -425,12 +441,19 @@ const (
 	zoneFieldQuickVetoDurationH            semanticFieldKey = "zone.quick_veto_duration_h"
 	zoneFieldQuickVetoEndTime              semanticFieldKey = "zone.quick_veto_end_time"
 	zoneFieldQuickVetoEndDate              semanticFieldKey = "zone.quick_veto_end_date"
+	zoneFieldHolidayStartDate              semanticFieldKey = "zone.holiday_start_date"
+	zoneFieldHolidayEndDate                semanticFieldKey = "zone.holiday_end_date"
+	zoneFieldHolidaySetpointC              semanticFieldKey = "zone.holiday_setpoint_c"
+	zoneFieldHolidayStartTime              semanticFieldKey = "zone.holiday_start_time"
+	zoneFieldHolidayEndTime                semanticFieldKey = "zone.holiday_end_time"
 	dhwFieldOperatingMode                  semanticFieldKey = "dhw.operating_mode"
 	dhwFieldPreset                         semanticFieldKey = "dhw.preset"
 	dhwFieldCurrentTempC                   semanticFieldKey = "dhw.current_temp_c"
 	dhwFieldTargetTempC                    semanticFieldKey = "dhw.target_temp_c"
 	dhwFieldSpecialFunctionRaw             semanticFieldKey = "dhw.special_function_raw"
 	dhwFieldDhwOperationModeRaw            semanticFieldKey = "dhw.operation_mode_raw"
+	dhwFieldHolidayStartDate               semanticFieldKey = "dhw.holiday_start_date"
+	dhwFieldHolidayEndDate                 semanticFieldKey = "dhw.holiday_end_date"
 )
 
 type semanticFieldFreshness struct {
@@ -492,6 +515,11 @@ var (
 		zoneFieldQuickVetoDurationH,
 		zoneFieldQuickVetoEndTime,
 		zoneFieldQuickVetoEndDate,
+		zoneFieldHolidayStartDate,
+		zoneFieldHolidayEndDate,
+		zoneFieldHolidaySetpointC,
+		zoneFieldHolidayStartTime,
+		zoneFieldHolidayEndTime,
 	)
 	zoneGrabFieldSet = newSemanticFieldSet(
 		zoneFieldName,
@@ -516,6 +544,8 @@ var (
 		dhwFieldTargetTempC,
 		dhwFieldDhwOperationModeRaw,
 		dhwFieldSpecialFunctionRaw,
+		dhwFieldHolidayStartDate,
+		dhwFieldHolidayEndDate,
 	)
 )
 
@@ -723,6 +753,11 @@ func zoneSnapshotFromSemanticZone(instance byte, zone graphql.Zone) *vaillantZon
 	}
 	snapshot.QuickVetoTempC = cloneFloat64Ptr(zone.Config.QuickVetoSetpointC)
 	snapshot.QuickVetoDurationH = cloneFloat64Ptr(zone.Config.QuickVetoDurationH)
+	snapshot.HolidayStartDate = zone.Config.HolidayStartDate
+	snapshot.HolidayEndDate = zone.Config.HolidayEndDate
+	snapshot.HolidaySetpointC = cloneFloat64Ptr(zone.Config.HolidaySetpointC)
+	snapshot.HolidayStartTime = zone.Config.HolidayStartTime
+	snapshot.HolidayEndTime = zone.Config.HolidayEndTime
 	seedZoneFreshness(snapshot, semanticSnapshotSourceCache, true)
 	return snapshot
 }
@@ -754,6 +789,8 @@ func dhwSnapshotFromSemanticStatus(status *graphql.DhwStatus) *vaillantDhwSnapsh
 		CurrentTempC:         cloneFloat64Ptr(status.State.CurrentTempC),
 		TargetTempC:          cloneFloat64Ptr(status.Config.TargetTempC),
 		StateSpecialFunction: status.State.SpecialFunction,
+		HolidayStartDate:     status.Config.HolidayStartDate,
+		HolidayEndDate:       status.Config.HolidayEndDate,
 	}
 	seedDhwFreshness(snapshot, semanticSnapshotSourceCache, true)
 	return snapshot
@@ -892,6 +929,11 @@ func mergeZoneSnapshotFields(entry *vaillantZoneSnapshot, incoming *vaillantZone
 	mergeFloatField(&entry.QuickVetoDurationH, incoming.QuickVetoDurationH, attempted.has(zoneFieldQuickVetoDurationH), fields, zoneFieldQuickVetoDurationH, source)
 	mergeStringField(&entry.QuickVetoEndTime, incoming.QuickVetoEndTime, attempted.has(zoneFieldQuickVetoEndTime), fields, zoneFieldQuickVetoEndTime, source)
 	mergeStringField(&entry.QuickVetoEndDate, incoming.QuickVetoEndDate, attempted.has(zoneFieldQuickVetoEndDate), fields, zoneFieldQuickVetoEndDate, source)
+	mergeStringField(&entry.HolidayStartDate, incoming.HolidayStartDate, attempted.has(zoneFieldHolidayStartDate), fields, zoneFieldHolidayStartDate, source)
+	mergeStringField(&entry.HolidayEndDate, incoming.HolidayEndDate, attempted.has(zoneFieldHolidayEndDate), fields, zoneFieldHolidayEndDate, source)
+	mergeFloatField(&entry.HolidaySetpointC, incoming.HolidaySetpointC, attempted.has(zoneFieldHolidaySetpointC), fields, zoneFieldHolidaySetpointC, source)
+	mergeStringField(&entry.HolidayStartTime, incoming.HolidayStartTime, attempted.has(zoneFieldHolidayStartTime), fields, zoneFieldHolidayStartTime, source)
+	mergeStringField(&entry.HolidayEndTime, incoming.HolidayEndTime, attempted.has(zoneFieldHolidayEndTime), fields, zoneFieldHolidayEndTime, source)
 }
 
 func mergeDhwSnapshotFields(entry *vaillantDhwSnapshot, incoming *vaillantDhwSnapshot, source semanticSnapshotSource, attempted semanticFieldSet) {
@@ -906,6 +948,8 @@ func mergeDhwSnapshotFields(entry *vaillantDhwSnapshot, incoming *vaillantDhwSna
 	mergeFloatField(&entry.TargetTempC, incoming.TargetTempC, attempted.has(dhwFieldTargetTempC), fields, dhwFieldTargetTempC, source)
 	mergeStringField(&entry.ConfigurationDHWOperationMode, incoming.ConfigurationDHWOperationMode, attempted.has(dhwFieldDhwOperationModeRaw), fields, dhwFieldDhwOperationModeRaw, source)
 	mergeStringField(&entry.StateSpecialFunction, incoming.StateSpecialFunction, attempted.has(dhwFieldSpecialFunctionRaw), fields, dhwFieldSpecialFunctionRaw, source)
+	mergeStringField(&entry.HolidayStartDate, incoming.HolidayStartDate, attempted.has(dhwFieldHolidayStartDate), fields, dhwFieldHolidayStartDate, source)
+	mergeStringField(&entry.HolidayEndDate, incoming.HolidayEndDate, attempted.has(dhwFieldHolidayEndDate), fields, dhwFieldHolidayEndDate, source)
 }
 
 func seedZoneFreshness(snapshot *vaillantZoneSnapshot, source semanticSnapshotSource, stale bool) {
@@ -967,6 +1011,21 @@ func seedZoneFreshness(snapshot *vaillantZoneSnapshot, source semanticSnapshotSo
 	if snapshot.QuickVetoEndDate != "" {
 		setFieldFreshness(fields, zoneFieldQuickVetoEndDate, source, stale)
 	}
+	if snapshot.HolidayStartDate != "" {
+		setFieldFreshness(fields, zoneFieldHolidayStartDate, source, stale)
+	}
+	if snapshot.HolidayEndDate != "" {
+		setFieldFreshness(fields, zoneFieldHolidayEndDate, source, stale)
+	}
+	if snapshot.HolidaySetpointC != nil {
+		setFieldFreshness(fields, zoneFieldHolidaySetpointC, source, stale)
+	}
+	if snapshot.HolidayStartTime != "" {
+		setFieldFreshness(fields, zoneFieldHolidayStartTime, source, stale)
+	}
+	if snapshot.HolidayEndTime != "" {
+		setFieldFreshness(fields, zoneFieldHolidayEndTime, source, stale)
+	}
 }
 
 func seedDhwFreshness(snapshot *vaillantDhwSnapshot, source semanticSnapshotSource, stale bool) {
@@ -991,6 +1050,12 @@ func seedDhwFreshness(snapshot *vaillantDhwSnapshot, source semanticSnapshotSour
 	}
 	if strings.TrimSpace(snapshot.StateSpecialFunction) != "" {
 		setFieldFreshness(fields, dhwFieldSpecialFunctionRaw, source, stale)
+	}
+	if snapshot.HolidayStartDate != "" {
+		setFieldFreshness(fields, dhwFieldHolidayStartDate, source, stale)
+	}
+	if snapshot.HolidayEndDate != "" {
+		setFieldFreshness(fields, dhwFieldHolidayEndDate, source, stale)
 	}
 }
 
@@ -1585,6 +1650,34 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 			liveReadSuccess = true
 		}
 
+		var holidayStartDate, holidayEndDate, holidayStartTime, holidayEndTime string
+		var holidaySetpointPtr *float64
+		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidayStartDate); ok && len(raw) >= 3 {
+			if date := decodeB524DateSuppressSentinel(raw); date != "" {
+				holidayStartDate = date
+			}
+			liveReadSuccess = true
+		}
+		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidayEndDate); ok && len(raw) >= 3 {
+			if date := decodeB524DateSuppressSentinel(raw); date != "" {
+				holidayEndDate = date
+			}
+			liveReadSuccess = true
+		}
+		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidaySetpoint); ok {
+			v := value
+			holidaySetpointPtr = &v
+			liveReadSuccess = true
+		}
+		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidayEndTime); ok && len(raw) >= 2 {
+			holidayEndTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
+			liveReadSuccess = true
+		}
+		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidayStartTime); ok && len(raw) >= 2 {
+			holidayStartTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
+			liveReadSuccess = true
+		}
+
 		zoneOpMode, zoneOpModeOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHeatingOpMode)
 		zoneSF, zoneSFOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegSpecialFunction)
 		zoneValve, zoneValveOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegValveStatus)
@@ -1617,6 +1710,11 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 			QuickVetoDurationH: qvDurPtr,
 			QuickVetoEndTime:   qvEndTime,
 			QuickVetoEndDate:   qvEndDate,
+			HolidayStartDate:   holidayStartDate,
+			HolidayEndDate:     holidayEndDate,
+			HolidaySetpointC:   holidaySetpointPtr,
+			HolidayStartTime:   holidayStartTime,
+			HolidayEndTime:     holidayEndTime,
 			ConfigurationRoomTemperatureZoneMappingRaw: zoneRoomTemperatureZoneMappingRaw,
 			ConfigurationAssociatedCircuitRaw:          associatedCircuitRaw,
 			ConfigurationCircuitTypeRaw:                circuitType,
@@ -1714,6 +1812,11 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 				QuickVetoSetpointC:         entry.QuickVetoTempC,
 				QuickVetoDurationH:         entry.QuickVetoDurationH,
 				QuickVetoExpiry:            qvExpiry,
+				HolidayStartDate:           entry.HolidayStartDate,
+				HolidayEndDate:             entry.HolidayEndDate,
+				HolidaySetpointC:           entry.HolidaySetpointC,
+				HolidayStartTime:           entry.HolidayStartTime,
+				HolidayEndTime:             entry.HolidayEndTime,
 			},
 		}
 		zones = append(zones, zone)
@@ -1791,6 +1894,15 @@ func zoneEquals(a, b graphql.Zone) bool {
 		return false
 	}
 	if !floatPtrEquals(a.Config.QuickVetoDurationH, b.Config.QuickVetoDurationH) {
+		return false
+	}
+	if a.Config.HolidayStartDate != b.Config.HolidayStartDate || a.Config.HolidayEndDate != b.Config.HolidayEndDate {
+		return false
+	}
+	if !floatPtrEquals(a.Config.HolidaySetpointC, b.Config.HolidaySetpointC) {
+		return false
+	}
+	if a.Config.HolidayStartTime != b.Config.HolidayStartTime || a.Config.HolidayEndTime != b.Config.HolidayEndTime {
 		return false
 	}
 	return true
@@ -1897,13 +2009,31 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 		attempted[dhwFieldSpecialFunctionRaw] = struct{}{}
 	}
 
+	var dhwHolidayStartDate, dhwHolidayEndDate string
+	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegHolidayStartDate); ok && len(raw) >= 3 {
+		if date := decodeB524DateSuppressSentinel(raw); date != "" {
+			dhwHolidayStartDate = date
+		}
+		liveReadSuccess = true
+		attempted[dhwFieldHolidayStartDate] = struct{}{}
+	}
+	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegHolidayEndDate); ok && len(raw) >= 3 {
+		if date := decodeB524DateSuppressSentinel(raw); date != "" {
+			dhwHolidayEndDate = date
+		}
+		liveReadSuccess = true
+		attempted[dhwFieldHolidayEndDate] = struct{}{}
+	}
+
 	if !liveReadSuccess {
 		return p.sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
 	}
 
 	status := &vaillantDhwSnapshot{
-		CurrentTempC: currentPtr,
-		TargetTempC:  targetPtr,
+		CurrentTempC:     currentPtr,
+		TargetTempC:      targetPtr,
+		HolidayStartDate: dhwHolidayStartDate,
+		HolidayEndDate:   dhwHolidayEndDate,
 	}
 	if attempted.has(dhwFieldOperatingMode) || attempted.has(dhwFieldPreset) {
 		status.OperatingMode, status.Preset = deriveDhwModeAndPreset(opModeRaw, sfModeRaw)
@@ -2034,9 +2164,11 @@ func (p *vaillantSemanticPoller) publishDHW(source semanticSnapshotSource) {
 			SpecialFunction: snapshot.StateSpecialFunction,
 		},
 		Config: graphql.DhwConfig{
-			OperatingMode: snapshot.OperatingMode,
-			Preset:        snapshot.Preset,
-			TargetTempC:   snapshot.TargetTempC,
+			OperatingMode:    snapshot.OperatingMode,
+			Preset:           snapshot.Preset,
+			TargetTempC:      snapshot.TargetTempC,
+			HolidayStartDate: snapshot.HolidayStartDate,
+			HolidayEndDate:   snapshot.HolidayEndDate,
 		},
 	}
 
@@ -4336,6 +4468,9 @@ func dhwEquals(a, b *graphql.DhwStatus) bool {
 	if !floatPtrEquals(a.State.HeatingDemandPct, b.State.HeatingDemandPct) {
 		return false
 	}
+	if a.Config.HolidayStartDate != b.Config.HolidayStartDate || a.Config.HolidayEndDate != b.Config.HolidayEndDate {
+		return false
+	}
 	return true
 }
 
@@ -4345,6 +4480,17 @@ func decodeValvePositionPct(raw *uint16) *float64 {
 	}
 	pct := float64(*raw) / 655.35
 	return &pct
+}
+
+func decodeB524DateSuppressSentinel(raw []byte) string {
+	if len(raw) < 3 {
+		return ""
+	}
+	day, month, year := int(raw[0]), int(raw[1]), 2000+int(raw[2])
+	if year == 2015 && month == 1 && day == 1 {
+		return ""
+	}
+	return fmt.Sprintf("%04d-%02d-%02d", year, month, day)
 }
 
 func decodeCircuitType(raw *uint16) string {

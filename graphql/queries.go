@@ -261,6 +261,71 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return config.QuickVetoExpiry, nil
 				},
 			},
+			"holidayStartDate": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(ZoneConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.HolidayStartDate == "" {
+						return nil, nil
+					}
+					return config.HolidayStartDate, nil
+				},
+			},
+			"holidayEndDate": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(ZoneConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.HolidayEndDate == "" {
+						return nil, nil
+					}
+					return config.HolidayEndDate, nil
+				},
+			},
+			"holidaySetpoint": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(ZoneConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.HolidaySetpointC == nil {
+						return nil, nil
+					}
+					return *config.HolidaySetpointC, nil
+				},
+			},
+			"holidayStartTime": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(ZoneConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.HolidayStartTime == "" {
+						return nil, nil
+					}
+					return config.HolidayStartTime, nil
+				},
+			},
+			"holidayEndTime": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(ZoneConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.HolidayEndTime == "" {
+						return nil, nil
+					}
+					return config.HolidayEndTime, nil
+				},
+			},
 		},
 	})
 
@@ -493,6 +558,32 @@ func buildSchemaTypes() graphqlSchemaTypes {
 						return nil, nil
 					}
 					return *config.TargetTempC, nil
+				},
+			},
+			"holidayStartDate": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(DhwConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.HolidayStartDate == "" {
+						return nil, nil
+					}
+					return config.HolidayStartDate, nil
+				},
+			},
+			"holidayEndDate": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(DhwConfig)
+					if !ok {
+						return nil, nil
+					}
+					if config.HolidayEndDate == "" {
+						return nil, nil
+					}
+					return config.HolidayEndDate, nil
 				},
 			},
 		},

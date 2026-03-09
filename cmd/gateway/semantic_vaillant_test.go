@@ -3367,3 +3367,25 @@ func TestEnrichRegulatorIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeB524DateSuppressSentinel(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  []byte
+		want string
+	}{
+		{"sentinel 01.01.2015", []byte{0x01, 0x01, 0x0F}, ""},
+		{"valid 15.03.2026", []byte{0x0F, 0x03, 0x1A}, "2026-03-15"},
+		{"valid 01.01.2026", []byte{0x01, 0x01, 0x1A}, "2026-01-01"},
+		{"short payload", []byte{0x01, 0x01}, ""},
+		{"empty payload", []byte{}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := decodeB524DateSuppressSentinel(tt.raw)
+			if got != tt.want {
+				t.Errorf("decodeB524DateSuppressSentinel(%v) = %q; want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}

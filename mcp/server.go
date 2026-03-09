@@ -315,6 +315,32 @@ type ScheduleStatus struct {
 	Programs []ScheduleProgram `json:"programs"`
 }
 
+type TimeProgramSlot struct {
+	StartHour    int      `json:"start_hour"`
+	StartMinute  int      `json:"start_minute"`
+	EndHour      int      `json:"end_hour"`
+	EndMinute    int      `json:"end_minute"`
+	TemperatureC *float64 `json:"temperature_c,omitempty"`
+}
+
+type TimeProgramSlotResult struct {
+	SlotIndex int    `json:"slot_index"`
+	Accepted  bool   `json:"accepted"`
+	ErrorCode int    `json:"error_code"`
+	ErrorDesc string `json:"error_description,omitempty"`
+}
+
+type TimeProgramWriteResult struct {
+	Success     bool                    `json:"success"`
+	SlotResults []TimeProgramSlotResult `json:"slot_results"`
+	Error       string                  `json:"error,omitempty"`
+}
+
+type ScheduleWriter interface {
+	SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []TimeProgramSlot) (*TimeProgramWriteResult, error)
+	SetDhwTimeProgram(ctx context.Context, weekday int, slots []TimeProgramSlot) (*TimeProgramWriteResult, error)
+}
+
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
@@ -330,14 +356,15 @@ type SemanticProvider interface {
 }
 
 type Server struct {
-	registry       Registry
-	invoker        Invoker
-	statusProvider StatusProvider
-	semantic       SemanticProvider
-	idempotencyMu  sync.Mutex
-	idempotency    map[string]idempotencyEntry
-	snapshotMu     sync.RWMutex
-	snapshots      map[string]snapshotState
+	registry        Registry
+	invoker         Invoker
+	statusProvider  StatusProvider
+	semantic        SemanticProvider
+	scheduleWriter  ScheduleWriter
+	idempotencyMu   sync.Mutex
+	idempotency     map[string]idempotencyEntry
+	snapshotMu      sync.RWMutex
+	snapshots       map[string]snapshotState
 
 	tools []Tool
 }
@@ -354,8 +381,10 @@ const (
 	toolSemanticEnergyGetName    = "ebus.v1.semantic.energy_totals.get"
 	toolSemanticBoilerGetName    = "ebus.v1.semantic.boiler_status.get"
 	toolSemanticSystemGetName    = "ebus.v1.semantic.system.get"
-	toolSemanticSchedulesGetName = "ebus.v1.semantic.schedules.get"
-	toolSemanticSnapshotName     = "ebus.v1.semantic.snapshot.get"
+	toolSemanticSchedulesGetName        = "ebus.v1.semantic.schedules.get"
+	toolSemanticSchedulesSetZoneName    = "ebus.v1.semantic.schedules.set_zone_time_program"
+	toolSemanticSchedulesSetDhwName     = "ebus.v1.semantic.schedules.set_dhw_time_program"
+	toolSemanticSnapshotName            = "ebus.v1.semantic.snapshot.get"
 	toolSnapshotCaptureName      = "ebus.v1.snapshot.capture"
 	toolSnapshotDropName         = "ebus.v1.snapshot.drop"
 	toolDevicesV1Name            = "ebus.v1.registry.devices.list"
@@ -641,6 +670,59 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			},
 		},
 		{
+			Name:        toolSemanticSchedulesSetZoneName,
+			Description: "Write a zone heating time program for a specific weekday (B555 protocol). Writes individual slots sequentially (SC=1 per slot for reliability).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"zone":    map[string]any{"type": "integer", "minimum": 0, "maximum": 2},
+					"weekday": map[string]any{"type": "integer", "minimum": 0, "maximum": 6, "description": "0=Monday, 6=Sunday"},
+					"slots": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"start_hour":     map[string]any{"type": "integer", "minimum": 0, "maximum": 24},
+								"start_minute":   map[string]any{"type": "integer", "minimum": 0, "maximum": 59},
+								"end_hour":       map[string]any{"type": "integer", "minimum": 0, "maximum": 24},
+								"end_minute":     map[string]any{"type": "integer", "minimum": 0, "maximum": 59},
+								"temperature_c":  map[string]any{"type": "number"},
+							},
+							"required": []string{"start_hour", "start_minute", "end_hour", "end_minute", "temperature_c"},
+						},
+					},
+				},
+				"required":             []string{"zone", "weekday", "slots"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolSemanticSchedulesSetDhwName,
+			Description: "Write a DHW (domestic hot water) time program for a specific weekday (B555 protocol). Temperature is optional — omit to keep current B524 setpoint (0xFFFF sentinel).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"weekday": map[string]any{"type": "integer", "minimum": 0, "maximum": 6, "description": "0=Monday, 6=Sunday"},
+					"slots": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"start_hour":    map[string]any{"type": "integer", "minimum": 0, "maximum": 24},
+								"start_minute":  map[string]any{"type": "integer", "minimum": 0, "maximum": 59},
+								"end_hour":      map[string]any{"type": "integer", "minimum": 0, "maximum": 24},
+								"end_minute":    map[string]any{"type": "integer", "minimum": 0, "maximum": 59},
+								"temperature_c": map[string]any{"type": "number"},
+							},
+							"required": []string{"start_hour", "start_minute", "end_hour", "end_minute"},
+						},
+					},
+				},
+				"required":             []string{"weekday", "slots"},
+				"additionalProperties": false,
+			},
+		},
+		{
 			Name:        toolSemanticSnapshotName,
 			Description: "Get a consistent semantic snapshot across selected semantic planes.",
 			InputSchema: map[string]any{
@@ -792,6 +874,13 @@ func (s *Server) SetSemanticProvider(provider SemanticProvider) {
 		return
 	}
 	s.semantic = provider
+}
+
+func (s *Server) SetScheduleWriter(writer ScheduleWriter) {
+	if s == nil || writer == nil {
+		return
+	}
+	s.scheduleWriter = writer
 }
 
 func (s *Server) Handler() http.Handler {
@@ -982,6 +1071,24 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotSchedules(snapshot), nil, consistency)), false), nil
+	case toolSemanticSchedulesSetZoneName:
+		if s.scheduleWriter == nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, fmt.Errorf("schedule writer not available"))), true), nil
+		}
+		result, err := s.handleSetZoneTimeProgram(ctx, call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelope(result, nil)), !result.Success), nil
+	case toolSemanticSchedulesSetDhwName:
+		if s.scheduleWriter == nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, fmt.Errorf("schedule writer not available"))), true), nil
+		}
+		result, err := s.handleSetDhwTimeProgram(ctx, call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelope(result, nil)), !result.Success), nil
 	case toolSemanticSnapshotName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -1093,6 +1200,128 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	default:
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", call.Name))
 	}
+}
+
+func (s *Server) handleSetZoneTimeProgram(ctx context.Context, args map[string]any) (*TimeProgramWriteResult, error) {
+	zoneRaw, ok := args["zone"]
+	if !ok {
+		return nil, fmt.Errorf("missing required parameter: zone")
+	}
+	zoneFloat, ok := zoneRaw.(float64)
+	if !ok {
+		return nil, fmt.Errorf("zone must be an integer")
+	}
+	zone := int(zoneFloat)
+
+	weekdayRaw, ok := args["weekday"]
+	if !ok {
+		return nil, fmt.Errorf("missing required parameter: weekday")
+	}
+	weekdayFloat, ok := weekdayRaw.(float64)
+	if !ok {
+		return nil, fmt.Errorf("weekday must be an integer")
+	}
+	weekday := int(weekdayFloat)
+
+	slotsRaw, ok := args["slots"]
+	if !ok {
+		return nil, fmt.Errorf("missing required parameter: slots")
+	}
+	slotsArr, ok := slotsRaw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("slots must be an array")
+	}
+
+	slots := make([]TimeProgramSlot, 0, len(slotsArr))
+	for i, raw := range slotsArr {
+		slotMap, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("slot %d must be an object", i)
+		}
+		slot, err := parseTimeProgramSlot(slotMap, true)
+		if err != nil {
+			return nil, fmt.Errorf("slot %d: %w", i, err)
+		}
+		slots = append(slots, slot)
+	}
+
+	return s.scheduleWriter.SetZoneTimeProgram(ctx, zone, weekday, slots)
+}
+
+func (s *Server) handleSetDhwTimeProgram(ctx context.Context, args map[string]any) (*TimeProgramWriteResult, error) {
+	weekdayRaw, ok := args["weekday"]
+	if !ok {
+		return nil, fmt.Errorf("missing required parameter: weekday")
+	}
+	weekdayFloat, ok := weekdayRaw.(float64)
+	if !ok {
+		return nil, fmt.Errorf("weekday must be an integer")
+	}
+	weekday := int(weekdayFloat)
+
+	slotsRaw, ok := args["slots"]
+	if !ok {
+		return nil, fmt.Errorf("missing required parameter: slots")
+	}
+	slotsArr, ok := slotsRaw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("slots must be an array")
+	}
+
+	slots := make([]TimeProgramSlot, 0, len(slotsArr))
+	for i, raw := range slotsArr {
+		slotMap, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("slot %d must be an object", i)
+		}
+		slot, err := parseTimeProgramSlot(slotMap, false)
+		if err != nil {
+			return nil, fmt.Errorf("slot %d: %w", i, err)
+		}
+		slots = append(slots, slot)
+	}
+
+	return s.scheduleWriter.SetDhwTimeProgram(ctx, weekday, slots)
+}
+
+func parseTimeProgramSlot(m map[string]any, tempRequired bool) (TimeProgramSlot, error) {
+	var slot TimeProgramSlot
+
+	startHour, ok := m["start_hour"].(float64)
+	if !ok {
+		return slot, fmt.Errorf("start_hour is required")
+	}
+	slot.StartHour = int(startHour)
+
+	startMinute, ok := m["start_minute"].(float64)
+	if !ok {
+		return slot, fmt.Errorf("start_minute is required")
+	}
+	slot.StartMinute = int(startMinute)
+
+	endHour, ok := m["end_hour"].(float64)
+	if !ok {
+		return slot, fmt.Errorf("end_hour is required")
+	}
+	slot.EndHour = int(endHour)
+
+	endMinute, ok := m["end_minute"].(float64)
+	if !ok {
+		return slot, fmt.Errorf("end_minute is required")
+	}
+	slot.EndMinute = int(endMinute)
+
+	if tempVal, ok := m["temperature_c"]; ok && tempVal != nil {
+		tempFloat, ok := tempVal.(float64)
+		if !ok {
+			return slot, fmt.Errorf("temperature_c must be a number")
+		}
+		slot.TemperatureC = &tempFloat
+	} else if tempRequired {
+		return slot, fmt.Errorf("temperature_c is required")
+	}
+
+	return slot, nil
 }
 
 func (s *Server) resolveConsistency(args map[string]any) (envelopeConsistency, *snapshotState, error) {

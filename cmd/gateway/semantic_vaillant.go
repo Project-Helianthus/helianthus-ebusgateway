@@ -131,6 +131,7 @@ const (
 	b555OpcodeConfigRead = byte(0xA3)
 	b555OpcodeSlotsRead  = byte(0xA4)
 	b555OpcodeTimerRead  = byte(0xA5)
+	b555OpcodeTimerWrite = byte(0xA6)
 
 	b555HCHeating = byte(0x00)
 	b555HCCooling = byte(0x01)
@@ -5863,6 +5864,353 @@ func (p *vaillantSemanticPoller) readB555Frame(ctx context.Context, data []byte)
 		return nil, false
 	}
 	return response.Data, true
+}
+
+func (p *vaillantSemanticPoller) writeB555Frame(ctx context.Context, data []byte) ([]byte, bool) {
+	if p == nil || p.bus == nil {
+		return nil, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	source := p.source
+	target := p.controller
+	timeout := p.requestTimeout
+	p.mu.Unlock()
+
+	if target == 0 {
+		return nil, false
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	p.readMu.Lock()
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	request := protocol.Frame{
+		Source:    source,
+		Target:    target,
+		Primary:   vaillantB555Primary,
+		Secondary: vaillantB555Secondary,
+		Data:      data,
+	}
+	response, err := p.bus.Send(reqCtx, request)
+	cancel()
+	p.readMu.Unlock()
+
+	if err != nil || response == nil {
+		return nil, false
+	}
+	return response.Data, true
+}
+
+func (p *vaillantSemanticPoller) writeB555TimerSlot(ctx context.Context, zone, hc, weekday, slotIdx, slotCount, startHour, startMinute, endHour, endMinute byte, temperatureRaw uint16) (byte, error) {
+	data := []byte{
+		b555OpcodeTimerWrite,
+		zone, hc, weekday,
+		slotIdx, slotCount,
+		startHour, startMinute,
+		endHour, endMinute,
+		byte(temperatureRaw & 0xFF), byte(temperatureRaw >> 8),
+	}
+	resp, ok := p.writeB555Frame(ctx, data)
+	if !ok {
+		return 0xFF, fmt.Errorf("b555 timer write: no response")
+	}
+	if len(resp) < 1 {
+		return 0xFF, fmt.Errorf("b555 timer write: empty response")
+	}
+	return resp[0], nil
+}
+
+var b555ErrorDescriptions = map[byte]string{
+	0x00: "accepted",
+	0x01: "parameter out of range",
+	0x03: "timer unavailable",
+	0x06: "validation failure",
+}
+
+func b555ErrorDesc(code byte) string {
+	if desc, ok := b555ErrorDescriptions[code]; ok {
+		return desc
+	}
+	return fmt.Sprintf("unknown error 0x%02X", code)
+}
+
+func (p *vaillantSemanticPoller) setZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+	if p == nil {
+		return nil, fmt.Errorf("schedule writer unavailable")
+	}
+	if zone < 0 || zone > 2 {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: "zone must be 0-2"}, nil
+	}
+	if weekday < 0 || weekday > 6 {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: "weekday must be 0-6"}, nil
+	}
+
+	cfg := p.readB555Config(ctx, byte(zone), b555HCHeating)
+	if cfg == nil {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: "unable to read B555 config for zone heating"}, nil
+	}
+
+	maxSlots := cfg.MaxSlots
+	if maxSlots <= 0 {
+		maxSlots = 3
+	}
+	if len(slots) > maxSlots {
+		return &mcp.TimeProgramWriteResult{
+			Success: false,
+			Error:   fmt.Sprintf("slot count %d exceeds max_slots %d", len(slots), maxSlots),
+		}, nil
+	}
+
+	minTemp := 5.0
+	maxTemp := 30.0
+	if cfg.MinTempC != nil {
+		minTemp = *cfg.MinTempC
+	}
+	if cfg.MaxTempC != nil {
+		maxTemp = *cfg.MaxTempC
+	}
+
+	for i, slot := range slots {
+		if slot.StartHour < 0 || slot.StartHour > 24 {
+			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_hour %d out of range 0-24", i, slot.StartHour)}, nil
+		}
+		if slot.StartMinute < 0 || slot.StartMinute > 59 {
+			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_minute %d out of range 0-59", i, slot.StartMinute)}, nil
+		}
+		if slot.EndHour < 0 || slot.EndHour > 24 {
+			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_hour %d out of range 0-24", i, slot.EndHour)}, nil
+		}
+		if slot.EndMinute < 0 || slot.EndMinute > 59 {
+			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_minute %d out of range 0-59", i, slot.EndMinute)}, nil
+		}
+		if slot.TemperatureC == nil {
+			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: temperature_c is required for heating", i)}, nil
+		}
+		if *slot.TemperatureC < minTemp || *slot.TemperatureC > maxTemp {
+			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: temperature_c %.1f out of range [%.0f, %.0f]", i, *slot.TemperatureC, minTemp, maxTemp)}, nil
+		}
+	}
+
+	result := &mcp.TimeProgramWriteResult{
+		Success:     true,
+		SlotResults: make([]mcp.TimeProgramSlotResult, len(slots)),
+	}
+
+	for i, slot := range slots {
+		tempRaw := uint16(math.Round(*slot.TemperatureC * 10))
+		code, err := p.writeB555TimerSlot(ctx,
+			byte(zone), b555HCHeating, byte(weekday),
+			byte(i), byte(len(slots)),
+			byte(slot.StartHour), byte(slot.StartMinute),
+			byte(slot.EndHour), byte(slot.EndMinute),
+			tempRaw,
+		)
+		if err != nil {
+			result.SlotResults[i] = mcp.TimeProgramSlotResult{
+				SlotIndex: i,
+				Accepted:  false,
+				ErrorCode: 0xFF,
+				ErrorDesc: err.Error(),
+			}
+			result.Success = false
+			continue
+		}
+		accepted := code == 0x00
+		if !accepted {
+			result.Success = false
+		}
+		result.SlotResults[i] = mcp.TimeProgramSlotResult{
+			SlotIndex: i,
+			Accepted:  accepted,
+			ErrorCode: int(code),
+			ErrorDesc: b555ErrorDesc(code),
+		}
+	}
+
+	go p.refreshScheduleForProgram(context.Background(), byte(zone), b555HCHeating, byte(weekday))
+
+	return result, nil
+}
+
+func (p *vaillantSemanticPoller) setDhwTimeProgram(ctx context.Context, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+	if p == nil {
+		return nil, fmt.Errorf("schedule writer unavailable")
+	}
+	if weekday < 0 || weekday > 6 {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: "weekday must be 0-6"}, nil
+	}
+
+	cfg := p.readB555Config(ctx, b555ZoneDHW, b555HCDHW)
+	if cfg == nil {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: "unable to read B555 config for DHW"}, nil
+	}
+
+	maxSlots := cfg.MaxSlots
+	if maxSlots <= 0 {
+		maxSlots = 3
+	}
+	if len(slots) > maxSlots {
+		return &mcp.TimeProgramWriteResult{
+			Success: false,
+			Error:   fmt.Sprintf("slot count %d exceeds max_slots %d", len(slots), maxSlots),
+		}, nil
+	}
+
+	minTemp := 35.0
+	maxTemp := 65.0
+	if cfg.MinTempC != nil {
+		minTemp = *cfg.MinTempC
+	}
+	if cfg.MaxTempC != nil {
+		maxTemp = *cfg.MaxTempC
+	}
+
+	for i, slot := range slots {
+		if slot.StartHour < 0 || slot.StartHour > 24 {
+			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_hour %d out of range 0-24", i, slot.StartHour)}, nil
+		}
+		if slot.StartMinute < 0 || slot.StartMinute > 59 {
+			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: start_minute %d out of range 0-59", i, slot.StartMinute)}, nil
+		}
+		if slot.EndHour < 0 || slot.EndHour > 24 {
+			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_hour %d out of range 0-24", i, slot.EndHour)}, nil
+		}
+		if slot.EndMinute < 0 || slot.EndMinute > 59 {
+			return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: end_minute %d out of range 0-59", i, slot.EndMinute)}, nil
+		}
+		if slot.TemperatureC != nil {
+			if *slot.TemperatureC < minTemp || *slot.TemperatureC > maxTemp {
+				return &mcp.TimeProgramWriteResult{Success: false, Error: fmt.Sprintf("slot %d: temperature_c %.1f out of range [%.0f, %.0f]", i, *slot.TemperatureC, minTemp, maxTemp)}, nil
+			}
+		}
+	}
+
+	result := &mcp.TimeProgramWriteResult{
+		Success:     true,
+		SlotResults: make([]mcp.TimeProgramSlotResult, len(slots)),
+	}
+
+	for i, slot := range slots {
+		var tempRaw uint16
+		if slot.TemperatureC != nil {
+			tempRaw = uint16(math.Round(*slot.TemperatureC * 10))
+		} else {
+			tempRaw = 0xFFFF
+		}
+		code, err := p.writeB555TimerSlot(ctx,
+			b555ZoneDHW, b555HCDHW, byte(weekday),
+			byte(i), byte(len(slots)),
+			byte(slot.StartHour), byte(slot.StartMinute),
+			byte(slot.EndHour), byte(slot.EndMinute),
+			tempRaw,
+		)
+		if err != nil {
+			result.SlotResults[i] = mcp.TimeProgramSlotResult{
+				SlotIndex: i,
+				Accepted:  false,
+				ErrorCode: 0xFF,
+				ErrorDesc: err.Error(),
+			}
+			result.Success = false
+			continue
+		}
+		accepted := code == 0x00
+		if !accepted {
+			result.Success = false
+		}
+		result.SlotResults[i] = mcp.TimeProgramSlotResult{
+			SlotIndex: i,
+			Accepted:  accepted,
+			ErrorCode: int(code),
+			ErrorDesc: b555ErrorDesc(code),
+		}
+	}
+
+	go p.refreshScheduleForProgram(context.Background(), b555ZoneDHW, b555HCDHW, byte(weekday))
+
+	return result, nil
+}
+
+func (p *vaillantSemanticPoller) SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+	return p.setZoneTimeProgram(ctx, zone, weekday, slots)
+}
+
+func (p *vaillantSemanticPoller) SetDhwTimeProgram(ctx context.Context, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+	return p.setDhwTimeProgram(ctx, weekday, slots)
+}
+
+func (p *vaillantSemanticPoller) refreshScheduleForProgram(ctx context.Context, zone, hc, weekday byte) {
+	if p == nil || p.bus == nil || p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
+	if controller == 0 {
+		return
+	}
+
+	cfg := p.readB555Config(ctx, zone, hc)
+	if cfg == nil {
+		return
+	}
+
+	maxSlots := cfg.MaxSlots
+	if maxSlots <= 0 {
+		maxSlots = 3
+	}
+
+	slotsPerDay, _ := p.readB555Slots(ctx, zone, hc)
+
+	slotCount := maxSlots
+	if slotsPerDay != nil && int(weekday) < len(slotsPerDay) && slotsPerDay[weekday] < slotCount {
+		slotCount = slotsPerDay[weekday]
+	}
+
+	var timerSlots []graphql.ScheduleTimerSlot
+	for ss := 0; ss < slotCount; ss++ {
+		slot := p.readB555Timer(ctx, zone, hc, weekday, byte(ss))
+		if slot == nil {
+			break
+		}
+		timerSlots = append(timerSlots, *slot)
+	}
+
+	status := p.provider.Schedules()
+	if status == nil {
+		return
+	}
+
+	hcName := b555HCNames[hc]
+	if hcName == "" {
+		hcName = fmt.Sprintf("unknown_%d", hc)
+	}
+	zoneIdx := int(zone)
+	if zone == b555ZoneDHW {
+		zoneIdx = 255
+	}
+
+	for i, prog := range status.Programs {
+		if prog.Zone == zoneIdx && prog.HC == hcName {
+			if int(weekday) < len(prog.Days) {
+				status.Programs[i].Days[weekday] = graphql.ScheduleDayProgram{
+					Weekday: b555WeekdayNames[weekday],
+					Slots:   timerSlots,
+				}
+			}
+			if slotsPerDay != nil {
+				status.Programs[i].SlotsUsed = slotsPerDay
+			}
+			p.provider.SetSchedules(status)
+			return
+		}
+	}
 }
 
 // readB555Config reads a B555 A3 config response for a zone+HC.

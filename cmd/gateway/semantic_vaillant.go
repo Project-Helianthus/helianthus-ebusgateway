@@ -508,10 +508,6 @@ var (
 		zoneFieldZoneCircuitIndexRaw,
 		zoneFieldZoneValveStatusRaw,
 		zoneFieldCircuitTypeRaw,
-		zoneFieldQuickVetoTempC,
-		zoneFieldQuickVetoDurationH,
-		zoneFieldQuickVetoEndTime,
-		zoneFieldQuickVetoEndDate,
 	)
 	dhwFieldSet = newSemanticFieldSet(
 		dhwFieldOperatingMode,
@@ -727,7 +723,6 @@ func zoneSnapshotFromSemanticZone(instance byte, zone graphql.Zone) *vaillantZon
 	}
 	snapshot.QuickVetoTempC = cloneFloat64Ptr(zone.Config.QuickVetoSetpointC)
 	snapshot.QuickVetoDurationH = cloneFloat64Ptr(zone.Config.QuickVetoDurationH)
-	snapshot.QuickVetoEndDate = zone.Config.QuickVetoExpiry
 	seedZoneFreshness(snapshot, semanticSnapshotSourceCache, true)
 	return snapshot
 }
@@ -1787,6 +1782,15 @@ func zoneEquals(a, b graphql.Zone) bool {
 		return false
 	}
 	if !intPtrEquals(a.Config.RoomTemperatureZoneMapping, b.Config.RoomTemperatureZoneMapping) {
+		return false
+	}
+	if a.Config.QuickVeto != b.Config.QuickVeto || a.Config.QuickVetoExpiry != b.Config.QuickVetoExpiry {
+		return false
+	}
+	if !floatPtrEquals(a.Config.QuickVetoSetpointC, b.Config.QuickVetoSetpointC) {
+		return false
+	}
+	if !floatPtrEquals(a.Config.QuickVetoDurationH, b.Config.QuickVetoDurationH) {
 		return false
 	}
 	return true

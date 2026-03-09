@@ -81,6 +81,8 @@ func TestToolInventoryGoldenSignatures(t *testing.T) {
 		{Name: "ebus.v1.semantic.fm5_mode.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.radio_devices.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.schedules.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
+		{Name: "ebus.v1.semantic.schedules.set_dhw_time_program", SchemaHash: "955bfe655aa44c535bf2f72fa93fce71e92f1c84232c60f871e03bdf96562786"},
+		{Name: "ebus.v1.semantic.schedules.set_zone_time_program", SchemaHash: "f97fba96e7f2255451a21a120529c7cc3eff902459ea8f4233118dac7449d19a"},
 		{Name: "ebus.v1.semantic.snapshot.get", SchemaHash: "b393a16a2de0a0dd8eb8a3daa78992285d24771ed3005023a801b48fcf55aa13"},
 		{Name: "ebus.v1.semantic.solar.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.system.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},

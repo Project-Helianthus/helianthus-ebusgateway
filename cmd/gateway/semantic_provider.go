@@ -42,6 +42,10 @@ func (adapter mcpSemanticProviderAdapter) Zones() []mcp.Zone {
 				CircuitType:                zone.Config.CircuitType,
 				AssociatedCircuit:          cloneIntPtr(zone.Config.AssociatedCircuit),
 				RoomTemperatureZoneMapping: cloneIntPtr(zone.Config.RoomTemperatureZoneMapping),
+				QuickVeto:                  zone.Config.QuickVeto,
+				QuickVetoSetpointC:         cloneFloatPtr(zone.Config.QuickVetoSetpointC),
+				QuickVetoDurationH:         cloneFloatPtr(zone.Config.QuickVetoDurationH),
+				QuickVetoExpiry:            zone.Config.QuickVetoExpiry,
 			},
 		}
 	}

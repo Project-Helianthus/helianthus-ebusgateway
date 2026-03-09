@@ -11,6 +11,7 @@ type Builder struct {
 	status   StatusProvider
 	semantic SemanticProvider
 	boiler   BoilerConfigWriter
+	schedule ScheduleWriter
 
 	mu       sync.RWMutex
 	schema   Schema
@@ -155,6 +156,25 @@ func (b *Builder) boilerConfigWriter() BoilerConfigWriter {
 	}
 	b.mu.RLock()
 	writer := b.boiler
+	b.mu.RUnlock()
+	return writer
+}
+
+func (b *Builder) SetScheduleWriter(writer ScheduleWriter) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.schedule = writer
+	b.mu.Unlock()
+}
+
+func (b *Builder) scheduleWriter() ScheduleWriter {
+	if b == nil {
+		return nil
+	}
+	b.mu.RLock()
+	writer := b.schedule
 	b.mu.RUnlock()
 	return writer
 }

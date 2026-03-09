@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/types"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -50,6 +52,11 @@ type BoilerConfigMutationResult struct {
 
 type BoilerConfigWriter interface {
 	SetBoilerConfig(ctx context.Context, fieldName string, rawValue string) BoilerConfigMutationResult
+}
+
+type ScheduleWriter interface {
+	SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error)
+	SetDhwTimeProgram(ctx context.Context, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error)
 }
 
 type ConfigMutationResult struct {
@@ -130,7 +137,7 @@ func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *
 
 	var mutationType *graphqlgo.Object
 	if registry != nil && invoker != nil {
-		mutationType = buildMutationType(registry, invoker, builder.boilerConfigWriter())
+		mutationType = buildMutationType(registry, invoker, builder.boilerConfigWriter(), builder.scheduleWriter())
 	}
 
 	var subscriptionType *graphqlgo.Object
@@ -158,7 +165,7 @@ func NewInvokeHandler(builder *Builder, registry InvokeRegistry, invoker Invoker
 	}), nil
 }
 
-func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter) *graphqlgo.Object {
+func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, scheduleWriter ScheduleWriter) *graphqlgo.Object {
 	jsonScalar := jsonScalarType()
 	errorType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "InvokeError",
@@ -284,6 +291,88 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 		},
 	})
 
+	scheduleSlotResultType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ScheduleSlotResult",
+		Fields: graphqlgo.Fields{
+			"slotIndex": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					result, ok := scheduleSlotResultFromSource(params)
+					if !ok {
+						return 0, nil
+					}
+					return result.SlotIndex, nil
+				},
+			},
+			"accepted": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					result, ok := scheduleSlotResultFromSource(params)
+					if !ok {
+						return false, nil
+					}
+					return result.Accepted, nil
+				},
+			},
+			"errorCode": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					result, ok := scheduleSlotResultFromSource(params)
+					if !ok {
+						return 0, nil
+					}
+					return result.ErrorCode, nil
+				},
+			},
+			"errorDescription": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					result, ok := scheduleSlotResultFromSource(params)
+					if !ok || result.ErrorDesc == "" {
+						return nil, nil
+					}
+					return result.ErrorDesc, nil
+				},
+			},
+		},
+	})
+
+	scheduleWriteResultType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ScheduleWriteResult",
+		Fields: graphqlgo.Fields{
+			"success": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					result, ok := scheduleWriteResultFromSource(params)
+					if !ok {
+						return false, nil
+					}
+					return result.Success, nil
+				},
+			},
+			"slotResults": &graphqlgo.Field{
+				Type: graphqlgo.NewList(graphqlgo.NewNonNull(scheduleSlotResultType)),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					result, ok := scheduleWriteResultFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return result.SlotResults, nil
+				},
+			},
+			"error": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					result, ok := scheduleWriteResultFromSource(params)
+					if !ok || result.Error == "" {
+						return nil, nil
+					}
+					return result.Error, nil
+				},
+			},
+		},
+	})
+
 	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Mutation",
 		Fields: graphqlgo.Fields{
@@ -353,6 +442,27 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return setZoneConfigResolve(params, registry, invoker), nil
 				},
 			},
+			"setZoneTimeProgram": &graphqlgo.Field{
+				Type: scheduleWriteResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"zone":    &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+					"weekday": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+					"slots":   &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return setZoneTimeProgramResolve(params, scheduleWriter), nil
+				},
+			},
+			"setDhwTimeProgram": &graphqlgo.Field{
+				Type: scheduleWriteResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"weekday": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+					"slots":   &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return setDhwTimeProgramResolve(params, scheduleWriter), nil
+				},
+			},
 		},
 	})
 }
@@ -400,6 +510,70 @@ func setZoneConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistr
 		return configMutationError(err)
 	}
 	return applyConfigMutation(params.Context, registry, invoker, spec, instance, fieldValue)
+}
+
+func setZoneTimeProgramResolve(params graphqlgo.ResolveParams, scheduleWriter ScheduleWriter) *mcp.TimeProgramWriteResult {
+	if scheduleWriter == nil {
+		return scheduleWriteMutationError(fmt.Errorf("schedule mutation missing writer: %w", ebuserrors.ErrInvalidPayload))
+	}
+
+	zone, err := parseScheduleMutationIntArg(params.Args["zone"], "zone")
+	if err != nil {
+		return scheduleWriteMutationError(err)
+	}
+	weekday, err := parseScheduleMutationIntArg(params.Args["weekday"], "weekday")
+	if err != nil {
+		return scheduleWriteMutationError(err)
+	}
+	rawSlots, _ := params.Args["slots"].(string)
+	slots, err := parseTimeProgramSlotsJSON(rawSlots, true)
+	if err != nil {
+		return scheduleWriteMutationError(err)
+	}
+
+	ctx := params.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	result, err := scheduleWriter.SetZoneTimeProgram(ctx, zone, weekday, slots)
+	if err != nil {
+		return scheduleWriteMutationError(err)
+	}
+	if result == nil {
+		return scheduleWriteMutationError(fmt.Errorf("schedule writer returned nil result: %w", ebuserrors.ErrInvalidPayload))
+	}
+	return result
+}
+
+func setDhwTimeProgramResolve(params graphqlgo.ResolveParams, scheduleWriter ScheduleWriter) *mcp.TimeProgramWriteResult {
+	if scheduleWriter == nil {
+		return scheduleWriteMutationError(fmt.Errorf("schedule mutation missing writer: %w", ebuserrors.ErrInvalidPayload))
+	}
+
+	weekday, err := parseScheduleMutationIntArg(params.Args["weekday"], "weekday")
+	if err != nil {
+		return scheduleWriteMutationError(err)
+	}
+	rawSlots, _ := params.Args["slots"].(string)
+	slots, err := parseTimeProgramSlotsJSON(rawSlots, false)
+	if err != nil {
+		return scheduleWriteMutationError(err)
+	}
+
+	ctx := params.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	result, err := scheduleWriter.SetDhwTimeProgram(ctx, weekday, slots)
+	if err != nil {
+		return scheduleWriteMutationError(err)
+	}
+	if result == nil {
+		return scheduleWriteMutationError(fmt.Errorf("schedule writer returned nil result: %w", ebuserrors.ErrInvalidPayload))
+	}
+	return result
 }
 
 func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, spec configFieldSpec, instance byte, rawValue string) ConfigMutationResult {
@@ -475,6 +649,97 @@ func parseConfigInstance(raw any) (byte, error) {
 		return 0, fmt.Errorf("circuit index out of range: %w", ebuserrors.ErrInvalidPayload)
 	}
 	return byte(index), nil
+}
+
+func parseScheduleMutationIntArg(raw any, name string) (int, error) {
+	value, ok := raw.(int)
+	if !ok {
+		return 0, fmt.Errorf("%s must be an integer: %w", name, ebuserrors.ErrInvalidPayload)
+	}
+	return value, nil
+}
+
+func parseTimeProgramSlotsJSON(raw string, tempRequired bool) ([]mcp.TimeProgramSlot, error) {
+	var slotsRaw []map[string]any
+	if err := json.Unmarshal([]byte(raw), &slotsRaw); err != nil {
+		return nil, fmt.Errorf("invalid slots JSON: %w", err)
+	}
+
+	slots := make([]mcp.TimeProgramSlot, 0, len(slotsRaw))
+	for i, slotRaw := range slotsRaw {
+		slot, err := parseTimeProgramSlot(slotRaw, tempRequired)
+		if err != nil {
+			return nil, fmt.Errorf("slot %d: %w", i, err)
+		}
+		slots = append(slots, slot)
+	}
+	return slots, nil
+}
+
+func parseTimeProgramSlot(raw map[string]any, tempRequired bool) (mcp.TimeProgramSlot, error) {
+	var slot mcp.TimeProgramSlot
+
+	startHour, err := parseTimeProgramIntegerField(raw, "start_hour")
+	if err != nil {
+		return slot, err
+	}
+	startMinute, err := parseTimeProgramIntegerField(raw, "start_minute")
+	if err != nil {
+		return slot, err
+	}
+	endHour, err := parseTimeProgramIntegerField(raw, "end_hour")
+	if err != nil {
+		return slot, err
+	}
+	endMinute, err := parseTimeProgramIntegerField(raw, "end_minute")
+	if err != nil {
+		return slot, err
+	}
+
+	slot.StartHour = startHour
+	slot.StartMinute = startMinute
+	slot.EndHour = endHour
+	slot.EndMinute = endMinute
+
+	tempValue, ok := raw["temperature_c"]
+	if ok && tempValue != nil {
+		temp, ok := tempValue.(float64)
+		if !ok {
+			return slot, fmt.Errorf("temperature_c must be a number")
+		}
+		slot.TemperatureC = &temp
+		return slot, nil
+	}
+	if tempRequired {
+		return slot, fmt.Errorf("temperature_c is required")
+	}
+
+	return slot, nil
+}
+
+func parseTimeProgramIntegerField(raw map[string]any, field string) (int, error) {
+	value, ok := raw[field]
+	if !ok || value == nil {
+		return 0, fmt.Errorf("%s is required", field)
+	}
+	coerced, ok := coerceFloatToInt(value)
+	if !ok {
+		return 0, fmt.Errorf("%s must be an integer, got %v", field, value)
+	}
+	return int(coerced), nil
+}
+
+func scheduleWriteMutationError(err error) *mcp.TimeProgramWriteResult {
+	if err == nil {
+		return &mcp.TimeProgramWriteResult{
+			Success: false,
+			Error:   "schedule mutation failed",
+		}
+	}
+	return &mcp.TimeProgramWriteResult{
+		Success: false,
+		Error:   err.Error(),
+	}
 }
 
 func resolveConfigFieldSpec(scope, fieldName string, specs map[string]configFieldSpec) (configFieldSpec, error) {
@@ -1133,6 +1398,34 @@ func configResultFromSource(params graphqlgo.ResolveParams) (ConfigMutationResul
 		return *value, true
 	default:
 		return ConfigMutationResult{}, false
+	}
+}
+
+func scheduleWriteResultFromSource(params graphqlgo.ResolveParams) (mcp.TimeProgramWriteResult, bool) {
+	switch value := params.Source.(type) {
+	case mcp.TimeProgramWriteResult:
+		return value, true
+	case *mcp.TimeProgramWriteResult:
+		if value == nil {
+			return mcp.TimeProgramWriteResult{}, false
+		}
+		return *value, true
+	default:
+		return mcp.TimeProgramWriteResult{}, false
+	}
+}
+
+func scheduleSlotResultFromSource(params graphqlgo.ResolveParams) (mcp.TimeProgramSlotResult, bool) {
+	switch value := params.Source.(type) {
+	case mcp.TimeProgramSlotResult:
+		return value, true
+	case *mcp.TimeProgramSlotResult:
+		if value == nil {
+			return mcp.TimeProgramSlotResult{}, false
+		}
+		return *value, true
+	default:
+		return mcp.TimeProgramSlotResult{}, false
 	}
 }
 

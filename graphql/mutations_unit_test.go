@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/types"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -80,6 +81,48 @@ func (writer *mockBoilerWriter) SetBoilerConfig(_ context.Context, fieldName str
 		value string
 	}{field: fieldName, value: rawValue})
 	return writer.result
+}
+
+type mockScheduleWriter struct {
+	zoneResult *mcp.TimeProgramWriteResult
+	dhwResult  *mcp.TimeProgramWriteResult
+	zoneErr    error
+	dhwErr     error
+	zoneCalls  []struct {
+		zone    int
+		weekday int
+		slots   []mcp.TimeProgramSlot
+	}
+	dhwCalls []struct {
+		weekday int
+		slots   []mcp.TimeProgramSlot
+	}
+}
+
+func (writer *mockScheduleWriter) SetZoneTimeProgram(_ context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+	cloned := append([]mcp.TimeProgramSlot(nil), slots...)
+	writer.zoneCalls = append(writer.zoneCalls, struct {
+		zone    int
+		weekday int
+		slots   []mcp.TimeProgramSlot
+	}{
+		zone:    zone,
+		weekday: weekday,
+		slots:   cloned,
+	})
+	return writer.zoneResult, writer.zoneErr
+}
+
+func (writer *mockScheduleWriter) SetDhwTimeProgram(_ context.Context, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+	cloned := append([]mcp.TimeProgramSlot(nil), slots...)
+	writer.dhwCalls = append(writer.dhwCalls, struct {
+		weekday int
+		slots   []mcp.TimeProgramSlot
+	}{
+		weekday: weekday,
+		slots:   cloned,
+	})
+	return writer.dhwResult, writer.dhwErr
 }
 
 func TestValidateInvokeParams_SchemaCoercion(t *testing.T) {
@@ -216,7 +259,7 @@ func TestSetBoilerConfigMutation_UnsupportedInReducedProfile(t *testing.T) {
 			"noop": &graphqlgo.Field{Type: graphqlgo.String},
 		},
 	})
-	mutationType := buildMutationType(nil, nil, nil)
+	mutationType := buildMutationType(nil, nil, nil, nil)
 	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
 		Query:    queryType,
 		Mutation: mutationType,
@@ -271,7 +314,7 @@ func TestSetCircuitConfigMutation_Success(t *testing.T) {
 		},
 	}
 
-	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
+	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
 		setCircuitConfig(index: 1, field: "heatingCurve", value: "1.5") {
 			success
 			error
@@ -330,7 +373,7 @@ func TestSetBoilerConfigMutation_DelegatesToWriter(t *testing.T) {
 		result: BoilerConfigMutationResult{Success: true},
 	}
 
-	data := executeMutation(t, buildMutationSchema(t, nil, nil, writer), `mutation {
+	data := executeMutation(t, buildMutationSchema(t, nil, nil, writer, nil), `mutation {
 		setBoilerConfig(field: "flowsetHcMaxC", value: "55") {
 			success
 			error
@@ -371,7 +414,7 @@ func TestSetSystemConfigMutation_Success(t *testing.T) {
 		},
 	}
 
-	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
+	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
 		setSystemConfig(field: "adaptiveHeatingCurve", value: "true") {
 			success
 			error
@@ -424,7 +467,7 @@ func TestSetSystemConfigMutation_IntegerLikeFloatString(t *testing.T) {
 		},
 	}
 
-	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
+	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
 		setSystemConfig(field: "maxRoomHumidityPct", value: "55.0") {
 			success
 			error
@@ -490,7 +533,7 @@ func TestSetCircuitConfigMutation_ValidationFailures(t *testing.T) {
 				order: []byte{0x15},
 			}
 			invoker := &mutationTestInvoker{}
-			data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), test.query)
+			data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), test.query)
 
 			payload, ok := data["setCircuitConfig"].(map[string]any)
 			if !ok {
@@ -519,7 +562,7 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 			order: []byte{0x15},
 		}
 		invoker := &mutationTestInvoker{}
-		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
+		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
 			setSystemConfig(field: "adaptiveHeatingCurve", value: "maybe") { success error }
 		}`)
 		payload, _ := data["setSystemConfig"].(map[string]any)
@@ -537,7 +580,7 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 	t.Run("missing controller", func(t *testing.T) {
 		registry := mutationTestRegistry{}
 		invoker := &mutationTestInvoker{}
-		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
+		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
 			setSystemConfig(field: "adaptiveHeatingCurve", value: "true") { success error }
 		}`)
 		payload, _ := data["setSystemConfig"].(map[string]any)
@@ -557,7 +600,7 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 			order: []byte{0x15},
 		}
 		invoker := &mutationTestInvoker{}
-		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
+		data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
 			setSystemConfig(field: "adaptiveHeatingCurve", value: "true") { success error }
 		}`)
 		payload, _ := data["setSystemConfig"].(map[string]any)
@@ -588,7 +631,7 @@ func TestSetCircuitConfigMutation_ReadbackConfirmFailure(t *testing.T) {
 			},
 		},
 	}
-	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil), `mutation {
+	data := executeMutation(t, buildMutationSchema(t, registry, invoker, nil, nil), `mutation {
 		setCircuitConfig(index: 2, field: "heatingCurve", value: "1.5") { success error }
 	}`)
 	payload, _ := data["setCircuitConfig"].(map[string]any)
@@ -603,7 +646,172 @@ func TestSetCircuitConfigMutation_ReadbackConfirmFailure(t *testing.T) {
 	}
 }
 
-func buildMutationSchema(t *testing.T, registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter) graphqlgo.Schema {
+func TestSetZoneTimeProgramMutation_Success(t *testing.T) {
+	writer := &mockScheduleWriter{
+		zoneResult: &mcp.TimeProgramWriteResult{
+			Success: true,
+			SlotResults: []mcp.TimeProgramSlotResult{
+				{SlotIndex: 0, Accepted: true, ErrorCode: 0},
+			},
+		},
+	}
+
+	data := executeMutation(t, buildMutationSchema(t, nil, nil, nil, writer), `mutation {
+		setZoneTimeProgram(
+			zone: 2
+			weekday: 1
+			slots: "[{\"start_hour\":6,\"start_minute\":0,\"end_hour\":22,\"end_minute\":0,\"temperature_c\":21}]"
+		) {
+			success
+			error
+			slotResults {
+				slotIndex
+				accepted
+				errorCode
+				errorDescription
+			}
+		}
+	}`)
+
+	payload, ok := data["setZoneTimeProgram"].(map[string]any)
+	if !ok {
+		t.Fatalf("setZoneTimeProgram payload type = %T; want map", data["setZoneTimeProgram"])
+	}
+	if got, _ := payload["success"].(bool); !got {
+		t.Fatalf("setZoneTimeProgram success = %v; want true", got)
+	}
+	if got := payload["error"]; got != nil {
+		t.Fatalf("setZoneTimeProgram error = %#v; want nil", got)
+	}
+	slotResults, ok := payload["slotResults"].([]any)
+	if !ok || len(slotResults) != 1 {
+		t.Fatalf("setZoneTimeProgram slotResults = %#v; want one result", payload["slotResults"])
+	}
+	firstSlot, ok := slotResults[0].(map[string]any)
+	if !ok {
+		t.Fatalf("setZoneTimeProgram first slot type = %T; want map", slotResults[0])
+	}
+	if got, _ := firstSlot["slotIndex"].(int); got != 0 {
+		t.Fatalf("slotIndex = %v; want 0", got)
+	}
+	if got, _ := firstSlot["accepted"].(bool); !got {
+		t.Fatalf("accepted = %v; want true", got)
+	}
+	if got, _ := firstSlot["errorCode"].(int); got != 0 {
+		t.Fatalf("errorCode = %v; want 0", got)
+	}
+	if got := firstSlot["errorDescription"]; got != nil {
+		t.Fatalf("errorDescription = %#v; want nil", got)
+	}
+
+	if len(writer.zoneCalls) != 1 {
+		t.Fatalf("zone writer calls = %d; want 1", len(writer.zoneCalls))
+	}
+	call := writer.zoneCalls[0]
+	if call.zone != 2 || call.weekday != 1 {
+		t.Fatalf("zone writer call = %#v; want zone=2 weekday=1", call)
+	}
+	if len(call.slots) != 1 {
+		t.Fatalf("zone writer slots = %#v; want one slot", call.slots)
+	}
+	slot := call.slots[0]
+	if slot.StartHour != 6 || slot.StartMinute != 0 || slot.EndHour != 22 || slot.EndMinute != 0 {
+		t.Fatalf("zone slot = %#v; want 06:00-22:00", slot)
+	}
+	if slot.TemperatureC == nil || *slot.TemperatureC != 21 {
+		t.Fatalf("zone slot temperature = %#v; want 21", slot.TemperatureC)
+	}
+}
+
+func TestSetDhwTimeProgramMutation_Success(t *testing.T) {
+	writer := &mockScheduleWriter{
+		dhwResult: &mcp.TimeProgramWriteResult{
+			Success: true,
+			SlotResults: []mcp.TimeProgramSlotResult{
+				{SlotIndex: 0, Accepted: true, ErrorCode: 0},
+			},
+		},
+	}
+
+	data := executeMutation(t, buildMutationSchema(t, nil, nil, nil, writer), `mutation {
+		setDhwTimeProgram(
+			weekday: 5
+			slots: "[{\"start_hour\":5,\"start_minute\":30,\"end_hour\":7,\"end_minute\":0}]"
+		) {
+			success
+			error
+			slotResults {
+				slotIndex
+				accepted
+				errorCode
+				errorDescription
+			}
+		}
+	}`)
+
+	payload, ok := data["setDhwTimeProgram"].(map[string]any)
+	if !ok {
+		t.Fatalf("setDhwTimeProgram payload type = %T; want map", data["setDhwTimeProgram"])
+	}
+	if got, _ := payload["success"].(bool); !got {
+		t.Fatalf("setDhwTimeProgram success = %v; want true", got)
+	}
+	if got := payload["error"]; got != nil {
+		t.Fatalf("setDhwTimeProgram error = %#v; want nil", got)
+	}
+	if len(writer.dhwCalls) != 1 {
+		t.Fatalf("dhw writer calls = %d; want 1", len(writer.dhwCalls))
+	}
+	call := writer.dhwCalls[0]
+	if call.weekday != 5 {
+		t.Fatalf("dhw writer weekday = %d; want 5", call.weekday)
+	}
+	if len(call.slots) != 1 {
+		t.Fatalf("dhw writer slots = %#v; want one slot", call.slots)
+	}
+	slot := call.slots[0]
+	if slot.StartHour != 5 || slot.StartMinute != 30 || slot.EndHour != 7 || slot.EndMinute != 0 {
+		t.Fatalf("dhw slot = %#v; want 05:30-07:00", slot)
+	}
+	if slot.TemperatureC != nil {
+		t.Fatalf("dhw slot temperature = %#v; want nil", slot.TemperatureC)
+	}
+}
+
+func TestSetZoneTimeProgramMutation_InvalidJSON(t *testing.T) {
+	writer := &mockScheduleWriter{}
+
+	data := executeMutation(t, buildMutationSchema(t, nil, nil, nil, writer), `mutation {
+		setZoneTimeProgram(zone: 1, weekday: 2, slots: "not-json") {
+			success
+			error
+			slotResults {
+				slotIndex
+			}
+		}
+	}`)
+
+	payload, ok := data["setZoneTimeProgram"].(map[string]any)
+	if !ok {
+		t.Fatalf("setZoneTimeProgram payload type = %T; want map", data["setZoneTimeProgram"])
+	}
+	if got, _ := payload["success"].(bool); got {
+		t.Fatalf("setZoneTimeProgram success = %v; want false", got)
+	}
+	errMessage, _ := payload["error"].(string)
+	if !strings.Contains(errMessage, "invalid slots JSON") {
+		t.Fatalf("setZoneTimeProgram error = %q; want invalid slots JSON", errMessage)
+	}
+	slotResults, ok := payload["slotResults"].([]any)
+	if !ok || len(slotResults) != 0 {
+		t.Fatalf("setZoneTimeProgram slotResults = %#v; want empty list", payload["slotResults"])
+	}
+	if len(writer.zoneCalls) != 0 {
+		t.Fatalf("zone writer calls = %d; want 0", len(writer.zoneCalls))
+	}
+}
+
+func buildMutationSchema(t *testing.T, registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, scheduleWriter ScheduleWriter) graphqlgo.Schema {
 	t.Helper()
 	queryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Query",
@@ -611,7 +819,7 @@ func buildMutationSchema(t *testing.T, registry InvokeRegistry, invoker Invoker,
 			"noop": &graphqlgo.Field{Type: graphqlgo.String},
 		},
 	})
-	mutationType := buildMutationType(registry, invoker, boilerWriter)
+	mutationType := buildMutationType(registry, invoker, boilerWriter, scheduleWriter)
 	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
 		Query:    queryType,
 		Mutation: mutationType,

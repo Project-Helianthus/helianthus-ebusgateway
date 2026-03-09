@@ -79,6 +79,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	semanticPoller := startVaillantSemanticPolling(ctx, cfg, gateway, semanticRuntime.Provider(), hub)
 	if semanticPoller != nil {
 		builder.SetBoilerConfigWriter(semanticPoller)
+		builder.SetScheduleWriter(semanticPoller)
 	}
 
 	if err := builder.Start(ctx); err != nil {

@@ -46,15 +46,22 @@ func (recorder *passiveEventRecorder) snapshot() []PassiveTapEvent {
 func TestStartPassiveBusTapRejectsEbusdTCP(t *testing.T) {
 	t.Parallel()
 
-	cfg := DefaultConfig()
-	cfg.TransportConfig = TransportConfig{
-		Protocol: TransportEbusdTCP,
-		Network:  "tcp",
-		Address:  "127.0.0.1:9999",
-	}
+	for _, protocolName := range []TransportProtocol{TransportEbusdTCP, TransportProtocol("ebusd")} {
+		protocolName := protocolName
+		t.Run(string(protocolName), func(t *testing.T) {
+			t.Parallel()
 
-	if _, err := StartPassiveBusTap(context.Background(), cfg, newPassiveEventRecorder()); err == nil {
-		t.Fatal("StartPassiveBusTap error = nil; want unsupported transport error")
+			cfg := DefaultConfig()
+			cfg.TransportConfig = TransportConfig{
+				Protocol: protocolName,
+				Network:  "tcp",
+				Address:  "127.0.0.1:9999",
+			}
+
+			if _, err := StartPassiveBusTap(context.Background(), cfg, newPassiveEventRecorder()); err == nil {
+				t.Fatal("StartPassiveBusTap error = nil; want unsupported transport error")
+			}
+		})
 	}
 }
 
@@ -240,10 +247,10 @@ func TestBroadcastListener_RoutesBroadcastFramesViaPassiveTap(t *testing.T) {
 	}()
 
 	waitForCondition(t, 2*time.Second, func() bool {
-		return plane.broadcasts == 1
+		return plane.BroadcastCount() == 1
 	})
-	if plane.broadcasts != 1 {
-		t.Fatalf("OnBroadcast calls = %d; want 1", plane.broadcasts)
+	if got := plane.BroadcastCount(); got != 1 {
+		t.Fatalf("OnBroadcast calls = %d; want 1", got)
 	}
 }
 

@@ -170,7 +170,7 @@ func clampEbusdTCPTimeouts(config TransportConfig, scanRequestTimeout time.Durat
 }
 
 func normalizeTransportConfig(config TransportConfig) (TransportConfig, error) {
-	config.Protocol = TransportProtocol(strings.ToLower(strings.TrimSpace(string(config.Protocol))))
+	config.Protocol = canonicalTransportProtocol(config.Protocol)
 	config.Network = strings.ToLower(strings.TrimSpace(config.Network))
 	config.Address = strings.TrimSpace(config.Address)
 
@@ -189,6 +189,15 @@ func normalizeTransportConfig(config TransportConfig) (TransportConfig, error) {
 	config.Network = network
 	config.Address = address
 	return config, nil
+}
+
+func canonicalTransportProtocol(protocol TransportProtocol) TransportProtocol {
+	switch normalized := TransportProtocol(strings.ToLower(strings.TrimSpace(string(protocol)))); normalized {
+	case TransportProtocol("ebusd"):
+		return TransportEbusdTCP
+	default:
+		return normalized
+	}
 }
 
 func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol) (TransportProtocol, string, string, error) {
@@ -261,8 +270,7 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 }
 
 func transportFromConn(protocolName TransportProtocol, conn net.Conn, readTimeout, writeTimeout time.Duration) (transport.RawTransport, error) {
-	normalized := strings.ToLower(string(protocolName))
-	switch TransportProtocol(normalized) {
+	switch canonicalTransportProtocol(protocolName) {
 	case TransportENH, "":
 		return transport.NewENHTransport(conn, readTimeout, writeTimeout), nil
 	case TransportENS:
@@ -275,7 +283,7 @@ func transportFromConn(protocolName TransportProtocol, conn net.Conn, readTimeou
 		return transport.NewUDPPlainTransport(udpConn, readTimeout, writeTimeout), nil
 	case TransportTCPPlain:
 		return transport.NewTCPPlainTransport(conn, readTimeout, writeTimeout), nil
-	case TransportEbusdTCP, TransportProtocol("ebusd"):
+	case TransportEbusdTCP:
 		return transport.NewEbusdTCPTransport(conn, readTimeout, writeTimeout), nil
 	default:
 		return nil, fmt.Errorf("gateway transport unsupported protocol %q: %w", protocolName, ebuserrors.ErrInvalidPayload)

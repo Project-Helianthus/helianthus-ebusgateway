@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -328,6 +329,20 @@ func TestNormalizeTransportConfigTCPPlainEndpoint(t *testing.T) {
 	}
 }
 
+func TestNormalizeTransportConfigCanonicalizesEbusdAlias(t *testing.T) {
+	cfg, err := normalizeTransportConfig(TransportConfig{
+		Protocol: TransportProtocol("ebusd"),
+		Network:  "tcp",
+		Address:  "127.0.0.1:9999",
+	})
+	if err != nil {
+		t.Fatalf("normalizeTransportConfig error = %v", err)
+	}
+	if cfg.Protocol != TransportEbusdTCP {
+		t.Fatalf("protocol = %q; want %q", cfg.Protocol, TransportEbusdTCP)
+	}
+}
+
 func TestTransportFromConn_UDPPlain(t *testing.T) {
 	t.Run("requires udp conn", func(t *testing.T) {
 		client, server := net.Pipe()
@@ -532,8 +547,8 @@ func TestGateway_RefreshRouterPlanes(t *testing.T) {
 		Secondary: 0xB2,
 	})
 
-	if plane.broadcasts != 1 {
-		t.Fatalf("OnBroadcast calls = %d; want 1", plane.broadcasts)
+	if got := plane.BroadcastCount(); got != 1 {
+		t.Fatalf("OnBroadcast calls = %d; want 1", got)
 	}
 }
 
@@ -568,8 +583,8 @@ func TestGateway_AddRouterPlane(t *testing.T) {
 		Secondary: 0xB2,
 	})
 
-	if plane.broadcasts != 1 {
-		t.Fatalf("OnBroadcast calls = %d; want 1", plane.broadcasts)
+	if got := plane.BroadcastCount(); got != 1 {
+		t.Fatalf("OnBroadcast calls = %d; want 1", got)
 	}
 }
 
@@ -592,6 +607,7 @@ func (provider mockProvider) CreatePlanes(registry.DeviceInfo) []registry.Plane 
 type mockPlane struct {
 	name          string
 	subscriptions []router.Subscription
+	mu            sync.Mutex
 	broadcasts    int
 }
 
@@ -608,8 +624,16 @@ func (plane *mockPlane) Subscriptions() []router.Subscription {
 }
 
 func (plane *mockPlane) OnBroadcast(frame protocol.Frame) error {
+	plane.mu.Lock()
+	defer plane.mu.Unlock()
 	plane.broadcasts++
 	return nil
+}
+
+func (plane *mockPlane) BroadcastCount() int {
+	plane.mu.Lock()
+	defer plane.mu.Unlock()
+	return plane.broadcasts
 }
 
 func (plane *mockPlane) BuildRequest(registry.Method, map[string]any) (protocol.Frame, error) {

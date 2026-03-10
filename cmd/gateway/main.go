@@ -54,17 +54,9 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		cfg.Providers = vaillantproviders.Default()
 	}
 
-	busObservability := ebusgateway.NewBusObservabilityStore(cfg)
-	cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, busObservability)
-
-	var deduplicator *ebusgateway.ActivePassiveDeduplicator
-	if cfg.BroadcastListen {
-		dedup, err := ebusgateway.NewActivePassiveDeduplicator(cfg)
-		if err != nil {
-			return err
-		}
-		cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, dedup)
-		deduplicator = dedup
+	busObservability, deduplicator, err := wireObserveFirstObservers(&cfg)
+	if err != nil {
+		return err
 	}
 
 	gateway, err := ebusgateway.New(ctx, cfg)
@@ -193,6 +185,32 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	<-ctx.Done()
 	return nil
+}
+
+func wireObserveFirstObservers(cfg *ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+	if cfg == nil {
+		return nil, nil, nil
+	}
+
+	observerCfg := *cfg
+
+	var deduplicator *ebusgateway.ActivePassiveDeduplicator
+	if cfg.BroadcastListen {
+		dedup, err := ebusgateway.NewActivePassiveDeduplicator(observerCfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		deduplicator = dedup
+		observerCfg.LocalAddressSnapshotter = deduplicator
+	}
+
+	busObservability := ebusgateway.NewBusObservabilityStore(observerCfg)
+	cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, busObservability)
+	if deduplicator != nil {
+		cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, deduplicator)
+	}
+
+	return busObservability, deduplicator, nil
 }
 
 func applyTransportSourcePolicy(cfg *ebusgateway.Config) {

@@ -966,6 +966,12 @@ func (store *BusObservabilityStore) refreshPassiveStateLocked(now time.Time, tap
 		store.passive.state = "unavailable"
 		store.passive.processStartedAt = now
 	}
+	if !store.cfg.BroadcastListen {
+		store.setPassiveStateLocked("unavailable")
+		store.passive.unavailableReason = "capability_withdrawn"
+		store.passive.startupWindowClosed = true
+		return
+	}
 	if !store.passive.startupWindowClosed && !now.Before(store.passive.processStartedAt.Add(store.cfg.ObserveFirstWarmupOuterWindow)) {
 		if store.passive.state == "warming_up" && store.passive.fallbackHealthy {
 			store.setPassiveStateLocked("available")

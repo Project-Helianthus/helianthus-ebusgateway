@@ -1,0 +1,384 @@
+{
+  "group": 4,
+  "opcode": 2,
+  "description": "Solar Circuit",
+  "singleton": true,
+  "scan_time": "2026-03-05T14:20:04.600031+00:00",
+  "total_probed": 31,
+  "total_valid": 10,
+  "registers": [
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 1,
+      "addr_hex": "0x0001",
+      "opcode": 2,
+      "responded": true,
+      "flags": 3,
+      "flags_hex": "0x03",
+      "payload_length": 1,
+      "raw_hex": "00",
+      "decoded": {
+        "u8": 0,
+        "wire_type_guess": "u8"
+      },
+      "full_payload_hex": "0304010000"
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 2,
+      "addr_hex": "0x0002",
+      "opcode": 2,
+      "responded": true,
+      "flags": 3,
+      "flags_hex": "0x03",
+      "payload_length": 1,
+      "raw_hex": "00",
+      "decoded": {
+        "u8": 0,
+        "wire_type_guess": "u8"
+      },
+      "full_payload_hex": "0304020000"
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 3,
+      "addr_hex": "0x0003",
+      "opcode": 2,
+      "responded": true,
+      "flags": 1,
+      "flags_hex": "0x01",
+      "payload_length": 4,
+      "raw_hex": "00007142",
+      "decoded": {
+        "u8": 0,
+        "u16": 0,
+        "i16": 0,
+        "u32": 1114701824,
+        "i32": 1114701824,
+        "f32": 60.25,
+        "wire_type_guess": "f32"
+      },
+      "full_payload_hex": "0104030000007142"
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 4,
+      "addr_hex": "0x0004",
+      "opcode": 2,
+      "responded": true,
+      "flags": 3,
+      "flags_hex": "0x03",
+      "payload_length": 4,
+      "raw_hex": "0000a041",
+      "decoded": {
+        "u8": 0,
+        "u16": 0,
+        "i16": 0,
+        "u32": 1101004800,
+        "i32": 1101004800,
+        "f32": 20.0,
+        "wire_type_guess": "f32"
+      },
+      "full_payload_hex": "030404000000a041"
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 5,
+      "addr_hex": "0x0005",
+      "opcode": 2,
+      "responded": true,
+      "flags": 3,
+      "flags_hex": "0x03",
+      "payload_length": 4,
+      "raw_hex": "00000243",
+      "decoded": {
+        "u8": 0,
+        "u16": 0,
+        "i16": 0,
+        "u32": 1124204544,
+        "i32": 1124204544,
+        "f32": 130.0,
+        "wire_type_guess": "f32"
+      },
+      "full_payload_hex": "0304050000000243"
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 6,
+      "addr_hex": "0x0006",
+      "opcode": 2,
+      "responded": true,
+      "flags": 3,
+      "flags_hex": "0x03",
+      "payload_length": 4,
+      "raw_hex": "0000be42",
+      "decoded": {
+        "u8": 0,
+        "u16": 0,
+        "i16": 0,
+        "u32": 1119748096,
+        "i32": 1119748096,
+        "f32": 95.0,
+        "wire_type_guess": "f32"
+      },
+      "full_payload_hex": "030406000000be42"
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 7,
+      "addr_hex": "0x0007",
+      "opcode": 2,
+      "responded": true,
+      "flags": 1,
+      "flags_hex": "0x01",
+      "payload_length": 4,
+      "raw_hex": "0000c141",
+      "decoded": {
+        "u8": 0,
+        "u16": 0,
+        "i16": 0,
+        "u32": 1103167488,
+        "i32": 1103167488,
+        "f32": 24.125,
+        "wire_type_guess": "f32"
+      },
+      "full_payload_hex": "010407000000c141"
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 8,
+      "addr_hex": "0x0008",
+      "opcode": 2,
+      "responded": true,
+      "flags": 1,
+      "flags_hex": "0x01",
+      "payload_length": 1,
+      "raw_hex": "00",
+      "decoded": {
+        "u8": 0,
+        "wire_type_guess": "u8"
+      },
+      "full_payload_hex": "0104080000"
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 9,
+      "addr_hex": "0x0009",
+      "opcode": 2,
+      "responded": true,
+      "flags": 1,
+      "flags_hex": "0x01",
+      "payload_length": 4,
+      "raw_hex": "00000000",
+      "decoded": {
+        "u8": 0,
+        "u16": 0,
+        "i16": 0,
+        "u32": 0,
+        "i32": 0,
+        "f32": 0.0,
+        "wire_type_guess": "f32"
+      },
+      "full_payload_hex": "0104090000000000"
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 10,
+      "addr_hex": "0x000A",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 11,
+      "addr_hex": "0x000B",
+      "opcode": 2,
+      "responded": true,
+      "flags": 3,
+      "flags_hex": "0x03",
+      "payload_length": 4,
+      "raw_hex": "15090000",
+      "decoded": {
+        "u8": 21,
+        "u16": 2325,
+        "i16": 2325,
+        "u32": 2325,
+        "i32": 2325,
+        "f32": 3.2580189295552e-42,
+        "wire_type_guess": "f32"
+      },
+      "full_payload_hex": "03040b0015090000"
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 12,
+      "addr_hex": "0x000C",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 13,
+      "addr_hex": "0x000D",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 14,
+      "addr_hex": "0x000E",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 15,
+      "addr_hex": "0x000F",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 16,
+      "addr_hex": "0x0010",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 17,
+      "addr_hex": "0x0011",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 18,
+      "addr_hex": "0x0012",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 19,
+      "addr_hex": "0x0013",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 20,
+      "addr_hex": "0x0014",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 21,
+      "addr_hex": "0x0015",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 22,
+      "addr_hex": "0x0016",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 23,
+      "addr_hex": "0x0017",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 24,
+      "addr_hex": "0x0018",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 25,
+      "addr_hex": "0x0019",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 26,
+      "addr_hex": "0x001A",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 27,
+      "addr_hex": "0x001B",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 28,
+      "addr_hex": "0x001C",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 29,
+      "addr_hex": "0x001D",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 30,
+      "addr_hex": "0x001E",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 4,
+      "instance": 0,
+      "addr": 31,
+      "addr_hex": "0x001F",
+      "opcode": 2,
+      "responded": false
+    }
+  ]
+}

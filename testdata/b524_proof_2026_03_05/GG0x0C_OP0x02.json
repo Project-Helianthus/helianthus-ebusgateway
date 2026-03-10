@@ -1,0 +1,171 @@
+{
+  "group": 12,
+  "opcode": 2,
+  "description": "Unknown remote (local config)",
+  "singleton": false,
+  "scan_time": "2026-03-05T14:59:27.043084+00:00",
+  "total_probed": 20,
+  "total_valid": 0,
+  "registers": [
+    {
+      "group": 12,
+      "instance": 0,
+      "addr": 1,
+      "addr_hex": "0x0001",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 0,
+      "addr": 2,
+      "addr_hex": "0x0002",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 0,
+      "addr": 3,
+      "addr_hex": "0x0003",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 0,
+      "addr": 4,
+      "addr_hex": "0x0004",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 0,
+      "addr": 5,
+      "addr_hex": "0x0005",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 0,
+      "addr": 6,
+      "addr_hex": "0x0006",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 0,
+      "addr": 7,
+      "addr_hex": "0x0007",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 0,
+      "addr": 8,
+      "addr_hex": "0x0008",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 0,
+      "addr": 9,
+      "addr_hex": "0x0009",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 0,
+      "addr": 10,
+      "addr_hex": "0x000A",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 1,
+      "addr": 1,
+      "addr_hex": "0x0001",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 1,
+      "addr": 2,
+      "addr_hex": "0x0002",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 1,
+      "addr": 3,
+      "addr_hex": "0x0003",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 1,
+      "addr": 4,
+      "addr_hex": "0x0004",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 1,
+      "addr": 5,
+      "addr_hex": "0x0005",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 1,
+      "addr": 6,
+      "addr_hex": "0x0006",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 1,
+      "addr": 7,
+      "addr_hex": "0x0007",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 1,
+      "addr": 8,
+      "addr_hex": "0x0008",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 1,
+      "addr": 9,
+      "addr_hex": "0x0009",
+      "opcode": 2,
+      "responded": false
+    },
+    {
+      "group": 12,
+      "instance": 1,
+      "addr": 10,
+      "addr_hex": "0x000A",
+      "opcode": 2,
+      "responded": false
+    }
+  ]
+}

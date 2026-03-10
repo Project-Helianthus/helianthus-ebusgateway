@@ -1,0 +1,42 @@
+{
+  "name": "b524_wire_logs_seed_corpus",
+  "status": "m0_mirrored_wireish_captures",
+  "kind": "mirrored_external_log_capture",
+  "mirror_source_workspace_path": "_work_register_mapping/B524/",
+  "mirrored_repo_path": "testdata/b524_wire_logs/",
+  "validation_scope": "corpus_presence_only",
+  "deferred_validation": {
+    "owners": [
+      "ISSUE-GW-01",
+      "ISSUE-GW-01B"
+    ],
+    "note": "These logs seed later replay reconstruction work. M0 asserts presence and provenance only."
+  },
+  "cases": [
+    {
+      "name": "b524_discovery_scan_log",
+      "file": "b524_discovery_scan.log",
+      "kind": "request_response_log"
+    },
+    {
+      "name": "b524_groups_scan_schema_log",
+      "file": "b524_groups_scan_schema.log",
+      "kind": "request_response_log"
+    },
+    {
+      "name": "b524_discovery_scan_tail",
+      "file": "b524_discovery_scan_tail.json",
+      "kind": "tail_snapshot"
+    },
+    {
+      "name": "b524_groups_scan_schema_tail",
+      "file": "b524_groups_scan_schema_tail.json",
+      "kind": "tail_snapshot"
+    },
+    {
+      "name": "b524_groups_scan_schema_decoded",
+      "file": "b524_groups_scan_schema_decoded.json",
+      "kind": "decoded_snapshot"
+    }
+  ]
+}

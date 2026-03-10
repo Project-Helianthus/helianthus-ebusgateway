@@ -2,7 +2,6 @@ package ebusgateway
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
@@ -12,10 +11,9 @@ import (
 )
 
 type BroadcastListener struct {
-	transport transport.RawTransport
-	closeFn   func() error
-	router    *router.BusEventRouter
-	reader    *frameReader
+	router *router.BusEventRouter
+	parser *broadcastFrameParser
+	tap    *PassiveBusTap
 }
 
 func StartBroadcastListener(ctx context.Context, cfg Config, router *router.BusEventRouter) (*BroadcastListener, error) {
@@ -27,152 +25,71 @@ func StartBroadcastListenerWithTransport(ctx context.Context, cfg Config, router
 		return nil, fmt.Errorf("broadcast listener missing router: %w", ebuserrors.ErrInvalidPayload)
 	}
 
-	// Always use a fresh transport connection to avoid interfering with bus I/O.
-	cfg.Transport = nil
-	tr, closeFn, err := resolveBroadcastTransport(ctx, cfg)
+	listener := &BroadcastListener{
+		router: router,
+		parser: &broadcastFrameParser{},
+	}
+	tap, err := StartPassiveBusTapWithTransport(ctx, cfg, listener, wrap)
 	if err != nil {
 		return nil, err
 	}
-	if wrap != nil {
-		tr = wrap(tr)
-	}
-
-	listener := &BroadcastListener{
-		transport: tr,
-		closeFn:   closeFn,
-		router:    router,
-		reader:    newFrameReader(tr),
-	}
-	listener.Start(ctx)
+	listener.tap = tap
 	return listener, nil
 }
 
-func resolveBroadcastTransport(ctx context.Context, cfg Config) (transport.RawTransport, func() error, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	config, err := normalizeTransportConfig(cfg.TransportConfig)
-	if err != nil {
-		return nil, nil, fmt.Errorf("broadcast transport config: %w", err)
-	}
-	if config.Network == "" {
-		return nil, nil, fmt.Errorf("broadcast transport missing network: %w", ebuserrors.ErrInvalidPayload)
-	}
-	if config.Address == "" {
-		return nil, nil, fmt.Errorf("broadcast transport missing address: %w", ebuserrors.ErrInvalidPayload)
-	}
-
-	dial := config.Dial
-	if dial == nil {
-		dial = dialContext
-	}
-
-	conn, err := dial(ctx, config.Network, config.Address, config.DialTimeout)
-	if err != nil {
-		return nil, nil, fmt.Errorf("broadcast transport dial failed: %w", err)
-	}
-
-	transportLayer, err := transportFromConn(config.Protocol, conn, config.ReadTimeout, config.WriteTimeout)
-	if err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-
-	return transportLayer, conn.Close, nil
-}
-
 func (listener *BroadcastListener) Start(ctx context.Context) {
-	if listener == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	go listener.run(ctx)
+	_ = ctx
 }
 
 func (listener *BroadcastListener) Close() error {
-	if listener == nil || listener.closeFn == nil {
+	if listener == nil || listener.tap == nil {
 		return nil
 	}
-	return listener.closeFn()
+	return listener.tap.Close()
 }
 
-func (listener *BroadcastListener) run(ctx context.Context) {
-	for {
-		frame, ok, err := listener.reader.ReadFrame(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			if errors.Is(err, ebuserrors.ErrTransportClosed) {
-				return
-			}
-			continue
-		}
+func (listener *BroadcastListener) OnPassiveTapEvent(event PassiveTapEvent) {
+	if listener == nil || listener.router == nil || listener.parser == nil {
+		return
+	}
+
+	switch event.Kind {
+	case PassiveTapEventSymbol:
+		frame, ok := listener.parser.push(event.Symbol)
 		if !ok {
-			continue
+			return
 		}
-		if frame.Target != protocol.AddressBroadcast {
-			continue
+		if frame.Target == protocol.AddressBroadcast {
+			_ = listener.router.HandleBroadcast(frame)
 		}
-		_ = listener.router.HandleBroadcast(frame)
+	default:
+		listener.parser.reset()
 	}
 }
 
-type frameReader struct {
-	transport transport.RawTransport
-	escape    bool
-	buffer    []byte
+type broadcastFrameParser struct {
+	buffer []byte
 }
 
-func newFrameReader(tr transport.RawTransport) *frameReader {
-	return &frameReader{transport: tr}
-}
-
-func (reader *frameReader) ReadFrame(ctx context.Context) (protocol.Frame, bool, error) {
-	for {
-		if ctx != nil && ctx.Err() != nil {
-			return protocol.Frame{}, false, ctx.Err()
-		}
-
-		symbol, err := reader.transport.ReadByte()
-		if err != nil {
-			if errors.Is(err, ebuserrors.ErrTimeout) {
-				reader.escape = false
-				continue
-			}
-			return protocol.Frame{}, false, err
-		}
-
-		if reader.escape {
-			reader.escape = false
-			switch symbol {
-			case 0x00:
-				reader.buffer = append(reader.buffer, protocol.SymbolEscape)
-			case 0x01:
-				reader.buffer = append(reader.buffer, protocol.SymbolSyn)
-			default:
-				reader.buffer = reader.buffer[:0]
-			}
-			continue
-		}
-
-		switch symbol {
-		case protocol.SymbolEscape:
-			reader.escape = true
-		case protocol.SymbolSyn:
-			if len(reader.buffer) == 0 {
-				continue
-			}
-			frame, ok := parseFrame(reader.buffer)
-			reader.buffer = reader.buffer[:0]
-			if ok {
-				return frame, true, nil
-			}
-		default:
-			reader.buffer = append(reader.buffer, symbol)
-		}
+func (parser *broadcastFrameParser) push(symbol byte) (protocol.Frame, bool) {
+	if parser == nil {
+		return protocol.Frame{}, false
 	}
+	if symbol == protocol.SymbolSyn {
+		if len(parser.buffer) == 0 {
+			return protocol.Frame{}, false
+		}
+		frame, ok := parseFrame(parser.buffer)
+		parser.buffer = parser.buffer[:0]
+		return frame, ok
+	}
+	parser.buffer = append(parser.buffer, symbol)
+	return protocol.Frame{}, false
+}
+
+func (parser *broadcastFrameParser) reset() {
+	if parser == nil {
+		return
+	}
+	parser.buffer = parser.buffer[:0]
 }

@@ -1,0 +1,341 @@
+package ebusgateway
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+	"github.com/Project-Helianthus/helianthus-ebusreg/router"
+)
+
+type passiveEventRecorder struct {
+	mu     sync.Mutex
+	events []PassiveTapEvent
+	notify chan struct{}
+}
+
+func newPassiveEventRecorder() *passiveEventRecorder {
+	return &passiveEventRecorder{
+		notify: make(chan struct{}, 32),
+	}
+}
+
+func (recorder *passiveEventRecorder) OnPassiveTapEvent(event PassiveTapEvent) {
+	recorder.mu.Lock()
+	recorder.events = append(recorder.events, event)
+	recorder.mu.Unlock()
+	select {
+	case recorder.notify <- struct{}{}:
+	default:
+	}
+}
+
+func (recorder *passiveEventRecorder) snapshot() []PassiveTapEvent {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	return append([]PassiveTapEvent(nil), recorder.events...)
+}
+
+func TestStartPassiveBusTapRejectsEbusdTCP(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.TransportConfig = TransportConfig{
+		Protocol: TransportEbusdTCP,
+		Network:  "tcp",
+		Address:  "127.0.0.1:9999",
+	}
+
+	if _, err := StartPassiveBusTap(context.Background(), cfg, newPassiveEventRecorder()); err == nil {
+		t.Fatal("StartPassiveBusTap error = nil; want unsupported transport error")
+	}
+}
+
+func TestPassiveBusTap_WrappedResetAndDecodeFaultsStillSurface(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	recorder := newPassiveEventRecorder()
+
+	cfg := DefaultConfig()
+	cfg.TransportConfig = TransportConfig{
+		Protocol:     TransportENH,
+		Network:      "tcp",
+		Address:      "127.0.0.1:9999",
+		ReadTimeout:  50 * time.Millisecond,
+		WriteTimeout: 50 * time.Millisecond,
+		DialTimeout:  time.Second,
+		Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+			return client, nil
+		},
+	}
+	cfg.PassiveAbsenceThreshold = time.Second
+	cfg.PassiveReconnectInitialDelay = time.Second
+	cfg.PassiveReconnectMaxDelay = time.Second
+
+	go func() {
+		defer func() { _ = server.Close() }()
+		reset := transport.EncodeENH(transport.ENHResResetted, 0x00)
+		payload := append([]byte{}, reset[:]...)
+		payload = append(payload, enhReceivedBytes([]byte{0x11, protocol.SymbolEscape, 0x02, 0x22})...)
+		_, _ = server.Write(payload)
+	}()
+
+	wrap := func(inner transport.RawTransport) transport.RawTransport {
+		inner = &loggingTransport{inner: inner, logger: log.New(io.Discard, "", 0)}
+		return newWireLogTransport(inner, &wireLogger{writer: io.Discard}, "passive")
+	}
+
+	tap, err := StartPassiveBusTapWithTransport(context.Background(), cfg, recorder, wrap)
+	if err != nil {
+		t.Fatalf("StartPassiveBusTapWithTransport error = %v", err)
+	}
+	defer func() {
+		if err := tap.Close(); err != nil {
+			t.Fatalf("Close error = %v", err)
+		}
+	}()
+
+	events := waitForPassiveEvents(t, recorder, 2*time.Second, func(events []PassiveTapEvent) bool {
+		return countPassiveEventKind(events, PassiveTapEventReset) >= 1 &&
+			countPassiveEventKind(events, PassiveTapEventDecodeFault) >= 1 &&
+			hasPassiveSymbols(events, 0x11, 0x22)
+	})
+
+	if !hasPassiveSymbols(events, 0x11, 0x22) {
+		t.Fatalf("symbol events = %v; want [0x11, 0x22]", passiveSymbols(events))
+	}
+}
+
+func TestPassiveBusTap_ReconnectsAfterDisconnect(t *testing.T) {
+	t.Parallel()
+
+	recorder := newPassiveEventRecorder()
+	var dialMu sync.Mutex
+	dialCount := 0
+
+	cfg := DefaultConfig()
+	cfg.TransportConfig = TransportConfig{
+		Protocol:     TransportENH,
+		Network:      "tcp",
+		Address:      "127.0.0.1:9999",
+		ReadTimeout:  50 * time.Millisecond,
+		WriteTimeout: 50 * time.Millisecond,
+		DialTimeout:  time.Second,
+		Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+			dialMu.Lock()
+			defer dialMu.Unlock()
+			dialCount++
+			client, server := net.Pipe()
+			switch dialCount {
+			case 1:
+				go writePassivePayload(server, enhReceivedBytes([]byte{0x11}))
+			case 2:
+				go writePassivePayload(server, enhReceivedBytes([]byte{0x22}))
+			default:
+				_ = server.Close()
+				return nil, fmt.Errorf("unexpected extra reconnect")
+			}
+			return client, nil
+		},
+	}
+	cfg.PassiveAbsenceThreshold = time.Second
+	cfg.PassiveReconnectInitialDelay = 5 * time.Millisecond
+	cfg.PassiveReconnectMaxDelay = 5 * time.Millisecond
+
+	tap, err := StartPassiveBusTap(context.Background(), cfg, recorder)
+	if err != nil {
+		t.Fatalf("StartPassiveBusTap error = %v", err)
+	}
+	defer func() {
+		if err := tap.Close(); err != nil {
+			t.Fatalf("Close error = %v", err)
+		}
+	}()
+
+	events := waitForPassiveEvents(t, recorder, 2*time.Second, func(events []PassiveTapEvent) bool {
+		return hasPassiveSymbols(events, 0x11, 0x22) &&
+			countPassiveEventKind(events, PassiveTapEventConnected) >= 2 &&
+			countPassiveEventKind(events, PassiveTapEventDisconnected) >= 1
+	})
+
+	if !hasPassiveSymbols(events, 0x11, 0x22) {
+		t.Fatalf("symbol events = %v; want reconnect sequence [0x11, 0x22]", passiveSymbols(events))
+	}
+
+	snapshot := tap.Snapshot()
+	if snapshot.ConnectCount < 2 {
+		t.Fatalf("ConnectCount = %d; want >= 2", snapshot.ConnectCount)
+	}
+	if snapshot.DisconnectCount < 1 {
+		t.Fatalf("DisconnectCount = %d; want >= 1", snapshot.DisconnectCount)
+	}
+}
+
+func TestBroadcastListener_RoutesBroadcastFramesViaPassiveTap(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	cfg := DefaultConfig()
+	cfg.TransportConfig = TransportConfig{
+		Protocol:     TransportENH,
+		Network:      "tcp",
+		Address:      "127.0.0.1:9999",
+		ReadTimeout:  50 * time.Millisecond,
+		WriteTimeout: 50 * time.Millisecond,
+		DialTimeout:  time.Second,
+		Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+			return client, nil
+		},
+	}
+	cfg.PassiveAbsenceThreshold = time.Second
+	cfg.PassiveReconnectInitialDelay = time.Second
+	cfg.PassiveReconnectMaxDelay = time.Second
+
+	plane := &mockPlane{
+		name: "broadcast",
+		subscriptions: []router.Subscription{
+			{Primary: 0xB5, Secondary: 0x16},
+		},
+	}
+	eventRouter := router.NewBusEventRouter(nil)
+	eventRouter.SetPlanes([]router.Plane{plane})
+
+	go func() {
+		defer func() { _ = server.Close() }()
+		unicast := protocol.Frame{
+			Source:    0x10,
+			Target:    0x08,
+			Primary:   0xB5,
+			Secondary: 0x16,
+			Data:      []byte{0x01, 0x02},
+		}
+		broadcast := protocol.Frame{
+			Source:    0x10,
+			Target:    protocol.AddressBroadcast,
+			Primary:   0xB5,
+			Secondary: 0x16,
+			Data:      []byte{0x55, 0x66},
+		}
+		payload := append([]byte{}, enhReceivedBytes(frameBytes(unicast))...)
+		payload = append(payload, enhReceivedBytes(frameBytes(broadcast))...)
+		_, _ = server.Write(payload)
+	}()
+
+	listener, err := StartBroadcastListener(context.Background(), cfg, eventRouter)
+	if err != nil {
+		t.Fatalf("StartBroadcastListener error = %v", err)
+	}
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Fatalf("Close error = %v", err)
+		}
+	}()
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		return plane.broadcasts == 1
+	})
+	if plane.broadcasts != 1 {
+		t.Fatalf("OnBroadcast calls = %d; want 1", plane.broadcasts)
+	}
+}
+
+func waitForPassiveEvents(t *testing.T, recorder *passiveEventRecorder, timeout time.Duration, ready func([]PassiveTapEvent) bool) []PassiveTapEvent {
+	t.Helper()
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	for {
+		events := recorder.snapshot()
+		if ready(events) {
+			return events
+		}
+
+		select {
+		case <-recorder.notify:
+		case <-deadline.C:
+			t.Fatalf("timeout waiting for passive events; got %#v", events)
+		}
+	}
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, ready func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ready() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for condition")
+}
+
+func countPassiveEventKind(events []PassiveTapEvent, kind PassiveTapEventKind) int {
+	count := 0
+	for _, event := range events {
+		if event.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func passiveSymbols(events []PassiveTapEvent) []byte {
+	out := make([]byte, 0, len(events))
+	for _, event := range events {
+		if event.Kind == PassiveTapEventSymbol {
+			out = append(out, event.Symbol)
+		}
+	}
+	return out
+}
+
+func hasPassiveSymbols(events []PassiveTapEvent, want ...byte) bool {
+	got := passiveSymbols(events)
+	if len(got) < len(want) {
+		return false
+	}
+	index := 0
+	for _, symbol := range got {
+		if symbol != want[index] {
+			continue
+		}
+		index++
+		if index == len(want) {
+			return true
+		}
+	}
+	return false
+}
+
+func enhReceivedBytes(values []byte) []byte {
+	out := make([]byte, 0, len(values)*2)
+	for _, value := range values {
+		seq := transport.EncodeENH(transport.ENHResReceived, value)
+		out = append(out, seq[0], seq[1])
+	}
+	return out
+}
+
+func frameBytes(frame protocol.Frame) []byte {
+	raw := make([]byte, 0, 7+len(frame.Data))
+	raw = append(raw, frame.Source, frame.Target, frame.Primary, frame.Secondary, byte(len(frame.Data)))
+	raw = append(raw, frame.Data...)
+	raw = append(raw, protocol.CRC(raw), protocol.SymbolSyn)
+	return raw
+}
+
+func writePassivePayload(conn net.Conn, payload []byte) {
+	defer func() { _ = conn.Close() }()
+	_, _ = conn.Write(payload)
+}

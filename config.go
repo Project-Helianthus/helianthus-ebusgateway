@@ -70,6 +70,9 @@ type Config struct {
 	SemanticRegulatorAbsenceGrace         time.Duration
 	SemanticCachePath                     string
 	BroadcastListen                       bool
+	PassiveAbsenceThreshold               time.Duration
+	PassiveReconnectInitialDelay          time.Duration
+	PassiveReconnectMaxDelay              time.Duration
 	HTTPAddr                              string
 	GraphQLPath                           string
 	SnapshotPath                          string
@@ -121,6 +124,9 @@ func DefaultConfig() Config {
 		SemanticRegulatorRecheckInterval:      DefaultSemanticRegulatorRecheckInterval,
 		SemanticRegulatorAbsenceGrace:         DefaultSemanticRegulatorAbsenceGrace,
 		SemanticCachePath:                     "./semantic_cache.json",
+		PassiveAbsenceThreshold:               10 * time.Second,
+		PassiveReconnectInitialDelay:          1 * time.Second,
+		PassiveReconnectMaxDelay:              30 * time.Second,
 		HTTPAddr:                              ":8080",
 		GraphQLPath:                           "/graphql",
 		SnapshotPath:                          "/snapshot",
@@ -200,6 +206,15 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.SemanticCachePath == "" {
 		cfg.SemanticCachePath = "./semantic_cache.json"
+	}
+	if cfg.PassiveAbsenceThreshold <= 0 {
+		cfg.PassiveAbsenceThreshold = 10 * time.Second
+	}
+	if cfg.PassiveReconnectInitialDelay <= 0 {
+		cfg.PassiveReconnectInitialDelay = 1 * time.Second
+	}
+	if cfg.PassiveReconnectMaxDelay <= 0 {
+		cfg.PassiveReconnectMaxDelay = 30 * time.Second
 	}
 	if cfg.Transport == nil {
 		if cfg.TransportConfig.Protocol == "" {

@@ -670,6 +670,31 @@ func (l *loggingTransport) ReadByte() (byte, error) {
 	return b, err
 }
 
+func (l *loggingTransport) ReadEvent() (transport.StreamEvent, error) {
+	if l == nil || l.inner == nil {
+		return transport.StreamEvent{}, fmt.Errorf("logging transport missing: %w", ebuserrors.ErrInvalidPayload)
+	}
+	if reader, ok := l.inner.(transport.StreamEventReader); ok {
+		event, err := reader.ReadEvent()
+		if l.logger != nil {
+			if err != nil {
+				l.logger.Printf("read event error: %v", err)
+			} else if event.Kind == transport.StreamEventReset {
+				l.logger.Printf("read reset")
+			} else {
+				l.logger.Printf("read 0x%02x", event.Byte)
+			}
+		}
+		return event, err
+	}
+
+	value, err := l.ReadByte()
+	if err != nil {
+		return transport.StreamEvent{}, err
+	}
+	return transport.StreamEvent{Kind: transport.StreamEventByte, Byte: value}, nil
+}
+
 func (l *loggingTransport) Write(data []byte) (int, error) {
 	if l == nil || l.inner == nil {
 		return 0, fmt.Errorf("logging transport missing: %w", ebuserrors.ErrInvalidPayload)

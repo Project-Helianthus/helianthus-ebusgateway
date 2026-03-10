@@ -3167,6 +3167,22 @@ func newTestPoller(reg *registry.DeviceRegistry) *vaillantSemanticPoller {
 	}
 }
 
+func TestRadioInventoryRegistryInfo_MaterializesVR71PhysicalDevice(t *testing.T) {
+	t.Parallel()
+
+	classAddress := uint8(0x26)
+	info, ok := radioInventoryRegistryInfo(&vaillantRadioDeviceSnapshot{
+		DeviceClassAddress: &classAddress,
+		DeviceModel:        "VR71/FM5",
+	})
+	if !ok {
+		t.Fatal("radioInventoryRegistryInfo should materialize VR_71 inventory evidence")
+	}
+	if info.Address != 0x26 || info.Manufacturer != "Vaillant" || info.DeviceID != "VR_71" {
+		t.Fatalf("radioInventoryRegistryInfo = %+v; want VR_71 at 0x26", info)
+	}
+}
+
 func TestCapabilityFirstDiscovery_FindsRootWithSingleCandidate(t *testing.T) {
 	t.Parallel()
 

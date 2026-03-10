@@ -42,6 +42,40 @@ func TestBuildSchema_VaillantMatchIsCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestBuildSchema_UsesDeviceIDFallbackWhenVaillantPartNumberMissing(t *testing.T) {
+	t.Parallel()
+
+	netx := mockEntry{
+		info: registry.DeviceInfo{
+			Address:      0x04,
+			Manufacturer: "Vaillant",
+			DeviceID:     "NETX3",
+		},
+	}
+	vr71 := mockEntry{
+		info: registry.DeviceInfo{
+			Address:      0x26,
+			Manufacturer: "Vaillant",
+			DeviceID:     "VR_71",
+		},
+	}
+
+	got, err := BuildSchema(mockRegistry{entries: []registry.DeviceEntry{netx, vr71}})
+	if err != nil {
+		t.Fatalf("BuildSchema error = %v", err)
+	}
+	if len(got.Devices) != 2 {
+		t.Fatalf("devices = %d; want 2", len(got.Devices))
+	}
+
+	if got.Devices[0].DisplayName != "myVaillant Connect" || got.Devices[0].ProductModel != "VR940f" {
+		t.Fatalf("NETX3 fallback metadata = %+v; want myVaillant Connect / VR940f", got.Devices[0])
+	}
+	if got.Devices[1].DisplayName != "FM5 Control Centre" || got.Devices[1].ProductModel != "VR 71" {
+		t.Fatalf("VR_71 fallback metadata = %+v; want FM5 Control Centre / VR 71", got.Devices[1])
+	}
+}
+
 func TestCloneSchema_PreservesDeviceMetadataFields(t *testing.T) {
 	t.Parallel()
 

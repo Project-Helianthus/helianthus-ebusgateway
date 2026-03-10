@@ -3359,6 +3359,14 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 		return
 	}
 
+	for _, snapshot := range discovered {
+		info, ok := radioInventoryRegistryInfo(snapshot)
+		if !ok {
+			continue
+		}
+		p.reg.Register(info)
+	}
+
 	p.mu.Lock()
 	p.radioDevices = discovered
 	p.mu.Unlock()
@@ -3774,6 +3782,22 @@ func hasFM5EvidenceFromRadioSnapshots(snapshots []*vaillantRadioDeviceSnapshot) 
 		}
 	}
 	return false
+}
+
+func radioInventoryRegistryInfo(snapshot *vaillantRadioDeviceSnapshot) (registry.DeviceInfo, bool) {
+	if snapshot == nil || snapshot.DeviceClassAddress == nil {
+		return registry.DeviceInfo{}, false
+	}
+	switch *snapshot.DeviceClassAddress {
+	case circuitManagingDeviceVR71Address:
+		return registry.DeviceInfo{
+			Address:      circuitManagingDeviceVR71Address,
+			Manufacturer: "Vaillant",
+			DeviceID:     circuitManagingDeviceVR71ID,
+		}, true
+	default:
+		return registry.DeviceInfo{}, false
+	}
 }
 
 func (p *vaillantSemanticPoller) hasFM5RegistryEvidence() bool {

@@ -115,44 +115,74 @@ func newWireLogTransport(inner transport.RawTransport, logger *wireLogger, connL
 	}
 }
 
-func (transport *wireLogTransport) ReadByte() (byte, error) {
-	if transport == nil || transport.inner == nil {
+func (wt *wireLogTransport) ReadByte() (byte, error) {
+	if wt == nil || wt.inner == nil {
 		return 0, fmt.Errorf("wire log transport missing")
 	}
-	value, err := transport.inner.ReadByte()
+	value, err := wt.inner.ReadByte()
 	if err != nil {
-		transport.logger.logError(transport.connLabel, "rx", err)
+		wt.logger.logError(wt.connLabel, "rx", err)
 		return value, err
 	}
-	transport.logger.logByte(transport.connLabel, "rx", value)
-	if frame, ok := transport.rx.push(value); ok {
-		transport.logger.logFrame(transport.connLabel, "rx", frame)
+	wt.logger.logByte(wt.connLabel, "rx", value)
+	if frame, ok := wt.rx.push(value); ok {
+		wt.logger.logFrame(wt.connLabel, "rx", frame)
 	}
 	return value, nil
 }
 
-func (transport *wireLogTransport) Write(data []byte) (int, error) {
-	if transport == nil || transport.inner == nil {
+func (wt *wireLogTransport) ReadEvent() (transport.StreamEvent, error) {
+	if wt == nil || wt.inner == nil {
+		return transport.StreamEvent{}, fmt.Errorf("wire log transport missing")
+	}
+	if reader, ok := wt.inner.(transport.StreamEventReader); ok {
+		event, err := reader.ReadEvent()
+		if err != nil {
+			wt.logger.logError(wt.connLabel, "rx", err)
+			return event, err
+		}
+		switch event.Kind {
+		case transport.StreamEventReset:
+			wt.rx.reset()
+			wt.logger.logf("%s conn=%s dir=rx reset\n", time.Now().Format(time.RFC3339Nano), wt.connLabel)
+		case transport.StreamEventByte:
+			wt.logger.logByte(wt.connLabel, "rx", event.Byte)
+			if frame, ok := wt.rx.push(event.Byte); ok {
+				wt.logger.logFrame(wt.connLabel, "rx", frame)
+			}
+		}
+		return event, nil
+	}
+
+	value, err := wt.ReadByte()
+	if err != nil {
+		return transport.StreamEvent{}, err
+	}
+	return transport.StreamEvent{Kind: transport.StreamEventByte, Byte: value}, nil
+}
+
+func (wt *wireLogTransport) Write(data []byte) (int, error) {
+	if wt == nil || wt.inner == nil {
 		return 0, fmt.Errorf("wire log transport missing")
 	}
 	for _, value := range data {
-		transport.logger.logByte(transport.connLabel, "tx", value)
-		if frame, ok := transport.tx.push(value); ok {
-			transport.logger.logFrame(transport.connLabel, "tx", frame)
+		wt.logger.logByte(wt.connLabel, "tx", value)
+		if frame, ok := wt.tx.push(value); ok {
+			wt.logger.logFrame(wt.connLabel, "tx", frame)
 		}
 	}
-	written, err := transport.inner.Write(data)
+	written, err := wt.inner.Write(data)
 	if err != nil {
-		transport.logger.logError(transport.connLabel, "tx", err)
+		wt.logger.logError(wt.connLabel, "tx", err)
 	}
 	return written, err
 }
 
-func (transport *wireLogTransport) Close() error {
-	if transport == nil || transport.inner == nil {
+func (wt *wireLogTransport) Close() error {
+	if wt == nil || wt.inner == nil {
 		return nil
 	}
-	return transport.inner.Close()
+	return wt.inner.Close()
 }
 
 type frameDecoder struct {
@@ -195,6 +225,14 @@ func (decoder *frameDecoder) push(symbol byte) (protocol.Frame, bool) {
 		decoder.buffer = append(decoder.buffer, symbol)
 		return protocol.Frame{}, false
 	}
+}
+
+func (decoder *frameDecoder) reset() {
+	if decoder == nil {
+		return
+	}
+	decoder.escape = false
+	decoder.buffer = decoder.buffer[:0]
 }
 
 func parseFrame(raw []byte) (protocol.Frame, bool) {

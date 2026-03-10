@@ -21,6 +21,7 @@ const (
 	PassiveTapEventSymbol
 	PassiveTapEventReset
 	PassiveTapEventDecodeFault
+	PassiveTapEventReadTimeout
 )
 
 type PassiveEndpointState string
@@ -190,6 +191,11 @@ func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 		event, err := readPassiveTransportEvent(tr)
 		if err != nil {
 			if errors.Is(err, ebuserrors.ErrTimeout) {
+				tap.emit(PassiveTapEvent{
+					Kind:       PassiveTapEventReadTimeout,
+					ObservedAt: time.Now(),
+					Err:        err,
+				})
 				threshold := tap.cfg.PassiveAbsenceThreshold
 				if threshold > 0 && time.Since(lastSymbolAt) >= threshold {
 					return fmt.Errorf("passive tap absence threshold exceeded after %s: %w", threshold, ebuserrors.ErrTimeout)

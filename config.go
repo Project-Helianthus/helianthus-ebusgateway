@@ -71,6 +71,7 @@ type Config struct {
 	SemanticCachePath                     string
 	BroadcastListen                       bool
 	PassiveAbsenceThreshold               time.Duration
+	PassiveTransactionWatchdog            time.Duration
 	PassiveReconnectInitialDelay          time.Duration
 	PassiveReconnectMaxDelay              time.Duration
 	HTTPAddr                              string
@@ -125,6 +126,7 @@ func DefaultConfig() Config {
 		SemanticRegulatorAbsenceGrace:         DefaultSemanticRegulatorAbsenceGrace,
 		SemanticCachePath:                     "./semantic_cache.json",
 		PassiveAbsenceThreshold:               10 * time.Second,
+		PassiveTransactionWatchdog:            1 * time.Second,
 		PassiveReconnectInitialDelay:          1 * time.Second,
 		PassiveReconnectMaxDelay:              30 * time.Second,
 		HTTPAddr:                              ":8080",
@@ -209,6 +211,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.PassiveAbsenceThreshold <= 0 {
 		cfg.PassiveAbsenceThreshold = 10 * time.Second
+	}
+	if cfg.PassiveTransactionWatchdog <= 0 {
+		cfg.PassiveTransactionWatchdog = 1 * time.Second
 	}
 	if cfg.PassiveReconnectInitialDelay <= 0 {
 		cfg.PassiveReconnectInitialDelay = 1 * time.Second

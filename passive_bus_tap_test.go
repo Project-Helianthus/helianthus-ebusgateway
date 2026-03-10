@@ -232,6 +232,9 @@ func TestBroadcastListener_RoutesBroadcastFramesViaPassiveTap(t *testing.T) {
 			Data:      []byte{0x55, 0x66},
 		}
 		payload := append([]byte{}, enhReceivedBytes(frameBytes(unicast))...)
+		payload = append(payload, enhReceivedBytes([]byte{protocol.SymbolAck})...)
+		payload = append(payload, enhReceivedBytes(responseSegmentBytes([]byte{0x01, 0x02}))...)
+		payload = append(payload, enhReceivedBytes([]byte{protocol.SymbolAck, protocol.SymbolSyn})...)
 		payload = append(payload, enhReceivedBytes(frameBytes(broadcast))...)
 		_, _ = server.Write(payload)
 	}()

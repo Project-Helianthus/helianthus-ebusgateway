@@ -356,54 +356,54 @@ type SemanticProvider interface {
 }
 
 type Server struct {
-	registry        Registry
-	invoker         Invoker
-	statusProvider  StatusProvider
-	semantic        SemanticProvider
-	scheduleWriter  ScheduleWriter
-	idempotencyMu   sync.Mutex
-	idempotency     map[string]idempotencyEntry
-	snapshotMu      sync.RWMutex
-	snapshots       map[string]snapshotState
+	registry       Registry
+	invoker        Invoker
+	statusProvider StatusProvider
+	semantic       SemanticProvider
+	scheduleWriter ScheduleWriter
+	idempotencyMu  sync.Mutex
+	idempotency    map[string]idempotencyEntry
+	snapshotMu     sync.RWMutex
+	snapshots      map[string]snapshotState
 
 	tools []Tool
 }
 
 const (
-	toolRuntimeStatusGetName     = "ebus.v1.runtime.status.get"
-	toolSemanticZonesGetName     = "ebus.v1.semantic.zones.get"
-	toolSemanticCircuitsGetName  = "ebus.v1.semantic.circuits.get"
-	toolSemanticRadioGetName     = "ebus.v1.semantic.radio_devices.get"
-	toolSemanticFM5ModeGetName   = "ebus.v1.semantic.fm5_mode.get"
-	toolSemanticSolarGetName     = "ebus.v1.semantic.solar.get"
-	toolSemanticCylindersGetName = "ebus.v1.semantic.cylinders.get"
-	toolSemanticDHWGetName       = "ebus.v1.semantic.dhw.get"
-	toolSemanticEnergyGetName    = "ebus.v1.semantic.energy_totals.get"
-	toolSemanticBoilerGetName    = "ebus.v1.semantic.boiler_status.get"
-	toolSemanticSystemGetName    = "ebus.v1.semantic.system.get"
-	toolSemanticSchedulesGetName        = "ebus.v1.semantic.schedules.get"
-	toolSemanticSchedulesSetZoneName    = "ebus.v1.semantic.schedules.set_zone_time_program"
-	toolSemanticSchedulesSetDhwName     = "ebus.v1.semantic.schedules.set_dhw_time_program"
-	toolSemanticSnapshotName            = "ebus.v1.semantic.snapshot.get"
-	toolSnapshotCaptureName      = "ebus.v1.snapshot.capture"
-	toolSnapshotDropName         = "ebus.v1.snapshot.drop"
-	toolDevicesV1Name            = "ebus.v1.registry.devices.list"
-	toolDeviceGetV1Name          = "ebus.v1.registry.devices.get"
-	toolPlanesListV1Name         = "ebus.v1.registry.planes.list"
-	toolMethodsListV1Name        = "ebus.v1.registry.methods.list"
-	toolInvokeV1Name             = "ebus.v1.rpc.invoke"
-	toolDevicesLegacyName        = "ebus.devices"
-	toolInvokeLegacyName         = "ebus.invoke"
-	methodMutabilityUnknown      = "unknown"
-	methodMutabilityReadOnly     = "read_only"
-	methodMutabilityMutating     = "mutating"
-	methodDangerUnknown          = "unknown"
-	methodDangerSafe             = "safe"
-	methodDangerDangerous        = "dangerous"
-	defaultInvokeTimeout         = 3 * time.Second
-	defaultIdempotencyTTL        = 30 * time.Second
-	defaultSnapshotTTL           = 5 * time.Minute
-	defaultSnapshotReadTTL       = 10 * time.Second
+	toolRuntimeStatusGetName         = "ebus.v1.runtime.status.get"
+	toolSemanticZonesGetName         = "ebus.v1.semantic.zones.get"
+	toolSemanticCircuitsGetName      = "ebus.v1.semantic.circuits.get"
+	toolSemanticRadioGetName         = "ebus.v1.semantic.radio_devices.get"
+	toolSemanticFM5ModeGetName       = "ebus.v1.semantic.fm5_mode.get"
+	toolSemanticSolarGetName         = "ebus.v1.semantic.solar.get"
+	toolSemanticCylindersGetName     = "ebus.v1.semantic.cylinders.get"
+	toolSemanticDHWGetName           = "ebus.v1.semantic.dhw.get"
+	toolSemanticEnergyGetName        = "ebus.v1.semantic.energy_totals.get"
+	toolSemanticBoilerGetName        = "ebus.v1.semantic.boiler_status.get"
+	toolSemanticSystemGetName        = "ebus.v1.semantic.system.get"
+	toolSemanticSchedulesGetName     = "ebus.v1.semantic.schedules.get"
+	toolSemanticSchedulesSetZoneName = "ebus.v1.semantic.schedules.set_zone_time_program"
+	toolSemanticSchedulesSetDhwName  = "ebus.v1.semantic.schedules.set_dhw_time_program"
+	toolSemanticSnapshotName         = "ebus.v1.semantic.snapshot.get"
+	toolSnapshotCaptureName          = "ebus.v1.snapshot.capture"
+	toolSnapshotDropName             = "ebus.v1.snapshot.drop"
+	toolDevicesV1Name                = "ebus.v1.registry.devices.list"
+	toolDeviceGetV1Name              = "ebus.v1.registry.devices.get"
+	toolPlanesListV1Name             = "ebus.v1.registry.planes.list"
+	toolMethodsListV1Name            = "ebus.v1.registry.methods.list"
+	toolInvokeV1Name                 = "ebus.v1.rpc.invoke"
+	toolDevicesLegacyName            = "ebus.devices"
+	toolInvokeLegacyName             = "ebus.invoke"
+	methodMutabilityUnknown          = "unknown"
+	methodMutabilityReadOnly         = "read_only"
+	methodMutabilityMutating         = "mutating"
+	methodDangerUnknown              = "unknown"
+	methodDangerSafe                 = "safe"
+	methodDangerDangerous            = "dangerous"
+	defaultInvokeTimeout             = 3 * time.Second
+	defaultIdempotencyTTL            = 30 * time.Second
+	defaultSnapshotTTL               = 5 * time.Minute
+	defaultSnapshotReadTTL           = 10 * time.Second
 )
 
 var errInvokePermissionDenied = errors.New("invoke permission denied")
@@ -682,11 +682,11 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"start_hour":     map[string]any{"type": "integer", "minimum": 0, "maximum": 24},
-								"start_minute":   map[string]any{"type": "integer", "minimum": 0, "maximum": 59},
-								"end_hour":       map[string]any{"type": "integer", "minimum": 0, "maximum": 24},
-								"end_minute":     map[string]any{"type": "integer", "minimum": 0, "maximum": 59},
-								"temperature_c":  map[string]any{"type": "number"},
+								"start_hour":    map[string]any{"type": "integer", "minimum": 0, "maximum": 24},
+								"start_minute":  map[string]any{"type": "integer", "minimum": 0, "maximum": 59},
+								"end_hour":      map[string]any{"type": "integer", "minimum": 0, "maximum": 24},
+								"end_minute":    map[string]any{"type": "integer", "minimum": 0, "maximum": 59},
+								"temperature_c": map[string]any{"type": "number"},
 							},
 							"required": []string{"start_hour", "start_minute", "end_hour", "end_minute", "temperature_c"},
 						},

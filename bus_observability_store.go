@@ -280,6 +280,13 @@ func (store *BusObservabilityStore) runPassiveLoop() {
 			}
 		}
 
+		snapshot := reconstructor.Snapshot()
+		now := store.now()
+		store.mu.Lock()
+		store.refreshPassiveStateLocked(now, snapshot.TapStatus)
+		store.bootstrapPassiveWarmupFromSnapshotLocked(now, snapshot)
+		store.mu.Unlock()
+
 		closedUnexpectedly := false
 		for {
 			select {
@@ -302,6 +309,24 @@ func (store *BusObservabilityStore) runPassiveLoop() {
 			store.mu.Unlock()
 		}
 	}
+}
+
+func (store *BusObservabilityStore) bootstrapPassiveWarmupFromSnapshotLocked(now time.Time, snapshot PassiveReconstructorSnapshot) {
+	if store.passive.probeAttemptsTotal != 0 {
+		return
+	}
+	if store.passive.state == "warming_up" || store.passive.state == "available" {
+		return
+	}
+	if !snapshot.TapStatus.Connected {
+		return
+	}
+
+	observedAt := snapshot.TapStatus.LastConnectAt
+	if observedAt.IsZero() {
+		observedAt = now
+	}
+	store.passiveStartWarmupLocked(observedAt, false)
 }
 
 func (store *BusObservabilityStore) OnPassiveClassifiedEvent(event PassiveClassifiedEvent) {

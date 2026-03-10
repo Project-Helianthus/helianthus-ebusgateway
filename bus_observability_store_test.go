@@ -1,6 +1,7 @@
 package ebusgateway
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -133,6 +134,52 @@ func TestBusObservabilityStoreMarksPassiveDisabledAsCapabilityWithdrawn(t *testi
 	if strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="startup_timeout"} 1`) {
 		t.Fatalf("RenderPrometheus reported startup_timeout for disabled passive mode:\n%s", metrics)
 	}
+}
+
+func TestBusObservabilityStoreBootstrapsWarmupFromConnectedSnapshotAfterAttach(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+
+	reconstructor := newPassiveTransactionReconstructorCore(cfg)
+	reconstructor.tap = &PassiveBusTap{
+		status: PassiveTapStatus{
+			Connected:     true,
+			EndpointState: PassiveEndpointStateConnected,
+			ConnectCount:  1,
+			LastConnectAt: time.Unix(1700000000, 0).UTC(),
+		},
+	}
+
+	store := NewBusObservabilityStore(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close error = %v", err)
+		}
+	}()
+
+	if err := store.AttachReconstructor(ctx, reconstructor); err != nil {
+		t.Fatalf("AttachReconstructor error = %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.RLock()
+		state := store.passive.state
+		probeAttempts := store.passive.probeAttemptsTotal
+		sessionStartedAt := store.passive.sessionStartedAt
+		store.mu.RUnlock()
+		if state == "warming_up" && probeAttempts == 1 && sessionStartedAt.Equal(reconstructor.tap.status.LastConnectAt) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	t.Fatalf("passive warmup state = %q, probeAttempts=%d, sessionStartedAt=%s; want warming_up bootstrap from connected snapshot",
+		store.passive.state, store.passive.probeAttemptsTotal, store.passive.sessionStartedAt)
 }
 
 func TestBusObservabilityStoreExportsBusyMetricsWhenPassiveAvailable(t *testing.T) {

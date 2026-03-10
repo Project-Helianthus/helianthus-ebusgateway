@@ -68,7 +68,13 @@ type statsBus struct {
 }
 
 var (
-	semanticBusCollisionsTotal = expvar.NewInt("semantic_bus_collisions_total")
+	semanticBusCollisionsTotal  = expvar.NewInt("semantic_bus_collisions_total")
+	registryScanFn              = registry.Scan
+	ebusdScanTargetCandidatesFn = ebusdScanTargetCandidates
+	ebusdScanResultTargetsFn    = ebusdScanResultTargets
+	ebusdScanResultInfosFn      = ebusdScanResultInfos
+	enrichVaillantIdentityFn    = enrichVaillantIdentity
+	enrichSerialsFromEbusdFn    = enrichSerialsFromEbusd
 )
 
 func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
@@ -125,8 +131,8 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			targets := ([]byte)(nil)
 			targetLabel := ""
 			var targetConfig *ebusgateway.TransportConfig
-			for _, candidate := range ebusdScanTargetCandidates(cfg.TransportConfig) {
-				scanTargets, err := ebusdScanResultTargets(scanCtx, candidate)
+			for _, candidate := range ebusdScanTargetCandidatesFn(cfg.TransportConfig) {
+				scanTargets, err := ebusdScanResultTargetsFn(scanCtx, candidate)
 				if err != nil || len(scanTargets) == 0 {
 					continue
 				}
@@ -141,7 +147,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			}
 
 			if cfg.TransportConfig.Protocol == ebusgateway.TransportEbusdTCP && targetConfig != nil {
-				infos, infoErr := ebusdScanResultInfos(scanCtx, *targetConfig)
+				infos, infoErr := ebusdScanResultInfosFn(scanCtx, *targetConfig)
 				if infoErr != nil {
 					log.Printf("startup scan preload error: %v", infoErr)
 				} else if len(infos) > 0 {
@@ -157,7 +163,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 					log.Printf("startup scan preload: imported=%d total=%d (ebusd-tcp)", imported, total)
 					cancel()
 
-					enrichVaillantIdentity(ctx, gateway, cfg)
+					enrichVaillantIdentityFn(ctx, gateway, cfg)
 
 					if total > 0 && total != previousTotal {
 						previousTotal = total
@@ -183,7 +189,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				}
 			}
 
-			devices, err := registry.Scan(scanCtx, scanBus, gateway.Registry, cfg.ScanSource, targets)
+			devices, err := registryScanFn(scanCtx, scanBus, gateway.Registry, cfg.ScanSource, targets)
 
 			if err != nil && ctx.Err() == nil {
 				log.Printf("startup scan error: %v", err)
@@ -193,7 +199,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			imported := 0
 			if total == 0 && len(devices) == 0 && targetConfig != nil &&
 				scanBus.stats.ok == 0 && (scanBus.stats.timeouts > 0 || scanBus.stats.collisions > 0) {
-				infos, infoErr := ebusdScanResultInfos(scanCtx, *targetConfig)
+				infos, infoErr := ebusdScanResultInfosFn(scanCtx, *targetConfig)
 				if infoErr != nil {
 					log.Printf("startup scan fallback error: %v", infoErr)
 				} else if len(infos) > 0 {
@@ -206,7 +212,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			}
 			if imported > 0 {
 				log.Printf("startup scan fallback: imported %d device(s) from ebusd scan result", imported)
-				enrichVaillantIdentity(ctx, gateway, cfg)
+				enrichVaillantIdentityFn(ctx, gateway, cfg)
 			}
 			log.Printf("startup scan: pass=%d device(s), total=%d", len(devices), total)
 			log.Printf(
@@ -220,8 +226,13 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			)
 			cancel()
 
-			if total > 0 && targetConfig != nil {
-				enrichSerialsFromEbusd(ctx, gateway.Registry, *targetConfig)
+			if total > 0 {
+				// Normal direct scans can still miss B5.09 identity chunks on the first pass.
+				// Retry the physical-device enrichment once before GraphQL/device consumers stabilize.
+				enrichVaillantIdentityFn(ctx, gateway, cfg)
+				if targetConfig != nil {
+					enrichSerialsFromEbusdFn(ctx, gateway.Registry, *targetConfig)
+				}
 			}
 
 			if total > 0 && total != previousTotal {

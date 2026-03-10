@@ -163,6 +163,14 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) (runErr e
 	gatewayCfg.TransportConfig = transportCfg
 	gatewayCfg.Providers = providers
 
+	var deduplicator *ActivePassiveDeduplicator
+	dedup, err := NewActivePassiveDeduplicator(gatewayCfg)
+	if err != nil {
+		return err
+	}
+	gatewayCfg.BusConfig.Observer = ChainBusObservers(gatewayCfg.BusConfig.Observer, dedup)
+	deduplicator = dedup
+
 	wireLogger, err := newWireLogger(cfg.Smoke.WireLogPath)
 	if err != nil {
 		return err
@@ -192,10 +200,21 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) (runErr e
 		return err
 	}
 	var broadcastListener *BroadcastListener
+	var reconstructor *PassiveTransactionReconstructor
 	defer func() {
 		if broadcastListener != nil {
 			if err := broadcastListener.Close(); err != nil {
 				logger.Printf("broadcast listener close: %v", err)
+			}
+		}
+		if deduplicator != nil {
+			if err := deduplicator.Close(); err != nil {
+				logger.Printf("deduplicator close: %v", err)
+			}
+		}
+		if reconstructor != nil {
+			if err := reconstructor.Close(); err != nil {
+				logger.Printf("reconstructor close: %v", err)
 			}
 		}
 		if err := gateway.Close(); err != nil {
@@ -307,12 +326,28 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) (runErr e
 			})
 		}
 
-		listener, err := StartBroadcastListenerWithTransport(ctx, gatewayCfg, gateway.Router, broadcastWrap)
+		reconstructor, err = StartPassiveTransactionReconstructorWithTransport(ctx, gatewayCfg, broadcastWrap)
 		if err != nil {
 			logger.Printf("broadcast listener start: %v", err)
 		} else {
-			broadcastListener = listener
-			logger.Printf("broadcast listener started")
+			if deduplicator != nil {
+				if err := deduplicator.AttachReconstructor(ctx, reconstructor); err != nil {
+					logger.Printf("deduplicator attach: %v", err)
+					_ = reconstructor.Close()
+					reconstructor = nil
+				}
+			}
+			if reconstructor != nil {
+				listener, err := StartBroadcastListenerWithReconstructor(ctx, gateway.Router, reconstructor)
+				if err != nil {
+					logger.Printf("broadcast listener start: %v", err)
+					_ = reconstructor.Close()
+					reconstructor = nil
+				} else {
+					broadcastListener = listener
+					logger.Printf("broadcast listener started")
+				}
+			}
 		}
 	}
 	if opts.OnGatewayReady != nil {

@@ -53,43 +53,52 @@ type Config struct {
 	BootLiveTimeout    time.Duration
 	// SemanticInterval is a legacy single-interval semantic polling configuration.
 	// Prefer SemanticDiscoveryInterval / SemanticConfigInterval / SemanticStateInterval.
-	SemanticInterval                      time.Duration
-	SemanticDiscoveryInterval             time.Duration
-	SemanticConfigInterval                time.Duration
-	SemanticStateInterval                 time.Duration
-	SemanticEnergyInterval                time.Duration
-	SemanticRequestTimeout                time.Duration
-	SemanticReadBreakerFailureBudget      int
-	SemanticReadBreakerFailureBudgetSet   bool
-	SemanticReadBreakerOpenCooldown       time.Duration
-	SemanticReadBreakerHalfOpenProbeLimit int
-	SemanticZonePresenceMissThreshold     int
-	SemanticZonePresenceHitThreshold      int
-	SemanticDHWStaleTTL                   time.Duration
-	SemanticRegulatorRecheckInterval      time.Duration
-	SemanticRegulatorAbsenceGrace         time.Duration
-	SemanticCachePath                     string
-	BroadcastListen                       bool
-	PassiveAbsenceThreshold               time.Duration
-	PassiveTransactionWatchdog            time.Duration
-	PassiveReconnectInitialDelay          time.Duration
-	PassiveReconnectMaxDelay              time.Duration
-	HTTPAddr                              string
-	GraphQLPath                           string
-	SnapshotPath                          string
-	SubscriptionPath                      string
-	MCPPath                               string
-	UIPath                                string
-	PortalPath                            string
-	MDNSAdvertise                         bool
-	MDNSInstance                          string
-	DumpOutputDir                         string
-	DumpUploadPath                        string
-	DumpUploadURL                         string
-	DumpIncludePII                        bool
+	SemanticInterval                       time.Duration
+	SemanticDiscoveryInterval              time.Duration
+	SemanticConfigInterval                 time.Duration
+	SemanticStateInterval                  time.Duration
+	SemanticEnergyInterval                 time.Duration
+	SemanticRequestTimeout                 time.Duration
+	SemanticReadBreakerFailureBudget       int
+	SemanticReadBreakerFailureBudgetSet    bool
+	SemanticReadBreakerOpenCooldown        time.Duration
+	SemanticReadBreakerHalfOpenProbeLimit  int
+	SemanticZonePresenceMissThreshold      int
+	SemanticZonePresenceHitThreshold       int
+	SemanticDHWStaleTTL                    time.Duration
+	SemanticRegulatorRecheckInterval       time.Duration
+	SemanticRegulatorAbsenceGrace          time.Duration
+	SemanticCachePath                      string
+	BroadcastListen                        bool
+	PassiveAbsenceThreshold                time.Duration
+	PassiveTransactionWatchdog             time.Duration
+	PassiveReconnectInitialDelay           time.Duration
+	PassiveReconnectMaxDelay               time.Duration
+	PassiveDedupActivePublishBudget        time.Duration
+	PassiveDedupPassiveDeliveryBudget      time.Duration
+	PassiveDedupPendingGraceTimeout        time.Duration
+	PassiveDedupActiveFingerprintRetention time.Duration
+	PassiveDedupPendingCapacity            int
+	PassiveDedupRecoveryHysteresis         time.Duration
+	PassiveDedupRecoveryEventThreshold     int
+	LocalAddressSnapshotter                LocalBusAddressSnapshotter
+	HTTPAddr                               string
+	GraphQLPath                            string
+	SnapshotPath                           string
+	SubscriptionPath                       string
+	MCPPath                                string
+	UIPath                                 string
+	PortalPath                             string
+	MDNSAdvertise                          bool
+	MDNSInstance                           string
+	DumpOutputDir                          string
+	DumpUploadPath                         string
+	DumpUploadURL                          string
+	DumpIncludePII                         bool
 }
 
 func DefaultConfig() Config {
+	dedupDefaults := defaultPassiveDedupBudgets(protocol.DefaultBusConfig().RetryEnvelope())
 	return Config{
 		TransportConfig: TransportConfig{
 			Protocol:     TransportENH,
@@ -107,38 +116,45 @@ func DefaultConfig() Config {
 		ScanTimeout: 3 * time.Minute,
 		// Per-request scan timeout must accommodate bus/transport latency.
 		// 150ms is too aggressive for real-world ENH over TCP setups.
-		ScanRequestTimeout:                    400 * time.Millisecond,
-		ScanInterval:                          30 * time.Second,
-		BootLiveTimeout:                       2 * time.Minute,
-		SemanticInterval:                      1 * time.Minute,
-		SemanticDiscoveryInterval:             10 * time.Minute,
-		SemanticConfigInterval:                5 * time.Minute,
-		SemanticStateInterval:                 1 * time.Minute,
-		SemanticEnergyInterval:                DefaultSemanticEnergyInterval,
-		SemanticRequestTimeout:                2 * time.Second,
-		SemanticReadBreakerFailureBudget:      DefaultSemanticReadFailureBudget,
-		SemanticReadBreakerOpenCooldown:       DefaultSemanticReadOpenCooldown,
-		SemanticReadBreakerHalfOpenProbeLimit: DefaultSemanticReadHalfOpenProbeLimit,
-		SemanticZonePresenceMissThreshold:     DefaultSemanticZonePresenceMissThreshold,
-		SemanticZonePresenceHitThreshold:      DefaultSemanticZonePresenceHitThreshold,
-		SemanticDHWStaleTTL:                   DefaultSemanticDHWStaleTTL,
-		SemanticRegulatorRecheckInterval:      DefaultSemanticRegulatorRecheckInterval,
-		SemanticRegulatorAbsenceGrace:         DefaultSemanticRegulatorAbsenceGrace,
-		SemanticCachePath:                     "./semantic_cache.json",
-		PassiveAbsenceThreshold:               10 * time.Second,
-		PassiveTransactionWatchdog:            1 * time.Second,
-		PassiveReconnectInitialDelay:          1 * time.Second,
-		PassiveReconnectMaxDelay:              30 * time.Second,
-		HTTPAddr:                              ":8080",
-		GraphQLPath:                           "/graphql",
-		SnapshotPath:                          "/snapshot",
-		SubscriptionPath:                      "/graphql/subscriptions",
-		MCPPath:                               "/mcp",
-		UIPath:                                "/ui",
-		PortalPath:                            "/portal",
-		MDNSAdvertise:                         true,
-		MDNSInstance:                          "helianthus",
-		DumpOutputDir:                         "./dumps",
+		ScanRequestTimeout:                     400 * time.Millisecond,
+		ScanInterval:                           30 * time.Second,
+		BootLiveTimeout:                        2 * time.Minute,
+		SemanticInterval:                       1 * time.Minute,
+		SemanticDiscoveryInterval:              10 * time.Minute,
+		SemanticConfigInterval:                 5 * time.Minute,
+		SemanticStateInterval:                  1 * time.Minute,
+		SemanticEnergyInterval:                 DefaultSemanticEnergyInterval,
+		SemanticRequestTimeout:                 2 * time.Second,
+		SemanticReadBreakerFailureBudget:       DefaultSemanticReadFailureBudget,
+		SemanticReadBreakerOpenCooldown:        DefaultSemanticReadOpenCooldown,
+		SemanticReadBreakerHalfOpenProbeLimit:  DefaultSemanticReadHalfOpenProbeLimit,
+		SemanticZonePresenceMissThreshold:      DefaultSemanticZonePresenceMissThreshold,
+		SemanticZonePresenceHitThreshold:       DefaultSemanticZonePresenceHitThreshold,
+		SemanticDHWStaleTTL:                    DefaultSemanticDHWStaleTTL,
+		SemanticRegulatorRecheckInterval:       DefaultSemanticRegulatorRecheckInterval,
+		SemanticRegulatorAbsenceGrace:          DefaultSemanticRegulatorAbsenceGrace,
+		SemanticCachePath:                      "./semantic_cache.json",
+		PassiveAbsenceThreshold:                10 * time.Second,
+		PassiveTransactionWatchdog:             1 * time.Second,
+		PassiveReconnectInitialDelay:           1 * time.Second,
+		PassiveReconnectMaxDelay:               30 * time.Second,
+		PassiveDedupActivePublishBudget:        dedupDefaults.ActivePublishBudget,
+		PassiveDedupPassiveDeliveryBudget:      dedupDefaults.PassiveDeliveryBudget,
+		PassiveDedupPendingGraceTimeout:        dedupDefaults.PendingGraceTimeout,
+		PassiveDedupActiveFingerprintRetention: dedupDefaults.ActiveFingerprintRetention,
+		PassiveDedupPendingCapacity:            dedupDefaults.PendingCapacity,
+		PassiveDedupRecoveryHysteresis:         dedupDefaults.RecoveryHysteresis,
+		PassiveDedupRecoveryEventThreshold:     dedupDefaults.RecoveryEventThreshold,
+		HTTPAddr:                               ":8080",
+		GraphQLPath:                            "/graphql",
+		SnapshotPath:                           "/snapshot",
+		SubscriptionPath:                       "/graphql/subscriptions",
+		MCPPath:                                "/mcp",
+		UIPath:                                 "/ui",
+		PortalPath:                             "/portal",
+		MDNSAdvertise:                          true,
+		MDNSInstance:                           "helianthus",
+		DumpOutputDir:                          "./dumps",
 	}
 }
 
@@ -220,6 +236,28 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.PassiveReconnectMaxDelay <= 0 {
 		cfg.PassiveReconnectMaxDelay = 30 * time.Second
+	}
+	dedupDefaults := defaultPassiveDedupBudgets(cfg.BusConfig.RetryEnvelope())
+	if cfg.PassiveDedupActivePublishBudget <= 0 {
+		cfg.PassiveDedupActivePublishBudget = dedupDefaults.ActivePublishBudget
+	}
+	if cfg.PassiveDedupPassiveDeliveryBudget <= 0 {
+		cfg.PassiveDedupPassiveDeliveryBudget = dedupDefaults.PassiveDeliveryBudget
+	}
+	if cfg.PassiveDedupPendingGraceTimeout <= 0 {
+		cfg.PassiveDedupPendingGraceTimeout = dedupDefaults.PendingGraceTimeout
+	}
+	if cfg.PassiveDedupActiveFingerprintRetention <= 0 {
+		cfg.PassiveDedupActiveFingerprintRetention = dedupDefaults.ActiveFingerprintRetention
+	}
+	if cfg.PassiveDedupPendingCapacity <= 0 {
+		cfg.PassiveDedupPendingCapacity = dedupDefaults.PendingCapacity
+	}
+	if cfg.PassiveDedupRecoveryHysteresis <= 0 {
+		cfg.PassiveDedupRecoveryHysteresis = dedupDefaults.RecoveryHysteresis
+	}
+	if cfg.PassiveDedupRecoveryEventThreshold <= 0 {
+		cfg.PassiveDedupRecoveryEventThreshold = dedupDefaults.RecoveryEventThreshold
 	}
 	if cfg.Transport == nil {
 		if cfg.TransportConfig.Protocol == "" {

@@ -2706,7 +2706,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 			"devices": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.deviceType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					snapshot := builder.Schema()
+					snapshot := builder.FreshSchema()
 					return snapshot.Devices, nil
 				},
 			},
@@ -2720,7 +2720,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					if err != nil {
 						return nil, err
 					}
-					snapshot := builder.Schema()
+					snapshot := builder.FreshSchema()
 					device, ok := findDevice(snapshot.Devices, address)
 					if !ok {
 						return nil, nil
@@ -2738,7 +2738,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					if err != nil {
 						return nil, err
 					}
-					snapshot := builder.Schema()
+					snapshot := builder.FreshSchema()
 					device, ok := findDevice(snapshot.Devices, address)
 					if !ok {
 						return []Plane{}, nil
@@ -2758,7 +2758,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 						return nil, err
 					}
 					planeName, _ := params.Args["plane"].(string)
-					snapshot := builder.Schema()
+					snapshot := builder.FreshSchema()
 					device, ok := findDevice(snapshot.Devices, address)
 					if !ok {
 						return []Method{}, nil

@@ -48,7 +48,7 @@ func NewProjectionSnapshotHandler(builder *Builder) (http.Handler, error) {
 			return
 		}
 
-		snapshot := builder.Schema()
+		snapshot := builder.FreshSchema()
 		device, ok := findDevice(snapshot.Devices, address)
 		if !ok {
 			http.Error(w, "device not found", http.StatusNotFound)

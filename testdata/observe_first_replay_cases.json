@@ -1,0 +1,122 @@
+{
+  "name": "observe_first_gateway_replay_cases_v1",
+  "status": "m0_seed_corpus",
+  "purpose": "Seed replay corpus for future passive tap, reconstructor, dedup, and shadow-cache tests. M0 records required scenario coverage and negative-path expectations without claiming parser or correlation correctness.",
+  "validation_scope": "fixture_presence_and_shape_only",
+  "deferred_validation": {
+    "owners": [
+      "ISSUE-GW-01",
+      "ISSUE-GW-01B",
+      "ISSUE-GW-01C",
+      "ISSUE-GW-02",
+      "ISSUE-GW-03"
+    ],
+    "note": "Later M1 parser/correlation milestones own behavioral correctness over this corpus."
+  },
+  "cases": [
+    {
+      "name": "b509_value_bearing_enh",
+      "transport": "enh",
+      "family": "B509",
+      "response_class": "value_bearing",
+      "scenario_tags": [
+        "passive",
+        "direct_reply"
+      ]
+    },
+    {
+      "name": "b516_broadcast_ens",
+      "transport": "ens",
+      "family": "B516",
+      "response_class": "header_only",
+      "scenario_tags": [
+        "broadcast",
+        "pre_dedup_energy_path"
+      ]
+    },
+    {
+      "name": "b524_value_bearing_enh",
+      "transport": "enh",
+      "family": "B524",
+      "response_class": "value_bearing",
+      "scenario_tags": [
+        "passive",
+        "shadow_candidate"
+      ]
+    },
+    {
+      "name": "b555_record_invalidate_ens",
+      "transport": "ens",
+      "family": "B555",
+      "response_class": "value_bearing",
+      "scenario_tags": [
+        "passive",
+        "record_invalidate_only"
+      ]
+    },
+    {
+      "name": "short_reply_header_only",
+      "transport": "enh",
+      "family": "generic",
+      "response_class": "header_only",
+      "scenario_tags": [
+        "short_reply"
+      ]
+    },
+    {
+      "name": "ack_only_master_master",
+      "transport": "ens",
+      "family": "generic",
+      "response_class": "ack_only",
+      "scenario_tags": [
+        "master_master",
+        "ack_only"
+      ]
+    },
+    {
+      "name": "collision_episode",
+      "transport": "enh",
+      "family": "generic",
+      "response_class": "error_or_ambiguous",
+      "scenario_tags": [
+        "collision",
+        "epoch_reset_candidate"
+      ]
+    },
+    {
+      "name": "timeout_no_progress",
+      "transport": "ens",
+      "family": "generic",
+      "response_class": "error_or_ambiguous",
+      "scenario_tags": [
+        "timeout",
+        "abandoned_transaction"
+      ]
+    },
+    {
+      "name": "delayed_reply_value_bearing",
+      "transport": "enh",
+      "family": "generic",
+      "response_class": "value_bearing",
+      "scenario_tags": [
+        "delayed_reply",
+        "busy_time_markers"
+      ]
+    },
+    {
+      "name": "ebusd_tcp_passive_unavailable_negative",
+      "transport": "ebusd-tcp",
+      "family": "generic",
+      "response_class": "error_or_ambiguous",
+      "scenario_tags": [
+        "negative_path",
+        "active_only"
+      ],
+      "expected": {
+        "passive_events": 0,
+        "passive_capability": "unavailable",
+        "broadcast_capability": "unavailable"
+      }
+    }
+  ]
+}

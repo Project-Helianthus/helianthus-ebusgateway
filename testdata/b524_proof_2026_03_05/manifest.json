@@ -1,0 +1,103 @@
+{
+  "name": "b524_proof_2026_03_05",
+  "status": "m0_mirrored_proof_corpus",
+  "kind": "mirrored_external_capture",
+  "capture_date": "2026-03-05",
+  "mirror_source_workspace_path": "_work_register_mapping/B524/proof_2026-03-05/",
+  "mirrored_repo_path": "testdata/b524_proof_2026_03_05/",
+  "validation_scope": "corpus_presence_only",
+  "deferred_validation": {
+    "owners": [
+      "ISSUE-GW-01B",
+      "ISSUE-GW-01C"
+    ],
+    "note": "M0 mirrors the proof-scan corpus and records provenance only. Parser and correlation correctness against these captures is intentionally deferred to later parser-owning gateway milestones."
+  },
+  "cases": [
+    {
+      "name": "GG0x00_OP0x02",
+      "file": "GG0x00_OP0x02.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x01_OP0x02",
+      "file": "GG0x01_OP0x02.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x02_OP0x02",
+      "file": "GG0x02_OP0x02.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x03_OP0x02",
+      "file": "GG0x03_OP0x02.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x04_OP0x02",
+      "file": "GG0x04_OP0x02.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x05_OP0x02",
+      "file": "GG0x05_OP0x02.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x08_OP0x02",
+      "file": "GG0x08_OP0x02.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x08_OP0x06",
+      "file": "GG0x08_OP0x06.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x09_OP0x02",
+      "file": "GG0x09_OP0x02.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x09_OP0x06",
+      "file": "GG0x09_OP0x06.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x0A_OP0x02",
+      "file": "GG0x0A_OP0x02.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x0A_OP0x06",
+      "file": "GG0x0A_OP0x06.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x0C_OP0x02",
+      "file": "GG0x0C_OP0x02.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "GG0x0C_OP0x06",
+      "file": "GG0x0C_OP0x06.json",
+      "kind": "captured_group_scan"
+    },
+    {
+      "name": "scan_summary",
+      "file": "scan_summary.json",
+      "kind": "capture_summary"
+    },
+    {
+      "name": "analysis_report",
+      "file": "analysis_report.json",
+      "kind": "capture_analysis"
+    },
+    {
+      "name": "ebusd_basv_reads",
+      "file": "ebusd_basv_reads.json",
+      "kind": "cross_check_reads"
+    }
+  ]
+}

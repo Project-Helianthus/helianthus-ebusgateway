@@ -164,12 +164,14 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) (runErr e
 	gatewayCfg.Providers = providers
 
 	var deduplicator *ActivePassiveDeduplicator
-	dedup, err := NewActivePassiveDeduplicator(gatewayCfg)
-	if err != nil {
-		return err
+	if !cfg.Smoke.RegisterDumpProbeOnly {
+		dedup, err := NewActivePassiveDeduplicator(gatewayCfg)
+		if err != nil {
+			return err
+		}
+		gatewayCfg.BusConfig.Observer = ChainBusObservers(gatewayCfg.BusConfig.Observer, dedup)
+		deduplicator = dedup
 	}
-	gatewayCfg.BusConfig.Observer = ChainBusObservers(gatewayCfg.BusConfig.Observer, dedup)
-	deduplicator = dedup
 
 	wireLogger, err := newWireLogger(cfg.Smoke.WireLogPath)
 	if err != nil {

@@ -819,6 +819,7 @@ func (deduplicator *ActivePassiveDeduplicator) matchPendingLocked(active ActiveT
 	matched := false
 	for _, pending := range deduplicator.pending {
 		if pending.Epoch != deduplicator.currentEpoch || pending.Fingerprint.Epoch != deduplicator.currentEpoch {
+			next = append(next, pending)
 			continue
 		}
 		if !matched && pending.Fingerprint.Hash == active.Hash {
@@ -1092,7 +1093,7 @@ func (deduplicator *ActivePassiveDeduplicator) publish(event AdjudicatedPassiveE
 			continue
 		}
 		criticalOverflow = true
-		deduplicator.unsubscribeWithFault(subscription, event.Event.ObservedAt)
+		deduplicator.unsubscribeWithFault(subscription, event.Event.ObservedAt, event.Epoch)
 	}
 	if criticalOverflow {
 		deduplicator.handleCriticalReset(event.Event.ObservedAt, PassiveDiscontinuityCriticalSubscriberFault, "dedup_output_overflow")
@@ -1118,7 +1119,7 @@ func (deduplicator *ActivePassiveDeduplicator) unsubscribe(subscription *Adjudic
 	deduplicator.unsubscribeCore(subscription, nil)
 }
 
-func (deduplicator *ActivePassiveDeduplicator) unsubscribeWithFault(subscription *AdjudicatedPassiveSubscription, observedAt time.Time) {
+func (deduplicator *ActivePassiveDeduplicator) unsubscribeWithFault(subscription *AdjudicatedPassiveSubscription, observedAt time.Time, epoch uint64) {
 	deduplicator.unsubscribeCore(subscription, &AdjudicatedPassiveEvent{
 		Event: PassiveClassifiedEvent{
 			Kind:                PassiveClassifiedEventDiscontinuity,
@@ -1128,7 +1129,7 @@ func (deduplicator *ActivePassiveDeduplicator) unsubscribeWithFault(subscription
 		},
 		Disposition:       DedupDispositionDiscontinuity,
 		ObservabilityOnly: true,
-		Epoch:             deduplicator.currentEpoch,
+		Epoch:             epoch,
 	})
 }
 

@@ -292,6 +292,63 @@ func TestActivePassiveDeduplicator_DiscontinuityResetsEpochAndFlushesPending(t *
 	}
 }
 
+func TestActivePassiveDeduplicator_CriticalSubscriberOverflowAdvancesEpoch(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	subscription, err := deduplicator.Subscribe("overflow", DedupSubscriberCritical, 1)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	forceHealthyDedup(deduplicator)
+	request, _ := directTransactionPair()
+	setKnownLocalAddress(deduplicator, request.Source)
+
+	base := time.Unix(0, 0)
+	masterFrame := PassiveClassifiedEvent{
+		Kind:       PassiveClassifiedEventMasterFrame,
+		FrameType:  protocol.FrameTypeInitiatorInitiator,
+		Request:    protocol.Frame{Source: 0x10, Target: request.Source, Primary: 0x01, Secondary: 0x02, Data: []byte{0x03}},
+		HasRequest: true,
+		ObservedAt: base,
+	}
+	beforeEpochResets := expvarIntValue(observeFirstDedupEpochResetTotal)
+
+	deduplicator.OnPassiveClassifiedEvent(masterFrame)
+	deduplicator.OnPassiveClassifiedEvent(PassiveClassifiedEvent{
+		Kind:       masterFrame.Kind,
+		FrameType:  masterFrame.FrameType,
+		Request:    masterFrame.Request,
+		HasRequest: true,
+		ObservedAt: base.Add(10 * time.Millisecond),
+	})
+
+	fault := requireAdjudicatedEvent(t, subscription, DedupDispositionDiscontinuity)
+	if fault.Event.DiscontinuityReason != PassiveDiscontinuityCriticalSubscriberFault {
+		t.Fatalf("DiscontinuityReason = %q; want %q", fault.Event.DiscontinuityReason, PassiveDiscontinuityCriticalSubscriberFault)
+	}
+	if got := expvarIntValue(observeFirstDedupEpochResetTotal); got != beforeEpochResets+1 {
+		t.Fatalf("epoch reset total = %d; want %d", got, beforeEpochResets+1)
+	}
+}
+
+func TestChainBusObserversCallsAllObservers(t *testing.T) {
+	first := &countingObserver{}
+	second := &countingObserver{}
+	observer := ChainBusObservers(first, second)
+	if observer == nil {
+		t.Fatal("ChainBusObservers returned nil")
+	}
+
+	err := observer.OnBusEvent(protocol.BusEvent{Kind: protocol.BusEventAttemptComplete})
+	if err != nil {
+		t.Fatalf("OnBusEvent error = %v", err)
+	}
+	if first.calls != 1 || second.calls != 1 {
+		t.Fatalf("observer calls = (%d, %d); want (1, 1)", first.calls, second.calls)
+	}
+}
+
 func newTestDeduplicator(t *testing.T) *ActivePassiveDeduplicator {
 	t.Helper()
 
@@ -419,4 +476,13 @@ func expvarMapInt64(value *expvar.Map, key string) int64 {
 		return 0
 	}
 	return counter.Value()
+}
+
+type countingObserver struct {
+	calls int
+}
+
+func (observer *countingObserver) OnBusEvent(event protocol.BusEvent) error {
+	observer.calls++
+	return nil
 }

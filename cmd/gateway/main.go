@@ -54,6 +54,9 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		cfg.Providers = vaillantproviders.Default()
 	}
 
+	busObservability := ebusgateway.NewBusObservabilityStore(cfg)
+	cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, busObservability)
+
 	var deduplicator *ebusgateway.ActivePassiveDeduplicator
 	if cfg.BroadcastListen {
 		dedup, err := ebusgateway.NewActivePassiveDeduplicator(cfg)
@@ -102,7 +105,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if semanticPoller != nil {
 		scheduleWriter = semanticPoller
 	}
-	server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, hub, semanticRuntime.Provider(), scheduleWriter)
+	server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, hub, semanticRuntime.Provider(), scheduleWriter, busObservability)
 	if err != nil {
 		return err
 	}
@@ -118,6 +121,18 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				_ = server.Close()
 			}
 			return err
+		}
+		if busObservability != nil {
+			if err := busObservability.AttachReconstructor(ctx, reconstructor); err != nil {
+				_ = reconstructor.Close()
+				if advertiser != nil {
+					_ = advertiser.Close()
+				}
+				if server != nil {
+					_ = server.Close()
+				}
+				return err
+			}
 		}
 		if deduplicator != nil {
 			if err := deduplicator.AttachReconstructor(ctx, reconstructor); err != nil {
@@ -157,6 +172,11 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		if reconstructor != nil {
 			if err := reconstructor.Close(); err != nil {
 				log.Printf("reconstructor close: %v", err)
+			}
+		}
+		if busObservability != nil {
+			if err := busObservability.Close(); err != nil {
+				log.Printf("bus observability close: %v", err)
 			}
 		}
 		if advertiser != nil {
@@ -276,7 +296,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	})
 }
 
-func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub, semanticProvider graphql.SemanticProvider, scheduleWriter mcp.ScheduleWriter) (*http.Server, mdns.Advertiser, error) {
+func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub, semanticProvider graphql.SemanticProvider, scheduleWriter mcp.ScheduleWriter, busObservability *ebusgateway.BusObservabilityStore) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
 	}
@@ -316,6 +336,9 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 	}
 
 	mux := http.NewServeMux()
+	if busObservability != nil {
+		mux.Handle(normalizeMountPath(cfg.MetricsPath, ebusgateway.DefaultMetricsPath), busObservability.MetricsHandler())
+	}
 	mux.Handle(cfg.GraphQLPath, queryHandler)
 	mux.Handle(cfg.SnapshotPath, snapshotHandler)
 	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)

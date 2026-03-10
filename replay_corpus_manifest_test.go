@@ -116,13 +116,31 @@ func TestB524WireLogsManifest(t *testing.T) {
 	if manifest.MirrorSourceWorkspace != "_work_register_mapping/B524/" {
 		t.Fatalf("mirror_source_workspace_path = %q; want _work_register_mapping/B524/", manifest.MirrorSourceWorkspace)
 	}
+	required := map[string]bool{
+		"b524_discovery_scan_log":         false,
+		"b524_groups_scan_schema_log":     false,
+		"b524_discovery_scan_tail":        false,
+		"b524_groups_scan_schema_tail":    false,
+		"b524_groups_scan_schema_decoded": false,
+	}
+	if len(manifest.Cases) == 0 {
+		t.Fatalf("cases = 0; want non-empty mirrored wire-log inventory")
+	}
 
 	for _, tc := range manifest.Cases {
 		if tc.Name == "" || tc.File == "" {
 			t.Fatalf("wire log case %+v is missing required metadata", tc)
 		}
+		if _, ok := required[tc.Name]; ok {
+			required[tc.Name] = true
+		}
 		if _, err := os.Stat(filepath.Join(dir, tc.File)); err != nil {
 			t.Fatalf("wire log file %s missing: %v", tc.File, err)
+		}
+	}
+	for name, seen := range required {
+		if !seen {
+			t.Fatalf("required wire log corpus case %q missing from %s", name, manifestPath)
 		}
 	}
 }

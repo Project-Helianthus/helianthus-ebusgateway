@@ -2,6 +2,7 @@ package ebusgateway
 
 import (
 	"context"
+	"expvar"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+	"github.com/Project-Helianthus/helianthus-ebusgo/types"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
 
@@ -187,8 +189,6 @@ func TestPassiveBusTap_ReconnectsAfterDisconnect(t *testing.T) {
 }
 
 func TestBroadcastListener_RoutesBroadcastFramesViaPassiveTap(t *testing.T) {
-	t.Parallel()
-
 	client, server := net.Pipe()
 	cfg := DefaultConfig()
 	cfg.TransportConfig = TransportConfig{
@@ -257,6 +257,101 @@ func TestBroadcastListener_RoutesBroadcastFramesViaPassiveTap(t *testing.T) {
 	}
 }
 
+func TestBroadcastListener_RouterOverflowMarksDegradedAndResubscribes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reconstructor := newPassiveTransactionReconstructorCore(DefaultConfig())
+	reconstructor.ctx, reconstructor.cancel = context.WithCancel(ctx)
+	defer func() {
+		if err := reconstructor.Close(); err != nil {
+			t.Fatalf("reconstructor close: %v", err)
+		}
+	}()
+
+	plane := &decodingRouterPlane{
+		mockPlane: &mockPlane{
+			name: "broadcast",
+			subscriptions: []router.Subscription{
+				{Primary: 0xB5, Secondary: 0x16},
+			},
+		},
+		decoded: map[string]types.Value{
+			"energy": {Value: uint8(1), Valid: true},
+		},
+		handled: true,
+	}
+	eventRouter := router.NewBusEventRouter(nil)
+	eventRouter.SetPlanes([]router.Plane{plane})
+
+	beforeFaults := expvarMapInt64Value(observeFirstBroadcastSupervisorFaultsTotal, "router_overflow")
+	beforeResubscribes := observeFirstBroadcastSupervisorResubscribeTotal.Value()
+	listener, err := StartBroadcastListenerWithReconstructor(ctx, eventRouter, reconstructor)
+	if err != nil {
+		t.Fatalf("StartBroadcastListenerWithReconstructor error = %v", err)
+	}
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Fatalf("listener close: %v", err)
+		}
+	}()
+
+	broadcast := protocol.Frame{
+		Source:    0x10,
+		Target:    protocol.AddressBroadcast,
+		Primary:   0xB5,
+		Secondary: 0x16,
+		Data:      []byte{0x55, 0x66},
+	}
+	for i := 0; i < 65; i++ {
+		reconstructor.publish(PassiveClassifiedEvent{
+			Kind:       PassiveClassifiedEventBroadcastFrame,
+			Request:    broadcast,
+			HasRequest: true,
+			ObservedAt: time.Unix(0, int64(i+1)),
+		})
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		return observeFirstBroadcastSupervisorState.Value() == "degraded" &&
+			expvarMapInt64Value(observeFirstBroadcastSupervisorFaultsTotal, "router_overflow") >= beforeFaults+1 &&
+			observeFirstBroadcastSupervisorResubscribeTotal.Value() >= beforeResubscribes+1
+	})
+
+	drainBroadcastEvents(eventRouter.Events())
+
+	reconstructor.publish(PassiveClassifiedEvent{
+		Kind:       PassiveClassifiedEventBroadcastFrame,
+		Request:    broadcast,
+		HasRequest: true,
+		ObservedAt: time.Unix(0, 1000),
+	})
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		return observeFirstBroadcastSupervisorState.Value() == "healthy"
+	})
+
+	select {
+	case event := <-eventRouter.Events():
+		if event.Plane != "broadcast" {
+			t.Fatalf("event.Plane = %q; want broadcast", event.Plane)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for post-resubscribe broadcast event")
+	}
+}
+
+type decodingRouterPlane struct {
+	*mockPlane
+	decoded map[string]types.Value
+	handled bool
+	err     error
+}
+
+func (plane *decodingRouterPlane) DecodeBroadcast(frame protocol.Frame) (map[string]types.Value, bool, error) {
+	return plane.decoded, plane.handled, plane.err
+}
+
 func waitForPassiveEvents(t *testing.T, recorder *passiveEventRecorder, timeout time.Duration, ready func([]PassiveTapEvent) bool) []PassiveTapEvent {
 	t.Helper()
 
@@ -288,6 +383,31 @@ func waitForCondition(t *testing.T, timeout time.Duration, ready func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timeout waiting for condition")
+}
+
+func drainBroadcastEvents(ch <-chan router.BroadcastEvent) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
+}
+
+func expvarMapInt64Value(m *expvar.Map, key string) int64 {
+	if m == nil {
+		return 0
+	}
+	variable := m.Get(key)
+	if variable == nil {
+		return 0
+	}
+	counter, ok := variable.(*expvar.Int)
+	if !ok {
+		return 0
+	}
+	return counter.Value()
 }
 
 func countPassiveEventKind(events []PassiveTapEvent, kind PassiveTapEventKind) int {

@@ -88,6 +88,21 @@ func (b *Builder) Schema() Schema {
 	return cloneSchema(b.schema)
 }
 
+func (b *Builder) FreshSchema() Schema {
+	if b == nil {
+		return Schema{}
+	}
+
+	// Registry mutations can arrive outside explicit builder change hooks,
+	// for example from semantic discovery after boot. Rebuild on read so
+	// schema-backed device views do not stay pinned to an empty startup snapshot.
+	_ = b.Rebuild()
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return cloneSchema(b.schema)
+}
+
 func (b *Builder) Revision() uint64 {
 	if b == nil {
 		return 0

@@ -386,7 +386,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 			GatewayVersion:   buildVersion,
 			BuildID:          buildID,
 			ListRegistry: func() []portal.RegistryDevice {
-				schemaSnapshot := builder.Schema()
+				schemaSnapshot := builder.FreshSchema()
 				schemaByAddr := make(map[byte]graphql.Device, len(schemaSnapshot.Devices))
 				for _, sd := range schemaSnapshot.Devices {
 					schemaByAddr[sd.Address] = sd
@@ -456,7 +456,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 				}
 			},
 			ListProjections: func() []portal.ProjectionDevice {
-				snapshot := builder.Schema()
+				snapshot := builder.FreshSchema()
 				items := make([]portal.ProjectionDevice, 0, len(snapshot.Devices))
 				for _, device := range snapshot.Devices {
 					summaries := make([]portal.ProjectionSummary, 0, len(device.Projections))
@@ -478,7 +478,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 				return items
 			},
 			GetProjection: func(address byte, plane string) (portal.ProjectionGraph, bool) {
-				snapshot := builder.Schema()
+				snapshot := builder.FreshSchema()
 				for _, device := range snapshot.Devices {
 					if device.Address != address {
 						continue

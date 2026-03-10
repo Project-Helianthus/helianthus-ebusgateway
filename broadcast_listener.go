@@ -13,6 +13,7 @@ import (
 type BroadcastListener struct {
 	router        *router.BusEventRouter
 	reconstructor *PassiveTransactionReconstructor
+	ownsSource    bool
 	ctx           context.Context
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
@@ -50,6 +51,36 @@ func StartBroadcastListenerWithTransport(ctx context.Context, cfg Config, router
 	listener := &BroadcastListener{
 		router:        router,
 		reconstructor: reconstructor,
+		ownsSource:    true,
+		ctx:           listenerCtx,
+		cancel:        cancel,
+	}
+	listener.wg.Add(1)
+	go listener.run(subscription)
+	return listener, nil
+}
+
+func StartBroadcastListenerWithReconstructor(ctx context.Context, router *router.BusEventRouter, reconstructor *PassiveTransactionReconstructor) (*BroadcastListener, error) {
+	if router == nil {
+		return nil, fmt.Errorf("broadcast listener missing router: %w", ebuserrors.ErrInvalidPayload)
+	}
+	if reconstructor == nil {
+		return nil, fmt.Errorf("broadcast listener missing reconstructor: %w", ebuserrors.ErrInvalidPayload)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	listenerCtx, cancel := context.WithCancel(ctx)
+	subscription, err := reconstructor.Subscribe("broadcast-listener", PassiveSubscriberCritical, 0)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	listener := &BroadcastListener{
+		router:        router,
+		reconstructor: reconstructor,
 		ctx:           listenerCtx,
 		cancel:        cancel,
 	}
@@ -70,7 +101,7 @@ func (listener *BroadcastListener) Close() error {
 		listener.cancel()
 	}
 	listener.wg.Wait()
-	if listener.reconstructor == nil {
+	if listener.reconstructor == nil || !listener.ownsSource {
 		return nil
 	}
 	return listener.reconstructor.Close()

@@ -54,6 +54,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		cfg.Providers = vaillantproviders.Default()
 	}
 
+	var deduplicator *ebusgateway.ActivePassiveDeduplicator
+	if cfg.BroadcastListen {
+		dedup, err := ebusgateway.NewActivePassiveDeduplicator(cfg)
+		if err != nil {
+			return err
+		}
+		cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, dedup)
+		deduplicator = dedup
+	}
+
 	gateway, err := ebusgateway.New(ctx, cfg)
 	if err != nil {
 		return err
@@ -97,9 +107,33 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		return err
 	}
 	var listener *ebusgateway.BroadcastListener
+	var reconstructor *ebusgateway.PassiveTransactionReconstructor
 	if cfg.BroadcastListen {
-		listener, err = ebusgateway.StartBroadcastListener(ctx, cfg, gateway.Router)
+		reconstructor, err = ebusgateway.StartPassiveTransactionReconstructor(ctx, cfg)
 		if err != nil {
+			if advertiser != nil {
+				_ = advertiser.Close()
+			}
+			if server != nil {
+				_ = server.Close()
+			}
+			return err
+		}
+		if deduplicator != nil {
+			if err := deduplicator.AttachReconstructor(ctx, reconstructor); err != nil {
+				_ = reconstructor.Close()
+				if advertiser != nil {
+					_ = advertiser.Close()
+				}
+				if server != nil {
+					_ = server.Close()
+				}
+				return err
+			}
+		}
+		listener, err = ebusgateway.StartBroadcastListenerWithReconstructor(ctx, gateway.Router, reconstructor)
+		if err != nil {
+			_ = reconstructor.Close()
 			if advertiser != nil {
 				_ = advertiser.Close()
 			}
@@ -113,6 +147,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		if listener != nil {
 			if err := listener.Close(); err != nil {
 				log.Printf("broadcast listener close: %v", err)
+			}
+		}
+		if deduplicator != nil {
+			if err := deduplicator.Close(); err != nil {
+				log.Printf("deduplicator close: %v", err)
+			}
+		}
+		if reconstructor != nil {
+			if err := reconstructor.Close(); err != nil {
+				log.Printf("reconstructor close: %v", err)
 			}
 		}
 		if advertiser != nil {

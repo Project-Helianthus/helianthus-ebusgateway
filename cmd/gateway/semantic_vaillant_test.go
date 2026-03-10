@@ -946,6 +946,21 @@ func TestDeriveCircuitManagingDevice(t *testing.T) {
 	}
 }
 
+func TestFM5InventoryRegistryInfos_MaterializesVR71ForInterpretedTopology(t *testing.T) {
+	t.Parallel()
+
+	got := fm5InventoryRegistryInfos(&vaillantSystemSnapshot{
+		SystemScheme:            uint16Ptr(1),
+		ModuleConfigurationVR71: uint16Ptr(2),
+	}, graphql.Fm5SemanticModeInterpreted)
+	if len(got) != 1 {
+		t.Fatalf("fm5InventoryRegistryInfos(...) len = %d; want 1", len(got))
+	}
+	if got[0].Address != 0x26 || got[0].Manufacturer != "Vaillant" || got[0].DeviceID != "VR_71" {
+		t.Fatalf("fm5InventoryRegistryInfos(...) = %+v; want VR_71 at 0x26", got[0])
+	}
+}
+
 func TestDeriveFM5SemanticModeTransitions(t *testing.T) {
 	t.Parallel()
 

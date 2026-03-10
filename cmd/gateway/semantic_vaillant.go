@@ -3550,6 +3550,7 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 	p.mu.Lock()
 	controller := p.controller
 	var moduleConfig *uint16
+	systemSnapshot := cloneSystemSnapshot(p.system)
 	if p.system != nil {
 		moduleConfig = cloneUint16Ptr(p.system.ModuleConfigurationVR71)
 	}
@@ -3575,6 +3576,9 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 	}
 
 	nextMode := deriveFM5SemanticMode(controller != 0, fm5GateSatisfied, solarReadable, cylindersReadable, hasFM5Evidence)
+	for _, info := range fm5InventoryRegistryInfos(systemSnapshot, nextMode) {
+		p.reg.Register(info)
+	}
 
 	p.mu.Lock()
 	p.fm5Mode = nextMode
@@ -4064,6 +4068,20 @@ const (
 	circuitManagingDeviceVR71ID      = "VR_71"
 	circuitManagingDeviceVR71Address = 0x26
 )
+
+func fm5InventoryRegistryInfos(system *vaillantSystemSnapshot, fm5Mode graphql.Fm5SemanticMode) []registry.DeviceInfo {
+	if system != nil &&
+		system.SystemScheme != nil && *system.SystemScheme == 1 &&
+		system.ModuleConfigurationVR71 != nil && *system.ModuleConfigurationVR71 == 2 &&
+		fm5Mode == graphql.Fm5SemanticModeInterpreted {
+		return []registry.DeviceInfo{{
+			Address:      circuitManagingDeviceVR71Address,
+			Manufacturer: "Vaillant",
+			DeviceID:     circuitManagingDeviceVR71ID,
+		}}
+	}
+	return nil
+}
 
 func deriveCircuitManagingDevice(system *vaillantSystemSnapshot, fm5Mode graphql.Fm5SemanticMode) graphql.ManagingDevice {
 	if system != nil &&

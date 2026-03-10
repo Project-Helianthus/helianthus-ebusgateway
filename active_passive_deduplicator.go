@@ -505,6 +505,7 @@ func (deduplicator *ActivePassiveDeduplicator) handleBusEvent(event protocol.Bus
 
 	switch event.Kind {
 	case protocol.BusEventObserverFault:
+		clear(deduplicator.active)
 		deduplicator.enterDegradedLocked("observer_fault")
 		return outputs
 	case protocol.BusEventAttemptComplete:
@@ -1000,11 +1001,17 @@ func (deduplicator *ActivePassiveDeduplicator) updateLocalAddressLocked(address 
 	if address == 0 {
 		return false
 	}
-	if deduplicator.localAddr.Known && deduplicator.localAddr.Address == address {
+	if !deduplicator.localAddr.Known {
+		deduplicator.localAddr.Known = true
+		deduplicator.localAddr.Address = address
+		deduplicator.localAddr.Epoch = deduplicator.currentEpoch
+		_ = observedAt
+		return false
+	}
+	if deduplicator.localAddr.Address == address {
 		return false
 	}
 
-	deduplicator.localAddr.Known = true
 	deduplicator.localAddr.Address = address
 	deduplicator.localAddr.Epoch++
 	_ = observedAt

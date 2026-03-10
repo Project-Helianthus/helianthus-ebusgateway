@@ -251,6 +251,80 @@ func TestActivePassiveDeduplicator_LocalParticipantInboundUsesRuntimeAddress(t *
 	}
 }
 
+func TestActivePassiveDeduplicator_InitialLocalAddressLearnDoesNotResetEpoch(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	forceHealthyDedup(deduplicator)
+
+	base := time.Unix(0, 0)
+	deduplicator.nowFunc = func() time.Time { return base }
+	request, response := directTransactionPair()
+
+	beforeEpoch := deduplicator.currentEpoch
+	if err := deduplicator.OnBusEvent(activeAttemptEvent(request, response)); err != nil {
+		t.Fatalf("OnBusEvent error = %v", err)
+	}
+
+	assertNoAdjudicatedEvent(t, subscription, 25*time.Millisecond)
+	if deduplicator.currentEpoch != beforeEpoch {
+		t.Fatalf("currentEpoch = %d; want %d", deduplicator.currentEpoch, beforeEpoch)
+	}
+	if !deduplicator.localAddr.Known || deduplicator.localAddr.Address != request.Source {
+		t.Fatalf("localAddr = %+v; want known source 0x%02x", deduplicator.localAddr, request.Source)
+	}
+}
+
+func TestActivePassiveDeduplicator_DegradedSkipsActiveFingerprintSuppression(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	forceHealthyDedup(deduplicator)
+
+	base := time.Unix(0, 0)
+	deduplicator.nowFunc = func() time.Time { return base }
+	request, response := directTransactionPair()
+	setKnownLocalAddress(deduplicator, request.Source)
+
+	if err := deduplicator.OnBusEvent(activeAttemptEvent(request, response)); err != nil {
+		t.Fatalf("OnBusEvent error = %v", err)
+	}
+	assertNoAdjudicatedEvent(t, subscription, 25*time.Millisecond)
+
+	deduplicator.nowFunc = func() time.Time { return base.Add(100 * time.Millisecond) }
+	if err := deduplicator.OnBusEvent(protocol.BusEvent{
+		Kind:    protocol.BusEventObserverFault,
+		Outcome: protocol.BusOutcomeObserverFault,
+	}); err != nil {
+		t.Fatalf("observer fault event error = %v", err)
+	}
+
+	deduplicator.nowFunc = func() time.Time { return base.Add(200 * time.Millisecond) }
+	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base.Add(200*time.Millisecond), request, response))
+
+	deduplicator.nowFunc = func() time.Time { return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Second) }
+	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
+
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
+	if !event.ObservabilityOnly {
+		t.Fatal("ObservabilityOnly = false; want true")
+	}
+	if event.MatchedActiveDuplicate {
+		t.Fatal("MatchedActiveDuplicate = true; want false while degraded")
+	}
+	if len(deduplicator.active) != 0 {
+		t.Fatalf("active fingerprints = %d; want 0 after observer fault", len(deduplicator.active))
+	}
+}
+
 func TestActivePassiveDeduplicator_DiscontinuityResetsEpochAndFlushesPending(t *testing.T) {
 	deduplicator := newTestDeduplicator(t)
 	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)

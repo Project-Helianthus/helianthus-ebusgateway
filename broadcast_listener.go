@@ -24,16 +24,19 @@ var (
 )
 
 type BroadcastListener struct {
-	router        *router.BusEventRouter
-	reconstructor *PassiveTransactionReconstructor
-	ownsSource    bool
-	ctx           context.Context
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
+	router         *router.BusEventRouter
+	reconstructor  *PassiveTransactionReconstructor
+	ownsSource     bool
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	recoveryWindow time.Duration
 
 	stateMu            sync.Mutex
 	degraded           bool
 	recoveryGeneration atomic.Uint64
+	recoveryLoopActive bool
+	recoveryTerminal   bool
 }
 
 func StartBroadcastListener(ctx context.Context, cfg Config, router *router.BusEventRouter) (*BroadcastListener, error) {
@@ -66,11 +69,12 @@ func StartBroadcastListenerWithTransport(ctx context.Context, cfg Config, router
 	}
 	reconstructor.tap = tap
 	listener := &BroadcastListener{
-		router:        router,
-		reconstructor: reconstructor,
-		ownsSource:    true,
-		ctx:           listenerCtx,
-		cancel:        cancel,
+		router:         router,
+		reconstructor:  reconstructor,
+		ownsSource:     true,
+		ctx:            listenerCtx,
+		cancel:         cancel,
+		recoveryWindow: broadcastSupervisorRecoveryWindow,
 	}
 	listener.wg.Add(1)
 	observeFirstBroadcastSupervisorState.Set("healthy")
@@ -97,10 +101,11 @@ func StartBroadcastListenerWithReconstructor(ctx context.Context, router *router
 	}
 
 	listener := &BroadcastListener{
-		router:        router,
-		reconstructor: reconstructor,
-		ctx:           listenerCtx,
-		cancel:        cancel,
+		router:         router,
+		reconstructor:  reconstructor,
+		ctx:            listenerCtx,
+		cancel:         cancel,
+		recoveryWindow: broadcastSupervisorRecoveryWindow,
 	}
 	listener.wg.Add(1)
 	observeFirstBroadcastSupervisorState.Set("healthy")
@@ -191,7 +196,7 @@ func (listener *BroadcastListener) markDegraded(reason string) {
 		return
 	}
 
-	generation := listener.recoveryGeneration.Add(1)
+	listener.recoveryGeneration.Add(1)
 
 	listener.stateMu.Lock()
 	if !listener.degraded {
@@ -199,20 +204,60 @@ func (listener *BroadcastListener) markDegraded(reason string) {
 	}
 	listener.degraded = true
 	observeFirstBroadcastSupervisorState.Set("degraded")
+	if reason == "resubscribe_failed" {
+		listener.recoveryTerminal = true
+		listener.stateMu.Unlock()
+		return
+	}
+	if listener.recoveryLoopActive {
+		listener.stateMu.Unlock()
+		return
+	}
+	listener.recoveryLoopActive = true
 	listener.stateMu.Unlock()
 
-	go listener.recoverAfterFaultFreeWindow(generation)
+	go listener.recoverAfterFaultFreeWindow()
 }
 
-func (listener *BroadcastListener) recoverAfterFaultFreeWindow(generation uint64) {
-	timer := time.NewTimer(broadcastSupervisorRecoveryWindow)
+func (listener *BroadcastListener) recoverAfterFaultFreeWindow() {
+	defer func() {
+		listener.stateMu.Lock()
+		listener.recoveryLoopActive = false
+		listener.stateMu.Unlock()
+	}()
+
+	window := listener.recoveryWindow
+	if window <= 0 {
+		window = broadcastSupervisorRecoveryWindow
+	}
+	timer := time.NewTimer(window)
 	defer timer.Stop()
+	generation := listener.recoveryGeneration.Load()
 
 	select {
 	case <-listener.ctx.Done():
 		return
 	case <-timer.C:
-		listener.markHealthyIfGeneration(generation, "fault_free_window")
+		for {
+			listener.stateMu.Lock()
+			terminal := listener.recoveryTerminal
+			currentGeneration := listener.recoveryGeneration.Load()
+			listener.stateMu.Unlock()
+			if terminal {
+				return
+			}
+			if currentGeneration == generation {
+				listener.markHealthyIfGeneration(currentGeneration, "fault_free_window")
+				return
+			}
+			generation = currentGeneration
+			timer.Reset(window)
+			select {
+			case <-listener.ctx.Done():
+				return
+			case <-timer.C:
+			}
+		}
 	}
 }
 

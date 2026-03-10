@@ -327,11 +327,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleTapEventLocked(event
 	case PassiveTapEventDecodeFault:
 		return reconstructor.handleTransportDiscontinuityLocked(events, event.ObservedAt, PassiveDiscontinuityDecodeFault, PassiveAbandonReasonDecodeFault, event.Err)
 	case PassiveTapEventReadTimeout:
-		if reconstructor.state.phase != passivePhaseIdle && reconstructor.state.phase != passivePhaseAbandoned {
-			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNoProgress, event.ObservedAt, event.Err))
-			reconstructor.state.phase = passivePhaseAbandoned
-		}
-		return events
+		return reconstructor.expireIfStaleLocked(events, event.ObservedAt)
 	default:
 		return events
 	}

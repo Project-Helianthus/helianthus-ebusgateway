@@ -3,17 +3,19 @@ package ebusgateway
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
-	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
 
 type BroadcastListener struct {
-	router *router.BusEventRouter
-	parser *broadcastFrameParser
-	tap    *PassiveBusTap
+	router        *router.BusEventRouter
+	reconstructor *PassiveTransactionReconstructor
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 func StartBroadcastListener(ctx context.Context, cfg Config, router *router.BusEventRouter) (*BroadcastListener, error) {
@@ -24,16 +26,35 @@ func StartBroadcastListenerWithTransport(ctx context.Context, cfg Config, router
 	if router == nil {
 		return nil, fmt.Errorf("broadcast listener missing router: %w", ebuserrors.ErrInvalidPayload)
 	}
-
-	listener := &BroadcastListener{
-		router: router,
-		parser: &broadcastFrameParser{},
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	tap, err := StartPassiveBusTapWithTransport(ctx, cfg, listener, wrap)
+
+	listenerCtx, cancel := context.WithCancel(ctx)
+	reconstructor := newPassiveTransactionReconstructorCore(cfg)
+	reconstructor.ctx, reconstructor.cancel = context.WithCancel(listenerCtx)
+
+	subscription, err := reconstructor.Subscribe("broadcast-listener", PassiveSubscriberCritical, 0)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	listener.tap = tap
+	tap, err := StartPassiveBusTapWithTransport(reconstructor.ctx, reconstructor.cfg, reconstructor, wrap)
+	if err != nil {
+		subscription.Close()
+		reconstructor.cancel()
+		cancel()
+		return nil, err
+	}
+	reconstructor.tap = tap
+	listener := &BroadcastListener{
+		router:        router,
+		reconstructor: reconstructor,
+		ctx:           listenerCtx,
+		cancel:        cancel,
+	}
+	listener.wg.Add(1)
+	go listener.run(subscription)
 	return listener, nil
 }
 
@@ -42,54 +63,53 @@ func (listener *BroadcastListener) Start(ctx context.Context) {
 }
 
 func (listener *BroadcastListener) Close() error {
-	if listener == nil || listener.tap == nil {
+	if listener == nil {
 		return nil
 	}
-	return listener.tap.Close()
+	if listener.cancel != nil {
+		listener.cancel()
+	}
+	listener.wg.Wait()
+	if listener.reconstructor == nil {
+		return nil
+	}
+	return listener.reconstructor.Close()
 }
 
-func (listener *BroadcastListener) OnPassiveTapEvent(event PassiveTapEvent) {
-	if listener == nil || listener.router == nil || listener.parser == nil {
-		return
-	}
+func (listener *BroadcastListener) run(initial *PassiveClassifiedSubscription) {
+	defer listener.wg.Done()
 
-	switch event.Kind {
-	case PassiveTapEventSymbol:
-		frame, ok := listener.parser.push(event.Symbol)
-		if !ok {
+	subscription := initial
+	for {
+		if subscription == nil {
+			next, err := listener.reconstructor.Subscribe("broadcast-listener", PassiveSubscriberCritical, 0)
+			if err != nil {
+				return
+			}
+			subscription = next
+		}
+		if !listener.consume(subscription) {
 			return
 		}
-		if frame.Target == protocol.AddressBroadcast {
-			_ = listener.router.HandleBroadcast(frame)
+		subscription = nil
+	}
+}
+
+func (listener *BroadcastListener) consume(subscription *PassiveClassifiedSubscription) bool {
+	defer subscription.Close()
+
+	for {
+		select {
+		case <-listener.ctx.Done():
+			return false
+		case event, ok := <-subscription.Events():
+			if !ok {
+				return listener.ctx.Err() == nil
+			}
+			if listener.router == nil || event.Kind != PassiveClassifiedEventBroadcastFrame {
+				continue
+			}
+			_ = listener.router.HandleBroadcast(event.Request)
 		}
-	default:
-		listener.parser.reset()
 	}
-}
-
-type broadcastFrameParser struct {
-	buffer []byte
-}
-
-func (parser *broadcastFrameParser) push(symbol byte) (protocol.Frame, bool) {
-	if parser == nil {
-		return protocol.Frame{}, false
-	}
-	if symbol == protocol.SymbolSyn {
-		if len(parser.buffer) == 0 {
-			return protocol.Frame{}, false
-		}
-		frame, ok := parseFrame(parser.buffer)
-		parser.buffer = parser.buffer[:0]
-		return frame, ok
-	}
-	parser.buffer = append(parser.buffer, symbol)
-	return protocol.Frame{}, false
-}
-
-func (parser *broadcastFrameParser) reset() {
-	if parser == nil {
-		return
-	}
-	parser.buffer = parser.buffer[:0]
 }

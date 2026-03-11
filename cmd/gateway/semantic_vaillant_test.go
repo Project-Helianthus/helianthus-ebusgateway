@@ -946,6 +946,21 @@ func TestDeriveCircuitManagingDevice(t *testing.T) {
 	}
 }
 
+func TestFM5InventoryRegistryInfos_MaterializesVR71ForInterpretedTopology(t *testing.T) {
+	t.Parallel()
+
+	got := fm5InventoryRegistryInfos(&vaillantSystemSnapshot{
+		SystemScheme:            uint16Ptr(1),
+		ModuleConfigurationVR71: uint16Ptr(2),
+	}, graphql.Fm5SemanticModeInterpreted)
+	if len(got) != 1 {
+		t.Fatalf("fm5InventoryRegistryInfos(...) len = %d; want 1", len(got))
+	}
+	if got[0].Address != 0x26 || got[0].Manufacturer != "Vaillant" || got[0].DeviceID != "VR_71" {
+		t.Fatalf("fm5InventoryRegistryInfos(...) = %+v; want VR_71 at 0x26", got[0])
+	}
+}
+
 func TestDeriveFM5SemanticModeTransitions(t *testing.T) {
 	t.Parallel()
 
@@ -3164,6 +3179,55 @@ func newTestPoller(reg *registry.DeviceRegistry) *vaillantSemanticPoller {
 		source:         0x71,
 		requestTimeout: 2 * time.Second,
 		nowFn:          time.Now,
+	}
+}
+
+func TestRadioInventoryRegistryInfo_MaterializesVR71PhysicalDevice(t *testing.T) {
+	t.Parallel()
+
+	classAddress := uint8(0x26)
+	info, ok := radioInventoryRegistryInfo(&vaillantRadioDeviceSnapshot{
+		DeviceClassAddress: &classAddress,
+		DeviceModel:        "VR71/FM5",
+	})
+	if !ok {
+		t.Fatal("radioInventoryRegistryInfo should materialize VR_71 inventory evidence")
+	}
+	if info.Address != 0x26 || info.Manufacturer != "Vaillant" || info.DeviceID != "VR_71" {
+		t.Fatalf("radioInventoryRegistryInfo = %+v; want VR_71 at 0x26", info)
+	}
+}
+
+func TestPreserveExistingRegistryMetadata_KeepsRicherIdentityFields(t *testing.T) {
+	t.Parallel()
+
+	reg := newTestRegistry(registry.DeviceInfo{
+		Address:         0x26,
+		Manufacturer:    "Vaillant",
+		DeviceID:        "VR_71",
+		SerialNumber:    "21-21-34-0020262148-0082-014267-N7",
+		MacAddress:      "00:11:22:33:44:55",
+		SoftwareVersion: "0507",
+		HardwareVersion: "1704",
+	})
+
+	got := preserveExistingRegistryMetadata(reg, registry.DeviceInfo{
+		Address:      0x26,
+		Manufacturer: "Vaillant",
+		DeviceID:     "VR_71",
+	})
+
+	if got.SerialNumber != "21-21-34-0020262148-0082-014267-N7" {
+		t.Fatalf("SerialNumber = %q; want preserved serial", got.SerialNumber)
+	}
+	if got.MacAddress != "00:11:22:33:44:55" {
+		t.Fatalf("MacAddress = %q; want preserved MAC", got.MacAddress)
+	}
+	if got.SoftwareVersion != "0507" {
+		t.Fatalf("SoftwareVersion = %q; want preserved software version", got.SoftwareVersion)
+	}
+	if got.HardwareVersion != "1704" {
+		t.Fatalf("HardwareVersion = %q; want preserved hardware version", got.HardwareVersion)
 	}
 }
 

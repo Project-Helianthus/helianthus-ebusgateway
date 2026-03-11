@@ -98,6 +98,9 @@ func BuildSchema(reg Registry) (Schema, error) {
 		if strings.EqualFold(entry.Manufacturer(), "Vaillant") {
 			partNumber = extractVaillantPartNumber(entry.SerialNumber())
 			displayName, family, model, role = resolveVaillantProduct(partNumber, catalog, catalogErr)
+			if displayName == "" && family == "" && model == "" && role == "" {
+				displayName, family, model, role = fallbackVaillantIdentity(entry.DeviceID())
+			}
 		}
 
 		device := Device{
@@ -203,6 +206,22 @@ func BuildSchema(reg Registry) (Schema, error) {
 	}
 
 	return out, nil
+}
+
+func fallbackVaillantIdentity(deviceID string) (displayName string, family string, model string, role string) {
+	normalized := strings.ToUpper(strings.TrimSpace(deviceID))
+	switch {
+	case strings.HasPrefix(normalized, "BASV"):
+		return "sensoCOMFORT RF", "sensoCOMFORT RF", "VRC 720f/2", ""
+	case strings.HasPrefix(normalized, "VR_71") || strings.HasPrefix(normalized, "VR71"):
+		return "FM5 Control Centre", "FM5 Control Centre", "VR 71", ""
+	case strings.HasPrefix(normalized, "BAI"):
+		return "ecoTEC plus", "ecoTEC plus", "VUW", ""
+	case strings.HasPrefix(normalized, "NETX3"):
+		return "myVaillant Connect", "myVaillant Connect", "VR940f", ""
+	default:
+		return "", "", "", ""
+	}
 }
 
 func extractVaillantPartNumber(serial string) string {

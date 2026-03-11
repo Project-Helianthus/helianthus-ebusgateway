@@ -3359,6 +3359,14 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 		return
 	}
 
+	for _, snapshot := range discovered {
+		info, ok := radioInventoryRegistryInfo(snapshot)
+		if !ok {
+			continue
+		}
+		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
+	}
+
 	p.mu.Lock()
 	p.radioDevices = discovered
 	p.mu.Unlock()
@@ -3542,6 +3550,7 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 	p.mu.Lock()
 	controller := p.controller
 	var moduleConfig *uint16
+	systemSnapshot := cloneSystemSnapshot(p.system)
 	if p.system != nil {
 		moduleConfig = cloneUint16Ptr(p.system.ModuleConfigurationVR71)
 	}
@@ -3567,6 +3576,9 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 	}
 
 	nextMode := deriveFM5SemanticMode(controller != 0, fm5GateSatisfied, solarReadable, cylindersReadable, hasFM5Evidence)
+	for _, info := range fm5InventoryRegistryInfos(systemSnapshot, nextMode) {
+		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
+	}
 
 	p.mu.Lock()
 	p.fm5Mode = nextMode
@@ -3774,6 +3786,53 @@ func hasFM5EvidenceFromRadioSnapshots(snapshots []*vaillantRadioDeviceSnapshot) 
 		}
 	}
 	return false
+}
+
+func radioInventoryRegistryInfo(snapshot *vaillantRadioDeviceSnapshot) (registry.DeviceInfo, bool) {
+	if snapshot == nil || snapshot.DeviceClassAddress == nil {
+		return registry.DeviceInfo{}, false
+	}
+	switch *snapshot.DeviceClassAddress {
+	case circuitManagingDeviceVR71Address:
+		return registry.DeviceInfo{
+			Address:      circuitManagingDeviceVR71Address,
+			Manufacturer: "Vaillant",
+			DeviceID:     circuitManagingDeviceVR71ID,
+		}, true
+	default:
+		return registry.DeviceInfo{}, false
+	}
+}
+
+func preserveExistingRegistryMetadata(reg *registry.DeviceRegistry, info registry.DeviceInfo) registry.DeviceInfo {
+	if reg == nil {
+		return info
+	}
+	reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry == nil || entry.Address() != info.Address {
+			return true
+		}
+		if info.Manufacturer == "" {
+			info.Manufacturer = entry.Manufacturer()
+		}
+		if info.DeviceID == "" {
+			info.DeviceID = entry.DeviceID()
+		}
+		if info.SerialNumber == "" {
+			info.SerialNumber = entry.SerialNumber()
+		}
+		if info.MacAddress == "" {
+			info.MacAddress = entry.MacAddress()
+		}
+		if info.SoftwareVersion == "" {
+			info.SoftwareVersion = entry.SoftwareVersion()
+		}
+		if info.HardwareVersion == "" {
+			info.HardwareVersion = entry.HardwareVersion()
+		}
+		return false
+	})
+	return info
 }
 
 func (p *vaillantSemanticPoller) hasFM5RegistryEvidence() bool {
@@ -4040,6 +4099,20 @@ const (
 	circuitManagingDeviceVR71ID      = "VR_71"
 	circuitManagingDeviceVR71Address = 0x26
 )
+
+func fm5InventoryRegistryInfos(system *vaillantSystemSnapshot, fm5Mode graphql.Fm5SemanticMode) []registry.DeviceInfo {
+	if system != nil &&
+		system.SystemScheme != nil && *system.SystemScheme == 1 &&
+		system.ModuleConfigurationVR71 != nil && *system.ModuleConfigurationVR71 == 2 &&
+		fm5Mode == graphql.Fm5SemanticModeInterpreted {
+		return []registry.DeviceInfo{{
+			Address:      circuitManagingDeviceVR71Address,
+			Manufacturer: "Vaillant",
+			DeviceID:     circuitManagingDeviceVR71ID,
+		}}
+	}
+	return nil
+}
 
 func deriveCircuitManagingDevice(system *vaillantSystemSnapshot, fm5Mode graphql.Fm5SemanticMode) graphql.ManagingDevice {
 	if system != nil &&

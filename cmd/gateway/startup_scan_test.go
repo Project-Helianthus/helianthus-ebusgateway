@@ -996,6 +996,148 @@ func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedSca
 	}
 }
 
+func TestStartDiscoveryScanLoop_EbusdPreloadNonVaillantImportFallsThroughToRestrictedActiveScan(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origTargetCandidatesFn := ebusdScanTargetCandidatesFn
+	origResultTargetsFn := ebusdScanResultTargetsFn
+	origResultInfosFn := ebusdScanResultInfosFn
+	origLoopExitFn := startupScanLoopExitFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
+		ebusdScanResultTargetsFn = origResultTargetsFn
+		ebusdScanResultInfosFn = origResultInfosFn
+		startupScanLoopExitFn = origLoopExitFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+	})
+
+	var (
+		mu            sync.Mutex
+		preloadRun    int
+		scanRun       int
+		scanCtxErr    error
+		targetHistory [][]byte
+	)
+	activeSuccess := make(chan struct{}, 1)
+	loopExited := make(chan struct{}, 1)
+	registryScanFn = func(scanCtx context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, targets []byte) ([]registry.DeviceEntry, error) {
+		if err := scanCtx.Err(); err != nil {
+			mu.Lock()
+			if scanCtxErr == nil {
+				scanCtxErr = err
+			}
+			mu.Unlock()
+			return nil, err
+		}
+
+		mu.Lock()
+		scanRun++
+		targetHistory = append(targetHistory, append([]byte(nil), targets...))
+		mu.Unlock()
+
+		entry := reg.Register(registry.DeviceInfo{
+			Address:      0x15,
+			Manufacturer: "Vaillant",
+			DeviceID:     "BASV2",
+		})
+		select {
+		case activeSuccess <- struct{}{}:
+		default:
+		}
+		return []registry.DeviceEntry{entry}, nil
+	}
+	ebusdScanTargetCandidatesFn = func(cfg ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
+		return []ebusgateway.TransportConfig{cfg}
+	}
+	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
+		return []byte{0x04, 0x08}, nil
+	}
+	ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		preloadRun++
+		return []registry.DeviceInfo{
+			{Address: 0x04, Manufacturer: "Other", DeviceID: "GENERIC"},
+		}, nil
+	}
+	startupScanLoopExitFn = func() {
+		select {
+		case loopExited <- struct{}{}:
+		default:
+		}
+	}
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = 10 * time.Millisecond
+	cfg.TransportConfig = ebusgateway.TransportConfig{
+		Protocol: ebusgateway.TransportEbusdTCP,
+		Network:  "tcp",
+		Address:  "127.0.0.1:8888",
+	}
+
+	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	select {
+	case <-activeSuccess:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not perform restricted active scan after non-Vaillant preload import")
+	}
+
+	select {
+	case <-loopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not stop after restricted active confirmation")
+	}
+
+	mu.Lock()
+	gotPreloadRun := preloadRun
+	gotScanRun := scanRun
+	gotScanCtxErr := scanCtxErr
+	gotTargetHistory := make([][]byte, len(targetHistory))
+	for i := range targetHistory {
+		gotTargetHistory[i] = append([]byte(nil), targetHistory[i]...)
+	}
+	mu.Unlock()
+
+	if gotPreloadRun != 1 {
+		t.Fatalf("ebusd scan preload runs = %d; want 1 before restricted active confirmation", gotPreloadRun)
+	}
+	if gotScanRun != 1 {
+		t.Fatalf("registry scan runs = %d; want 1 restricted active confirmation pass", gotScanRun)
+	}
+	if gotScanCtxErr != nil {
+		t.Fatalf("registry scan received canceled context during non-Vaillant preload confirmation flow: %v", gotScanCtxErr)
+	}
+
+	wantTargetHistory := [][]byte{
+		{0x04, 0x08},
+	}
+	if !reflect.DeepEqual(gotTargetHistory, wantTargetHistory) {
+		t.Fatalf("scan target history = %#v; want %#v", gotTargetHistory, wantTargetHistory)
+	}
+}
+
 func TestStartDiscoveryScanLoop_LocalFallbackImportRetriesFullRangeThenRestrictedConfirmation(t *testing.T) {
 	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
 		Transport: transport.NewLoopback(),

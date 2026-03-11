@@ -221,10 +221,11 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 					} else if shouldStopDiscoveryScan(total, confirmationPending, confirmationSatisfied) {
 						cancel()
 						return
-					} else if confirmationPending && usedRestrictedTargets && !retryingFullRange &&
-						fullRangeRecoveryAttempted && !confirmationSatisfied {
-						// Once the bounded full-range retry is spent, keep the preload inventory
-						// but fall through so restricted active scans can still confirm the bus.
+					} else if confirmationPending && usedRestrictedTargets && !retryingFullRange && !confirmationSatisfied {
+						// Keep the preload inventory, but still allow a restricted active scan pass
+						// whenever confirmation remains unresolved. This covers both:
+						// - bounded recovery already consumed, and
+						// - non-Vaillant preload imports that cannot justify a full-range retry.
 					} else {
 						cancel()
 						timer := time.NewTimer(interval)

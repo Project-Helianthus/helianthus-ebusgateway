@@ -185,6 +185,7 @@ func (tap *PassiveBusTap) run() {
 
 func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 	decoder := passiveEscapeDecoder{}
+	decodeWireEscapes := passiveTapDecodesWireEscapes(tap.cfg)
 	lastSymbolAt := time.Now()
 	absenceDisconnect := passiveTapEnforcesAbsenceDisconnect(tap.cfg)
 
@@ -217,19 +218,24 @@ func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 		now := time.Now()
 		switch event.Kind {
 		case transport.StreamEventReset:
-			if decoder.escape {
+			if decodeWireEscapes && decoder.escape {
 				tap.recordDecodeFault(fmt.Errorf("incomplete escape sequence before reset: %w", ebuserrors.ErrInvalidPayload))
 				decoder.reset()
 			}
 			tap.recordReset(now)
 		case transport.StreamEventByte:
-			symbol, ok, decodeErr := decoder.push(event.Byte)
-			if decodeErr != nil {
-				tap.recordDecodeFault(decodeErr)
-				continue
-			}
-			if !ok {
-				continue
+			symbol := event.Byte
+			if decodeWireEscapes {
+				var ok bool
+				var decodeErr error
+				symbol, ok, decodeErr = decoder.push(event.Byte)
+				if decodeErr != nil {
+					tap.recordDecodeFault(decodeErr)
+					continue
+				}
+				if !ok {
+					continue
+				}
 			}
 
 			lastSymbolAt = now
@@ -412,6 +418,10 @@ func readPassiveTransportEvent(tr transport.RawTransport) (transport.StreamEvent
 }
 
 func passiveTapEnforcesAbsenceDisconnect(cfg Config) bool {
+	return !passiveTapUsesProxyLikeObserverTransport(cfg)
+}
+
+func passiveTapDecodesWireEscapes(cfg Config) bool {
 	return !passiveTapUsesProxyLikeObserverTransport(cfg)
 }
 

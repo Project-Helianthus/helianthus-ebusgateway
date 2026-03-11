@@ -254,6 +254,81 @@ func TestPassiveBusTap_ProxyLikeEndpointDoesNotReconnectOnReadTimeoutSilence(t *
 	}
 }
 
+func TestPassiveBusTap_ProxyLikeObserverStreamEmitsLogicalSymbolsWithoutDecodeFault(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		address string
+	}{
+		{name: "default proxy port", address: "127.0.0.1:19001"},
+		{name: "matrix proxy port", address: "127.0.0.1:19183"},
+	}
+
+	request := protocol.Frame{
+		Source:    0xF7,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{protocol.SymbolEscape},
+	}
+	logicalPayload := proxyObserverTransactionBytes(request, []byte{0x11, 0x22})
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, server := net.Pipe()
+			defer func() { _ = server.Close() }()
+
+			recorder := newPassiveEventRecorder()
+			cfg := DefaultConfig()
+			cfg.TransportConfig = TransportConfig{
+				Protocol:     TransportENS,
+				Network:      "tcp",
+				Address:      test.address,
+				ReadTimeout:  20 * time.Millisecond,
+				WriteTimeout: 20 * time.Millisecond,
+				DialTimeout:  time.Second,
+				Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+					return client, nil
+				},
+			}
+			cfg.PassiveAbsenceThreshold = time.Second
+			cfg.PassiveReconnectInitialDelay = time.Second
+			cfg.PassiveReconnectMaxDelay = time.Second
+
+			tap, err := StartPassiveBusTap(context.Background(), cfg, recorder)
+			if err != nil {
+				t.Fatalf("StartPassiveBusTap error = %v", err)
+			}
+			defer func() {
+				if err := tap.Close(); err != nil {
+					t.Fatalf("Close error = %v", err)
+				}
+			}()
+
+			go func() {
+				_, _ = server.Write(enhReceivedBytes(logicalPayload))
+			}()
+
+			events := waitForPassiveEvents(t, recorder, 2*time.Second, func(events []PassiveTapEvent) bool {
+				return hasPassiveSymbols(events, logicalPayload...)
+			})
+
+			if got := countPassiveEventKind(events, PassiveTapEventDecodeFault); got != 0 {
+				t.Fatalf("decode fault count = %d; want 0 for proxy-like logical observer payload", got)
+			}
+
+			snapshot := tap.Snapshot()
+			if got := snapshot.DecodeFaultCount; got != 0 {
+				t.Fatalf("DecodeFaultCount = %d; want 0", got)
+			}
+		})
+	}
+}
+
 func TestPassiveBusTap_LoopbackENHStillReconnectsOnReadTimeoutSilence(t *testing.T) {
 	t.Parallel()
 
@@ -350,6 +425,137 @@ func TestPassiveBusTap_LoopbackENHStillReconnectsOnReadTimeoutSilence(t *testing
 	}
 	if snapshot.DisconnectCount < 1 {
 		t.Fatalf("DisconnectCount = %d; want >= 1", snapshot.DisconnectCount)
+	}
+}
+
+func TestPassiveBusTap_LoopbackENHStillDecodesWireEscapedObserverTraffic(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	defer func() { _ = server.Close() }()
+
+	recorder := newPassiveEventRecorder()
+	cfg := DefaultConfig()
+	cfg.TransportConfig = TransportConfig{
+		Protocol:     TransportENH,
+		Network:      "tcp",
+		Address:      "127.0.0.1:9999",
+		ReadTimeout:  20 * time.Millisecond,
+		WriteTimeout: 20 * time.Millisecond,
+		DialTimeout:  time.Second,
+		Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+			return client, nil
+		},
+	}
+	cfg.PassiveAbsenceThreshold = time.Second
+	cfg.PassiveReconnectInitialDelay = time.Second
+	cfg.PassiveReconnectMaxDelay = time.Second
+
+	tap, err := StartPassiveBusTap(context.Background(), cfg, recorder)
+	if err != nil {
+		t.Fatalf("StartPassiveBusTap error = %v", err)
+	}
+	defer func() {
+		if err := tap.Close(); err != nil {
+			t.Fatalf("Close error = %v", err)
+		}
+	}()
+
+	request := protocol.Frame{
+		Source:    0x10,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{protocol.SymbolEscape},
+	}
+	logicalPayload := proxyObserverTransactionBytes(request, []byte{0x11, 0x22})
+
+	go func() {
+		_, _ = server.Write(enhReceivedBytes(wireEscapeSymbols(logicalPayload)))
+	}()
+
+	events := waitForPassiveEvents(t, recorder, 2*time.Second, func(events []PassiveTapEvent) bool {
+		return hasPassiveSymbols(events, logicalPayload...)
+	})
+
+	if got := countPassiveEventKind(events, PassiveTapEventDecodeFault); got != 0 {
+		t.Fatalf("decode fault count = %d; want 0 for direct raw-wire observer payload", got)
+	}
+
+	snapshot := tap.Snapshot()
+	if got := snapshot.DecodeFaultCount; got != 0 {
+		t.Fatalf("DecodeFaultCount = %d; want 0", got)
+	}
+}
+
+func TestPassiveTransactionReconstructor_ClassifiesProxyLikeObserverTraffic(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	defer func() { _ = server.Close() }()
+
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig = TransportConfig{
+		Protocol:     TransportENS,
+		Network:      "tcp",
+		Address:      "127.0.0.1:19183",
+		ReadTimeout:  20 * time.Millisecond,
+		WriteTimeout: 20 * time.Millisecond,
+		DialTimeout:  time.Second,
+		Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+			return client, nil
+		},
+	}
+	cfg.PassiveAbsenceThreshold = time.Second
+	cfg.PassiveReconnectInitialDelay = time.Second
+	cfg.PassiveReconnectMaxDelay = time.Second
+	cfg.ObserveFirstWarmupConnectedWindow = time.Millisecond
+	cfg.ObserveFirstWarmupCompletedTransactions = 1
+	cfg.ObserveFirstWarmupOuterWindow = time.Second
+
+	reconstructor, err := StartPassiveTransactionReconstructor(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartPassiveTransactionReconstructor error = %v", err)
+	}
+	defer func() {
+		if err := reconstructor.Close(); err != nil {
+			t.Fatalf("reconstructor.Close error = %v", err)
+		}
+	}()
+
+	subscription, err := reconstructor.Subscribe("test", PassiveSubscriberCritical, 8)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	request := protocol.Frame{
+		Source:    0xF7,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{protocol.SymbolEscape},
+	}
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		_, _ = server.Write(enhReceivedBytes(proxyObserverTransactionBytes(request, []byte{0x11, 0x22})))
+	}()
+
+	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventTransaction)
+	if got := event.Request.Data; len(got) != 1 || got[0] != protocol.SymbolEscape {
+		t.Fatalf("request data = %v; want [0x%02X]", got, protocol.SymbolEscape)
+	}
+	if !event.HasResponse {
+		t.Fatal("transaction event missing response")
+	}
+
+	snapshot := reconstructor.Snapshot()
+	if got := snapshot.TapStatus.DecodeFaultCount; got != 0 {
+		t.Fatalf("DecodeFaultCount = %d; want 0", got)
+	}
+	if got := snapshot.TapStatus.ObservedSymbolCount; got == 0 {
+		t.Fatal("ObservedSymbolCount = 0; want proxy-like observer traffic to produce symbols")
 	}
 }
 
@@ -674,6 +880,29 @@ func frameBytes(frame protocol.Frame) []byte {
 	raw = append(raw, frame.Data...)
 	raw = append(raw, protocol.CRC(raw), protocol.SymbolSyn)
 	return raw
+}
+
+func proxyObserverTransactionBytes(request protocol.Frame, responseData []byte) []byte {
+	payload := append([]byte{}, frameBytes(request)...)
+	payload = append(payload, protocol.SymbolAck)
+	payload = append(payload, responseSegmentBytes(responseData)...)
+	payload = append(payload, protocol.SymbolAck, protocol.SymbolSyn)
+	return payload
+}
+
+func wireEscapeSymbols(symbols []byte) []byte {
+	out := make([]byte, 0, len(symbols)+4)
+	for _, symbol := range symbols {
+		switch symbol {
+		case protocol.SymbolEscape:
+			out = append(out, protocol.SymbolEscape, 0x00)
+		case protocol.SymbolSyn:
+			out = append(out, protocol.SymbolEscape, 0x01)
+		default:
+			out = append(out, symbol)
+		}
+	}
+	return out
 }
 
 func writePassivePayload(conn net.Conn, payload []byte) {

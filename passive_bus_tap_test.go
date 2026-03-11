@@ -191,51 +191,66 @@ func TestPassiveBusTap_ReconnectsAfterDisconnect(t *testing.T) {
 func TestPassiveBusTap_ProxyLikeEndpointDoesNotReconnectOnReadTimeoutSilence(t *testing.T) {
 	t.Parallel()
 
-	client, server := net.Pipe()
-	defer func() { _ = server.Close() }()
-
-	recorder := newPassiveEventRecorder()
-	cfg := DefaultConfig()
-	cfg.TransportConfig = TransportConfig{
-		Protocol:     TransportENS,
-		Network:      "tcp",
-		Address:      "127.0.0.1:19001",
-		ReadTimeout:  20 * time.Millisecond,
-		WriteTimeout: 20 * time.Millisecond,
-		DialTimeout:  time.Second,
-		Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
-			return client, nil
-		},
+	tests := []struct {
+		name    string
+		address string
+	}{
+		{name: "default proxy port", address: "127.0.0.1:19001"},
+		{name: "matrix proxy port", address: "127.0.0.1:19183"},
 	}
-	cfg.PassiveAbsenceThreshold = 60 * time.Millisecond
-	cfg.PassiveReconnectInitialDelay = 5 * time.Millisecond
-	cfg.PassiveReconnectMaxDelay = 5 * time.Millisecond
 
-	tap, err := StartPassiveBusTap(context.Background(), cfg, recorder)
-	if err != nil {
-		t.Fatalf("StartPassiveBusTap error = %v", err)
-	}
-	defer func() {
-		if err := tap.Close(); err != nil {
-			t.Fatalf("Close error = %v", err)
-		}
-	}()
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	waitForPassiveEvents(t, recorder, 2*time.Second, func(events []PassiveTapEvent) bool {
-		return countPassiveEventKind(events, PassiveTapEventReadTimeout) >= 3
-	})
+			client, server := net.Pipe()
+			defer func() { _ = server.Close() }()
 
-	time.Sleep(100 * time.Millisecond)
+			recorder := newPassiveEventRecorder()
+			cfg := DefaultConfig()
+			cfg.TransportConfig = TransportConfig{
+				Protocol:     TransportENS,
+				Network:      "tcp",
+				Address:      test.address,
+				ReadTimeout:  20 * time.Millisecond,
+				WriteTimeout: 20 * time.Millisecond,
+				DialTimeout:  time.Second,
+				Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+					return client, nil
+				},
+			}
+			cfg.PassiveAbsenceThreshold = 60 * time.Millisecond
+			cfg.PassiveReconnectInitialDelay = 5 * time.Millisecond
+			cfg.PassiveReconnectMaxDelay = 5 * time.Millisecond
 
-	snapshot := tap.Snapshot()
-	if !snapshot.Connected {
-		t.Fatal("Connected = false; want true for proxy-like silent observer session")
-	}
-	if snapshot.ConnectCount != 1 {
-		t.Fatalf("ConnectCount = %d; want 1", snapshot.ConnectCount)
-	}
-	if snapshot.DisconnectCount != 0 {
-		t.Fatalf("DisconnectCount = %d; want 0", snapshot.DisconnectCount)
+			tap, err := StartPassiveBusTap(context.Background(), cfg, recorder)
+			if err != nil {
+				t.Fatalf("StartPassiveBusTap error = %v", err)
+			}
+			defer func() {
+				if err := tap.Close(); err != nil {
+					t.Fatalf("Close error = %v", err)
+				}
+			}()
+
+			waitForPassiveEvents(t, recorder, 2*time.Second, func(events []PassiveTapEvent) bool {
+				return countPassiveEventKind(events, PassiveTapEventReadTimeout) >= 3
+			})
+
+			time.Sleep(100 * time.Millisecond)
+
+			snapshot := tap.Snapshot()
+			if !snapshot.Connected {
+				t.Fatal("Connected = false; want true for proxy-like silent observer session")
+			}
+			if snapshot.ConnectCount != 1 {
+				t.Fatalf("ConnectCount = %d; want 1", snapshot.ConnectCount)
+			}
+			if snapshot.DisconnectCount != 0 {
+				t.Fatalf("DisconnectCount = %d; want 0", snapshot.DisconnectCount)
+			}
+		})
 	}
 }
 

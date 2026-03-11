@@ -430,11 +430,19 @@ func passiveTapUsesProxyLikeObserverTransport(cfg Config) bool {
 		return false
 	}
 
-	_, port, err := net.SplitHostPort(strings.TrimSpace(config.Address))
+	if passiveObserveFirstDirectAdapterEndpoint(config.Network, config.Address) {
+		return false
+	}
+
+	host, port, err := net.SplitHostPort(strings.TrimSpace(config.Address))
 	if err != nil {
 		return false
 	}
-	return port == "19001"
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if port == "9999" && (strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()) {
+		return false
+	}
+	return port != "9999"
 }
 
 func resolvePassiveTransport(ctx context.Context, cfg Config) (transport.RawTransport, error) {

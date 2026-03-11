@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRunnerDryRunWritesMatrixArtifacts(t *testing.T) {
@@ -75,6 +76,55 @@ func TestRunnerDryRunWritesMatrixArtifacts(t *testing.T) {
 	}
 	if verdict.Expected != "pass" {
 		t.Fatalf("verdict expected = %q; want pass", verdict.Expected)
+	}
+	if verdict.Suite != SuiteFullMatrix {
+		t.Fatalf("verdict suite = %q; want %q", verdict.Suite, SuiteFullMatrix)
+	}
+}
+
+func TestRunnerDryRunWritesPassiveSuiteArtifacts(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	runner, err := NewRunner(RunnerOptions{
+		OutputDir: filepath.Join(tempDir, "results"),
+		Target:    "local",
+		Suite:     SuitePassive,
+		Execute:   false,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner error = %v", err)
+	}
+
+	verdicts, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if len(verdicts) != 6 {
+		t.Fatalf("len(verdicts) = %d; want 6", len(verdicts))
+	}
+	if verdicts[0].CaseID != "P01" || verdicts[len(verdicts)-1].CaseID != "P06" {
+		t.Fatalf("passive verdict ids = first %q last %q; want P01/P06", verdicts[0].CaseID, verdicts[len(verdicts)-1].CaseID)
+	}
+	if verdicts[len(verdicts)-1].PassiveMode != "unsupported_or_misconfigured" {
+		t.Fatalf("P06 passive mode = %q; want unsupported_or_misconfigured", verdicts[len(verdicts)-1].PassiveMode)
+	}
+
+	checkPath := filepath.Join(tempDir, "results", "P01", "configs", "helianthus.json")
+	data, err := os.ReadFile(checkPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", checkPath, err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatalf("decode helianthus config: %v", err)
+	}
+	if got := config["suite"]; got != SuitePassive {
+		t.Fatalf("config suite = %#v; want %q", got, SuitePassive)
+	}
+	if got := config["passive_mode"]; got != "required" {
+		t.Fatalf("config passive_mode = %#v; want required", got)
 	}
 }
 
@@ -252,6 +302,51 @@ func TestRunnerExecuteClassifiesUnexpectedPassForExpectedFailure(t *testing.T) {
 	}
 	if verdict.Expected != "fail" {
 		t.Fatalf("verdict expected = %q; want fail", verdict.Expected)
+	}
+}
+
+func TestRunnerRunsCleanupAfterCaseTimeout(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	runner, err := NewRunner(RunnerOptions{
+		OutputDir:    filepath.Join(tempDir, "results"),
+		Target:       "local",
+		IncludeIDs:   []string{"T01"},
+		Execute:      true,
+		CaseTimeout:  100 * time.Millisecond,
+		StartGateway: "echo gateway-start",
+		StopGateway:  "echo gateway-stop",
+		SmokeCommand: "sleep 2",
+	})
+	if err != nil {
+		t.Fatalf("NewRunner error = %v", err)
+	}
+
+	verdicts, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if len(verdicts) != 1 {
+		t.Fatalf("len(verdicts) = %d; want 1", len(verdicts))
+	}
+
+	verdict := verdicts[0]
+	if verdict.Status != "failed" {
+		t.Fatalf("verdict status = %q; want failed", verdict.Status)
+	}
+	foundStop := false
+	for _, command := range verdict.Commands {
+		if command.Name != "gateway-stop" {
+			continue
+		}
+		foundStop = true
+		if command.Status != "passed" {
+			t.Fatalf("gateway-stop status = %q; want passed", command.Status)
+		}
+	}
+	if !foundStop {
+		t.Fatalf("gateway-stop command result missing")
 	}
 }
 

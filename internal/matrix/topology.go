@@ -37,7 +37,13 @@ type TopologyCase struct {
 	UsesProxy        bool         `json:"uses_proxy"`
 	UsesEbusd        bool         `json:"uses_ebusd"`
 	EbusdViaProxy    bool         `json:"ebusd_via_proxy"`
+	PassiveMode      string       `json:"passive_mode,omitempty"`
 }
+
+const (
+	SuiteFullMatrix = "full88"
+	SuitePassive    = "passive"
+)
 
 func GenerateTopologyCases() []TopologyCase {
 	nextID := 1
@@ -114,4 +120,81 @@ func FilterCases(cases []TopologyCase, includeIDs []string) []TopologyCase {
 		}
 	}
 	return filtered
+}
+
+func GeneratePassiveSmokeCases() []TopologyCase {
+	return []TopologyCase{
+		{
+			ID:               "P01",
+			Kind:             TopologyDirectAdapter,
+			GatewayTransport: TransportENS,
+			PassiveMode:      "required",
+		},
+		{
+			ID:               "P02",
+			Kind:             TopologyDirectAdapter,
+			GatewayTransport: TransportENH,
+			PassiveMode:      "required",
+		},
+		{
+			ID:               "P03",
+			Kind:             TopologyProxySingle,
+			GatewayTransport: TransportENS,
+			ProxyTransport:   TransportENS,
+			UsesProxy:        true,
+			PassiveMode:      "required",
+		},
+		{
+			ID:               "P04",
+			Kind:             TopologyProxyDual,
+			GatewayTransport: TransportENS,
+			ProxyTransport:   TransportENS,
+			EbusdTransport:   TransportENS,
+			UsesProxy:        true,
+			UsesEbusd:        true,
+			EbusdViaProxy:    true,
+			PassiveMode:      "required",
+		},
+		{
+			ID:               "P05",
+			Kind:             TopologyProxyDual,
+			GatewayTransport: TransportENH,
+			ProxyTransport:   TransportENH,
+			EbusdTransport:   TransportENH,
+			UsesProxy:        true,
+			UsesEbusd:        true,
+			EbusdViaProxy:    true,
+			PassiveMode:      "required",
+		},
+		{
+			ID:               "P06",
+			Kind:             TopologyViaEbusdTCP,
+			GatewayTransport: TransportEbusdTCP,
+			EbusdTransport:   TransportENS,
+			UsesEbusd:        true,
+			PassiveMode:      "unsupported_or_misconfigured",
+		},
+	}
+}
+
+func CasesForSuite(suite string) ([]TopologyCase, error) {
+	switch normalizeSuite(suite) {
+	case SuiteFullMatrix:
+		return GenerateTopologyCases(), nil
+	case SuitePassive:
+		return GeneratePassiveSmokeCases(), nil
+	default:
+		return nil, fmt.Errorf("unsupported matrix suite %q", suite)
+	}
+}
+
+func normalizeSuite(suite string) string {
+	switch suite {
+	case "", SuiteFullMatrix:
+		return SuiteFullMatrix
+	case SuitePassive:
+		return SuitePassive
+	default:
+		return suite
+	}
 }

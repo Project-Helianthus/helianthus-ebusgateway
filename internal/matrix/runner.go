@@ -14,6 +14,7 @@ import (
 type RunnerOptions struct {
 	OutputDir        string
 	Target           string
+	Suite            string
 	IncludeIDs       []string
 	ExpectedFailures map[string]string
 	Execute          bool
@@ -41,7 +42,9 @@ type commandResult struct {
 
 type CaseVerdict struct {
 	CaseID      string          `json:"case_id"`
+	Suite       string          `json:"suite,omitempty"`
 	Kind        TopologyKind    `json:"kind"`
+	PassiveMode string          `json:"passive_mode,omitempty"`
 	Target      string          `json:"target"`
 	Status      string          `json:"status"`
 	Outcome     string          `json:"outcome"`
@@ -77,6 +80,7 @@ const (
 	caseOutcomeBlocked = "blocked-infra"
 
 	infraReasonAdapterNoSignal = "adapter_no_signal"
+	cleanupCommandTimeout      = 30 * time.Second
 )
 
 func NewRunner(options RunnerOptions) (*Runner, error) {
@@ -89,6 +93,10 @@ func NewRunner(options RunnerOptions) (*Runner, error) {
 	}
 	if options.Target != "local" && options.Target != "ha-addon" {
 		return nil, fmt.Errorf("unsupported target %q (allowed: local, ha-addon)", options.Target)
+	}
+	options.Suite = normalizeSuite(options.Suite)
+	if _, err := CasesForSuite(options.Suite); err != nil {
+		return nil, err
 	}
 	if options.SettleDelay < 0 {
 		return nil, fmt.Errorf("settle delay must be >= 0")
@@ -110,7 +118,11 @@ func (runner *Runner) Run(ctx context.Context) ([]CaseVerdict, error) {
 		ctx = context.Background()
 	}
 
-	cases := FilterCases(GenerateTopologyCases(), runner.options.IncludeIDs)
+	allCases, err := CasesForSuite(runner.options.Suite)
+	if err != nil {
+		return nil, err
+	}
+	cases := FilterCases(allCases, runner.options.IncludeIDs)
 	if len(cases) == 0 {
 		return nil, fmt.Errorf("no topology cases selected")
 	}
@@ -138,6 +150,7 @@ func (runner *Runner) Run(ctx context.Context) ([]CaseVerdict, error) {
 	if err := writeJSON(indexPath, map[string]any{
 		"generated_at": runner.nowUTC().Format(time.RFC3339),
 		"target":       runner.options.Target,
+		"suite":        runner.options.Suite,
 		"cases":        verdicts,
 	}); err != nil {
 		return verdicts, fmt.Errorf("write matrix index: %w", err)
@@ -211,7 +224,7 @@ func (runner *Runner) runCase(ctx context.Context, testCase TopologyCase) (CaseV
 			defer cancel()
 		}
 
-		env := buildCaseEnv(testCase, runner.options.Target, caseDir, configDir, logDir)
+		env := buildCaseEnv(testCase, runner.options.Target, runner.options.Suite, caseDir, configDir, logDir)
 		appendResult := func(result commandResult) {
 			commands = append(commands, result)
 			logFiles = append(logFiles, filepath.ToSlash(result.LogFile))
@@ -265,8 +278,10 @@ func (runner *Runner) runCase(ctx context.Context, testCase TopologyCase) (CaseV
 			appendResult(smokeResult)
 		}
 
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), cleanupCommandTimeout)
+		defer stopCancel()
 		for _, step := range stopPlan {
-			result := runner.runPlannedCommand(caseCtx, commandLogPath, step.name, step.command, step.enabled, env)
+			result := runner.runPlannedCommand(stopCtx, commandLogPath, step.name, step.command, step.enabled, env)
 			appendResult(result)
 		}
 
@@ -279,7 +294,9 @@ func (runner *Runner) runCase(ctx context.Context, testCase TopologyCase) (CaseV
 
 	verdict := CaseVerdict{
 		CaseID:      testCase.ID,
+		Suite:       runner.options.Suite,
 		Kind:        testCase.Kind,
+		PassiveMode: testCase.PassiveMode,
 		Target:      runner.options.Target,
 		Status:      status,
 		Outcome:     outcome,
@@ -306,7 +323,9 @@ func (runner *Runner) writeCaseConfigs(testCase TopologyCase, configDir string) 
 
 	helianthusConfig := map[string]any{
 		"case_id":            testCase.ID,
+		"suite":              runner.options.Suite,
 		"kind":               testCase.Kind,
+		"passive_mode":       testCase.PassiveMode,
 		"target":             runner.options.Target,
 		"gateway_transport":  testCase.GatewayTransport,
 		"uses_proxy":         testCase.UsesProxy,
@@ -442,13 +461,16 @@ func (runner *Runner) runPlannedCommand(
 func buildCaseEnv(
 	testCase TopologyCase,
 	target string,
+	suite string,
 	caseDir string,
 	configDir string,
 	logDir string,
 ) []string {
 	return []string{
 		"MATRIX_CASE_ID=" + testCase.ID,
+		"MATRIX_SUITE=" + normalizeSuite(suite),
 		"MATRIX_CASE_KIND=" + string(testCase.Kind),
+		"MATRIX_PASSIVE_MODE=" + testCase.PassiveMode,
 		"MATRIX_TARGET=" + target,
 		"MATRIX_CASE_DIR=" + caseDir,
 		"MATRIX_CONFIG_DIR=" + configDir,

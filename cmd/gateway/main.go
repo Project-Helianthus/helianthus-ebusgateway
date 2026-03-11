@@ -102,13 +102,13 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		return err
 	}
 
-	startupScanFirstPassDone := startDiscoveryScanLoopFn(ctx, cfg, gateway, builder)
+	startupScanSignals := startDiscoveryScanLoopFn(ctx, cfg, gateway, builder)
 
 	if semanticBarrier != nil {
 		go func() {
 			select {
 			case <-ctx.Done():
-			case <-startupScanFirstPassDone:
+			case <-startupScanSignals.semanticBootstrapReady:
 			}
 			close(semanticBarrier)
 		}()
@@ -125,7 +125,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	var listener *ebusgateway.BroadcastListener
 	var reconstructor *ebusgateway.PassiveTransactionReconstructor
 	if shouldStartPassiveObserveFirst(cfg) {
-		waitForStartupScanFirstPass(ctx, cfg, startupScanFirstPassDone)
+		waitForStartupScanFirstPass(ctx, cfg, startupScanSignals.firstPassDone)
 
 		reconstructor, err = startPassiveTransactionReconstructor(ctx, cfg)
 		if err != nil {

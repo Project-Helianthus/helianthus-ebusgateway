@@ -183,7 +183,6 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 						imported = 0
 					}
 					log.Printf("startup scan preload: imported=%d total=%d (ebusd-tcp)", imported, total)
-					cancel()
 
 					enrichVaillantIdentityFn(ctx, gateway, cfg)
 
@@ -210,6 +209,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 						shouldRetryDiscoveryWithFullRange(ctx, cfg, gateway, usedRestrictedTargets, retryingFullRange) {
 						forceFullRangeNextPass = true
 						fullRangeRecoveryAttempted = true
+						cancel()
 						timer := time.NewTimer(interval)
 						select {
 						case <-ctx.Done():
@@ -219,12 +219,14 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 						}
 						continue
 					} else if shouldStopDiscoveryScan(total, confirmationPending, confirmationSatisfied) {
+						cancel()
 						return
 					} else if confirmationPending && usedRestrictedTargets && !retryingFullRange &&
 						fullRangeRecoveryAttempted && !confirmationSatisfied {
 						// Once the bounded full-range retry is spent, keep the preload inventory
 						// but fall through so restricted active scans can still confirm the bus.
 					} else {
+						cancel()
 						timer := time.NewTimer(interval)
 						select {
 						case <-ctx.Done():

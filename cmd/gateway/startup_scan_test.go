@@ -870,10 +870,20 @@ func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedSca
 		mu            sync.Mutex
 		preloadRun    int
 		scanRun       int
+		scanCtxErr    error
 		targetHistory [][]byte
 	)
 	activeSuccess := make(chan struct{}, 1)
-	registryScanFn = func(_ context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, targets []byte) ([]registry.DeviceEntry, error) {
+	registryScanFn = func(scanCtx context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, targets []byte) ([]registry.DeviceEntry, error) {
+		if err := scanCtx.Err(); err != nil {
+			mu.Lock()
+			if scanCtxErr == nil {
+				scanCtxErr = err
+			}
+			mu.Unlock()
+			return nil, err
+		}
+
 		mu.Lock()
 		scanRun++
 		targetHistory = append(targetHistory, append([]byte(nil), targets...))
@@ -953,6 +963,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedSca
 	mu.Lock()
 	gotPreloadRun := preloadRun
 	gotScanRun := scanRun
+	gotScanCtxErr := scanCtxErr
 	gotTargetHistory := make([][]byte, len(targetHistory))
 	for i := range targetHistory {
 		gotTargetHistory[i] = append([]byte(nil), targetHistory[i]...)
@@ -964,6 +975,9 @@ func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedSca
 	}
 	if gotScanRun != 2 {
 		t.Fatalf("registry scan runs = %d; want 2 (failed full-range retry, then restricted success)", gotScanRun)
+	}
+	if gotScanCtxErr != nil {
+		t.Fatalf("registry scan received canceled context during follow-up active confirmation: %v", gotScanCtxErr)
 	}
 
 	wantTargetHistory := [][]byte{

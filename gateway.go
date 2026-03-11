@@ -200,6 +200,14 @@ func canonicalTransportProtocol(protocol TransportProtocol) TransportProtocol {
 	}
 }
 
+func PassiveTransportSupported(cfg Config) bool {
+	config, err := normalizeTransportConfig(cfg.TransportConfig)
+	if err == nil {
+		return config.Protocol != TransportEbusdTCP
+	}
+	return canonicalTransportProtocol(cfg.TransportConfig.Protocol) != TransportEbusdTCP
+}
+
 func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol) (TransportProtocol, string, string, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil {

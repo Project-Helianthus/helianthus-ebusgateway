@@ -103,7 +103,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}
 	var listener *ebusgateway.BroadcastListener
 	var reconstructor *ebusgateway.PassiveTransactionReconstructor
-	if cfg.BroadcastListen {
+	if shouldStartPassiveObserveFirst(cfg) {
 		reconstructor, err = ebusgateway.StartPassiveTransactionReconstructor(ctx, cfg)
 		if err != nil {
 			if advertiser != nil {
@@ -150,6 +150,9 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			return err
 		}
 	}
+	if cfg.BroadcastListen && !shouldStartPassiveObserveFirst(cfg) {
+		log.Printf("passive observe-first unavailable on transport=%s; continuing degraded", cfg.TransportConfig.Protocol)
+	}
 	defer func() {
 		if listener != nil {
 			if err := listener.Close(); err != nil {
@@ -185,6 +188,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	<-ctx.Done()
 	return nil
+}
+
+func shouldStartPassiveObserveFirst(cfg ebusgateway.Config) bool {
+	return cfg.BroadcastListen && ebusgateway.PassiveTransportSupported(cfg)
 }
 
 func wireObserveFirstObservers(cfg *ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {

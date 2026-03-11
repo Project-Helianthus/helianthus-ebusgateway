@@ -61,6 +61,31 @@ remote_exec() {
   "${SSH[@]}" "$@"
 }
 
+select_ebusd_config_src() {
+  if [[ -n "${EBUSD_CONFIG_SRC:-}" ]]; then
+    printf '%s\n' "${EBUSD_CONFIG_SRC}"
+    return 0
+  fi
+
+  local selected
+  selected="$(
+    remote_exec "for d in \
+      '/mnt/data/supervisor/homeassistant/ebusd-configuration.old/ebusd-2.1.x/de/vaillant' \
+      '/mnt/data/supervisor/homeassistant/ebusd-configuration.old/ebusd-1.x.x/vaillant_de' \
+      '/mnt/data/supervisor/homeassistant/ebusd-configuration/outcsv-pr564-9097c032a6cc'; do \
+        if [ -d \"\$d\" ] && find \"\$d\" -maxdepth 1 -type f | grep -q .; then \
+          printf '%s\n' \"\$d\"; \
+          exit 0; \
+        fi; \
+      done"
+  )"
+  if [[ -z "${selected}" ]]; then
+    echo "unable to resolve EBUSD_CONFIG_SRC on HA host" >&2
+    return 1
+  fi
+  printf '%s\n' "${selected}"
+}
+
 gateway_connection() {
   local protocol network address
   if [[ "${MATRIX_USES_EBUSD:-0}" == "1" && "${MATRIX_USES_PROXY:-0}" == "0" ]]; then
@@ -127,11 +152,14 @@ gateway_connection() {
 }
 
 run_local_ops() {
+  local ebusd_config_src
+  ebusd_config_src="$(select_ebusd_config_src)"
   MATRIX_CASE_CANONICAL_ID="${canonical_case_id}" \
   MATRIX_CASE_EXEC_ID="${exec_case_id}" \
   MATRIX_GATEWAY_BASE_URL="${gateway_base_url}" \
   MATRIX_GRAPHQL_URL="${MATRIX_GRAPHQL_URL:-${gateway_base_url}/graphql}" \
   MATRIX_METRICS_URL="${MATRIX_METRICS_URL:-${gateway_base_url}/metrics}" \
+  EBUSD_CONFIG_SRC="${ebusd_config_src}" \
   ADAPTER_REQUIRE_SIGNAL="${ADAPTER_REQUIRE_SIGNAL:-0}" \
   MATRIX_CASE_ID="${exec_case_id}" \
     "${LOCAL_OPS_SCRIPT}" "$@"

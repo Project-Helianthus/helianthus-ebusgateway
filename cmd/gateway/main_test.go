@@ -154,6 +154,22 @@ func TestWireObserveFirstObserversWiresDedupSnapshotterIntoObservabilityStore(t 
 	}
 }
 
+func TestShouldStartPassiveObserveFirst(t *testing.T) {
+	t.Parallel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
+	if shouldStartPassiveObserveFirst(cfg) {
+		t.Fatal("shouldStartPassiveObserveFirst() = true; want false for ebusd-tcp")
+	}
+
+	cfg.TransportConfig.Protocol = ebusgateway.TransportENH
+	if !shouldStartPassiveObserveFirst(cfg) {
+		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for enh")
+	}
+}
+
 func TestBindFlags_PortalPath(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)

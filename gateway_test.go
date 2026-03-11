@@ -343,6 +343,59 @@ func TestNormalizeTransportConfigCanonicalizesEbusdAlias(t *testing.T) {
 	}
 }
 
+func TestPassiveTransportSupported(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{
+			name: "protocol field ebusd-tcp",
+			cfg: Config{
+				TransportConfig: TransportConfig{
+					Protocol: TransportEbusdTCP,
+					Network:  "tcp",
+					Address:  "127.0.0.1:8888",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "endpoint scheme ebusd",
+			cfg: Config{
+				TransportConfig: TransportConfig{
+					Address: "ebusd://127.0.0.1:8888",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "enh transport",
+			cfg: Config{
+				TransportConfig: TransportConfig{
+					Protocol: TransportENH,
+					Network:  "tcp",
+					Address:  "127.0.0.1:9999",
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := PassiveTransportSupported(test.cfg); got != test.want {
+				t.Fatalf("PassiveTransportSupported() = %v; want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestTransportFromConn_UDPPlain(t *testing.T) {
 	t.Run("requires udp conn", func(t *testing.T) {
 		client, server := net.Pipe()

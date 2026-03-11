@@ -136,6 +136,29 @@ func TestBusObservabilityStoreMarksPassiveDisabledAsCapabilityWithdrawn(t *testi
 	}
 }
 
+func TestBusObservabilityStoreKeepsUnsupportedPassiveTransportOutOfStartupTimeout(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportEbusdTCP
+
+	base := time.Now().UTC()
+	store := NewBusObservabilityStore(cfg)
+	store.now = func() time.Time {
+		return base.Add(cfg.ObserveFirstWarmupOuterWindow + time.Second)
+	}
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="unsupported_or_misconfigured"} 1`) {
+		t.Fatalf("RenderPrometheus missing unsupported_or_misconfigured reason for ebusd-tcp passive mode:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0`) {
+		t.Fatalf("RenderPrometheus unexpectedly counted timeout probes for ebusd-tcp passive mode:\n%s", metrics)
+	}
+	if strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="startup_timeout"} 1`) {
+		t.Fatalf("RenderPrometheus reported startup_timeout for ebusd-tcp passive mode:\n%s", metrics)
+	}
+}
+
 func TestBusObservabilityStoreBootstrapsWarmupFromConnectedSnapshotAfterAttach(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BroadcastListen = true

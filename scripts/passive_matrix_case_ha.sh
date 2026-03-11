@@ -70,8 +70,8 @@ select_ebusd_config_src() {
   local selected
   selected="$(
     remote_exec "for d in \
-      '/mnt/data/supervisor/homeassistant/ebusd-configuration.old/ebusd-2.1.x/de/vaillant' \
       '/mnt/data/supervisor/homeassistant/ebusd-configuration.old/ebusd-1.x.x/vaillant_de' \
+      '/mnt/data/supervisor/homeassistant/ebusd-configuration.old/ebusd-2.1.x/de/vaillant' \
       '/mnt/data/supervisor/homeassistant/ebusd-configuration/outcsv-pr564-9097c032a6cc'; do \
         if [ -d \"\$d\" ] && find \"\$d\" -maxdepth 1 -type f | grep -q .; then \
           printf '%s\n' \"\$d\"; \

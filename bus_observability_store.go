@@ -185,8 +185,8 @@ func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 			transitions:      make(map[string]uint64),
 		},
 	}
-	if !PassiveTransportSupported(cfg) {
-		store.passive.unavailableReason = "unsupported_or_misconfigured"
+	if reason := passiveTransportUnavailableReason(cfg); reason != "" {
+		store.passive.unavailableReason = reason
 	}
 	return store
 }
@@ -1014,9 +1014,9 @@ func (store *BusObservabilityStore) refreshPassiveStateLocked(now time.Time, tap
 		store.passive.startupWindowClosed = true
 		return
 	}
-	if !PassiveTransportSupported(store.cfg) {
+	if reason := passiveTransportUnavailableReason(store.cfg); reason != "" {
 		store.setPassiveStateLocked("unavailable")
-		store.passive.unavailableReason = "unsupported_or_misconfigured"
+		store.passive.unavailableReason = reason
 		store.passive.startupWindowClosed = true
 		return
 	}

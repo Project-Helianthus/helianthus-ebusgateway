@@ -71,6 +71,9 @@ func TestBusObservabilityStoreRecentRingEvictsOldestButCountersAdvance(t *testin
 func TestBusObservabilityStorePeriodicityBudgetEvictsLRU(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
 	cfg.ObserveFirstPeriodicityCapacity = 1
 	store := NewBusObservabilityStore(cfg)
 	base := time.Now().UTC()
@@ -159,9 +162,106 @@ func TestBusObservabilityStoreKeepsUnsupportedPassiveTransportOutOfStartupTimeou
 	}
 }
 
+func TestBusObservabilityStoreKeepsDirectRemotePassiveOutOfStartupTimeout(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "192.168.100.2:9999"
+
+	base := time.Now().UTC()
+	store := NewBusObservabilityStore(cfg)
+	store.now = func() time.Time {
+		return base.Add(cfg.ObserveFirstWarmupOuterWindow + time.Second)
+	}
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="unsupported_or_misconfigured"} 1`) {
+		t.Fatalf("RenderPrometheus missing unsupported_or_misconfigured reason for direct remote passive mode:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0`) {
+		t.Fatalf("RenderPrometheus unexpectedly counted timeout probes for direct remote passive mode:\n%s", metrics)
+	}
+	if strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="startup_timeout"} 1`) {
+		t.Fatalf("RenderPrometheus reported startup_timeout for direct remote passive mode:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreKeepsDirectRemoteHostnamePassiveOutOfStartupTimeout(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENS
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "adapter.local:9999"
+
+	base := time.Now().UTC()
+	store := NewBusObservabilityStore(cfg)
+	store.now = func() time.Time {
+		return base.Add(cfg.ObserveFirstWarmupOuterWindow + time.Second)
+	}
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="unsupported_or_misconfigured"} 1`) {
+		t.Fatalf("RenderPrometheus missing unsupported_or_misconfigured reason for hostname direct remote passive mode:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0`) {
+		t.Fatalf("RenderPrometheus unexpectedly counted timeout probes for hostname direct remote passive mode:\n%s", metrics)
+	}
+	if strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="startup_timeout"} 1`) {
+		t.Fatalf("RenderPrometheus reported startup_timeout for hostname direct remote passive mode:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreDoesNotDowngradeRemoteProxyLikeEndpoint(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENS
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "192.168.100.4:19001"
+
+	base := time.Now().UTC()
+	store := NewBusObservabilityStore(cfg)
+	store.now = func() time.Time {
+		return base.Add(cfg.ObserveFirstWarmupOuterWindow + time.Second)
+	}
+
+	metrics := store.RenderPrometheus()
+	if strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="unsupported_or_misconfigured"} 1`) {
+		t.Fatalf("RenderPrometheus incorrectly marked remote proxy-like endpoint unsupported:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="startup_timeout"} 1`) {
+		t.Fatalf("RenderPrometheus missing startup_timeout for remote proxy-like endpoint without passive ingress:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreDoesNotDowngradeRemoteProxyLikeHostnameEndpoint(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENS
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "proxy.local:19001"
+
+	base := time.Now().UTC()
+	store := NewBusObservabilityStore(cfg)
+	store.now = func() time.Time {
+		return base.Add(cfg.ObserveFirstWarmupOuterWindow + time.Second)
+	}
+
+	metrics := store.RenderPrometheus()
+	if strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="unsupported_or_misconfigured"} 1`) {
+		t.Fatalf("RenderPrometheus incorrectly marked hostname remote proxy-like endpoint unsupported:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="startup_timeout"} 1`) {
+		t.Fatalf("RenderPrometheus missing startup_timeout for hostname remote proxy-like endpoint without passive ingress:\n%s", metrics)
+	}
+}
+
 func TestBusObservabilityStoreBootstrapsWarmupFromConnectedSnapshotAfterAttach(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
 	reconstructor := newPassiveTransactionReconstructorCore(cfg)
 	reconstructor.tap = &PassiveBusTap{
@@ -208,6 +308,9 @@ func TestBusObservabilityStoreBootstrapsWarmupFromConnectedSnapshotAfterAttach(t
 func TestBusObservabilityStoreExportsBusyMetricsWhenPassiveAvailable(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
 	store := NewBusObservabilityStore(cfg)
 	base := time.Now().UTC()
 	store.now = func() time.Time { return base }
@@ -231,6 +334,9 @@ func TestBusObservabilityStoreExportsBusyMetricsWhenPassiveAvailable(t *testing.
 func TestBusObservabilityStoreRebootsWarmupFromConnectedSnapshotAfterSocketLoss(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
 	store := NewBusObservabilityStore(cfg)
 	reconstructor := newPassiveTransactionReconstructorCore(cfg)
@@ -270,6 +376,9 @@ func TestBusObservabilityStoreRebootsWarmupFromConnectedSnapshotAfterSocketLoss(
 func TestBusObservabilityStoreRestartsWarmupOnTrafficAfterStartupTimeout(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
 	store := NewBusObservabilityStore(cfg)
 	base := time.Unix(1700000200, 0).UTC()

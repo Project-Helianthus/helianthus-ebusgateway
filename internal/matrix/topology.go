@@ -128,13 +128,13 @@ func GeneratePassiveSmokeCases() []TopologyCase {
 			ID:               "P01",
 			Kind:             TopologyDirectAdapter,
 			GatewayTransport: TransportENS,
-			PassiveMode:      "required",
+			PassiveMode:      "unsupported_or_misconfigured",
 		},
 		{
 			ID:               "P02",
 			Kind:             TopologyDirectAdapter,
 			GatewayTransport: TransportENH,
-			PassiveMode:      "required",
+			PassiveMode:      "unsupported_or_misconfigured",
 		},
 		{
 			ID:               "P03",

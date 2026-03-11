@@ -165,8 +165,30 @@ func TestShouldStartPassiveObserveFirst(t *testing.T) {
 	}
 
 	cfg.TransportConfig.Protocol = ebusgateway.TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
 	if !shouldStartPassiveObserveFirst(cfg) {
-		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for enh")
+		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for loopback proxy endpoint")
+	}
+
+	cfg.TransportConfig.Address = "192.168.100.4:19001"
+	if !shouldStartPassiveObserveFirst(cfg) {
+		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for remote proxy-like endpoint")
+	}
+
+	cfg.TransportConfig.Address = "192.168.100.2:9999"
+	if shouldStartPassiveObserveFirst(cfg) {
+		t.Fatal("shouldStartPassiveObserveFirst() = true; want false for direct remote endpoint")
+	}
+
+	cfg.TransportConfig.Address = "adapter.local:9999"
+	if shouldStartPassiveObserveFirst(cfg) {
+		t.Fatal("shouldStartPassiveObserveFirst() = true; want false for hostname direct remote endpoint")
+	}
+
+	cfg.TransportConfig.Address = "proxy.local:19001"
+	if !shouldStartPassiveObserveFirst(cfg) {
+		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for hostname proxy-like endpoint")
 	}
 }
 

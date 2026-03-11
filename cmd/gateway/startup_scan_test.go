@@ -226,6 +226,20 @@ func TestResolveStartupScanSourceConfig(t *testing.T) {
 			want: 0x00,
 		},
 		{
+			name: "proxy single ENS without broadcast resolves startup source",
+			cfg: func() ebusgateway.Config {
+				cfg := ebusgateway.DefaultConfig()
+				cfg.BroadcastListen = false
+				cfg.ScanSource = 0x00
+				cfg.ScanSourceAuto = true
+				cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+				cfg.TransportConfig.Network = "tcp"
+				cfg.TransportConfig.Address = "127.0.0.1:19001"
+				return cfg
+			}(),
+			want: proxyObserveFirstStartupSource,
+		},
+		{
 			name: "explicit source is preserved",
 			cfg: func() ebusgateway.Config {
 				cfg := ebusgateway.DefaultConfig()
@@ -397,6 +411,77 @@ func TestStartDiscoveryScanLoop_ProxyObserveFirstAutoUsesExplicitStartupSource(t
 
 	select {
 	case got := <-scanSourceCh:
+		if got != proxyObserveFirstStartupSource {
+			t.Fatalf("registry scan source = 0x%02X; want 0x%02X", got, proxyObserveFirstStartupSource)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("registry scan was not invoked")
+	}
+
+	select {
+	case <-firstPassDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("firstPassDone was not signaled")
+	}
+
+	select {
+	case <-loopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup scan loop did not exit after context cancellation")
+	}
+}
+
+func TestStartDiscoveryScanLoop_ProxySingleENSWithoutBroadcastResolvesSource(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origLoopExitFn := startupScanLoopExitFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		startupScanLoopExitFn = origLoopExitFn
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	scanSourceCh := make(chan byte, 1)
+	loopExited := make(chan struct{})
+	registryScanFn = func(_ context.Context, _ registry.ScanBus, _ *registry.DeviceRegistry, source byte, _ []byte) ([]registry.DeviceEntry, error) {
+		scanSourceCh <- source
+		cancel()
+		return nil, nil
+	}
+	startupScanLoopExitFn = func() {
+		close(loopExited)
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = time.Hour
+	cfg.BroadcastListen = false
+	cfg.ScanSource = 0x00
+	cfg.ScanSourceAuto = true
+	cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
+
+	firstPassDone := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	select {
+	case got := <-scanSourceCh:
+		if got == 0x00 {
+			t.Fatal("registry scan source = 0x00; proxy-single ENS must not use invalid initiator")
+		}
 		if got != proxyObserveFirstStartupSource {
 			t.Fatalf("registry scan source = 0x%02X; want 0x%02X", got, proxyObserveFirstStartupSource)
 		}

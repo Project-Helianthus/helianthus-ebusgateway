@@ -480,7 +480,12 @@ func resolveStartupScanSourceConfig(cfg ebusgateway.Config) ebusgateway.Config {
 	if !cfg.ScanSourceAuto || cfg.ScanSource != 0x00 {
 		return cfg
 	}
-	if shouldStartPassiveObserveFirst(cfg) {
+	// Source 0x00 is not a valid eBUS initiator. On proxy-capable endpoints
+	// (ENH/ENS through a proxy) the proxy cannot arbitrate with initiator=0x00.
+	// Resolve to the dedicated proxy startup source regardless of broadcast
+	// mode. Direct adapter endpoints (e.g. :9999) handle 0x00 internally via
+	// firmware, so leave those unchanged.
+	if ebusgateway.PassiveTransportSupported(cfg) {
 		cfg.ScanSource = proxyObserveFirstStartupSource
 		cfg.ScanSourceAuto = false
 	}

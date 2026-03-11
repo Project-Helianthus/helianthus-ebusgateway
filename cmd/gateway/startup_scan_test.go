@@ -35,6 +35,149 @@ func TestShouldStopDiscoveryScan(t *testing.T) {
 	}
 }
 
+func TestShouldRetryDiscoveryWithFullRange(t *testing.T) {
+	origProbeFn := startupScanB524ProbeFn
+	t.Cleanup(func() { startupScanB524ProbeFn = origProbeFn })
+
+	tests := []struct {
+		name              string
+		devices           []registry.DeviceInfo
+		usedRestricted    bool
+		retryingFullRange bool
+		coherent          map[byte]bool
+		canceledCtx       bool
+		want              bool
+		wantProbeCalls    bool
+	}{
+		{
+			name: "non restricted pass never retries",
+			devices: []registry.DeviceInfo{{
+				Address:      0x08,
+				Manufacturer: "Vaillant",
+				DeviceID:     "BAI00",
+			}},
+			coherent:       map[byte]bool{0x08: false},
+			want:           false,
+			wantProbeCalls: false,
+		},
+		{
+			name: "bounded full range retry does not recurse",
+			devices: []registry.DeviceInfo{{
+				Address:      0x08,
+				Manufacturer: "Vaillant",
+				DeviceID:     "BAI00",
+			}},
+			usedRestricted:    true,
+			retryingFullRange: true,
+			coherent:          map[byte]bool{0x08: false},
+			want:              false,
+			wantProbeCalls:    false,
+		},
+		{
+			name: "non vaillant inventory does not broaden",
+			devices: []registry.DeviceInfo{{
+				Address:      0x01,
+				Manufacturer: "Other",
+				DeviceID:     "GENERIC",
+			}},
+			usedRestricted: true,
+			coherent:       map[byte]bool{0x01: false},
+			want:           false,
+			wantProbeCalls: false,
+		},
+		{
+			name: "mixed inventory broadens when vaillant root is not ready",
+			devices: []registry.DeviceInfo{
+				{Address: 0x01, Manufacturer: "Other", DeviceID: "GENERIC"},
+				{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"},
+			},
+			usedRestricted: true,
+			coherent:       map[byte]bool{0x01: false, 0x08: false},
+			want:           true,
+			wantProbeCalls: true,
+		},
+		{
+			name: "mixed inventory stops broadening once root is ready",
+			devices: []registry.DeviceInfo{
+				{Address: 0x01, Manufacturer: "Other", DeviceID: "GENERIC"},
+				{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
+			},
+			usedRestricted: true,
+			coherent:       map[byte]bool{0x01: false, 0x26: true},
+			want:           false,
+			wantProbeCalls: true,
+		},
+		{
+			name: "canceled context never broadens or probes",
+			devices: []registry.DeviceInfo{{
+				Address:      0x08,
+				Manufacturer: "Vaillant",
+				DeviceID:     "BAI00",
+			}},
+			usedRestricted: true,
+			coherent:       map[byte]bool{0x08: false},
+			canceledCtx:    true,
+			want:           false,
+			wantProbeCalls: false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+				Transport: transport.NewLoopback(),
+			})
+			if err != nil {
+				t.Fatalf("gateway.New error = %v", err)
+			}
+			t.Cleanup(func() {
+				if err := gateway.Close(); err != nil {
+					t.Fatalf("gateway.Close error = %v", err)
+				}
+			})
+
+			for _, device := range test.devices {
+				gateway.Registry.Register(device)
+			}
+
+			var (
+				probeCalls       int
+				sawCanceledProbe bool
+			)
+			startupScanB524ProbeFn = func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+				probeCalls++
+				if err := ctx.Err(); err != nil {
+					sawCanceledProbe = true
+					return false
+				}
+				return test.coherent[target]
+			}
+
+			ctx := context.Background()
+			if test.canceledCtx {
+				canceledCtx, cancel := context.WithCancel(context.Background())
+				cancel()
+				ctx = canceledCtx
+			}
+
+			got := shouldRetryDiscoveryWithFullRange(ctx, ebusgateway.DefaultConfig(), gateway, test.usedRestricted, test.retryingFullRange)
+			if got != test.want {
+				t.Fatalf("shouldRetryDiscoveryWithFullRange(...) = %v; want %v", got, test.want)
+			}
+			if sawCanceledProbe {
+				t.Fatal("shouldRetryDiscoveryWithFullRange probed with a canceled context")
+			}
+			if test.wantProbeCalls && probeCalls == 0 {
+				t.Fatal("shouldRetryDiscoveryWithFullRange did not exercise real readiness probing")
+			}
+			if !test.wantProbeCalls && probeCalls != 0 {
+				t.Fatalf("probe calls = %d; want 0", probeCalls)
+			}
+		})
+	}
+}
+
 func TestEbusdScanTargetCandidates(t *testing.T) {
 	t.Parallel()
 
@@ -248,6 +391,9 @@ func TestStartDiscoveryScanLoop_RerunsPhysicalIdentityEnrichmentAfterNormalScan(
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
 }
 
 func TestStartDiscoveryScanLoop_FallbackIdentityEnrichmentRunsOnce(t *testing.T) {
@@ -365,4 +511,314 @@ func TestStartDiscoveryScanLoop_FallbackIdentityEnrichmentRunsOnce(t *testing.T)
 	if gotEbusd != 1 {
 		t.Fatalf("fallback ebusd enrichment calls = %d; want 1", gotEbusd)
 	}
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestStartDiscoveryScanLoop_EbusdPreloadKeepsScanningUntilControllerCandidate(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origTargetCandidatesFn := ebusdScanTargetCandidatesFn
+	origResultTargetsFn := ebusdScanResultTargetsFn
+	origResultInfosFn := ebusdScanResultInfosFn
+	origProbeFn := startupScanB524ProbeFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
+		ebusdScanResultTargetsFn = origResultTargetsFn
+		ebusdScanResultInfosFn = origResultInfosFn
+		startupScanB524ProbeFn = origProbeFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+	})
+
+	var (
+		mu                    sync.Mutex
+		preloadRun            int
+		scanRun               int
+		lastTargets           []byte
+		unexpectedPreloadRuns int
+	)
+	postScanEnrichDone := make(chan struct{}, 1)
+	registryScanFn = func(_ context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, targets []byte) ([]registry.DeviceEntry, error) {
+		mu.Lock()
+		scanRun++
+		lastTargets = append([]byte(nil), targets...)
+		mu.Unlock()
+
+		entry := reg.Register(registry.DeviceInfo{
+			Address:      0x15,
+			Manufacturer: "Vaillant",
+			DeviceID:     "BASV2",
+		})
+		return []registry.DeviceEntry{entry}, nil
+	}
+	ebusdScanTargetCandidatesFn = func(cfg ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
+		return []ebusgateway.TransportConfig{cfg}
+	}
+	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
+		return []byte{0x04, 0x08}, nil
+	}
+	ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		preloadRun++
+		if preloadRun == 1 {
+			return []registry.DeviceInfo{
+				{Address: 0x04, Manufacturer: "Vaillant", DeviceID: "NETX3"},
+				{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"},
+			}, nil
+		}
+		unexpectedPreloadRuns++
+		return nil, nil
+	}
+	var probeCtxErr error
+	startupScanB524ProbeFn = func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if err := ctx.Err(); err != nil && probeCtxErr == nil {
+			probeCtxErr = err
+			return false
+		}
+		switch target {
+		case 0x15:
+			return true
+		case 0x04, 0x08:
+			return false
+		default:
+			return false
+		}
+	}
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {
+		select {
+		case postScanEnrichDone <- struct{}{}:
+		default:
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = 10 * time.Millisecond
+	cfg.TransportConfig = ebusgateway.TransportConfig{
+		Protocol: ebusgateway.TransportEbusdTCP,
+		Network:  "tcp",
+		Address:  "127.0.0.1:8888",
+	}
+
+	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if entry, ok := gateway.Registry.Lookup(0x15); ok && entry != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("startup discovery scan did not persist BASV2 after partial preload")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	gotRuns := preloadRun
+	gotScanRuns := scanRun
+	gotLastTargets := append([]byte(nil), lastTargets...)
+	gotUnexpectedPreloadRuns := unexpectedPreloadRuns
+	gotProbeCtxErr := probeCtxErr
+	mu.Unlock()
+	if gotRuns != 1 {
+		t.Fatalf("ebusd scan preload runs = %d; want 1 before bounded full-range retry", gotRuns)
+	}
+	if gotScanRuns != 1 {
+		t.Fatalf("registry scan runs = %d; want 1 full-range recovery pass", gotScanRuns)
+	}
+	if gotLastTargets != nil {
+		t.Fatalf("registry scan targets = %v; want nil for full-range retry", gotLastTargets)
+	}
+	if gotUnexpectedPreloadRuns != 0 {
+		t.Fatalf("unexpected preload reruns = %d; want 0 after bounded full-range retry", gotUnexpectedPreloadRuns)
+	}
+	if gotProbeCtxErr != nil {
+		t.Fatalf("startup scan readiness probe received canceled context: %v", gotProbeCtxErr)
+	}
+
+	if !startupScanHasCoherentVaillantRoot(context.Background(), cfg, gateway) {
+		t.Fatal("startupScanHasCoherentVaillantRoot should succeed after bounded full-range recovery")
+	}
+	if shouldRetryDiscoveryWithFullRange(context.Background(), cfg, gateway, true, false) {
+		t.Fatal("shouldRetryDiscoveryWithFullRange should stop retrying once recovery has produced a coherent root")
+	}
+
+	select {
+	case <-postScanEnrichDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not complete post-scan serial enrichment before teardown")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	finalPreloadRun := preloadRun
+	finalScanRun := scanRun
+	mu.Unlock()
+	if finalPreloadRun != 1 {
+		t.Fatalf("preload runs after recovery = %d; want prompt stop at 1", finalPreloadRun)
+	}
+	if finalScanRun != 1 {
+		t.Fatalf("registry scan runs after recovery = %d; want prompt stop at 1", finalScanRun)
+	}
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRange(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origTargetCandidatesFn := ebusdScanTargetCandidatesFn
+	origResultTargetsFn := ebusdScanResultTargetsFn
+	origResultInfosFn := ebusdScanResultInfosFn
+	origProbeFn := startupScanB524ProbeFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
+		ebusdScanResultTargetsFn = origResultTargetsFn
+		ebusdScanResultInfosFn = origResultInfosFn
+		startupScanB524ProbeFn = origProbeFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+	})
+
+	var (
+		mu                    sync.Mutex
+		preloadRun            int
+		scanRun               int
+		probeCtxErr           error
+		unexpectedPreloadRuns int
+	)
+	preloadEnrichDone := make(chan struct{}, 1)
+	registryScanFn = func(_ context.Context, _ registry.ScanBus, _ *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+		mu.Lock()
+		scanRun++
+		mu.Unlock()
+		return nil, nil
+	}
+	ebusdScanTargetCandidatesFn = func(cfg ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
+		return []ebusgateway.TransportConfig{cfg}
+	}
+	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
+		return []byte{0x04, 0x08, 0x15}, nil
+	}
+	ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		preloadRun++
+		if preloadRun > 1 {
+			unexpectedPreloadRuns++
+		}
+		return []registry.DeviceInfo{
+			{Address: 0x04, Manufacturer: "Vaillant", DeviceID: "NETX3"},
+			{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"},
+			{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"},
+		}, nil
+	}
+	startupScanB524ProbeFn = func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if err := ctx.Err(); err != nil && probeCtxErr == nil {
+			probeCtxErr = err
+			return false
+		}
+		return target == 0x15
+	}
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {
+		select {
+		case preloadEnrichDone <- struct{}{}:
+		default:
+		}
+	}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = 10 * time.Millisecond
+	cfg.TransportConfig = ebusgateway.TransportConfig{
+		Protocol: ebusgateway.TransportEbusdTCP,
+		Network:  "tcp",
+		Address:  "127.0.0.1:8888",
+	}
+
+	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if ready := startupScanHasCoherentVaillantRoot(context.Background(), cfg, gateway); ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("startup discovery scan preload did not produce a coherent root")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	select {
+	case <-preloadEnrichDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not complete preload enrichment before teardown")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	finalPreloadRun := preloadRun
+	finalScanRun := scanRun
+	finalUnexpectedPreloadRuns := unexpectedPreloadRuns
+	finalProbeCtxErr := probeCtxErr
+	mu.Unlock()
+	if finalPreloadRun != 1 {
+		t.Fatalf("ebusd scan preload runs = %d; want 1", finalPreloadRun)
+	}
+	if finalScanRun != 0 {
+		t.Fatalf("registry scan runs = %d; want 0 when preload already has a coherent root", finalScanRun)
+	}
+	if finalUnexpectedPreloadRuns != 0 {
+		t.Fatalf("unexpected preload reruns = %d; want 0 when preload already has a coherent root", finalUnexpectedPreloadRuns)
+	}
+	if finalProbeCtxErr != nil {
+		t.Fatalf("startup scan readiness probe received canceled context: %v", finalProbeCtxErr)
+	}
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
 }

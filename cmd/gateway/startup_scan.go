@@ -73,6 +73,7 @@ var (
 	ebusdScanTargetCandidatesFn = ebusdScanTargetCandidates
 	ebusdScanResultTargetsFn    = ebusdScanResultTargets
 	ebusdScanResultInfosFn      = ebusdScanResultInfos
+	startupScanB524ProbeFn      func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
 	enrichVaillantIdentityFn    = enrichVaillantIdentity
 	enrichSerialsFromEbusdFn    = enrichSerialsFromEbusd
 )
@@ -119,6 +120,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 
 	go func() {
 		previousTotal := 0
+		forceFullRangeNextPass := false
 		for {
 			scanCtx := ctx
 			cancel := func() {}
@@ -131,22 +133,33 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			targets := ([]byte)(nil)
 			targetLabel := ""
 			var targetConfig *ebusgateway.TransportConfig
-			for _, candidate := range ebusdScanTargetCandidatesFn(cfg.TransportConfig) {
-				scanTargets, err := ebusdScanResultTargetsFn(scanCtx, candidate)
-				if err != nil || len(scanTargets) == 0 {
-					continue
+			retryingFullRange := forceFullRangeNextPass
+			forceFullRangeNextPass = false
+			candidates := ebusdScanTargetCandidatesFn(cfg.TransportConfig)
+			if retryingFullRange {
+				if len(candidates) > 0 {
+					candidateCopy := candidates[0]
+					targetConfig = &candidateCopy
 				}
-				targets = scanTargets
-				targetLabel = candidate.Address
-				candidateCopy := candidate
-				targetConfig = &candidateCopy
-				break
+				log.Printf("startup scan: retrying with full target range after partial ebusd inventory")
+			} else {
+				for _, candidate := range candidates {
+					scanTargets, err := ebusdScanResultTargetsFn(scanCtx, candidate)
+					if err != nil || len(scanTargets) == 0 {
+						continue
+					}
+					targets = scanTargets
+					targetLabel = candidate.Address
+					candidateCopy := candidate
+					targetConfig = &candidateCopy
+					break
+				}
 			}
 			if len(targets) > 0 {
 				log.Printf("startup scan: using %d target(s) from ebusd scan result at %s", len(targets), targetLabel)
 			}
 
-			if cfg.TransportConfig.Protocol == ebusgateway.TransportEbusdTCP && targetConfig != nil {
+			if cfg.TransportConfig.Protocol == ebusgateway.TransportEbusdTCP && targetConfig != nil && !retryingFullRange {
 				infos, infoErr := ebusdScanResultInfosFn(scanCtx, *targetConfig)
 				if infoErr != nil {
 					log.Printf("startup scan preload error: %v", infoErr)
@@ -175,7 +188,9 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 						}
 					}
 
-					if shouldStopDiscoveryScan(total) {
+					if shouldRetryDiscoveryWithFullRange(ctx, cfg, gateway, len(targets) > 0, retryingFullRange) {
+						forceFullRangeNextPass = true
+					} else if shouldStopDiscoveryScan(total) {
 						return
 					}
 					timer := time.NewTimer(interval)
@@ -249,7 +264,9 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				}
 			}
 
-			if shouldStopDiscoveryScan(total) {
+			if shouldRetryDiscoveryWithFullRange(ctx, cfg, gateway, len(targets) > 0, retryingFullRange) {
+				forceFullRangeNextPass = true
+			} else if shouldStopDiscoveryScan(total) {
 				return
 			}
 
@@ -298,6 +315,57 @@ func ebusdScanTargetCandidates(config ebusgateway.TransportConfig) []ebusgateway
 
 func shouldStopDiscoveryScan(total int) bool {
 	return total > 0
+}
+
+func shouldRetryDiscoveryWithFullRange(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, usedRestrictedTargets bool, retryingFullRange bool) bool {
+	if !usedRestrictedTargets || retryingFullRange || gateway == nil || gateway.Registry == nil {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	hasVaillant := false
+	gateway.Registry.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry != nil && strings.EqualFold(entry.Manufacturer(), "Vaillant") {
+			hasVaillant = true
+			return false
+		}
+		return true
+	})
+	if !hasVaillant {
+		return false
+	}
+	return !startupScanHasCoherentVaillantRoot(ctx, cfg, gateway)
+}
+
+func startupScanHasCoherentVaillantRoot(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway) bool {
+	if gateway == nil || gateway.Bus == nil || gateway.Registry == nil {
+		return false
+	}
+	baseCtx := ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	timeout := cfg.SemanticRequestTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	if cfg.ScanRequestTimeout > timeout {
+		timeout = cfg.ScanRequestTimeout
+	}
+	probeCtx, cancel := context.WithTimeout(baseCtx, timeout)
+	defer cancel()
+	poller := &vaillantSemanticPoller{
+		reg:            gateway.Registry,
+		bus:            gateway.Bus,
+		source:         cfg.ScanSource,
+		requestTimeout: cfg.SemanticRequestTimeout,
+	}
+	if startupScanB524ProbeFn != nil {
+		poller.b524ProbeFn = startupScanB524ProbeFn
+	}
+	_, err := poller.discoverB524Root(probeCtx)
+	return err == nil
 }
 
 func countRegistryDevices(reg *registry.DeviceRegistry) int {

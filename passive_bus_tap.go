@@ -46,16 +46,19 @@ type PassiveTapConsumer interface {
 }
 
 type PassiveTapStatus struct {
-	Connected          bool
-	EndpointState      PassiveEndpointState
-	LastError          string
-	ConnectCount       uint64
-	DisconnectCount    uint64
-	ResetCount         uint64
-	DecodeFaultCount   uint64
-	LastConnectAt      time.Time
-	LastDisconnectAt   time.Time
-	LastObservedSymbol time.Time
+	Connected           bool
+	EndpointState       PassiveEndpointState
+	LastError           string
+	ConnectAttemptCount uint64
+	ConnectCount        uint64
+	ConnectFailureCount uint64
+	DisconnectCount     uint64
+	ResetCount          uint64
+	DecodeFaultCount    uint64
+	ObservedSymbolCount uint64
+	LastConnectAt       time.Time
+	LastDisconnectAt    time.Time
+	LastObservedSymbol  time.Time
 }
 
 type PassiveBusTap struct {
@@ -239,8 +242,16 @@ func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 }
 
 func (tap *PassiveBusTap) connect(ctx context.Context) error {
+	tap.statusMu.Lock()
+	tap.status.ConnectAttemptCount++
+	tap.statusMu.Unlock()
+
 	tr, err := resolvePassiveTransport(ctx, tap.cfg)
 	if err != nil {
+		tap.statusMu.Lock()
+		tap.status.ConnectFailureCount++
+		tap.status.LastError = err.Error()
+		tap.statusMu.Unlock()
 		return err
 	}
 	if tap.wrap != nil {
@@ -328,6 +339,7 @@ func (tap *PassiveBusTap) recordDecodeFault(err error) {
 
 func (tap *PassiveBusTap) recordSymbol(observedAt time.Time) {
 	tap.statusMu.Lock()
+	tap.status.ObservedSymbolCount++
 	tap.status.LastObservedSymbol = observedAt
 	tap.statusMu.Unlock()
 }

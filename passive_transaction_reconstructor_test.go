@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
@@ -155,6 +156,47 @@ func TestPassiveTransactionReconstructor_ResetAbandonsInFlight(t *testing.T) {
 	}
 }
 
+func TestPassiveTransactionReconstructor_ReadTimeoutHonorsWatchdog(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.PassiveTransactionWatchdog = 250 * time.Millisecond
+	reconstructor := newPassiveTransactionReconstructorCore(cfg)
+	subscription, err := reconstructor.Subscribe("test", PassiveSubscriberCritical, 8)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	request := protocol.Frame{
+		Source:    0x10,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{0x01},
+	}
+	base := time.Unix(0, 0)
+	feedPassiveSymbols(reconstructor, base, append(frameBytes(request), protocol.SymbolAck))
+
+	reconstructor.OnPassiveTapEvent(PassiveTapEvent{
+		Kind:       PassiveTapEventReadTimeout,
+		ObservedAt: base.Add(100 * time.Millisecond),
+		Err:        ebuserrors.ErrTimeout,
+	})
+	assertNoPassiveClassifiedEvent(t, subscription, 25*time.Millisecond)
+
+	reconstructor.OnPassiveTapEvent(PassiveTapEvent{
+		Kind:       PassiveTapEventReadTimeout,
+		ObservedAt: base.Add(400 * time.Millisecond),
+		Err:        ebuserrors.ErrTimeout,
+	})
+
+	abandoned := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventAbandonedTransaction)
+	if abandoned.AbandonReason != PassiveAbandonReasonNoProgress {
+		t.Fatalf("abandon reason = %q; want %q", abandoned.AbandonReason, PassiveAbandonReasonNoProgress)
+	}
+}
+
 func feedPassiveSymbols(reconstructor *PassiveTransactionReconstructor, start time.Time, symbols []byte) {
 	for index, symbol := range symbols {
 		reconstructor.OnPassiveTapEvent(PassiveTapEvent{
@@ -183,6 +225,22 @@ func requirePassiveClassifiedEvent(t *testing.T, subscription *PassiveClassified
 		case <-timeout.C:
 			t.Fatalf("timeout waiting for passive classified event kind %d", kind)
 		}
+	}
+}
+
+func assertNoPassiveClassifiedEvent(t *testing.T, subscription *PassiveClassifiedSubscription, wait time.Duration) {
+	t.Helper()
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
+	select {
+	case event, ok := <-subscription.Events():
+		if !ok {
+			return
+		}
+		t.Fatalf("unexpected passive classified event: %+v", event)
+	case <-timer.C:
 	}
 }
 

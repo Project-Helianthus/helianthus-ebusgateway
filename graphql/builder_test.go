@@ -369,6 +369,40 @@ func TestBuilder_StopsOnClosedChannel(t *testing.T) {
 	}
 }
 
+func TestBuilder_FreshSchemaRebuildsWithoutChangeChannel(t *testing.T) {
+	entry := mockEntry{
+		info: registry.DeviceInfo{
+			Address:         0x10,
+			Manufacturer:    "vaillant",
+			DeviceID:        "device-a",
+			HardwareVersion: "7603",
+		},
+		planes: []registry.Plane{
+			mockPlane{name: "heating"},
+		},
+	}
+
+	reg := &mutableRegistry{}
+	builder := NewBuilder(reg, nil)
+	if err := builder.Start(context.Background()); err != nil {
+		t.Fatalf("Start error = %v", err)
+	}
+
+	if len(builder.Schema().Devices) != 0 {
+		t.Fatalf("Schema devices = %d; want 0", len(builder.Schema().Devices))
+	}
+
+	reg.SetEntries([]registry.DeviceEntry{entry})
+
+	fresh := builder.FreshSchema()
+	if len(fresh.Devices) != 1 {
+		t.Fatalf("FreshSchema devices = %d; want 1", len(fresh.Devices))
+	}
+	if fresh.Devices[0].Address != 0x10 {
+		t.Fatalf("FreshSchema address = 0x%02x; want 0x10", fresh.Devices[0].Address)
+	}
+}
+
 func waitForRevision(t *testing.T, builder *Builder, last uint64) {
 	t.Helper()
 

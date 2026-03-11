@@ -2,11 +2,21 @@ package main
 
 import (
 	"flag"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
+
+type fixedLocalSnapshotter struct {
+	snapshot ebusgateway.LocalAddressSnapshot
+}
+
+func (snapshotter fixedLocalSnapshotter) LocalAddressSnapshot() ebusgateway.LocalAddressSnapshot {
+	return snapshotter.snapshot
+}
 
 func TestBindFlags_SourceAddrAuto(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
@@ -89,6 +99,58 @@ func TestApplyTransportSourcePolicy_EbusdTCPDefaultF0PromotesToEbusdSource(t *te
 
 	if cfg.ScanSource != 0x31 {
 		t.Fatalf("ScanSource = 0x%02x; want 0x31", cfg.ScanSource)
+	}
+}
+
+func TestWireObserveFirstObserversWiresDedupSnapshotterIntoObservabilityStore(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.LocalAddressSnapshotter = fixedLocalSnapshotter{
+		snapshot: ebusgateway.LocalAddressSnapshot{
+			Address: 0x31,
+			Known:   true,
+			Epoch:   1,
+		},
+	}
+
+	busObservability, deduplicator, err := wireObserveFirstObservers(&cfg)
+	if err != nil {
+		t.Fatalf("wireObserveFirstObservers error = %v", err)
+	}
+	if busObservability == nil {
+		t.Fatal("busObservability = nil")
+	}
+	if deduplicator == nil {
+		t.Fatal("deduplicator = nil")
+	}
+
+	local := deduplicator.LocalAddressSnapshot()
+	if !local.Known || local.Address != 0x31 {
+		t.Fatalf("LocalAddressSnapshot = %+v; want known 0x31", local)
+	}
+
+	request := protocol.Frame{
+		Source:    0x10,
+		Target:    0x31,
+		Primary:   0x01,
+		Secondary: 0x02,
+		Data:      []byte{0x03},
+	}
+	if got := request.Type(); got != protocol.FrameTypeInitiatorInitiator {
+		t.Fatalf("request.Type() = %v; want %v", got, protocol.FrameTypeInitiatorInitiator)
+	}
+
+	if err := busObservability.OnBusEvent(protocol.BusEvent{
+		Kind:       protocol.BusEventAttemptComplete,
+		Request:    request,
+		HasRequest: true,
+	}); err != nil {
+		t.Fatalf("OnBusEvent error = %v", err)
+	}
+
+	metrics := busObservability.RenderPrometheus()
+	if !strings.Contains(metrics, `frame_type="local_participant_inbound"`) {
+		t.Fatalf("RenderPrometheus missing local_participant_inbound classification:\n%s", metrics)
 	}
 }
 

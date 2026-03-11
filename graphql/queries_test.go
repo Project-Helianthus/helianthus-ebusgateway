@@ -1157,3 +1157,65 @@ func intPtr(value int) *int {
 	v := value
 	return &v
 }
+
+func TestQueryResolvers_DevicesReflectLateRegistryPopulation(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	defer func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	}()
+
+	builder := NewBuilder(gateway.Registry, nil)
+	if err := builder.Start(context.Background()); err != nil {
+		t.Fatalf("builder.Start error = %v", err)
+	}
+
+	handler, err := NewHandler(builder)
+	if err != nil {
+		t.Fatalf("NewHandler error = %v", err)
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	gateway.Registry.Register(registry.DeviceInfo{
+		Address:         0x15,
+		Manufacturer:    "Vaillant",
+		DeviceID:        "BASV2",
+		SoftwareVersion: "0507",
+		HardwareVersion: "1704",
+	})
+
+	client := graphqlclient.NewClient(server.URL)
+	request := graphqlclient.NewRequest(`
+		query {
+			devices {
+				address
+				deviceId
+			}
+		}
+	`)
+
+	var response struct {
+		Devices []struct {
+			Address  int    `json:"address"`
+			DeviceID string `json:"deviceId"`
+		} `json:"devices"`
+	}
+
+	if err := client.Run(context.Background(), request, &response); err != nil {
+		t.Fatalf("devices query error = %v", err)
+	}
+	if len(response.Devices) != 1 {
+		t.Fatalf("devices = %d; want 1", len(response.Devices))
+	}
+	if response.Devices[0].Address != 21 || response.Devices[0].DeviceID != "BASV2" {
+		t.Fatalf("device payload = %+v; want address=21 deviceId=BASV2", response.Devices[0])
+	}
+}

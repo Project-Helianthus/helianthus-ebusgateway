@@ -26,6 +26,17 @@ const (
 	DefaultSemanticEnergyInterval            = 5 * time.Minute
 	DefaultSemanticRegulatorRecheckInterval  = 60 * time.Second
 	DefaultSemanticRegulatorAbsenceGrace     = 5 * time.Minute
+
+	DefaultMetricsPath                             = "/metrics"
+	DefaultObserveFirstRecentMessageCapacity       = 1024
+	DefaultObserveFirstPeriodicityCapacity         = 256
+	DefaultObserveFirstPeriodicityStaleTTL         = time.Hour
+	DefaultObserveFirstSeriesBudget                = 1024
+	DefaultObserveFirstWarmupConnectedWindow       = 30 * time.Second
+	DefaultObserveFirstWarmupCompletedTransactions = 20
+	DefaultObserveFirstWarmupPostResetWindow       = 5 * time.Second
+	DefaultObserveFirstWarmupPostResetTransactions = 10
+	DefaultObserveFirstWarmupOuterWindow           = 5 * time.Minute
 )
 
 type TransportConfig struct {
@@ -53,48 +64,58 @@ type Config struct {
 	BootLiveTimeout    time.Duration
 	// SemanticInterval is a legacy single-interval semantic polling configuration.
 	// Prefer SemanticDiscoveryInterval / SemanticConfigInterval / SemanticStateInterval.
-	SemanticInterval                       time.Duration
-	SemanticDiscoveryInterval              time.Duration
-	SemanticConfigInterval                 time.Duration
-	SemanticStateInterval                  time.Duration
-	SemanticEnergyInterval                 time.Duration
-	SemanticRequestTimeout                 time.Duration
-	SemanticReadBreakerFailureBudget       int
-	SemanticReadBreakerFailureBudgetSet    bool
-	SemanticReadBreakerOpenCooldown        time.Duration
-	SemanticReadBreakerHalfOpenProbeLimit  int
-	SemanticZonePresenceMissThreshold      int
-	SemanticZonePresenceHitThreshold       int
-	SemanticDHWStaleTTL                    time.Duration
-	SemanticRegulatorRecheckInterval       time.Duration
-	SemanticRegulatorAbsenceGrace          time.Duration
-	SemanticCachePath                      string
-	BroadcastListen                        bool
-	PassiveAbsenceThreshold                time.Duration
-	PassiveTransactionWatchdog             time.Duration
-	PassiveReconnectInitialDelay           time.Duration
-	PassiveReconnectMaxDelay               time.Duration
-	PassiveDedupActivePublishBudget        time.Duration
-	PassiveDedupPassiveDeliveryBudget      time.Duration
-	PassiveDedupPendingGraceTimeout        time.Duration
-	PassiveDedupActiveFingerprintRetention time.Duration
-	PassiveDedupPendingCapacity            int
-	PassiveDedupRecoveryHysteresis         time.Duration
-	PassiveDedupRecoveryEventThreshold     int
-	LocalAddressSnapshotter                LocalBusAddressSnapshotter
-	HTTPAddr                               string
-	GraphQLPath                            string
-	SnapshotPath                           string
-	SubscriptionPath                       string
-	MCPPath                                string
-	UIPath                                 string
-	PortalPath                             string
-	MDNSAdvertise                          bool
-	MDNSInstance                           string
-	DumpOutputDir                          string
-	DumpUploadPath                         string
-	DumpUploadURL                          string
-	DumpIncludePII                         bool
+	SemanticInterval                        time.Duration
+	SemanticDiscoveryInterval               time.Duration
+	SemanticConfigInterval                  time.Duration
+	SemanticStateInterval                   time.Duration
+	SemanticEnergyInterval                  time.Duration
+	SemanticRequestTimeout                  time.Duration
+	SemanticReadBreakerFailureBudget        int
+	SemanticReadBreakerFailureBudgetSet     bool
+	SemanticReadBreakerOpenCooldown         time.Duration
+	SemanticReadBreakerHalfOpenProbeLimit   int
+	SemanticZonePresenceMissThreshold       int
+	SemanticZonePresenceHitThreshold        int
+	SemanticDHWStaleTTL                     time.Duration
+	SemanticRegulatorRecheckInterval        time.Duration
+	SemanticRegulatorAbsenceGrace           time.Duration
+	SemanticCachePath                       string
+	BroadcastListen                         bool
+	PassiveAbsenceThreshold                 time.Duration
+	PassiveTransactionWatchdog              time.Duration
+	PassiveReconnectInitialDelay            time.Duration
+	PassiveReconnectMaxDelay                time.Duration
+	PassiveDedupActivePublishBudget         time.Duration
+	PassiveDedupPassiveDeliveryBudget       time.Duration
+	PassiveDedupPendingGraceTimeout         time.Duration
+	PassiveDedupActiveFingerprintRetention  time.Duration
+	PassiveDedupPendingCapacity             int
+	PassiveDedupRecoveryHysteresis          time.Duration
+	PassiveDedupRecoveryEventThreshold      int
+	LocalAddressSnapshotter                 LocalBusAddressSnapshotter
+	HTTPAddr                                string
+	MetricsPath                             string
+	GraphQLPath                             string
+	SnapshotPath                            string
+	SubscriptionPath                        string
+	MCPPath                                 string
+	UIPath                                  string
+	PortalPath                              string
+	MDNSAdvertise                           bool
+	MDNSInstance                            string
+	DumpOutputDir                           string
+	DumpUploadPath                          string
+	DumpUploadURL                           string
+	DumpIncludePII                          bool
+	ObserveFirstRecentMessageCapacity       int
+	ObserveFirstPeriodicityCapacity         int
+	ObserveFirstPeriodicityStaleTTL         time.Duration
+	ObserveFirstSeriesBudget                int
+	ObserveFirstWarmupConnectedWindow       time.Duration
+	ObserveFirstWarmupCompletedTransactions int
+	ObserveFirstWarmupPostResetWindow       time.Duration
+	ObserveFirstWarmupPostResetTransactions int
+	ObserveFirstWarmupOuterWindow           time.Duration
 }
 
 func DefaultConfig() Config {
@@ -116,45 +137,55 @@ func DefaultConfig() Config {
 		ScanTimeout: 3 * time.Minute,
 		// Per-request scan timeout must accommodate bus/transport latency.
 		// 150ms is too aggressive for real-world ENH over TCP setups.
-		ScanRequestTimeout:                     400 * time.Millisecond,
-		ScanInterval:                           30 * time.Second,
-		BootLiveTimeout:                        2 * time.Minute,
-		SemanticInterval:                       1 * time.Minute,
-		SemanticDiscoveryInterval:              10 * time.Minute,
-		SemanticConfigInterval:                 5 * time.Minute,
-		SemanticStateInterval:                  1 * time.Minute,
-		SemanticEnergyInterval:                 DefaultSemanticEnergyInterval,
-		SemanticRequestTimeout:                 2 * time.Second,
-		SemanticReadBreakerFailureBudget:       DefaultSemanticReadFailureBudget,
-		SemanticReadBreakerOpenCooldown:        DefaultSemanticReadOpenCooldown,
-		SemanticReadBreakerHalfOpenProbeLimit:  DefaultSemanticReadHalfOpenProbeLimit,
-		SemanticZonePresenceMissThreshold:      DefaultSemanticZonePresenceMissThreshold,
-		SemanticZonePresenceHitThreshold:       DefaultSemanticZonePresenceHitThreshold,
-		SemanticDHWStaleTTL:                    DefaultSemanticDHWStaleTTL,
-		SemanticRegulatorRecheckInterval:       DefaultSemanticRegulatorRecheckInterval,
-		SemanticRegulatorAbsenceGrace:          DefaultSemanticRegulatorAbsenceGrace,
-		SemanticCachePath:                      "./semantic_cache.json",
-		PassiveAbsenceThreshold:                10 * time.Second,
-		PassiveTransactionWatchdog:             1 * time.Second,
-		PassiveReconnectInitialDelay:           1 * time.Second,
-		PassiveReconnectMaxDelay:               30 * time.Second,
-		PassiveDedupActivePublishBudget:        dedupDefaults.ActivePublishBudget,
-		PassiveDedupPassiveDeliveryBudget:      dedupDefaults.PassiveDeliveryBudget,
-		PassiveDedupPendingGraceTimeout:        dedupDefaults.PendingGraceTimeout,
-		PassiveDedupActiveFingerprintRetention: dedupDefaults.ActiveFingerprintRetention,
-		PassiveDedupPendingCapacity:            dedupDefaults.PendingCapacity,
-		PassiveDedupRecoveryHysteresis:         dedupDefaults.RecoveryHysteresis,
-		PassiveDedupRecoveryEventThreshold:     dedupDefaults.RecoveryEventThreshold,
-		HTTPAddr:                               ":8080",
-		GraphQLPath:                            "/graphql",
-		SnapshotPath:                           "/snapshot",
-		SubscriptionPath:                       "/graphql/subscriptions",
-		MCPPath:                                "/mcp",
-		UIPath:                                 "/ui",
-		PortalPath:                             "/portal",
-		MDNSAdvertise:                          true,
-		MDNSInstance:                           "helianthus",
-		DumpOutputDir:                          "./dumps",
+		ScanRequestTimeout:                      400 * time.Millisecond,
+		ScanInterval:                            30 * time.Second,
+		BootLiveTimeout:                         2 * time.Minute,
+		SemanticInterval:                        1 * time.Minute,
+		SemanticDiscoveryInterval:               10 * time.Minute,
+		SemanticConfigInterval:                  5 * time.Minute,
+		SemanticStateInterval:                   1 * time.Minute,
+		SemanticEnergyInterval:                  DefaultSemanticEnergyInterval,
+		SemanticRequestTimeout:                  2 * time.Second,
+		SemanticReadBreakerFailureBudget:        DefaultSemanticReadFailureBudget,
+		SemanticReadBreakerOpenCooldown:         DefaultSemanticReadOpenCooldown,
+		SemanticReadBreakerHalfOpenProbeLimit:   DefaultSemanticReadHalfOpenProbeLimit,
+		SemanticZonePresenceMissThreshold:       DefaultSemanticZonePresenceMissThreshold,
+		SemanticZonePresenceHitThreshold:        DefaultSemanticZonePresenceHitThreshold,
+		SemanticDHWStaleTTL:                     DefaultSemanticDHWStaleTTL,
+		SemanticRegulatorRecheckInterval:        DefaultSemanticRegulatorRecheckInterval,
+		SemanticRegulatorAbsenceGrace:           DefaultSemanticRegulatorAbsenceGrace,
+		SemanticCachePath:                       "./semantic_cache.json",
+		PassiveAbsenceThreshold:                 10 * time.Second,
+		PassiveTransactionWatchdog:              1 * time.Second,
+		PassiveReconnectInitialDelay:            1 * time.Second,
+		PassiveReconnectMaxDelay:                30 * time.Second,
+		PassiveDedupActivePublishBudget:         dedupDefaults.ActivePublishBudget,
+		PassiveDedupPassiveDeliveryBudget:       dedupDefaults.PassiveDeliveryBudget,
+		PassiveDedupPendingGraceTimeout:         dedupDefaults.PendingGraceTimeout,
+		PassiveDedupActiveFingerprintRetention:  dedupDefaults.ActiveFingerprintRetention,
+		PassiveDedupPendingCapacity:             dedupDefaults.PendingCapacity,
+		PassiveDedupRecoveryHysteresis:          dedupDefaults.RecoveryHysteresis,
+		PassiveDedupRecoveryEventThreshold:      dedupDefaults.RecoveryEventThreshold,
+		HTTPAddr:                                ":8080",
+		MetricsPath:                             DefaultMetricsPath,
+		GraphQLPath:                             "/graphql",
+		SnapshotPath:                            "/snapshot",
+		SubscriptionPath:                        "/graphql/subscriptions",
+		MCPPath:                                 "/mcp",
+		UIPath:                                  "/ui",
+		PortalPath:                              "/portal",
+		MDNSAdvertise:                           true,
+		MDNSInstance:                            "helianthus",
+		DumpOutputDir:                           "./dumps",
+		ObserveFirstRecentMessageCapacity:       DefaultObserveFirstRecentMessageCapacity,
+		ObserveFirstPeriodicityCapacity:         DefaultObserveFirstPeriodicityCapacity,
+		ObserveFirstPeriodicityStaleTTL:         DefaultObserveFirstPeriodicityStaleTTL,
+		ObserveFirstSeriesBudget:                DefaultObserveFirstSeriesBudget,
+		ObserveFirstWarmupConnectedWindow:       DefaultObserveFirstWarmupConnectedWindow,
+		ObserveFirstWarmupCompletedTransactions: DefaultObserveFirstWarmupCompletedTransactions,
+		ObserveFirstWarmupPostResetWindow:       DefaultObserveFirstWarmupPostResetWindow,
+		ObserveFirstWarmupPostResetTransactions: DefaultObserveFirstWarmupPostResetTransactions,
+		ObserveFirstWarmupOuterWindow:           DefaultObserveFirstWarmupOuterWindow,
 	}
 }
 
@@ -282,6 +313,9 @@ func applyDefaults(cfg Config) Config {
 	if cfg.HTTPAddr == "" {
 		cfg.HTTPAddr = ":8080"
 	}
+	if cfg.MetricsPath == "" {
+		cfg.MetricsPath = DefaultMetricsPath
+	}
 	if cfg.GraphQLPath == "" {
 		cfg.GraphQLPath = "/graphql"
 	}
@@ -305,6 +339,33 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.DumpOutputDir == "" {
 		cfg.DumpOutputDir = "./dumps"
+	}
+	if cfg.ObserveFirstRecentMessageCapacity <= 0 {
+		cfg.ObserveFirstRecentMessageCapacity = DefaultObserveFirstRecentMessageCapacity
+	}
+	if cfg.ObserveFirstPeriodicityCapacity <= 0 {
+		cfg.ObserveFirstPeriodicityCapacity = DefaultObserveFirstPeriodicityCapacity
+	}
+	if cfg.ObserveFirstPeriodicityStaleTTL <= 0 {
+		cfg.ObserveFirstPeriodicityStaleTTL = DefaultObserveFirstPeriodicityStaleTTL
+	}
+	if cfg.ObserveFirstSeriesBudget <= 0 {
+		cfg.ObserveFirstSeriesBudget = DefaultObserveFirstSeriesBudget
+	}
+	if cfg.ObserveFirstWarmupConnectedWindow <= 0 {
+		cfg.ObserveFirstWarmupConnectedWindow = DefaultObserveFirstWarmupConnectedWindow
+	}
+	if cfg.ObserveFirstWarmupCompletedTransactions <= 0 {
+		cfg.ObserveFirstWarmupCompletedTransactions = DefaultObserveFirstWarmupCompletedTransactions
+	}
+	if cfg.ObserveFirstWarmupPostResetWindow <= 0 {
+		cfg.ObserveFirstWarmupPostResetWindow = DefaultObserveFirstWarmupPostResetWindow
+	}
+	if cfg.ObserveFirstWarmupPostResetTransactions <= 0 {
+		cfg.ObserveFirstWarmupPostResetTransactions = DefaultObserveFirstWarmupPostResetTransactions
+	}
+	if cfg.ObserveFirstWarmupOuterWindow <= 0 {
+		cfg.ObserveFirstWarmupOuterWindow = DefaultObserveFirstWarmupOuterWindow
 	}
 	return cfg
 }

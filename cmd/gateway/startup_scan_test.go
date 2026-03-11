@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
 func TestShouldStopDiscoveryScan(t *testing.T) {
@@ -142,5 +146,223 @@ func TestParseEbusdScanResultLineRejectsInvalid(t *testing.T) {
 				t.Fatalf("parseEbusdScanResultLine(%q) returned ok=true; want false", sample)
 			}
 		})
+	}
+}
+
+func TestStartDiscoveryScanLoop_RerunsPhysicalIdentityEnrichmentAfterNormalScan(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origTargetCandidatesFn := ebusdScanTargetCandidatesFn
+	origResultTargetsFn := ebusdScanResultTargetsFn
+	origResultInfosFn := ebusdScanResultInfosFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
+		ebusdScanResultTargetsFn = origResultTargetsFn
+		ebusdScanResultInfosFn = origResultInfosFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+	})
+
+	done := make(chan struct{}, 1)
+	registryScanFn = func(_ context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+		entry := reg.Register(registry.DeviceInfo{
+			Address:         0x08,
+			Manufacturer:    "Vaillant",
+			DeviceID:        "BAI00",
+			SoftwareVersion: "1201",
+			HardwareVersion: "7603",
+		})
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+		return []registry.DeviceEntry{entry}, nil
+	}
+	ebusdScanTargetCandidatesFn = func(cfg ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
+		return []ebusgateway.TransportConfig{cfg}
+	}
+	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
+		return []byte{0x08}, nil
+	}
+	ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+		return nil, nil
+	}
+
+	var mu sync.Mutex
+	var vaillantEnrichCalls int
+	var ebusdEnrichCalls int
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {
+		mu.Lock()
+		vaillantEnrichCalls++
+		mu.Unlock()
+	}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {
+		mu.Lock()
+		ebusdEnrichCalls++
+		mu.Unlock()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.TransportConfig = ebusgateway.TransportConfig{
+		Network: "tcp",
+		Address: "127.0.0.1:8888",
+	}
+
+	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not complete a pass")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		gotVaillant := vaillantEnrichCalls
+		gotEbusd := ebusdEnrichCalls
+		mu.Unlock()
+		if gotVaillant >= 1 && gotEbusd >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("enrichment calls after normal scan = vaillant:%d ebusd:%d; want both >= 1", gotVaillant, gotEbusd)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestStartDiscoveryScanLoop_FallbackIdentityEnrichmentRunsOnce(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origTargetCandidatesFn := ebusdScanTargetCandidatesFn
+	origResultTargetsFn := ebusdScanResultTargetsFn
+	origResultInfosFn := ebusdScanResultInfosFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
+		ebusdScanResultTargetsFn = origResultTargetsFn
+		ebusdScanResultInfosFn = origResultInfosFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+	})
+
+	done := make(chan struct{}, 1)
+	registryScanFn = func(_ context.Context, scanBus registry.ScanBus, _ *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+		statsBus, ok := scanBus.(*statsBus)
+		if !ok {
+			panic("startup scan bus missing stats wrapper")
+		}
+		statsBus.stats.timeouts = 1
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+		return nil, nil
+	}
+	ebusdScanTargetCandidatesFn = func(cfg ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
+		return []ebusgateway.TransportConfig{cfg}
+	}
+	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
+		return []byte{0x08}, nil
+	}
+	ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+		return []registry.DeviceInfo{{
+			Address:         0x08,
+			Manufacturer:    "Vaillant",
+			DeviceID:        "BAI00",
+			SoftwareVersion: "1201",
+			HardwareVersion: "7603",
+		}}, nil
+	}
+
+	var mu sync.Mutex
+	var vaillantEnrichCalls int
+	var ebusdEnrichCalls int
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {
+		mu.Lock()
+		vaillantEnrichCalls++
+		mu.Unlock()
+	}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {
+		mu.Lock()
+		ebusdEnrichCalls++
+		mu.Unlock()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.TransportConfig = ebusgateway.TransportConfig{
+		Network: "tcp",
+		Address: "127.0.0.1:8888",
+	}
+
+	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan fallback did not execute")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		gotVaillant := vaillantEnrichCalls
+		gotEbusd := ebusdEnrichCalls
+		mu.Unlock()
+		if gotVaillant >= 1 && gotEbusd >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fallback enrichment calls = vaillant:%d ebusd:%d; want both >= 1", gotVaillant, gotEbusd)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	gotVaillant := vaillantEnrichCalls
+	gotEbusd := ebusdEnrichCalls
+	mu.Unlock()
+	if gotVaillant != 1 {
+		t.Fatalf("fallback vaillant enrichment calls = %d; want 1", gotVaillant)
+	}
+	if gotEbusd != 1 {
+		t.Fatalf("fallback ebusd enrichment calls = %d; want 1", gotEbusd)
 	}
 }

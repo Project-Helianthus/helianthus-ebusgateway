@@ -146,14 +146,29 @@ type PassiveTransactionReconstructor struct {
 	tap      *PassiveBusTap
 	watchdog time.Duration
 
-	stateMu sync.Mutex
-	state   passiveTransactionState
+	stateMu               sync.Mutex
+	state                 passiveTransactionState
+	pendingRecoveryReason string
 
 	subscribersMu sync.Mutex
 	subscribers   map[uint64]*PassiveClassifiedSubscription
 	nextSubID     atomic.Uint64
 
+	metricsMu sync.Mutex
+	metrics   passiveReconstructorMetrics
+
 	closeOnce sync.Once
+}
+
+type PassiveReconstructorSnapshot struct {
+	TapStatus           PassiveTapStatus
+	FanoutOverflowTotal map[string]uint64
+	RecoveryTotal       map[string]uint64
+}
+
+type passiveReconstructorMetrics struct {
+	fanoutOverflowTotal map[string]uint64
+	recoveryTotal       map[string]uint64
 }
 
 func StartPassiveTransactionReconstructor(ctx context.Context, cfg Config) (*PassiveTransactionReconstructor, error) {
@@ -183,6 +198,10 @@ func newPassiveTransactionReconstructorCore(cfg Config) *PassiveTransactionRecon
 		cfg:         cfg,
 		watchdog:    clampPassiveTransactionWatchdog(cfg.PassiveTransactionWatchdog),
 		subscribers: make(map[uint64]*PassiveClassifiedSubscription),
+		metrics: passiveReconstructorMetrics{
+			fanoutOverflowTotal: make(map[string]uint64),
+			recoveryTotal:       make(map[string]uint64),
+		},
 	}
 }
 
@@ -256,6 +275,26 @@ func (reconstructor *PassiveTransactionReconstructor) Close() error {
 	return closeErr
 }
 
+func (reconstructor *PassiveTransactionReconstructor) Snapshot() PassiveReconstructorSnapshot {
+	if reconstructor == nil {
+		return PassiveReconstructorSnapshot{}
+	}
+
+	var tapStatus PassiveTapStatus
+	if reconstructor.tap != nil {
+		tapStatus = reconstructor.tap.Snapshot()
+	}
+
+	reconstructor.metricsMu.Lock()
+	defer reconstructor.metricsMu.Unlock()
+
+	return PassiveReconstructorSnapshot{
+		TapStatus:           tapStatus,
+		FanoutOverflowTotal: cloneUint64Map(reconstructor.metrics.fanoutOverflowTotal),
+		RecoveryTotal:       cloneUint64Map(reconstructor.metrics.recoveryTotal),
+	}
+}
+
 func (reconstructor *PassiveTransactionReconstructor) OnPassiveTapEvent(event PassiveTapEvent) {
 	if reconstructor == nil {
 		return
@@ -288,11 +327,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleTapEventLocked(event
 	case PassiveTapEventDecodeFault:
 		return reconstructor.handleTransportDiscontinuityLocked(events, event.ObservedAt, PassiveDiscontinuityDecodeFault, PassiveAbandonReasonDecodeFault, event.Err)
 	case PassiveTapEventReadTimeout:
-		if reconstructor.state.phase != passivePhaseIdle && reconstructor.state.phase != passivePhaseAbandoned {
-			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNoProgress, event.ObservedAt, event.Err))
-			reconstructor.state.phase = passivePhaseAbandoned
-		}
-		return events
+		return reconstructor.expireIfStaleLocked(events, event.ObservedAt)
 	default:
 		return events
 	}
@@ -301,6 +336,10 @@ func (reconstructor *PassiveTransactionReconstructor) handleTapEventLocked(event
 func (reconstructor *PassiveTransactionReconstructor) handleTransportDiscontinuityLocked(events []PassiveClassifiedEvent, observedAt time.Time, reason PassiveDiscontinuityReason, abandonReason PassiveAbandonReason, err error) []PassiveClassifiedEvent {
 	if reconstructor.state.phase != passivePhaseIdle && reconstructor.state.phase != passivePhaseAbandoned {
 		events = append(events, reconstructor.abandonLocked(abandonReason, observedAt, err))
+	}
+	switch reason {
+	case PassiveDiscontinuityTransportReset, PassiveDiscontinuityDecodeFault:
+		reconstructor.pendingRecoveryReason = string(reason)
 	}
 	reconstructor.resetStateLocked()
 	return append(events, PassiveClassifiedEvent{
@@ -397,6 +436,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 	reconstructor.state.frameType = frameType
 	switch frameType {
 	case protocol.FrameTypeBroadcast:
+		reconstructor.recordRecoveryLocked()
 		events = append(events, PassiveClassifiedEvent{
 			Kind:       PassiveClassifiedEventBroadcastFrame,
 			FrameType:  frameType,
@@ -438,6 +478,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(even
 		return events
 	case protocol.SymbolSyn:
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
+		reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
 		reconstructor.resetStateLocked()
 		return events
 	default:
@@ -455,6 +496,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked
 	}
 	if len(reconstructor.state.responseRaw) > 0 && symbol == protocol.SymbolSyn {
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
+		reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
 		reconstructor.resetStateLocked()
 		return events
 	}
@@ -498,6 +540,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleFinalACKSymbolLocked
 		return events
 	case protocol.SymbolSyn:
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
+		reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
 		reconstructor.resetStateLocked()
 		return events
 	default:
@@ -519,6 +562,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleTerminalSymbolLocked
 	timing.Terminal = observedAt
 	switch reconstructor.state.frameType {
 	case protocol.FrameTypeInitiatorInitiator:
+		reconstructor.recordRecoveryLocked()
 		events = append(events, PassiveClassifiedEvent{
 			Kind:       PassiveClassifiedEventMasterFrame,
 			FrameType:  reconstructor.state.frameType,
@@ -528,6 +572,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleTerminalSymbolLocked
 			ObservedAt: observedAt,
 		})
 	case protocol.FrameTypeInitiatorTarget:
+		reconstructor.recordRecoveryLocked()
 		events = append(events, PassiveClassifiedEvent{
 			Kind:        PassiveClassifiedEventTransaction,
 			FrameType:   reconstructor.state.frameType,
@@ -617,6 +662,7 @@ func (reconstructor *PassiveTransactionReconstructor) publish(event PassiveClass
 		if subscription.priority != PassiveSubscriberCritical {
 			continue
 		}
+		reconstructor.recordFanoutOverflow(subscription.name)
 		reconstructor.unsubscribe(subscription, &PassiveClassifiedEvent{
 			Kind:                PassiveClassifiedEventDiscontinuity,
 			ObservedAt:          event.ObservedAt,
@@ -701,4 +747,44 @@ func (reconstructor *PassiveTransactionReconstructor) closeAllSubscribers() {
 	for _, subscription := range subscribers {
 		reconstructor.unsubscribe(subscription, nil)
 	}
+}
+
+func (reconstructor *PassiveTransactionReconstructor) recordFanoutOverflow(name string) {
+	reconstructor.metricsMu.Lock()
+	defer reconstructor.metricsMu.Unlock()
+	reconstructor.metrics.fanoutOverflowTotal[normalizePassiveConsumerName(name)]++
+}
+
+func (reconstructor *PassiveTransactionReconstructor) recordRecoveryLocked() {
+	if reconstructor.pendingRecoveryReason == "" {
+		return
+	}
+	reconstructor.metricsMu.Lock()
+	reconstructor.metrics.recoveryTotal[reconstructor.pendingRecoveryReason]++
+	reconstructor.metricsMu.Unlock()
+	reconstructor.pendingRecoveryReason = ""
+}
+
+func normalizePassiveConsumerName(name string) string {
+	switch strings.TrimSpace(strings.ToLower(name)) {
+	case "broadcast-listener":
+		return "broadcast_listener"
+	case "active-passive-dedup":
+		return "dedup"
+	case "observability-store":
+		return "observability_store"
+	default:
+		return "debug_summary"
+	}
+}
+
+func cloneUint64Map(input map[string]uint64) map[string]uint64 {
+	if len(input) == 0 {
+		return nil
+	}
+	output := make(map[string]uint64, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
 }

@@ -54,14 +54,9 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		cfg.Providers = vaillantproviders.Default()
 	}
 
-	var deduplicator *ebusgateway.ActivePassiveDeduplicator
-	if cfg.BroadcastListen {
-		dedup, err := ebusgateway.NewActivePassiveDeduplicator(cfg)
-		if err != nil {
-			return err
-		}
-		cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, dedup)
-		deduplicator = dedup
+	busObservability, deduplicator, err := wireObserveFirstObservers(&cfg)
+	if err != nil {
+		return err
 	}
 
 	gateway, err := ebusgateway.New(ctx, cfg)
@@ -102,7 +97,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if semanticPoller != nil {
 		scheduleWriter = semanticPoller
 	}
-	server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, hub, semanticRuntime.Provider(), scheduleWriter)
+	server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, hub, semanticRuntime.Provider(), scheduleWriter, busObservability)
 	if err != nil {
 		return err
 	}
@@ -118,6 +113,18 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				_ = server.Close()
 			}
 			return err
+		}
+		if busObservability != nil {
+			if err := busObservability.AttachReconstructor(ctx, reconstructor); err != nil {
+				_ = reconstructor.Close()
+				if advertiser != nil {
+					_ = advertiser.Close()
+				}
+				if server != nil {
+					_ = server.Close()
+				}
+				return err
+			}
 		}
 		if deduplicator != nil {
 			if err := deduplicator.AttachReconstructor(ctx, reconstructor); err != nil {
@@ -159,6 +166,11 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				log.Printf("reconstructor close: %v", err)
 			}
 		}
+		if busObservability != nil {
+			if err := busObservability.Close(); err != nil {
+				log.Printf("bus observability close: %v", err)
+			}
+		}
 		if advertiser != nil {
 			if err := advertiser.Close(); err != nil {
 				log.Printf("mdns close: %v", err)
@@ -173,6 +185,32 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	<-ctx.Done()
 	return nil
+}
+
+func wireObserveFirstObservers(cfg *ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+	if cfg == nil {
+		return nil, nil, nil
+	}
+
+	observerCfg := *cfg
+
+	var deduplicator *ebusgateway.ActivePassiveDeduplicator
+	if cfg.BroadcastListen {
+		dedup, err := ebusgateway.NewActivePassiveDeduplicator(observerCfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		deduplicator = dedup
+		observerCfg.LocalAddressSnapshotter = deduplicator
+	}
+
+	busObservability := ebusgateway.NewBusObservabilityStore(observerCfg)
+	cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, busObservability)
+	if deduplicator != nil {
+		cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, deduplicator)
+	}
+
+	return busObservability, deduplicator, nil
 }
 
 func applyTransportSourcePolicy(cfg *ebusgateway.Config) {
@@ -276,7 +314,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	})
 }
 
-func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub, semanticProvider graphql.SemanticProvider, scheduleWriter mcp.ScheduleWriter) (*http.Server, mdns.Advertiser, error) {
+func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub, semanticProvider graphql.SemanticProvider, scheduleWriter mcp.ScheduleWriter, busObservability *ebusgateway.BusObservabilityStore) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
 	}
@@ -316,6 +354,9 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 	}
 
 	mux := http.NewServeMux()
+	if busObservability != nil {
+		mux.Handle(normalizeMountPath(cfg.MetricsPath, ebusgateway.DefaultMetricsPath), busObservability.MetricsHandler())
+	}
 	mux.Handle(cfg.GraphQLPath, queryHandler)
 	mux.Handle(cfg.SnapshotPath, snapshotHandler)
 	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)
@@ -345,7 +386,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 			GatewayVersion:   buildVersion,
 			BuildID:          buildID,
 			ListRegistry: func() []portal.RegistryDevice {
-				schemaSnapshot := builder.Schema()
+				schemaSnapshot := builder.FreshSchema()
 				schemaByAddr := make(map[byte]graphql.Device, len(schemaSnapshot.Devices))
 				for _, sd := range schemaSnapshot.Devices {
 					schemaByAddr[sd.Address] = sd
@@ -415,7 +456,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 				}
 			},
 			ListProjections: func() []portal.ProjectionDevice {
-				snapshot := builder.Schema()
+				snapshot := builder.FreshSchema()
 				items := make([]portal.ProjectionDevice, 0, len(snapshot.Devices))
 				for _, device := range snapshot.Devices {
 					summaries := make([]portal.ProjectionSummary, 0, len(device.Projections))
@@ -437,7 +478,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 				return items
 			},
 			GetProjection: func(address byte, plane string) (portal.ProjectionGraph, bool) {
-				snapshot := builder.Schema()
+				snapshot := builder.FreshSchema()
 				for _, device := range snapshot.Devices {
 					if device.Address != address {
 						continue

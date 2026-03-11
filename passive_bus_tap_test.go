@@ -341,6 +341,46 @@ func TestBroadcastListener_RouterOverflowMarksDegradedAndResubscribes(t *testing
 	}
 }
 
+func TestBroadcastListener_RecoveryWindowTracksLatestFault(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	listener := &BroadcastListener{ctx: ctx, recoveryWindow: 40 * time.Millisecond}
+	observeFirstBroadcastSupervisorState.Set("healthy")
+
+	listener.markDegraded("router_overflow")
+	time.Sleep(20 * time.Millisecond)
+	listener.markDegraded("router_overflow")
+
+	time.Sleep(30 * time.Millisecond)
+	if !broadcastListenerIsDegraded(listener) {
+		t.Fatal("listener degraded = false; want true before latest fault-free window elapses")
+	}
+
+	waitForCondition(t, 250*time.Millisecond, func() bool {
+		return !broadcastListenerIsDegraded(listener) && observeFirstBroadcastSupervisorState.Value() == "healthy"
+	})
+}
+
+func TestBroadcastListener_TerminalResubscribeFailureStaysDegraded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	listener := &BroadcastListener{ctx: ctx, recoveryWindow: 30 * time.Millisecond}
+	observeFirstBroadcastSupervisorState.Set("healthy")
+
+	listener.markDegraded("router_overflow")
+	listener.markDegraded("resubscribe_failed")
+
+	time.Sleep(2 * listener.recoveryWindow)
+	if !broadcastListenerIsDegraded(listener) {
+		t.Fatal("listener degraded = false; want terminal degraded state")
+	}
+	if got := observeFirstBroadcastSupervisorState.Value(); got != "degraded" {
+		t.Fatalf("supervisor state = %q; want degraded", got)
+	}
+}
+
 type decodingRouterPlane struct {
 	*mockPlane
 	decoded map[string]types.Value
@@ -383,6 +423,12 @@ func waitForCondition(t *testing.T, timeout time.Duration, ready func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timeout waiting for condition")
+}
+
+func broadcastListenerIsDegraded(listener *BroadcastListener) bool {
+	listener.stateMu.Lock()
+	defer listener.stateMu.Unlock()
+	return listener.degraded
 }
 
 func drainBroadcastEvents(ch <-chan router.BroadcastEvent) {

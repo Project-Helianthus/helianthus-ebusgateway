@@ -49,6 +49,13 @@ type TransportConfig struct {
 	Dial         func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error)
 }
 
+type PassiveObserveFirstSupport string
+
+const (
+	PassiveObserveFirstSupportAuto                       PassiveObserveFirstSupport = "auto"
+	PassiveObserveFirstSupportUnsupportedOrMisconfigured PassiveObserveFirstSupport = "unsupported_or_misconfigured"
+)
+
 type Config struct {
 	Transport          transport.RawTransport
 	TransportConfig    TransportConfig
@@ -81,6 +88,7 @@ type Config struct {
 	SemanticRegulatorAbsenceGrace           time.Duration
 	SemanticCachePath                       string
 	BroadcastListen                         bool
+	PassiveObserveFirstSupport              PassiveObserveFirstSupport
 	PassiveAbsenceThreshold                 time.Duration
 	PassiveTransactionWatchdog              time.Duration
 	PassiveReconnectInitialDelay            time.Duration
@@ -155,6 +163,7 @@ func DefaultConfig() Config {
 		SemanticRegulatorRecheckInterval:        DefaultSemanticRegulatorRecheckInterval,
 		SemanticRegulatorAbsenceGrace:           DefaultSemanticRegulatorAbsenceGrace,
 		SemanticCachePath:                       "./semantic_cache.json",
+		PassiveObserveFirstSupport:              PassiveObserveFirstSupportAuto,
 		PassiveAbsenceThreshold:                 10 * time.Second,
 		PassiveTransactionWatchdog:              1 * time.Second,
 		PassiveReconnectInitialDelay:            1 * time.Second,
@@ -210,6 +219,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.BootLiveTimeout == 0 {
 		cfg.BootLiveTimeout = 2 * time.Minute
+	}
+	if cfg.PassiveObserveFirstSupport == "" {
+		cfg.PassiveObserveFirstSupport = PassiveObserveFirstSupportAuto
 	}
 	if cfg.SemanticInterval == 0 {
 		cfg.SemanticInterval = 1 * time.Minute

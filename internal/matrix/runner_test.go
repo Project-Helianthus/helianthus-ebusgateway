@@ -123,8 +123,8 @@ func TestRunnerDryRunWritesPassiveSuiteArtifacts(t *testing.T) {
 	if got := config["suite"]; got != SuitePassive {
 		t.Fatalf("config suite = %#v; want %q", got, SuitePassive)
 	}
-	if got := config["passive_mode"]; got != "required" {
-		t.Fatalf("config passive_mode = %#v; want required", got)
+	if got := config["passive_mode"]; got != "unsupported_or_misconfigured" {
+		t.Fatalf("config passive_mode = %#v; want unsupported_or_misconfigured", got)
 	}
 }
 

@@ -168,6 +168,23 @@ func TestShouldStartPassiveObserveFirst(t *testing.T) {
 	if !shouldStartPassiveObserveFirst(cfg) {
 		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for enh")
 	}
+
+	cfg.PassiveObserveFirstSupport = ebusgateway.PassiveObserveFirstSupportUnsupportedOrMisconfigured
+	if shouldStartPassiveObserveFirst(cfg) {
+		t.Fatal("shouldStartPassiveObserveFirst() = true; want false for explicit unsupported override")
+	}
+}
+
+func TestBindFlags_PassiveObserveFirstSupport(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-passive-observe-first-support", "unsupported_or_misconfigured"}); err != nil {
+		t.Fatalf("parse passive-observe-first-support: %v", err)
+	}
+	if cfg.PassiveObserveFirstSupport != ebusgateway.PassiveObserveFirstSupportUnsupportedOrMisconfigured {
+		t.Fatalf("PassiveObserveFirstSupport = %q; want unsupported_or_misconfigured", cfg.PassiveObserveFirstSupport)
+	}
 }
 
 func TestBindFlags_PortalPath(t *testing.T) {

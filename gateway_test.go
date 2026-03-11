@@ -382,6 +382,18 @@ func TestPassiveTransportSupported(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name: "explicit unsupported override",
+			cfg: Config{
+				TransportConfig: TransportConfig{
+					Protocol: TransportENH,
+					Network:  "tcp",
+					Address:  "127.0.0.1:9999",
+				},
+				PassiveObserveFirstSupport: PassiveObserveFirstSupportUnsupportedOrMisconfigured,
+			},
+			want: false,
+		},
 	}
 
 	for _, test := range tests {

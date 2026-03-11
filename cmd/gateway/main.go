@@ -287,6 +287,18 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		return nil
 	})
 	fs.BoolVar(&cfg.BroadcastListen, "broadcast", cfg.BroadcastListen, "enable broadcast listener (separate connection)")
+	fs.Func("passive-observe-first-support", "passive observe-first support override: auto or unsupported_or_misconfigured", func(value string) error {
+		switch normalized := ebusgateway.PassiveObserveFirstSupport(strings.ToLower(strings.TrimSpace(value))); normalized {
+		case "", ebusgateway.PassiveObserveFirstSupportAuto:
+			cfg.PassiveObserveFirstSupport = ebusgateway.PassiveObserveFirstSupportAuto
+			return nil
+		case ebusgateway.PassiveObserveFirstSupportUnsupportedOrMisconfigured:
+			cfg.PassiveObserveFirstSupport = normalized
+			return nil
+		default:
+			return fmt.Errorf("unsupported passive observe-first support %q", value)
+		}
+	})
 	fs.StringVar(&cfg.HTTPAddr, "http-addr", cfg.HTTPAddr, "http listen address (empty disables)")
 	fs.StringVar(&cfg.GraphQLPath, "graphql-path", cfg.GraphQLPath, "graphql endpoint path")
 	fs.StringVar(&cfg.SnapshotPath, "snapshot-path", cfg.SnapshotPath, "projection snapshot endpoint path")

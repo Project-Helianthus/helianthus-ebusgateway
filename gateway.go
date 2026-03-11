@@ -200,12 +200,37 @@ func canonicalTransportProtocol(protocol TransportProtocol) TransportProtocol {
 	}
 }
 
-func PassiveTransportSupported(cfg Config) bool {
+func normalizePassiveObserveFirstSupport(value PassiveObserveFirstSupport) PassiveObserveFirstSupport {
+	switch normalized := PassiveObserveFirstSupport(strings.ToLower(strings.TrimSpace(string(value)))); normalized {
+	case "", PassiveObserveFirstSupportAuto:
+		return PassiveObserveFirstSupportAuto
+	case PassiveObserveFirstSupportUnsupportedOrMisconfigured:
+		return PassiveObserveFirstSupportUnsupportedOrMisconfigured
+	default:
+		return PassiveObserveFirstSupportAuto
+	}
+}
+
+func passiveTransportUnavailableReason(cfg Config) string {
+	if normalizePassiveObserveFirstSupport(cfg.PassiveObserveFirstSupport) == PassiveObserveFirstSupportUnsupportedOrMisconfigured {
+		return string(PassiveObserveFirstSupportUnsupportedOrMisconfigured)
+	}
+
 	config, err := normalizeTransportConfig(cfg.TransportConfig)
 	if err == nil {
-		return config.Protocol != TransportEbusdTCP
+		if config.Protocol == TransportEbusdTCP {
+			return string(PassiveObserveFirstSupportUnsupportedOrMisconfigured)
+		}
+		return ""
 	}
-	return canonicalTransportProtocol(cfg.TransportConfig.Protocol) != TransportEbusdTCP
+	if canonicalTransportProtocol(cfg.TransportConfig.Protocol) == TransportEbusdTCP {
+		return string(PassiveObserveFirstSupportUnsupportedOrMisconfigured)
+	}
+	return ""
+}
+
+func PassiveTransportSupported(cfg Config) bool {
+	return passiveTransportUnavailableReason(cfg) == ""
 }
 
 func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol) (TransportProtocol, string, string, error) {

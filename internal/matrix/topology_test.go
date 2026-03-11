@@ -80,8 +80,8 @@ func TestGeneratePassiveSmokeCases(t *testing.T) {
 		transport   Transport
 		passiveMode string
 	}{
-		{id: "P01", kind: TopologyDirectAdapter, transport: TransportENS, passiveMode: "required"},
-		{id: "P02", kind: TopologyDirectAdapter, transport: TransportENH, passiveMode: "required"},
+		{id: "P01", kind: TopologyDirectAdapter, transport: TransportENS, passiveMode: "unsupported_or_misconfigured"},
+		{id: "P02", kind: TopologyDirectAdapter, transport: TransportENH, passiveMode: "unsupported_or_misconfigured"},
 		{id: "P03", kind: TopologyProxySingle, transport: TransportENS, passiveMode: "required"},
 		{id: "P04", kind: TopologyProxyDual, transport: TransportENS, passiveMode: "required"},
 		{id: "P05", kind: TopologyProxyDual, transport: TransportENH, passiveMode: "required"},

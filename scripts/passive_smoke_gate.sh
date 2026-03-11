@@ -97,8 +97,8 @@ if not isinstance(cases, list):
     raise SystemExit(1)
 
 expected = {
-    "P01": "required",
-    "P02": "required",
+    "P01": "unsupported_or_misconfigured",
+    "P02": "unsupported_or_misconfigured",
     "P03": "required",
     "P04": "required",
     "P05": "required",

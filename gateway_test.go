@@ -383,14 +383,64 @@ func TestPassiveTransportSupported(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "explicit unsupported override",
+			name: "direct enh remote adapter unsupported",
 			cfg: Config{
 				TransportConfig: TransportConfig{
 					Protocol: TransportENH,
 					Network:  "tcp",
-					Address:  "127.0.0.1:9999",
+					Address:  "192.168.100.2:9999",
 				},
-				PassiveObserveFirstSupport: PassiveObserveFirstSupportUnsupportedOrMisconfigured,
+			},
+			want: false,
+		},
+		{
+			name: "direct ens remote adapter unsupported",
+			cfg: Config{
+				TransportConfig: TransportConfig{
+					Protocol: TransportENS,
+					Network:  "tcp",
+					Address:  "192.168.100.2:9999",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "local ens proxy endpoint supported",
+			cfg: Config{
+				TransportConfig: TransportConfig{
+					Protocol: TransportENS,
+					Network:  "tcp",
+					Address:  "127.0.0.1:19001",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "loopback endpoint uri supported",
+			cfg: Config{
+				TransportConfig: TransportConfig{
+					Address: "ens://127.0.0.1:19001",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "remote endpoint uri unsupported",
+			cfg: Config{
+				TransportConfig: TransportConfig{
+					Address: "enh://192.168.100.2:9999",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "unix endpoint unsupported",
+			cfg: Config{
+				TransportConfig: TransportConfig{
+					Protocol: TransportENH,
+					Network:  "unix",
+					Address:  "/var/run/adapter.sock",
+				},
 			},
 			want: false,
 		},

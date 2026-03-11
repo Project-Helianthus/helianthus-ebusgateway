@@ -200,37 +200,49 @@ func canonicalTransportProtocol(protocol TransportProtocol) TransportProtocol {
 	}
 }
 
-func normalizePassiveObserveFirstSupport(value PassiveObserveFirstSupport) PassiveObserveFirstSupport {
-	switch normalized := PassiveObserveFirstSupport(strings.ToLower(strings.TrimSpace(string(value)))); normalized {
-	case "", PassiveObserveFirstSupportAuto:
-		return PassiveObserveFirstSupportAuto
-	case PassiveObserveFirstSupportUnsupportedOrMisconfigured:
-		return PassiveObserveFirstSupportUnsupportedOrMisconfigured
-	default:
-		return PassiveObserveFirstSupportAuto
-	}
-}
-
 func passiveTransportUnavailableReason(cfg Config) string {
-	if normalizePassiveObserveFirstSupport(cfg.PassiveObserveFirstSupport) == PassiveObserveFirstSupportUnsupportedOrMisconfigured {
-		return string(PassiveObserveFirstSupportUnsupportedOrMisconfigured)
-	}
-
 	config, err := normalizeTransportConfig(cfg.TransportConfig)
 	if err == nil {
-		if config.Protocol == TransportEbusdTCP {
-			return string(PassiveObserveFirstSupportUnsupportedOrMisconfigured)
+		switch config.Protocol {
+		case TransportEbusdTCP:
+			return "unsupported_or_misconfigured"
+		case TransportENH, TransportENS:
+			if !passiveObserveFirstLoopbackEndpoint(config.Network, config.Address) {
+				return "unsupported_or_misconfigured"
+			}
 		}
 		return ""
 	}
-	if canonicalTransportProtocol(cfg.TransportConfig.Protocol) == TransportEbusdTCP {
-		return string(PassiveObserveFirstSupportUnsupportedOrMisconfigured)
+
+	switch canonicalTransportProtocol(cfg.TransportConfig.Protocol) {
+	case TransportEbusdTCP:
+		return "unsupported_or_misconfigured"
+	case TransportENH, TransportENS:
+		if !passiveObserveFirstLoopbackEndpoint(cfg.TransportConfig.Network, cfg.TransportConfig.Address) {
+			return "unsupported_or_misconfigured"
+		}
 	}
 	return ""
 }
 
 func PassiveTransportSupported(cfg Config) bool {
 	return passiveTransportUnavailableReason(cfg) == ""
+}
+
+func passiveObserveFirstLoopbackEndpoint(network, address string) bool {
+	if strings.ToLower(strings.TrimSpace(network)) != "tcp" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol) (TransportProtocol, string, string, error) {

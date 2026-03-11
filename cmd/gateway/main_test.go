@@ -165,25 +165,15 @@ func TestShouldStartPassiveObserveFirst(t *testing.T) {
 	}
 
 	cfg.TransportConfig.Protocol = ebusgateway.TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
 	if !shouldStartPassiveObserveFirst(cfg) {
-		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for enh")
+		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for loopback proxy endpoint")
 	}
 
-	cfg.PassiveObserveFirstSupport = ebusgateway.PassiveObserveFirstSupportUnsupportedOrMisconfigured
+	cfg.TransportConfig.Address = "192.168.100.2:9999"
 	if shouldStartPassiveObserveFirst(cfg) {
-		t.Fatal("shouldStartPassiveObserveFirst() = true; want false for explicit unsupported override")
-	}
-}
-
-func TestBindFlags_PassiveObserveFirstSupport(t *testing.T) {
-	cfg := ebusgateway.DefaultConfig()
-	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
-	bindFlags(fs, &cfg)
-	if err := fs.Parse([]string{"-passive-observe-first-support", "unsupported_or_misconfigured"}); err != nil {
-		t.Fatalf("parse passive-observe-first-support: %v", err)
-	}
-	if cfg.PassiveObserveFirstSupport != ebusgateway.PassiveObserveFirstSupportUnsupportedOrMisconfigured {
-		t.Fatalf("PassiveObserveFirstSupport = %q; want unsupported_or_misconfigured", cfg.PassiveObserveFirstSupport)
+		t.Fatal("shouldStartPassiveObserveFirst() = true; want false for direct remote endpoint")
 	}
 }
 

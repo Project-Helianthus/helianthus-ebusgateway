@@ -179,20 +179,7 @@ run_local_ops() {
 
 restart_gateway_with_passive_mode() {
   local protocol network address
-  local passive_support
   IFS=';' read -r protocol network address < <(gateway_connection)
-  passive_support="${MATRIX_PASSIVE_SUPPORT_OVERRIDE:-${MATRIX_PASSIVE_MODE:-required}}"
-  case "${passive_support}" in
-    required)
-      passive_support="auto"
-      ;;
-    unsupported_or_misconfigured|auto)
-      ;;
-    *)
-      echo "unsupported passive support override ${passive_support}" >&2
-      return 1
-      ;;
-  esac
 
   remote_exec "mkdir -p '${remote_case_dir}/state' '${remote_case_dir}/logs'"
   remote_exec "if [ -f '${remote_case_dir}/state/gateway.pid' ]; then kill \$(cat '${remote_case_dir}/state/gateway.pid') >/dev/null 2>&1 || true; rm -f '${remote_case_dir}/state/gateway.pid'; fi"
@@ -205,7 +192,6 @@ restart_gateway_with_passive_mode() {
     --semantic-discovery-interval 5m --semantic-config-interval 5m --semantic-state-interval 1m --semantic-request-timeout 2s \
     --semantic-cache-path '${remote_case_dir}/state/semantic_cache.json' \
     --http-addr ':${gateway_http_port}' --mdns=false --broadcast=true \
-    --passive-observe-first-support '${passive_support}' \
     > '${remote_case_dir}/logs/gateway.log' 2>&1 & echo \$! > '${remote_case_dir}/state/gateway.pid'"
   remote_exec "for i in \$(seq 1 60); do kill -0 \$(cat '${remote_case_dir}/state/gateway.pid') || exit 2; ss -ltn '( sport = :${gateway_http_port} )' | grep -q LISTEN && exit 0; sleep 1; done; exit 1"
 }

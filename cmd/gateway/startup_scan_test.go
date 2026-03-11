@@ -189,6 +189,73 @@ func TestShouldRetryDiscoveryWithFullRange(t *testing.T) {
 	}
 }
 
+func TestResolveStartupScanSourceConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  ebusgateway.Config
+		want byte
+	}{
+		{
+			name: "proxy observe first auto resolves explicit startup source",
+			cfg: func() ebusgateway.Config {
+				cfg := ebusgateway.DefaultConfig()
+				cfg.BroadcastListen = true
+				cfg.ScanSource = 0x00
+				cfg.ScanSourceAuto = true
+				cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+				cfg.TransportConfig.Network = "tcp"
+				cfg.TransportConfig.Address = "127.0.0.1:19001"
+				return cfg
+			}(),
+			want: proxyObserveFirstStartupSource,
+		},
+		{
+			name: "direct adapter auto remains dynamic",
+			cfg: func() ebusgateway.Config {
+				cfg := ebusgateway.DefaultConfig()
+				cfg.BroadcastListen = true
+				cfg.ScanSource = 0x00
+				cfg.ScanSourceAuto = true
+				cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+				cfg.TransportConfig.Network = "tcp"
+				cfg.TransportConfig.Address = "192.168.100.2:9999"
+				return cfg
+			}(),
+			want: 0x00,
+		},
+		{
+			name: "explicit source is preserved",
+			cfg: func() ebusgateway.Config {
+				cfg := ebusgateway.DefaultConfig()
+				cfg.BroadcastListen = true
+				cfg.ScanSource = 0xF0
+				cfg.ScanSourceAuto = false
+				cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+				cfg.TransportConfig.Network = "tcp"
+				cfg.TransportConfig.Address = "127.0.0.1:19001"
+				return cfg
+			}(),
+			want: 0xF0,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := resolveStartupScanSourceConfig(test.cfg)
+			if got.ScanSource != test.want {
+				t.Fatalf("resolveStartupScanSourceConfig(...).ScanSource = 0x%02X; want 0x%02X", got.ScanSource, test.want)
+			}
+			if got.ScanSource == proxyObserveFirstStartupSource && got.ScanSourceAuto {
+				t.Fatal("resolveStartupScanSourceConfig(...) left ScanSourceAuto=true for explicit proxy startup source")
+			}
+		})
+	}
+}
+
 func TestEbusdScanTargetCandidates(t *testing.T) {
 	t.Parallel()
 
@@ -279,6 +346,74 @@ func TestParseEbusdScanResultLine(t *testing.T) {
 	}
 	if row.SerialNumber != "21-21-34-0020262148-0082-014267-N7" {
 		t.Fatalf("SerialNumber = %q; want %q", row.SerialNumber, "21-21-34-0020262148-0082-014267-N7")
+	}
+}
+
+func TestStartDiscoveryScanLoop_ProxyObserveFirstAutoUsesExplicitStartupSource(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origLoopExitFn := startupScanLoopExitFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		startupScanLoopExitFn = origLoopExitFn
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	scanSourceCh := make(chan byte, 1)
+	loopExited := make(chan struct{})
+	registryScanFn = func(_ context.Context, _ registry.ScanBus, _ *registry.DeviceRegistry, source byte, _ []byte) ([]registry.DeviceEntry, error) {
+		scanSourceCh <- source
+		cancel()
+		return nil, nil
+	}
+	startupScanLoopExitFn = func() {
+		close(loopExited)
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = time.Hour
+	cfg.BroadcastListen = true
+	cfg.ScanSource = 0x00
+	cfg.ScanSourceAuto = true
+	cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
+
+	firstPassDone := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	select {
+	case got := <-scanSourceCh:
+		if got != proxyObserveFirstStartupSource {
+			t.Fatalf("registry scan source = 0x%02X; want 0x%02X", got, proxyObserveFirstStartupSource)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("registry scan was not invoked")
+	}
+
+	select {
+	case <-firstPassDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("firstPassDone was not signaled")
+	}
+
+	select {
+	case <-loopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup scan loop did not exit after context cancellation")
 	}
 }
 
@@ -545,6 +680,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadKeepsScanningUntilControllerCandidat
 	origResultTargetsFn := ebusdScanResultTargetsFn
 	origResultInfosFn := ebusdScanResultInfosFn
 	origProbeFn := startupScanB524ProbeFn
+	origLoopExitFn := startupScanLoopExitFn
 	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
 	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
 	t.Cleanup(func() {
@@ -553,6 +689,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadKeepsScanningUntilControllerCandidat
 		ebusdScanResultTargetsFn = origResultTargetsFn
 		ebusdScanResultInfosFn = origResultInfosFn
 		startupScanB524ProbeFn = origProbeFn
+		startupScanLoopExitFn = origLoopExitFn
 		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
 		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
 	})
@@ -778,9 +915,23 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 		}
 	}
 	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+	loopExited := make(chan struct{}, 1)
+	startupScanLoopExitFn = func() {
+		select {
+		case loopExited <- struct{}{}:
+		default:
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer func() {
+		cancel()
+		select {
+		case <-loopExited:
+		case <-time.After(2 * time.Second):
+			t.Fatal("startup discovery scan did not exit after cancellation")
+		}
+	}()
 
 	cfg := ebusgateway.DefaultConfig()
 	cfg.ScanOnStart = true
@@ -830,8 +981,6 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 		t.Fatalf("startup scan readiness probe received canceled context: %v", finalProbeCtxErr)
 	}
 
-	cancel()
-	time.Sleep(50 * time.Millisecond)
 }
 
 func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedScansUntilActiveSuccess(t *testing.T) {

@@ -180,6 +180,16 @@ func TestShouldStartPassiveObserveFirst(t *testing.T) {
 	if shouldStartPassiveObserveFirst(cfg) {
 		t.Fatal("shouldStartPassiveObserveFirst() = true; want false for direct remote endpoint")
 	}
+
+	cfg.TransportConfig.Address = "adapter.local:9999"
+	if shouldStartPassiveObserveFirst(cfg) {
+		t.Fatal("shouldStartPassiveObserveFirst() = true; want false for hostname direct remote endpoint")
+	}
+
+	cfg.TransportConfig.Address = "proxy.local:19001"
+	if !shouldStartPassiveObserveFirst(cfg) {
+		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for hostname proxy-like endpoint")
+	}
 }
 
 func TestBindFlags_PortalPath(t *testing.T) {

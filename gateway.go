@@ -245,10 +245,12 @@ func passiveObserveFirstDirectAdapterEndpoint(network, address string) bool {
 		return false
 	}
 	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
+	if ip != nil {
+		return !ip.IsLoopback()
 	}
-	return !ip.IsLoopback()
+	// Hostname-based tcp/:9999 endpoints are the same direct-adapter class as
+	// the proven raw adapter case unless they resolve to loopback localhost.
+	return true
 }
 
 func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol) (TransportProtocol, string, string, error) {

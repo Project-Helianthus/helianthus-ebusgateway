@@ -187,6 +187,31 @@ func TestBusObservabilityStoreKeepsDirectRemotePassiveOutOfStartupTimeout(t *tes
 	}
 }
 
+func TestBusObservabilityStoreKeepsDirectRemoteHostnamePassiveOutOfStartupTimeout(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENS
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "adapter.local:9999"
+
+	base := time.Now().UTC()
+	store := NewBusObservabilityStore(cfg)
+	store.now = func() time.Time {
+		return base.Add(cfg.ObserveFirstWarmupOuterWindow + time.Second)
+	}
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="unsupported_or_misconfigured"} 1`) {
+		t.Fatalf("RenderPrometheus missing unsupported_or_misconfigured reason for hostname direct remote passive mode:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0`) {
+		t.Fatalf("RenderPrometheus unexpectedly counted timeout probes for hostname direct remote passive mode:\n%s", metrics)
+	}
+	if strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="startup_timeout"} 1`) {
+		t.Fatalf("RenderPrometheus reported startup_timeout for hostname direct remote passive mode:\n%s", metrics)
+	}
+}
+
 func TestBusObservabilityStoreDoesNotDowngradeRemoteProxyLikeEndpoint(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BroadcastListen = true
@@ -206,6 +231,28 @@ func TestBusObservabilityStoreDoesNotDowngradeRemoteProxyLikeEndpoint(t *testing
 	}
 	if !strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="startup_timeout"} 1`) {
 		t.Fatalf("RenderPrometheus missing startup_timeout for remote proxy-like endpoint without passive ingress:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreDoesNotDowngradeRemoteProxyLikeHostnameEndpoint(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENS
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "proxy.local:19001"
+
+	base := time.Now().UTC()
+	store := NewBusObservabilityStore(cfg)
+	store.now = func() time.Time {
+		return base.Add(cfg.ObserveFirstWarmupOuterWindow + time.Second)
+	}
+
+	metrics := store.RenderPrometheus()
+	if strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="unsupported_or_misconfigured"} 1`) {
+		t.Fatalf("RenderPrometheus incorrectly marked hostname remote proxy-like endpoint unsupported:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="startup_timeout"} 1`) {
+		t.Fatalf("RenderPrometheus missing startup_timeout for hostname remote proxy-like endpoint without passive ingress:\n%s", metrics)
 	}
 }
 

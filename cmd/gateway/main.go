@@ -29,6 +29,7 @@ var (
 	buildID                                   = "unknown"
 	wireObserveFirstObserversFn               = wireObserveFirstObservers
 	startDiscoveryScanLoopFn                  = startDiscoveryScanLoop
+	startVaillantSemanticPollingFn            = startVaillantSemanticPolling
 	startPassiveTransactionReconstructor      = ebusgateway.StartPassiveTransactionReconstructor
 	startBroadcastListenerWithReconstructorFn = ebusgateway.StartBroadcastListenerWithReconstructor
 	startHTTPServerFn                         = startHTTPServer
@@ -86,7 +87,12 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
-	semanticPoller := startVaillantSemanticPolling(ctx, cfg, gateway, semanticRuntime.Provider(), hub)
+
+	var semanticBarrier chan struct{}
+	if cfg.ScanOnStart && shouldStartPassiveObserveFirst(cfg) {
+		semanticBarrier = make(chan struct{})
+	}
+	semanticPoller := startVaillantSemanticPollingFn(ctx, cfg, gateway, semanticRuntime.Provider(), hub, semanticBarrier)
 	if semanticPoller != nil {
 		builder.SetBoilerConfigWriter(semanticPoller)
 		builder.SetScheduleWriter(semanticPoller)
@@ -97,6 +103,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}
 
 	startupScanFirstPassDone := startDiscoveryScanLoopFn(ctx, cfg, gateway, builder)
+
+	if semanticBarrier != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+			case <-startupScanFirstPassDone:
+			}
+			close(semanticBarrier)
+		}()
+	}
 
 	var scheduleWriter mcp.ScheduleWriter
 	if semanticPoller != nil {

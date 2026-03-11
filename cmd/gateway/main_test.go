@@ -199,6 +199,167 @@ func TestShouldStartPassiveObserveFirst(t *testing.T) {
 	}
 }
 
+func TestRun_DefersSemanticBootstrapUntilStartupScanFirstPassOnPassiveObserveFirst(t *testing.T) {
+	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
+	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
+	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
+	origStartPassiveTransactionReconstructor := startPassiveTransactionReconstructor
+	origStartBroadcastListenerWithReconstructorFn := startBroadcastListenerWithReconstructorFn
+	origStartHTTPServerFn := startHTTPServerFn
+	t.Cleanup(func() {
+		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
+		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
+		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
+		startPassiveTransactionReconstructor = origStartPassiveTransactionReconstructor
+		startBroadcastListenerWithReconstructorFn = origStartBroadcastListenerWithReconstructorFn
+		startHTTPServerFn = origStartHTTPServerFn
+	})
+
+	firstPassDone := make(chan struct{})
+	barrierObserved := make(chan bool, 1)
+	semanticStarted := make(chan struct{}, 1)
+
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, nil
+	}
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder) <-chan struct{} {
+		return firstPassDone
+	}
+	startVaillantSemanticPollingFn = func(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, startupBarrier <-chan struct{}) *vaillantSemanticPoller {
+		barrierObserved <- startupBarrier != nil
+		go func() {
+			if startupBarrier == nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+			case <-startupBarrier:
+				select {
+				case semanticStarted <- struct{}{}:
+				default:
+				}
+			}
+		}()
+		return nil
+	}
+	startPassiveTransactionReconstructor = func(context.Context, ebusgateway.Config) (*ebusgateway.PassiveTransactionReconstructor, error) {
+		return nil, nil
+	}
+	startBroadcastListenerWithReconstructorFn = func(context.Context, *router.BusEventRouter, *ebusgateway.PassiveTransactionReconstructor) (*ebusgateway.BroadcastListener, error) {
+		return nil, nil
+	}
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, *ebusgateway.BusObservabilityStore) (*http.Server, mdns.Advertiser, error) {
+		return nil, nil, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.Transport = transport.NewLoopback()
+	cfg.BroadcastListen = true
+	cfg.ScanOnStart = true
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg)
+	}()
+
+	select {
+	case observed := <-barrierObserved:
+		if !observed {
+			t.Fatal("semantic startup barrier missing on passive observe-first path")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("semantic poller was not initialized")
+	}
+
+	select {
+	case <-semanticStarted:
+		t.Fatal("semantic bootstrap started before startup scan first pass completed")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(firstPassDone)
+
+	select {
+	case <-semanticStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("semantic bootstrap did not start after startup scan first pass completed")
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run() did not exit after context cancellation")
+	}
+}
+
+func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.T) {
+	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
+	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
+	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
+	origStartHTTPServerFn := startHTTPServerFn
+	t.Cleanup(func() {
+		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
+		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
+		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
+		startHTTPServerFn = origStartHTTPServerFn
+	})
+
+	barrierObserved := make(chan bool, 1)
+
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, nil
+	}
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder) <-chan struct{} {
+		return make(chan struct{})
+	}
+	startVaillantSemanticPollingFn = func(_ context.Context, _ ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.LiveSemanticProvider, _ *graphql.BroadcastHub, startupBarrier <-chan struct{}) *vaillantSemanticPoller {
+		barrierObserved <- startupBarrier != nil
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, *ebusgateway.BusObservabilityStore) (*http.Server, mdns.Advertiser, error) {
+		cancel()
+		return nil, nil, nil
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.Transport = transport.NewLoopback()
+	cfg.ScanOnStart = true
+	cfg.BroadcastListen = false
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg)
+	}()
+
+	select {
+	case observed := <-barrierObserved:
+		if observed {
+			t.Fatal("semantic startup barrier should be disabled outside passive observe-first path")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("semantic poller was not initialized")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run() did not exit after context cancellation")
+	}
+}
+
 func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T) {
 	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
 	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn

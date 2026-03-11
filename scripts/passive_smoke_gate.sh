@@ -34,6 +34,7 @@ requires_passive_smoke_gate() {
     bus_observability_store.go|\
     config.go|\
     cmd/gateway/main.go|\
+    cmd/gateway/startup_scan*.go|\
     gateway.go|\
     passive_*.go|\
     cmd/matrix-runner/*|\

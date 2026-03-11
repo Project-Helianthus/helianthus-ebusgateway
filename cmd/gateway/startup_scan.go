@@ -210,17 +210,30 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 						shouldRetryDiscoveryWithFullRange(ctx, cfg, gateway, usedRestrictedTargets, retryingFullRange) {
 						forceFullRangeNextPass = true
 						fullRangeRecoveryAttempted = true
+						timer := time.NewTimer(interval)
+						select {
+						case <-ctx.Done():
+							timer.Stop()
+							return
+						case <-timer.C:
+						}
+						continue
 					} else if shouldStopDiscoveryScan(total, confirmationPending, confirmationSatisfied) {
 						return
+					} else if confirmationPending && usedRestrictedTargets && !retryingFullRange &&
+						fullRangeRecoveryAttempted && !confirmationSatisfied {
+						// Once the bounded full-range retry is spent, keep the preload inventory
+						// but fall through so restricted active scans can still confirm the bus.
+					} else {
+						timer := time.NewTimer(interval)
+						select {
+						case <-ctx.Done():
+							timer.Stop()
+							return
+						case <-timer.C:
+						}
+						continue
 					}
-					timer := time.NewTimer(interval)
-					select {
-					case <-ctx.Done():
-						timer.Stop()
-						return
-					case <-timer.C:
-					}
-					continue
 				}
 			}
 

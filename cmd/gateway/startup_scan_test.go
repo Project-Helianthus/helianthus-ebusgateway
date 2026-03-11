@@ -904,9 +904,6 @@ func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedSca
 		mu.Lock()
 		defer mu.Unlock()
 		preloadRun++
-		if preloadRun > 1 {
-			return nil, nil
-		}
 		return []registry.DeviceInfo{
 			{Address: 0x04, Manufacturer: "Vaillant", DeviceID: "NETX3"},
 			{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"},

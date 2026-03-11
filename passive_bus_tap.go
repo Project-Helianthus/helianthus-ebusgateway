@@ -185,6 +185,7 @@ func (tap *PassiveBusTap) run() {
 func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 	decoder := passiveEscapeDecoder{}
 	lastSymbolAt := time.Now()
+	absenceDisconnect := passiveTapEnforcesAbsenceDisconnect(tap.cfg)
 
 	for {
 		if err := tap.ctx.Err(); err != nil {
@@ -200,7 +201,7 @@ func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 					Err:        err,
 				})
 				threshold := tap.cfg.PassiveAbsenceThreshold
-				if threshold > 0 && time.Since(lastSymbolAt) >= threshold {
+				if absenceDisconnect && threshold > 0 && time.Since(lastSymbolAt) >= threshold {
 					return fmt.Errorf("passive tap absence threshold exceeded after %s: %w", threshold, ebuserrors.ErrTimeout)
 				}
 				continue
@@ -407,6 +408,10 @@ func readPassiveTransportEvent(tr transport.RawTransport) (transport.StreamEvent
 		Kind: transport.StreamEventByte,
 		Byte: value,
 	}, nil
+}
+
+func passiveTapEnforcesAbsenceDisconnect(cfg Config) bool {
+	return !PassiveTransportSupported(cfg)
 }
 
 func resolvePassiveTransport(ctx context.Context, cfg Config) (transport.RawTransport, error) {

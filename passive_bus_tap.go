@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -411,7 +412,29 @@ func readPassiveTransportEvent(tr transport.RawTransport) (transport.StreamEvent
 }
 
 func passiveTapEnforcesAbsenceDisconnect(cfg Config) bool {
-	return !PassiveTransportSupported(cfg)
+	return !passiveTapUsesProxyLikeObserverTransport(cfg)
+}
+
+func passiveTapUsesProxyLikeObserverTransport(cfg Config) bool {
+	config, err := normalizeTransportConfig(cfg.TransportConfig)
+	if err != nil {
+		return false
+	}
+
+	switch config.Protocol {
+	case TransportENH, TransportENS:
+	default:
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(config.Network)) != "tcp" {
+		return false
+	}
+
+	_, port, err := net.SplitHostPort(strings.TrimSpace(config.Address))
+	if err != nil {
+		return false
+	}
+	return port == "19001"
 }
 
 func resolvePassiveTransport(ctx context.Context, cfg Config) (transport.RawTransport, error) {

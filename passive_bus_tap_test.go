@@ -239,6 +239,105 @@ func TestPassiveBusTap_ProxyLikeEndpointDoesNotReconnectOnReadTimeoutSilence(t *
 	}
 }
 
+func TestPassiveBusTap_LoopbackENHStillReconnectsOnReadTimeoutSilence(t *testing.T) {
+	t.Parallel()
+
+	recorder := newPassiveEventRecorder()
+	keepStreaming := make(chan struct{})
+	var serversMu sync.Mutex
+	var servers []net.Conn
+	var dialMu sync.Mutex
+	dialCount := 0
+
+	cfg := DefaultConfig()
+	cfg.TransportConfig = TransportConfig{
+		Protocol:     TransportENH,
+		Network:      "tcp",
+		Address:      "127.0.0.1:9999",
+		ReadTimeout:  20 * time.Millisecond,
+		WriteTimeout: 20 * time.Millisecond,
+		DialTimeout:  time.Second,
+		Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+			dialMu.Lock()
+			defer dialMu.Unlock()
+			dialCount++
+
+			client, server := net.Pipe()
+			serversMu.Lock()
+			servers = append(servers, server)
+			serversMu.Unlock()
+
+			switch dialCount {
+			case 1:
+				// Stay silent so the absence threshold forces a reconnect.
+			case 2:
+				go func() {
+					ticker := time.NewTicker(15 * time.Millisecond)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-keepStreaming:
+							return
+						case <-ticker.C:
+							if _, err := server.Write(enhReceivedBytes([]byte{0x44})); err != nil {
+								return
+							}
+						}
+					}
+				}()
+			default:
+				_ = server.Close()
+				return nil, fmt.Errorf("unexpected extra reconnect")
+			}
+
+			return client, nil
+		},
+	}
+	cfg.PassiveAbsenceThreshold = 60 * time.Millisecond
+	cfg.PassiveReconnectInitialDelay = 5 * time.Millisecond
+	cfg.PassiveReconnectMaxDelay = 5 * time.Millisecond
+
+	t.Cleanup(func() {
+		close(keepStreaming)
+		serversMu.Lock()
+		defer serversMu.Unlock()
+		for _, server := range servers {
+			_ = server.Close()
+		}
+	})
+
+	tap, err := StartPassiveBusTap(context.Background(), cfg, recorder)
+	if err != nil {
+		t.Fatalf("StartPassiveBusTap error = %v", err)
+	}
+	defer func() {
+		if err := tap.Close(); err != nil {
+			t.Fatalf("Close error = %v", err)
+		}
+	}()
+
+	events := waitForPassiveEvents(t, recorder, 2*time.Second, func(events []PassiveTapEvent) bool {
+		return countPassiveEventKind(events, PassiveTapEventDisconnected) >= 1 &&
+			countPassiveEventKind(events, PassiveTapEventConnected) >= 2 &&
+			hasPassiveSymbols(events, 0x44)
+	})
+
+	if !hasPassiveSymbols(events, 0x44) {
+		t.Fatalf("symbol events = %v; want reconnect recovery symbol [0x44]", passiveSymbols(events))
+	}
+
+	snapshot := tap.Snapshot()
+	if !snapshot.Connected {
+		t.Fatal("Connected = false; want true after loopback ENH reconnect")
+	}
+	if snapshot.ConnectCount < 2 {
+		t.Fatalf("ConnectCount = %d; want >= 2", snapshot.ConnectCount)
+	}
+	if snapshot.DisconnectCount < 1 {
+		t.Fatalf("DisconnectCount = %d; want >= 1", snapshot.DisconnectCount)
+	}
+}
+
 func TestBroadcastListener_RoutesBroadcastFramesViaPassiveTap(t *testing.T) {
 	client, server := net.Pipe()
 	cfg := DefaultConfig()

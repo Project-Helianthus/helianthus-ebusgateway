@@ -152,14 +152,26 @@ gateway_connection() {
 }
 
 run_local_ops() {
-  local ebusd_config_src
-  ebusd_config_src="$(select_ebusd_config_src)"
+  if [[ "${MATRIX_USES_EBUSD:-0}" == "1" ]]; then
+    local ebusd_config_src
+    ebusd_config_src="$(select_ebusd_config_src)"
+    MATRIX_CASE_CANONICAL_ID="${canonical_case_id}" \
+    MATRIX_CASE_EXEC_ID="${exec_case_id}" \
+    MATRIX_GATEWAY_BASE_URL="${gateway_base_url}" \
+    MATRIX_GRAPHQL_URL="${MATRIX_GRAPHQL_URL:-${gateway_base_url}/graphql}" \
+    MATRIX_METRICS_URL="${MATRIX_METRICS_URL:-${gateway_base_url}/metrics}" \
+    EBUSD_CONFIG_SRC="${ebusd_config_src}" \
+    ADAPTER_REQUIRE_SIGNAL="${ADAPTER_REQUIRE_SIGNAL:-0}" \
+    MATRIX_CASE_ID="${exec_case_id}" \
+      "${LOCAL_OPS_SCRIPT}" "$@"
+    return
+  fi
+
   MATRIX_CASE_CANONICAL_ID="${canonical_case_id}" \
   MATRIX_CASE_EXEC_ID="${exec_case_id}" \
   MATRIX_GATEWAY_BASE_URL="${gateway_base_url}" \
   MATRIX_GRAPHQL_URL="${MATRIX_GRAPHQL_URL:-${gateway_base_url}/graphql}" \
   MATRIX_METRICS_URL="${MATRIX_METRICS_URL:-${gateway_base_url}/metrics}" \
-  EBUSD_CONFIG_SRC="${ebusd_config_src}" \
   ADAPTER_REQUIRE_SIGNAL="${ADAPTER_REQUIRE_SIGNAL:-0}" \
   MATRIX_CASE_ID="${exec_case_id}" \
     "${LOCAL_OPS_SCRIPT}" "$@"

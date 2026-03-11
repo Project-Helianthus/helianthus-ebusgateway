@@ -26,10 +26,29 @@ if [[ -z "${changed_files}" ]]; then
   exit 0
 fi
 
+requires_passive_smoke_gate() {
+  local file="$1"
+  case "${file}" in
+    active_passive_deduplicator.go|\
+    broadcast_listener.go|\
+    bus_observability_store.go|\
+    config.go|\
+    cmd/gateway/main.go|\
+    gateway.go|\
+    passive_*.go|\
+    cmd/matrix-runner/*|\
+    internal/matrix/*|\
+    scripts/passive_*.sh)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 requires_gate=0
 while IFS= read -r file; do
   [[ -z "${file}" ]] && continue
-  if [[ "${file}" =~ ^(config\.go|cmd/gateway/main\.go|bus_observability_store\.go|passive_.*\.go|active_passive_deduplicator\.go|cmd/matrix-runner/|internal/matrix/|scripts/passive_.*\.sh)$ ]]; then
+  if requires_passive_smoke_gate "${file}"; then
     requires_gate=1
     break
   fi

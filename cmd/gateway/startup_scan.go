@@ -197,6 +197,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 
 			total := countRegistryDevices(gateway.Registry)
 			imported := 0
+			didIdentityEnrich := false
 			if total == 0 && len(devices) == 0 && targetConfig != nil &&
 				scanBus.stats.ok == 0 && (scanBus.stats.timeouts > 0 || scanBus.stats.collisions > 0) {
 				infos, infoErr := ebusdScanResultInfosFn(scanCtx, *targetConfig)
@@ -213,6 +214,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			if imported > 0 {
 				log.Printf("startup scan fallback: imported %d device(s) from ebusd scan result", imported)
 				enrichVaillantIdentityFn(ctx, gateway, cfg)
+				didIdentityEnrich = true
 			}
 			log.Printf("startup scan: pass=%d device(s), total=%d", len(devices), total)
 			log.Printf(
@@ -229,7 +231,9 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			if total > 0 {
 				// Normal direct scans can still miss B5.09 identity chunks on the first pass.
 				// Retry the physical-device enrichment once before GraphQL/device consumers stabilize.
-				enrichVaillantIdentityFn(ctx, gateway, cfg)
+				if !didIdentityEnrich {
+					enrichVaillantIdentityFn(ctx, gateway, cfg)
+				}
 				if targetConfig != nil {
 					enrichSerialsFromEbusdFn(ctx, gateway.Registry, *targetConfig)
 				}

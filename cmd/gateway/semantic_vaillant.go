@@ -3364,7 +3364,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		p.reg.Register(info)
+		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
 	}
 
 	p.mu.Lock()
@@ -3577,7 +3577,7 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 
 	nextMode := deriveFM5SemanticMode(controller != 0, fm5GateSatisfied, solarReadable, cylindersReadable, hasFM5Evidence)
 	for _, info := range fm5InventoryRegistryInfos(systemSnapshot, nextMode) {
-		p.reg.Register(info)
+		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
 	}
 
 	p.mu.Lock()
@@ -3802,6 +3802,37 @@ func radioInventoryRegistryInfo(snapshot *vaillantRadioDeviceSnapshot) (registry
 	default:
 		return registry.DeviceInfo{}, false
 	}
+}
+
+func preserveExistingRegistryMetadata(reg *registry.DeviceRegistry, info registry.DeviceInfo) registry.DeviceInfo {
+	if reg == nil {
+		return info
+	}
+	reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry == nil || entry.Address() != info.Address {
+			return true
+		}
+		if info.Manufacturer == "" {
+			info.Manufacturer = entry.Manufacturer()
+		}
+		if info.DeviceID == "" {
+			info.DeviceID = entry.DeviceID()
+		}
+		if info.SerialNumber == "" {
+			info.SerialNumber = entry.SerialNumber()
+		}
+		if info.MacAddress == "" {
+			info.MacAddress = entry.MacAddress()
+		}
+		if info.SoftwareVersion == "" {
+			info.SoftwareVersion = entry.SoftwareVersion()
+		}
+		if info.HardwareVersion == "" {
+			info.HardwareVersion = entry.HardwareVersion()
+		}
+		return false
+	})
+	return info
 }
 
 func (p *vaillantSemanticPoller) hasFM5RegistryEvidence() bool {

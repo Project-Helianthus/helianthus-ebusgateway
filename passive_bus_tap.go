@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -449,10 +450,21 @@ func passiveTapUsesProxyLikeObserverTransport(cfg Config) bool {
 		return false
 	}
 	host = strings.Trim(strings.TrimSpace(host), "[]")
-	if port == "9999" && (strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()) {
+	if port == "9999" {
 		return false
 	}
-	return port != "9999"
+	if !strings.EqualFold(host, "localhost") {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return false
+		}
+	}
+
+	portValue, err := strconv.Atoi(port)
+	if err != nil {
+		return false
+	}
+	return portValue >= 19001 && portValue < 20000
 }
 
 func resolvePassiveTransport(ctx context.Context, cfg Config) (transport.RawTransport, error) {

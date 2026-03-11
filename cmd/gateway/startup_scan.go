@@ -10,6 +10,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -106,9 +107,18 @@ func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Fr
 	return response, err
 }
 
-func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder) {
+func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder) <-chan struct{} {
+	firstPassDone := make(chan struct{})
+	var firstPassOnce sync.Once
+	signalFirstPassDone := func() {
+		firstPassOnce.Do(func() {
+			close(firstPassDone)
+		})
+	}
+
 	if !cfg.ScanOnStart || gateway == nil || gateway.Bus == nil || gateway.Registry == nil {
-		return
+		signalFirstPassDone()
+		return firstPassDone
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -121,6 +131,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 
 	go func() {
 		defer func() {
+			signalFirstPassDone()
 			if startupScanLoopExitFn != nil {
 				startupScanLoopExitFn()
 			}
@@ -219,6 +230,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 						}
 						continue
 					} else if shouldStopDiscoveryScan(total, confirmationPending, confirmationSatisfied) {
+						signalFirstPassDone()
 						cancel()
 						return
 					} else if confirmationPending && usedRestrictedTargets && !retryingFullRange && !confirmationSatisfied {
@@ -227,6 +239,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 						// - bounded recovery already consumed, and
 						// - non-Vaillant preload imports that cannot justify a full-range retry.
 					} else {
+						signalFirstPassDone()
 						cancel()
 						timer := time.NewTimer(interval)
 						select {
@@ -278,6 +291,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				scanBus.stats.otherErrs,
 			)
 			cancel()
+			signalFirstPassDone()
 
 			if total > 0 {
 				// Normal direct scans can still miss B5.09 identity chunks on the first pass.
@@ -327,6 +341,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			}
 		}
 	}()
+	return firstPassDone
 }
 
 func ebusdScanTargetCandidates(config ebusgateway.TransportConfig) []ebusgateway.TransportConfig {

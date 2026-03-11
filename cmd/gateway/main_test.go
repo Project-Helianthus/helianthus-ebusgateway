@@ -1,13 +1,20 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
 
 type fixedLocalSnapshotter struct {
@@ -189,6 +196,80 @@ func TestShouldStartPassiveObserveFirst(t *testing.T) {
 	cfg.TransportConfig.Address = "proxy.local:19001"
 	if !shouldStartPassiveObserveFirst(cfg) {
 		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for hostname proxy-like endpoint")
+	}
+}
+
+func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T) {
+	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
+	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
+	origStartPassiveTransactionReconstructor := startPassiveTransactionReconstructor
+	origStartBroadcastListenerWithReconstructorFn := startBroadcastListenerWithReconstructorFn
+	origStartHTTPServerFn := startHTTPServerFn
+	t.Cleanup(func() {
+		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
+		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
+		startPassiveTransactionReconstructor = origStartPassiveTransactionReconstructor
+		startBroadcastListenerWithReconstructorFn = origStartBroadcastListenerWithReconstructorFn
+		startHTTPServerFn = origStartHTTPServerFn
+	})
+
+	firstPassDone := make(chan struct{})
+	passiveStarted := make(chan struct{}, 1)
+
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, nil
+	}
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder) <-chan struct{} {
+		return firstPassDone
+	}
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, *ebusgateway.BusObservabilityStore) (*http.Server, mdns.Advertiser, error) {
+		return nil, nil, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	startPassiveTransactionReconstructor = func(context.Context, ebusgateway.Config) (*ebusgateway.PassiveTransactionReconstructor, error) {
+		select {
+		case passiveStarted <- struct{}{}:
+		default:
+		}
+		cancel()
+		return nil, nil
+	}
+	startBroadcastListenerWithReconstructorFn = func(context.Context, *router.BusEventRouter, *ebusgateway.PassiveTransactionReconstructor) (*ebusgateway.BroadcastListener, error) {
+		return nil, nil
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.Transport = transport.NewLoopback()
+	cfg.BroadcastListen = true
+	cfg.ScanOnStart = true
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg)
+	}()
+
+	select {
+	case <-passiveStarted:
+		t.Fatal("passive observe-first started before startup scan first pass completed")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(firstPassDone)
+
+	select {
+	case <-passiveStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("passive observe-first did not start after startup scan first pass completed")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run() did not exit after context cancellation")
 	}
 }
 

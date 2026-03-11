@@ -25,8 +25,13 @@ import (
 )
 
 var (
-	buildVersion = "dev"
-	buildID      = "unknown"
+	buildVersion                              = "dev"
+	buildID                                   = "unknown"
+	wireObserveFirstObserversFn               = wireObserveFirstObservers
+	startDiscoveryScanLoopFn                  = startDiscoveryScanLoop
+	startPassiveTransactionReconstructor      = ebusgateway.StartPassiveTransactionReconstructor
+	startBroadcastListenerWithReconstructorFn = ebusgateway.StartBroadcastListenerWithReconstructor
+	startHTTPServerFn                         = startHTTPServer
 )
 
 func main() {
@@ -54,7 +59,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		cfg.Providers = vaillantproviders.Default()
 	}
 
-	busObservability, deduplicator, err := wireObserveFirstObservers(&cfg)
+	busObservability, deduplicator, err := wireObserveFirstObserversFn(&cfg)
 	if err != nil {
 		return err
 	}
@@ -91,20 +96,22 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		return err
 	}
 
-	startDiscoveryScanLoop(ctx, cfg, gateway, builder)
+	startupScanFirstPassDone := startDiscoveryScanLoopFn(ctx, cfg, gateway, builder)
 
 	var scheduleWriter mcp.ScheduleWriter
 	if semanticPoller != nil {
 		scheduleWriter = semanticPoller
 	}
-	server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, hub, semanticRuntime.Provider(), scheduleWriter, busObservability)
+	server, advertiser, err := startHTTPServerFn(ctx, cfg, gateway, builder, hub, semanticRuntime.Provider(), scheduleWriter, busObservability)
 	if err != nil {
 		return err
 	}
 	var listener *ebusgateway.BroadcastListener
 	var reconstructor *ebusgateway.PassiveTransactionReconstructor
 	if shouldStartPassiveObserveFirst(cfg) {
-		reconstructor, err = ebusgateway.StartPassiveTransactionReconstructor(ctx, cfg)
+		waitForStartupScanFirstPass(ctx, cfg, startupScanFirstPassDone)
+
+		reconstructor, err = startPassiveTransactionReconstructor(ctx, cfg)
 		if err != nil {
 			if advertiser != nil {
 				_ = advertiser.Close()
@@ -138,7 +145,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				return err
 			}
 		}
-		listener, err = ebusgateway.StartBroadcastListenerWithReconstructor(ctx, gateway.Router, reconstructor)
+		listener, err = startBroadcastListenerWithReconstructorFn(ctx, gateway.Router, reconstructor)
 		if err != nil {
 			_ = reconstructor.Close()
 			if advertiser != nil {
@@ -192,6 +199,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 func shouldStartPassiveObserveFirst(cfg ebusgateway.Config) bool {
 	return cfg.BroadcastListen && ebusgateway.PassiveTransportSupported(cfg)
+}
+
+func waitForStartupScanFirstPass(ctx context.Context, cfg ebusgateway.Config, firstPassDone <-chan struct{}) {
+	if !cfg.ScanOnStart || !shouldStartPassiveObserveFirst(cfg) || firstPassDone == nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+	case <-firstPassDone:
+	}
 }
 
 func wireObserveFirstObservers(cfg *ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {

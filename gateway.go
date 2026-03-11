@@ -207,7 +207,7 @@ func passiveTransportUnavailableReason(cfg Config) string {
 		case TransportEbusdTCP:
 			return "unsupported_or_misconfigured"
 		case TransportENH, TransportENS:
-			if !passiveObserveFirstLoopbackEndpoint(config.Network, config.Address) {
+			if passiveObserveFirstDirectAdapterEndpoint(config.Network, config.Address) {
 				return "unsupported_or_misconfigured"
 			}
 		}
@@ -218,7 +218,7 @@ func passiveTransportUnavailableReason(cfg Config) string {
 	case TransportEbusdTCP:
 		return "unsupported_or_misconfigured"
 	case TransportENH, TransportENS:
-		if !passiveObserveFirstLoopbackEndpoint(cfg.TransportConfig.Network, cfg.TransportConfig.Address) {
+		if passiveObserveFirstDirectAdapterEndpoint(cfg.TransportConfig.Network, cfg.TransportConfig.Address) {
 			return "unsupported_or_misconfigured"
 		}
 	}
@@ -229,20 +229,26 @@ func PassiveTransportSupported(cfg Config) bool {
 	return passiveTransportUnavailableReason(cfg) == ""
 }
 
-func passiveObserveFirstLoopbackEndpoint(network, address string) bool {
+func passiveObserveFirstDirectAdapterEndpoint(network, address string) bool {
 	if strings.ToLower(strings.TrimSpace(network)) != "tcp" {
 		return false
 	}
-	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+	host, port, err := net.SplitHostPort(strings.TrimSpace(address))
 	if err != nil {
 		return false
 	}
 	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if port != "9999" {
+		return false
+	}
 	if strings.EqualFold(host, "localhost") {
-		return true
+		return false
 	}
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	if ip == nil {
+		return false
+	}
+	return !ip.IsLoopback()
 }
 
 func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol) (TransportProtocol, string, string, error) {

@@ -405,6 +405,17 @@ func TestPassiveTransportSupported(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "remote ens proxy-like endpoint supported",
+			cfg: Config{
+				TransportConfig: TransportConfig{
+					Protocol: TransportENS,
+					Network:  "tcp",
+					Address:  "192.168.100.4:19001",
+				},
+			},
+			want: true,
+		},
+		{
 			name: "local ens proxy endpoint supported",
 			cfg: Config{
 				TransportConfig: TransportConfig{
@@ -434,7 +445,16 @@ func TestPassiveTransportSupported(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "unix endpoint unsupported",
+			name: "remote proxy-like endpoint uri supported",
+			cfg: Config{
+				TransportConfig: TransportConfig{
+					Address: "ens://192.168.100.4:19001",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "unix endpoint unchanged",
 			cfg: Config{
 				TransportConfig: TransportConfig{
 					Protocol: TransportENH,
@@ -442,7 +462,7 @@ func TestPassiveTransportSupported(t *testing.T) {
 					Address:  "/var/run/adapter.sock",
 				},
 			},
-			want: false,
+			want: true,
 		},
 	}
 

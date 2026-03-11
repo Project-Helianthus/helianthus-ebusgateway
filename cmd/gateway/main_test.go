@@ -171,6 +171,11 @@ func TestShouldStartPassiveObserveFirst(t *testing.T) {
 		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for loopback proxy endpoint")
 	}
 
+	cfg.TransportConfig.Address = "192.168.100.4:19001"
+	if !shouldStartPassiveObserveFirst(cfg) {
+		t.Fatal("shouldStartPassiveObserveFirst() = false; want true for remote proxy-like endpoint")
+	}
+
 	cfg.TransportConfig.Address = "192.168.100.2:9999"
 	if shouldStartPassiveObserveFirst(cfg) {
 		t.Fatal("shouldStartPassiveObserveFirst() = true; want false for direct remote endpoint")

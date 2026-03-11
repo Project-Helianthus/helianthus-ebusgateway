@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -15,21 +16,31 @@ func TestShouldStopDiscoveryScan(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		total int
-		want  bool
+		name                  string
+		total                 int
+		confirmationPending   bool
+		confirmationSatisfied bool
+		want                  bool
 	}{
 		{name: "no devices", total: 0, want: false},
-		{name: "some devices", total: 1, want: true},
-		{name: "many devices", total: 7, want: true},
+		{name: "normal direct inventory stops", total: 1, want: true},
+		{name: "imported inventory keeps scanning while confirmation is pending", total: 4, confirmationPending: true, want: false},
+		{name: "imported inventory stops once confirmation resolves", total: 4, confirmationPending: true, confirmationSatisfied: true, want: true},
 	}
 
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := shouldStopDiscoveryScan(test.total); got != test.want {
-				t.Fatalf("shouldStopDiscoveryScan(%d) = %v; want %v", test.total, got, test.want)
+			if got := shouldStopDiscoveryScan(test.total, test.confirmationPending, test.confirmationSatisfied); got != test.want {
+				t.Fatalf(
+					"shouldStopDiscoveryScan(%d, pending=%v, satisfied=%v) = %v; want %v",
+					test.total,
+					test.confirmationPending,
+					test.confirmationSatisfied,
+					got,
+					test.want,
+				)
 			}
 		})
 	}
@@ -821,4 +832,155 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 
 	cancel()
 	time.Sleep(50 * time.Millisecond)
+}
+
+func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedScansUntilActiveSuccess(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origTargetCandidatesFn := ebusdScanTargetCandidatesFn
+	origResultTargetsFn := ebusdScanResultTargetsFn
+	origResultInfosFn := ebusdScanResultInfosFn
+	origProbeFn := startupScanB524ProbeFn
+	origLoopExitFn := startupScanLoopExitFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	restoreGlobals := func() {
+		registryScanFn = origRegistryScanFn
+		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
+		ebusdScanResultTargetsFn = origResultTargetsFn
+		ebusdScanResultInfosFn = origResultInfosFn
+		startupScanB524ProbeFn = origProbeFn
+		startupScanLoopExitFn = origLoopExitFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+	}
+
+	var (
+		mu            sync.Mutex
+		preloadRun    int
+		scanRun       int
+		targetHistory [][]byte
+	)
+	activeSuccess := make(chan struct{}, 1)
+	registryScanFn = func(_ context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, targets []byte) ([]registry.DeviceEntry, error) {
+		mu.Lock()
+		scanRun++
+		targetHistory = append(targetHistory, append([]byte(nil), targets...))
+		currentRun := scanRun
+		mu.Unlock()
+
+		if currentRun == 1 {
+			return nil, nil
+		}
+		entry := reg.Register(registry.DeviceInfo{
+			Address:      0x15,
+			Manufacturer: "Vaillant",
+			DeviceID:     "BASV2",
+		})
+		select {
+		case activeSuccess <- struct{}{}:
+		default:
+		}
+		return []registry.DeviceEntry{entry}, nil
+	}
+	ebusdScanTargetCandidatesFn = func(cfg ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
+		return []ebusgateway.TransportConfig{cfg}
+	}
+	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
+		return []byte{0x04, 0x08}, nil
+	}
+	ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		preloadRun++
+		if preloadRun > 1 {
+			return nil, nil
+		}
+		return []registry.DeviceInfo{
+			{Address: 0x04, Manufacturer: "Vaillant", DeviceID: "NETX3"},
+			{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"},
+		}, nil
+	}
+	startupScanB524ProbeFn = func(_ context.Context, target, _opcode, _group, _instance byte, _addr uint16) bool {
+		return target == 0x15
+	}
+	loopExited := make(chan struct{}, 1)
+	startupScanLoopExitFn = func() {
+		select {
+		case loopExited <- struct{}{}:
+		default:
+		}
+	}
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		select {
+		case <-loopExited:
+		case <-time.After(2 * time.Second):
+		}
+		restoreGlobals()
+	}()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = 10 * time.Millisecond
+	cfg.TransportConfig = ebusgateway.TransportConfig{
+		Protocol: ebusgateway.TransportEbusdTCP,
+		Network:  "tcp",
+		Address:  "127.0.0.1:8888",
+	}
+
+	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	select {
+	case <-activeSuccess:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not continue after failed bounded recovery")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	gotPreloadRun := preloadRun
+	gotScanRun := scanRun
+	gotTargetHistory := make([][]byte, len(targetHistory))
+	for i := range targetHistory {
+		gotTargetHistory[i] = append([]byte(nil), targetHistory[i]...)
+	}
+	mu.Unlock()
+
+	if gotPreloadRun != 2 {
+		t.Fatalf("ebusd scan preload runs = %d; want 2 (initial preload plus later restricted scan check)", gotPreloadRun)
+	}
+	if gotScanRun != 2 {
+		t.Fatalf("registry scan runs = %d; want 2 (failed full-range retry, then restricted success)", gotScanRun)
+	}
+
+	wantTargetHistory := [][]byte{
+		nil,
+		{0x04, 0x08},
+	}
+	if !reflect.DeepEqual(gotTargetHistory, wantTargetHistory) {
+		t.Fatalf("scan target history = %#v; want %#v", gotTargetHistory, wantTargetHistory)
+	}
+
+	cancel()
+	select {
+	case <-loopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not exit after cancellation")
+	}
 }

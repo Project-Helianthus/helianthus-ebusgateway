@@ -205,6 +205,89 @@ func TestBusObservabilityStoreExportsBusyMetricsWhenPassiveAvailable(t *testing.
 	}
 }
 
+func TestBusObservabilityStoreRebootsWarmupFromConnectedSnapshotAfterSocketLoss(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+
+	store := NewBusObservabilityStore(cfg)
+	reconstructor := newPassiveTransactionReconstructorCore(cfg)
+	connectedAt := time.Unix(1700000100, 0).UTC()
+	reconstructor.tap = &PassiveBusTap{
+		status: PassiveTapStatus{
+			Connected:     true,
+			EndpointState: PassiveEndpointStateConnected,
+			ConnectCount:  2,
+			LastConnectAt: connectedAt,
+		},
+	}
+
+	store.mu.Lock()
+	store.reconstructor = reconstructor
+	store.passive.state = "unavailable"
+	store.passive.unavailableReason = "socket_loss"
+	store.passive.startupWindowClosed = true
+	store.passive.probeAttemptsTotal = 1
+	store.bootstrapPassiveWarmupFromSnapshotLocked(connectedAt, reconstructor.Snapshot())
+	state := store.passive.state
+	probeAttempts := store.passive.probeAttemptsTotal
+	sessionStartedAt := store.passive.sessionStartedAt
+	store.mu.Unlock()
+
+	if state != "warming_up" {
+		t.Fatalf("passive warmup state = %q; want warming_up", state)
+	}
+	if probeAttempts != 2 {
+		t.Fatalf("probeAttemptsTotal = %d; want 2", probeAttempts)
+	}
+	if !sessionStartedAt.Equal(connectedAt) {
+		t.Fatalf("sessionStartedAt = %s; want %s", sessionStartedAt, connectedAt)
+	}
+}
+
+func TestBusObservabilityStoreRestartsWarmupOnTrafficAfterStartupTimeout(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+
+	store := NewBusObservabilityStore(cfg)
+	base := time.Unix(1700000200, 0).UTC()
+	store.now = func() time.Time { return base }
+
+	reconstructor := newPassiveTransactionReconstructorCore(cfg)
+	reconstructor.tap = &PassiveBusTap{
+		status: PassiveTapStatus{
+			Connected:     true,
+			EndpointState: PassiveEndpointStateConnected,
+			ConnectCount:  1,
+			LastConnectAt: base.Add(-time.Minute),
+		},
+	}
+
+	store.mu.Lock()
+	store.reconstructor = reconstructor
+	store.passive.state = "unavailable"
+	store.passive.unavailableReason = "startup_timeout"
+	store.passive.startupWindowClosed = true
+	store.passive.probeAttemptsTotal = 1
+	store.mu.Unlock()
+
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base, 0x10, 0x08, 0xB5, 0x24))
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if store.passive.state != "warming_up" {
+		t.Fatalf("passive warmup state = %q; want warming_up after passive traffic resumes", store.passive.state)
+	}
+	if store.passive.probeAttemptsTotal != 2 {
+		t.Fatalf("probeAttemptsTotal = %d; want 2", store.passive.probeAttemptsTotal)
+	}
+	if store.passive.completedTransactions != 1 {
+		t.Fatalf("completedTransactions = %d; want 1", store.passive.completedTransactions)
+	}
+	if store.passive.unavailableReason != "" {
+		t.Fatalf("unavailableReason = %q; want cleared after traffic restart", store.passive.unavailableReason)
+	}
+}
+
 func observabilityPassiveTransactionEvent(observedAt time.Time, source, target, primary, secondary byte) PassiveClassifiedEvent {
 	return PassiveClassifiedEvent{
 		Kind:      PassiveClassifiedEventTransaction,

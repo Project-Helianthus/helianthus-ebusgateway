@@ -312,9 +312,6 @@ func (store *BusObservabilityStore) runPassiveLoop() {
 }
 
 func (store *BusObservabilityStore) bootstrapPassiveWarmupFromSnapshotLocked(now time.Time, snapshot PassiveReconstructorSnapshot) {
-	if store.passive.probeAttemptsTotal != 0 {
-		return
-	}
 	if store.passive.state == "warming_up" || store.passive.state == "available" {
 		return
 	}
@@ -690,6 +687,7 @@ func (store *BusObservabilityStore) recordPassiveFrameLocked(event PassiveClassi
 	if !event.HasRequest {
 		return
 	}
+	store.bootstrapPassiveWarmupFromTrafficLocked(event)
 	now := event.ObservedAt
 	local := store.localAddressSnapshotLocked()
 	frameType := classifyPassiveFrameType(event, local)
@@ -722,6 +720,25 @@ func (store *BusObservabilityStore) recordPassiveFrameLocked(event PassiveClassi
 	store.recordPassiveWarmupSuccessLocked(event)
 	store.recordBusyLocked(event)
 	store.recordPeriodicityLocked(event, family)
+}
+
+func (store *BusObservabilityStore) bootstrapPassiveWarmupFromTrafficLocked(event PassiveClassifiedEvent) {
+	if store.passive.state != "unavailable" {
+		return
+	}
+	switch store.passive.unavailableReason {
+	case "capability_withdrawn", "unsupported_or_misconfigured":
+		return
+	}
+	snapshot := store.reconstructorSnapshotLocked()
+	if !snapshot.TapStatus.Connected {
+		return
+	}
+	observedAt := event.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = store.now()
+	}
+	store.passiveStartWarmupLocked(observedAt, false)
 }
 
 func (store *BusObservabilityStore) recordPassiveAbandonedLocked(event PassiveClassifiedEvent) {

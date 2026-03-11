@@ -243,6 +243,20 @@ func TestResolveStartupScanSourceConfig(t *testing.T) {
 			want: proxyObserveFirstStartupSource,
 		},
 		{
+			name: "proxy single ENH without broadcast resolves startup source",
+			cfg: func() ebusgateway.Config {
+				cfg := ebusgateway.DefaultConfig()
+				cfg.BroadcastListen = false
+				cfg.ScanSource = 0x00
+				cfg.ScanSourceAuto = true
+				cfg.TransportConfig.Protocol = ebusgateway.TransportENH
+				cfg.TransportConfig.Network = "tcp"
+				cfg.TransportConfig.Address = "127.0.0.1:19001"
+				return cfg
+			}(),
+			want: proxyObserveFirstStartupSource,
+		},
+		{
 			name: "explicit source is preserved",
 			cfg: func() ebusgateway.Config {
 				cfg := ebusgateway.DefaultConfig()

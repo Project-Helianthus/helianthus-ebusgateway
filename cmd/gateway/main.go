@@ -92,7 +92,8 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if cfg.ScanOnStart && shouldStartPassiveObserveFirst(cfg) {
 		semanticBarrier = make(chan struct{})
 	}
-	semanticPoller := startVaillantSemanticPollingFn(ctx, cfg, gateway, semanticRuntime.Provider(), hub, semanticBarrier)
+	semanticCfg := resolveStartupScanSourceConfig(cfg)
+	semanticPoller := startVaillantSemanticPollingFn(ctx, semanticCfg, gateway, semanticRuntime.Provider(), hub, semanticBarrier)
 	if semanticPoller != nil {
 		builder.SetBoilerConfigWriter(semanticPoller)
 		builder.SetScheduleWriter(semanticPoller)

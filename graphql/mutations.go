@@ -162,6 +162,9 @@ func NewInvokeHandler(builder *Builder, registry InvokeRegistry, invoker Invoker
 		Schema:   &schema,
 		Pretty:   true,
 		GraphiQL: false,
+		RootObjectFn: func(_ context.Context, _ *http.Request) map[string]interface{} {
+			return newGraphQLRootObject(builder)
+		},
 	}), nil
 }
 

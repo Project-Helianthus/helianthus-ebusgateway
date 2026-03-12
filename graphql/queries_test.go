@@ -2,9 +2,12 @@ package graphql
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -38,6 +41,43 @@ type testBusObservabilityProvider struct {
 
 func (provider testBusObservabilityProvider) Snapshot() BusObservabilitySnapshot {
 	return cloneBusObservabilitySnapshot(provider.snapshot)
+}
+
+type driftingBusObservabilityProvider struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (provider *driftingBusObservabilityProvider) Snapshot() BusObservabilitySnapshot {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+
+	provider.calls++
+	sequence := provider.calls
+	family := fmt.Sprintf("snapshot-%d", sequence)
+
+	return BusObservabilitySnapshot{
+		Summary: &BusSummary{
+			Messages:    BusBoundedListSummary{Count: sequence, Capacity: 16},
+			Periodicity: BusBoundedListSummary{Count: sequence, Capacity: 8},
+		},
+		Messages: []BusMessage{
+			{
+				Family: family,
+			},
+		},
+		Periodicity: []BusPeriodicityEntry{
+			{
+				Family: family,
+			},
+		},
+	}
+}
+
+func (provider *driftingBusObservabilityProvider) CallCount() int {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	return provider.calls
 }
 
 func TestQueryResolvers_Integration(t *testing.T) {
@@ -583,8 +623,8 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					Capacity int `json:"capacity"`
 				} `json:"periodicity"`
 				Counters struct {
-					SeriesBudgetOverflowTotal      int `json:"seriesBudgetOverflowTotal"`
-					PeriodicityBudgetOverflowTotal int `json:"periodicityBudgetOverflowTotal"`
+					SeriesBudgetOverflowTotal      string `json:"seriesBudgetOverflowTotal"`
+					PeriodicityBudgetOverflowTotal string `json:"periodicityBudgetOverflowTotal"`
 				} `json:"counters"`
 			} `json:"busSummary"`
 			BusMessages struct {
@@ -649,8 +689,8 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		if response.BusSummary.Periodicity.Count != 2 || response.BusSummary.Periodicity.Capacity != 256 {
 			t.Fatalf("periodicity summary = %+v; want count=2 capacity=256", response.BusSummary.Periodicity)
 		}
-		if response.BusSummary.Counters.SeriesBudgetOverflowTotal != 1 || response.BusSummary.Counters.PeriodicityBudgetOverflowTotal != 2 {
-			t.Fatalf("counters = %+v; want 1/2", response.BusSummary.Counters)
+		if response.BusSummary.Counters.SeriesBudgetOverflowTotal != "1" || response.BusSummary.Counters.PeriodicityBudgetOverflowTotal != "2" {
+			t.Fatalf("counters = %+v; want 1/2 as strings", response.BusSummary.Counters)
 		}
 
 		if response.BusMessages.Count != 2 || response.BusMessages.Capacity != 1024 {
@@ -677,6 +717,122 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if response.BusPeriodicity.Status.Warmup.State != "warming_up" {
 			t.Fatalf("busPeriodicity warmup.state = %q; want warming_up", response.BusPeriodicity.Status.Warmup.State)
+		}
+	})
+
+	t.Run("bus_observability_shared_snapshot_per_operation", func(t *testing.T) {
+		builder := NewBuilder(mockRegistry{}, nil)
+		provider := &driftingBusObservabilityProvider{}
+		builder.SetBusObservabilityProvider(provider)
+
+		handler, err := NewInvokeHandler(builder, nil, nil)
+		if err != nil {
+			t.Fatalf("NewInvokeHandler error = %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ busSummary { messages { count } periodicity { count } } busMessages { count items { family } } busPeriodicity { count items { family } } }"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		var response struct {
+			Data struct {
+				BusSummary struct {
+					Messages struct {
+						Count int `json:"count"`
+					} `json:"messages"`
+					Periodicity struct {
+						Count int `json:"count"`
+					} `json:"periodicity"`
+				} `json:"busSummary"`
+				BusMessages struct {
+					Count int `json:"count"`
+					Items []struct {
+						Family string `json:"family"`
+					} `json:"items"`
+				} `json:"busMessages"`
+				BusPeriodicity struct {
+					Count int `json:"count"`
+					Items []struct {
+						Family string `json:"family"`
+					} `json:"items"`
+				} `json:"busPeriodicity"`
+			} `json:"data"`
+			Errors []any `json:"errors"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("json.Unmarshal response: %v body=%s", err, rec.Body.String())
+		}
+		if len(response.Errors) != 0 {
+			t.Fatalf("errors = %#v; want none", response.Errors)
+		}
+		if provider.CallCount() != 1 {
+			t.Fatalf("Snapshot() calls = %d; want 1 shared snapshot per operation", provider.CallCount())
+		}
+		if response.Data.BusSummary.Messages.Count != 1 || response.Data.BusSummary.Periodicity.Count != 1 {
+			t.Fatalf("busSummary = %+v; want snapshot-1 counts", response.Data.BusSummary)
+		}
+		if response.Data.BusMessages.Count != 1 || len(response.Data.BusMessages.Items) != 1 || response.Data.BusMessages.Items[0].Family != "snapshot-1" {
+			t.Fatalf("busMessages = %+v; want count=1 family=snapshot-1", response.Data.BusMessages)
+		}
+		if response.Data.BusPeriodicity.Count != 1 || len(response.Data.BusPeriodicity.Items) != 1 || response.Data.BusPeriodicity.Items[0].Family != "snapshot-1" {
+			t.Fatalf("busPeriodicity = %+v; want count=1 family=snapshot-1", response.Data.BusPeriodicity)
+		}
+	})
+
+	t.Run("bus_observability_counters_allow_uint64_values", func(t *testing.T) {
+		builder := NewBuilder(mockRegistry{}, nil)
+		builder.SetBusObservabilityProvider(testBusObservabilityProvider{
+			snapshot: BusObservabilitySnapshot{
+				Summary: &BusSummary{
+					Counters: BusObservabilityCounters{
+						SeriesBudgetOverflowTotal:      1<<31 + 7,
+						PeriodicityBudgetOverflowTotal: 1<<40 + 9,
+					},
+				},
+			},
+		})
+
+		handler, err := NewHandler(builder)
+		if err != nil {
+			t.Fatalf("NewHandler error = %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ busSummary { counters { seriesBudgetOverflowTotal periodicityBudgetOverflowTotal } } }"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		var response struct {
+			Data struct {
+				BusSummary struct {
+					Counters struct {
+						SeriesBudgetOverflowTotal      string `json:"seriesBudgetOverflowTotal"`
+						PeriodicityBudgetOverflowTotal string `json:"periodicityBudgetOverflowTotal"`
+					} `json:"counters"`
+				} `json:"busSummary"`
+			} `json:"data"`
+			Errors []any `json:"errors"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("json.Unmarshal response: %v body=%s", err, rec.Body.String())
+		}
+		if len(response.Errors) != 0 {
+			t.Fatalf("errors = %#v; want none", response.Errors)
+		}
+		if response.Data.BusSummary.Counters.SeriesBudgetOverflowTotal != "2147483655" {
+			t.Fatalf("seriesBudgetOverflowTotal = %q; want 2147483655", response.Data.BusSummary.Counters.SeriesBudgetOverflowTotal)
+		}
+		if response.Data.BusSummary.Counters.PeriodicityBudgetOverflowTotal != "1099511627785" {
+			t.Fatalf("periodicityBudgetOverflowTotal = %q; want 1099511627785", response.Data.BusSummary.Counters.PeriodicityBudgetOverflowTotal)
 		}
 	})
 

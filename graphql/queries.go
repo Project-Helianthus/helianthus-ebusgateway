@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -2714,7 +2715,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 			"busSummary": &graphqlgo.Field{
 				Type: types.busSummaryType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return resolveBusSummary(builder), nil
+					return resolveBusSummary(builder, params.Info.RootValue), nil
 				},
 			},
 			"busMessages": &graphqlgo.Field{
@@ -2727,7 +2728,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					if err != nil {
 						return nil, err
 					}
-					return resolveBusMessages(builder, limit), nil
+					return resolveBusMessages(builder, params.Info.RootValue, limit), nil
 				},
 			},
 			"busPeriodicity": &graphqlgo.Field{
@@ -2740,7 +2741,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					if err != nil {
 						return nil, err
 					}
-					return resolveBusPeriodicity(builder, limit), nil
+					return resolveBusPeriodicity(builder, params.Info.RootValue, limit), nil
 				},
 			},
 			"devices": &graphqlgo.Field{
@@ -2836,6 +2837,9 @@ func NewHandler(builder *Builder) (http.Handler, error) {
 		Schema:   &schema,
 		Pretty:   true,
 		GraphiQL: false,
+		RootObjectFn: func(_ context.Context, _ *http.Request) map[string]interface{} {
+			return newGraphQLRootObject(builder)
+		},
 	}), nil
 }
 

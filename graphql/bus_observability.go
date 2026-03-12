@@ -2,6 +2,8 @@ package graphql
 
 import (
 	"fmt"
+	"strconv"
+	"sync"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	graphqlgo "github.com/graphql-go/graphql"
@@ -119,6 +121,59 @@ type staticBusObservabilityProvider struct{}
 
 func (staticBusObservabilityProvider) Snapshot() BusObservabilitySnapshot {
 	return BusObservabilitySnapshot{}
+}
+
+const busObservabilitySnapshotCacheRootKey = "_busObservabilitySnapshotCache"
+
+type busObservabilitySnapshotCache struct {
+	provider BusObservabilityProvider
+
+	once     sync.Once
+	snapshot *BusObservabilitySnapshot
+}
+
+func newGraphQLRootObject(builder *Builder) map[string]any {
+	return map[string]any{
+		busObservabilitySnapshotCacheRootKey: newBusObservabilitySnapshotCache(builder),
+	}
+}
+
+func newBusObservabilitySnapshotCache(builder *Builder) *busObservabilitySnapshotCache {
+	cache := &busObservabilitySnapshotCache{
+		provider: staticBusObservabilityProvider{},
+	}
+	if builder != nil {
+		cache.provider = builder.busObservabilityProvider()
+	}
+	return cache
+}
+
+func busObservabilitySnapshotCacheFromRoot(rootValue any) *busObservabilitySnapshotCache {
+	root, ok := rootValue.(map[string]any)
+	if !ok {
+		return nil
+	}
+	cache, ok := root[busObservabilitySnapshotCacheRootKey].(*busObservabilitySnapshotCache)
+	if !ok {
+		return nil
+	}
+	return cache
+}
+
+func (cache *busObservabilitySnapshotCache) Snapshot() *BusObservabilitySnapshot {
+	if cache == nil {
+		return nil
+	}
+
+	cache.once.Do(func() {
+		snapshot := cloneBusObservabilitySnapshot(cache.provider.Snapshot())
+		if snapshot.Summary == nil && len(snapshot.Messages) == 0 && len(snapshot.Periodicity) == 0 {
+			return
+		}
+		cache.snapshot = &snapshot
+	})
+
+	return cache.snapshot
 }
 
 func cloneBusObservabilitySnapshot(source BusObservabilitySnapshot) BusObservabilitySnapshot {
@@ -524,23 +579,23 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 		Name: "BusObservabilityCounters",
 		Fields: graphqlgo.Fields{
 			"seriesBudgetOverflowTotal": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					counters, ok := params.Source.(BusObservabilityCounters)
 					if !ok {
-						return 0, nil
+						return "0", nil
 					}
-					return int(counters.SeriesBudgetOverflowTotal), nil
+					return strconv.FormatUint(counters.SeriesBudgetOverflowTotal, 10), nil
 				},
 			},
 			"periodicityBudgetOverflowTotal": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					counters, ok := params.Source.(BusObservabilityCounters)
 					if !ok {
-						return 0, nil
+						return "0", nil
 					}
-					return int(counters.PeriodicityBudgetOverflowTotal), nil
+					return strconv.FormatUint(counters.PeriodicityBudgetOverflowTotal, 10), nil
 				},
 			},
 		},
@@ -993,7 +1048,10 @@ func parseBusObservabilityLimit(args map[string]any) (int, error) {
 	}
 }
 
-func snapshotBusObservability(builder *Builder) *BusObservabilitySnapshot {
+func snapshotBusObservability(builder *Builder, rootValue any) *BusObservabilitySnapshot {
+	if cache := busObservabilitySnapshotCacheFromRoot(rootValue); cache != nil {
+		return cache.Snapshot()
+	}
 	if builder == nil {
 		return nil
 	}
@@ -1004,16 +1062,16 @@ func snapshotBusObservability(builder *Builder) *BusObservabilitySnapshot {
 	return &snapshot
 }
 
-func resolveBusSummary(builder *Builder) *BusSummary {
-	snapshot := snapshotBusObservability(builder)
+func resolveBusSummary(builder *Builder, rootValue any) *BusSummary {
+	snapshot := snapshotBusObservability(builder, rootValue)
 	if snapshot == nil {
 		return nil
 	}
 	return cloneBusSummary(snapshot.Summary)
 }
 
-func resolveBusMessages(builder *Builder, limit int) *BusMessagesList {
-	snapshot := snapshotBusObservability(builder)
+func resolveBusMessages(builder *Builder, rootValue any, limit int) *BusMessagesList {
+	snapshot := snapshotBusObservability(builder, rootValue)
 	if snapshot == nil {
 		return nil
 	}
@@ -1032,8 +1090,8 @@ func resolveBusMessages(builder *Builder, limit int) *BusMessagesList {
 	return result
 }
 
-func resolveBusPeriodicity(builder *Builder, limit int) *BusPeriodicityList {
-	snapshot := snapshotBusObservability(builder)
+func resolveBusPeriodicity(builder *Builder, rootValue any, limit int) *BusPeriodicityList {
+	snapshot := snapshotBusObservability(builder, rootValue)
 	if snapshot == nil {
 		return nil
 	}

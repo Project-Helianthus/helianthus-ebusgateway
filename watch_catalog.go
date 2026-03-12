@@ -584,7 +584,7 @@ func parsePassiveB509WatchKey(frame protocol.Frame) (WatchKey, bool) {
 		return nil, false
 	}
 	switch frame.Data[0] {
-	case 0x0D, 0x0E:
+	case 0x0D, 0x0E, 0x29:
 	default:
 		return nil, false
 	}

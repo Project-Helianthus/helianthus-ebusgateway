@@ -145,6 +145,50 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedWatchKey(t *te
 	}
 }
 
+func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedB509WatchKeyForPassiveOpcode(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	forceHealthyDedup(deduplicator)
+
+	base := time.Unix(0, 0)
+	deduplicator.nowFunc = func() time.Time { return base }
+
+	request := protocol.Frame{
+		Source:    0x10,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{0x29, 0x02, 0x00},
+	}
+	response := protocol.Frame{
+		Source:    request.Target,
+		Target:    request.Source,
+		Primary:   request.Primary,
+		Secondary: request.Secondary,
+		Data:      []byte{0x29, 0x02, 0x00, 0x01},
+	}
+
+	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base, request, response))
+	assertNoAdjudicatedEvent(t, subscription, 25*time.Millisecond)
+
+	deduplicator.nowFunc = func() time.Time { return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Millisecond) }
+	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
+
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
+	if event.Fingerprint.SharedWatchKey == nil {
+		t.Fatal("SharedWatchKey = nil; want parsed passive watch key")
+	}
+	want := NewB509WatchKey(0x08, 0x0200).Canonical()
+	if got := event.Fingerprint.SharedWatchKey.Canonical(); got != want {
+		t.Fatalf("SharedWatchKey.Canonical() = %q; want %q", got, want)
+	}
+}
+
 func TestActivePassiveDeduplicator_ConsumesActiveFingerprintAfterSingleMatch(t *testing.T) {
 	deduplicator := newTestDeduplicator(t)
 	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)

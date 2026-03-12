@@ -20,24 +20,27 @@ func TestShouldStopDiscoveryScan(t *testing.T) {
 		total                 int
 		confirmationPending   bool
 		confirmationSatisfied bool
+		confirmationExhausted bool
 		want                  bool
 	}{
 		{name: "no devices", total: 0, want: false},
 		{name: "normal direct inventory stops", total: 1, want: true},
 		{name: "imported inventory keeps scanning while confirmation is pending", total: 4, confirmationPending: true, want: false},
 		{name: "imported inventory stops once confirmation resolves", total: 4, confirmationPending: true, confirmationSatisfied: true, want: true},
+		{name: "bounded root-aware fallback exhaustion stops", total: 4, confirmationPending: true, confirmationExhausted: true, want: true},
 	}
 
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := shouldStopDiscoveryScan(test.total, test.confirmationPending, test.confirmationSatisfied); got != test.want {
+			if got := shouldStopDiscoveryScan(test.total, test.confirmationPending, test.confirmationSatisfied, test.confirmationExhausted); got != test.want {
 				t.Fatalf(
-					"shouldStopDiscoveryScan(%d, pending=%v, satisfied=%v) = %v; want %v",
+					"shouldStopDiscoveryScan(%d, pending=%v, satisfied=%v, exhausted=%v) = %v; want %v",
 					test.total,
 					test.confirmationPending,
 					test.confirmationSatisfied,
+					test.confirmationExhausted,
 					got,
 					test.want,
 				)
@@ -240,6 +243,20 @@ func TestResolveStartupScanSourceConfig(t *testing.T) {
 			want: proxyObserveFirstStartupSource,
 		},
 		{
+			name: "proxy single ENH without broadcast resolves startup source",
+			cfg: func() ebusgateway.Config {
+				cfg := ebusgateway.DefaultConfig()
+				cfg.BroadcastListen = false
+				cfg.ScanSource = 0x00
+				cfg.ScanSourceAuto = true
+				cfg.TransportConfig.Protocol = ebusgateway.TransportENH
+				cfg.TransportConfig.Network = "tcp"
+				cfg.TransportConfig.Address = "127.0.0.1:19001"
+				return cfg
+			}(),
+			want: proxyObserveFirstStartupSource,
+		},
+		{
 			name: "explicit source is preserved",
 			cfg: func() ebusgateway.Config {
 				cfg := ebusgateway.DefaultConfig()
@@ -407,7 +424,7 @@ func TestStartDiscoveryScanLoop_ProxyObserveFirstAutoUsesExplicitStartupSource(t
 	cfg.TransportConfig.Network = "tcp"
 	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
-	firstPassDone := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
 
 	select {
 	case got := <-scanSourceCh:
@@ -419,7 +436,7 @@ func TestStartDiscoveryScanLoop_ProxyObserveFirstAutoUsesExplicitStartupSource(t
 	}
 
 	select {
-	case <-firstPassDone:
+	case <-signals.firstPassDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("firstPassDone was not signaled")
 	}
@@ -475,7 +492,7 @@ func TestStartDiscoveryScanLoop_ProxySingleENSWithoutBroadcastResolvesSource(t *
 	cfg.TransportConfig.Network = "tcp"
 	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
-	firstPassDone := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
 
 	select {
 	case got := <-scanSourceCh:
@@ -490,7 +507,7 @@ func TestStartDiscoveryScanLoop_ProxySingleENSWithoutBroadcastResolvesSource(t *
 	}
 
 	select {
-	case <-firstPassDone:
+	case <-signals.firstPassDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("firstPassDone was not signaled")
 	}
@@ -1247,6 +1264,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadNonVaillantImportFallsThroughToRestr
 	origTargetCandidatesFn := ebusdScanTargetCandidatesFn
 	origResultTargetsFn := ebusdScanResultTargetsFn
 	origResultInfosFn := ebusdScanResultInfosFn
+	origProbeFn := startupScanB524ProbeFn
 	origLoopExitFn := startupScanLoopExitFn
 	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
 	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
@@ -1255,6 +1273,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadNonVaillantImportFallsThroughToRestr
 		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
 		ebusdScanResultTargetsFn = origResultTargetsFn
 		ebusdScanResultInfosFn = origResultInfosFn
+		startupScanB524ProbeFn = origProbeFn
 		startupScanLoopExitFn = origLoopExitFn
 		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
 		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
@@ -1308,6 +1327,9 @@ func TestStartDiscoveryScanLoop_EbusdPreloadNonVaillantImportFallsThroughToRestr
 		return []registry.DeviceInfo{
 			{Address: 0x04, Manufacturer: "Other", DeviceID: "GENERIC"},
 		}, nil
+	}
+	startupScanB524ProbeFn = func(_ context.Context, target, _opcode, _group, _instance byte, _addr uint16) bool {
+		return target == 0x15
 	}
 	startupScanLoopExitFn = func() {
 		select {
@@ -1549,5 +1571,183 @@ func TestStartDiscoveryScanLoop_LocalFallbackImportRetriesFullRangeThenRestricte
 	wantInfoQueryHistory := []string{"127.0.0.1:8888"}
 	if !reflect.DeepEqual(gotInfoQueryHistory, wantInfoQueryHistory) {
 		t.Fatalf("scan-result info query history = %#v; want %#v", gotInfoQueryHistory, wantInfoQueryHistory)
+	}
+}
+
+func TestStartDiscoveryScanLoop_ProxyObserveFirstKeepsSemanticBarrierUntilRootFallbackExhausted(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origTargetCandidatesFn := ebusdScanTargetCandidatesFn
+	origResultTargetsFn := ebusdScanResultTargetsFn
+	origResultInfosFn := ebusdScanResultInfosFn
+	origProbeFn := startupScanB524ProbeFn
+	origLoopExitFn := startupScanLoopExitFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
+		ebusdScanResultTargetsFn = origResultTargetsFn
+		ebusdScanResultInfosFn = origResultInfosFn
+		startupScanB524ProbeFn = origProbeFn
+		startupScanLoopExitFn = origLoopExitFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+	})
+
+	var (
+		mu            sync.Mutex
+		scanRun       int
+		targetHistory [][]byte
+	)
+	scanRuns := make(chan int, 3)
+	loopExited := make(chan struct{}, 1)
+	registryScanFn = func(_ context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, targets []byte) ([]registry.DeviceEntry, error) {
+		mu.Lock()
+		scanRun++
+		targetHistory = append(targetHistory, append([]byte(nil), targets...))
+		currentRun := scanRun
+		mu.Unlock()
+
+		infos := []registry.DeviceInfo{
+			{Address: 0x04, Manufacturer: "Vaillant", DeviceID: "NETX3"},
+			{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"},
+			{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"},
+			{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
+		}
+		entries := make([]registry.DeviceEntry, 0, len(infos))
+		for _, info := range infos {
+			entries = append(entries, reg.Register(info))
+		}
+
+		select {
+		case scanRuns <- currentRun:
+		default:
+		}
+		return entries, nil
+	}
+	ebusdScanTargetCandidatesFn = func(cfg ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
+		return []ebusgateway.TransportConfig{cfg}
+	}
+	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
+		return []byte{0x04, 0x08, 0x15, 0x26}, nil
+	}
+	ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+		return nil, nil
+	}
+	startupScanB524ProbeFn = func(_ context.Context, _target, _opcode, _group, _instance byte, _addr uint16) bool {
+		return false
+	}
+	startupScanLoopExitFn = func() {
+		select {
+		case loopExited <- struct{}{}:
+		default:
+		}
+	}
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = 10 * time.Millisecond
+	cfg.BroadcastListen = true
+	cfg.TransportConfig = ebusgateway.TransportConfig{
+		Protocol: ebusgateway.TransportENS,
+		Network:  "tcp",
+		Address:  "127.0.0.1:19001",
+	}
+
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	select {
+	case got := <-scanRuns:
+		if got != 1 {
+			t.Fatalf("first scan run = %d; want 1", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not execute first restricted pass")
+	}
+
+	select {
+	case <-signals.firstPassDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("firstPassDone was not signaled after first restricted pass")
+	}
+
+	select {
+	case <-signals.semanticBootstrapReady:
+		t.Fatal("semantic barrier released before bounded full-range retry completed")
+	default:
+	}
+
+	select {
+	case got := <-scanRuns:
+		if got != 2 {
+			t.Fatalf("second scan run = %d; want 2", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not execute bounded full-range retry")
+	}
+
+	select {
+	case <-signals.semanticBootstrapReady:
+		t.Fatal("semantic barrier released before post-recovery restricted confirmation pass")
+	default:
+	}
+
+	select {
+	case got := <-scanRuns:
+		if got != 3 {
+			t.Fatalf("third scan run = %d; want 3", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not execute post-recovery restricted confirmation pass")
+	}
+
+	select {
+	case <-signals.semanticBootstrapReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("semantic barrier did not release after bounded root-aware fallback exhaustion")
+	}
+
+	select {
+	case <-loopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not stop after bounded root-aware fallback exhaustion")
+	}
+
+	mu.Lock()
+	gotScanRun := scanRun
+	gotTargetHistory := make([][]byte, len(targetHistory))
+	for i := range targetHistory {
+		gotTargetHistory[i] = append([]byte(nil), targetHistory[i]...)
+	}
+	mu.Unlock()
+
+	if gotScanRun != 3 {
+		t.Fatalf("registry scan runs = %d; want 3", gotScanRun)
+	}
+
+	wantTargetHistory := [][]byte{
+		{0x04, 0x08, 0x15, 0x26},
+		nil,
+		{0x04, 0x08, 0x15, 0x26},
+	}
+	if !reflect.DeepEqual(gotTargetHistory, wantTargetHistory) {
+		t.Fatalf("scan target history = %#v; want %#v", gotTargetHistory, wantTargetHistory)
 	}
 }

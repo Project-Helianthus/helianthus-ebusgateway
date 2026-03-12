@@ -54,6 +54,11 @@ type scanStats struct {
 	otherErrs  int
 }
 
+type startupScanSignals struct {
+	firstPassDone          <-chan struct{}
+	semanticBootstrapReady <-chan struct{}
+}
+
 type ebusdScanResultRow struct {
 	Address         byte
 	Manufacturer    string
@@ -109,7 +114,7 @@ func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Fr
 	return response, err
 }
 
-func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder) <-chan struct{} {
+func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder) startupScanSignals {
 	firstPassDone := make(chan struct{})
 	var firstPassOnce sync.Once
 	signalFirstPassDone := func() {
@@ -117,10 +122,21 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			close(firstPassDone)
 		})
 	}
+	semanticBootstrapReady := make(chan struct{})
+	var semanticBootstrapReadyOnce sync.Once
+	signalSemanticBootstrapReady := func() {
+		semanticBootstrapReadyOnce.Do(func() {
+			close(semanticBootstrapReady)
+		})
+	}
 
 	if !cfg.ScanOnStart || gateway == nil || gateway.Bus == nil || gateway.Registry == nil {
 		signalFirstPassDone()
-		return firstPassDone
+		signalSemanticBootstrapReady()
+		return startupScanSignals{
+			firstPassDone:          firstPassDone,
+			semanticBootstrapReady: semanticBootstrapReady,
+		}
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -143,6 +159,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 	go func() {
 		defer func() {
 			signalFirstPassDone()
+			signalSemanticBootstrapReady()
 			if loopExitFn != nil {
 				loopExitFn()
 			}
@@ -151,6 +168,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 		forceFullRangeNextPass := false
 		confirmationPending := false
 		fullRangeRecoveryAttempted := false
+		restrictedConfirmationAfterRecoveryPending := false
 		for {
 			scanCtx := ctx
 			cancel := func() {}
@@ -218,6 +236,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 						}
 					}
 
+					requiresRootAwareConfirmation := startupScanHasVaillantInventory(gateway)
 					confirmationSatisfied := startupScanConfirmationSatisfied(ctx, startupCfg, gateway, total, false)
 					confirmationPending, fullRangeRecoveryAttempted = updateStartupScanConfirmationState(
 						total,
@@ -225,12 +244,14 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 						confirmationPending,
 						fullRangeRecoveryAttempted,
 						confirmationSatisfied,
+						requiresRootAwareConfirmation,
 					)
 
 					if confirmationPending && usedRestrictedTargets && !retryingFullRange && !fullRangeRecoveryAttempted &&
 						shouldRetryDiscoveryWithFullRange(ctx, startupCfg, gateway, usedRestrictedTargets, retryingFullRange) {
 						forceFullRangeNextPass = true
 						fullRangeRecoveryAttempted = true
+						restrictedConfirmationAfterRecoveryPending = true
 						cancel()
 						timer := time.NewTimer(interval)
 						select {
@@ -240,7 +261,8 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 						case <-timer.C:
 						}
 						continue
-					} else if shouldStopDiscoveryScan(total, confirmationPending, confirmationSatisfied) {
+					} else if shouldStopDiscoveryScan(total, confirmationPending, confirmationSatisfied, false) {
+						signalSemanticBootstrapReady()
 						signalFirstPassDone()
 						cancel()
 						return
@@ -326,6 +348,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			}
 
 			activeConfirmed := len(devices) > 0 || scanBus.stats.ok > 0
+			requiresRootAwareConfirmation := startupScanHasVaillantInventory(gateway)
 			confirmationSatisfied := startupScanConfirmationSatisfied(ctx, startupCfg, gateway, total, activeConfirmed)
 			confirmationPending, fullRangeRecoveryAttempted = updateStartupScanConfirmationState(
 				total,
@@ -333,13 +356,24 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				confirmationPending,
 				fullRangeRecoveryAttempted,
 				confirmationSatisfied,
+				requiresRootAwareConfirmation,
 			)
+			confirmationFallbackExhausted := confirmationPending &&
+				!confirmationSatisfied &&
+				usedRestrictedTargets &&
+				!retryingFullRange &&
+				restrictedConfirmationAfterRecoveryPending
+			if confirmationSatisfied || confirmationFallbackExhausted {
+				restrictedConfirmationAfterRecoveryPending = false
+			}
 
 			if confirmationPending && usedRestrictedTargets && !retryingFullRange && !fullRangeRecoveryAttempted &&
 				shouldRetryDiscoveryWithFullRange(ctx, startupCfg, gateway, usedRestrictedTargets, retryingFullRange) {
 				forceFullRangeNextPass = true
 				fullRangeRecoveryAttempted = true
-			} else if shouldStopDiscoveryScan(total, confirmationPending, confirmationSatisfied) {
+				restrictedConfirmationAfterRecoveryPending = true
+			} else if shouldStopDiscoveryScan(total, confirmationPending, confirmationSatisfied, confirmationFallbackExhausted) {
+				signalSemanticBootstrapReady()
 				return
 			}
 
@@ -352,7 +386,10 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			}
 		}
 	}()
-	return firstPassDone
+	return startupScanSignals{
+		firstPassDone:          firstPassDone,
+		semanticBootstrapReady: semanticBootstrapReady,
+	}
 }
 
 func ebusdScanTargetCandidates(config ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
@@ -387,9 +424,12 @@ func ebusdScanTargetCandidates(config ebusgateway.TransportConfig) []ebusgateway
 	return candidates
 }
 
-func shouldStopDiscoveryScan(total int, confirmationPending bool, confirmationSatisfied bool) bool {
+func shouldStopDiscoveryScan(total int, confirmationPending bool, confirmationSatisfied bool, confirmationFallbackExhausted bool) bool {
 	if total == 0 {
 		return false
+	}
+	if confirmationFallbackExhausted {
+		return true
 	}
 	if confirmationPending && !confirmationSatisfied {
 		return false
@@ -398,20 +438,20 @@ func shouldStopDiscoveryScan(total int, confirmationPending bool, confirmationSa
 }
 
 func startupScanConfirmationSatisfied(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, total int, activeConfirmation bool) bool {
-	if activeConfirmation {
-		return true
-	}
-	if total == 0 || !startupScanHasVaillantInventory(gateway) {
+	if total == 0 {
 		return false
 	}
-	return startupScanHasCoherentVaillantRoot(ctx, cfg, gateway)
+	if startupScanHasVaillantInventory(gateway) {
+		return startupScanHasCoherentVaillantRoot(ctx, cfg, gateway)
+	}
+	return activeConfirmation
 }
 
-func updateStartupScanConfirmationState(total int, imported int, confirmationPending bool, fullRangeRecoveryAttempted bool, confirmationSatisfied bool) (bool, bool) {
+func updateStartupScanConfirmationState(total int, imported int, confirmationPending bool, fullRangeRecoveryAttempted bool, confirmationSatisfied bool, requiresRootAwareConfirmation bool) (bool, bool) {
 	if total == 0 || confirmationSatisfied {
 		return false, false
 	}
-	if imported > 0 || confirmationPending {
+	if imported > 0 || confirmationPending || requiresRootAwareConfirmation {
 		return true, fullRangeRecoveryAttempted
 	}
 	return false, fullRangeRecoveryAttempted

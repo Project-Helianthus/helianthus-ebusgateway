@@ -214,7 +214,7 @@ func NewB555WatchKey(target, opcode, zone, hc, weekday, slot byte) B555WatchKey 
 }
 
 func (key B555WatchKey) Canonical() string {
-	return fmt.Sprintf(
+	canonical := fmt.Sprintf(
 		"b555:%02x:%02x:%02x:%02x:%02x:%02x",
 		key.Target,
 		key.Opcode,
@@ -222,6 +222,17 @@ func (key B555WatchKey) Canonical() string {
 		key.HC,
 		b555SelectorByte(key.HasWeekday, key.Weekday),
 		b555SelectorByte(key.HasSlot, key.Slot),
+	)
+	if b555WatchKeySelectorsValid(key) {
+		return canonical
+	}
+	return fmt.Sprintf(
+		"%s:raw:%d:%02x:%d:%02x",
+		canonical,
+		b555BoolByte(key.HasWeekday),
+		key.Weekday,
+		b555BoolByte(key.HasSlot),
+		key.Slot,
 	)
 }
 
@@ -638,6 +649,23 @@ func b555SelectorByte(set bool, value byte) byte {
 	return value
 }
 
+func b555BoolByte(value bool) byte {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func b555WatchKeySelectorsValid(key B555WatchKey) bool {
+	if key.HasWeekday != key.HasSlot {
+		return false
+	}
+	if !key.HasWeekday {
+		return key.Weekday == 0x00 && key.Slot == 0x00
+	}
+	return key.Weekday != 0xFF && key.Slot != 0xFF
+}
+
 func cloneWatchKey(key WatchKey) (WatchKey, error) {
 	switch typed := key.(type) {
 	case B509WatchKey:
@@ -688,6 +716,15 @@ func validateB555WatchKey(key WatchKey) error {
 	}
 	if b555Key.HasWeekday != b555Key.HasSlot {
 		return fmt.Errorf("must set both weekday and slot selectors together")
+	}
+	if !b555Key.HasWeekday {
+		if b555Key.Weekday != 0x00 || b555Key.Slot != 0x00 {
+			return fmt.Errorf("program selectors must keep raw weekday/slot zero when unset")
+		}
+		return nil
+	}
+	if b555Key.Weekday == 0xFF || b555Key.Slot == 0xFF {
+		return fmt.Errorf("timer selectors may not use 0xff sentinel")
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package ebusgateway
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -306,6 +307,50 @@ func TestB555WatchKeyCanonicalPreservesSelectorAxes(t *testing.T) {
 	}
 }
 
+func TestB555WatchKeyCanonicalDisambiguatesMalformedProgramSelectors(t *testing.T) {
+	t.Parallel()
+
+	validProgram := NewB555ProgramWatchKey(0x15, 0xA4, 0x02, 0x00)
+	malformed := B555WatchKey{
+		Target:  0x15,
+		Opcode:  0xA4,
+		Zone:    0x02,
+		HC:      0x00,
+		Weekday: 0x06,
+		Slot:    0x03,
+	}
+
+	if malformed.Canonical() == validProgram.Canonical() {
+		t.Fatalf("malformed program canonical = %q; aliased valid program key", malformed.Canonical())
+	}
+	if !strings.Contains(malformed.Canonical(), ":raw:0:06:0:03") {
+		t.Fatalf("malformed program canonical = %q; want raw disambiguator", malformed.Canonical())
+	}
+}
+
+func TestB555WatchKeyCanonicalDisambiguatesSentinelTimerSelectors(t *testing.T) {
+	t.Parallel()
+
+	validProgram := NewB555ProgramWatchKey(0x15, 0xA5, 0x02, 0x00)
+	malformed := B555WatchKey{
+		Target:     0x15,
+		Opcode:     0xA5,
+		Zone:       0x02,
+		HC:         0x00,
+		Weekday:    0xFF,
+		Slot:       0x03,
+		HasWeekday: true,
+		HasSlot:    true,
+	}
+
+	if malformed.Canonical() == validProgram.Canonical() {
+		t.Fatalf("malformed timer canonical = %q; aliased valid program key", malformed.Canonical())
+	}
+	if !strings.Contains(malformed.Canonical(), ":raw:1:ff:1:03") {
+		t.Fatalf("malformed timer canonical = %q; want raw disambiguator", malformed.Canonical())
+	}
+}
+
 func TestWatchDescriptorRejectsPartialB555Selector(t *testing.T) {
 	t.Parallel()
 
@@ -327,6 +372,56 @@ func TestWatchDescriptorRejectsPartialB555Selector(t *testing.T) {
 
 	if _, err := descriptor.EffectiveFreshnessTTL(); err == nil {
 		t.Fatal("EffectiveFreshnessTTL() succeeded for partial B555 weekday/slot selector")
+	}
+}
+
+func TestWatchDescriptorRejectsNonCanonicalProgramB555SelectorBytes(t *testing.T) {
+	t.Parallel()
+
+	descriptor := WatchDescriptor{
+		Key: B555WatchKey{
+			Target:  0x15,
+			Opcode:  0xA4,
+			Zone:    0x02,
+			HC:      0x00,
+			Weekday: 0x06,
+			Slot:    0x03,
+		},
+		SemanticClass:     WatchSemanticClassConfig,
+		FreshnessProfile:  WatchFreshnessProfileConfig,
+		DecoderID:         "vaillant.b555",
+		CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: WatchDirectApplyPolicyConfigOptIn,
+	}
+
+	if _, err := descriptor.EffectiveFreshnessTTL(); err == nil {
+		t.Fatal("EffectiveFreshnessTTL() succeeded for non-canonical unset B555 selectors")
+	}
+}
+
+func TestWatchDescriptorRejectsSentinelTimerB555Selector(t *testing.T) {
+	t.Parallel()
+
+	descriptor := WatchDescriptor{
+		Key: B555WatchKey{
+			Target:     0x15,
+			Opcode:     0xA5,
+			Zone:       0x02,
+			HC:         0x00,
+			Weekday:    0xFF,
+			Slot:       0x03,
+			HasWeekday: true,
+			HasSlot:    true,
+		},
+		SemanticClass:     WatchSemanticClassConfig,
+		FreshnessProfile:  WatchFreshnessProfileConfig,
+		DecoderID:         "vaillant.b555",
+		CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: WatchDirectApplyPolicyConfigOptIn,
+	}
+
+	if _, err := descriptor.EffectiveFreshnessTTL(); err == nil {
+		t.Fatal("EffectiveFreshnessTTL() succeeded for sentinel B555 timer selector")
 	}
 }
 

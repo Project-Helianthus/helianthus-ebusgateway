@@ -5279,11 +5279,11 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 }
 
 func semanticReadBreakerKey(target, opcode, group, instance byte, addr uint16) string {
-	return fmt.Sprintf("b524:%02x:%02x:%02x:%02x:%04x", target, opcode, group, instance, addr)
+	return ebusgateway.NewB524WatchKey(target, opcode, group, instance, addr).Canonical()
 }
 
 func semanticReadB509Key(target byte, addr uint16) string {
-	return fmt.Sprintf("b509:%02x:%04x", target, addr)
+	return ebusgateway.NewB509WatchKey(target, addr).Canonical()
 }
 
 func buildB509ReadSelector(addr uint16) []byte {

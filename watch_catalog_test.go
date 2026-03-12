@@ -282,14 +282,16 @@ func TestPassiveWatchKeyFromEventMatchesB509SchedulerKey(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		opcode byte
+		name    string
+		opcode  byte
+		wantOK  bool
+		wantKey B509WatchKey
 	}{
-		{name: "read", opcode: 0x0D},
-		{name: "passive", opcode: 0x29},
+		{name: "read", opcode: 0x0D, wantOK: true, wantKey: NewB509WatchKey(0x08, 0x0200)},
+		{name: "passive", opcode: 0x29, wantOK: true, wantKey: NewB509WatchKey(0x08, 0x0200)},
+		{name: "write excluded", opcode: 0x0E, wantOK: false},
 	}
 
-	expected := NewB509WatchKey(0x08, 0x0200)
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
@@ -307,11 +309,17 @@ func TestPassiveWatchKeyFromEventMatchesB509SchedulerKey(t *testing.T) {
 			}
 
 			key, ok := PassiveWatchKeyFromEvent(event)
-			if !ok {
-				t.Fatalf("PassiveWatchKeyFromEvent() = !ok for opcode 0x%02x; want ok", test.opcode)
+			if ok != test.wantOK {
+				t.Fatalf("PassiveWatchKeyFromEvent() ok = %t for opcode 0x%02x; want %t", ok, test.opcode, test.wantOK)
 			}
-			if got := key.Canonical(); got != expected.Canonical() {
-				t.Fatalf("PassiveWatchKeyFromEvent().Canonical() = %q; want %q", got, expected.Canonical())
+			if !test.wantOK {
+				if key != nil {
+					t.Fatalf("PassiveWatchKeyFromEvent() key = %v for opcode 0x%02x; want nil", key, test.opcode)
+				}
+				return
+			}
+			if got := key.Canonical(); got != test.wantKey.Canonical() {
+				t.Fatalf("PassiveWatchKeyFromEvent().Canonical() = %q; want %q", got, test.wantKey.Canonical())
 			}
 		})
 	}

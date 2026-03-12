@@ -191,7 +191,7 @@ var (
 	semanticRegulatorTransitionsTotal    = expvar.NewMap("semantic_regulator_transitions_total")
 )
 
-func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub) *vaillantSemanticPoller {
+func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, startupBarrier <-chan struct{}) *vaillantSemanticPoller {
 	if gateway == nil || gateway.Bus == nil || gateway.Registry == nil || provider == nil {
 		return nil
 	}
@@ -199,6 +199,7 @@ func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, g
 	cacheStore := newSemanticCacheStore(cfg.SemanticCachePath, log.Printf)
 	cacheSnapshot, cacheLoaded := preloadSemanticCache(provider, cacheStore)
 	poller := newVaillantSemanticPoller(cfg, gateway, provider, hub, cacheStore)
+	poller.startupBarrier = startupBarrier
 	if cacheLoaded {
 		poller.hydrateFromCache(cacheSnapshot)
 	}
@@ -258,6 +259,8 @@ type vaillantSemanticPoller struct {
 	fm5Mode                  graphql.Fm5SemanticMode
 	solar                    *vaillantSolarSnapshot
 	solarCylinders           map[byte]*vaillantCylinderSnapshot
+
+	startupBarrier <-chan struct{}
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	b524ProbeFn            func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
@@ -1131,6 +1134,26 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 
 	go p.tasks.run(ctx)
 
+	// When a startup barrier is set, defer all bus traffic until the startup
+	// scan first pass completes.  This prevents semantic bootstrap (B5.24
+	// discovery) from racing ahead of the active scan on proxy-single paths.
+	if p.startupBarrier != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.startupBarrier:
+			}
+			log.Printf("semantic poller: startup barrier cleared, starting polling loops")
+			p.startPollingLoops(ctx)
+		}()
+		return
+	}
+
+	p.startPollingLoops(ctx)
+}
+
+func (p *vaillantSemanticPoller) startPollingLoops(ctx context.Context) {
 	// Discovery owns downstream controller/boiler priming and avoids duplicate startup bursts.
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)

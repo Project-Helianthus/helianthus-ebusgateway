@@ -19,7 +19,8 @@ func main() {
 	var (
 		outputDir      = flag.String("output-dir", "results", "matrix output directory")
 		target         = flag.String("target", "local", "execution target: local|ha-addon")
-		includeIDs     = flag.String("cases", "", "comma-separated case IDs (default: all T01..T88)")
+		suite          = flag.String("suite", matrix.SuiteFullMatrix, "matrix suite: full88|passive")
+		includeIDs     = flag.String("cases", "", "comma-separated case IDs (default: all cases in selected suite)")
 		execute        = flag.Bool("execute", false, "execute commands instead of dry-run planning")
 		settleDelay    = flag.Duration("settle-delay", 3*time.Second, "delay after service startup")
 		caseTimeout    = flag.Duration("case-timeout", 2*time.Minute, "per-case timeout (0 disables timeout)")
@@ -47,6 +48,7 @@ func main() {
 	runner, err := matrix.NewRunner(matrix.RunnerOptions{
 		OutputDir:        *outputDir,
 		Target:           *target,
+		Suite:            *suite,
 		IncludeIDs:       splitCSV(*includeIDs),
 		ExpectedFailures: expectedFailures,
 		Execute:          *execute,
@@ -88,7 +90,8 @@ func main() {
 	}
 
 	fmt.Printf(
-		"matrix complete: total=%d pass=%d fail=%d xfail=%d xpass=%d blocked=%d planned=%d output=%s\n",
+		"matrix complete: suite=%s total=%d pass=%d fail=%d xfail=%d xpass=%d blocked=%d planned=%d output=%s\n",
+		*suite,
 		len(verdicts),
 		passed,
 		failed,

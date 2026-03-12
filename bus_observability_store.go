@@ -185,8 +185,8 @@ func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 			transitions:      make(map[string]uint64),
 		},
 	}
-	if canonicalTransportProtocol(cfg.TransportConfig.Protocol) == TransportEbusdTCP {
-		store.passive.unavailableReason = "unsupported_or_misconfigured"
+	if reason := passiveTransportUnavailableReason(cfg); reason != "" {
+		store.passive.unavailableReason = reason
 	}
 	return store
 }
@@ -1014,6 +1014,12 @@ func (store *BusObservabilityStore) refreshPassiveStateLocked(now time.Time, tap
 		store.passive.startupWindowClosed = true
 		return
 	}
+	if reason := passiveTransportUnavailableReason(store.cfg); reason != "" {
+		store.setPassiveStateLocked("unavailable")
+		store.passive.unavailableReason = reason
+		store.passive.startupWindowClosed = true
+		return
+	}
 	if !store.passive.startupWindowClosed && !now.Before(store.passive.processStartedAt.Add(store.cfg.ObserveFirstWarmupOuterWindow)) {
 		if store.passive.state == "warming_up" && store.passive.fallbackHealthy {
 			store.setPassiveStateLocked("available")
@@ -1224,7 +1230,7 @@ func timingQualityForActive(cfg Config) string {
 }
 
 func timingQualityForPassive(cfg Config) string {
-	if canonicalTransportProtocol(cfg.TransportConfig.Protocol) == TransportEbusdTCP || !cfg.BroadcastListen {
+	if !PassiveTransportSupported(cfg) || !cfg.BroadcastListen {
 		return "unavailable"
 	}
 	return "estimated"

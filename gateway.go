@@ -200,6 +200,59 @@ func canonicalTransportProtocol(protocol TransportProtocol) TransportProtocol {
 	}
 }
 
+func passiveTransportUnavailableReason(cfg Config) string {
+	config, err := normalizeTransportConfig(cfg.TransportConfig)
+	if err == nil {
+		switch config.Protocol {
+		case TransportEbusdTCP:
+			return "unsupported_or_misconfigured"
+		case TransportENH, TransportENS:
+			if passiveObserveFirstDirectAdapterEndpoint(config.Network, config.Address) {
+				return "unsupported_or_misconfigured"
+			}
+		}
+		return ""
+	}
+
+	switch canonicalTransportProtocol(cfg.TransportConfig.Protocol) {
+	case TransportEbusdTCP:
+		return "unsupported_or_misconfigured"
+	case TransportENH, TransportENS:
+		if passiveObserveFirstDirectAdapterEndpoint(cfg.TransportConfig.Network, cfg.TransportConfig.Address) {
+			return "unsupported_or_misconfigured"
+		}
+	}
+	return ""
+}
+
+func PassiveTransportSupported(cfg Config) bool {
+	return passiveTransportUnavailableReason(cfg) == ""
+}
+
+func passiveObserveFirstDirectAdapterEndpoint(network, address string) bool {
+	if strings.ToLower(strings.TrimSpace(network)) != "tcp" {
+		return false
+	}
+	host, port, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if port != "9999" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip != nil {
+		return !ip.IsLoopback()
+	}
+	// Hostname-based tcp/:9999 endpoints are the same direct-adapter class as
+	// the proven raw adapter case unless they resolve to loopback localhost.
+	return true
+}
+
 func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol) (TransportProtocol, string, string, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil {

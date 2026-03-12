@@ -43,3 +43,6 @@ fi
 
 echo "==> transport gate"
 ./scripts/transport_gate.sh
+
+echo "==> passive smoke gate"
+./scripts/passive_smoke_gate.sh

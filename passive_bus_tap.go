@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -184,7 +186,9 @@ func (tap *PassiveBusTap) run() {
 
 func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 	decoder := passiveEscapeDecoder{}
+	decodeWireEscapes := passiveTapDecodesWireEscapes(tap.cfg)
 	lastSymbolAt := time.Now()
+	absenceDisconnect := passiveTapEnforcesAbsenceDisconnect(tap.cfg)
 
 	for {
 		if err := tap.ctx.Err(); err != nil {
@@ -200,7 +204,7 @@ func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 					Err:        err,
 				})
 				threshold := tap.cfg.PassiveAbsenceThreshold
-				if threshold > 0 && time.Since(lastSymbolAt) >= threshold {
+				if absenceDisconnect && threshold > 0 && time.Since(lastSymbolAt) >= threshold {
 					return fmt.Errorf("passive tap absence threshold exceeded after %s: %w", threshold, ebuserrors.ErrTimeout)
 				}
 				continue
@@ -215,19 +219,24 @@ func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 		now := time.Now()
 		switch event.Kind {
 		case transport.StreamEventReset:
-			if decoder.escape {
+			if decodeWireEscapes && decoder.escape {
 				tap.recordDecodeFault(fmt.Errorf("incomplete escape sequence before reset: %w", ebuserrors.ErrInvalidPayload))
 				decoder.reset()
 			}
 			tap.recordReset(now)
 		case transport.StreamEventByte:
-			symbol, ok, decodeErr := decoder.push(event.Byte)
-			if decodeErr != nil {
-				tap.recordDecodeFault(decodeErr)
-				continue
-			}
-			if !ok {
-				continue
+			symbol := event.Byte
+			if decodeWireEscapes {
+				var ok bool
+				var decodeErr error
+				symbol, ok, decodeErr = decoder.push(event.Byte)
+				if decodeErr != nil {
+					tap.recordDecodeFault(decodeErr)
+					continue
+				}
+				if !ok {
+					continue
+				}
 			}
 
 			lastSymbolAt = now
@@ -407,6 +416,55 @@ func readPassiveTransportEvent(tr transport.RawTransport) (transport.StreamEvent
 		Kind: transport.StreamEventByte,
 		Byte: value,
 	}, nil
+}
+
+func passiveTapEnforcesAbsenceDisconnect(cfg Config) bool {
+	return !passiveTapUsesProxyLikeObserverTransport(cfg)
+}
+
+func passiveTapDecodesWireEscapes(cfg Config) bool {
+	return !passiveTapUsesProxyLikeObserverTransport(cfg)
+}
+
+func passiveTapUsesProxyLikeObserverTransport(cfg Config) bool {
+	config, err := normalizeTransportConfig(cfg.TransportConfig)
+	if err != nil {
+		return false
+	}
+
+	switch config.Protocol {
+	case TransportENH, TransportENS:
+	default:
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(config.Network)) != "tcp" {
+		return false
+	}
+
+	if passiveObserveFirstDirectAdapterEndpoint(config.Network, config.Address) {
+		return false
+	}
+
+	host, port, err := net.SplitHostPort(strings.TrimSpace(config.Address))
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if port == "9999" {
+		return false
+	}
+	if !strings.EqualFold(host, "localhost") {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return false
+		}
+	}
+
+	portValue, err := strconv.Atoi(port)
+	if err != nil {
+		return false
+	}
+	return portValue >= 19001 && portValue < 20000
 }
 
 func resolvePassiveTransport(ctx context.Context, cfg Config) (transport.RawTransport, error) {

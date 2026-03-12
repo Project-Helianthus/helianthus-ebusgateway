@@ -439,6 +439,9 @@ type WatchActivationSet struct {
 }
 
 func NewWatchActivationSet(catalog *WatchCatalog) *WatchActivationSet {
+	if catalog == nil {
+		catalog = &WatchCatalog{}
+	}
 	return &WatchActivationSet{
 		catalog: catalog,
 		active:  make(map[string]map[WatchActivationSource]struct{}),

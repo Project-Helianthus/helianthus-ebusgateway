@@ -222,6 +222,38 @@ func TestWatchActivationSetActivateIsBatchAtomicOnValidationFailure(t *testing.T
 	}
 }
 
+func TestWatchActivationSetNilCatalogBehavesAsEmptyCatalog(t *testing.T) {
+	t.Parallel()
+
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x000F)
+
+	activations := NewWatchActivationSet(nil)
+	if activations == nil {
+		t.Fatal("NewWatchActivationSet(nil) = nil; want non-nil activation set")
+	}
+	if activations.catalog == nil {
+		t.Fatal("NewWatchActivationSet(nil).catalog = nil; want empty catalog sentinel")
+	}
+
+	err := activations.Activate(WatchActivationSourcePoller, key)
+	if err == nil {
+		t.Fatal("Activate() with nil-backed catalog succeeded; want catalog miss error")
+	}
+	if !strings.Contains(err.Error(), "missing from catalog") {
+		t.Fatalf("Activate() error = %q; want missing-from-catalog error", err)
+	}
+
+	observation := activations.Observe(key)
+	if observation.State != WatchObservationStateCatalogMiss {
+		t.Fatalf("Observe(key).State = %s; want %s", observation.State, WatchObservationStateCatalogMiss)
+	}
+
+	summary := activations.Summary()
+	if summary.ActiveTotal != 0 || summary.InactiveTotal != 0 || summary.CatalogMissTotal != 1 {
+		t.Fatalf("Summary() = %+v; want active=0 inactive=0 catalog_miss=1", summary)
+	}
+}
+
 func TestPassiveWatchKeyFromEventMatchesB524SchedulerKey(t *testing.T) {
 	t.Parallel()
 

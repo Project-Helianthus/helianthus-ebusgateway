@@ -36,6 +36,7 @@ func toolClassificationPolicy() map[string]toolClass {
 		toolSemanticSchedulesGetName:     toolClassCoreStable,
 		toolSemanticSchedulesSetZoneName: toolClassCoreStable,
 		toolSemanticSchedulesSetDhwName:  toolClassCoreStable,
+		toolSemanticAdapterInfoGetName:   toolClassCoreStable,
 		toolSemanticSnapshotName:         toolClassCoreStable,
 		toolSnapshotCaptureName:          toolClassCoreStable,
 		toolSnapshotDropName:             toolClassCoreStable,

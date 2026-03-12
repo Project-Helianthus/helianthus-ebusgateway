@@ -15,7 +15,7 @@ import (
 	graphqlclient "github.com/machinebox/graphql"
 )
 
-var canonicalSemanticRootFields = []string{
+var canonicalQueryRootFields = []string{
 	"zones",
 	"dhw",
 	"energyTotals",
@@ -27,6 +27,17 @@ var canonicalSemanticRootFields = []string{
 	"boilerStatus",
 	"system",
 	"schedules",
+	"busSummary",
+	"busMessages",
+	"busPeriodicity",
+}
+
+type testBusObservabilityProvider struct {
+	snapshot BusObservabilitySnapshot
+}
+
+func (provider testBusObservabilityProvider) Snapshot() BusObservabilitySnapshot {
+	return cloneBusObservabilitySnapshot(provider.snapshot)
 }
 
 func TestQueryResolvers_Integration(t *testing.T) {
@@ -92,6 +103,103 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	client := graphqlclient.NewClient(server.URL)
 	semantic := NewLiveSemanticProvider()
 	builder.SetSemanticProvider(semantic)
+	builder.SetBusObservabilityProvider(testBusObservabilityProvider{
+		snapshot: BusObservabilitySnapshot{
+			Summary: &BusSummary{
+				Status: &BusObservabilityStatus{
+					TransportClass: "ens",
+					Capability: BusObservabilityCapability{
+						ActiveSupported:    true,
+						PassiveSupported:   true,
+						BroadcastSupported: true,
+						PassiveAvailable:   false,
+						PassiveState:       "warming_up",
+						PassiveReason:      "unsupported_or_misconfigured",
+						EndpointState:      "temporarily_disconnected",
+						TapConnected:       false,
+					},
+					Warmup: BusObservabilityWarmup{
+						State:                 "warming_up",
+						Blocker:               "completed_transactions",
+						ElapsedSeconds:        12.5,
+						CompletedTransactions: 2,
+						RequiredTransactions:  5,
+						CompletionMode:        "thresholds_met",
+					},
+					TimingQuality: BusObservabilityTimingQuality{
+						Active:      "wire_estimated",
+						Passive:     "wire_estimated",
+						Busy:        "wire_estimated",
+						Periodicity: "wire_estimated",
+					},
+					Degraded: BusObservabilityDegraded{
+						Active:  true,
+						Reasons: []string{"unsupported_or_misconfigured", "dedup_degraded"},
+					},
+				},
+				Messages:    BusBoundedListSummary{Count: 2, Capacity: 1024},
+				Periodicity: BusBoundedListSummary{Count: 2, Capacity: 256},
+				Counters: BusObservabilityCounters{
+					SeriesBudgetOverflowTotal:      1,
+					PeriodicityBudgetOverflowTotal: 2,
+				},
+			},
+			Messages: []BusMessage{
+				{
+					Scope:         "active",
+					Family:        "B509",
+					FrameType:     "initiator_target",
+					Outcome:       "success",
+					ObservedAt:    "2026-03-12T18:00:00Z",
+					SourceAddress: 8,
+					TargetAddress: 21,
+					RequestLen:    1,
+					ResponseLen:   2,
+				},
+				{
+					Scope:         "passive",
+					Family:        "B524",
+					FrameType:     "initiator_target",
+					Outcome:       "success",
+					ObservedAt:    "2026-03-12T18:00:05Z",
+					SourceAddress: 21,
+					TargetAddress: 38,
+					RequestLen:    2,
+					ResponseLen:   3,
+				},
+			},
+			Periodicity: []BusPeriodicityEntry{
+				{
+					SourceBucket: "controller",
+					TargetBucket: "boiler",
+					Primary:      0xB5,
+					Secondary:    0x09,
+					Family:       "B509",
+					State:        "available",
+					LastSeen:     "2026-03-12T18:00:02Z",
+					SampleCount:  2,
+					LastInterval: "10s",
+					MeanInterval: "10s",
+					MinInterval:  "10s",
+					MaxInterval:  "10s",
+				},
+				{
+					SourceBucket: "controller",
+					TargetBucket: "module",
+					Primary:      0xB5,
+					Secondary:    0x16,
+					Family:       "B524",
+					State:        "warming_up",
+					LastSeen:     "2026-03-12T18:00:06Z",
+					SampleCount:  3,
+					LastInterval: "5s",
+					MeanInterval: "5s",
+					MinInterval:  "5s",
+					MaxInterval:  "5s",
+				},
+			},
+		},
+	})
 
 	t.Run("devices", func(t *testing.T) {
 		request := graphqlclient.NewRequest(`
@@ -332,10 +440,243 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			got[field.Name] = true
 		}
 
-		for _, name := range canonicalSemanticRootFields {
+		for _, name := range canonicalQueryRootFields {
 			if !got[name] {
 				t.Fatalf("query root missing %q in introspection: %#v", name, got)
 			}
+		}
+	})
+
+	t.Run("bus_observability", func(t *testing.T) {
+		request := graphqlclient.NewRequest(`
+			query {
+				busSummary {
+					status {
+						transportClass
+						capability {
+							activeSupported
+							passiveSupported
+							broadcastSupported
+							passiveAvailable
+							passiveState
+							passiveReason
+							endpointState
+							tapConnected
+						}
+						warmup {
+							state
+							blocker
+							elapsedSeconds
+							completedTransactions
+							requiredTransactions
+							completionMode
+						}
+						timingQuality {
+							active
+							passive
+							busy
+							periodicity
+						}
+						degraded {
+							active
+							reasons
+						}
+					}
+					messages {
+						count
+						capacity
+					}
+					periodicity {
+						count
+						capacity
+					}
+					counters {
+						seriesBudgetOverflowTotal
+						periodicityBudgetOverflowTotal
+					}
+				}
+				busMessages(limit: 1) {
+					status {
+						capability {
+							passiveState
+							passiveReason
+						}
+						timingQuality {
+							passive
+							periodicity
+						}
+					}
+					count
+					capacity
+					items {
+						scope
+						family
+						frameType
+						outcome
+						observedAt
+						sourceAddress
+						targetAddress
+						requestLen
+						responseLen
+					}
+				}
+				busPeriodicity(limit: 1) {
+					status {
+						warmup {
+							state
+						}
+						degraded {
+							active
+						}
+					}
+					count
+					capacity
+					items {
+						sourceBucket
+						targetBucket
+						primary
+						secondary
+						family
+						state
+						lastSeen
+						sampleCount
+						lastInterval
+						meanInterval
+						minInterval
+						maxInterval
+					}
+				}
+			}
+		`)
+
+		var response struct {
+			BusSummary struct {
+				Status struct {
+					TransportClass string `json:"transportClass"`
+					Capability     struct {
+						PassiveState  string `json:"passiveState"`
+						PassiveReason string `json:"passiveReason"`
+						EndpointState string `json:"endpointState"`
+					} `json:"capability"`
+					Warmup struct {
+						State                 string  `json:"state"`
+						Blocker               string  `json:"blocker"`
+						ElapsedSeconds        float64 `json:"elapsedSeconds"`
+						CompletedTransactions int     `json:"completedTransactions"`
+						RequiredTransactions  int     `json:"requiredTransactions"`
+					} `json:"warmup"`
+					TimingQuality struct {
+						Passive     string `json:"passive"`
+						Periodicity string `json:"periodicity"`
+					} `json:"timingQuality"`
+					Degraded struct {
+						Active  bool     `json:"active"`
+						Reasons []string `json:"reasons"`
+					} `json:"degraded"`
+				} `json:"status"`
+				Messages struct {
+					Count    int `json:"count"`
+					Capacity int `json:"capacity"`
+				} `json:"messages"`
+				Periodicity struct {
+					Count    int `json:"count"`
+					Capacity int `json:"capacity"`
+				} `json:"periodicity"`
+				Counters struct {
+					SeriesBudgetOverflowTotal      int `json:"seriesBudgetOverflowTotal"`
+					PeriodicityBudgetOverflowTotal int `json:"periodicityBudgetOverflowTotal"`
+				} `json:"counters"`
+			} `json:"busSummary"`
+			BusMessages struct {
+				Status struct {
+					Capability struct {
+						PassiveState  string `json:"passiveState"`
+						PassiveReason string `json:"passiveReason"`
+					} `json:"capability"`
+					TimingQuality struct {
+						Passive     string `json:"passive"`
+						Periodicity string `json:"periodicity"`
+					} `json:"timingQuality"`
+				} `json:"status"`
+				Count    int `json:"count"`
+				Capacity int `json:"capacity"`
+				Items    []struct {
+					Family        string `json:"family"`
+					ObservedAt    string `json:"observedAt"`
+					SourceAddress int    `json:"sourceAddress"`
+					TargetAddress int    `json:"targetAddress"`
+				} `json:"items"`
+			} `json:"busMessages"`
+			BusPeriodicity struct {
+				Status struct {
+					Warmup struct {
+						State string `json:"state"`
+					} `json:"warmup"`
+				} `json:"status"`
+				Count    int `json:"count"`
+				Capacity int `json:"capacity"`
+				Items    []struct {
+					Family      string `json:"family"`
+					Primary     int    `json:"primary"`
+					Secondary   int    `json:"secondary"`
+					LastSeen    string `json:"lastSeen"`
+					SampleCount int    `json:"sampleCount"`
+				} `json:"items"`
+			} `json:"busPeriodicity"`
+		}
+
+		if err := client.Run(context.Background(), request, &response); err != nil {
+			t.Fatalf("bus observability query error = %v", err)
+		}
+		if response.BusSummary.Status.TransportClass != "ens" {
+			t.Fatalf("transportClass = %q; want ens", response.BusSummary.Status.TransportClass)
+		}
+		if response.BusSummary.Status.Capability.PassiveState != "warming_up" {
+			t.Fatalf("passiveState = %q; want warming_up", response.BusSummary.Status.Capability.PassiveState)
+		}
+		if response.BusSummary.Status.Warmup.Blocker != "completed_transactions" {
+			t.Fatalf("warmup.blocker = %q; want completed_transactions", response.BusSummary.Status.Warmup.Blocker)
+		}
+		if response.BusSummary.Status.TimingQuality.Passive != "wire_estimated" {
+			t.Fatalf("timingQuality.passive = %q; want wire_estimated", response.BusSummary.Status.TimingQuality.Passive)
+		}
+		if !response.BusSummary.Status.Degraded.Active || len(response.BusSummary.Status.Degraded.Reasons) != 2 {
+			t.Fatalf("degraded = %+v; want active with 2 reasons", response.BusSummary.Status.Degraded)
+		}
+		if response.BusSummary.Messages.Count != 2 || response.BusSummary.Messages.Capacity != 1024 {
+			t.Fatalf("messages summary = %+v; want count=2 capacity=1024", response.BusSummary.Messages)
+		}
+		if response.BusSummary.Periodicity.Count != 2 || response.BusSummary.Periodicity.Capacity != 256 {
+			t.Fatalf("periodicity summary = %+v; want count=2 capacity=256", response.BusSummary.Periodicity)
+		}
+		if response.BusSummary.Counters.SeriesBudgetOverflowTotal != 1 || response.BusSummary.Counters.PeriodicityBudgetOverflowTotal != 2 {
+			t.Fatalf("counters = %+v; want 1/2", response.BusSummary.Counters)
+		}
+
+		if response.BusMessages.Count != 2 || response.BusMessages.Capacity != 1024 {
+			t.Fatalf("busMessages wrapper = %+v; want count=2 capacity=1024", response.BusMessages)
+		}
+		if len(response.BusMessages.Items) != 1 || response.BusMessages.Items[0].Family != "B524" {
+			t.Fatalf("busMessages items = %+v; want trimmed B524 item", response.BusMessages.Items)
+		}
+		if response.BusMessages.Items[0].ObservedAt != "2026-03-12T18:00:05Z" {
+			t.Fatalf("busMessages observedAt = %q; want 2026-03-12T18:00:05Z", response.BusMessages.Items[0].ObservedAt)
+		}
+		if response.BusMessages.Status.Capability.PassiveReason != "unsupported_or_misconfigured" {
+			t.Fatalf("busMessages passiveReason = %q; want unsupported_or_misconfigured", response.BusMessages.Status.Capability.PassiveReason)
+		}
+
+		if response.BusPeriodicity.Count != 2 || response.BusPeriodicity.Capacity != 256 {
+			t.Fatalf("busPeriodicity wrapper = %+v; want count=2 capacity=256", response.BusPeriodicity)
+		}
+		if len(response.BusPeriodicity.Items) != 1 || response.BusPeriodicity.Items[0].Family != "B524" {
+			t.Fatalf("busPeriodicity items = %+v; want trimmed B524 item", response.BusPeriodicity.Items)
+		}
+		if response.BusPeriodicity.Items[0].LastSeen != "2026-03-12T18:00:06Z" {
+			t.Fatalf("busPeriodicity lastSeen = %q; want 2026-03-12T18:00:06Z", response.BusPeriodicity.Items[0].LastSeen)
+		}
+		if response.BusPeriodicity.Status.Warmup.State != "warming_up" {
+			t.Fatalf("busPeriodicity warmup.state = %q; want warming_up", response.BusPeriodicity.Status.Warmup.State)
 		}
 	})
 

@@ -80,6 +80,9 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	builder := graphql.NewBuilder(gateway.Registry, nil)
 	builder.SetStatusProvider(newRuntimeStatusProvider(cfg))
+	if busObservability != nil {
+		builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(busObservability))
+	}
 	hub := graphql.NewBroadcastHub(nil)
 	gateway.AddRouterPlane(hub)
 	gateway.RefreshRouterPlanes()

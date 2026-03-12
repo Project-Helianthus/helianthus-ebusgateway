@@ -113,6 +113,12 @@ func (store *BusObservabilityStore) periodicitySnapshotLocked() []BusPeriodicity
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].LastSeen.Equal(items[j].LastSeen) {
 			if items[i].SourceBucket == items[j].SourceBucket {
+				if items[i].TargetBucket == items[j].TargetBucket {
+					if items[i].Primary == items[j].Primary {
+						return items[i].Secondary < items[j].Secondary
+					}
+					return items[i].Primary < items[j].Primary
+				}
 				return items[i].TargetBucket < items[j].TargetBucket
 			}
 			return items[i].SourceBucket < items[j].SourceBucket

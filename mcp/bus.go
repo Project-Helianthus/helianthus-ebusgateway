@@ -110,12 +110,6 @@ type BusObservabilityProvider interface {
 	Snapshot() BusObservabilitySnapshot
 }
 
-type staticBusObservabilityProvider struct{}
-
-func (staticBusObservabilityProvider) Snapshot() BusObservabilitySnapshot {
-	return BusObservabilitySnapshot{}
-}
-
 func cloneBusObservabilitySnapshot(source BusObservabilitySnapshot) BusObservabilitySnapshot {
 	return BusObservabilitySnapshot{
 		Summary:     cloneBusSummary(source.Summary),

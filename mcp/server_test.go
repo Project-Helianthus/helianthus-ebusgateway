@@ -318,9 +318,6 @@ func TestServer_InitializeAndTools(t *testing.T) {
 	}
 	for _, name := range []string{
 		toolRuntimeStatusGetName,
-		toolBusSummaryGetName,
-		toolBusMessagesListName,
-		toolBusPeriodicityListName,
 		toolSemanticZonesGetName,
 		toolSemanticCircuitsGetName,
 		toolSemanticRadioGetName,
@@ -361,6 +358,81 @@ func TestServer_InitializeAndTools(t *testing.T) {
 	for _, key := range []string{"intent", "allow_dangerous", "idempotency_key", "timeout_ms"} {
 		if _, ok := properties[key]; !ok {
 			t.Fatalf("invoke v1 properties missing %q", key)
+		}
+	}
+}
+
+func TestServer_BusObservabilityToolsRequireConfiguredProvider(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list", Params: nil})
+	if res.Error != nil {
+		t.Fatalf("tools/list error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list result type = %T; want map", res.Result)
+	}
+	tools, ok := resultMap["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools/list tools type = %T; want []any", resultMap["tools"])
+	}
+	for _, name := range []string{
+		toolBusSummaryGetName,
+		toolBusMessagesListName,
+		toolBusPeriodicityListName,
+	} {
+		if hasToolName(tools, name) {
+			t.Fatalf("tools list unexpectedly included %q without bus provider", name)
+		}
+	}
+
+	res = doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"` + toolBusSummaryGetName + `","arguments":{}}`),
+	})
+	if res.Error == nil {
+		t.Fatalf("bus summary call error = nil; want unknown tool")
+	}
+	if want := `unknown tool "` + toolBusSummaryGetName + `"`; res.Error.Message != want {
+		t.Fatalf("bus summary call error = %q; want %q", res.Error.Message, want)
+	}
+
+	server.SetBusObservabilityProvider(&testBusObservabilityProvider{
+		snapshot: BusObservabilitySnapshot{
+			Summary: &BusSummary{
+				Status: &BusObservabilityStatus{
+					Capability: BusObservabilityCapability{PassiveState: "unavailable"},
+				},
+			},
+		},
+	})
+
+	res = doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 3, Method: "tools/list", Params: nil})
+	if res.Error != nil {
+		t.Fatalf("tools/list after bus provider error = %+v", res.Error)
+	}
+	resultMap, ok = res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list after bus provider result type = %T; want map", res.Result)
+	}
+	tools, ok = resultMap["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools/list after bus provider tools type = %T; want []any", resultMap["tools"])
+	}
+	for _, name := range []string{
+		toolBusSummaryGetName,
+		toolBusMessagesListName,
+		toolBusPeriodicityListName,
+	} {
+		if !hasToolName(tools, name) {
+			t.Fatalf("tools list missing %q after bus provider configured", name)
 		}
 	}
 }

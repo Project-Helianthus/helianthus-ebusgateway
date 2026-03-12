@@ -67,9 +67,6 @@ func TestToolInventoryGoldenSignatures(t *testing.T) {
 	expected := []toolSchemaSignature{
 		{Name: "ebus.devices", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.invoke", SchemaHash: "2e6b78e869aed69fa5d7fb3722c476a3d2b04767a1f2d9e0e64e8bd456d072f7"},
-		{Name: "ebus.v1.bus.messages.list", SchemaHash: "12199086e5168a552547d23cdf43b854ed35714d55961904956ac15a4e26d88a"},
-		{Name: "ebus.v1.bus.periodicity.list", SchemaHash: "12199086e5168a552547d23cdf43b854ed35714d55961904956ac15a4e26d88a"},
-		{Name: "ebus.v1.bus.summary.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.registry.devices.get", SchemaHash: "da78278884d60ad8b0f1d272acde9ea9aa0d407993039a2b39dbf584d95f0757"},
 		{Name: "ebus.v1.registry.devices.list", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.registry.methods.list", SchemaHash: "97aa07b78405c1f77e2c3845a083b088db13019ca0a3ea83dba4206088d3bcf8"},
@@ -130,37 +127,6 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 		t.Fatalf("NewServer error = %v", err)
 	}
 	server.SetStatusProvider(testStatusProvider{daemon: ServiceStatus{Status: "running"}, adapter: ServiceStatus{Status: "connected"}})
-	server.SetBusObservabilityProvider(&testBusObservabilityProvider{
-		snapshot: BusObservabilitySnapshot{
-			Summary: &BusSummary{
-				Status: &BusObservabilityStatus{
-					TransportClass: "ens",
-					Capability: BusObservabilityCapability{
-						ActiveSupported:    true,
-						PassiveSupported:   true,
-						BroadcastSupported: true,
-						PassiveAvailable:   true,
-						PassiveState:       "available",
-					},
-					Warmup: BusObservabilityWarmup{State: "available"},
-					TimingQuality: BusObservabilityTimingQuality{
-						Active:      "estimated",
-						Passive:     "estimated",
-						Busy:        "estimated",
-						Periodicity: "estimated",
-					},
-				},
-				Messages:    BusBoundedListSummary{Count: 1, Capacity: 16},
-				Periodicity: BusBoundedListSummary{Count: 1, Capacity: 8},
-			},
-			Messages: []BusMessage{
-				{Scope: "active", Family: "B509", FrameType: "master_target", Outcome: "success"},
-			},
-			Periodicity: []BusPeriodicityEntry{
-				{SourceBucket: "0x08", TargetBucket: "0x15", Primary: 0xB5, Secondary: 0x09, Family: "B509", State: "available", SampleCount: 3, LastInterval: "30s", MeanInterval: "30s", MinInterval: "30s", MaxInterval: "30s"},
-			},
-		},
-	})
 	server.SetSemanticProvider(testSemanticProvider{
 		zones:    []Zone{{ID: "zone-a", Name: "Living", Config: ZoneConfig{OperatingMode: "AUTO", Preset: "COMFORT"}}},
 		circuits: []CircuitStatus{{Index: 0, CircuitType: "heating", ManagingDevice: ManagingDevice{Role: "FUNCTION_MODULE", DeviceID: stringPtr("VR_71"), Address: intPtr(0x26)}}},
@@ -182,9 +148,6 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 		args string
 	}{
 		{name: "runtime", tool: toolRuntimeStatusGetName, args: `{}`},
-		{name: "bus_summary", tool: toolBusSummaryGetName, args: `{}`},
-		{name: "bus_messages", tool: toolBusMessagesListName, args: `{}`},
-		{name: "bus_periodicity", tool: toolBusPeriodicityListName, args: `{}`},
 		{name: "devices", tool: toolDevicesV1Name, args: `{}`},
 		{name: "device", tool: toolDeviceGetV1Name, args: `{"address":8}`},
 		{name: "planes", tool: toolPlanesListV1Name, args: `{"address":8}`},

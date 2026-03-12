@@ -530,32 +530,8 @@ func consistencyInputProperty() map[string]any {
 	}
 }
 
-func NewServer(reg Registry, invoker Invoker) (*Server, error) {
-	if reg == nil {
-		return nil, fmt.Errorf("mcp server missing registry: %w", ebuserrors.ErrInvalidPayload)
-	}
-
-	server := &Server{
-		registry:       reg,
-		invoker:        invoker,
-		statusProvider: staticStatusProvider{},
-		bus:            staticBusObservabilityProvider{},
-		semantic:       staticSemanticProvider{},
-		idempotency:    make(map[string]idempotencyEntry),
-		snapshots:      make(map[string]snapshotState),
-	}
-	server.tools = []Tool{
-		{
-			Name:        toolRuntimeStatusGetName,
-			Description: "Get runtime daemon and adapter status.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"consistency": consistencyInputProperty(),
-				},
-				"additionalProperties": false,
-			},
-		},
+func busObservabilityTools() []Tool {
+	return []Tool{
 		{
 			Name:        toolBusSummaryGetName,
 			Description: "Get observe-first bus capability, warmup, degraded, and bounded-list summary state.",
@@ -586,6 +562,34 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 				"type": "object",
 				"properties": map[string]any{
 					"limit":       map[string]any{"type": "integer", "minimum": 1},
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+	}
+}
+
+func NewServer(reg Registry, invoker Invoker) (*Server, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("mcp server missing registry: %w", ebuserrors.ErrInvalidPayload)
+	}
+
+	server := &Server{
+		registry:       reg,
+		invoker:        invoker,
+		statusProvider: staticStatusProvider{},
+		semantic:       staticSemanticProvider{},
+		idempotency:    make(map[string]idempotencyEntry),
+		snapshots:      make(map[string]snapshotState),
+	}
+	server.tools = []Tool{
+		{
+			Name:        toolRuntimeStatusGetName,
+			Description: "Get runtime daemon and adapter status.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
 					"consistency": consistencyInputProperty(),
 				},
 				"additionalProperties": false,
@@ -905,6 +909,49 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 	return server, nil
 }
 
+func (s *Server) hasToolNamed(name string) bool {
+	if s == nil {
+		return false
+	}
+	for _, tool := range s.tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) indexOfTool(name string) int {
+	if s == nil {
+		return -1
+	}
+	for i, tool := range s.tools {
+		if tool.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func (s *Server) registerBusObservabilityTools() {
+	if s == nil || s.hasToolNamed(toolBusSummaryGetName) {
+		return
+	}
+
+	insertAt := s.indexOfTool(toolRuntimeStatusGetName) + 1
+	if insertAt <= 0 || insertAt > len(s.tools) {
+		s.tools = append(s.tools, busObservabilityTools()...)
+		return
+	}
+
+	additions := busObservabilityTools()
+	tools := make([]Tool, 0, len(s.tools)+len(additions))
+	tools = append(tools, s.tools[:insertAt]...)
+	tools = append(tools, additions...)
+	tools = append(tools, s.tools[insertAt:]...)
+	s.tools = tools
+}
+
 func (s *Server) SetStatusProvider(provider StatusProvider) {
 	if s == nil || provider == nil {
 		return
@@ -917,6 +964,7 @@ func (s *Server) SetBusObservabilityProvider(provider BusObservabilityProvider) 
 		return
 	}
 	s.bus = provider
+	s.registerBusObservabilityTools()
 }
 
 func (s *Server) SetSemanticProvider(provider SemanticProvider) {
@@ -1041,6 +1089,9 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 	if call.Name == "" {
 		return nil, rpcErrorInvalidParams("tools/call missing name")
+	}
+	if !s.hasToolNamed(call.Name) {
+		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", call.Name))
 	}
 
 	switch call.Name {

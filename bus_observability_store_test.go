@@ -102,6 +102,44 @@ func TestBusObservabilityStorePeriodicityBudgetEvictsLRU(t *testing.T) {
 	}
 }
 
+func TestBusObservabilityStorePeriodicitySnapshotOrdersSameTimestampByTuple(t *testing.T) {
+	cfg := DefaultConfig()
+	store := NewBusObservabilityStore(cfg)
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base }
+
+	store.mu.Lock()
+	store.periodicity = map[periodicityKey]*BusPeriodicityEntry{
+		{SourceBucket: "0x08", TargetBucket: "0x15", Primary: 0xB5, Secondary: 0x24}: {
+			SourceBucket: "0x08",
+			TargetBucket: "0x15",
+			Primary:      0xB5,
+			Secondary:    0x24,
+			Family:       "B524",
+			State:        "available",
+			LastSeen:     base,
+		},
+		{SourceBucket: "0x08", TargetBucket: "0x15", Primary: 0xB5, Secondary: 0x09}: {
+			SourceBucket: "0x08",
+			TargetBucket: "0x15",
+			Primary:      0xB5,
+			Secondary:    0x09,
+			Family:       "B509",
+			State:        "available",
+			LastSeen:     base,
+		},
+	}
+	store.mu.Unlock()
+
+	items := store.PeriodicitySnapshot()
+	if len(items) != 2 {
+		t.Fatalf("PeriodicitySnapshot length = %d; want 2", len(items))
+	}
+	if items[0].Secondary != 0x09 || items[1].Secondary != 0x24 {
+		t.Fatalf("PeriodicitySnapshot ordering = %#v; want secondary 0x09 before 0x24", items)
+	}
+}
+
 func TestBusObservabilityStoreSuppressesBusyMetricsOnEbusdTCP(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.TransportConfig.Protocol = TransportEbusdTCP

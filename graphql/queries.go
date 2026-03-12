@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -31,6 +32,9 @@ type graphqlSchemaTypes struct {
 	boilerStatusType   *graphqlgo.Object
 	systemStatusType   *graphqlgo.Object
 	scheduleStatusType *graphqlgo.Object
+	busSummaryType     *graphqlgo.Object
+	busMessagesType    *graphqlgo.Object
+	busPeriodicityType *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {
@@ -2572,6 +2576,8 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		},
 	})
 
+	busSummaryType, busMessagesType, busPeriodicityType := buildBusObservabilityTypes()
+
 	return graphqlSchemaTypes{
 		fieldType:          fieldType,
 		responseType:       responseType,
@@ -2594,6 +2600,9 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		boilerStatusType:   boilerStatusType,
 		systemStatusType:   systemStatusType,
 		scheduleStatusType: scheduleStatusType,
+		busSummaryType:     busSummaryType,
+		busMessagesType:    busMessagesType,
+		busPeriodicityType: busPeriodicityType,
 	}
 }
 
@@ -2703,6 +2712,38 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return builder.semanticProvider().Schedules(), nil
 				},
 			},
+			"busSummary": &graphqlgo.Field{
+				Type: types.busSummaryType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return resolveBusSummary(builder, params.Info.RootValue), nil
+				},
+			},
+			"busMessages": &graphqlgo.Field{
+				Type: types.busMessagesType,
+				Args: graphqlgo.FieldConfigArgument{
+					"limit": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					limit, err := parseBusObservabilityLimit(params.Args)
+					if err != nil {
+						return nil, err
+					}
+					return resolveBusMessages(builder, params.Info.RootValue, limit), nil
+				},
+			},
+			"busPeriodicity": &graphqlgo.Field{
+				Type: types.busPeriodicityType,
+				Args: graphqlgo.FieldConfigArgument{
+					"limit": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					limit, err := parseBusObservabilityLimit(params.Args)
+					if err != nil {
+						return nil, err
+					}
+					return resolveBusPeriodicity(builder, params.Info.RootValue, limit), nil
+				},
+			},
 			"devices": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.deviceType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -2796,6 +2837,9 @@ func NewHandler(builder *Builder) (http.Handler, error) {
 		Schema:   &schema,
 		Pretty:   true,
 		GraphiQL: false,
+		RootObjectFn: func(_ context.Context, _ *http.Request) map[string]interface{} {
+			return newGraphQLRootObject(builder)
+		},
 	}), nil
 }
 

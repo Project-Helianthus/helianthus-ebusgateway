@@ -7,6 +7,23 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
+type mutableTestWatchKey struct {
+	canonical string
+	family    WatchFamily
+}
+
+func (key *mutableTestWatchKey) Canonical() string {
+	return key.canonical
+}
+
+func (key *mutableTestWatchKey) String() string {
+	return key.canonical
+}
+
+func (key *mutableTestWatchKey) Family() WatchFamily {
+	return key.family
+}
+
 func TestWatchDescriptorEffectiveFreshnessTTLUsesProfileDefault(t *testing.T) {
 	t.Parallel()
 
@@ -170,6 +187,40 @@ func TestWatchActivationSetRejectsCatalogMissActivation(t *testing.T) {
 	}
 }
 
+func TestWatchActivationSetActivateIsBatchAtomicOnValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	validKey := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x000F)
+	missingKey := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x0022)
+
+	catalog, err := NewWatchCatalog([]WatchDescriptor{
+		{
+			Key:               validKey,
+			SemanticClass:     WatchSemanticClassState,
+			FreshnessProfile:  WatchFreshnessProfileStateFast,
+			DecoderID:         "vaillant.f32le",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWatchCatalog() error = %v", err)
+	}
+
+	activations := NewWatchActivationSet(catalog)
+	if err := activations.Activate(WatchActivationSourcePoller, validKey); err != nil {
+		t.Fatalf("Activate(poller) error = %v", err)
+	}
+	if err := activations.Activate(WatchActivationSourceTooling, validKey, missingKey); err == nil {
+		t.Fatal("Activate(tooling, valid, missing) succeeded")
+	}
+
+	sources := activations.ActiveSources(validKey)
+	if len(sources) != 1 || sources[0] != WatchActivationSourcePoller {
+		t.Fatalf("ActiveSources(validKey) after failed batch = %v; want [poller]", sources)
+	}
+}
+
 func TestPassiveWatchKeyFromEventMatchesB524SchedulerKey(t *testing.T) {
 	t.Parallel()
 
@@ -224,7 +275,115 @@ func TestWatchKeyBuildersRemainStable(t *testing.T) {
 	if got := NewB516WatchKey(0x15, 0x01, 0x02, 0x03).Canonical(); got != "b516:15:01:02:03" {
 		t.Fatalf("NewB516WatchKey().Canonical() = %q; want %q", got, "b516:15:01:02:03")
 	}
-	if got := NewB555WatchKey(0x15, 0xA5, 0x02, 0x06, 0x03).Canonical(); got != "b555:15:a5:02:06:03" {
-		t.Fatalf("NewB555WatchKey().Canonical() = %q; want %q", got, "b555:15:a5:02:06:03")
+	if got := NewB555ProgramWatchKey(0x15, 0xA4, 0x02, 0x00).Canonical(); got != "b555:15:a4:02:00:ff:ff" {
+		t.Fatalf("NewB555ProgramWatchKey().Canonical() = %q; want %q", got, "b555:15:a4:02:00:ff:ff")
+	}
+	if got := NewB555WatchKey(0x15, 0xA5, 0x02, 0x00, 0x06, 0x03).Canonical(); got != "b555:15:a5:02:00:06:03" {
+		t.Fatalf("NewB555WatchKey().Canonical() = %q; want %q", got, "b555:15:a5:02:00:06:03")
+	}
+}
+
+func TestB555WatchKeyCanonicalPreservesSelectorAxes(t *testing.T) {
+	t.Parallel()
+
+	keys := []B555WatchKey{
+		NewB555ProgramWatchKey(0x15, 0xA4, 0x02, 0x00),
+		NewB555ProgramWatchKey(0x15, 0xA4, 0x02, 0x01),
+		NewB555WatchKey(0x15, 0xA5, 0x02, 0x00, 0x06, 0x03),
+		NewB555WatchKey(0x15, 0xA5, 0x01, 0x00, 0x06, 0x03),
+		NewB555WatchKey(0x15, 0xA5, 0x02, 0x01, 0x06, 0x03),
+		NewB555WatchKey(0x15, 0xA5, 0x02, 0x00, 0x05, 0x03),
+		NewB555WatchKey(0x15, 0xA5, 0x02, 0x00, 0x06, 0x02),
+	}
+
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		canonical := key.Canonical()
+		if _, exists := seen[canonical]; exists {
+			t.Fatalf("B555 canonical alias detected for %q", canonical)
+		}
+		seen[canonical] = struct{}{}
+	}
+}
+
+func TestWatchDescriptorRejectsPartialB555Selector(t *testing.T) {
+	t.Parallel()
+
+	descriptor := WatchDescriptor{
+		Key: B555WatchKey{
+			Target:     0x15,
+			Opcode:     0xA5,
+			Zone:       0x02,
+			HC:         0x00,
+			Weekday:    0x06,
+			HasWeekday: true,
+		},
+		SemanticClass:     WatchSemanticClassConfig,
+		FreshnessProfile:  WatchFreshnessProfileConfig,
+		DecoderID:         "vaillant.b555",
+		CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: WatchDirectApplyPolicyConfigOptIn,
+	}
+
+	if _, err := descriptor.EffectiveFreshnessTTL(); err == nil {
+		t.Fatal("EffectiveFreshnessTTL() succeeded for partial B555 weekday/slot selector")
+	}
+}
+
+func TestNewWatchCatalogClonesSupportedPointerWatchKeys(t *testing.T) {
+	t.Parallel()
+
+	originalKey := &B524WatchKey{
+		Target:          0x15,
+		Opcode:          0x06,
+		Group:           0x01,
+		Instance:        0x00,
+		RegisterAddress: 0x0005,
+	}
+	originalCanonical := originalKey.Canonical()
+
+	catalog, err := NewWatchCatalog([]WatchDescriptor{
+		{
+			Key:               originalKey,
+			SemanticClass:     WatchSemanticClassState,
+			FreshnessProfile:  WatchFreshnessProfileStateFast,
+			DecoderID:         "vaillant.f32le",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWatchCatalog() error = %v", err)
+	}
+
+	originalKey.RegisterAddress = 0x0022
+
+	stored, ok := catalog.DescriptorByCanonical(originalCanonical)
+	if !ok {
+		t.Fatalf("DescriptorByCanonical(%q) = !ok; want ok", originalCanonical)
+	}
+	storedKey, ok := stored.Key.(B524WatchKey)
+	if !ok {
+		t.Fatalf("stored key type = %T; want B524WatchKey", stored.Key)
+	}
+	if storedKey.Canonical() != originalCanonical {
+		t.Fatalf("stored key canonical = %q; want %q", storedKey.Canonical(), originalCanonical)
+	}
+}
+
+func TestNewWatchCatalogRejectsUnsupportedMutableKeyType(t *testing.T) {
+	t.Parallel()
+
+	descriptor := WatchDescriptor{
+		Key:               &mutableTestWatchKey{canonical: "custom:mutable", family: WatchFamilyB524},
+		SemanticClass:     WatchSemanticClassState,
+		FreshnessProfile:  WatchFreshnessProfileStateFast,
+		DecoderID:         "custom.mutable",
+		CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+	}
+
+	if _, err := NewWatchCatalog([]WatchDescriptor{descriptor}); err == nil {
+		t.Fatal("NewWatchCatalog() succeeded for unsupported mutable watch key type")
 	}
 }

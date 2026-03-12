@@ -94,6 +94,9 @@ type WatchKey interface {
 	Family() WatchFamily
 }
 
+// WatchCatalog accepts only the built-in B509/B516/B524/B555 key shapes so it can clone
+// descriptors by value and keep catalog storage immutable after construction.
+
 type B524WatchKey struct {
 	Target          byte
 	Opcode          byte
@@ -177,25 +180,49 @@ func (key B516WatchKey) Family() WatchFamily {
 }
 
 type B555WatchKey struct {
-	Target        byte
-	Opcode        byte
-	ZoneOrCircuit byte
-	DaySelector   byte
-	SlotSelector  byte
+	Target byte
+	Opcode byte
+	Zone   byte
+	HC     byte
+
+	Weekday    byte
+	Slot       byte
+	HasWeekday bool
+	HasSlot    bool
 }
 
-func NewB555WatchKey(target, opcode, zoneOrCircuit, daySelector, slotSelector byte) B555WatchKey {
+func NewB555ProgramWatchKey(target, opcode, zone, hc byte) B555WatchKey {
 	return B555WatchKey{
-		Target:        target,
-		Opcode:        opcode,
-		ZoneOrCircuit: zoneOrCircuit,
-		DaySelector:   daySelector,
-		SlotSelector:  slotSelector,
+		Target: target,
+		Opcode: opcode,
+		Zone:   zone,
+		HC:     hc,
+	}
+}
+
+func NewB555WatchKey(target, opcode, zone, hc, weekday, slot byte) B555WatchKey {
+	return B555WatchKey{
+		Target:     target,
+		Opcode:     opcode,
+		Zone:       zone,
+		HC:         hc,
+		Weekday:    weekday,
+		Slot:       slot,
+		HasWeekday: true,
+		HasSlot:    true,
 	}
 }
 
 func (key B555WatchKey) Canonical() string {
-	return fmt.Sprintf("b555:%02x:%02x:%02x:%02x:%02x", key.Target, key.Opcode, key.ZoneOrCircuit, key.DaySelector, key.SlotSelector)
+	return fmt.Sprintf(
+		"b555:%02x:%02x:%02x:%02x:%02x:%02x",
+		key.Target,
+		key.Opcode,
+		key.Zone,
+		key.HC,
+		b555SelectorByte(key.HasWeekday, key.Weekday),
+		b555SelectorByte(key.HasSlot, key.Slot),
+	)
 }
 
 func (key B555WatchKey) String() string {
@@ -245,46 +272,54 @@ func validateWatchDescriptor(descriptor WatchDescriptor) error {
 	if descriptor.Key == nil {
 		return fmt.Errorf("watch descriptor missing key")
 	}
+	normalizedKey, err := cloneWatchKey(descriptor.Key)
+	if err != nil {
+		return err
+	}
+	canonical := normalizedKey.Canonical()
+	if err := validateB555WatchKey(normalizedKey); err != nil {
+		return fmt.Errorf("watch descriptor %q %w", canonical, err)
+	}
 	if descriptor.SemanticClass == "" {
-		return fmt.Errorf("watch descriptor %q missing semantic class", descriptor.Key.Canonical())
+		return fmt.Errorf("watch descriptor %q missing semantic class", canonical)
 	}
 	if descriptor.FreshnessProfile == "" {
-		return fmt.Errorf("watch descriptor %q missing freshness profile", descriptor.Key.Canonical())
+		return fmt.Errorf("watch descriptor %q missing freshness profile", canonical)
 	}
 	if !watchSemanticClassAllowsProfile(descriptor.SemanticClass, descriptor.FreshnessProfile) {
 		return fmt.Errorf(
 			"watch descriptor %q invalid semantic_class=%s freshness_profile=%s",
-			descriptor.Key.Canonical(),
+			canonical,
 			descriptor.SemanticClass,
 			descriptor.FreshnessProfile,
 		)
 	}
 	if descriptor.DecoderID == "" {
-		return fmt.Errorf("watch descriptor %q missing decoder id", descriptor.Key.Canonical())
+		return fmt.Errorf("watch descriptor %q missing decoder id", canonical)
 	}
 	if descriptor.CorrelationPolicy == "" {
-		return fmt.Errorf("watch descriptor %q missing correlation policy", descriptor.Key.Canonical())
+		return fmt.Errorf("watch descriptor %q missing correlation policy", canonical)
 	}
 	if descriptor.DirectApplyPolicy == "" {
-		return fmt.Errorf("watch descriptor %q missing direct-apply policy", descriptor.Key.Canonical())
+		return fmt.Errorf("watch descriptor %q missing direct-apply policy", canonical)
 	}
 	defaultTTL, ok := watchFreshnessProfileDefaults[descriptor.FreshnessProfile]
 	if !ok {
-		return fmt.Errorf("watch descriptor %q has unknown freshness profile %s", descriptor.Key.Canonical(), descriptor.FreshnessProfile)
+		return fmt.Errorf("watch descriptor %q has unknown freshness profile %s", canonical, descriptor.FreshnessProfile)
 	}
 	if descriptor.FreshnessTTL == nil {
 		return nil
 	}
 	if *descriptor.FreshnessTTL < 0 {
-		return fmt.Errorf("watch descriptor %q has negative freshness ttl", descriptor.Key.Canonical())
+		return fmt.Errorf("watch descriptor %q has negative freshness ttl", canonical)
 	}
 	if defaultTTL == 0 && *descriptor.FreshnessTTL != 0 {
-		return fmt.Errorf("watch descriptor %q cannot widen zero-default freshness ttl", descriptor.Key.Canonical())
+		return fmt.Errorf("watch descriptor %q cannot widen zero-default freshness ttl", canonical)
 	}
 	if defaultTTL > 0 && *descriptor.FreshnessTTL > defaultTTL {
 		return fmt.Errorf(
 			"watch descriptor %q freshness ttl %s widens default %s",
-			descriptor.Key.Canonical(),
+			canonical,
 			descriptor.FreshnessTTL.Round(time.Millisecond),
 			defaultTTL.Round(time.Millisecond),
 		)
@@ -318,16 +353,16 @@ func NewWatchCatalog(descriptors []WatchDescriptor) (*WatchCatalog, error) {
 		ordered:     make([]WatchDescriptor, 0, len(descriptors)),
 	}
 	for _, descriptor := range descriptors {
-		if err := validateWatchDescriptor(descriptor); err != nil {
+		normalized, err := normalizeWatchDescriptor(descriptor)
+		if err != nil {
 			return nil, err
 		}
-		key := descriptor.CanonicalKey()
+		key := normalized.CanonicalKey()
 		if _, exists := catalog.descriptors[key]; exists {
 			return nil, fmt.Errorf("duplicate watch descriptor for %q", key)
 		}
-		cloned := cloneWatchDescriptor(descriptor)
-		catalog.descriptors[key] = cloned
-		catalog.ordered = append(catalog.ordered, cloned)
+		catalog.descriptors[key] = normalized
+		catalog.ordered = append(catalog.ordered, normalized)
 	}
 	sort.Slice(catalog.ordered, func(i, j int) bool {
 		return catalog.ordered[i].CanonicalKey() < catalog.ordered[j].CanonicalKey()
@@ -399,7 +434,7 @@ func NewWatchActivationSet(catalog *WatchCatalog) *WatchActivationSet {
 	}
 }
 
-// Activate accepts only concrete key lists that already exist in the immutable catalog.
+// Activate validates the full batch before mutating the immutable catalog-backed activation set.
 func (set *WatchActivationSet) Activate(source WatchActivationSource, keys ...WatchKey) error {
 	if set == nil {
 		return nil
@@ -409,6 +444,7 @@ func (set *WatchActivationSet) Activate(source WatchActivationSource, keys ...Wa
 	}
 	set.mu.Lock()
 	defer set.mu.Unlock()
+	canonicals := make([]string, 0, len(keys))
 	for _, key := range keys {
 		if key == nil {
 			return fmt.Errorf("watch activation contains nil key")
@@ -417,6 +453,9 @@ func (set *WatchActivationSet) Activate(source WatchActivationSource, keys ...Wa
 		if _, ok := set.catalog.DescriptorByCanonical(canonical); !ok {
 			return fmt.Errorf("watch activation key %q missing from catalog", canonical)
 		}
+		canonicals = append(canonicals, canonical)
+	}
+	for _, canonical := range canonicals {
 		sources := set.active[canonical]
 		if sources == nil {
 			sources = make(map[WatchActivationSource]struct{}, 1)
@@ -541,6 +580,9 @@ func parsePassiveB509WatchKey(frame protocol.Frame) (WatchKey, bool) {
 
 func cloneWatchDescriptor(descriptor WatchDescriptor) WatchDescriptor {
 	cloned := descriptor
+	if descriptor.Key != nil {
+		cloned.Key = mustCloneWatchKey(descriptor.Key)
+	}
 	if descriptor.FreshnessTTL != nil {
 		value := *descriptor.FreshnessTTL
 		cloned.FreshnessTTL = &value
@@ -568,4 +610,84 @@ func sortedWatchActivationSources(sources map[WatchActivationSource]struct{}) []
 		return out[i] < out[j]
 	})
 	return out
+}
+
+func normalizeWatchDescriptor(descriptor WatchDescriptor) (WatchDescriptor, error) {
+	normalized := descriptor
+	if descriptor.Key != nil {
+		key, err := cloneWatchKey(descriptor.Key)
+		if err != nil {
+			return WatchDescriptor{}, err
+		}
+		normalized.Key = key
+	}
+	if descriptor.FreshnessTTL != nil {
+		value := *descriptor.FreshnessTTL
+		normalized.FreshnessTTL = &value
+	}
+	if err := validateWatchDescriptor(normalized); err != nil {
+		return WatchDescriptor{}, err
+	}
+	return normalized, nil
+}
+
+func b555SelectorByte(set bool, value byte) byte {
+	if !set {
+		return 0xFF
+	}
+	return value
+}
+
+func cloneWatchKey(key WatchKey) (WatchKey, error) {
+	switch typed := key.(type) {
+	case B509WatchKey:
+		return typed, nil
+	case *B509WatchKey:
+		if typed == nil {
+			return nil, fmt.Errorf("watch descriptor contains nil *B509WatchKey")
+		}
+		return *typed, nil
+	case B516WatchKey:
+		return typed, nil
+	case *B516WatchKey:
+		if typed == nil {
+			return nil, fmt.Errorf("watch descriptor contains nil *B516WatchKey")
+		}
+		return *typed, nil
+	case B524WatchKey:
+		return typed, nil
+	case *B524WatchKey:
+		if typed == nil {
+			return nil, fmt.Errorf("watch descriptor contains nil *B524WatchKey")
+		}
+		return *typed, nil
+	case B555WatchKey:
+		return typed, nil
+	case *B555WatchKey:
+		if typed == nil {
+			return nil, fmt.Errorf("watch descriptor contains nil *B555WatchKey")
+		}
+		return *typed, nil
+	default:
+		return nil, fmt.Errorf("watch descriptor key type %T is not supported for immutable catalog storage", key)
+	}
+}
+
+func mustCloneWatchKey(key WatchKey) WatchKey {
+	cloned, err := cloneWatchKey(key)
+	if err != nil {
+		panic(err)
+	}
+	return cloned
+}
+
+func validateB555WatchKey(key WatchKey) error {
+	b555Key, ok := key.(B555WatchKey)
+	if !ok {
+		return nil
+	}
+	if b555Key.HasWeekday != b555Key.HasSlot {
+		return fmt.Errorf("must set both weekday and slot selectors together")
+	}
+	return nil
 }

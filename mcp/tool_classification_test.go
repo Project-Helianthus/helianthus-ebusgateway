@@ -37,6 +37,9 @@ func TestToolClassificationPolicy(t *testing.T) {
 
 	classification := map[string]toolClass{
 		toolRuntimeStatusGetName:         toolClassCoreStable,
+		toolBusSummaryGetName:            toolClassCoreStable,
+		toolBusMessagesListName:          toolClassCoreStable,
+		toolBusPeriodicityListName:       toolClassCoreStable,
 		toolSemanticZonesGetName:         toolClassCoreStable,
 		toolSemanticCircuitsGetName:      toolClassCoreStable,
 		toolSemanticRadioGetName:         toolClassCoreStable,

@@ -351,19 +351,7 @@ func (store *BusObservabilityStore) RecentMessages(limit int) []BusMessageRecord
 	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	if store.recentLen == 0 {
-		return nil
-	}
-	if limit <= 0 || limit > store.recentLen {
-		limit = store.recentLen
-	}
-	items := make([]BusMessageRecord, 0, limit)
-	start := (store.recentStart + store.recentLen - limit + len(store.recent)) % len(store.recent)
-	for i := 0; i < limit; i++ {
-		idx := (start + i) % len(store.recent)
-		items = append(items, store.recent[idx])
-	}
-	return items
+	return store.recentMessagesLocked(limit)
 }
 
 func (store *BusObservabilityStore) PeriodicitySnapshot() []BusPeriodicityEntry {
@@ -373,20 +361,7 @@ func (store *BusObservabilityStore) PeriodicitySnapshot() []BusPeriodicityEntry 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.evictStalePeriodicityLocked(store.now())
-	items := make([]BusPeriodicityEntry, 0, len(store.periodicity))
-	for _, entry := range store.periodicity {
-		items = append(items, store.exportedPeriodicityEntryLocked(entry))
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].LastSeen.Equal(items[j].LastSeen) {
-			if items[i].SourceBucket == items[j].SourceBucket {
-				return items[i].TargetBucket < items[j].TargetBucket
-			}
-			return items[i].SourceBucket < items[j].SourceBucket
-		}
-		return items[i].LastSeen.Before(items[j].LastSeen)
-	})
-	return items
+	return store.periodicitySnapshotLocked()
 }
 
 func (store *BusObservabilityStore) MetricsHandler() http.Handler {

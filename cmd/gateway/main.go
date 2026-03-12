@@ -389,6 +389,9 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 		return nil, nil, err
 	}
 	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg))
+	if busObservability != nil {
+		mcpServer.SetBusObservabilityProvider(newMCPBusObservabilityProvider(busObservability))
+	}
 	mcpServer.SetSemanticProvider(newMCPSemanticProvider(semanticProvider))
 	if scheduleWriter != nil {
 		mcpServer.SetScheduleWriter(scheduleWriter)

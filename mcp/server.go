@@ -359,6 +359,7 @@ type Server struct {
 	registry       Registry
 	invoker        Invoker
 	statusProvider StatusProvider
+	bus            BusObservabilityProvider
 	semantic       SemanticProvider
 	scheduleWriter ScheduleWriter
 	idempotencyMu  sync.Mutex
@@ -371,6 +372,9 @@ type Server struct {
 
 const (
 	toolRuntimeStatusGetName         = "ebus.v1.runtime.status.get"
+	toolBusSummaryGetName            = "ebus.v1.bus.summary.get"
+	toolBusMessagesListName          = "ebus.v1.bus.messages.list"
+	toolBusPeriodicityListName       = "ebus.v1.bus.periodicity.list"
 	toolSemanticZonesGetName         = "ebus.v1.semantic.zones.get"
 	toolSemanticCircuitsGetName      = "ebus.v1.semantic.circuits.get"
 	toolSemanticRadioGetName         = "ebus.v1.semantic.radio_devices.get"
@@ -497,19 +501,22 @@ type snapshotState struct {
 	createdAt time.Time
 	expiresAt time.Time
 
-	runtime   map[string]any
-	zones     []Zone
-	circuits  []CircuitStatus
-	radio     []RadioDevice
-	fm5Mode   Fm5SemanticMode
-	solar     *SolarStatus
-	cylinders []CylinderStatus
-	dhw       *DhwStatus
-	energy    *EnergyTotals
-	boiler    *BoilerStatus
-	system    *SystemStatus
-	schedules *ScheduleStatus
-	devices   []deviceInfo
+	runtime        map[string]any
+	busSummary     *BusSummary
+	busMessages    []BusMessage
+	busPeriodicity []BusPeriodicityEntry
+	zones          []Zone
+	circuits       []CircuitStatus
+	radio          []RadioDevice
+	fm5Mode        Fm5SemanticMode
+	solar          *SolarStatus
+	cylinders      []CylinderStatus
+	dhw            *DhwStatus
+	energy         *EnergyTotals
+	boiler         *BoilerStatus
+	system         *SystemStatus
+	schedules      *ScheduleStatus
+	devices        []deviceInfo
 }
 
 func consistencyInputProperty() map[string]any {
@@ -532,6 +539,7 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 		registry:       reg,
 		invoker:        invoker,
 		statusProvider: staticStatusProvider{},
+		bus:            staticBusObservabilityProvider{},
 		semantic:       staticSemanticProvider{},
 		idempotency:    make(map[string]idempotencyEntry),
 		snapshots:      make(map[string]snapshotState),
@@ -543,6 +551,41 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolBusSummaryGetName,
+			Description: "Get observe-first bus capability, warmup, degraded, and bounded-list summary state.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolBusMessagesListName,
+			Description: "List bounded recent bus-message records from the observe-first store.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"limit":       map[string]any{"type": "integer", "minimum": 1},
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolBusPeriodicityListName,
+			Description: "List bounded observe-first bus periodicity summaries.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"limit":       map[string]any{"type": "integer", "minimum": 1},
 					"consistency": consistencyInputProperty(),
 				},
 				"additionalProperties": false,
@@ -869,6 +912,13 @@ func (s *Server) SetStatusProvider(provider StatusProvider) {
 	s.statusProvider = provider
 }
 
+func (s *Server) SetBusObservabilityProvider(provider BusObservabilityProvider) {
+	if s == nil || provider == nil {
+		return
+	}
+	s.bus = provider
+}
+
 func (s *Server) SetSemanticProvider(provider SemanticProvider) {
 	if s == nil || provider == nil {
 		return
@@ -1001,6 +1051,32 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		}
 		status := s.runtimeStatus(snapshot)
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(status, nil, consistency)), false), nil
+	case toolBusSummaryGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotBusSummary(snapshot), nil, consistency)), false), nil
+	case toolBusMessagesListName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		limit, err := parseOptionalLimit(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(nil, err, consistency)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotBusMessagesList(snapshot, limit), nil, consistency)), false), nil
+	case toolBusPeriodicityListName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		limit, err := parseOptionalLimit(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(nil, err, consistency)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotBusPeriodicityList(snapshot, limit), nil, consistency)), false), nil
 	case toolSemanticZonesGetName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -1300,6 +1376,36 @@ func intFromFloat(v float64) (int, bool) {
 	return i, v == float64(i)
 }
 
+func parseOptionalLimit(args map[string]any) (int, error) {
+	if args == nil {
+		return 0, nil
+	}
+	raw, ok := args["limit"]
+	if !ok || raw == nil {
+		return 0, nil
+	}
+	switch value := raw.(type) {
+	case int:
+		if value <= 0 {
+			return 0, fmt.Errorf("invalid limit: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return value, nil
+	case int64:
+		if value <= 0 {
+			return 0, fmt.Errorf("invalid limit: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return int(value), nil
+	case float64:
+		limit, exact := intFromFloat(value)
+		if !exact || limit <= 0 {
+			return 0, fmt.Errorf("invalid limit: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return limit, nil
+	default:
+		return 0, fmt.Errorf("invalid limit: %w", ebuserrors.ErrInvalidPayload)
+	}
+}
+
 func parseTimeProgramSlot(m map[string]any, tempRequired bool) (TimeProgramSlot, error) {
 	var slot TimeProgramSlot
 
@@ -1401,23 +1507,27 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		return "", time.Time{}, fmt.Errorf("snapshot id generation failed: %w", err)
 	}
 	now := time.Now().UTC()
+	bus := s.snapshotBusObservability(nil)
 	snapshot := snapshotState{
-		id:        id,
-		createdAt: now,
-		expiresAt: now.Add(defaultSnapshotTTL),
-		runtime:   s.runtimeStatus(nil),
-		zones:     s.snapshotZones(nil),
-		circuits:  s.snapshotCircuits(nil),
-		radio:     s.snapshotRadioDevices(nil),
-		fm5Mode:   s.snapshotFM5Mode(nil),
-		solar:     s.snapshotSolar(nil),
-		cylinders: s.snapshotCylinders(nil),
-		dhw:       s.snapshotDHW(nil),
-		energy:    s.snapshotEnergyTotals(nil),
-		boiler:    s.snapshotBoilerStatus(nil),
-		system:    s.snapshotSystem(nil),
-		schedules: s.snapshotSchedules(nil),
-		devices:   s.listDevices(nil),
+		id:             id,
+		createdAt:      now,
+		expiresAt:      now.Add(defaultSnapshotTTL),
+		runtime:        s.runtimeStatus(nil),
+		busSummary:     cloneBusSummary(bus.Summary),
+		busMessages:    cloneBusMessages(bus.Messages),
+		busPeriodicity: cloneBusPeriodicity(bus.Periodicity),
+		zones:          s.snapshotZones(nil),
+		circuits:       s.snapshotCircuits(nil),
+		radio:          s.snapshotRadioDevices(nil),
+		fm5Mode:        s.snapshotFM5Mode(nil),
+		solar:          s.snapshotSolar(nil),
+		cylinders:      s.snapshotCylinders(nil),
+		dhw:            s.snapshotDHW(nil),
+		energy:         s.snapshotEnergyTotals(nil),
+		boiler:         s.snapshotBoilerStatus(nil),
+		system:         s.snapshotSystem(nil),
+		schedules:      s.snapshotSchedules(nil),
+		devices:        s.listDevices(nil),
 	}
 
 	s.snapshotMu.Lock()
@@ -1506,22 +1616,25 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 	}
 	cylindersCopy := cloneCylinders(snapshot.cylinders)
 	return snapshotState{
-		id:        snapshot.id,
-		createdAt: snapshot.createdAt,
-		expiresAt: snapshot.expiresAt,
-		runtime:   cloneMap(snapshot.runtime),
-		zones:     cloneZones(snapshot.zones),
-		circuits:  cloneCircuits(snapshot.circuits),
-		radio:     cloneRadioDevices(snapshot.radio),
-		fm5Mode:   snapshot.fm5Mode,
-		solar:     solarCopy,
-		cylinders: cylindersCopy,
-		dhw:       dhwCopy,
-		energy:    energyCopy,
-		boiler:    boilerCopy,
-		system:    systemCopy,
-		schedules: schedulesCopy,
-		devices:   cloneDeviceInfoList(snapshot.devices),
+		id:             snapshot.id,
+		createdAt:      snapshot.createdAt,
+		expiresAt:      snapshot.expiresAt,
+		runtime:        cloneMap(snapshot.runtime),
+		busSummary:     cloneBusSummary(snapshot.busSummary),
+		busMessages:    cloneBusMessages(snapshot.busMessages),
+		busPeriodicity: cloneBusPeriodicity(snapshot.busPeriodicity),
+		zones:          cloneZones(snapshot.zones),
+		circuits:       cloneCircuits(snapshot.circuits),
+		radio:          cloneRadioDevices(snapshot.radio),
+		fm5Mode:        snapshot.fm5Mode,
+		solar:          solarCopy,
+		cylinders:      cylindersCopy,
+		dhw:            dhwCopy,
+		energy:         energyCopy,
+		boiler:         boilerCopy,
+		system:         systemCopy,
+		schedules:      schedulesCopy,
+		devices:        cloneDeviceInfoList(snapshot.devices),
 	}
 }
 
@@ -2131,6 +2244,56 @@ func (s *Server) runtimeStatus(snapshot *snapshotState) map[string]any {
 		"daemon_status":  s.statusProvider.DaemonStatus(),
 		"adapter_status": s.statusProvider.AdapterStatus(),
 	}
+}
+
+func (s *Server) snapshotBusObservability(snapshot *snapshotState) BusObservabilitySnapshot {
+	if snapshot != nil {
+		return BusObservabilitySnapshot{
+			Summary:     cloneBusSummary(snapshot.busSummary),
+			Messages:    cloneBusMessages(snapshot.busMessages),
+			Periodicity: cloneBusPeriodicity(snapshot.busPeriodicity),
+		}
+	}
+	if s == nil || s.bus == nil {
+		return BusObservabilitySnapshot{}
+	}
+	return cloneBusObservabilitySnapshot(s.bus.Snapshot())
+}
+
+func (s *Server) snapshotBusSummary(snapshot *snapshotState) *BusSummary {
+	return s.snapshotBusObservability(snapshot).Summary
+}
+
+func (s *Server) snapshotBusMessagesList(snapshot *snapshotState, limit int) *BusMessagesList {
+	bus := s.snapshotBusObservability(snapshot)
+	result := &BusMessagesList{
+		Items: trimBusMessages(bus.Messages, limit),
+	}
+	if bus.Summary != nil {
+		result.Status = cloneBusObservabilityStatus(bus.Summary.Status)
+		result.Count = bus.Summary.Messages.Count
+		result.Capacity = bus.Summary.Messages.Capacity
+		return result
+	}
+	result.Count = len(bus.Messages)
+	result.Capacity = len(bus.Messages)
+	return result
+}
+
+func (s *Server) snapshotBusPeriodicityList(snapshot *snapshotState, limit int) *BusPeriodicityList {
+	bus := s.snapshotBusObservability(snapshot)
+	result := &BusPeriodicityList{
+		Items: trimBusPeriodicity(bus.Periodicity, limit),
+	}
+	if bus.Summary != nil {
+		result.Status = cloneBusObservabilityStatus(bus.Summary.Status)
+		result.Count = bus.Summary.Periodicity.Count
+		result.Capacity = bus.Summary.Periodicity.Capacity
+		return result
+	}
+	result.Count = len(bus.Periodicity)
+	result.Capacity = len(bus.Periodicity)
+	return result
 }
 
 func (s *Server) snapshotZones(snapshot *snapshotState) []Zone {

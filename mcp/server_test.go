@@ -158,6 +158,17 @@ func (p testStatusProvider) AdapterStatus() ServiceStatus {
 	return p.adapter
 }
 
+type testBusObservabilityProvider struct {
+	snapshot BusObservabilitySnapshot
+}
+
+func (p *testBusObservabilityProvider) Snapshot() BusObservabilitySnapshot {
+	if p == nil {
+		return BusObservabilitySnapshot{}
+	}
+	return cloneBusObservabilitySnapshot(p.snapshot)
+}
+
 type testSemanticProvider struct {
 	zones         []Zone
 	circuits      []CircuitStatus
@@ -302,11 +313,14 @@ func TestServer_InitializeAndTools(t *testing.T) {
 		t.Fatalf("tools/list result type = %T; want map", res.Result)
 	}
 	tools, ok := resultMap["tools"].([]any)
-	if !ok || len(tools) < 21 {
-		t.Fatalf("tools = %#v; want at least 21 tools", resultMap["tools"])
+	if !ok || len(tools) < 24 {
+		t.Fatalf("tools = %#v; want at least 24 tools", resultMap["tools"])
 	}
 	for _, name := range []string{
 		toolRuntimeStatusGetName,
+		toolBusSummaryGetName,
+		toolBusMessagesListName,
+		toolBusPeriodicityListName,
 		toolSemanticZonesGetName,
 		toolSemanticCircuitsGetName,
 		toolSemanticRadioGetName,
@@ -532,6 +546,155 @@ func TestServer_ToolsCallRuntimeStatus(t *testing.T) {
 	}
 	if got, _ := adapter["status"].(string); got != "connected" {
 		t.Fatalf("adapter status = %q; want connected", got)
+	}
+}
+
+func TestServer_ToolsCallBusObservability(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	base := time.Date(2026, time.March, 12, 12, 0, 0, 0, time.UTC)
+	server.SetBusObservabilityProvider(&testBusObservabilityProvider{
+		snapshot: BusObservabilitySnapshot{
+			Summary: &BusSummary{
+				Status: &BusObservabilityStatus{
+					TransportClass: "ens",
+					Capability: BusObservabilityCapability{
+						ActiveSupported:    true,
+						PassiveSupported:   true,
+						BroadcastSupported: true,
+						PassiveAvailable:   false,
+						PassiveState:       "warming_up",
+						EndpointState:      "connected",
+						TapConnected:       true,
+					},
+					Warmup: BusObservabilityWarmup{
+						State:                 "warming_up",
+						Blocker:               "completed_transactions",
+						ElapsedSeconds:        12,
+						CompletedTransactions: 3,
+						RequiredTransactions:  20,
+					},
+					TimingQuality: BusObservabilityTimingQuality{
+						Active:      "estimated",
+						Passive:     "estimated",
+						Busy:        "estimated",
+						Periodicity: "estimated",
+					},
+					Degraded: BusObservabilityDegraded{
+						Active:  true,
+						Reasons: []string{"dedup_degraded"},
+					},
+				},
+				Messages:    BusBoundedListSummary{Count: 3, Capacity: 16},
+				Periodicity: BusBoundedListSummary{Count: 2, Capacity: 8},
+				Counters: BusObservabilityCounters{
+					SeriesBudgetOverflowTotal:      1,
+					PeriodicityBudgetOverflowTotal: 2,
+				},
+			},
+			Messages: []BusMessage{
+				{Scope: "active", Family: "B509", FrameType: "master_target", Outcome: "success", ObservedAt: base, SourceAddress: 0x08, TargetAddress: 0x15, RequestLen: 6, ResponseLen: 4},
+				{Scope: "passive", Family: "B524", FrameType: "broadcast", Outcome: "success", ObservedAt: base.Add(2 * time.Second), SourceAddress: 0x15, TargetAddress: 0xfe, RequestLen: 8, ResponseLen: 6},
+				{Scope: "active", Family: "other", FrameType: "abandoned_partial", Outcome: "timeout", ObservedAt: base.Add(4 * time.Second), SourceAddress: 0x26, TargetAddress: 0x08, RequestLen: 7, ResponseLen: 0},
+			},
+			Periodicity: []BusPeriodicityEntry{
+				{SourceBucket: "0x08", TargetBucket: "0x15", Primary: 0xB5, Secondary: 0x09, Family: "B509", State: "warming_up", LastSeen: base.Add(10 * time.Second), SampleCount: 1, LastInterval: "15s", MeanInterval: "15s", MinInterval: "15s", MaxInterval: "15s"},
+				{SourceBucket: "0x15", TargetBucket: "0xfe", Primary: 0xB5, Secondary: 0x24, Family: "B524", State: "available", LastSeen: base.Add(40 * time.Second), SampleCount: 4, LastInterval: "30s", MeanInterval: "29s", MinInterval: "28s", MaxInterval: "31s"},
+			},
+		},
+	})
+
+	summaryEnvelope := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.bus.summary.get","arguments":{}}`),
+	}))
+	summaryData, ok := summaryEnvelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("bus summary data type = %T; want map", summaryEnvelope["data"])
+	}
+	status, ok := summaryData["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("bus summary status type = %T; want map", summaryData["status"])
+	}
+	capability, ok := status["capability"].(map[string]any)
+	if !ok {
+		t.Fatalf("bus summary capability type = %T; want map", status["capability"])
+	}
+	if got, _ := capability["passive_state"].(string); got != "warming_up" {
+		t.Fatalf("bus summary passive_state = %q; want warming_up", got)
+	}
+	warmup, ok := status["warmup"].(map[string]any)
+	if !ok {
+		t.Fatalf("bus summary warmup type = %T; want map", status["warmup"])
+	}
+	if got, _ := warmup["blocker"].(string); got != "completed_transactions" {
+		t.Fatalf("bus summary warmup.blocker = %q; want completed_transactions", got)
+	}
+	degraded, ok := status["degraded"].(map[string]any)
+	if !ok {
+		t.Fatalf("bus summary degraded type = %T; want map", status["degraded"])
+	}
+	if got, _ := degraded["active"].(bool); !got {
+		t.Fatalf("bus summary degraded.active = %v; want true", degraded["active"])
+	}
+
+	messageEnvelope := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.bus.messages.list","arguments":{"limit":2}}`),
+	}))
+	messageData, ok := messageEnvelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("bus messages data type = %T; want map", messageEnvelope["data"])
+	}
+	if got, _ := messageData["count"].(float64); int(got) != 3 {
+		t.Fatalf("bus messages count = %v; want 3", messageData["count"])
+	}
+	items, ok := messageData["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("bus messages items = %#v; want 2 items", messageData["items"])
+	}
+	firstItem, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("bus messages first item type = %T; want map", items[0])
+	}
+	if got, _ := firstItem["family"].(string); got != "B524" {
+		t.Fatalf("bus messages first family = %q; want B524", got)
+	}
+
+	periodicityEnvelope := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      3,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.bus.periodicity.list","arguments":{"limit":1}}`),
+	}))
+	periodicityData, ok := periodicityEnvelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("bus periodicity data type = %T; want map", periodicityEnvelope["data"])
+	}
+	if got, _ := periodicityData["capacity"].(float64); int(got) != 8 {
+		t.Fatalf("bus periodicity capacity = %v; want 8", periodicityData["capacity"])
+	}
+	periodicityItems, ok := periodicityData["items"].([]any)
+	if !ok || len(periodicityItems) != 1 {
+		t.Fatalf("bus periodicity items = %#v; want 1 item", periodicityData["items"])
+	}
+	periodicityItem, ok := periodicityItems[0].(map[string]any)
+	if !ok {
+		t.Fatalf("bus periodicity first item type = %T; want map", periodicityItems[0])
+	}
+	if got, _ := periodicityItem["state"].(string); got != "available" {
+		t.Fatalf("bus periodicity state = %q; want available", got)
+	}
+	if got, _ := periodicityItem["last_interval"].(string); got != "30s" {
+		t.Fatalf("bus periodicity last_interval = %q; want 30s", got)
 	}
 }
 
@@ -1177,6 +1340,159 @@ func TestServer_SnapshotConsistencyMode(t *testing.T) {
 		Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	})
 	assertToolErrorCode(t, missing, "NOT_FOUND")
+}
+
+func TestServer_BusObservabilitySnapshotConsistency(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	base := time.Date(2026, time.March, 12, 13, 0, 0, 0, time.UTC)
+	provider := &testBusObservabilityProvider{
+		snapshot: BusObservabilitySnapshot{
+			Summary: &BusSummary{
+				Status: &BusObservabilityStatus{
+					TransportClass: "ens",
+					Capability: BusObservabilityCapability{
+						ActiveSupported:    true,
+						PassiveSupported:   true,
+						BroadcastSupported: true,
+						PassiveAvailable:   true,
+						PassiveState:       "available",
+						EndpointState:      "connected",
+						TapConnected:       true,
+					},
+					Warmup: BusObservabilityWarmup{State: "available"},
+					TimingQuality: BusObservabilityTimingQuality{
+						Active:      "estimated",
+						Passive:     "estimated",
+						Busy:        "estimated",
+						Periodicity: "estimated",
+					},
+				},
+				Messages:    BusBoundedListSummary{Count: 1, Capacity: 8},
+				Periodicity: BusBoundedListSummary{Count: 1, Capacity: 4},
+			},
+			Messages: []BusMessage{
+				{Scope: "active", Family: "B509", FrameType: "master_target", Outcome: "success", ObservedAt: base, SourceAddress: 0x08, TargetAddress: 0x15, RequestLen: 6, ResponseLen: 4},
+			},
+			Periodicity: []BusPeriodicityEntry{
+				{SourceBucket: "0x08", TargetBucket: "0x15", Primary: 0xB5, Secondary: 0x09, Family: "B509", State: "available", LastSeen: base.Add(30 * time.Second), SampleCount: 3, LastInterval: "30s", MeanInterval: "30s", MinInterval: "30s", MaxInterval: "30s"},
+			},
+		},
+	}
+	server.SetBusObservabilityProvider(provider)
+
+	capture := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+	}))
+	captureData, ok := capture["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("capture data type = %T; want map", capture["data"])
+	}
+	snapshotID, _ := captureData["snapshot_id"].(string)
+	if snapshotID == "" {
+		t.Fatal("capture snapshot_id empty")
+	}
+
+	provider.snapshot = BusObservabilitySnapshot{
+		Summary: &BusSummary{
+			Status: &BusObservabilityStatus{
+				TransportClass: "ebusd-tcp",
+				Capability: BusObservabilityCapability{
+					ActiveSupported:    true,
+					PassiveSupported:   false,
+					BroadcastSupported: false,
+					PassiveAvailable:   false,
+					PassiveState:       "unavailable",
+					PassiveReason:      "unsupported_or_misconfigured",
+					EndpointState:      "unsupported_or_misconfigured",
+				},
+				Warmup: BusObservabilityWarmup{State: "unavailable"},
+				TimingQuality: BusObservabilityTimingQuality{
+					Active:      "unavailable",
+					Passive:     "unavailable",
+					Busy:        "unavailable",
+					Periodicity: "unavailable",
+				},
+				Degraded: BusObservabilityDegraded{
+					Active:  true,
+					Reasons: []string{"unsupported_or_misconfigured"},
+				},
+			},
+			Messages:    BusBoundedListSummary{Count: 2, Capacity: 8},
+			Periodicity: BusBoundedListSummary{Count: 2, Capacity: 4},
+		},
+		Messages: []BusMessage{
+			{Scope: "active", Family: "B509", FrameType: "master_target", Outcome: "success", ObservedAt: base, SourceAddress: 0x08, TargetAddress: 0x15, RequestLen: 6, ResponseLen: 4},
+			{Scope: "active", Family: "other", FrameType: "abandoned_partial", Outcome: "timeout", ObservedAt: base.Add(time.Minute), SourceAddress: 0x26, TargetAddress: 0x08, RequestLen: 7, ResponseLen: 0},
+		},
+		Periodicity: []BusPeriodicityEntry{
+			{SourceBucket: "0x08", TargetBucket: "0x15", Primary: 0xB5, Secondary: 0x09, Family: "B509", State: "available", LastSeen: base.Add(30 * time.Second), SampleCount: 3, LastInterval: "30s", MeanInterval: "30s", MinInterval: "30s", MaxInterval: "30s"},
+			{SourceBucket: "0x15", TargetBucket: "0xfe", Primary: 0xB5, Secondary: 0x24, Family: "B524", State: "warming_up", LastSeen: base.Add(90 * time.Second), SampleCount: 1, LastInterval: "1m", MeanInterval: "1m", MinInterval: "1m", MaxInterval: "1m"},
+		},
+	}
+
+	liveSummary := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.bus.summary.get","arguments":{}}`),
+	}))
+	liveSummaryData, _ := liveSummary["data"].(map[string]any)
+	liveStatus, _ := liveSummaryData["status"].(map[string]any)
+	liveCapability, _ := liveStatus["capability"].(map[string]any)
+	if got, _ := liveCapability["passive_state"].(string); got != "unavailable" {
+		t.Fatalf("live bus passive_state = %q; want unavailable", got)
+	}
+
+	snapshotSummary := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      3,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.bus.summary.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+	}))
+	snapshotSummaryData, _ := snapshotSummary["data"].(map[string]any)
+	snapshotStatus, _ := snapshotSummaryData["status"].(map[string]any)
+	snapshotCapability, _ := snapshotStatus["capability"].(map[string]any)
+	if got, _ := snapshotCapability["passive_state"].(string); got != "available" {
+		t.Fatalf("snapshot bus passive_state = %q; want available", got)
+	}
+
+	snapshotMessages := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      4,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.bus.messages.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+	}))
+	snapshotMessagesData, _ := snapshotMessages["data"].(map[string]any)
+	if got, _ := snapshotMessagesData["count"].(float64); int(got) != 1 {
+		t.Fatalf("snapshot bus messages count = %v; want 1", snapshotMessagesData["count"])
+	}
+	snapshotMessageItems, _ := snapshotMessagesData["items"].([]any)
+	if len(snapshotMessageItems) != 1 {
+		t.Fatalf("snapshot bus message items len = %d; want 1", len(snapshotMessageItems))
+	}
+
+	snapshotPeriodicity := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      5,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.bus.periodicity.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+	}))
+	snapshotPeriodicityData, _ := snapshotPeriodicity["data"].(map[string]any)
+	if got, _ := snapshotPeriodicityData["count"].(float64); int(got) != 1 {
+		t.Fatalf("snapshot bus periodicity count = %v; want 1", snapshotPeriodicityData["count"])
+	}
+	snapshotPeriodicityItems, _ := snapshotPeriodicityData["items"].([]any)
+	if len(snapshotPeriodicityItems) != 1 {
+		t.Fatalf("snapshot bus periodicity items len = %d; want 1", len(snapshotPeriodicityItems))
+	}
 }
 
 func TestServer_RegistryReadToolsOrderingAndMetadata(t *testing.T) {

@@ -720,6 +720,106 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 	})
 
+	t.Run("bus_observability_empty_provider_uses_zero_value_wrappers", func(t *testing.T) {
+		builder := NewBuilder(mockRegistry{}, nil)
+
+		handler, err := NewHandler(builder)
+		if err != nil {
+			t.Fatalf("NewHandler error = %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ busSummary { status { transportClass } messages { count capacity } periodicity { count capacity } counters { seriesBudgetOverflowTotal periodicityBudgetOverflowTotal } } busMessages { status { transportClass } count capacity items { family } } busPeriodicity { status { transportClass } count capacity items { family } } }"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		var response struct {
+			Data struct {
+				BusSummary *struct {
+					Status *struct {
+						TransportClass string `json:"transportClass"`
+					} `json:"status"`
+					Messages struct {
+						Count    int `json:"count"`
+						Capacity int `json:"capacity"`
+					} `json:"messages"`
+					Periodicity struct {
+						Count    int `json:"count"`
+						Capacity int `json:"capacity"`
+					} `json:"periodicity"`
+					Counters struct {
+						SeriesBudgetOverflowTotal      string `json:"seriesBudgetOverflowTotal"`
+						PeriodicityBudgetOverflowTotal string `json:"periodicityBudgetOverflowTotal"`
+					} `json:"counters"`
+				} `json:"busSummary"`
+				BusMessages *struct {
+					Status *struct {
+						TransportClass string `json:"transportClass"`
+					} `json:"status"`
+					Count    int `json:"count"`
+					Capacity int `json:"capacity"`
+					Items    []struct {
+						Family string `json:"family"`
+					} `json:"items"`
+				} `json:"busMessages"`
+				BusPeriodicity *struct {
+					Status *struct {
+						TransportClass string `json:"transportClass"`
+					} `json:"status"`
+					Count    int `json:"count"`
+					Capacity int `json:"capacity"`
+					Items    []struct {
+						Family string `json:"family"`
+					} `json:"items"`
+				} `json:"busPeriodicity"`
+			} `json:"data"`
+			Errors []any `json:"errors"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("json.Unmarshal response: %v body=%s", err, rec.Body.String())
+		}
+		if len(response.Errors) != 0 {
+			t.Fatalf("errors = %#v; want none", response.Errors)
+		}
+		if response.Data.BusSummary == nil {
+			t.Fatalf("busSummary = nil; want zero-value wrapper")
+		}
+		if response.Data.BusSummary.Status != nil {
+			t.Fatalf("busSummary.status = %+v; want nil for unwired observability", response.Data.BusSummary.Status)
+		}
+		if response.Data.BusSummary.Messages.Count != 0 || response.Data.BusSummary.Messages.Capacity != 0 {
+			t.Fatalf("busSummary.messages = %+v; want zero-value wrapper", response.Data.BusSummary.Messages)
+		}
+		if response.Data.BusSummary.Periodicity.Count != 0 || response.Data.BusSummary.Periodicity.Capacity != 0 {
+			t.Fatalf("busSummary.periodicity = %+v; want zero-value wrapper", response.Data.BusSummary.Periodicity)
+		}
+		if response.Data.BusSummary.Counters.SeriesBudgetOverflowTotal != "0" || response.Data.BusSummary.Counters.PeriodicityBudgetOverflowTotal != "0" {
+			t.Fatalf("busSummary.counters = %+v; want 0/0 as strings", response.Data.BusSummary.Counters)
+		}
+		if response.Data.BusMessages == nil {
+			t.Fatalf("busMessages = nil; want bounded zero-value wrapper")
+		}
+		if response.Data.BusMessages.Status != nil {
+			t.Fatalf("busMessages.status = %+v; want nil for unwired observability", response.Data.BusMessages.Status)
+		}
+		if response.Data.BusMessages.Count != 0 || response.Data.BusMessages.Capacity != 0 || len(response.Data.BusMessages.Items) != 0 {
+			t.Fatalf("busMessages = %+v; want count=0 capacity=0 empty items", response.Data.BusMessages)
+		}
+		if response.Data.BusPeriodicity == nil {
+			t.Fatalf("busPeriodicity = nil; want bounded zero-value wrapper")
+		}
+		if response.Data.BusPeriodicity.Status != nil {
+			t.Fatalf("busPeriodicity.status = %+v; want nil for unwired observability", response.Data.BusPeriodicity.Status)
+		}
+		if response.Data.BusPeriodicity.Count != 0 || response.Data.BusPeriodicity.Capacity != 0 || len(response.Data.BusPeriodicity.Items) != 0 {
+			t.Fatalf("busPeriodicity = %+v; want count=0 capacity=0 empty items", response.Data.BusPeriodicity)
+		}
+	})
+
 	t.Run("bus_observability_shared_snapshot_per_operation", func(t *testing.T) {
 		builder := NewBuilder(mockRegistry{}, nil)
 		provider := &driftingBusObservabilityProvider{}
@@ -781,6 +881,91 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if response.Data.BusPeriodicity.Count != 1 || len(response.Data.BusPeriodicity.Items) != 1 || response.Data.BusPeriodicity.Items[0].Family != "snapshot-1" {
 			t.Fatalf("busPeriodicity = %+v; want count=1 family=snapshot-1", response.Data.BusPeriodicity)
+		}
+	})
+
+	t.Run("bus_observability_snapshot_cache_does_not_leak_across_requests", func(t *testing.T) {
+		builder := NewBuilder(mockRegistry{}, nil)
+		provider := &driftingBusObservabilityProvider{}
+		builder.SetBusObservabilityProvider(provider)
+
+		handler, err := NewInvokeHandler(builder, nil, nil)
+		if err != nil {
+			t.Fatalf("NewInvokeHandler error = %v", err)
+		}
+
+		type operationResponse struct {
+			Data struct {
+				BusSummary struct {
+					Messages struct {
+						Count int `json:"count"`
+					} `json:"messages"`
+					Periodicity struct {
+						Count int `json:"count"`
+					} `json:"periodicity"`
+				} `json:"busSummary"`
+				BusMessages struct {
+					Count int `json:"count"`
+					Items []struct {
+						Family string `json:"family"`
+					} `json:"items"`
+				} `json:"busMessages"`
+				BusPeriodicity struct {
+					Count int `json:"count"`
+					Items []struct {
+						Family string `json:"family"`
+					} `json:"items"`
+				} `json:"busPeriodicity"`
+			} `json:"data"`
+			Errors []any `json:"errors"`
+		}
+
+		run := func() operationResponse {
+			req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ busSummary { messages { count } periodicity { count } } busMessages { count items { family } } busPeriodicity { count items { family } } }"}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d; want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			var response operationResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("json.Unmarshal response: %v body=%s", err, rec.Body.String())
+			}
+			if len(response.Errors) != 0 {
+				t.Fatalf("errors = %#v; want none", response.Errors)
+			}
+			return response
+		}
+
+		first := run()
+		if provider.CallCount() != 1 {
+			t.Fatalf("Snapshot() calls after first request = %d; want 1", provider.CallCount())
+		}
+		if first.Data.BusSummary.Messages.Count != 1 || first.Data.BusSummary.Periodicity.Count != 1 {
+			t.Fatalf("first busSummary = %+v; want snapshot-1 counts", first.Data.BusSummary)
+		}
+		if first.Data.BusMessages.Count != 1 || len(first.Data.BusMessages.Items) != 1 || first.Data.BusMessages.Items[0].Family != "snapshot-1" {
+			t.Fatalf("first busMessages = %+v; want count=1 family=snapshot-1", first.Data.BusMessages)
+		}
+		if first.Data.BusPeriodicity.Count != 1 || len(first.Data.BusPeriodicity.Items) != 1 || first.Data.BusPeriodicity.Items[0].Family != "snapshot-1" {
+			t.Fatalf("first busPeriodicity = %+v; want count=1 family=snapshot-1", first.Data.BusPeriodicity)
+		}
+
+		second := run()
+		if provider.CallCount() != 2 {
+			t.Fatalf("Snapshot() calls after second request = %d; want 2", provider.CallCount())
+		}
+		if second.Data.BusSummary.Messages.Count != 2 || second.Data.BusSummary.Periodicity.Count != 2 {
+			t.Fatalf("second busSummary = %+v; want snapshot-2 counts", second.Data.BusSummary)
+		}
+		if second.Data.BusMessages.Count != 2 || len(second.Data.BusMessages.Items) != 1 || second.Data.BusMessages.Items[0].Family != "snapshot-2" {
+			t.Fatalf("second busMessages = %+v; want count=2 family=snapshot-2", second.Data.BusMessages)
+		}
+		if second.Data.BusPeriodicity.Count != 2 || len(second.Data.BusPeriodicity.Items) != 1 || second.Data.BusPeriodicity.Items[0].Family != "snapshot-2" {
+			t.Fatalf("second busPeriodicity = %+v; want count=2 family=snapshot-2", second.Data.BusPeriodicity)
 		}
 	})
 

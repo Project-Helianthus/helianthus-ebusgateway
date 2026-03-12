@@ -167,9 +167,6 @@ func (cache *busObservabilitySnapshotCache) Snapshot() *BusObservabilitySnapshot
 
 	cache.once.Do(func() {
 		snapshot := cloneBusObservabilitySnapshot(cache.provider.Snapshot())
-		if snapshot.Summary == nil && len(snapshot.Messages) == 0 && len(snapshot.Periodicity) == 0 {
-			return
-		}
 		cache.snapshot = &snapshot
 	})
 
@@ -1056,15 +1053,18 @@ func snapshotBusObservability(builder *Builder, rootValue any) *BusObservability
 		return nil
 	}
 	snapshot := cloneBusObservabilitySnapshot(builder.busObservabilityProvider().Snapshot())
-	if snapshot.Summary == nil && len(snapshot.Messages) == 0 && len(snapshot.Periodicity) == 0 {
-		return nil
-	}
 	return &snapshot
 }
 
 func resolveBusSummary(builder *Builder, rootValue any) *BusSummary {
 	snapshot := snapshotBusObservability(builder, rootValue)
 	if snapshot == nil {
+		return nil
+	}
+	if snapshot.Summary == nil {
+		if len(snapshot.Messages) == 0 && len(snapshot.Periodicity) == 0 {
+			return &BusSummary{}
+		}
 		return nil
 	}
 	return cloneBusSummary(snapshot.Summary)

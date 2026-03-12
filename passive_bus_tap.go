@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -185,6 +186,7 @@ func (tap *PassiveBusTap) run() {
 
 func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 	decoder := passiveEscapeDecoder{}
+	decodeWireEscapes := passiveTapDecodesWireEscapes(tap.cfg)
 	lastSymbolAt := time.Now()
 	absenceDisconnect := passiveTapEnforcesAbsenceDisconnect(tap.cfg)
 
@@ -217,19 +219,24 @@ func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 		now := time.Now()
 		switch event.Kind {
 		case transport.StreamEventReset:
-			if decoder.escape {
+			if decodeWireEscapes && decoder.escape {
 				tap.recordDecodeFault(fmt.Errorf("incomplete escape sequence before reset: %w", ebuserrors.ErrInvalidPayload))
 				decoder.reset()
 			}
 			tap.recordReset(now)
 		case transport.StreamEventByte:
-			symbol, ok, decodeErr := decoder.push(event.Byte)
-			if decodeErr != nil {
-				tap.recordDecodeFault(decodeErr)
-				continue
-			}
-			if !ok {
-				continue
+			symbol := event.Byte
+			if decodeWireEscapes {
+				var ok bool
+				var decodeErr error
+				symbol, ok, decodeErr = decoder.push(event.Byte)
+				if decodeErr != nil {
+					tap.recordDecodeFault(decodeErr)
+					continue
+				}
+				if !ok {
+					continue
+				}
 			}
 
 			lastSymbolAt = now
@@ -415,6 +422,10 @@ func passiveTapEnforcesAbsenceDisconnect(cfg Config) bool {
 	return !passiveTapUsesProxyLikeObserverTransport(cfg)
 }
 
+func passiveTapDecodesWireEscapes(cfg Config) bool {
+	return !passiveTapUsesProxyLikeObserverTransport(cfg)
+}
+
 func passiveTapUsesProxyLikeObserverTransport(cfg Config) bool {
 	config, err := normalizeTransportConfig(cfg.TransportConfig)
 	if err != nil {
@@ -439,10 +450,21 @@ func passiveTapUsesProxyLikeObserverTransport(cfg Config) bool {
 		return false
 	}
 	host = strings.Trim(strings.TrimSpace(host), "[]")
-	if port == "9999" && (strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()) {
+	if port == "9999" {
 		return false
 	}
-	return port != "9999"
+	if !strings.EqualFold(host, "localhost") {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return false
+		}
+	}
+
+	portValue, err := strconv.Atoi(port)
+	if err != nil {
+		return false
+	}
+	return portValue >= 19001 && portValue < 20000
 }
 
 func resolvePassiveTransport(ctx context.Context, cfg Config) (transport.RawTransport, error) {

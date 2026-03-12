@@ -29,6 +29,7 @@ var (
 	buildID                                   = "unknown"
 	wireObserveFirstObserversFn               = wireObserveFirstObservers
 	startDiscoveryScanLoopFn                  = startDiscoveryScanLoop
+	startVaillantSemanticPollingFn            = startVaillantSemanticPolling
 	startPassiveTransactionReconstructor      = ebusgateway.StartPassiveTransactionReconstructor
 	startBroadcastListenerWithReconstructorFn = ebusgateway.StartBroadcastListenerWithReconstructor
 	startHTTPServerFn                         = startHTTPServer
@@ -86,7 +87,13 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
-	semanticPoller := startVaillantSemanticPolling(ctx, cfg, gateway, semanticRuntime.Provider(), hub)
+
+	var semanticBarrier chan struct{}
+	if cfg.ScanOnStart && shouldStartPassiveObserveFirst(cfg) {
+		semanticBarrier = make(chan struct{})
+	}
+	semanticCfg := resolveStartupScanSourceConfig(cfg)
+	semanticPoller := startVaillantSemanticPollingFn(ctx, semanticCfg, gateway, semanticRuntime.Provider(), hub, semanticBarrier)
 	if semanticPoller != nil {
 		builder.SetBoilerConfigWriter(semanticPoller)
 		builder.SetScheduleWriter(semanticPoller)
@@ -96,7 +103,17 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		return err
 	}
 
-	startupScanFirstPassDone := startDiscoveryScanLoopFn(ctx, cfg, gateway, builder)
+	startupScanSignals := startDiscoveryScanLoopFn(ctx, cfg, gateway, builder)
+
+	if semanticBarrier != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+			case <-startupScanSignals.semanticBootstrapReady:
+			}
+			close(semanticBarrier)
+		}()
+	}
 
 	var scheduleWriter mcp.ScheduleWriter
 	if semanticPoller != nil {
@@ -109,7 +126,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	var listener *ebusgateway.BroadcastListener
 	var reconstructor *ebusgateway.PassiveTransactionReconstructor
 	if shouldStartPassiveObserveFirst(cfg) {
-		waitForStartupScanFirstPass(ctx, cfg, startupScanFirstPassDone)
+		waitForStartupScanFirstPass(ctx, cfg, startupScanSignals.firstPassDone)
 
 		reconstructor, err = startPassiveTransactionReconstructor(ctx, cfg)
 		if err != nil {

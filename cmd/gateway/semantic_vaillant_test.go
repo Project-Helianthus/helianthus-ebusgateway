@@ -3453,3 +3453,113 @@ func TestDecodeB524DateSuppressSentinel(t *testing.T) {
 		})
 	}
 }
+
+// --- P03 startup barrier regression tests (#362) ---
+
+func TestVaillantSemanticPoller_StartDefersPollingUntilBarrier(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	scheduler := newSemanticTaskScheduler()
+	poller := &vaillantSemanticPoller{
+		tasks:                    scheduler,
+		discoveryInterval:        time.Hour,
+		configInterval:           time.Hour,
+		stateInterval:            time.Hour,
+		energyInterval:           time.Hour,
+		scheduleInterval:         time.Hour,
+		regulatorRecheckInterval: time.Hour,
+		nowFn:                    time.Now,
+	}
+
+	barrier := make(chan struct{})
+	poller.startupBarrier = barrier
+	poller.Start(ctx)
+
+	// Allow goroutines to schedule.
+	time.Sleep(50 * time.Millisecond)
+
+	scheduler.mu.Lock()
+	seqBefore := scheduler.seq
+	scheduler.mu.Unlock()
+
+	if seqBefore != 0 {
+		t.Fatalf("scheduler.seq = %d before barrier; want 0 (no tasks submitted)", seqBefore)
+	}
+
+	close(barrier)
+
+	// Allow deferred tasks to be enqueued.
+	time.Sleep(50 * time.Millisecond)
+
+	scheduler.mu.Lock()
+	seqAfter := scheduler.seq
+	scheduler.mu.Unlock()
+
+	if seqAfter == 0 {
+		t.Fatal("scheduler.seq = 0 after barrier; want > 0 (tasks should be submitted)")
+	}
+}
+
+func TestVaillantSemanticPoller_StartWithoutBarrierSubmitsImmediately(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	scheduler := newSemanticTaskScheduler()
+	poller := &vaillantSemanticPoller{
+		tasks:                    scheduler,
+		discoveryInterval:        time.Hour,
+		configInterval:           time.Hour,
+		stateInterval:            time.Hour,
+		energyInterval:           time.Hour,
+		scheduleInterval:         time.Hour,
+		regulatorRecheckInterval: time.Hour,
+		nowFn:                    time.Now,
+	}
+
+	poller.Start(ctx)
+
+	time.Sleep(50 * time.Millisecond)
+
+	scheduler.mu.Lock()
+	seq := scheduler.seq
+	scheduler.mu.Unlock()
+
+	if seq == 0 {
+		t.Fatal("scheduler.seq = 0 without barrier; want > 0 (tasks should be submitted immediately)")
+	}
+}
+
+func TestVaillantSemanticPoller_StartBarrierExitsOnContextCancel(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	scheduler := newSemanticTaskScheduler()
+	poller := &vaillantSemanticPoller{
+		tasks:                    scheduler,
+		discoveryInterval:        time.Hour,
+		configInterval:           time.Hour,
+		stateInterval:            time.Hour,
+		energyInterval:           time.Hour,
+		scheduleInterval:         time.Hour,
+		regulatorRecheckInterval: time.Hour,
+		nowFn:                    time.Now,
+	}
+
+	barrier := make(chan struct{})
+	poller.startupBarrier = barrier
+	poller.Start(ctx)
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+
+	scheduler.mu.Lock()
+	seq := scheduler.seq
+	scheduler.mu.Unlock()
+
+	if seq != 0 {
+		t.Fatalf("scheduler.seq = %d after cancel; want 0 (should not start polling on cancel)", seq)
+	}
+}

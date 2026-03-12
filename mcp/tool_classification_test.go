@@ -10,33 +10,18 @@ import (
 type toolClass string
 
 const (
-	toolClassCoreStable   toolClass = "core_stable"
-	toolClassLegacy       toolClass = "legacy_alias"
-	toolClassExperimental toolClass = "experimental"
+	toolClassCoreStable    toolClass = "core_stable"
+	toolClassLegacy        toolClass = "legacy_alias"
+	toolClassReservedDraft toolClass = "reserved_draft"
+	toolClassExperimental  toolClass = "experimental"
 )
 
-func TestToolClassificationPolicy(t *testing.T) {
-	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
-	server, err := NewServer(reg, &testInvoker{})
-	if err != nil {
-		t.Fatalf("NewServer error = %v", err)
-	}
-
-	res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list", Params: nil})
-	if res.Error != nil {
-		t.Fatalf("tools/list error = %+v", res.Error)
-	}
-	resultMap, ok := res.Result.(map[string]any)
-	if !ok {
-		t.Fatalf("tools/list result type = %T; want map", res.Result)
-	}
-	tools, ok := resultMap["tools"].([]any)
-	if !ok {
-		t.Fatalf("tools/list tools type = %T; want []any", resultMap["tools"])
-	}
-
-	classification := map[string]toolClass{
+func toolClassificationPolicy() map[string]toolClass {
+	return map[string]toolClass{
 		toolRuntimeStatusGetName:         toolClassCoreStable,
+		toolBusSummaryGetName:            toolClassReservedDraft,
+		toolBusMessagesListName:          toolClassReservedDraft,
+		toolBusPeriodicityListName:       toolClassReservedDraft,
 		toolSemanticZonesGetName:         toolClassCoreStable,
 		toolSemanticCircuitsGetName:      toolClassCoreStable,
 		toolSemanticRadioGetName:         toolClassCoreStable,
@@ -61,6 +46,38 @@ func TestToolClassificationPolicy(t *testing.T) {
 		toolDevicesLegacyName:            toolClassLegacy,
 		toolInvokeLegacyName:             toolClassLegacy,
 	}
+}
+
+func isReservedDraftTool(name string) bool {
+	switch name {
+	case toolBusSummaryGetName, toolBusMessagesListName, toolBusPeriodicityListName:
+		return true
+	default:
+		return false
+	}
+}
+
+func TestToolClassificationPolicy(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list", Params: nil})
+	if res.Error != nil {
+		t.Fatalf("tools/list error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list result type = %T; want map", res.Result)
+	}
+	tools, ok := resultMap["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools/list tools type = %T; want []any", resultMap["tools"])
+	}
+
+	classification := toolClassificationPolicy()
 
 	experimentalCount := 0
 	for _, raw := range tools {
@@ -73,7 +90,10 @@ func TestToolClassificationPolicy(t *testing.T) {
 		if !ok {
 			t.Fatalf("tool %q missing classification", name)
 		}
-		if strings.HasPrefix(name, "ebus.v1.") && class != toolClassCoreStable {
+		if isReservedDraftTool(name) && class != toolClassReservedDraft {
+			t.Fatalf("reserved draft tool %q classified as %q; want %q", name, class, toolClassReservedDraft)
+		}
+		if strings.HasPrefix(name, "ebus.v1.") && !isReservedDraftTool(name) && class != toolClassCoreStable {
 			t.Fatalf("tool %q is v1 but classified as %q", name, class)
 		}
 		if strings.HasPrefix(name, "ebus.experimental.") {
@@ -86,5 +106,49 @@ func TestToolClassificationPolicy(t *testing.T) {
 
 	if experimentalCount != 0 {
 		t.Fatalf("experimental tool count = %d; want 0 in showroom surface", experimentalCount)
+	}
+}
+
+func TestBusObservabilityToolClassificationReservation(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+	server.SetBusObservabilityProvider(&testBusObservabilityProvider{
+		snapshot: BusObservabilitySnapshot{
+			Summary: &BusSummary{
+				Status: &BusObservabilityStatus{
+					Capability: BusObservabilityCapability{PassiveState: "unavailable"},
+				},
+			},
+		},
+	})
+
+	res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list", Params: nil})
+	if res.Error != nil {
+		t.Fatalf("tools/list error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list result type = %T; want map", res.Result)
+	}
+	tools, ok := resultMap["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools/list tools type = %T; want []any", resultMap["tools"])
+	}
+
+	classification := toolClassificationPolicy()
+	for _, name := range []string{
+		toolBusSummaryGetName,
+		toolBusMessagesListName,
+		toolBusPeriodicityListName,
+	} {
+		if !hasToolName(tools, name) {
+			t.Fatalf("tools list missing reserved draft tool %q", name)
+		}
+		if class := classification[name]; class != toolClassReservedDraft {
+			t.Fatalf("classification[%q] = %q; want %q", name, class, toolClassReservedDraft)
+		}
 	}
 }

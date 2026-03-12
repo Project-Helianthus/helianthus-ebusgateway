@@ -199,6 +199,106 @@ func TestShouldStartPassiveObserveFirst(t *testing.T) {
 	}
 }
 
+func TestRun_ProxySingleENSAutoUsesSameSemanticSourceAsStartupConfirmation(t *testing.T) {
+	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
+	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
+	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
+	origStartHTTPServerFn := startHTTPServerFn
+	t.Cleanup(func() {
+		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
+		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
+		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
+		startHTTPServerFn = origStartHTTPServerFn
+	})
+
+	semanticSource := make(chan byte, 1)
+	semanticAuto := make(chan bool, 1)
+	expectedStartupSource := make(chan byte, 1)
+	expectedStartupAuto := make(chan bool, 1)
+
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, nil
+	}
+	startDiscoveryScanLoopFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.Builder) startupScanSignals {
+		resolved := resolveStartupScanSourceConfig(cfg)
+		expectedStartupSource <- resolved.ScanSource
+		expectedStartupAuto <- resolved.ScanSourceAuto
+		return startupScanSignals{}
+	}
+	startVaillantSemanticPollingFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.LiveSemanticProvider, _ *graphql.BroadcastHub, _ <-chan struct{}) *vaillantSemanticPoller {
+		semanticSource <- cfg.ScanSource
+		semanticAuto <- cfg.ScanSourceAuto
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, *ebusgateway.BusObservabilityStore) (*http.Server, mdns.Advertiser, error) {
+		cancel()
+		return nil, nil, nil
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.Transport = transport.NewLoopback()
+	cfg.ScanOnStart = true
+	cfg.BroadcastListen = false
+	cfg.ScanSource = 0x00
+	cfg.ScanSourceAuto = true
+	cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg)
+	}()
+
+	var gotSemanticSource byte
+	select {
+	case gotSemanticSource = <-semanticSource:
+	case <-time.After(2 * time.Second):
+		t.Fatal("semantic poller was not initialized")
+	}
+	if gotSemanticSource != proxyObserveFirstStartupSource {
+		t.Fatalf("semantic poller source = 0x%02X; want 0x%02X", gotSemanticSource, proxyObserveFirstStartupSource)
+	}
+
+	select {
+	case got := <-semanticAuto:
+		if got {
+			t.Fatal("semantic poller source remained auto; want explicit proxy startup source")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("semantic poller auto flag was not observed")
+	}
+
+	select {
+	case got := <-expectedStartupSource:
+		if got != gotSemanticSource {
+			t.Fatalf("startup confirmation source = 0x%02X; want semantic source 0x%02X", got, gotSemanticSource)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup confirmation source was not observed")
+	}
+
+	select {
+	case got := <-expectedStartupAuto:
+		if got {
+			t.Fatal("startup confirmation source remained auto; want explicit proxy startup source")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup confirmation auto flag was not observed")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run() did not exit after context cancellation")
+	}
+}
+
 func TestRun_DefersSemanticBootstrapUntilStartupConfirmationReadyOnPassiveObserveFirst(t *testing.T) {
 	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
 	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn

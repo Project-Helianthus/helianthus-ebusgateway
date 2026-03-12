@@ -499,6 +499,7 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 					FM5Mode:      string(semanticProvider.FM5SemanticMode()),
 					Solar:        mapPortalSolarStatus(semanticProvider.Solar()),
 					Cylinders:    mapPortalCylinders(semanticProvider.Cylinders()),
+					AdapterInfo:  mapPortalAdapterInfo(semanticProvider.AdapterHardwareInfo()),
 					CapturedUTC:  time.Now().UTC().Format(time.RFC3339),
 				}
 			},
@@ -883,4 +884,49 @@ func mapPortalCylinders(cylinders []graphql.CylinderStatus) []portal.SemanticCyl
 		})
 	}
 	return items
+}
+
+func mapPortalAdapterInfo(info *graphql.AdapterHardwareInfo) *portal.SemanticAdapterInfo {
+	if info == nil {
+		return nil
+	}
+	result := &portal.SemanticAdapterInfo{
+		FirmwareVersion:    info.FirmwareVersion,
+		FirmwareChecksum:   info.FirmwareChecksum,
+		BootloaderVersion:  info.BootloaderVersion,
+		BootloaderChecksum: info.BootloaderChecksum,
+		HardwareID:         info.HardwareID,
+		HardwareConfig:     info.HardwareConfig,
+		Features:           info.Features,
+		Jumpers:            info.Jumpers,
+		IsWiFi:             info.IsWiFi,
+		IsEthernet:         info.IsEthernet,
+		VersionResponseLen: info.VersionResponseLen,
+		InfoSupported:      info.InfoSupported,
+		TemperatureC:       cloneFloatPtr(info.TemperatureC),
+		SupplyVoltageMV:    cloneIntPtr(info.SupplyVoltageMV),
+		BusVoltageMaxDV:    cloneIntPtr(info.BusVoltageMaxDV),
+		BusVoltageMinDV:    cloneIntPtr(info.BusVoltageMinDV),
+		ResetCause:         cloneStringPtr(info.ResetCause),
+		WiFiRSSIDBm:        cloneIntPtr(info.WiFiRSSIDBm),
+	}
+	if info.JumperFlags != nil {
+		result.JumperFlags = make([]string, len(info.JumperFlags))
+		copy(result.JumperFlags, info.JumperFlags)
+	}
+	if info.ResetCauseCode != nil {
+		code := int(*info.ResetCauseCode)
+		result.ResetCauseCode = &code
+	}
+	if info.RestartCount != nil {
+		count := int(*info.RestartCount)
+		result.RestartCount = &count
+	}
+	if info.LastIdentityQuery != nil {
+		result.LastIdentityQuery = info.LastIdentityQuery.Format(time.RFC3339)
+	}
+	if info.LastTelemetryQuery != nil {
+		result.LastTelemetryQuery = info.LastTelemetryQuery.Format(time.RFC3339)
+	}
+	return result
 }

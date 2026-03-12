@@ -262,6 +262,7 @@ class PortalShell extends HTMLElement {
       "section-semantic": ["section-semantic"],
       "section-projection": ["section-projection"],
       "section-explorer": ["section-explorer"],
+      "section-adapter": ["section-adapter"],
       "section-timeline": ["section-timeline", "section-provenance"],
       "section-snapshots": ["section-snapshots", "section-snapshot-diff", "section-sessions"],
       "section-issue-builder": ["section-issue-builder"],
@@ -402,6 +403,15 @@ class PortalShell extends HTMLElement {
       if (capabilities.explorer) {
         this.initExplorer();
       }
+      if (capabilities.semantic) {
+        await this.refreshAdapterInfo();
+        if (this.adapterInfoInterval) {
+          clearInterval(this.adapterInfoInterval);
+        }
+        this.adapterInfoInterval = setInterval(() => {
+          this.refreshAdapterInfo();
+        }, 30000);
+      }
     } catch (err) {
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
@@ -419,6 +429,7 @@ class PortalShell extends HTMLElement {
     this.setNavState("semantic", cap.semantic);
     this.setNavState("projection", cap.projection);
     this.setNavState("explorer", cap.explorer);
+    this.setNavState("adapter", cap.semantic);
     this.setNavState("timeline", cap.timeline || cap.provenance);
     this.setNavState("snapshots", cap.snapshots || cap.snapshot_diff);
     this.setNavState("issue-builder", cap.issue_builder);
@@ -1077,6 +1088,102 @@ class PortalShell extends HTMLElement {
     }
   }
 
+  async refreshAdapterInfo() {
+    const identityBody = this.querySelector('[data-role="adapter-identity-body"]');
+    const telemetryBody = this.querySelector('[data-role="adapter-telemetry-body"]');
+    const statusEl = this.querySelector('[data-role="adapter-refresh-status"]');
+    try {
+      const response = await fetch("api/v1/semantic/snapshot");
+      const payload = await response.json();
+      const info = payload.adapter_info;
+      if (!info) {
+        if (identityBody) {
+          identityBody.innerHTML = `<tr><td colspan="2">Adapter info not available (INFO protocol not supported or adapter not connected).</td></tr>`;
+        }
+        if (telemetryBody) {
+          telemetryBody.innerHTML = `<tr><td colspan="2">No telemetry data.</td></tr>`;
+        }
+        if (statusEl) {
+          statusEl.textContent = `Last refresh: ${new Date().toLocaleTimeString()} (no data)`;
+        }
+        return;
+      }
+      if (identityBody) {
+        const rows = [];
+        rows.push(this.adapterRow("Firmware Version", info.firmware_version || "n/a"));
+        if (info.firmware_checksum) {
+          rows.push(this.adapterRow("Firmware Checksum", info.firmware_checksum));
+        }
+        if (info.bootloader_version) {
+          rows.push(this.adapterRow("Bootloader Version", info.bootloader_version));
+        }
+        if (info.bootloader_checksum) {
+          rows.push(this.adapterRow("Bootloader Checksum", info.bootloader_checksum));
+        }
+        if (info.hardware_id) {
+          rows.push(this.adapterRow("Hardware ID", info.hardware_id));
+        }
+        if (info.hardware_config) {
+          rows.push(this.adapterRow("Hardware Config", info.hardware_config));
+        }
+        rows.push(this.adapterRow("Connection Type", info.is_wifi ? "WiFi" : info.is_ethernet ? "Ethernet" : "Serial"));
+        if (info.jumper_flags && info.jumper_flags.length > 0) {
+          rows.push(this.adapterRow("Jumper Flags", info.jumper_flags.join(", ")));
+        }
+        rows.push(this.adapterRow("INFO Supported", info.info_supported ? "Yes" : "No"));
+        rows.push(this.adapterRow("Version Response Length", String(info.version_response_len)));
+        identityBody.innerHTML = rows.join("");
+      }
+      if (telemetryBody) {
+        const rows = [];
+        if (info.temperature_c != null) {
+          rows.push(this.adapterRow("Temperature", formatTemperature(info.temperature_c)));
+        }
+        if (info.supply_voltage_mv != null) {
+          rows.push(this.adapterRow("Supply Voltage", `${info.supply_voltage_mv} mV`));
+        }
+        if (info.bus_voltage_max_dv != null) {
+          rows.push(this.adapterRow("Bus Voltage Max", `${formatFixed(info.bus_voltage_max_dv * 0.1, 1)} V`));
+        }
+        if (info.bus_voltage_min_dv != null) {
+          rows.push(this.adapterRow("Bus Voltage Min", `${formatFixed(info.bus_voltage_min_dv * 0.1, 1)} V`));
+        }
+        if (info.reset_cause != null) {
+          rows.push(this.adapterRow("Reset Cause", escapeHtml(info.reset_cause)));
+        }
+        if (info.restart_count != null) {
+          rows.push(this.adapterRow("Restart Count", String(info.restart_count)));
+        }
+        if (info.wifi_rssi_dbm != null) {
+          rows.push(this.adapterRow("WiFi RSSI", `${info.wifi_rssi_dbm} dBm`));
+        }
+        if (rows.length === 0) {
+          rows.push(`<tr><td colspan="2">No telemetry data available yet.</td></tr>`);
+        }
+        telemetryBody.innerHTML = rows.join("");
+      }
+      if (statusEl) {
+        const parts = [];
+        if (info.last_identity_query) {
+          parts.push(`identity: ${new Date(info.last_identity_query).toLocaleTimeString()}`);
+        }
+        if (info.last_telemetry_query) {
+          parts.push(`telemetry: ${new Date(info.last_telemetry_query).toLocaleTimeString()}`);
+        }
+        statusEl.textContent = `Last refresh: ${new Date().toLocaleTimeString()}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`;
+      }
+    } catch (err) {
+      console.error("adapter info refresh failed", err);
+      if (statusEl) {
+        statusEl.textContent = `Last refresh: ${new Date().toLocaleTimeString()} (error)`;
+      }
+    }
+  }
+
+  adapterRow(label, value) {
+    return `<tr><td><strong>${escapeHtml(label)}</strong></td><td>${escapeHtml(value)}</td></tr>`;
+  }
+
   async loadProjectionPreview(listEl) {
     const gridEl = this.querySelector('[data-role="projection-uml-grid"]');
     const controls = this.querySelector('[data-role="projection-controls"]');
@@ -1566,6 +1673,7 @@ class PortalShell extends HTMLElement {
             <button data-role="nav-semantic" data-nav-target="section-semantic" disabled><span class="nav-bullet"></span> Semantic</button>
             <button data-role="nav-projection" data-nav-target="section-projection" disabled><span class="nav-bullet"></span> Projection</button>
             <button data-role="nav-explorer" data-nav-target="section-explorer" disabled><span class="nav-bullet"></span> Explorer</button>
+            <button data-role="nav-adapter" data-nav-target="section-adapter" disabled><span class="nav-bullet"></span> Adapter</button>
             <button data-role="nav-timeline" data-nav-target="section-timeline" disabled><span class="nav-bullet"></span> Timeline</button>
             <button data-role="nav-snapshots" data-nav-target="section-snapshots" disabled><span class="nav-bullet"></span> Snapshots</button>
             <button data-role="nav-issue-builder" data-nav-target="section-issue-builder" disabled><span class="nav-bullet"></span> Issue Builder</button>
@@ -1677,6 +1785,26 @@ class PortalShell extends HTMLElement {
                   <span class="muted-inline" data-role="explorer-quick-result"></span>
                 </div>
               </div>
+            </section>
+            <section id="section-adapter" class="registry-preview">
+              <h2>Adapter Hardware Info</h2>
+              <div data-role="adapter-identity" class="adapter-panel">
+                <h3>Identity</h3>
+                <table class="explorer-table">
+                  <tbody data-role="adapter-identity-body">
+                    <tr><td colspan="2">Loading adapter info...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div data-role="adapter-telemetry" class="adapter-panel">
+                <h3>Telemetry</h3>
+                <table class="explorer-table">
+                  <tbody data-role="adapter-telemetry-body">
+                    <tr><td colspan="2">Waiting for telemetry data...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="muted-inline" data-role="adapter-refresh-status">Last refresh: never</div>
             </section>
             <section id="section-search" class="registry-preview">
               <h2>Search Results</h2>

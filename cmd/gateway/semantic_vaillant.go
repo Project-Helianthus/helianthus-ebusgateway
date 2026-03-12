@@ -260,6 +260,7 @@ type vaillantSemanticPoller struct {
 	solar                    *vaillantSolarSnapshot
 	solarCylinders           map[byte]*vaillantCylinderSnapshot
 
+	adapterInfo    *vaillantAdapterInfoState
 	startupBarrier <-chan struct{}
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
@@ -621,6 +622,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		OnTransition:       poller.onSemanticReadBreakerTransition,
 		OnSuppressed:       poller.onSemanticReadBreakerSuppressed,
 	})
+	poller.adapterInfo = newVaillantAdapterInfoState(gateway.Bus, gateway.Transport, provider)
 	return poller
 }
 
@@ -1168,6 +1170,7 @@ func (p *vaillantSemanticPoller) startPollingLoops(ctx context.Context) {
 	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshRadioDevices)
 	go p.runLoop(ctx, p.energyInterval, semanticTaskPriorityMedium, p.refreshEnergy)
 	go p.runLoop(ctx, p.scheduleInterval, semanticTaskPriorityLow, p.refreshSchedules)
+	go p.adapterInfo.run(ctx)
 	for _, schedule := range p.boilerStatusTierSchedules() {
 		go p.runLoop(ctx, schedule.interval, schedule.priority, p.boilerStatusTierTask(schedule.tier))
 	}

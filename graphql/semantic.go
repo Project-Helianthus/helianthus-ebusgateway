@@ -1,6 +1,9 @@
 package graphql
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 type ZoneState struct {
 	CurrentTempC       *float64
@@ -283,6 +286,32 @@ type ScheduleStatus struct {
 	Programs []ScheduleProgram
 }
 
+type AdapterHardwareInfo struct {
+	FirmwareVersion    string
+	FirmwareChecksum   string
+	BootloaderVersion  string
+	BootloaderChecksum string
+	HardwareID         string
+	HardwareConfig     string
+	Features           byte
+	Jumpers            byte
+	JumperFlags        []string
+	IsWiFi             bool
+	IsEthernet         bool
+	TemperatureC       *float64
+	SupplyVoltageMV    *int
+	BusVoltageMaxDV    *int
+	BusVoltageMinDV    *int
+	ResetCause         *string
+	ResetCauseCode     *byte
+	RestartCount       *byte
+	WiFiRSSIDBm        *int
+	LastIdentityQuery  *time.Time
+	LastTelemetryQuery *time.Time
+	VersionResponseLen int
+	InfoSupported      bool
+}
+
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
@@ -295,6 +324,7 @@ type SemanticProvider interface {
 	BoilerStatus() *BoilerStatus
 	System() *SystemStatus
 	Schedules() *ScheduleStatus
+	AdapterHardwareInfo() *AdapterHardwareInfo
 }
 
 type staticSemanticProvider struct{}
@@ -340,6 +370,10 @@ func (staticSemanticProvider) System() *SystemStatus {
 }
 
 func (staticSemanticProvider) Schedules() *ScheduleStatus {
+	return nil
+}
+
+func (staticSemanticProvider) AdapterHardwareInfo() *AdapterHardwareInfo {
 	return nil
 }
 
@@ -409,6 +443,90 @@ func (provider *LiveSemanticProvider) SetSchedules(status *ScheduleStatus) {
 		return
 	}
 	liveScheduleSnapshots.Store(provider, cloneScheduleStatus(status))
+}
+
+var liveAdapterHWInfoSnapshots sync.Map
+
+func (provider *LiveSemanticProvider) AdapterHardwareInfo() *AdapterHardwareInfo {
+	if provider == nil {
+		return nil
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	stored, ok := liveAdapterHWInfoSnapshots.Load(provider)
+	if !ok || stored == nil {
+		return nil
+	}
+	info, ok := stored.(*AdapterHardwareInfo)
+	if !ok || info == nil {
+		return nil
+	}
+	return cloneAdapterHardwareInfo(info)
+}
+
+func (provider *LiveSemanticProvider) SetAdapterHardwareInfo(info *AdapterHardwareInfo) {
+	if provider == nil {
+		return
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if info == nil {
+		liveAdapterHWInfoSnapshots.Delete(provider)
+		return
+	}
+	liveAdapterHWInfoSnapshots.Store(provider, cloneAdapterHardwareInfo(info))
+}
+
+func cloneAdapterHardwareInfo(info *AdapterHardwareInfo) *AdapterHardwareInfo {
+	if info == nil {
+		return nil
+	}
+	cp := *info
+	if info.JumperFlags != nil {
+		cp.JumperFlags = make([]string, len(info.JumperFlags))
+		copy(cp.JumperFlags, info.JumperFlags)
+	}
+	if info.TemperatureC != nil {
+		v := *info.TemperatureC
+		cp.TemperatureC = &v
+	}
+	if info.SupplyVoltageMV != nil {
+		v := *info.SupplyVoltageMV
+		cp.SupplyVoltageMV = &v
+	}
+	if info.BusVoltageMaxDV != nil {
+		v := *info.BusVoltageMaxDV
+		cp.BusVoltageMaxDV = &v
+	}
+	if info.BusVoltageMinDV != nil {
+		v := *info.BusVoltageMinDV
+		cp.BusVoltageMinDV = &v
+	}
+	if info.ResetCause != nil {
+		v := *info.ResetCause
+		cp.ResetCause = &v
+	}
+	if info.ResetCauseCode != nil {
+		v := *info.ResetCauseCode
+		cp.ResetCauseCode = &v
+	}
+	if info.RestartCount != nil {
+		v := *info.RestartCount
+		cp.RestartCount = &v
+	}
+	if info.WiFiRSSIDBm != nil {
+		v := *info.WiFiRSSIDBm
+		cp.WiFiRSSIDBm = &v
+	}
+	if info.LastIdentityQuery != nil {
+		v := *info.LastIdentityQuery
+		cp.LastIdentityQuery = &v
+	}
+	if info.LastTelemetryQuery != nil {
+		v := *info.LastTelemetryQuery
+		cp.LastTelemetryQuery = &v
+	}
+	return &cp
 }
 
 func cloneSystemStatus(status *SystemStatus) *SystemStatus {

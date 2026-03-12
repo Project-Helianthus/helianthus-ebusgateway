@@ -268,6 +268,10 @@ func (p testSemanticProvider) Schedules() *ScheduleStatus {
 	return cloneMCPScheduleStatus(p.schedules)
 }
 
+func (p testSemanticProvider) AdapterHardwareInfo() *AdapterHardwareInfo {
+	return nil
+}
+
 func (p testSemanticProvider) EnergyTotals() *EnergyTotals {
 	if p.energyDelay > 0 {
 		time.Sleep(p.energyDelay)
@@ -1038,8 +1042,8 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			t.Fatalf("snapshot data type = %T; want map", envelope["data"])
 		}
 		completed, ok := data["completed_planes"].([]any)
-		if !ok || len(completed) != 12 {
-			t.Fatalf("snapshot completed_planes = %#v; want 12 entries", data["completed_planes"])
+		if !ok || len(completed) != 13 {
+			t.Fatalf("snapshot completed_planes = %#v; want 13 entries", data["completed_planes"])
 		}
 		planes, ok := data["planes"].(map[string]any)
 		if !ok {

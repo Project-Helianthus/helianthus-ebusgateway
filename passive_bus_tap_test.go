@@ -506,45 +506,6 @@ func TestPassiveBusTap_CustomDirectAdapterPortsStillDecodeWireEscapedObserverTra
 func TestPassiveTransactionReconstructor_ClassifiesProxyLikeObserverTraffic(t *testing.T) {
 	t.Parallel()
 
-	client, server := net.Pipe()
-	defer func() { _ = server.Close() }()
-
-	cfg := DefaultConfig()
-	cfg.BroadcastListen = true
-	cfg.TransportConfig = TransportConfig{
-		Protocol:     TransportENS,
-		Network:      "tcp",
-		Address:      "127.0.0.1:19183",
-		ReadTimeout:  20 * time.Millisecond,
-		WriteTimeout: 20 * time.Millisecond,
-		DialTimeout:  time.Second,
-		Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
-			return client, nil
-		},
-	}
-	cfg.PassiveAbsenceThreshold = time.Second
-	cfg.PassiveReconnectInitialDelay = time.Second
-	cfg.PassiveReconnectMaxDelay = time.Second
-	cfg.ObserveFirstWarmupConnectedWindow = time.Millisecond
-	cfg.ObserveFirstWarmupCompletedTransactions = 1
-	cfg.ObserveFirstWarmupOuterWindow = time.Second
-
-	reconstructor, err := StartPassiveTransactionReconstructor(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("StartPassiveTransactionReconstructor error = %v", err)
-	}
-	defer func() {
-		if err := reconstructor.Close(); err != nil {
-			t.Fatalf("reconstructor.Close error = %v", err)
-		}
-	}()
-
-	subscription, err := reconstructor.Subscribe("test", PassiveSubscriberCritical, 8)
-	if err != nil {
-		t.Fatalf("Subscribe error = %v", err)
-	}
-	defer subscription.Close()
-
 	request := protocol.Frame{
 		Source:    0xF7,
 		Target:    0x08,
@@ -552,12 +513,11 @@ func TestPassiveTransactionReconstructor_ClassifiesProxyLikeObserverTraffic(t *t
 		Secondary: 0x09,
 		Data:      []byte{protocol.SymbolEscape},
 	}
-	go func() {
-		time.Sleep(25 * time.Millisecond)
-		_, _ = server.Write(enhReceivedBytes(proxyObserverTransactionBytes(request, []byte{0x11, 0x22})))
-	}()
+	result := runProxyENSObserverHarness(t, []proxyObserverWrite{
+		{delay: 25 * time.Millisecond, logicalSymbols: proxyObserverTransactionBytes(request, []byte{0x11, 0x22})},
+	}, false)
 
-	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventTransaction)
+	event := result.requireEvent(t, PassiveClassifiedEventTransaction)
 	if got := event.Request.Data; len(got) != 1 || got[0] != protocol.SymbolEscape {
 		t.Fatalf("request data = %v; want [0x%02X]", got, protocol.SymbolEscape)
 	}
@@ -565,12 +525,69 @@ func TestPassiveTransactionReconstructor_ClassifiesProxyLikeObserverTraffic(t *t
 		t.Fatal("transaction event missing response")
 	}
 
-	snapshot := reconstructor.Snapshot()
-	if got := snapshot.TapStatus.DecodeFaultCount; got != 0 {
+	if got := result.snapshot.TapStatus.DecodeFaultCount; got != 0 {
 		t.Fatalf("DecodeFaultCount = %d; want 0", got)
 	}
-	if got := snapshot.TapStatus.ObservedSymbolCount; got == 0 {
+	if got := result.snapshot.TapStatus.ObservedSymbolCount; got == 0 {
 		t.Fatal("ObservedSymbolCount = 0; want proxy-like observer traffic to produce symbols")
+	}
+	if got := result.countEvents(PassiveClassifiedEventTransaction); got == 0 {
+		t.Fatal("transaction event count = 0; want > 0 for reconstructible observer traffic")
+	}
+}
+
+func TestProxyENSObserverReplayHarness_FirstRXBeforeSecondSendStillCompletesWarmup(t *testing.T) {
+	t.Parallel()
+
+	request := protocol.Frame{
+		Source:    0xF7,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x24,
+		Data:      []byte{0x08, 0x10},
+	}
+	observerSymbols := proxyObserverTransactionBytes(request, []byte{0x01, 0x42})
+
+	result := runProxyENSObserverHarness(t, []proxyObserverWrite{
+		{logicalSymbols: observerSymbols[:2]},
+		{delay: 20 * time.Millisecond, logicalSymbols: observerSymbols[2:]},
+	}, false)
+
+	if result.countEvents(PassiveClassifiedEventTransaction) == 0 {
+		t.Fatal("transaction event count = 0; want > 0 for fragmented proxy observer replay")
+	}
+	if got := result.countEvents(PassiveClassifiedEventTransaction); got == 0 {
+		t.Fatal("transaction event count = 0; want > 0 for fragmented proxy observer replay")
+	}
+}
+
+func TestProxyENSObserverReplayHarness_CurrentProxyModeledStreamRoutesBlameToStreamShape(t *testing.T) {
+	t.Parallel()
+
+	// This models the current northbound observer shape asserted in proxy PR #81:
+	// synthetic owner prefix plus raw observed wire symbols from the active session.
+	// The harness keeps it explicit so the next fix can be routed cleanly:
+	// if this stream stays non-reconstructible while the normalized stream above
+	// succeeds, the next corrective slice belongs in the proxy observer contract.
+	currentProxyModeledObserverSymbols := []byte{
+		0xF7,
+		0x15, 0xB5, 0x24, 0x02, 0x08, 0x10, 0x00,
+		0x00, 0x03, 0x01, 0x42, 0x99, 0x00,
+		0xAA,
+	}
+
+	result := runProxyENSObserverHarness(t, []proxyObserverWrite{
+		{delay: 25 * time.Millisecond, logicalSymbols: currentProxyModeledObserverSymbols},
+	}, false)
+
+	if got := result.countEvents(PassiveClassifiedEventTransaction); got != 0 {
+		t.Fatalf("transaction event count = %d; want 0 for current proxy-modeled observer stream", got)
+	}
+	if got := result.completedTransactions; got != 0 {
+		t.Fatalf("completedTransactions = %d; want 0 for current proxy-modeled observer stream", got)
+	}
+	if got := result.snapshot.TapStatus.ObservedSymbolCount; got == 0 {
+		t.Fatal("ObservedSymbolCount = 0; want harness to prove the stream was ingested before routing blame")
 	}
 }
 
@@ -903,6 +920,159 @@ func proxyObserverTransactionBytes(request protocol.Frame, responseData []byte) 
 	payload = append(payload, responseSegmentBytes(responseData)...)
 	payload = append(payload, protocol.SymbolAck, protocol.SymbolSyn)
 	return payload
+}
+
+type proxyObserverWrite struct {
+	delay          time.Duration
+	logicalSymbols []byte
+}
+
+type proxyObserverHarnessResult struct {
+	snapshot              PassiveReconstructorSnapshot
+	classified            []PassiveClassifiedEvent
+	observedBytes         int
+	completedTransactions int
+	passiveState          string
+}
+
+func (result proxyObserverHarnessResult) requireEvent(t *testing.T, kind PassiveClassifiedEventKind) PassiveClassifiedEvent {
+	t.Helper()
+	for _, event := range result.classified {
+		if event.Kind == kind {
+			return event
+		}
+	}
+	t.Fatalf("missing classified event kind %d in %#v", kind, result.classified)
+	return PassiveClassifiedEvent{}
+}
+
+func (result proxyObserverHarnessResult) countEvents(kind PassiveClassifiedEventKind) int {
+	count := 0
+	for _, event := range result.classified {
+		if event.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func runProxyENSObserverHarness(t *testing.T, writes []proxyObserverWrite, waitCompleted bool) proxyObserverHarnessResult {
+	t.Helper()
+
+	client, server := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer func() { _ = server.Close() }()
+
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig = TransportConfig{
+		Protocol:     TransportENS,
+		Network:      "tcp",
+		Address:      "127.0.0.1:19183",
+		ReadTimeout:  20 * time.Millisecond,
+		WriteTimeout: 20 * time.Millisecond,
+		DialTimeout:  time.Second,
+		Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+			return client, nil
+		},
+	}
+	cfg.PassiveAbsenceThreshold = time.Second
+	cfg.PassiveReconnectInitialDelay = time.Second
+	cfg.PassiveReconnectMaxDelay = time.Second
+	cfg.ObserveFirstWarmupConnectedWindow = time.Millisecond
+	cfg.ObserveFirstWarmupCompletedTransactions = 1
+	cfg.ObserveFirstWarmupOuterWindow = time.Second
+
+	reconstructor, err := StartPassiveTransactionReconstructor(ctx, cfg)
+	if err != nil {
+		t.Fatalf("StartPassiveTransactionReconstructor error = %v", err)
+	}
+	defer func() {
+		if err := reconstructor.Close(); err != nil {
+			t.Fatalf("reconstructor.Close error = %v", err)
+		}
+	}()
+
+	store := NewBusObservabilityStore(cfg)
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close error = %v", err)
+		}
+	}()
+	if err := store.AttachReconstructor(ctx, reconstructor); err != nil {
+		t.Fatalf("AttachReconstructor error = %v", err)
+	}
+
+	subscription, err := reconstructor.Subscribe("harness", PassiveSubscriberCritical, 16)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	totalSymbols := 0
+	for _, write := range writes {
+		totalSymbols += len(write.logicalSymbols)
+	}
+	go func() {
+		for _, write := range writes {
+			if write.delay > 0 {
+				time.Sleep(write.delay)
+			}
+			_, _ = server.Write(enhReceivedBytes(write.logicalSymbols))
+		}
+	}()
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		return reconstructor.Snapshot().TapStatus.ObservedSymbolCount >= uint64(totalSymbols)
+	})
+
+	classified := collectPassiveClassifiedEvents(subscription, 200*time.Millisecond)
+	if waitCompleted {
+		waitForCondition(t, 2*time.Second, func() bool {
+			store.mu.RLock()
+			defer store.mu.RUnlock()
+			return store.passive.completedTransactions > 0
+		})
+	}
+
+	store.mu.RLock()
+	completedTransactions := store.passive.completedTransactions
+	passiveState := store.passive.state
+	store.mu.RUnlock()
+
+	return proxyObserverHarnessResult{
+		snapshot:              reconstructor.Snapshot(),
+		classified:            classified,
+		observedBytes:         totalSymbols,
+		completedTransactions: completedTransactions,
+		passiveState:          passiveState,
+	}
+}
+
+func collectPassiveClassifiedEvents(subscription *PassiveClassifiedSubscription, quietWindow time.Duration) []PassiveClassifiedEvent {
+	events := make([]PassiveClassifiedEvent, 0, 8)
+	timer := time.NewTimer(quietWindow)
+	defer timer.Stop()
+
+	for {
+		select {
+		case event, ok := <-subscription.Events():
+			if !ok {
+				return events
+			}
+			events = append(events, event)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(quietWindow)
+		case <-timer.C:
+			return events
+		}
+	}
 }
 
 func wireEscapeSymbols(symbols []byte) []byte {

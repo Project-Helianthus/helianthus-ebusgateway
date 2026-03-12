@@ -108,6 +108,7 @@ type PassiveTransactionFingerprint struct {
 	TransactionClass DedupTransactionClass
 	OutcomeClass     DedupOutcomeClass
 	ResponseClass    DedupResponseClass
+	SharedWatchKey   WatchKey
 	Source           byte
 	Target           byte
 	RequestBytes     []byte
@@ -618,6 +619,9 @@ func (deduplicator *ActivePassiveDeduplicator) buildPassiveFingerprintLocked(eve
 		fingerprint.Source = event.Request.Source
 		fingerprint.Target = event.Request.Target
 		fingerprint.RequestBytes = canonicalFrameBytes(event.Request)
+		if key, ok := PassiveWatchKeyFromEvent(event); ok {
+			fingerprint.SharedWatchKey = mustCloneWatchKey(key)
+		}
 	}
 	if event.HasResponse {
 		fingerprint.ResponseBytes = canonicalFrameBytes(event.Response)

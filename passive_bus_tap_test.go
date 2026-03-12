@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -515,7 +516,7 @@ func TestPassiveTransactionReconstructor_ClassifiesProxyLikeObserverTraffic(t *t
 	}
 	result := runProxyENSObserverHarness(t, []proxyObserverWrite{
 		{delay: 25 * time.Millisecond, logicalSymbols: proxyObserverTransactionBytes(request, []byte{0x11, 0x22})},
-	}, false)
+	}, false, 1)
 
 	event := result.requireEvent(t, PassiveClassifiedEventTransaction)
 	if got := event.Request.Data; len(got) != 1 || got[0] != protocol.SymbolEscape {
@@ -546,39 +547,81 @@ func TestProxyENSObserverReplayHarness_FirstRXBeforeSecondSendStillCompletesWarm
 		Secondary: 0x24,
 		Data:      []byte{0x08, 0x10},
 	}
-	observerSymbols := proxyObserverTransactionBytes(request, []byte{0x01, 0x42})
+	firstObserverSymbols := proxyObserverTransactionBytes(request, []byte{0x01, 0x42})
+	secondObserverSymbols := proxyObserverTransactionBytes(request, []byte{0x02, 0x24})
 
 	result := runProxyENSObserverHarness(t, []proxyObserverWrite{
-		{logicalSymbols: observerSymbols[:2]},
-		{delay: 20 * time.Millisecond, logicalSymbols: observerSymbols[2:]},
-	}, false)
+		{logicalSymbols: firstObserverSymbols[:2]},
+		{delay: 20 * time.Millisecond, logicalSymbols: firstObserverSymbols[2:]},
+		{delay: 20 * time.Millisecond, logicalSymbols: secondObserverSymbols},
+	}, false, 2)
 
-	if result.countEvents(PassiveClassifiedEventTransaction) == 0 {
-		t.Fatal("transaction event count = 0; want > 0 for fragmented proxy observer replay")
+	transactions := passiveEventsByKind(result.classified, PassiveClassifiedEventTransaction)
+	if len(transactions) < 2 {
+		t.Fatalf("transaction event count = %d; want >= 2 for fragmented proxy observer replay", len(transactions))
 	}
-	if got := result.countEvents(PassiveClassifiedEventTransaction); got == 0 {
-		t.Fatal("transaction event count = 0; want > 0 for fragmented proxy observer replay")
+
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig = TransportConfig{
+		Protocol: TransportENS,
+		Network:  "tcp",
+		Address:  "127.0.0.1:19183",
+	}
+	cfg.ObserveFirstWarmupConnectedWindow = time.Millisecond
+	cfg.ObserveFirstWarmupCompletedTransactions = 2
+
+	store := NewBusObservabilityStore(cfg)
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close error = %v", err)
+		}
+	}()
+
+	store.mu.Lock()
+	store.passive.processStartedAt = transactions[0].ObservedAt
+	store.passiveStartWarmupLocked(transactions[0].ObservedAt, false)
+	store.mu.Unlock()
+
+	store.OnPassiveClassifiedEvent(transactions[0])
+
+	store.mu.RLock()
+	afterFirstCount := store.passive.completedTransactions
+	afterFirstState := store.passive.state
+	store.mu.RUnlock()
+	if afterFirstCount == 0 {
+		t.Fatal("completedTransactions after first normalized transaction = 0; want > 0")
+	}
+	if afterFirstState != "warming_up" {
+		t.Fatalf("passive state after first normalized transaction = %q; want warming_up", afterFirstState)
+	}
+
+	store.OnPassiveClassifiedEvent(transactions[1])
+
+	store.mu.RLock()
+	finalState := store.passive.state
+	confirmed := store.passive.probeOutcomes["confirmed"]
+	store.mu.RUnlock()
+	if finalState != "available" {
+		t.Fatalf("passive state after second normalized transaction = %q; want available", finalState)
+	}
+	if confirmed == 0 {
+		t.Fatal("confirmed probe outcomes = 0; want > 0 after second normalized transaction")
 	}
 }
 
-func TestProxyENSObserverReplayHarness_CurrentProxyModeledStreamRoutesBlameToStreamShape(t *testing.T) {
+func TestProxyENSObserverReplayHarness_CombinedArtifactFixtureRoutesBlameToStreamShape(t *testing.T) {
 	t.Parallel()
 
-	// This models the current northbound observer shape asserted in proxy PR #81:
-	// synthetic owner prefix plus raw observed wire symbols from the active session.
-	// The harness keeps it explicit so the next fix can be routed cleanly:
-	// if this stream stays non-reconstructible while the normalized stream above
-	// succeeds, the next corrective slice belongs in the proxy observer contract.
-	currentProxyModeledObserverSymbols := []byte{
-		0xF7,
-		0x15, 0xB5, 0x24, 0x02, 0x08, 0x10, 0x00,
-		0x00, 0x03, 0x01, 0x42, 0x99, 0x00,
-		0xAA,
-	}
+	// Fixture derived from the failing combined artifact:
+	// results-matrix-ha/20260312T055859Z-proxy81-gateway373-p03-rerun/P03/logs/proxy.log
+	// It contains the exact active request burst captured at 08:01:55 and is wrapped
+	// into the current northbound observer shape asserted by the proxy lane.
+	currentProxyModeledObserverSymbols := mustLoadProxyObserverFixture(t, "testdata/p03_proxy_single_combined_artifact_observer.hex")
 
 	result := runProxyENSObserverHarness(t, []proxyObserverWrite{
 		{delay: 25 * time.Millisecond, logicalSymbols: currentProxyModeledObserverSymbols},
-	}, false)
+	}, false, 1)
 
 	if got := result.countEvents(PassiveClassifiedEventTransaction); got != 0 {
 		t.Fatalf("transaction event count = %d; want 0 for current proxy-modeled observer stream", got)
@@ -928,11 +971,12 @@ type proxyObserverWrite struct {
 }
 
 type proxyObserverHarnessResult struct {
-	snapshot              PassiveReconstructorSnapshot
-	classified            []PassiveClassifiedEvent
-	observedBytes         int
-	completedTransactions int
-	passiveState          string
+	snapshot                         PassiveReconstructorSnapshot
+	classified                       []PassiveClassifiedEvent
+	observedBytes                    int
+	completedTransactions            int
+	maxCompletedTransactionsObserved int
+	passiveState                     string
 }
 
 func (result proxyObserverHarnessResult) requireEvent(t *testing.T, kind PassiveClassifiedEventKind) PassiveClassifiedEvent {
@@ -956,7 +1000,17 @@ func (result proxyObserverHarnessResult) countEvents(kind PassiveClassifiedEvent
 	return count
 }
 
-func runProxyENSObserverHarness(t *testing.T, writes []proxyObserverWrite, waitCompleted bool) proxyObserverHarnessResult {
+func passiveEventsByKind(events []PassiveClassifiedEvent, kind PassiveClassifiedEventKind) []PassiveClassifiedEvent {
+	filtered := make([]PassiveClassifiedEvent, 0, len(events))
+	for _, event := range events {
+		if event.Kind == kind {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
+func runProxyENSObserverHarness(t *testing.T, writes []proxyObserverWrite, waitCompleted bool, requiredTransactions int) proxyObserverHarnessResult {
 	t.Helper()
 
 	client, server := net.Pipe()
@@ -983,6 +1037,9 @@ func runProxyENSObserverHarness(t *testing.T, writes []proxyObserverWrite, waitC
 	cfg.ObserveFirstWarmupConnectedWindow = time.Millisecond
 	cfg.ObserveFirstWarmupCompletedTransactions = 1
 	cfg.ObserveFirstWarmupOuterWindow = time.Second
+	if requiredTransactions > 0 {
+		cfg.ObserveFirstWarmupCompletedTransactions = requiredTransactions
+	}
 
 	reconstructor, err := StartPassiveTransactionReconstructor(ctx, cfg)
 	if err != nil {
@@ -1003,6 +1060,15 @@ func runProxyENSObserverHarness(t *testing.T, writes []proxyObserverWrite, waitC
 	if err := store.AttachReconstructor(ctx, reconstructor); err != nil {
 		t.Fatalf("AttachReconstructor error = %v", err)
 	}
+	waitForCondition(t, 2*time.Second, func() bool {
+		reconstructor.subscribersMu.Lock()
+		subscriberCount := len(reconstructor.subscribers)
+		reconstructor.subscribersMu.Unlock()
+		store.mu.RLock()
+		passiveState := store.passive.state
+		store.mu.RUnlock()
+		return subscriberCount >= 1 && passiveState == "warming_up"
+	})
 
 	subscription, err := reconstructor.Subscribe("harness", PassiveSubscriberCritical, 16)
 	if err != nil {
@@ -1028,26 +1094,72 @@ func runProxyENSObserverHarness(t *testing.T, writes []proxyObserverWrite, waitC
 	})
 
 	classified := collectPassiveClassifiedEvents(subscription, 200*time.Millisecond)
+	maxCompletedTransactionsObserved := 0
 	if waitCompleted {
 		waitForCondition(t, 2*time.Second, func() bool {
 			store.mu.RLock()
 			defer store.mu.RUnlock()
-			return store.passive.completedTransactions > 0
+			if store.passive.completedTransactions > maxCompletedTransactionsObserved {
+				maxCompletedTransactionsObserved = store.passive.completedTransactions
+			}
+			return store.passive.state == "available"
 		})
 	}
 
 	store.mu.RLock()
 	completedTransactions := store.passive.completedTransactions
 	passiveState := store.passive.state
+	if store.passive.completedTransactions > maxCompletedTransactionsObserved {
+		maxCompletedTransactionsObserved = store.passive.completedTransactions
+	}
 	store.mu.RUnlock()
 
 	return proxyObserverHarnessResult{
-		snapshot:              reconstructor.Snapshot(),
-		classified:            classified,
-		observedBytes:         totalSymbols,
-		completedTransactions: completedTransactions,
-		passiveState:          passiveState,
+		snapshot:                         reconstructor.Snapshot(),
+		classified:                       classified,
+		observedBytes:                    totalSymbols,
+		completedTransactions:            completedTransactions,
+		maxCompletedTransactionsObserved: maxCompletedTransactionsObserved,
+		passiveState:                     passiveState,
 	}
+}
+
+func mustLoadProxyObserverFixture(t *testing.T, path string) []byte {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+	values := make([]byte, 0, len(content)/3)
+	var current byte
+	haveHalf := false
+	for _, raw := range content {
+		switch {
+		case raw >= '0' && raw <= '9':
+			raw -= '0'
+		case raw >= 'a' && raw <= 'f':
+			raw = raw - 'a' + 10
+		case raw >= 'A' && raw <= 'F':
+			raw = raw - 'A' + 10
+		default:
+			continue
+		}
+		if !haveHalf {
+			current = raw << 4
+			haveHalf = true
+			continue
+		}
+		values = append(values, current|raw)
+		haveHalf = false
+	}
+	if haveHalf {
+		t.Fatalf("fixture %q has dangling half-byte", path)
+	}
+	if len(values) == 0 {
+		t.Fatalf("fixture %q parsed no bytes", path)
+	}
+	return values
 }
 
 func collectPassiveClassifiedEvents(subscription *PassiveClassifiedSubscription, quietWindow time.Duration) []PassiveClassifiedEvent {

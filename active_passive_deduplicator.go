@@ -783,11 +783,11 @@ func buildActiveFingerprint(
 			observeFirstWatchObservationForFrame(event.Request, observer),
 			flags,
 		),
-		Source:           event.Request.Source,
-		Target:           event.Request.Target,
-		RequestBytes:     requestBytes,
-		ResponseBytes:    responseBytes,
-		ObservedAt:       observedAt,
+		Source:        event.Request.Source,
+		Target:        event.Request.Target,
+		RequestBytes:  requestBytes,
+		ResponseBytes: responseBytes,
+		ObservedAt:    observedAt,
 	}
 	fingerprint.Hash = hashTransactionIdentity(
 		transactionClass,
@@ -1021,8 +1021,11 @@ func observeFirstWatchObservationForFrame(frame protocol.Frame, observer WatchOb
 }
 
 func observeFirstWatchObservationForKey(key WatchKey, observer WatchObserver) WatchObservation {
-	if key == nil || observer == nil {
+	if key == nil {
 		return WatchObservation{State: WatchObservationStateCatalogMiss}
+	}
+	if observer == nil {
+		return observeFirstDefaultWatchObservationForKey(key)
 	}
 	return observer.Observe(key)
 }
@@ -1031,11 +1034,62 @@ func dedupFamilyPolicyAllowsRuntimeThirdParty(policy ObserveFirstFamilyPolicy) b
 	if policy.UsesRuntimeExternalWritePolicy {
 		return policy.EffectiveExternalWritePolicy != ObserveFirstExternalWritePolicyRecordOnly
 	}
+	if policy.CorrelationPolicy == WatchCorrelationPolicyRecordInvalidate {
+		return true
+	}
 	switch policy.DirectApplyPolicy {
 	case ObserveFirstDirectApplyPolicyStateDefault, ObserveFirstDirectApplyPolicyConfigOptIn, ObserveFirstDirectApplyPolicyEnergyMergeOnly:
 		return true
 	default:
 		return false
+	}
+}
+
+func observeFirstDefaultWatchObservationForKey(key WatchKey) WatchObservation {
+	if fallback, ok := observeFirstDefaultB524Observation(key); ok {
+		return fallback
+	}
+	return WatchObservation{State: WatchObservationStateCatalogMiss}
+}
+
+func observeFirstDefaultB524Observation(key WatchKey) (WatchObservation, bool) {
+	b524, ok := asB524WatchKey(key)
+	if !ok {
+		return WatchObservation{}, false
+	}
+	if b524.Opcode != 0x02 && b524.Opcode != 0x06 {
+		return WatchObservation{}, false
+	}
+	canonicalKey := NewB524WatchKey(
+		b524.Target,
+		b524.Opcode,
+		b524.Group,
+		b524.Instance,
+		b524.RegisterAddress,
+	)
+	return WatchObservation{
+		State: WatchObservationStateActive,
+		Descriptor: WatchDescriptor{
+			Key:               canonicalKey,
+			SemanticClass:     WatchSemanticClassState,
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+		},
+		HasDescriptor: true,
+	}, true
+}
+
+func asB524WatchKey(key WatchKey) (B524WatchKey, bool) {
+	switch typed := key.(type) {
+	case B524WatchKey:
+		return typed, true
+	case *B524WatchKey:
+		if typed == nil {
+			return B524WatchKey{}, false
+		}
+		return *typed, true
+	default:
+		return B524WatchKey{}, false
 	}
 }
 

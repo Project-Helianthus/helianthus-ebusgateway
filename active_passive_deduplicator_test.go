@@ -126,7 +126,7 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedWatchKey(t *te
 		Target:    request.Source,
 		Primary:   request.Primary,
 		Secondary: request.Secondary,
-		Data:      []byte{0x11, 0x22},
+		Data:      []byte{0x42, 0x01, 0x03, 0x1C, 0x00, 0x22},
 	}
 
 	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base, request, response))
@@ -135,7 +135,7 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedWatchKey(t *te
 	deduplicator.nowFunc = func() time.Time { return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Millisecond) }
 	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
 
-	event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
 	if event.Fingerprint.SharedWatchKey == nil {
 		t.Fatal("SharedWatchKey = nil; want parsed passive watch key")
 	}
@@ -143,8 +143,51 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedWatchKey(t *te
 	if got := event.Fingerprint.SharedWatchKey.Canonical(); got != want {
 		t.Fatalf("SharedWatchKey.Canonical() = %q; want %q", got, want)
 	}
-	if event.ThirdPartyEligible {
-		t.Fatal("ThirdPartyEligible = true; want false when family policy denies runtime third-party")
+	if !event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = false; want true for default B524 correlated-read fallback")
+	}
+}
+
+func TestActivePassiveDeduplicator_B555RecordInvalidateFlowsToRuntimeThirdParty(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	forceHealthyDedup(deduplicator)
+
+	base := time.Unix(0, 0)
+	deduplicator.nowFunc = func() time.Time { return base }
+
+	request := protocol.Frame{
+		Source:    0x10,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x55,
+		Data:      []byte{0xA3, 0x01},
+	}
+	response := protocol.Frame{
+		Source:    request.Target,
+		Target:    request.Source,
+		Primary:   request.Primary,
+		Secondary: request.Secondary,
+		Data:      []byte{0x00},
+	}
+
+	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base, request, response))
+	assertNoAdjudicatedEvent(t, subscription, 25*time.Millisecond)
+
+	deduplicator.nowFunc = func() time.Time { return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Millisecond) }
+	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
+
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
+	if !event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = false; want true for record/invalidate policy")
+	}
+	if event.FamilyPolicy.CorrelationPolicy != WatchCorrelationPolicyRecordInvalidate {
+		t.Fatalf("CorrelationPolicy = %q; want %q", event.FamilyPolicy.CorrelationPolicy, WatchCorrelationPolicyRecordInvalidate)
 	}
 }
 
@@ -574,6 +617,16 @@ func TestChainBusObserversCallsAllObservers(t *testing.T) {
 	}
 	if first.calls != 1 || second.calls != 1 {
 		t.Fatalf("observer calls = (%d, %d); want (1, 1)", first.calls, second.calls)
+	}
+}
+
+func TestDedupFamilyPolicyAllowsRuntimeThirdParty_RecordInvalidateAllowed(t *testing.T) {
+	policy := ObserveFirstFamilyPolicy{
+		CorrelationPolicy: WatchCorrelationPolicyRecordInvalidate,
+		DirectApplyPolicy: ObserveFirstDirectApplyPolicyNever,
+	}
+	if !dedupFamilyPolicyAllowsRuntimeThirdParty(policy) {
+		t.Fatal("dedupFamilyPolicyAllowsRuntimeThirdParty() = false; want true for record/invalidate")
 	}
 }
 

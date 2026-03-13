@@ -2,6 +2,7 @@ package ebusgateway
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -669,6 +670,306 @@ func TestShadowCacheEvictionStoresAbsentSnapshot(t *testing.T) {
 	}
 	if snapshot.Generation != generation {
 		t.Fatalf("SnapshotEligibility(evictedKey).Generation = %d; want %d", snapshot.Generation, generation)
+	}
+}
+
+func TestShadowCacheBootstrapRuntimeDescriptorUpgradesPassiveFallbackDescriptor(t *testing.T) {
+	t.Parallel()
+
+	key := NewB524WatchKey(0x15, 0x02, 0x03, 0x01, 0x001C)
+	catalog, activations := testShadowCatalogAndActivations(t, nil, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{})
+
+	provisional := WatchDescriptor{
+		Key:               key,
+		SemanticClass:     WatchSemanticClassState,
+		FreshnessProfile:  WatchFreshnessProfileStateFast,
+		DecoderID:         runtimeDescriptorDecoderPassiveFallback,
+		CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+	}
+	if err := cache.BootstrapRuntimeDescriptor(provisional, WatchActivationSourceTooling); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor(provisional) error = %v", err)
+	}
+
+	seed := cache.Write(ShadowWrite{
+		Key:        key,
+		Source:     ShadowWriteSourcePassive,
+		Confidence: ShadowConfidenceHigh,
+		Value:      []byte{0x42},
+		ObservedAt: time.Unix(100, 0),
+	})
+	if !seed.Accepted {
+		t.Fatalf("seed Write() rejected: %s", seed.Reason)
+	}
+	entry, ok := cache.Entry(key)
+	if !ok {
+		t.Fatal("Entry(key) missing after provisional bootstrap write")
+	}
+	if entry.Descriptor.DecoderID != runtimeDescriptorDecoderPassiveFallback {
+		t.Fatalf("Entry(key).Descriptor.DecoderID = %q; want %q", entry.Descriptor.DecoderID, runtimeDescriptorDecoderPassiveFallback)
+	}
+
+	real := WatchDescriptor{
+		Key:               key,
+		SemanticClass:     WatchSemanticClassState,
+		FreshnessProfile:  WatchFreshnessProfileStateSlow,
+		DecoderID:         "test.semantic.read.observer.real",
+		CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+	}
+	if err := cache.BootstrapRuntimeDescriptor(real, WatchActivationSourceOperator); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor(real) error = %v", err)
+	}
+	if err := cache.BootstrapRuntimeDescriptor(provisional, WatchActivationSourceTooling); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor(provisional-repeat) error = %v", err)
+	}
+
+	descriptor, ok := cache.catalog.DescriptorByCanonical(key.Canonical())
+	if !ok {
+		t.Fatal("DescriptorByCanonical(key) missing after runtime upgrade")
+	}
+	if descriptor.DecoderID != real.DecoderID {
+		t.Fatalf("catalog decoder id = %q; want %q", descriptor.DecoderID, real.DecoderID)
+	}
+	if descriptor.FreshnessProfile != real.FreshnessProfile {
+		t.Fatalf("catalog freshness profile = %q; want %q", descriptor.FreshnessProfile, real.FreshnessProfile)
+	}
+
+	entry, ok = cache.Entry(key)
+	if !ok {
+		t.Fatal("Entry(key) missing after runtime upgrade")
+	}
+	if entry.Descriptor.DecoderID != real.DecoderID {
+		t.Fatalf("entry decoder id = %q; want %q", entry.Descriptor.DecoderID, real.DecoderID)
+	}
+	if entry.Descriptor.FreshnessProfile != real.FreshnessProfile {
+		t.Fatalf("entry freshness profile = %q; want %q", entry.Descriptor.FreshnessProfile, real.FreshnessProfile)
+	}
+
+	observation := cache.activations.Observe(key)
+	if observation.State != WatchObservationStateActive {
+		t.Fatalf("Observe(key).State = %q; want active", observation.State)
+	}
+	if got, want := observation.Sources, []WatchActivationSource{WatchActivationSourceTooling, WatchActivationSourceOperator}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Observe(key).Sources = %v; want %v", got, want)
+	}
+
+	if summary := cache.Summary(); summary.StaticPinnedFootprint != 0 {
+		t.Fatalf("Summary().StaticPinnedFootprint = %d; want 0 without poller activation", summary.StaticPinnedFootprint)
+	}
+}
+
+func TestShadowCacheBootstrapRuntimeDescriptorExistingKeyPromotionRecomputesBudgetAndPins(t *testing.T) {
+	t.Parallel()
+
+	firstKey := NewB509WatchKey(0x08, 0x0200)
+	secondKey := NewB509WatchKey(0x08, 0x0201)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{firstKey, secondKey}, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{
+		Capacity:              4,
+		PinnedCapacity:        1,
+		WriteConfirmPinnedCap: 0,
+	})
+
+	writeShadow(t, cache, firstKey, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x40})
+	writeShadow(t, cache, secondKey, ShadowWriteSourcePassive, time.Unix(101, 0), []byte{0x41})
+
+	descriptorFor := func(key WatchKey) WatchDescriptor {
+		return WatchDescriptor{
+			Key:               key,
+			SemanticClass:     WatchSemanticClassState,
+			FreshnessProfile:  WatchFreshnessProfileStateFast,
+			DecoderID:         "test.decoder",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+		}
+	}
+
+	if err := cache.BootstrapRuntimeDescriptor(descriptorFor(firstKey), WatchActivationSourcePoller); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor(first poller) error = %v", err)
+	}
+	summary := cache.Summary()
+	if summary.PinnedBudgetDegraded {
+		t.Fatal("PinnedBudgetDegraded=true after first poller activation; want false with footprint within budget")
+	}
+
+	if err := cache.BootstrapRuntimeDescriptor(descriptorFor(secondKey), WatchActivationSourcePoller); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor(second poller) error = %v", err)
+	}
+	summary = cache.Summary()
+	if !summary.PinnedBudgetDegraded {
+		t.Fatal("PinnedBudgetDegraded=false after second poller activation exceeds static budget")
+	}
+	if summary.StaticPinnedFootprint != 2 {
+		t.Fatalf("StaticPinnedFootprint=%d; want 2 after promoting both keys to poller", summary.StaticPinnedFootprint)
+	}
+
+	firstEntry, ok := cache.Entry(firstKey)
+	if !ok {
+		t.Fatal("Entry(firstKey) missing after runtime promotion")
+	}
+	if firstEntry.Pinned {
+		t.Fatal("Entry(firstKey).Pinned=true; want immediate depin when pinned budget degrades")
+	}
+
+	secondEntry, ok := cache.Entry(secondKey)
+	if !ok {
+		t.Fatal("Entry(secondKey) missing after runtime promotion")
+	}
+	if secondEntry.Pinned {
+		t.Fatal("Entry(secondKey).Pinned=true; want immediate depin when pinned budget degrades")
+	}
+}
+
+func TestShadowCacheBootstrapRuntimeDescriptorConcurrentFirstUsePreservesBothKeys(t *testing.T) {
+	t.Parallel()
+
+	seedKey := NewB509WatchKey(0x08, 0x0200)
+	firstKey := NewB509WatchKey(0x08, 0x0201)
+	secondKey := NewB509WatchKey(0x08, 0x0202)
+
+	descriptorFor := func(key WatchKey, decoderID string) WatchDescriptor {
+		return WatchDescriptor{
+			Key:               key,
+			SemanticClass:     WatchSemanticClassState,
+			FreshnessProfile:  WatchFreshnessProfileStateFast,
+			DecoderID:         decoderID,
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+		}
+	}
+
+	for iteration := 0; iteration < 200; iteration++ {
+		catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{seedKey}, WatchActivationSourcePoller)
+		cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{})
+
+		firstDescriptor := descriptorFor(firstKey, "test.decoder.concurrent.first")
+		secondDescriptor := descriptorFor(secondKey, "test.decoder.concurrent.second")
+
+		start := make(chan struct{})
+		errCh := make(chan error, 2)
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			<-start
+			errCh <- cache.BootstrapRuntimeDescriptor(firstDescriptor, WatchActivationSourcePoller)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			errCh <- cache.BootstrapRuntimeDescriptor(secondDescriptor, WatchActivationSourceTooling)
+		}()
+
+		close(start)
+		wg.Wait()
+		close(errCh)
+
+		for err := range errCh {
+			if err != nil {
+				t.Fatalf("BootstrapRuntimeDescriptor() error on iteration %d: %v", iteration, err)
+			}
+		}
+
+		if _, ok := cache.catalog.DescriptorByCanonical(firstKey.Canonical()); !ok {
+			t.Fatalf("first concurrent descriptor missing on iteration %d", iteration)
+		}
+		if _, ok := cache.catalog.DescriptorByCanonical(secondKey.Canonical()); !ok {
+			t.Fatalf("second concurrent descriptor missing on iteration %d", iteration)
+		}
+
+		firstObservation := cache.activations.Observe(firstKey)
+		if firstObservation.State != WatchObservationStateActive {
+			t.Fatalf("first activation state = %s on iteration %d; want active", firstObservation.State, iteration)
+		}
+		secondObservation := cache.activations.Observe(secondKey)
+		if secondObservation.State != WatchObservationStateActive {
+			t.Fatalf("second activation state = %s on iteration %d; want active", secondObservation.State, iteration)
+		}
+	}
+}
+
+func TestShadowCacheBootstrapRuntimeDescriptorConcurrentWithWriteInvalidate(t *testing.T) {
+	t.Parallel()
+
+	seedKey := NewB509WatchKey(0x08, 0x0200)
+	key := NewB509WatchKey(0x08, 0x0201)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{seedKey}, WatchActivationSourcePoller)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{})
+
+	descriptor := WatchDescriptor{
+		Key:               key,
+		SemanticClass:     WatchSemanticClassState,
+		FreshnessProfile:  WatchFreshnessProfileStateFast,
+		DecoderID:         "test.decoder.concurrent.write.invalidate",
+		CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+	}
+
+	start := make(chan struct{})
+	errCh := make(chan error, 1)
+	reportErr := func(err error) {
+		if err == nil {
+			return
+		}
+		select {
+		case errCh <- err:
+		default:
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 200; i++ {
+			reportErr(cache.BootstrapRuntimeDescriptor(descriptor, WatchActivationSourcePoller))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 200; i++ {
+			cache.Write(ShadowWrite{
+				Key:        key,
+				Source:     ShadowWriteSourcePassive,
+				Confidence: ShadowConfidenceHigh,
+				Value:      []byte{byte(i)},
+				ObservedAt: time.Unix(200+int64(i), 0),
+			})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 200; i++ {
+			cache.Invalidate(ShadowInvalidation{
+				Key:           key,
+				Reason:        ShadowInvalidationReasonExternalWrite,
+				Source:        ShadowInvalidationSourcePassive,
+				InvalidatedAt: time.Unix(400+int64(i), 0),
+			})
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent BootstrapRuntimeDescriptor() error = %v", err)
+		}
+	}
+
+	if _, ok := cache.catalog.DescriptorByCanonical(key.Canonical()); !ok {
+		t.Fatal("descriptor missing after concurrent bootstrap/write/invalidate load")
+	}
+	if snapshot := cache.SnapshotEligibility(key); snapshot.Generation == 0 {
+		t.Fatal("SnapshotEligibility(key).Generation = 0; want generation advancement under concurrent bootstrap/write/invalidate")
 	}
 }
 

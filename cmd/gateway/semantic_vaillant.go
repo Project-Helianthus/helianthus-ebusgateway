@@ -189,6 +189,10 @@ var (
 	semanticDHWUpdatesTotal              = expvar.NewInt("semantic_dhw_updates_total")
 	semanticRegulatorState               = expvar.NewString("semantic_regulator_state")
 	semanticRegulatorTransitionsTotal    = expvar.NewMap("semantic_regulator_transitions_total")
+
+	passiveShadowSubscriberPriority = ebusgateway.DedupSubscriberCritical
+	passiveShadowSubscriberBuffer   = 256
+	passiveShadowRetryDelay         = 100 * time.Millisecond
 )
 
 func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, startupBarrier <-chan struct{}) *vaillantSemanticPoller {
@@ -216,8 +220,10 @@ type vaillantSemanticPoller struct {
 	provider *graphql.LiveSemanticProvider
 	hub      *graphql.BroadcastHub
 	cache    semanticCachePersister
+	shadow   *ebusgateway.ShadowCache
 
 	transportConfig ebusgateway.TransportConfig
+	watchObserver   ebusgateway.WatchObserver
 
 	source               byte
 	requestTimeout       time.Duration
@@ -264,6 +270,7 @@ type vaillantSemanticPoller struct {
 
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	b524ProbeFn            func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
+	sendFrameFn            func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error)
 	nowFn                  func() time.Time
 }
 
@@ -555,6 +562,10 @@ var (
 
 func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, cache semanticCachePersister) *vaillantSemanticPoller {
 	catalog, catalogErr := productids.LoadCatalog()
+	observeFirstFlags := normalizeObserveFirstFeatureFlagsForPoller(cfg)
+	shadow := ebusgateway.NewShadowCache(ebusgateway.ShadowCacheOptions{
+		FeatureFlags: observeFirstFlags,
+	})
 	poller := &vaillantSemanticPoller{
 		scheduler:       ebusgateway.NewSemanticReadScheduler(),
 		tasks:           newSemanticTaskScheduler(),
@@ -563,7 +574,9 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		provider:        provider,
 		hub:             hub,
 		cache:           cache,
+		shadow:          shadow,
 		transportConfig: cfg.TransportConfig,
+		watchObserver:   cfg.WatchObserver,
 		source:          cfg.ScanSource,
 
 		requestTimeout:       cfg.SemanticRequestTimeout,
@@ -614,6 +627,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 	}
 	semanticZoneCount.Set(0)
 	semanticRegulatorState.Set(string(poller.regAbsenceState))
+	poller.scheduler.SetShadowCache(shadow)
 	poller.scheduler.SetCircuitBreaker(ebusgateway.SemanticReadCircuitBreakerOptions{
 		FailureBudget:      cfg.SemanticReadBreakerFailureBudget,
 		OpenCooldown:       cfg.SemanticReadBreakerOpenCooldown,
@@ -622,6 +636,21 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		OnSuppressed:       poller.onSemanticReadBreakerSuppressed,
 	})
 	return poller
+}
+
+func normalizeObserveFirstFeatureFlagsForPoller(cfg ebusgateway.Config) ebusgateway.ObserveFirstFeatureFlags {
+	if cfg.ExternalWritePolicy == "" &&
+		!cfg.ObserveFirstEnabled &&
+		!cfg.PassiveStateDirectApply &&
+		!cfg.PassiveConfigDirectApply {
+		return ebusgateway.NormalizeObserveFirstFeatureFlagsFromView(cfg.ObserveFirstFlags)
+	}
+	return ebusgateway.NormalizeObserveFirstFeatureFlags(
+		cfg.ObserveFirstEnabled,
+		cfg.PassiveStateDirectApply,
+		cfg.PassiveConfigDirectApply,
+		cfg.ExternalWritePolicy,
+	)
 }
 
 func (p *vaillantSemanticPoller) onSemanticReadBreakerTransition(event ebusgateway.SemanticReadCircuitBreakerTransition) {
@@ -1151,6 +1180,242 @@ func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	}
 
 	p.startPollingLoops(ctx)
+}
+
+func (p *vaillantSemanticPoller) AttachPassiveShadowProducer(ctx context.Context, deduplicator *ebusgateway.ActivePassiveDeduplicator) error {
+	if p == nil || deduplicator == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	subscription, err := deduplicator.Subscribe(
+		"semantic-vaillant-shadow",
+		passiveShadowSubscriberPriority,
+		passiveShadowSubscriberBuffer,
+	)
+	if err != nil {
+		return err
+	}
+
+	go func(subscription *ebusgateway.AdjudicatedPassiveSubscription) {
+		for {
+			closedUnexpectedly := false
+		consume:
+			for {
+				select {
+				case <-ctx.Done():
+					subscription.Close()
+					return
+				case event, ok := <-subscription.Events():
+					if !ok {
+						closedUnexpectedly = ctx.Err() == nil
+						break consume
+					}
+					p.handleAdjudicatedPassiveEvent(event)
+				}
+			}
+			subscription.Close()
+			if !closedUnexpectedly {
+				return
+			}
+			for {
+				if !waitForPassiveShadowRetry(ctx) {
+					return
+				}
+				next, err := deduplicator.Subscribe(
+					"semantic-vaillant-shadow",
+					passiveShadowSubscriberPriority,
+					passiveShadowSubscriberBuffer,
+				)
+				if err != nil {
+					continue
+				}
+				subscription = next
+				break
+			}
+		}
+	}(subscription)
+
+	return nil
+}
+
+func waitForPassiveShadowRetry(ctx context.Context) bool {
+	delay := passiveShadowRetryDelay
+	if delay <= 0 {
+		delay = 100 * time.Millisecond
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (p *vaillantSemanticPoller) handleAdjudicatedPassiveEvent(event ebusgateway.AdjudicatedPassiveEvent) {
+	if p == nil || p.shadow == nil {
+		return
+	}
+	if event.Disposition != ebusgateway.DedupDispositionUnmatchedThirdParty ||
+		event.ObservabilityOnly ||
+		event.LocalParticipantInbound ||
+		event.MatchedActiveDuplicate {
+		return
+	}
+
+	familyPolicy := event.Fingerprint.FamilyPolicy
+	if !passiveShadowLaneEnabled(p.shadow.FeatureFlags(), familyPolicy) {
+		return
+	}
+
+	key, ok := clonePassiveAdjudicatedWatchKey(event)
+	if !ok || key == nil {
+		return
+	}
+	p.bootstrapPassiveSharedWatchKey(key)
+
+	switch familyPolicy.RequestIntent {
+	case ebusgateway.ObserveFirstRequestIntentWrite:
+		if !shouldInvalidatePassiveExternalWrite(familyPolicy) {
+			return
+		}
+		invalidatedAt := event.Fingerprint.ObservedAt
+		if invalidatedAt.IsZero() {
+			invalidatedAt = p.now()
+		}
+		p.shadow.Invalidate(ebusgateway.ShadowInvalidation{
+			Key:           key,
+			Reason:        ebusgateway.ShadowInvalidationReasonExternalWrite,
+			Source:        ebusgateway.ShadowInvalidationSourcePassive,
+			InvalidatedAt: invalidatedAt,
+		})
+		return
+	case ebusgateway.ObserveFirstRequestIntentRead:
+	default:
+		return
+	}
+	if event.SuppressShadow {
+		return
+	}
+
+	if event.Fingerprint.ResponseClass != ebusgateway.DedupResponseValueBearing {
+		return
+	}
+	value, ok := parsePassiveShadowPayload(event, key)
+	if !ok || len(value) == 0 {
+		return
+	}
+
+	observedAt := event.Fingerprint.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = p.now()
+	}
+	result := p.shadow.Write(ebusgateway.ShadowWrite{
+		Key:        key,
+		Source:     ebusgateway.ShadowWriteSourcePassive,
+		Confidence: ebusgateway.ShadowConfidenceHigh,
+		Value:      value,
+		ObservedAt: observedAt,
+	})
+	if !result.Accepted {
+		log.Printf("semantic_passive_shadow_write_rejected key=%q reason=%s", key.Canonical(), result.Reason)
+	}
+}
+
+func passiveShadowLaneEnabled(flags ebusgateway.ObserveFirstFeatureFlags, policy ebusgateway.ObserveFirstFamilyPolicy) bool {
+	if !flags.ObserveFirstEnabled() {
+		return false
+	}
+
+	switch policy.RequestIntent {
+	case ebusgateway.ObserveFirstRequestIntentRead:
+		switch policy.DirectApplyPolicy {
+		case ebusgateway.ObserveFirstDirectApplyPolicyStateDefault:
+			return flags.PassiveStateDirectApply()
+		case ebusgateway.ObserveFirstDirectApplyPolicyConfigOptIn:
+			return flags.PassiveConfigDirectApply()
+		default:
+			return false
+		}
+	case ebusgateway.ObserveFirstRequestIntentWrite:
+		if !policy.UsesRuntimeExternalWritePolicy {
+			return false
+		}
+		return policy.EffectiveExternalWritePolicy != ebusgateway.ObserveFirstExternalWritePolicyRecordOnly
+	default:
+		return false
+	}
+}
+
+func shouldInvalidatePassiveExternalWrite(policy ebusgateway.ObserveFirstFamilyPolicy) bool {
+	if !policy.UsesRuntimeExternalWritePolicy {
+		return false
+	}
+	switch policy.EffectiveExternalWritePolicy {
+	case ebusgateway.ObserveFirstExternalWritePolicyInvalidateOnly,
+		ebusgateway.ObserveFirstExternalWritePolicyRecordAndInvalidate:
+		return true
+	default:
+		return false
+	}
+}
+
+func clonePassiveAdjudicatedWatchKey(event ebusgateway.AdjudicatedPassiveEvent) (ebusgateway.WatchKey, bool) {
+	return cloneSemanticWatchKey(event.Fingerprint.SharedWatchKey)
+}
+
+func cloneSemanticWatchKey(key ebusgateway.WatchKey) (ebusgateway.WatchKey, bool) {
+	switch typed := key.(type) {
+	case ebusgateway.B509WatchKey:
+		cloned := ebusgateway.NewB509WatchKey(typed.Target, typed.RegisterAddress)
+		return cloned, true
+	case *ebusgateway.B509WatchKey:
+		if typed == nil {
+			return nil, false
+		}
+		cloned := ebusgateway.NewB509WatchKey(typed.Target, typed.RegisterAddress)
+		return cloned, true
+	case ebusgateway.B524WatchKey:
+		cloned := ebusgateway.NewB524WatchKey(typed.Target, typed.Opcode, typed.Group, typed.Instance, typed.RegisterAddress)
+		return cloned, true
+	case *ebusgateway.B524WatchKey:
+		if typed == nil {
+			return nil, false
+		}
+		cloned := ebusgateway.NewB524WatchKey(typed.Target, typed.Opcode, typed.Group, typed.Instance, typed.RegisterAddress)
+		return cloned, true
+	default:
+		return nil, false
+	}
+}
+
+func parsePassiveShadowPayload(event ebusgateway.AdjudicatedPassiveEvent, key ebusgateway.WatchKey) ([]byte, bool) {
+	if !event.Event.HasResponse {
+		return nil, false
+	}
+	switch typed := key.(type) {
+	case ebusgateway.B509WatchKey:
+		return parseB509ReadPayload(event.Event.Response.Data, typed.RegisterAddress)
+	case *ebusgateway.B509WatchKey:
+		if typed == nil {
+			return nil, false
+		}
+		return parseB509ReadPayload(event.Event.Response.Data, typed.RegisterAddress)
+	case ebusgateway.B524WatchKey:
+		return parseB524ReadPayload(event.Event.Response.Data, typed.Opcode, typed.Group, typed.Instance, typed.RegisterAddress)
+	case *ebusgateway.B524WatchKey:
+		if typed == nil {
+			return nil, false
+		}
+		return parseB524ReadPayload(event.Event.Response.Data, typed.Opcode, typed.Group, typed.Instance, typed.RegisterAddress)
+	default:
+		return nil, false
+	}
 }
 
 func (p *vaillantSemanticPoller) startPollingLoops(ctx context.Context) {
@@ -4775,8 +5040,189 @@ func isAllDigits(value string) bool {
 	return true
 }
 
+func (p *vaillantSemanticPoller) prepareSemanticReadWatch(key ebusgateway.WatchKey) time.Duration {
+	if maxAge, ok := p.prepareSemanticReadWatchObserved(key); ok {
+		return maxAge
+	}
+
+	if key == nil {
+		return 0
+	}
+
+	descriptor := semanticReadWatchDescriptorDefault(key)
+	sources := []ebusgateway.WatchActivationSource{ebusgateway.WatchActivationSourcePoller}
+	if p != nil && p.watchObserver != nil {
+		observation := p.watchObserver.Observe(key)
+		if observation.HasDescriptor {
+			descriptor = semanticReadWatchDescriptorFromObservation(key, observation.Descriptor)
+		}
+		sources = semanticReadActivationSources(observation.Sources)
+	}
+
+	maxAge, err := descriptor.EffectiveFreshnessTTL()
+	if err != nil {
+		descriptor = semanticReadWatchDescriptorDefault(key)
+		maxAge, _ = descriptor.EffectiveFreshnessTTL()
+	}
+	if maxAge < 0 {
+		maxAge = 0
+	}
+
+	if p != nil && p.shadow != nil {
+		if err := p.shadow.BootstrapRuntimeDescriptor(descriptor, sources...); err != nil {
+			log.Printf("semantic_read_shadow_bootstrap_failed key=%q err=%v", key.Canonical(), err)
+		}
+	}
+
+	return maxAge
+}
+
+func (p *vaillantSemanticPoller) bootstrapPassiveSharedWatchKey(key ebusgateway.WatchKey) {
+	if p == nil || p.shadow == nil || key == nil {
+		return
+	}
+
+	descriptor := semanticReadWatchDescriptorPassiveFallback(key)
+	sources := []ebusgateway.WatchActivationSource{ebusgateway.WatchActivationSourceTooling}
+	if p.watchObserver != nil {
+		observation := p.watchObserver.Observe(key)
+		if observation.HasDescriptor {
+			descriptor = semanticReadWatchDescriptorFromObservation(key, observation.Descriptor)
+		}
+		sources = semanticReadPassiveActivationSources(observation.Sources)
+	}
+
+	if err := p.shadow.BootstrapRuntimeDescriptor(descriptor, sources...); err != nil {
+		log.Printf("semantic_passive_shadow_bootstrap_failed key=%q err=%v", key.Canonical(), err)
+	}
+}
+
+func (p *vaillantSemanticPoller) prepareSemanticReadWatchObserved(key ebusgateway.WatchKey) (time.Duration, bool) {
+	if key == nil || p == nil || p.watchObserver == nil {
+		return 0, false
+	}
+
+	observation := p.watchObserver.Observe(key)
+	if !observation.HasDescriptor {
+		return 0, false
+	}
+
+	descriptor := semanticReadWatchDescriptorFromObservation(key, observation.Descriptor)
+	maxAge, err := descriptor.EffectiveFreshnessTTL()
+	if err != nil {
+		return 0, false
+	}
+	if maxAge < 0 {
+		maxAge = 0
+	}
+
+	if p.shadow != nil {
+		sources := semanticReadActivationSources(observation.Sources)
+		if err := p.shadow.BootstrapRuntimeDescriptor(descriptor, sources...); err != nil {
+			log.Printf("semantic_read_shadow_bootstrap_failed key=%q err=%v", key.Canonical(), err)
+			return 0, false
+		}
+	}
+
+	return maxAge, true
+}
+
+func semanticReadWatchDescriptorDefault(key ebusgateway.WatchKey) ebusgateway.WatchDescriptor {
+	return semanticReadWatchDescriptorWithDecoderID(key, "semantic.read.poller")
+}
+
+func semanticReadWatchDescriptorPassiveFallback(key ebusgateway.WatchKey) ebusgateway.WatchDescriptor {
+	return semanticReadWatchDescriptorWithDecoderID(key, "semantic.read.passive_fallback")
+}
+
+func semanticReadWatchDescriptorWithDecoderID(key ebusgateway.WatchKey, decoderID string) ebusgateway.WatchDescriptor {
+	return ebusgateway.WatchDescriptor{
+		Key:               key,
+		SemanticClass:     ebusgateway.WatchSemanticClassState,
+		FreshnessProfile:  ebusgateway.WatchFreshnessProfileStateFast,
+		DecoderID:         decoderID,
+		CorrelationPolicy: ebusgateway.WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: ebusgateway.WatchDirectApplyPolicyStateDefault,
+	}
+}
+
+func semanticReadWatchDescriptorFromObservation(key ebusgateway.WatchKey, observed ebusgateway.WatchDescriptor) ebusgateway.WatchDescriptor {
+	normalized := observed
+	normalized.Key = key
+	if normalized.SemanticClass == "" {
+		normalized.SemanticClass = ebusgateway.WatchSemanticClassState
+	}
+	if normalized.FreshnessProfile == "" {
+		normalized.FreshnessProfile = ebusgateway.WatchFreshnessProfileStateFast
+	}
+	if normalized.DecoderID == "" {
+		normalized.DecoderID = "semantic.read.poller"
+	}
+	if normalized.CorrelationPolicy == "" {
+		normalized.CorrelationPolicy = ebusgateway.WatchCorrelationPolicyRequestResponse
+	}
+	if normalized.DirectApplyPolicy == "" {
+		normalized.DirectApplyPolicy = ebusgateway.WatchDirectApplyPolicyStateDefault
+	}
+	return normalized
+}
+
+func semanticReadActivationSources(sources []ebusgateway.WatchActivationSource) []ebusgateway.WatchActivationSource {
+	if len(sources) == 0 {
+		return []ebusgateway.WatchActivationSource{ebusgateway.WatchActivationSourcePoller}
+	}
+
+	out := make([]ebusgateway.WatchActivationSource, 0, len(sources)+1)
+	seen := make(map[ebusgateway.WatchActivationSource]struct{}, len(sources)+1)
+	for _, source := range sources {
+		if source == "" {
+			continue
+		}
+		if _, ok := seen[source]; ok {
+			continue
+		}
+		seen[source] = struct{}{}
+		out = append(out, source)
+	}
+	if _, ok := seen[ebusgateway.WatchActivationSourcePoller]; !ok {
+		out = append(out, ebusgateway.WatchActivationSourcePoller)
+	}
+	return out
+}
+
+func semanticReadPassiveActivationSources(sources []ebusgateway.WatchActivationSource) []ebusgateway.WatchActivationSource {
+	if len(sources) == 0 {
+		return []ebusgateway.WatchActivationSource{ebusgateway.WatchActivationSourceTooling}
+	}
+
+	seen := make(map[ebusgateway.WatchActivationSource]struct{}, len(sources))
+	out := make([]ebusgateway.WatchActivationSource, 0, len(sources))
+	for _, source := range sources {
+		if source == "" {
+			continue
+		}
+		if _, ok := seen[source]; ok {
+			continue
+		}
+		seen[source] = struct{}{}
+		out = append(out, source)
+	}
+	if len(out) == 0 {
+		return []ebusgateway.WatchActivationSource{ebusgateway.WatchActivationSourceTooling}
+	}
+	return out
+}
+
 func (p *vaillantSemanticPoller) readB509Value(ctx context.Context, target byte, addr uint16) ([]byte, bool) {
-	if p == nil || p.bus == nil || target == 0 {
+	return p.readB509ValueWithMaxAge(ctx, target, addr, -1)
+}
+
+func (p *vaillantSemanticPoller) readB509ValueLive(ctx context.Context, target byte, addr uint16) ([]byte, bool) {
+	return p.readB509ValueWithMaxAge(ctx, target, addr, 0)
+}
+
+func (p *vaillantSemanticPoller) readB509ValueWithMaxAge(ctx context.Context, target byte, addr uint16, maxAgeOverride time.Duration) ([]byte, bool) {
+	if p == nil || (p.bus == nil && p.sendFrameFn == nil) || target == 0 {
 		return nil, false
 	}
 	if ctx == nil {
@@ -4791,8 +5237,12 @@ func (p *vaillantSemanticPoller) readB509Value(ctx context.Context, target byte,
 		timeout = 2 * time.Second
 	}
 
-	key := semanticReadB509Key(target, addr)
-	value, err := p.scheduler.Get(ctx, key, 500*time.Millisecond, func(ctx context.Context) ([]byte, error) {
+	watchKey := ebusgateway.NewB509WatchKey(target, addr)
+	maxAge := p.prepareSemanticReadWatch(watchKey)
+	if maxAgeOverride >= 0 {
+		maxAge = maxAgeOverride
+	}
+	value, err := p.scheduler.GetWatch(ctx, watchKey, maxAge, func(ctx context.Context) ([]byte, error) {
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
 			p.readMu.Lock()
@@ -4804,7 +5254,7 @@ func (p *vaillantSemanticPoller) readB509Value(ctx context.Context, target byte,
 				Secondary: vaillantB509Secondary,
 				Data:      buildB509ReadSelector(addr),
 			}
-			response, err := p.bus.Send(reqCtx, request)
+			response, err := p.sendSemanticFrame(reqCtx, request)
 			cancel()
 			p.readMu.Unlock()
 
@@ -4838,7 +5288,7 @@ func (p *vaillantSemanticPoller) readB509Value(ctx context.Context, target byte,
 }
 
 func (p *vaillantSemanticPoller) writeB509Value(ctx context.Context, target byte, addr uint16, value []byte) error {
-	if p == nil || p.bus == nil {
+	if p == nil || (p.bus == nil && p.sendFrameFn == nil) {
 		return fmt.Errorf("b509 write unavailable")
 	}
 	if target == 0 {
@@ -4867,7 +5317,7 @@ func (p *vaillantSemanticPoller) writeB509Value(ctx context.Context, target byte
 			Secondary: vaillantB509Secondary,
 			Data:      buildB509WriteSelector(addr, value),
 		}
-		response, err := p.bus.Send(reqCtx, request)
+		response, err := p.sendSemanticFrame(reqCtx, request)
 		cancel()
 		p.readMu.Unlock()
 
@@ -4893,6 +5343,19 @@ func (p *vaillantSemanticPoller) writeB509Value(ctx context.Context, target byte
 		lastErr = fmt.Errorf("b509 write failed")
 	}
 	return lastErr
+}
+
+func (p *vaillantSemanticPoller) sendSemanticFrame(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+	if p == nil {
+		return nil, fmt.Errorf("semantic poller unavailable")
+	}
+	if p.sendFrameFn != nil {
+		return p.sendFrameFn(ctx, frame)
+	}
+	if p.bus == nil {
+		return nil, fmt.Errorf("semantic bus unavailable")
+	}
+	return p.bus.Send(ctx, frame)
 }
 
 type boilerConfigFieldSpec struct {
@@ -4957,7 +5420,8 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 	if err := p.writeB509Value(ctx, boilerAddress, addr, payload); err != nil {
 		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
 	}
-	readback, ok := p.readB509Value(ctx, boilerAddress, addr)
+	p.fenceB509WriteConfirmShadow(boilerAddress, addr)
+	readback, ok := p.readB509ValueLive(ctx, boilerAddress, addr)
 	if !ok || len(readback) < len(payload) {
 		return graphql.BoilerConfigMutationResult{Success: false, Error: "b509 write confirm failed: read-back unavailable"}
 	}
@@ -4971,6 +5435,20 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 
 	p.publishBoilerStatus(semanticSnapshotSourceLive)
 	return graphql.BoilerConfigMutationResult{Success: true}
+}
+
+func (p *vaillantSemanticPoller) fenceB509WriteConfirmShadow(target byte, addr uint16) {
+	if p == nil || p.shadow == nil || target == 0 {
+		return
+	}
+
+	key := ebusgateway.NewB509WatchKey(target, addr)
+	p.shadow.Invalidate(ebusgateway.ShadowInvalidation{
+		Key:           key,
+		Reason:        ebusgateway.ShadowInvalidationReasonExternalWrite,
+		Source:        ebusgateway.ShadowInvalidationSourceActive,
+		InvalidatedAt: p.now(),
+	})
 }
 
 func parseBoilerConfigValue(rawValue string, spec boilerConfigFieldSpec) (float64, error) {
@@ -5223,8 +5701,9 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 		timeout = 2 * time.Second
 	}
 
-	key := semanticReadBreakerKey(target, opcode, group, instance, addr)
-	value, err := p.scheduler.Get(ctx, key, 500*time.Millisecond, func(ctx context.Context) ([]byte, error) {
+	watchKey := ebusgateway.NewB524WatchKey(target, opcode, group, instance, addr)
+	maxAge := p.prepareSemanticReadWatch(watchKey)
+	value, err := p.scheduler.GetWatch(ctx, watchKey, maxAge, func(ctx context.Context) ([]byte, error) {
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
 			p.readMu.Lock()

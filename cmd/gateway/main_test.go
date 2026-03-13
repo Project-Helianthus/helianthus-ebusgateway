@@ -273,6 +273,165 @@ func TestShouldStartPassiveObserveFirst(t *testing.T) {
 	}
 }
 
+func TestRun_AttachesPassiveShadowProducerWhenObserveFirstLaneEnabled(t *testing.T) {
+	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
+	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
+	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
+	origAttachPassiveShadowProducerFn := attachPassiveShadowProducerFn
+	origStartHTTPServerFn := startHTTPServerFn
+	t.Cleanup(func() {
+		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
+		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
+		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
+		attachPassiveShadowProducerFn = origAttachPassiveShadowProducerFn
+		startHTTPServerFn = origStartHTTPServerFn
+	})
+
+	cfgForDedup := ebusgateway.DefaultConfig()
+	deduplicator, err := ebusgateway.NewActivePassiveDeduplicator(cfgForDedup)
+	if err != nil {
+		t.Fatalf("NewActivePassiveDeduplicator() error = %v", err)
+	}
+
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, deduplicator, nil
+	}
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder) startupScanSignals {
+		return startupScanSignals{}
+	}
+
+	poller := &vaillantSemanticPoller{}
+	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
+		return poller
+	}
+
+	attached := make(chan struct{}, 1)
+	attachErr := make(chan string, 1)
+	attachPassiveShadowProducerFn = func(gotPoller *vaillantSemanticPoller, _ context.Context, gotDeduplicator *ebusgateway.ActivePassiveDeduplicator) error {
+		if gotPoller != poller {
+			select {
+			case attachErr <- "attach poller mismatch":
+			default:
+			}
+			return nil
+		}
+		if gotDeduplicator != deduplicator {
+			select {
+			case attachErr <- "attach deduplicator mismatch":
+			default:
+			}
+			return nil
+		}
+		select {
+		case attached <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, *ebusgateway.BusObservabilityStore) (*http.Server, mdns.Advertiser, error) {
+		cancel()
+		return nil, nil, nil
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.Transport = transport.NewLoopback()
+	cfg.BroadcastListen = false
+	cfg.ObserveFirstEnabled = true
+	cfg.PassiveStateDirectApply = true
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg)
+	}()
+
+	select {
+	case <-attached:
+	case msg := <-attachErr:
+		t.Fatal(msg)
+	case <-time.After(2 * time.Second):
+		t.Fatal("attachPassiveShadowProducerFn was not called")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run() did not exit after context cancellation")
+	}
+}
+
+func TestRun_DoesNotAttachPassiveShadowProducerWhenObserveFirstMasterDisabled(t *testing.T) {
+	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
+	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
+	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
+	origAttachPassiveShadowProducerFn := attachPassiveShadowProducerFn
+	origStartHTTPServerFn := startHTTPServerFn
+	t.Cleanup(func() {
+		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
+		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
+		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
+		attachPassiveShadowProducerFn = origAttachPassiveShadowProducerFn
+		startHTTPServerFn = origStartHTTPServerFn
+	})
+
+	cfgForDedup := ebusgateway.DefaultConfig()
+	deduplicator, err := ebusgateway.NewActivePassiveDeduplicator(cfgForDedup)
+	if err != nil {
+		t.Fatalf("NewActivePassiveDeduplicator() error = %v", err)
+	}
+
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, deduplicator, nil
+	}
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder) startupScanSignals {
+		return startupScanSignals{}
+	}
+	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
+		return &vaillantSemanticPoller{}
+	}
+
+	attachCalled := make(chan struct{}, 1)
+	attachPassiveShadowProducerFn = func(*vaillantSemanticPoller, context.Context, *ebusgateway.ActivePassiveDeduplicator) error {
+		select {
+		case attachCalled <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, *ebusgateway.BusObservabilityStore) (*http.Server, mdns.Advertiser, error) {
+		cancel()
+		return nil, nil, nil
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.Transport = transport.NewLoopback()
+	cfg.BroadcastListen = false
+	cfg.ObserveFirstEnabled = false
+	cfg.PassiveStateDirectApply = true
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg)
+	}()
+
+	select {
+	case <-attachCalled:
+		t.Fatal("attachPassiveShadowProducerFn was called with observe-first master disabled")
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run() did not exit after context cancellation")
+	}
+}
+
 func TestRun_ProxySingleENSAutoUsesSameSemanticSourceAsStartupConfirmation(t *testing.T) {
 	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
 	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn

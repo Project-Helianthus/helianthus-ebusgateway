@@ -422,7 +422,7 @@ func TestRun_DoesNotAttachPassiveShadowProducerWhenObserveFirstMasterDisabled(t 
 
 	select {
 	case <-attachCalled:
-		t.Fatal("attachPassiveShadowProducerFn was called with observe-first master disabled")
+		t.Fatal("attachPassiveShadowProducerFn was called with observe-first global gate disabled")
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("run() error = %v", err)

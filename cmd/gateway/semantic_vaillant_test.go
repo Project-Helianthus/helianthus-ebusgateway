@@ -1168,7 +1168,7 @@ func TestHandleAdjudicatedPassiveEvent_ReadSkipsShadowWhenObserveFirstMasterDisa
 	poller.handleAdjudicatedPassiveEvent(event)
 
 	if lookup := poller.shadow.Lookup(key, 10*time.Second); lookup.Found {
-		t.Fatalf("shadow lookup found = true; want observe-first master gate to block passive shadow write (state=%s value=%x)", lookup.Entry.State, lookup.Entry.Value)
+		t.Fatalf("shadow lookup found = true; want observe-first global gate to block passive shadow write (state=%s value=%x)", lookup.Entry.State, lookup.Entry.Value)
 	}
 }
 

@@ -606,7 +606,7 @@ func (deduplicator *ActivePassiveDeduplicator) handlePassiveEvent(event PassiveC
 func (deduplicator *ActivePassiveDeduplicator) buildPassiveFingerprintLocked(event PassiveClassifiedEvent, observedAt time.Time) (PassiveTransactionFingerprint, bool, DedupDisposition) {
 	transactionClass := deduplicator.passiveTransactionClassLocked(event)
 	outcome := passiveOutcomeClass(event)
-	responseClass := passiveResponseClass(event, outcome)
+	responseClass := observeFirstResponseClassForPassiveEvent(event, outcome)
 
 	fingerprint := PassiveTransactionFingerprint{
 		Epoch:            deduplicator.currentEpoch,
@@ -741,7 +741,7 @@ func buildActiveFingerprint(epoch uint64, event protocol.BusEvent, observedAt ti
 		return ActiveTransactionFingerprint{}, false
 	}
 
-	responseClass := activeResponseClass(event)
+	responseClass := observeFirstResponseClassForActiveEvent(event)
 	requestBytes := canonicalFrameBytes(event.Request)
 	var responseBytes []byte
 	if event.HasResponse {

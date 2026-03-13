@@ -189,6 +189,63 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedB509WatchKeyFo
 	}
 }
 
+func TestBuildActiveFingerprint_B509HeaderOnlyResponseUsesFamilyClassifier(t *testing.T) {
+	request := protocol.Frame{
+		Source:    0x31,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{0x29, 0x02, 0x00},
+	}
+	response := protocol.Frame{
+		Source:    request.Target,
+		Target:    request.Source,
+		Primary:   request.Primary,
+		Secondary: request.Secondary,
+		Data:      []byte{0x29, 0x02, 0x00},
+	}
+
+	fingerprint, ok := buildActiveFingerprint(7, activeAttemptEvent(request, response), time.Unix(0, 0))
+	if !ok {
+		t.Fatal("buildActiveFingerprint ok = false; want true")
+	}
+	if fingerprint.ResponseClass != DedupResponseHeaderOnly {
+		t.Fatalf("ResponseClass = %q; want %q", fingerprint.ResponseClass, DedupResponseHeaderOnly)
+	}
+}
+
+func TestActivePassiveDeduplicator_BuildPassiveFingerprint_B524HeaderOnlyUsesFamilyClassifier(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	request := protocol.Frame{
+		Source:    0x10,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x24,
+		Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x1C, 0x00},
+	}
+	response := protocol.Frame{
+		Source:    request.Target,
+		Target:    request.Source,
+		Primary:   request.Primary,
+		Secondary: request.Secondary,
+		Data:      []byte{0x42, 0x01, 0x03, 0x1C, 0x00},
+	}
+
+	deduplicator.mu.Lock()
+	fingerprint, matchEligible, disposition := deduplicator.buildPassiveFingerprintLocked(
+		passiveTransactionEvent(time.Unix(0, 0), request, response),
+		time.Unix(0, 0),
+	)
+	deduplicator.mu.Unlock()
+
+	if !matchEligible {
+		t.Fatalf("matchEligible = false; want true (disposition=%q)", disposition)
+	}
+	if fingerprint.ResponseClass != DedupResponseHeaderOnly {
+		t.Fatalf("ResponseClass = %q; want %q", fingerprint.ResponseClass, DedupResponseHeaderOnly)
+	}
+}
+
 func TestActivePassiveDeduplicator_ConsumesActiveFingerprintAfterSingleMatch(t *testing.T) {
 	deduplicator := newTestDeduplicator(t)
 	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)

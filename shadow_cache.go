@@ -181,6 +181,7 @@ type ShadowCache struct {
 	compactorStop   chan struct{}
 	compactorDone   chan struct{}
 	compactorOnce   sync.Once
+	compactorClose  sync.Once
 
 	pinnedBudgetDegraded atomic.Bool
 	compactorDegraded    atomic.Bool
@@ -350,7 +351,9 @@ func (cache *ShadowCache) Close(ctx context.Context) error {
 		return nil
 	default:
 	}
-	close(cache.compactorStop)
+	cache.compactorClose.Do(func() {
+		close(cache.compactorStop)
+	})
 	select {
 	case <-cache.compactorDone:
 		return nil
@@ -840,7 +843,7 @@ func (cache *ShadowCache) ensureCapacityLocked(desiredPin shadowPinClass) bool {
 			return false
 		}
 		canonical, _ := front.Value.(string)
-		cache.removeEntryLocked(canonical, false)
+		cache.removeEntryLocked(canonical)
 	}
 	if desiredPin == shadowPinClassWriteConfirm && cache.writeConfirmPinnedCountLocked() >= cache.writeConfirmPinnedCap {
 		return false
@@ -895,7 +898,7 @@ func (cache *ShadowCache) compactBatch(batch []string, now time.Time) {
 			}
 			cache.advanceGenerationLocked(entry, state)
 			cache.storeAbsentSnapshotLocked(state)
-			cache.removeEntryLocked(canonical, true)
+			cache.removeEntryLocked(canonical)
 		}
 	}
 }
@@ -999,7 +1002,7 @@ func (cache *ShadowCache) loadSnapshotRecord(canonical string) shadowEligibility
 	return *record
 }
 
-func (cache *ShadowCache) removeEntryLocked(canonical string, removeSnapshot bool) {
+func (cache *ShadowCache) removeEntryLocked(canonical string) {
 	entry := cache.entries[canonical]
 	if entry == nil {
 		return
@@ -1015,11 +1018,9 @@ func (cache *ShadowCache) removeEntryLocked(canonical string, removeSnapshot boo
 		cache.compactorList.Remove(entry.compactorElem)
 	}
 	delete(cache.entries, canonical)
-	if removeSnapshot {
-		loaded, _ := cache.keyState.Load(canonical)
-		state, _ := loaded.(*shadowKeyState)
-		cache.storeAbsentSnapshotLocked(state)
-	}
+	loaded, _ := cache.keyState.Load(canonical)
+	state, _ := loaded.(*shadowKeyState)
+	cache.storeAbsentSnapshotLocked(state)
 }
 
 func cloneShadowEntryView(entry *shadowEntry) ShadowEntryView {

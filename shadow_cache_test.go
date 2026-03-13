@@ -560,6 +560,37 @@ func TestShadowCacheSnapshotEligibilityAndLookupFollowFreshness(t *testing.T) {
 	}
 }
 
+func TestShadowCacheEvictionStoresAbsentSnapshot(t *testing.T) {
+	t.Parallel()
+
+	evictedKey := NewB509WatchKey(0x08, 0x0200)
+	survivorKey := NewB509WatchKey(0x08, 0x0201)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{evictedKey, survivorKey}, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{
+		Capacity:       1,
+		PinnedCapacity: 1,
+	})
+
+	writeShadow(t, cache, evictedKey, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x20})
+	generation := cache.CaptureGeneration(evictedKey)
+	if generation == 0 {
+		t.Fatal("CaptureGeneration(evictedKey) = 0; want persisted generation before eviction")
+	}
+
+	writeShadow(t, cache, survivorKey, ShadowWriteSourcePassive, time.Unix(101, 0), []byte{0x21})
+
+	if _, ok := cache.Entry(evictedKey); ok {
+		t.Fatal("Entry(evictedKey) still present after capacity eviction")
+	}
+	snapshot := cache.SnapshotEligibility(evictedKey)
+	if snapshot.Present {
+		t.Fatalf("SnapshotEligibility(evictedKey) = %+v; want absent after eviction", snapshot)
+	}
+	if snapshot.Generation != generation {
+		t.Fatalf("SnapshotEligibility(evictedKey).Generation = %d; want %d", snapshot.Generation, generation)
+	}
+}
+
 func TestShadowCacheStartAndCloseCompactor(t *testing.T) {
 	t.Parallel()
 
@@ -575,6 +606,50 @@ func TestShadowCacheStartAndCloseCompactor(t *testing.T) {
 	defer cancel()
 	if err := cache.Close(ctx); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestShadowCacheCloseIsIdempotentAcrossConcurrentCalls(t *testing.T) {
+	t.Parallel()
+
+	key := NewB509WatchKey(0x08, 0x0200)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourcePoller)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{
+		ShutdownCompactorTimeout: 100 * time.Millisecond,
+	})
+	cache.compactorStarted.Store(true)
+	cache.compactorStop = make(chan struct{})
+	cache.compactorDone = make(chan struct{})
+
+	stopObserved := make(chan struct{})
+	releaseDone := make(chan struct{})
+	go func() {
+		<-cache.compactorStop
+		close(stopObserved)
+		<-releaseDone
+		close(cache.compactorDone)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- cache.Close(ctx)
+	}()
+
+	<-stopObserved
+
+	go func() {
+		errCh <- cache.Close(ctx)
+	}()
+
+	close(releaseDone)
+
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("Close() error = %v; want nil across repeated/concurrent calls", err)
+		}
 	}
 }
 

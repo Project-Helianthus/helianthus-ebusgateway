@@ -660,6 +660,16 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 						Active:  true,
 						Reasons: []string{"dedup_degraded"},
 					},
+					FeatureFlags: ObserveFirstFeatureFlagState{
+						ObserveFirstEnabled:      true,
+						PassiveStateDirectApply:  false,
+						PassiveConfigDirectApply: false,
+						ExternalWritePolicy:      "record_only",
+						Normalizations: []string{
+							"config_requires_state",
+							"state_disabled_forces_record_only",
+						},
+					},
 				},
 				Messages:    BusBoundedListSummary{Count: 3, Capacity: 16},
 				Periodicity: BusBoundedListSummary{Count: 2, Capacity: 8},
@@ -714,6 +724,19 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 	}
 	if got, _ := degraded["active"].(bool); !got {
 		t.Fatalf("bus summary degraded.active = %v; want true", degraded["active"])
+	}
+	featureFlags, ok := status["feature_flags"].(map[string]any)
+	if !ok {
+		t.Fatalf("bus summary feature_flags type = %T; want map", status["feature_flags"])
+	}
+	if got, _ := featureFlags["external_write_policy"].(string); got != "record_only" {
+		t.Fatalf("bus summary feature_flags.external_write_policy = %q; want record_only", got)
+	}
+	if got, _ := featureFlags["passive_state_direct_apply"].(bool); got {
+		t.Fatalf("bus summary feature_flags.passive_state_direct_apply = %v; want false", got)
+	}
+	if normalizations, _ := featureFlags["normalizations"].([]any); len(normalizations) != 2 {
+		t.Fatalf("bus summary feature_flags.normalizations = %#v; want 2 entries", featureFlags["normalizations"])
 	}
 
 	messageEnvelope := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{

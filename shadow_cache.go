@@ -72,6 +72,7 @@ const (
 )
 
 type ShadowCacheOptions struct {
+	FeatureFlags             ObserveFirstFeatureFlagView
 	Catalog                  *WatchCatalog
 	Activations              *WatchActivationSet
 	Capacity                 int
@@ -170,6 +171,7 @@ type ShadowCache struct {
 	compactorCadence         time.Duration
 	compactorBatchSize       int
 	shutdownCompactorTimeout time.Duration
+	featureFlags             ObserveFirstFeatureFlags
 	now                      func() time.Time
 
 	mu              sync.Mutex
@@ -245,6 +247,7 @@ func NewShadowCache(options ShadowCacheOptions) *ShadowCache {
 		compactorCadence:         options.CompactorCadence,
 		compactorBatchSize:       options.CompactorBatchSize,
 		shutdownCompactorTimeout: options.ShutdownCompactorTimeout,
+		featureFlags:             NormalizeObserveFirstFeatureFlagsFromView(options.FeatureFlags),
 		now:                      options.Now,
 		entries:                  make(map[string]*shadowEntry),
 		evictableLRU:             list.New(),
@@ -257,6 +260,7 @@ func NewShadowCache(options ShadowCacheOptions) *ShadowCache {
 }
 
 func normalizeShadowCacheOptions(options ShadowCacheOptions) ShadowCacheOptions {
+	options.FeatureFlags = NormalizeObserveFirstFeatureFlagsFromView(options.FeatureFlags)
 	if options.Catalog == nil {
 		options.Catalog = &WatchCatalog{}
 	}
@@ -300,6 +304,13 @@ func normalizeShadowCacheOptions(options ShadowCacheOptions) ShadowCacheOptions 
 		options.Now = time.Now
 	}
 	return options
+}
+
+func (cache *ShadowCache) FeatureFlags() ObserveFirstFeatureFlags {
+	if cache == nil {
+		return DefaultObserveFirstFeatureFlags()
+	}
+	return cache.featureFlags
 }
 
 func (cache *ShadowCache) StartCompactor() {

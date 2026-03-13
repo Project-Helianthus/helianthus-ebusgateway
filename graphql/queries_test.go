@@ -176,6 +176,16 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						Active:  true,
 						Reasons: []string{"unsupported_or_misconfigured", "dedup_degraded"},
 					},
+					FeatureFlags: ObserveFirstFeatureFlagState{
+						ObserveFirstEnabled:      true,
+						PassiveStateDirectApply:  false,
+						PassiveConfigDirectApply: false,
+						ExternalWritePolicy:      "record_only",
+						Normalizations: []string{
+							"config_requires_state",
+							"state_disabled_forces_record_only",
+						},
+					},
 				},
 				Messages:    BusBoundedListSummary{Count: 2, Capacity: 1024},
 				Periodicity: BusBoundedListSummary{Count: 2, Capacity: 256},
@@ -521,6 +531,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 							active
 							reasons
 						}
+						featureFlags {
+							observeFirstEnabled
+							passiveStateDirectApply
+							passiveConfigDirectApply
+							externalWritePolicy
+							normalizations
+						}
 					}
 					messages {
 						count
@@ -613,6 +630,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						Active  bool     `json:"active"`
 						Reasons []string `json:"reasons"`
 					} `json:"degraded"`
+					FeatureFlags struct {
+						ObserveFirstEnabled      bool     `json:"observeFirstEnabled"`
+						PassiveStateDirectApply  bool     `json:"passiveStateDirectApply"`
+						PassiveConfigDirectApply bool     `json:"passiveConfigDirectApply"`
+						ExternalWritePolicy      string   `json:"externalWritePolicy"`
+						Normalizations           []string `json:"normalizations"`
+					} `json:"featureFlags"`
 				} `json:"status"`
 				Messages struct {
 					Count    int `json:"count"`
@@ -682,6 +706,15 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if !response.BusSummary.Status.Degraded.Active || len(response.BusSummary.Status.Degraded.Reasons) != 2 {
 			t.Fatalf("degraded = %+v; want active with 2 reasons", response.BusSummary.Status.Degraded)
+		}
+		if response.BusSummary.Status.FeatureFlags.ExternalWritePolicy != "record_only" {
+			t.Fatalf("featureFlags.externalWritePolicy = %q; want record_only", response.BusSummary.Status.FeatureFlags.ExternalWritePolicy)
+		}
+		if response.BusSummary.Status.FeatureFlags.PassiveStateDirectApply {
+			t.Fatal("featureFlags.passiveStateDirectApply = true; want false")
+		}
+		if len(response.BusSummary.Status.FeatureFlags.Normalizations) != 2 {
+			t.Fatalf("featureFlags.normalizations = %v; want 2 entries", response.BusSummary.Status.FeatureFlags.Normalizations)
 		}
 		if response.BusSummary.Messages.Count != 2 || response.BusSummary.Messages.Capacity != 1024 {
 			t.Fatalf("messages summary = %+v; want count=2 capacity=1024", response.BusSummary.Messages)

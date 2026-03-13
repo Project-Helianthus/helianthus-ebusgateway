@@ -43,6 +43,7 @@ type BusObservabilityStatus struct {
 	Warmup         BusObservabilityWarmup        `json:"warmup"`
 	TimingQuality  BusObservabilityTimingQuality `json:"timing_quality"`
 	Degraded       BusObservabilityDegraded      `json:"degraded"`
+	FeatureFlags   ObserveFirstFeatureFlagState  `json:"feature_flags"`
 }
 
 type BusObservabilityBoundedList struct {
@@ -174,6 +175,7 @@ func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus Passi
 				Active:  len(reasons) > 0,
 				Reasons: reasons,
 			},
+			FeatureFlags: store.cfg.ObserveFirstFlags.State(),
 		},
 		Messages: BusObservabilityBoundedList{
 			Count:    store.recentLen,

@@ -245,6 +245,7 @@ func normalizeMCPBusSnapshot(snapshot mcp.BusObservabilitySnapshot) mcp.BusObser
 		if snapshot.Summary.Status != nil {
 			status := *snapshot.Summary.Status
 			status.Degraded.Reasons = append([]string(nil), snapshot.Summary.Status.Degraded.Reasons...)
+			status.FeatureFlags.Normalizations = append([]string(nil), snapshot.Summary.Status.FeatureFlags.Normalizations...)
 			normalized.Status = &status
 		}
 		snapshot.Summary = &normalized
@@ -291,6 +292,13 @@ func graphQLStatusToMCP(status *graphql.BusObservabilityStatus) *mcp.BusObservab
 		Degraded: mcp.BusObservabilityDegraded{
 			Active:  status.Degraded.Active,
 			Reasons: append([]string(nil), status.Degraded.Reasons...),
+		},
+		FeatureFlags: mcp.ObserveFirstFeatureFlagState{
+			ObserveFirstEnabled:      status.FeatureFlags.ObserveFirstEnabled,
+			PassiveStateDirectApply:  status.FeatureFlags.PassiveStateDirectApply,
+			PassiveConfigDirectApply: status.FeatureFlags.PassiveConfigDirectApply,
+			ExternalWritePolicy:      status.FeatureFlags.ExternalWritePolicy,
+			Normalizations:           append([]string(nil), status.FeatureFlags.Normalizations...),
 		},
 	}
 }

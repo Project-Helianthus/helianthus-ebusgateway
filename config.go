@@ -107,6 +107,11 @@ type Config struct {
 	DumpUploadPath                          string
 	DumpUploadURL                           string
 	DumpIncludePII                          bool
+	ObserveFirstEnabled                     bool
+	PassiveStateDirectApply                 bool
+	PassiveConfigDirectApply                bool
+	ExternalWritePolicy                     ObserveFirstExternalWritePolicy
+	ObserveFirstFlags                       ObserveFirstFeatureFlags
 	ObserveFirstRecentMessageCapacity       int
 	ObserveFirstPeriodicityCapacity         int
 	ObserveFirstPeriodicityStaleTTL         time.Duration
@@ -120,6 +125,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	dedupDefaults := defaultPassiveDedupBudgets(protocol.DefaultBusConfig().RetryEnvelope())
+	featureFlags := DefaultObserveFirstFeatureFlags()
 	return Config{
 		TransportConfig: TransportConfig{
 			Protocol:     TransportENH,
@@ -177,6 +183,11 @@ func DefaultConfig() Config {
 		MDNSAdvertise:                           true,
 		MDNSInstance:                            "helianthus",
 		DumpOutputDir:                           "./dumps",
+		ObserveFirstEnabled:                     featureFlags.ObserveFirstEnabled(),
+		PassiveStateDirectApply:                 featureFlags.PassiveStateDirectApply(),
+		PassiveConfigDirectApply:                featureFlags.PassiveConfigDirectApply(),
+		ExternalWritePolicy:                     featureFlags.ExternalWritePolicy(),
+		ObserveFirstFlags:                       featureFlags,
 		ObserveFirstRecentMessageCapacity:       DefaultObserveFirstRecentMessageCapacity,
 		ObserveFirstPeriodicityCapacity:         DefaultObserveFirstPeriodicityCapacity,
 		ObserveFirstPeriodicityStaleTTL:         DefaultObserveFirstPeriodicityStaleTTL,
@@ -367,5 +378,14 @@ func applyDefaults(cfg Config) Config {
 	if cfg.ObserveFirstWarmupOuterWindow <= 0 {
 		cfg.ObserveFirstWarmupOuterWindow = DefaultObserveFirstWarmupOuterWindow
 	}
+	flags := NormalizeObserveFirstFeatureFlags(cfg.ObserveFirstEnabled, cfg.PassiveStateDirectApply, cfg.PassiveConfigDirectApply, cfg.ExternalWritePolicy)
+	if cfg.ExternalWritePolicy == "" && !cfg.ObserveFirstEnabled && !cfg.PassiveStateDirectApply && !cfg.PassiveConfigDirectApply && cfg.ObserveFirstFlags.configured() {
+		flags = NormalizeObserveFirstFeatureFlagsFromView(cfg.ObserveFirstFlags)
+	}
+	cfg.ObserveFirstFlags = flags
+	cfg.ObserveFirstEnabled = flags.ObserveFirstEnabled()
+	cfg.PassiveStateDirectApply = flags.PassiveStateDirectApply()
+	cfg.PassiveConfigDirectApply = flags.PassiveConfigDirectApply()
+	cfg.ExternalWritePolicy = flags.ExternalWritePolicy()
 	return cfg
 }

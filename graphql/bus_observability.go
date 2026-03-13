@@ -47,6 +47,15 @@ type BusObservabilityStatus struct {
 	Warmup         BusObservabilityWarmup
 	TimingQuality  BusObservabilityTimingQuality
 	Degraded       BusObservabilityDegraded
+	FeatureFlags   ObserveFirstFeatureFlagState
+}
+
+type ObserveFirstFeatureFlagState struct {
+	ObserveFirstEnabled      bool
+	PassiveStateDirectApply  bool
+	PassiveConfigDirectApply bool
+	ExternalWritePolicy      string
+	Normalizations           []string
 }
 
 type BusBoundedListSummary struct {
@@ -197,6 +206,9 @@ func cloneBusObservabilityStatus(source *BusObservabilityStatus) *BusObservabili
 	out := *source
 	if len(source.Degraded.Reasons) > 0 {
 		out.Degraded.Reasons = append([]string(nil), source.Degraded.Reasons...)
+	}
+	if len(source.FeatureFlags.Normalizations) > 0 {
+		out.FeatureFlags.Normalizations = append([]string(nil), source.FeatureFlags.Normalizations...)
 	}
 	return &out
 }
@@ -470,6 +482,62 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 		},
 	})
 
+	featureFlagStateType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "ObserveFirstFeatureFlagState",
+		Fields: graphqlgo.Fields{
+			"observeFirstEnabled": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(ObserveFirstFeatureFlagState)
+					if !ok {
+						return false, nil
+					}
+					return state.ObserveFirstEnabled, nil
+				},
+			},
+			"passiveStateDirectApply": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(ObserveFirstFeatureFlagState)
+					if !ok {
+						return false, nil
+					}
+					return state.PassiveStateDirectApply, nil
+				},
+			},
+			"passiveConfigDirectApply": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(ObserveFirstFeatureFlagState)
+					if !ok {
+						return false, nil
+					}
+					return state.PassiveConfigDirectApply, nil
+				},
+			},
+			"externalWritePolicy": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(ObserveFirstFeatureFlagState)
+					if !ok {
+						return "", nil
+					}
+					return state.ExternalWritePolicy, nil
+				},
+			},
+			"normalizations": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.String))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(ObserveFirstFeatureFlagState)
+					if !ok || len(state.Normalizations) == 0 {
+						return []string{}, nil
+					}
+					return append([]string(nil), state.Normalizations...), nil
+				},
+			},
+		},
+	})
+
 	statusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "BusObservabilityStatus",
 		Fields: graphqlgo.Fields{
@@ -541,6 +609,20 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 						return BusObservabilityDegraded{}, nil
 					}
 					return value.Degraded, nil
+				},
+			},
+			"featureFlags": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(featureFlagStateType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*BusObservabilityStatus)
+					if ok && status != nil {
+						return status.FeatureFlags, nil
+					}
+					value, ok := params.Source.(BusObservabilityStatus)
+					if !ok {
+						return ObserveFirstFeatureFlagState{}, nil
+					}
+					return value.FeatureFlags, nil
 				},
 			},
 		},

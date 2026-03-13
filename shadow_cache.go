@@ -560,6 +560,8 @@ func (cache *ShadowCache) Invalidate(invalidation ShadowInvalidation) ShadowInva
 
 	if entry == nil {
 		if !cache.ensureCapacityLocked(desiredPin) {
+			cache.advanceAbsentGenerationLocked(state)
+			cache.storeAbsentSnapshotLocked(state)
 			return ShadowInvalidationResult{
 				Generation: state.generation,
 				State:      ShadowEntryStateTombstone,
@@ -919,6 +921,14 @@ func (cache *ShadowCache) nextCompactorBatch() []string {
 func (cache *ShadowCache) advanceGenerationLocked(entry *shadowEntry, state *shadowKeyState) {
 	state.generation++
 	entry.generation = state.generation
+}
+
+func (cache *ShadowCache) advanceAbsentGenerationLocked(state *shadowKeyState) {
+	if state == nil {
+		return
+	}
+	state.generation++
+	state.lastWriteGeneration++
 }
 
 func (cache *ShadowCache) bumpLastWriteGenerationLocked(entry *shadowEntry, state *shadowKeyState) {

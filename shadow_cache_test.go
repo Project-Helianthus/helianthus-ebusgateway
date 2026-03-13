@@ -211,6 +211,65 @@ func TestShadowCacheInvalidationGenerationRejectsStaleActiveWrite(t *testing.T) 
 	}
 }
 
+func TestShadowCacheCapacityBlockedInvalidationStillRejectsStaleActiveWrite(t *testing.T) {
+	t.Parallel()
+
+	pinnedKey := NewB509WatchKey(0x08, 0x0200)
+	invalidatedKey := NewB509WatchKey(0x08, 0x0201)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{pinnedKey, invalidatedKey}, WatchActivationSourceWriteConfirm)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{
+		Capacity:              1,
+		PinnedCapacity:        1,
+		WriteConfirmPinnedCap: 1,
+	})
+
+	writeShadow(t, cache, pinnedKey, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x20})
+	startGeneration := cache.CaptureGeneration(invalidatedKey)
+
+	invalidation := cache.Invalidate(ShadowInvalidation{
+		Key:           invalidatedKey,
+		Reason:        ShadowInvalidationReasonExternalWrite,
+		Source:        ShadowInvalidationSourcePassive,
+		InvalidatedAt: time.Unix(101, 0),
+	})
+	if invalidation.Generation == startGeneration {
+		t.Fatalf("Invalidate() generation = %d; want generation advancement even when tombstone admission fails", invalidation.Generation)
+	}
+	if invalidation.State != ShadowEntryStateTombstone {
+		t.Fatalf("Invalidate() state = %s; want %s when tombstone could not be admitted", invalidation.State, ShadowEntryStateTombstone)
+	}
+
+	snapshot := cache.SnapshotEligibility(invalidatedKey)
+	if snapshot.Present {
+		t.Fatalf("SnapshotEligibility() = %+v; want no cached entry when tombstone admission fails", snapshot)
+	}
+	if snapshot.Generation != invalidation.Generation {
+		t.Fatalf("SnapshotEligibility().Generation = %d; want %d", snapshot.Generation, invalidation.Generation)
+	}
+
+	activations.Deactivate(WatchActivationSourceWriteConfirm, pinnedKey)
+	cache.RefreshActivations()
+
+	result := cache.Write(ShadowWrite{
+		Key:             invalidatedKey,
+		Source:          ShadowWriteSourceActiveConfirmed,
+		Confidence:      ShadowConfidenceHigh,
+		Value:           []byte{0x21},
+		ObservedAt:      time.Unix(102, 0),
+		StartGeneration: startGeneration,
+	})
+	if result.Accepted {
+		t.Fatal("stale active_confirmed write accepted after capacity-blocked invalidation")
+	}
+	if result.Reason != ShadowWriteRejectionReasonGenerationAdvanced {
+		t.Fatalf("rejection reason = %s; want %s", result.Reason, ShadowWriteRejectionReasonGenerationAdvanced)
+	}
+
+	if _, ok := cache.Entry(invalidatedKey); ok {
+		t.Fatal("Entry(invalidatedKey) present; want no cached tombstone after admission failure")
+	}
+}
+
 func TestShadowCacheCompactsAndDepinsPinnedTombstone(t *testing.T) {
 	t.Parallel()
 

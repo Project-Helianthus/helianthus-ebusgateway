@@ -197,11 +197,11 @@ func TestBusObservabilityStoreExportsNormalizedFeatureFlags(t *testing.T) {
 	if state.PassiveConfigDirectApply {
 		t.Fatal("FeatureFlags.PassiveConfigDirectApply = true; want false")
 	}
-	if state.ExternalWritePolicy != ObserveFirstExternalWritePolicyRecordOnly {
-		t.Fatalf("FeatureFlags.ExternalWritePolicy = %q; want record_only", state.ExternalWritePolicy)
+	if state.ExternalWritePolicy != ObserveFirstExternalWritePolicyInvalidateOnly {
+		t.Fatalf("FeatureFlags.ExternalWritePolicy = %q; want invalidate_only", state.ExternalWritePolicy)
 	}
-	if len(state.Normalizations) != 2 {
-		t.Fatalf("FeatureFlags.Normalizations = %v; want 2 entries", state.Normalizations)
+	if len(state.Normalizations) != 1 {
+		t.Fatalf("FeatureFlags.Normalizations = %v; want 1 entry", state.Normalizations)
 	}
 
 	metrics := store.RenderPrometheus()
@@ -211,14 +211,11 @@ func TestBusObservabilityStoreExportsNormalizedFeatureFlags(t *testing.T) {
 	if !strings.Contains(metrics, `feature_flag_enabled{flag="passive_state_direct_apply"} 0`) {
 		t.Fatalf("RenderPrometheus missing passive_state_direct_apply gauge:\n%s", metrics)
 	}
-	if !strings.Contains(metrics, `external_write_policy_state{policy="record_only"} 1`) {
-		t.Fatalf("RenderPrometheus missing normalized record_only policy:\n%s", metrics)
+	if !strings.Contains(metrics, `external_write_policy_state{policy="invalidate_only"} 1`) {
+		t.Fatalf("RenderPrometheus missing normalized invalidate_only policy:\n%s", metrics)
 	}
 	if !strings.Contains(metrics, `feature_flag_normalizations_total{reason="config_requires_state"} 1`) {
 		t.Fatalf("RenderPrometheus missing config_requires_state normalization:\n%s", metrics)
-	}
-	if !strings.Contains(metrics, `feature_flag_normalizations_total{reason="state_disabled_forces_record_only"} 1`) {
-		t.Fatalf("RenderPrometheus missing state_disabled_forces_record_only normalization:\n%s", metrics)
 	}
 }
 

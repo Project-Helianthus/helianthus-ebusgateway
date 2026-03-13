@@ -42,7 +42,7 @@ func TestNormalizeObserveFirstFeatureFlags_MasterOffClampsUnsafeSubFlags(t *test
 	assertNormalizationReasons(t, flags, ObserveFirstFeatureFlagNormalizationReasonMasterOffClamp)
 }
 
-func TestNormalizeObserveFirstFeatureFlags_StateDisabledForcesConfigOffAndRecordOnly(t *testing.T) {
+func TestNormalizeObserveFirstFeatureFlags_StateDisabledForcesConfigOffOnly(t *testing.T) {
 	flags := NormalizeObserveFirstFeatureFlags(true, false, true, ObserveFirstExternalWritePolicyInvalidateOnly)
 
 	if !flags.ObserveFirstEnabled() {
@@ -54,13 +54,37 @@ func TestNormalizeObserveFirstFeatureFlags_StateDisabledForcesConfigOffAndRecord
 	if flags.PassiveConfigDirectApply() {
 		t.Fatal("PassiveConfigDirectApply() = true; want false")
 	}
-	if flags.ExternalWritePolicy() != ObserveFirstExternalWritePolicyRecordOnly {
-		t.Fatalf("ExternalWritePolicy() = %q; want record_only", flags.ExternalWritePolicy())
+	if flags.ExternalWritePolicy() != ObserveFirstExternalWritePolicyInvalidateOnly {
+		t.Fatalf("ExternalWritePolicy() = %q; want invalidate_only", flags.ExternalWritePolicy())
 	}
 	assertNormalizationReasons(t, flags,
 		ObserveFirstFeatureFlagNormalizationReasonConfigRequiresState,
-		ObserveFirstFeatureFlagNormalizationReasonStateDisabledForcesRecordOnly,
 	)
+}
+
+func TestNormalizeObserveFirstFeatureFlags_StateDisabledKeepsValidExternalWritePolicy(t *testing.T) {
+	for _, policy := range []ObserveFirstExternalWritePolicy{
+		ObserveFirstExternalWritePolicyInvalidateOnly,
+		ObserveFirstExternalWritePolicyRecordAndInvalidate,
+	} {
+		t.Run(string(policy), func(t *testing.T) {
+			flags := NormalizeObserveFirstFeatureFlags(true, false, false, policy)
+
+			if !flags.ObserveFirstEnabled() {
+				t.Fatal("ObserveFirstEnabled() = false; want true")
+			}
+			if flags.PassiveStateDirectApply() {
+				t.Fatal("PassiveStateDirectApply() = true; want false")
+			}
+			if flags.PassiveConfigDirectApply() {
+				t.Fatal("PassiveConfigDirectApply() = true; want false")
+			}
+			if flags.ExternalWritePolicy() != policy {
+				t.Fatalf("ExternalWritePolicy() = %q; want %q", flags.ExternalWritePolicy(), policy)
+			}
+			assertNormalizationReasons(t, flags)
+		})
+	}
 }
 
 func TestNormalizeObserveFirstFeatureFlags_ConfigDirectRequiresInvalidatingPolicy(t *testing.T) {
@@ -86,8 +110,8 @@ func TestApplyDefaultsNormalizesObserveFirstFlagsIntoConfig(t *testing.T) {
 	if cfg.PassiveConfigDirectApply {
 		t.Fatal("PassiveConfigDirectApply = true; want false after normalization")
 	}
-	if cfg.ExternalWritePolicy != ObserveFirstExternalWritePolicyRecordOnly {
-		t.Fatalf("ExternalWritePolicy = %q; want record_only", cfg.ExternalWritePolicy)
+	if cfg.ExternalWritePolicy != ObserveFirstExternalWritePolicyInvalidateOnly {
+		t.Fatalf("ExternalWritePolicy = %q; want invalidate_only", cfg.ExternalWritePolicy)
 	}
 	if cfg.ObserveFirstFlags.PassiveConfigDirectApply() {
 		t.Fatal("ObserveFirstFlags.PassiveConfigDirectApply() = true; want false")

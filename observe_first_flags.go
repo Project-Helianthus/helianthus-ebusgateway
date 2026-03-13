@@ -19,7 +19,6 @@ const (
 	ObserveFirstFeatureFlagNormalizationReasonMasterOffClamp                ObserveFirstFeatureFlagNormalizationReason = "master_off_clamp"
 	ObserveFirstFeatureFlagNormalizationReasonConfigRequiresState           ObserveFirstFeatureFlagNormalizationReason = "config_requires_state"
 	ObserveFirstFeatureFlagNormalizationReasonConfigRequiresInvalidation    ObserveFirstFeatureFlagNormalizationReason = "config_requires_invalidation"
-	ObserveFirstFeatureFlagNormalizationReasonStateDisabledForcesRecordOnly ObserveFirstFeatureFlagNormalizationReason = "state_disabled_forces_record_only"
 )
 
 var observeFirstExternalWritePolicies = []ObserveFirstExternalWritePolicy{
@@ -32,7 +31,6 @@ var observeFirstFeatureFlagNormalizationReasons = []ObserveFirstFeatureFlagNorma
 	ObserveFirstFeatureFlagNormalizationReasonMasterOffClamp,
 	ObserveFirstFeatureFlagNormalizationReasonConfigRequiresState,
 	ObserveFirstFeatureFlagNormalizationReasonConfigRequiresInvalidation,
-	ObserveFirstFeatureFlagNormalizationReasonStateDisabledForcesRecordOnly,
 }
 
 type ObserveFirstFeatureFlagView interface {
@@ -103,10 +101,6 @@ func NormalizeObserveFirstFeatureFlags(enabled, stateDirect, configDirect bool, 
 			addReason(ObserveFirstFeatureFlagNormalizationReasonConfigRequiresState)
 		}
 		flags.passiveConfigDirectApply = false
-		if flags.externalWritePolicy != ObserveFirstExternalWritePolicyRecordOnly {
-			addReason(ObserveFirstFeatureFlagNormalizationReasonStateDisabledForcesRecordOnly)
-			flags.externalWritePolicy = ObserveFirstExternalWritePolicyRecordOnly
-		}
 	}
 
 	if flags.passiveConfigDirectApply && flags.externalWritePolicy == ObserveFirstExternalWritePolicyRecordOnly {

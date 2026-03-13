@@ -569,14 +569,15 @@ func PassiveWatchKeyFromFrame(frame protocol.Frame) (WatchKey, bool) {
 }
 
 func parsePassiveB524WatchKey(frame protocol.Frame) (WatchKey, bool) {
-	if len(frame.Data) != 6 {
+	if len(frame.Data) < 6 {
 		return nil, false
 	}
-	if frame.Data[1] != 0x00 {
+	opcode := frame.Data[0]
+	if opcode != 0x02 && opcode != 0x06 {
 		return nil, false
 	}
 	addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
-	return NewB524WatchKey(frame.Target, frame.Data[0], frame.Data[2], frame.Data[3], addr), true
+	return NewB524WatchKey(frame.Target, opcode, frame.Data[2], frame.Data[3], addr), true
 }
 
 func parsePassiveB509WatchKey(frame protocol.Frame) (WatchKey, bool) {
@@ -584,7 +585,7 @@ func parsePassiveB509WatchKey(frame protocol.Frame) (WatchKey, bool) {
 		return nil, false
 	}
 	switch frame.Data[0] {
-	case 0x0D, 0x29:
+	case 0x0D, 0x29, 0x0E:
 	default:
 		return nil, false
 	}

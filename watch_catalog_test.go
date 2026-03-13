@@ -257,24 +257,47 @@ func TestWatchActivationSetNilCatalogBehavesAsEmptyCatalog(t *testing.T) {
 func TestPassiveWatchKeyFromEventMatchesB524SchedulerKey(t *testing.T) {
 	t.Parallel()
 
-	expected := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C)
-	event := PassiveClassifiedEvent{
-		HasRequest: true,
-		Request: protocol.Frame{
-			Source:    0x10,
-			Target:    0x15,
-			Primary:   0xB5,
-			Secondary: 0x24,
-			Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x1C, 0x00},
+	tests := []struct {
+		name    string
+		data    []byte
+		wantKey B524WatchKey
+	}{
+		{
+			name:    "read",
+			data:    []byte{0x06, 0x00, 0x03, 0x01, 0x1C, 0x00},
+			wantKey: NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C),
+		},
+		{
+			name:    "write",
+			data:    []byte{0x02, 0x02, 0x03, 0x01, 0x1C, 0x00, 0xAA, 0x55},
+			wantKey: NewB524WatchKey(0x15, 0x02, 0x03, 0x01, 0x001C),
 		},
 	}
 
-	key, ok := PassiveWatchKeyFromEvent(event)
-	if !ok {
-		t.Fatal("PassiveWatchKeyFromEvent() = !ok; want ok")
-	}
-	if got := key.Canonical(); got != expected.Canonical() {
-		t.Fatalf("PassiveWatchKeyFromEvent().Canonical() = %q; want %q", got, expected.Canonical())
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			event := PassiveClassifiedEvent{
+				HasRequest: true,
+				Request: protocol.Frame{
+					Source:    0x10,
+					Target:    0x15,
+					Primary:   0xB5,
+					Secondary: 0x24,
+					Data:      test.data,
+				},
+			}
+
+			key, ok := PassiveWatchKeyFromEvent(event)
+			if !ok {
+				t.Fatal("PassiveWatchKeyFromEvent() = !ok; want ok")
+			}
+			if got := key.Canonical(); got != test.wantKey.Canonical() {
+				t.Fatalf("PassiveWatchKeyFromEvent().Canonical() = %q; want %q", got, test.wantKey.Canonical())
+			}
+		})
 	}
 }
 
@@ -289,7 +312,7 @@ func TestPassiveWatchKeyFromEventMatchesB509SchedulerKey(t *testing.T) {
 	}{
 		{name: "read", opcode: 0x0D, wantOK: true, wantKey: NewB509WatchKey(0x08, 0x0200)},
 		{name: "passive", opcode: 0x29, wantOK: true, wantKey: NewB509WatchKey(0x08, 0x0200)},
-		{name: "write excluded", opcode: 0x0E, wantOK: false},
+		{name: "write", opcode: 0x0E, wantOK: true, wantKey: NewB509WatchKey(0x08, 0x0200)},
 	}
 
 	for _, test := range tests {

@@ -12,9 +12,16 @@ const (
 	DefaultSemanticReadFailureBudget      = 2
 	DefaultSemanticReadOpenCooldown       = 15 * time.Second
 	DefaultSemanticReadHalfOpenProbeLimit = 1
+
+	semanticReadShadowMaxPreActivePasses = 2
+	semanticReadShadowMaxRecomputeCycles = 1
 )
 
-var ErrSemanticReadCircuitOpen = errors.New("semantic read circuit breaker open")
+var (
+	ErrSemanticReadCircuitOpen           = errors.New("semantic read circuit breaker open")
+	ErrSemanticReadSupersededInFlight    = errors.New("semantic read superseded while in flight")
+	ErrSemanticReadRevalidationExhausted = errors.New("semantic read shadow revalidation exhausted")
+)
 
 type SemanticReadCircuitState string
 
@@ -55,6 +62,7 @@ type SemanticReadScheduler struct {
 	entries map[string]*semanticReadEntry
 	now     func() time.Time
 	breaker semanticReadCircuitBreakerConfig
+	shadow  *ShadowCache
 }
 
 type semanticReadEntry struct {
@@ -64,6 +72,10 @@ type semanticReadEntry struct {
 	lastOKAt time.Time
 	lastOK   []byte
 	lastErr  error
+
+	lastOKShadowGeneration uint64
+	lastOKHasGeneration    bool
+	lastOKFromShadow       bool
 
 	breakerState            SemanticReadCircuitState
 	consecutiveFailures     int
@@ -81,11 +93,31 @@ type semanticReadCircuitBreakerConfig struct {
 	onSuppressed       func(SemanticReadCircuitBreakerSuppression)
 }
 
+type semanticReadShadowCandidate struct {
+	value      []byte
+	generation uint64
+}
+
+type semanticReadShadowWriteResult struct {
+	attempted       bool
+	startGeneration uint64
+	result          ShadowWriteResult
+}
+
 func NewSemanticReadScheduler() *SemanticReadScheduler {
 	return &SemanticReadScheduler{
 		entries: make(map[string]*semanticReadEntry),
 		now:     time.Now,
 	}
+}
+
+func (s *SemanticReadScheduler) SetShadowCache(cache *ShadowCache) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.shadow = cache
+	s.mu.Unlock()
 }
 
 func (s *SemanticReadScheduler) SetCircuitBreaker(options SemanticReadCircuitBreakerOptions) {
@@ -144,6 +176,17 @@ func normalizeSemanticReadCircuitBreakerOptions(options SemanticReadCircuitBreak
 //
 // If fetch fails, the last successful value (if any) remains cached.
 func (s *SemanticReadScheduler) Get(ctx context.Context, key string, maxAge time.Duration, fetch func(context.Context) ([]byte, error)) ([]byte, error) {
+	return s.getWithWatchKey(ctx, key, nil, maxAge, fetch)
+}
+
+func (s *SemanticReadScheduler) GetWatch(ctx context.Context, key WatchKey, maxAge time.Duration, fetch func(context.Context) ([]byte, error)) ([]byte, error) {
+	if key == nil {
+		return s.getWithWatchKey(ctx, "", nil, maxAge, fetch)
+	}
+	return s.getWithWatchKey(ctx, key.Canonical(), key, maxAge, fetch)
+}
+
+func (s *SemanticReadScheduler) getWithWatchKey(ctx context.Context, key string, watchKey WatchKey, maxAge time.Duration, fetch func(context.Context) ([]byte, error)) ([]byte, error) {
 	if s == nil {
 		return fetch(ctx)
 	}
@@ -157,10 +200,20 @@ func (s *SemanticReadScheduler) Get(ctx context.Context, key string, maxAge time
 		return nil, context.Canceled
 	}
 
+	shadow := s.shadowSnapshot()
+	shadowPassesRemaining := semanticReadShadowMaxPreActivePasses
+	recomputeRemaining := semanticReadShadowMaxRecomputeCycles
+
 	for {
 		var preTransition *SemanticReadCircuitBreakerTransition
 		var preSuppression *SemanticReadCircuitBreakerSuppression
 		var preErr error
+		var candidate *semanticReadShadowCandidate
+
+		if shadow != nil && watchKey != nil && maxAge > 0 && shadowPassesRemaining > 0 {
+			candidate = consultSemanticReadShadow(shadow, watchKey, maxAge)
+			shadowPassesRemaining--
+		}
 
 		s.mu.Lock()
 		entry := s.entries[key]
@@ -173,15 +226,6 @@ func (s *SemanticReadScheduler) Get(ctx context.Context, key string, maxAge time
 			entry.breakerState = SemanticReadCircuitStateClosed
 		}
 
-		if !entry.running && len(entry.lastOK) > 0 && maxAge > 0 {
-			age := s.now().Sub(entry.lastOKAt)
-			if age >= 0 && age <= maxAge {
-				value := append([]byte(nil), entry.lastOK...)
-				s.mu.Unlock()
-				return value, nil
-			}
-		}
-
 		if entry.running {
 			done := entry.done
 			s.mu.Unlock()
@@ -190,6 +234,46 @@ func (s *SemanticReadScheduler) Get(ctx context.Context, key string, maxAge time
 				return nil, ctx.Err()
 			case <-done:
 				continue
+			}
+		}
+
+		if candidate != nil {
+			if snapshot, ok := revalidateSemanticReadShadowCandidate(shadow, watchKey, candidate, maxAge, s.now()); ok {
+				entry.lastOKAt = s.now()
+				entry.lastOK = append(entry.lastOK[:0], candidate.value...)
+				entry.lastErr = nil
+				entry.lastOKShadowGeneration = snapshot.Generation
+				entry.lastOKHasGeneration = true
+				entry.lastOKFromShadow = true
+				value := append([]byte(nil), entry.lastOK...)
+				s.mu.Unlock()
+				return value, nil
+			}
+			if shadowPassesRemaining > 0 {
+				s.mu.Unlock()
+				continue
+			}
+		}
+
+		if !entry.running && len(entry.lastOK) > 0 && maxAge > 0 {
+			age := s.now().Sub(entry.lastOKAt)
+			if age >= 0 && age <= maxAge {
+				if shadow == nil || watchKey == nil || !entry.lastOKHasGeneration {
+					value := append([]byte(nil), entry.lastOK...)
+					s.mu.Unlock()
+					return value, nil
+				}
+
+				snapshot := shadow.SnapshotEligibility(watchKey)
+				if snapshot.Generation != entry.lastOKShadowGeneration {
+					clearSemanticReadCacheLocked(entry)
+				} else if entry.lastOKFromShadow && !shadowSnapshotEligibleForMaxAge(snapshot, maxAge, s.now()) {
+					clearSemanticReadCacheLocked(entry)
+				} else {
+					value := append([]byte(nil), entry.lastOK...)
+					s.mu.Unlock()
+					return value, nil
+				}
 			}
 		}
 
@@ -211,26 +295,95 @@ func (s *SemanticReadScheduler) Get(ctx context.Context, key string, maxAge time
 		s.mu.Unlock()
 		s.emitBreakerTransition(preTransition)
 
+		startGeneration := uint64(0)
+		if shadow != nil && watchKey != nil {
+			startGeneration = shadow.SnapshotEligibility(watchKey).Generation
+		}
+
 		value, err := fetch(ctx)
+		shadowWrite := semanticReadShadowWriteResult{
+			startGeneration: startGeneration,
+		}
+		if err == nil && shadow != nil && watchKey != nil {
+			shadowWrite.attempted = true
+			shadowWrite.result = shadow.Write(ShadowWrite{
+				Key:             watchKey,
+				Source:          ShadowWriteSourceActiveConfirmed,
+				Confidence:      ShadowConfidenceHigh,
+				Value:           value,
+				ObservedAt:      s.now(),
+				StartGeneration: startGeneration,
+			})
+			if !shadowWrite.result.Accepted {
+				switch shadowWrite.result.Reason {
+				case ShadowWriteRejectionReasonGenerationAdvanced,
+					ShadowWriteRejectionReasonStaleTimestamp,
+					ShadowWriteRejectionReasonSameTimestampConflict:
+					err = ErrSemanticReadSupersededInFlight
+				}
+			}
+		}
 
 		var postTransition *SemanticReadCircuitBreakerTransition
+		invalidatedInFlight := false
 		s.mu.Lock()
 		entry.running = false
+		if errors.Is(err, ErrSemanticReadSupersededInFlight) {
+			invalidatedInFlight = true
+		}
+		if err == nil && shadow != nil && watchKey != nil {
+			currentGeneration := shadow.SnapshotEligibility(watchKey).Generation
+			expectedGeneration := startGeneration
+			if shadowWrite.attempted && shadowWrite.result.Accepted {
+				expectedGeneration = shadowWrite.result.Generation
+			}
+			if currentGeneration != expectedGeneration {
+				err = ErrSemanticReadSupersededInFlight
+				invalidatedInFlight = true
+			}
+		}
 		if err == nil {
 			entry.lastOKAt = s.now()
 			entry.lastOK = append(entry.lastOK[:0], value...)
 			entry.lastErr = nil
+			entry.lastOKFromShadow = false
+			if shadow != nil && watchKey != nil {
+				entry.lastOKHasGeneration = true
+				if shadowWrite.attempted && shadowWrite.result.Accepted {
+					entry.lastOKShadowGeneration = shadowWrite.result.Generation
+				} else {
+					entry.lastOKShadowGeneration = startGeneration
+				}
+			} else {
+				entry.lastOKHasGeneration = false
+				entry.lastOKShadowGeneration = 0
+			}
 			entry.consecutiveFailures = 0
 			postTransition = s.transitionBreakerLocked(key, entry, SemanticReadCircuitStateClosed)
 		} else {
 			entry.lastErr = err
-			postTransition = s.recordFailureLocked(key, entry)
+			if invalidatedInFlight {
+				clearSemanticReadCacheLocked(entry)
+				if s.breaker.enabled && entry.breakerState == SemanticReadCircuitStateHalfOpen && entry.halfOpenProbesRemaining < s.breaker.halfOpenProbeLimit {
+					entry.halfOpenProbesRemaining++
+				}
+			} else {
+				postTransition = s.recordFailureLocked(key, entry)
+			}
 		}
 		close(done)
 		s.mu.Unlock()
 		s.emitBreakerTransition(postTransition)
 
 		if err != nil {
+			if invalidatedInFlight {
+				if recomputeRemaining > 0 {
+					recomputeRemaining--
+					shadowPassesRemaining = semanticReadShadowMaxPreActivePasses
+					continue
+				}
+				return nil, fmt.Errorf("%w: key=%s", ErrSemanticReadRevalidationExhausted, key)
+			}
 			return nil, err
 		}
 		return append([]byte(nil), value...), nil
@@ -375,4 +528,67 @@ func (s *SemanticReadScheduler) emitBreakerSuppression(event *SemanticReadCircui
 	if callback != nil {
 		callback(*event)
 	}
+}
+
+func (s *SemanticReadScheduler) shadowSnapshot() *ShadowCache {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	cache := s.shadow
+	s.mu.Unlock()
+	return cache
+}
+
+func consultSemanticReadShadow(cache *ShadowCache, key WatchKey, maxAge time.Duration) *semanticReadShadowCandidate {
+	if cache == nil || key == nil || maxAge <= 0 {
+		return nil
+	}
+	result := cache.Lookup(key, maxAge)
+	if !result.Found || !result.Eligible || result.Entry.State != ShadowEntryStatePresent {
+		return nil
+	}
+	return &semanticReadShadowCandidate{
+		value:      append([]byte(nil), result.Entry.Value...),
+		generation: result.Entry.Generation,
+	}
+}
+
+func revalidateSemanticReadShadowCandidate(cache *ShadowCache, key WatchKey, candidate *semanticReadShadowCandidate, maxAge time.Duration, now time.Time) (ShadowEligibilitySnapshot, bool) {
+	if cache == nil || key == nil || candidate == nil {
+		return ShadowEligibilitySnapshot{}, false
+	}
+	snapshot := cache.SnapshotEligibility(key)
+	if snapshot.Generation != candidate.generation {
+		return snapshot, false
+	}
+	if !shadowSnapshotEligibleForMaxAge(snapshot, maxAge, now) {
+		return snapshot, false
+	}
+	return snapshot, true
+}
+
+func shadowSnapshotEligibleForMaxAge(snapshot ShadowEligibilitySnapshot, maxAge time.Duration, now time.Time) bool {
+	if !snapshot.Present || !snapshot.Eligible || snapshot.State != ShadowEntryStatePresent {
+		return false
+	}
+	if maxAge <= 0 {
+		return false
+	}
+	if !snapshot.ExpiresAt.IsZero() && now.After(snapshot.ExpiresAt) {
+		return false
+	}
+	age := now.Sub(snapshot.ObservedAt)
+	return age >= 0 && age <= maxAge
+}
+
+func clearSemanticReadCacheLocked(entry *semanticReadEntry) {
+	if entry == nil {
+		return
+	}
+	entry.lastOKAt = time.Time{}
+	entry.lastOK = entry.lastOK[:0]
+	entry.lastOKShadowGeneration = 0
+	entry.lastOKHasGeneration = false
+	entry.lastOKFromShadow = false
 }

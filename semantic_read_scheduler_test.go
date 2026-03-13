@@ -409,3 +409,374 @@ func TestSemanticReadScheduler_CircuitBreaker_HalfOpenProbeLimitRespected(t *tes
 		t.Fatalf("fetch calls = %d; want 3 (initial failure + 2 half-open probes)", got)
 	}
 }
+
+func TestSemanticReadScheduler_GetWatchReturnsShadowHitWithoutFetch(t *testing.T) {
+	t.Parallel()
+
+	key := NewB509WatchKey(0x08, 0x0200)
+	now := time.Unix(100, 0)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourcePoller)
+	cache := newTestShadowCache(t, catalog, activations, now, ShadowCacheOptions{})
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, now, []byte{0xAB})
+
+	scheduler := NewSemanticReadScheduler()
+	scheduler.now = func() time.Time { return now }
+	scheduler.SetShadowCache(cache)
+
+	var fetchCalls int32
+	value, err := scheduler.GetWatch(context.Background(), key, time.Second, func(context.Context) ([]byte, error) {
+		atomic.AddInt32(&fetchCalls, 1)
+		return []byte{0xCD}, nil
+	})
+	if err != nil {
+		t.Fatalf("GetWatch() error = %v", err)
+	}
+	if len(value) != 1 || value[0] != 0xAB {
+		t.Fatalf("GetWatch() value = %v; want shadow value [0xab]", value)
+	}
+	if got := atomic.LoadInt32(&fetchCalls); got != 0 {
+		t.Fatalf("fetch calls = %d; want 0 on eligible shadow hit", got)
+	}
+}
+
+func TestSemanticReadScheduler_RevalidatesShadowWhenInvalidatedBeforeLock(t *testing.T) {
+	t.Parallel()
+
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+	now := time.Unix(200, 0)
+
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourcePoller)
+	cache := NewShadowCache(ShadowCacheOptions{
+		Catalog:               catalog,
+		Activations:           activations,
+		Capacity:              8,
+		PinnedCapacity:        4,
+		WriteConfirmPinnedCap: 2,
+		Now:                   func() time.Time { return now },
+	})
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, now, []byte{0x10})
+
+	candidate := consultSemanticReadShadow(cache, key, time.Second)
+	if candidate == nil {
+		t.Fatal("consultSemanticReadShadow() = nil; want candidate")
+	}
+
+	cache.Invalidate(ShadowInvalidation{
+		Key:           key,
+		Reason:        ShadowInvalidationReasonExternalWrite,
+		Source:        ShadowInvalidationSourcePassive,
+		InvalidatedAt: now,
+	})
+
+	snapshot, ok := revalidateSemanticReadShadowCandidate(cache, key, candidate, time.Second, now)
+	if ok {
+		t.Fatal("revalidateSemanticReadShadowCandidate() = ok; want invalid after generation advance")
+	}
+	if snapshot.Generation == candidate.generation {
+		t.Fatalf("snapshot generation = %d; want generation change after invalidation", snapshot.Generation)
+	}
+
+	scheduler := NewSemanticReadScheduler()
+	scheduler.now = func() time.Time { return now }
+	scheduler.SetShadowCache(cache)
+
+	var fetchCalls int32
+	value, err := scheduler.GetWatch(context.Background(), key, time.Second, func(context.Context) ([]byte, error) {
+		atomic.AddInt32(&fetchCalls, 1)
+		return []byte{0x44}, nil
+	})
+	if err != nil {
+		t.Fatalf("GetWatch() error = %v", err)
+	}
+	if len(value) != 1 || value[0] != 0x44 {
+		t.Fatalf("GetWatch() value = %v; want recomputed [0x44]", value)
+	}
+	if got := atomic.LoadInt32(&fetchCalls); got != 1 {
+		t.Fatalf("fetch calls = %d; want 1 after invalidation-before-lock revalidation", got)
+	}
+}
+
+func TestSemanticReadScheduler_RecomputesWhenActiveWriteRejectedSameGeneration(t *testing.T) {
+	t.Parallel()
+
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+	maxAge := 5 * time.Second
+
+	var nowUnix atomic.Int64
+	nowUnix.Store(time.Unix(200, 0).UnixNano())
+	nowFn := func() time.Time { return time.Unix(0, nowUnix.Load()) }
+
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourcePoller)
+	cache := NewShadowCache(ShadowCacheOptions{
+		Catalog:               catalog,
+		Activations:           activations,
+		Capacity:              8,
+		PinnedCapacity:        4,
+		WriteConfirmPinnedCap: 2,
+		Now:                   nowFn,
+	})
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x20})
+
+	scheduler := NewSemanticReadScheduler()
+	scheduler.now = nowFn
+	scheduler.SetShadowCache(cache)
+
+	firstFetchStarted := make(chan struct{}, 1)
+	releaseFirstFetch := make(chan struct{})
+	var fetchCalls int32
+
+	fetch := func(context.Context) ([]byte, error) {
+		call := atomic.AddInt32(&fetchCalls, 1)
+		if call == 1 {
+			select {
+			case firstFetchStarted <- struct{}{}:
+			default:
+			}
+			<-releaseFirstFetch
+			return []byte{0x11}, nil
+		}
+		nowUnix.Store(time.Unix(202, 0).UnixNano())
+		return []byte{0x33}, nil
+	}
+
+	type getResult struct {
+		value []byte
+		err   error
+	}
+	resultCh := make(chan getResult, 1)
+	go func() {
+		value, err := scheduler.GetWatch(context.Background(), key, maxAge, fetch)
+		resultCh <- getResult{value: value, err: err}
+	}()
+
+	select {
+	case <-firstFetchStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first fetch start")
+	}
+
+	result := cache.Write(ShadowWrite{
+		Key:        key,
+		Source:     ShadowWriteSourcePassive,
+		Confidence: ShadowConfidenceHigh,
+		Value:      []byte{0x22},
+		ObservedAt: time.Unix(201, 0),
+	})
+	if !result.Accepted {
+		t.Fatalf("passive write rejected: %s", result.Reason)
+	}
+
+	close(releaseFirstFetch)
+
+	select {
+	case out := <-resultCh:
+		if out.err != nil {
+			t.Fatalf("GetWatch() error = %v", out.err)
+		}
+		if len(out.value) != 1 || out.value[0] != 0x33 {
+			t.Fatalf("GetWatch() value = %v; want second recompute value [0x33]", out.value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("GetWatch() timed out")
+	}
+
+	if got := atomic.LoadInt32(&fetchCalls); got != 2 {
+		t.Fatalf("fetch calls = %d; want 2 after stale same-generation active completion", got)
+	}
+}
+
+func TestSemanticReadScheduler_SupersededInFlightHalfOpenProbeDoesNotReopen(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100, 0)
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourcePoller)
+	cache := newTestShadowCache(t, catalog, activations, now, ShadowCacheOptions{})
+
+	scheduler := NewSemanticReadScheduler()
+	scheduler.now = func() time.Time { return now }
+	scheduler.SetShadowCache(cache)
+
+	var transitions []SemanticReadCircuitBreakerTransition
+	scheduler.SetCircuitBreaker(SemanticReadCircuitBreakerOptions{
+		FailureBudget:      1,
+		OpenCooldown:       10 * time.Second,
+		HalfOpenProbeLimit: 1,
+		OnTransition: func(event SemanticReadCircuitBreakerTransition) {
+			transitions = append(transitions, event)
+		},
+	})
+
+	failFetch := func(context.Context) ([]byte, error) {
+		return nil, errors.New("initial failure")
+	}
+	if _, err := scheduler.GetWatch(context.Background(), key, 0, failFetch); err == nil || errors.Is(err, ErrSemanticReadCircuitOpen) {
+		t.Fatalf("initial failure err = %v; want non-open failure", err)
+	}
+	if _, err := scheduler.GetWatch(context.Background(), key, 0, failFetch); !errors.Is(err, ErrSemanticReadCircuitOpen) {
+		t.Fatalf("open-state err = %v; want ErrSemanticReadCircuitOpen", err)
+	}
+
+	now = now.Add(10 * time.Second)
+
+	firstFetchStarted := make(chan struct{}, 1)
+	releaseFirstFetch := make(chan struct{})
+	var fetchCalls int32
+	liveFetch := func(context.Context) ([]byte, error) {
+		call := atomic.AddInt32(&fetchCalls, 1)
+		if call == 1 {
+			select {
+			case firstFetchStarted <- struct{}{}:
+			default:
+			}
+			<-releaseFirstFetch
+			return []byte{0x11}, nil
+		}
+		return []byte{0x44}, nil
+	}
+
+	type getResult struct {
+		value []byte
+		err   error
+	}
+	resultCh := make(chan getResult, 1)
+	go func() {
+		value, err := scheduler.GetWatch(context.Background(), key, 0, liveFetch)
+		resultCh <- getResult{value: value, err: err}
+	}()
+
+	select {
+	case <-firstFetchStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for half-open probe fetch")
+	}
+
+	write := cache.Write(ShadowWrite{
+		Key:        key,
+		Source:     ShadowWriteSourcePassive,
+		Confidence: ShadowConfidenceHigh,
+		Value:      []byte{0x22},
+		ObservedAt: now.Add(time.Second),
+	})
+	if !write.Accepted {
+		t.Fatalf("passive write rejected during half-open supersede setup: %s", write.Reason)
+	}
+	now = now.Add(2 * time.Second)
+	close(releaseFirstFetch)
+
+	select {
+	case out := <-resultCh:
+		if out.err != nil {
+			t.Fatalf("half-open superseded call err = %v; want nil after recompute", out.err)
+		}
+		if len(out.value) != 1 || out.value[0] != 0x44 {
+			t.Fatalf("half-open superseded call value = %v; want [0x44]", out.value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("half-open superseded call timed out")
+	}
+
+	if got := atomic.LoadInt32(&fetchCalls); got != 2 {
+		t.Fatalf("fetch calls = %d; want 2 (superseded probe + recompute)", got)
+	}
+
+	if len(transitions) != 3 {
+		t.Fatalf("transition count = %d; want 3", len(transitions))
+	}
+	if transitions[0].From != SemanticReadCircuitStateClosed || transitions[0].To != SemanticReadCircuitStateOpen {
+		t.Fatalf("transition[0] = %s->%s; want closed->open", transitions[0].From, transitions[0].To)
+	}
+	if transitions[1].From != SemanticReadCircuitStateOpen || transitions[1].To != SemanticReadCircuitStateHalfOpen {
+		t.Fatalf("transition[1] = %s->%s; want open->half-open", transitions[1].From, transitions[1].To)
+	}
+	if transitions[2].From != SemanticReadCircuitStateHalfOpen || transitions[2].To != SemanticReadCircuitStateClosed {
+		t.Fatalf("transition[2] = %s->%s; want half-open->closed", transitions[2].From, transitions[2].To)
+	}
+}
+
+func TestSemanticReadScheduler_SupersededInFlightDoesNotBurnFailureBudget(t *testing.T) {
+	t.Parallel()
+
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+
+	now := time.Unix(100, 0)
+	nowFn := func() time.Time { return now }
+
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourcePoller)
+	cache := NewShadowCache(ShadowCacheOptions{
+		Catalog:               catalog,
+		Activations:           activations,
+		Capacity:              8,
+		PinnedCapacity:        4,
+		WriteConfirmPinnedCap: 2,
+		Now:                   nowFn,
+	})
+
+	scheduler := NewSemanticReadScheduler()
+	scheduler.now = nowFn
+	scheduler.SetShadowCache(cache)
+	scheduler.SetCircuitBreaker(SemanticReadCircuitBreakerOptions{
+		FailureBudget:      2,
+		OpenCooldown:       time.Hour,
+		HalfOpenProbeLimit: 1,
+	})
+
+	var supersedeFetchCalls int32
+	supersedeFetch := func(context.Context) ([]byte, error) {
+		call := atomic.AddInt32(&supersedeFetchCalls, 1)
+		if call == 1 {
+			observedAt := now.Add(time.Second)
+			result := cache.Write(ShadowWrite{
+				Key:        key,
+				Source:     ShadowWriteSourcePassive,
+				Confidence: ShadowConfidenceHigh,
+				Value:      []byte{0x21},
+				ObservedAt: observedAt,
+			})
+			if !result.Accepted {
+				return nil, errors.New("passive write rejected while preparing superseded completion")
+			}
+			now = observedAt.Add(time.Second)
+			return []byte{0x30}, nil
+		}
+		return []byte{0x44}, nil
+	}
+
+	supersededValue, err := scheduler.GetWatch(context.Background(), key, 0, supersedeFetch)
+	if err != nil {
+		t.Fatalf("superseded call err = %v; want nil after recompute", err)
+	}
+	if len(supersededValue) != 1 || supersededValue[0] != 0x44 {
+		t.Fatalf("superseded call value = %v; want [0x44] after recompute", supersededValue)
+	}
+	if got := atomic.LoadInt32(&supersedeFetchCalls); got != 2 {
+		t.Fatalf("supersede fetch calls = %d; want 2 (initial + recompute)", got)
+	}
+
+	var failCalls int32
+	failFetch := func(context.Context) ([]byte, error) {
+		atomic.AddInt32(&failCalls, 1)
+		return nil, errors.New("active failure")
+	}
+
+	if _, err := scheduler.GetWatch(context.Background(), key, 0, failFetch); err == nil || errors.Is(err, ErrSemanticReadCircuitOpen) {
+		t.Fatalf("first active failure err = %v; want non-open failure", err)
+	}
+	if got := atomic.LoadInt32(&failCalls); got != 1 {
+		t.Fatalf("fail fetch calls after first active failure = %d; want 1", got)
+	}
+
+	if _, err := scheduler.GetWatch(context.Background(), key, 0, failFetch); err == nil || errors.Is(err, ErrSemanticReadCircuitOpen) {
+		t.Fatalf("second active failure err = %v; want non-open failure (transition to open happens after this call)", err)
+	}
+	if got := atomic.LoadInt32(&failCalls); got != 2 {
+		t.Fatalf("fail fetch calls after second active failure = %d; want 2", got)
+	}
+
+	if _, err := scheduler.GetWatch(context.Background(), key, 0, failFetch); !errors.Is(err, ErrSemanticReadCircuitOpen) {
+		t.Fatalf("third active failure err = %v; want ErrSemanticReadCircuitOpen", err)
+	}
+	if got := atomic.LoadInt32(&failCalls); got != 2 {
+		t.Fatalf("fail fetch calls after open suppression = %d; want 2", got)
+	}
+}

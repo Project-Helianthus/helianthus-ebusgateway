@@ -30,6 +30,7 @@ var (
 	wireObserveFirstObserversFn               = wireObserveFirstObservers
 	startDiscoveryScanLoopFn                  = startDiscoveryScanLoop
 	startVaillantSemanticPollingFn            = startVaillantSemanticPolling
+	attachPassiveShadowProducerFn             = (*vaillantSemanticPoller).AttachPassiveShadowProducer
 	startPassiveTransactionReconstructor      = ebusgateway.StartPassiveTransactionReconstructor
 	startBroadcastListenerWithReconstructorFn = ebusgateway.StartBroadcastListenerWithReconstructor
 	startHTTPServerFn                         = startHTTPServer
@@ -121,6 +122,20 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if semanticPoller != nil {
 		builder.SetBoilerConfigWriter(semanticPoller)
 		builder.SetScheduleWriter(semanticPoller)
+	}
+	observeFirstFlags := ebusgateway.NormalizeObserveFirstFeatureFlags(
+		cfg.ObserveFirstEnabled,
+		cfg.PassiveStateDirectApply,
+		cfg.PassiveConfigDirectApply,
+		cfg.ExternalWritePolicy,
+	)
+	passiveShadowLaneEnabled := observeFirstFlags.PassiveStateDirectApply() ||
+		observeFirstFlags.PassiveConfigDirectApply() ||
+		observeFirstFlags.ExternalWritePolicy() != ebusgateway.ObserveFirstExternalWritePolicyRecordOnly
+	if semanticPoller != nil && deduplicator != nil && observeFirstFlags.ObserveFirstEnabled() && passiveShadowLaneEnabled {
+		if err := attachPassiveShadowProducerFn(semanticPoller, ctx, deduplicator); err != nil {
+			return err
+		}
 	}
 
 	if err := builder.Start(ctx); err != nil {

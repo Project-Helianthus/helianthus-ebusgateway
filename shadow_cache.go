@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"container/list"
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +19,8 @@ const (
 	DefaultShadowCacheCompactorCadence         = time.Minute
 	DefaultShadowCacheCompactorBatchSize       = 64
 	DefaultShadowCacheShutdownCompactorTimeout = time.Second
+
+	runtimeDescriptorDecoderPassiveFallback = "semantic.read.passive_fallback"
 )
 
 type ShadowWriteSource string
@@ -459,6 +462,8 @@ func (cache *ShadowCache) Write(write ShadowWrite) ShadowWriteResult {
 	}
 
 	canonical := write.Key.Canonical()
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
 	descriptor, ok := cache.catalog.DescriptorByCanonical(canonical)
 	if !ok || descriptor.FreshnessProfile == WatchFreshnessProfileDebug || write.Confidence == ShadowConfidenceNone {
 		return ShadowWriteResult{Reason: ShadowWriteRejectionReasonPolicyReject}
@@ -472,9 +477,6 @@ func (cache *ShadowCache) Write(write ShadowWrite) ShadowWriteResult {
 	if len(sources) == 0 {
 		return ShadowWriteResult{Reason: ShadowWriteRejectionReasonPolicyReject}
 	}
-
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
 
 	state := cache.ensureKeyStateLocked(canonical)
 	entry := cache.entries[canonical]
@@ -562,11 +564,10 @@ func (cache *ShadowCache) Invalidate(invalidation ShadowInvalidation) ShadowInva
 	}
 
 	canonical := invalidation.Key.Canonical()
-	descriptor, _ := cache.catalog.DescriptorByCanonical(canonical)
-	sources := cache.activations.ActiveSources(invalidation.Key)
-
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
+	descriptor, _ := cache.catalog.DescriptorByCanonical(canonical)
+	sources := cache.activations.ActiveSources(invalidation.Key)
 
 	state := cache.ensureKeyStateLocked(canonical)
 	entry := cache.entries[canonical]
@@ -626,9 +627,9 @@ func (cache *ShadowCache) RevalidatePinnedBudget() ShadowCacheSummary {
 	if cache == nil {
 		return ShadowCacheSummary{}
 	}
+	cache.mu.Lock()
 	footprint := cache.staticPinnedFootprint()
 	cache.pinnedBudgetDegraded.Store(footprint > cache.staticPinnedBudget())
-	cache.mu.Lock()
 	cache.syncAllPinsLocked()
 	cache.mu.Unlock()
 	return cache.Summary()
@@ -641,6 +642,123 @@ func (cache *ShadowCache) RefreshActivations() {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	cache.syncAllPinsLocked()
+}
+
+// BootstrapRuntimeDescriptor registers a descriptor/source pair into the runtime
+// catalog+activation graph so shadow reads/writes can participate for keys that
+// were discovered after cache construction.
+func (cache *ShadowCache) BootstrapRuntimeDescriptor(descriptor WatchDescriptor, sources ...WatchActivationSource) error {
+	if cache == nil {
+		return fmt.Errorf("shadow cache unavailable")
+	}
+
+	normalized, err := normalizeWatchDescriptor(descriptor)
+	if err != nil {
+		return err
+	}
+	if normalized.Key == nil {
+		return fmt.Errorf("shadow runtime bootstrap missing key")
+	}
+
+	activationSources := dedupeWatchActivationSources(sources)
+	if len(activationSources) == 0 {
+		activationSources = []WatchActivationSource{WatchActivationSourcePoller}
+	}
+
+	canonical := normalized.CanonicalKey()
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	currentCatalog := cache.catalog
+	currentActivations := cache.activations
+	if existing, ok := currentCatalog.DescriptorByCanonical(canonical); ok {
+		if shouldUpgradeRuntimeDescriptor(existing, normalized) {
+			descriptors := currentCatalog.Descriptors()
+			for i, stored := range descriptors {
+				if stored.CanonicalKey() == canonical {
+					descriptors[i] = normalized
+					break
+				}
+			}
+
+			updatedCatalog, err := NewWatchCatalog(descriptors)
+			if err != nil {
+				return err
+			}
+			updatedActivations, err := bootstrapRuntimeActivationSet(updatedCatalog, currentActivations, canonical, activationSources)
+			if err != nil {
+				return err
+			}
+
+			cache.catalog = updatedCatalog
+			cache.activations = updatedActivations
+			if entry := cache.entries[canonical]; entry != nil {
+				entry.descriptor = normalized
+			}
+			footprint := cache.staticPinnedFootprint()
+			cache.pinnedBudgetDegraded.Store(footprint > cache.staticPinnedBudget())
+			cache.syncAllPinsLocked()
+			return nil
+		}
+
+		for _, source := range activationSources {
+			if err := currentActivations.Activate(source, normalized.Key); err != nil {
+				return err
+			}
+		}
+		if entry := cache.entries[canonical]; entry != nil {
+			cache.syncEntryPinLocked(entry)
+		}
+		return nil
+	}
+
+	descriptors := currentCatalog.Descriptors()
+	descriptors = append(descriptors, normalized)
+	updatedCatalog, err := NewWatchCatalog(descriptors)
+	if err != nil {
+		return err
+	}
+	updatedActivations, err := bootstrapRuntimeActivationSet(updatedCatalog, currentActivations, canonical, activationSources)
+	if err != nil {
+		return err
+	}
+
+	cache.catalog = updatedCatalog
+	cache.activations = updatedActivations
+	footprint := cache.staticPinnedFootprint()
+	cache.pinnedBudgetDegraded.Store(footprint > cache.staticPinnedBudget())
+	cache.syncAllPinsLocked()
+
+	return nil
+}
+
+func shouldUpgradeRuntimeDescriptor(existing, incoming WatchDescriptor) bool {
+	if existing.DecoderID != runtimeDescriptorDecoderPassiveFallback {
+		return false
+	}
+	return incoming.DecoderID != runtimeDescriptorDecoderPassiveFallback
+}
+
+func bootstrapRuntimeActivationSet(
+	updatedCatalog *WatchCatalog,
+	currentActivations *WatchActivationSet,
+	canonical string,
+	activationSources []WatchActivationSource,
+) (*WatchActivationSet, error) {
+	updatedActivations := NewWatchActivationSet(updatedCatalog)
+	for _, stored := range updatedCatalog.Descriptors() {
+		mergedSources := currentActivations.ActiveSources(stored.Key)
+		if stored.CanonicalKey() == canonical {
+			mergedSources = append(mergedSources, activationSources...)
+		}
+		for _, source := range dedupeWatchActivationSources(mergedSources) {
+			if err := updatedActivations.Activate(source, stored.Key); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return updatedActivations, nil
 }
 
 func (cache *ShadowCache) CompactOnce() time.Duration {
@@ -658,6 +776,25 @@ func (cache *ShadowCache) CompactOnce() time.Duration {
 		remaining -= len(batch)
 	}
 	return cache.now().Sub(start)
+}
+
+func dedupeWatchActivationSources(sources []WatchActivationSource) []WatchActivationSource {
+	if len(sources) == 0 {
+		return nil
+	}
+	seen := make(map[WatchActivationSource]struct{}, len(sources))
+	out := make([]WatchActivationSource, 0, len(sources))
+	for _, source := range sources {
+		if source == "" {
+			continue
+		}
+		if _, ok := seen[source]; ok {
+			continue
+		}
+		seen[source] = struct{}{}
+		out = append(out, source)
+	}
+	return out
 }
 
 func (cache *ShadowCache) Summary() ShadowCacheSummary {

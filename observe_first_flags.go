@@ -16,9 +16,9 @@ const (
 type ObserveFirstFeatureFlagNormalizationReason string
 
 const (
-	ObserveFirstFeatureFlagNormalizationReasonMasterOffClamp                ObserveFirstFeatureFlagNormalizationReason = "master_off_clamp"
-	ObserveFirstFeatureFlagNormalizationReasonConfigRequiresState           ObserveFirstFeatureFlagNormalizationReason = "config_requires_state"
-	ObserveFirstFeatureFlagNormalizationReasonConfigRequiresInvalidation    ObserveFirstFeatureFlagNormalizationReason = "config_requires_invalidation"
+	ObserveFirstFeatureFlagNormalizationReasonMasterOffClamp             ObserveFirstFeatureFlagNormalizationReason = "master_off_clamp"
+	ObserveFirstFeatureFlagNormalizationReasonConfigRequiresState        ObserveFirstFeatureFlagNormalizationReason = "config_requires_state"
+	ObserveFirstFeatureFlagNormalizationReasonConfigRequiresInvalidation ObserveFirstFeatureFlagNormalizationReason = "config_requires_invalidation"
 )
 
 var observeFirstExternalWritePolicies = []ObserveFirstExternalWritePolicy{

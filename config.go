@@ -49,6 +49,10 @@ type TransportConfig struct {
 	Dial         func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error)
 }
 
+type WatchObserver interface {
+	Observe(key WatchKey) WatchObservation
+}
+
 type Config struct {
 	Transport          transport.RawTransport
 	TransportConfig    TransportConfig
@@ -93,6 +97,7 @@ type Config struct {
 	PassiveDedupRecoveryHysteresis          time.Duration
 	PassiveDedupRecoveryEventThreshold      int
 	LocalAddressSnapshotter                 LocalBusAddressSnapshotter
+	WatchObserver                           WatchObserver
 	HTTPAddr                                string
 	MetricsPath                             string
 	GraphQLPath                             string

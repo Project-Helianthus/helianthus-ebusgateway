@@ -126,7 +126,195 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedWatchKey(t *te
 		Target:    request.Source,
 		Primary:   request.Primary,
 		Secondary: request.Secondary,
-		Data:      []byte{0x11, 0x22},
+		Data:      []byte{0x42, 0x01, 0x03, 0x1C, 0x00, 0x22},
+	}
+
+	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base, request, response))
+	assertNoAdjudicatedEvent(t, subscription, 25*time.Millisecond)
+
+	deduplicator.nowFunc = func() time.Time {
+		return base.Add(100*time.Millisecond + deduplicator.budgets.PendingGraceTimeout + time.Millisecond)
+	}
+	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
+
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
+	if event.Fingerprint.SharedWatchKey == nil {
+		t.Fatal("SharedWatchKey = nil; want parsed passive watch key")
+	}
+	want := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C).Canonical()
+	if got := event.Fingerprint.SharedWatchKey.Canonical(); got != want {
+		t.Fatalf("SharedWatchKey.Canonical() = %q; want %q", got, want)
+	}
+	if event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = true; want false without active watch observer evidence")
+	}
+}
+
+func TestActivePassiveDeduplicator_B524CorrelatedReadUsesRuntimeObserverFallback(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	forceHealthyDedup(deduplicator)
+	stateKey := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C)
+	deduplicator.cfg.WatchObserver = staticWatchObserver{
+		byCanonical: map[string]WatchObservation{
+			stateKey.Canonical(): {
+				State: WatchObservationStateActive,
+				Descriptor: WatchDescriptor{
+					Key:               stateKey,
+					SemanticClass:     WatchSemanticClassState,
+					CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+					DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+				},
+				HasDescriptor: true,
+			},
+		},
+	}
+
+	base := time.Unix(0, 0)
+	deduplicator.nowFunc = func() time.Time { return base }
+
+	activeRequest := protocol.Frame{
+		Source:    0x31,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x24,
+		Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x1C, 0x00},
+	}
+	activeResponse := protocol.Frame{
+		Source:    activeRequest.Target,
+		Target:    activeRequest.Source,
+		Primary:   activeRequest.Primary,
+		Secondary: activeRequest.Secondary,
+		Data:      []byte{0x42, 0x01, 0x03, 0x1C, 0x00, 0x22},
+	}
+
+	if err := deduplicator.OnBusEvent(activeAttemptEvent(activeRequest, activeResponse)); err != nil {
+		t.Fatalf("OnBusEvent(active) error = %v", err)
+	}
+	observation := deduplicator.Observe(stateKey)
+	if observation.State != WatchObservationStateActive {
+		t.Fatalf("Observe(B524 key).State = %q; want %q", observation.State, WatchObservationStateActive)
+	}
+
+	passiveRequest := activeRequest
+	passiveRequest.Source = 0x10
+	passiveResponse := activeResponse
+	passiveResponse.Target = passiveRequest.Source
+
+	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base.Add(100*time.Millisecond), passiveRequest, passiveResponse))
+	assertNoAdjudicatedEvent(t, subscription, 25*time.Millisecond)
+	if len(deduplicator.pending) == 0 {
+		t.Fatal("pending entries = 0; want at least 1 before grace expiry")
+	}
+
+	deduplicator.nowFunc = func() time.Time {
+		return base.Add(100*time.Millisecond + deduplicator.budgets.PendingGraceTimeout + time.Millisecond)
+	}
+	outputs := deduplicator.releaseExpiredPending(deduplicator.now())
+	if len(outputs) == 0 {
+		t.Fatal("releaseExpiredPending() produced 0 outputs after grace expiry")
+	}
+	deduplicator.publishAll(outputs)
+
+	timeout := time.NewTimer(time.Second)
+	defer timeout.Stop()
+	var event AdjudicatedPassiveEvent
+	select {
+	case out, ok := <-subscription.Events():
+		if !ok {
+			t.Fatal("subscription closed before adjudicated event arrived")
+		}
+		event = out
+	case <-timeout.C:
+		t.Fatalf("timeout waiting for adjudicated event")
+	}
+	if event.Disposition != DedupDispositionUnmatchedThirdParty {
+		t.Fatalf("Disposition = %q; want %q (event=%+v)", event.Disposition, DedupDispositionUnmatchedThirdParty, event)
+	}
+	if !event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = false; want true with runtime active-observer evidence")
+	}
+	if event.FamilyPolicy.DirectApplyPolicy != ObserveFirstDirectApplyPolicyStateDefault {
+		t.Fatalf("DirectApplyPolicy = %q; want %q", event.FamilyPolicy.DirectApplyPolicy, ObserveFirstDirectApplyPolicyStateDefault)
+	}
+}
+
+func TestActivePassiveDeduplicator_B524ConfigPolicyNotPromotedToStateDefault(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	forceHealthyDedup(deduplicator)
+
+	configKey := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x0005)
+	deduplicator.cfg.WatchObserver = staticWatchObserver{
+		byCanonical: map[string]WatchObservation{
+			configKey.Canonical(): {
+				State: WatchObservationStateActive,
+				Descriptor: WatchDescriptor{
+					Key:               configKey,
+					SemanticClass:     WatchSemanticClassConfig,
+					CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+					DirectApplyPolicy: WatchDirectApplyPolicyConfigOptIn,
+				},
+				HasDescriptor: true,
+			},
+		},
+	}
+
+	activeRequest := protocol.Frame{
+		Source:    0x31,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x24,
+		Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x05, 0x00},
+	}
+	activeResponse := protocol.Frame{
+		Source:    activeRequest.Target,
+		Target:    activeRequest.Source,
+		Primary:   activeRequest.Primary,
+		Secondary: activeRequest.Secondary,
+		Data:      []byte{0x42, 0x01, 0x03, 0x05, 0x00, 0x22},
+	}
+
+	if err := deduplicator.OnBusEvent(activeAttemptEvent(activeRequest, activeResponse)); err != nil {
+		t.Fatalf("OnBusEvent(active) error = %v", err)
+	}
+
+	observation := deduplicator.Observe(configKey)
+	if observation.State != WatchObservationStateCatalogMiss {
+		t.Fatalf("Observe(config B524 key).State = %q; want %q", observation.State, WatchObservationStateCatalogMiss)
+	}
+}
+
+func TestActivePassiveDeduplicator_B555RecordInvalidateFlowsToRuntimeThirdParty(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	forceHealthyDedup(deduplicator)
+
+	base := time.Unix(0, 0)
+	deduplicator.nowFunc = func() time.Time { return base }
+
+	request := protocol.Frame{
+		Source:    0x10,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x55,
+		Data:      []byte{0xA3, 0x01},
+	}
+	response := protocol.Frame{
+		Source:    request.Target,
+		Target:    request.Source,
+		Primary:   request.Primary,
+		Secondary: request.Secondary,
+		Data:      []byte{0x00},
 	}
 
 	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base, request, response))
@@ -136,12 +324,11 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedWatchKey(t *te
 	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
 
 	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
-	if event.Fingerprint.SharedWatchKey == nil {
-		t.Fatal("SharedWatchKey = nil; want parsed passive watch key")
+	if !event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = false; want true for record/invalidate policy")
 	}
-	want := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C).Canonical()
-	if got := event.Fingerprint.SharedWatchKey.Canonical(); got != want {
-		t.Fatalf("SharedWatchKey.Canonical() = %q; want %q", got, want)
+	if event.FamilyPolicy.CorrelationPolicy != WatchCorrelationPolicyRecordInvalidate {
+		t.Fatalf("CorrelationPolicy = %q; want %q", event.FamilyPolicy.CorrelationPolicy, WatchCorrelationPolicyRecordInvalidate)
 	}
 }
 
@@ -189,6 +376,69 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedB509WatchKeyFo
 	}
 }
 
+func TestBuildActiveFingerprint_B509HeaderOnlyResponseUsesFamilyClassifier(t *testing.T) {
+	request := protocol.Frame{
+		Source:    0x31,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{0x29, 0x02, 0x00},
+	}
+	response := protocol.Frame{
+		Source:    request.Target,
+		Target:    request.Source,
+		Primary:   request.Primary,
+		Secondary: request.Secondary,
+		Data:      []byte{0x29, 0x02, 0x00},
+	}
+
+	fingerprint, ok := buildActiveFingerprint(
+		7,
+		activeAttemptEvent(request, response),
+		time.Unix(0, 0),
+		DefaultObserveFirstFeatureFlags(),
+		nil,
+	)
+	if !ok {
+		t.Fatal("buildActiveFingerprint ok = false; want true")
+	}
+	if fingerprint.ResponseClass != DedupResponseHeaderOnly {
+		t.Fatalf("ResponseClass = %q; want %q", fingerprint.ResponseClass, DedupResponseHeaderOnly)
+	}
+}
+
+func TestActivePassiveDeduplicator_BuildPassiveFingerprint_B524HeaderOnlyUsesFamilyClassifier(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	request := protocol.Frame{
+		Source:    0x10,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x24,
+		Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x1C, 0x00},
+	}
+	response := protocol.Frame{
+		Source:    request.Target,
+		Target:    request.Source,
+		Primary:   request.Primary,
+		Secondary: request.Secondary,
+		Data:      []byte{0x42, 0x01, 0x03, 0x1C, 0x00},
+	}
+
+	deduplicator.mu.Lock()
+	fingerprint, matchEligible, disposition := deduplicator.buildPassiveFingerprintLocked(
+		passiveTransactionEvent(time.Unix(0, 0), request, response),
+		time.Unix(0, 0),
+	)
+	deduplicator.mu.Unlock()
+
+	if !matchEligible {
+		t.Fatalf("matchEligible = false; want true (disposition=%q)", disposition)
+	}
+	if fingerprint.ResponseClass != DedupResponseHeaderOnly {
+		t.Fatalf("ResponseClass = %q; want %q", fingerprint.ResponseClass, DedupResponseHeaderOnly)
+	}
+}
+
 func TestActivePassiveDeduplicator_ConsumesActiveFingerprintAfterSingleMatch(t *testing.T) {
 	deduplicator := newTestDeduplicator(t)
 	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)
@@ -217,9 +467,9 @@ func TestActivePassiveDeduplicator_ConsumesActiveFingerprintAfterSingleMatch(t *
 	deduplicator.nowFunc = func() time.Time { return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Second) }
 	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
 
-	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
-	if !event.ThirdPartyEligible {
-		t.Fatal("ThirdPartyEligible = false; want true")
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
+	if event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = true; want false when family policy denies runtime third-party")
 	}
 }
 
@@ -253,9 +503,9 @@ func TestActivePassiveDeduplicator_OneActiveFingerprintMatchesOnlyOnePendingEntr
 	deduplicator.nowFunc = func() time.Time { return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Second) }
 	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
 
-	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
-	if !event.ThirdPartyEligible {
-		t.Fatal("ThirdPartyEligible = false; want true")
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
+	if event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = true; want false when family policy denies runtime third-party")
 	}
 }
 
@@ -511,6 +761,16 @@ func TestChainBusObserversCallsAllObservers(t *testing.T) {
 	}
 }
 
+func TestDedupFamilyPolicyAllowsRuntimeThirdParty_RecordInvalidateAllowed(t *testing.T) {
+	policy := ObserveFirstFamilyPolicy{
+		CorrelationPolicy: WatchCorrelationPolicyRecordInvalidate,
+		DirectApplyPolicy: ObserveFirstDirectApplyPolicyNever,
+	}
+	if !dedupFamilyPolicyAllowsRuntimeThirdParty(policy) {
+		t.Fatal("dedupFamilyPolicyAllowsRuntimeThirdParty() = false; want true for record/invalidate")
+	}
+}
+
 func newTestDeduplicator(t *testing.T) *ActivePassiveDeduplicator {
 	t.Helper()
 
@@ -519,6 +779,20 @@ func newTestDeduplicator(t *testing.T) *ActivePassiveDeduplicator {
 		t.Fatalf("NewActivePassiveDeduplicator error = %v", err)
 	}
 	return deduplicator
+}
+
+type staticWatchObserver struct {
+	byCanonical map[string]WatchObservation
+}
+
+func (observer staticWatchObserver) Observe(key WatchKey) WatchObservation {
+	if key == nil || observer.byCanonical == nil {
+		return WatchObservation{State: WatchObservationStateCatalogMiss}
+	}
+	if observation, ok := observer.byCanonical[key.Canonical()]; ok {
+		return observation
+	}
+	return WatchObservation{State: WatchObservationStateCatalogMiss}
 }
 
 func forceHealthyDedup(deduplicator *ActivePassiveDeduplicator) {

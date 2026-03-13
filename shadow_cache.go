@@ -810,6 +810,10 @@ func (cache *ShadowCache) applyPinClassLocked(entry *shadowEntry, desired shadow
 		if desired == shadowPinClassNone && entry.evictableElem == nil {
 			entry.evictableElem = cache.evictableLRU.PushBack(entry.canonicalKey)
 		}
+		if desired != shadowPinClassNone && entry.evictableElem != nil {
+			cache.evictableLRU.Remove(entry.evictableElem)
+			entry.evictableElem = nil
+		}
 		return
 	}
 	if entry.evictableElem != nil {

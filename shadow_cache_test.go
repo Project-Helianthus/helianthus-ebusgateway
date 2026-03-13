@@ -560,6 +560,62 @@ func TestShadowCacheSnapshotEligibilityAndLookupFollowFreshness(t *testing.T) {
 	}
 }
 
+func TestShadowCacheInvalidateRepinnedEntryLeavesEvictionLRU(t *testing.T) {
+	t.Parallel()
+
+	repinnedKey := NewB509WatchKey(0x08, 0x0200)
+	evictableKey := NewB509WatchKey(0x08, 0x0201)
+	newcomerKey := NewB509WatchKey(0x08, 0x0202)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{repinnedKey, evictableKey, newcomerKey}, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{
+		Capacity:              2,
+		PinnedCapacity:        2,
+		WriteConfirmPinnedCap: 1,
+	})
+
+	writeShadow(t, cache, repinnedKey, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x20})
+	writeShadow(t, cache, evictableKey, ShadowWriteSourcePassive, time.Unix(101, 0), []byte{0x21})
+
+	if err := activations.Activate(WatchActivationSourceWriteConfirm, repinnedKey); err != nil {
+		t.Fatalf("Activate(write_confirm repinnedKey) error = %v", err)
+	}
+
+	invalidation := cache.Invalidate(ShadowInvalidation{
+		Key:           repinnedKey,
+		Reason:        ShadowInvalidationReasonExternalWrite,
+		Source:        ShadowInvalidationSourcePassive,
+		InvalidatedAt: time.Unix(102, 0),
+	})
+	if invalidation.State != ShadowEntryStateInvalidated {
+		t.Fatalf("Invalidate() state = %s; want %s for cached entry with retained payload", invalidation.State, ShadowEntryStateInvalidated)
+	}
+
+	entry, ok := cache.entries[repinnedKey.Canonical()]
+	if !ok {
+		t.Fatal("repinned entry missing after invalidation")
+	}
+	if entry.pinClass != shadowPinClassWriteConfirm {
+		t.Fatalf("repinned entry pinClass = %v; want %v", entry.pinClass, shadowPinClassWriteConfirm)
+	}
+	if entry.evictableElem != nil {
+		t.Fatal("repinned entry still linked in eviction LRU after invalidation")
+	}
+
+	writeShadow(t, cache, newcomerKey, ShadowWriteSourcePassive, time.Unix(103, 0), []byte{0x22})
+
+	if _, ok := cache.Entry(repinnedKey); !ok {
+		t.Fatal("repinned invalidated entry was evicted under capacity pressure")
+	}
+	if _, ok := cache.Entry(evictableKey); ok {
+		t.Fatal("unrelated evictable entry remained; want it evicted before the repinned tombstone")
+	}
+
+	summary := cache.Summary()
+	if summary.WriteConfirmPinnedActive != 1 {
+		t.Fatalf("Summary().WriteConfirmPinnedActive = %d; want 1", summary.WriteConfirmPinnedActive)
+	}
+}
+
 func TestShadowCacheEvictionStoresAbsentSnapshot(t *testing.T) {
 	t.Parallel()
 

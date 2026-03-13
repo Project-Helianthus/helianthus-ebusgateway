@@ -270,6 +270,96 @@ func TestShadowCacheCapacityBlockedInvalidationStillRejectsStaleActiveWrite(t *t
 	}
 }
 
+func TestShadowCacheInvalidateWriteConfirmPinCapFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name           string
+		capacity       int
+		seedEvictable  bool
+		wantTotalEntry int
+	}{
+		{
+			name:           "with_free_capacity",
+			capacity:       3,
+			wantTotalEntry: 1,
+		},
+		{
+			name:           "without_evicting_existing_evictable_entry",
+			capacity:       2,
+			seedEvictable:  true,
+			wantTotalEntry: 2,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			pinnedKey := NewB509WatchKey(0x08, 0x0200)
+			evictableKey := NewB509WatchKey(0x08, 0x0201)
+			invalidatedKey := NewB509WatchKey(0x08, 0x0202)
+
+			catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{pinnedKey, evictableKey, invalidatedKey}, WatchActivationSourceTooling)
+			if err := activations.Activate(WatchActivationSourceWriteConfirm, pinnedKey, invalidatedKey); err != nil {
+				t.Fatalf("Activate(write_confirm) error = %v", err)
+			}
+
+			cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{
+				Capacity:              tc.capacity,
+				PinnedCapacity:        2,
+				WriteConfirmPinnedCap: 1,
+			})
+
+			writeShadow(t, cache, pinnedKey, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x20})
+			if tc.seedEvictable {
+				writeShadow(t, cache, evictableKey, ShadowWriteSourcePassive, time.Unix(101, 0), []byte{0x21})
+			}
+
+			startGeneration := cache.CaptureGeneration(invalidatedKey)
+			invalidation := cache.Invalidate(ShadowInvalidation{
+				Key:           invalidatedKey,
+				Reason:        ShadowInvalidationReasonExternalWrite,
+				Source:        ShadowInvalidationSourcePassive,
+				InvalidatedAt: time.Unix(102, 0),
+			})
+			if invalidation.Generation == startGeneration {
+				t.Fatalf("Invalidate() generation = %d; want generation advancement when write-confirm pin cap is full", invalidation.Generation)
+			}
+			if invalidation.State != ShadowEntryStateTombstone {
+				t.Fatalf("Invalidate() state = %s; want %s when write-confirm tombstone admission fails", invalidation.State, ShadowEntryStateTombstone)
+			}
+
+			snapshot := cache.SnapshotEligibility(invalidatedKey)
+			if snapshot.Present {
+				t.Fatalf("SnapshotEligibility() = %+v; want no cached tombstone when write-confirm pin cap is full", snapshot)
+			}
+			if snapshot.Generation != invalidation.Generation {
+				t.Fatalf("SnapshotEligibility().Generation = %d; want %d", snapshot.Generation, invalidation.Generation)
+			}
+
+			if _, ok := cache.Entry(invalidatedKey); ok {
+				t.Fatal("Entry(invalidatedKey) present; want no cached tombstone when write-confirm pin cap is full")
+			}
+			if _, ok := cache.Entry(pinnedKey); !ok {
+				t.Fatal("Entry(pinnedKey) missing; existing write-confirm pinned entry must remain")
+			}
+			if tc.seedEvictable {
+				if _, ok := cache.Entry(evictableKey); !ok {
+					t.Fatal("Entry(evictableKey) missing; invalidation must not evict unrelated evictable entries before failing the write-confirm pin cap")
+				}
+			}
+
+			summary := cache.Summary()
+			if summary.TotalEntries != tc.wantTotalEntry {
+				t.Fatalf("Summary().TotalEntries = %d; want %d", summary.TotalEntries, tc.wantTotalEntry)
+			}
+			if summary.WriteConfirmPinnedActive != 1 {
+				t.Fatalf("Summary().WriteConfirmPinnedActive = %d; want 1", summary.WriteConfirmPinnedActive)
+			}
+		})
+	}
+}
+
 func TestShadowCacheCompactsAndDepinsPinnedTombstone(t *testing.T) {
 	t.Parallel()
 

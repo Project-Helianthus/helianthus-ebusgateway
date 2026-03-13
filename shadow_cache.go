@@ -558,6 +558,15 @@ func (cache *ShadowCache) Invalidate(invalidation ShadowInvalidation) ShadowInva
 	entry := cache.entries[canonical]
 	desiredPin := cache.desiredPinClass(invalidation.Key, descriptor, sources)
 
+	if entry == nil && desiredPin == shadowPinClassWriteConfirm && !cache.canAdmitWriteConfirmPinLocked(canonical, entry) {
+		cache.advanceAbsentGenerationLocked(state)
+		cache.storeAbsentSnapshotLocked(state)
+		return ShadowInvalidationResult{
+			Generation: state.generation,
+			State:      ShadowEntryStateTombstone,
+		}
+	}
+
 	if entry == nil {
 		if !cache.ensureCapacityLocked(desiredPin) {
 			cache.advanceAbsentGenerationLocked(state)

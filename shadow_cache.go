@@ -583,6 +583,9 @@ func (cache *ShadowCache) Invalidate(invalidation ShadowInvalidation) ShadowInva
 		}
 		cache.entries[canonical] = entry
 	}
+	if desiredPin == shadowPinClassWriteConfirm && !cache.canAdmitWriteConfirmPinLocked(canonical, entry) {
+		desiredPin = shadowPinClassNone
+	}
 
 	cache.advanceGenerationLocked(entry, state)
 	entry.descriptor = descriptor

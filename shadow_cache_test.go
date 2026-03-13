@@ -360,6 +360,69 @@ func TestShadowCacheInvalidateWriteConfirmPinCapFailsClosed(t *testing.T) {
 	}
 }
 
+func TestShadowCacheInvalidateCachedEntryDoesNotExceedWriteConfirmPinCap(t *testing.T) {
+	t.Parallel()
+
+	pinnedKey := NewB509WatchKey(0x08, 0x0200)
+	cachedKey := NewB509WatchKey(0x08, 0x0201)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{pinnedKey, cachedKey}, WatchActivationSourceTooling)
+	if err := activations.Activate(WatchActivationSourceWriteConfirm, pinnedKey); err != nil {
+		t.Fatalf("Activate(write_confirm pinnedKey) error = %v", err)
+	}
+
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{
+		Capacity:              2,
+		PinnedCapacity:        2,
+		WriteConfirmPinnedCap: 1,
+	})
+
+	writeShadow(t, cache, pinnedKey, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x20})
+	writeShadow(t, cache, cachedKey, ShadowWriteSourcePassive, time.Unix(101, 0), []byte{0x21})
+
+	entry, ok := cache.Entry(cachedKey)
+	if !ok {
+		t.Fatal("Entry(cachedKey) missing before invalidation")
+	}
+	if entry.Pinned {
+		t.Fatal("Entry(cachedKey).Pinned = true before invalidation; want existing cached entry to start evictable")
+	}
+
+	if err := activations.Activate(WatchActivationSourceWriteConfirm, cachedKey); err != nil {
+		t.Fatalf("Activate(write_confirm cachedKey) error = %v", err)
+	}
+	cache.RefreshActivations()
+
+	startGeneration := cache.CaptureGeneration(cachedKey)
+	invalidation := cache.Invalidate(ShadowInvalidation{
+		Key:           cachedKey,
+		Reason:        ShadowInvalidationReasonExternalWrite,
+		Source:        ShadowInvalidationSourcePassive,
+		InvalidatedAt: time.Unix(102, 0),
+	})
+	if invalidation.Generation == startGeneration {
+		t.Fatalf("Invalidate() generation = %d; want generation advancement", invalidation.Generation)
+	}
+	if invalidation.State != ShadowEntryStateInvalidated {
+		t.Fatalf("Invalidate() state = %s; want %s for cached entry retaining diagnostic payload", invalidation.State, ShadowEntryStateInvalidated)
+	}
+
+	entry, ok = cache.Entry(cachedKey)
+	if !ok {
+		t.Fatal("Entry(cachedKey) missing after invalidation")
+	}
+	if entry.State != ShadowEntryStateInvalidated {
+		t.Fatalf("Entry(cachedKey).State = %s; want %s", entry.State, ShadowEntryStateInvalidated)
+	}
+	if entry.Pinned {
+		t.Fatal("Entry(cachedKey).Pinned = true; want cached invalidation to stay unpinned when write-confirm cap is already full")
+	}
+
+	summary := cache.Summary()
+	if summary.WriteConfirmPinnedActive != 1 {
+		t.Fatalf("Summary().WriteConfirmPinnedActive = %d; want 1", summary.WriteConfirmPinnedActive)
+	}
+}
+
 func TestShadowCacheCompactsAndDepinsPinnedTombstone(t *testing.T) {
 	t.Parallel()
 

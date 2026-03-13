@@ -562,8 +562,9 @@ var (
 
 func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, cache semanticCachePersister) *vaillantSemanticPoller {
 	catalog, catalogErr := productids.LoadCatalog()
+	observeFirstFlags := normalizeObserveFirstFeatureFlagsForPoller(cfg)
 	shadow := ebusgateway.NewShadowCache(ebusgateway.ShadowCacheOptions{
-		FeatureFlags: cfg.ObserveFirstFlags,
+		FeatureFlags: observeFirstFlags,
 	})
 	poller := &vaillantSemanticPoller{
 		scheduler:       ebusgateway.NewSemanticReadScheduler(),
@@ -635,6 +636,21 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		OnSuppressed:       poller.onSemanticReadBreakerSuppressed,
 	})
 	return poller
+}
+
+func normalizeObserveFirstFeatureFlagsForPoller(cfg ebusgateway.Config) ebusgateway.ObserveFirstFeatureFlags {
+	if cfg.ExternalWritePolicy == "" &&
+		!cfg.ObserveFirstEnabled &&
+		!cfg.PassiveStateDirectApply &&
+		!cfg.PassiveConfigDirectApply {
+		return ebusgateway.NormalizeObserveFirstFeatureFlagsFromView(cfg.ObserveFirstFlags)
+	}
+	return ebusgateway.NormalizeObserveFirstFeatureFlags(
+		cfg.ObserveFirstEnabled,
+		cfg.PassiveStateDirectApply,
+		cfg.PassiveConfigDirectApply,
+		cfg.ExternalWritePolicy,
+	)
 }
 
 func (p *vaillantSemanticPoller) onSemanticReadBreakerTransition(event ebusgateway.SemanticReadCircuitBreakerTransition) {

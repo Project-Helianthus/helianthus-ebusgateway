@@ -1818,6 +1818,38 @@ func TestNewVaillantSemanticPoller_BoilerTierCadence(t *testing.T) {
 	}
 }
 
+func TestNewVaillantSemanticPoller_NormalizesObserveFirstFlagsFromScalarOnlyConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := ebusgateway.Config{
+		ObserveFirstEnabled:      true,
+		PassiveStateDirectApply:  true,
+		PassiveConfigDirectApply: true,
+		ExternalWritePolicy:      ebusgateway.ObserveFirstExternalWritePolicyRecordOnly,
+	}
+	poller := newVaillantSemanticPoller(
+		cfg,
+		&ebusgateway.Gateway{},
+		graphql.NewLiveSemanticProvider(),
+		nil,
+		nil,
+	)
+
+	want := ebusgateway.NormalizeObserveFirstFeatureFlags(
+		cfg.ObserveFirstEnabled,
+		cfg.PassiveStateDirectApply,
+		cfg.PassiveConfigDirectApply,
+		cfg.ExternalWritePolicy,
+	).State()
+	got := poller.shadow.FeatureFlags().State()
+	if got.ObserveFirstEnabled != want.ObserveFirstEnabled ||
+		got.PassiveStateDirectApply != want.PassiveStateDirectApply ||
+		got.PassiveConfigDirectApply != want.PassiveConfigDirectApply ||
+		got.ExternalWritePolicy != want.ExternalWritePolicy {
+		t.Fatalf("shadow feature flags = %+v; want %+v", got, want)
+	}
+}
+
 func TestNewVaillantSemanticPoller_AttachesRuntimeShadowCache(t *testing.T) {
 	t.Parallel()
 

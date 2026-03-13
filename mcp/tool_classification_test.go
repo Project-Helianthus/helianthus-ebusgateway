@@ -22,6 +22,7 @@ func toolClassificationPolicy() map[string]toolClass {
 		toolBusSummaryGetName:            toolClassReservedDraft,
 		toolBusMessagesListName:          toolClassReservedDraft,
 		toolBusPeriodicityListName:       toolClassReservedDraft,
+		toolWatchSummaryGetName:          toolClassReservedDraft,
 		toolSemanticZonesGetName:         toolClassCoreStable,
 		toolSemanticCircuitsGetName:      toolClassCoreStable,
 		toolSemanticRadioGetName:         toolClassCoreStable,
@@ -50,7 +51,7 @@ func toolClassificationPolicy() map[string]toolClass {
 
 func isReservedDraftTool(name string) bool {
 	switch name {
-	case toolBusSummaryGetName, toolBusMessagesListName, toolBusPeriodicityListName:
+	case toolBusSummaryGetName, toolBusMessagesListName, toolBusPeriodicityListName, toolWatchSummaryGetName:
 		return true
 	default:
 		return false
@@ -124,6 +125,13 @@ func TestBusObservabilityToolClassificationReservation(t *testing.T) {
 			},
 		},
 	})
+	server.SetWatchSummaryProvider(&testWatchSummaryProvider{
+		summary: WatchSummary{
+			Degraded: WatchSummaryDegraded{
+				ShadowingEnabled: true,
+			},
+		},
+	})
 
 	res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list", Params: nil})
 	if res.Error != nil {
@@ -143,6 +151,7 @@ func TestBusObservabilityToolClassificationReservation(t *testing.T) {
 		toolBusSummaryGetName,
 		toolBusMessagesListName,
 		toolBusPeriodicityListName,
+		toolWatchSummaryGetName,
 	} {
 		if !hasToolName(tools, name) {
 			t.Fatalf("tools list missing reserved draft tool %q", name)

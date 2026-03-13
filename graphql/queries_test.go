@@ -33,6 +33,7 @@ var canonicalQueryRootFields = []string{
 	"busSummary",
 	"busMessages",
 	"busPeriodicity",
+	"watchSummary",
 }
 
 type testBusObservabilityProvider struct {

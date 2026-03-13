@@ -122,6 +122,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if semanticPoller != nil {
 		builder.SetBoilerConfigWriter(semanticPoller)
 		builder.SetScheduleWriter(semanticPoller)
+		builder.SetWatchSummaryProvider(newGraphQLWatchSummaryProvider(semanticPoller.shadow))
 	}
 	observeFirstFlags := ebusgateway.NormalizeObserveFirstFeatureFlags(
 		cfg.ObserveFirstEnabled,
@@ -158,7 +159,22 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if semanticPoller != nil {
 		scheduleWriter = semanticPoller
 	}
-	server, advertiser, err := startHTTPServerFn(ctx, cfg, gateway, builder, hub, semanticRuntime.Provider(), scheduleWriter, busObservability)
+	var shadowCache *ebusgateway.ShadowCache
+	if semanticPoller != nil {
+		shadowCache = semanticPoller.shadow
+	}
+
+	server, advertiser, err := startHTTPServerFn(
+		ctx,
+		cfg,
+		gateway,
+		builder,
+		hub,
+		semanticRuntime.Provider(),
+		scheduleWriter,
+		busObservability,
+		shadowCache,
+	)
 	if err != nil {
 		return err
 	}
@@ -415,7 +431,17 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	})
 }
 
-func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub, semanticProvider graphql.SemanticProvider, scheduleWriter mcp.ScheduleWriter, busObservability *ebusgateway.BusObservabilityStore) (*http.Server, mdns.Advertiser, error) {
+func startHTTPServer(
+	ctx context.Context,
+	cfg ebusgateway.Config,
+	gateway *ebusgateway.Gateway,
+	builder *graphql.Builder,
+	hub *graphql.BroadcastHub,
+	semanticProvider graphql.SemanticProvider,
+	scheduleWriter mcp.ScheduleWriter,
+	busObservability *ebusgateway.BusObservabilityStore,
+	shadowCache *ebusgateway.ShadowCache,
+) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
 	}
@@ -451,6 +477,9 @@ func startHTTPServer(ctx context.Context, cfg ebusgateway.Config, gateway *ebusg
 	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg))
 	if busObservability != nil {
 		mcpServer.SetBusObservabilityProvider(newMCPBusObservabilityProvider(busObservability))
+	}
+	if shadowCache != nil {
+		mcpServer.SetWatchSummaryProvider(newMCPWatchSummaryProvider(shadowCache))
 	}
 	mcpServer.SetSemanticProvider(newMCPSemanticProvider(semanticProvider))
 	if scheduleWriter != nil {

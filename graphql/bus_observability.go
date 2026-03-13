@@ -144,6 +144,7 @@ type busObservabilitySnapshotCache struct {
 func newGraphQLRootObject(builder *Builder) map[string]any {
 	return map[string]any{
 		busObservabilitySnapshotCacheRootKey: newBusObservabilitySnapshotCache(builder),
+		watchSummarySnapshotCacheRootKey:     newWatchSummarySnapshotCache(builder),
 	}
 }
 

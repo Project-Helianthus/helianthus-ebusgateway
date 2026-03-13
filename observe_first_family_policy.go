@@ -230,9 +230,6 @@ func observeFirstB509ResponseClass(request protocol.Frame, intent ObserveFirstRe
 	addrHi := byte(addr >> 8)
 	addrLo := byte(addr)
 
-	if len(payload) == 1 {
-		return DedupResponseHeaderOnly
-	}
 	if len(payload) >= 3 && (payload[0] == 0x0D || payload[0] == 0x29) && payload[1] == addrHi && payload[2] == addrLo {
 		if len(payload) == 3 {
 			return DedupResponseHeaderOnly

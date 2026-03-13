@@ -49,6 +49,28 @@ func TestObserveFirstResponseClass_B509ReadMapsHeaderOnlyAndValueBearing(t *test
 	if valueBearing != DedupResponseValueBearing {
 		t.Fatalf("value-bearing response class = %q; want %q", valueBearing, DedupResponseValueBearing)
 	}
+
+	singleByteValue := observeFirstResponseClass(
+		request,
+		protocol.FrameTypeInitiatorTarget,
+		DedupOutcomeSuccess,
+		protocol.Frame{Data: []byte{0x7F}},
+		true,
+	)
+	if singleByteValue != DedupResponseValueBearing {
+		t.Fatalf("single-byte response class = %q; want %q", singleByteValue, DedupResponseValueBearing)
+	}
+
+	emptyPayload := observeFirstResponseClass(
+		request,
+		protocol.FrameTypeInitiatorTarget,
+		DedupOutcomeSuccess,
+		protocol.Frame{Data: nil},
+		true,
+	)
+	if emptyPayload != DedupResponseHeaderOnly {
+		t.Fatalf("empty response class = %q; want %q", emptyPayload, DedupResponseHeaderOnly)
+	}
 }
 
 func TestObserveFirstResponseClass_B524ReadMapsHeaderValueAndAmbiguous(t *testing.T) {

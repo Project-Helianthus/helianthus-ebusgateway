@@ -760,6 +760,68 @@ func TestShadowCacheBootstrapRuntimeDescriptorUpgradesPassiveFallbackDescriptor(
 	}
 }
 
+func TestShadowCacheBootstrapRuntimeDescriptorExistingKeyPromotionRecomputesBudgetAndPins(t *testing.T) {
+	t.Parallel()
+
+	firstKey := NewB509WatchKey(0x08, 0x0200)
+	secondKey := NewB509WatchKey(0x08, 0x0201)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{firstKey, secondKey}, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{
+		Capacity:              4,
+		PinnedCapacity:        1,
+		WriteConfirmPinnedCap: 0,
+	})
+
+	writeShadow(t, cache, firstKey, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x40})
+	writeShadow(t, cache, secondKey, ShadowWriteSourcePassive, time.Unix(101, 0), []byte{0x41})
+
+	descriptorFor := func(key WatchKey) WatchDescriptor {
+		return WatchDescriptor{
+			Key:               key,
+			SemanticClass:     WatchSemanticClassState,
+			FreshnessProfile:  WatchFreshnessProfileStateFast,
+			DecoderID:         "test.decoder",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+		}
+	}
+
+	if err := cache.BootstrapRuntimeDescriptor(descriptorFor(firstKey), WatchActivationSourcePoller); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor(first poller) error = %v", err)
+	}
+	summary := cache.Summary()
+	if summary.PinnedBudgetDegraded {
+		t.Fatal("PinnedBudgetDegraded=true after first poller activation; want false with footprint within budget")
+	}
+
+	if err := cache.BootstrapRuntimeDescriptor(descriptorFor(secondKey), WatchActivationSourcePoller); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor(second poller) error = %v", err)
+	}
+	summary = cache.Summary()
+	if !summary.PinnedBudgetDegraded {
+		t.Fatal("PinnedBudgetDegraded=false after second poller activation exceeds static budget")
+	}
+	if summary.StaticPinnedFootprint != 2 {
+		t.Fatalf("StaticPinnedFootprint=%d; want 2 after promoting both keys to poller", summary.StaticPinnedFootprint)
+	}
+
+	firstEntry, ok := cache.Entry(firstKey)
+	if !ok {
+		t.Fatal("Entry(firstKey) missing after runtime promotion")
+	}
+	if firstEntry.Pinned {
+		t.Fatal("Entry(firstKey).Pinned=true; want immediate depin when pinned budget degrades")
+	}
+
+	secondEntry, ok := cache.Entry(secondKey)
+	if !ok {
+		t.Fatal("Entry(secondKey) missing after runtime promotion")
+	}
+	if secondEntry.Pinned {
+		t.Fatal("Entry(secondKey).Pinned=true; want immediate depin when pinned budget degrades")
+	}
+}
+
 func TestShadowCacheBootstrapRuntimeDescriptorConcurrentFirstUsePreservesBothKeys(t *testing.T) {
 	t.Parallel()
 

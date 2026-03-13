@@ -707,9 +707,9 @@ func (cache *ShadowCache) BootstrapRuntimeDescriptor(descriptor WatchDescriptor,
 				return err
 			}
 		}
-		if entry := cache.entries[canonical]; entry != nil {
-			cache.syncEntryPinLocked(entry)
-		}
+		footprint := cache.staticPinnedFootprint()
+		cache.pinnedBudgetDegraded.Store(footprint > cache.staticPinnedBudget())
+		cache.syncAllPinsLocked()
 		return nil
 	}
 

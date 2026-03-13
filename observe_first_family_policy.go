@@ -91,7 +91,7 @@ func observeFirstResponseClass(request protocol.Frame, frameType protocol.FrameT
 	}
 }
 
-func observeFirstFamilyPolicy(scope ObserveFirstTrafficScope, request protocol.Frame, responseClass DedupResponseClass, flags ObserveFirstFeatureFlagView) ObserveFirstFamilyPolicy {
+func observeFirstFamilyPolicy(scope ObserveFirstTrafficScope, request protocol.Frame, responseClass DedupResponseClass, observation WatchObservation, flags ObserveFirstFeatureFlagView) ObserveFirstFamilyPolicy {
 	family := observeFirstFamilyFromFrame(request)
 	intent := observeFirstRequestIntentFromFrame(request)
 
@@ -116,7 +116,7 @@ func observeFirstFamilyPolicy(scope ObserveFirstTrafficScope, request protocol.F
 		}
 	case ObserveFirstFamilyB524:
 		policy.CorrelationPolicy = WatchCorrelationPolicyRequestResponse
-		if observeFirstB524CorrelatedStateRead(request) && responseClass == DedupResponseValueBearing {
+		if observeFirstB524CorrelatedStateRead(request, observation) && responseClass == DedupResponseValueBearing {
 			policy.DirectApplyPolicy = ObserveFirstDirectApplyPolicyStateDefault
 		}
 	case ObserveFirstFamilyB509:
@@ -324,9 +324,22 @@ func observeFirstExpectedB524ReadSelector(frame protocol.Frame) (opcode, group, 
 	return frame.Data[0], frame.Data[2], frame.Data[3], uint16(frame.Data[4]) | uint16(frame.Data[5])<<8, true
 }
 
-func observeFirstB524CorrelatedStateRead(frame protocol.Frame) bool {
+func observeFirstB524CorrelatedStateRead(frame protocol.Frame, observation WatchObservation) bool {
 	_, _, _, _, ok := observeFirstExpectedB524ReadSelector(frame)
-	return ok
+	if !ok {
+		return false
+	}
+	if !observation.HasDescriptor || observation.State != WatchObservationStateActive {
+		return false
+	}
+	descriptor := observation.Descriptor
+	if descriptor.SemanticClass != WatchSemanticClassState {
+		return false
+	}
+	if descriptor.CorrelationPolicy != WatchCorrelationPolicyRequestResponse {
+		return false
+	}
+	return descriptor.DirectApplyPolicy == WatchDirectApplyPolicyStateDefault
 }
 
 func observeFirstIsB524TimerRead(frame protocol.Frame) bool {

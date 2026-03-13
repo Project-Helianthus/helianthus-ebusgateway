@@ -6,6 +6,19 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
+func testActiveStateObservation(key WatchKey) WatchObservation {
+	return WatchObservation{
+		State: WatchObservationStateActive,
+		Descriptor: WatchDescriptor{
+			Key:               key,
+			SemanticClass:     WatchSemanticClassState,
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+		},
+		HasDescriptor: true,
+	}
+}
+
 func TestObserveFirstResponseClass_B509ReadMapsHeaderOnlyAndValueBearing(t *testing.T) {
 	request := protocol.Frame{
 		Source:    0x31,
@@ -94,6 +107,7 @@ func TestObserveFirstFamilyPolicy_B516UsesEnergyMergeOnly(t *testing.T) {
 		ObserveFirstTrafficScopePassive,
 		request,
 		DedupResponseValueBearing,
+		WatchObservation{State: WatchObservationStateCatalogMiss},
 		DefaultObserveFirstFeatureFlags(),
 	)
 	if policy.Family != ObserveFirstFamilyB516 {
@@ -122,6 +136,7 @@ func TestObserveFirstFamilyPolicy_B524ReadAndObservedWriteStaySeparated(t *testi
 		ObserveFirstTrafficScopePassive,
 		readRequest,
 		DedupResponseValueBearing,
+		testActiveStateObservation(NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C)),
 		DefaultObserveFirstFeatureFlags(),
 	)
 	if readPolicy.DirectApplyPolicy != ObserveFirstDirectApplyPolicyStateDefault {
@@ -148,6 +163,7 @@ func TestObserveFirstFamilyPolicy_B524ReadAndObservedWriteStaySeparated(t *testi
 			ObserveFirstTrafficScopePassive,
 			writeRequest,
 			DedupResponseHeaderOnly,
+			testActiveStateObservation(NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C)),
 			flags,
 		)
 		if writePolicy.DirectApplyPolicy != ObserveFirstDirectApplyPolicyNever {
@@ -175,6 +191,7 @@ func TestObserveFirstFamilyPolicy_B509DirectApplyRequiresPayloadBearingRead(t *t
 		ObserveFirstTrafficScopePassive,
 		readRequest,
 		DedupResponseHeaderOnly,
+		testActiveStateObservation(NewB509WatchKey(0x08, 0x0200)),
 		DefaultObserveFirstFeatureFlags(),
 	)
 	if headerOnly.DirectApplyPolicy != ObserveFirstDirectApplyPolicyNever {
@@ -185,6 +202,7 @@ func TestObserveFirstFamilyPolicy_B509DirectApplyRequiresPayloadBearingRead(t *t
 		ObserveFirstTrafficScopePassive,
 		readRequest,
 		DedupResponseValueBearing,
+		testActiveStateObservation(NewB509WatchKey(0x08, 0x0200)),
 		DefaultObserveFirstFeatureFlags(),
 	)
 	if valueBearing.DirectApplyPolicy != ObserveFirstDirectApplyPolicyStateDefault {
@@ -202,6 +220,7 @@ func TestObserveFirstFamilyPolicy_B509DirectApplyRequiresPayloadBearingRead(t *t
 		ObserveFirstTrafficScopePassive,
 		writeRequest,
 		DedupResponseHeaderOnly,
+		testActiveStateObservation(NewB509WatchKey(0x08, 0x0200)),
 		NormalizeObserveFirstFeatureFlags(true, true, false, ObserveFirstExternalWritePolicyRecordAndInvalidate),
 	)
 	if writePolicy.DirectApplyPolicy != ObserveFirstDirectApplyPolicyNever {
@@ -225,6 +244,7 @@ func TestObserveFirstFamilyPolicy_B555UsesConservativeRecordInvalidate(t *testin
 		ObserveFirstTrafficScopePassive,
 		request,
 		DedupResponseHeaderOnly,
+		WatchObservation{State: WatchObservationStateCatalogMiss},
 		DefaultObserveFirstFeatureFlags(),
 	)
 	if policy.Family != ObserveFirstFamilyB555 {
@@ -235,5 +255,98 @@ func TestObserveFirstFamilyPolicy_B555UsesConservativeRecordInvalidate(t *testin
 	}
 	if policy.DirectApplyPolicy != ObserveFirstDirectApplyPolicyNever {
 		t.Fatalf("DirectApplyPolicy = %q; want %q", policy.DirectApplyPolicy, ObserveFirstDirectApplyPolicyNever)
+	}
+}
+
+func TestObserveFirstFamilyPolicy_B524StateDefaultRequiresActiveDescriptorBackedStateRead(t *testing.T) {
+	readRequest := protocol.Frame{
+		Source:    0x31,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x24,
+		Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x1C, 0x00},
+	}
+	baseFlags := DefaultObserveFirstFeatureFlags()
+	cases := []struct {
+		name        string
+		request     protocol.Frame
+		observation WatchObservation
+	}{
+		{
+			name:        "catalog miss",
+			request:     readRequest,
+			observation: WatchObservation{State: WatchObservationStateCatalogMiss},
+		},
+		{
+			name:    "inactive descriptor",
+			request: readRequest,
+			observation: WatchObservation{
+				State: WatchObservationStateInactive,
+				Descriptor: WatchDescriptor{
+					Key:               NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C),
+					SemanticClass:     WatchSemanticClassState,
+					CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+					DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+				},
+				HasDescriptor: true,
+			},
+		},
+		{
+			name:    "config descriptor",
+			request: readRequest,
+			observation: WatchObservation{
+				State: WatchObservationStateActive,
+				Descriptor: WatchDescriptor{
+					Key:               NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C),
+					SemanticClass:     WatchSemanticClassConfig,
+					CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+					DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+				},
+				HasDescriptor: true,
+			},
+		},
+		{
+			name:    "timer read",
+			request: protocol.Frame{Source: 0x31, Target: 0x15, Primary: 0xB5, Secondary: 0x24, Data: []byte{0x03, 0x01, 0x00}},
+			observation: WatchObservation{
+				State: WatchObservationStateActive,
+				Descriptor: WatchDescriptor{
+					Key:               NewB524WatchKey(0x15, 0x03, 0x03, 0x01, 0x0000),
+					SemanticClass:     WatchSemanticClassState,
+					CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+					DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+				},
+				HasDescriptor: true,
+			},
+		},
+		{
+			name:    "write",
+			request: protocol.Frame{Source: 0x10, Target: 0x15, Primary: 0xB5, Secondary: 0x24, Data: []byte{0x06, 0x01, 0x03, 0x01, 0x1C, 0x00}},
+			observation: WatchObservation{
+				State: WatchObservationStateActive,
+				Descriptor: WatchDescriptor{
+					Key:               NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C),
+					SemanticClass:     WatchSemanticClassState,
+					CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+					DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+				},
+				HasDescriptor: true,
+			},
+		},
+	}
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			policy := observeFirstFamilyPolicy(
+				ObserveFirstTrafficScopePassive,
+				testCase.request,
+				DedupResponseValueBearing,
+				testCase.observation,
+				baseFlags,
+			)
+			if policy.DirectApplyPolicy != ObserveFirstDirectApplyPolicyNever {
+				t.Fatalf("DirectApplyPolicy = %q; want %q", policy.DirectApplyPolicy, ObserveFirstDirectApplyPolicyNever)
+			}
+		})
 	}
 }

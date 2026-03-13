@@ -135,13 +135,16 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedWatchKey(t *te
 	deduplicator.nowFunc = func() time.Time { return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Millisecond) }
 	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
 
-	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
 	if event.Fingerprint.SharedWatchKey == nil {
 		t.Fatal("SharedWatchKey = nil; want parsed passive watch key")
 	}
 	want := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C).Canonical()
 	if got := event.Fingerprint.SharedWatchKey.Canonical(); got != want {
 		t.Fatalf("SharedWatchKey.Canonical() = %q; want %q", got, want)
+	}
+	if event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = true; want false when family policy denies runtime third-party")
 	}
 }
 
@@ -205,7 +208,13 @@ func TestBuildActiveFingerprint_B509HeaderOnlyResponseUsesFamilyClassifier(t *te
 		Data:      []byte{0x29, 0x02, 0x00},
 	}
 
-	fingerprint, ok := buildActiveFingerprint(7, activeAttemptEvent(request, response), time.Unix(0, 0))
+	fingerprint, ok := buildActiveFingerprint(
+		7,
+		activeAttemptEvent(request, response),
+		time.Unix(0, 0),
+		DefaultObserveFirstFeatureFlags(),
+		nil,
+	)
 	if !ok {
 		t.Fatal("buildActiveFingerprint ok = false; want true")
 	}
@@ -274,9 +283,9 @@ func TestActivePassiveDeduplicator_ConsumesActiveFingerprintAfterSingleMatch(t *
 	deduplicator.nowFunc = func() time.Time { return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Second) }
 	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
 
-	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
-	if !event.ThirdPartyEligible {
-		t.Fatal("ThirdPartyEligible = false; want true")
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
+	if event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = true; want false when family policy denies runtime third-party")
 	}
 }
 
@@ -310,9 +319,9 @@ func TestActivePassiveDeduplicator_OneActiveFingerprintMatchesOnlyOnePendingEntr
 	deduplicator.nowFunc = func() time.Time { return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Second) }
 	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
 
-	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
-	if !event.ThirdPartyEligible {
-		t.Fatal("ThirdPartyEligible = false; want true")
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
+	if event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = true; want false when family policy denies runtime third-party")
 	}
 }
 

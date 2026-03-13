@@ -5761,10 +5761,6 @@ func semanticReadBreakerKey(target, opcode, group, instance byte, addr uint16) s
 	return ebusgateway.NewB524WatchKey(target, opcode, group, instance, addr).Canonical()
 }
 
-func semanticReadB509Key(target byte, addr uint16) string {
-	return ebusgateway.NewB509WatchKey(target, addr).Canonical()
-}
-
 func buildB509ReadSelector(addr uint16) []byte {
 	return []byte{
 		vaillantB509OpcodeRead,

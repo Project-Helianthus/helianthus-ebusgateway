@@ -96,6 +96,7 @@ type ActiveTransactionFingerprint struct {
 	OutcomeClass     DedupOutcomeClass
 	ResponseClass    DedupResponseClass
 	FamilyPolicy     ObserveFirstFamilyPolicy
+	SharedWatchKey   WatchKey
 	Source           byte
 	Target           byte
 	RequestBytes     []byte
@@ -632,6 +633,9 @@ func (deduplicator *ActivePassiveDeduplicator) buildPassiveFingerprintLocked(eve
 			fingerprint.SharedWatchKey = mustCloneWatchKey(key)
 		}
 		observation := observeFirstWatchObservationForKey(fingerprint.SharedWatchKey, deduplicator.cfg.WatchObserver)
+		if observation.State == WatchObservationStateCatalogMiss && fingerprint.SharedWatchKey != nil {
+			observation = deduplicator.observeFromActiveLocked(fingerprint.SharedWatchKey)
+		}
 		fingerprint.FamilyPolicy = observeFirstFamilyPolicy(
 			ObserveFirstTrafficScopePassive,
 			event.Request,
@@ -771,16 +775,24 @@ func buildActiveFingerprint(
 		responseBytes = canonicalFrameBytes(event.Response)
 	}
 
+	var sharedWatchKey WatchKey
+	observation := WatchObservation{State: WatchObservationStateCatalogMiss}
+	if key, ok := PassiveWatchKeyFromFrame(event.Request); ok {
+		sharedWatchKey = mustCloneWatchKey(key)
+		observation = observeFirstWatchObservationForKey(sharedWatchKey, observer)
+	}
+
 	fingerprint := ActiveTransactionFingerprint{
 		Epoch:            epoch,
 		TransactionClass: transactionClass,
 		OutcomeClass:     DedupOutcomeSuccess,
 		ResponseClass:    responseClass,
+		SharedWatchKey:   sharedWatchKey,
 		FamilyPolicy: observeFirstFamilyPolicy(
 			ObserveFirstTrafficScopeActive,
 			event.Request,
 			responseClass,
-			observeFirstWatchObservationForFrame(event.Request, observer),
+			observation,
 			flags,
 		),
 		Source:        event.Request.Source,
@@ -1025,7 +1037,7 @@ func observeFirstWatchObservationForKey(key WatchKey, observer WatchObserver) Wa
 		return WatchObservation{State: WatchObservationStateCatalogMiss}
 	}
 	if observer == nil {
-		return observeFirstDefaultWatchObservationForKey(key)
+		return WatchObservation{State: WatchObservationStateCatalogMiss}
 	}
 	return observer.Observe(key)
 }
@@ -1045,37 +1057,91 @@ func dedupFamilyPolicyAllowsRuntimeThirdParty(policy ObserveFirstFamilyPolicy) b
 	}
 }
 
-func observeFirstDefaultWatchObservationForKey(key WatchKey) WatchObservation {
-	if fallback, ok := observeFirstDefaultB524Observation(key); ok {
-		return fallback
+func (deduplicator *ActivePassiveDeduplicator) Observe(key WatchKey) WatchObservation {
+	if deduplicator == nil || key == nil {
+		return WatchObservation{State: WatchObservationStateCatalogMiss}
 	}
+
+	deduplicator.mu.Lock()
+	defer deduplicator.mu.Unlock()
+	return deduplicator.observeFromActiveLocked(key)
+}
+
+func (deduplicator *ActivePassiveDeduplicator) observeFromActiveLocked(key WatchKey) WatchObservation {
+	if key == nil {
+		return WatchObservation{State: WatchObservationStateCatalogMiss}
+	}
+
+	canonical := key.Canonical()
+
+	for _, retained := range deduplicator.active {
+		shared := retained.Fingerprint.SharedWatchKey
+		if shared == nil || shared.Canonical() != canonical {
+			continue
+		}
+		if !dedupFingerprintSupportsStateDefault(retained.Fingerprint, key) {
+			continue
+		}
+		return WatchObservation{
+			State: WatchObservationStateActive,
+			Descriptor: WatchDescriptor{
+				Key:               mustCloneWatchKey(key),
+				SemanticClass:     WatchSemanticClassState,
+				CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+				DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+			},
+			HasDescriptor: true,
+		}
+	}
+
 	return WatchObservation{State: WatchObservationStateCatalogMiss}
 }
 
-func observeFirstDefaultB524Observation(key WatchKey) (WatchObservation, bool) {
-	b524, ok := asB524WatchKey(key)
+func dedupFingerprintSupportsStateDefault(fingerprint ActiveTransactionFingerprint, key WatchKey) bool {
+	if fingerprint.OutcomeClass != DedupOutcomeSuccess || fingerprint.ResponseClass != DedupResponseValueBearing {
+		return false
+	}
+	if !dedupFingerprintIsReadIntent(fingerprint) {
+		return false
+	}
+	switch key.Family() {
+	case WatchFamilyB509:
+		return true
+	case WatchFamilyB524:
+		b524, ok := asB524WatchKey(key)
+		if !ok {
+			return false
+		}
+		return b524.Opcode == 0x02 || b524.Opcode == 0x06
+	default:
+		return false
+	}
+}
+
+func dedupFingerprintIsReadIntent(fingerprint ActiveTransactionFingerprint) bool {
+	frame, ok := dedupRequestFrameFromFingerprint(fingerprint.RequestBytes)
 	if !ok {
-		return WatchObservation{}, false
+		return false
 	}
-	if b524.Opcode != 0x02 && b524.Opcode != 0x06 {
-		return WatchObservation{}, false
+	return observeFirstRequestIntentFromFrame(frame) == ObserveFirstRequestIntentRead
+}
+
+func dedupRequestFrameFromFingerprint(raw []byte) (protocol.Frame, bool) {
+	if len(raw) < 6 {
+		return protocol.Frame{}, false
 	}
-	canonicalKey := NewB524WatchKey(
-		b524.Target,
-		b524.Opcode,
-		b524.Group,
-		b524.Instance,
-		b524.RegisterAddress,
-	)
-	return WatchObservation{
-		State: WatchObservationStateActive,
-		Descriptor: WatchDescriptor{
-			Key:               canonicalKey,
-			SemanticClass:     WatchSemanticClassState,
-			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
-			DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
-		},
-		HasDescriptor: true,
+	dataLen := int(raw[4])
+	if len(raw) != 6+dataLen {
+		return protocol.Frame{}, false
+	}
+	data := make([]byte, dataLen)
+	copy(data, raw[5:5+dataLen])
+	return protocol.Frame{
+		Source:    raw[0],
+		Target:    raw[1],
+		Primary:   raw[2],
+		Secondary: raw[3],
+		Data:      data,
 	}, true
 }
 

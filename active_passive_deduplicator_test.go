@@ -132,10 +132,12 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedWatchKey(t *te
 	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base, request, response))
 	assertNoAdjudicatedEvent(t, subscription, 25*time.Millisecond)
 
-	deduplicator.nowFunc = func() time.Time { return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Millisecond) }
+	deduplicator.nowFunc = func() time.Time {
+		return base.Add(100*time.Millisecond + deduplicator.budgets.PendingGraceTimeout + time.Millisecond)
+	}
 	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
 
-	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
 	if event.Fingerprint.SharedWatchKey == nil {
 		t.Fatal("SharedWatchKey = nil; want parsed passive watch key")
 	}
@@ -143,8 +145,87 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedWatchKey(t *te
 	if got := event.Fingerprint.SharedWatchKey.Canonical(); got != want {
 		t.Fatalf("SharedWatchKey.Canonical() = %q; want %q", got, want)
 	}
+	if event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = true; want false without active watch observer evidence")
+	}
+}
+
+func TestActivePassiveDeduplicator_B524CorrelatedReadUsesRuntimeObserverFallback(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	forceHealthyDedup(deduplicator)
+
+	base := time.Unix(0, 0)
+	deduplicator.nowFunc = func() time.Time { return base }
+
+	activeRequest := protocol.Frame{
+		Source:    0x31,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x24,
+		Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x1C, 0x00},
+	}
+	activeResponse := protocol.Frame{
+		Source:    activeRequest.Target,
+		Target:    activeRequest.Source,
+		Primary:   activeRequest.Primary,
+		Secondary: activeRequest.Secondary,
+		Data:      []byte{0x42, 0x01, 0x03, 0x1C, 0x00, 0x22},
+	}
+
+	if err := deduplicator.OnBusEvent(activeAttemptEvent(activeRequest, activeResponse)); err != nil {
+		t.Fatalf("OnBusEvent(active) error = %v", err)
+	}
+	observation := deduplicator.Observe(NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C))
+	if observation.State != WatchObservationStateActive {
+		t.Fatalf("Observe(B524 key).State = %q; want %q", observation.State, WatchObservationStateActive)
+	}
+
+	passiveRequest := activeRequest
+	passiveRequest.Source = 0x10
+	passiveResponse := activeResponse
+	passiveResponse.Target = passiveRequest.Source
+
+	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base.Add(100*time.Millisecond), passiveRequest, passiveResponse))
+	assertNoAdjudicatedEvent(t, subscription, 25*time.Millisecond)
+	if len(deduplicator.pending) == 0 {
+		t.Fatal("pending entries = 0; want at least 1 before grace expiry")
+	}
+
+	deduplicator.nowFunc = func() time.Time {
+		return base.Add(100*time.Millisecond + deduplicator.budgets.PendingGraceTimeout + time.Millisecond)
+	}
+	outputs := deduplicator.releaseExpiredPending(deduplicator.now())
+	if len(outputs) == 0 {
+		t.Fatal("releaseExpiredPending() produced 0 outputs after grace expiry")
+	}
+	deduplicator.publishAll(outputs)
+
+	timeout := time.NewTimer(time.Second)
+	defer timeout.Stop()
+	var event AdjudicatedPassiveEvent
+	select {
+	case out, ok := <-subscription.Events():
+		if !ok {
+			t.Fatal("subscription closed before adjudicated event arrived")
+		}
+		event = out
+	case <-timeout.C:
+		t.Fatalf("timeout waiting for adjudicated event")
+	}
+	if event.Disposition != DedupDispositionUnmatchedThirdParty {
+		t.Fatalf("Disposition = %q; want %q (event=%+v)", event.Disposition, DedupDispositionUnmatchedThirdParty, event)
+	}
 	if !event.ThirdPartyEligible {
-		t.Fatal("ThirdPartyEligible = false; want true for default B524 correlated-read fallback")
+		t.Fatal("ThirdPartyEligible = false; want true with runtime active-observer evidence")
+	}
+	if event.FamilyPolicy.DirectApplyPolicy != ObserveFirstDirectApplyPolicyStateDefault {
+		t.Fatalf("DirectApplyPolicy = %q; want %q", event.FamilyPolicy.DirectApplyPolicy, ObserveFirstDirectApplyPolicyStateDefault)
 	}
 }
 

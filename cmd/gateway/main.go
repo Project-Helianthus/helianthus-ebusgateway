@@ -35,6 +35,27 @@ var (
 	startHTTPServerFn                         = startHTTPServer
 )
 
+type runtimeWatchObserver struct {
+	primary  ebusgateway.WatchObserver
+	fallback ebusgateway.WatchObserver
+}
+
+func (observer *runtimeWatchObserver) Observe(key ebusgateway.WatchKey) ebusgateway.WatchObservation {
+	if key == nil {
+		return ebusgateway.WatchObservation{State: ebusgateway.WatchObservationStateCatalogMiss}
+	}
+	if observer != nil && observer.primary != nil {
+		observation := observer.primary.Observe(key)
+		if observation.State != ebusgateway.WatchObservationStateCatalogMiss {
+			return observation
+		}
+	}
+	if observer != nil && observer.fallback != nil {
+		return observer.fallback.Observe(key)
+	}
+	return ebusgateway.WatchObservation{State: ebusgateway.WatchObservationStateCatalogMiss}
+}
+
 func main() {
 	cfg := ebusgateway.DefaultConfig()
 	bindFlags(flag.CommandLine, &cfg)
@@ -236,20 +257,30 @@ func wireObserveFirstObservers(cfg *ebusgateway.Config) (*ebusgateway.BusObserva
 		return nil, nil, nil
 	}
 
-	observerCfg := *cfg
+	observer := &runtimeWatchObserver{primary: cfg.WatchObserver}
+
+	dedupCfg := *cfg
+	dedupCfg.WatchObserver = cfg.WatchObserver
 
 	var deduplicator *ebusgateway.ActivePassiveDeduplicator
 	if cfg.BroadcastListen {
-		dedup, err := ebusgateway.NewActivePassiveDeduplicator(observerCfg)
+		dedup, err := ebusgateway.NewActivePassiveDeduplicator(dedupCfg)
 		if err != nil {
 			return nil, nil, err
 		}
 		deduplicator = dedup
+		observer.fallback = deduplicator
+	}
+
+	observerCfg := *cfg
+	observerCfg.WatchObserver = observer
+	if deduplicator != nil {
 		observerCfg.LocalAddressSnapshotter = deduplicator
 	}
 
 	busObservability := ebusgateway.NewBusObservabilityStore(observerCfg)
 	cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, busObservability)
+	cfg.WatchObserver = observer
 	if deduplicator != nil {
 		cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, deduplicator)
 	}

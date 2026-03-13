@@ -48,6 +48,31 @@ func TestShadowCacheDegradesWhenStaticPinnedFootprintExceedsBudget(t *testing.T)
 	}
 }
 
+func TestShadowCacheStoresNormalizedFeatureFlagSeam(t *testing.T) {
+	t.Parallel()
+
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{NewB509WatchKey(0x08, 0x0200)}, WatchActivationSourceTooling)
+	cache := NewShadowCache(ShadowCacheOptions{
+		Catalog:        catalog,
+		Activations:    activations,
+		FeatureFlags:   NormalizeObserveFirstFeatureFlags(true, true, true, ObserveFirstExternalWritePolicyRecordOnly),
+		Capacity:       8,
+		PinnedCapacity: 4,
+		Now:            func() time.Time { return time.Unix(100, 0) },
+	})
+
+	flags := cache.FeatureFlags()
+	if !flags.ObserveFirstEnabled() {
+		t.Fatal("FeatureFlags().ObserveFirstEnabled() = false; want true")
+	}
+	if !flags.PassiveConfigDirectApply() {
+		t.Fatal("FeatureFlags().PassiveConfigDirectApply() = false; want true")
+	}
+	if flags.ExternalWritePolicy() != ObserveFirstExternalWritePolicyRecordAndInvalidate {
+		t.Fatalf("FeatureFlags().ExternalWritePolicy() = %q; want record_and_invalidate", flags.ExternalWritePolicy())
+	}
+}
+
 func TestShadowCacheEvictsOldestEvictableEntryFirst(t *testing.T) {
 	t.Parallel()
 

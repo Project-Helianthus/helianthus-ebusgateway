@@ -40,6 +40,15 @@ type BusObservabilityStatus struct {
 	Warmup         BusObservabilityWarmup        `json:"warmup"`
 	TimingQuality  BusObservabilityTimingQuality `json:"timing_quality"`
 	Degraded       BusObservabilityDegraded      `json:"degraded"`
+	FeatureFlags   ObserveFirstFeatureFlagState  `json:"feature_flags"`
+}
+
+type ObserveFirstFeatureFlagState struct {
+	ObserveFirstEnabled      bool     `json:"observe_first_enabled"`
+	PassiveStateDirectApply  bool     `json:"passive_state_direct_apply"`
+	PassiveConfigDirectApply bool     `json:"passive_config_direct_apply"`
+	ExternalWritePolicy      string   `json:"external_write_policy"`
+	Normalizations           []string `json:"normalizations,omitempty"`
 }
 
 type BusBoundedListSummary struct {
@@ -134,6 +143,9 @@ func cloneBusObservabilityStatus(source *BusObservabilityStatus) *BusObservabili
 	out := *source
 	if len(source.Degraded.Reasons) > 0 {
 		out.Degraded.Reasons = append([]string(nil), source.Degraded.Reasons...)
+	}
+	if len(source.FeatureFlags.Normalizations) > 0 {
+		out.FeatureFlags.Normalizations = append([]string(nil), source.FeatureFlags.Normalizations...)
 	}
 	return &out
 }

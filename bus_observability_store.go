@@ -396,6 +396,7 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	activeTiming := store.activeTimingQuality
 	passiveTiming := store.passiveTimingQuality
 	transportClass := store.transportClass
+	featureFlags := store.cfg.ObserveFirstFlags
 	store.mu.Unlock()
 
 	var buffer bytes.Buffer
@@ -405,6 +406,47 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	writer.writeType("ebus_observability_transport_info", "gauge")
 	writer.writeGaugeSample("ebus_observability_transport_info", 1, labelMap("scope", "active", "transport_class", transportClass, "timing_quality", activeTiming))
 	writer.writeGaugeSample("ebus_observability_transport_info", 1, labelMap("scope", "passive", "transport_class", transportClass, "timing_quality", passiveTiming))
+
+	writer.writeHelp("feature_flag_normalizations_total", "Observe-first feature-flag normalization events.")
+	writer.writeType("feature_flag_normalizations_total", "counter")
+	appliedNormalizations := make(map[ObserveFirstFeatureFlagNormalizationReason]struct{}, len(featureFlags.NormalizationReasons()))
+	for _, reason := range featureFlags.NormalizationReasons() {
+		appliedNormalizations[reason] = struct{}{}
+	}
+	for _, reason := range observeFirstFeatureFlagNormalizationReasons {
+		value := 0.0
+		if _, ok := appliedNormalizations[reason]; ok {
+			value = 1
+		}
+		writer.writeCounterSample("feature_flag_normalizations_total", value, labelMap("reason", string(reason)))
+	}
+
+	writer.writeHelp("feature_flag_enabled", "Observe-first normalized feature-flag state.")
+	writer.writeType("feature_flag_enabled", "gauge")
+	for _, item := range []struct {
+		name    string
+		enabled bool
+	}{
+		{name: "observe_first_enabled", enabled: featureFlags.ObserveFirstEnabled()},
+		{name: "passive_state_direct_apply", enabled: featureFlags.PassiveStateDirectApply()},
+		{name: "passive_config_direct_apply", enabled: featureFlags.PassiveConfigDirectApply()},
+	} {
+		value := 0.0
+		if item.enabled {
+			value = 1
+		}
+		writer.writeGaugeSample("feature_flag_enabled", value, labelMap("flag", item.name))
+	}
+
+	writer.writeHelp("external_write_policy_state", "Observe-first normalized external write policy state.")
+	writer.writeType("external_write_policy_state", "gauge")
+	for _, policy := range observeFirstExternalWritePolicies {
+		value := 0.0
+		if featureFlags.ExternalWritePolicy() == policy {
+			value = 1
+		}
+		writer.writeGaugeSample("external_write_policy_state", value, labelMap("policy", string(policy)))
+	}
 
 	writer.writeHelp("ebus_frames_observed_total", "Bounded observe-first frame counters.")
 	writer.writeType("ebus_frames_observed_total", "counter")

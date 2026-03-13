@@ -337,6 +337,17 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.StringVar(&cfg.DumpOutputDir, "dump-output-dir", cfg.DumpOutputDir, "unknown device dump output dir")
 	fs.StringVar(&cfg.DumpUploadURL, "dump-upload-url", cfg.DumpUploadURL, "unknown device dump upload url (internal)")
 	fs.BoolVar(&cfg.DumpIncludePII, "dump-include-pii", cfg.DumpIncludePII, "include identifiers in unknown device dumps")
+	fs.BoolVar(&cfg.ObserveFirstEnabled, "observe-first-enabled", cfg.ObserveFirstEnabled, "enable observe-first runtime behavior gates")
+	fs.BoolVar(&cfg.PassiveStateDirectApply, "passive-state-direct-apply", cfg.PassiveStateDirectApply, "allow passive state direct-apply when observe-first is enabled")
+	fs.BoolVar(&cfg.PassiveConfigDirectApply, "passive-config-direct-apply", cfg.PassiveConfigDirectApply, "allow passive config direct-apply when state direct-apply is enabled")
+	fs.Func("external-write-policy", "externally observed write policy: invalidate_only, record_only, or record_and_invalidate", func(value string) error {
+		policy, err := ebusgateway.ParseObserveFirstExternalWritePolicy(value)
+		if err != nil {
+			return err
+		}
+		cfg.ExternalWritePolicy = policy
+		return nil
+	})
 
 	fs.Func("source-addr", "source address for scans/semantic reads (e.g. 0xf0, 0x00, or auto)", func(value string) error {
 		value = strings.TrimSpace(strings.ToLower(value))

@@ -177,6 +177,48 @@ func TestBusObservabilityStoreMarksPassiveDisabledAsCapabilityWithdrawn(t *testi
 	}
 }
 
+func TestBusObservabilityStoreExportsNormalizedFeatureFlags(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ObserveFirstEnabled = true
+	cfg.PassiveStateDirectApply = false
+	cfg.PassiveConfigDirectApply = true
+	cfg.ExternalWritePolicy = ObserveFirstExternalWritePolicyInvalidateOnly
+
+	store := NewBusObservabilityStore(cfg)
+	snapshot := store.Snapshot()
+	state := snapshot.Summary.Status.FeatureFlags
+
+	if !state.ObserveFirstEnabled {
+		t.Fatal("FeatureFlags.ObserveFirstEnabled = false; want true")
+	}
+	if state.PassiveStateDirectApply {
+		t.Fatal("FeatureFlags.PassiveStateDirectApply = true; want false")
+	}
+	if state.PassiveConfigDirectApply {
+		t.Fatal("FeatureFlags.PassiveConfigDirectApply = true; want false")
+	}
+	if state.ExternalWritePolicy != ObserveFirstExternalWritePolicyInvalidateOnly {
+		t.Fatalf("FeatureFlags.ExternalWritePolicy = %q; want invalidate_only", state.ExternalWritePolicy)
+	}
+	if len(state.Normalizations) != 1 {
+		t.Fatalf("FeatureFlags.Normalizations = %v; want 1 entry", state.Normalizations)
+	}
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `feature_flag_enabled{flag="observe_first_enabled"} 1`) {
+		t.Fatalf("RenderPrometheus missing observe_first_enabled gauge:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `feature_flag_enabled{flag="passive_state_direct_apply"} 0`) {
+		t.Fatalf("RenderPrometheus missing passive_state_direct_apply gauge:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `external_write_policy_state{policy="invalidate_only"} 1`) {
+		t.Fatalf("RenderPrometheus missing normalized invalidate_only policy:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `feature_flag_normalizations_total{reason="config_requires_state"} 1`) {
+		t.Fatalf("RenderPrometheus missing config_requires_state normalization:\n%s", metrics)
+	}
+}
+
 func TestBusObservabilityStoreKeepsUnsupportedPassiveTransportOutOfStartupTimeout(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BroadcastListen = true

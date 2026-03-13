@@ -117,6 +117,13 @@ func mapGraphQLBusStatus(status ebusgateway.BusObservabilityStatus) *graphql.Bus
 			Active:  status.Degraded.Active,
 			Reasons: append([]string(nil), status.Degraded.Reasons...),
 		},
+		FeatureFlags: graphql.ObserveFirstFeatureFlagState{
+			ObserveFirstEnabled:      status.FeatureFlags.ObserveFirstEnabled,
+			PassiveStateDirectApply:  status.FeatureFlags.PassiveStateDirectApply,
+			PassiveConfigDirectApply: status.FeatureFlags.PassiveConfigDirectApply,
+			ExternalWritePolicy:      string(status.FeatureFlags.ExternalWritePolicy),
+			Normalizations:           append([]string(nil), status.FeatureFlags.Normalizations...),
+		},
 	}
 }
 
@@ -150,6 +157,13 @@ func mapMCPBusStatus(status ebusgateway.BusObservabilityStatus) *mcp.BusObservab
 		Degraded: mcp.BusObservabilityDegraded{
 			Active:  status.Degraded.Active,
 			Reasons: append([]string(nil), status.Degraded.Reasons...),
+		},
+		FeatureFlags: mcp.ObserveFirstFeatureFlagState{
+			ObserveFirstEnabled:      status.FeatureFlags.ObserveFirstEnabled,
+			PassiveStateDirectApply:  status.FeatureFlags.PassiveStateDirectApply,
+			PassiveConfigDirectApply: status.FeatureFlags.PassiveConfigDirectApply,
+			ExternalWritePolicy:      string(status.FeatureFlags.ExternalWritePolicy),
+			Normalizations:           append([]string(nil), status.FeatureFlags.Normalizations...),
 		},
 	}
 }

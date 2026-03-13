@@ -667,6 +667,41 @@ func TestBindFlags_SemanticEnergyInterval(t *testing.T) {
 	}
 }
 
+func TestBindFlags_ObserveFirstFeatureFlags(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{
+		"-observe-first-enabled",
+		"-passive-state-direct-apply",
+		"-passive-config-direct-apply",
+		"-external-write-policy", "record_and_invalidate",
+	}); err != nil {
+		t.Fatalf("parse observe-first flags: %v", err)
+	}
+	if !cfg.ObserveFirstEnabled {
+		t.Fatal("ObserveFirstEnabled = false; want true")
+	}
+	if !cfg.PassiveStateDirectApply {
+		t.Fatal("PassiveStateDirectApply = false; want true")
+	}
+	if !cfg.PassiveConfigDirectApply {
+		t.Fatal("PassiveConfigDirectApply = false; want true")
+	}
+	if cfg.ExternalWritePolicy != ebusgateway.ObserveFirstExternalWritePolicyRecordAndInvalidate {
+		t.Fatalf("ExternalWritePolicy = %q; want record_and_invalidate", cfg.ExternalWritePolicy)
+	}
+}
+
+func TestBindFlags_ObserveFirstRejectsInvalidExternalWritePolicy(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-external-write-policy", "unsafe"}); err == nil {
+		t.Fatal("parse invalid external-write-policy error = nil; want error")
+	}
+}
+
 func TestNormalizeMountPath(t *testing.T) {
 	tests := []struct {
 		name     string

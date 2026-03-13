@@ -159,6 +159,21 @@ func TestActivePassiveDeduplicator_B524CorrelatedReadUsesRuntimeObserverFallback
 	defer subscription.Close()
 
 	forceHealthyDedup(deduplicator)
+	stateKey := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C)
+	deduplicator.cfg.WatchObserver = staticWatchObserver{
+		byCanonical: map[string]WatchObservation{
+			stateKey.Canonical(): {
+				State: WatchObservationStateActive,
+				Descriptor: WatchDescriptor{
+					Key:               stateKey,
+					SemanticClass:     WatchSemanticClassState,
+					CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+					DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+				},
+				HasDescriptor: true,
+			},
+		},
+	}
 
 	base := time.Unix(0, 0)
 	deduplicator.nowFunc = func() time.Time { return base }
@@ -181,7 +196,7 @@ func TestActivePassiveDeduplicator_B524CorrelatedReadUsesRuntimeObserverFallback
 	if err := deduplicator.OnBusEvent(activeAttemptEvent(activeRequest, activeResponse)); err != nil {
 		t.Fatalf("OnBusEvent(active) error = %v", err)
 	}
-	observation := deduplicator.Observe(NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C))
+	observation := deduplicator.Observe(stateKey)
 	if observation.State != WatchObservationStateActive {
 		t.Fatalf("Observe(B524 key).State = %q; want %q", observation.State, WatchObservationStateActive)
 	}
@@ -226,6 +241,51 @@ func TestActivePassiveDeduplicator_B524CorrelatedReadUsesRuntimeObserverFallback
 	}
 	if event.FamilyPolicy.DirectApplyPolicy != ObserveFirstDirectApplyPolicyStateDefault {
 		t.Fatalf("DirectApplyPolicy = %q; want %q", event.FamilyPolicy.DirectApplyPolicy, ObserveFirstDirectApplyPolicyStateDefault)
+	}
+}
+
+func TestActivePassiveDeduplicator_B524ConfigPolicyNotPromotedToStateDefault(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	forceHealthyDedup(deduplicator)
+
+	configKey := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x0005)
+	deduplicator.cfg.WatchObserver = staticWatchObserver{
+		byCanonical: map[string]WatchObservation{
+			configKey.Canonical(): {
+				State: WatchObservationStateActive,
+				Descriptor: WatchDescriptor{
+					Key:               configKey,
+					SemanticClass:     WatchSemanticClassConfig,
+					CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+					DirectApplyPolicy: WatchDirectApplyPolicyConfigOptIn,
+				},
+				HasDescriptor: true,
+			},
+		},
+	}
+
+	activeRequest := protocol.Frame{
+		Source:    0x31,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x24,
+		Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x05, 0x00},
+	}
+	activeResponse := protocol.Frame{
+		Source:    activeRequest.Target,
+		Target:    activeRequest.Source,
+		Primary:   activeRequest.Primary,
+		Secondary: activeRequest.Secondary,
+		Data:      []byte{0x42, 0x01, 0x03, 0x05, 0x00, 0x22},
+	}
+
+	if err := deduplicator.OnBusEvent(activeAttemptEvent(activeRequest, activeResponse)); err != nil {
+		t.Fatalf("OnBusEvent(active) error = %v", err)
+	}
+
+	observation := deduplicator.Observe(configKey)
+	if observation.State != WatchObservationStateCatalogMiss {
+		t.Fatalf("Observe(config B524 key).State = %q; want %q", observation.State, WatchObservationStateCatalogMiss)
 	}
 }
 
@@ -719,6 +779,20 @@ func newTestDeduplicator(t *testing.T) *ActivePassiveDeduplicator {
 		t.Fatalf("NewActivePassiveDeduplicator error = %v", err)
 	}
 	return deduplicator
+}
+
+type staticWatchObserver struct {
+	byCanonical map[string]WatchObservation
+}
+
+func (observer staticWatchObserver) Observe(key WatchKey) WatchObservation {
+	if key == nil || observer.byCanonical == nil {
+		return WatchObservation{State: WatchObservationStateCatalogMiss}
+	}
+	if observation, ok := observer.byCanonical[key.Canonical()]; ok {
+		return observation
+	}
+	return WatchObservation{State: WatchObservationStateCatalogMiss}
 }
 
 func forceHealthyDedup(deduplicator *ActivePassiveDeduplicator) {

@@ -25,6 +25,20 @@ func (snapshotter fixedLocalSnapshotter) LocalAddressSnapshot() ebusgateway.Loca
 	return snapshotter.snapshot
 }
 
+type staticRuntimeWatchObserver struct {
+	byCanonical map[string]ebusgateway.WatchObservation
+}
+
+func (observer staticRuntimeWatchObserver) Observe(key ebusgateway.WatchKey) ebusgateway.WatchObservation {
+	if key == nil || observer.byCanonical == nil {
+		return ebusgateway.WatchObservation{State: ebusgateway.WatchObservationStateCatalogMiss}
+	}
+	if observation, ok := observer.byCanonical[key.Canonical()]; ok {
+		return observation
+	}
+	return ebusgateway.WatchObservation{State: ebusgateway.WatchObservationStateCatalogMiss}
+}
+
 func TestBindFlags_SourceAddrAuto(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
@@ -112,6 +126,21 @@ func TestApplyTransportSourcePolicy_EbusdTCPDefaultF0PromotesToEbusdSource(t *te
 func TestWireObserveFirstObserversWiresDedupSnapshotterIntoObservabilityStore(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.BroadcastListen = true
+	b524Key := ebusgateway.NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C)
+	cfg.WatchObserver = staticRuntimeWatchObserver{
+		byCanonical: map[string]ebusgateway.WatchObservation{
+			b524Key.Canonical(): {
+				State: ebusgateway.WatchObservationStateActive,
+				Descriptor: ebusgateway.WatchDescriptor{
+					Key:               b524Key,
+					SemanticClass:     ebusgateway.WatchSemanticClassState,
+					CorrelationPolicy: ebusgateway.WatchCorrelationPolicyRequestResponse,
+					DirectApplyPolicy: ebusgateway.WatchDirectApplyPolicyStateDefault,
+				},
+				HasDescriptor: true,
+			},
+		},
+	}
 	cfg.LocalAddressSnapshotter = fixedLocalSnapshotter{
 		snapshot: ebusgateway.LocalAddressSnapshot{
 			Address: 0x31,
@@ -139,10 +168,9 @@ func TestWireObserveFirstObserversWiresDedupSnapshotterIntoObservabilityStore(t 
 		t.Fatalf("LocalAddressSnapshot = %+v; want known 0x31", local)
 	}
 
-	b524Key := ebusgateway.NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C)
 	initialObservation := cfg.WatchObserver.Observe(b524Key)
-	if initialObservation.State != ebusgateway.WatchObservationStateCatalogMiss {
-		t.Fatalf("initial WatchObserver state = %q; want catalog_miss before active evidence", initialObservation.State)
+	if initialObservation.State != ebusgateway.WatchObservationStateActive {
+		t.Fatalf("initial WatchObserver state = %q; want active from runtime observer", initialObservation.State)
 	}
 
 	b524Request := protocol.Frame{

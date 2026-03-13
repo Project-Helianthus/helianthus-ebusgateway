@@ -1079,7 +1079,7 @@ func (deduplicator *ActivePassiveDeduplicator) observeFromActiveLocked(key Watch
 		if shared == nil || shared.Canonical() != canonical {
 			continue
 		}
-		if !dedupFingerprintSupportsStateDefault(retained.Fingerprint, key) {
+		if !dedupFingerprintSupportsStateDefault(retained.Fingerprint) {
 			continue
 		}
 		return WatchObservation{
@@ -1097,25 +1097,17 @@ func (deduplicator *ActivePassiveDeduplicator) observeFromActiveLocked(key Watch
 	return WatchObservation{State: WatchObservationStateCatalogMiss}
 }
 
-func dedupFingerprintSupportsStateDefault(fingerprint ActiveTransactionFingerprint, key WatchKey) bool {
+func dedupFingerprintSupportsStateDefault(fingerprint ActiveTransactionFingerprint) bool {
 	if fingerprint.OutcomeClass != DedupOutcomeSuccess || fingerprint.ResponseClass != DedupResponseValueBearing {
 		return false
 	}
 	if !dedupFingerprintIsReadIntent(fingerprint) {
 		return false
 	}
-	switch key.Family() {
-	case WatchFamilyB509:
-		return true
-	case WatchFamilyB524:
-		b524, ok := asB524WatchKey(key)
-		if !ok {
-			return false
-		}
-		return b524.Opcode == 0x02 || b524.Opcode == 0x06
-	default:
+	if fingerprint.FamilyPolicy.CorrelationPolicy != WatchCorrelationPolicyRequestResponse {
 		return false
 	}
+	return fingerprint.FamilyPolicy.DirectApplyPolicy == ObserveFirstDirectApplyPolicyStateDefault
 }
 
 func dedupFingerprintIsReadIntent(fingerprint ActiveTransactionFingerprint) bool {

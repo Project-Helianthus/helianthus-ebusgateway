@@ -240,6 +240,65 @@ func TestEnergyMerge_SnapshotBuildsMonthlySeries(t *testing.T) {
 	}
 }
 
+func TestEnergyMerge_SnapshotMonthlyMetadataBackfillsPartialSelectors(t *testing.T) {
+	cases := []struct {
+		name         string
+		presentKind  string
+		presentIndex int
+		missingIndex int
+	}{
+		{name: "current_only", presentKind: "current", presentIndex: 1, missingIndex: 0},
+		{name: "previous_only", presentKind: "previous", presentIndex: 0, missingIndex: 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newEnergyMergeStore()
+			if !store.Apply(energyMergeKey{
+				Channel:  "gas",
+				Usage:    "climate",
+				Period:   "month",
+				YearKind: tc.presentKind,
+			}, 9.5, EnergySourceRegister, t0) {
+				t.Fatal("Apply() = false; want true")
+			}
+
+			snap := store.SnapshotWithContext(t0.Add(time.Minute), "")
+			if snap == nil {
+				t.Fatal("SnapshotWithContext() = nil; want non-nil")
+			}
+			if len(snap.Gas.Climate.MonthlyMeta) != 2 {
+				t.Fatalf("Gas.Climate.MonthlyMeta len = %d; want 2", len(snap.Gas.Climate.MonthlyMeta))
+			}
+
+			presentMeta := snap.Gas.Climate.MonthlyMeta[tc.presentIndex]
+			if presentMeta.FreshnessState != EnergyFreshnessStateFresh {
+				t.Fatalf("present selector freshness = %q; want fresh", presentMeta.FreshnessState)
+			}
+			if presentMeta.Provenance != EnergyProvenanceRegister {
+				t.Fatalf("present selector provenance = %q; want register", presentMeta.Provenance)
+			}
+
+			missingMeta := snap.Gas.Climate.MonthlyMeta[tc.missingIndex]
+			if missingMeta.FreshnessState != EnergyFreshnessStateNeverSeen {
+				t.Fatalf("missing selector freshness = %q; want never_seen", missingMeta.FreshnessState)
+			}
+			if missingMeta.Provenance != EnergyProvenanceNone {
+				t.Fatalf("missing selector provenance = %q; want none", missingMeta.Provenance)
+			}
+
+			for i, meta := range snap.Gas.Climate.MonthlyMeta {
+				if meta.FreshnessState == "" {
+					t.Fatalf("MonthlyMeta[%d].FreshnessState is empty; want non-empty", i)
+				}
+				if meta.Provenance == "" {
+					t.Fatalf("MonthlyMeta[%d].Provenance is empty; want non-empty", i)
+				}
+			}
+		})
+	}
+}
+
 func TestEnergyMerge_SnapshotReturnsNeverSeenShapeWhenEmpty(t *testing.T) {
 	store := newEnergyMergeStore()
 	snap := store.SnapshotWithContext(t0, "")
@@ -488,6 +547,23 @@ func TestEnergyMerge_BroadcastFreshnessTransitionsMetricIncrements(t *testing.T)
 	after := readExpvarMapValue(energyBroadcastTransitions, "warming_up->stale")
 	if after <= before {
 		t.Fatalf("energy_broadcast_freshness_transitions_total[warming_up->stale] = %d; want > %d", after, before)
+	}
+}
+
+func TestEnergyMerge_ConstructorsDoNotMutateBroadcastSelectorMetrics(t *testing.T) {
+	before := make(map[EnergyFreshnessState]int64)
+	for _, state := range energyFreshnessStates() {
+		before[state] = readExpvarMapValue(energyBroadcastSelectors, string(state))
+	}
+
+	_ = newEnergyMergeStore()
+	_ = NewLiveSemanticProvider()
+
+	for _, state := range energyFreshnessStates() {
+		after := readExpvarMapValue(energyBroadcastSelectors, string(state))
+		if after != before[state] {
+			t.Fatalf("energy_broadcast_selectors[%s] = %d; want %d (constructor must not mutate process-global gauge)", state, after, before[state])
+		}
 	}
 }
 

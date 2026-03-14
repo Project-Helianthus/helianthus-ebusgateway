@@ -81,13 +81,11 @@ type energyMergeStore struct {
 }
 
 func newEnergyMergeStore() *energyMergeStore {
-	store := &energyMergeStore{
+	return &energyMergeStore{
 		points:               make(map[energyMergeKey]energyDataPoint),
 		broadcastStates:      make(map[energyMergeKey]EnergyFreshnessState),
 		broadcastStateCounts: make(map[EnergyFreshnessState]int),
 	}
-	store.reconcileBroadcastStatesLocked(time.Now(), "")
-	return store
 }
 
 // Apply attempts to merge an incoming energy value into the store.
@@ -224,9 +222,9 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 		}
 	}
 
-	// Ensure all B516 selectors are observable with explicit freshness metadata,
-	// even when the value has never been seen.
-	for _, key := range energyBroadcastSelectorCatalog() {
+	// Ensure all energy selector slots are observable with explicit freshness
+	// metadata, even when a value has never been seen.
+	for _, key := range energyMetadataSelectorCatalog() {
 		channel := mergeSelectChannel(totals, key.Channel)
 		if channel == nil {
 			continue
@@ -252,6 +250,16 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 			}
 			if key.YearKind == "current" && series.YearlyMeta[1].FreshnessState == "" {
 				series.YearlyMeta[1] = meta
+			}
+		case "month":
+			if len(series.MonthlyMeta) < 2 {
+				series.MonthlyMeta = make([]EnergyPointMeta, 2)
+			}
+			if key.YearKind == "previous" && series.MonthlyMeta[0].FreshnessState == "" {
+				series.MonthlyMeta[0] = meta
+			}
+			if key.YearKind == "current" && series.MonthlyMeta[1].FreshnessState == "" {
+				series.MonthlyMeta[1] = meta
 			}
 		}
 	}
@@ -383,10 +391,22 @@ func energyFreshnessStates() []EnergyFreshnessState {
 	}
 }
 
+func energyMetadataSelectorCatalog() []energyMergeKey {
+	return energySelectorCatalog(true)
+}
+
 func energyBroadcastSelectorCatalog() []energyMergeKey {
+	return energySelectorCatalog(false)
+}
+
+func energySelectorCatalog(includeMonth bool) []energyMergeKey {
 	channels := []string{"gas", "electricity", "solar"}
 	usages := []string{"hot_water", "climate"}
-	out := make([]energyMergeKey, 0, len(channels)*len(usages)*3)
+	periodVariants := 3
+	if includeMonth {
+		periodVariants = 5
+	}
+	out := make([]energyMergeKey, 0, len(channels)*len(usages)*periodVariants)
 	for _, channel := range channels {
 		for _, usage := range usages {
 			out = append(out, energyMergeKey{
@@ -406,6 +426,20 @@ func energyBroadcastSelectorCatalog() []energyMergeKey {
 				Period:   "year",
 				YearKind: "current",
 			})
+			if includeMonth {
+				out = append(out, energyMergeKey{
+					Channel:  channel,
+					Usage:    usage,
+					Period:   "month",
+					YearKind: "previous",
+				})
+				out = append(out, energyMergeKey{
+					Channel:  channel,
+					Usage:    usage,
+					Period:   "month",
+					YearKind: "current",
+				})
+			}
 		}
 	}
 	return out

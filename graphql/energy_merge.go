@@ -330,6 +330,13 @@ func energyFreshnessForOptionalPoint(exists bool, point energyDataPoint, now tim
 	}
 
 	if point.Source == EnergySourceRegister {
+		age := now.Sub(point.IngestAt)
+		if age < 0 {
+			age = 0
+		}
+		if age >= energyBroadcastUnavailableTTL {
+			return EnergyFreshnessStateStale
+		}
 		return EnergyFreshnessStateFresh
 	}
 

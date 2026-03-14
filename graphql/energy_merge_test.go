@@ -653,6 +653,45 @@ func TestApplyEnergyFromRegister_MetadataFresh(t *testing.T) {
 	}
 }
 
+func TestEnergyMerge_RegisterFreshnessAgesOut(t *testing.T) {
+	store := newEnergyMergeStore()
+	key := energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}
+	if !store.Apply(key, 8.75, EnergySourceRegister, t0) {
+		t.Fatal("Apply() = false; want true")
+	}
+
+	fresh := store.SnapshotWithContext(t0.Add(time.Minute), "")
+	if fresh == nil {
+		t.Fatal("SnapshotWithContext() fresh = nil; want non-nil")
+	}
+	if got := fresh.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateFresh {
+		t.Fatalf("fresh register freshness = %q; want fresh", got)
+	}
+
+	staleAt := t0.Add(energyBroadcastUnavailableTTL + time.Second)
+	stale := store.SnapshotWithContext(staleAt, "")
+	if stale == nil {
+		t.Fatal("SnapshotWithContext() stale = nil; want non-nil")
+	}
+	if got := stale.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateStale {
+		t.Fatalf("aged register freshness = %q; want stale", got)
+	}
+	if got := stale.Gas.Climate.TodayMeta.Provenance; got != EnergyProvenanceRegister {
+		t.Fatalf("aged register provenance = %q; want register", got)
+	}
+	if !stale.Gas.Climate.TodayMeta.Stale {
+		t.Fatal("aged register stale flag = false; want true")
+	}
+
+	staleUnavailableCtx := store.SnapshotWithContext(staleAt, "unavailable")
+	if staleUnavailableCtx == nil {
+		t.Fatal("SnapshotWithContext() stale unavailable = nil; want non-nil")
+	}
+	if got := staleUnavailableCtx.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateStale {
+		t.Fatalf("aged register freshness with passive unavailable = %q; want stale", got)
+	}
+}
+
 func TestLiveSemanticProvider_EnergyTotalsVisibleWhenNeverSeen(t *testing.T) {
 	provider := NewLiveSemanticProvider()
 

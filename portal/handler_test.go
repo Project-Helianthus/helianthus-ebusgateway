@@ -155,6 +155,19 @@ func TestBootstrapEndpoint(t *testing.T) {
 		ListSemantic: func() SemanticSnapshot {
 			return SemanticSnapshot{Zones: []SemanticZone{{ID: "z1", Name: "Zone 1"}}}
 		},
+		GetBusObservability: func() any {
+			return map[string]any{
+				"status": map[string]any{
+					"transport_class": "ens",
+					"warmup": map[string]any{
+						"state": "available",
+					},
+					"degraded": map[string]any{
+						"active": false,
+					},
+				},
+			}
+		},
 		ListProjections: func() []ProjectionDevice {
 			return []ProjectionDevice{{Address: 0x10, Projections: []ProjectionSummary{{Plane: "Service"}}}}
 		},
@@ -183,6 +196,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	}
 	if endpoints["search"] != "/portal/api/v1/search" {
 		t.Fatalf("search endpoint=%v; want /portal/api/v1/search", endpoints["search"])
+	}
+	if endpoints["bus_observability"] != "/portal/api/v1/bus/observability" {
+		t.Fatalf("bus_observability endpoint=%v; want /portal/api/v1/bus/observability", endpoints["bus_observability"])
 	}
 	if endpoints["timeline"] != "/portal/api/v1/timeline/events" {
 		t.Fatalf("timeline endpoint=%v; want /portal/api/v1/timeline/events", endpoints["timeline"])
@@ -223,6 +239,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	}
 	if capabilities["semantic"] != true {
 		t.Fatalf("capabilities.semantic=%v; want true", capabilities["semantic"])
+	}
+	if capabilities["bus_observability"] != true {
+		t.Fatalf("capabilities.bus_observability=%v; want true", capabilities["bus_observability"])
 	}
 	if capabilities["projection"] != true {
 		t.Fatalf("capabilities.projection=%v; want true", capabilities["projection"])
@@ -268,6 +287,58 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 	}
 	if got := rec.Header().Get("Allow"); got != http.MethodGet {
 		t.Fatalf("Allow=%q; want GET", got)
+	}
+}
+
+func TestBusObservabilityEndpointUnavailable(t *testing.T) {
+	h := NewHandler(Options{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/bus/observability", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestBusObservabilityEndpoint(t *testing.T) {
+	h := NewHandler(Options{
+		GetBusObservability: func() any {
+			return map[string]any{
+				"status": map[string]any{
+					"transport_class": "ebusd-tcp",
+					"warmup": map[string]any{
+						"state": "warming_up",
+					},
+					"degraded": map[string]any{
+						"active": true,
+						"reasons": []string{
+							"unsupported_or_misconfigured",
+						},
+					},
+				},
+			}
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/bus/observability", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	status, ok := payload["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("status missing or invalid")
+	}
+	if status["transport_class"] != "ebusd-tcp" {
+		t.Fatalf("status.transport_class=%v; want ebusd-tcp", status["transport_class"])
 	}
 }
 

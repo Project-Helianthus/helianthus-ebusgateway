@@ -48,18 +48,19 @@ var (
 )
 
 type Options struct {
-	GraphQLPath      string
-	SnapshotPath     string
-	SubscriptionPath string
-	MCPPath          string
-	GatewayVersion   string
-	BuildID          string
-	ListRegistry     func() []RegistryDevice
-	ListSemantic     func() SemanticSnapshot
-	ListProjections  func() []ProjectionDevice
-	GetProjection    func(address byte, plane string) (ProjectionGraph, bool)
-	ExplorerBus      ExplorerBus // nil disables explorer
-	ExplorerSource   byte        // default eBUS source address (0xF0 if zero)
+	GraphQLPath         string
+	SnapshotPath        string
+	SubscriptionPath    string
+	MCPPath             string
+	GatewayVersion      string
+	BuildID             string
+	ListRegistry        func() []RegistryDevice
+	ListSemantic        func() SemanticSnapshot
+	GetBusObservability func() any
+	ListProjections     func() []ProjectionDevice
+	GetProjection       func(address byte, plane string) (ProjectionGraph, bool)
+	ExplorerBus         ExplorerBus // nil disables explorer
+	ExplorerSource      byte        // default eBUS source address (0xF0 if zero)
 }
 
 type handler struct {
@@ -851,26 +852,28 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		streamEnabled := h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil
 		writeJSON(w, http.StatusOK, map[string]any{
 			"capabilities": map[string]bool{
-				"registry":      h.opts.ListRegistry != nil,
-				"semantic":      h.opts.ListSemantic != nil,
-				"projection":    h.opts.ListProjections != nil && h.opts.GetProjection != nil,
-				"search":        h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil,
-				"stream":        streamEnabled,
-				"timeline":      streamEnabled,
-				"provenance":    streamEnabled,
-				"snapshots":     streamEnabled,
-				"snapshot_diff": streamEnabled,
-				"snapshot_view": streamEnabled,
-				"sessions":      true,
-				"issue_builder": true,
-				"migration":     false,
-				"explorer":      h.explorer != nil,
+				"registry":          h.opts.ListRegistry != nil,
+				"semantic":          h.opts.ListSemantic != nil,
+				"bus_observability": h.opts.GetBusObservability != nil,
+				"projection":        h.opts.ListProjections != nil && h.opts.GetProjection != nil,
+				"search":            h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil,
+				"stream":            streamEnabled,
+				"timeline":          streamEnabled,
+				"provenance":        streamEnabled,
+				"snapshots":         streamEnabled,
+				"snapshot_diff":     streamEnabled,
+				"snapshot_view":     streamEnabled,
+				"sessions":          true,
+				"issue_builder":     true,
+				"migration":         false,
+				"explorer":          h.explorer != nil,
 			},
 			"endpoints": map[string]string{
 				"graphql":               h.opts.GraphQLPath,
 				"snapshot":              h.opts.SnapshotPath,
 				"subscriptions":         h.opts.SubscriptionPath,
 				"mcp":                   h.opts.MCPPath,
+				"bus_observability":     "/portal/api/v1/bus/observability",
 				"search":                "/portal/api/v1/search",
 				"stream":                "/portal/api/v1/stream",
 				"timeline":              "/portal/api/v1/timeline/events",
@@ -903,6 +906,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleRegistryDevices(w, r)
 	case "semantic/snapshot":
 		h.handleSemanticSnapshot(w)
+	case "bus/observability":
+		h.handleBusObservability(w)
 	case "projection/devices":
 		h.handleProjectionDevices(w, r)
 	case "projection/graph":
@@ -979,6 +984,8 @@ func classifyRoute(path string) string {
 		return "api.registry.devices"
 	case strings.HasPrefix(path, "/api/v1/semantic/snapshot"):
 		return "api.semantic.snapshot"
+	case strings.HasPrefix(path, "/api/v1/bus/observability"):
+		return "api.bus.observability"
 	case strings.HasPrefix(path, "/api/v1/projection/devices"):
 		return "api.projection.devices"
 	case strings.HasPrefix(path, "/api/v1/projection/graph"):
@@ -1161,6 +1168,19 @@ func (h *handler) handleSemanticSnapshot(w http.ResponseWriter) {
 		snapshot.Zones = []SemanticZone{}
 	}
 	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (h *handler) handleBusObservability(w http.ResponseWriter) {
+	if h.opts.GetBusObservability == nil {
+		http.Error(w, "bus observability unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	payload := h.opts.GetBusObservability()
+	if payload == nil {
+		http.Error(w, "bus observability unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (h *handler) handleProjectionDevices(w http.ResponseWriter, r *http.Request) {

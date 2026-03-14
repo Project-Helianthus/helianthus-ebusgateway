@@ -521,6 +521,12 @@ func startHTTPServer(
 	}
 	if cfg.PortalPath != "" {
 		portalPath := normalizeMountPath(cfg.PortalPath, "/portal")
+		var getPortalBusObservability func() any
+		if busObservability != nil {
+			getPortalBusObservability = func() any {
+				return busObservability.Snapshot().Summary
+			}
+		}
 		portalHandler := portal.NewHandler(portal.Options{
 			GraphQLPath:      cfg.GraphQLPath,
 			SnapshotPath:     cfg.SnapshotPath,
@@ -598,6 +604,7 @@ func startHTTPServer(
 					CapturedUTC:  time.Now().UTC().Format(time.RFC3339),
 				}
 			},
+			GetBusObservability: getPortalBusObservability,
 			ListProjections: func() []portal.ProjectionDevice {
 				snapshot := builder.FreshSchema()
 				items := make([]portal.ProjectionDevice, 0, len(snapshot.Devices))

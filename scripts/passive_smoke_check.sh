@@ -42,6 +42,24 @@ poll_interval_sec="${PASSIVE_SMOKE_POLL_INTERVAL_SEC:-2}"
 timeout_sec="${PASSIVE_SMOKE_TIMEOUT_SEC:-120}"
 log_dir="${MATRIX_LOG_DIR:-${REPO_ROOT}/results/${case_id}/logs}"
 gw15_proof_mode="${MATRIX_GW15_PROOF_MODE:-0}"
+
+normalize_bool_flag() {
+  local value="${1:-}"
+  local lowered
+  lowered="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
+  case "${lowered}" in
+    1|true|yes|on)
+      printf '1\n'
+      ;;
+    0|false|no|off)
+      printf '0\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 proof_artifacts_enabled="${PASSIVE_PROOF_ARTIFACTS_ENABLED:-${gw15_proof_mode}}"
 if [[ -n "${PASSIVE_PROOF_SAMPLE_INTERVAL_SEC:-}" ]]; then
   proof_sample_interval_sec="${PASSIVE_PROOF_SAMPLE_INTERVAL_SEC}"
@@ -72,7 +90,29 @@ if [[ ! "${proof_sample_interval_sec}" =~ ^[0-9]+$ ]] || [[ "${proof_sample_inte
     proof_sample_interval_sec=5
   fi
 fi
+
+if [[ "${gw15_proof_mode}" == "1" ]]; then
+  if [[ -n "${PASSIVE_PROOF_ARTIFACTS_ENABLED:-}" ]]; then
+    normalized_artifacts="$(normalize_bool_flag "${PASSIVE_PROOF_ARTIFACTS_ENABLED}")" || {
+      echo "proof mode: invalid PASSIVE_PROOF_ARTIFACTS_ENABLED=${PASSIVE_PROOF_ARTIFACTS_ENABLED}" >&2
+      exit 2
+    }
+    if [[ "${normalized_artifacts}" != "1" ]]; then
+      echo "proof mode requires PASSIVE_PROOF_ARTIFACTS_ENABLED=1" >&2
+      exit 2
+    fi
+  fi
+  proof_artifacts_enabled=1
+else
+  normalized_artifacts="$(normalize_bool_flag "${proof_artifacts_enabled}")" || {
+    echo "invalid PASSIVE_PROOF_ARTIFACTS_ENABLED=${proof_artifacts_enabled}" >&2
+    exit 2
+  }
+  proof_artifacts_enabled="${normalized_artifacts}"
+fi
+
 if [[ "${proof_artifacts_enabled}" == "1" ]]; then
+  rm -rf "${proof_dir}"
   mkdir -p "${proof_samples_dir}"
 fi
 
@@ -218,6 +258,7 @@ PY
 capture_proof_snapshot() {
   local prefix="$1"
   local metrics_payload="${2:-}"
+  local require_complete="${3:-0}"
   local metrics_file="${prefix}_metrics.prom"
   local bus_file="${prefix}_bus_observability.json"
   local graphql_file="${prefix}_graphql_bus_watch.json"
@@ -225,6 +266,11 @@ capture_proof_snapshot() {
   local bus_payload=""
   local graphql_payload=""
   local sampled_metrics=""
+  local have_metrics=0
+  local have_bus=0
+  local have_graphql=0
+
+  rm -f "${metrics_file}" "${bus_file}" "${graphql_file}" "${flags_file}"
 
   if [[ -z "${metrics_payload}" ]]; then
     if sampled_metrics="$(curl -fsS -m 8 "${metrics_url}" 2>/dev/null)"; then
@@ -233,23 +279,44 @@ capture_proof_snapshot() {
   fi
   if [[ -n "${metrics_payload}" ]]; then
     printf '%s\n' "${metrics_payload}" > "${metrics_file}"
+    have_metrics=1
   fi
 
   if bus_payload="$(curl -fsS -m 8 "${gateway_base_url}/portal/api/v1/bus/observability" 2>/dev/null)"; then
     printf '%s\n' "${bus_payload}" > "${bus_file}"
+    have_bus=1
   fi
 
   if graphql_payload="$(curl -fsS -m 8 -H 'Content-Type: application/json' -d "${graphql_bus_watch_query}" "${graphql_url}" 2>/dev/null)"; then
     printf '%s\n' "${graphql_payload}" > "${graphql_file}"
+    have_graphql=1
   fi
 
-  if [[ -f "${graphql_file}" || -f "${bus_file}" ]]; then
+  if [[ "${have_bus}" == "1" || "${have_graphql}" == "1" ]]; then
     write_feature_flag_snapshot "${graphql_file}" "${bus_file}" "${flags_file}" || true
   fi
+
+  if [[ "${require_complete}" == "1" ]]; then
+    if [[ "${have_metrics}" != "1" || "${have_bus}" != "1" || "${have_graphql}" != "1" || ! -f "${flags_file}" ]]; then
+      return 1
+    fi
+  fi
+  return 0
 }
 
 if [[ "${proof_artifacts_enabled}" == "1" ]]; then
-  capture_proof_snapshot "${proof_dir}/start"
+  start_captured=0
+  for _ in $(seq 1 5); do
+    if capture_proof_snapshot "${proof_dir}/start" "" 1; then
+      start_captured=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "${start_captured}" != "1" ]]; then
+    echo "proof mode: failed to capture required start artifacts" >&2
+    exit 1
+  fi
   proof_next_sample_epoch="$(date +%s)"
 fi
 
@@ -266,7 +333,7 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
       if [[ "${now_epoch}" -ge "${proof_next_sample_epoch}" ]]; then
         proof_sample_index=$((proof_sample_index + 1))
         sample_prefix="${proof_samples_dir}/sample_$(printf '%04d' "${proof_sample_index}")"
-        capture_proof_snapshot "${sample_prefix}" "${metrics}"
+        capture_proof_snapshot "${sample_prefix}" "${metrics}" 0
         proof_next_sample_epoch=$((now_epoch + proof_sample_interval_sec))
       fi
     fi
@@ -286,7 +353,18 @@ if [[ -n "${last_graphql}" ]]; then
 fi
 
 if [[ "${proof_artifacts_enabled}" == "1" ]]; then
-  capture_proof_snapshot "${proof_dir}/end" "${last_metrics}"
+  end_captured=0
+  for _ in $(seq 1 5); do
+    if capture_proof_snapshot "${proof_dir}/end" "${last_metrics}" 1; then
+      end_captured=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "${end_captured}" != "1" ]]; then
+    echo "proof mode: failed to capture required end artifacts" >&2
+    exit 1
+  fi
 fi
 
 if [[ "${smoke_ok}" -eq 1 ]]; then

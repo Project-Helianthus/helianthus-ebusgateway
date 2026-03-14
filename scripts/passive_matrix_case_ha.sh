@@ -76,7 +76,9 @@ remote_exec() {
 
 normalize_bool_flag() {
   local value="${1:-}"
-  case "${value,,}" in
+  local lowered
+  lowered="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
+  case "${lowered}" in
     1|true|yes|on)
       printf 'true\n'
       ;;
@@ -136,7 +138,7 @@ build_observe_first_cli_flags() {
       echo "invalid MATRIX_OBSERVE_FIRST_ENABLED=${MATRIX_OBSERVE_FIRST_ENABLED:-}" >&2
       return 1
     }
-    flags+=("--observe-first-enabled ${normalized}")
+    flags+=("--observe-first-enabled=${normalized}")
   fi
 
   value="$(printf '%s' "${MATRIX_PASSIVE_STATE_DIRECT_APPLY:-}" | xargs)"
@@ -145,7 +147,7 @@ build_observe_first_cli_flags() {
       echo "invalid MATRIX_PASSIVE_STATE_DIRECT_APPLY=${MATRIX_PASSIVE_STATE_DIRECT_APPLY:-}" >&2
       return 1
     }
-    flags+=("--passive-state-direct-apply ${normalized}")
+    flags+=("--passive-state-direct-apply=${normalized}")
   fi
 
   value="$(printf '%s' "${MATRIX_PASSIVE_CONFIG_DIRECT_APPLY:-}" | xargs)"
@@ -154,14 +156,14 @@ build_observe_first_cli_flags() {
       echo "invalid MATRIX_PASSIVE_CONFIG_DIRECT_APPLY=${MATRIX_PASSIVE_CONFIG_DIRECT_APPLY:-}" >&2
       return 1
     }
-    flags+=("--passive-config-direct-apply ${normalized}")
+    flags+=("--passive-config-direct-apply=${normalized}")
   fi
 
   value="$(printf '%s' "${MATRIX_EXTERNAL_WRITE_POLICY:-}" | xargs)"
   if [[ -n "${value}" ]]; then
     case "${value}" in
       invalidate_only|record_only|record_and_invalidate)
-        flags+=("--external-write-policy ${value}")
+        flags+=("--external-write-policy=${value}")
         ;;
       *)
         echo "invalid MATRIX_EXTERNAL_WRITE_POLICY=${MATRIX_EXTERNAL_WRITE_POLICY:-}" >&2

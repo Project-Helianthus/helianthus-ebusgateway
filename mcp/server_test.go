@@ -926,8 +926,16 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		},
 		energy: &EnergyTotals{
 			Gas: EnergyChannel{
-				DHW:     EnergySeries{Today: 1.25, Yearly: []float64{10, 20}},
-				Climate: EnergySeries{Today: 2.5, Yearly: []float64{30, 40}},
+				DHW: EnergySeries{
+					Today:     1.25,
+					Yearly:    []float64{10, 20},
+					TodayMeta: EnergyPointMeta{FreshnessState: "fresh", Provenance: "register", Stale: false},
+				},
+				Climate: EnergySeries{
+					Today:     2.5,
+					Yearly:    []float64{30, 40},
+					TodayMeta: EnergyPointMeta{FreshnessState: "stale", Provenance: "broadcast", Stale: true},
+				},
 			},
 		},
 		system: &SystemStatus{
@@ -1121,6 +1129,16 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 		if today, _ := dhw["today"].(float64); today != 1.25 {
 			t.Fatalf("energy gas.dhw.today = %v; want 1.25", dhw["today"])
+		}
+		todayMeta, ok := dhw["today_meta"].(map[string]any)
+		if !ok {
+			t.Fatalf("energy gas.dhw.today_meta type = %T; want map", dhw["today_meta"])
+		}
+		if got, _ := todayMeta["freshness_state"].(string); got != "fresh" {
+			t.Fatalf("energy gas.dhw.today_meta.freshness_state = %q; want fresh", got)
+		}
+		if got, _ := todayMeta["provenance"].(string); got != "register" {
+			t.Fatalf("energy gas.dhw.today_meta.provenance = %q; want register", got)
 		}
 	})
 

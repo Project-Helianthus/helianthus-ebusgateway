@@ -2268,6 +2268,20 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 	if accepted > 0 || failed > 0 {
 		log.Printf("semantic energy b524: accepted=%d failed=%d", accepted, failed)
 	}
+	if accepted > 0 {
+		p.publishEnergyTotals()
+	}
+}
+
+func (p *vaillantSemanticPoller) publishEnergyTotals() {
+	if p == nil || p.provider == nil || p.hub == nil {
+		return
+	}
+	totals := p.provider.EnergyTotals()
+	if totals == nil {
+		return
+	}
+	p.hub.PublishEnergyUpdate(totals)
 }
 
 func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapshotSource {

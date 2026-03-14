@@ -68,8 +68,10 @@ type LiveSemanticProvider struct {
 	energy    *EnergyTotals
 	boiler    *BoilerStatus
 
-	energyMerge    *energyMergeStore
-	energyRevision uint64
+	energyMerge                *energyMergeStore
+	energyRevision             uint64
+	energyPassiveState         string
+	energyPassiveStateProvider func() string
 
 	phase              SemanticStartupPhase
 	cacheEpoch         uint64
@@ -304,19 +306,64 @@ func (provider *LiveSemanticProvider) SetCylindersFromCache(cylinders []Cylinder
 }
 
 func (provider *LiveSemanticProvider) EnergyTotals() *EnergyTotals {
-	if provider == nil {
+	if provider == nil || provider.energyMerge == nil {
 		return nil
 	}
-	provider.mu.RLock()
-	defer provider.mu.RUnlock()
-	if provider.energy == nil {
+	snapshot := provider.energyMerge.SnapshotWithContext(time.Now(), provider.currentEnergyPassiveState())
+	if snapshot == nil {
 		return nil
 	}
-	copy := *provider.energy
+	copy := *snapshot
 	copy.Gas = cloneEnergyChannel(copy.Gas)
 	copy.Electric = cloneEnergyChannel(copy.Electric)
 	copy.Solar = cloneEnergyChannel(copy.Solar)
 	return &copy
+}
+
+func (provider *LiveSemanticProvider) SetEnergyPassiveState(state string) {
+	if provider == nil {
+		return
+	}
+	provider.mu.Lock()
+	provider.energyPassiveState = strings.TrimSpace(state)
+	provider.mu.Unlock()
+}
+
+func (provider *LiveSemanticProvider) SetEnergyPassiveStateProvider(providerFn func() string) {
+	if provider == nil {
+		return
+	}
+	provider.mu.Lock()
+	provider.energyPassiveStateProvider = providerFn
+	provider.mu.Unlock()
+}
+
+func (provider *LiveSemanticProvider) RefreshEnergyFreshnessMetrics(now time.Time, passiveState string) {
+	if provider == nil || provider.energyMerge == nil {
+		return
+	}
+	state := strings.TrimSpace(passiveState)
+	if state == "" {
+		state = provider.currentEnergyPassiveState()
+	}
+	provider.energyMerge.RefreshFreshnessMetricsWithContext(now, state)
+}
+
+func (provider *LiveSemanticProvider) currentEnergyPassiveState() string {
+	if provider == nil {
+		return ""
+	}
+	provider.mu.RLock()
+	providerFn := provider.energyPassiveStateProvider
+	fallback := provider.energyPassiveState
+	provider.mu.RUnlock()
+	if providerFn == nil {
+		return fallback
+	}
+	if value := strings.TrimSpace(providerFn()); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func (provider *LiveSemanticProvider) SetZones(zones []Zone) {
@@ -856,7 +903,7 @@ func (provider *LiveSemanticProvider) applyEnergyPoint(key energyMergeKey, kwh f
 	// Only publish if our revision is still the latest (prevents stale overwrites
 	// from concurrent callers).
 	rev := provider.energyMerge.Revision()
-	snapshot := provider.energyMerge.Snapshot()
+	snapshot := provider.energyMerge.SnapshotWithContext(now, provider.currentEnergyPassiveState())
 	provider.mu.Lock()
 	if rev >= provider.energyRevision {
 		provider.energy = snapshot
@@ -964,6 +1011,21 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 		copySlice := make([]float64, len(series.Yearly))
 		copy(copySlice, series.Yearly)
 		series.Yearly = copySlice
+	}
+	if len(series.Monthly) > 0 {
+		copySlice := make([]float64, len(series.Monthly))
+		copy(copySlice, series.Monthly)
+		series.Monthly = copySlice
+	}
+	if len(series.YearlyMeta) > 0 {
+		copySlice := make([]EnergyPointMeta, len(series.YearlyMeta))
+		copy(copySlice, series.YearlyMeta)
+		series.YearlyMeta = copySlice
+	}
+	if len(series.MonthlyMeta) > 0 {
+		copySlice := make([]EnergyPointMeta, len(series.MonthlyMeta))
+		copy(copySlice, series.MonthlyMeta)
+		series.MonthlyMeta = copySlice
 	}
 	return series
 }

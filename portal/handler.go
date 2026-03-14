@@ -158,8 +158,20 @@ type SemanticEnergyChannel struct {
 }
 
 type SemanticEnergySeries struct {
-	Today  float64   `json:"today"`
-	Yearly []float64 `json:"yearly,omitempty"`
+	Today       float64                   `json:"today"`
+	Yearly      []float64                 `json:"yearly,omitempty"`
+	Monthly     []float64                 `json:"monthly,omitempty"`
+	TodayMeta   SemanticEnergyPointMeta   `json:"today_meta"`
+	YearlyMeta  []SemanticEnergyPointMeta `json:"yearly_meta,omitempty"`
+	MonthlyMeta []SemanticEnergyPointMeta `json:"monthly_meta,omitempty"`
+}
+
+type SemanticEnergyPointMeta struct {
+	FreshnessState  string  `json:"freshness_state"`
+	Provenance      string  `json:"provenance"`
+	LastObservedUTC string  `json:"last_observed_utc,omitempty"`
+	AgeSeconds      float64 `json:"age_seconds,omitempty"`
+	Stale           bool    `json:"stale"`
 }
 
 type SemanticBoilerState struct {

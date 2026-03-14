@@ -81,6 +81,18 @@ function formatSeriesYearly(values, digits = 2) {
   return values.map((value) => formatFixed(value, digits)).join(", ");
 }
 
+function formatEnergyMeta(meta) {
+  if (!meta || typeof meta !== "object") {
+    return "state=n/a source=n/a";
+  }
+  const state = String(meta.freshness_state || "never_seen");
+  const source = String(meta.provenance || "none");
+  const age = Number(meta.age_seconds);
+  const ageLabel = Number.isFinite(age) ? ` age=${formatFixed(age, 0)}s` : "";
+  const stale = meta.stale === true ? " stale=yes" : " stale=no";
+  return `state=${state} source=${source}${ageLabel}${stale}`;
+}
+
 function formatAddress(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -1038,13 +1050,13 @@ class PortalShell extends HTMLElement {
       if (payload.energy_totals) {
         const et = payload.energy_totals;
         rows.push(
-          `<li><strong>Energy (gas)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.gas?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.gas?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.gas?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.gas?.dhw?.yearly))}]</span></li>`,
+          `<li><strong>Energy (gas)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.gas?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.gas?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.gas?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.gas?.dhw?.yearly))}] monthly climate=[${escapeHtml(formatSeriesYearly(et.gas?.climate?.monthly))}] dhw=[${escapeHtml(formatSeriesYearly(et.gas?.dhw?.monthly))}] meta climate(${escapeHtml(formatEnergyMeta(et.gas?.climate?.today_meta))}) dhw(${escapeHtml(formatEnergyMeta(et.gas?.dhw?.today_meta))})</span></li>`,
         );
         rows.push(
-          `<li><strong>Energy (electric)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.electric?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.electric?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.electric?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.electric?.dhw?.yearly))}]</span></li>`,
+          `<li><strong>Energy (electric)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.electric?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.electric?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.electric?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.electric?.dhw?.yearly))}] monthly climate=[${escapeHtml(formatSeriesYearly(et.electric?.climate?.monthly))}] dhw=[${escapeHtml(formatSeriesYearly(et.electric?.dhw?.monthly))}] meta climate(${escapeHtml(formatEnergyMeta(et.electric?.climate?.today_meta))}) dhw(${escapeHtml(formatEnergyMeta(et.electric?.dhw?.today_meta))})</span></li>`,
         );
         rows.push(
-          `<li><strong>Energy (solar)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.solar?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.solar?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.solar?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.solar?.dhw?.yearly))}]</span></li>`,
+          `<li><strong>Energy (solar)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.solar?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.solar?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.solar?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.solar?.dhw?.yearly))}] monthly climate=[${escapeHtml(formatSeriesYearly(et.solar?.climate?.monthly))}] dhw=[${escapeHtml(formatSeriesYearly(et.solar?.dhw?.monthly))}] meta climate(${escapeHtml(formatEnergyMeta(et.solar?.climate?.today_meta))}) dhw(${escapeHtml(formatEnergyMeta(et.solar?.dhw?.today_meta))})</span></li>`,
         );
       }
       if (circuits.length > 0) {

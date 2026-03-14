@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"expvar"
 	"testing"
 	"time"
 
@@ -239,10 +240,87 @@ func TestEnergyMerge_SnapshotBuildsMonthlySeries(t *testing.T) {
 	}
 }
 
-func TestEnergyMerge_SnapshotReturnsNilWhenEmpty(t *testing.T) {
+func TestEnergyMerge_SnapshotMonthlyMetadataBackfillsPartialSelectors(t *testing.T) {
+	cases := []struct {
+		name         string
+		presentKind  string
+		presentIndex int
+		missingIndex int
+	}{
+		{name: "current_only", presentKind: "current", presentIndex: 1, missingIndex: 0},
+		{name: "previous_only", presentKind: "previous", presentIndex: 0, missingIndex: 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newEnergyMergeStore()
+			if !store.Apply(energyMergeKey{
+				Channel:  "gas",
+				Usage:    "climate",
+				Period:   "month",
+				YearKind: tc.presentKind,
+			}, 9.5, EnergySourceRegister, t0) {
+				t.Fatal("Apply() = false; want true")
+			}
+
+			snap := store.SnapshotWithContext(t0.Add(time.Minute), "")
+			if snap == nil {
+				t.Fatal("SnapshotWithContext() = nil; want non-nil")
+			}
+			if len(snap.Gas.Climate.MonthlyMeta) != 2 {
+				t.Fatalf("Gas.Climate.MonthlyMeta len = %d; want 2", len(snap.Gas.Climate.MonthlyMeta))
+			}
+
+			presentMeta := snap.Gas.Climate.MonthlyMeta[tc.presentIndex]
+			if presentMeta.FreshnessState != EnergyFreshnessStateFresh {
+				t.Fatalf("present selector freshness = %q; want fresh", presentMeta.FreshnessState)
+			}
+			if presentMeta.Provenance != EnergyProvenanceRegister {
+				t.Fatalf("present selector provenance = %q; want register", presentMeta.Provenance)
+			}
+
+			missingMeta := snap.Gas.Climate.MonthlyMeta[tc.missingIndex]
+			if missingMeta.FreshnessState != EnergyFreshnessStateNeverSeen {
+				t.Fatalf("missing selector freshness = %q; want never_seen", missingMeta.FreshnessState)
+			}
+			if missingMeta.Provenance != EnergyProvenanceNone {
+				t.Fatalf("missing selector provenance = %q; want none", missingMeta.Provenance)
+			}
+
+			for i, meta := range snap.Gas.Climate.MonthlyMeta {
+				if meta.FreshnessState == "" {
+					t.Fatalf("MonthlyMeta[%d].FreshnessState is empty; want non-empty", i)
+				}
+				if meta.Provenance == "" {
+					t.Fatalf("MonthlyMeta[%d].Provenance is empty; want non-empty", i)
+				}
+			}
+		})
+	}
+}
+
+func TestEnergyMerge_SnapshotReturnsNeverSeenShapeWhenEmpty(t *testing.T) {
 	store := newEnergyMergeStore()
-	if snap := store.Snapshot(); snap != nil {
-		t.Fatalf("Snapshot() = %v; want nil for empty store", snap)
+	snap := store.SnapshotWithContext(t0, "")
+	if snap == nil {
+		t.Fatal("SnapshotWithContext() = nil; want empty energy shape")
+	}
+	if got := snap.Gas.DHW.TodayMeta.FreshnessState; got != EnergyFreshnessStateNeverSeen {
+		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want never_seen", got)
+	}
+	if got := snap.Gas.DHW.TodayMeta.Provenance; got != EnergyProvenanceNone {
+		t.Fatalf("Gas.DHW.TodayMeta.Provenance = %q; want none", got)
+	}
+	if len(snap.Gas.DHW.YearlyMeta) != 2 {
+		t.Fatalf("Gas.DHW.YearlyMeta len = %d; want 2 for previous/current selectors", len(snap.Gas.DHW.YearlyMeta))
+	}
+
+	unavailable := store.SnapshotWithContext(t0, "unavailable")
+	if unavailable == nil {
+		t.Fatal("SnapshotWithContext(unavailable) = nil; want empty energy shape")
+	}
+	if got := unavailable.Gas.DHW.TodayMeta.FreshnessState; got != EnergyFreshnessStateUnavailable {
+		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want unavailable", got)
 	}
 }
 
@@ -399,4 +477,257 @@ func TestApplyEnergyFromRegister_OverwritesBroadcast(t *testing.T) {
 	if totals.Gas.Climate.Today != 2.5 {
 		t.Fatalf("Gas.Climate.Today = %f; want 2.5", totals.Gas.Climate.Today)
 	}
+}
+
+func TestEnergyMerge_BroadcastMetadataStatesAndStaleness(t *testing.T) {
+	store := newEnergyMergeStore()
+	key := energyMergeKey{Channel: "gas", Usage: "heating", Period: "day"}
+	if !store.Apply(key, 12.5, EnergySourceBroadcast, t0) {
+		t.Fatal("Apply() = false; want true")
+	}
+
+	warm := store.SnapshotWithContext(t0.Add(time.Minute), "warming_up")
+	if warm == nil {
+		t.Fatal("SnapshotWithContext() = nil; want non-nil")
+	}
+	if warm.Gas.Climate.TodayMeta.FreshnessState != EnergyFreshnessStateWarmingUp {
+		t.Fatalf("warm state = %q; want warming_up", warm.Gas.Climate.TodayMeta.FreshnessState)
+	}
+	if warm.Gas.Climate.TodayMeta.Provenance != EnergyProvenanceBroadcast {
+		t.Fatalf("warm provenance = %q; want broadcast", warm.Gas.Climate.TodayMeta.Provenance)
+	}
+
+	stale := store.SnapshotWithContext(t0.Add(10*time.Minute), "")
+	if stale.Gas.Climate.TodayMeta.FreshnessState != EnergyFreshnessStateStale {
+		t.Fatalf("stale state = %q; want stale", stale.Gas.Climate.TodayMeta.FreshnessState)
+	}
+	if stale.Gas.Climate.Today != 12.5 {
+		t.Fatalf("stale value = %v; want 12.5 (queryable stale value)", stale.Gas.Climate.Today)
+	}
+	if !stale.Gas.Climate.TodayMeta.Stale {
+		t.Fatal("stale flag = false; want true")
+	}
+
+	unavailable := store.SnapshotWithContext(t0.Add(time.Hour), "unavailable")
+	if unavailable.Gas.Climate.TodayMeta.FreshnessState != EnergyFreshnessStateUnavailable {
+		t.Fatalf("unavailable state = %q; want unavailable", unavailable.Gas.Climate.TodayMeta.FreshnessState)
+	}
+	if unavailable.Gas.Climate.Today != 12.5 {
+		t.Fatalf("unavailable value = %v; want stale value retained", unavailable.Gas.Climate.Today)
+	}
+}
+
+func TestEnergyMerge_MissingSelectorStatesNeverSeenAndUnavailable(t *testing.T) {
+	store := newEnergyMergeStore()
+	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}, 1, EnergySourceBroadcast, t0) {
+		t.Fatal("Apply() = false; want true")
+	}
+
+	seen := store.SnapshotWithContext(t0.Add(time.Minute), "")
+	if got := seen.Electric.DHW.TodayMeta.FreshnessState; got != EnergyFreshnessStateNeverSeen {
+		t.Fatalf("missing selector state = %q; want never_seen", got)
+	}
+
+	unavailable := store.SnapshotWithContext(t0.Add(time.Minute), "unavailable")
+	if got := unavailable.Electric.DHW.TodayMeta.FreshnessState; got != EnergyFreshnessStateUnavailable {
+		t.Fatalf("missing selector unavailable state = %q; want unavailable", got)
+	}
+}
+
+func TestEnergyMerge_BroadcastFreshnessTransitionsMetricIncrements(t *testing.T) {
+	before := readExpvarMapValue(energyBroadcastTransitions, "warming_up->stale")
+
+	store := newEnergyMergeStore()
+	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}, 2, EnergySourceBroadcast, t0) {
+		t.Fatal("Apply() = false; want true")
+	}
+	store.RefreshFreshnessMetricsWithContext(t0.Add(time.Minute), "warming_up")
+	store.RefreshFreshnessMetricsWithContext(t0.Add(10*time.Minute), "")
+
+	after := readExpvarMapValue(energyBroadcastTransitions, "warming_up->stale")
+	if after <= before {
+		t.Fatalf("energy_broadcast_freshness_transitions_total[warming_up->stale] = %d; want > %d", after, before)
+	}
+}
+
+func TestEnergyMerge_SnapshotWithContextDoesNotMutateBroadcastMetrics(t *testing.T) {
+	store := newEnergyMergeStore()
+	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}, 2, EnergySourceBroadcast, t0) {
+		t.Fatal("Apply() = false; want true")
+	}
+	store.RefreshFreshnessMetricsWithContext(t0.Add(time.Minute), "warming_up")
+
+	beforeGauge := make(map[EnergyFreshnessState]int64)
+	for _, state := range energyFreshnessStates() {
+		beforeGauge[state] = readExpvarMapValue(energyBroadcastSelectors, string(state))
+	}
+	beforeTransition := readExpvarMapValue(energyBroadcastTransitions, "warming_up->stale")
+
+	_ = store.SnapshotWithContext(t0.Add(10*time.Minute), "")
+
+	afterTransition := readExpvarMapValue(energyBroadcastTransitions, "warming_up->stale")
+	if afterTransition != beforeTransition {
+		t.Fatalf("SnapshotWithContext mutated transitions: warming_up->stale = %d; want %d", afterTransition, beforeTransition)
+	}
+	for _, state := range energyFreshnessStates() {
+		afterGauge := readExpvarMapValue(energyBroadcastSelectors, string(state))
+		if afterGauge != beforeGauge[state] {
+			t.Fatalf("SnapshotWithContext mutated gauge state=%s: got %d want %d", state, afterGauge, beforeGauge[state])
+		}
+	}
+}
+
+func TestEnergyMerge_BroadcastFreshnessIgnoresRegisterSelectors(t *testing.T) {
+	store := newEnergyMergeStore()
+	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}, 7, EnergySourceRegister, t0) {
+		t.Fatal("Apply() = false; want true")
+	}
+	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "year", YearKind: "previous"}, 70, EnergySourceRegister, t0) {
+		t.Fatal("Apply() year previous = false; want true")
+	}
+	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "year", YearKind: "current"}, 71, EnergySourceRegister, t0) {
+		t.Fatal("Apply() year current = false; want true")
+	}
+
+	beforeFresh := readExpvarMapValue(energyBroadcastSelectors, string(EnergyFreshnessStateFresh))
+	beforeNeverSeen := readExpvarMapValue(energyBroadcastSelectors, string(EnergyFreshnessStateNeverSeen))
+	beforeRegisterTransition := readExpvarMapValue(energyBroadcastTransitions, "never_seen->fresh")
+
+	store.RefreshFreshnessMetricsWithContext(t0.Add(time.Minute), "")
+
+	afterFresh := readExpvarMapValue(energyBroadcastSelectors, string(EnergyFreshnessStateFresh))
+	afterNeverSeen := readExpvarMapValue(energyBroadcastSelectors, string(EnergyFreshnessStateNeverSeen))
+	afterRegisterTransition := readExpvarMapValue(energyBroadcastTransitions, "never_seen->fresh")
+
+	if afterFresh != beforeFresh {
+		t.Fatalf("energy_broadcast_selectors[fresh] = %d; want unchanged %d for register-only selectors", afterFresh, beforeFresh)
+	}
+	wantNeverSeenDelta := int64(len(energyBroadcastSelectorCatalog()))
+	if delta := afterNeverSeen - beforeNeverSeen; delta != wantNeverSeenDelta {
+		t.Fatalf("energy_broadcast_selectors[never_seen] delta = %d; want %d", delta, wantNeverSeenDelta)
+	}
+	if afterRegisterTransition != beforeRegisterTransition {
+		t.Fatalf("energy_broadcast_freshness_transitions_total[never_seen->fresh] = %d; want unchanged %d", afterRegisterTransition, beforeRegisterTransition)
+	}
+}
+
+func TestEnergyMerge_ConstructorsDoNotMutateBroadcastSelectorMetrics(t *testing.T) {
+	before := make(map[EnergyFreshnessState]int64)
+	for _, state := range energyFreshnessStates() {
+		before[state] = readExpvarMapValue(energyBroadcastSelectors, string(state))
+	}
+
+	_ = newEnergyMergeStore()
+	_ = NewLiveSemanticProvider()
+
+	for _, state := range energyFreshnessStates() {
+		after := readExpvarMapValue(energyBroadcastSelectors, string(state))
+		if after != before[state] {
+			t.Fatalf("energy_broadcast_selectors[%s] = %d; want %d (constructor must not mutate process-global gauge)", state, after, before[state])
+		}
+	}
+}
+
+func TestApplyEnergyFromRegister_MetadataFresh(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+	if !provider.ApplyEnergyFromRegister(EnergyMergeKey{
+		Channel: "gas",
+		Usage:   "climate",
+		Period:  "day",
+	}, 8.75) {
+		t.Fatal("ApplyEnergyFromRegister() = false; want true")
+	}
+
+	totals := provider.EnergyTotals()
+	if totals == nil {
+		t.Fatal("EnergyTotals() = nil; want non-nil")
+	}
+	if totals.Gas.Climate.TodayMeta.FreshnessState != EnergyFreshnessStateFresh {
+		t.Fatalf("register freshness = %q; want fresh", totals.Gas.Climate.TodayMeta.FreshnessState)
+	}
+	if totals.Gas.Climate.TodayMeta.Provenance != EnergyProvenanceRegister {
+		t.Fatalf("register provenance = %q; want register", totals.Gas.Climate.TodayMeta.Provenance)
+	}
+	if totals.Gas.Climate.TodayMeta.Stale {
+		t.Fatal("register stale flag = true; want false")
+	}
+}
+
+func TestEnergyMerge_RegisterFreshnessAgesOut(t *testing.T) {
+	store := newEnergyMergeStore()
+	key := energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}
+	if !store.Apply(key, 8.75, EnergySourceRegister, t0) {
+		t.Fatal("Apply() = false; want true")
+	}
+
+	fresh := store.SnapshotWithContext(t0.Add(time.Minute), "")
+	if fresh == nil {
+		t.Fatal("SnapshotWithContext() fresh = nil; want non-nil")
+	}
+	if got := fresh.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateFresh {
+		t.Fatalf("fresh register freshness = %q; want fresh", got)
+	}
+
+	staleAt := t0.Add(energyBroadcastUnavailableTTL + time.Second)
+	stale := store.SnapshotWithContext(staleAt, "")
+	if stale == nil {
+		t.Fatal("SnapshotWithContext() stale = nil; want non-nil")
+	}
+	if got := stale.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateStale {
+		t.Fatalf("aged register freshness = %q; want stale", got)
+	}
+	if got := stale.Gas.Climate.TodayMeta.Provenance; got != EnergyProvenanceRegister {
+		t.Fatalf("aged register provenance = %q; want register", got)
+	}
+	if !stale.Gas.Climate.TodayMeta.Stale {
+		t.Fatal("aged register stale flag = false; want true")
+	}
+
+	staleUnavailableCtx := store.SnapshotWithContext(staleAt, "unavailable")
+	if staleUnavailableCtx == nil {
+		t.Fatal("SnapshotWithContext() stale unavailable = nil; want non-nil")
+	}
+	if got := staleUnavailableCtx.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateStale {
+		t.Fatalf("aged register freshness with passive unavailable = %q; want stale", got)
+	}
+}
+
+func TestLiveSemanticProvider_EnergyTotalsVisibleWhenNeverSeen(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+
+	totals := provider.EnergyTotals()
+	if totals == nil {
+		t.Fatal("EnergyTotals() = nil; want never-seen energy shape")
+	}
+	if got := totals.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateNeverSeen {
+		t.Fatalf("Gas.Climate.TodayMeta.FreshnessState = %q; want never_seen", got)
+	}
+	if got := totals.Gas.Climate.TodayMeta.Provenance; got != EnergyProvenanceNone {
+		t.Fatalf("Gas.Climate.TodayMeta.Provenance = %q; want none", got)
+	}
+
+	provider.SetEnergyPassiveState("unavailable")
+	unavailable := provider.EnergyTotals()
+	if unavailable == nil {
+		t.Fatal("EnergyTotals() unavailable = nil; want visible energy shape")
+	}
+	if got := unavailable.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateUnavailable {
+		t.Fatalf("Gas.Climate.TodayMeta.FreshnessState = %q; want unavailable", got)
+	}
+}
+
+func readExpvarMapValue(value *expvar.Map, key string) int64 {
+	if value == nil {
+		return 0
+	}
+	var out int64
+	value.Do(func(kv expvar.KeyValue) {
+		if kv.Key != key {
+			return
+		}
+		if parsed, ok := kv.Value.(*expvar.Int); ok {
+			out = parsed.Value()
+		}
+	})
+	return out
 }

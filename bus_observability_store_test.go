@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/types"
+	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
 
 func TestBusObservabilityStoreRecentRingEvictsOldestButCountersAdvance(t *testing.T) {
@@ -825,6 +828,89 @@ func TestBusObservabilityStoreTransportLimitationClassifiesBroadcastUnavailable(
 	}
 	if strings.Contains(metrics, `missed_due_to_transport_limitations_total{family="B524",freshness_profile="state_fast",limitation="transport_unavailable"} 1`) {
 		t.Fatalf("RenderPrometheus unexpectedly classified ENH broadcast-off miss as transport_unavailable:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreRenderPrometheusIncludesEnergyBroadcastFreshnessMetrics(t *testing.T) {
+	store := NewBusObservabilityStore(DefaultConfig())
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `# HELP energy_broadcast_selectors`) {
+		t.Fatalf("RenderPrometheus missing energy_broadcast_selectors help:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `energy_broadcast_selectors{state="never_seen"}`) {
+		t.Fatalf("RenderPrometheus missing energy_broadcast_selectors never_seen sample:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `# HELP energy_broadcast_freshness_transitions_total`) {
+		t.Fatalf("RenderPrometheus missing energy_broadcast_freshness_transitions_total help:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `energy_broadcast_freshness_transitions_total{from="never_seen",to="fresh"}`) {
+		t.Fatalf("RenderPrometheus missing energy_broadcast_freshness_transitions_total sample:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreEnergyFreshnessMetricsTrackPassiveAndAgingWithoutNewReads(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
+
+	store := NewBusObservabilityStore(cfg)
+	base := time.Now().UTC()
+	now := base
+	store.now = func() time.Time { return now }
+	store.mu.Lock()
+	store.passive.startupWindowClosed = true
+	store.passive.state = "warming_up"
+	store.mu.Unlock()
+
+	semantic := graphql.NewLiveSemanticProvider()
+	store.SetEnergyFreshnessMetricsRefresher(func(observedAt time.Time, passiveState string) {
+		semantic.RefreshEnergyFreshnessMetrics(observedAt, passiveState)
+	})
+
+	_, updated := semantic.ApplyBroadcast(router.BroadcastEvent{
+		Values: map[string]types.Value{
+			"wh":     {Valid: true, Value: float64(1000)},
+			"source": {Valid: true, Value: "gas"},
+			"usage":  {Valid: true, Value: "heating"},
+			"period": {Valid: true, Value: "day"},
+		},
+	})
+	if !updated {
+		t.Fatal("ApplyBroadcast() updated = false; want true")
+	}
+
+	now = now.Add(1 * time.Minute)
+	staleAfterWarmBefore := readExpvarNamedMapInt("energy_broadcast_selectors", "stale")
+	metricsWarm := store.RenderPrometheus()
+	staleAfterWarm := readExpvarNamedMapInt("energy_broadcast_selectors", "stale")
+	if staleAfterWarm < staleAfterWarmBefore {
+		t.Fatalf("energy_broadcast_selectors[stale] = %d; want >= %d", staleAfterWarm, staleAfterWarmBefore)
+	}
+
+	warmToStaleBefore := readExpvarNamedMapInt("energy_broadcast_freshness_transitions_total", "warming_up->stale")
+
+	now = now.Add(9 * time.Minute)
+	store.mu.Lock()
+	store.passive.state = "available"
+	store.mu.Unlock()
+	metricsAged := store.RenderPrometheus()
+	staleAfterAged := readExpvarNamedMapInt("energy_broadcast_selectors", "stale")
+	warmToStaleAfter := readExpvarNamedMapInt("energy_broadcast_freshness_transitions_total", "warming_up->stale")
+
+	if staleAfterAged <= staleAfterWarm {
+		t.Fatalf("energy_broadcast_selectors[stale] after aging = %d; want > %d", staleAfterAged, staleAfterWarm)
+	}
+	if warmToStaleAfter <= warmToStaleBefore {
+		t.Fatalf("energy_broadcast_freshness_transitions_total[warming_up->stale] = %d; want > %d", warmToStaleAfter, warmToStaleBefore)
+	}
+	if !strings.Contains(metricsWarm, "energy_broadcast_selectors") || !strings.Contains(metricsAged, "energy_broadcast_selectors") {
+		t.Fatalf("RenderPrometheus missing energy freshness selectors metric:\nwarm:\n%s\naged:\n%s", metricsWarm, metricsAged)
+	}
+	if !strings.Contains(metricsAged, "recomputed at scrape time") {
+		t.Fatalf("RenderPrometheus help text does not describe scrape-time recomputation:\n%s", metricsAged)
 	}
 }
 

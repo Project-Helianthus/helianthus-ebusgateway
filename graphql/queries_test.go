@@ -1471,6 +1471,61 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	})
 
 	t.Run("energy_totals_root", func(t *testing.T) {
+		request := graphqlclient.NewRequest(`
+			query {
+				energyTotals {
+					gas {
+						dhw {
+							today
+							todayMeta { freshnessState provenance stale }
+							yearlyMeta { freshnessState provenance stale }
+						}
+					}
+				}
+			}
+		`)
+
+		var response struct {
+			EnergyTotals *struct {
+				Gas struct {
+					DHW struct {
+						Today     float64 `json:"today"`
+						TodayMeta struct {
+							FreshnessState string `json:"freshnessState"`
+							Provenance     string `json:"provenance"`
+							Stale          bool   `json:"stale"`
+						} `json:"todayMeta"`
+						YearlyMeta []struct {
+							FreshnessState string `json:"freshnessState"`
+							Provenance     string `json:"provenance"`
+							Stale          bool   `json:"stale"`
+						} `json:"yearlyMeta"`
+					} `json:"dhw"`
+				} `json:"gas"`
+			} `json:"energyTotals"`
+		}
+
+		if err := client.Run(context.Background(), request, &response); err != nil {
+			t.Fatalf("energyTotals no-data root query error = %v", err)
+		}
+		if response.EnergyTotals == nil {
+			t.Fatal("energyTotals = nil; want visible no-data object")
+		}
+		if response.EnergyTotals.Gas.DHW.Today != 0 {
+			t.Fatalf("gas.dhw.today = %v; want 0 when no values were seen", response.EnergyTotals.Gas.DHW.Today)
+		}
+		if response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState != "never_seen" {
+			t.Fatalf("gas.dhw.todayMeta.freshnessState = %q; want never_seen", response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState)
+		}
+		if response.EnergyTotals.Gas.DHW.TodayMeta.Provenance != "none" {
+			t.Fatalf("gas.dhw.todayMeta.provenance = %q; want none", response.EnergyTotals.Gas.DHW.TodayMeta.Provenance)
+		}
+		if len(response.EnergyTotals.Gas.DHW.YearlyMeta) != 2 {
+			t.Fatalf("gas.dhw.yearlyMeta len = %d; want 2", len(response.EnergyTotals.Gas.DHW.YearlyMeta))
+		}
+	})
+
+	t.Run("energy_totals_root_with_values", func(t *testing.T) {
 		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
 			Channel: "gas",
 			Usage:   "hot_water",
@@ -1494,6 +1549,12 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			Period:  "day",
 		}, 1.25)
 		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
+			Channel:  "gas",
+			Usage:    "hot_water",
+			Period:   "month",
+			YearKind: "current",
+		}, 15.0)
+		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
 			Channel: "solar",
 			Usage:   "cooling",
 			Period:  "day",
@@ -1502,7 +1563,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		request := graphqlclient.NewRequest(`
 			query {
 				energyTotals {
-					gas { dhw { today yearly } climate { today yearly } }
+					gas { dhw { today yearly monthly todayMeta { freshnessState provenance stale } monthlyMeta { freshnessState provenance stale } } climate { today yearly todayMeta { freshnessState provenance stale } } }
 					electric { dhw { today yearly } climate { today yearly } }
 					solar { dhw { today yearly } climate { today yearly } }
 				}
@@ -1513,12 +1574,28 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			EnergyTotals *struct {
 				Gas struct {
 					DHW struct {
-						Today  float64   `json:"today"`
-						Yearly []float64 `json:"yearly"`
+						Today     float64   `json:"today"`
+						Yearly    []float64 `json:"yearly"`
+						Monthly   []float64 `json:"monthly"`
+						TodayMeta struct {
+							FreshnessState string `json:"freshnessState"`
+							Provenance     string `json:"provenance"`
+							Stale          bool   `json:"stale"`
+						} `json:"todayMeta"`
+						MonthlyMeta []struct {
+							FreshnessState string `json:"freshnessState"`
+							Provenance     string `json:"provenance"`
+							Stale          bool   `json:"stale"`
+						} `json:"monthlyMeta"`
 					} `json:"dhw"`
 					Climate struct {
-						Today  float64   `json:"today"`
-						Yearly []float64 `json:"yearly"`
+						Today     float64   `json:"today"`
+						Yearly    []float64 `json:"yearly"`
+						TodayMeta struct {
+							FreshnessState string `json:"freshnessState"`
+							Provenance     string `json:"provenance"`
+							Stale          bool   `json:"stale"`
+						} `json:"todayMeta"`
 					} `json:"climate"`
 				} `json:"gas"`
 				Electric struct {
@@ -1555,6 +1632,21 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if len(response.EnergyTotals.Gas.DHW.Yearly) != 2 || response.EnergyTotals.Gas.DHW.Yearly[0] != 120.0 || response.EnergyTotals.Gas.DHW.Yearly[1] != 240.0 {
 			t.Fatalf("gas.dhw.yearly = %#v; want [120 240]", response.EnergyTotals.Gas.DHW.Yearly)
+		}
+		if len(response.EnergyTotals.Gas.DHW.Monthly) != 2 || response.EnergyTotals.Gas.DHW.Monthly[0] != 0 || response.EnergyTotals.Gas.DHW.Monthly[1] != 15.0 {
+			t.Fatalf("gas.dhw.monthly = %#v; want [0 15]", response.EnergyTotals.Gas.DHW.Monthly)
+		}
+		if len(response.EnergyTotals.Gas.DHW.MonthlyMeta) != 2 {
+			t.Fatalf("gas.dhw.monthlyMeta len = %d; want 2", len(response.EnergyTotals.Gas.DHW.MonthlyMeta))
+		}
+		if got := response.EnergyTotals.Gas.DHW.MonthlyMeta[0]; got.FreshnessState != "never_seen" || got.Provenance != "none" || got.Stale {
+			t.Fatalf("gas.dhw.monthlyMeta[0] = %+v; want never_seen/none/stale=false", got)
+		}
+		if got := response.EnergyTotals.Gas.DHW.MonthlyMeta[1]; got.FreshnessState != "fresh" || got.Provenance != "register" || got.Stale {
+			t.Fatalf("gas.dhw.monthlyMeta[1] = %+v; want fresh/register/stale=false", got)
+		}
+		if response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState != "fresh" || response.EnergyTotals.Gas.DHW.TodayMeta.Provenance != "register" || response.EnergyTotals.Gas.DHW.TodayMeta.Stale {
+			t.Fatalf("gas.dhw.todayMeta = %+v; want fresh/register/stale=false", response.EnergyTotals.Gas.DHW.TodayMeta)
 		}
 		if response.EnergyTotals.Electric.Climate.Today != 1.25 {
 			t.Fatalf("electric.climate.today = %v; want 1.25", response.EnergyTotals.Electric.Climate.Today)

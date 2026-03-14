@@ -97,9 +97,20 @@ type DhwStatus struct {
 }
 
 type EnergySeries struct {
-	Today   float64   `json:"today"`
-	Yearly  []float64 `json:"yearly"`
-	Monthly []float64 `json:"monthly"`
+	Today       float64           `json:"today"`
+	Yearly      []float64         `json:"yearly"`
+	Monthly     []float64         `json:"monthly,omitempty"`
+	TodayMeta   EnergyPointMeta   `json:"today_meta"`
+	YearlyMeta  []EnergyPointMeta `json:"yearly_meta,omitempty"`
+	MonthlyMeta []EnergyPointMeta `json:"monthly_meta,omitempty"`
+}
+
+type EnergyPointMeta struct {
+	FreshnessState  string  `json:"freshness_state"`
+	Provenance      string  `json:"provenance"`
+	LastObservedUTC string  `json:"last_observed_utc,omitempty"`
+	AgeSeconds      float64 `json:"age_seconds,omitempty"`
+	Stale           bool    `json:"stale"`
 }
 
 type EnergyChannel struct {
@@ -3145,15 +3156,27 @@ func cloneEnergyChannel(channel EnergyChannel) EnergyChannel {
 }
 
 func cloneEnergySeries(series EnergySeries) EnergySeries {
-	if len(series.Yearly) == 0 {
-		return EnergySeries{Today: series.Today}
+	if len(series.Yearly) > 0 {
+		values := make([]float64, len(series.Yearly))
+		copy(values, series.Yearly)
+		series.Yearly = values
 	}
-	values := make([]float64, len(series.Yearly))
-	copy(values, series.Yearly)
-	return EnergySeries{
-		Today:  series.Today,
-		Yearly: values,
+	if len(series.Monthly) > 0 {
+		values := make([]float64, len(series.Monthly))
+		copy(values, series.Monthly)
+		series.Monthly = values
 	}
+	if len(series.YearlyMeta) > 0 {
+		values := make([]EnergyPointMeta, len(series.YearlyMeta))
+		copy(values, series.YearlyMeta)
+		series.YearlyMeta = values
+	}
+	if len(series.MonthlyMeta) > 0 {
+		values := make([]EnergyPointMeta, len(series.MonthlyMeta))
+		copy(values, series.MonthlyMeta)
+		series.MonthlyMeta = values
+	}
+	return series
 }
 
 func buildDeviceInfo(entry registry.DeviceEntry) deviceInfo {

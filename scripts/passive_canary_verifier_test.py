@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import json
+import os
 import pathlib
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -341,6 +344,294 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             summary = verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
             self.assertEqual(summary["interval_phase_count"], 0)
             self.assertFalse(summary["interval_phase_required"])
+
+
+class CanaryVerdictTests(unittest.TestCase):
+    def build_summary_payload(
+        self,
+        *,
+        mismatch_count: int,
+        interval_required: bool,
+        interval_results: int,
+        interval_conclusive: int,
+        per_canary_interval: dict[str, dict[str, int]],
+    ) -> dict:
+        per_canary = {canary_id: {"last_status": "pass"} for canary_id in per_canary_interval}
+        return {
+            "schema": "p03_canary_overall_summary_v1",
+            "run_id": "run-1",
+            "interval_phase_required": interval_required,
+            "totals": {
+                "results": 20,
+                "pass": 20 - mismatch_count,
+                "mismatch": mismatch_count,
+                "inconclusive": 0,
+                "conclusive": 20,
+            },
+            "interval_totals": {
+                "results": interval_results,
+                "conclusive": interval_conclusive,
+                "pass": max(interval_conclusive - mismatch_count, 0),
+                "mismatch": mismatch_count,
+                "inconclusive": max(interval_results - interval_conclusive, 0),
+            },
+            "per_canary": per_canary,
+            "per_canary_interval": per_canary_interval,
+        }
+
+    def test_verdict_fails_on_any_mismatch(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=1,
+            interval_required=True,
+            interval_results=10,
+            interval_conclusive=10,
+            per_canary_interval={
+                "a": {"pass": 5, "mismatch": 0, "inconclusive": 0, "conclusive": 5},
+                "b": {"pass": 4, "mismatch": 1, "inconclusive": 0, "conclusive": 5},
+            },
+        )
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["no_mismatches"]["ok"])
+
+    def test_verdict_fails_when_overall_interval_conclusive_ratio_below_threshold(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=True,
+            interval_results=10,
+            interval_conclusive=8,
+            per_canary_interval={
+                "a": {"pass": 4, "mismatch": 0, "inconclusive": 1, "conclusive": 4},
+                "b": {"pass": 4, "mismatch": 0, "inconclusive": 1, "conclusive": 4},
+            },
+        )
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["overall_interval_conclusive_rate"]["ok"])
+
+    def test_verdict_fails_when_any_canary_interval_conclusive_ratio_below_threshold(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=True,
+            interval_results=20,
+            interval_conclusive=18,
+            per_canary_interval={
+                "a": {"pass": 9, "mismatch": 0, "inconclusive": 0, "conclusive": 9},
+                "b": {"pass": 9, "mismatch": 0, "inconclusive": 0, "conclusive": 9},
+                "c": {"pass": 0, "mismatch": 0, "inconclusive": 2, "conclusive": 0},
+            },
+        )
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["per_canary_interval_conclusive_rate"]["ok"])
+        self.assertEqual(verdict["criteria"]["per_canary_interval_conclusive_rate"]["failing_canaries"], ["c"])
+
+    def test_verdict_passes_when_all_thresholds_are_healthy(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=True,
+            interval_results=10,
+            interval_conclusive=9,
+            per_canary_interval={
+                "a": {"pass": 4, "mismatch": 0, "inconclusive": 1, "conclusive": 4},
+                "b": {"pass": 5, "mismatch": 0, "inconclusive": 0, "conclusive": 5},
+            },
+        )
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertTrue(verdict["ok"])
+        self.assertTrue(verdict["criteria"]["no_mismatches"]["ok"])
+        self.assertTrue(verdict["criteria"]["overall_interval_conclusive_rate"]["ok"])
+        self.assertTrue(verdict["criteria"]["per_canary_interval_conclusive_rate"]["ok"])
+
+    def test_verdict_waives_interval_thresholds_when_interval_phase_not_required(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=False,
+            interval_results=0,
+            interval_conclusive=0,
+            per_canary_interval={
+                "a": {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0},
+                "b": {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0},
+            },
+        )
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertTrue(verdict["ok"])
+        self.assertTrue(verdict["criteria"]["overall_interval_conclusive_rate"]["waived"])
+        self.assertTrue(verdict["criteria"]["per_canary_interval_conclusive_rate"]["waived"])
+
+
+class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
+    def run_smoke_with_fake_tools(self, canary_status: str) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir(parents=True, exist_ok=True)
+            log_dir = temp_path / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            fake_python = fake_bin / "python3"
+            fake_python.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    real_python="${REAL_PYTHON3:?REAL_PYTHON3 is required}"
+
+                    if [[ "$#" -ge 2 && "$1" == *"/scripts/passive_canary_verifier.py" && "$2" == "verify-phase" ]]; then
+                      shift 2
+                      output=""
+                      phase=""
+                      run_id=""
+                      baseline=""
+                      while [[ "$#" -gt 0 ]]; do
+                        case "$1" in
+                          --output) output="$2"; shift 2 ;;
+                          --phase) phase="$2"; shift 2 ;;
+                          --run-id) run_id="$2"; shift 2 ;;
+                          --baseline) baseline="$2"; shift 2 ;;
+                          *) shift ;;
+                        esac
+                      done
+                      status="${FAKE_CANARY_STATUS:-pass}"
+                      pass_count=0
+                      mismatch_count=0
+                      if [[ "${status}" == "pass" ]]; then
+                        pass_count=1
+                      elif [[ "${status}" == "mismatch" ]]; then
+                        mismatch_count=1
+                      fi
+                      mkdir -p "$(dirname "${output}")"
+                      cat > "${output}" <<JSON
+                    {
+                      "schema": "p03_canary_phase_result_v1",
+                      "run_id": "${run_id}",
+                      "phase": "${phase}",
+                      "results": [
+                        {
+                          "id": "canary_1",
+                          "family": "B524",
+                          "status": "${status}",
+                          "conclusive": true
+                        }
+                      ],
+                      "summary": {
+                        "total": 1,
+                        "pass": ${pass_count},
+                        "mismatch": ${mismatch_count},
+                        "inconclusive": 0,
+                        "conclusive": 1
+                      }
+                    }
+                    JSON
+                      if [[ -n "${baseline}" ]]; then
+                        mkdir -p "$(dirname "${baseline}")"
+                        printf '{"canary_1":"BEEF"}\\n' > "${baseline}"
+                      fi
+                      exit 0
+                    fi
+
+                    exec "${real_python}" "$@"
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+
+                    url="${@: -1}"
+                    data=""
+                    while [[ "$#" -gt 0 ]]; do
+                      case "$1" in
+                        -d)
+                          data="$2"
+                          shift 2
+                          ;;
+                        *)
+                          shift
+                          ;;
+                      esac
+                    done
+
+                    if [[ "${url}" == *"/metrics" ]]; then
+                      cat <<'EOF'
+                    ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0
+                    ebus_passive_tap_connected 1
+                    ebus_passive_warmup_state{state="available"} 1
+                    ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1
+                    EOF
+                      exit 0
+                    fi
+
+                    if [[ "${url}" == *"/portal/api/v1/bus/observability" ]]; then
+                      cat <<'EOF'
+                    {"summary":{"status":{"feature_flags":{"observeFirstEnabled":true}}}}
+                    EOF
+                      exit 0
+                    fi
+
+                    if [[ "${url}" == *"/graphql" ]]; then
+                      if [[ "${data}" == *"busSummary"* ]]; then
+                        cat <<'EOF'
+                    {"data":{"busSummary":{"status":{"featureFlags":{"observeFirstEnabled":true}}},"watchSummary":{"inventory":{"totalEntries":1},"activationCounts":{"catalogDescriptors":1,"activeKeys":1,"sourceClasses":[]},"directApplyEligibilityClasses":[],"degraded":{"active":false,"shadowingEnabled":false,"pinnedBudgetDegraded":false,"compactorDegraded":false,"reasons":[]}}}}
+                    EOF
+                        exit 0
+                      fi
+                      cat <<'EOF'
+                    {"data":{"devices":[{"address":"0x15","deviceId":"BASV2"}]}}
+                    EOF
+                      exit 0
+                    fi
+
+                    echo "unsupported fake curl url: ${url}" >&2
+                    exit 22
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "MATRIX_CASE_ID": "P03",
+                    "MATRIX_PASSIVE_MODE": "required",
+                    "MATRIX_GW15_PROOF_MODE": "1",
+                    "PASSIVE_SMOKE_TIMEOUT_SEC": "6",
+                    "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+                    "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "3600",
+                    "MATRIX_LOG_DIR": str(log_dir),
+                    "MATRIX_GATEWAY_BASE_URL": "http://fake-gateway:18083",
+                    "MATRIX_GRAPHQL_URL": "http://fake-gateway:18083/graphql",
+                    "MATRIX_METRICS_URL": "http://fake-gateway:18083/metrics",
+                    "REAL_PYTHON3": sys.executable,
+                    "FAKE_CANARY_STATUS": canary_status,
+                    "PATH": f"{fake_bin}:{env.get('PATH', '')}",
+                }
+            )
+            script_path = SCRIPT_DIR / "passive_smoke_check.sh"
+            return subprocess.run(
+                ["bash", str(script_path)],
+                cwd=SCRIPT_DIR.parent,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    def test_smoke_exits_non_zero_when_canary_verdict_is_bad(self) -> None:
+        result = self.run_smoke_with_fake_tools("mismatch")
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("canary verdict gate failed", result.stderr)
+
+    def test_smoke_exits_zero_when_canary_verdict_is_good(self) -> None:
+        result = self.run_smoke_with_fake_tools("pass")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
 
 
 if __name__ == "__main__":

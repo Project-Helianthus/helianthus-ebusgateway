@@ -82,6 +82,7 @@ canary_manifest_path="${PASSIVE_P03_CANARY_MANIFEST:-${REPO_ROOT}/testdata/passi
 canary_manifest_validation_path="${proof_dir}/canary_manifest_validation.json"
 canary_baseline_path="${proof_dir}/canary_baseline.json"
 canary_summary_path="${proof_dir}/canary_summary.json"
+canary_verdict_path="${proof_dir}/canary_verdict.json"
 canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
 canary_retries=3
 canary_enabled=0
@@ -399,6 +400,12 @@ build_canary_summary() {
     --output "${canary_summary_path}"
 }
 
+build_canary_verdict() {
+  python3 "${canary_verifier_script}" verdict \
+    --summary "${canary_summary_path}" \
+    --output "${canary_verdict_path}"
+}
+
 if [[ "${proof_artifacts_enabled}" == "1" ]]; then
   start_captured=0
   for _ in $(seq 1 5); do
@@ -480,6 +487,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_canary_summary "${canary_require_interval_phase}"; then
       echo "proof mode: failed to build canary summary" >&2
+      exit 1
+    fi
+    if ! build_canary_verdict; then
+      echo "proof mode: canary verdict gate failed (see ${canary_verdict_path})" >&2
       exit 1
     fi
   fi

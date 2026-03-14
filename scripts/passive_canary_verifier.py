@@ -22,6 +22,9 @@ MAX_RETRIES = 3
 CANARY_PHASE_PREFIX = "canary_phase_"
 MANIFEST_SCHEMA = "p03_canary_manifest_v1"
 P03_ALLOWED_METHODS = {"get_register", "get_ext_register"}
+CANARY_VERDICT_SCHEMA = "p03_canary_verdict_v1"
+OVERALL_INTERVAL_CONCLUSIVE_MIN = 0.90
+PER_CANARY_INTERVAL_CONCLUSIVE_MIN = 0.75
 
 
 def utc_now() -> str:
@@ -275,6 +278,16 @@ def phase_sort_key(phase: str) -> Tuple[int, int, str]:
     return (1, 0, normalized)
 
 
+def is_interval_phase(phase: str) -> bool:
+    return re.fullmatch(r"sample_[0-9]+", phase.strip().lower()) is not None
+
+
+def safe_ratio(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return float(numerator) / float(denominator)
+
+
 def verify_phase(
     canaries: List[CanarySpec],
     graphql_url: str,
@@ -391,8 +404,10 @@ def summarize_run(
     phases_seen = set()
     interval_phase_count = 0
     totals = {"results": 0, "pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}
+    interval_totals = {"results": 0, "pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}
     per_canary: Dict[str, Dict[str, Any]] = {}
-    phase_payloads: List[Tuple[Tuple[int, int, str], Dict[str, Any]]] = []
+    per_canary_interval: Dict[str, Dict[str, Any]] = {}
+    phase_payloads: List[Tuple[Tuple[int, int, str], str, Dict[str, Any]]] = []
     for path in phase_files:
         payload = load_json(path)
         if not isinstance(payload, dict):
@@ -400,11 +415,12 @@ def summarize_run(
         phase = str(payload.get("phase", "")).strip()
         if phase:
             phases_seen.add(phase)
-            if re.fullmatch(r"sample_[0-9]+", phase):
+            if is_interval_phase(phase):
                 interval_phase_count += 1
-        phase_payloads.append((phase_sort_key(phase), payload))
+        phase_payloads.append((phase_sort_key(phase), phase, payload))
 
-    for _, payload in sorted(phase_payloads, key=lambda item: item[0]):
+    for _, phase, payload in sorted(phase_payloads, key=lambda item: item[0]):
+        interval_phase = is_interval_phase(phase)
         entries = payload.get("results")
         if not isinstance(entries, list):
             continue
@@ -428,6 +444,19 @@ def summarize_run(
                 canary_bucket["conclusive"] += 1
             canary_bucket["last_status"] = status
 
+            if interval_phase:
+                interval_totals["results"] += 1
+                interval_totals[status] += 1
+                if status in ("pass", "mismatch"):
+                    interval_totals["conclusive"] += 1
+                canary_interval_bucket = per_canary_interval.setdefault(
+                    canary_id,
+                    {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0},
+                )
+                canary_interval_bucket[status] += 1
+                if status in ("pass", "mismatch"):
+                    canary_interval_bucket["conclusive"] += 1
+
     if "start" not in phases_seen or "end" not in phases_seen:
         raise ValueError("missing current-run start/end canary artifacts (stale artifact rejection)")
     if require_interval_phase and interval_phase_count < 1:
@@ -446,8 +475,106 @@ def summarize_run(
         "interval_phase_count": interval_phase_count,
         "interval_phase_required": require_interval_phase,
         "totals": totals,
+        "interval_totals": interval_totals,
         "per_canary": per_canary,
+        "per_canary_interval": per_canary_interval,
         "overall_conclusive_count": totals["conclusive"],
+        "overall_interval_conclusive_count": interval_totals["conclusive"],
+    }
+
+
+def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(summary, dict):
+        raise ValueError("summary must be a JSON object")
+
+    totals = summary.get("totals")
+    if not isinstance(totals, dict):
+        totals = {}
+    interval_totals = summary.get("interval_totals")
+    if not isinstance(interval_totals, dict):
+        interval_totals = {}
+    per_canary = summary.get("per_canary")
+    if not isinstance(per_canary, dict):
+        per_canary = {}
+    per_canary_interval = summary.get("per_canary_interval")
+    if not isinstance(per_canary_interval, dict):
+        per_canary_interval = {}
+
+    mismatch_count = int(totals.get("mismatch", 0) or 0)
+    no_mismatches_ok = mismatch_count == 0
+
+    interval_required = bool(summary.get("interval_phase_required", True))
+    overall_interval_total = int(interval_totals.get("results", 0) or 0)
+    overall_interval_conclusive = int(interval_totals.get("conclusive", 0) or 0)
+    overall_interval_rate = safe_ratio(overall_interval_conclusive, overall_interval_total)
+    if interval_required:
+        overall_interval_ok = overall_interval_rate >= OVERALL_INTERVAL_CONCLUSIVE_MIN
+        overall_interval_waived = False
+    else:
+        overall_interval_ok = True
+        overall_interval_waived = True
+
+    per_canary_details: Dict[str, Dict[str, Any]] = {}
+    failing_canaries: List[str] = []
+    for canary_id in sorted(per_canary.keys()):
+        bucket = per_canary_interval.get(canary_id)
+        if not isinstance(bucket, dict):
+            bucket = {}
+        pass_count = int(bucket.get("pass", 0) or 0)
+        mismatch_bucket = int(bucket.get("mismatch", 0) or 0)
+        inconclusive_count = int(bucket.get("inconclusive", 0) or 0)
+        interval_total = pass_count + mismatch_bucket + inconclusive_count
+        interval_conclusive = int(bucket.get("conclusive", pass_count + mismatch_bucket) or 0)
+        interval_rate = safe_ratio(interval_conclusive, interval_total)
+        if interval_required:
+            canary_ok = interval_rate >= PER_CANARY_INTERVAL_CONCLUSIVE_MIN
+            canary_waived = False
+        else:
+            canary_ok = True
+            canary_waived = True
+        if not canary_ok:
+            failing_canaries.append(canary_id)
+        per_canary_details[canary_id] = {
+            "interval_conclusive": interval_conclusive,
+            "interval_total": interval_total,
+            "interval_conclusive_rate": interval_rate,
+            "threshold": PER_CANARY_INTERVAL_CONCLUSIVE_MIN,
+            "ok": canary_ok,
+            "waived": canary_waived,
+        }
+
+    per_canary_ok = len(failing_canaries) == 0
+    verdict_ok = no_mismatches_ok and overall_interval_ok and per_canary_ok
+
+    return {
+        "schema": CANARY_VERDICT_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": str(summary.get("run_id", "")).strip(),
+        "summary_schema": str(summary.get("schema", "")).strip(),
+        "ok": verdict_ok,
+        "status": "pass" if verdict_ok else "fail",
+        "criteria": {
+            "no_mismatches": {
+                "ok": no_mismatches_ok,
+                "mismatch_count": mismatch_count,
+            },
+            "overall_interval_conclusive_rate": {
+                "ok": overall_interval_ok,
+                "waived": overall_interval_waived,
+                "interval_conclusive": overall_interval_conclusive,
+                "interval_total": overall_interval_total,
+                "interval_conclusive_rate": overall_interval_rate,
+                "threshold": OVERALL_INTERVAL_CONCLUSIVE_MIN,
+            },
+            "per_canary_interval_conclusive_rate": {
+                "ok": per_canary_ok,
+                "waived": not interval_required,
+                "threshold": PER_CANARY_INTERVAL_CONCLUSIVE_MIN,
+                "failing_canaries": failing_canaries,
+                "canaries_evaluated": len(per_canary_details),
+            },
+        },
+        "per_canary": per_canary_details,
     }
 
 
@@ -507,6 +634,13 @@ def summarize_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def verdict_command(args: argparse.Namespace) -> int:
+    summary = load_json(pathlib.Path(args.summary))
+    verdict = build_canary_verdict(summary)
+    write_json(pathlib.Path(args.output), verdict)
+    return 0 if bool(verdict.get("ok", False)) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -534,6 +668,11 @@ def build_parser() -> argparse.ArgumentParser:
     summarize.add_argument("--output", required=True)
     summarize.add_argument("--require-interval-phase", choices=("0", "1"), default="1")
     summarize.set_defaults(func=summarize_command)
+
+    verdict = sub.add_parser("verdict", help="build proof-mode canary verdict from summary")
+    verdict.add_argument("--summary", required=True)
+    verdict.add_argument("--output", required=True)
+    verdict.set_defaults(func=verdict_command)
     return parser
 
 

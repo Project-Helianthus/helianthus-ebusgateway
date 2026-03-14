@@ -534,7 +534,8 @@ func TestBusObservabilityStoreExportsWatchEfficiencyMetrics(t *testing.T) {
 		HasDescriptor: true,
 		MaxAge:        10 * time.Second,
 		Stats: SemanticReadExecutionStats{
-			ServedFromShadow: true,
+			ServedFromShadow:        true,
+			ServedFromPassiveShadow: true,
 		},
 		ObservedAt: base.Add(6 * time.Second),
 	})
@@ -636,6 +637,112 @@ func TestBusObservabilityStoreOmitsStaleActiveReadSavedSeconds(t *testing.T) {
 	}
 }
 
+func TestBusObservabilityStoreStaleSavedWindowMustReearnThreshold(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ObserveFirstEnabled = true
+	cfg.PassiveStateDirectApply = true
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportEbusdTCP
+
+	base := time.Unix(1700000450, 0).UTC()
+	store := NewBusObservabilityStore(cfg)
+	store.now = func() time.Time { return base.Add(4 * time.Second) }
+
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+	descriptor := watchEfficiencyStateFastDescriptor(key)
+	for index := 0; index < 5; index++ {
+		store.ObserveWatchRead(WatchEfficiencyReadEvent{
+			Key:           key,
+			Descriptor:    descriptor,
+			HasDescriptor: true,
+			MaxAge:        10 * time.Second,
+			Stats: SemanticReadExecutionStats{
+				ActiveFetchAttempted: true,
+				ActiveFetchSucceeded: true,
+				ActiveFetchDuration:  time.Second,
+			},
+			ObservedAt: base.Add(time.Duration(index) * time.Second),
+		})
+	}
+
+	store.now = func() time.Time { return base.Add(16 * time.Minute) }
+	metrics := store.RenderPrometheus()
+	if strings.Contains(metrics, `active_read_saved_seconds{family="B524",freshness_profile="state_fast"}`) {
+		t.Fatalf("RenderPrometheus unexpectedly kept stale active_read_saved_seconds sample:\n%s", metrics)
+	}
+
+	freshStart := base.Add(16*time.Minute + time.Second)
+	store.ObserveWatchRead(WatchEfficiencyReadEvent{
+		Key:           key,
+		Descriptor:    descriptor,
+		HasDescriptor: true,
+		MaxAge:        10 * time.Second,
+		Stats: SemanticReadExecutionStats{
+			ActiveFetchAttempted: true,
+			ActiveFetchSucceeded: true,
+			ActiveFetchDuration:  2 * time.Second,
+		},
+		ObservedAt: freshStart,
+	})
+
+	store.now = func() time.Time { return freshStart }
+	metrics = store.RenderPrometheus()
+	if strings.Contains(metrics, `active_read_saved_seconds{family="B524",freshness_profile="state_fast"}`) {
+		t.Fatalf("RenderPrometheus should require fresh re-earning threshold after staleness:\n%s", metrics)
+	}
+
+	for index := 1; index < 5; index++ {
+		store.ObserveWatchRead(WatchEfficiencyReadEvent{
+			Key:           key,
+			Descriptor:    descriptor,
+			HasDescriptor: true,
+			MaxAge:        10 * time.Second,
+			Stats: SemanticReadExecutionStats{
+				ActiveFetchAttempted: true,
+				ActiveFetchSucceeded: true,
+				ActiveFetchDuration:  2 * time.Second,
+			},
+			ObservedAt: freshStart.Add(time.Duration(index) * time.Second),
+		})
+	}
+
+	store.now = func() time.Time { return freshStart.Add(4 * time.Second) }
+	metrics = store.RenderPrometheus()
+	if !strings.Contains(metrics, `active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 2`) {
+		t.Fatalf("RenderPrometheus missing fresh active_read_saved_seconds estimate after re-earning:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreTreatsActiveConfirmedShadowHitsAsNonPassive(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ObserveFirstEnabled = true
+	cfg.PassiveStateDirectApply = true
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportEbusdTCP
+
+	store := NewBusObservabilityStore(cfg)
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+	descriptor := watchEfficiencyStateFastDescriptor(key)
+	store.ObserveWatchRead(WatchEfficiencyReadEvent{
+		Key:           key,
+		Descriptor:    descriptor,
+		HasDescriptor: true,
+		MaxAge:        10 * time.Second,
+		Stats: SemanticReadExecutionStats{
+			ServedFromShadow: true,
+		},
+		ObservedAt: time.Unix(1700000475, 0).UTC(),
+	})
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `passive_hits_total{family="B524",freshness_profile="state_fast"} 0`) {
+		t.Fatalf("RenderPrometheus should not count active-confirmed shadow hit as passive:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 0`) {
+		t.Fatalf("RenderPrometheus should not count active-confirmed shadow hit as read avoidance:\n%s", metrics)
+	}
+}
+
 func TestBusObservabilityStoreExportsWatchEfficiencyAmbiguousReason(t *testing.T) {
 	cfg := DefaultConfig()
 	store := NewBusObservabilityStore(cfg)
@@ -684,6 +791,40 @@ func TestBusObservabilityStoreTransportLimitationPrefersTransportUnavailableOver
 	}
 	if strings.Contains(metrics, `missed_due_to_transport_limitations_total{family="B524",freshness_profile="state_fast",limitation="broadcast_unavailable"} 1`) {
 		t.Fatalf("RenderPrometheus incorrectly preferred broadcast_unavailable over transport_unavailable on dual-failure config:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreTransportLimitationClassifiesBroadcastUnavailable(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ObserveFirstEnabled = true
+	cfg.PassiveStateDirectApply = true
+	cfg.BroadcastListen = false
+	cfg.TransportConfig.Protocol = TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
+
+	store := NewBusObservabilityStore(cfg)
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+	descriptor := watchEfficiencyStateFastDescriptor(key)
+	store.ObserveWatchRead(WatchEfficiencyReadEvent{
+		Key:           key,
+		Descriptor:    descriptor,
+		HasDescriptor: true,
+		MaxAge:        10 * time.Second,
+		Stats: SemanticReadExecutionStats{
+			ActiveFetchAttempted: true,
+			ActiveFetchSucceeded: true,
+			ActiveFetchDuration:  time.Second,
+		},
+		ObservedAt: time.Unix(1700000550, 0).UTC(),
+	})
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `missed_due_to_transport_limitations_total{family="B524",freshness_profile="state_fast",limitation="broadcast_unavailable"} 1`) {
+		t.Fatalf("RenderPrometheus missing broadcast_unavailable miss classification:\n%s", metrics)
+	}
+	if strings.Contains(metrics, `missed_due_to_transport_limitations_total{family="B524",freshness_profile="state_fast",limitation="transport_unavailable"} 1`) {
+		t.Fatalf("RenderPrometheus unexpectedly classified ENH broadcast-off miss as transport_unavailable:\n%s", metrics)
 	}
 }
 

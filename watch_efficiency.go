@@ -3,10 +3,11 @@ package ebusgateway
 import "time"
 
 type SemanticReadExecutionStats struct {
-	ServedFromShadow     bool
-	ActiveFetchAttempted bool
-	ActiveFetchSucceeded bool
-	ActiveFetchDuration  time.Duration
+	ServedFromShadow        bool
+	ServedFromPassiveShadow bool
+	ActiveFetchAttempted    bool
+	ActiveFetchSucceeded    bool
+	ActiveFetchDuration     time.Duration
 }
 
 type WatchEfficiencyReadEvent struct {

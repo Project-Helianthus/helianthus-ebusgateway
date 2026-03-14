@@ -76,6 +76,7 @@ type semanticReadEntry struct {
 	lastOKShadowGeneration uint64
 	lastOKHasGeneration    bool
 	lastOKFromShadow       bool
+	lastOKFromPassive      bool
 
 	breakerState            SemanticReadCircuitState
 	consecutiveFailures     int
@@ -96,6 +97,7 @@ type semanticReadCircuitBreakerConfig struct {
 type semanticReadShadowCandidate struct {
 	value      []byte
 	generation uint64
+	source     ShadowWriteSource
 }
 
 type semanticReadShadowWriteResult struct {
@@ -277,9 +279,11 @@ func (s *SemanticReadScheduler) getWithWatchKey(
 				entry.lastOKShadowGeneration = snapshot.Generation
 				entry.lastOKHasGeneration = true
 				entry.lastOKFromShadow = true
+				entry.lastOKFromPassive = candidate.source == ShadowWriteSourcePassive
 				value := append([]byte(nil), entry.lastOK...)
 				s.mu.Unlock()
 				stats.ServedFromShadow = true
+				stats.ServedFromPassiveShadow = candidate.source == ShadowWriteSourcePassive
 				return value, stats, nil
 			}
 			if shadowPassesRemaining > 0 {
@@ -295,6 +299,7 @@ func (s *SemanticReadScheduler) getWithWatchKey(
 					value := append([]byte(nil), entry.lastOK...)
 					s.mu.Unlock()
 					stats.ServedFromShadow = entry.lastOKFromShadow
+					stats.ServedFromPassiveShadow = entry.lastOKFromPassive
 					return value, stats, nil
 				}
 
@@ -307,6 +312,7 @@ func (s *SemanticReadScheduler) getWithWatchKey(
 					value := append([]byte(nil), entry.lastOK...)
 					s.mu.Unlock()
 					stats.ServedFromShadow = entry.lastOKFromShadow
+					stats.ServedFromPassiveShadow = entry.lastOKFromPassive
 					return value, stats, nil
 				}
 			}
@@ -387,6 +393,7 @@ func (s *SemanticReadScheduler) getWithWatchKey(
 			entry.lastOK = append(entry.lastOK[:0], value...)
 			entry.lastErr = nil
 			entry.lastOKFromShadow = false
+			entry.lastOKFromPassive = false
 			if shadow != nil && watchKey != nil {
 				entry.lastOKHasGeneration = true
 				if shadowWrite.attempted && shadowWrite.result.Accepted {
@@ -592,6 +599,7 @@ func consultSemanticReadShadow(cache *ShadowCache, key WatchKey, maxAge time.Dur
 	return &semanticReadShadowCandidate{
 		value:      append([]byte(nil), result.Entry.Value...),
 		generation: result.Entry.Generation,
+		source:     result.Entry.Source,
 	}
 }
 
@@ -632,4 +640,5 @@ func clearSemanticReadCacheLocked(entry *semanticReadEntry) {
 	entry.lastOKShadowGeneration = 0
 	entry.lastOKHasGeneration = false
 	entry.lastOKFromShadow = false
+	entry.lastOKFromPassive = false
 }

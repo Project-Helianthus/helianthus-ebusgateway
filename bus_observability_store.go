@@ -457,7 +457,7 @@ func (store *BusObservabilityStore) observeWatchReadLocked(event WatchEfficiency
 	if event.Stats.ActiveFetchAttempted && event.Stats.ActiveFetchSucceeded && eligibleForMiss {
 		series.saved.add(event.Stats.ActiveFetchDuration, observedAt)
 	}
-	if event.Stats.ServedFromShadow {
+	if event.Stats.ServedFromPassiveShadow {
 		series.passiveHits++
 		series.activeReadsAvoided++
 		return
@@ -1676,6 +1676,9 @@ func watchEfficiencyTransportLimitation(cfg Config) string {
 }
 
 func (window *watchEfficiencySavedWindow) add(sample time.Duration, observedAt time.Time) {
+	if !window.lastSampleAt.IsZero() && observedAt.Sub(window.lastSampleAt) > watchEfficiencySavedStaleTTL {
+		*window = watchEfficiencySavedWindow{}
+	}
 	if sample < 0 {
 		sample = 0
 	}

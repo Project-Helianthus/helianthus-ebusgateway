@@ -131,9 +131,22 @@ func loadSmokeConfig(rootDir string) (smokeConfig, string, error) {
 			return smokeConfig{}, "", err
 		}
 	}
-	path := filepath.Join(rootDir, "AGENT-local.md")
-	cfg, err := loadSmokeConfigFile(path)
-	return cfg, path, err
+	paths := []string{
+		filepath.Join(rootDir, "AGENT-local.md"),
+		filepath.Join(rootDir, "AGENTS-local.md"),
+	}
+	var lastErr error
+	for _, path := range paths {
+		cfg, err := loadSmokeConfigFile(path)
+		if err == nil {
+			return cfg, path, nil
+		}
+		lastErr = err
+		if !errors.Is(err, errSmokeConfigMissing) {
+			return smokeConfig{}, path, err
+		}
+	}
+	return smokeConfig{}, paths[0], lastErr
 }
 
 func loadSmokeConfigFile(path string) (smokeConfig, error) {

@@ -41,15 +41,32 @@ metrics_url="${MATRIX_METRICS_URL:-${gateway_base_url}/metrics}"
 poll_interval_sec="${PASSIVE_SMOKE_POLL_INTERVAL_SEC:-2}"
 timeout_sec="${PASSIVE_SMOKE_TIMEOUT_SEC:-120}"
 log_dir="${MATRIX_LOG_DIR:-${REPO_ROOT}/results/${case_id}/logs}"
+gw15_proof_mode="${MATRIX_GW15_PROOF_MODE:-0}"
+proof_artifacts_enabled="${PASSIVE_PROOF_ARTIFACTS_ENABLED:-${gw15_proof_mode}}"
+proof_sample_interval_sec="${PASSIVE_PROOF_SAMPLE_INTERVAL_SEC:-5}"
 
 mkdir -p "${log_dir}"
 
 metrics_path="${log_dir}/passive_metrics.prom"
 graphql_path="${log_dir}/passive_devices.json"
+proof_dir="${log_dir}/proof_artifacts"
+proof_samples_dir="${proof_dir}/samples"
+proof_sample_index=0
+proof_next_sample_epoch=0
 
 deadline=$(( $(date +%s) + timeout_sec ))
 last_metrics=""
 last_graphql=""
+smoke_ok=0
+
+if [[ ! "${proof_sample_interval_sec}" =~ ^[0-9]+$ ]] || [[ "${proof_sample_interval_sec}" -lt 1 ]]; then
+  proof_sample_interval_sec=5
+fi
+if [[ "${proof_artifacts_enabled}" == "1" ]]; then
+  mkdir -p "${proof_samples_dir}"
+fi
+
+graphql_bus_watch_query='{"query":"{ busSummary { status { transportClass featureFlags { observeFirstEnabled passiveStateDirectApply passiveConfigDirectApply externalWritePolicy normalizations } capability { passiveSupported passiveAvailable passiveState passiveReason endpointState tapConnected } warmup { state blocker elapsedSeconds completedTransactions requiredTransactions completionMode } degraded { active reasons } } } watchSummary { inventory { totalEntries pinnedEntries evictableEntries staticPinnedFootprint writeConfirmPinnedActive } activationCounts { catalogDescriptors activeKeys sourceClasses { class count } } directApplyEligibilityClasses { class count } degraded { active shadowingEnabled pinnedBudgetDegraded compactorDegraded reasons } } }"}'
 
 validate_snapshot() {
   METRICS_PAYLOAD="${1}" \
@@ -148,6 +165,84 @@ raise SystemExit(1)
 PY
 }
 
+write_feature_flag_snapshot() {
+  local graphql_file="$1"
+  local bus_file="$2"
+  local output_file="$3"
+  python3 - "${graphql_file}" "${bus_file}" "${output_file}" <<'PY'
+import json
+import pathlib
+import sys
+from datetime import datetime, timezone
+
+graphql_file = pathlib.Path(sys.argv[1])
+bus_file = pathlib.Path(sys.argv[2])
+output_file = pathlib.Path(sys.argv[3])
+
+graphql_flags = None
+bus_flags = None
+
+if graphql_file.exists():
+    try:
+        payload = json.loads(graphql_file.read_text())
+        graphql_flags = (((payload.get("data") or {}).get("busSummary") or {}).get("status") or {}).get("featureFlags")
+    except Exception:
+        graphql_flags = None
+
+if bus_file.exists():
+    try:
+        payload = json.loads(bus_file.read_text())
+        bus_flags = (((payload.get("summary") or {}).get("status") or {}).get("feature_flags"))
+    except Exception:
+        bus_flags = None
+
+snapshot = {
+    "captured_at": datetime.now(timezone.utc).isoformat(),
+    "graphql_feature_flags": graphql_flags,
+    "bus_observability_feature_flags": bus_flags,
+}
+output_file.write_text(json.dumps(snapshot, indent=2) + "\n")
+PY
+}
+
+capture_proof_snapshot() {
+  local prefix="$1"
+  local metrics_payload="${2:-}"
+  local metrics_file="${prefix}_metrics.prom"
+  local bus_file="${prefix}_bus_observability.json"
+  local graphql_file="${prefix}_graphql_bus_watch.json"
+  local flags_file="${prefix}_feature_flags.json"
+  local bus_payload=""
+  local graphql_payload=""
+  local sampled_metrics=""
+
+  if [[ -z "${metrics_payload}" ]]; then
+    if sampled_metrics="$(curl -fsS -m 8 "${metrics_url}" 2>/dev/null)"; then
+      metrics_payload="${sampled_metrics}"
+    fi
+  fi
+  if [[ -n "${metrics_payload}" ]]; then
+    printf '%s\n' "${metrics_payload}" > "${metrics_file}"
+  fi
+
+  if bus_payload="$(curl -fsS -m 8 "${gateway_base_url}/portal/api/v1/bus/observability" 2>/dev/null)"; then
+    printf '%s\n' "${bus_payload}" > "${bus_file}"
+  fi
+
+  if graphql_payload="$(curl -fsS -m 8 -H 'Content-Type: application/json' -d "${graphql_bus_watch_query}" "${graphql_url}" 2>/dev/null)"; then
+    printf '%s\n' "${graphql_payload}" > "${graphql_file}"
+  fi
+
+  if [[ -f "${graphql_file}" || -f "${bus_file}" ]]; then
+    write_feature_flag_snapshot "${graphql_file}" "${bus_file}" "${flags_file}" || true
+  fi
+}
+
+if [[ "${proof_artifacts_enabled}" == "1" ]]; then
+  capture_proof_snapshot "${proof_dir}/start"
+  proof_next_sample_epoch="$(date +%s)"
+fi
+
 while [[ "$(date +%s)" -lt "${deadline}" ]]; do
   if metrics="$(curl -fsS -m 8 "${metrics_url}" 2>/dev/null)" && \
      graphql="$(curl -fsS -m 8 -H 'Content-Type: application/json' \
@@ -156,8 +251,18 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
     last_graphql="${graphql}"
     printf '%s\n' "${metrics}" > "${metrics_path}"
     printf '%s\n' "${graphql}" > "${graphql_path}"
+    if [[ "${proof_artifacts_enabled}" == "1" ]]; then
+      now_epoch="$(date +%s)"
+      if [[ "${now_epoch}" -ge "${proof_next_sample_epoch}" ]]; then
+        proof_sample_index=$((proof_sample_index + 1))
+        sample_prefix="${proof_samples_dir}/sample_$(printf '%04d' "${proof_sample_index}")"
+        capture_proof_snapshot "${sample_prefix}" "${metrics}"
+        proof_next_sample_epoch=$((now_epoch + proof_sample_interval_sec))
+      fi
+    fi
     if validate_snapshot "${metrics}" "${graphql}"; then
-      exit 0
+      smoke_ok=1
+      break
     fi
   fi
   sleep "${poll_interval_sec}"
@@ -170,8 +275,16 @@ if [[ -n "${last_graphql}" ]]; then
   printf '%s\n' "${last_graphql}" > "${graphql_path}"
 fi
 
-if [[ -n "${last_metrics}" && -n "${last_graphql}" ]]; then
-  validate_snapshot "${last_metrics}" "${last_graphql}"
+if [[ "${proof_artifacts_enabled}" == "1" ]]; then
+  capture_proof_snapshot "${proof_dir}/end" "${last_metrics}"
+fi
+
+if [[ "${smoke_ok}" -eq 1 ]]; then
+  exit 0
+fi
+
+if [[ -n "${last_metrics}" && -n "${last_graphql}" ]] && validate_snapshot "${last_metrics}" "${last_graphql}"; then
+  exit 0
 fi
 
 echo "passive smoke: timed out waiting for ${case_id} (${passive_mode}) at ${gateway_base_url}" >&2

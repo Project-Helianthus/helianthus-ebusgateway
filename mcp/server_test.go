@@ -169,6 +169,21 @@ func (p *testBusObservabilityProvider) Snapshot() BusObservabilitySnapshot {
 	return cloneBusObservabilitySnapshot(p.snapshot)
 }
 
+type testWatchSummaryProvider struct {
+	summary WatchSummary
+}
+
+func (p *testWatchSummaryProvider) Snapshot() WatchSummary {
+	if p == nil {
+		return WatchSummary{}
+	}
+	copy := cloneWatchSummary(&p.summary)
+	if copy == nil {
+		return WatchSummary{}
+	}
+	return *copy
+}
+
 type testSemanticProvider struct {
 	zones         []Zone
 	circuits      []CircuitStatus
@@ -434,6 +449,88 @@ func TestServer_BusObservabilityToolsRequireConfiguredProvider(t *testing.T) {
 		if !hasToolName(tools, name) {
 			t.Fatalf("tools list missing %q after bus provider configured", name)
 		}
+	}
+}
+
+func TestServer_WatchSummaryToolRequiresConfiguredProvider(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list", Params: nil})
+	if res.Error != nil {
+		t.Fatalf("tools/list error = %+v", res.Error)
+	}
+	resultMap, ok := res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list result type = %T; want map", res.Result)
+	}
+	tools, ok := resultMap["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools/list tools type = %T; want []any", resultMap["tools"])
+	}
+	if hasToolName(tools, toolWatchSummaryGetName) {
+		t.Fatalf("tools list unexpectedly included %q without watch-summary provider", toolWatchSummaryGetName)
+	}
+
+	res = doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"` + toolWatchSummaryGetName + `","arguments":{}}`),
+	})
+	if res.Error == nil {
+		t.Fatalf("watch summary call error = nil; want unknown tool")
+	}
+	if want := `unknown tool "` + toolWatchSummaryGetName + `"`; res.Error.Message != want {
+		t.Fatalf("watch summary call error = %q; want %q", res.Error.Message, want)
+	}
+
+	server.SetWatchSummaryProvider(&testWatchSummaryProvider{
+		summary: WatchSummary{
+			ActivationCounts: WatchSummaryActivationCounts{
+				ActiveKeys: 3,
+			},
+			Degraded: WatchSummaryDegraded{
+				ShadowingEnabled: true,
+			},
+		},
+	})
+
+	res = doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 3, Method: "tools/list", Params: nil})
+	if res.Error != nil {
+		t.Fatalf("tools/list after watch provider error = %+v", res.Error)
+	}
+	resultMap, ok = res.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list after watch provider result type = %T; want map", res.Result)
+	}
+	tools, ok = resultMap["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools/list after watch provider tools type = %T; want []any", resultMap["tools"])
+	}
+	if !hasToolName(tools, toolWatchSummaryGetName) {
+		t.Fatalf("tools list missing %q after watch provider configured", toolWatchSummaryGetName)
+	}
+
+	envelope := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      4,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"` + toolWatchSummaryGetName + `","arguments":{}}`),
+	}))
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("watch summary data type = %T; want map", envelope["data"])
+	}
+	activationCounts, ok := data["activation_counts"].(map[string]any)
+	if !ok {
+		t.Fatalf("watch summary activation_counts type = %T; want map", data["activation_counts"])
+	}
+	if got, _ := activationCounts["active_keys"].(float64); int(got) != 3 {
+		t.Fatalf("watch summary activation_counts.active_keys = %v; want 3", activationCounts["active_keys"])
 	}
 }
 
@@ -1587,6 +1684,78 @@ func TestServer_BusObservabilitySnapshotConsistency(t *testing.T) {
 	snapshotPeriodicityItems, _ := snapshotPeriodicityData["items"].([]any)
 	if len(snapshotPeriodicityItems) != 1 {
 		t.Fatalf("snapshot bus periodicity items len = %d; want 1", len(snapshotPeriodicityItems))
+	}
+}
+
+func TestServer_WatchSummarySnapshotConsistency(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	provider := &testWatchSummaryProvider{
+		summary: WatchSummary{
+			ActivationCounts: WatchSummaryActivationCounts{
+				ActiveKeys: 1,
+			},
+			Degraded: WatchSummaryDegraded{
+				Active:           false,
+				ShadowingEnabled: true,
+			},
+		},
+	}
+	server.SetWatchSummaryProvider(provider)
+
+	capture := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+	}))
+	captureData, ok := capture["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("capture data type = %T; want map", capture["data"])
+	}
+	snapshotID, _ := captureData["snapshot_id"].(string)
+	if snapshotID == "" {
+		t.Fatal("capture snapshot_id empty")
+	}
+
+	provider.summary = WatchSummary{
+		ActivationCounts: WatchSummaryActivationCounts{
+			ActiveKeys: 7,
+		},
+		Degraded: WatchSummaryDegraded{
+			Active:               true,
+			ShadowingEnabled:     false,
+			PinnedBudgetDegraded: true,
+			Reasons:              []string{"shadow_pinned_budget_degraded"},
+		},
+	}
+
+	live := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.watch.summary.get","arguments":{}}`),
+	}))
+	liveData, _ := live["data"].(map[string]any)
+	liveActivation, _ := liveData["activation_counts"].(map[string]any)
+	if got, _ := liveActivation["active_keys"].(float64); int(got) != 7 {
+		t.Fatalf("live watch summary active_keys = %v; want 7", liveActivation["active_keys"])
+	}
+
+	snap := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      3,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.watch.summary.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+	}))
+	snapshotData, _ := snap["data"].(map[string]any)
+	snapshotActivation, _ := snapshotData["activation_counts"].(map[string]any)
+	if got, _ := snapshotActivation["active_keys"].(float64); int(got) != 1 {
+		t.Fatalf("snapshot watch summary active_keys = %v; want 1", snapshotActivation["active_keys"])
 	}
 }
 

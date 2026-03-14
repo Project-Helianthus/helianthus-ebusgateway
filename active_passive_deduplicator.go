@@ -729,22 +729,6 @@ func passiveOutcomeClass(event PassiveClassifiedEvent) DedupOutcomeClass {
 	}
 }
 
-func passiveResponseClass(event PassiveClassifiedEvent, outcome DedupOutcomeClass) DedupResponseClass {
-	if outcome != DedupOutcomeSuccess {
-		return DedupResponseErrorOrAmbiguous
-	}
-	if !event.HasResponse {
-		if event.FrameType == protocol.FrameTypeInitiatorInitiator {
-			return DedupResponseACKOnly
-		}
-		return DedupResponseErrorOrAmbiguous
-	}
-	if len(event.Response.Data) == 0 {
-		return DedupResponseHeaderOnly
-	}
-	return DedupResponseValueBearing
-}
-
 func buildActiveFingerprint(
 	epoch uint64,
 	event protocol.BusEvent,
@@ -811,19 +795,6 @@ func buildActiveFingerprint(
 		responseBytes,
 	)
 	return fingerprint, true
-}
-
-func activeResponseClass(event protocol.BusEvent) DedupResponseClass {
-	if !event.HasResponse {
-		if event.FrameType == protocol.FrameTypeInitiatorInitiator {
-			return DedupResponseACKOnly
-		}
-		return DedupResponseErrorOrAmbiguous
-	}
-	if len(event.Response.Data) == 0 {
-		return DedupResponseHeaderOnly
-	}
-	return DedupResponseValueBearing
 }
 
 func canonicalFrameBytes(frame protocol.Frame) []byte {
@@ -1024,14 +995,6 @@ func makeAdjudicatedDiscontinuity(event PassiveClassifiedEvent, epoch uint64) Ad
 	}
 }
 
-func observeFirstWatchObservationForFrame(frame protocol.Frame, observer WatchObserver) WatchObservation {
-	key, ok := PassiveWatchKeyFromFrame(frame)
-	if !ok {
-		return WatchObservation{State: WatchObservationStateCatalogMiss}
-	}
-	return observeFirstWatchObservationForKey(key, observer)
-}
-
 func observeFirstWatchObservationForKey(key WatchKey, observer WatchObserver) WatchObservation {
 	if key == nil {
 		return WatchObservation{State: WatchObservationStateCatalogMiss}
@@ -1135,20 +1098,6 @@ func dedupRequestFrameFromFingerprint(raw []byte) (protocol.Frame, bool) {
 		Secondary: raw[3],
 		Data:      data,
 	}, true
-}
-
-func asB524WatchKey(key WatchKey) (B524WatchKey, bool) {
-	switch typed := key.(type) {
-	case B524WatchKey:
-		return typed, true
-	case *B524WatchKey:
-		if typed == nil {
-			return B524WatchKey{}, false
-		}
-		return *typed, true
-	default:
-		return B524WatchKey{}, false
-	}
 }
 
 func dedupFamilyPolicySuppressesShadow(policy ObserveFirstFamilyPolicy) bool {

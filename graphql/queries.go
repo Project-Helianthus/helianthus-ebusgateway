@@ -35,6 +35,7 @@ type graphqlSchemaTypes struct {
 	busSummaryType     *graphqlgo.Object
 	busMessagesType    *graphqlgo.Object
 	busPeriodicityType *graphqlgo.Object
+	watchSummaryType   *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {
@@ -2577,6 +2578,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	})
 
 	busSummaryType, busMessagesType, busPeriodicityType := buildBusObservabilityTypes()
+	watchSummaryType := buildWatchSummaryType()
 
 	return graphqlSchemaTypes{
 		fieldType:          fieldType,
@@ -2603,6 +2605,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		busSummaryType:     busSummaryType,
 		busMessagesType:    busMessagesType,
 		busPeriodicityType: busPeriodicityType,
+		watchSummaryType:   watchSummaryType,
 	}
 }
 
@@ -2742,6 +2745,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 						return nil, err
 					}
 					return resolveBusPeriodicity(builder, params.Info.RootValue, limit), nil
+				},
+			},
+			"watchSummary": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.watchSummaryType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return resolveWatchSummary(builder, params.Info.RootValue), nil
 				},
 			},
 			"devices": &graphqlgo.Field{

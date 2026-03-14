@@ -360,6 +360,7 @@ type Server struct {
 	invoker        Invoker
 	statusProvider StatusProvider
 	bus            BusObservabilityProvider
+	watch          WatchSummaryProvider
 	semantic       SemanticProvider
 	scheduleWriter ScheduleWriter
 	idempotencyMu  sync.Mutex
@@ -375,6 +376,7 @@ const (
 	toolBusSummaryGetName            = "ebus.v1.bus.summary.get"
 	toolBusMessagesListName          = "ebus.v1.bus.messages.list"
 	toolBusPeriodicityListName       = "ebus.v1.bus.periodicity.list"
+	toolWatchSummaryGetName          = "ebus.v1.watch.summary.get"
 	toolSemanticZonesGetName         = "ebus.v1.semantic.zones.get"
 	toolSemanticCircuitsGetName      = "ebus.v1.semantic.circuits.get"
 	toolSemanticRadioGetName         = "ebus.v1.semantic.radio_devices.get"
@@ -416,6 +418,7 @@ var errSnapshotNotFound = errors.New("snapshot not found")
 
 type staticStatusProvider struct{}
 type staticSemanticProvider struct{}
+type staticWatchSummaryProvider struct{}
 
 func (staticStatusProvider) DaemonStatus() ServiceStatus {
 	return ServiceStatus{
@@ -478,6 +481,10 @@ func (staticSemanticProvider) Schedules() *ScheduleStatus {
 	return nil
 }
 
+func (staticWatchSummaryProvider) Snapshot() WatchSummary {
+	return WatchSummary{}
+}
+
 type idempotencyEntry struct {
 	signature string
 	result    any
@@ -505,6 +512,7 @@ type snapshotState struct {
 	busSummary     *BusSummary
 	busMessages    []BusMessage
 	busPeriodicity []BusPeriodicityEntry
+	watchSummary   *WatchSummary
 	zones          []Zone
 	circuits       []CircuitStatus
 	radio          []RadioDevice
@@ -570,6 +578,22 @@ func busObservabilityTools() []Tool {
 	}
 }
 
+func watchSummaryTools() []Tool {
+	return []Tool{
+		{
+			Name:        toolWatchSummaryGetName,
+			Description: "Get watch-summary surfaces computed from the ShadowCache projection.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+	}
+}
+
 func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("mcp server missing registry: %w", ebuserrors.ErrInvalidPayload)
@@ -579,6 +603,7 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 		registry:       reg,
 		invoker:        invoker,
 		statusProvider: staticStatusProvider{},
+		watch:          staticWatchSummaryProvider{},
 		semantic:       staticSemanticProvider{},
 		idempotency:    make(map[string]idempotencyEntry),
 		snapshots:      make(map[string]snapshotState),
@@ -952,6 +977,28 @@ func (s *Server) registerBusObservabilityTools() {
 	s.tools = tools
 }
 
+func (s *Server) registerWatchSummaryTools() {
+	if s == nil || s.hasToolNamed(toolWatchSummaryGetName) {
+		return
+	}
+
+	insertAt := s.indexOfTool(toolBusPeriodicityListName) + 1
+	if insertAt <= 0 || insertAt > len(s.tools) {
+		insertAt = s.indexOfTool(toolRuntimeStatusGetName) + 1
+	}
+	if insertAt <= 0 || insertAt > len(s.tools) {
+		s.tools = append(s.tools, watchSummaryTools()...)
+		return
+	}
+
+	additions := watchSummaryTools()
+	tools := make([]Tool, 0, len(s.tools)+len(additions))
+	tools = append(tools, s.tools[:insertAt]...)
+	tools = append(tools, additions...)
+	tools = append(tools, s.tools[insertAt:]...)
+	s.tools = tools
+}
+
 func (s *Server) SetStatusProvider(provider StatusProvider) {
 	if s == nil || provider == nil {
 		return
@@ -965,6 +1012,14 @@ func (s *Server) SetBusObservabilityProvider(provider BusObservabilityProvider) 
 	}
 	s.bus = provider
 	s.registerBusObservabilityTools()
+}
+
+func (s *Server) SetWatchSummaryProvider(provider WatchSummaryProvider) {
+	if s == nil || provider == nil {
+		return
+	}
+	s.watch = provider
+	s.registerWatchSummaryTools()
 }
 
 func (s *Server) SetSemanticProvider(provider SemanticProvider) {
@@ -1128,6 +1183,12 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(nil, err, consistency)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotBusPeriodicityList(snapshot, limit), nil, consistency)), false), nil
+	case toolWatchSummaryGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotWatchSummary(snapshot), nil, consistency)), false), nil
 	case toolSemanticZonesGetName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -1559,6 +1620,7 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 	}
 	now := time.Now().UTC()
 	bus := s.snapshotBusObservability(nil)
+	watch := s.snapshotWatchSummary(nil)
 	snapshot := snapshotState{
 		id:             id,
 		createdAt:      now,
@@ -1567,6 +1629,7 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		busSummary:     cloneBusSummary(bus.Summary),
 		busMessages:    cloneBusMessages(bus.Messages),
 		busPeriodicity: cloneBusPeriodicity(bus.Periodicity),
+		watchSummary:   cloneWatchSummary(watch),
 		zones:          s.snapshotZones(nil),
 		circuits:       s.snapshotCircuits(nil),
 		radio:          s.snapshotRadioDevices(nil),
@@ -1674,6 +1737,7 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		busSummary:     cloneBusSummary(snapshot.busSummary),
 		busMessages:    cloneBusMessages(snapshot.busMessages),
 		busPeriodicity: cloneBusPeriodicity(snapshot.busPeriodicity),
+		watchSummary:   cloneWatchSummary(snapshot.watchSummary),
 		zones:          cloneZones(snapshot.zones),
 		circuits:       cloneCircuits(snapshot.circuits),
 		radio:          cloneRadioDevices(snapshot.radio),
@@ -2345,6 +2409,17 @@ func (s *Server) snapshotBusPeriodicityList(snapshot *snapshotState, limit int) 
 	result.Count = len(bus.Periodicity)
 	result.Capacity = len(bus.Periodicity)
 	return result
+}
+
+func (s *Server) snapshotWatchSummary(snapshot *snapshotState) *WatchSummary {
+	if snapshot != nil {
+		return cloneWatchSummary(snapshot.watchSummary)
+	}
+	if s == nil || s.watch == nil {
+		return nil
+	}
+	watchSummary := s.watch.Snapshot()
+	return cloneWatchSummary(&watchSummary)
 }
 
 func (s *Server) snapshotZones(snapshot *snapshotState) []Zone {

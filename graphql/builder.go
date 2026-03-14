@@ -11,6 +11,7 @@ type Builder struct {
 	status   StatusProvider
 	semantic SemanticProvider
 	bus      BusObservabilityProvider
+	watch    WatchSummaryProvider
 	boiler   BoilerConfigWriter
 	schedule ScheduleWriter
 
@@ -26,6 +27,7 @@ func NewBuilder(reg Registry, changes <-chan struct{}) *Builder {
 		status:   staticStatusProvider{},
 		semantic: staticSemanticProvider{},
 		bus:      staticBusObservabilityProvider{},
+		watch:    staticWatchSummaryProvider{},
 	}
 }
 
@@ -176,6 +178,28 @@ func (b *Builder) busObservabilityProvider() BusObservabilityProvider {
 	b.mu.RUnlock()
 	if provider == nil {
 		return staticBusObservabilityProvider{}
+	}
+	return provider
+}
+
+func (b *Builder) SetWatchSummaryProvider(provider WatchSummaryProvider) {
+	if b == nil || provider == nil {
+		return
+	}
+	b.mu.Lock()
+	b.watch = provider
+	b.mu.Unlock()
+}
+
+func (b *Builder) watchSummaryProvider() WatchSummaryProvider {
+	if b == nil {
+		return staticWatchSummaryProvider{}
+	}
+	b.mu.RLock()
+	provider := b.watch
+	b.mu.RUnlock()
+	if provider == nil {
+		return staticWatchSummaryProvider{}
 	}
 	return provider
 }

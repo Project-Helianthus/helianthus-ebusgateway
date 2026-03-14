@@ -108,6 +108,19 @@ class ManifestValidationTests(unittest.TestCase):
                 verifier.load_and_validate_manifest(manifest_path, "P03")
             self.assertIn("read-only", str(ctx.exception))
 
+    def test_manifest_rejects_prefix_bypass_method_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = pathlib.Path(temp_dir) / "manifest.json"
+            payload = verifier.load_json(
+                SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json"
+            )
+            payload["canaries"][0]["method"] = "get_then_set_target"
+            write_json(manifest_path, payload)
+
+            with self.assertRaises(ValueError) as ctx:
+                verifier.load_and_validate_manifest(manifest_path, "P03")
+            self.assertIn("read-only", str(ctx.exception))
+
 
 class RetryClassificationTests(unittest.TestCase):
     def test_inconclusive_after_three_retries(self) -> None:

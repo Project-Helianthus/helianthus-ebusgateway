@@ -101,7 +101,7 @@ if [[ ! "${proof_sample_interval_sec}" =~ ^[0-9]+$ ]] || [[ "${proof_sample_inte
   fi
 fi
 
-if [[ "${proof_sample_interval_sec}" -ge "${timeout_sec}" ]]; then
+if [[ "${proof_sample_interval_sec}" -gt "${timeout_sec}" ]]; then
   canary_require_interval_phase=0
 fi
 

@@ -21,7 +21,7 @@ MIN_FAMILY_COUNTS = {"B524": 2, "B509": 2}
 MAX_RETRIES = 3
 CANARY_PHASE_PREFIX = "canary_phase_"
 MANIFEST_SCHEMA = "p03_canary_manifest_v1"
-READ_ONLY_METHOD_PREFIXES = ("get_", "read_", "list_", "describe_")
+P03_ALLOWED_METHODS = {"get_register", "get_ext_register"}
 
 
 def utc_now() -> str:
@@ -104,7 +104,7 @@ def is_start_phase(phase: str) -> bool:
 
 def is_read_only_canary_method(method: str) -> bool:
     normalized = method.strip().lower()
-    return any(normalized.startswith(prefix) for prefix in READ_ONLY_METHOD_PREFIXES)
+    return normalized in P03_ALLOWED_METHODS
 
 
 def normalize_canary(raw: Any, index: int) -> CanarySpec:

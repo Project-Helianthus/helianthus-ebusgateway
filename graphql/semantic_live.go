@@ -338,6 +338,17 @@ func (provider *LiveSemanticProvider) SetEnergyPassiveStateProvider(providerFn f
 	provider.mu.Unlock()
 }
 
+func (provider *LiveSemanticProvider) RefreshEnergyFreshnessMetrics(now time.Time, passiveState string) {
+	if provider == nil || provider.energyMerge == nil {
+		return
+	}
+	state := strings.TrimSpace(passiveState)
+	if state == "" {
+		state = provider.currentEnergyPassiveState()
+	}
+	provider.energyMerge.RefreshFreshnessMetricsWithContext(now, state)
+}
+
 func (provider *LiveSemanticProvider) currentEnergyPassiveState() string {
 	if provider == nil {
 		return ""

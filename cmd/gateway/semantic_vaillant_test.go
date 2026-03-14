@@ -2835,7 +2835,7 @@ func intPtr(value int) *int {
 	return &v
 }
 
-func TestRefreshEnergy_NilController(t *testing.T) {
+func TestRefreshEnergy_NilControllerKeepsNeverSeenShape(t *testing.T) {
 	t.Parallel()
 
 	provider := graphql.NewLiveSemanticProvider()
@@ -2846,12 +2846,16 @@ func TestRefreshEnergy_NilController(t *testing.T) {
 
 	poller.refreshEnergy(context.Background())
 
-	if totals := provider.EnergyTotals(); totals != nil {
-		t.Fatalf("EnergyTotals() = %#v; want nil for nil controller", totals)
+	totals := provider.EnergyTotals()
+	if totals == nil {
+		t.Fatal("EnergyTotals() = nil; want visible no-data shape for nil controller path")
+	}
+	if got := totals.Gas.DHW.TodayMeta.FreshnessState; got != graphql.EnergyFreshnessStateNeverSeen {
+		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want never_seen", got)
 	}
 }
 
-func TestRefreshEnergy_NoRegulator(t *testing.T) {
+func TestRefreshEnergy_NoRegulatorKeepsNeverSeenShape(t *testing.T) {
 	t.Parallel()
 
 	provider := graphql.NewLiveSemanticProvider()
@@ -2863,8 +2867,12 @@ func TestRefreshEnergy_NoRegulator(t *testing.T) {
 
 	poller.refreshEnergy(context.Background())
 
-	if totals := provider.EnergyTotals(); totals != nil {
-		t.Fatalf("EnergyTotals() = %#v; want nil without regulator", totals)
+	totals := provider.EnergyTotals()
+	if totals == nil {
+		t.Fatal("EnergyTotals() = nil; want visible no-data shape without regulator")
+	}
+	if got := totals.Gas.DHW.TodayMeta.FreshnessState; got != graphql.EnergyFreshnessStateNeverSeen {
+		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want never_seen", got)
 	}
 }
 

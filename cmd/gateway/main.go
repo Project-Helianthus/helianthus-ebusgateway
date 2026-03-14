@@ -117,6 +117,9 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			snapshot := busObservability.Snapshot()
 			return snapshot.Summary.Status.Capability.PassiveState
 		})
+		busObservability.SetEnergyFreshnessMetricsRefresher(func(now time.Time, passiveState string) {
+			semanticRuntime.Provider().RefreshEnergyFreshnessMetrics(now, passiveState)
+		})
 	}
 
 	var semanticBarrier chan struct{}

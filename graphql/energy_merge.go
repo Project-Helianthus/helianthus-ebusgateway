@@ -258,11 +258,21 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 
 	s.reconcileBroadcastStatesLocked(now, passiveState)
 
-	if len(s.points) == 0 {
-		// Preserve historical behavior: empty merge store reports nil totals.
-		return nil
-	}
 	return totals
+}
+
+// RefreshFreshnessMetricsWithContext recomputes freshness selector gauges/counters
+// for the current clock/passive state without requiring a concurrent energy read/apply.
+func (s *energyMergeStore) RefreshFreshnessMetricsWithContext(now time.Time, passiveState string) {
+	if s == nil {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reconcileBroadcastStatesLocked(now, passiveState)
 }
 
 func energyPointMetaFromDataPoint(point *energyDataPoint, state EnergyFreshnessState, now time.Time) EnergyPointMeta {

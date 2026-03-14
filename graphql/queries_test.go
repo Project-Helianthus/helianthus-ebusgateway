@@ -1471,6 +1471,61 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	})
 
 	t.Run("energy_totals_root", func(t *testing.T) {
+		request := graphqlclient.NewRequest(`
+			query {
+				energyTotals {
+					gas {
+						dhw {
+							today
+							todayMeta { freshnessState provenance stale }
+							yearlyMeta { freshnessState provenance stale }
+						}
+					}
+				}
+			}
+		`)
+
+		var response struct {
+			EnergyTotals *struct {
+				Gas struct {
+					DHW struct {
+						Today     float64 `json:"today"`
+						TodayMeta struct {
+							FreshnessState string `json:"freshnessState"`
+							Provenance     string `json:"provenance"`
+							Stale          bool   `json:"stale"`
+						} `json:"todayMeta"`
+						YearlyMeta []struct {
+							FreshnessState string `json:"freshnessState"`
+							Provenance     string `json:"provenance"`
+							Stale          bool   `json:"stale"`
+						} `json:"yearlyMeta"`
+					} `json:"dhw"`
+				} `json:"gas"`
+			} `json:"energyTotals"`
+		}
+
+		if err := client.Run(context.Background(), request, &response); err != nil {
+			t.Fatalf("energyTotals no-data root query error = %v", err)
+		}
+		if response.EnergyTotals == nil {
+			t.Fatal("energyTotals = nil; want visible no-data object")
+		}
+		if response.EnergyTotals.Gas.DHW.Today != 0 {
+			t.Fatalf("gas.dhw.today = %v; want 0 when no values were seen", response.EnergyTotals.Gas.DHW.Today)
+		}
+		if response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState != "never_seen" {
+			t.Fatalf("gas.dhw.todayMeta.freshnessState = %q; want never_seen", response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState)
+		}
+		if response.EnergyTotals.Gas.DHW.TodayMeta.Provenance != "none" {
+			t.Fatalf("gas.dhw.todayMeta.provenance = %q; want none", response.EnergyTotals.Gas.DHW.TodayMeta.Provenance)
+		}
+		if len(response.EnergyTotals.Gas.DHW.YearlyMeta) != 2 {
+			t.Fatalf("gas.dhw.yearlyMeta len = %d; want 2", len(response.EnergyTotals.Gas.DHW.YearlyMeta))
+		}
+	})
+
+	t.Run("energy_totals_root_with_values", func(t *testing.T) {
 		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
 			Channel: "gas",
 			Usage:   "hot_water",

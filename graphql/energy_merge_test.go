@@ -240,10 +240,28 @@ func TestEnergyMerge_SnapshotBuildsMonthlySeries(t *testing.T) {
 	}
 }
 
-func TestEnergyMerge_SnapshotReturnsNilWhenEmpty(t *testing.T) {
+func TestEnergyMerge_SnapshotReturnsNeverSeenShapeWhenEmpty(t *testing.T) {
 	store := newEnergyMergeStore()
-	if snap := store.Snapshot(); snap != nil {
-		t.Fatalf("Snapshot() = %v; want nil for empty store", snap)
+	snap := store.SnapshotWithContext(t0, "")
+	if snap == nil {
+		t.Fatal("SnapshotWithContext() = nil; want empty energy shape")
+	}
+	if got := snap.Gas.DHW.TodayMeta.FreshnessState; got != EnergyFreshnessStateNeverSeen {
+		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want never_seen", got)
+	}
+	if got := snap.Gas.DHW.TodayMeta.Provenance; got != EnergyProvenanceNone {
+		t.Fatalf("Gas.DHW.TodayMeta.Provenance = %q; want none", got)
+	}
+	if len(snap.Gas.DHW.YearlyMeta) != 2 {
+		t.Fatalf("Gas.DHW.YearlyMeta len = %d; want 2 for previous/current selectors", len(snap.Gas.DHW.YearlyMeta))
+	}
+
+	unavailable := store.SnapshotWithContext(t0, "unavailable")
+	if unavailable == nil {
+		t.Fatal("SnapshotWithContext(unavailable) = nil; want empty energy shape")
+	}
+	if got := unavailable.Gas.DHW.TodayMeta.FreshnessState; got != EnergyFreshnessStateUnavailable {
+		t.Fatalf("Gas.DHW.TodayMeta.FreshnessState = %q; want unavailable", got)
 	}
 }
 
@@ -495,6 +513,30 @@ func TestApplyEnergyFromRegister_MetadataFresh(t *testing.T) {
 	}
 	if totals.Gas.Climate.TodayMeta.Stale {
 		t.Fatal("register stale flag = true; want false")
+	}
+}
+
+func TestLiveSemanticProvider_EnergyTotalsVisibleWhenNeverSeen(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+
+	totals := provider.EnergyTotals()
+	if totals == nil {
+		t.Fatal("EnergyTotals() = nil; want never-seen energy shape")
+	}
+	if got := totals.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateNeverSeen {
+		t.Fatalf("Gas.Climate.TodayMeta.FreshnessState = %q; want never_seen", got)
+	}
+	if got := totals.Gas.Climate.TodayMeta.Provenance; got != EnergyProvenanceNone {
+		t.Fatalf("Gas.Climate.TodayMeta.Provenance = %q; want none", got)
+	}
+
+	provider.SetEnergyPassiveState("unavailable")
+	unavailable := provider.EnergyTotals()
+	if unavailable == nil {
+		t.Fatal("EnergyTotals() unavailable = nil; want visible energy shape")
+	}
+	if got := unavailable.Gas.Climate.TodayMeta.FreshnessState; got != EnergyFreshnessStateUnavailable {
+		t.Fatalf("Gas.Climate.TodayMeta.FreshnessState = %q; want unavailable", got)
 	}
 }
 

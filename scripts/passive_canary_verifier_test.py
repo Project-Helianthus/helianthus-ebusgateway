@@ -95,6 +95,19 @@ class ManifestValidationTests(unittest.TestCase):
                 verifier.load_and_validate_manifest(manifest_path, "P03")
             self.assertIn("B509", str(ctx.exception))
 
+    def test_manifest_rejects_non_read_methods(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = pathlib.Path(temp_dir) / "manifest.json"
+            payload = verifier.load_json(
+                SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json"
+            )
+            payload["canaries"][0]["method"] = "set_target"
+            write_json(manifest_path, payload)
+
+            with self.assertRaises(ValueError) as ctx:
+                verifier.load_and_validate_manifest(manifest_path, "P03")
+            self.assertIn("read-only", str(ctx.exception))
+
 
 class RetryClassificationTests(unittest.TestCase):
     def test_inconclusive_after_three_retries(self) -> None:
@@ -112,7 +125,7 @@ class RetryClassificationTests(unittest.TestCase):
             results = verifier.verify_phase(
                 canaries=canaries[:1],
                 graphql_url="http://unused/graphql",
-                phase="sample_0001",
+                phase="start",
                 run_id="run-1",
                 retries=3,
                 timeout_sec=0.01,
@@ -151,6 +164,65 @@ class RetryClassificationTests(unittest.TestCase):
         entry = results["results"][0]
         self.assertEqual(entry["status"], "mismatch")
         self.assertEqual(results["summary"]["mismatch"], 1)
+
+
+class BaselineSeedingPhaseTests(unittest.TestCase):
+    def test_start_phase_seeds_baseline(self) -> None:
+        _, canaries = verifier.load_and_validate_manifest(
+            SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json",
+            "P03",
+        )
+        original_invoke = verifier.invoke_canary
+        verifier.invoke_canary = lambda *_args, **_kwargs: "BEEF"
+        baseline_map = {}
+        try:
+            results = verifier.verify_phase(
+                canaries=canaries[:1],
+                graphql_url="http://unused/graphql",
+                phase="start",
+                run_id="run-start",
+                retries=3,
+                timeout_sec=0.01,
+                baseline_map=baseline_map,
+            )
+        finally:
+            verifier.invoke_canary = original_invoke
+
+        canary_id = canaries[0].canary_id
+        self.assertEqual(baseline_map[canary_id], "BEEF")
+        self.assertEqual(results["results"][0]["status"], "pass")
+
+    def test_non_start_phase_with_missing_baseline_is_inconclusive_and_not_seeded(self) -> None:
+        _, canaries = verifier.load_and_validate_manifest(
+            SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json",
+            "P03",
+        )
+        original_invoke = verifier.invoke_canary
+
+        def fail_if_called(*_args, **_kwargs):
+            raise AssertionError("invoke_canary should not run without baseline in non-start phases")
+
+        verifier.invoke_canary = fail_if_called
+        baseline_map = {}
+        try:
+            results = verifier.verify_phase(
+                canaries=canaries[:1],
+                graphql_url="http://unused/graphql",
+                phase="sample_0001",
+                run_id="run-sample",
+                retries=3,
+                timeout_sec=0.01,
+                baseline_map=baseline_map,
+            )
+        finally:
+            verifier.invoke_canary = original_invoke
+
+        self.assertEqual(baseline_map, {})
+        self.assertEqual(results["summary"]["inconclusive"], 1)
+        entry = results["results"][0]
+        self.assertEqual(entry["status"], "inconclusive")
+        self.assertEqual(entry["attempts_used"], 0)
+        self.assertIn("missing baseline", entry["reason"])
 
 
 class IntervalSchedulingTests(unittest.TestCase):
@@ -209,6 +281,30 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 verifier.summarize_run(proof_dir, "run-1")
             self.assertIn("interval", str(ctx.exception))
+
+    def test_summary_allows_missing_interval_when_not_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_json(
+                proof_dir / "canary_phase_start.json",
+                {
+                    "run_id": "run-1",
+                    "phase": "start",
+                    "results": [{"id": "a", "status": "pass"}],
+                },
+            )
+            write_json(
+                proof_dir / "canary_phase_end.json",
+                {
+                    "run_id": "run-1",
+                    "phase": "end",
+                    "results": [{"id": "a", "status": "pass"}],
+                },
+            )
+
+            summary = verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertEqual(summary["interval_phase_count"], 0)
+            self.assertFalse(summary["interval_phase_required"])
 
 
 if __name__ == "__main__":

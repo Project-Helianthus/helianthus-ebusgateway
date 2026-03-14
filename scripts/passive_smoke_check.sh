@@ -85,6 +85,7 @@ canary_summary_path="${proof_dir}/canary_summary.json"
 canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
 canary_retries=3
 canary_enabled=0
+canary_require_interval_phase=1
 canary_run_id="p03-$(date +%s)-$$"
 
 deadline=$(( $(date +%s) + timeout_sec ))
@@ -98,6 +99,10 @@ if [[ ! "${proof_sample_interval_sec}" =~ ^[0-9]+$ ]] || [[ "${proof_sample_inte
   else
     proof_sample_interval_sec=5
   fi
+fi
+
+if [[ "${proof_sample_interval_sec}" -ge "${timeout_sec}" ]]; then
+  canary_require_interval_phase=0
 fi
 
 if [[ "${gw15_proof_mode}" == "1" ]]; then
@@ -386,9 +391,11 @@ run_canary_phase() {
 }
 
 build_canary_summary() {
+  local require_interval_phase="${1:-1}"
   python3 "${canary_verifier_script}" summarize \
     --proof-dir "${proof_dir}" \
     --run-id "${canary_run_id}" \
+    --require-interval-phase "${require_interval_phase}" \
     --output "${canary_summary_path}"
 }
 
@@ -471,7 +478,7 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
       echo "proof mode: failed to run end canary verification" >&2
       exit 1
     fi
-    if ! build_canary_summary; then
+    if ! build_canary_summary "${canary_require_interval_phase}"; then
       echo "proof mode: failed to build canary summary" >&2
       exit 1
     fi

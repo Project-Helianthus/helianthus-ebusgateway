@@ -21,6 +21,7 @@ MIN_FAMILY_COUNTS = {"B524": 2, "B509": 2}
 MAX_RETRIES = 3
 CANARY_PHASE_PREFIX = "canary_phase_"
 MANIFEST_SCHEMA = "p03_canary_manifest_v1"
+READ_ONLY_METHOD_PREFIXES = ("get_", "read_", "list_", "describe_")
 
 
 def utc_now() -> str:
@@ -97,6 +98,15 @@ class CanarySpec:
     expected_hex: str | None
 
 
+def is_start_phase(phase: str) -> bool:
+    return phase.strip().lower() == "start"
+
+
+def is_read_only_canary_method(method: str) -> bool:
+    normalized = method.strip().lower()
+    return any(normalized.startswith(prefix) for prefix in READ_ONLY_METHOD_PREFIXES)
+
+
 def normalize_canary(raw: Any, index: int) -> CanarySpec:
     if not isinstance(raw, dict):
         raise ValueError(f"canary[{index}] must be object")
@@ -113,6 +123,10 @@ def normalize_canary(raw: Any, index: int) -> CanarySpec:
     method = str(raw.get("method", "")).strip()
     if plane == "" or method == "":
         raise ValueError(f"canary[{index}] missing plane/method")
+    if not is_read_only_canary_method(method):
+        raise ValueError(
+            f"canary[{index}] method {method!r} is not read-only; only read methods are allowed"
+        )
     params = raw.get("params")
     if not isinstance(params, dict):
         raise ValueError(f"canary[{index}] missing params object")
@@ -259,6 +273,7 @@ def verify_phase(
     baseline_map: Dict[str, str],
 ) -> Dict[str, Any]:
     retries = normalize_retries(retries)
+    allow_baseline_seed = is_start_phase(phase)
     results: List[Dict[str, Any]] = []
     for canary in canaries:
         status = "inconclusive"
@@ -266,6 +281,23 @@ def verify_phase(
         attempts_used = 0
         value_hex = None
         baseline_hex = baseline_map.get(canary.canary_id)
+        if baseline_hex is None and not allow_baseline_seed:
+            reason = f"missing baseline for phase {phase!r}; baseline can only be seeded during start"
+            results.append(
+                {
+                    "id": canary.canary_id,
+                    "family": canary.family,
+                    "status": status,
+                    "conclusive": False,
+                    "attempts_used": attempts_used,
+                    "max_retries": retries,
+                    "value_hex": value_hex,
+                    "baseline_hex": baseline_hex,
+                    "expected_hex": canary.expected_hex,
+                    "reason": reason,
+                }
+            )
+            continue
 
         for attempt in range(1, retries + 1):
             attempts_used = attempt
@@ -273,7 +305,7 @@ def verify_phase(
                 candidate_hex = invoke_canary(graphql_url, canary, timeout_sec)
                 value_hex = normalize_hex(candidate_hex)
                 status, reason = classify_canary_value(canary, value_hex, baseline_hex)
-                if baseline_hex is None:
+                if baseline_hex is None and allow_baseline_seed:
                     baseline_map[canary.canary_id] = value_hex
                     baseline_hex = value_hex
                 break
@@ -338,6 +370,7 @@ def collect_phase_files_for_run(proof_dir: pathlib.Path, run_id: str) -> Tuple[L
 def summarize_run(
     proof_dir: pathlib.Path,
     run_id: str,
+    require_interval_phase: bool = True,
 ) -> Dict[str, Any]:
     phase_files, stale_ignored = collect_phase_files_for_run(proof_dir, run_id)
     if not phase_files:
@@ -379,7 +412,7 @@ def summarize_run(
 
     if "start" not in phases_seen or "end" not in phases_seen:
         raise ValueError("missing current-run start/end canary artifacts (stale artifact rejection)")
-    if interval_phase_count < 1:
+    if require_interval_phase and interval_phase_count < 1:
         raise ValueError("missing current-run interval canary artifacts (no elapsed sample phase)")
 
     return {
@@ -393,6 +426,7 @@ def summarize_run(
         "phase_files_stale_ignored": stale_ignored,
         "phases_seen": sorted(phases_seen),
         "interval_phase_count": interval_phase_count,
+        "interval_phase_required": require_interval_phase,
         "totals": totals,
         "per_canary": per_canary,
         "overall_conclusive_count": totals["conclusive"],
@@ -445,7 +479,12 @@ def verify_phase_command(args: argparse.Namespace) -> int:
 
 
 def summarize_command(args: argparse.Namespace) -> int:
-    summary = summarize_run(pathlib.Path(args.proof_dir), args.run_id)
+    require_interval_phase = str(args.require_interval_phase).strip() != "0"
+    summary = summarize_run(
+        pathlib.Path(args.proof_dir),
+        args.run_id,
+        require_interval_phase=require_interval_phase,
+    )
     write_json(pathlib.Path(args.output), summary)
     return 0
 
@@ -475,6 +514,7 @@ def build_parser() -> argparse.ArgumentParser:
     summarize.add_argument("--proof-dir", required=True)
     summarize.add_argument("--run-id", required=True)
     summarize.add_argument("--output", required=True)
+    summarize.add_argument("--require-interval-phase", choices=("0", "1"), default="1")
     summarize.set_defaults(func=summarize_command)
     return parser
 

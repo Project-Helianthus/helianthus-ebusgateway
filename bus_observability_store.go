@@ -453,7 +453,8 @@ func (store *BusObservabilityStore) observeWatchReadLocked(event WatchEfficiency
 	}
 
 	series := store.ensureWatchEfficiencyBucketLocked(bucket)
-	if event.Stats.ActiveFetchSucceeded {
+	eligibleForMiss := watchEfficiencyEligibleForMiss(event.Descriptor, store.cfg.ObserveFirstFlags, event.MaxAge)
+	if event.Stats.ActiveFetchAttempted && event.Stats.ActiveFetchSucceeded && eligibleForMiss {
 		series.saved.add(event.Stats.ActiveFetchDuration, observedAt)
 	}
 	if event.Stats.ServedFromShadow {
@@ -464,7 +465,7 @@ func (store *BusObservabilityStore) observeWatchReadLocked(event WatchEfficiency
 	if !event.Stats.ActiveFetchAttempted {
 		return
 	}
-	if !watchEfficiencyEligibleForMiss(event.Descriptor, store.cfg.ObserveFirstFlags, event.MaxAge) {
+	if !eligibleForMiss {
 		return
 	}
 	limitation := watchEfficiencyTransportLimitation(store.cfg)
@@ -1665,11 +1666,11 @@ func watchEfficiencyEligibleForMiss(descriptor WatchDescriptor, flags ObserveFir
 }
 
 func watchEfficiencyTransportLimitation(cfg Config) string {
-	if !cfg.BroadcastListen {
-		return "broadcast_unavailable"
-	}
 	if !PassiveTransportSupported(cfg) {
 		return "transport_unavailable"
+	}
+	if !cfg.BroadcastListen {
+		return "broadcast_unavailable"
 	}
 	return ""
 }

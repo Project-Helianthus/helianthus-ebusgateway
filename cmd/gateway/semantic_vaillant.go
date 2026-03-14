@@ -5087,7 +5087,7 @@ func (p *vaillantSemanticPoller) resolveSemanticReadWatchRuntime(
 	}
 
 	descriptor := fallback(key)
-	hasDescriptor := true
+	hasDescriptor := false
 	sources := defaultSources
 	if sourceResolver == nil {
 		sourceResolver = semanticReadActivationSources
@@ -5105,7 +5105,7 @@ func (p *vaillantSemanticPoller) resolveSemanticReadWatchRuntime(
 	if err != nil {
 		descriptor = fallback(key)
 		maxAge, _ = descriptor.EffectiveFreshnessTTL()
-		hasDescriptor = true
+		hasDescriptor = false
 	}
 	if maxAge < 0 {
 		maxAge = 0

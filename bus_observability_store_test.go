@@ -567,6 +567,40 @@ func TestBusObservabilityStoreExportsWatchEfficiencyMetrics(t *testing.T) {
 	}
 }
 
+func TestBusObservabilityStoreExcludesMaxAgeZeroReadsFromSavedDurationSamples(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ObserveFirstEnabled = true
+	cfg.PassiveStateDirectApply = true
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportEbusdTCP
+
+	store := NewBusObservabilityStore(cfg)
+	base := time.Unix(1700000350, 0).UTC()
+	store.now = func() time.Time { return base.Add(4 * time.Second) }
+
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+	descriptor := watchEfficiencyStateFastDescriptor(key)
+	for index := 0; index < 5; index++ {
+		store.ObserveWatchRead(WatchEfficiencyReadEvent{
+			Key:           key,
+			Descriptor:    descriptor,
+			HasDescriptor: true,
+			MaxAge:        0,
+			Stats: SemanticReadExecutionStats{
+				ActiveFetchAttempted: true,
+				ActiveFetchSucceeded: true,
+				ActiveFetchDuration:  time.Second,
+			},
+			ObservedAt: base.Add(time.Duration(index) * time.Second),
+		})
+	}
+
+	metrics := store.RenderPrometheus()
+	if strings.Contains(metrics, `active_read_saved_seconds{family="B524",freshness_profile="state_fast"}`) {
+		t.Fatalf("RenderPrometheus unexpectedly included maxAge=0 reads in active_read_saved_seconds:\n%s", metrics)
+	}
+}
+
 func TestBusObservabilityStoreOmitsStaleActiveReadSavedSeconds(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ObserveFirstEnabled = true
@@ -618,6 +652,38 @@ func TestBusObservabilityStoreExportsWatchEfficiencyAmbiguousReason(t *testing.T
 	metrics := store.RenderPrometheus()
 	if !strings.Contains(metrics, `ambiguous_total{family="B524",reason="missing_runtime_descriptor"} 1`) {
 		t.Fatalf("RenderPrometheus missing ambiguous_total sample for missing descriptor:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreTransportLimitationPrefersTransportUnavailableOverBroadcast(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ObserveFirstEnabled = true
+	cfg.PassiveStateDirectApply = true
+	cfg.BroadcastListen = false
+	cfg.TransportConfig.Protocol = TransportEbusdTCP
+
+	store := NewBusObservabilityStore(cfg)
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+	descriptor := watchEfficiencyStateFastDescriptor(key)
+	store.ObserveWatchRead(WatchEfficiencyReadEvent{
+		Key:           key,
+		Descriptor:    descriptor,
+		HasDescriptor: true,
+		MaxAge:        10 * time.Second,
+		Stats: SemanticReadExecutionStats{
+			ActiveFetchAttempted: true,
+			ActiveFetchSucceeded: true,
+			ActiveFetchDuration:  time.Second,
+		},
+		ObservedAt: time.Unix(1700000525, 0).UTC(),
+	})
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `missed_due_to_transport_limitations_total{family="B524",freshness_profile="state_fast",limitation="transport_unavailable"} 1`) {
+		t.Fatalf("RenderPrometheus missing transport_unavailable miss classification on dual-failure config:\n%s", metrics)
+	}
+	if strings.Contains(metrics, `missed_due_to_transport_limitations_total{family="B524",freshness_profile="state_fast",limitation="broadcast_unavailable"} 1`) {
+		t.Fatalf("RenderPrometheus incorrectly preferred broadcast_unavailable over transport_unavailable on dual-failure config:\n%s", metrics)
 	}
 }
 

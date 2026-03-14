@@ -1989,6 +1989,39 @@ func TestPrepareSemanticReadWatch_UsesObserverDescriptorFreshness(t *testing.T) 
 	}
 }
 
+func TestPrepareSemanticReadWatchRuntime_MissingDescriptorB524DiscoveryEmitsAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	cfg := ebusgateway.DefaultConfig()
+	store := ebusgateway.NewBusObservabilityStore(cfg)
+	poller := &vaillantSemanticPoller{
+		watchEfficiency: store,
+		nowFn: func() time.Time {
+			return time.Unix(1700000700, 0).UTC()
+		},
+	}
+
+	key := ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, vaillantGroupZones, 0x01, zoneRegIndex)
+	runtime := poller.prepareSemanticReadWatchRuntime(key)
+	if runtime.hasDescriptor {
+		t.Fatal("runtime.hasDescriptor = true; want false when runtime observation descriptor is missing")
+	}
+
+	poller.emitWatchReadEfficiency(runtime, runtime.maxAge, ebusgateway.SemanticReadExecutionStats{
+		ActiveFetchAttempted: true,
+		ActiveFetchSucceeded: true,
+		ActiveFetchDuration:  time.Second,
+	})
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `ambiguous_total{family="B524",reason="missing_runtime_descriptor"} 1`) {
+		t.Fatalf("RenderPrometheus missing missing_runtime_descriptor ambiguity for descriptor-less B524 discovery key:\n%s", metrics)
+	}
+	if strings.Contains(metrics, `active_read_saved_seconds{family="B524"`) {
+		t.Fatalf("RenderPrometheus unexpectedly bucketed descriptor-less B524 discovery read:\n%s", metrics)
+	}
+}
+
 func TestReadB509Value_EmitsWatchEfficiencyShadowHit(t *testing.T) {
 	t.Parallel()
 

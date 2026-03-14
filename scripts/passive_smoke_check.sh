@@ -77,6 +77,15 @@ proof_dir="${log_dir}/proof_artifacts"
 proof_samples_dir="${proof_dir}/samples"
 proof_sample_index=0
 proof_next_sample_epoch=0
+canary_verifier_script="${SCRIPT_DIR}/passive_canary_verifier.py"
+canary_manifest_path="${PASSIVE_P03_CANARY_MANIFEST:-${REPO_ROOT}/testdata/passive_proof/p03_canary_manifest.json}"
+canary_manifest_validation_path="${proof_dir}/canary_manifest_validation.json"
+canary_baseline_path="${proof_dir}/canary_baseline.json"
+canary_summary_path="${proof_dir}/canary_summary.json"
+canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
+canary_retries=3
+canary_enabled=0
+canary_run_id="p03-$(date +%s)-$$"
 
 deadline=$(( $(date +%s) + timeout_sec ))
 last_metrics=""
@@ -114,6 +123,31 @@ fi
 if [[ "${proof_artifacts_enabled}" == "1" ]]; then
   rm -rf "${proof_dir}"
   mkdir -p "${proof_samples_dir}"
+fi
+
+if [[ ! "${canary_retries_raw}" =~ ^[0-9]+$ ]]; then
+  canary_retries=3
+elif [[ "${canary_retries_raw}" -lt 1 ]]; then
+  canary_retries=1
+elif [[ "${canary_retries_raw}" -gt 3 ]]; then
+  canary_retries=3
+else
+  canary_retries="${canary_retries_raw}"
+fi
+
+if [[ "${gw15_proof_mode}" == "1" ]]; then
+  canary_enabled=1
+  if [[ ! -f "${canary_verifier_script}" ]]; then
+    echo "proof mode: missing canary verifier script: ${canary_verifier_script}" >&2
+    exit 2
+  fi
+  if ! python3 "${canary_verifier_script}" validate-manifest \
+      --manifest "${canary_manifest_path}" \
+      --require-case-id "${case_id}" \
+      > "${canary_manifest_validation_path}"; then
+    echo "proof mode: invalid canary manifest: ${canary_manifest_path}" >&2
+    exit 2
+  fi
 fi
 
 graphql_bus_watch_query='{"query":"{ busSummary { status { transportClass featureFlags { observeFirstEnabled passiveStateDirectApply passiveConfigDirectApply externalWritePolicy normalizations } capability { passiveSupported passiveAvailable passiveState passiveReason endpointState tapConnected } warmup { state blocker elapsedSeconds completedTransactions requiredTransactions completionMode } degraded { active reasons } } } watchSummary { inventory { totalEntries pinnedEntries evictableEntries staticPinnedFootprint writeConfirmPinnedActive } activationCounts { catalogDescriptors activeKeys sourceClasses { class count } } directApplyEligibilityClasses { class count } degraded { active shadowingEnabled pinnedBudgetDegraded compactorDegraded reasons } } }"}'
@@ -336,6 +370,28 @@ capture_proof_snapshot() {
   return 0
 }
 
+run_canary_phase() {
+  local phase="$1"
+  local output_path="${proof_dir}/canary_phase_${phase}.json"
+  python3 "${canary_verifier_script}" verify-phase \
+    --manifest "${canary_manifest_path}" \
+    --require-case-id "${case_id}" \
+    --graphql-url "${graphql_url}" \
+    --phase "${phase}" \
+    --run-id "${canary_run_id}" \
+    --baseline "${canary_baseline_path}" \
+    --output "${output_path}" \
+    --retries "${canary_retries}" \
+    --timeout-sec 8
+}
+
+build_canary_summary() {
+  python3 "${canary_verifier_script}" summarize \
+    --proof-dir "${proof_dir}" \
+    --run-id "${canary_run_id}" \
+    --output "${canary_summary_path}"
+}
+
 if [[ "${proof_artifacts_enabled}" == "1" ]]; then
   start_captured=0
   for _ in $(seq 1 5); do
@@ -350,6 +406,12 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     exit 1
   fi
   proof_next_sample_epoch="$(date +%s)"
+  if [[ "${canary_enabled}" == "1" ]]; then
+    if ! run_canary_phase "start"; then
+      echo "proof mode: failed to run start canary verification" >&2
+      exit 1
+    fi
+  fi
 fi
 
 while [[ "$(date +%s)" -lt "${deadline}" ]]; do
@@ -365,7 +427,14 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
       if [[ "${now_epoch}" -ge "${proof_next_sample_epoch}" ]]; then
         proof_sample_index=$((proof_sample_index + 1))
         sample_prefix="${proof_samples_dir}/sample_$(printf '%04d' "${proof_sample_index}")"
+        sample_phase="sample_$(printf '%04d' "${proof_sample_index}")"
         capture_proof_snapshot "${sample_prefix}" "${metrics}" 0
+        if [[ "${canary_enabled}" == "1" ]]; then
+          if ! run_canary_phase "${sample_phase}"; then
+            echo "proof mode: failed to run interval canary verification (${sample_phase})" >&2
+            exit 1
+          fi
+        fi
         proof_next_sample_epoch=$((now_epoch + proof_sample_interval_sec))
       fi
     fi
@@ -396,6 +465,16 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
   if [[ "${end_captured}" != "1" ]]; then
     echo "proof mode: failed to capture required end artifacts" >&2
     exit 1
+  fi
+  if [[ "${canary_enabled}" == "1" ]]; then
+    if ! run_canary_phase "end"; then
+      echo "proof mode: failed to run end canary verification" >&2
+      exit 1
+    fi
+    if ! build_canary_summary; then
+      echo "proof mode: failed to build canary summary" >&2
+      exit 1
+    fi
   fi
 fi
 

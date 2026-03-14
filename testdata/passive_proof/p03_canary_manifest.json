@@ -1,0 +1,82 @@
+{
+  "schema": "p03_canary_manifest_v1",
+  "case_id": "P03",
+  "description": "Fixed active direct-read canaries for proof-mode P03 runs.",
+  "canaries": [
+    {
+      "id": "b524_g00_i00_a5c00",
+      "family": "B524",
+      "address": 21,
+      "plane": "system",
+      "method": "get_ext_register",
+      "params": {
+        "source": 16,
+        "opcode": 2,
+        "group": 0,
+        "instance": 0,
+        "addr": 23552
+      }
+    },
+    {
+      "id": "b524_g00_i00_a5e00",
+      "family": "B524",
+      "address": 21,
+      "plane": "system",
+      "method": "get_ext_register",
+      "params": {
+        "source": 16,
+        "opcode": 2,
+        "group": 0,
+        "instance": 0,
+        "addr": 24064
+      }
+    },
+    {
+      "id": "b524_g00_i00_a6200",
+      "family": "B524",
+      "address": 21,
+      "plane": "system",
+      "method": "get_ext_register",
+      "params": {
+        "source": 16,
+        "opcode": 2,
+        "group": 0,
+        "instance": 0,
+        "addr": 25088
+      }
+    },
+    {
+      "id": "b509_a0200",
+      "family": "B509",
+      "address": 8,
+      "plane": "system",
+      "method": "get_register",
+      "params": {
+        "source": 16,
+        "addr": 512
+      }
+    },
+    {
+      "id": "b509_a1800",
+      "family": "B509",
+      "address": 8,
+      "plane": "system",
+      "method": "get_register",
+      "params": {
+        "source": 16,
+        "addr": 6144
+      }
+    },
+    {
+      "id": "b509_aab00",
+      "family": "B509",
+      "address": 8,
+      "plane": "system",
+      "method": "get_register",
+      "params": {
+        "source": 16,
+        "addr": 43776
+      }
+    }
+  ]
+}

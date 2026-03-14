@@ -36,6 +36,54 @@ func (observer staticSemanticReadWatchObserver) Observe(ebusgateway.WatchKey) eb
 	return observer.observation
 }
 
+type watchEfficiencyObserverSpy struct {
+	mu                sync.Mutex
+	readEvents        []ebusgateway.WatchEfficiencyReadEvent
+	directApplyEvents []ebusgateway.WatchEfficiencyDirectApplyEvent
+}
+
+func (spy *watchEfficiencyObserverSpy) ObserveWatchRead(event ebusgateway.WatchEfficiencyReadEvent) {
+	if spy == nil {
+		return
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	spy.readEvents = append(spy.readEvents, event)
+}
+
+func (spy *watchEfficiencyObserverSpy) ObserveWatchDirectApply(event ebusgateway.WatchEfficiencyDirectApplyEvent) {
+	if spy == nil {
+		return
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	spy.directApplyEvents = append(spy.directApplyEvents, event)
+}
+
+func (spy *watchEfficiencyObserverSpy) latestReadEvent() (ebusgateway.WatchEfficiencyReadEvent, bool) {
+	if spy == nil {
+		return ebusgateway.WatchEfficiencyReadEvent{}, false
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.readEvents) == 0 {
+		return ebusgateway.WatchEfficiencyReadEvent{}, false
+	}
+	return spy.readEvents[len(spy.readEvents)-1], true
+}
+
+func (spy *watchEfficiencyObserverSpy) latestDirectApplyEvent() (ebusgateway.WatchEfficiencyDirectApplyEvent, bool) {
+	if spy == nil {
+		return ebusgateway.WatchEfficiencyDirectApplyEvent{}, false
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.directApplyEvents) == 0 {
+		return ebusgateway.WatchEfficiencyDirectApplyEvent{}, false
+	}
+	return spy.directApplyEvents[len(spy.directApplyEvents)-1], true
+}
+
 type b509MutationTestBus struct {
 	mu     sync.Mutex
 	addr   uint16
@@ -1938,6 +1986,148 @@ func TestPrepareSemanticReadWatch_UsesObserverDescriptorFreshness(t *testing.T) 
 	})
 	if !result.Accepted {
 		t.Fatalf("shadow write rejected after runtime descriptor bootstrap: %s", result.Reason)
+	}
+}
+
+func TestPrepareSemanticReadWatchRuntime_MissingDescriptorB524DiscoveryEmitsAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	cfg := ebusgateway.DefaultConfig()
+	store := ebusgateway.NewBusObservabilityStore(cfg)
+	poller := &vaillantSemanticPoller{
+		watchEfficiency: store,
+		nowFn: func() time.Time {
+			return time.Unix(1700000700, 0).UTC()
+		},
+	}
+
+	key := ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, vaillantGroupZones, 0x01, zoneRegIndex)
+	runtime := poller.prepareSemanticReadWatchRuntime(key)
+	if runtime.hasDescriptor {
+		t.Fatal("runtime.hasDescriptor = true; want false when runtime observation descriptor is missing")
+	}
+
+	poller.emitWatchReadEfficiency(runtime, runtime.maxAge, ebusgateway.SemanticReadExecutionStats{
+		ActiveFetchAttempted: true,
+		ActiveFetchSucceeded: true,
+		ActiveFetchDuration:  time.Second,
+	})
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `ambiguous_total{family="B524",reason="missing_runtime_descriptor"} 1`) {
+		t.Fatalf("RenderPrometheus missing missing_runtime_descriptor ambiguity for descriptor-less B524 discovery key:\n%s", metrics)
+	}
+	if strings.Contains(metrics, `active_read_saved_seconds{family="B524"`) {
+		t.Fatalf("RenderPrometheus unexpectedly bucketed descriptor-less B524 discovery read:\n%s", metrics)
+	}
+}
+
+func TestReadB509Value_EmitsWatchEfficiencyShadowHit(t *testing.T) {
+	t.Parallel()
+
+	key := ebusgateway.NewB509WatchKey(0x08, 0x0200)
+	spy := &watchEfficiencyObserverSpy{}
+	cfg := observeFirstStateShadowConfig(key)
+	cfg.WatchEfficiencyObserver = spy
+
+	poller := newVaillantSemanticPoller(
+		cfg,
+		&ebusgateway.Gateway{},
+		graphql.NewLiveSemanticProvider(),
+		nil,
+		nil,
+	)
+	poller.sendFrameFn = func(context.Context, protocol.Frame) (*protocol.Frame, error) {
+		return nil, fmt.Errorf("unexpected active send on shadow-hit path")
+	}
+
+	maxAge := poller.prepareSemanticReadWatch(key)
+	if maxAge != 10*time.Second {
+		t.Fatalf("prepareSemanticReadWatch() = %s; want 10s", maxAge)
+	}
+	write := poller.shadow.Write(ebusgateway.ShadowWrite{
+		Key:        key,
+		Source:     ebusgateway.ShadowWriteSourcePassive,
+		Confidence: ebusgateway.ShadowConfidenceHigh,
+		Value:      []byte{0x7A},
+		ObservedAt: time.Now(),
+	})
+	if !write.Accepted {
+		t.Fatalf("shadow write rejected: %s", write.Reason)
+	}
+
+	value, ok := poller.readB509Value(context.Background(), 0x08, 0x0200)
+	if !ok {
+		t.Fatal("readB509Value() ok = false; want true on shadow hit")
+	}
+	if len(value) != 1 || value[0] != 0x7A {
+		t.Fatalf("readB509Value() value = %v; want [0x7a]", value)
+	}
+
+	event, found := spy.latestReadEvent()
+	if !found {
+		t.Fatal("watch-efficiency read event missing")
+	}
+	if !event.Stats.ServedFromShadow {
+		t.Fatal("event.Stats.ServedFromShadow = false; want true")
+	}
+	if event.Stats.ActiveFetchAttempted {
+		t.Fatal("event.Stats.ActiveFetchAttempted = true; want false on shadow hit")
+	}
+	if event.Descriptor.FreshnessProfile != ebusgateway.WatchFreshnessProfileStateFast {
+		t.Fatalf("event descriptor freshness_profile = %q; want state_fast", event.Descriptor.FreshnessProfile)
+	}
+	if event.Descriptor.Family() != ebusgateway.WatchFamilyB509 {
+		t.Fatalf("event descriptor family = %q; want B509", event.Descriptor.Family())
+	}
+}
+
+func TestHandleAdjudicatedPassiveEvent_EmitsWatchEfficiencyDirectApply(t *testing.T) {
+	t.Parallel()
+
+	key := ebusgateway.NewB509WatchKey(0x08, 0x0200)
+	spy := &watchEfficiencyObserverSpy{}
+	cfg := observeFirstStateShadowRuntimeConfig(ebusgateway.ObserveFirstExternalWritePolicyRecordOnly)
+	cfg.WatchEfficiencyObserver = spy
+
+	poller := newVaillantSemanticPoller(
+		cfg,
+		&ebusgateway.Gateway{},
+		graphql.NewLiveSemanticProvider(),
+		nil,
+		nil,
+	)
+	now := time.Unix(1700000600, 0).UTC()
+	poller.nowFn = func() time.Time { return now }
+
+	poller.handleAdjudicatedPassiveEvent(ebusgateway.AdjudicatedPassiveEvent{
+		Disposition: ebusgateway.DedupDispositionUnmatchedThirdParty,
+		Fingerprint: ebusgateway.PassiveTransactionFingerprint{
+			SharedWatchKey: key,
+			ObservedAt:     now,
+			ResponseClass:  ebusgateway.DedupResponseValueBearing,
+			FamilyPolicy: ebusgateway.ObserveFirstFamilyPolicy{
+				RequestIntent:     ebusgateway.ObserveFirstRequestIntentRead,
+				DirectApplyPolicy: ebusgateway.ObserveFirstDirectApplyPolicyStateDefault,
+			},
+		},
+		Event: ebusgateway.PassiveClassifiedEvent{
+			HasResponse: true,
+			Response: protocol.Frame{
+				Data: []byte{vaillantB509OpcodeRead, 0x02, 0x00, 0x11},
+			},
+		},
+	})
+
+	event, found := spy.latestDirectApplyEvent()
+	if !found {
+		t.Fatal("watch-efficiency direct-apply event missing")
+	}
+	if event.Descriptor.FreshnessProfile != ebusgateway.WatchFreshnessProfileStateFast {
+		t.Fatalf("event descriptor freshness_profile = %q; want state_fast", event.Descriptor.FreshnessProfile)
+	}
+	if event.Descriptor.Family() != ebusgateway.WatchFamilyB509 {
+		t.Fatalf("event descriptor family = %q; want B509", event.Descriptor.Family())
 	}
 }
 

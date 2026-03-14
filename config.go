@@ -98,6 +98,7 @@ type Config struct {
 	PassiveDedupRecoveryEventThreshold      int
 	LocalAddressSnapshotter                 LocalBusAddressSnapshotter
 	WatchObserver                           WatchObserver
+	WatchEfficiencyObserver                 WatchEfficiencyObserver
 	HTTPAddr                                string
 	MetricsPath                             string
 	GraphQLPath                             string

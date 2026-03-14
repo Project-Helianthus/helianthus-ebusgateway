@@ -76,6 +76,7 @@ type semanticReadEntry struct {
 	lastOKShadowGeneration uint64
 	lastOKHasGeneration    bool
 	lastOKFromShadow       bool
+	lastOKFromPassive      bool
 
 	breakerState            SemanticReadCircuitState
 	consecutiveFailures     int
@@ -96,6 +97,7 @@ type semanticReadCircuitBreakerConfig struct {
 type semanticReadShadowCandidate struct {
 	value      []byte
 	generation uint64
+	source     ShadowWriteSource
 }
 
 type semanticReadShadowWriteResult struct {
@@ -176,28 +178,60 @@ func normalizeSemanticReadCircuitBreakerOptions(options SemanticReadCircuitBreak
 //
 // If fetch fails, the last successful value (if any) remains cached.
 func (s *SemanticReadScheduler) Get(ctx context.Context, key string, maxAge time.Duration, fetch func(context.Context) ([]byte, error)) ([]byte, error) {
-	return s.getWithWatchKey(ctx, key, nil, maxAge, fetch)
+	value, _, err := s.getWithWatchKey(ctx, key, nil, maxAge, fetch)
+	return value, err
 }
 
 func (s *SemanticReadScheduler) GetWatch(ctx context.Context, key WatchKey, maxAge time.Duration, fetch func(context.Context) ([]byte, error)) ([]byte, error) {
+	if key == nil {
+		value, _, err := s.getWithWatchKey(ctx, "", nil, maxAge, fetch)
+		return value, err
+	}
+	value, _, err := s.getWithWatchKey(ctx, key.Canonical(), key, maxAge, fetch)
+	return value, err
+}
+
+func (s *SemanticReadScheduler) GetWatchWithStats(
+	ctx context.Context,
+	key WatchKey,
+	maxAge time.Duration,
+	fetch func(context.Context) ([]byte, error),
+) ([]byte, SemanticReadExecutionStats, error) {
 	if key == nil {
 		return s.getWithWatchKey(ctx, "", nil, maxAge, fetch)
 	}
 	return s.getWithWatchKey(ctx, key.Canonical(), key, maxAge, fetch)
 }
 
-func (s *SemanticReadScheduler) getWithWatchKey(ctx context.Context, key string, watchKey WatchKey, maxAge time.Duration, fetch func(context.Context) ([]byte, error)) ([]byte, error) {
+func (s *SemanticReadScheduler) getWithWatchKey(
+	ctx context.Context,
+	key string,
+	watchKey WatchKey,
+	maxAge time.Duration,
+	fetch func(context.Context) ([]byte, error),
+) ([]byte, SemanticReadExecutionStats, error) {
+	var stats SemanticReadExecutionStats
 	if s == nil {
-		return fetch(ctx)
+		stats.ActiveFetchAttempted = true
+		startedAt := time.Now()
+		value, err := fetch(ctx)
+		stats.ActiveFetchDuration = time.Since(startedAt)
+		stats.ActiveFetchSucceeded = err == nil
+		return value, stats, err
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if key == "" {
-		return fetch(ctx)
+		stats.ActiveFetchAttempted = true
+		startedAt := time.Now()
+		value, err := fetch(ctx)
+		stats.ActiveFetchDuration = time.Since(startedAt)
+		stats.ActiveFetchSucceeded = err == nil
+		return value, stats, err
 	}
 	if fetch == nil {
-		return nil, context.Canceled
+		return nil, stats, context.Canceled
 	}
 
 	shadow := s.shadowSnapshot()
@@ -231,7 +265,7 @@ func (s *SemanticReadScheduler) getWithWatchKey(ctx context.Context, key string,
 			s.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, stats, ctx.Err()
 			case <-done:
 				continue
 			}
@@ -245,9 +279,12 @@ func (s *SemanticReadScheduler) getWithWatchKey(ctx context.Context, key string,
 				entry.lastOKShadowGeneration = snapshot.Generation
 				entry.lastOKHasGeneration = true
 				entry.lastOKFromShadow = true
+				entry.lastOKFromPassive = candidate.source == ShadowWriteSourcePassive
 				value := append([]byte(nil), entry.lastOK...)
 				s.mu.Unlock()
-				return value, nil
+				stats.ServedFromShadow = true
+				stats.ServedFromPassiveShadow = candidate.source == ShadowWriteSourcePassive
+				return value, stats, nil
 			}
 			if shadowPassesRemaining > 0 {
 				s.mu.Unlock()
@@ -261,7 +298,9 @@ func (s *SemanticReadScheduler) getWithWatchKey(ctx context.Context, key string,
 				if shadow == nil || watchKey == nil || !entry.lastOKHasGeneration {
 					value := append([]byte(nil), entry.lastOK...)
 					s.mu.Unlock()
-					return value, nil
+					stats.ServedFromShadow = entry.lastOKFromShadow
+					stats.ServedFromPassiveShadow = entry.lastOKFromPassive
+					return value, stats, nil
 				}
 
 				snapshot := shadow.SnapshotEligibility(watchKey)
@@ -272,7 +311,9 @@ func (s *SemanticReadScheduler) getWithWatchKey(ctx context.Context, key string,
 				} else {
 					value := append([]byte(nil), entry.lastOK...)
 					s.mu.Unlock()
-					return value, nil
+					stats.ServedFromShadow = entry.lastOKFromShadow
+					stats.ServedFromPassiveShadow = entry.lastOKFromPassive
+					return value, stats, nil
 				}
 			}
 		}
@@ -282,7 +323,7 @@ func (s *SemanticReadScheduler) getWithWatchKey(ctx context.Context, key string,
 			s.mu.Unlock()
 			s.emitBreakerTransition(preTransition)
 			s.emitBreakerSuppression(preSuppression)
-			return nil, preErr
+			return nil, stats, preErr
 		}
 
 		if entry.breakerState == SemanticReadCircuitStateHalfOpen {
@@ -300,7 +341,12 @@ func (s *SemanticReadScheduler) getWithWatchKey(ctx context.Context, key string,
 			startGeneration = shadow.SnapshotEligibility(watchKey).Generation
 		}
 
+		stats.ActiveFetchAttempted = true
+		activeStartedAt := s.now()
 		value, err := fetch(ctx)
+		if activeEndedAt := s.now(); !activeEndedAt.Before(activeStartedAt) {
+			stats.ActiveFetchDuration = activeEndedAt.Sub(activeStartedAt)
+		}
 		shadowWrite := semanticReadShadowWriteResult{
 			startGeneration: startGeneration,
 		}
@@ -347,6 +393,7 @@ func (s *SemanticReadScheduler) getWithWatchKey(ctx context.Context, key string,
 			entry.lastOK = append(entry.lastOK[:0], value...)
 			entry.lastErr = nil
 			entry.lastOKFromShadow = false
+			entry.lastOKFromPassive = false
 			if shadow != nil && watchKey != nil {
 				entry.lastOKHasGeneration = true
 				if shadowWrite.attempted && shadowWrite.result.Accepted {
@@ -382,11 +429,12 @@ func (s *SemanticReadScheduler) getWithWatchKey(ctx context.Context, key string,
 					shadowPassesRemaining = semanticReadShadowMaxPreActivePasses
 					continue
 				}
-				return nil, fmt.Errorf("%w: key=%s", ErrSemanticReadRevalidationExhausted, key)
+				return nil, stats, fmt.Errorf("%w: key=%s", ErrSemanticReadRevalidationExhausted, key)
 			}
-			return nil, err
+			return nil, stats, err
 		}
-		return append([]byte(nil), value...), nil
+		stats.ActiveFetchSucceeded = true
+		return append([]byte(nil), value...), stats, nil
 	}
 }
 
@@ -551,6 +599,7 @@ func consultSemanticReadShadow(cache *ShadowCache, key WatchKey, maxAge time.Dur
 	return &semanticReadShadowCandidate{
 		value:      append([]byte(nil), result.Entry.Value...),
 		generation: result.Entry.Generation,
+		source:     result.Entry.Source,
 	}
 }
 
@@ -591,4 +640,5 @@ func clearSemanticReadCacheLocked(entry *semanticReadEntry) {
 	entry.lastOKShadowGeneration = 0
 	entry.lastOKHasGeneration = false
 	entry.lastOKFromShadow = false
+	entry.lastOKFromPassive = false
 }

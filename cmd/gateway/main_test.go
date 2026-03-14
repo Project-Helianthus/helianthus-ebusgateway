@@ -162,6 +162,9 @@ func TestWireObserveFirstObserversWiresDedupSnapshotterIntoObservabilityStore(t 
 	if cfg.WatchObserver == nil {
 		t.Fatal("WatchObserver = nil; want runtime observer wired")
 	}
+	if cfg.WatchEfficiencyObserver == nil {
+		t.Fatal("WatchEfficiencyObserver = nil; want bus observability wiring")
+	}
 
 	local := deduplicator.LocalAddressSnapshot()
 	if !local.Known || local.Address != 0x31 {

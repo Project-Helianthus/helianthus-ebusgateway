@@ -439,6 +439,120 @@ func TestSemanticReadScheduler_GetWatchReturnsShadowHitWithoutFetch(t *testing.T
 	}
 }
 
+func TestSemanticReadScheduler_GetWatchWithStats_TracksShadowHit(t *testing.T) {
+	t.Parallel()
+
+	key := NewB509WatchKey(0x08, 0x0200)
+	now := time.Unix(100, 0)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourcePoller)
+	cache := newTestShadowCache(t, catalog, activations, now, ShadowCacheOptions{})
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, now, []byte{0xAB})
+
+	scheduler := NewSemanticReadScheduler()
+	scheduler.now = func() time.Time { return now }
+	scheduler.SetShadowCache(cache)
+
+	value, stats, err := scheduler.GetWatchWithStats(context.Background(), key, time.Second, func(context.Context) ([]byte, error) {
+		return []byte{0xCD}, nil
+	})
+	if err != nil {
+		t.Fatalf("GetWatchWithStats() error = %v", err)
+	}
+	if len(value) != 1 || value[0] != 0xAB {
+		t.Fatalf("GetWatchWithStats() value = %v; want shadow value [0xab]", value)
+	}
+	if !stats.ServedFromShadow {
+		t.Fatal("stats.ServedFromShadow = false; want true")
+	}
+	if !stats.ServedFromPassiveShadow {
+		t.Fatal("stats.ServedFromPassiveShadow = false; want true for passive shadow hit")
+	}
+	if stats.ActiveFetchAttempted {
+		t.Fatal("stats.ActiveFetchAttempted = true; want false on shadow hit")
+	}
+	if stats.ActiveFetchSucceeded {
+		t.Fatal("stats.ActiveFetchSucceeded = true; want false on shadow hit")
+	}
+	if stats.ActiveFetchDuration != 0 {
+		t.Fatalf("stats.ActiveFetchDuration = %s; want 0", stats.ActiveFetchDuration)
+	}
+}
+
+func TestSemanticReadScheduler_GetWatchWithStats_TracksActiveConfirmedShadowHit(t *testing.T) {
+	t.Parallel()
+
+	key := NewB509WatchKey(0x08, 0x0200)
+	now := time.Unix(100, 0)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourcePoller)
+	cache := newTestShadowCache(t, catalog, activations, now, ShadowCacheOptions{})
+	writeShadow(t, cache, key, ShadowWriteSourceActiveConfirmed, now, []byte{0xAB})
+
+	scheduler := NewSemanticReadScheduler()
+	scheduler.now = func() time.Time { return now }
+	scheduler.SetShadowCache(cache)
+
+	value, stats, err := scheduler.GetWatchWithStats(context.Background(), key, time.Second, func(context.Context) ([]byte, error) {
+		return []byte{0xCD}, nil
+	})
+	if err != nil {
+		t.Fatalf("GetWatchWithStats() error = %v", err)
+	}
+	if len(value) != 1 || value[0] != 0xAB {
+		t.Fatalf("GetWatchWithStats() value = %v; want shadow value [0xab]", value)
+	}
+	if !stats.ServedFromShadow {
+		t.Fatal("stats.ServedFromShadow = false; want true")
+	}
+	if stats.ServedFromPassiveShadow {
+		t.Fatal("stats.ServedFromPassiveShadow = true; want false for active-confirmed shadow hit")
+	}
+	if stats.ActiveFetchAttempted {
+		t.Fatal("stats.ActiveFetchAttempted = true; want false on shadow hit")
+	}
+	if stats.ActiveFetchSucceeded {
+		t.Fatal("stats.ActiveFetchSucceeded = true; want false on shadow hit")
+	}
+	if stats.ActiveFetchDuration != 0 {
+		t.Fatalf("stats.ActiveFetchDuration = %s; want 0", stats.ActiveFetchDuration)
+	}
+}
+
+func TestSemanticReadScheduler_GetWatchWithStats_TracksActiveDuration(t *testing.T) {
+	t.Parallel()
+
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+	now := time.Unix(200, 0)
+
+	scheduler := NewSemanticReadScheduler()
+	scheduler.now = func() time.Time { return now }
+
+	value, stats, err := scheduler.GetWatchWithStats(context.Background(), key, 0, func(context.Context) ([]byte, error) {
+		now = now.Add(250 * time.Millisecond)
+		return []byte{0x42}, nil
+	})
+	if err != nil {
+		t.Fatalf("GetWatchWithStats() error = %v", err)
+	}
+	if len(value) != 1 || value[0] != 0x42 {
+		t.Fatalf("GetWatchWithStats() value = %v; want [0x42]", value)
+	}
+	if stats.ServedFromShadow {
+		t.Fatal("stats.ServedFromShadow = true; want false for active read")
+	}
+	if stats.ServedFromPassiveShadow {
+		t.Fatal("stats.ServedFromPassiveShadow = true; want false for active read")
+	}
+	if !stats.ActiveFetchAttempted {
+		t.Fatal("stats.ActiveFetchAttempted = false; want true for active read")
+	}
+	if !stats.ActiveFetchSucceeded {
+		t.Fatal("stats.ActiveFetchSucceeded = false; want true for successful active read")
+	}
+	if stats.ActiveFetchDuration != 250*time.Millisecond {
+		t.Fatalf("stats.ActiveFetchDuration = %s; want 250ms", stats.ActiveFetchDuration)
+	}
+}
+
 func TestSemanticReadScheduler_RevalidatesShadowWhenInvalidatedBeforeLock(t *testing.T) {
 	t.Parallel()
 

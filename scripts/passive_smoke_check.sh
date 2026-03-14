@@ -42,6 +42,7 @@ poll_interval_sec="${PASSIVE_SMOKE_POLL_INTERVAL_SEC:-2}"
 timeout_sec="${PASSIVE_SMOKE_TIMEOUT_SEC:-120}"
 log_dir="${MATRIX_LOG_DIR:-${REPO_ROOT}/results/${case_id}/logs}"
 gw15_proof_mode="${MATRIX_GW15_PROOF_MODE:-0}"
+proof_hold_sec_raw="${PASSIVE_PROOF_HOLD_SEC:-${MATRIX_GW15_PROOF_HOLD_SEC:-0}}"
 
 normalize_bool_flag() {
   local value="${1:-}"
@@ -88,6 +89,10 @@ canary_retries=3
 canary_enabled=0
 canary_require_interval_phase=1
 canary_run_id="p03-$(date +%s)-$$"
+proof_hold_sec=0
+proof_window_start_epoch=0
+proof_window_end_epoch=0
+proof_window_started=0
 
 deadline=$(( $(date +%s) + timeout_sec ))
 last_metrics=""
@@ -102,8 +107,20 @@ if [[ ! "${proof_sample_interval_sec}" =~ ^[0-9]+$ ]] || [[ "${proof_sample_inte
   fi
 fi
 
+if [[ ! "${proof_hold_sec_raw}" =~ ^[0-9]+$ ]]; then
+  echo "invalid PASSIVE_PROOF_HOLD_SEC=${proof_hold_sec_raw}" >&2
+  exit 2
+fi
+proof_hold_sec="${proof_hold_sec_raw}"
+if [[ "${gw15_proof_mode}" != "1" ]]; then
+  proof_hold_sec=0
+fi
+
 if [[ "${proof_sample_interval_sec}" -gt "${timeout_sec}" ]]; then
   canary_require_interval_phase=0
+fi
+if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 ]]; then
+  canary_require_interval_phase=1
 fi
 
 if [[ "${gw15_proof_mode}" == "1" ]]; then
@@ -419,7 +436,11 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     echo "proof mode: failed to capture required start artifacts" >&2
     exit 1
   fi
-  proof_next_sample_epoch="$(date +%s)"
+  if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 ]]; then
+    proof_next_sample_epoch=0
+  else
+    proof_next_sample_epoch="$(date +%s)"
+  fi
   if [[ "${canary_enabled}" == "1" ]]; then
     if ! run_canary_phase "start"; then
       echo "proof mode: failed to run start canary verification" >&2
@@ -432,13 +453,28 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
   if metrics="$(curl -fsS -m 8 "${metrics_url}" 2>/dev/null)" && \
      graphql="$(curl -fsS -m 8 -H 'Content-Type: application/json' \
        -d '{"query":"{ devices { address deviceId } }"}' "${graphql_url}" 2>/dev/null)"; then
+    now_epoch="$(date +%s)"
+    snapshot_healthy=0
     last_metrics="${metrics}"
     last_graphql="${graphql}"
     printf '%s\n' "${metrics}" > "${metrics_path}"
     printf '%s\n' "${graphql}" > "${graphql_path}"
+    if validate_snapshot "${metrics}" "${graphql}"; then
+      smoke_ok=1
+      snapshot_healthy=1
+      if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 && "${proof_window_started}" != "1" ]]; then
+        proof_window_started=1
+        proof_window_start_epoch="${now_epoch}"
+        proof_window_end_epoch=$((now_epoch + proof_hold_sec))
+        proof_next_sample_epoch="${now_epoch}"
+      fi
+    fi
     if [[ "${proof_artifacts_enabled}" == "1" ]]; then
-      now_epoch="$(date +%s)"
-      if [[ "${now_epoch}" -ge "${proof_next_sample_epoch}" ]]; then
+      sample_allowed=1
+      if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 && "${proof_window_started}" != "1" ]]; then
+        sample_allowed=0
+      fi
+      if [[ "${sample_allowed}" == "1" && "${now_epoch}" -ge "${proof_next_sample_epoch}" ]]; then
         proof_sample_index=$((proof_sample_index + 1))
         sample_prefix="${proof_samples_dir}/sample_$(printf '%04d' "${proof_sample_index}")"
         sample_phase="sample_$(printf '%04d' "${proof_sample_index}")"
@@ -452,9 +488,14 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
         proof_next_sample_epoch=$((now_epoch + proof_sample_interval_sec))
       fi
     fi
-    if validate_snapshot "${metrics}" "${graphql}"; then
-      smoke_ok=1
-      break
+    if [[ "${snapshot_healthy}" == "1" ]]; then
+      if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 ]]; then
+        if [[ "${proof_window_started}" == "1" && "${now_epoch}" -ge "${proof_window_end_epoch}" ]]; then
+          break
+        fi
+      else
+        break
+      fi
     fi
   fi
   sleep "${poll_interval_sec}"
@@ -496,12 +537,22 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
   fi
 fi
 
+current_epoch="$(date +%s)"
+
 if [[ "${smoke_ok}" -eq 1 ]]; then
-  exit 0
+  if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 ]]; then
+    if [[ "${proof_window_started}" == "1" && "${current_epoch}" -ge "${proof_window_end_epoch}" ]]; then
+      exit 0
+    fi
+  else
+    exit 0
+  fi
 fi
 
-if [[ -n "${last_metrics}" && -n "${last_graphql}" ]] && validate_snapshot "${last_metrics}" "${last_graphql}"; then
-  exit 0
+if [[ "${gw15_proof_mode}" != "1" || "${proof_hold_sec}" -le 0 ]]; then
+  if [[ -n "${last_metrics}" && -n "${last_graphql}" ]] && validate_snapshot "${last_metrics}" "${last_graphql}"; then
+    exit 0
+  fi
 fi
 
 echo "passive smoke: timed out waiting for ${case_id} (${passive_mode}) at ${gateway_base_url}" >&2

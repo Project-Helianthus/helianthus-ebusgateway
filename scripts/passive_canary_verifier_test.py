@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -461,7 +462,13 @@ class CanaryVerdictTests(unittest.TestCase):
 
 
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
-    def run_smoke_with_fake_tools(self, canary_status: str) -> subprocess.CompletedProcess[str]:
+    def _run_smoke_with_fake_tools(
+        self,
+        canary_status: str,
+        *,
+        extra_env: dict[str, str] | None = None,
+        collect_artifacts: bool = False,
+    ) -> tuple[subprocess.CompletedProcess[str], dict]:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = pathlib.Path(temp_dir)
             fake_bin = temp_path / "bin"
@@ -614,8 +621,11 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     "PATH": f"{fake_bin}:{env.get('PATH', '')}",
                 }
             )
+            if extra_env:
+                env.update(extra_env)
             script_path = SCRIPT_DIR / "passive_smoke_check.sh"
-            return subprocess.run(
+            started = time.monotonic()
+            result = subprocess.run(
                 ["bash", str(script_path)],
                 cwd=SCRIPT_DIR.parent,
                 env=env,
@@ -623,6 +633,45 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 capture_output=True,
                 check=False,
             )
+            elapsed = time.monotonic() - started
+            artifacts = {"elapsed_sec": elapsed}
+            if collect_artifacts:
+                proof_dir = log_dir / "proof_artifacts"
+                summary_path = proof_dir / "canary_summary.json"
+                verdict_path = proof_dir / "canary_verdict.json"
+                if summary_path.exists():
+                    artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
+                if verdict_path.exists():
+                    artifacts["verdict"] = json.loads(verdict_path.read_text(encoding="utf-8"))
+                artifacts["sample_phase_files"] = sorted(
+                    path.name for path in proof_dir.glob("canary_phase_sample_*.json")
+                )
+            return result, artifacts
+
+    def run_smoke_with_fake_tools(
+        self,
+        canary_status: str,
+        *,
+        extra_env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        result, _ = self._run_smoke_with_fake_tools(
+            canary_status,
+            extra_env=extra_env,
+            collect_artifacts=False,
+        )
+        return result
+
+    def run_smoke_with_fake_tools_detailed(
+        self,
+        canary_status: str,
+        *,
+        extra_env: dict[str, str] | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], dict]:
+        return self._run_smoke_with_fake_tools(
+            canary_status,
+            extra_env=extra_env,
+            collect_artifacts=True,
+        )
 
     def test_smoke_exits_non_zero_when_canary_verdict_is_bad(self) -> None:
         result = self.run_smoke_with_fake_tools("mismatch")
@@ -632,6 +681,23 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def test_smoke_exits_zero_when_canary_verdict_is_good(self) -> None:
         result = self.run_smoke_with_fake_tools("pass")
         self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def test_smoke_holds_until_proof_window_end_and_requires_interval_phase(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "PASSIVE_PROOF_HOLD_SEC": "4",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "10",
+                "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "3600",
+            },
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertGreaterEqual(artifacts["elapsed_sec"], 3.0, msg=result.stderr)
+        summary = artifacts.get("summary")
+        self.assertIsInstance(summary, dict)
+        self.assertTrue(summary["interval_phase_required"])
+        self.assertGreaterEqual(summary["interval_phase_count"], 1)
+        self.assertGreaterEqual(len(artifacts.get("sample_phase_files", [])), 1)
 
 
 if __name__ == "__main__":

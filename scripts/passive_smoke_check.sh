@@ -41,15 +41,82 @@ metrics_url="${MATRIX_METRICS_URL:-${gateway_base_url}/metrics}"
 poll_interval_sec="${PASSIVE_SMOKE_POLL_INTERVAL_SEC:-2}"
 timeout_sec="${PASSIVE_SMOKE_TIMEOUT_SEC:-120}"
 log_dir="${MATRIX_LOG_DIR:-${REPO_ROOT}/results/${case_id}/logs}"
+gw15_proof_mode="${MATRIX_GW15_PROOF_MODE:-0}"
+
+normalize_bool_flag() {
+  local value="${1:-}"
+  local lowered
+  lowered="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
+  case "${lowered}" in
+    1|true|yes|on)
+      printf '1\n'
+      ;;
+    0|false|no|off)
+      printf '0\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+proof_artifacts_enabled="${PASSIVE_PROOF_ARTIFACTS_ENABLED:-${gw15_proof_mode}}"
+if [[ -n "${PASSIVE_PROOF_SAMPLE_INTERVAL_SEC:-}" ]]; then
+  proof_sample_interval_sec="${PASSIVE_PROOF_SAMPLE_INTERVAL_SEC}"
+elif [[ "${gw15_proof_mode}" == "1" ]]; then
+  proof_sample_interval_sec=3600
+else
+  proof_sample_interval_sec=5
+fi
 
 mkdir -p "${log_dir}"
 
 metrics_path="${log_dir}/passive_metrics.prom"
 graphql_path="${log_dir}/passive_devices.json"
+proof_dir="${log_dir}/proof_artifacts"
+proof_samples_dir="${proof_dir}/samples"
+proof_sample_index=0
+proof_next_sample_epoch=0
 
 deadline=$(( $(date +%s) + timeout_sec ))
 last_metrics=""
 last_graphql=""
+smoke_ok=0
+
+if [[ ! "${proof_sample_interval_sec}" =~ ^[0-9]+$ ]] || [[ "${proof_sample_interval_sec}" -lt 1 ]]; then
+  if [[ "${gw15_proof_mode}" == "1" ]]; then
+    proof_sample_interval_sec=3600
+  else
+    proof_sample_interval_sec=5
+  fi
+fi
+
+if [[ "${gw15_proof_mode}" == "1" ]]; then
+  if [[ -n "${PASSIVE_PROOF_ARTIFACTS_ENABLED:-}" ]]; then
+    normalized_artifacts="$(normalize_bool_flag "${PASSIVE_PROOF_ARTIFACTS_ENABLED}")" || {
+      echo "proof mode: invalid PASSIVE_PROOF_ARTIFACTS_ENABLED=${PASSIVE_PROOF_ARTIFACTS_ENABLED}" >&2
+      exit 2
+    }
+    if [[ "${normalized_artifacts}" != "1" ]]; then
+      echo "proof mode requires PASSIVE_PROOF_ARTIFACTS_ENABLED=1" >&2
+      exit 2
+    fi
+  fi
+  proof_artifacts_enabled=1
+else
+  normalized_artifacts="$(normalize_bool_flag "${proof_artifacts_enabled}")" || {
+    echo "invalid PASSIVE_PROOF_ARTIFACTS_ENABLED=${proof_artifacts_enabled}" >&2
+    exit 2
+  }
+  proof_artifacts_enabled="${normalized_artifacts}"
+fi
+
+if [[ "${proof_artifacts_enabled}" == "1" ]]; then
+  rm -rf "${proof_dir}"
+  mkdir -p "${proof_samples_dir}"
+fi
+
+graphql_bus_watch_query='{"query":"{ busSummary { status { transportClass featureFlags { observeFirstEnabled passiveStateDirectApply passiveConfigDirectApply externalWritePolicy normalizations } capability { passiveSupported passiveAvailable passiveState passiveReason endpointState tapConnected } warmup { state blocker elapsedSeconds completedTransactions requiredTransactions completionMode } degraded { active reasons } } } watchSummary { inventory { totalEntries pinnedEntries evictableEntries staticPinnedFootprint writeConfirmPinnedActive } activationCounts { catalogDescriptors activeKeys sourceClasses { class count } } directApplyEligibilityClasses { class count } degraded { active shadowingEnabled pinnedBudgetDegraded compactorDegraded reasons } } }"}'
 
 validate_snapshot() {
   METRICS_PAYLOAD="${1}" \
@@ -148,6 +215,143 @@ raise SystemExit(1)
 PY
 }
 
+write_feature_flag_snapshot() {
+  local graphql_file="$1"
+  local bus_file="$2"
+  local output_file="$3"
+  python3 - "${graphql_file}" "${bus_file}" "${output_file}" <<'PY'
+import json
+import pathlib
+import sys
+from datetime import datetime, timezone
+
+graphql_file = pathlib.Path(sys.argv[1])
+bus_file = pathlib.Path(sys.argv[2])
+output_file = pathlib.Path(sys.argv[3])
+
+graphql_flags = None
+bus_flags = None
+
+if graphql_file.exists():
+    try:
+        payload = json.loads(graphql_file.read_text())
+        graphql_flags = (((payload.get("data") or {}).get("busSummary") or {}).get("status") or {}).get("featureFlags")
+    except Exception:
+        graphql_flags = None
+
+if bus_file.exists():
+    try:
+        payload = json.loads(bus_file.read_text())
+        bus_flags = (((payload.get("summary") or {}).get("status") or {}).get("feature_flags"))
+    except Exception:
+        bus_flags = None
+
+snapshot = {
+    "captured_at": datetime.now(timezone.utc).isoformat(),
+    "graphql_feature_flags": graphql_flags,
+    "bus_observability_feature_flags": bus_flags,
+}
+output_file.write_text(json.dumps(snapshot, indent=2) + "\n")
+PY
+}
+
+graphql_bus_watch_payload_valid() {
+  local payload="${1:-}"
+  GRAPHQL_PAYLOAD="${payload}" python3 - <<'PY'
+import json
+import os
+import sys
+
+payload_text = os.environ.get("GRAPHQL_PAYLOAD", "")
+try:
+    payload = json.loads(payload_text)
+except Exception:
+    raise SystemExit(1)
+
+errors = payload.get("errors")
+if isinstance(errors, list) and len(errors) > 0:
+    raise SystemExit(1)
+
+data = payload.get("data")
+if not isinstance(data, dict):
+    raise SystemExit(1)
+
+if data.get("busSummary") is None:
+    raise SystemExit(1)
+if data.get("watchSummary") is None:
+    raise SystemExit(1)
+
+raise SystemExit(0)
+PY
+}
+
+capture_proof_snapshot() {
+  local prefix="$1"
+  local metrics_payload="${2:-}"
+  local require_complete="${3:-0}"
+  local metrics_file="${prefix}_metrics.prom"
+  local bus_file="${prefix}_bus_observability.json"
+  local graphql_file="${prefix}_graphql_bus_watch.json"
+  local flags_file="${prefix}_feature_flags.json"
+  local bus_payload=""
+  local graphql_payload=""
+  local sampled_metrics=""
+  local have_metrics=0
+  local have_bus=0
+  local have_graphql=0
+
+  rm -f "${metrics_file}" "${bus_file}" "${graphql_file}" "${flags_file}"
+
+  if [[ -z "${metrics_payload}" ]]; then
+    if sampled_metrics="$(curl -fsS -m 8 "${metrics_url}" 2>/dev/null)"; then
+      metrics_payload="${sampled_metrics}"
+    fi
+  fi
+  if [[ -n "${metrics_payload}" ]]; then
+    printf '%s\n' "${metrics_payload}" > "${metrics_file}"
+    have_metrics=1
+  fi
+
+  if bus_payload="$(curl -fsS -m 8 "${gateway_base_url}/portal/api/v1/bus/observability" 2>/dev/null)"; then
+    printf '%s\n' "${bus_payload}" > "${bus_file}"
+    have_bus=1
+  fi
+
+  if graphql_payload="$(curl -fsS -m 8 -H 'Content-Type: application/json' -d "${graphql_bus_watch_query}" "${graphql_url}" 2>/dev/null)"; then
+    if graphql_bus_watch_payload_valid "${graphql_payload}"; then
+      printf '%s\n' "${graphql_payload}" > "${graphql_file}"
+      have_graphql=1
+    fi
+  fi
+
+  if [[ "${have_bus}" == "1" || "${have_graphql}" == "1" ]]; then
+    write_feature_flag_snapshot "${graphql_file}" "${bus_file}" "${flags_file}" || true
+  fi
+
+  if [[ "${require_complete}" == "1" ]]; then
+    if [[ "${have_metrics}" != "1" || "${have_bus}" != "1" || "${have_graphql}" != "1" || ! -f "${flags_file}" ]]; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
+if [[ "${proof_artifacts_enabled}" == "1" ]]; then
+  start_captured=0
+  for _ in $(seq 1 5); do
+    if capture_proof_snapshot "${proof_dir}/start" "" 1; then
+      start_captured=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "${start_captured}" != "1" ]]; then
+    echo "proof mode: failed to capture required start artifacts" >&2
+    exit 1
+  fi
+  proof_next_sample_epoch="$(date +%s)"
+fi
+
 while [[ "$(date +%s)" -lt "${deadline}" ]]; do
   if metrics="$(curl -fsS -m 8 "${metrics_url}" 2>/dev/null)" && \
      graphql="$(curl -fsS -m 8 -H 'Content-Type: application/json' \
@@ -156,8 +360,18 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
     last_graphql="${graphql}"
     printf '%s\n' "${metrics}" > "${metrics_path}"
     printf '%s\n' "${graphql}" > "${graphql_path}"
+    if [[ "${proof_artifacts_enabled}" == "1" ]]; then
+      now_epoch="$(date +%s)"
+      if [[ "${now_epoch}" -ge "${proof_next_sample_epoch}" ]]; then
+        proof_sample_index=$((proof_sample_index + 1))
+        sample_prefix="${proof_samples_dir}/sample_$(printf '%04d' "${proof_sample_index}")"
+        capture_proof_snapshot "${sample_prefix}" "${metrics}" 0
+        proof_next_sample_epoch=$((now_epoch + proof_sample_interval_sec))
+      fi
+    fi
     if validate_snapshot "${metrics}" "${graphql}"; then
-      exit 0
+      smoke_ok=1
+      break
     fi
   fi
   sleep "${poll_interval_sec}"
@@ -170,8 +384,27 @@ if [[ -n "${last_graphql}" ]]; then
   printf '%s\n' "${last_graphql}" > "${graphql_path}"
 fi
 
-if [[ -n "${last_metrics}" && -n "${last_graphql}" ]]; then
-  validate_snapshot "${last_metrics}" "${last_graphql}"
+if [[ "${proof_artifacts_enabled}" == "1" ]]; then
+  end_captured=0
+  for _ in $(seq 1 5); do
+    if capture_proof_snapshot "${proof_dir}/end" "${last_metrics}" 1; then
+      end_captured=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "${end_captured}" != "1" ]]; then
+    echo "proof mode: failed to capture required end artifacts" >&2
+    exit 1
+  fi
+fi
+
+if [[ "${smoke_ok}" -eq 1 ]]; then
+  exit 0
+fi
+
+if [[ -n "${last_metrics}" && -n "${last_graphql}" ]] && validate_snapshot "${last_metrics}" "${last_graphql}"; then
+  exit 0
 fi
 
 echo "passive smoke: timed out waiting for ${case_id} (${passive_mode}) at ${gateway_base_url}" >&2

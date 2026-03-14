@@ -136,3 +136,23 @@ func TestRunSmokeFromEnvMissingConfig(t *testing.T) {
 		t.Fatalf("expected errSmokeConfigMissing, got %v", err)
 	}
 }
+
+func TestLoadSmokeConfigFallbackToAGENTSLocal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS-local.md")
+	content := "```yaml\nenh:\n  type: tcp\n  host: \"127.0.0.1\"\n  port: 7624\nsmoke:\n  profile: ens\n```\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	cfg, loadedPath, err := loadSmokeConfig(dir)
+	if err != nil {
+		t.Fatalf("loadSmokeConfig error = %v", err)
+	}
+	if loadedPath != path {
+		t.Fatalf("loaded path = %q; want %q", loadedPath, path)
+	}
+	if cfg.Smoke.Profile != string(TransportENS) {
+		t.Fatalf("profile = %q; want %q", cfg.Smoke.Profile, string(TransportENS))
+	}
+}

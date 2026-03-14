@@ -146,9 +146,12 @@ type CylinderStatus struct {
 }
 
 type EnergySeries struct {
-	Today   float64
-	Yearly  []float64
-	Monthly []float64
+	Today       float64
+	Yearly      []float64
+	Monthly     []float64
+	TodayMeta   EnergyPointMeta
+	YearlyMeta  []EnergyPointMeta
+	MonthlyMeta []EnergyPointMeta
 }
 
 type EnergyChannel struct {
@@ -160,6 +163,32 @@ type EnergyTotals struct {
 	Gas      EnergyChannel
 	Electric EnergyChannel
 	Solar    EnergyChannel
+}
+
+type EnergyFreshnessState string
+
+const (
+	EnergyFreshnessStateNeverSeen   EnergyFreshnessState = "never_seen"
+	EnergyFreshnessStateFresh       EnergyFreshnessState = "fresh"
+	EnergyFreshnessStateWarmingUp   EnergyFreshnessState = "warming_up"
+	EnergyFreshnessStateStale       EnergyFreshnessState = "stale"
+	EnergyFreshnessStateUnavailable EnergyFreshnessState = "unavailable"
+)
+
+type EnergyProvenance string
+
+const (
+	EnergyProvenanceNone      EnergyProvenance = "none"
+	EnergyProvenanceRegister  EnergyProvenance = "register"
+	EnergyProvenanceBroadcast EnergyProvenance = "broadcast"
+)
+
+type EnergyPointMeta struct {
+	FreshnessState  EnergyFreshnessState
+	Provenance      EnergyProvenance
+	LastObservedUTC string
+	AgeSeconds      float64
+	Stale           bool
 }
 
 type BoilerState struct {

@@ -112,6 +112,12 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
+	if busObservability != nil && semanticRuntime.Provider() != nil {
+		semanticRuntime.Provider().SetEnergyPassiveStateProvider(func() string {
+			snapshot := busObservability.Snapshot()
+			return snapshot.Summary.Status.Capability.PassiveState
+		})
+	}
 
 	var semanticBarrier chan struct{}
 	if cfg.ScanOnStart && shouldStartPassiveObserveFirst(cfg) {
@@ -783,11 +789,39 @@ func mapPortalEnergyChannel(channel graphql.EnergyChannel) portal.SemanticEnergy
 }
 
 func mapPortalEnergySeries(series graphql.EnergySeries) portal.SemanticEnergySeries {
-	out := portal.SemanticEnergySeries{Today: series.Today}
+	out := portal.SemanticEnergySeries{
+		Today:     series.Today,
+		TodayMeta: mapPortalEnergyPointMeta(series.TodayMeta),
+	}
 	if len(series.Yearly) > 0 {
 		out.Yearly = append([]float64(nil), series.Yearly...)
 	}
+	if len(series.Monthly) > 0 {
+		out.Monthly = append([]float64(nil), series.Monthly...)
+	}
+	if len(series.YearlyMeta) > 0 {
+		out.YearlyMeta = make([]portal.SemanticEnergyPointMeta, len(series.YearlyMeta))
+		for i, meta := range series.YearlyMeta {
+			out.YearlyMeta[i] = mapPortalEnergyPointMeta(meta)
+		}
+	}
+	if len(series.MonthlyMeta) > 0 {
+		out.MonthlyMeta = make([]portal.SemanticEnergyPointMeta, len(series.MonthlyMeta))
+		for i, meta := range series.MonthlyMeta {
+			out.MonthlyMeta[i] = mapPortalEnergyPointMeta(meta)
+		}
+	}
 	return out
+}
+
+func mapPortalEnergyPointMeta(meta graphql.EnergyPointMeta) portal.SemanticEnergyPointMeta {
+	return portal.SemanticEnergyPointMeta{
+		FreshnessState:  string(meta.FreshnessState),
+		Provenance:      string(meta.Provenance),
+		LastObservedUTC: meta.LastObservedUTC,
+		AgeSeconds:      meta.AgeSeconds,
+		Stale:           meta.Stale,
+	}
 }
 
 func mapPortalBoilerStatus(status *graphql.BoilerStatus) *portal.SemanticBoilerStatus {

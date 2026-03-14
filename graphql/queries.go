@@ -380,6 +380,68 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		},
 	})
 
+	energyPointMetaType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "EnergyPointMeta",
+		Fields: graphqlgo.Fields{
+			"freshnessState": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					meta, ok := params.Source.(EnergyPointMeta)
+					if !ok {
+						return string(EnergyFreshnessStateNeverSeen), nil
+					}
+					if meta.FreshnessState == "" {
+						return string(EnergyFreshnessStateNeverSeen), nil
+					}
+					return string(meta.FreshnessState), nil
+				},
+			},
+			"provenance": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					meta, ok := params.Source.(EnergyPointMeta)
+					if !ok {
+						return string(EnergyProvenanceNone), nil
+					}
+					if meta.Provenance == "" {
+						return string(EnergyProvenanceNone), nil
+					}
+					return string(meta.Provenance), nil
+				},
+			},
+			"lastObservedUtc": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					meta, ok := params.Source.(EnergyPointMeta)
+					if !ok || meta.LastObservedUTC == "" {
+						return nil, nil
+					}
+					return meta.LastObservedUTC, nil
+				},
+			},
+			"ageSeconds": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					meta, ok := params.Source.(EnergyPointMeta)
+					if !ok || meta.LastObservedUTC == "" {
+						return nil, nil
+					}
+					return meta.AgeSeconds, nil
+				},
+			},
+			"stale": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					meta, ok := params.Source.(EnergyPointMeta)
+					if !ok {
+						return false, nil
+					}
+					return meta.Stale, nil
+				},
+			},
+		},
+	})
+
 	energySeriesType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "EnergySeries",
 		Fields: graphqlgo.Fields{
@@ -411,6 +473,39 @@ func buildSchemaTypes() graphqlSchemaTypes {
 						return nil, nil
 					}
 					return series.Monthly, nil
+				},
+			},
+			"todayMeta": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(energyPointMetaType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					series, ok := params.Source.(EnergySeries)
+					if !ok {
+						return EnergyPointMeta{}, nil
+					}
+					return series.TodayMeta, nil
+				},
+			},
+			"yearlyMeta": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(energyPointMetaType))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					series, ok := params.Source.(EnergySeries)
+					if !ok {
+						return []EnergyPointMeta{}, nil
+					}
+					if len(series.YearlyMeta) == 0 {
+						return []EnergyPointMeta{}, nil
+					}
+					return series.YearlyMeta, nil
+				},
+			},
+			"monthlyMeta": &graphqlgo.Field{
+				Type: graphqlgo.NewList(graphqlgo.NewNonNull(energyPointMetaType)),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					series, ok := params.Source.(EnergySeries)
+					if !ok {
+						return nil, nil
+					}
+					return series.MonthlyMeta, nil
 				},
 			},
 		},

@@ -841,6 +841,22 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		))
 	}
 
+	energyStates := []string{"never_seen", "fresh", "warming_up", "stale", "unavailable"}
+	writer.writeHelp("energy_broadcast_selectors", "Current energy selector freshness state counts.")
+	writer.writeType("energy_broadcast_selectors", "gauge")
+	for _, state := range energyStates {
+		writer.writeGaugeSample("energy_broadcast_selectors", float64(readExpvarNamedMapInt("energy_broadcast_selectors", state)), labelMap("state", state))
+	}
+
+	writer.writeHelp("energy_broadcast_freshness_transitions_total", "Energy freshness state transitions by selector.")
+	writer.writeType("energy_broadcast_freshness_transitions_total", "counter")
+	for _, from := range energyStates {
+		for _, to := range energyStates {
+			key := from + "->" + to
+			writer.writeCounterSample("energy_broadcast_freshness_transitions_total", float64(readExpvarNamedMapInt("energy_broadcast_freshness_transitions_total", key)), labelMap("from", from, "to", to))
+		}
+	}
+
 	return buffer.String()
 }
 
@@ -1914,6 +1930,21 @@ func readExpvarMapInt(value *expvar.Map, key string) int64 {
 		}
 	})
 	return result
+}
+
+func readExpvarNamedMapInt(name, key string) int64 {
+	if strings.TrimSpace(name) == "" {
+		return 0
+	}
+	value := expvar.Get(name)
+	if value == nil {
+		return 0
+	}
+	mapped, ok := value.(*expvar.Map)
+	if !ok {
+		return 0
+	}
+	return readExpvarMapInt(mapped, key)
 }
 
 func readDedupDegradedState() float64 {

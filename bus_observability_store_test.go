@@ -828,6 +828,24 @@ func TestBusObservabilityStoreTransportLimitationClassifiesBroadcastUnavailable(
 	}
 }
 
+func TestBusObservabilityStoreRenderPrometheusIncludesEnergyBroadcastFreshnessMetrics(t *testing.T) {
+	store := NewBusObservabilityStore(DefaultConfig())
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `# HELP energy_broadcast_selectors`) {
+		t.Fatalf("RenderPrometheus missing energy_broadcast_selectors help:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `energy_broadcast_selectors{state="never_seen"}`) {
+		t.Fatalf("RenderPrometheus missing energy_broadcast_selectors never_seen sample:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `# HELP energy_broadcast_freshness_transitions_total`) {
+		t.Fatalf("RenderPrometheus missing energy_broadcast_freshness_transitions_total help:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `energy_broadcast_freshness_transitions_total{from="never_seen",to="fresh"}`) {
+		t.Fatalf("RenderPrometheus missing energy_broadcast_freshness_transitions_total sample:\n%s", metrics)
+	}
+}
+
 func watchEfficiencyStateFastDescriptor(key WatchKey) WatchDescriptor {
 	return WatchDescriptor{
 		Key:               key,

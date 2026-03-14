@@ -20,6 +20,13 @@ const (
 var (
 	semanticEnergyMergesTotal     = expvar.NewMap("semantic_energy_merges_total")
 	semanticEnergyRejectionsTotal = expvar.NewMap("semantic_energy_rejections_total")
+	energyBroadcastSelectors      = expvar.NewMap("energy_broadcast_selectors")
+	energyBroadcastTransitions    = expvar.NewMap("energy_broadcast_freshness_transitions_total")
+)
+
+const (
+	energyBroadcastWarmupTTL      = 3 * time.Minute
+	energyBroadcastUnavailableTTL = 45 * time.Minute
 )
 
 // energyDataPoint tracks a single energy value with its source and ingest time.
@@ -66,15 +73,21 @@ func canonicalizeUsage(usage string) string {
 //	| register        | register       | no              | reject (monotonic)                  |
 //	| register        | broadcast      | any             | reject (broadcast never overwrites) |
 type energyMergeStore struct {
-	mu       sync.RWMutex
-	points   map[energyMergeKey]energyDataPoint
-	revision uint64
+	mu                   sync.RWMutex
+	points               map[energyMergeKey]energyDataPoint
+	revision             uint64
+	broadcastStates      map[energyMergeKey]EnergyFreshnessState
+	broadcastStateCounts map[EnergyFreshnessState]int
 }
 
 func newEnergyMergeStore() *energyMergeStore {
-	return &energyMergeStore{
-		points: make(map[energyMergeKey]energyDataPoint),
+	store := &energyMergeStore{
+		points:               make(map[energyMergeKey]energyDataPoint),
+		broadcastStates:      make(map[energyMergeKey]EnergyFreshnessState),
+		broadcastStateCounts: make(map[EnergyFreshnessState]int),
 	}
+	store.reconcileBroadcastStatesLocked(time.Now(), "")
+	return store
 }
 
 // Apply attempts to merge an incoming energy value into the store.
@@ -83,6 +96,9 @@ func newEnergyMergeStore() *energyMergeStore {
 func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source EnergyDataSource, ingestAt time.Time) bool {
 	key.Usage = canonicalizeUsage(key.Usage)
 	sourceLabel := energySourceLabel(source)
+	if ingestAt.IsZero() {
+		ingestAt = time.Now()
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -93,6 +109,7 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
 		s.revision++
 		semanticEnergyMergesTotal.Add(sourceLabel, 1)
+		s.reconcileBroadcastStatesLocked(ingestAt, "")
 		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
 		return true
 	}
@@ -108,6 +125,7 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
 		s.revision++
 		semanticEnergyMergesTotal.Add(sourceLabel, 1)
+		s.reconcileBroadcastStatesLocked(ingestAt, "")
 		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
 		return true
 	default:
@@ -120,6 +138,7 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
 		s.revision++
 		semanticEnergyMergesTotal.Add(sourceLabel, 1)
+		s.reconcileBroadcastStatesLocked(ingestAt, "")
 		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
 		return true
 	}
@@ -143,12 +162,18 @@ func (s *energyMergeStore) Revision() uint64 {
 
 // Snapshot builds an EnergyTotals from all current points in the store.
 func (s *energyMergeStore) Snapshot() *EnergyTotals {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	return s.SnapshotWithContext(time.Now(), "")
+}
 
-	if len(s.points) == 0 {
+func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState string) *EnergyTotals {
+	if s == nil {
 		return nil
 	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	totals := &EnergyTotals{}
 
@@ -165,30 +190,215 @@ func (s *energyMergeStore) Snapshot() *EnergyTotals {
 		switch key.Period {
 		case "day":
 			series.Today = point.Value
+			series.TodayMeta = energyPointMetaFromDataPoint(&point, energyFreshnessStateFor(point, now, passiveState), now)
 		case "year":
 			if len(series.Yearly) < 2 {
 				series.Yearly = make([]float64, 2)
 			}
+			if len(series.YearlyMeta) < 2 {
+				series.YearlyMeta = make([]EnergyPointMeta, 2)
+			}
 			switch key.YearKind {
 			case "previous":
 				series.Yearly[0] = point.Value
+				series.YearlyMeta[0] = energyPointMetaFromDataPoint(&point, energyFreshnessStateFor(point, now, passiveState), now)
 			case "current":
 				series.Yearly[1] = point.Value
+				series.YearlyMeta[1] = energyPointMetaFromDataPoint(&point, energyFreshnessStateFor(point, now, passiveState), now)
 			}
 		case "month":
 			if len(series.Monthly) < 2 {
 				series.Monthly = make([]float64, 2)
 			}
+			if len(series.MonthlyMeta) < 2 {
+				series.MonthlyMeta = make([]EnergyPointMeta, 2)
+			}
 			switch key.YearKind {
 			case "previous":
 				series.Monthly[0] = point.Value
+				series.MonthlyMeta[0] = energyPointMetaFromDataPoint(&point, energyFreshnessStateFor(point, now, passiveState), now)
 			case "current":
 				series.Monthly[1] = point.Value
+				series.MonthlyMeta[1] = energyPointMetaFromDataPoint(&point, energyFreshnessStateFor(point, now, passiveState), now)
 			}
 		}
 	}
 
+	// Ensure all B516 selectors are observable with explicit freshness metadata,
+	// even when the value has never been seen.
+	for _, key := range energyBroadcastSelectorCatalog() {
+		channel := mergeSelectChannel(totals, key.Channel)
+		if channel == nil {
+			continue
+		}
+		series := mergeSelectUsage(channel, key.Usage)
+		if series == nil {
+			continue
+		}
+		point, exists := s.points[key]
+		state := energyFreshnessForOptionalPoint(exists, point, now, passiveState)
+		meta := energyPointMetaFromOptionalPoint(exists, point, state, now)
+		switch key.Period {
+		case "day":
+			if series.TodayMeta.FreshnessState == "" {
+				series.TodayMeta = meta
+			}
+		case "year":
+			if len(series.YearlyMeta) < 2 {
+				series.YearlyMeta = make([]EnergyPointMeta, 2)
+			}
+			if key.YearKind == "previous" && series.YearlyMeta[0].FreshnessState == "" {
+				series.YearlyMeta[0] = meta
+			}
+			if key.YearKind == "current" && series.YearlyMeta[1].FreshnessState == "" {
+				series.YearlyMeta[1] = meta
+			}
+		}
+	}
+
+	s.reconcileBroadcastStatesLocked(now, passiveState)
+
+	if len(s.points) == 0 {
+		// Preserve historical behavior: empty merge store reports nil totals.
+		return nil
+	}
 	return totals
+}
+
+func energyPointMetaFromDataPoint(point *energyDataPoint, state EnergyFreshnessState, now time.Time) EnergyPointMeta {
+	if point == nil {
+		return EnergyPointMeta{
+			FreshnessState: state,
+			Provenance:     EnergyProvenanceNone,
+		}
+	}
+	return energyPointMetaFromOptionalPoint(true, *point, state, now)
+}
+
+func energyPointMetaFromOptionalPoint(exists bool, point energyDataPoint, state EnergyFreshnessState, now time.Time) EnergyPointMeta {
+	meta := EnergyPointMeta{
+		FreshnessState: state,
+		Provenance:     EnergyProvenanceNone,
+	}
+	if !exists {
+		return meta
+	}
+	if point.Source == EnergySourceRegister {
+		meta.Provenance = EnergyProvenanceRegister
+	} else {
+		meta.Provenance = EnergyProvenanceBroadcast
+	}
+	if !point.IngestAt.IsZero() {
+		meta.LastObservedUTC = point.IngestAt.UTC().Format(time.RFC3339)
+		age := now.Sub(point.IngestAt)
+		if age < 0 {
+			age = 0
+		}
+		meta.AgeSeconds = age.Seconds()
+	}
+	meta.Stale = state == EnergyFreshnessStateStale || state == EnergyFreshnessStateUnavailable
+	return meta
+}
+
+func energyFreshnessStateFor(point energyDataPoint, now time.Time, passiveState string) EnergyFreshnessState {
+	return energyFreshnessForOptionalPoint(true, point, now, passiveState)
+}
+
+func energyFreshnessForOptionalPoint(exists bool, point energyDataPoint, now time.Time, passiveState string) EnergyFreshnessState {
+	if !exists {
+		switch passiveState {
+		case "unavailable":
+			return EnergyFreshnessStateUnavailable
+		case "warming_up":
+			return EnergyFreshnessStateWarmingUp
+		default:
+			return EnergyFreshnessStateNeverSeen
+		}
+	}
+
+	if point.Source == EnergySourceRegister {
+		return EnergyFreshnessStateFresh
+	}
+
+	age := now.Sub(point.IngestAt)
+	if age < 0 {
+		age = 0
+	}
+	switch passiveState {
+	case "warming_up":
+		return EnergyFreshnessStateWarmingUp
+	case "unavailable":
+		if age >= energyBroadcastUnavailableTTL {
+			return EnergyFreshnessStateUnavailable
+		}
+		return EnergyFreshnessStateStale
+	}
+	if age <= energyBroadcastWarmupTTL {
+		return EnergyFreshnessStateWarmingUp
+	}
+	return EnergyFreshnessStateStale
+}
+
+func (s *energyMergeStore) reconcileBroadcastStatesLocked(now time.Time, passiveState string) {
+	nextCounts := make(map[EnergyFreshnessState]int)
+	for _, key := range energyBroadcastSelectorCatalog() {
+		point, exists := s.points[key]
+		nextState := energyFreshnessForOptionalPoint(exists, point, now, passiveState)
+		prevState := s.broadcastStates[key]
+		if prevState == "" {
+			prevState = EnergyFreshnessStateNeverSeen
+		}
+		if prevState != nextState {
+			energyBroadcastTransitions.Add(string(prevState)+"->"+string(nextState), 1)
+		}
+		s.broadcastStates[key] = nextState
+		nextCounts[nextState]++
+	}
+	for _, state := range energyFreshnessStates() {
+		delta := nextCounts[state] - s.broadcastStateCounts[state]
+		if delta != 0 {
+			energyBroadcastSelectors.Add(string(state), int64(delta))
+		}
+		s.broadcastStateCounts[state] = nextCounts[state]
+	}
+}
+
+func energyFreshnessStates() []EnergyFreshnessState {
+	return []EnergyFreshnessState{
+		EnergyFreshnessStateNeverSeen,
+		EnergyFreshnessStateFresh,
+		EnergyFreshnessStateWarmingUp,
+		EnergyFreshnessStateStale,
+		EnergyFreshnessStateUnavailable,
+	}
+}
+
+func energyBroadcastSelectorCatalog() []energyMergeKey {
+	channels := []string{"gas", "electricity", "solar"}
+	usages := []string{"hot_water", "climate"}
+	out := make([]energyMergeKey, 0, len(channels)*len(usages)*3)
+	for _, channel := range channels {
+		for _, usage := range usages {
+			out = append(out, energyMergeKey{
+				Channel: channel,
+				Usage:   usage,
+				Period:  "day",
+			})
+			out = append(out, energyMergeKey{
+				Channel:  channel,
+				Usage:    usage,
+				Period:   "year",
+				YearKind: "previous",
+			})
+			out = append(out, energyMergeKey{
+				Channel:  channel,
+				Usage:    usage,
+				Period:   "year",
+				YearKind: "current",
+			})
+		}
+	}
+	return out
 }
 
 // mergeSelectUsage returns a pointer to the EnergySeries for the canonical usage.

@@ -315,7 +315,10 @@ func mapEnergyChannel(channel graphql.EnergyChannel) mcp.EnergyChannel {
 }
 
 func mapEnergySeries(series graphql.EnergySeries) mcp.EnergySeries {
-	out := mcp.EnergySeries{Today: series.Today}
+	out := mcp.EnergySeries{
+		Today:     series.Today,
+		TodayMeta: mapEnergyPointMeta(series.TodayMeta),
+	}
 	if len(series.Yearly) > 0 {
 		out.Yearly = make([]float64, len(series.Yearly))
 		copy(out.Yearly, series.Yearly)
@@ -324,7 +327,29 @@ func mapEnergySeries(series graphql.EnergySeries) mcp.EnergySeries {
 		out.Monthly = make([]float64, len(series.Monthly))
 		copy(out.Monthly, series.Monthly)
 	}
+	if len(series.YearlyMeta) > 0 {
+		out.YearlyMeta = make([]mcp.EnergyPointMeta, len(series.YearlyMeta))
+		for i, meta := range series.YearlyMeta {
+			out.YearlyMeta[i] = mapEnergyPointMeta(meta)
+		}
+	}
+	if len(series.MonthlyMeta) > 0 {
+		out.MonthlyMeta = make([]mcp.EnergyPointMeta, len(series.MonthlyMeta))
+		for i, meta := range series.MonthlyMeta {
+			out.MonthlyMeta[i] = mapEnergyPointMeta(meta)
+		}
+	}
 	return out
+}
+
+func mapEnergyPointMeta(meta graphql.EnergyPointMeta) mcp.EnergyPointMeta {
+	return mcp.EnergyPointMeta{
+		FreshnessState:  string(meta.FreshnessState),
+		Provenance:      string(meta.Provenance),
+		LastObservedUTC: meta.LastObservedUTC,
+		AgeSeconds:      meta.AgeSeconds,
+		Stale:           meta.Stale,
+	}
 }
 
 func (adapter mcpSemanticProviderAdapter) Schedules() *mcp.ScheduleStatus {

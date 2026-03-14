@@ -997,6 +997,25 @@ func TestHandleAdjudicatedPassiveEvent_UnmatchedValueBearingB524ReadWritesShadow
 	}
 }
 
+func TestPassiveShadowLaneEnabled_EnergyMergeOnlyPolicyDisabled(t *testing.T) {
+	t.Parallel()
+
+	flags := ebusgateway.NormalizeObserveFirstFeatureFlags(
+		true,
+		true,
+		true,
+		ebusgateway.ObserveFirstExternalWritePolicyRecordOnly,
+	)
+	policy := ebusgateway.ObserveFirstFamilyPolicy{
+		RequestIntent:     ebusgateway.ObserveFirstRequestIntentRead,
+		DirectApplyPolicy: ebusgateway.ObserveFirstDirectApplyPolicyEnergyMergeOnly,
+	}
+
+	if passiveShadowLaneEnabled(flags, policy) {
+		t.Fatal("passiveShadowLaneEnabled() = true; want false for energy_merge_only carve-out")
+	}
+}
+
 func TestHandleAdjudicatedPassiveEvent_UnmatchedExternalWriteInvalidatesShadow(t *testing.T) {
 	t.Parallel()
 
@@ -2886,6 +2905,47 @@ func TestRefreshEnergy_ReadFailurePreservesLastKnown(t *testing.T) {
 	}
 	if len(after.Gas.DHW.Yearly) != len(before.Gas.DHW.Yearly) || after.Gas.DHW.Yearly[1] != before.Gas.DHW.Yearly[1] {
 		t.Fatalf("Gas.DHW.Yearly after failed refresh = %#v; want preserved %#v", after.Gas.DHW.Yearly, before.Gas.DHW.Yearly)
+	}
+}
+
+func TestPublishEnergyTotals_PublishesProviderSnapshot(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	if !provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
+		Channel: "gas",
+		Usage:   "climate",
+		Period:  "day",
+	}, 4.25) {
+		t.Fatal("ApplyEnergyFromRegister() = false; want true")
+	}
+
+	hub := graphql.NewBroadcastHub(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	subscription, err := hub.SubscribeEnergy(ctx)
+	if err != nil {
+		t.Fatalf("SubscribeEnergy() error = %v", err)
+	}
+
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		hub:      hub,
+	}
+	poller.publishEnergyTotals()
+
+	select {
+	case raw := <-subscription:
+		totals, ok := raw.(*graphql.EnergyTotals)
+		if !ok {
+			t.Fatalf("energy payload type = %T; want *graphql.EnergyTotals", raw)
+		}
+		if totals.Gas.Climate.Today != 4.25 {
+			t.Fatalf("energy payload gas.climate.today = %v; want 4.25", totals.Gas.Climate.Today)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for energy publish")
 	}
 }
 

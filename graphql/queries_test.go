@@ -1502,7 +1502,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		request := graphqlclient.NewRequest(`
 			query {
 				energyTotals {
-					gas { dhw { today yearly } climate { today yearly } }
+					gas { dhw { today yearly todayMeta { freshnessState provenance stale } } climate { today yearly todayMeta { freshnessState provenance stale } } }
 					electric { dhw { today yearly } climate { today yearly } }
 					solar { dhw { today yearly } climate { today yearly } }
 				}
@@ -1513,12 +1513,22 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			EnergyTotals *struct {
 				Gas struct {
 					DHW struct {
-						Today  float64   `json:"today"`
-						Yearly []float64 `json:"yearly"`
+						Today     float64   `json:"today"`
+						Yearly    []float64 `json:"yearly"`
+						TodayMeta struct {
+							FreshnessState string `json:"freshnessState"`
+							Provenance     string `json:"provenance"`
+							Stale          bool   `json:"stale"`
+						} `json:"todayMeta"`
 					} `json:"dhw"`
 					Climate struct {
-						Today  float64   `json:"today"`
-						Yearly []float64 `json:"yearly"`
+						Today     float64   `json:"today"`
+						Yearly    []float64 `json:"yearly"`
+						TodayMeta struct {
+							FreshnessState string `json:"freshnessState"`
+							Provenance     string `json:"provenance"`
+							Stale          bool   `json:"stale"`
+						} `json:"todayMeta"`
 					} `json:"climate"`
 				} `json:"gas"`
 				Electric struct {
@@ -1555,6 +1565,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if len(response.EnergyTotals.Gas.DHW.Yearly) != 2 || response.EnergyTotals.Gas.DHW.Yearly[0] != 120.0 || response.EnergyTotals.Gas.DHW.Yearly[1] != 240.0 {
 			t.Fatalf("gas.dhw.yearly = %#v; want [120 240]", response.EnergyTotals.Gas.DHW.Yearly)
+		}
+		if response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState != "fresh" || response.EnergyTotals.Gas.DHW.TodayMeta.Provenance != "register" || response.EnergyTotals.Gas.DHW.TodayMeta.Stale {
+			t.Fatalf("gas.dhw.todayMeta = %+v; want fresh/register/stale=false", response.EnergyTotals.Gas.DHW.TodayMeta)
 		}
 		if response.EnergyTotals.Electric.Climate.Today != 1.25 {
 			t.Fatalf("electric.climate.today = %v; want 1.25", response.EnergyTotals.Electric.Climate.Today)

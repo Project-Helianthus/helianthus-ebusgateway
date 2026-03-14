@@ -20,6 +20,7 @@ MIN_TOTAL_CANARIES = 6
 MIN_FAMILY_COUNTS = {"B524": 2, "B509": 2}
 MAX_RETRIES = 3
 CANARY_PHASE_PREFIX = "canary_phase_"
+MANIFEST_SCHEMA = "p03_canary_manifest_v1"
 
 
 def utc_now() -> str:
@@ -140,6 +141,9 @@ def load_and_validate_manifest(path: pathlib.Path, require_case_id: str | None =
     payload = load_json(path)
     if not isinstance(payload, dict):
         raise ValueError("manifest must be a JSON object")
+    got_schema = str(payload.get("schema", "")).strip()
+    if got_schema != MANIFEST_SCHEMA:
+        raise ValueError(f"manifest schema={got_schema!r}; want {MANIFEST_SCHEMA!r}")
     if require_case_id:
         got_case = str(payload.get("case_id", "")).strip()
         if got_case != require_case_id:
@@ -340,6 +344,7 @@ def summarize_run(
         raise ValueError("no current-run canary phase artifacts found (stale artifacts rejected)")
 
     phases_seen = set()
+    interval_phase_count = 0
     totals = {"results": 0, "pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}
     per_canary: Dict[str, Dict[str, Any]] = {}
     for path in phase_files:
@@ -347,6 +352,8 @@ def summarize_run(
         phase = str(payload.get("phase", "")).strip()
         if phase:
             phases_seen.add(phase)
+            if re.fullmatch(r"sample_[0-9]+", phase):
+                interval_phase_count += 1
         entries = payload.get("results")
         if not isinstance(entries, list):
             continue
@@ -372,6 +379,8 @@ def summarize_run(
 
     if "start" not in phases_seen or "end" not in phases_seen:
         raise ValueError("missing current-run start/end canary artifacts (stale artifact rejection)")
+    if interval_phase_count < 1:
+        raise ValueError("missing current-run interval canary artifacts (no elapsed sample phase)")
 
     return {
         "schema": "p03_canary_overall_summary_v1",
@@ -383,6 +392,7 @@ def summarize_run(
         "phase_files_used": len(phase_files),
         "phase_files_stale_ignored": stale_ignored,
         "phases_seen": sorted(phases_seen),
+        "interval_phase_count": interval_phase_count,
         "totals": totals,
         "per_canary": per_canary,
         "overall_conclusive_count": totals["conclusive"],

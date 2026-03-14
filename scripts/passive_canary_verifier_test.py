@@ -18,12 +18,26 @@ def write_json(path: pathlib.Path, payload: object) -> None:
 
 
 class ManifestValidationTests(unittest.TestCase):
+    def test_manifest_requires_expected_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = pathlib.Path(temp_dir) / "manifest.json"
+            payload = verifier.load_json(
+                SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json"
+            )
+            payload["schema"] = "unexpected_schema"
+            write_json(manifest_path, payload)
+
+            with self.assertRaises(ValueError) as ctx:
+                verifier.load_and_validate_manifest(manifest_path, "P03")
+            self.assertIn("schema", str(ctx.exception))
+
     def test_manifest_requires_b509_minimum(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manifest_path = pathlib.Path(temp_dir) / "manifest.json"
             write_json(
                 manifest_path,
                 {
+                    "schema": "p03_canary_manifest_v1",
                     "case_id": "P03",
                     "canaries": [
                         {
@@ -171,6 +185,30 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 verifier.summarize_run(proof_dir, "new-run")
             self.assertIn("stale artifacts", str(ctx.exception))
+
+    def test_summary_requires_interval_sample_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_json(
+                proof_dir / "canary_phase_start.json",
+                {
+                    "run_id": "run-1",
+                    "phase": "start",
+                    "results": [{"id": "a", "status": "pass"}],
+                },
+            )
+            write_json(
+                proof_dir / "canary_phase_end.json",
+                {
+                    "run_id": "run-1",
+                    "phase": "end",
+                    "results": [{"id": "a", "status": "pass"}],
+                },
+            )
+
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1")
+            self.assertIn("interval", str(ctx.exception))
 
 
 if __name__ == "__main__":

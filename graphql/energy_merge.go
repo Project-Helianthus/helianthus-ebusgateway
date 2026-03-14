@@ -167,8 +167,8 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 	if now.IsZero() {
 		now = time.Now()
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	totals := &EnergyTotals{}
 

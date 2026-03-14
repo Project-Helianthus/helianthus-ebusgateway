@@ -43,7 +43,13 @@ timeout_sec="${PASSIVE_SMOKE_TIMEOUT_SEC:-120}"
 log_dir="${MATRIX_LOG_DIR:-${REPO_ROOT}/results/${case_id}/logs}"
 gw15_proof_mode="${MATRIX_GW15_PROOF_MODE:-0}"
 proof_artifacts_enabled="${PASSIVE_PROOF_ARTIFACTS_ENABLED:-${gw15_proof_mode}}"
-proof_sample_interval_sec="${PASSIVE_PROOF_SAMPLE_INTERVAL_SEC:-5}"
+if [[ -n "${PASSIVE_PROOF_SAMPLE_INTERVAL_SEC:-}" ]]; then
+  proof_sample_interval_sec="${PASSIVE_PROOF_SAMPLE_INTERVAL_SEC}"
+elif [[ "${gw15_proof_mode}" == "1" ]]; then
+  proof_sample_interval_sec=3600
+else
+  proof_sample_interval_sec=5
+fi
 
 mkdir -p "${log_dir}"
 
@@ -60,7 +66,11 @@ last_graphql=""
 smoke_ok=0
 
 if [[ ! "${proof_sample_interval_sec}" =~ ^[0-9]+$ ]] || [[ "${proof_sample_interval_sec}" -lt 1 ]]; then
-  proof_sample_interval_sec=5
+  if [[ "${gw15_proof_mode}" == "1" ]]; then
+    proof_sample_interval_sec=3600
+  else
+    proof_sample_interval_sec=5
+  fi
 fi
 if [[ "${proof_artifacts_enabled}" == "1" ]]; then
   mkdir -p "${proof_samples_dir}"

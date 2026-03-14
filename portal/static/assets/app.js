@@ -173,6 +173,10 @@ class PortalShell extends HTMLElement {
       clearInterval(this.snapshotInterval);
       this.snapshotInterval = undefined;
     }
+    if (this.busObservabilityInterval) {
+      clearInterval(this.busObservabilityInterval);
+      this.busObservabilityInterval = undefined;
+    }
     if (this._explorerPollTimer) {
       clearInterval(this._explorerPollTimer);
       this._explorerPollTimer = undefined;
@@ -273,6 +277,7 @@ class PortalShell extends HTMLElement {
     const sectionMap = {
       "section-registry": ["section-registry"],
       "section-semantic": ["section-semantic"],
+      "section-bus": ["section-bus"],
       "section-projection": ["section-projection"],
       "section-explorer": ["section-explorer"],
       "section-timeline": ["section-timeline", "section-provenance"],
@@ -295,6 +300,7 @@ class PortalShell extends HTMLElement {
     const metaEl = this.querySelector('[data-role="meta"]');
     const listEl = this.querySelector('[data-role="registry-list"]');
     const semanticEl = this.querySelector('[data-role="semantic-list"]');
+    const busObservabilityEl = this.querySelector('[data-role="bus-observability"]');
     const projectionEl = this.querySelector('[data-role="projection-list"]');
     const searchInput = this.querySelector('[data-role="search-input"]');
     const searchList = this.querySelector('[data-role="search-list"]');
@@ -336,6 +342,20 @@ class PortalShell extends HTMLElement {
       }
       if (capabilities.semantic && semanticEl) {
         await this.loadSemanticPreview(semanticEl);
+      }
+      if (busObservabilityEl) {
+        busObservabilityEl.innerHTML = capabilities.bus_observability
+          ? "<li>Loading bus observability...</li>"
+          : "<li>Bus observability unavailable.</li>";
+      }
+      if (capabilities.bus_observability) {
+        await this.refreshBusObservability();
+        if (this.busObservabilityInterval) {
+          clearInterval(this.busObservabilityInterval);
+        }
+        this.busObservabilityInterval = setInterval(() => {
+          this.refreshBusObservability();
+        }, 3000);
       }
       if (capabilities.projection && projectionEl) {
         await this.loadProjectionPreview(projectionEl);
@@ -430,6 +450,7 @@ class PortalShell extends HTMLElement {
     const cap = capabilities || {};
     this.setNavState("registry", cap.registry);
     this.setNavState("semantic", cap.semantic);
+    this.setNavState("bus", cap.bus_observability);
     this.setNavState("projection", cap.projection);
     this.setNavState("explorer", cap.explorer);
     this.setNavState("timeline", cap.timeline || cap.provenance);
@@ -448,6 +469,89 @@ class PortalShell extends HTMLElement {
     if (bullet) {
       bullet.classList.toggle("available", Boolean(enabled));
       bullet.classList.toggle("unavailable", !enabled);
+    }
+  }
+
+  async refreshBusObservability() {
+    const listEl = this.querySelector('[data-role="bus-observability"]');
+    const bannerEl = this.querySelector('[data-role="bus-banner"]');
+    if (!listEl || !bannerEl) {
+      return;
+    }
+    try {
+      const response = await fetch("api/v1/bus/observability");
+      if (!response.ok) {
+        throw new Error(`status ${response.status}`);
+      }
+      const payload = await response.json();
+      const summary = payload && payload.status ? payload : payload?.summary;
+      if (!summary || !summary.status) {
+        throw new Error("missing status");
+      }
+      const status = summary.status || {};
+      const capability = status.capability || {};
+      const warmup = status.warmup || {};
+      const degraded = status.degraded || {};
+      const featureFlags = status.feature_flags || {};
+      const transportClass = String(status.transport_class || "unknown");
+      const passiveState = String(warmup.state || capability.passive_state || "unknown");
+      const warmupState = passiveState === "warming_up";
+      const degradedState = !warmupState && degraded.active === true;
+      const unavailableState =
+        !warmupState &&
+        !degradedState &&
+        (passiveState === "unavailable" || capability.passive_supported === false);
+      const viewState = warmupState
+        ? "warming_up"
+        : degradedState
+          ? "degraded"
+          : unavailableState
+            ? "unavailable"
+            : "available";
+
+      const stateLabel = {
+        available: "Passive observability available",
+        warming_up: "Passive warmup in progress",
+        degraded: "Observability degraded",
+        unavailable: "Passive observability unavailable",
+      }[viewState] || "Passive observability state unknown";
+
+      const reasons = Array.isArray(degraded.reasons) ? degraded.reasons : [];
+      const endpoint = capability.endpoint_state ? ` endpoint=${capability.endpoint_state}` : "";
+      const connected = capability.tap_connected === true ? " connected" : " disconnected";
+      let bannerText = `${stateLabel} (${transportClass}${endpoint}${connected})`;
+      if (transportClass === "ebusd-tcp" && (viewState === "degraded" || viewState === "unavailable")) {
+        bannerText += " | ebusd-tcp transport limits passive observe-first coverage.";
+      }
+      bannerEl.className = `bus-banner bus-state-${viewState}`;
+      bannerEl.textContent = bannerText;
+
+      const elapsedSeconds = Number(warmup.elapsed_seconds);
+      const elapsedLabel = Number.isFinite(elapsedSeconds) ? `${formatFixed(elapsedSeconds, 1)}s` : "n/a";
+      const completedTransactions = formatInteger(warmup.completed_transactions);
+      const requiredTransactions = formatInteger(warmup.required_transactions);
+      const passiveReason = capability.passive_reason ? String(capability.passive_reason) : "none";
+      const warmupBlocker = warmup.blocker ? String(warmup.blocker) : "none";
+      const completionMode = warmup.completion_mode ? String(warmup.completion_mode) : "n/a";
+      const normalization = Array.isArray(featureFlags.normalizations) && featureFlags.normalizations.length > 0
+        ? featureFlags.normalizations.join(", ")
+        : "none";
+
+      const rows = [
+        `transport=${escapeHtml(transportClass)} passive_supported=${escapeHtml(formatYesNo(capability.passive_supported))} passive_available=${escapeHtml(formatYesNo(capability.passive_available))}`,
+        `passive_state=${escapeHtml(passiveState)} passive_reason=${escapeHtml(passiveReason)}`,
+        `warmup blocker=${escapeHtml(warmupBlocker)} elapsed=${escapeHtml(elapsedLabel)} transactions=${escapeHtml(completedTransactions)}/${escapeHtml(requiredTransactions)} completion_mode=${escapeHtml(completionMode)}`,
+        `feature_flags observe_first_enabled=${escapeHtml(formatYesNo(featureFlags.observe_first_enabled))} state_direct_apply=${escapeHtml(formatYesNo(featureFlags.passive_state_direct_apply))} config_direct_apply=${escapeHtml(formatYesNo(featureFlags.passive_config_direct_apply))} external_write_policy=${escapeHtml(String(featureFlags.external_write_policy || "n/a"))} normalizations=${escapeHtml(normalization)}`,
+      ];
+      if (reasons.length > 0) {
+        rows.push(`degraded_reasons=${escapeHtml(reasons.join(", "))}`);
+      }
+      listEl.innerHTML = rows.map((row) => `<li>${row}</li>`).join("");
+    } catch (err) {
+      bannerEl.className = "bus-banner bus-state-unavailable";
+      bannerEl.textContent = "Bus observability endpoint unavailable";
+      listEl.innerHTML = "<li>Bus observability fetch failed.</li>";
+      console.error("bus observability query failed", err);
     }
   }
 
@@ -470,6 +574,7 @@ class PortalShell extends HTMLElement {
         streamStatus.textContent = `Stream live: layer=${layer} at=${at}`;
         this.scheduleTimelineRefresh();
         this.scheduleProvenanceRefresh();
+        this.refreshBusObservability();
         this.refreshSnapshots();
       } catch (err) {
         streamStatus.textContent = "Stream payload parse error";
@@ -1577,6 +1682,7 @@ class PortalShell extends HTMLElement {
             <h2>Views</h2>
             <button data-role="nav-registry" data-nav-target="section-registry" disabled><span class="nav-bullet"></span> Registry</button>
             <button data-role="nav-semantic" data-nav-target="section-semantic" disabled><span class="nav-bullet"></span> Semantic</button>
+            <button data-role="nav-bus" data-nav-target="section-bus" disabled><span class="nav-bullet"></span> Bus</button>
             <button data-role="nav-projection" data-nav-target="section-projection" disabled><span class="nav-bullet"></span> Projection</button>
             <button data-role="nav-explorer" data-nav-target="section-explorer" disabled><span class="nav-bullet"></span> Explorer</button>
             <button data-role="nav-timeline" data-nav-target="section-timeline" disabled><span class="nav-bullet"></span> Timeline</button>
@@ -1596,6 +1702,13 @@ class PortalShell extends HTMLElement {
               <h2>Semantic Preview</h2>
               <ul data-role="semantic-list">
                 <li>Loading semantic snapshot...</li>
+              </ul>
+            </section>
+            <section id="section-bus" class="registry-preview">
+              <h2>Bus Observability</h2>
+              <div class="bus-banner bus-state-unavailable" data-role="bus-banner">Loading bus observability...</div>
+              <ul data-role="bus-observability">
+                <li>Loading bus observability...</li>
               </ul>
             </section>
             <section id="section-projection" class="registry-preview">

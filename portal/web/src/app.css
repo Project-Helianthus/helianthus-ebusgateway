@@ -201,6 +201,34 @@ body {
   color: var(--muted);
 }
 
+.bus-banner {
+  margin: 0 0 0.65rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.bus-state-available {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-soft));
+  color: var(--text);
+}
+
+.bus-state-warming_up {
+  border-color: color-mix(in srgb, var(--warn) 60%, var(--border));
+  background: color-mix(in srgb, var(--warn) 14%, var(--panel-soft));
+  color: var(--text);
+}
+
+.bus-state-degraded,
+.bus-state-unavailable {
+  border-color: color-mix(in srgb, #d96f6f 70%, var(--border));
+  background: color-mix(in srgb, #d96f6f 14%, var(--panel-soft));
+  color: var(--text);
+}
+
 .timeline-filter {
   width: 100%;
   margin: 0 0 0.6rem;

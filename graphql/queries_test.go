@@ -1549,6 +1549,12 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			Period:  "day",
 		}, 1.25)
 		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
+			Channel:  "gas",
+			Usage:    "hot_water",
+			Period:   "month",
+			YearKind: "current",
+		}, 15.0)
+		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
 			Channel: "solar",
 			Usage:   "cooling",
 			Period:  "day",
@@ -1557,7 +1563,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		request := graphqlclient.NewRequest(`
 			query {
 				energyTotals {
-					gas { dhw { today yearly todayMeta { freshnessState provenance stale } } climate { today yearly todayMeta { freshnessState provenance stale } } }
+					gas { dhw { today yearly monthly todayMeta { freshnessState provenance stale } monthlyMeta { freshnessState provenance stale } } climate { today yearly todayMeta { freshnessState provenance stale } } }
 					electric { dhw { today yearly } climate { today yearly } }
 					solar { dhw { today yearly } climate { today yearly } }
 				}
@@ -1570,11 +1576,17 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					DHW struct {
 						Today     float64   `json:"today"`
 						Yearly    []float64 `json:"yearly"`
+						Monthly   []float64 `json:"monthly"`
 						TodayMeta struct {
 							FreshnessState string `json:"freshnessState"`
 							Provenance     string `json:"provenance"`
 							Stale          bool   `json:"stale"`
 						} `json:"todayMeta"`
+						MonthlyMeta []struct {
+							FreshnessState string `json:"freshnessState"`
+							Provenance     string `json:"provenance"`
+							Stale          bool   `json:"stale"`
+						} `json:"monthlyMeta"`
 					} `json:"dhw"`
 					Climate struct {
 						Today     float64   `json:"today"`
@@ -1620,6 +1632,18 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if len(response.EnergyTotals.Gas.DHW.Yearly) != 2 || response.EnergyTotals.Gas.DHW.Yearly[0] != 120.0 || response.EnergyTotals.Gas.DHW.Yearly[1] != 240.0 {
 			t.Fatalf("gas.dhw.yearly = %#v; want [120 240]", response.EnergyTotals.Gas.DHW.Yearly)
+		}
+		if len(response.EnergyTotals.Gas.DHW.Monthly) != 2 || response.EnergyTotals.Gas.DHW.Monthly[0] != 0 || response.EnergyTotals.Gas.DHW.Monthly[1] != 15.0 {
+			t.Fatalf("gas.dhw.monthly = %#v; want [0 15]", response.EnergyTotals.Gas.DHW.Monthly)
+		}
+		if len(response.EnergyTotals.Gas.DHW.MonthlyMeta) != 2 {
+			t.Fatalf("gas.dhw.monthlyMeta len = %d; want 2", len(response.EnergyTotals.Gas.DHW.MonthlyMeta))
+		}
+		if got := response.EnergyTotals.Gas.DHW.MonthlyMeta[0]; got.FreshnessState != "never_seen" || got.Provenance != "none" || got.Stale {
+			t.Fatalf("gas.dhw.monthlyMeta[0] = %+v; want never_seen/none/stale=false", got)
+		}
+		if got := response.EnergyTotals.Gas.DHW.MonthlyMeta[1]; got.FreshnessState != "fresh" || got.Provenance != "register" || got.Stale {
+			t.Fatalf("gas.dhw.monthlyMeta[1] = %+v; want fresh/register/stale=false", got)
 		}
 		if response.EnergyTotals.Gas.DHW.TodayMeta.FreshnessState != "fresh" || response.EnergyTotals.Gas.DHW.TodayMeta.Provenance != "register" || response.EnergyTotals.Gas.DHW.TodayMeta.Stale {
 			t.Fatalf("gas.dhw.todayMeta = %+v; want fresh/register/stale=false", response.EnergyTotals.Gas.DHW.TodayMeta)

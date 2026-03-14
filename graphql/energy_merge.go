@@ -107,7 +107,6 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
 		s.revision++
 		semanticEnergyMergesTotal.Add(sourceLabel, 1)
-		s.reconcileBroadcastStatesLocked(ingestAt, "")
 		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
 		return true
 	}
@@ -123,7 +122,6 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
 		s.revision++
 		semanticEnergyMergesTotal.Add(sourceLabel, 1)
-		s.reconcileBroadcastStatesLocked(ingestAt, "")
 		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
 		return true
 	default:
@@ -136,7 +134,6 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
 		s.revision++
 		semanticEnergyMergesTotal.Add(sourceLabel, 1)
-		s.reconcileBroadcastStatesLocked(ingestAt, "")
 		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
 		return true
 	}
@@ -264,8 +261,6 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 		}
 	}
 
-	s.reconcileBroadcastStatesLocked(now, passiveState)
-
 	return totals
 }
 
@@ -361,6 +356,11 @@ func (s *energyMergeStore) reconcileBroadcastStatesLocked(now time.Time, passive
 	nextCounts := make(map[EnergyFreshnessState]int)
 	for _, key := range energyBroadcastSelectorCatalog() {
 		point, exists := s.points[key]
+		if exists && point.Source == EnergySourceRegister {
+			// Broadcast freshness tracks passive/broadcast observability, not
+			// register-read availability. Treat register-backed selectors as unseen.
+			exists = false
+		}
 		nextState := energyFreshnessForOptionalPoint(exists, point, now, passiveState)
 		prevState := s.broadcastStates[key]
 		if prevState == "" {

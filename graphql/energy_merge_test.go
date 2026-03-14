@@ -541,12 +541,73 @@ func TestEnergyMerge_BroadcastFreshnessTransitionsMetricIncrements(t *testing.T)
 	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}, 2, EnergySourceBroadcast, t0) {
 		t.Fatal("Apply() = false; want true")
 	}
-	_ = store.SnapshotWithContext(t0.Add(time.Minute), "warming_up")
-	_ = store.SnapshotWithContext(t0.Add(10*time.Minute), "")
+	store.RefreshFreshnessMetricsWithContext(t0.Add(time.Minute), "warming_up")
+	store.RefreshFreshnessMetricsWithContext(t0.Add(10*time.Minute), "")
 
 	after := readExpvarMapValue(energyBroadcastTransitions, "warming_up->stale")
 	if after <= before {
 		t.Fatalf("energy_broadcast_freshness_transitions_total[warming_up->stale] = %d; want > %d", after, before)
+	}
+}
+
+func TestEnergyMerge_SnapshotWithContextDoesNotMutateBroadcastMetrics(t *testing.T) {
+	store := newEnergyMergeStore()
+	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}, 2, EnergySourceBroadcast, t0) {
+		t.Fatal("Apply() = false; want true")
+	}
+	store.RefreshFreshnessMetricsWithContext(t0.Add(time.Minute), "warming_up")
+
+	beforeGauge := make(map[EnergyFreshnessState]int64)
+	for _, state := range energyFreshnessStates() {
+		beforeGauge[state] = readExpvarMapValue(energyBroadcastSelectors, string(state))
+	}
+	beforeTransition := readExpvarMapValue(energyBroadcastTransitions, "warming_up->stale")
+
+	_ = store.SnapshotWithContext(t0.Add(10*time.Minute), "")
+
+	afterTransition := readExpvarMapValue(energyBroadcastTransitions, "warming_up->stale")
+	if afterTransition != beforeTransition {
+		t.Fatalf("SnapshotWithContext mutated transitions: warming_up->stale = %d; want %d", afterTransition, beforeTransition)
+	}
+	for _, state := range energyFreshnessStates() {
+		afterGauge := readExpvarMapValue(energyBroadcastSelectors, string(state))
+		if afterGauge != beforeGauge[state] {
+			t.Fatalf("SnapshotWithContext mutated gauge state=%s: got %d want %d", state, afterGauge, beforeGauge[state])
+		}
+	}
+}
+
+func TestEnergyMerge_BroadcastFreshnessIgnoresRegisterSelectors(t *testing.T) {
+	store := newEnergyMergeStore()
+	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}, 7, EnergySourceRegister, t0) {
+		t.Fatal("Apply() = false; want true")
+	}
+	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "year", YearKind: "previous"}, 70, EnergySourceRegister, t0) {
+		t.Fatal("Apply() year previous = false; want true")
+	}
+	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "year", YearKind: "current"}, 71, EnergySourceRegister, t0) {
+		t.Fatal("Apply() year current = false; want true")
+	}
+
+	beforeFresh := readExpvarMapValue(energyBroadcastSelectors, string(EnergyFreshnessStateFresh))
+	beforeNeverSeen := readExpvarMapValue(energyBroadcastSelectors, string(EnergyFreshnessStateNeverSeen))
+	beforeRegisterTransition := readExpvarMapValue(energyBroadcastTransitions, "never_seen->fresh")
+
+	store.RefreshFreshnessMetricsWithContext(t0.Add(time.Minute), "")
+
+	afterFresh := readExpvarMapValue(energyBroadcastSelectors, string(EnergyFreshnessStateFresh))
+	afterNeverSeen := readExpvarMapValue(energyBroadcastSelectors, string(EnergyFreshnessStateNeverSeen))
+	afterRegisterTransition := readExpvarMapValue(energyBroadcastTransitions, "never_seen->fresh")
+
+	if afterFresh != beforeFresh {
+		t.Fatalf("energy_broadcast_selectors[fresh] = %d; want unchanged %d for register-only selectors", afterFresh, beforeFresh)
+	}
+	wantNeverSeenDelta := int64(len(energyBroadcastSelectorCatalog()))
+	if delta := afterNeverSeen - beforeNeverSeen; delta != wantNeverSeenDelta {
+		t.Fatalf("energy_broadcast_selectors[never_seen] delta = %d; want %d", delta, wantNeverSeenDelta)
+	}
+	if afterRegisterTransition != beforeRegisterTransition {
+		t.Fatalf("energy_broadcast_freshness_transitions_total[never_seen->fresh] = %d; want unchanged %d", afterRegisterTransition, beforeRegisterTransition)
 	}
 }
 

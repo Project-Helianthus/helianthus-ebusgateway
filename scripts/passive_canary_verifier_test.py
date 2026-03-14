@@ -295,6 +295,29 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 verifier.summarize_run(proof_dir, "run-1")
             self.assertIn("interval", str(ctx.exception))
 
+    def test_summary_last_status_uses_final_phase_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_json(
+                proof_dir / "canary_phase_start.json",
+                {
+                    "run_id": "run-1",
+                    "phase": "start",
+                    "results": [{"id": "a", "status": "pass"}],
+                },
+            )
+            write_json(
+                proof_dir / "canary_phase_end.json",
+                {
+                    "run_id": "run-1",
+                    "phase": "end",
+                    "results": [{"id": "a", "status": "mismatch"}],
+                },
+            )
+
+            summary = verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertEqual(summary["per_canary"]["a"]["last_status"], "mismatch")
+
     def test_summary_allows_missing_interval_when_not_required(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)

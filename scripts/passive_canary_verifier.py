@@ -263,6 +263,18 @@ def compute_next_sample_epoch(now_epoch: int, interval_sec: int) -> int:
     return now_epoch + interval_sec
 
 
+def phase_sort_key(phase: str) -> Tuple[int, int, str]:
+    normalized = phase.strip().lower()
+    if normalized == "start":
+        return (0, 0, normalized)
+    sample_match = re.fullmatch(r"sample_([0-9]+)", normalized)
+    if sample_match:
+        return (1, int(sample_match.group(1)), normalized)
+    if normalized == "end":
+        return (2, 0, normalized)
+    return (1, 0, normalized)
+
+
 def verify_phase(
     canaries: List[CanarySpec],
     graphql_url: str,
@@ -380,13 +392,19 @@ def summarize_run(
     interval_phase_count = 0
     totals = {"results": 0, "pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}
     per_canary: Dict[str, Dict[str, Any]] = {}
+    phase_payloads: List[Tuple[Tuple[int, int, str], Dict[str, Any]]] = []
     for path in phase_files:
         payload = load_json(path)
+        if not isinstance(payload, dict):
+            continue
         phase = str(payload.get("phase", "")).strip()
         if phase:
             phases_seen.add(phase)
             if re.fullmatch(r"sample_[0-9]+", phase):
                 interval_phase_count += 1
+        phase_payloads.append((phase_sort_key(phase), payload))
+
+    for _, payload in sorted(phase_payloads, key=lambda item: item[0]):
         entries = payload.get("results")
         if not isinstance(entries, list):
             continue

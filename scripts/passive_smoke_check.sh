@@ -412,7 +412,7 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     echo "proof mode: failed to capture required start artifacts" >&2
     exit 1
   fi
-  proof_next_sample_epoch=$(( $(date +%s) + proof_sample_interval_sec ))
+  proof_next_sample_epoch="$(date +%s)"
   if [[ "${canary_enabled}" == "1" ]]; then
     if ! run_canary_phase "start"; then
       echo "proof mode: failed to run start canary verification" >&2

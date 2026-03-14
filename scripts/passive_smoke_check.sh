@@ -255,6 +255,36 @@ output_file.write_text(json.dumps(snapshot, indent=2) + "\n")
 PY
 }
 
+graphql_bus_watch_payload_valid() {
+  local payload="${1:-}"
+  GRAPHQL_PAYLOAD="${payload}" python3 - <<'PY'
+import json
+import os
+import sys
+
+payload_text = os.environ.get("GRAPHQL_PAYLOAD", "")
+try:
+    payload = json.loads(payload_text)
+except Exception:
+    raise SystemExit(1)
+
+errors = payload.get("errors")
+if isinstance(errors, list) and len(errors) > 0:
+    raise SystemExit(1)
+
+data = payload.get("data")
+if not isinstance(data, dict):
+    raise SystemExit(1)
+
+if data.get("busSummary") is None:
+    raise SystemExit(1)
+if data.get("watchSummary") is None:
+    raise SystemExit(1)
+
+raise SystemExit(0)
+PY
+}
+
 capture_proof_snapshot() {
   local prefix="$1"
   local metrics_payload="${2:-}"
@@ -288,8 +318,10 @@ capture_proof_snapshot() {
   fi
 
   if graphql_payload="$(curl -fsS -m 8 -H 'Content-Type: application/json' -d "${graphql_bus_watch_query}" "${graphql_url}" 2>/dev/null)"; then
-    printf '%s\n' "${graphql_payload}" > "${graphql_file}"
-    have_graphql=1
+    if graphql_bus_watch_payload_valid "${graphql_payload}"; then
+      printf '%s\n' "${graphql_payload}" > "${graphql_file}"
+      have_graphql=1
+    fi
   fi
 
   if [[ "${have_bus}" == "1" || "${have_graphql}" == "1" ]]; then

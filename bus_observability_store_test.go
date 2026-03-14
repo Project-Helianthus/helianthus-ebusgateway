@@ -500,6 +500,138 @@ func TestBusObservabilityStoreRestartsWarmupOnTrafficAfterStartupTimeout(t *test
 	}
 }
 
+func TestBusObservabilityStoreExportsWatchEfficiencyMetrics(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ObserveFirstEnabled = true
+	cfg.PassiveStateDirectApply = true
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportEbusdTCP
+
+	store := NewBusObservabilityStore(cfg)
+	base := time.Unix(1700000300, 0).UTC()
+	store.now = func() time.Time { return base.Add(4 * time.Second) }
+
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+	descriptor := watchEfficiencyStateFastDescriptor(key)
+	for index := 0; index < 5; index++ {
+		store.ObserveWatchRead(WatchEfficiencyReadEvent{
+			Key:           key,
+			Descriptor:    descriptor,
+			HasDescriptor: true,
+			MaxAge:        10 * time.Second,
+			Stats: SemanticReadExecutionStats{
+				ActiveFetchAttempted: true,
+				ActiveFetchSucceeded: true,
+				ActiveFetchDuration:  time.Second,
+			},
+			ObservedAt: base.Add(time.Duration(index) * time.Second),
+		})
+	}
+
+	store.ObserveWatchRead(WatchEfficiencyReadEvent{
+		Key:           key,
+		Descriptor:    descriptor,
+		HasDescriptor: true,
+		MaxAge:        10 * time.Second,
+		Stats: SemanticReadExecutionStats{
+			ServedFromShadow: true,
+		},
+		ObservedAt: base.Add(6 * time.Second),
+	})
+
+	store.ObserveWatchDirectApply(WatchEfficiencyDirectApplyEvent{
+		Key:           key,
+		Descriptor:    descriptor,
+		HasDescriptor: true,
+		ObservedAt:    base.Add(7 * time.Second),
+	})
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `passive_hits_total{family="B524",freshness_profile="state_fast"} 1`) {
+		t.Fatalf("RenderPrometheus missing passive_hits_total bucket sample:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `direct_apply_total{family="B524",freshness_profile="state_fast"} 1`) {
+		t.Fatalf("RenderPrometheus missing direct_apply_total bucket sample:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 2`) {
+		t.Fatalf("RenderPrometheus missing active_reads_avoided_total bucket sample:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1`) {
+		t.Fatalf("RenderPrometheus missing active_read_saved_seconds estimate:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `missed_due_to_transport_limitations_total{family="B524",freshness_profile="state_fast",limitation="transport_unavailable"} 5`) {
+		t.Fatalf("RenderPrometheus missing transport limitation miss counter:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, "Bucket-level estimate") {
+		t.Fatalf("RenderPrometheus missing bucket-level estimate help text for saved duration:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreOmitsStaleActiveReadSavedSeconds(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ObserveFirstEnabled = true
+	cfg.PassiveStateDirectApply = true
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportEbusdTCP
+
+	base := time.Unix(1700000400, 0).UTC()
+	store := NewBusObservabilityStore(cfg)
+	store.now = func() time.Time { return base }
+
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+	descriptor := watchEfficiencyStateFastDescriptor(key)
+	for index := 0; index < 5; index++ {
+		store.ObserveWatchRead(WatchEfficiencyReadEvent{
+			Key:           key,
+			Descriptor:    descriptor,
+			HasDescriptor: true,
+			MaxAge:        10 * time.Second,
+			Stats: SemanticReadExecutionStats{
+				ActiveFetchAttempted: true,
+				ActiveFetchSucceeded: true,
+				ActiveFetchDuration:  900 * time.Millisecond,
+			},
+			ObservedAt: base.Add(time.Duration(index) * time.Second),
+		})
+	}
+
+	store.now = func() time.Time { return base.Add(16 * time.Minute) }
+	metrics := store.RenderPrometheus()
+	if strings.Contains(metrics, `active_read_saved_seconds{family="B524",freshness_profile="state_fast"}`) {
+		t.Fatalf("RenderPrometheus unexpectedly kept stale active_read_saved_seconds sample:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreExportsWatchEfficiencyAmbiguousReason(t *testing.T) {
+	cfg := DefaultConfig()
+	store := NewBusObservabilityStore(cfg)
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x00, 0x001C)
+
+	store.ObserveWatchRead(WatchEfficiencyReadEvent{
+		Key: key,
+		Stats: SemanticReadExecutionStats{
+			ActiveFetchAttempted: true,
+		},
+		ObservedAt: time.Unix(1700000500, 0).UTC(),
+	})
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `ambiguous_total{family="B524",reason="missing_runtime_descriptor"} 1`) {
+		t.Fatalf("RenderPrometheus missing ambiguous_total sample for missing descriptor:\n%s", metrics)
+	}
+}
+
+func watchEfficiencyStateFastDescriptor(key WatchKey) WatchDescriptor {
+	return WatchDescriptor{
+		Key:               key,
+		SemanticClass:     WatchSemanticClassState,
+		FreshnessProfile:  WatchFreshnessProfileStateFast,
+		DecoderID:         "test.watch.efficiency",
+		CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+	}
+}
+
 func observabilityPassiveTransactionEvent(observedAt time.Time, source, target, primary, secondary byte) PassiveClassifiedEvent {
 	return PassiveClassifiedEvent{
 		Kind:      PassiveClassifiedEventTransaction,

@@ -224,6 +224,7 @@ type vaillantSemanticPoller struct {
 
 	transportConfig ebusgateway.TransportConfig
 	watchObserver   ebusgateway.WatchObserver
+	watchEfficiency ebusgateway.WatchEfficiencyObserver
 
 	source               byte
 	requestTimeout       time.Duration
@@ -577,6 +578,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		shadow:          shadow,
 		transportConfig: cfg.TransportConfig,
 		watchObserver:   cfg.WatchObserver,
+		watchEfficiency: cfg.WatchEfficiencyObserver,
 		source:          cfg.ScanSource,
 
 		requestTimeout:       cfg.SemanticRequestTimeout,
@@ -1277,7 +1279,7 @@ func (p *vaillantSemanticPoller) handleAdjudicatedPassiveEvent(event ebusgateway
 	if !ok || key == nil {
 		return
 	}
-	p.bootstrapPassiveSharedWatchKey(key)
+	runtime := p.bootstrapPassiveSharedWatchKey(key)
 
 	switch familyPolicy.RequestIntent {
 	case ebusgateway.ObserveFirstRequestIntentWrite:
@@ -1324,7 +1326,9 @@ func (p *vaillantSemanticPoller) handleAdjudicatedPassiveEvent(event ebusgateway
 	})
 	if !result.Accepted {
 		log.Printf("semantic_passive_shadow_write_rejected key=%q reason=%s", key.Canonical(), result.Reason)
+		return
 	}
+	p.emitWatchDirectApplyEfficiency(runtime, observedAt)
 }
 
 func passiveShadowLaneEnabled(flags ebusgateway.ObserveFirstFeatureFlags, policy ebusgateway.ObserveFirstFamilyPolicy) bool {
@@ -5040,29 +5044,68 @@ func isAllDigits(value string) bool {
 	return true
 }
 
+type semanticReadWatchRuntime struct {
+	key           ebusgateway.WatchKey
+	descriptor    ebusgateway.WatchDescriptor
+	hasDescriptor bool
+	maxAge        time.Duration
+}
+
 func (p *vaillantSemanticPoller) prepareSemanticReadWatch(key ebusgateway.WatchKey) time.Duration {
-	if maxAge, ok := p.prepareSemanticReadWatchObserved(key); ok {
-		return maxAge
-	}
+	return p.prepareSemanticReadWatchRuntime(key).maxAge
+}
 
+func (p *vaillantSemanticPoller) prepareSemanticReadWatchRuntime(key ebusgateway.WatchKey) semanticReadWatchRuntime {
+	return p.resolveSemanticReadWatchRuntime(
+		key,
+		semanticReadWatchDescriptorDefault,
+		[]ebusgateway.WatchActivationSource{ebusgateway.WatchActivationSourcePoller},
+		semanticReadActivationSources,
+	)
+}
+
+func (p *vaillantSemanticPoller) bootstrapPassiveSharedWatchKey(key ebusgateway.WatchKey) semanticReadWatchRuntime {
+	return p.resolveSemanticReadWatchRuntime(
+		key,
+		semanticReadWatchDescriptorPassiveFallback,
+		[]ebusgateway.WatchActivationSource{ebusgateway.WatchActivationSourceTooling},
+		semanticReadPassiveActivationSources,
+	)
+}
+
+func (p *vaillantSemanticPoller) resolveSemanticReadWatchRuntime(
+	key ebusgateway.WatchKey,
+	fallback func(ebusgateway.WatchKey) ebusgateway.WatchDescriptor,
+	defaultSources []ebusgateway.WatchActivationSource,
+	sourceResolver func([]ebusgateway.WatchActivationSource) []ebusgateway.WatchActivationSource,
+) semanticReadWatchRuntime {
+	runtime := semanticReadWatchRuntime{
+		key: key,
+	}
 	if key == nil {
-		return 0
+		return runtime
 	}
 
-	descriptor := semanticReadWatchDescriptorDefault(key)
-	sources := []ebusgateway.WatchActivationSource{ebusgateway.WatchActivationSourcePoller}
+	descriptor := fallback(key)
+	hasDescriptor := true
+	sources := defaultSources
+	if sourceResolver == nil {
+		sourceResolver = semanticReadActivationSources
+	}
 	if p != nil && p.watchObserver != nil {
 		observation := p.watchObserver.Observe(key)
 		if observation.HasDescriptor {
 			descriptor = semanticReadWatchDescriptorFromObservation(key, observation.Descriptor)
+			hasDescriptor = true
 		}
-		sources = semanticReadActivationSources(observation.Sources)
+		sources = sourceResolver(observation.Sources)
 	}
 
 	maxAge, err := descriptor.EffectiveFreshnessTTL()
 	if err != nil {
-		descriptor = semanticReadWatchDescriptorDefault(key)
+		descriptor = fallback(key)
 		maxAge, _ = descriptor.EffectiveFreshnessTTL()
+		hasDescriptor = true
 	}
 	if maxAge < 0 {
 		maxAge = 0
@@ -5074,57 +5117,40 @@ func (p *vaillantSemanticPoller) prepareSemanticReadWatch(key ebusgateway.WatchK
 		}
 	}
 
-	return maxAge
+	runtime.descriptor = descriptor
+	runtime.hasDescriptor = hasDescriptor
+	runtime.maxAge = maxAge
+	return runtime
 }
 
-func (p *vaillantSemanticPoller) bootstrapPassiveSharedWatchKey(key ebusgateway.WatchKey) {
-	if p == nil || p.shadow == nil || key == nil {
+func (p *vaillantSemanticPoller) emitWatchReadEfficiency(runtime semanticReadWatchRuntime, maxAge time.Duration, stats ebusgateway.SemanticReadExecutionStats) {
+	if p == nil || p.watchEfficiency == nil || runtime.key == nil {
 		return
 	}
-
-	descriptor := semanticReadWatchDescriptorPassiveFallback(key)
-	sources := []ebusgateway.WatchActivationSource{ebusgateway.WatchActivationSourceTooling}
-	if p.watchObserver != nil {
-		observation := p.watchObserver.Observe(key)
-		if observation.HasDescriptor {
-			descriptor = semanticReadWatchDescriptorFromObservation(key, observation.Descriptor)
-		}
-		sources = semanticReadPassiveActivationSources(observation.Sources)
-	}
-
-	if err := p.shadow.BootstrapRuntimeDescriptor(descriptor, sources...); err != nil {
-		log.Printf("semantic_passive_shadow_bootstrap_failed key=%q err=%v", key.Canonical(), err)
-	}
+	observedAt := p.now()
+	p.watchEfficiency.ObserveWatchRead(ebusgateway.WatchEfficiencyReadEvent{
+		Key:           runtime.key,
+		Descriptor:    runtime.descriptor,
+		HasDescriptor: runtime.hasDescriptor,
+		MaxAge:        maxAge,
+		Stats:         stats,
+		ObservedAt:    observedAt,
+	})
 }
 
-func (p *vaillantSemanticPoller) prepareSemanticReadWatchObserved(key ebusgateway.WatchKey) (time.Duration, bool) {
-	if key == nil || p == nil || p.watchObserver == nil {
-		return 0, false
+func (p *vaillantSemanticPoller) emitWatchDirectApplyEfficiency(runtime semanticReadWatchRuntime, observedAt time.Time) {
+	if p == nil || p.watchEfficiency == nil || runtime.key == nil {
+		return
 	}
-
-	observation := p.watchObserver.Observe(key)
-	if !observation.HasDescriptor {
-		return 0, false
+	if observedAt.IsZero() {
+		observedAt = p.now()
 	}
-
-	descriptor := semanticReadWatchDescriptorFromObservation(key, observation.Descriptor)
-	maxAge, err := descriptor.EffectiveFreshnessTTL()
-	if err != nil {
-		return 0, false
-	}
-	if maxAge < 0 {
-		maxAge = 0
-	}
-
-	if p.shadow != nil {
-		sources := semanticReadActivationSources(observation.Sources)
-		if err := p.shadow.BootstrapRuntimeDescriptor(descriptor, sources...); err != nil {
-			log.Printf("semantic_read_shadow_bootstrap_failed key=%q err=%v", key.Canonical(), err)
-			return 0, false
-		}
-	}
-
-	return maxAge, true
+	p.watchEfficiency.ObserveWatchDirectApply(ebusgateway.WatchEfficiencyDirectApplyEvent{
+		Key:           runtime.key,
+		Descriptor:    runtime.descriptor,
+		HasDescriptor: runtime.hasDescriptor,
+		ObservedAt:    observedAt,
+	})
 }
 
 func semanticReadWatchDescriptorDefault(key ebusgateway.WatchKey) ebusgateway.WatchDescriptor {
@@ -5238,11 +5264,12 @@ func (p *vaillantSemanticPoller) readB509ValueWithMaxAge(ctx context.Context, ta
 	}
 
 	watchKey := ebusgateway.NewB509WatchKey(target, addr)
-	maxAge := p.prepareSemanticReadWatch(watchKey)
+	watchRuntime := p.prepareSemanticReadWatchRuntime(watchKey)
+	maxAge := watchRuntime.maxAge
 	if maxAgeOverride >= 0 {
 		maxAge = maxAgeOverride
 	}
-	value, err := p.scheduler.GetWatch(ctx, watchKey, maxAge, func(ctx context.Context) ([]byte, error) {
+	value, stats, err := p.scheduler.GetWatchWithStats(ctx, watchKey, maxAge, func(ctx context.Context) ([]byte, error) {
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
 			p.readMu.Lock()
@@ -5281,6 +5308,7 @@ func (p *vaillantSemanticPoller) readB509ValueWithMaxAge(ctx context.Context, ta
 		}
 		return nil, lastErr
 	})
+	p.emitWatchReadEfficiency(watchRuntime, maxAge, stats)
 	if err != nil {
 		return nil, false
 	}
@@ -5702,8 +5730,9 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 	}
 
 	watchKey := ebusgateway.NewB524WatchKey(target, opcode, group, instance, addr)
-	maxAge := p.prepareSemanticReadWatch(watchKey)
-	value, err := p.scheduler.GetWatch(ctx, watchKey, maxAge, func(ctx context.Context) ([]byte, error) {
+	watchRuntime := p.prepareSemanticReadWatchRuntime(watchKey)
+	maxAge := watchRuntime.maxAge
+	value, stats, err := p.scheduler.GetWatchWithStats(ctx, watchKey, maxAge, func(ctx context.Context) ([]byte, error) {
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
 			p.readMu.Lock()
@@ -5751,6 +5780,7 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 		}
 		return nil, lastErr
 	})
+	p.emitWatchReadEfficiency(watchRuntime, maxAge, stats)
 	if err != nil {
 		return nil, false
 	}

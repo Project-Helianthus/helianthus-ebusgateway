@@ -21,6 +21,10 @@ const (
 	observeFirstAddressBucketCap   = 8
 	observeFirstPeriodicitySamples = 3
 	observeFirstBusyWindowHorizon  = time.Hour
+
+	watchEfficiencySavedWindowSize = 32
+	watchEfficiencySavedMinSamples = 5
+	watchEfficiencySavedStaleTTL   = 15 * time.Minute
 )
 
 var (
@@ -77,6 +81,7 @@ type BusObservabilityStore struct {
 	periodicity               map[periodicityKey]*BusPeriodicityEntry
 	periodicityOverflowTotal  uint64
 	seriesBudgetOverflowTotal uint64
+	watchEfficiency           watchEfficiencyRuntime
 
 	passive passiveWarmupRuntime
 }
@@ -163,6 +168,47 @@ type passiveWarmupRuntime struct {
 	lastCompletionMode    string
 }
 
+type watchEfficiencyBucketKey struct {
+	Family           string
+	FreshnessProfile string
+}
+
+type watchEfficiencyAmbiguousKey struct {
+	Family string
+	Reason string
+}
+
+type watchEfficiencyMissedKey struct {
+	Bucket     watchEfficiencyBucketKey
+	Limitation string
+}
+
+type watchEfficiencySavedWindow struct {
+	samples      [watchEfficiencySavedWindowSize]time.Duration
+	count        int
+	next         int
+	lastSampleAt time.Time
+}
+
+type watchEfficiencyBucketRuntime struct {
+	passiveHits        uint64
+	directApply        uint64
+	activeReadsAvoided uint64
+	saved              watchEfficiencySavedWindow
+}
+
+type watchEfficiencyRuntime struct {
+	buckets   map[watchEfficiencyBucketKey]*watchEfficiencyBucketRuntime
+	ambiguous map[watchEfficiencyAmbiguousKey]uint64
+	missed    map[watchEfficiencyMissedKey]uint64
+}
+
+type watchEfficiencySnapshot struct {
+	buckets   map[watchEfficiencyBucketKey]watchEfficiencyBucketRuntime
+	ambiguous map[watchEfficiencyAmbiguousKey]uint64
+	missed    map[watchEfficiencyMissedKey]uint64
+}
+
 func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 	cfg = applyDefaults(cfg)
 	now := time.Now()
@@ -178,6 +224,11 @@ func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 		recent:               make([]BusMessageRecord, cfg.ObserveFirstRecentMessageCapacity),
 		addressBuckets:       make(map[byte]string),
 		periodicity:          make(map[periodicityKey]*BusPeriodicityEntry),
+		watchEfficiency: watchEfficiencyRuntime{
+			buckets:   make(map[watchEfficiencyBucketKey]*watchEfficiencyBucketRuntime),
+			ambiguous: make(map[watchEfficiencyAmbiguousKey]uint64),
+			missed:    make(map[watchEfficiencyMissedKey]uint64),
+		},
 		passive: passiveWarmupRuntime{
 			processStartedAt: now,
 			state:            "unavailable",
@@ -345,6 +396,24 @@ func (store *BusObservabilityStore) OnPassiveClassifiedEvent(event PassiveClassi
 	}
 }
 
+func (store *BusObservabilityStore) ObserveWatchRead(event WatchEfficiencyReadEvent) {
+	if store == nil {
+		return
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.observeWatchReadLocked(event)
+}
+
+func (store *BusObservabilityStore) ObserveWatchDirectApply(event WatchEfficiencyDirectApplyEvent) {
+	if store == nil {
+		return
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.observeWatchDirectApplyLocked(event)
+}
+
 func (store *BusObservabilityStore) RecentMessages(limit int) []BusMessageRecord {
 	if store == nil {
 		return nil
@@ -362,6 +431,80 @@ func (store *BusObservabilityStore) PeriodicitySnapshot() []BusPeriodicityEntry 
 	defer store.mu.Unlock()
 	store.evictStalePeriodicityLocked(store.now())
 	return store.periodicitySnapshotLocked()
+}
+
+func (store *BusObservabilityStore) observeWatchReadLocked(event WatchEfficiencyReadEvent) {
+	observedAt := event.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = store.now()
+	}
+
+	bucket, reason, include := resolveWatchEfficiencyBucket(event.Key, event.Descriptor, event.HasDescriptor)
+	if reason != "" {
+		family := familyForAmbiguous(event.Key, event.Descriptor)
+		store.watchEfficiency.ambiguous[watchEfficiencyAmbiguousKey{
+			Family: family,
+			Reason: reason,
+		}]++
+		return
+	}
+	if !include {
+		return
+	}
+
+	series := store.ensureWatchEfficiencyBucketLocked(bucket)
+	if event.Stats.ActiveFetchSucceeded {
+		series.saved.add(event.Stats.ActiveFetchDuration, observedAt)
+	}
+	if event.Stats.ServedFromShadow {
+		series.passiveHits++
+		series.activeReadsAvoided++
+		return
+	}
+	if !event.Stats.ActiveFetchAttempted {
+		return
+	}
+	if !watchEfficiencyEligibleForMiss(event.Descriptor, store.cfg.ObserveFirstFlags, event.MaxAge) {
+		return
+	}
+	limitation := watchEfficiencyTransportLimitation(store.cfg)
+	if limitation == "" {
+		return
+	}
+	store.watchEfficiency.missed[watchEfficiencyMissedKey{
+		Bucket:     bucket,
+		Limitation: limitation,
+	}]++
+}
+
+func (store *BusObservabilityStore) observeWatchDirectApplyLocked(event WatchEfficiencyDirectApplyEvent) {
+	bucket, reason, include := resolveWatchEfficiencyBucket(event.Key, event.Descriptor, event.HasDescriptor)
+	if reason != "" {
+		family := familyForAmbiguous(event.Key, event.Descriptor)
+		store.watchEfficiency.ambiguous[watchEfficiencyAmbiguousKey{
+			Family: family,
+			Reason: reason,
+		}]++
+		return
+	}
+	if !include {
+		return
+	}
+	series := store.ensureWatchEfficiencyBucketLocked(bucket)
+	series.directApply++
+	series.activeReadsAvoided++
+}
+
+func (store *BusObservabilityStore) ensureWatchEfficiencyBucketLocked(bucket watchEfficiencyBucketKey) *watchEfficiencyBucketRuntime {
+	if store.watchEfficiency.buckets == nil {
+		store.watchEfficiency.buckets = make(map[watchEfficiencyBucketKey]*watchEfficiencyBucketRuntime)
+	}
+	series := store.watchEfficiency.buckets[bucket]
+	if series == nil {
+		series = &watchEfficiencyBucketRuntime{}
+		store.watchEfficiency.buckets[bucket] = series
+	}
+	return series
 }
 
 func (store *BusObservabilityStore) MetricsHandler() http.Handler {
@@ -393,6 +536,7 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	passive := store.passive
 	passive.probeOutcomes = cloneStringUint64Map(passive.probeOutcomes)
 	passive.transitions = cloneStringUint64Map(passive.transitions)
+	watchEfficiency := store.watchEfficiencySnapshotLocked(now)
 	activeTiming := store.activeTimingQuality
 	passiveTiming := store.passiveTimingQuality
 	transportClass := store.transportClass
@@ -635,6 +779,65 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	writer.writeType("ebus_passive_reconstructor_recoveries_total", "counter")
 	for _, reason := range reconstructorRecoveryKeys {
 		writer.writeCounterSample("ebus_passive_reconstructor_recoveries_total", float64(snapshot.RecoveryTotal[reason]), labelMap("reason", reason))
+	}
+
+	writer.writeHelp("passive_hits_total", "Observe-first scheduler reads served from passive shadow.")
+	writer.writeType("passive_hits_total", "counter")
+	for _, item := range sortedWatchEfficiencyBuckets(watchEfficiency.buckets) {
+		writer.writeCounterSample("passive_hits_total", float64(item.Value.passiveHits), labelMap(
+			"family", item.Key.Family,
+			"freshness_profile", item.Key.FreshnessProfile,
+		))
+	}
+
+	writer.writeHelp("direct_apply_total", "Observe-first passive direct-apply writes accepted by shadow runtime descriptor bucket.")
+	writer.writeType("direct_apply_total", "counter")
+	for _, item := range sortedWatchEfficiencyBuckets(watchEfficiency.buckets) {
+		writer.writeCounterSample("direct_apply_total", float64(item.Value.directApply), labelMap(
+			"family", item.Key.Family,
+			"freshness_profile", item.Key.FreshnessProfile,
+		))
+	}
+
+	writer.writeHelp("active_reads_avoided_total", "Observe-first active reads avoided by passive shadow hits or direct-apply.")
+	writer.writeType("active_reads_avoided_total", "counter")
+	for _, item := range sortedWatchEfficiencyBuckets(watchEfficiency.buckets) {
+		writer.writeCounterSample("active_reads_avoided_total", float64(item.Value.activeReadsAvoided), labelMap(
+			"family", item.Key.Family,
+			"freshness_profile", item.Key.FreshnessProfile,
+		))
+	}
+
+	writer.writeHelp("active_read_saved_seconds", "Bucket-level estimate from recent active logical request-complete durations; not a per-key guarantee.")
+	writer.writeType("active_read_saved_seconds", "gauge")
+	for _, item := range sortedWatchEfficiencyBuckets(watchEfficiency.buckets) {
+		estimate, ok := item.Value.saved.estimateSeconds(now)
+		if !ok {
+			continue
+		}
+		writer.writeGaugeSample("active_read_saved_seconds", estimate, labelMap(
+			"family", item.Key.Family,
+			"freshness_profile", item.Key.FreshnessProfile,
+		))
+	}
+
+	writer.writeHelp("ambiguous_total", "Observe-first watch-efficiency events that could not be bucketed.")
+	writer.writeType("ambiguous_total", "counter")
+	for _, item := range sortedWatchEfficiencyAmbiguous(watchEfficiency.ambiguous) {
+		writer.writeCounterSample("ambiguous_total", float64(item.Value), labelMap(
+			"family", item.Key.Family,
+			"reason", item.Key.Reason,
+		))
+	}
+
+	writer.writeHelp("missed_due_to_transport_limitations_total", "Observe-first-eligible reads that fell back to active due to passive capability limitations.")
+	writer.writeType("missed_due_to_transport_limitations_total", "counter")
+	for _, item := range sortedWatchEfficiencyMissed(watchEfficiency.missed) {
+		writer.writeCounterSample("missed_due_to_transport_limitations_total", float64(item.Value), labelMap(
+			"family", item.Key.Bucket.Family,
+			"freshness_profile", item.Key.Bucket.FreshnessProfile,
+			"limitation", item.Key.Limitation,
+		))
 	}
 
 	return buffer.String()
@@ -1359,6 +1562,144 @@ func clippedRatio(total time.Duration, window time.Duration) float64 {
 	return ratio
 }
 
+func (store *BusObservabilityStore) watchEfficiencySnapshotLocked(now time.Time) watchEfficiencySnapshot {
+	snapshot := watchEfficiencySnapshot{
+		buckets:   make(map[watchEfficiencyBucketKey]watchEfficiencyBucketRuntime, len(store.watchEfficiency.buckets)),
+		ambiguous: make(map[watchEfficiencyAmbiguousKey]uint64, len(store.watchEfficiency.ambiguous)),
+		missed:    make(map[watchEfficiencyMissedKey]uint64, len(store.watchEfficiency.missed)),
+	}
+	for key, series := range store.watchEfficiency.buckets {
+		if series == nil {
+			continue
+		}
+		item := *series
+		if _, ok := item.saved.estimateSeconds(now); !ok {
+			item.saved = watchEfficiencySavedWindow{}
+		}
+		snapshot.buckets[key] = item
+	}
+	for key, value := range store.watchEfficiency.ambiguous {
+		snapshot.ambiguous[key] = value
+	}
+	for key, value := range store.watchEfficiency.missed {
+		snapshot.missed[key] = value
+	}
+	return snapshot
+}
+
+func resolveWatchEfficiencyBucket(key WatchKey, descriptor WatchDescriptor, hasDescriptor bool) (watchEfficiencyBucketKey, string, bool) {
+	if !hasDescriptor || descriptor.Key == nil {
+		return watchEfficiencyBucketKey{}, "missing_runtime_descriptor", false
+	}
+	family := string(descriptor.Family())
+	if family == "" {
+		return watchEfficiencyBucketKey{}, "unsupported_family", false
+	}
+	profile := string(descriptor.FreshnessProfile)
+	if profile == "" {
+		return watchEfficiencyBucketKey{}, "unsupported_freshness_profile", false
+	}
+	if descriptor.FreshnessProfile == WatchFreshnessProfileDebug {
+		return watchEfficiencyBucketKey{}, "", false
+	}
+	if !watchEfficiencyProfileAllowed(descriptor.FreshnessProfile) {
+		return watchEfficiencyBucketKey{}, "unsupported_freshness_profile", false
+	}
+	if !watchEfficiencyFamilyAllowed(descriptor.Family()) {
+		return watchEfficiencyBucketKey{}, "unsupported_family", false
+	}
+	if descriptor.Family() == WatchFamilyB516 && descriptor.DirectApplyPolicy == WatchDirectApplyPolicyEnergyMergeOnly {
+		return watchEfficiencyBucketKey{}, "", false
+	}
+	_ = key
+	return watchEfficiencyBucketKey{
+		Family:           family,
+		FreshnessProfile: profile,
+	}, "", true
+}
+
+func familyForAmbiguous(key WatchKey, descriptor WatchDescriptor) string {
+	if descriptor.Key != nil {
+		if family := string(descriptor.Family()); family != "" {
+			return family
+		}
+	}
+	if key != nil {
+		if family := string(key.Family()); family != "" {
+			return family
+		}
+	}
+	return "unknown"
+}
+
+func watchEfficiencyFamilyAllowed(family WatchFamily) bool {
+	switch family {
+	case WatchFamilyB509, WatchFamilyB516, WatchFamilyB524, WatchFamilyB555:
+		return true
+	default:
+		return false
+	}
+}
+
+func watchEfficiencyProfileAllowed(profile WatchFreshnessProfile) bool {
+	switch profile {
+	case WatchFreshnessProfileStateFast, WatchFreshnessProfileStateSlow, WatchFreshnessProfileConfig, WatchFreshnessProfileDiscovery:
+		return true
+	default:
+		return false
+	}
+}
+
+func watchEfficiencyEligibleForMiss(descriptor WatchDescriptor, flags ObserveFirstFeatureFlags, maxAge time.Duration) bool {
+	if maxAge <= 0 || !flags.ObserveFirstEnabled() {
+		return false
+	}
+	switch descriptor.DirectApplyPolicy {
+	case WatchDirectApplyPolicyStateDefault:
+		return flags.PassiveStateDirectApply()
+	case WatchDirectApplyPolicyConfigOptIn:
+		return flags.PassiveConfigDirectApply()
+	default:
+		return false
+	}
+}
+
+func watchEfficiencyTransportLimitation(cfg Config) string {
+	if !cfg.BroadcastListen {
+		return "broadcast_unavailable"
+	}
+	if !PassiveTransportSupported(cfg) {
+		return "transport_unavailable"
+	}
+	return ""
+}
+
+func (window *watchEfficiencySavedWindow) add(sample time.Duration, observedAt time.Time) {
+	if sample < 0 {
+		sample = 0
+	}
+	window.samples[window.next] = sample
+	if window.count < len(window.samples) {
+		window.count++
+	}
+	window.next = (window.next + 1) % len(window.samples)
+	window.lastSampleAt = observedAt
+}
+
+func (window watchEfficiencySavedWindow) estimateSeconds(now time.Time) (float64, bool) {
+	if window.count < watchEfficiencySavedMinSamples {
+		return 0, false
+	}
+	if window.lastSampleAt.IsZero() || now.Sub(window.lastSampleAt) > watchEfficiencySavedStaleTTL {
+		return 0, false
+	}
+	var total time.Duration
+	for index := 0; index < window.count; index++ {
+		total += window.samples[index]
+	}
+	return total.Seconds() / float64(window.count), true
+}
+
 type frameSeriesItem struct {
 	Key   frameSeriesKey
 	Value uint64
@@ -1376,6 +1717,21 @@ type frameBytesSeriesItem struct {
 
 type stringUint64Item struct {
 	Key   string
+	Value uint64
+}
+
+type watchEfficiencyBucketItem struct {
+	Key   watchEfficiencyBucketKey
+	Value watchEfficiencyBucketRuntime
+}
+
+type watchEfficiencyAmbiguousItem struct {
+	Key   watchEfficiencyAmbiguousKey
+	Value uint64
+}
+
+type watchEfficiencyMissedItem struct {
+	Key   watchEfficiencyMissedKey
 	Value uint64
 }
 
@@ -1469,6 +1825,51 @@ func sortedTransitionMap(input map[string]uint64) []stringUint64Item {
 		items = append(items, stringUint64Item{Key: key, Value: value})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
+	return items
+}
+
+func sortedWatchEfficiencyBuckets(input map[watchEfficiencyBucketKey]watchEfficiencyBucketRuntime) []watchEfficiencyBucketItem {
+	items := make([]watchEfficiencyBucketItem, 0, len(input))
+	for key, value := range input {
+		items = append(items, watchEfficiencyBucketItem{Key: key, Value: value})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Key.Family != items[j].Key.Family {
+			return items[i].Key.Family < items[j].Key.Family
+		}
+		return items[i].Key.FreshnessProfile < items[j].Key.FreshnessProfile
+	})
+	return items
+}
+
+func sortedWatchEfficiencyAmbiguous(input map[watchEfficiencyAmbiguousKey]uint64) []watchEfficiencyAmbiguousItem {
+	items := make([]watchEfficiencyAmbiguousItem, 0, len(input))
+	for key, value := range input {
+		items = append(items, watchEfficiencyAmbiguousItem{Key: key, Value: value})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Key.Family != items[j].Key.Family {
+			return items[i].Key.Family < items[j].Key.Family
+		}
+		return items[i].Key.Reason < items[j].Key.Reason
+	})
+	return items
+}
+
+func sortedWatchEfficiencyMissed(input map[watchEfficiencyMissedKey]uint64) []watchEfficiencyMissedItem {
+	items := make([]watchEfficiencyMissedItem, 0, len(input))
+	for key, value := range input {
+		items = append(items, watchEfficiencyMissedItem{Key: key, Value: value})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Key.Bucket.Family != items[j].Key.Bucket.Family {
+			return items[i].Key.Bucket.Family < items[j].Key.Bucket.Family
+		}
+		if items[i].Key.Bucket.FreshnessProfile != items[j].Key.Bucket.FreshnessProfile {
+			return items[i].Key.Bucket.FreshnessProfile < items[j].Key.Bucket.FreshnessProfile
+		}
+		return items[i].Key.Limitation < items[j].Key.Limitation
+	})
 	return items
 }
 

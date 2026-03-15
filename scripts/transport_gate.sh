@@ -32,6 +32,7 @@ requires_transport_gate() {
   case "${file}" in
     config.go|\
     gateway.go|\
+    cmd/gateway/main.go|\
     cmd/gateway/startup_scan*.go|\
     cmd/matrix-runner/*|\
     internal/matrix/*|\

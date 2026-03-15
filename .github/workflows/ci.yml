@@ -60,7 +60,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - run: go test -race -count=1 ./...
+      - run: python3 scripts/passive_canary_verifier_test.py
+      - run: python3 scripts/transport_gate_test.py
 
   lint:
     runs-on: ubuntu-latest

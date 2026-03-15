@@ -93,6 +93,8 @@ proof_hold_sec=0
 proof_window_start_epoch=0
 proof_window_end_epoch=0
 proof_window_started=0
+proof_window_completed=0
+proof_first_sample_delay_sec=1
 
 deadline=$(( $(date +%s) + timeout_sec ))
 last_metrics=""
@@ -105,6 +107,9 @@ if [[ ! "${proof_sample_interval_sec}" =~ ^[0-9]+$ ]] || [[ "${proof_sample_inte
   else
     proof_sample_interval_sec=5
   fi
+fi
+if [[ "${poll_interval_sec}" =~ ^[0-9]+$ ]] && [[ "${poll_interval_sec}" -gt 0 ]]; then
+  proof_first_sample_delay_sec="${poll_interval_sec}"
 fi
 
 if [[ ! "${proof_hold_sec_raw}" =~ ^[0-9]+$ ]]; then
@@ -466,7 +471,7 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
         proof_window_started=1
         proof_window_start_epoch="${now_epoch}"
         proof_window_end_epoch=$((now_epoch + proof_hold_sec))
-        proof_next_sample_epoch="${now_epoch}"
+        proof_next_sample_epoch=$((now_epoch + proof_first_sample_delay_sec))
       fi
     fi
     if [[ "${proof_artifacts_enabled}" == "1" ]]; then
@@ -488,9 +493,16 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
         proof_next_sample_epoch=$((now_epoch + proof_sample_interval_sec))
       fi
     fi
+    if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 && "${snapshot_healthy}" != "1" && "${proof_window_started}" == "1" ]]; then
+      proof_window_started=0
+      proof_window_start_epoch=0
+      proof_window_end_epoch=0
+      proof_next_sample_epoch=0
+    fi
     if [[ "${snapshot_healthy}" == "1" ]]; then
       if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 ]]; then
         if [[ "${proof_window_started}" == "1" && "${now_epoch}" -ge "${proof_window_end_epoch}" ]]; then
+          proof_window_completed=1
           break
         fi
       else
@@ -537,16 +549,12 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
   fi
 fi
 
-current_epoch="$(date +%s)"
-
-if [[ "${smoke_ok}" -eq 1 ]]; then
-  if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 ]]; then
-    if [[ "${proof_window_started}" == "1" && "${current_epoch}" -ge "${proof_window_end_epoch}" ]]; then
-      exit 0
-    fi
-  else
+if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 ]]; then
+  if [[ "${proof_window_completed}" == "1" ]]; then
     exit 0
   fi
+elif [[ "${smoke_ok}" -eq 1 ]]; then
+  exit 0
 fi
 
 if [[ "${gw15_proof_mode}" != "1" || "${proof_hold_sec}" -le 0 ]]; then

@@ -499,6 +499,9 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           *) shift ;;
                         esac
                       done
+                      if [[ "${phase}" == "end" && "${FAKE_CANARY_END_DELAY_SEC:-0}" != "0" ]]; then
+                        sleep "${FAKE_CANARY_END_DELAY_SEC}"
+                      fi
                       status="${FAKE_CANARY_STATUS:-pass}"
                       pass_count=0
                       mismatch_count=0
@@ -566,8 +569,23 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     done
 
                     if [[ "${url}" == *"/metrics" ]]; then
-                      cat <<'EOF'
-                    ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0
+                      timed_out=0
+                      metrics_mode="${FAKE_METRICS_MODE:-always_healthy}"
+                      if [[ "${metrics_mode}" == "healthy_once_then_bad" ]]; then
+                        state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
+                        healthy_calls="${FAKE_METRICS_HEALTHY_CALLS:-1}"
+                        metrics_count=0
+                        if [[ -f "${state_file}" ]]; then
+                          metrics_count="$(cat "${state_file}")"
+                        fi
+                        metrics_count=$((metrics_count + 1))
+                        printf '%s\\n' "${metrics_count}" > "${state_file}"
+                        if [[ "${metrics_count}" -gt "${healthy_calls}" ]]; then
+                          timed_out=1
+                        fi
+                      fi
+                      cat <<EOF
+                    ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} ${timed_out}
                     ebus_passive_tap_connected 1
                     ebus_passive_warmup_state{state="available"} 1
                     ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1
@@ -618,6 +636,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     "MATRIX_METRICS_URL": "http://fake-gateway:18083/metrics",
                     "REAL_PYTHON3": sys.executable,
                     "FAKE_CANARY_STATUS": canary_status,
+                    "FAKE_METRICS_STATE_FILE": str(temp_path / "fake_metrics_count.txt"),
                     "PATH": f"{fake_bin}:{env.get('PATH', '')}",
                 }
             )
@@ -698,6 +717,42 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertTrue(summary["interval_phase_required"])
         self.assertGreaterEqual(summary["interval_phase_count"], 1)
         self.assertGreaterEqual(len(artifacts.get("sample_phase_files", [])), 1)
+
+    def test_smoke_fails_when_hold_times_out_before_window_completion_despite_slow_cleanup(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "PASSIVE_PROOF_HOLD_SEC": "8",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "5",
+                "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+                "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "1",
+                "FAKE_CANARY_END_DELAY_SEC": "4",
+            },
+        )
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("timed out waiting", result.stderr)
+        self.assertGreaterEqual(artifacts["elapsed_sec"], 4.0, msg=result.stderr)
+        summary = artifacts.get("summary")
+        self.assertIsInstance(summary, dict)
+        self.assertGreaterEqual(summary["interval_phase_count"], 1)
+
+    def test_smoke_fails_when_health_is_healthy_once_then_bad_forever(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "PASSIVE_PROOF_HOLD_SEC": "4",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "6",
+                "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+                "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "1",
+                "FAKE_METRICS_MODE": "healthy_once_then_bad",
+                "FAKE_METRICS_HEALTHY_CALLS": "2",
+            },
+        )
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("timed out waiting", result.stderr)
+        summary = artifacts.get("summary")
+        self.assertIsInstance(summary, dict)
+        self.assertGreaterEqual(summary["interval_phase_count"], 1)
 
 
 if __name__ == "__main__":

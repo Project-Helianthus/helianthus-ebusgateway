@@ -1,48 +1,62 @@
 {
   "schema": "p03_canary_manifest_v1",
   "case_id": "P03",
-  "description": "Fixed active direct-read canaries for proof-mode P03 runs.",
+  "description": "Stable active direct-read canaries for proof-mode P03 runs on the proxy-backed ENS topology.",
   "canaries": [
     {
-      "id": "b524_g00_i00_a5c00",
+      "id": "b524_dhw_mode",
       "family": "B524",
       "address": 21,
       "plane": "system",
       "method": "get_ext_register",
       "params": {
-        "source": 16,
+        "source": 247,
         "opcode": 2,
-        "group": 0,
+        "group": 1,
         "instance": 0,
-        "addr": 23552
+        "addr": 3
       }
     },
     {
-      "id": "b524_g00_i00_a5e00",
+      "id": "b524_dhw_target",
       "family": "B524",
       "address": 21,
       "plane": "system",
       "method": "get_ext_register",
       "params": {
-        "source": 16,
+        "source": 247,
         "opcode": 2,
-        "group": 0,
+        "group": 1,
         "instance": 0,
-        "addr": 24064
+        "addr": 4
       }
     },
     {
-      "id": "b524_g00_i00_a6200",
+      "id": "b524_circuit_type",
       "family": "B524",
       "address": 21,
       "plane": "system",
       "method": "get_ext_register",
       "params": {
-        "source": 16,
+        "source": 247,
         "opcode": 2,
-        "group": 0,
+        "group": 2,
         "instance": 0,
-        "addr": 25088
+        "addr": 2
+      }
+    },
+    {
+      "id": "b524_room_temp_control",
+      "family": "B524",
+      "address": 21,
+      "plane": "system",
+      "method": "get_ext_register",
+      "params": {
+        "source": 247,
+        "opcode": 2,
+        "group": 2,
+        "instance": 0,
+        "addr": 21
       }
     },
     {
@@ -52,30 +66,19 @@
       "plane": "system",
       "method": "get_register",
       "params": {
-        "source": 16,
+        "source": 247,
         "addr": 512
       }
     },
     {
-      "id": "b509_a1800",
+      "id": "b509_a0f04",
       "family": "B509",
       "address": 8,
       "plane": "system",
       "method": "get_register",
       "params": {
-        "source": 16,
-        "addr": 6144
-      }
-    },
-    {
-      "id": "b509_aab00",
-      "family": "B509",
-      "address": 8,
-      "plane": "system",
-      "method": "get_register",
-      "params": {
-        "source": 16,
-        "addr": 43776
+        "source": 247,
+        "addr": 3844
       }
     }
   ]

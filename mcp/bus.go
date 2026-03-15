@@ -34,12 +34,19 @@ type BusObservabilityDegraded struct {
 	Reasons []string `json:"reasons,omitempty"`
 }
 
+type BusObservabilityStartup struct {
+	Phase      string `json:"phase"`
+	CacheEpoch uint64 `json:"cache_epoch"`
+	LiveEpoch  uint64 `json:"live_epoch"`
+}
+
 type BusObservabilityStatus struct {
 	TransportClass string                        `json:"transport_class"`
 	Capability     BusObservabilityCapability    `json:"capability"`
 	Warmup         BusObservabilityWarmup        `json:"warmup"`
 	TimingQuality  BusObservabilityTimingQuality `json:"timing_quality"`
 	Degraded       BusObservabilityDegraded      `json:"degraded"`
+	Startup        *BusObservabilityStartup      `json:"startup,omitempty"`
 	FeatureFlags   ObserveFirstFeatureFlagState  `json:"feature_flags"`
 }
 
@@ -141,12 +148,21 @@ func cloneBusObservabilityStatus(source *BusObservabilityStatus) *BusObservabili
 		return nil
 	}
 	out := *source
+	out.Startup = cloneBusObservabilityStartup(source.Startup)
 	if len(source.Degraded.Reasons) > 0 {
 		out.Degraded.Reasons = append([]string(nil), source.Degraded.Reasons...)
 	}
 	if len(source.FeatureFlags.Normalizations) > 0 {
 		out.FeatureFlags.Normalizations = append([]string(nil), source.FeatureFlags.Normalizations...)
 	}
+	return &out
+}
+
+func cloneBusObservabilityStartup(source *BusObservabilityStartup) *BusObservabilityStartup {
+	if source == nil {
+		return nil
+	}
+	out := *source
 	return &out
 }
 

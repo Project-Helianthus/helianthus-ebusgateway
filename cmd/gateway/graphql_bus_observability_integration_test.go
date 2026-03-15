@@ -27,6 +27,13 @@ func TestGraphQLBusObservabilityProviderAdapter_ParityWithMCPAdapter(t *testing.
 	if store == nil {
 		t.Fatal("NewBusObservabilityStore() = nil")
 	}
+	store.SetStartupSurfaceProvider(func() *ebusgateway.BusObservabilityStartup {
+		return &ebusgateway.BusObservabilityStartup{
+			Phase:      string(graphql.SemanticStartupPhaseLiveReady),
+			CacheEpoch: 4,
+			LiveEpoch:  9,
+		}
+	})
 
 	if err := store.OnBusEvent(protocol.BusEvent{
 		Kind: protocol.BusEventAttemptComplete,
@@ -68,6 +75,13 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 
 	wireObserveFirstObserversFn = func(cfg *ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		store := ebusgateway.NewBusObservabilityStore(*cfg)
+		store.SetStartupSurfaceProvider(func() *ebusgateway.BusObservabilityStartup {
+			return &ebusgateway.BusObservabilityStartup{
+				Phase:      string(graphql.SemanticStartupPhaseLiveReady),
+				CacheEpoch: 1,
+				LiveEpoch:  3,
+			}
+		})
 		if err := store.OnBusEvent(protocol.BusEvent{
 			Kind: protocol.BusEventAttemptComplete,
 			Request: protocol.Frame{
@@ -102,7 +116,7 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 			t.Fatalf("NewInvokeHandler error = %v", err)
 		}
 
-		body := bytes.NewBufferString(`{"query":"{ busSummary { messages { count capacity } status { transportClass capability { activeSupported } } } busMessages(limit: 1) { count items { family sourceAddress targetAddress } } }"}`)
+		body := bytes.NewBufferString(`{"query":"{ busSummary { messages { count capacity } status { transportClass capability { activeSupported } startup { phase cacheEpoch liveEpoch } } } busMessages(limit: 1) { count items { family sourceAddress targetAddress } } }"}`)
 		req := httptest.NewRequest(http.MethodPost, cfg.GraphQLPath, body)
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -124,6 +138,11 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 						Capability     struct {
 							ActiveSupported bool `json:"activeSupported"`
 						} `json:"capability"`
+						Startup struct {
+							Phase      string `json:"phase"`
+							CacheEpoch string `json:"cacheEpoch"`
+							LiveEpoch  string `json:"liveEpoch"`
+						} `json:"startup"`
 					} `json:"status"`
 				} `json:"busSummary"`
 				BusMessages struct {
@@ -151,6 +170,12 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 		}
 		if !response.Data.BusSummary.Status.Capability.ActiveSupported {
 			t.Fatal("busSummary.status.capability.activeSupported = false; want true")
+		}
+		if response.Data.BusSummary.Status.Startup.Phase != string(graphql.SemanticStartupPhaseBootInit) {
+			t.Fatalf("busSummary.status.startup.phase = %q; want BOOT_INIT", response.Data.BusSummary.Status.Startup.Phase)
+		}
+		if response.Data.BusSummary.Status.Startup.CacheEpoch != "0" || response.Data.BusSummary.Status.Startup.LiveEpoch != "0" {
+			t.Fatalf("busSummary.status.startup epochs = (%s,%s); want (0,0)", response.Data.BusSummary.Status.Startup.CacheEpoch, response.Data.BusSummary.Status.Startup.LiveEpoch)
 		}
 		if response.Data.BusMessages.Count != 1 || len(response.Data.BusMessages.Items) != 1 {
 			t.Fatalf("busMessages = %+v; want one wired item", response.Data.BusMessages)
@@ -263,6 +288,14 @@ func graphQLStatusToMCP(status *graphql.BusObservabilityStatus) *mcp.BusObservab
 	if status == nil {
 		return nil
 	}
+	var startup *mcp.BusObservabilityStartup
+	if status.Startup != nil {
+		startup = &mcp.BusObservabilityStartup{
+			Phase:      status.Startup.Phase,
+			CacheEpoch: status.Startup.CacheEpoch,
+			LiveEpoch:  status.Startup.LiveEpoch,
+		}
+	}
 	return &mcp.BusObservabilityStatus{
 		TransportClass: status.TransportClass,
 		Capability: mcp.BusObservabilityCapability{
@@ -293,6 +326,7 @@ func graphQLStatusToMCP(status *graphql.BusObservabilityStatus) *mcp.BusObservab
 			Active:  status.Degraded.Active,
 			Reasons: append([]string(nil), status.Degraded.Reasons...),
 		},
+		Startup: startup,
 		FeatureFlags: mcp.ObserveFirstFeatureFlagState{
 			ObserveFirstEnabled:      status.FeatureFlags.ObserveFirstEnabled,
 			PassiveStateDirectApply:  status.FeatureFlags.PassiveStateDirectApply,

@@ -172,6 +172,11 @@ build_observe_first_cli_flags() {
     esac
   fi
 
+  if [[ "${#flags[@]}" -eq 0 ]]; then
+    printf '\n'
+    return 0
+  fi
+
   printf '%s\n' "${flags[*]}"
 }
 

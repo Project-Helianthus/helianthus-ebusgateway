@@ -22,6 +22,25 @@ def write_json(path: pathlib.Path, payload: object) -> None:
 
 
 class ManifestValidationTests(unittest.TestCase):
+    def test_manifest_matches_canonical_proxy_p03_stable_set(self) -> None:
+        _, canaries = verifier.load_and_validate_manifest(
+            SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json",
+            "P03",
+        )
+        self.assertEqual(
+            [item.canary_id for item in canaries],
+            [
+                "b524_dhw_mode",
+                "b524_dhw_target",
+                "b524_circuit_type",
+                "b524_room_temp_control",
+                "b509_a0200",
+                "b509_a0f04",
+            ],
+        )
+        for item in canaries:
+            self.assertEqual(item.params["source"], 0xF7)
+
     def test_manifest_requires_expected_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manifest_path = pathlib.Path(temp_dir) / "manifest.json"
@@ -127,6 +146,83 @@ class ManifestValidationTests(unittest.TestCase):
 
 
 class RetryClassificationTests(unittest.TestCase):
+    def test_invoke_canary_adds_internal_nonce_without_mutating_manifest_params(self) -> None:
+        _, canaries = verifier.load_and_validate_manifest(
+            SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json",
+            "P03",
+        )
+        captured_request = {}
+        original_urlopen = verifier.urllib.request.urlopen
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data":{"invoke":{"ok":true,"result":{"value":"BEEF"}}}}'
+
+        def fake_urlopen(request, timeout):
+            captured_request["timeout"] = timeout
+            captured_request["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        verifier.urllib.request.urlopen = fake_urlopen
+        try:
+            result = verifier.invoke_canary(
+                "http://unused/graphql",
+                canaries[0],
+                0.25,
+                nonce="nonce-1",
+            )
+        finally:
+            verifier.urllib.request.urlopen = original_urlopen
+
+        self.assertEqual(result, "BEEF")
+        params = captured_request["payload"]["variables"]["params"]
+        self.assertEqual(params[verifier.CANARY_NONCE_PARAM], "nonce-1")
+        self.assertNotIn(verifier.CANARY_NONCE_PARAM, canaries[0].params)
+
+    def test_verify_phase_uses_distinct_nonce_per_retry(self) -> None:
+        _, canaries = verifier.load_and_validate_manifest(
+            SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json",
+            "P03",
+        )
+        original_invoke = verifier.invoke_canary
+        seen_nonces: list[str | None] = []
+
+        def flaky_invoke(_graphql_url, _canary, _timeout_sec, nonce=None):
+            seen_nonces.append(nonce)
+            if len(seen_nonces) < 3:
+                raise RuntimeError("timeout")
+            return "BEEF"
+
+        verifier.invoke_canary = flaky_invoke
+        try:
+            results = verifier.verify_phase(
+                canaries=canaries[:1],
+                graphql_url="http://unused/graphql",
+                phase="start",
+                run_id="run-retry",
+                retries=3,
+                timeout_sec=0.01,
+                baseline_map={},
+            )
+        finally:
+            verifier.invoke_canary = original_invoke
+
+        self.assertEqual(results["results"][0]["status"], "pass")
+        self.assertEqual(
+            seen_nonces,
+            [
+                "run-retry:start:b524_dhw_mode:1",
+                "run-retry:start:b524_dhw_mode:2",
+                "run-retry:start:b524_dhw_mode:3",
+            ],
+        )
+
     def test_inconclusive_after_three_retries(self) -> None:
         _, canaries = verifier.load_and_validate_manifest(
             SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json",
@@ -510,6 +606,13 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                       elif [[ "${status}" == "mismatch" ]]; then
                         mismatch_count=1
                       fi
+                      if [[ -n "${FAKE_CANARY_PHASE_LOG:-}" ]]; then
+                        metrics_count="unknown"
+                        if [[ -n "${FAKE_METRICS_STATE_FILE:-}" && -f "${FAKE_METRICS_STATE_FILE}" ]]; then
+                          metrics_count="$(cat "${FAKE_METRICS_STATE_FILE}")"
+                        fi
+                        printf '%s:%s\\n' "${phase}" "${metrics_count}" >> "${FAKE_CANARY_PHASE_LOG}"
+                      fi
                       mkdir -p "$(dirname "${output}")"
                       cat > "${output}" <<JSON
                     {
@@ -599,6 +702,24 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           echo "simulated hard metrics poll failure on call ${metrics_count}" >&2
                           exit 28
                         fi
+                      elif [[ "${metrics_mode}" == "initially_unhealthy_then_healthy" ]]; then
+                        state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
+                        unhealthy_calls="${FAKE_METRICS_UNHEALTHY_CALLS:-1}"
+                        metrics_count=0
+                        if [[ -f "${state_file}" ]]; then
+                          metrics_count="$(cat "${state_file}")"
+                        fi
+                        metrics_count=$((metrics_count + 1))
+                        printf '%s\\n' "${metrics_count}" > "${state_file}"
+                        if [[ "${metrics_count}" -le "${unhealthy_calls}" ]]; then
+                          cat <<EOF
+                    ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0
+                    ebus_passive_tap_connected 1
+                    ebus_passive_warmup_state{state="available"} 0
+                    ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 0
+                    EOF
+                          exit 0
+                        fi
                       fi
                       cat <<EOF
                     ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} ${timed_out}
@@ -610,8 +731,21 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     fi
 
                     if [[ "${url}" == *"/portal/api/v1/bus/observability" ]]; then
-                      cat <<'EOF'
-                    {"summary":{"status":{"feature_flags":{"observeFirstEnabled":true}}}}
+                      startup_mode="${FAKE_BUS_STARTUP_MODE:-always_live_ready}"
+                      phase="LIVE_READY"
+                      if [[ "${startup_mode}" == "initially_live_warmup_then_live_ready" ]]; then
+                        state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
+                        warmup_calls="${FAKE_BUS_LIVE_WARMUP_CALLS:-1}"
+                        metrics_count=0
+                        if [[ -f "${state_file}" ]]; then
+                          metrics_count="$(cat "${state_file}")"
+                        fi
+                        if [[ "${metrics_count}" -le "${warmup_calls}" ]]; then
+                          phase="LIVE_WARMUP"
+                        fi
+                      fi
+                      cat <<EOF
+                    {"status":{"startup":{"phase":"${phase}"},"feature_flags":{"observeFirstEnabled":true}}}
                     EOF
                       exit 0
                     fi
@@ -652,6 +786,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     "MATRIX_METRICS_URL": "http://fake-gateway:18083/metrics",
                     "REAL_PYTHON3": sys.executable,
                     "FAKE_CANARY_STATUS": canary_status,
+                    "FAKE_CANARY_PHASE_LOG": str(temp_path / "fake_canary_phase_log.txt"),
                     "FAKE_METRICS_STATE_FILE": str(temp_path / "fake_metrics_count.txt"),
                     "PATH": f"{fake_bin}:{env.get('PATH', '')}",
                 }
@@ -674,10 +809,17 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 proof_dir = log_dir / "proof_artifacts"
                 summary_path = proof_dir / "canary_summary.json"
                 verdict_path = proof_dir / "canary_verdict.json"
+                phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
                 if verdict_path.exists():
                     artifacts["verdict"] = json.loads(verdict_path.read_text(encoding="utf-8"))
+                if phase_log_path.exists():
+                    artifacts["phase_log"] = [
+                        line.strip()
+                        for line in phase_log_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
                 artifacts["sample_phase_files"] = sorted(
                     path.name for path in proof_dir.glob("canary_phase_sample_*.json")
                 )
@@ -733,6 +875,46 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertTrue(summary["interval_phase_required"])
         self.assertGreaterEqual(summary["interval_phase_count"], 1)
         self.assertGreaterEqual(len(artifacts.get("sample_phase_files", [])), 1)
+
+    def test_smoke_defers_start_canary_until_first_healthy_snapshot(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "PASSIVE_PROOF_HOLD_SEC": "4",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "8",
+                "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+                "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "3600",
+                "FAKE_METRICS_MODE": "initially_unhealthy_then_healthy",
+                "FAKE_METRICS_UNHEALTHY_CALLS": "2",
+            },
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        phase_log = artifacts.get("phase_log")
+        self.assertIsInstance(phase_log, list)
+        self.assertGreaterEqual(len(phase_log), 1)
+        self.assertEqual(phase_log[0].split(":", 1)[0], "start")
+        self.assertGreaterEqual(int(phase_log[0].split(":", 1)[1]), 3)
+
+    def test_smoke_defers_start_canary_until_bus_startup_phase_is_live_ready(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "PASSIVE_PROOF_HOLD_SEC": "4",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "8",
+                "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+                "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "3600",
+                "FAKE_METRICS_MODE": "initially_unhealthy_then_healthy",
+                "FAKE_METRICS_UNHEALTHY_CALLS": "0",
+                "FAKE_BUS_STARTUP_MODE": "initially_live_warmup_then_live_ready",
+                "FAKE_BUS_LIVE_WARMUP_CALLS": "2",
+            },
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        phase_log = artifacts.get("phase_log")
+        self.assertIsInstance(phase_log, list)
+        self.assertGreaterEqual(len(phase_log), 1)
+        self.assertEqual(phase_log[0].split(":", 1)[0], "start")
+        self.assertGreaterEqual(int(phase_log[0].split(":", 1)[1]), 3)
 
     def test_smoke_fails_when_hold_times_out_before_window_completion_despite_slow_cleanup(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

@@ -117,6 +117,7 @@ func mapGraphQLBusStatus(status ebusgateway.BusObservabilityStatus) *graphql.Bus
 			Active:  status.Degraded.Active,
 			Reasons: append([]string(nil), status.Degraded.Reasons...),
 		},
+		Startup: mapGraphQLBusStartup(status.Startup),
 		FeatureFlags: graphql.ObserveFirstFeatureFlagState{
 			ObserveFirstEnabled:      status.FeatureFlags.ObserveFirstEnabled,
 			PassiveStateDirectApply:  status.FeatureFlags.PassiveStateDirectApply,
@@ -158,6 +159,7 @@ func mapMCPBusStatus(status ebusgateway.BusObservabilityStatus) *mcp.BusObservab
 			Active:  status.Degraded.Active,
 			Reasons: append([]string(nil), status.Degraded.Reasons...),
 		},
+		Startup: mapMCPBusStartup(status.Startup),
 		FeatureFlags: mcp.ObserveFirstFeatureFlagState{
 			ObserveFirstEnabled:      status.FeatureFlags.ObserveFirstEnabled,
 			PassiveStateDirectApply:  status.FeatureFlags.PassiveStateDirectApply,
@@ -165,6 +167,28 @@ func mapMCPBusStatus(status ebusgateway.BusObservabilityStatus) *mcp.BusObservab
 			ExternalWritePolicy:      string(status.FeatureFlags.ExternalWritePolicy),
 			Normalizations:           append([]string(nil), status.FeatureFlags.Normalizations...),
 		},
+	}
+}
+
+func mapGraphQLBusStartup(startup *ebusgateway.BusObservabilityStartup) *graphql.BusObservabilityStartup {
+	if startup == nil {
+		return nil
+	}
+	return &graphql.BusObservabilityStartup{
+		Phase:      startup.Phase,
+		CacheEpoch: startup.CacheEpoch,
+		LiveEpoch:  startup.LiveEpoch,
+	}
+}
+
+func mapMCPBusStartup(startup *ebusgateway.BusObservabilityStartup) *mcp.BusObservabilityStartup {
+	if startup == nil {
+		return nil
+	}
+	return &mcp.BusObservabilityStartup{
+		Phase:      startup.Phase,
+		CacheEpoch: startup.CacheEpoch,
+		LiveEpoch:  startup.LiveEpoch,
 	}
 }
 

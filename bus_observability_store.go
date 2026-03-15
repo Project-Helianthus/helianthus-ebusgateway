@@ -85,6 +85,8 @@ type BusObservabilityStore struct {
 
 	passive passiveWarmupRuntime
 
+	startupSurfaceProvider func() *BusObservabilityStartup
+
 	energyFreshnessMetricsRefresher func(now time.Time, passiveState string)
 }
 
@@ -242,6 +244,28 @@ func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 		store.passive.unavailableReason = reason
 	}
 	return store
+}
+
+func (store *BusObservabilityStore) SetStartupSurfaceProvider(provider func() *BusObservabilityStartup) {
+	if store == nil {
+		return
+	}
+	store.mu.Lock()
+	store.startupSurfaceProvider = provider
+	store.mu.Unlock()
+}
+
+func (store *BusObservabilityStore) startupSurface() *BusObservabilityStartup {
+	if store == nil {
+		return nil
+	}
+	store.mu.RLock()
+	provider := store.startupSurfaceProvider
+	store.mu.RUnlock()
+	if provider == nil {
+		return nil
+	}
+	return cloneBusObservabilityStartup(provider())
 }
 
 func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {

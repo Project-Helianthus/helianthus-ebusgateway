@@ -7,6 +7,7 @@ import argparse
 import base64
 import glob
 import json
+import math
 import pathlib
 import re
 import sys
@@ -26,6 +27,11 @@ CANARY_VERDICT_SCHEMA = "p03_canary_verdict_v1"
 OVERALL_INTERVAL_CONCLUSIVE_MIN = 0.90
 PER_CANARY_INTERVAL_CONCLUSIVE_MIN = 0.75
 CANARY_NONCE_PARAM = "_canary_nonce"
+READ_AVOIDANCE_ACCOUNTING_SCHEMA = "p03_read_avoidance_accounting_v1"
+READ_AVOIDANCE_DIRECT_APPLY_METRIC = "direct_apply_total"
+READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC = "active_reads_avoided_total"
+READ_AVOIDANCE_SAVED_SECONDS_METRIC = "active_read_saved_seconds"
+PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)$")
 
 
 def utc_now() -> str:
@@ -252,6 +258,257 @@ mutation($address:Int!, $plane:String!, $method:String!, $params: JSON) {
     return extract_value_hex(invoke_payload.get("result"), canary.result_field)
 
 
+def parse_prometheus_samples(metrics_text: str) -> Dict[str, List[float]]:
+    if metrics_text.strip() == "":
+        raise ValueError("metrics payload is empty")
+    samples: Dict[str, List[float]] = {}
+    for raw_line in metrics_text.splitlines():
+        line = raw_line.strip()
+        if line == "" or line.startswith("#"):
+            continue
+        match = PROM_SAMPLE_RE.match(line)
+        if not match:
+            continue
+        metric_name = match.group(1)
+        raw_value = match.group(3)
+        try:
+            value = float(raw_value)
+        except ValueError:
+            continue
+        samples.setdefault(metric_name, []).append(value)
+    return samples
+
+
+def aggregate_metric_total(samples: Dict[str, List[float]], metric_name: str, *, required: bool) -> float | None:
+    values = samples.get(metric_name, [])
+    if not values:
+        if required:
+            raise ValueError(f"missing required metric sample: {metric_name}")
+        return None
+    total = float(sum(values))
+    if not math.isfinite(total):
+        raise ValueError(f"metric {metric_name} has non-finite total {total!r}")
+    if total < 0:
+        raise ValueError(f"metric {metric_name} has negative total {total!r}")
+    return total
+
+
+def collect_read_avoidance_totals(samples: Dict[str, List[float]]) -> Dict[str, float | None]:
+    return {
+        READ_AVOIDANCE_DIRECT_APPLY_METRIC: aggregate_metric_total(
+            samples,
+            READ_AVOIDANCE_DIRECT_APPLY_METRIC,
+            required=True,
+        ),
+        READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC: aggregate_metric_total(
+            samples,
+            READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC,
+            required=True,
+        ),
+        READ_AVOIDANCE_SAVED_SECONDS_METRIC: aggregate_metric_total(
+            samples,
+            READ_AVOIDANCE_SAVED_SECONDS_METRIC,
+            required=False,
+        ),
+    }
+
+
+def phase_metrics_snapshot_path(output_path: pathlib.Path, phase: str) -> pathlib.Path:
+    proof_dir = output_path.parent
+    return proof_phase_metrics_snapshot_path(proof_dir, phase)
+
+
+def proof_phase_metrics_snapshot_path(proof_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    normalized = phase.strip().lower()
+    if normalized in ("start", "end"):
+        return proof_dir / f"{normalized}_metrics.prom"
+    if is_interval_phase(normalized):
+        return proof_dir / "samples" / f"{normalized}_metrics.prom"
+    raise ValueError(f"unsupported canary phase for metrics snapshot lookup: {phase!r}")
+
+
+def build_phase_read_avoidance_observation(
+    output_path: pathlib.Path,
+    phase: str,
+    run_id: str,
+) -> Dict[str, Any]:
+    snapshot_path = phase_metrics_snapshot_path(output_path, phase)
+    if not snapshot_path.exists():
+        raise ValueError(f"missing required proof metrics artifact: {snapshot_path}")
+    totals = collect_read_avoidance_totals(parse_prometheus_samples(snapshot_path.read_text(encoding="utf-8")))
+    return {
+        "schema": READ_AVOIDANCE_ACCOUNTING_SCHEMA,
+        "claim_scope": "phase_local_non_authoritative_observation",
+        "captured_at": utc_now(),
+        "run_id": run_id,
+        "phase": phase,
+        "evidence": {
+            "metrics_snapshot_path": str(snapshot_path),
+        },
+        "totals": totals,
+        "notes": [
+            "Non-authoritative phase-local observation only.",
+            "Authoritative proof claim is derived from start/end deltas in canary_summary.",
+        ],
+    }
+
+
+def build_window_read_avoidance_accounting(proof_dir: pathlib.Path) -> Dict[str, Any]:
+    return build_window_read_avoidance_accounting_for_phases(proof_dir, ["start", "end"])
+
+
+def build_window_read_avoidance_accounting_for_phases(proof_dir: pathlib.Path, phases: Iterable[str]) -> Dict[str, Any]:
+    start_metrics_path = proof_dir / "start_metrics.prom"
+    end_metrics_path = proof_dir / "end_metrics.prom"
+    if not start_metrics_path.exists():
+        raise ValueError(f"missing required proof metrics artifact: {start_metrics_path}")
+    if not end_metrics_path.exists():
+        raise ValueError(f"missing required proof metrics artifact: {end_metrics_path}")
+
+    start_samples = parse_prometheus_samples(start_metrics_path.read_text(encoding="utf-8"))
+    end_samples = parse_prometheus_samples(end_metrics_path.read_text(encoding="utf-8"))
+    start_totals = collect_read_avoidance_totals(start_samples)
+    end_totals = collect_read_avoidance_totals(end_samples)
+
+    ordered_phases: List[str] = []
+    seen_phases = set()
+    for raw_phase in phases:
+        phase = str(raw_phase).strip().lower()
+        if phase == "" or phase in seen_phases:
+            continue
+        if phase in ("start", "end") or is_interval_phase(phase):
+            ordered_phases.append(phase)
+            seen_phases.add(phase)
+    if "start" not in seen_phases:
+        ordered_phases.insert(0, "start")
+    if "end" not in seen_phases:
+        ordered_phases.append("end")
+
+    metrics_sequence: List[Dict[str, Any]] = []
+    previous_direct_apply: float | None = None
+    previous_avoided: float | None = None
+    for phase in ordered_phases:
+        snapshot_path = proof_phase_metrics_snapshot_path(proof_dir, phase)
+        if not snapshot_path.exists():
+            raise ValueError(f"missing required proof metrics artifact: {snapshot_path}")
+        totals = collect_read_avoidance_totals(parse_prometheus_samples(snapshot_path.read_text(encoding="utf-8")))
+        direct_apply_total = float(totals[READ_AVOIDANCE_DIRECT_APPLY_METRIC] or 0.0)
+        avoided_total = float(totals[READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC] or 0.0)
+        if previous_direct_apply is not None and direct_apply_total + 1e-9 < previous_direct_apply:
+            raise ValueError(
+                "incoherent read-avoidance metrics: "
+                f"{READ_AVOIDANCE_DIRECT_APPLY_METRIC} decreased at phase {phase}"
+            )
+        if previous_avoided is not None and avoided_total + 1e-9 < previous_avoided:
+            raise ValueError(
+                "incoherent read-avoidance metrics: "
+                f"{READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC} decreased at phase {phase}"
+            )
+        metrics_sequence.append(
+            {
+                "phase": phase,
+                "metrics_snapshot_path": str(snapshot_path),
+                "totals": totals,
+            }
+        )
+        previous_direct_apply = direct_apply_total
+        previous_avoided = avoided_total
+
+    start_direct_apply = float(start_totals[READ_AVOIDANCE_DIRECT_APPLY_METRIC] or 0.0)
+    end_direct_apply = float(end_totals[READ_AVOIDANCE_DIRECT_APPLY_METRIC] or 0.0)
+    start_avoided = float(start_totals[READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC] or 0.0)
+    end_avoided = float(end_totals[READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC] or 0.0)
+
+    delta_direct_apply = end_direct_apply - start_direct_apply
+    delta_avoided = end_avoided - start_avoided
+    if delta_direct_apply < -1e-9:
+        raise ValueError(
+            "incoherent read-avoidance metrics: "
+            f"{READ_AVOIDANCE_DIRECT_APPLY_METRIC} decreased across proof window"
+        )
+    if delta_avoided < -1e-9:
+        raise ValueError(
+            "incoherent read-avoidance metrics: "
+            f"{READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC} decreased across proof window"
+        )
+    if delta_avoided + 1e-9 < delta_direct_apply:
+        raise ValueError(
+            "incoherent read-avoidance metrics: "
+            f"delta {READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC}={delta_avoided} "
+            f"< delta {READ_AVOIDANCE_DIRECT_APPLY_METRIC}={delta_direct_apply}"
+        )
+
+    saved_start = start_totals[READ_AVOIDANCE_SAVED_SECONDS_METRIC]
+    saved_end = end_totals[READ_AVOIDANCE_SAVED_SECONDS_METRIC]
+    saved_delta: float | None = None
+    if saved_start is not None and saved_end is not None:
+        saved_delta = float(saved_end) - float(saved_start)
+
+    return {
+        "schema": READ_AVOIDANCE_ACCOUNTING_SCHEMA,
+        "captured_at": utc_now(),
+        "source": "proof_artifact_metrics",
+        "claim_scope": "bounded_proof_window_lower_bound_activity",
+        "evidence": {
+            "start_metrics_path": str(start_metrics_path),
+            "end_metrics_path": str(end_metrics_path),
+            "metrics_sequence": metrics_sequence,
+        },
+        "start_totals": start_totals,
+        "end_totals": end_totals,
+        "delta_totals": {
+            READ_AVOIDANCE_DIRECT_APPLY_METRIC: delta_direct_apply,
+            READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC: delta_avoided,
+        },
+        "active_read_saved_seconds": {
+            "start_total": saved_start,
+            "end_total": saved_end,
+            "delta_total": saved_delta,
+        },
+        "coherence": {
+            "counter_monotonic": True,
+            "active_reads_avoided_gte_direct_apply_delta": True,
+        },
+    }
+
+
+def evaluate_read_avoidance_accounting(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return False, "missing read_avoidance_accounting payload", {}
+    delta_totals = payload.get("delta_totals")
+    if not isinstance(delta_totals, dict):
+        return False, "read_avoidance_accounting missing delta_totals", {}
+
+    direct_delta = delta_totals.get(READ_AVOIDANCE_DIRECT_APPLY_METRIC)
+    avoided_delta = delta_totals.get(READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC)
+    if not isinstance(direct_delta, (int, float)):
+        return False, f"read_avoidance_accounting missing numeric {READ_AVOIDANCE_DIRECT_APPLY_METRIC} delta", {}
+    if not isinstance(avoided_delta, (int, float)):
+        return (
+            False,
+            f"read_avoidance_accounting missing numeric {READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC} delta",
+            {},
+        )
+    direct_value = float(direct_delta)
+    avoided_value = float(avoided_delta)
+    if not math.isfinite(direct_value) or direct_value < 0:
+        return False, f"invalid {READ_AVOIDANCE_DIRECT_APPLY_METRIC} delta {direct_value!r}", {}
+    if not math.isfinite(avoided_value) or avoided_value < 0:
+        return False, f"invalid {READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC} delta {avoided_value!r}", {}
+    if avoided_value + 1e-9 < direct_value:
+        return (
+            False,
+            f"incoherent accounting: delta {READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC}={avoided_value} "
+            f"< delta {READ_AVOIDANCE_DIRECT_APPLY_METRIC}={direct_value}",
+            {},
+        )
+    details = {
+        "direct_apply_total_delta": direct_value,
+        "active_reads_avoided_total_delta": avoided_value,
+    }
+    return True, "", details
+
+
 def classify_canary_value(
     canary: CanarySpec,
     value_hex: str,
@@ -301,6 +558,7 @@ def verify_phase(
     retries: int,
     timeout_sec: float,
     baseline_map: Dict[str, str],
+    read_avoidance_accounting: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     retries = normalize_retries(retries)
     allow_baseline_seed = is_start_phase(phase)
@@ -378,7 +636,11 @@ def verify_phase(
         "run_id": run_id,
         "phase": phase,
         "verification_mode": "active_direct_read",
-        "read_avoidance_accounting": {"excluded": True},
+        "read_avoidance_accounting": read_avoidance_accounting
+        or {
+            "authoritative": False,
+            "reason": "read-avoidance accounting is only reconstructed from proof window artifacts",
+        },
         "results": results,
         "summary": summary,
     }
@@ -472,13 +734,15 @@ def summarize_run(
         raise ValueError("missing current-run start/end canary artifacts (stale artifact rejection)")
     if require_interval_phase and interval_phase_count < 1:
         raise ValueError("missing current-run interval canary artifacts (no elapsed sample phase)")
+    ordered_phases = [phase for _, phase, _ in sorted(phase_payloads, key=lambda item: item[0])]
+    read_avoidance_accounting = build_window_read_avoidance_accounting_for_phases(proof_dir, ordered_phases)
 
     return {
         "schema": "p03_canary_overall_summary_v1",
         "captured_at": utc_now(),
         "run_id": run_id,
         "verification_mode": "active_direct_read",
-        "read_avoidance_accounting": {"excluded": True},
+        "read_avoidance_accounting": read_avoidance_accounting,
         "phase_files_total": len(list((proof_dir).glob(f"{CANARY_PHASE_PREFIX}*.json"))),
         "phase_files_used": len(phase_files),
         "phase_files_stale_ignored": stale_ignored,
@@ -510,6 +774,9 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
     per_canary_interval = summary.get("per_canary_interval")
     if not isinstance(per_canary_interval, dict):
         per_canary_interval = {}
+    read_avoidance_ok, read_avoidance_reason, read_avoidance_details = evaluate_read_avoidance_accounting(
+        summary.get("read_avoidance_accounting")
+    )
 
     mismatch_count = int(totals.get("mismatch", 0) or 0)
     no_mismatches_ok = mismatch_count == 0
@@ -555,7 +822,7 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     per_canary_ok = len(failing_canaries) == 0
-    verdict_ok = no_mismatches_ok and overall_interval_ok and per_canary_ok
+    verdict_ok = no_mismatches_ok and overall_interval_ok and per_canary_ok and read_avoidance_ok
 
     return {
         "schema": CANARY_VERDICT_SCHEMA,
@@ -583,6 +850,11 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
                 "threshold": PER_CANARY_INTERVAL_CONCLUSIVE_MIN,
                 "failing_canaries": failing_canaries,
                 "canaries_evaluated": len(per_canary_details),
+            },
+            "read_avoidance_accounting": {
+                "ok": read_avoidance_ok,
+                "reason": read_avoidance_reason,
+                **read_avoidance_details,
             },
         },
         "per_canary": per_canary_details,
@@ -619,6 +891,12 @@ def validate_command(args: argparse.Namespace) -> int:
 def verify_phase_command(args: argparse.Namespace) -> int:
     _, canaries = load_and_validate_manifest(pathlib.Path(args.manifest), args.require_case_id)
     baseline_path = pathlib.Path(args.baseline)
+    output_path = pathlib.Path(args.output)
+    read_avoidance_accounting = build_phase_read_avoidance_observation(
+        output_path=output_path,
+        phase=args.phase,
+        run_id=args.run_id,
+    )
     baseline_map = load_baseline_map(baseline_path)
     phase_result = verify_phase(
         canaries=canaries,
@@ -628,8 +906,9 @@ def verify_phase_command(args: argparse.Namespace) -> int:
         retries=args.retries,
         timeout_sec=args.timeout_sec,
         baseline_map=baseline_map,
+        read_avoidance_accounting=read_avoidance_accounting,
     )
-    write_json(pathlib.Path(args.output), phase_result)
+    write_json(output_path, phase_result)
     write_json(baseline_path, baseline_map)
     return 0
 

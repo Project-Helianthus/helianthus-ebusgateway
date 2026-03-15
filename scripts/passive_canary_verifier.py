@@ -315,6 +315,10 @@ def collect_read_avoidance_totals(samples: Dict[str, List[float]]) -> Dict[str, 
 
 def phase_metrics_snapshot_path(output_path: pathlib.Path, phase: str) -> pathlib.Path:
     proof_dir = output_path.parent
+    return proof_phase_metrics_snapshot_path(proof_dir, phase)
+
+
+def proof_phase_metrics_snapshot_path(proof_dir: pathlib.Path, phase: str) -> pathlib.Path:
     normalized = phase.strip().lower()
     if normalized in ("start", "end"):
         return proof_dir / f"{normalized}_metrics.prom"
@@ -350,6 +354,10 @@ def build_phase_read_avoidance_observation(
 
 
 def build_window_read_avoidance_accounting(proof_dir: pathlib.Path) -> Dict[str, Any]:
+    return build_window_read_avoidance_accounting_for_phases(proof_dir, ["start", "end"])
+
+
+def build_window_read_avoidance_accounting_for_phases(proof_dir: pathlib.Path, phases: Iterable[str]) -> Dict[str, Any]:
     start_metrics_path = proof_dir / "start_metrics.prom"
     end_metrics_path = proof_dir / "end_metrics.prom"
     if not start_metrics_path.exists():
@@ -361,6 +369,50 @@ def build_window_read_avoidance_accounting(proof_dir: pathlib.Path) -> Dict[str,
     end_samples = parse_prometheus_samples(end_metrics_path.read_text(encoding="utf-8"))
     start_totals = collect_read_avoidance_totals(start_samples)
     end_totals = collect_read_avoidance_totals(end_samples)
+
+    ordered_phases: List[str] = []
+    seen_phases = set()
+    for raw_phase in phases:
+        phase = str(raw_phase).strip().lower()
+        if phase == "" or phase in seen_phases:
+            continue
+        if phase in ("start", "end") or is_interval_phase(phase):
+            ordered_phases.append(phase)
+            seen_phases.add(phase)
+    if "start" not in seen_phases:
+        ordered_phases.insert(0, "start")
+    if "end" not in seen_phases:
+        ordered_phases.append("end")
+
+    metrics_sequence: List[Dict[str, Any]] = []
+    previous_direct_apply: float | None = None
+    previous_avoided: float | None = None
+    for phase in ordered_phases:
+        snapshot_path = proof_phase_metrics_snapshot_path(proof_dir, phase)
+        if not snapshot_path.exists():
+            raise ValueError(f"missing required proof metrics artifact: {snapshot_path}")
+        totals = collect_read_avoidance_totals(parse_prometheus_samples(snapshot_path.read_text(encoding="utf-8")))
+        direct_apply_total = float(totals[READ_AVOIDANCE_DIRECT_APPLY_METRIC] or 0.0)
+        avoided_total = float(totals[READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC] or 0.0)
+        if previous_direct_apply is not None and direct_apply_total + 1e-9 < previous_direct_apply:
+            raise ValueError(
+                "incoherent read-avoidance metrics: "
+                f"{READ_AVOIDANCE_DIRECT_APPLY_METRIC} decreased at phase {phase}"
+            )
+        if previous_avoided is not None and avoided_total + 1e-9 < previous_avoided:
+            raise ValueError(
+                "incoherent read-avoidance metrics: "
+                f"{READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC} decreased at phase {phase}"
+            )
+        metrics_sequence.append(
+            {
+                "phase": phase,
+                "metrics_snapshot_path": str(snapshot_path),
+                "totals": totals,
+            }
+        )
+        previous_direct_apply = direct_apply_total
+        previous_avoided = avoided_total
 
     start_direct_apply = float(start_totals[READ_AVOIDANCE_DIRECT_APPLY_METRIC] or 0.0)
     end_direct_apply = float(end_totals[READ_AVOIDANCE_DIRECT_APPLY_METRIC] or 0.0)
@@ -400,6 +452,7 @@ def build_window_read_avoidance_accounting(proof_dir: pathlib.Path) -> Dict[str,
         "evidence": {
             "start_metrics_path": str(start_metrics_path),
             "end_metrics_path": str(end_metrics_path),
+            "metrics_sequence": metrics_sequence,
         },
         "start_totals": start_totals,
         "end_totals": end_totals,
@@ -681,7 +734,8 @@ def summarize_run(
         raise ValueError("missing current-run start/end canary artifacts (stale artifact rejection)")
     if require_interval_phase and interval_phase_count < 1:
         raise ValueError("missing current-run interval canary artifacts (no elapsed sample phase)")
-    read_avoidance_accounting = build_window_read_avoidance_accounting(proof_dir)
+    ordered_phases = [phase for _, phase, _ in sorted(phase_payloads, key=lambda item: item[0])]
+    read_avoidance_accounting = build_window_read_avoidance_accounting_for_phases(proof_dir, ordered_phases)
 
     return {
         "schema": "p03_canary_overall_summary_v1",

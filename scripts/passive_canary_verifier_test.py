@@ -378,6 +378,24 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             ],
         )
 
+    def write_sample_read_avoidance_metrics(
+        self,
+        proof_dir: pathlib.Path,
+        phase: str,
+        *,
+        direct_apply: float,
+        avoided: float,
+        saved_seconds: float = 1,
+    ) -> None:
+        write_metrics(
+            proof_dir / "samples" / f"{phase}_metrics.prom",
+            [
+                f'direct_apply_total{{family="B524",freshness_profile="state_fast"}} {direct_apply}',
+                f'active_reads_avoided_total{{family="B524",freshness_profile="state_fast"}} {avoided}',
+                f'active_read_saved_seconds{{family="B524",freshness_profile="state_fast"}} {saved_seconds}',
+            ],
+        )
+
     def write_run_phase_artifacts(
         self,
         proof_dir: pathlib.Path,
@@ -622,6 +640,90 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
             self.assertIn("incoherent", str(ctx.exception))
+
+    def test_summary_fails_closed_when_direct_apply_counter_regresses_mid_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=10,
+                start_avoided=15,
+                end_direct_apply=12,
+                end_avoided=18,
+            )
+            self.write_sample_read_avoidance_metrics(
+                proof_dir,
+                "sample_0001",
+                direct_apply=14,
+                avoided=18,
+            )
+            self.write_sample_read_avoidance_metrics(
+                proof_dir,
+                "sample_0002",
+                direct_apply=11,
+                avoided=19,
+            )
+            write_json(
+                proof_dir / "canary_phase_start.json",
+                {"run_id": "run-1", "phase": "start", "results": [{"id": "a", "status": "pass"}]},
+            )
+            write_json(
+                proof_dir / "canary_phase_sample_0001.json",
+                {"run_id": "run-1", "phase": "sample_0001", "results": [{"id": "a", "status": "pass"}]},
+            )
+            write_json(
+                proof_dir / "canary_phase_sample_0002.json",
+                {"run_id": "run-1", "phase": "sample_0002", "results": [{"id": "a", "status": "pass"}]},
+            )
+            write_json(
+                proof_dir / "canary_phase_end.json",
+                {"run_id": "run-1", "phase": "end", "results": [{"id": "a", "status": "pass"}]},
+            )
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("decreased at phase sample_0002", str(ctx.exception))
+
+    def test_summary_fails_closed_when_avoided_counter_regresses_mid_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=10,
+                start_avoided=15,
+                end_direct_apply=12,
+                end_avoided=16,
+            )
+            self.write_sample_read_avoidance_metrics(
+                proof_dir,
+                "sample_0001",
+                direct_apply=12,
+                avoided=20,
+            )
+            self.write_sample_read_avoidance_metrics(
+                proof_dir,
+                "sample_0002",
+                direct_apply=12,
+                avoided=14,
+            )
+            write_json(
+                proof_dir / "canary_phase_start.json",
+                {"run_id": "run-1", "phase": "start", "results": [{"id": "a", "status": "pass"}]},
+            )
+            write_json(
+                proof_dir / "canary_phase_sample_0001.json",
+                {"run_id": "run-1", "phase": "sample_0001", "results": [{"id": "a", "status": "pass"}]},
+            )
+            write_json(
+                proof_dir / "canary_phase_sample_0002.json",
+                {"run_id": "run-1", "phase": "sample_0002", "results": [{"id": "a", "status": "pass"}]},
+            )
+            write_json(
+                proof_dir / "canary_phase_end.json",
+                {"run_id": "run-1", "phase": "end", "results": [{"id": "a", "status": "pass"}]},
+            )
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("decreased at phase sample_0002", str(ctx.exception))
 
     def test_summary_fails_closed_on_non_finite_read_avoidance_totals(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

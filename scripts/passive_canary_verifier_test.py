@@ -583,6 +583,22 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         if [[ "${metrics_count}" -gt "${healthy_calls}" ]]; then
                           timed_out=1
                         fi
+                      elif [[ "${metrics_mode}" == "healthy_then_hard_fail_then_healthy" ]]; then
+                        state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
+                        healthy_before_fail_calls="${FAKE_METRICS_HEALTHY_BEFORE_FAIL_CALLS:-2}"
+                        hard_fail_calls="${FAKE_METRICS_HARD_FAIL_CALLS:-3}"
+                        metrics_count=0
+                        if [[ -f "${state_file}" ]]; then
+                          metrics_count="$(cat "${state_file}")"
+                        fi
+                        metrics_count=$((metrics_count + 1))
+                        printf '%s\\n' "${metrics_count}" > "${state_file}"
+                        fail_start=$((healthy_before_fail_calls + 1))
+                        fail_end=$((healthy_before_fail_calls + hard_fail_calls))
+                        if [[ "${metrics_count}" -ge "${fail_start}" && "${metrics_count}" -le "${fail_end}" ]]; then
+                          echo "simulated hard metrics poll failure on call ${metrics_count}" >&2
+                          exit 28
+                        fi
                       fi
                       cat <<EOF
                     ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} ${timed_out}
@@ -746,6 +762,25 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "1",
                 "FAKE_METRICS_MODE": "healthy_once_then_bad",
                 "FAKE_METRICS_HEALTHY_CALLS": "2",
+            },
+        )
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("timed out waiting", result.stderr)
+        summary = artifacts.get("summary")
+        self.assertIsInstance(summary, dict)
+        self.assertGreaterEqual(summary["interval_phase_count"], 1)
+
+    def test_smoke_fails_when_hard_poll_failures_interrupt_proof_window(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "PASSIVE_PROOF_HOLD_SEC": "6",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "8",
+                "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+                "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "1",
+                "FAKE_METRICS_MODE": "healthy_then_hard_fail_then_healthy",
+                "FAKE_METRICS_HEALTHY_BEFORE_FAIL_CALLS": "2",
+                "FAKE_METRICS_HARD_FAIL_CALLS": "3",
             },
         )
         self.assertNotEqual(result.returncode, 0, msg=result.stderr)

@@ -428,6 +428,13 @@ build_canary_verdict() {
     --output "${canary_verdict_path}"
 }
 
+reset_active_proof_window() {
+  proof_window_started=0
+  proof_window_start_epoch=0
+  proof_window_end_epoch=0
+  proof_next_sample_epoch=0
+}
+
 if [[ "${proof_artifacts_enabled}" == "1" ]]; then
   start_captured=0
   for _ in $(seq 1 5); do
@@ -494,10 +501,7 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
       fi
     fi
     if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 && "${snapshot_healthy}" != "1" && "${proof_window_started}" == "1" ]]; then
-      proof_window_started=0
-      proof_window_start_epoch=0
-      proof_window_end_epoch=0
-      proof_next_sample_epoch=0
+      reset_active_proof_window
     fi
     if [[ "${snapshot_healthy}" == "1" ]]; then
       if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 ]]; then
@@ -509,6 +513,8 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
         break
       fi
     fi
+  elif [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 && "${proof_window_started}" == "1" ]]; then
+    reset_active_proof_window
   fi
   sleep "${poll_interval_sec}"
 done

@@ -26,9 +26,31 @@ if [[ -z "${changed_files}" ]]; then
 fi
 
 requires_gate=0
+
+requires_transport_gate() {
+  local file="$1"
+  case "${file}" in
+    config.go|\
+    gateway.go|\
+    cmd/gateway/startup_scan*.go|\
+    cmd/matrix-runner/*|\
+    internal/matrix/*|\
+    smoke.go|\
+    smoke_config.go|\
+    cmd/smoke/*|\
+    cmd/ebusdscan/*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 while IFS= read -r file; do
   [[ -z "${file}" ]] && continue
-  if [[ "${file}" =~ ^(config\.go|gateway\.go|cmd/gateway/|cmd/matrix-runner/|internal/matrix/|smoke\.go|smoke_config\.go|cmd/smoke/|cmd/ebusdscan/) ]]; then
+  # The transport gate is for transport/protocol and matrix topology execution
+  # surfaces. Public observability/API changes under cmd/gateway must not demand
+  # an unrelated 88-case transport report.
+  if requires_transport_gate "${file}"; then
     requires_gate=1
     break
   fi

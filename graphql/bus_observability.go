@@ -41,12 +41,19 @@ type BusObservabilityDegraded struct {
 	Reasons []string
 }
 
+type BusObservabilityStartup struct {
+	Phase      string
+	CacheEpoch uint64
+	LiveEpoch  uint64
+}
+
 type BusObservabilityStatus struct {
 	TransportClass string
 	Capability     BusObservabilityCapability
 	Warmup         BusObservabilityWarmup
 	TimingQuality  BusObservabilityTimingQuality
 	Degraded       BusObservabilityDegraded
+	Startup        *BusObservabilityStartup
 	FeatureFlags   ObserveFirstFeatureFlagState
 }
 
@@ -205,12 +212,21 @@ func cloneBusObservabilityStatus(source *BusObservabilityStatus) *BusObservabili
 		return nil
 	}
 	out := *source
+	out.Startup = cloneBusObservabilityStartup(source.Startup)
 	if len(source.Degraded.Reasons) > 0 {
 		out.Degraded.Reasons = append([]string(nil), source.Degraded.Reasons...)
 	}
 	if len(source.FeatureFlags.Normalizations) > 0 {
 		out.FeatureFlags.Normalizations = append([]string(nil), source.FeatureFlags.Normalizations...)
 	}
+	return &out
+}
+
+func cloneBusObservabilityStartup(source *BusObservabilityStartup) *BusObservabilityStartup {
+	if source == nil {
+		return nil
+	}
+	out := *source
 	return &out
 }
 
@@ -483,6 +499,54 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 		},
 	})
 
+	startupType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "BusObservabilityStartup",
+		Fields: graphqlgo.Fields{
+			"phase": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					startup, ok := params.Source.(*BusObservabilityStartup)
+					if ok && startup != nil {
+						return startup.Phase, nil
+					}
+					value, ok := params.Source.(BusObservabilityStartup)
+					if !ok {
+						return "", nil
+					}
+					return value.Phase, nil
+				},
+			},
+			"cacheEpoch": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					startup, ok := params.Source.(*BusObservabilityStartup)
+					if ok && startup != nil {
+						return strconv.FormatUint(startup.CacheEpoch, 10), nil
+					}
+					value, ok := params.Source.(BusObservabilityStartup)
+					if !ok {
+						return "0", nil
+					}
+					return strconv.FormatUint(value.CacheEpoch, 10), nil
+				},
+			},
+			"liveEpoch": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					startup, ok := params.Source.(*BusObservabilityStartup)
+					if ok && startup != nil {
+						return strconv.FormatUint(startup.LiveEpoch, 10), nil
+					}
+					value, ok := params.Source.(BusObservabilityStartup)
+					if !ok {
+						return "0", nil
+					}
+					return strconv.FormatUint(value.LiveEpoch, 10), nil
+				},
+			},
+		},
+	})
+
 	featureFlagStateType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "ObserveFirstFeatureFlagState",
 		Fields: graphqlgo.Fields{
@@ -610,6 +674,20 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 						return BusObservabilityDegraded{}, nil
 					}
 					return value.Degraded, nil
+				},
+			},
+			"startup": &graphqlgo.Field{
+				Type: startupType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*BusObservabilityStatus)
+					if ok && status != nil {
+						return status.Startup, nil
+					}
+					value, ok := params.Source.(BusObservabilityStatus)
+					if !ok {
+						return nil, nil
+					}
+					return value.Startup, nil
 				},
 			},
 			"featureFlags": &graphqlgo.Field{

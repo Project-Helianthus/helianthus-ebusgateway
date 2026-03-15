@@ -37,12 +37,19 @@ type BusObservabilityDegraded struct {
 	Reasons []string `json:"reasons,omitempty"`
 }
 
+type BusObservabilityStartup struct {
+	Phase      string `json:"phase"`
+	CacheEpoch uint64 `json:"cache_epoch"`
+	LiveEpoch  uint64 `json:"live_epoch"`
+}
+
 type BusObservabilityStatus struct {
 	TransportClass string                        `json:"transport_class"`
 	Capability     BusObservabilityCapability    `json:"capability"`
 	Warmup         BusObservabilityWarmup        `json:"warmup"`
 	TimingQuality  BusObservabilityTimingQuality `json:"timing_quality"`
 	Degraded       BusObservabilityDegraded      `json:"degraded"`
+	Startup        *BusObservabilityStartup      `json:"startup,omitempty"`
 	FeatureFlags   ObserveFirstFeatureFlagState  `json:"feature_flags"`
 }
 
@@ -74,6 +81,8 @@ func (store *BusObservabilityStore) Snapshot() BusObservabilitySnapshot {
 		return BusObservabilitySnapshot{}
 	}
 
+	startup := store.startupSurface()
+
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
@@ -83,7 +92,7 @@ func (store *BusObservabilityStore) Snapshot() BusObservabilitySnapshot {
 	store.evictStalePeriodicityLocked(now)
 
 	return BusObservabilitySnapshot{
-		Summary:     store.summaryLocked(now, reconstructor.TapStatus),
+		Summary:     store.summaryLocked(now, reconstructor.TapStatus, startup),
 		Messages:    store.recentMessagesLocked(store.recentLen),
 		Periodicity: store.periodicitySnapshotLocked(),
 	}
@@ -129,7 +138,7 @@ func (store *BusObservabilityStore) periodicitySnapshotLocked() []BusPeriodicity
 	return items
 }
 
-func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus PassiveTapStatus) BusObservabilitySummary {
+func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus PassiveTapStatus, startup *BusObservabilityStartup) BusObservabilitySummary {
 	passiveSupported := store.cfg.BroadcastListen && PassiveTransportSupported(store.cfg)
 	reasons := make([]string, 0, 2)
 	if store.passive.state == "unavailable" && store.passive.unavailableReason != "" {
@@ -175,6 +184,7 @@ func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus Passi
 				Active:  len(reasons) > 0,
 				Reasons: reasons,
 			},
+			Startup:      cloneBusObservabilityStartup(startup),
 			FeatureFlags: store.cfg.ObserveFirstFlags.State(),
 		},
 		Messages: BusObservabilityBoundedList{
@@ -190,4 +200,12 @@ func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus Passi
 			PeriodicityBudgetOverflowTotal: store.periodicityOverflowTotal,
 		},
 	}
+}
+
+func cloneBusObservabilityStartup(source *BusObservabilityStartup) *BusObservabilityStartup {
+	if source == nil {
+		return nil
+	}
+	out := *source
+	return &out
 }

@@ -38,6 +38,7 @@ gateway_http_port=$((18080 + 10#${exec_case_num}))
 gateway_base_url="${MATRIX_GATEWAY_BASE_URL:-http://${ha_host}:${gateway_http_port}}"
 graphql_url="${MATRIX_GRAPHQL_URL:-${gateway_base_url}/graphql}"
 metrics_url="${MATRIX_METRICS_URL:-${gateway_base_url}/metrics}"
+bus_observability_url="${MATRIX_BUS_OBSERVABILITY_URL:-${gateway_base_url}/portal/api/v1/bus/observability}"
 poll_interval_sec="${PASSIVE_SMOKE_POLL_INTERVAL_SEC:-2}"
 timeout_sec="${PASSIVE_SMOKE_TIMEOUT_SEC:-120}"
 log_dir="${MATRIX_LOG_DIR:-${REPO_ROOT}/results/${case_id}/logs}"
@@ -89,6 +90,7 @@ canary_retries=3
 canary_enabled=0
 canary_require_interval_phase=1
 canary_run_id="p03-$(date +%s)-$$"
+canary_start_pending=0
 proof_hold_sec=0
 proof_window_start_epoch=0
 proof_window_end_epoch=0
@@ -277,6 +279,35 @@ raise SystemExit(1)
 PY
 }
 
+bus_startup_live_ready() {
+  BUS_PAYLOAD="${1:-}" python3 - <<'PY'
+import json
+import os
+import sys
+
+payload_text = os.environ.get("BUS_PAYLOAD", "")
+try:
+    payload = json.loads(payload_text)
+except Exception:
+    raise SystemExit(1)
+
+status = payload.get("status")
+if not isinstance(status, dict):
+    status = ((payload.get("summary") or {}).get("status"))
+if not isinstance(status, dict):
+    raise SystemExit(1)
+
+startup = status.get("startup")
+if not isinstance(startup, dict):
+    raise SystemExit(1)
+
+phase = startup.get("phase")
+if phase == "LIVE_READY":
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 write_feature_flag_snapshot() {
   local graphql_file="$1"
   local bus_file="$2"
@@ -374,7 +405,7 @@ capture_proof_snapshot() {
     have_metrics=1
   fi
 
-  if bus_payload="$(curl -fsS -m 8 "${gateway_base_url}/portal/api/v1/bus/observability" 2>/dev/null)"; then
+  if bus_payload="$(curl -fsS -m 8 "${bus_observability_url}" 2>/dev/null)"; then
     printf '%s\n' "${bus_payload}" > "${bus_file}"
     have_bus=1
   fi
@@ -454,27 +485,39 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     proof_next_sample_epoch="$(date +%s)"
   fi
   if [[ "${canary_enabled}" == "1" ]]; then
-    if ! run_canary_phase "start"; then
-      echo "proof mode: failed to run start canary verification" >&2
-      exit 1
-    fi
+    # Defer the start canary until bus observability reports semantic startup
+    # phase LIVE_READY, while still requiring validate_snapshot() to pass.
+    canary_start_pending=1
   fi
 fi
 
 while [[ "$(date +%s)" -lt "${deadline}" ]]; do
+  bus_payload=""
+  startup_live_ready=0
   if metrics="$(curl -fsS -m 8 "${metrics_url}" 2>/dev/null)" && \
      graphql="$(curl -fsS -m 8 -H 'Content-Type: application/json' \
-       -d '{"query":"{ devices { address deviceId } }"}' "${graphql_url}" 2>/dev/null)"; then
+       -d '{"query":"{ devices { address deviceId } }"}' "${graphql_url}" 2>/dev/null)" && \
+     bus_payload="$(curl -fsS -m 8 "${bus_observability_url}" 2>/dev/null)"; then
     now_epoch="$(date +%s)"
     snapshot_healthy=0
     last_metrics="${metrics}"
     last_graphql="${graphql}"
+    if bus_startup_live_ready "${bus_payload}"; then
+      startup_live_ready=1
+    fi
     printf '%s\n' "${metrics}" > "${metrics_path}"
     printf '%s\n' "${graphql}" > "${graphql_path}"
     if validate_snapshot "${metrics}" "${graphql}"; then
       smoke_ok=1
       snapshot_healthy=1
-      if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 && "${proof_window_started}" != "1" ]]; then
+      if [[ "${canary_start_pending}" == "1" && "${startup_live_ready}" == "1" ]]; then
+        if ! run_canary_phase "start"; then
+          echo "proof mode: failed to run start canary verification" >&2
+          exit 1
+        fi
+        canary_start_pending=0
+      fi
+      if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 && "${proof_window_started}" != "1" && "${canary_start_pending}" != "1" ]]; then
         proof_window_started=1
         proof_window_start_epoch="${now_epoch}"
         proof_window_end_epoch=$((now_epoch + proof_hold_sec))

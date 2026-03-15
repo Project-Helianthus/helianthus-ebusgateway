@@ -113,6 +113,14 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
 	if busObservability != nil && semanticRuntime.Provider() != nil {
+		busObservability.SetStartupSurfaceProvider(func() *ebusgateway.BusObservabilityStartup {
+			cacheEpoch, liveEpoch := semanticRuntime.Provider().StartupEpochs()
+			return &ebusgateway.BusObservabilityStartup{
+				Phase:      string(semanticRuntime.Provider().StartupPhase()),
+				CacheEpoch: cacheEpoch,
+				LiveEpoch:  liveEpoch,
+			}
+		})
 		semanticRuntime.Provider().SetEnergyPassiveStateProvider(func() string {
 			snapshot := busObservability.Snapshot()
 			return snapshot.Summary.Status.Capability.PassiveState

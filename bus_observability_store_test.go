@@ -222,6 +222,30 @@ func TestBusObservabilityStoreExportsNormalizedFeatureFlags(t *testing.T) {
 	}
 }
 
+func TestBusObservabilityStoreIncludesStartupSurfaceInSnapshot(t *testing.T) {
+	cfg := DefaultConfig()
+	store := NewBusObservabilityStore(cfg)
+	store.SetStartupSurfaceProvider(func() *BusObservabilityStartup {
+		return &BusObservabilityStartup{
+			Phase:      string(graphql.SemanticStartupPhaseLiveReady),
+			CacheEpoch: 2,
+			LiveEpoch:  5,
+		}
+	})
+
+	snapshot := store.Snapshot()
+	startup := snapshot.Summary.Status.Startup
+	if startup == nil {
+		t.Fatal("Snapshot().Summary.Status.Startup = nil; want startup surface")
+	}
+	if startup.Phase != string(graphql.SemanticStartupPhaseLiveReady) {
+		t.Fatalf("Startup.Phase = %q; want LIVE_READY", startup.Phase)
+	}
+	if startup.CacheEpoch != 2 || startup.LiveEpoch != 5 {
+		t.Fatalf("Startup epochs = (%d,%d); want (2,5)", startup.CacheEpoch, startup.LiveEpoch)
+	}
+}
+
 func TestBusObservabilityStoreKeepsUnsupportedPassiveTransportOutOfStartupTimeout(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BroadcastListen = true

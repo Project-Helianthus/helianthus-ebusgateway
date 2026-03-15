@@ -25,6 +25,7 @@ P03_ALLOWED_METHODS = {"get_register", "get_ext_register"}
 CANARY_VERDICT_SCHEMA = "p03_canary_verdict_v1"
 OVERALL_INTERVAL_CONCLUSIVE_MIN = 0.90
 PER_CANARY_INTERVAL_CONCLUSIVE_MIN = 0.75
+CANARY_NONCE_PARAM = "_canary_nonce"
 
 
 def utc_now() -> str:
@@ -199,6 +200,7 @@ def invoke_canary(
     graphql_url: str,
     canary: CanarySpec,
     timeout_sec: float,
+    nonce: str | None = None,
 ) -> str:
     mutation = """
 mutation($address:Int!, $plane:String!, $method:String!, $params: JSON) {
@@ -209,13 +211,16 @@ mutation($address:Int!, $plane:String!, $method:String!, $params: JSON) {
   }
 }
 """.strip()
+    params = dict(canary.params)
+    if nonce:
+        params[CANARY_NONCE_PARAM] = nonce
     payload = {
         "query": mutation,
         "variables": {
             "address": canary.address,
             "plane": canary.plane,
             "method": canary.method,
-            "params": canary.params,
+            "params": params,
         },
     }
     body = json.dumps(payload).encode("utf-8")
@@ -326,8 +331,14 @@ def verify_phase(
 
         for attempt in range(1, retries + 1):
             attempts_used = attempt
+            attempt_nonce = f"{run_id}:{phase}:{canary.canary_id}:{attempt}"
             try:
-                candidate_hex = invoke_canary(graphql_url, canary, timeout_sec)
+                candidate_hex = invoke_canary(
+                    graphql_url,
+                    canary,
+                    timeout_sec,
+                    nonce=attempt_nonce,
+                )
                 value_hex = normalize_hex(candidate_hex)
                 status, reason = classify_canary_value(canary, value_hex, baseline_hex)
                 if baseline_hex is None and allow_baseline_seed:

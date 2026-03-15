@@ -21,6 +21,11 @@ def write_json(path: pathlib.Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def write_metrics(path: pathlib.Path, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 class ManifestValidationTests(unittest.TestCase):
     def test_manifest_matches_canonical_proxy_p03_stable_set(self) -> None:
         _, canaries = verifier.load_and_validate_manifest(
@@ -347,9 +352,94 @@ class IntervalSchedulingTests(unittest.TestCase):
 
 
 class StaleArtifactRejectionTests(unittest.TestCase):
+    def write_required_read_avoidance_metrics(
+        self,
+        proof_dir: pathlib.Path,
+        *,
+        start_direct_apply: float,
+        start_avoided: float,
+        end_direct_apply: float,
+        end_avoided: float,
+    ) -> None:
+        write_metrics(
+            proof_dir / "start_metrics.prom",
+            [
+                f'direct_apply_total{{family="B524",freshness_profile="state_fast"}} {start_direct_apply}',
+                f'active_reads_avoided_total{{family="B524",freshness_profile="state_fast"}} {start_avoided}',
+                'active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1',
+            ],
+        )
+        write_metrics(
+            proof_dir / "end_metrics.prom",
+            [
+                f'direct_apply_total{{family="B524",freshness_profile="state_fast"}} {end_direct_apply}',
+                f'active_reads_avoided_total{{family="B524",freshness_profile="state_fast"}} {end_avoided}',
+                'active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 2',
+            ],
+        )
+
+    def write_run_phase_artifacts(
+        self,
+        proof_dir: pathlib.Path,
+        run_id: str = "run-1",
+        *,
+        include_interval: bool = False,
+        interval_status: str = "pass",
+    ) -> None:
+        write_json(
+            proof_dir / "canary_phase_start.json",
+            {
+                "run_id": run_id,
+                "phase": "start",
+                "results": [{"id": "a", "status": "pass"}],
+            },
+        )
+        if include_interval:
+            write_json(
+                proof_dir / "canary_phase_sample_0001.json",
+                {
+                    "run_id": run_id,
+                    "phase": "sample_0001",
+                    "results": [{"id": "a", "status": interval_status}],
+                },
+            )
+        write_json(
+            proof_dir / "canary_phase_end.json",
+            {
+                "run_id": run_id,
+                "phase": "end",
+                "results": [{"id": "a", "status": "pass"}],
+            },
+        )
+
+    def test_verify_phase_marks_read_avoidance_accounting_non_authoritative(self) -> None:
+        _, canaries = verifier.load_and_validate_manifest(
+            SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json",
+            "P03",
+        )
+        phase = verifier.verify_phase(
+            canaries=canaries[:1],
+            graphql_url="http://unused/graphql",
+            phase="start",
+            run_id="run-1",
+            retries=3,
+            timeout_sec=0.01,
+            baseline_map={},
+        )
+        self.assertIn("read_avoidance_accounting", phase)
+        self.assertFalse(phase["read_avoidance_accounting"]["authoritative"])
+
+
     def test_summary_rejects_stale_only_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=1,
+                end_direct_apply=1,
+                end_avoided=1,
+            )
             write_json(
                 proof_dir / "canary_phase_start.json",
                 {
@@ -374,6 +464,13 @@ class StaleArtifactRejectionTests(unittest.TestCase):
     def test_summary_requires_interval_sample_phase(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=1,
+                end_direct_apply=2,
+                end_avoided=2,
+            )
             write_json(
                 proof_dir / "canary_phase_start.json",
                 {
@@ -398,6 +495,13 @@ class StaleArtifactRejectionTests(unittest.TestCase):
     def test_summary_last_status_uses_final_phase_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=2,
+                end_direct_apply=3,
+                end_avoided=4,
+            )
             write_json(
                 proof_dir / "canary_phase_start.json",
                 {
@@ -417,10 +521,26 @@ class StaleArtifactRejectionTests(unittest.TestCase):
 
             summary = verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
             self.assertEqual(summary["per_canary"]["a"]["last_status"], "mismatch")
+            self.assertEqual(summary["read_avoidance_accounting"]["delta_totals"]["direct_apply_total"], 2.0)
+            self.assertEqual(
+                summary["read_avoidance_accounting"]["delta_totals"]["active_reads_avoided_total"], 2.0
+            )
+            self.assertEqual(
+                summary["read_avoidance_accounting"]["claim_scope"],
+                "bounded_proof_window_lower_bound_activity",
+            )
+            self.assertNotIn("excluded", summary["read_avoidance_accounting"])
 
     def test_summary_allows_missing_interval_when_not_required(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=4,
+                start_avoided=6,
+                end_direct_apply=4,
+                end_avoided=7,
+            )
             write_json(
                 proof_dir / "canary_phase_start.json",
                 {
@@ -442,6 +562,89 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             self.assertEqual(summary["interval_phase_count"], 0)
             self.assertFalse(summary["interval_phase_required"])
 
+    def test_summary_fails_closed_when_direct_apply_counter_decreases(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=10,
+                start_avoided=10,
+                end_direct_apply=9,
+                end_avoided=20,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("decreased", str(ctx.exception))
+
+    def test_summary_fails_closed_when_direct_apply_metric_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_metrics(
+                proof_dir / "start_metrics.prom",
+                ['active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 2'],
+            )
+            write_metrics(
+                proof_dir / "end_metrics.prom",
+                ['active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 3'],
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("direct_apply_total", str(ctx.exception))
+
+    def test_summary_fails_closed_when_avoided_counter_decreases(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=5,
+                start_avoided=10,
+                end_direct_apply=6,
+                end_avoided=9,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("decreased", str(ctx.exception))
+
+    def test_summary_fails_closed_when_avoided_delta_less_than_direct_delta(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=10,
+                start_avoided=10,
+                end_direct_apply=15,
+                end_avoided=11,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("incoherent", str(ctx.exception))
+
+    def test_summary_fails_closed_on_non_finite_read_avoidance_totals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_metrics(
+                proof_dir / "start_metrics.prom",
+                [
+                    'direct_apply_total{family="B524",freshness_profile="state_fast"} inf',
+                    'active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 1',
+                ],
+            )
+            write_metrics(
+                proof_dir / "end_metrics.prom",
+                [
+                    'direct_apply_total{family="B524",freshness_profile="state_fast"} inf',
+                    'active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 2',
+                ],
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("non-finite", str(ctx.exception))
+
 
 class CanaryVerdictTests(unittest.TestCase):
     def build_summary_payload(
@@ -457,6 +660,12 @@ class CanaryVerdictTests(unittest.TestCase):
         return {
             "schema": "p03_canary_overall_summary_v1",
             "run_id": "run-1",
+            "read_avoidance_accounting": {
+                "delta_totals": {
+                    "direct_apply_total": 1,
+                    "active_reads_avoided_total": 2,
+                }
+            },
             "interval_phase_required": interval_required,
             "totals": {
                 "results": 20,
@@ -555,6 +764,45 @@ class CanaryVerdictTests(unittest.TestCase):
         self.assertTrue(verdict["ok"])
         self.assertTrue(verdict["criteria"]["overall_interval_conclusive_rate"]["waived"])
         self.assertTrue(verdict["criteria"]["per_canary_interval_conclusive_rate"]["waived"])
+
+    def test_verdict_fails_closed_when_read_avoidance_accounting_is_missing(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=False,
+            interval_results=0,
+            interval_conclusive=0,
+            per_canary_interval={"a": {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}},
+        )
+        summary.pop("read_avoidance_accounting", None)
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["read_avoidance_accounting"]["ok"])
+
+    def test_verdict_fails_when_read_avoidance_delta_is_negative(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=False,
+            interval_results=0,
+            interval_conclusive=0,
+            per_canary_interval={"a": {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}},
+        )
+        summary["read_avoidance_accounting"]["delta_totals"]["direct_apply_total"] = -1
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertIn("invalid", verdict["criteria"]["read_avoidance_accounting"]["reason"])
+
+    def test_verdict_fails_when_read_avoidance_delta_is_non_finite(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=False,
+            interval_results=0,
+            interval_conclusive=0,
+            per_canary_interval={"a": {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}},
+        )
+        summary["read_avoidance_accounting"]["delta_totals"]["active_reads_avoided_total"] = float("inf")
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertIn("invalid", verdict["criteria"]["read_avoidance_accounting"]["reason"])
 
 
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
@@ -674,6 +922,27 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     if [[ "${url}" == *"/metrics" ]]; then
                       timed_out=0
                       metrics_mode="${FAKE_METRICS_MODE:-always_healthy}"
+                      metrics_quality="${FAKE_METRICS_QUALITY_MODE:-healthy}"
+                      if [[ "${metrics_quality}" == "missing_read_avoidance" ]]; then
+                        cat <<EOF
+                    ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0
+                    ebus_passive_tap_connected 1
+                    ebus_passive_warmup_state{state="available"} 1
+                    ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1
+                    EOF
+                        exit 0
+                      fi
+                      if [[ "${metrics_quality}" == "corrupt_read_avoidance" ]]; then
+                        cat <<EOF
+                    ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0
+                    ebus_passive_tap_connected 1
+                    ebus_passive_warmup_state{state="available"} 1
+                    ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1
+                    direct_apply_total{family="B524",freshness_profile="state_fast"} not_a_number
+                    active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 1
+                    EOF
+                        exit 0
+                      fi
                       if [[ "${metrics_mode}" == "healthy_once_then_bad" ]]; then
                         state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
                         healthy_calls="${FAKE_METRICS_HEALTHY_CALLS:-1}"
@@ -717,6 +986,9 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     ebus_passive_tap_connected 1
                     ebus_passive_warmup_state{state="available"} 0
                     ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 0
+                    direct_apply_total{family="B524",freshness_profile="state_fast"} 2
+                    active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 3
+                    active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1
                     EOF
                           exit 0
                         fi
@@ -726,6 +998,9 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     ebus_passive_tap_connected 1
                     ebus_passive_warmup_state{state="available"} 1
                     ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1
+                    direct_apply_total{family="B524",freshness_profile="state_fast"} 2
+                    active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 3
+                    active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1
                     EOF
                       exit 0
                     fi
@@ -881,7 +1156,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             "pass",
             extra_env={
                 "PASSIVE_PROOF_HOLD_SEC": "4",
-                "PASSIVE_SMOKE_TIMEOUT_SEC": "8",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "10",
                 "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
                 "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "3600",
                 "FAKE_METRICS_MODE": "initially_unhealthy_then_healthy",
@@ -894,6 +1169,32 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertGreaterEqual(len(phase_log), 1)
         self.assertEqual(phase_log[0].split(":", 1)[0], "start")
         self.assertGreaterEqual(int(phase_log[0].split(":", 1)[1]), 3)
+
+    def test_smoke_fails_when_read_avoidance_metrics_are_missing(self) -> None:
+        result = self.run_smoke_with_fake_tools(
+            "pass",
+            extra_env={
+                "PASSIVE_PROOF_HOLD_SEC": "0",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "6",
+                "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+                "FAKE_METRICS_QUALITY_MODE": "missing_read_avoidance",
+            },
+        )
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("proof mode: failed to build canary summary", result.stderr)
+
+    def test_smoke_fails_when_read_avoidance_metrics_are_corrupt(self) -> None:
+        result = self.run_smoke_with_fake_tools(
+            "pass",
+            extra_env={
+                "PASSIVE_PROOF_HOLD_SEC": "0",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "6",
+                "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+                "FAKE_METRICS_QUALITY_MODE": "corrupt_read_avoidance",
+            },
+        )
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("proof mode: failed to build canary summary", result.stderr)
 
     def test_smoke_defers_start_canary_until_bus_startup_phase_is_live_ready(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

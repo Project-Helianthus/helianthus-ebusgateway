@@ -34,6 +34,10 @@ go build ./...
 echo "==> go test (race)"
 go test -race -count=1 ./...
 
+echo "==> python script tests"
+python3 scripts/passive_canary_verifier_test.py
+python3 scripts/transport_gate_test.py
+
 if command -v golangci-lint >/dev/null 2>&1; then
   echo "==> golangci-lint"
   golangci-lint run ./...

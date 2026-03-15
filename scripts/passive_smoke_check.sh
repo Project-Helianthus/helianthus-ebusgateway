@@ -516,6 +516,9 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
           exit 1
         fi
         canary_start_pending=0
+        if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -le 0 ]]; then
+          proof_next_sample_epoch=$((now_epoch + proof_first_sample_delay_sec))
+        fi
       fi
       if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 && "${proof_window_started}" != "1" && "${canary_start_pending}" != "1" ]]; then
         proof_window_started=1
@@ -526,6 +529,9 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
     fi
     if [[ "${proof_artifacts_enabled}" == "1" ]]; then
       sample_allowed=1
+      if [[ "${canary_start_pending}" == "1" ]]; then
+        sample_allowed=0
+      fi
       if [[ "${gw15_proof_mode}" == "1" && "${proof_hold_sec}" -gt 0 && "${proof_window_started}" != "1" ]]; then
         sample_allowed=0
       fi
@@ -552,6 +558,14 @@ while [[ "$(date +%s)" -lt "${deadline}" ]]; do
           proof_window_completed=1
           break
         fi
+      elif [[ "${canary_start_pending}" == "1" ]]; then
+        # In the default hold=0 path, a healthy passive snapshot is not enough:
+        # proof-mode still needs the deferred start canary after LIVE_READY.
+        :
+      elif [[ "${canary_enabled}" == "1" && "${canary_require_interval_phase}" == "1" && "${proof_sample_index}" -lt 1 ]]; then
+        # When the verifier still requires an interval phase, do not exit until
+        # the first sample_* canary has been emitted after the deferred start.
+        :
       else
         break
       fi
@@ -583,6 +597,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     exit 1
   fi
   if [[ "${canary_enabled}" == "1" ]]; then
+    if [[ "${canary_start_pending}" == "1" ]]; then
+      echo "proof mode: timed out before deferred start canary reached LIVE_READY" >&2
+      exit 1
+    fi
     if ! run_canary_phase "end"; then
       echo "proof mode: failed to run end canary verification" >&2
       exit 1

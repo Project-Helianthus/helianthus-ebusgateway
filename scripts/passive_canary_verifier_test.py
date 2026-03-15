@@ -916,6 +916,51 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertEqual(phase_log[0].split(":", 1)[0], "start")
         self.assertGreaterEqual(int(phase_log[0].split(":", 1)[1]), 3)
 
+    def test_smoke_hold_zero_still_waits_for_deferred_start_canary(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "PASSIVE_PROOF_HOLD_SEC": "0",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "8",
+                "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+                "FAKE_METRICS_MODE": "initially_unhealthy_then_healthy",
+                "FAKE_METRICS_UNHEALTHY_CALLS": "0",
+                "FAKE_BUS_STARTUP_MODE": "initially_live_warmup_then_live_ready",
+                "FAKE_BUS_LIVE_WARMUP_CALLS": "2",
+            },
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        phase_log = artifacts.get("phase_log")
+        self.assertIsInstance(phase_log, list)
+        self.assertGreaterEqual(len(phase_log), 2)
+        self.assertEqual(phase_log[0].split(":", 1)[0], "start")
+        self.assertGreaterEqual(int(phase_log[0].split(":", 1)[1]), 3)
+        self.assertEqual(phase_log[-1].split(":", 1)[0], "end")
+        self.assertEqual(artifacts.get("sample_phase_files", []), [])
+
+    def test_smoke_hold_zero_waits_for_first_interval_when_interval_phase_is_required(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "PASSIVE_PROOF_HOLD_SEC": "0",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "8",
+                "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+                "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "1",
+                "FAKE_METRICS_MODE": "initially_unhealthy_then_healthy",
+                "FAKE_METRICS_UNHEALTHY_CALLS": "0",
+                "FAKE_BUS_STARTUP_MODE": "initially_live_warmup_then_live_ready",
+                "FAKE_BUS_LIVE_WARMUP_CALLS": "2",
+            },
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        phase_log = artifacts.get("phase_log")
+        self.assertIsInstance(phase_log, list)
+        self.assertGreaterEqual(len(phase_log), 3)
+        self.assertEqual(phase_log[0].split(":", 1)[0], "start")
+        self.assertIn("sample_0001", [entry.split(":", 1)[0] for entry in phase_log])
+        self.assertEqual(phase_log[-1].split(":", 1)[0], "end")
+        self.assertEqual(artifacts.get("sample_phase_files", []), ["canary_phase_sample_0001.json"])
+
     def test_smoke_fails_when_hold_times_out_before_window_completion_despite_slow_cleanup(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(
             "pass",

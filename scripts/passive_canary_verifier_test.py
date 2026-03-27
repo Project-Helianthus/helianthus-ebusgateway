@@ -360,6 +360,10 @@ class StaleArtifactRejectionTests(unittest.TestCase):
         start_avoided: float,
         end_direct_apply: float,
         end_avoided: float,
+        start_completed_transactions: float = 10_000,
+        end_completed_transactions: float = 12_000,
+        start_direct_apply_candidates: float = 1_000,
+        end_direct_apply_candidates: float = 1_200,
     ) -> None:
         write_metrics(
             proof_dir / "start_metrics.prom",
@@ -367,6 +371,8 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 f'direct_apply_total{{family="B524",freshness_profile="state_fast"}} {start_direct_apply}',
                 f'active_reads_avoided_total{{family="B524",freshness_profile="state_fast"}} {start_avoided}',
                 'active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1',
+                f"ebus_passive_completed_transactions_total {start_completed_transactions}",
+                f"ebus_passive_direct_apply_candidates_evaluated_total {start_direct_apply_candidates}",
             ],
         )
         write_metrics(
@@ -375,6 +381,8 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 f'direct_apply_total{{family="B524",freshness_profile="state_fast"}} {end_direct_apply}',
                 f'active_reads_avoided_total{{family="B524",freshness_profile="state_fast"}} {end_avoided}',
                 'active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 2',
+                f"ebus_passive_completed_transactions_total {end_completed_transactions}",
+                f"ebus_passive_direct_apply_candidates_evaluated_total {end_direct_apply_candidates}",
             ],
         )
 
@@ -386,6 +394,8 @@ class StaleArtifactRejectionTests(unittest.TestCase):
         direct_apply: float,
         avoided: float,
         saved_seconds: float = 1,
+        completed_transactions: float = 11_000,
+        direct_apply_candidates: float = 1_100,
     ) -> None:
         write_metrics(
             proof_dir / "samples" / f"{phase}_metrics.prom",
@@ -393,6 +403,8 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 f'direct_apply_total{{family="B524",freshness_profile="state_fast"}} {direct_apply}',
                 f'active_reads_avoided_total{{family="B524",freshness_profile="state_fast"}} {avoided}',
                 f'active_read_saved_seconds{{family="B524",freshness_profile="state_fast"}} {saved_seconds}',
+                f"ebus_passive_completed_transactions_total {completed_transactions}",
+                f"ebus_passive_direct_apply_candidates_evaluated_total {direct_apply_candidates}",
             ],
         )
 
@@ -548,6 +560,17 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 "bounded_proof_window_lower_bound_activity",
             )
             self.assertNotIn("excluded", summary["read_avoidance_accounting"])
+            self.assertTrue(summary["proof_window_traffic_minimums"]["ok"])
+            self.assertTrue(
+                summary["proof_window_traffic_minimums"]["thresholds"][
+                    "ebus_passive_completed_transactions_total"
+                ]["ok"]
+            )
+            self.assertTrue(
+                summary["proof_window_traffic_minimums"]["thresholds"][
+                    "ebus_passive_direct_apply_candidates_evaluated_total"
+                ]["ok"]
+            )
 
     def test_summary_allows_missing_interval_when_not_required(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -747,6 +770,119 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
             self.assertIn("non-finite", str(ctx.exception))
 
+    def test_summary_fails_closed_when_completed_transactions_metric_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_metrics(
+                proof_dir / "start_metrics.prom",
+                [
+                    'direct_apply_total{family="B524",freshness_profile="state_fast"} 1',
+                    'active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 1',
+                    "ebus_passive_direct_apply_candidates_evaluated_total 1000",
+                ],
+            )
+            write_metrics(
+                proof_dir / "end_metrics.prom",
+                [
+                    'direct_apply_total{family="B524",freshness_profile="state_fast"} 2',
+                    'active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 2',
+                    "ebus_passive_direct_apply_candidates_evaluated_total 1200",
+                ],
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("ebus_passive_completed_transactions_total", str(ctx.exception))
+
+    def test_summary_fails_closed_when_direct_apply_candidates_regress_mid_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=10,
+                start_avoided=15,
+                end_direct_apply=12,
+                end_avoided=18,
+                start_direct_apply_candidates=1_000,
+                end_direct_apply_candidates=1_050,
+            )
+            self.write_sample_read_avoidance_metrics(
+                proof_dir,
+                "sample_0001",
+                direct_apply=11,
+                avoided=16,
+                direct_apply_candidates=1_200,
+            )
+            self.write_sample_read_avoidance_metrics(
+                proof_dir,
+                "sample_0002",
+                direct_apply=12,
+                avoided=17,
+                direct_apply_candidates=900,
+            )
+            write_json(
+                proof_dir / "canary_phase_start.json",
+                {"run_id": "run-1", "phase": "start", "results": [{"id": "a", "status": "pass"}]},
+            )
+            write_json(
+                proof_dir / "canary_phase_sample_0001.json",
+                {"run_id": "run-1", "phase": "sample_0001", "results": [{"id": "a", "status": "pass"}]},
+            )
+            write_json(
+                proof_dir / "canary_phase_sample_0002.json",
+                {"run_id": "run-1", "phase": "sample_0002", "results": [{"id": "a", "status": "pass"}]},
+            )
+            write_json(
+                proof_dir / "canary_phase_end.json",
+                {"run_id": "run-1", "phase": "end", "results": [{"id": "a", "status": "pass"}]},
+            )
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("ebus_passive_direct_apply_candidates_evaluated_total", str(ctx.exception))
+            self.assertIn("decreased at phase sample_0002", str(ctx.exception))
+
+    def test_summary_reports_proof_window_threshold_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=2,
+                end_direct_apply=2,
+                end_avoided=3,
+                start_completed_transactions=100,
+                end_completed_transactions=1_100,
+                start_direct_apply_candidates=50,
+                end_direct_apply_candidates=150,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            summary = verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            thresholds = summary["proof_window_traffic_minimums"]["thresholds"]
+            self.assertTrue(summary["proof_window_traffic_minimums"]["ok"])
+            self.assertTrue(thresholds["ebus_passive_completed_transactions_total"]["ok"])
+            self.assertTrue(thresholds["ebus_passive_direct_apply_candidates_evaluated_total"]["ok"])
+
+    def test_summary_reports_proof_window_threshold_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=2,
+                end_direct_apply=2,
+                end_avoided=3,
+                start_completed_transactions=100,
+                end_completed_transactions=1_099,
+                start_direct_apply_candidates=50,
+                end_direct_apply_candidates=149,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            summary = verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            thresholds = summary["proof_window_traffic_minimums"]["thresholds"]
+            self.assertFalse(summary["proof_window_traffic_minimums"]["ok"])
+            self.assertFalse(thresholds["ebus_passive_completed_transactions_total"]["ok"])
+            self.assertFalse(thresholds["ebus_passive_direct_apply_candidates_evaluated_total"]["ok"])
+
 
 class CanaryVerdictTests(unittest.TestCase):
     def build_summary_payload(
@@ -757,6 +893,8 @@ class CanaryVerdictTests(unittest.TestCase):
         interval_results: int,
         interval_conclusive: int,
         per_canary_interval: dict[str, dict[str, int]],
+        completed_transactions_delta: float = 1_200,
+        direct_apply_candidates_delta: float = 120,
     ) -> dict:
         per_canary = {canary_id: {"last_status": "pass"} for canary_id in per_canary_interval}
         return {
@@ -766,6 +904,12 @@ class CanaryVerdictTests(unittest.TestCase):
                 "delta_totals": {
                     "direct_apply_total": 1,
                     "active_reads_avoided_total": 2,
+                }
+            },
+            "proof_window_traffic_minimums": {
+                "delta_totals": {
+                    "ebus_passive_completed_transactions_total": completed_transactions_delta,
+                    "ebus_passive_direct_apply_candidates_evaluated_total": direct_apply_candidates_delta,
                 }
             },
             "interval_phase_required": interval_required,
@@ -906,6 +1050,34 @@ class CanaryVerdictTests(unittest.TestCase):
         self.assertFalse(verdict["ok"])
         self.assertIn("invalid", verdict["criteria"]["read_avoidance_accounting"]["reason"])
 
+    def test_verdict_fails_closed_when_proof_window_traffic_minimums_are_missing(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=False,
+            interval_results=0,
+            interval_conclusive=0,
+            per_canary_interval={"a": {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}},
+        )
+        summary.pop("proof_window_traffic_minimums", None)
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["proof_window_traffic_minimums"]["ok"])
+
+    def test_verdict_fails_when_proof_window_traffic_minimums_are_below_threshold(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=False,
+            interval_results=0,
+            interval_conclusive=0,
+            per_canary_interval={"a": {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}},
+            completed_transactions_delta=999,
+            direct_apply_candidates_delta=99,
+        )
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["proof_window_traffic_minimums"]["ok"])
+        self.assertIn("minimum not met", verdict["criteria"]["proof_window_traffic_minimums"]["reason"])
+
 
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(
@@ -1025,6 +1197,16 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                       timed_out=0
                       metrics_mode="${FAKE_METRICS_MODE:-always_healthy}"
                       metrics_quality="${FAKE_METRICS_QUALITY_MODE:-healthy}"
+                      state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
+                      metrics_count=0
+                      if [[ -f "${state_file}" ]]; then
+                        metrics_count="$(cat "${state_file}")"
+                      fi
+                      metrics_count=$((metrics_count + 1))
+                      printf '%s\\n' "${metrics_count}" > "${state_file}"
+                      completed_total=$((metrics_count * 1200))
+                      candidates_total=$((metrics_count * 120))
+
                       if [[ "${metrics_quality}" == "missing_read_avoidance" ]]; then
                         cat <<EOF
                     ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0
@@ -1042,31 +1224,19 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1
                     direct_apply_total{family="B524",freshness_profile="state_fast"} not_a_number
                     active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 1
+                    ebus_passive_completed_transactions_total ${completed_total}
+                    ebus_passive_direct_apply_candidates_evaluated_total ${candidates_total}
                     EOF
                         exit 0
                       fi
                       if [[ "${metrics_mode}" == "healthy_once_then_bad" ]]; then
-                        state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
                         healthy_calls="${FAKE_METRICS_HEALTHY_CALLS:-1}"
-                        metrics_count=0
-                        if [[ -f "${state_file}" ]]; then
-                          metrics_count="$(cat "${state_file}")"
-                        fi
-                        metrics_count=$((metrics_count + 1))
-                        printf '%s\\n' "${metrics_count}" > "${state_file}"
                         if [[ "${metrics_count}" -gt "${healthy_calls}" ]]; then
                           timed_out=1
                         fi
                       elif [[ "${metrics_mode}" == "healthy_then_hard_fail_then_healthy" ]]; then
-                        state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
                         healthy_before_fail_calls="${FAKE_METRICS_HEALTHY_BEFORE_FAIL_CALLS:-2}"
                         hard_fail_calls="${FAKE_METRICS_HARD_FAIL_CALLS:-3}"
-                        metrics_count=0
-                        if [[ -f "${state_file}" ]]; then
-                          metrics_count="$(cat "${state_file}")"
-                        fi
-                        metrics_count=$((metrics_count + 1))
-                        printf '%s\\n' "${metrics_count}" > "${state_file}"
                         fail_start=$((healthy_before_fail_calls + 1))
                         fail_end=$((healthy_before_fail_calls + hard_fail_calls))
                         if [[ "${metrics_count}" -ge "${fail_start}" && "${metrics_count}" -le "${fail_end}" ]]; then
@@ -1074,14 +1244,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           exit 28
                         fi
                       elif [[ "${metrics_mode}" == "initially_unhealthy_then_healthy" ]]; then
-                        state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
                         unhealthy_calls="${FAKE_METRICS_UNHEALTHY_CALLS:-1}"
-                        metrics_count=0
-                        if [[ -f "${state_file}" ]]; then
-                          metrics_count="$(cat "${state_file}")"
-                        fi
-                        metrics_count=$((metrics_count + 1))
-                        printf '%s\\n' "${metrics_count}" > "${state_file}"
                         if [[ "${metrics_count}" -le "${unhealthy_calls}" ]]; then
                           cat <<EOF
                     ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0
@@ -1091,6 +1254,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     direct_apply_total{family="B524",freshness_profile="state_fast"} 2
                     active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 3
                     active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1
+                    ebus_passive_completed_transactions_total ${completed_total}
+                    ebus_passive_direct_apply_candidates_evaluated_total ${candidates_total}
                     EOF
                           exit 0
                         fi
@@ -1103,6 +1268,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     direct_apply_total{family="B524",freshness_profile="state_fast"} 2
                     active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 3
                     active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1
+                    ebus_passive_completed_transactions_total ${completed_total}
+                    ebus_passive_direct_apply_candidates_evaluated_total ${candidates_total}
                     EOF
                       exit 0
                     fi

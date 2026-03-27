@@ -31,6 +31,10 @@ READ_AVOIDANCE_ACCOUNTING_SCHEMA = "p03_read_avoidance_accounting_v1"
 READ_AVOIDANCE_DIRECT_APPLY_METRIC = "direct_apply_total"
 READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC = "active_reads_avoided_total"
 READ_AVOIDANCE_SAVED_SECONDS_METRIC = "active_read_saved_seconds"
+PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC = "ebus_passive_completed_transactions_total"
+PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_apply_candidates_evaluated_total"
+PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
+PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA = 100.0
 PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)$")
 
 
@@ -313,6 +317,27 @@ def collect_read_avoidance_totals(samples: Dict[str, List[float]]) -> Dict[str, 
     }
 
 
+def collect_proof_window_traffic_totals(samples: Dict[str, List[float]]) -> Dict[str, float]:
+    return {
+        PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC: float(
+            aggregate_metric_total(
+                samples,
+                PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC,
+                required=True,
+            )
+            or 0.0
+        ),
+        PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC: float(
+            aggregate_metric_total(
+                samples,
+                PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC,
+                required=True,
+            )
+            or 0.0
+        ),
+    }
+
+
 def phase_metrics_snapshot_path(output_path: pathlib.Path, phase: str) -> pathlib.Path:
     proof_dir = output_path.parent
     return proof_phase_metrics_snapshot_path(proof_dir, phase)
@@ -369,6 +394,8 @@ def build_window_read_avoidance_accounting_for_phases(proof_dir: pathlib.Path, p
     end_samples = parse_prometheus_samples(end_metrics_path.read_text(encoding="utf-8"))
     start_totals = collect_read_avoidance_totals(start_samples)
     end_totals = collect_read_avoidance_totals(end_samples)
+    start_proof_window_totals = collect_proof_window_traffic_totals(start_samples)
+    end_proof_window_totals = collect_proof_window_traffic_totals(end_samples)
 
     ordered_phases: List[str] = []
     seen_phases = set()
@@ -387,13 +414,21 @@ def build_window_read_avoidance_accounting_for_phases(proof_dir: pathlib.Path, p
     metrics_sequence: List[Dict[str, Any]] = []
     previous_direct_apply: float | None = None
     previous_avoided: float | None = None
+    previous_completed_transactions: float | None = None
+    previous_direct_apply_candidates: float | None = None
     for phase in ordered_phases:
         snapshot_path = proof_phase_metrics_snapshot_path(proof_dir, phase)
         if not snapshot_path.exists():
             raise ValueError(f"missing required proof metrics artifact: {snapshot_path}")
-        totals = collect_read_avoidance_totals(parse_prometheus_samples(snapshot_path.read_text(encoding="utf-8")))
+        phase_samples = parse_prometheus_samples(snapshot_path.read_text(encoding="utf-8"))
+        totals = collect_read_avoidance_totals(phase_samples)
+        proof_window_totals = collect_proof_window_traffic_totals(phase_samples)
         direct_apply_total = float(totals[READ_AVOIDANCE_DIRECT_APPLY_METRIC] or 0.0)
         avoided_total = float(totals[READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC] or 0.0)
+        completed_transactions_total = float(proof_window_totals[PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC])
+        direct_apply_candidates_total = float(
+            proof_window_totals[PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC]
+        )
         if previous_direct_apply is not None and direct_apply_total + 1e-9 < previous_direct_apply:
             raise ValueError(
                 "incoherent read-avoidance metrics: "
@@ -404,23 +439,52 @@ def build_window_read_avoidance_accounting_for_phases(proof_dir: pathlib.Path, p
                 "incoherent read-avoidance metrics: "
                 f"{READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC} decreased at phase {phase}"
             )
+        if (
+            previous_completed_transactions is not None
+            and completed_transactions_total + 1e-9 < previous_completed_transactions
+        ):
+            raise ValueError(
+                "incoherent proof-window traffic metrics: "
+                f"{PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC} decreased at phase {phase}"
+            )
+        if (
+            previous_direct_apply_candidates is not None
+            and direct_apply_candidates_total + 1e-9 < previous_direct_apply_candidates
+        ):
+            raise ValueError(
+                "incoherent proof-window traffic metrics: "
+                f"{PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC} decreased at phase {phase}"
+            )
         metrics_sequence.append(
             {
                 "phase": phase,
                 "metrics_snapshot_path": str(snapshot_path),
                 "totals": totals,
+                "proof_window_totals": proof_window_totals,
             }
         )
         previous_direct_apply = direct_apply_total
         previous_avoided = avoided_total
+        previous_completed_transactions = completed_transactions_total
+        previous_direct_apply_candidates = direct_apply_candidates_total
 
     start_direct_apply = float(start_totals[READ_AVOIDANCE_DIRECT_APPLY_METRIC] or 0.0)
     end_direct_apply = float(end_totals[READ_AVOIDANCE_DIRECT_APPLY_METRIC] or 0.0)
     start_avoided = float(start_totals[READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC] or 0.0)
     end_avoided = float(end_totals[READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC] or 0.0)
+    start_completed_transactions = float(start_proof_window_totals[PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC])
+    end_completed_transactions = float(end_proof_window_totals[PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC])
+    start_direct_apply_candidates = float(
+        start_proof_window_totals[PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC]
+    )
+    end_direct_apply_candidates = float(
+        end_proof_window_totals[PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC]
+    )
 
     delta_direct_apply = end_direct_apply - start_direct_apply
     delta_avoided = end_avoided - start_avoided
+    delta_completed_transactions = end_completed_transactions - start_completed_transactions
+    delta_direct_apply_candidates = end_direct_apply_candidates - start_direct_apply_candidates
     if delta_direct_apply < -1e-9:
         raise ValueError(
             "incoherent read-avoidance metrics: "
@@ -437,12 +501,45 @@ def build_window_read_avoidance_accounting_for_phases(proof_dir: pathlib.Path, p
             f"delta {READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC}={delta_avoided} "
             f"< delta {READ_AVOIDANCE_DIRECT_APPLY_METRIC}={delta_direct_apply}"
         )
+    if delta_completed_transactions < -1e-9:
+        raise ValueError(
+            "incoherent proof-window traffic metrics: "
+            f"{PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC} decreased across proof window"
+        )
+    if delta_direct_apply_candidates < -1e-9:
+        raise ValueError(
+            "incoherent proof-window traffic metrics: "
+            f"{PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC} decreased across proof window"
+        )
 
     saved_start = start_totals[READ_AVOIDANCE_SAVED_SECONDS_METRIC]
     saved_end = end_totals[READ_AVOIDANCE_SAVED_SECONDS_METRIC]
     saved_delta: float | None = None
     if saved_start is not None and saved_end is not None:
         saved_delta = float(saved_end) - float(saved_start)
+
+    proof_window_thresholds = {
+        PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC: {
+            "observed_delta": delta_completed_transactions,
+            "minimum_delta": PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA,
+            "ok": delta_completed_transactions + 1e-9 >= PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA,
+        },
+        PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC: {
+            "observed_delta": delta_direct_apply_candidates,
+            "minimum_delta": PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA,
+            "ok": delta_direct_apply_candidates + 1e-9 >= PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA,
+        },
+    }
+    proof_window_traffic_minimums = {
+        "start_totals": start_proof_window_totals,
+        "end_totals": end_proof_window_totals,
+        "delta_totals": {
+            PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC: delta_completed_transactions,
+            PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC: delta_direct_apply_candidates,
+        },
+        "thresholds": proof_window_thresholds,
+        "ok": all(bool(item["ok"]) for item in proof_window_thresholds.values()),
+    }
 
     return {
         "schema": READ_AVOIDANCE_ACCOUNTING_SCHEMA,
@@ -469,6 +566,7 @@ def build_window_read_avoidance_accounting_for_phases(proof_dir: pathlib.Path, p
             "counter_monotonic": True,
             "active_reads_avoided_gte_direct_apply_delta": True,
         },
+        "proof_window_traffic_minimums": proof_window_traffic_minimums,
     }
 
 
@@ -507,6 +605,60 @@ def evaluate_read_avoidance_accounting(payload: Any) -> Tuple[bool, str, Dict[st
         "active_reads_avoided_total_delta": avoided_value,
     }
     return True, "", details
+
+
+def evaluate_proof_window_traffic_minimums(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return False, "missing proof_window_traffic_minimums payload", {}
+    delta_totals = payload.get("delta_totals")
+    if not isinstance(delta_totals, dict):
+        return False, "proof_window_traffic_minimums missing delta_totals", {}
+
+    completed_delta = delta_totals.get(PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC)
+    candidates_delta = delta_totals.get(PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC)
+    if not isinstance(completed_delta, (int, float)):
+        return False, f"proof_window_traffic_minimums missing numeric {PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC} delta", {}
+    if not isinstance(candidates_delta, (int, float)):
+        return (
+            False,
+            f"proof_window_traffic_minimums missing numeric {PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC} delta",
+            {},
+        )
+
+    completed_value = float(completed_delta)
+    candidates_value = float(candidates_delta)
+    if not math.isfinite(completed_value) or completed_value < 0:
+        return False, f"invalid {PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC} delta {completed_value!r}", {}
+    if not math.isfinite(candidates_value) or candidates_value < 0:
+        return False, f"invalid {PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC} delta {candidates_value!r}", {}
+
+    completed_ok = completed_value + 1e-9 >= PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA
+    candidates_ok = candidates_value + 1e-9 >= PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA
+    if not completed_ok:
+        return (
+            False,
+            f"proof-window traffic minimum not met: {PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC} "
+            f"delta={completed_value} < {PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA}",
+            {},
+        )
+    if not candidates_ok:
+        return (
+            False,
+            f"proof-window traffic minimum not met: {PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC} "
+            f"delta={candidates_value} < {PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA}",
+            {},
+        )
+
+    return (
+        True,
+        "",
+        {
+            "completed_transactions_delta": completed_value,
+            "completed_transactions_minimum": PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA,
+            "direct_apply_candidates_evaluated_delta": candidates_value,
+            "direct_apply_candidates_evaluated_minimum": PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA,
+        },
+    )
 
 
 def classify_canary_value(
@@ -736,6 +888,7 @@ def summarize_run(
         raise ValueError("missing current-run interval canary artifacts (no elapsed sample phase)")
     ordered_phases = [phase for _, phase, _ in sorted(phase_payloads, key=lambda item: item[0])]
     read_avoidance_accounting = build_window_read_avoidance_accounting_for_phases(proof_dir, ordered_phases)
+    proof_window_traffic_minimums = read_avoidance_accounting.get("proof_window_traffic_minimums")
 
     return {
         "schema": "p03_canary_overall_summary_v1",
@@ -743,6 +896,7 @@ def summarize_run(
         "run_id": run_id,
         "verification_mode": "active_direct_read",
         "read_avoidance_accounting": read_avoidance_accounting,
+        "proof_window_traffic_minimums": proof_window_traffic_minimums,
         "phase_files_total": len(list((proof_dir).glob(f"{CANARY_PHASE_PREFIX}*.json"))),
         "phase_files_used": len(phase_files),
         "phase_files_stale_ignored": stale_ignored,
@@ -776,6 +930,9 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
         per_canary_interval = {}
     read_avoidance_ok, read_avoidance_reason, read_avoidance_details = evaluate_read_avoidance_accounting(
         summary.get("read_avoidance_accounting")
+    )
+    proof_window_ok, proof_window_reason, proof_window_details = evaluate_proof_window_traffic_minimums(
+        summary.get("proof_window_traffic_minimums")
     )
 
     mismatch_count = int(totals.get("mismatch", 0) or 0)
@@ -822,7 +979,7 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     per_canary_ok = len(failing_canaries) == 0
-    verdict_ok = no_mismatches_ok and overall_interval_ok and per_canary_ok and read_avoidance_ok
+    verdict_ok = no_mismatches_ok and overall_interval_ok and per_canary_ok and read_avoidance_ok and proof_window_ok
 
     return {
         "schema": CANARY_VERDICT_SCHEMA,
@@ -855,6 +1012,11 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
                 "ok": read_avoidance_ok,
                 "reason": read_avoidance_reason,
                 **read_avoidance_details,
+            },
+            "proof_window_traffic_minimums": {
+                "ok": proof_window_ok,
+                "reason": proof_window_reason,
+                **proof_window_details,
             },
         },
         "per_canary": per_canary_details,

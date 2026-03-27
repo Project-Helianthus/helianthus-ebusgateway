@@ -436,6 +436,9 @@ func TestBusObservabilityStoreExportsBusyMetricsWhenPassiveAvailable(t *testing.
 	if !strings.Contains(metrics, `ebus_bus_busy_ratio{window="1m"} 0.0008333333333333334`) {
 		t.Fatalf("RenderPrometheus missing 1m busy ratio:\n%s", metrics)
 	}
+	if !strings.Contains(metrics, "ebus_passive_completed_transactions_total 1") {
+		t.Fatalf("RenderPrometheus missing cumulative passive completed transaction counter:\n%s", metrics)
+	}
 }
 
 func TestBusObservabilityStoreRebootsWarmupFromConnectedSnapshotAfterSocketLoss(t *testing.T) {
@@ -522,6 +525,9 @@ func TestBusObservabilityStoreRestartsWarmupOnTrafficAfterStartupTimeout(t *test
 	if store.passive.completedTransactions != 1 {
 		t.Fatalf("completedTransactions = %d; want 1", store.passive.completedTransactions)
 	}
+	if store.passive.completedTransactionsTotal != 1 {
+		t.Fatalf("completedTransactionsTotal = %d; want 1", store.passive.completedTransactionsTotal)
+	}
 	if store.passive.unavailableReason != "" {
 		t.Fatalf("unavailableReason = %q; want cleared after traffic restart", store.passive.unavailableReason)
 	}
@@ -568,10 +574,20 @@ func TestBusObservabilityStoreExportsWatchEfficiencyMetrics(t *testing.T) {
 	})
 
 	store.ObserveWatchDirectApply(WatchEfficiencyDirectApplyEvent{
-		Key:           key,
-		Descriptor:    descriptor,
-		HasDescriptor: true,
-		ObservedAt:    base.Add(7 * time.Second),
+		Key:                key,
+		Descriptor:         descriptor,
+		HasDescriptor:      true,
+		ObservedAt:         base.Add(7 * time.Second),
+		CandidateEvaluated: true,
+		Accepted:           true,
+	})
+	store.ObserveWatchDirectApply(WatchEfficiencyDirectApplyEvent{
+		Key:                key,
+		Descriptor:         descriptor,
+		HasDescriptor:      true,
+		ObservedAt:         base.Add(8 * time.Second),
+		CandidateEvaluated: true,
+		Accepted:           false,
 	})
 
 	metrics := store.RenderPrometheus()
@@ -580,6 +596,9 @@ func TestBusObservabilityStoreExportsWatchEfficiencyMetrics(t *testing.T) {
 	}
 	if !strings.Contains(metrics, `direct_apply_total{family="B524",freshness_profile="state_fast"} 1`) {
 		t.Fatalf("RenderPrometheus missing direct_apply_total bucket sample:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `ebus_passive_direct_apply_candidates_evaluated_total 2`) {
+		t.Fatalf("RenderPrometheus missing direct-apply candidate counter:\n%s", metrics)
 	}
 	if !strings.Contains(metrics, `active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 2`) {
 		t.Fatalf("RenderPrometheus missing active_reads_avoided_total bucket sample:\n%s", metrics)

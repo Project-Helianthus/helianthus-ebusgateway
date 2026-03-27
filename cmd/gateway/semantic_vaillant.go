@@ -1324,11 +1324,11 @@ func (p *vaillantSemanticPoller) handleAdjudicatedPassiveEvent(event ebusgateway
 		Value:      value,
 		ObservedAt: observedAt,
 	})
+	p.emitWatchDirectApplyEfficiency(runtime, observedAt, true, result.Accepted)
 	if !result.Accepted {
 		log.Printf("semantic_passive_shadow_write_rejected key=%q reason=%s", key.Canonical(), result.Reason)
 		return
 	}
-	p.emitWatchDirectApplyEfficiency(runtime, observedAt)
 }
 
 func passiveShadowLaneEnabled(flags ebusgateway.ObserveFirstFeatureFlags, policy ebusgateway.ObserveFirstFamilyPolicy) bool {
@@ -5152,7 +5152,7 @@ func (p *vaillantSemanticPoller) emitWatchReadEfficiency(runtime semanticReadWat
 	})
 }
 
-func (p *vaillantSemanticPoller) emitWatchDirectApplyEfficiency(runtime semanticReadWatchRuntime, observedAt time.Time) {
+func (p *vaillantSemanticPoller) emitWatchDirectApplyEfficiency(runtime semanticReadWatchRuntime, observedAt time.Time, candidateEvaluated bool, accepted bool) {
 	if p == nil || p.watchEfficiency == nil || runtime.key == nil {
 		return
 	}
@@ -5160,10 +5160,12 @@ func (p *vaillantSemanticPoller) emitWatchDirectApplyEfficiency(runtime semantic
 		observedAt = p.now()
 	}
 	p.watchEfficiency.ObserveWatchDirectApply(ebusgateway.WatchEfficiencyDirectApplyEvent{
-		Key:           runtime.key,
-		Descriptor:    runtime.descriptor,
-		HasDescriptor: runtime.hasDescriptor,
-		ObservedAt:    observedAt,
+		Key:                runtime.key,
+		Descriptor:         runtime.descriptor,
+		HasDescriptor:      runtime.hasDescriptor,
+		ObservedAt:         observedAt,
+		CandidateEvaluated: candidateEvaluated,
+		Accepted:           accepted,
 	})
 }
 

@@ -153,23 +153,24 @@ type busySegment struct {
 }
 
 type passiveWarmupRuntime struct {
-	processStartedAt      time.Time
-	startupWindowClosed   bool
-	state                 string
-	unavailableReason     string
-	sessionStartedAt      time.Time
-	sessionDeadline       time.Time
-	settlingDeadline      time.Time
-	connectedWindow       time.Duration
-	requiredTransactions  int
-	completedTransactions int
-	terminalEvents        int
-	symbolBaseline        uint64
-	fallbackHealthy       bool
-	probeAttemptsTotal    uint64
-	probeOutcomes         map[string]uint64
-	transitions           map[string]uint64
-	lastCompletionMode    string
+	processStartedAt           time.Time
+	startupWindowClosed        bool
+	state                      string
+	unavailableReason          string
+	sessionStartedAt           time.Time
+	sessionDeadline            time.Time
+	settlingDeadline           time.Time
+	connectedWindow            time.Duration
+	requiredTransactions       int
+	completedTransactions      int
+	terminalEvents             int
+	symbolBaseline             uint64
+	fallbackHealthy            bool
+	probeAttemptsTotal         uint64
+	probeOutcomes              map[string]uint64
+	transitions                map[string]uint64
+	lastCompletionMode         string
+	completedTransactionsTotal uint64
 }
 
 type watchEfficiencyBucketKey struct {
@@ -202,15 +203,17 @@ type watchEfficiencyBucketRuntime struct {
 }
 
 type watchEfficiencyRuntime struct {
-	buckets   map[watchEfficiencyBucketKey]*watchEfficiencyBucketRuntime
-	ambiguous map[watchEfficiencyAmbiguousKey]uint64
-	missed    map[watchEfficiencyMissedKey]uint64
+	buckets                             map[watchEfficiencyBucketKey]*watchEfficiencyBucketRuntime
+	ambiguous                           map[watchEfficiencyAmbiguousKey]uint64
+	missed                              map[watchEfficiencyMissedKey]uint64
+	directApplyCandidatesEvaluatedTotal uint64
 }
 
 type watchEfficiencySnapshot struct {
-	buckets   map[watchEfficiencyBucketKey]watchEfficiencyBucketRuntime
-	ambiguous map[watchEfficiencyAmbiguousKey]uint64
-	missed    map[watchEfficiencyMissedKey]uint64
+	buckets                             map[watchEfficiencyBucketKey]watchEfficiencyBucketRuntime
+	ambiguous                           map[watchEfficiencyAmbiguousKey]uint64
+	missed                              map[watchEfficiencyMissedKey]uint64
+	directApplyCandidatesEvaluatedTotal uint64
 }
 
 func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
@@ -505,6 +508,20 @@ func (store *BusObservabilityStore) observeWatchReadLocked(event WatchEfficiency
 }
 
 func (store *BusObservabilityStore) observeWatchDirectApplyLocked(event WatchEfficiencyDirectApplyEvent) {
+	candidateEvaluated := event.CandidateEvaluated
+	accepted := event.Accepted
+	if !candidateEvaluated && !accepted {
+		// Preserve legacy semantics for call sites created before candidate accounting.
+		candidateEvaluated = true
+		accepted = true
+	}
+	if accepted {
+		candidateEvaluated = true
+	}
+	if candidateEvaluated {
+		store.watchEfficiency.directApplyCandidatesEvaluatedTotal++
+	}
+
 	bucket, reason, include := resolveWatchEfficiencyBucket(event.Key, event.Descriptor, event.HasDescriptor)
 	if reason != "" {
 		family := familyForAmbiguous(event.Key, event.Descriptor)
@@ -515,6 +532,9 @@ func (store *BusObservabilityStore) observeWatchDirectApplyLocked(event WatchEff
 		return
 	}
 	if !include {
+		return
+	}
+	if !accepted {
 		return
 	}
 	series := store.ensureWatchEfficiencyBucketLocked(bucket)
@@ -746,6 +766,10 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	writer.writeType("ebus_passive_warmup_completed_transactions", "gauge")
 	writer.writeGaugeSample("ebus_passive_warmup_completed_transactions", float64(passive.completedTransactions), nil)
 
+	writer.writeHelp("ebus_passive_completed_transactions_total", "Cumulative completed passive transactions observed by the passive reconstructor.")
+	writer.writeType("ebus_passive_completed_transactions_total", "counter")
+	writer.writeCounterSample("ebus_passive_completed_transactions_total", float64(passive.completedTransactionsTotal), nil)
+
 	writer.writeHelp("ebus_passive_warmup_required_transactions", "Current passive warmup threshold.")
 	writer.writeType("ebus_passive_warmup_required_transactions", "gauge")
 	writer.writeGaugeSample("ebus_passive_warmup_required_transactions", float64(passive.requiredTransactions), nil)
@@ -840,6 +864,10 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 			"freshness_profile", item.Key.FreshnessProfile,
 		))
 	}
+
+	writer.writeHelp("ebus_passive_direct_apply_candidates_evaluated_total", "Observe-first passive direct-apply candidates evaluated, including rejected shadow writes.")
+	writer.writeType("ebus_passive_direct_apply_candidates_evaluated_total", "counter")
+	writer.writeCounterSample("ebus_passive_direct_apply_candidates_evaluated_total", float64(watchEfficiency.directApplyCandidatesEvaluatedTotal), nil)
 
 	writer.writeHelp("active_reads_avoided_total", "Observe-first active reads avoided by passive shadow hits or direct-apply.")
 	writer.writeType("active_reads_avoided_total", "counter")
@@ -965,6 +993,7 @@ func (store *BusObservabilityStore) recordPassiveFrameLocked(event PassiveClassi
 	if !event.HasRequest {
 		return
 	}
+	store.passive.completedTransactionsTotal++
 	store.bootstrapPassiveWarmupFromTrafficLocked(event)
 	now := event.ObservedAt
 	local := store.localAddressSnapshotLocked()
@@ -1622,9 +1651,10 @@ func clippedRatio(total time.Duration, window time.Duration) float64 {
 
 func (store *BusObservabilityStore) watchEfficiencySnapshotLocked(now time.Time) watchEfficiencySnapshot {
 	snapshot := watchEfficiencySnapshot{
-		buckets:   make(map[watchEfficiencyBucketKey]watchEfficiencyBucketRuntime, len(store.watchEfficiency.buckets)),
-		ambiguous: make(map[watchEfficiencyAmbiguousKey]uint64, len(store.watchEfficiency.ambiguous)),
-		missed:    make(map[watchEfficiencyMissedKey]uint64, len(store.watchEfficiency.missed)),
+		buckets:                             make(map[watchEfficiencyBucketKey]watchEfficiencyBucketRuntime, len(store.watchEfficiency.buckets)),
+		ambiguous:                           make(map[watchEfficiencyAmbiguousKey]uint64, len(store.watchEfficiency.ambiguous)),
+		missed:                              make(map[watchEfficiencyMissedKey]uint64, len(store.watchEfficiency.missed)),
+		directApplyCandidatesEvaluatedTotal: store.watchEfficiency.directApplyCandidatesEvaluatedTotal,
 	}
 	for key, series := range store.watchEfficiency.buckets {
 		if series == nil {

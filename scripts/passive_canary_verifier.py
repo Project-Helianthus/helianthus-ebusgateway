@@ -2493,11 +2493,16 @@ def build_family_proof_eligibility_artifact_for_run(
     if not replay_ok:
         reasons.append("replay falsification gate failed")
 
-    is_p03_family = (
+    canonical_family_shape = (
         normalized_kind == "proxy-single-client"
         and normalized_passive_mode == "required"
         and normalized_gateway_transport == "ens"
         and transport_class == "ens"
+    )
+    canonical_proven_scope = (
+        canonical_family_shape
+        and normalized_proxy_transport == "ens"
+        and normalized_ebusd_transport == ""
     )
     family_identity_missing = normalized_kind == "" or normalized_passive_mode == "" or transport_class == ""
     family_identity_ambiguous = any(
@@ -2507,7 +2512,24 @@ def build_family_proof_eligibility_artifact_for_run(
     family_scope_mismatch = False
     if family_identity_missing or family_identity_ambiguous:
         status = "blocked"
-    elif not is_p03_family:
+    elif canonical_family_shape and not canonical_proven_scope:
+        family_scope_mismatch = True
+        status = "blocked"
+        if normalized_proxy_transport == "":
+            reasons.append("family proof missing proof_scope.proxy_transport for canonical proven scope")
+        elif normalized_proxy_transport != "ens":
+            reasons.append(
+                "family proof proof_scope.proxy_transport mismatch: "
+                f"got {normalized_proxy_transport!r}; want 'ens'"
+            )
+        if normalized_ebusd_transport == "ebusd-tcp":
+            reasons.append("family proof proof_scope.ebusd_transport mismatch: topology='via-ebusd-tcp'")
+        elif normalized_ebusd_transport != "":
+            reasons.append(
+                "family proof proof_scope.ebusd_transport mismatch: "
+                f"got {normalized_ebusd_transport!r}; want absent"
+            )
+    elif not canonical_family_shape:
         family_scope_mismatch = True
         status = "not_proven"
         reasons.append(
@@ -2777,6 +2799,8 @@ def build_promotion_eligibility_artifact_for_run(
             reasons.append("family proof eligibility missing proof_scope.passive_mode")
         if family_scope.get("gateway_transport") in (None, ""):
             reasons.append("family proof eligibility missing proof_scope.gateway_transport")
+        if family_scope.get("proxy_transport") in (None, ""):
+            reasons.append("family proof eligibility missing proof_scope.proxy_transport")
         if family_scope.get("transport_class") in (None, ""):
             reasons.append("family proof eligibility missing proof_scope.transport_class")
         if family_scope.get("family_key") in (None, ""):
@@ -2803,11 +2827,15 @@ def build_promotion_eligibility_artifact_for_run(
                 "family proof eligibility proof_scope.gateway_transport mismatch: "
                 f"got {family_gateway_transport!r}; want {normalized_gateway_transport!r}"
             )
-        if family_proxy_transport and normalized_proxy_transport and family_proxy_transport != normalized_proxy_transport:
+        if normalized_proxy_transport == "":
+            reasons.append("missing promotion topology metadata: proxy_transport")
+        elif family_proxy_transport and family_proxy_transport != normalized_proxy_transport:
             reasons.append(
                 "family proof eligibility proof_scope.proxy_transport mismatch: "
                 f"got {family_proxy_transport!r}; want {normalized_proxy_transport!r}"
             )
+        if family_proxy_transport == "":
+            reasons.append("family proof eligibility missing proof_scope.proxy_transport")
         if family_ebusd_transport:
             if normalized_ebusd_transport == "":
                 reasons.append(

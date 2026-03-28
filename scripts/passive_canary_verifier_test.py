@@ -2367,7 +2367,7 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
                 "required",
                 "ens",
                 proxy_transport="ens",
-                ebusd_transport="ebusd-tcp",
+                ebusd_transport="",
             )
 
         self.assertEqual(artifact["schema"], verifier.FAMILY_PROOF_ELIGIBILITY_SCHEMA)
@@ -2375,6 +2375,54 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "proven_for_default_flip")
         self.assertEqual(artifact["family_identity"]["family_key"], "proxy-single-client/required/ens")
         self.assertEqual(artifact["family_identity"]["transport_class"], "ens")
+
+    def test_family_proof_eligibility_blocks_banned_topology_slices(self) -> None:
+        cases = (
+            (
+                "via-ebusd-tcp",
+                {
+                    "proxy_transport": "ens",
+                    "ebusd_transport": "ebusd-tcp",
+                },
+                "topology='via-ebusd-tcp'",
+            ),
+            (
+                "contradictory proxy transport axis",
+                {
+                    "proxy_transport": "tcp",
+                    "ebusd_transport": "",
+                },
+                "proxy_transport mismatch: got 'tcp'; want 'ens'",
+            ),
+            (
+                "contradictory ebusd transport axis",
+                {
+                    "proxy_transport": "ens",
+                    "ebusd_transport": "ens",
+                },
+                "ebusd_transport mismatch: got 'ens'; want absent",
+            ),
+        )
+
+        for label, topology, expected_reason in cases:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    proof_dir = pathlib.Path(temp_dir)
+                    write_family_proof_artifacts(proof_dir, transport_class="ens")
+                    artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                        proof_dir,
+                        "run-1",
+                        "P03",
+                        "proxy-single-client",
+                        "required",
+                        "ens",
+                        proxy_transport=topology["proxy_transport"],
+                        ebusd_transport=topology["ebusd_transport"],
+                    )
+
+                self.assertFalse(artifact["ok"])
+                self.assertEqual(artifact["eligibility"]["status"], "blocked")
+                self.assertIn(expected_reason, artifact["eligibility"]["reason"])
 
     def test_family_proof_eligibility_rejects_non_canonical_case_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3353,7 +3401,7 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
             write_family_proof_artifacts(proof_dir, transport_class="ens")
-            write_family_proof_eligibility_artifact(proof_dir, ebusd_transport="")
+            write_family_proof_eligibility_artifact(proof_dir, proxy_transport="ens", ebusd_transport="")
             artifact = verifier.build_promotion_eligibility_artifact_for_run(
                 proof_dir,
                 "run-1",
@@ -3371,6 +3419,55 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["promotion_scope"]["family_key"], "proxy-single-client/required/ens")
         self.assertEqual(artifact["matrix_topology"]["transport_class"], "ens")
 
+    def test_promotion_eligibility_blocks_missing_proxy_transport_metadata(self) -> None:
+        cases = (
+            (
+                "missing current proxy_transport",
+                {
+                    "family_proxy_transport": "ens",
+                    "family_ebusd_transport": "",
+                    "current_proxy_transport": "",
+                    "current_ebusd_transport": "",
+                },
+                "missing promotion topology metadata: proxy_transport",
+            ),
+            (
+                "missing family proof proxy_transport",
+                {
+                    "family_proxy_transport": "",
+                    "family_ebusd_transport": "",
+                    "current_proxy_transport": "ens",
+                    "current_ebusd_transport": "",
+                },
+                "family proof eligibility missing proof_scope.proxy_transport",
+            ),
+        )
+
+        for label, topology, expected_reason in cases:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    proof_dir = pathlib.Path(temp_dir)
+                    write_family_proof_artifacts(proof_dir, transport_class="ens")
+                    write_family_proof_eligibility_artifact(
+                        proof_dir,
+                        proxy_transport=topology["family_proxy_transport"],
+                        ebusd_transport=topology["family_ebusd_transport"],
+                    )
+                    artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                        proof_dir,
+                        "run-1",
+                        "P03",
+                        "proxy-single-client",
+                        "required",
+                        "ens",
+                        proxy_transport=topology["current_proxy_transport"],
+                        ebusd_transport=topology["current_ebusd_transport"],
+                    )
+
+                self.assertFalse(artifact["ok"])
+                self.assertEqual(artifact["eligibility"]["status"], "blocked")
+                self.assertIn(expected_reason, artifact["eligibility"]["reason"])
+
     def test_promotion_eligibility_rejects_explicitly_banned_topologies(self) -> None:
         cases = (
             (
@@ -3382,6 +3479,7 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                     "proxy_transport": "ens",
                     "ebusd_transport": "ebusd-tcp",
                 },
+                "not_proven",
                 "topology='via-ebusd-tcp'",
             ),
             (
@@ -3393,6 +3491,7 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                     "proxy_transport": "ens",
                     "ebusd_transport": "ens",
                 },
+                "not_proven",
                 "ebusd_transport='ens'",
             ),
             (
@@ -3404,6 +3503,7 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                     "proxy_transport": "ens",
                     "ebusd_transport": "",
                 },
+                "not_proven",
                 "topology='proxy-dual-client'",
             ),
             (
@@ -3415,11 +3515,12 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                     "proxy_transport": "",
                     "ebusd_transport": "",
                 },
-                "topology='direct-adapter'",
+                "blocked",
+                "missing promotion topology metadata: proxy_transport",
             ),
         )
 
-        for label, topology, expected_reason in cases:
+        for label, topology, expected_status, expected_reason in cases:
             with self.subTest(label=label):
                 with tempfile.TemporaryDirectory() as temp_dir:
                     proof_dir = pathlib.Path(temp_dir)
@@ -3449,8 +3550,9 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                     )
 
                 self.assertFalse(artifact["ok"])
-                self.assertEqual(artifact["eligibility"]["status"], "not_proven")
-                self.assertIn("promotion scope mismatch", artifact["eligibility"]["reason"])
+                self.assertEqual(artifact["eligibility"]["status"], expected_status)
+                if expected_status == "not_proven":
+                    self.assertIn("promotion scope mismatch", artifact["eligibility"]["reason"])
                 self.assertIn(expected_reason, artifact["eligibility"]["reason"])
 
     def test_promotion_eligibility_rejects_unproven_family(self) -> None:

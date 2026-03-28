@@ -38,12 +38,14 @@ type BusObservabilityDegraded struct {
 }
 
 type BusObservabilityStartup struct {
-	Phase      string `json:"phase"`
-	CacheEpoch uint64 `json:"cache_epoch"`
-	LiveEpoch  uint64 `json:"live_epoch"`
+	LastUpdatedAt *time.Time `json:"last_updated_at,omitempty"`
+	Phase         string     `json:"phase"`
+	CacheEpoch    uint64     `json:"cache_epoch"`
+	LiveEpoch     uint64     `json:"live_epoch"`
 }
 
 type BusObservabilityStatus struct {
+	LastUpdatedAt  *time.Time                    `json:"last_updated_at,omitempty"`
 	TransportClass string                        `json:"transport_class"`
 	Capability     BusObservabilityCapability    `json:"capability"`
 	Warmup         BusObservabilityWarmup        `json:"warmup"`
@@ -64,10 +66,11 @@ type BusObservabilityCounters struct {
 }
 
 type BusObservabilitySummary struct {
-	Status      BusObservabilityStatus      `json:"status"`
-	Messages    BusObservabilityBoundedList `json:"messages"`
-	Periodicity BusObservabilityBoundedList `json:"periodicity"`
-	Counters    BusObservabilityCounters    `json:"counters"`
+	LastUpdatedAt *time.Time                  `json:"last_updated_at,omitempty"`
+	Status        BusObservabilityStatus      `json:"status"`
+	Messages      BusObservabilityBoundedList `json:"messages"`
+	Periodicity   BusObservabilityBoundedList `json:"periodicity"`
+	Counters      BusObservabilityCounters    `json:"counters"`
 }
 
 type BusObservabilitySnapshot struct {
@@ -154,7 +157,9 @@ func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus Passi
 	}
 
 	return BusObservabilitySummary{
+		LastUpdatedAt: cloneTimePtr(store.lastUpdatedAtPtrLocked()),
 		Status: BusObservabilityStatus{
+			LastUpdatedAt:  store.lastUpdatedAtPtrLocked(),
 			TransportClass: store.transportClass,
 			Capability: BusObservabilityCapability{
 				ActiveSupported:    true,
@@ -185,7 +190,7 @@ func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus Passi
 				Reasons: reasons,
 			},
 			Startup:      cloneBusObservabilityStartup(startup),
-			FeatureFlags: store.cfg.ObserveFirstFlags.State(),
+			FeatureFlags: store.cfg.ObserveFirstFlags.StateAt(store.featureFlagsUpdatedAt),
 		},
 		Messages: BusObservabilityBoundedList{
 			Count:    store.recentLen,
@@ -207,5 +212,22 @@ func cloneBusObservabilityStartup(source *BusObservabilityStartup) *BusObservabi
 		return nil
 	}
 	out := *source
+	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
 	return &out
+}
+
+func (store *BusObservabilityStore) lastUpdatedAtPtrLocked() *time.Time {
+	if store == nil || store.lastUpdatedAt.IsZero() {
+		return nil
+	}
+	updatedAt := store.lastUpdatedAt.UTC()
+	return &updatedAt
+}
+
+func cloneTimePtr(source *time.Time) *time.Time {
+	if source == nil {
+		return nil
+	}
+	updatedAt := source.UTC()
+	return &updatedAt
 }

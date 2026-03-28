@@ -27,11 +27,13 @@ func TestGraphQLBusObservabilityProviderAdapter_ParityWithMCPAdapter(t *testing.
 	if store == nil {
 		t.Fatal("NewBusObservabilityStore() = nil")
 	}
+	startupAt := time.Date(2026, time.March, 12, 17, 45, 0, 0, time.UTC)
 	store.SetStartupSurfaceProvider(func() *ebusgateway.BusObservabilityStartup {
 		return &ebusgateway.BusObservabilityStartup{
-			Phase:      string(graphql.SemanticStartupPhaseLiveReady),
-			CacheEpoch: 4,
-			LiveEpoch:  9,
+			LastUpdatedAt: &startupAt,
+			Phase:         string(graphql.SemanticStartupPhaseLiveReady),
+			CacheEpoch:    4,
+			LiveEpoch:     9,
 		}
 	})
 
@@ -66,6 +68,7 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
 	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
 	origStartHTTPServerFn := startHTTPServerFn
+	startupAt := time.Date(2026, time.March, 12, 17, 45, 0, 0, time.UTC)
 	t.Cleanup(func() {
 		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
 		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
@@ -77,9 +80,10 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 		store := ebusgateway.NewBusObservabilityStore(*cfg)
 		store.SetStartupSurfaceProvider(func() *ebusgateway.BusObservabilityStartup {
 			return &ebusgateway.BusObservabilityStartup{
-				Phase:      string(graphql.SemanticStartupPhaseLiveReady),
-				CacheEpoch: 1,
-				LiveEpoch:  3,
+				LastUpdatedAt: &startupAt,
+				Phase:         string(graphql.SemanticStartupPhaseLiveReady),
+				CacheEpoch:    1,
+				LiveEpoch:     3,
 			}
 		})
 		if err := store.OnBusEvent(protocol.BusEvent{
@@ -116,7 +120,7 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 			t.Fatalf("NewInvokeHandler error = %v", err)
 		}
 
-		body := bytes.NewBufferString(`{"query":"{ busSummary { messages { count capacity } status { transportClass capability { activeSupported } startup { phase cacheEpoch liveEpoch } } } busMessages(limit: 1) { count items { family sourceAddress targetAddress } } }"}`)
+		body := bytes.NewBufferString(`{"query":"{ busSummary { lastUpdatedAt messages { count capacity } status { lastUpdatedAt transportClass capability { activeSupported } startup { lastUpdatedAt phase cacheEpoch liveEpoch } featureFlags { lastUpdatedAt } } } busMessages(limit: 1) { count items { family sourceAddress targetAddress } } }"}`)
 		req := httptest.NewRequest(http.MethodPost, cfg.GraphQLPath, body)
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -129,20 +133,26 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 		var response struct {
 			Data struct {
 				BusSummary struct {
-					Messages struct {
+					LastUpdatedAt string `json:"lastUpdatedAt"`
+					Messages      struct {
 						Count    int `json:"count"`
 						Capacity int `json:"capacity"`
 					} `json:"messages"`
 					Status struct {
+						LastUpdatedAt  string `json:"lastUpdatedAt"`
 						TransportClass string `json:"transportClass"`
 						Capability     struct {
 							ActiveSupported bool `json:"activeSupported"`
 						} `json:"capability"`
 						Startup struct {
-							Phase      string `json:"phase"`
-							CacheEpoch string `json:"cacheEpoch"`
-							LiveEpoch  string `json:"liveEpoch"`
+							LastUpdatedAt string `json:"lastUpdatedAt"`
+							Phase         string `json:"phase"`
+							CacheEpoch    string `json:"cacheEpoch"`
+							LiveEpoch     string `json:"liveEpoch"`
 						} `json:"startup"`
+						FeatureFlags struct {
+							LastUpdatedAt string `json:"lastUpdatedAt"`
+						} `json:"featureFlags"`
 					} `json:"status"`
 				} `json:"busSummary"`
 				BusMessages struct {
@@ -176,6 +186,30 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 		}
 		if response.Data.BusSummary.Status.Startup.CacheEpoch != "0" || response.Data.BusSummary.Status.Startup.LiveEpoch != "0" {
 			t.Fatalf("busSummary.status.startup epochs = (%s,%s); want (0,0)", response.Data.BusSummary.Status.Startup.CacheEpoch, response.Data.BusSummary.Status.Startup.LiveEpoch)
+		}
+		if response.Data.BusSummary.Status.Startup.LastUpdatedAt == "" {
+			t.Fatal("busSummary.status.startup.lastUpdatedAt empty; want timestamp")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, response.Data.BusSummary.Status.Startup.LastUpdatedAt); err != nil {
+			t.Fatalf("busSummary.status.startup.lastUpdatedAt parse: %v", err)
+		}
+		if response.Data.BusSummary.LastUpdatedAt == "" {
+			t.Fatal("busSummary.lastUpdatedAt empty; want timestamp")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, response.Data.BusSummary.LastUpdatedAt); err != nil {
+			t.Fatalf("busSummary.lastUpdatedAt parse: %v", err)
+		}
+		if response.Data.BusSummary.Status.LastUpdatedAt == "" {
+			t.Fatal("busSummary.status.lastUpdatedAt empty; want timestamp")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, response.Data.BusSummary.Status.LastUpdatedAt); err != nil {
+			t.Fatalf("busSummary.status.lastUpdatedAt parse: %v", err)
+		}
+		if response.Data.BusSummary.Status.FeatureFlags.LastUpdatedAt == "" {
+			t.Fatal("busSummary.status.featureFlags.lastUpdatedAt empty; want timestamp")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, response.Data.BusSummary.Status.FeatureFlags.LastUpdatedAt); err != nil {
+			t.Fatalf("busSummary.status.featureFlags.lastUpdatedAt parse: %v", err)
 		}
 		if response.Data.BusMessages.Count != 1 || len(response.Data.BusMessages.Items) != 1 {
 			t.Fatalf("busMessages = %+v; want one wired item", response.Data.BusMessages)
@@ -248,7 +282,8 @@ func graphQLSummaryToMCP(summary *graphql.BusSummary) *mcp.BusSummary {
 		return nil
 	}
 	return &mcp.BusSummary{
-		Status: graphQLStatusToMCP(summary.Status),
+		LastUpdatedAt: cloneTimePtr(summary.LastUpdatedAt),
+		Status:        graphQLStatusToMCP(summary.Status),
 		Messages: mcp.BusBoundedListSummary{
 			Count:    summary.Messages.Count,
 			Capacity: summary.Messages.Capacity,
@@ -267,9 +302,15 @@ func graphQLSummaryToMCP(summary *graphql.BusSummary) *mcp.BusSummary {
 func normalizeMCPBusSnapshot(snapshot mcp.BusObservabilitySnapshot) mcp.BusObservabilitySnapshot {
 	if snapshot.Summary != nil {
 		normalized := *snapshot.Summary
+		normalized.LastUpdatedAt = cloneTimePtr(normalized.LastUpdatedAt)
 		if snapshot.Summary.Status != nil {
 			status := *snapshot.Summary.Status
+			status.LastUpdatedAt = cloneTimePtr(status.LastUpdatedAt)
+			if status.Startup != nil {
+				status.Startup.LastUpdatedAt = cloneTimePtr(status.Startup.LastUpdatedAt)
+			}
 			status.Degraded.Reasons = append([]string(nil), snapshot.Summary.Status.Degraded.Reasons...)
+			status.FeatureFlags.LastUpdatedAt = cloneTimePtr(status.FeatureFlags.LastUpdatedAt)
 			status.FeatureFlags.Normalizations = append([]string(nil), snapshot.Summary.Status.FeatureFlags.Normalizations...)
 			normalized.Status = &status
 		}
@@ -291,12 +332,14 @@ func graphQLStatusToMCP(status *graphql.BusObservabilityStatus) *mcp.BusObservab
 	var startup *mcp.BusObservabilityStartup
 	if status.Startup != nil {
 		startup = &mcp.BusObservabilityStartup{
-			Phase:      status.Startup.Phase,
-			CacheEpoch: status.Startup.CacheEpoch,
-			LiveEpoch:  status.Startup.LiveEpoch,
+			LastUpdatedAt: cloneTimePtr(status.Startup.LastUpdatedAt),
+			Phase:         status.Startup.Phase,
+			CacheEpoch:    status.Startup.CacheEpoch,
+			LiveEpoch:     status.Startup.LiveEpoch,
 		}
 	}
 	return &mcp.BusObservabilityStatus{
+		LastUpdatedAt:  cloneTimePtr(status.LastUpdatedAt),
 		TransportClass: status.TransportClass,
 		Capability: mcp.BusObservabilityCapability{
 			ActiveSupported:    status.Capability.ActiveSupported,
@@ -332,6 +375,7 @@ func graphQLStatusToMCP(status *graphql.BusObservabilityStatus) *mcp.BusObservab
 			PassiveStateDirectApply:  status.FeatureFlags.PassiveStateDirectApply,
 			PassiveConfigDirectApply: status.FeatureFlags.PassiveConfigDirectApply,
 			ExternalWritePolicy:      status.FeatureFlags.ExternalWritePolicy,
+			LastUpdatedAt:            cloneTimePtr(status.FeatureFlags.LastUpdatedAt),
 			Normalizations:           append([]string(nil), status.FeatureFlags.Normalizations...),
 		},
 	}

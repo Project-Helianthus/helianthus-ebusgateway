@@ -38,6 +38,7 @@ func (adapter mcpWatchSummaryProviderAdapter) Snapshot() mcp.WatchSummary {
 
 func mapGraphQLWatchSummary(summary ebusgateway.WatchSummary) graphql.WatchSummary {
 	return graphql.WatchSummary{
+		LastUpdatedAt: cloneTimePtr(summary.LastUpdatedAt),
 		Inventory: graphql.WatchSummaryInventory{
 			TotalEntries:             summary.Inventory.TotalEntries,
 			PinnedEntries:            summary.Inventory.PinnedEntries,
@@ -66,6 +67,7 @@ func mapGraphQLWatchSummary(summary ebusgateway.WatchSummary) graphql.WatchSumma
 
 func mapMCPWatchSummary(summary ebusgateway.WatchSummary) mcp.WatchSummary {
 	return mcp.WatchSummary{
+		LastUpdatedAt: cloneTimePtr(summary.LastUpdatedAt),
 		Inventory: mcp.WatchSummaryInventory{
 			TotalEntries:             summary.Inventory.TotalEntries,
 			PinnedEntries:            summary.Inventory.PinnedEntries,

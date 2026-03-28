@@ -35,12 +35,14 @@ type BusObservabilityDegraded struct {
 }
 
 type BusObservabilityStartup struct {
-	Phase      string `json:"phase"`
-	CacheEpoch uint64 `json:"cache_epoch"`
-	LiveEpoch  uint64 `json:"live_epoch"`
+	LastUpdatedAt *time.Time `json:"last_updated_at,omitempty"`
+	Phase         string     `json:"phase"`
+	CacheEpoch    uint64     `json:"cache_epoch"`
+	LiveEpoch     uint64     `json:"live_epoch"`
 }
 
 type BusObservabilityStatus struct {
+	LastUpdatedAt  *time.Time                    `json:"last_updated_at,omitempty"`
 	TransportClass string                        `json:"transport_class"`
 	Capability     BusObservabilityCapability    `json:"capability"`
 	Warmup         BusObservabilityWarmup        `json:"warmup"`
@@ -51,11 +53,12 @@ type BusObservabilityStatus struct {
 }
 
 type ObserveFirstFeatureFlagState struct {
-	ObserveFirstEnabled      bool     `json:"observe_first_enabled"`
-	PassiveStateDirectApply  bool     `json:"passive_state_direct_apply"`
-	PassiveConfigDirectApply bool     `json:"passive_config_direct_apply"`
-	ExternalWritePolicy      string   `json:"external_write_policy"`
-	Normalizations           []string `json:"normalizations,omitempty"`
+	ObserveFirstEnabled      bool       `json:"observe_first_enabled"`
+	PassiveStateDirectApply  bool       `json:"passive_state_direct_apply"`
+	PassiveConfigDirectApply bool       `json:"passive_config_direct_apply"`
+	ExternalWritePolicy      string     `json:"external_write_policy"`
+	LastUpdatedAt            *time.Time `json:"last_updated_at,omitempty"`
+	Normalizations           []string   `json:"normalizations,omitempty"`
 }
 
 type BusBoundedListSummary struct {
@@ -69,10 +72,11 @@ type BusObservabilityCounters struct {
 }
 
 type BusSummary struct {
-	Status      *BusObservabilityStatus  `json:"status,omitempty"`
-	Messages    BusBoundedListSummary    `json:"messages"`
-	Periodicity BusBoundedListSummary    `json:"periodicity"`
-	Counters    BusObservabilityCounters `json:"counters"`
+	LastUpdatedAt *time.Time               `json:"last_updated_at,omitempty"`
+	Status        *BusObservabilityStatus  `json:"status,omitempty"`
+	Messages      BusBoundedListSummary    `json:"messages"`
+	Periodicity   BusBoundedListSummary    `json:"periodicity"`
+	Counters      BusObservabilityCounters `json:"counters"`
 }
 
 type BusMessage struct {
@@ -139,6 +143,7 @@ func cloneBusSummary(source *BusSummary) *BusSummary {
 		return nil
 	}
 	out := *source
+	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
 	out.Status = cloneBusObservabilityStatus(source.Status)
 	return &out
 }
@@ -148,14 +153,30 @@ func cloneBusObservabilityStatus(source *BusObservabilityStatus) *BusObservabili
 		return nil
 	}
 	out := *source
+	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
 	out.Startup = cloneBusObservabilityStartup(source.Startup)
 	if len(source.Degraded.Reasons) > 0 {
 		out.Degraded.Reasons = append([]string(nil), source.Degraded.Reasons...)
 	}
-	if len(source.FeatureFlags.Normalizations) > 0 {
-		out.FeatureFlags.Normalizations = append([]string(nil), source.FeatureFlags.Normalizations...)
-	}
+	out.FeatureFlags = cloneObserveFirstFeatureFlagState(source.FeatureFlags)
 	return &out
+}
+
+func cloneObserveFirstFeatureFlagState(source ObserveFirstFeatureFlagState) ObserveFirstFeatureFlagState {
+	out := source
+	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
+	if len(source.Normalizations) > 0 {
+		out.Normalizations = append([]string(nil), source.Normalizations...)
+	}
+	return out
+}
+
+func cloneTimePtr(source *time.Time) *time.Time {
+	if source == nil {
+		return nil
+	}
+	updatedAt := source.UTC()
+	return &updatedAt
 }
 
 func cloneBusObservabilityStartup(source *BusObservabilityStartup) *BusObservabilityStartup {
@@ -163,6 +184,7 @@ func cloneBusObservabilityStartup(source *BusObservabilityStartup) *BusObservabi
 		return nil
 	}
 	out := *source
+	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
 	return &out
 }
 

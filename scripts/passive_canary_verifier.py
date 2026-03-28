@@ -638,6 +638,28 @@ def canonicalize_json_value(value: Any) -> Any:
     return value
 
 
+def normalize_timestamp_value(raw: Any, snapshot_path: pathlib.Path, source_name: str, field_name: str) -> str:
+    if not isinstance(raw, str):
+        raise ValueError(f"{snapshot_path}: {source_name} {field_name} must be a string")
+    value = raw.strip()
+    if value == "":
+        raise ValueError(f"{snapshot_path}: {source_name} {field_name} must be a non-empty string")
+    if not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)", value):
+        raise ValueError(f"{snapshot_path}: {source_name} {field_name} must be RFC3339")
+    if value.endswith("+00:00") or value.endswith("-00:00"):
+        return value[:-6] + "Z"
+    return value
+
+
+def extract_timestamp_alias(raw: Any, snapshot_path: pathlib.Path, source_name: str, aliases: Iterable[str]) -> str | None:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{snapshot_path}: {source_name} payload must be a JSON object")
+    for field_name in aliases:
+        if field_name in raw:
+            return normalize_timestamp_value(raw[field_name], snapshot_path, source_name, field_name)
+    return None
+
+
 def feature_flag_field_default(source_name: str, field: str) -> Any:
     if source_name == "bus_observability" and field == "normalizations":
         return []
@@ -698,11 +720,27 @@ def load_feature_flag_snapshot(snapshot_path: pathlib.Path, phase: str) -> Dict[
         snapshot_path,
         "graphql",
     )
+    graphql_last_updated_at = extract_timestamp_alias(
+        payload.get("graphql_feature_flags"),
+        snapshot_path,
+        "graphql",
+        ("lastUpdatedAt", "last_updated_at"),
+    )
     bus_state = normalize_feature_flag_state(
         payload.get("bus_observability_feature_flags"),
         snapshot_path,
         "bus_observability",
     )
+    bus_last_updated_at = extract_timestamp_alias(
+        payload.get("bus_observability_feature_flags"),
+        snapshot_path,
+        "bus_observability",
+        ("last_updated_at", "lastUpdatedAt"),
+    )
+    if graphql_last_updated_at is None:
+        raise ValueError(f"{snapshot_path}: graphql feature flags missing lastUpdatedAt")
+    if bus_last_updated_at is None:
+        raise ValueError(f"{snapshot_path}: bus-observability feature flags missing last_updated_at")
     canonical_graphql_key = canonical_feature_flag_key(graphql_state)
     canonical_bus_key = canonical_feature_flag_key(bus_state)
     if canonical_graphql_key != canonical_bus_key:
@@ -721,6 +759,8 @@ def load_feature_flag_snapshot(snapshot_path: pathlib.Path, phase: str) -> Dict[
         "feature_flags_snapshot_path": str(snapshot_path),
         "graphql_feature_flags": graphql_state,
         "bus_observability_feature_flags": bus_state,
+        "graphql_feature_flags_last_updated_at": graphql_last_updated_at,
+        "bus_observability_feature_flags_last_updated_at": bus_last_updated_at,
         "canonical_feature_flags": graphql_state,
         "canonical_feature_flags_key": canonical_graphql_key,
     }
@@ -747,6 +787,88 @@ def load_phase_status_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict[str,
     startup_phase = str(startup.get("phase", "")).strip()
     if startup_phase == "":
         raise ValueError(f"{bus_path}: missing summary.status.startup.phase")
+    bus_summary = bus_payload.get("summary") or {}
+    bus_status = (bus_summary.get("status") or {}) if isinstance(bus_summary, dict) else {}
+    graphql_data = graphql_payload.get("data") or {}
+    graphql_bus_summary = (graphql_data.get("busSummary") or {}) if isinstance(graphql_data, dict) else {}
+    graphql_status = (graphql_bus_summary.get("status") or {}) if isinstance(graphql_bus_summary, dict) else {}
+    graphql_startup = graphql_status.get("startup") or {}
+    graphql_feature_flags = graphql_status.get("featureFlags") or {}
+    watch_summary = (graphql_data.get("watchSummary") or {}) if isinstance(graphql_data, dict) else {}
+    if not isinstance(bus_summary, dict):
+        raise ValueError(f"{bus_path}: missing summary object")
+    if not isinstance(bus_status, dict):
+        raise ValueError(f"{bus_path}: missing summary.status object")
+    if not isinstance(graphql_data, dict):
+        raise ValueError(f"{graphql_path}: missing data object")
+    if not isinstance(graphql_bus_summary, dict):
+        raise ValueError(f"{graphql_path}: missing data.busSummary object")
+    if not isinstance(graphql_status, dict):
+        raise ValueError(f"{graphql_path}: missing data.busSummary.status object")
+    if not isinstance(graphql_startup, dict):
+        raise ValueError(f"{graphql_path}: missing data.busSummary.status.startup object")
+    if not isinstance(graphql_feature_flags, dict):
+        raise ValueError(f"{graphql_path}: missing data.busSummary.status.featureFlags object")
+    if not isinstance(watch_summary, dict):
+        raise ValueError(f"{graphql_path}: missing data.watchSummary object")
+    bus_feature_flags = bus_status.get("feature_flags")
+    if not isinstance(bus_feature_flags, dict):
+        raise ValueError(f"{bus_path}: missing summary.status.feature_flags object")
+
+    summary_last_updated_at = normalize_timestamp_value(
+        bus_summary.get("last_updated_at"),
+        bus_path,
+        "bus observability",
+        "summary.last_updated_at",
+    )
+    status_last_updated_at = normalize_timestamp_value(
+        bus_status.get("last_updated_at"),
+        bus_path,
+        "bus observability",
+        "summary.status.last_updated_at",
+    )
+    startup_last_updated_at = normalize_timestamp_value(
+        startup.get("last_updated_at"),
+        bus_path,
+        "bus observability",
+        "summary.status.startup.last_updated_at",
+    )
+    feature_flags_last_updated_at = normalize_timestamp_value(
+        bus_feature_flags.get("last_updated_at"),
+        bus_path,
+        "bus observability",
+        "summary.status.feature_flags.last_updated_at",
+    )
+    graphql_summary_last_updated_at = normalize_timestamp_value(
+        graphql_bus_summary.get("lastUpdatedAt"),
+        graphql_path,
+        "graphql",
+        "data.busSummary.lastUpdatedAt",
+    )
+    graphql_status_last_updated_at = normalize_timestamp_value(
+        graphql_status.get("lastUpdatedAt"),
+        graphql_path,
+        "graphql",
+        "data.busSummary.status.lastUpdatedAt",
+    )
+    graphql_startup_last_updated_at = normalize_timestamp_value(
+        graphql_startup.get("lastUpdatedAt"),
+        graphql_path,
+        "graphql",
+        "data.busSummary.status.startup.lastUpdatedAt",
+    )
+    graphql_feature_flags_last_updated_at = normalize_timestamp_value(
+        graphql_feature_flags.get("lastUpdatedAt"),
+        graphql_path,
+        "graphql",
+        "data.busSummary.status.featureFlags.lastUpdatedAt",
+    )
+    watch_summary_last_updated_at = normalize_timestamp_value(
+        watch_summary.get("lastUpdatedAt"),
+        graphql_path,
+        "graphql",
+        "data.watchSummary.lastUpdatedAt",
+    )
 
     warmup = (((((graphql_payload.get("data") or {}).get("busSummary") or {}).get("status") or {}).get("warmup")) or {})
     if not isinstance(warmup, dict):
@@ -761,6 +883,21 @@ def load_phase_status_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict[str,
         "graphql_bus_watch_path": str(graphql_path),
         "startup_phase": startup_phase,
         "warmup_state": warmup_state,
+        "timestamps": {
+            "bus_observability": {
+                "summary_last_updated_at": summary_last_updated_at,
+                "status_last_updated_at": status_last_updated_at,
+                "startup_last_updated_at": startup_last_updated_at,
+                "feature_flags_last_updated_at": feature_flags_last_updated_at,
+            },
+            "graphql_bus_watch": {
+                "summary_last_updated_at": graphql_summary_last_updated_at,
+                "status_last_updated_at": graphql_status_last_updated_at,
+                "startup_last_updated_at": graphql_startup_last_updated_at,
+                "feature_flags_last_updated_at": graphql_feature_flags_last_updated_at,
+                "watch_summary_last_updated_at": watch_summary_last_updated_at,
+            },
+        },
     }
 
 
@@ -1075,6 +1212,33 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
     startup_phase = str(startup.get("phase", "")).strip().upper()
     if startup_phase == "":
         raise ValueError(f"{bus_path}: bus observability snapshot missing summary.status.startup.phase")
+    summary_last_updated_at = normalize_timestamp_value(
+        summary.get("last_updated_at"),
+        bus_path,
+        "bus observability",
+        "summary.last_updated_at",
+    )
+    status_last_updated_at = normalize_timestamp_value(
+        status.get("last_updated_at"),
+        bus_path,
+        "bus observability",
+        "summary.status.last_updated_at",
+    )
+    startup_last_updated_at = normalize_timestamp_value(
+        startup.get("last_updated_at"),
+        bus_path,
+        "bus observability",
+        "summary.status.startup.last_updated_at",
+    )
+    bus_feature_flags = status.get("feature_flags")
+    if not isinstance(bus_feature_flags, dict):
+        raise ValueError(f"{bus_path}: bus observability snapshot missing summary.status.feature_flags object")
+    bus_feature_flags_last_updated_at = normalize_timestamp_value(
+        bus_feature_flags.get("last_updated_at"),
+        bus_path,
+        "bus observability",
+        "summary.status.feature_flags.last_updated_at",
+    )
 
     graphql_payload = load_json(graphql_path)
     if not isinstance(graphql_payload, dict):
@@ -1088,6 +1252,45 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
     graphql_status = bus_summary.get("status")
     if not isinstance(graphql_status, dict):
         raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status object")
+    graphql_summary_last_updated_at = normalize_timestamp_value(
+        bus_summary.get("lastUpdatedAt"),
+        graphql_path,
+        "graphql",
+        "data.busSummary.lastUpdatedAt",
+    )
+    graphql_status_last_updated_at = normalize_timestamp_value(
+        graphql_status.get("lastUpdatedAt"),
+        graphql_path,
+        "graphql",
+        "data.busSummary.status.lastUpdatedAt",
+    )
+    graphql_startup = graphql_status.get("startup")
+    if not isinstance(graphql_startup, dict):
+        raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.startup object")
+    graphql_startup_last_updated_at = normalize_timestamp_value(
+        graphql_startup.get("lastUpdatedAt"),
+        graphql_path,
+        "graphql",
+        "data.busSummary.status.startup.lastUpdatedAt",
+    )
+    graphql_feature_flags = graphql_status.get("featureFlags")
+    if not isinstance(graphql_feature_flags, dict):
+        raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.featureFlags object")
+    graphql_feature_flags_last_updated_at = normalize_timestamp_value(
+        graphql_feature_flags.get("lastUpdatedAt"),
+        graphql_path,
+        "graphql",
+        "data.busSummary.status.featureFlags.lastUpdatedAt",
+    )
+    watch_summary = data.get("watchSummary")
+    if not isinstance(watch_summary, dict):
+        raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.watchSummary object")
+    watch_summary_last_updated_at = normalize_timestamp_value(
+        watch_summary.get("lastUpdatedAt"),
+        graphql_path,
+        "graphql",
+        "data.watchSummary.lastUpdatedAt",
+    )
     transport_class_raw = graphql_status.get("transportClass")
     if not isinstance(transport_class_raw, str):
         raise ValueError(
@@ -1121,6 +1324,21 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
         "startup_phase": startup_phase,
         "warmup_state": warmup_state,
         "transport_class": transport_class,
+        "timestamps": {
+            "bus_observability": {
+                "summary_last_updated_at": summary_last_updated_at,
+                "status_last_updated_at": status_last_updated_at,
+                "startup_last_updated_at": startup_last_updated_at,
+                "feature_flags_last_updated_at": bus_feature_flags_last_updated_at,
+            },
+            "graphql_bus_watch": {
+                "summary_last_updated_at": graphql_summary_last_updated_at,
+                "status_last_updated_at": graphql_status_last_updated_at,
+                "startup_last_updated_at": graphql_startup_last_updated_at,
+                "feature_flags_last_updated_at": graphql_feature_flags_last_updated_at,
+                "watch_summary_last_updated_at": watch_summary_last_updated_at,
+            },
+        },
     }
 
 
@@ -3089,6 +3307,7 @@ def build_warmup_behavior_artifact_for_phases(
             "feature_flag_snapshot": cold_start["feature_flag_snapshot"],
             "startup_phase": cold_start["startup_phase"],
             "warmup_state": cold_start["warmup_state"],
+            "timestamps": cold_start["timestamps"],
         },
         "post_warmup": {
             "snapshot_prefix": post_warmup["snapshot_prefix"],
@@ -3098,6 +3317,7 @@ def build_warmup_behavior_artifact_for_phases(
             "feature_flag_snapshot": post_warmup["feature_flag_snapshot"],
             "startup_phase": post_warmup["startup_phase"],
             "warmup_state": post_warmup["warmup_state"],
+            "timestamps": post_warmup["timestamps"],
         },
         "transition": {
             "established": transition_established,
@@ -3140,6 +3360,7 @@ def evaluate_warmup_behavior(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
         bus_observability = side.get("bus_observability")
         graphql_bus_watch = side.get("graphql_bus_watch")
         feature_flag_snapshot = side.get("feature_flag_snapshot")
+        timestamps = side.get("timestamps")
         startup_phase = str(side.get("startup_phase", "")).strip().upper()
         warmup_state = str(side.get("warmup_state", "")).strip().lower()
         if snapshot_prefix not in ("start", "end"):
@@ -3155,6 +3376,35 @@ def evaluate_warmup_behavior(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
             return False, f"warmup_behavior {side_name} missing graphql_bus_watch snapshot", {}
         if not isinstance(feature_flag_snapshot, dict):
             return False, f"warmup_behavior {side_name} missing feature_flag_snapshot", {}
+        if not isinstance(timestamps, dict):
+            return False, f"warmup_behavior {side_name} missing timestamps snapshot", {}
+
+        for timestamp_source in ("bus_observability", "graphql_bus_watch"):
+            source_timestamps = timestamps.get(timestamp_source)
+            if not isinstance(source_timestamps, dict):
+                return False, f"warmup_behavior {side_name} missing {timestamp_source} timestamps", {}
+            for timestamp_field in (
+                "summary_last_updated_at",
+                "status_last_updated_at",
+                "startup_last_updated_at",
+            ):
+                if not isinstance(source_timestamps.get(timestamp_field), str) or str(
+                    source_timestamps.get(timestamp_field, "")
+                ).strip() == "":
+                    return False, (
+                        f"warmup_behavior {side_name} missing {timestamp_source}.{timestamp_field}"
+                    ), {}
+        graphql_timestamps = timestamps.get("graphql_bus_watch")
+        if not isinstance(graphql_timestamps, dict):
+            return False, f"warmup_behavior {side_name} missing graphql_bus_watch timestamps", {}
+        if not isinstance(graphql_timestamps.get("feature_flags_last_updated_at"), str) or str(
+            graphql_timestamps.get("feature_flags_last_updated_at", "")
+        ).strip() == "":
+            return False, f"warmup_behavior {side_name} missing graphql_bus_watch.feature_flags_last_updated_at", {}
+        if not isinstance(graphql_timestamps.get("watch_summary_last_updated_at"), str) or str(
+            graphql_timestamps.get("watch_summary_last_updated_at", "")
+        ).strip() == "":
+            return False, f"warmup_behavior {side_name} missing graphql_bus_watch.watch_summary_last_updated_at", {}
 
         summary = bus_observability.get("summary")
         if not isinstance(summary, dict):

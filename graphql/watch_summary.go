@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"sync"
+	"time"
 
 	graphqlgo "github.com/graphql-go/graphql"
 )
@@ -36,6 +37,7 @@ type WatchSummaryDegraded struct {
 }
 
 type WatchSummary struct {
+	LastUpdatedAt                 *time.Time                   `json:"last_updated_at,omitempty"`
 	Inventory                     WatchSummaryInventory        `json:"inventory"`
 	ActivationCounts              WatchSummaryActivationCounts `json:"activation_counts"`
 	FreshnessClasses              []WatchSummaryClassCount     `json:"freshness_classes,omitempty"`
@@ -102,6 +104,7 @@ func cloneWatchSummary(source *WatchSummary) *WatchSummary {
 		return nil
 	}
 	out := *source
+	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
 	out.Inventory = cloneWatchSummaryInventory(source.Inventory)
 	out.ActivationCounts = cloneWatchSummaryActivationCounts(source.ActivationCounts)
 	out.FreshnessClasses = cloneWatchSummaryClassCounts(source.FreshnessClasses)
@@ -115,6 +118,13 @@ func cloneWatchSummaryInventory(source WatchSummaryInventory) WatchSummaryInvent
 	out.StateClasses = cloneWatchSummaryClassCounts(source.StateClasses)
 	out.PinClasses = cloneWatchSummaryClassCounts(source.PinClasses)
 	return out
+}
+
+func graphqlWatchTimeString(source *time.Time) any {
+	if source == nil || source.IsZero() {
+		return nil
+	}
+	return source.UTC().Format(time.RFC3339Nano)
 }
 
 func cloneWatchSummaryActivationCounts(source WatchSummaryActivationCounts) WatchSummaryActivationCounts {
@@ -338,6 +348,20 @@ func buildWatchSummaryType() *graphqlgo.Object {
 	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "WatchSummary",
 		Fields: graphqlgo.Fields{
+			"lastUpdatedAt": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					summary, ok := params.Source.(*WatchSummary)
+					if ok && summary != nil {
+						return graphqlWatchTimeString(summary.LastUpdatedAt), nil
+					}
+					value, ok := params.Source.(WatchSummary)
+					if !ok {
+						return nil, nil
+					}
+					return graphqlWatchTimeString(value.LastUpdatedAt), nil
+				},
+			},
 			"inventory": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(inventoryType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
@@ -144,11 +145,20 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	client := graphqlclient.NewClient(server.URL)
 	semantic := NewLiveSemanticProvider()
 	builder.SetSemanticProvider(semantic)
+	updatedAt := time.Date(2026, time.March, 12, 18, 30, 0, 0, time.UTC)
 	builder.SetBusObservabilityProvider(testBusObservabilityProvider{
 		snapshot: BusObservabilitySnapshot{
 			Summary: &BusSummary{
+				LastUpdatedAt: &updatedAt,
 				Status: &BusObservabilityStatus{
+					LastUpdatedAt:  &updatedAt,
 					TransportClass: "ens",
+					Startup: &BusObservabilityStartup{
+						LastUpdatedAt: &updatedAt,
+						Phase:         string(SemanticStartupPhaseLiveReady),
+						CacheEpoch:    2,
+						LiveEpoch:     5,
+					},
 					Capability: BusObservabilityCapability{
 						ActiveSupported:    true,
 						PassiveSupported:   true,
@@ -182,6 +192,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						PassiveStateDirectApply:  false,
 						PassiveConfigDirectApply: false,
 						ExternalWritePolicy:      "record_only",
+						LastUpdatedAt:            &updatedAt,
 						Normalizations: []string{
 							"config_requires_state",
 							"state_disabled_forces_record_only",
@@ -502,8 +513,16 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		request := graphqlclient.NewRequest(`
 			query {
 				busSummary {
+					lastUpdatedAt
 					status {
+						lastUpdatedAt
 						transportClass
+						startup {
+							lastUpdatedAt
+							phase
+							cacheEpoch
+							liveEpoch
+						}
 						capability {
 							activeSupported
 							passiveSupported
@@ -533,6 +552,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 							reasons
 						}
 						featureFlags {
+							lastUpdatedAt
 							observeFirstEnabled
 							passiveStateDirectApply
 							passiveConfigDirectApply
@@ -609,9 +629,17 @@ func TestQueryResolvers_Integration(t *testing.T) {
 
 		var response struct {
 			BusSummary struct {
-				Status struct {
+				LastUpdatedAt string `json:"lastUpdatedAt"`
+				Status        struct {
+					LastUpdatedAt  string `json:"lastUpdatedAt"`
 					TransportClass string `json:"transportClass"`
-					Capability     struct {
+					Startup        struct {
+						LastUpdatedAt string `json:"lastUpdatedAt"`
+						Phase         string `json:"phase"`
+						CacheEpoch    string `json:"cacheEpoch"`
+						LiveEpoch     string `json:"liveEpoch"`
+					} `json:"startup"`
+					Capability struct {
 						PassiveState  string `json:"passiveState"`
 						PassiveReason string `json:"passiveReason"`
 						EndpointState string `json:"endpointState"`
@@ -632,6 +660,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						Reasons []string `json:"reasons"`
 					} `json:"degraded"`
 					FeatureFlags struct {
+						LastUpdatedAt            string   `json:"lastUpdatedAt"`
 						ObserveFirstEnabled      bool     `json:"observeFirstEnabled"`
 						PassiveStateDirectApply  bool     `json:"passiveStateDirectApply"`
 						PassiveConfigDirectApply bool     `json:"passiveConfigDirectApply"`
@@ -725,6 +754,18 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if response.BusSummary.Counters.SeriesBudgetOverflowTotal != "1" || response.BusSummary.Counters.PeriodicityBudgetOverflowTotal != "2" {
 			t.Fatalf("counters = %+v; want 1/2 as strings", response.BusSummary.Counters)
+		}
+		if response.BusSummary.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) {
+			t.Fatalf("busSummary.lastUpdatedAt = %q; want %s", response.BusSummary.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
+		}
+		if response.BusSummary.Status.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) {
+			t.Fatalf("busSummary.status.lastUpdatedAt = %q; want %s", response.BusSummary.Status.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
+		}
+		if response.BusSummary.Status.Startup.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) {
+			t.Fatalf("busSummary.status.startup.lastUpdatedAt = %q; want %s", response.BusSummary.Status.Startup.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
+		}
+		if response.BusSummary.Status.FeatureFlags.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) {
+			t.Fatalf("busSummary.status.featureFlags.lastUpdatedAt = %q; want %s", response.BusSummary.Status.FeatureFlags.LastUpdatedAt, updatedAt.Format(time.RFC3339Nano))
 		}
 
 		if response.BusMessages.Count != 2 || response.BusMessages.Capacity != 1024 {

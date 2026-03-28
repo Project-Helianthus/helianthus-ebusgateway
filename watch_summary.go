@@ -1,6 +1,9 @@
 package ebusgateway
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 const (
 	watchSummaryDirectApplyClassStateEligible    = "state_eligible"
@@ -85,6 +88,7 @@ type WatchSummaryDegraded struct {
 }
 
 type WatchSummary struct {
+	LastUpdatedAt                 *time.Time                   `json:"last_updated_at,omitempty"`
 	Inventory                     WatchSummaryInventory        `json:"inventory"`
 	ActivationCounts              WatchSummaryActivationCounts `json:"activation_counts"`
 	FreshnessClasses              []WatchSummaryClassCount     `json:"freshness_classes"`
@@ -176,6 +180,7 @@ func (cache *ShadowCache) WatchSummary() WatchSummary {
 	sort.Strings(reasons)
 
 	return WatchSummary{
+		LastUpdatedAt:    cloneTimePtr(cache.lastUpdatedAtPtrLocked()),
 		Inventory:        inventory.withClasses(stateCounts, pinCounts),
 		ActivationCounts: activation.withClasses(sourceCounts),
 		FreshnessClasses: watchSummaryOrderedClassCounts(watchSummaryFreshnessClassOrder, freshnessCounts, true),

@@ -14,6 +14,18 @@ TRANSPORT_GATE_SCRIPT = REPO_ROOT / "scripts" / "transport_gate.sh"
 
 
 class TransportGateTests(unittest.TestCase):
+    def _script_env(self, **extra: str) -> dict[str, str]:
+        env = dict(os.environ)
+        for key in (
+            "TRANSPORT_GATE_OWNER_OVERRIDE",
+            "TRANSPORT_GATE_OWNER_REASON",
+            "TRANSPORT_MATRIX_REPORT",
+            "PASSIVE_SMOKE_REPORT",
+        ):
+            env.pop(key, None)
+        env.update(extra)
+        return env
+
     def _create_temp_repo(self, changed_file: str) -> tuple[pathlib.Path, pathlib.Path]:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
@@ -59,11 +71,10 @@ class TransportGateTests(unittest.TestCase):
         result = subprocess.run(
             ["bash", "scripts/transport_gate.sh"],
             cwd=repo_path,
-            env={
-                **dict(os.environ),
-                "TRANSPORT_GATE_BASE_REF": "HEAD",
-                "TRANSPORT_MATRIX_REPORT": str(report_path),
-            },
+            env=self._script_env(
+                TRANSPORT_GATE_BASE_REF="HEAD",
+                TRANSPORT_MATRIX_REPORT=str(report_path),
+            ),
             text=True,
             capture_output=True,
             check=False,
@@ -76,7 +87,7 @@ class TransportGateTests(unittest.TestCase):
         result = subprocess.run(
             ["bash", "scripts/transport_gate.sh"],
             cwd=repo_path,
-            env={**dict(os.environ), "TRANSPORT_GATE_BASE_REF": "HEAD"},
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
             text=True,
             capture_output=True,
             check=False,

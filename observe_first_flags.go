@@ -3,6 +3,7 @@ package ebusgateway
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type ObserveFirstExternalWritePolicy string
@@ -45,6 +46,7 @@ type ObserveFirstFeatureFlagState struct {
 	PassiveStateDirectApply  bool                            `json:"passive_state_direct_apply"`
 	PassiveConfigDirectApply bool                            `json:"passive_config_direct_apply"`
 	ExternalWritePolicy      ObserveFirstExternalWritePolicy `json:"external_write_policy"`
+	LastUpdatedAt            *time.Time                      `json:"last_updated_at,omitempty"`
 	Normalizations           []string                        `json:"normalizations,omitempty"`
 }
 
@@ -159,11 +161,19 @@ func (flags ObserveFirstFeatureFlags) NormalizationReasons() []ObserveFirstFeatu
 }
 
 func (flags ObserveFirstFeatureFlags) State() ObserveFirstFeatureFlagState {
+	return flags.StateAt(time.Time{})
+}
+
+func (flags ObserveFirstFeatureFlags) StateAt(updatedAt time.Time) ObserveFirstFeatureFlagState {
 	state := ObserveFirstFeatureFlagState{
 		ObserveFirstEnabled:      flags.observeFirstEnabled,
 		PassiveStateDirectApply:  flags.passiveStateDirectApply,
 		PassiveConfigDirectApply: flags.passiveConfigDirectApply,
 		ExternalWritePolicy:      flags.externalWritePolicy,
+	}
+	if !updatedAt.IsZero() {
+		updatedAt = updatedAt.UTC()
+		state.LastUpdatedAt = &updatedAt
 	}
 	if len(flags.normalizationReasons) == 0 {
 		return state

@@ -69,6 +69,9 @@ func TestMCPWatchSummaryProviderAdapterWiresRuntimeShadowCache(t *testing.T) {
 	if !ok {
 		t.Fatalf("watch summary data type = %T; want map", envelope["data"])
 	}
+	if got, _ := data["last_updated_at"].(string); got != now.Format(time.RFC3339Nano) {
+		t.Fatalf("watch summary last_updated_at = %q; want %s", got, now.Format(time.RFC3339Nano))
+	}
 
 	activationCounts, ok := data["activation_counts"].(map[string]any)
 	if !ok {

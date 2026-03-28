@@ -729,7 +729,9 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 	server.SetBusObservabilityProvider(&testBusObservabilityProvider{
 		snapshot: BusObservabilitySnapshot{
 			Summary: &BusSummary{
+				LastUpdatedAt: &base,
 				Status: &BusObservabilityStatus{
+					LastUpdatedAt:  &base,
 					TransportClass: "ens",
 					Capability: BusObservabilityCapability{
 						ActiveSupported:    true,
@@ -762,6 +764,7 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 						PassiveStateDirectApply:  false,
 						PassiveConfigDirectApply: false,
 						ExternalWritePolicy:      "record_only",
+						LastUpdatedAt:            &base,
 						Normalizations: []string{
 							"config_requires_state",
 							"state_disabled_forces_record_only",
@@ -834,6 +837,15 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 	}
 	if normalizations, _ := featureFlags["normalizations"].([]any); len(normalizations) != 2 {
 		t.Fatalf("bus summary feature_flags.normalizations = %#v; want 2 entries", featureFlags["normalizations"])
+	}
+	if got, _ := summaryData["last_updated_at"].(string); got != base.Format(time.RFC3339Nano) {
+		t.Fatalf("bus summary last_updated_at = %q; want %s", got, base.Format(time.RFC3339Nano))
+	}
+	if got, _ := status["last_updated_at"].(string); got != base.Format(time.RFC3339Nano) {
+		t.Fatalf("bus summary status.last_updated_at = %q; want %s", got, base.Format(time.RFC3339Nano))
+	}
+	if got, _ := featureFlags["last_updated_at"].(string); got != base.Format(time.RFC3339Nano) {
+		t.Fatalf("bus summary feature_flags.last_updated_at = %q; want %s", got, base.Format(time.RFC3339Nano))
 	}
 
 	messageEnvelope := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
@@ -1712,8 +1724,10 @@ func TestServer_WatchSummarySnapshotConsistency(t *testing.T) {
 		t.Fatalf("NewServer error = %v", err)
 	}
 
+	base := time.Date(2026, time.March, 12, 14, 0, 0, 0, time.UTC)
 	provider := &testWatchSummaryProvider{
 		summary: WatchSummary{
+			LastUpdatedAt: &base,
 			ActivationCounts: WatchSummaryActivationCounts{
 				ActiveKeys: 1,
 			},
@@ -1740,7 +1754,9 @@ func TestServer_WatchSummarySnapshotConsistency(t *testing.T) {
 		t.Fatal("capture snapshot_id empty")
 	}
 
+	updatedAt := base.Add(1 * time.Minute)
 	provider.summary = WatchSummary{
+		LastUpdatedAt: &updatedAt,
 		ActivationCounts: WatchSummaryActivationCounts{
 			ActiveKeys: 7,
 		},
@@ -1759,6 +1775,9 @@ func TestServer_WatchSummarySnapshotConsistency(t *testing.T) {
 		Params:  json.RawMessage(`{"name":"ebus.v1.watch.summary.get","arguments":{}}`),
 	}))
 	liveData, _ := live["data"].(map[string]any)
+	if got, _ := liveData["last_updated_at"].(string); got != updatedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("live watch summary last_updated_at = %q; want %s", got, updatedAt.Format(time.RFC3339Nano))
+	}
 	liveActivation, _ := liveData["activation_counts"].(map[string]any)
 	if got, _ := liveActivation["active_keys"].(float64); int(got) != 7 {
 		t.Fatalf("live watch summary active_keys = %v; want 7", liveActivation["active_keys"])
@@ -1771,6 +1790,9 @@ func TestServer_WatchSummarySnapshotConsistency(t *testing.T) {
 		Params:  json.RawMessage(`{"name":"ebus.v1.watch.summary.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	}))
 	snapshotData, _ := snap["data"].(map[string]any)
+	if got, _ := snapshotData["last_updated_at"].(string); got != base.Format(time.RFC3339Nano) {
+		t.Fatalf("snapshot watch summary last_updated_at = %q; want %s", got, base.Format(time.RFC3339Nano))
+	}
 	snapshotActivation, _ := snapshotData["activation_counts"].(map[string]any)
 	if got, _ := snapshotActivation["active_keys"].(float64); int(got) != 1 {
 		t.Fatalf("snapshot watch summary active_keys = %v; want 1", snapshotActivation["active_keys"])

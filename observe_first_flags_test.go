@@ -1,6 +1,9 @@
 package ebusgateway
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestDefaultObserveFirstFeatureFlagsAreConservative(t *testing.T) {
 	flags := DefaultObserveFirstFeatureFlags()
@@ -97,6 +100,24 @@ func TestNormalizeObserveFirstFeatureFlags_ConfigDirectRequiresInvalidatingPolic
 		t.Fatalf("ExternalWritePolicy() = %q; want record_and_invalidate", flags.ExternalWritePolicy())
 	}
 	assertNormalizationReasons(t, flags, ObserveFirstFeatureFlagNormalizationReasonConfigRequiresInvalidation)
+}
+
+func TestObserveFirstFeatureFlagsStateAtCarriesMutationTimestamp(t *testing.T) {
+	flags := NormalizeObserveFirstFeatureFlags(true, true, false, ObserveFirstExternalWritePolicyRecordOnly)
+	updatedAt := time.Date(2026, time.March, 12, 12, 34, 56, 0, time.UTC)
+
+	state := flags.StateAt(updatedAt)
+	if state.LastUpdatedAt == nil {
+		t.Fatal("StateAt() LastUpdatedAt = nil; want mutation timestamp")
+	}
+	if !state.LastUpdatedAt.Equal(updatedAt) {
+		t.Fatalf("StateAt() LastUpdatedAt = %s; want %s", state.LastUpdatedAt, updatedAt)
+	}
+
+	zero := flags.State()
+	if zero.LastUpdatedAt != nil {
+		t.Fatalf("State() LastUpdatedAt = %v; want nil", zero.LastUpdatedAt)
+	}
 }
 
 func TestApplyDefaultsNormalizesObserveFirstFlagsIntoConfig(t *testing.T) {

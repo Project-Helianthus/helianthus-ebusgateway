@@ -2142,11 +2142,78 @@ func TestHandleAdjudicatedPassiveEvent_EmitsWatchEfficiencyDirectApply(t *testin
 	if !found {
 		t.Fatal("watch-efficiency direct-apply event missing")
 	}
+	if !event.CandidateEvaluated {
+		t.Fatal("event.CandidateEvaluated = false; want true")
+	}
+	if !event.Accepted {
+		t.Fatal("event.Accepted = false; want true")
+	}
 	if event.Descriptor.FreshnessProfile != ebusgateway.WatchFreshnessProfileStateFast {
 		t.Fatalf("event descriptor freshness_profile = %q; want state_fast", event.Descriptor.FreshnessProfile)
 	}
 	if event.Descriptor.Family() != ebusgateway.WatchFamilyB509 {
 		t.Fatalf("event descriptor family = %q; want B509", event.Descriptor.Family())
+	}
+}
+
+func TestHandleAdjudicatedPassiveEvent_EmitsWatchEfficiencyCandidateForRejectedDirectApply(t *testing.T) {
+	t.Parallel()
+
+	key := ebusgateway.NewB509WatchKey(0x08, 0x0200)
+	spy := &watchEfficiencyObserverSpy{}
+	cfg := observeFirstStateShadowRuntimeConfig(ebusgateway.ObserveFirstExternalWritePolicyRecordOnly)
+	cfg.WatchEfficiencyObserver = spy
+
+	poller := newVaillantSemanticPoller(
+		cfg,
+		&ebusgateway.Gateway{},
+		graphql.NewLiveSemanticProvider(),
+		nil,
+		nil,
+	)
+	now := time.Unix(1700000600, 0).UTC()
+	poller.nowFn = func() time.Time { return now }
+	_ = poller.prepareSemanticReadWatch(key)
+
+	seed := poller.shadow.Write(ebusgateway.ShadowWrite{
+		Key:        key,
+		Source:     ebusgateway.ShadowWriteSourcePassive,
+		Confidence: ebusgateway.ShadowConfidenceHigh,
+		Value:      []byte{0x33},
+		ObservedAt: now.Add(time.Second),
+	})
+	if !seed.Accepted {
+		t.Fatalf("shadow seed write rejected: %s", seed.Reason)
+	}
+
+	poller.handleAdjudicatedPassiveEvent(ebusgateway.AdjudicatedPassiveEvent{
+		Disposition: ebusgateway.DedupDispositionUnmatchedThirdParty,
+		Fingerprint: ebusgateway.PassiveTransactionFingerprint{
+			SharedWatchKey: key,
+			ObservedAt:     now,
+			ResponseClass:  ebusgateway.DedupResponseValueBearing,
+			FamilyPolicy: ebusgateway.ObserveFirstFamilyPolicy{
+				RequestIntent:     ebusgateway.ObserveFirstRequestIntentRead,
+				DirectApplyPolicy: ebusgateway.ObserveFirstDirectApplyPolicyStateDefault,
+			},
+		},
+		Event: ebusgateway.PassiveClassifiedEvent{
+			HasResponse: true,
+			Response: protocol.Frame{
+				Data: []byte{vaillantB509OpcodeRead, 0x02, 0x00, 0x11},
+			},
+		},
+	})
+
+	event, found := spy.latestDirectApplyEvent()
+	if !found {
+		t.Fatal("watch-efficiency direct-apply event missing")
+	}
+	if !event.CandidateEvaluated {
+		t.Fatal("event.CandidateEvaluated = false; want true")
+	}
+	if event.Accepted {
+		t.Fatal("event.Accepted = true; want false for stale rejected write")
 	}
 }
 

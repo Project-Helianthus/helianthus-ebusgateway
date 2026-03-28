@@ -20,10 +20,12 @@ type WatchEfficiencyReadEvent struct {
 }
 
 type WatchEfficiencyDirectApplyEvent struct {
-	Key           WatchKey
-	Descriptor    WatchDescriptor
-	HasDescriptor bool
-	ObservedAt    time.Time
+	Key                WatchKey
+	Descriptor         WatchDescriptor
+	HasDescriptor      bool
+	ObservedAt         time.Time
+	CandidateEvaluated bool
+	Accepted           bool
 }
 
 type WatchEfficiencyObserver interface {

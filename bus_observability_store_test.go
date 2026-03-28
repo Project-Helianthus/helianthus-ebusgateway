@@ -436,6 +436,33 @@ func TestBusObservabilityStoreExportsBusyMetricsWhenPassiveAvailable(t *testing.
 	if !strings.Contains(metrics, `ebus_bus_busy_ratio{window="1m"} 0.0008333333333333334`) {
 		t.Fatalf("RenderPrometheus missing 1m busy ratio:\n%s", metrics)
 	}
+	if !strings.Contains(metrics, "ebus_passive_completed_transactions_total 1") {
+		t.Fatalf("RenderPrometheus missing cumulative passive completed transaction counter:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreCompletedTransactionsCounterTracksOnlyTransactions(t *testing.T) {
+	cfg := DefaultConfig()
+	store := NewBusObservabilityStore(cfg)
+	base := time.Now().UTC()
+
+	store.OnPassiveClassifiedEvent(observabilityPassiveBroadcastEvent(base, 0x15, 0xB5, 0x16))
+	store.OnPassiveClassifiedEvent(observabilityPassiveMasterFrameEvent(base.Add(time.Second), 0x15, 0x26, 0xB5, 0x09))
+
+	store.mu.RLock()
+	completed := store.passive.completedTransactionsTotal
+	store.mu.RUnlock()
+	if completed != 0 {
+		t.Fatalf("completedTransactionsTotal after broadcast/frame = %d; want 0", completed)
+	}
+
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(2*time.Second), 0x10, 0x08, 0xB5, 0x24))
+	store.mu.RLock()
+	completed = store.passive.completedTransactionsTotal
+	store.mu.RUnlock()
+	if completed != 1 {
+		t.Fatalf("completedTransactionsTotal after transaction = %d; want 1", completed)
+	}
 }
 
 func TestBusObservabilityStoreRebootsWarmupFromConnectedSnapshotAfterSocketLoss(t *testing.T) {
@@ -522,6 +549,9 @@ func TestBusObservabilityStoreRestartsWarmupOnTrafficAfterStartupTimeout(t *test
 	if store.passive.completedTransactions != 1 {
 		t.Fatalf("completedTransactions = %d; want 1", store.passive.completedTransactions)
 	}
+	if store.passive.completedTransactionsTotal != 1 {
+		t.Fatalf("completedTransactionsTotal = %d; want 1", store.passive.completedTransactionsTotal)
+	}
 	if store.passive.unavailableReason != "" {
 		t.Fatalf("unavailableReason = %q; want cleared after traffic restart", store.passive.unavailableReason)
 	}
@@ -568,10 +598,20 @@ func TestBusObservabilityStoreExportsWatchEfficiencyMetrics(t *testing.T) {
 	})
 
 	store.ObserveWatchDirectApply(WatchEfficiencyDirectApplyEvent{
-		Key:           key,
-		Descriptor:    descriptor,
-		HasDescriptor: true,
-		ObservedAt:    base.Add(7 * time.Second),
+		Key:                key,
+		Descriptor:         descriptor,
+		HasDescriptor:      true,
+		ObservedAt:         base.Add(7 * time.Second),
+		CandidateEvaluated: true,
+		Accepted:           true,
+	})
+	store.ObserveWatchDirectApply(WatchEfficiencyDirectApplyEvent{
+		Key:                key,
+		Descriptor:         descriptor,
+		HasDescriptor:      true,
+		ObservedAt:         base.Add(8 * time.Second),
+		CandidateEvaluated: true,
+		Accepted:           false,
 	})
 
 	metrics := store.RenderPrometheus()
@@ -580,6 +620,9 @@ func TestBusObservabilityStoreExportsWatchEfficiencyMetrics(t *testing.T) {
 	}
 	if !strings.Contains(metrics, `direct_apply_total{family="B524",freshness_profile="state_fast"} 1`) {
 		t.Fatalf("RenderPrometheus missing direct_apply_total bucket sample:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `ebus_passive_direct_apply_candidates_evaluated_total 2`) {
+		t.Fatalf("RenderPrometheus missing direct-apply candidate counter:\n%s", metrics)
 	}
 	if !strings.Contains(metrics, `active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 2`) {
 		t.Fatalf("RenderPrometheus missing active_reads_avoided_total bucket sample:\n%s", metrics)
@@ -976,6 +1019,38 @@ func observabilityPassiveTransactionEvent(observedAt time.Time, source, target, 
 			ResponseEnd:   observedAt.Add(-5 * time.Millisecond),
 			Terminal:      observedAt,
 		},
+		ObservedAt: observedAt,
+	}
+}
+
+func observabilityPassiveBroadcastEvent(observedAt time.Time, source, primary, secondary byte) PassiveClassifiedEvent {
+	return PassiveClassifiedEvent{
+		Kind:      PassiveClassifiedEventBroadcastFrame,
+		FrameType: protocol.FrameTypeBroadcast,
+		Request: protocol.Frame{
+			Source:    source,
+			Target:    0xFF,
+			Primary:   primary,
+			Secondary: secondary,
+			Data:      []byte{0x01},
+		},
+		HasRequest: true,
+		ObservedAt: observedAt,
+	}
+}
+
+func observabilityPassiveMasterFrameEvent(observedAt time.Time, source, target, primary, secondary byte) PassiveClassifiedEvent {
+	return PassiveClassifiedEvent{
+		Kind:      PassiveClassifiedEventMasterFrame,
+		FrameType: protocol.FrameTypeInitiatorInitiator,
+		Request: protocol.Frame{
+			Source:    source,
+			Target:    target,
+			Primary:   primary,
+			Secondary: secondary,
+			Data:      []byte{0x01},
+		},
+		HasRequest: true,
 		ObservedAt: observedAt,
 	}
 }

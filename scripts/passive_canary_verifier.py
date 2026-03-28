@@ -2738,7 +2738,7 @@ def build_promotion_eligibility_artifact_for_run(
     family_passive_mode = str((family_scope or {}).get("passive_mode", "")).strip().lower()
     family_gateway_transport = str((family_scope or {}).get("gateway_transport", "")).strip().lower()
     family_proxy_transport = str((family_scope or {}).get("proxy_transport", "")).strip().lower()
-    family_ebusd_transport = str((family_scope or {}).get("ebusd_transport", "")).strip().lower()
+    family_ebusd_transport = str(((family_scope or {}).get("ebusd_transport", "") or "")).strip().lower()
 
     if not isinstance(family_eligibility, dict):
         reasons.append("family proof eligibility artifact is not a JSON object")
@@ -2755,6 +2755,11 @@ def build_promotion_eligibility_artifact_for_run(
     elif not isinstance(family_upstream, dict):
         reasons.append("family proof eligibility missing upstream_proof object")
 
+    if family_eligibility_status == "proven_for_default_flip" and not family_ok:
+        reasons.append(
+            "family proof eligibility ok/status mismatch: "
+            f"ok={family_ok!r} status={family_eligibility_status!r}"
+        )
     if family_ok and family_eligibility_status != "proven_for_default_flip":
         reasons.append(
             "family proof eligibility ok/status mismatch: "
@@ -2803,11 +2808,17 @@ def build_promotion_eligibility_artifact_for_run(
                 "family proof eligibility proof_scope.proxy_transport mismatch: "
                 f"got {family_proxy_transport!r}; want {normalized_proxy_transport!r}"
             )
-        if family_ebusd_transport and normalized_ebusd_transport and family_ebusd_transport != normalized_ebusd_transport:
-            reasons.append(
-                "family proof eligibility proof_scope.ebusd_transport mismatch: "
-                f"got {family_ebusd_transport!r}; want {normalized_ebusd_transport!r}"
-            )
+        if family_ebusd_transport:
+            if normalized_ebusd_transport == "":
+                reasons.append(
+                    "family proof eligibility proof_scope.ebusd_transport mismatch: "
+                    f"got {family_ebusd_transport!r}; want absent"
+                )
+            elif family_ebusd_transport != normalized_ebusd_transport:
+                reasons.append(
+                    "family proof eligibility proof_scope.ebusd_transport mismatch: "
+                    f"got {family_ebusd_transport!r}; want {normalized_ebusd_transport!r}"
+                )
         if family_transport_class and transport_class and family_transport_class != transport_class:
             reasons.append(
                 "family proof eligibility proof_scope.transport_class mismatch: "
@@ -2848,7 +2859,7 @@ def build_promotion_eligibility_artifact_for_run(
                 f"got {family_run_id!r}; want {normalized_run_id!r}"
             )
 
-    family_claims_proven = family_eligibility_status == "proven_for_default_flip"
+    family_claims_proven = family_ok and family_eligibility_status == "proven_for_default_flip"
     promotion_topology = promotion_topology_label(
         normalized_kind,
         normalized_gateway_transport,

@@ -3482,6 +3482,51 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "not_proven")
         self.assertIn("promotion scope mismatch", artifact["eligibility"]["reason"])
 
+    def test_promotion_eligibility_rejects_upstream_ebusd_axis_when_current_run_drops_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            write_family_proof_eligibility_artifact(proof_dir, ebusd_transport="ebusd-tcp")
+            artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("proof_scope.ebusd_transport mismatch", artifact["eligibility"]["reason"])
+
+    def test_promotion_eligibility_blocks_contradictory_upstream_family_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            write_family_proof_eligibility_artifact(proof_dir, ebusd_transport="")
+            family_path = proof_dir / "family_proof_eligibility.json"
+            family_artifact = verifier.load_json(family_path)
+            family_artifact["ok"] = False
+            family_artifact["eligibility"]["status"] = "proven_for_default_flip"
+            write_json(family_path, family_artifact)
+            artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("ok/status mismatch", artifact["eligibility"]["reason"])
+
     def test_promotion_eligibility_rejects_missing_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)

@@ -10,6 +10,7 @@ case_kind="${MATRIX_CASE_KIND:-}"
 gateway_transport="${MATRIX_GATEWAY_TRANSPORT:-}"
 proxy_transport="${MATRIX_PROXY_TRANSPORT:-}"
 ebusd_transport="${MATRIX_EBUSD_TRANSPORT:-}"
+uses_ebusd="${MATRIX_USES_EBUSD:-}"
 if [[ -z "${case_id}" ]]; then
   echo "passive smoke: MATRIX_CASE_ID is required" >&2
   exit 2
@@ -49,21 +50,29 @@ log_dir="${MATRIX_LOG_DIR:-${REPO_ROOT}/results/${case_id}/logs}"
 gw15_proof_mode="${MATRIX_GW15_PROOF_MODE:-0}"
 proof_hold_sec_raw="${PASSIVE_PROOF_HOLD_SEC:-${MATRIX_GW15_PROOF_HOLD_SEC:-0}}"
 
-# For the currently supported proof-mode invocation (P03), derive family
-# metadata defaults so eligibility gating does not fail on missing env plumbing.
 if [[ "${gw15_proof_mode}" == "1" && "${case_id}" == "P03" ]]; then
+  missing_topology_envs=()
   if [[ -z "${case_kind}" ]]; then
-    case_kind="proxy-single-client"
+    missing_topology_envs+=("MATRIX_CASE_KIND")
   fi
   if [[ -z "${gateway_transport}" ]]; then
-    if [[ -n "${proxy_transport}" ]]; then
-      gateway_transport="${proxy_transport}"
-    else
-      gateway_transport="ens"
-    fi
+    missing_topology_envs+=("MATRIX_GATEWAY_TRANSPORT")
   fi
   if [[ -z "${proxy_transport}" ]]; then
-    proxy_transport="${gateway_transport}"
+    missing_topology_envs+=("MATRIX_PROXY_TRANSPORT")
+  fi
+  if [[ -z "${ebusd_transport}" && "${uses_ebusd}" == "0" ]]; then
+    ebusd_transport="no-ebusd"
+  fi
+  if [[ -z "${ebusd_transport}" && -z "${uses_ebusd}" ]]; then
+    missing_topology_envs+=("MATRIX_USES_EBUSD")
+  fi
+  if [[ -z "${ebusd_transport}" ]]; then
+    missing_topology_envs+=("MATRIX_EBUSD_TRANSPORT")
+  fi
+  if [[ "${#missing_topology_envs[@]}" -gt 0 ]]; then
+    echo "proof mode: missing P03 topology metadata: ${missing_topology_envs[*]}" >&2
+    exit 2
   fi
 fi
 
@@ -111,6 +120,7 @@ canary_verdict_path="${proof_dir}/canary_verdict.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
 replay_falsification_path="${proof_dir}/replay_falsification.json"
 family_eligibility_path="${proof_dir}/family_proof_eligibility.json"
+promotion_eligibility_path="${proof_dir}/promotion_eligibility.json"
 canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
 canary_retries=3
 canary_enabled=0
@@ -506,6 +516,19 @@ build_family_proof_eligibility_artifact() {
     --output "${family_eligibility_path}"
 }
 
+build_promotion_eligibility_artifact() {
+  python3 "${canary_verifier_script}" promotion-eligibility \
+    --proof-dir "${proof_dir}" \
+    --run-id "${canary_run_id}" \
+    --case-id "${case_id}" \
+    --kind "${case_kind}" \
+    --passive-mode "${passive_mode}" \
+    --gateway-transport "${gateway_transport}" \
+    --proxy-transport "${proxy_transport}" \
+    --ebusd-transport "${ebusd_transport}" \
+    --output "${promotion_eligibility_path}"
+}
+
 build_replay_behavior_artifact() {
   if ! (
     cd "${REPO_ROOT}" && \
@@ -680,6 +703,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_family_proof_eligibility_artifact; then
       echo "proof mode: family eligibility gate failed (see ${family_eligibility_path})" >&2
+      exit 1
+    fi
+    if ! build_promotion_eligibility_artifact; then
+      echo "proof mode: promotion eligibility gate failed (see ${promotion_eligibility_path})" >&2
       exit 1
     fi
   fi

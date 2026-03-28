@@ -42,14 +42,16 @@ type BusObservabilityStartup struct {
 }
 
 type BusObservabilityStatus struct {
-	LastUpdatedAt  *time.Time                    `json:"last_updated_at,omitempty"`
-	TransportClass string                        `json:"transport_class"`
-	Capability     BusObservabilityCapability    `json:"capability"`
-	Warmup         BusObservabilityWarmup        `json:"warmup"`
-	TimingQuality  BusObservabilityTimingQuality `json:"timing_quality"`
-	Degraded       BusObservabilityDegraded      `json:"degraded"`
-	Startup        *BusObservabilityStartup      `json:"startup,omitempty"`
-	FeatureFlags   ObserveFirstFeatureFlagState  `json:"feature_flags"`
+	LastUpdatedAt          *time.Time                    `json:"last_updated_at,omitempty"`
+	TransportClass         string                        `json:"transport_class"`
+	PublisherCadenceSec    float64                       `json:"publisher_cadence_sec"`
+	PublisherCadenceSource string                        `json:"publisher_cadence_source"`
+	Capability             BusObservabilityCapability    `json:"capability"`
+	Warmup                 BusObservabilityWarmup        `json:"warmup"`
+	TimingQuality          BusObservabilityTimingQuality `json:"timing_quality"`
+	Degraded               BusObservabilityDegraded      `json:"degraded"`
+	Startup                *BusObservabilityStartup      `json:"startup,omitempty"`
+	FeatureFlags           ObserveFirstFeatureFlagState  `json:"feature_flags"`
 }
 
 type ObserveFirstFeatureFlagState struct {

@@ -22,6 +22,7 @@ func TestGraphQLBusObservabilityProviderAdapter_ParityWithMCPAdapter(t *testing.
 	cfg := ebusgateway.DefaultConfig()
 	cfg.BroadcastListen = true
 	cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+	cfg.SemanticStateInterval = 7 * time.Minute
 
 	store := ebusgateway.NewBusObservabilityStore(cfg)
 	if store == nil {
@@ -120,7 +121,7 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 			t.Fatalf("NewInvokeHandler error = %v", err)
 		}
 
-		body := bytes.NewBufferString(`{"query":"{ busSummary { lastUpdatedAt messages { count capacity } status { lastUpdatedAt transportClass capability { activeSupported } startup { lastUpdatedAt phase cacheEpoch liveEpoch } featureFlags { lastUpdatedAt } } } busMessages(limit: 1) { count items { family sourceAddress targetAddress } } }"}`)
+		body := bytes.NewBufferString(`{"query":"{ busSummary { lastUpdatedAt messages { count capacity } status { lastUpdatedAt transportClass publisherCadenceSec publisherCadenceSource capability { activeSupported } startup { lastUpdatedAt phase cacheEpoch liveEpoch } featureFlags { lastUpdatedAt } } } busMessages(limit: 1) { count items { family sourceAddress targetAddress } } }"}`)
 		req := httptest.NewRequest(http.MethodPost, cfg.GraphQLPath, body)
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -139,9 +140,11 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 						Capacity int `json:"capacity"`
 					} `json:"messages"`
 					Status struct {
-						LastUpdatedAt  string `json:"lastUpdatedAt"`
-						TransportClass string `json:"transportClass"`
-						Capability     struct {
+						LastUpdatedAt          string  `json:"lastUpdatedAt"`
+						TransportClass         string  `json:"transportClass"`
+						PublisherCadenceSec    float64 `json:"publisherCadenceSec"`
+						PublisherCadenceSource string  `json:"publisherCadenceSource"`
+						Capability             struct {
 							ActiveSupported bool `json:"activeSupported"`
 						} `json:"capability"`
 						Startup struct {
@@ -177,6 +180,12 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 		}
 		if response.Data.BusSummary.Status.TransportClass == "" {
 			t.Fatal("busSummary.status.transportClass empty; want wired store summary")
+		}
+		if response.Data.BusSummary.Status.PublisherCadenceSec != 420 {
+			t.Fatalf("busSummary.status.publisherCadenceSec = %v; want 420", response.Data.BusSummary.Status.PublisherCadenceSec)
+		}
+		if response.Data.BusSummary.Status.PublisherCadenceSource != "config.semantic_state_interval" {
+			t.Fatalf("busSummary.status.publisherCadenceSource = %q; want config.semantic_state_interval", response.Data.BusSummary.Status.PublisherCadenceSource)
 		}
 		if !response.Data.BusSummary.Status.Capability.ActiveSupported {
 			t.Fatal("busSummary.status.capability.activeSupported = false; want true")
@@ -227,6 +236,7 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 	cfg.GraphQLPath = "/graphql"
 	cfg.BroadcastListen = false
 	cfg.ScanOnStart = false
+	cfg.SemanticStateInterval = 7 * time.Minute
 
 	if err := run(ctx, cfg); err != nil {
 		t.Fatalf("run error = %v", err)
@@ -339,8 +349,10 @@ func graphQLStatusToMCP(status *graphql.BusObservabilityStatus) *mcp.BusObservab
 		}
 	}
 	return &mcp.BusObservabilityStatus{
-		LastUpdatedAt:  cloneTimePtr(status.LastUpdatedAt),
-		TransportClass: status.TransportClass,
+		LastUpdatedAt:          cloneTimePtr(status.LastUpdatedAt),
+		TransportClass:         status.TransportClass,
+		PublisherCadenceSec:    status.PublisherCadenceSec,
+		PublisherCadenceSource: status.PublisherCadenceSource,
 		Capability: mcp.BusObservabilityCapability{
 			ActiveSupported:    status.Capability.ActiveSupported,
 			PassiveSupported:   status.Capability.PassiveSupported,

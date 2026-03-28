@@ -151,8 +151,10 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			Summary: &BusSummary{
 				LastUpdatedAt: &updatedAt,
 				Status: &BusObservabilityStatus{
-					LastUpdatedAt:  &updatedAt,
-					TransportClass: "ens",
+					LastUpdatedAt:          &updatedAt,
+					TransportClass:         "ens",
+					PublisherCadenceSec:    420,
+					PublisherCadenceSource: "config.semantic_state_interval",
 					Startup: &BusObservabilityStartup{
 						LastUpdatedAt: &updatedAt,
 						Phase:         string(SemanticStartupPhaseLiveReady),
@@ -514,10 +516,12 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			query {
 				busSummary {
 					lastUpdatedAt
-					status {
-						lastUpdatedAt
-						transportClass
-						startup {
+						status {
+							lastUpdatedAt
+							transportClass
+							publisherCadenceSec
+							publisherCadenceSource
+							startup {
 							lastUpdatedAt
 							phase
 							cacheEpoch
@@ -631,9 +635,11 @@ func TestQueryResolvers_Integration(t *testing.T) {
 			BusSummary struct {
 				LastUpdatedAt string `json:"lastUpdatedAt"`
 				Status        struct {
-					LastUpdatedAt  string `json:"lastUpdatedAt"`
-					TransportClass string `json:"transportClass"`
-					Startup        struct {
+					LastUpdatedAt          string  `json:"lastUpdatedAt"`
+					TransportClass         string  `json:"transportClass"`
+					PublisherCadenceSec    float64 `json:"publisherCadenceSec"`
+					PublisherCadenceSource string  `json:"publisherCadenceSource"`
+					Startup                struct {
 						LastUpdatedAt string `json:"lastUpdatedAt"`
 						Phase         string `json:"phase"`
 						CacheEpoch    string `json:"cacheEpoch"`
@@ -724,6 +730,12 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if response.BusSummary.Status.TransportClass != "ens" {
 			t.Fatalf("transportClass = %q; want ens", response.BusSummary.Status.TransportClass)
+		}
+		if response.BusSummary.Status.PublisherCadenceSec != 420 {
+			t.Fatalf("publisherCadenceSec = %v; want 420", response.BusSummary.Status.PublisherCadenceSec)
+		}
+		if response.BusSummary.Status.PublisherCadenceSource != "config.semantic_state_interval" {
+			t.Fatalf("publisherCadenceSource = %q; want config.semantic_state_interval", response.BusSummary.Status.PublisherCadenceSource)
 		}
 		if response.BusSummary.Status.Capability.PassiveState != "warming_up" {
 			t.Fatalf("passiveState = %q; want warming_up", response.BusSummary.Status.Capability.PassiveState)

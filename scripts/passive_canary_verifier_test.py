@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -80,6 +82,18 @@ def phase_timestamps(phase: str) -> dict[str, dict[str, str]]:
             "feature_flags_last_updated_at": graphql_time,
             "watch_summary_last_updated_at": watch_time,
         },
+    }
+
+
+def publisher_cadence_snapshot(phase: str, cadence_sec: float = 3600.0) -> dict[str, object]:
+    timestamps = phase_timestamps(phase)
+    return {
+        "publisher_cadence_sec": cadence_sec,
+        "publisher_cadence_source": "config.semantic_state_interval",
+        "graphql_publisher_cadence_sec": cadence_sec,
+        "graphql_publisher_cadence_source": "config.semantic_state_interval",
+        "last_updated_at": timestamps["bus_observability"]["status_last_updated_at"],
+        "graphql_last_updated_at": timestamps["graphql_bus_watch"]["status_last_updated_at"],
     }
 
 
@@ -179,6 +193,100 @@ def write_replay_behavior_artifact(proof_dir: pathlib.Path) -> dict:
     return artifact
 
 
+def write_structured_warmup_snapshot_bundle(
+    proof_dir: pathlib.Path,
+    phase: str,
+    *,
+    startup_phase: str,
+    warmup_state: str,
+    cache_epoch: int = 1,
+    live_epoch: int = 1,
+    transport_class: str = "ens",
+    publisher_cadence_sec: float = 3600.0,
+    publisher_cadence_source: str = "config.semantic_state_interval",
+    graphql_feature_flags: dict | None = None,
+    bus_feature_flags: dict | None = None,
+) -> None:
+    if graphql_feature_flags is None:
+        graphql_feature_flags = graphql_feature_flags_snapshot(phase)
+    else:
+        graphql_feature_flags = dict(graphql_feature_flags)
+        graphql_feature_flags.setdefault(
+            "lastUpdatedAt",
+            phase_timestamps(phase)["graphql_bus_watch"]["feature_flags_last_updated_at"],
+        )
+    if bus_feature_flags is None:
+        bus_feature_flags = bus_feature_flags_snapshot(phase)
+    else:
+        bus_feature_flags = dict(bus_feature_flags)
+        bus_feature_flags.setdefault(
+            "last_updated_at",
+            phase_timestamps(phase)["bus_observability"]["feature_flags_last_updated_at"],
+        )
+    snapshot_dir = proof_dir if phase in ("start", "end") else proof_dir / "samples"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    write_json(
+        snapshot_dir / f"{phase}_bus_observability.json",
+        {
+            "summary": {
+                "last_updated_at": phase_timestamps(phase)["bus_observability"]["summary_last_updated_at"],
+                "status": {
+                    "last_updated_at": phase_timestamps(phase)["bus_observability"]["status_last_updated_at"],
+                    "startup": {
+                        "phase": startup_phase,
+                        "cache_epoch": cache_epoch,
+                        "live_epoch": live_epoch,
+                        "last_updated_at": phase_timestamps(phase)["bus_observability"]["startup_last_updated_at"],
+                    },
+                    "publisher_cadence_sec": publisher_cadence_sec,
+                    "publisher_cadence_source": publisher_cadence_source,
+                    "feature_flags": bus_feature_flags,
+                }
+            }
+        },
+    )
+    write_json(
+        snapshot_dir / f"{phase}_graphql_bus_watch.json",
+        {
+            "data": {
+                "busSummary": {
+                    "lastUpdatedAt": phase_timestamps(phase)["graphql_bus_watch"]["summary_last_updated_at"],
+                    "status": {
+                        "lastUpdatedAt": phase_timestamps(phase)["graphql_bus_watch"]["status_last_updated_at"],
+                        "transportClass": transport_class,
+                        "startup": {
+                            "phase": startup_phase,
+                            "cacheEpoch": cache_epoch,
+                            "liveEpoch": live_epoch,
+                            "lastUpdatedAt": phase_timestamps(phase)["graphql_bus_watch"]["startup_last_updated_at"],
+                        },
+                        "publisherCadenceSec": publisher_cadence_sec,
+                        "publisherCadenceSource": publisher_cadence_source,
+                        "warmup": {
+                            "state": warmup_state,
+                            "blocker": "",
+                            "elapsedSeconds": 0.0,
+                            "completedTransactions": 0,
+                            "requiredTransactions": 0,
+                            "completionMode": "proof_window",
+                        },
+                        "featureFlags": graphql_feature_flags,
+                    }
+                },
+                "watchSummary": watch_summary_snapshot(phase),
+            }
+        },
+    )
+    write_json(
+        snapshot_dir / f"{phase}_feature_flags.json",
+        {
+            "captured_at": "2026-03-28T00:00:00+00:00",
+            "graphql_feature_flags": graphql_feature_flags,
+            "bus_observability_feature_flags": bus_feature_flags,
+        },
+    )
+
+
 def write_family_proof_artifacts(
     proof_dir: pathlib.Path,
     *,
@@ -204,117 +312,23 @@ def write_family_proof_artifacts(
             'ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1',
         ],
     )
-    write_json(
-        proof_dir / "start_bus_observability.json",
-        {
-            "summary": {
-                "last_updated_at": phase_timestamps("start")["bus_observability"]["summary_last_updated_at"],
-                "status": {
-                    "last_updated_at": phase_timestamps("start")["bus_observability"]["status_last_updated_at"],
-                    "startup": {
-                        "phase": "LIVE_WARMUP",
-                        "cache_epoch": 1,
-                        "live_epoch": 0,
-                        "last_updated_at": phase_timestamps("start")["bus_observability"]["startup_last_updated_at"],
-                    },
-                    "feature_flags": bus_feature_flags_snapshot("start"),
-                }
-            }
-        },
+    write_structured_warmup_snapshot_bundle(
+        proof_dir,
+        "start",
+        startup_phase="LIVE_WARMUP",
+        warmup_state="warming_up",
+        cache_epoch=1,
+        live_epoch=0,
+        transport_class=transport_class,
     )
-    write_json(
-        proof_dir / "end_bus_observability.json",
-        {
-            "summary": {
-                "last_updated_at": phase_timestamps("end")["bus_observability"]["summary_last_updated_at"],
-                "status": {
-                    "last_updated_at": phase_timestamps("end")["bus_observability"]["status_last_updated_at"],
-                    "startup": {
-                        "phase": "LIVE_READY",
-                        "cache_epoch": 1,
-                        "live_epoch": 1,
-                        "last_updated_at": phase_timestamps("end")["bus_observability"]["startup_last_updated_at"],
-                    },
-                    "feature_flags": bus_feature_flags_snapshot("end"),
-                }
-            }
-        },
-    )
-    write_json(
-        proof_dir / "start_graphql_bus_watch.json",
-        {
-            "data": {
-                "busSummary": {
-                    "lastUpdatedAt": phase_timestamps("start")["graphql_bus_watch"]["summary_last_updated_at"],
-                    "status": {
-                        "lastUpdatedAt": phase_timestamps("start")["graphql_bus_watch"]["status_last_updated_at"],
-                        "transportClass": transport_class,
-                        "startup": {
-                            "phase": "LIVE_WARMUP",
-                            "cacheEpoch": 1,
-                            "liveEpoch": 0,
-                            "lastUpdatedAt": phase_timestamps("start")["graphql_bus_watch"]["startup_last_updated_at"],
-                        },
-                        "warmup": {
-                            "state": "warming_up",
-                            "blocker": "",
-                            "elapsedSeconds": 0.0,
-                            "completedTransactions": 0,
-                            "requiredTransactions": 0,
-                            "completionMode": "proof_window",
-                        },
-                        "featureFlags": graphql_feature_flags_snapshot("start"),
-                    }
-                },
-                "watchSummary": watch_summary_snapshot("start"),
-            }
-        },
-    )
-    write_json(
-        proof_dir / "end_graphql_bus_watch.json",
-        {
-            "data": {
-                "busSummary": {
-                    "lastUpdatedAt": phase_timestamps("end")["graphql_bus_watch"]["summary_last_updated_at"],
-                    "status": {
-                        "lastUpdatedAt": phase_timestamps("end")["graphql_bus_watch"]["status_last_updated_at"],
-                        "transportClass": transport_class,
-                        "startup": {
-                            "phase": "LIVE_READY",
-                            "cacheEpoch": 1,
-                            "liveEpoch": 1,
-                            "lastUpdatedAt": phase_timestamps("end")["graphql_bus_watch"]["startup_last_updated_at"],
-                        },
-                        "warmup": {
-                            "state": "available",
-                            "blocker": "",
-                            "elapsedSeconds": 0.0,
-                            "completedTransactions": 0,
-                            "requiredTransactions": 0,
-                            "completionMode": "proof_window",
-                        },
-                        "featureFlags": graphql_feature_flags_snapshot("end"),
-                    }
-                },
-                "watchSummary": watch_summary_snapshot("end"),
-            }
-        },
-    )
-    write_json(
-        proof_dir / "start_feature_flags.json",
-        {
-            "captured_at": "2026-03-28T00:00:00+00:00",
-            "graphql_feature_flags": graphql_feature_flags_snapshot("start"),
-            "bus_observability_feature_flags": bus_feature_flags_snapshot("start"),
-        },
-    )
-    write_json(
-        proof_dir / "end_feature_flags.json",
-        {
-            "captured_at": "2026-03-28T00:00:00+00:00",
-            "graphql_feature_flags": graphql_feature_flags_snapshot("end"),
-            "bus_observability_feature_flags": bus_feature_flags_snapshot("end"),
-        },
+    write_structured_warmup_snapshot_bundle(
+        proof_dir,
+        "end",
+        startup_phase="LIVE_READY",
+        warmup_state="available",
+        cache_epoch=1,
+        live_epoch=1,
+        transport_class=transport_class,
     )
 
     summary_builder = CanaryVerdictTests("runTest")
@@ -850,80 +864,23 @@ class StaleArtifactRejectionTests(unittest.TestCase):
         cache_epoch: int = 1,
         live_epoch: int = 1,
         transport_class: str = "ens",
+        publisher_cadence_sec: float = 3600.0,
+        publisher_cadence_source: str = "config.semantic_state_interval",
         graphql_feature_flags: dict | None = None,
         bus_feature_flags: dict | None = None,
     ) -> None:
-        if graphql_feature_flags is None:
-            graphql_feature_flags = graphql_feature_flags_snapshot(phase)
-        else:
-            graphql_feature_flags = dict(graphql_feature_flags)
-            graphql_feature_flags.setdefault(
-                "lastUpdatedAt",
-                phase_timestamps(phase)["graphql_bus_watch"]["feature_flags_last_updated_at"],
-            )
-        if bus_feature_flags is None:
-            bus_feature_flags = bus_feature_flags_snapshot(phase)
-        else:
-            bus_feature_flags = dict(bus_feature_flags)
-            bus_feature_flags.setdefault(
-                "last_updated_at",
-                phase_timestamps(phase)["bus_observability"]["feature_flags_last_updated_at"],
-            )
-        snapshot_dir = proof_dir if phase in ("start", "end") else proof_dir / "samples"
-        snapshot_dir.mkdir(parents=True, exist_ok=True)
-        write_json(
-            snapshot_dir / f"{phase}_bus_observability.json",
-            {
-                "summary": {
-                    "last_updated_at": phase_timestamps(phase)["bus_observability"]["summary_last_updated_at"],
-                    "status": {
-                        "last_updated_at": phase_timestamps(phase)["bus_observability"]["status_last_updated_at"],
-                        "startup": {
-                            "phase": startup_phase,
-                            "cache_epoch": cache_epoch,
-                            "live_epoch": live_epoch,
-                            "last_updated_at": phase_timestamps(phase)["bus_observability"]["startup_last_updated_at"],
-                        },
-                        "feature_flags": bus_feature_flags,
-                    }
-                }
-            },
-        )
-        write_json(
-            snapshot_dir / f"{phase}_graphql_bus_watch.json",
-            {
-                "data": {
-                    "busSummary": {
-                        "lastUpdatedAt": phase_timestamps(phase)["graphql_bus_watch"]["summary_last_updated_at"],
-                        "status": {
-                            "lastUpdatedAt": phase_timestamps(phase)["graphql_bus_watch"]["status_last_updated_at"],
-                            "transportClass": transport_class,
-                            "startup": {
-                                "phase": startup_phase,
-                                "cacheEpoch": cache_epoch,
-                                "liveEpoch": live_epoch,
-                                "lastUpdatedAt": phase_timestamps(phase)["graphql_bus_watch"]["startup_last_updated_at"],
-                            },
-                            "warmup": {
-                                "state": warmup_state,
-                                "blocker": "",
-                                "elapsedSeconds": 0.0,
-                                "completedTransactions": 0,
-                                "requiredTransactions": 0,
-                                "completionMode": "proof_window",
-                            },
-                            "featureFlags": graphql_feature_flags,
-                        }
-                    },
-                    "watchSummary": watch_summary_snapshot(phase),
-                }
-            },
-        )
-        self.write_feature_flag_snapshot(
+        write_structured_warmup_snapshot_bundle(
             proof_dir,
             phase,
-            graphql_flags=graphql_feature_flags,
-            bus_flags=bus_feature_flags,
+            startup_phase=startup_phase,
+            warmup_state=warmup_state,
+            cache_epoch=cache_epoch,
+            live_epoch=live_epoch,
+            transport_class=transport_class,
+            publisher_cadence_sec=publisher_cadence_sec,
+            publisher_cadence_source=publisher_cadence_source,
+            graphql_feature_flags=graphql_feature_flags,
+            bus_feature_flags=bus_feature_flags,
         )
 
     def write_run_phase_artifacts(
@@ -4030,6 +3987,175 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
         self.assertIn("invalid canary verdict artifact", artifact["eligibility"]["reason"])
 
 
+class PublisherCadenceArtifactTests(unittest.TestCase):
+    def write_publisher_cadence_proof_window(
+        self,
+        proof_dir: pathlib.Path,
+        *,
+        start_cadence_sec: object = 3600.0,
+        end_cadence_sec: object = 3600.0,
+        start_cadence_source: str = "config.semantic_state_interval",
+        end_cadence_source: str = "config.semantic_state_interval",
+    ) -> None:
+        write_metrics(
+            proof_dir / "start_metrics.prom",
+            [
+                'ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0',
+                'ebus_passive_tap_connected 1',
+                'ebus_passive_warmup_state{state="warming_up"} 1',
+                'ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1',
+            ],
+        )
+        write_metrics(
+            proof_dir / "end_metrics.prom",
+            [
+                'ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0',
+                'ebus_passive_tap_connected 1',
+                'ebus_passive_warmup_state{state="available"} 1',
+                'ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1',
+            ],
+        )
+        write_structured_warmup_snapshot_bundle(
+            proof_dir,
+            "start",
+            startup_phase="LIVE_WARMUP",
+            warmup_state="warming_up",
+            cache_epoch=1,
+            live_epoch=0,
+            transport_class="ens",
+            publisher_cadence_sec=start_cadence_sec,  # type: ignore[arg-type]
+            publisher_cadence_source=start_cadence_source,
+        )
+        write_structured_warmup_snapshot_bundle(
+            proof_dir,
+            "end",
+            startup_phase="LIVE_READY",
+            warmup_state="available",
+            cache_epoch=1,
+            live_epoch=1,
+            transport_class="ens",
+            publisher_cadence_sec=end_cadence_sec,  # type: ignore[arg-type]
+            publisher_cadence_source=end_cadence_source,
+        )
+
+    def run_publisher_cadence_command(self, proof_dir: pathlib.Path, output_path: pathlib.Path) -> tuple[int, str]:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            exit_code = verifier.main(
+                [
+                    "publisher-cadence",
+                    "--proof-dir",
+                    str(proof_dir),
+                    "--run-id",
+                    "run-1",
+                    "--output",
+                    str(output_path),
+                ]
+            )
+        return exit_code, stderr.getvalue()
+
+    def test_publisher_cadence_command_accepts_valid_structured_warmup_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "publisher_cadence.json"
+            self.write_publisher_cadence_proof_window(proof_dir)
+
+            exit_code, stderr = self.run_publisher_cadence_command(proof_dir, output_path)
+            artifact = verifier.load_json(output_path)
+
+        self.assertEqual(exit_code, 0, msg=stderr)
+        self.assertEqual(stderr, "")
+        self.assertEqual(artifact["schema"], verifier.PUBLISHER_CADENCE_ARTIFACT_SCHEMA)
+        self.assertTrue(artifact["ok"])
+        self.assertEqual(artifact["coherence"]["source_anchor"], verifier.PUBLISHER_CADENCE_SOURCE_ANCHOR)
+        self.assertEqual(
+            artifact["start"]["graphql_bus_watch"]["data"]["busSummary"]["status"]["transportClass"],
+            "ens",
+        )
+        self.assertEqual(
+            artifact["end"]["publisher_cadence"]["publisher_cadence_source"],
+            verifier.PUBLISHER_CADENCE_SOURCE_ANCHOR,
+        )
+
+    def test_publisher_cadence_artifact_rejects_source_mismatch_across_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_publisher_cadence_proof_window(proof_dir)
+            artifact = verifier.build_publisher_cadence_artifact_for_phases(proof_dir, "run-1")
+            artifact["start"]["publisher_cadence"]["publisher_cadence_source"] = "config.other_interval"
+
+        ok, reason, details = verifier.evaluate_publisher_cadence(artifact)
+        self.assertFalse(ok)
+        self.assertEqual(details, {})
+        self.assertIn("publisher cadence source mismatch across proof window", reason)
+
+    def test_publisher_cadence_command_fails_closed_when_cadence_evidence_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "publisher_cadence.json"
+            self.write_publisher_cadence_proof_window(proof_dir)
+            payload = verifier.load_json(proof_dir / "start_graphql_bus_watch.json")
+            del payload["data"]["busSummary"]["status"]["publisherCadenceSec"]
+            write_json(proof_dir / "start_graphql_bus_watch.json", payload)
+
+            exit_code, stderr = self.run_publisher_cadence_command(proof_dir, output_path)
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("missing numeric publisherCadenceSec", stderr)
+        self.assertFalse(output_path.exists())
+
+    def test_publisher_cadence_command_fails_closed_on_malformed_cadence_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "publisher_cadence.json"
+            self.write_publisher_cadence_proof_window(proof_dir)
+            payload = verifier.load_json(proof_dir / "end_graphql_bus_watch.json")
+            payload["data"]["busSummary"]["status"]["publisherCadenceSec"] = "malformed"
+            write_json(proof_dir / "end_graphql_bus_watch.json", payload)
+
+            exit_code, stderr = self.run_publisher_cadence_command(proof_dir, output_path)
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("missing numeric publisherCadenceSec", stderr)
+        self.assertFalse(output_path.exists())
+
+    def test_publisher_cadence_command_fails_closed_on_source_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "publisher_cadence.json"
+            self.write_publisher_cadence_proof_window(proof_dir)
+            bus_payload = verifier.load_json(proof_dir / "end_bus_observability.json")
+            graphql_payload = verifier.load_json(proof_dir / "end_graphql_bus_watch.json")
+            bus_payload["summary"]["status"]["publisher_cadence_source"] = "config.other_interval"
+            graphql_payload["data"]["busSummary"]["status"]["publisherCadenceSource"] = "config.other_interval"
+            write_json(proof_dir / "end_bus_observability.json", bus_payload)
+            write_json(proof_dir / "end_graphql_bus_watch.json", graphql_payload)
+
+            exit_code, stderr = self.run_publisher_cadence_command(proof_dir, output_path)
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("publisher cadence source anchor mismatch", stderr)
+        self.assertFalse(output_path.exists())
+
+    def test_publisher_cadence_command_fails_closed_on_value_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "publisher_cadence.json"
+            self.write_publisher_cadence_proof_window(proof_dir)
+            bus_payload = verifier.load_json(proof_dir / "end_bus_observability.json")
+            graphql_payload = verifier.load_json(proof_dir / "end_graphql_bus_watch.json")
+            bus_payload["summary"]["status"]["publisher_cadence_sec"] = 1800.0
+            graphql_payload["data"]["busSummary"]["status"]["publisherCadenceSec"] = 1800.0
+            write_json(proof_dir / "end_bus_observability.json", bus_payload)
+            write_json(proof_dir / "end_graphql_bus_watch.json", graphql_payload)
+
+            exit_code, stderr = self.run_publisher_cadence_command(proof_dir, output_path)
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("publisher cadence mismatch across proof window", stderr)
+        self.assertFalse(output_path.exists())
+
+
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(
         self,
@@ -4365,9 +4491,27 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           live_epoch=0
                         fi
                       fi
-                      cat <<EOF
+                      publisher_cadence_mode="${FAKE_PUBLISHER_CADENCE_MODE:-present}"
+                      publisher_cadence_sec="${FAKE_PUBLISHER_CADENCE_SEC:-3600}"
+                      publisher_cadence_source="${FAKE_PUBLISHER_CADENCE_SOURCE:-config.semantic_state_interval}"
+                      include_publisher_cadence=1
+                      if [[ "${publisher_cadence_mode}" == "missing" ]]; then
+                        include_publisher_cadence=0
+                      elif [[ "${publisher_cadence_mode}" == "mismatch" ]]; then
+                        publisher_cadence_sec="1800"
+                        publisher_cadence_source="config.semantic_state_interval.alt"
+                      elif [[ "${publisher_cadence_mode}" == "malformed" ]]; then
+                        publisher_cadence_sec="not_a_number"
+                      fi
+                      if [[ "${include_publisher_cadence}" == "1" ]]; then
+                        cat <<EOF
+                    {"summary":{"last_updated_at":"${summary_last_updated_at}","status":{"last_updated_at":"${status_last_updated_at}","startup":{"phase":"${phase}","cache_epoch":${cache_epoch},"live_epoch":${live_epoch},"last_updated_at":"${startup_last_updated_at}"},"publisher_cadence_sec":${publisher_cadence_sec},"publisher_cadence_source":"${publisher_cadence_source}","feature_flags":{"observe_first_enabled":true,"passive_state_direct_apply":false,"passive_config_direct_apply":false,"external_write_policy":"record_only","normalizations":[],"last_updated_at":"${feature_flags_last_updated_at}"}}}}
+                    EOF
+                      else
+                        cat <<EOF
                     {"summary":{"last_updated_at":"${summary_last_updated_at}","status":{"last_updated_at":"${status_last_updated_at}","startup":{"phase":"${phase}","cache_epoch":${cache_epoch},"live_epoch":${live_epoch},"last_updated_at":"${startup_last_updated_at}"},"feature_flags":{"observe_first_enabled":true,"passive_state_direct_apply":false,"passive_config_direct_apply":false,"external_write_policy":"record_only","normalizations":[],"last_updated_at":"${feature_flags_last_updated_at}"}}}}
                     EOF
+                      fi
                       exit 0
                     fi
 
@@ -4398,11 +4542,75 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           live_epoch=0
                         fi
                       fi
+                      publisher_cadence_mode="${FAKE_PUBLISHER_CADENCE_MODE:-present}"
+                      publisher_cadence_sec="${FAKE_PUBLISHER_CADENCE_SEC:-3600}"
+                      publisher_cadence_source="${FAKE_PUBLISHER_CADENCE_SOURCE:-config.semantic_state_interval}"
+                      include_publisher_cadence=1
+                      if [[ "${publisher_cadence_mode}" == "missing" ]]; then
+                        include_publisher_cadence=0
+                      elif [[ "${publisher_cadence_mode}" == "mismatch" ]]; then
+                        publisher_cadence_sec="900"
+                        publisher_cadence_source="config.semantic_state_interval.alt"
+                      elif [[ "${publisher_cadence_mode}" == "malformed" ]]; then
+                        publisher_cadence_sec="not_a_number"
+                      fi
                       warmup_state="warming_up"
                       if [[ "${phase}" == "LIVE_READY" ]]; then
                         warmup_state="available"
                       fi
-                      cat <<EOF
+                      if [[ "${include_publisher_cadence}" == "1" ]]; then
+                        cat <<EOF
+                    {
+                      "data": {
+                        "busSummary": {
+                          "lastUpdatedAt": "${bus_summary_last_updated_at}",
+                          "status": {
+                            "lastUpdatedAt": "${bus_status_last_updated_at}",
+                            "transportClass": "ens",
+                            "startup": {
+                              "phase": "${phase}",
+                              "cacheEpoch": ${cache_epoch},
+                              "liveEpoch": ${live_epoch},
+                              "lastUpdatedAt": "${startup_last_updated_at}"
+                            },
+                            "publisherCadenceSec": ${publisher_cadence_sec},
+                            "publisherCadenceSource": "${publisher_cadence_source}",
+                            "warmup": {
+                              "state": "${warmup_state}",
+                              "blocker": "",
+                              "elapsedSeconds": 0,
+                              "completedTransactions": 0,
+                              "requiredTransactions": 0,
+                              "completionMode": "proof_window"
+                            },
+                            "featureFlags": {
+                              "lastUpdatedAt": "${feature_flags_last_updated_at}",
+                              "observeFirstEnabled": true,
+                              "passiveStateDirectApply": false,
+                              "passiveConfigDirectApply": false,
+                              "externalWritePolicy": "record_only",
+                              "normalizations": []
+                            }
+                          }
+                        },
+                        "watchSummary": {
+                          "lastUpdatedAt": "${watch_summary_last_updated_at}",
+                          "inventory": {"totalEntries": 1},
+                          "activationCounts": {"catalogDescriptors": 1, "activeKeys": 1, "sourceClasses": []},
+                          "directApplyEligibilityClasses": [],
+                          "degraded": {
+                            "active": false,
+                            "shadowingEnabled": false,
+                            "pinnedBudgetDegraded": false,
+                            "compactorDegraded": false,
+                            "reasons": []
+                          }
+                        }
+                      }
+                    }
+                    EOF
+                      else
+                        cat <<EOF
                     {
                       "data": {
                         "busSummary": {
@@ -4450,6 +4658,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                       }
                     }
                     EOF
+                      fi
                         exit 0
                       fi
                       printf '%s\\n' '{"data":{"devices":[{"address":"0x15","deviceId":"BASV2"}]}}'
@@ -4517,6 +4726,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 replay_verdict_path = proof_dir / "replay_falsification.json"
                 family_eligibility_path = proof_dir / "family_proof_eligibility.json"
                 promotion_eligibility_path = proof_dir / "promotion_eligibility.json"
+                publisher_cadence_path = proof_dir / "publisher_cadence.json"
                 phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -4533,6 +4743,10 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 if promotion_eligibility_path.exists():
                     artifacts["promotion_eligibility"] = json.loads(
                         promotion_eligibility_path.read_text(encoding="utf-8")
+                    )
+                if publisher_cadence_path.exists():
+                    artifacts["publisher_cadence"] = json.loads(
+                        publisher_cadence_path.read_text(encoding="utf-8")
                     )
                 if phase_log_path.exists():
                     artifacts["phase_log"] = [

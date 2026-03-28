@@ -90,8 +90,10 @@ func mapMCPBusSummary(summary ebusgateway.BusObservabilitySummary) *mcp.BusSumma
 
 func mapGraphQLBusStatus(status ebusgateway.BusObservabilityStatus) *graphql.BusObservabilityStatus {
 	return &graphql.BusObservabilityStatus{
-		LastUpdatedAt:  cloneTimePtr(status.LastUpdatedAt),
-		TransportClass: status.TransportClass,
+		LastUpdatedAt:          cloneTimePtr(status.LastUpdatedAt),
+		TransportClass:         status.TransportClass,
+		PublisherCadenceSec:    status.PublisherCadenceSec,
+		PublisherCadenceSource: status.PublisherCadenceSource,
 		Capability: graphql.BusObservabilityCapability{
 			ActiveSupported:    status.Capability.ActiveSupported,
 			PassiveSupported:   status.Capability.PassiveSupported,
@@ -134,8 +136,10 @@ func mapGraphQLBusStatus(status ebusgateway.BusObservabilityStatus) *graphql.Bus
 
 func mapMCPBusStatus(status ebusgateway.BusObservabilityStatus) *mcp.BusObservabilityStatus {
 	return &mcp.BusObservabilityStatus{
-		LastUpdatedAt:  cloneTimePtr(status.LastUpdatedAt),
-		TransportClass: status.TransportClass,
+		LastUpdatedAt:          cloneTimePtr(status.LastUpdatedAt),
+		TransportClass:         status.TransportClass,
+		PublisherCadenceSec:    status.PublisherCadenceSec,
+		PublisherCadenceSource: status.PublisherCadenceSource,
 		Capability: mcp.BusObservabilityCapability{
 			ActiveSupported:    status.Capability.ActiveSupported,
 			PassiveSupported:   status.Capability.PassiveSupported,

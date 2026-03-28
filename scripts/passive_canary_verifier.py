@@ -1018,7 +1018,33 @@ def required_finite_numeric_value(
     return value, ""
 
 
-def validate_family_upstream_canary_verdict(payload: Any, path: pathlib.Path) -> Tuple[bool, str]:
+def canonicalize_artifact_for_anchor_compare(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        return {
+            key: canonicalize_artifact_for_anchor_compare(value)
+            for key, value in payload.items()
+            if key != "captured_at"
+        }
+    if isinstance(payload, list):
+        return [canonicalize_artifact_for_anchor_compare(value) for value in payload]
+    return payload
+
+
+def resolve_anchor_artifact_path(raw_path: str, *, base_dir: pathlib.Path) -> pathlib.Path:
+    normalized = raw_path.strip()
+    candidate = pathlib.Path(normalized)
+    if not candidate.is_absolute():
+        candidate = base_dir / candidate
+    return candidate.resolve()
+
+
+def validate_family_upstream_canary_verdict(
+    payload: Any,
+    path: pathlib.Path,
+    *,
+    summary_payload: Any | None = None,
+    summary_path: pathlib.Path | None = None,
+) -> Tuple[bool, str]:
     if not isinstance(payload, dict):
         return False, f"{path}: canary verdict must be a JSON object"
     if str(payload.get("schema", "")).strip() != CANARY_VERDICT_SCHEMA:
@@ -1570,10 +1596,50 @@ def validate_family_upstream_canary_verdict(payload: Any, path: pathlib.Path) ->
             f"{path}: canary verdict contradictory success semantics: "
             f"status={status!r} but criteria imply {'pass' if derived_ok else 'fail'!r}"
         )
+    if not isinstance(summary_path, pathlib.Path):
+        return False, f"{path}: missing anchored canary summary artifact path"
+    if not isinstance(summary_payload, dict):
+        return False, f"{path}: missing anchored canary summary artifact: {summary_path}"
+    summary_schema = str(summary_payload.get("schema", "")).strip()
+    if summary_schema != "p03_canary_overall_summary_v1":
+        return False, f"{path}: anchored canary summary schema mismatch at {summary_path}"
+    verdict_summary_schema = str(payload.get("summary_schema", "")).strip()
+    if verdict_summary_schema != summary_schema:
+        return False, (
+            f"{path}: canary verdict summary_schema mismatch: "
+            f"summary_schema={verdict_summary_schema!r} anchored_summary_schema={summary_schema!r}"
+        )
+    summary_run_id = str(summary_payload.get("run_id", "")).strip()
+    verdict_run_id = str(payload.get("run_id", "")).strip()
+    if summary_run_id == "" or verdict_run_id == "" or summary_run_id != verdict_run_id:
+        return False, (
+            f"{path}: canary verdict run_id mismatch: "
+            f"verdict_run_id={verdict_run_id!r} anchored_summary_run_id={summary_run_id!r}"
+        )
+    try:
+        anchored_verdict = build_canary_verdict(summary_payload)
+    except Exception as exc:
+        return False, (
+            f"{path}: unable to derive canary verdict from anchored summary artifact "
+            f"{summary_path}: {exc}"
+        )
+    canonical_payload = canonicalize_artifact_for_anchor_compare(payload)
+    canonical_anchored = canonicalize_artifact_for_anchor_compare(anchored_verdict)
+    if canonical_payload != canonical_anchored:
+        return False, (
+            f"{path}: canary verdict does not match anchored canary summary artifact: "
+            f"{summary_path}"
+        )
     return True, ""
 
 
-def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) -> Tuple[bool, str]:
+def validate_family_upstream_replay_verdict(
+    payload: Any,
+    path: pathlib.Path,
+    *,
+    behavior_artifact_payload: Any | None = None,
+    behavior_artifact_path: pathlib.Path | None = None,
+) -> Tuple[bool, str]:
     if not isinstance(payload, dict):
         return False, f"{path}: replay falsification verdict must be a JSON object"
     if str(payload.get("schema", "")).strip() != REPLAY_FALSIFICATION_VERDICT_SCHEMA:
@@ -1627,6 +1693,53 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
     summary_proof_run_ok = summary.get("proof_run_ok")
     if not isinstance(summary_proof_run_ok, bool):
         return False, f"{path}: replay falsification verdict missing boolean summary.proof_run_ok"
+    if not isinstance(behavior_artifact_path, pathlib.Path):
+        return False, f"{path}: missing anchored replay behavior artifact path"
+    if not isinstance(behavior_artifact_payload, dict):
+        return False, f"{path}: missing anchored replay behavior artifact: {behavior_artifact_path}"
+    behavior_schema = str(behavior_artifact_payload.get("schema", "")).strip()
+    if behavior_schema != REPLAY_BEHAVIOR_ARTIFACT_SCHEMA:
+        return False, f"{path}: anchored replay behavior artifact schema mismatch at {behavior_artifact_path}"
+    anchored_behavior_artifact_ok = bool(behavior_artifact_payload.get("ok", False))
+    behavior_cases_payload = behavior_artifact_payload.get("cases")
+    if not isinstance(behavior_cases_payload, list):
+        return False, f"{path}: anchored replay behavior artifact missing cases array at {behavior_artifact_path}"
+    behavior_cases_by_name: Dict[str, Dict[str, Any]] = {}
+    for behavior_case_index, behavior_case_payload in enumerate(behavior_cases_payload):
+        if not isinstance(behavior_case_payload, dict):
+            return False, (
+                f"{path}: anchored replay behavior artifact case[{behavior_case_index}] "
+                f"must be an object at {behavior_artifact_path}"
+            )
+        behavior_case_name = str(behavior_case_payload.get("name", "")).strip()
+        if behavior_case_name == "":
+            return False, (
+                f"{path}: anchored replay behavior artifact case[{behavior_case_index}] "
+                f"missing name at {behavior_artifact_path}"
+            )
+        if behavior_case_name in behavior_cases_by_name:
+            return False, (
+                f"{path}: anchored replay behavior artifact duplicate case name "
+                f"{behavior_case_name!r} at {behavior_artifact_path}"
+            )
+        behavior_case_observed = behavior_case_payload.get("observed")
+        if not isinstance(behavior_case_observed, dict):
+            return False, (
+                f"{path}: anchored replay behavior artifact case[{behavior_case_index}] "
+                f"missing observed object at {behavior_artifact_path}"
+            )
+        behavior_case_reason = str(behavior_case_payload.get("reason", "")).strip()
+        if behavior_case_reason == "":
+            return False, (
+                f"{path}: anchored replay behavior artifact case[{behavior_case_index}] "
+                f"missing reason at {behavior_artifact_path}"
+            )
+        behavior_cases_by_name[behavior_case_name] = {
+            "status": str(behavior_case_payload.get("status", "")).strip().lower() or "observed",
+            "reason": behavior_case_reason,
+            "observed": behavior_case_observed,
+        }
+    expected_behavior_artifact_resolved = behavior_artifact_path.resolve()
     cases = payload.get("cases")
     if not isinstance(cases, list):
         return False, f"{path}: replay falsification verdict missing cases array"
@@ -1723,15 +1836,34 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.behavior_artifact_path"
             )
-        behavior_artifact_path = behavior_artifact_path_raw.strip()
-        if behavior_artifact_path == "":
+        behavior_artifact_path_text = behavior_artifact_path_raw.strip()
+        if behavior_artifact_path_text == "":
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.behavior_artifact_path"
+            )
+        resolved_behavior_artifact_path = resolve_anchor_artifact_path(
+            behavior_artifact_path_text,
+            base_dir=path.parent,
+        )
+        if resolved_behavior_artifact_path != expected_behavior_artifact_resolved:
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.behavior_artifact_path mismatches anchored replay_behavior artifact"
+            )
+        if not resolved_behavior_artifact_path.exists():
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.behavior_artifact_path does not exist"
             )
         if not isinstance(behavior_evidence.get("behavior_artifact_ok"), bool):
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing boolean "
                 "behavior_evidence.behavior_artifact_ok"
+            )
+        if behavior_evidence.get("behavior_artifact_ok") != anchored_behavior_artifact_ok:
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.behavior_artifact_ok mismatches anchored replay behavior artifact"
             )
         if str(behavior_evidence.get("behavior_schema", "")).strip() != REPLAY_BEHAVIOR_ARTIFACT_SCHEMA:
             return False, (
@@ -1747,6 +1879,12 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] "
                 "behavior_evidence.case_name mismatch"
+            )
+        behavior_case_anchor = behavior_cases_by_name.get(case_name)
+        if not isinstance(behavior_case_anchor, dict):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing anchored behavior "
+                f"case {case_name!r}"
             )
         behavior_observed_present = behavior_evidence.get("observed_present")
         if not isinstance(behavior_observed_present, bool):
@@ -1771,9 +1909,19 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
                 f"{path}: replay falsification verdict case[{case_index}] "
                 "reason mismatches behavior_evidence.observed_reason"
             )
-        behavior_artifact_ok = behavior_evidence.get("behavior_artifact_ok")
-        assert isinstance(behavior_artifact_ok, bool)
-        if not behavior_artifact_ok:
+        if behavior_observed_status != str(behavior_case_anchor.get("status", "")).strip().lower():
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.observed_status mismatches anchored replay behavior artifact"
+            )
+        if behavior_observed_reason != str(behavior_case_anchor.get("reason", "")).strip():
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.observed_reason mismatches anchored replay behavior artifact"
+            )
+        case_behavior_artifact_ok = behavior_evidence.get("behavior_artifact_ok")
+        assert isinstance(case_behavior_artifact_ok, bool)
+        if not case_behavior_artifact_ok:
             case_behavior_artifact_ok_all = False
         case_direct_apply = case_payload.get("direct_apply")
         if case_direct_apply is not None and not isinstance(case_direct_apply, bool):
@@ -1806,6 +1954,11 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
                 return False, (
                     f"{path}: replay falsification verdict case[{case_index}] "
                     "behavior_evidence.observed_present=true without observed evidence"
+                )
+            if behavior_case_anchor.get("observed") is not None:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "missing observed evidence from anchored replay behavior artifact"
                 )
             if behavior_observed_status != "missing":
                 return False, (
@@ -1840,6 +1993,17 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
                 return False, (
                     f"{path}: replay falsification verdict case[{case_index}] "
                     "behavior_evidence.observed_status='missing' with observed evidence"
+                )
+            anchored_observed = behavior_case_anchor.get("observed")
+            if not isinstance(anchored_observed, dict):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "anchored replay behavior observation is missing or malformed"
+                )
+            if canonicalize_json_value(observed) != canonicalize_json_value(anchored_observed):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "observed evidence mismatches anchored replay behavior artifact"
                 )
             observed_direct_apply = observed.get("direct_apply")
             if not isinstance(observed_direct_apply, bool):
@@ -2049,7 +2213,27 @@ def build_family_proof_eligibility_artifact_for_run(
         )
 
     canary_verdict_path = proof_dir / "canary_verdict.json"
+    canary_summary_path = proof_dir / "canary_summary.json"
+    replay_behavior_path = proof_dir / "replay_behavior.json"
     replay_verdict_path = proof_dir / "replay_falsification.json"
+    if not canary_summary_path.exists():
+        reasons.append(f"missing canary summary artifact: {canary_summary_path}")
+        canary_summary = None
+    else:
+        try:
+            canary_summary = load_json(canary_summary_path)
+        except Exception as exc:
+            reasons.append(f"invalid canary summary artifact: {canary_summary_path}: {exc}")
+            canary_summary = None
+    if not replay_behavior_path.exists():
+        reasons.append(f"missing replay behavior artifact: {replay_behavior_path}")
+        replay_behavior = None
+    else:
+        try:
+            replay_behavior = load_replay_behavior_artifact(replay_behavior_path)
+        except Exception as exc:
+            reasons.append(f"invalid replay behavior artifact: {replay_behavior_path}: {exc}")
+            replay_behavior = None
     if not canary_verdict_path.exists():
         reasons.append(f"missing canary verdict artifact: {canary_verdict_path}")
         canary_verdict = None
@@ -2063,6 +2247,8 @@ def build_family_proof_eligibility_artifact_for_run(
             canary_valid, canary_reason = validate_family_upstream_canary_verdict(
                 canary_verdict,
                 canary_verdict_path,
+                summary_payload=canary_summary,
+                summary_path=canary_summary_path,
             )
             if not canary_valid:
                 reasons.append(f"invalid canary verdict artifact: {canary_reason}")
@@ -2080,6 +2266,8 @@ def build_family_proof_eligibility_artifact_for_run(
             replay_valid, replay_reason = validate_family_upstream_replay_verdict(
                 replay_verdict,
                 replay_verdict_path,
+                behavior_artifact_payload=replay_behavior,
+                behavior_artifact_path=replay_behavior_path,
             )
             if not replay_valid:
                 reasons.append(f"invalid replay falsification artifact: {replay_reason}")
@@ -2188,7 +2376,9 @@ def build_family_proof_eligibility_artifact_for_run(
         "evidence": {
             "start_snapshot_paths": start_snapshot["snapshot_paths"] if isinstance(start_snapshot, dict) else {},
             "end_snapshot_paths": end_snapshot["snapshot_paths"] if isinstance(end_snapshot, dict) else {},
+            "canary_summary_path": str(canary_summary_path),
             "canary_verdict_path": str(canary_verdict_path),
+            "replay_behavior_path": str(replay_behavior_path),
             "replay_falsification_path": str(replay_verdict_path),
         },
         "upstream_proof": {

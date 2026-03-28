@@ -2621,6 +2621,31 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
             artifact["eligibility"]["reason"],
         )
 
+    def test_family_proof_eligibility_blocks_forged_canonical_canary_verdict_without_summary_anchor_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            canary_path = proof_dir / "canary_verdict.json"
+            payload = verifier.load_json(canary_path)
+            payload["criteria"]["read_avoidance_accounting"]["direct_apply_total_delta"] = 999.0
+            payload["criteria"]["read_avoidance_accounting"]["active_reads_avoided_total_delta"] = 1000.0
+            write_json(canary_path, payload)
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("invalid canary verdict artifact", artifact["eligibility"]["reason"])
+        self.assertIn("does not match anchored canary summary artifact", artifact["eligibility"]["reason"])
+
     def test_family_proof_eligibility_blocks_contradictory_ok_canary_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
@@ -2809,6 +2834,56 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "blocked")
         self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
         self.assertIn("missing behavior_evidence.case_name", artifact["eligibility"]["reason"])
+
+    def test_family_proof_eligibility_blocks_missing_replay_behavior_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            (proof_dir / "replay_behavior.json").unlink()
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("missing replay behavior artifact", artifact["eligibility"]["reason"])
+        self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
+        self.assertIn("missing anchored replay behavior artifact", artifact["eligibility"]["reason"])
+
+    def test_family_proof_eligibility_blocks_forged_replay_behavior_artifact_path_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            replay_path = proof_dir / "replay_falsification.json"
+            payload = verifier.load_json(replay_path)
+            for case_payload in payload["cases"]:
+                case_payload["behavior_evidence"]["behavior_artifact_path"] = "/tmp/forged/replay_behavior.json"
+            write_json(replay_path, payload)
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
+        self.assertIn(
+            "behavior_evidence.behavior_artifact_path mismatches anchored replay_behavior artifact",
+            artifact["eligibility"]["reason"],
+        )
 
     def test_family_proof_eligibility_blocks_schema_valid_but_zero_evidence_replay_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -173,6 +173,17 @@ def promotion_topology_label(kind: str, gateway_transport: str, proxy_transport:
     return normalized_kind or "unknown"
 
 
+def promotion_topology_requires_proxy_transport(kind: str, ebusd_transport: str) -> bool:
+    normalized_kind = str(kind).strip().lower()
+    normalized_ebusd_transport = str(ebusd_transport).strip().lower()
+
+    if normalized_kind == "proxy-dual-client":
+        return True
+    if normalized_kind == "proxy-single-client":
+        return normalized_ebusd_transport != "ebusd-tcp"
+    return False
+
+
 def normalize_canary(raw: Any, index: int) -> CanarySpec:
     if not isinstance(raw, dict):
         raise ValueError(f"canary[{index}] must be object")
@@ -2778,6 +2789,10 @@ def build_promotion_eligibility_artifact_for_run(
         else ""
     )
     family_scope_has_ebusd_transport = isinstance(family_scope, dict) and family_ebusd_transport != ""
+    proxy_transport_required = promotion_topology_requires_proxy_transport(
+        normalized_kind,
+        normalized_ebusd_transport,
+    )
 
     if not isinstance(family_eligibility, dict):
         reasons.append("family proof eligibility artifact is not a JSON object")
@@ -2881,13 +2896,14 @@ def build_promotion_eligibility_artifact_for_run(
                 "family proof eligibility proof_scope.gateway_transport mismatch: "
                 f"got {family_gateway_transport!r}; want {normalized_gateway_transport!r}"
             )
-        if normalized_proxy_transport == "":
-            reasons.append("missing promotion topology metadata: proxy_transport")
-        elif family_proxy_transport and family_proxy_transport != normalized_proxy_transport:
-            reasons.append(
-                "family proof eligibility proof_scope.proxy_transport mismatch: "
-                f"got {family_proxy_transport!r}; want {normalized_proxy_transport!r}"
-            )
+        if proxy_transport_required:
+            if normalized_proxy_transport == "":
+                reasons.append("missing promotion topology metadata: proxy_transport")
+            elif family_proxy_transport and family_proxy_transport != normalized_proxy_transport:
+                reasons.append(
+                    "family proof eligibility proof_scope.proxy_transport mismatch: "
+                    f"got {family_proxy_transport!r}; want {normalized_proxy_transport!r}"
+                )
         if family_proxy_transport == "":
             reasons.append("family proof eligibility missing proof_scope.proxy_transport")
         if normalized_ebusd_transport == "":

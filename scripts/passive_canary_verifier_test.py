@@ -3485,11 +3485,25 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                     "proxy_transport": "ens",
                     "ebusd_transport": "ebusd-tcp",
                 },
+                {
+                    "kind": "proxy-single-client",
+                    "passive_mode": "required",
+                    "gateway_transport": "ens",
+                    "proxy_transport": "",
+                    "ebusd_transport": "ebusd-tcp",
+                },
                 "not_proven",
                 "topology='via-ebusd-tcp'",
             ),
             (
                 "contradictory ebusd transport axis",
+                {
+                    "kind": "proxy-single-client",
+                    "passive_mode": "required",
+                    "gateway_transport": "ens",
+                    "proxy_transport": "ens",
+                    "ebusd_transport": "ens",
+                },
                 {
                     "kind": "proxy-single-client",
                     "passive_mode": "required",
@@ -3509,6 +3523,13 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                     "proxy_transport": "ens",
                     "ebusd_transport": CANONICAL_NO_EBUSD_TRANSPORT,
                 },
+                {
+                    "kind": "proxy-dual-client",
+                    "passive_mode": "optional",
+                    "gateway_transport": "ens",
+                    "proxy_transport": "ens",
+                    "ebusd_transport": CANONICAL_NO_EBUSD_TRANSPORT,
+                },
                 "not_proven",
                 "topology='proxy-dual-client'",
             ),
@@ -3518,31 +3539,38 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                     "kind": "direct-adapter",
                     "passive_mode": "required",
                     "gateway_transport": "ens",
+                    "proxy_transport": "ens",
+                    "ebusd_transport": CANONICAL_NO_EBUSD_TRANSPORT,
+                },
+                {
+                    "kind": "direct-adapter",
+                    "passive_mode": "required",
+                    "gateway_transport": "ens",
                     "proxy_transport": "",
                     "ebusd_transport": CANONICAL_NO_EBUSD_TRANSPORT,
                 },
-                "blocked",
-                "missing promotion topology metadata: proxy_transport",
+                "not_proven",
+                "topology='direct-adapter'",
             ),
         )
 
-        for label, topology, expected_status, expected_reason in cases:
+        for label, family_topology, topology, expected_status, expected_reason in cases:
             with self.subTest(label=label):
                 with tempfile.TemporaryDirectory() as temp_dir:
                     proof_dir = pathlib.Path(temp_dir)
                     write_family_proof_artifacts(
                         proof_dir,
                         transport_class="ens",
-                        kind=topology["kind"],
-                        passive_mode=topology["passive_mode"],
+                        kind=family_topology["kind"],
+                        passive_mode=family_topology["passive_mode"],
                     )
                     write_family_proof_eligibility_artifact(
                         proof_dir,
-                        kind=topology["kind"],
-                        passive_mode=topology["passive_mode"],
-                        gateway_transport=topology["gateway_transport"],
-                        proxy_transport=topology["proxy_transport"],
-                        ebusd_transport=topology["ebusd_transport"],
+                        kind=family_topology["kind"],
+                        passive_mode=family_topology["passive_mode"],
+                        gateway_transport=family_topology["gateway_transport"],
+                        proxy_transport=family_topology["proxy_transport"],
+                        ebusd_transport=family_topology["ebusd_transport"],
                     )
                     artifact = verifier.build_promotion_eligibility_artifact_for_run(
                         proof_dir,

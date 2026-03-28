@@ -87,6 +87,30 @@ def write_replay_behavior_artifact(proof_dir: pathlib.Path) -> dict:
     return artifact
 
 
+def write_rollback_smoke_action_marker(proof_dir: pathlib.Path, run_id: str, *, status: str = "attempted") -> dict:
+    marker = {
+        "schema": verifier.ROLLBACK_SMOKE_ACTION_MARKER_SCHEMA,
+        "captured_at": "2026-03-28T00:00:00+00:00",
+        "run_id": run_id,
+        "action": "rollback_smoke_attempted",
+        "status": status,
+        "source": "passive_smoke_check.sh",
+    }
+    write_json(proof_dir / "rollback_smoke_action.json", marker)
+    return marker
+
+
+def write_canary_verdict_marker(proof_dir: pathlib.Path, run_id: str, *, status: str = "pass") -> dict:
+    verdict = {
+        "schema": verifier.CANARY_VERDICT_SCHEMA,
+        "captured_at": "2026-03-28T00:00:00+00:00",
+        "run_id": run_id,
+        "status": status,
+    }
+    write_json(proof_dir / "canary_verdict.json", verdict)
+    return verdict
+
+
 class ManifestValidationTests(unittest.TestCase):
     def test_manifest_matches_canonical_proxy_p03_stable_set(self) -> None:
         _, canaries = verifier.load_and_validate_manifest(
@@ -1665,6 +1689,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 replay_behavior_path = proof_dir / "replay_behavior.json"
                 replay_verdict_path = proof_dir / "replay_falsification.json"
                 rollback_smoke_path = proof_dir / "rollback_smoke.json"
+                rollback_smoke_action_path = proof_dir / "rollback_smoke_action.json"
                 phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -1676,6 +1701,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     artifacts["replay_verdict"] = json.loads(replay_verdict_path.read_text(encoding="utf-8"))
                 if rollback_smoke_path.exists():
                     artifacts["rollback_smoke"] = json.loads(rollback_smoke_path.read_text(encoding="utf-8"))
+                if rollback_smoke_action_path.exists():
+                    artifacts["rollback_smoke_action"] = json.loads(rollback_smoke_action_path.read_text(encoding="utf-8"))
                 if phase_log_path.exists():
                     artifacts["phase_log"] = [
                         line.strip()
@@ -1735,17 +1762,38 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def test_smoke_emits_rollback_smoke_artifact_when_canary_verdict_is_good(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed("pass")
         self.assertEqual(result.returncode, 0, msg=result.stderr)
+        rollback_smoke_action = artifacts.get("rollback_smoke_action")
+        self.assertIsInstance(rollback_smoke_action, dict)
+        self.assertEqual(rollback_smoke_action["action"], "rollback_smoke_attempted")
         rollback_smoke = artifacts.get("rollback_smoke")
         self.assertIsInstance(rollback_smoke, dict)
         self.assertTrue(rollback_smoke["ok"])
         self.assertEqual(rollback_smoke["status"], "pass")
+        self.assertIsInstance(rollback_smoke["rollback_execution"], dict)
         self.assertEqual(
-            rollback_smoke["rollback_outcome"]["post_matches_target"],
+            rollback_smoke["rollback_execution"]["action"]["action"],
+            "rollback_smoke_attempted",
+        )
+        self.assertEqual(
+            rollback_smoke["rollback_execution"]["result"]["post_matches_target"],
             True,
         )
         self.assertEqual(
-            rollback_smoke["rollback_outcome"]["observed_transition"],
+            rollback_smoke["rollback_execution"]["result"]["observed_transition"],
             True,
+        )
+
+    def test_smoke_emits_rollback_smoke_artifact_even_when_canary_verdict_is_bad(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed("mismatch")
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        rollback_smoke = artifacts.get("rollback_smoke")
+        self.assertIsInstance(rollback_smoke, dict)
+        self.assertFalse(rollback_smoke["ok"])
+        self.assertEqual(rollback_smoke["status"], "fail")
+        self.assertIsInstance(rollback_smoke["rollback_execution"], dict)
+        self.assertEqual(
+            rollback_smoke["rollback_execution"]["action"]["status"],
+            "attempted",
         )
 
     def test_smoke_holds_until_proof_window_end_and_requires_interval_phase(self) -> None:
@@ -1813,6 +1861,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def test_rollback_smoke_builder_fails_closed_on_missing_end_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
+            write_rollback_smoke_action_marker(proof_dir, "run-1")
+            write_canary_verdict_marker(proof_dir, "run-1")
             write_json(
                 proof_dir / "start_feature_flags.json",
                 {
@@ -1839,9 +1889,61 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertFalse(artifact["ok"])
         self.assertIn("missing feature flag snapshot", artifact["rollback_outcome"]["reason"])
 
+    def test_rollback_smoke_builder_fails_closed_when_action_marker_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_canary_verdict_marker(proof_dir, "run-4")
+            write_json(
+                proof_dir / "start_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:00+00:00",
+                    "graphql_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": True,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                    "bus_observability_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": True,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                },
+            )
+            write_json(
+                proof_dir / "end_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:01+00:00",
+                    "graphql_feature_flags": {
+                        "observeFirstEnabled": False,
+                        "passiveStateDirectApply": False,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                    "bus_observability_feature_flags": {
+                        "observeFirstEnabled": False,
+                        "passiveStateDirectApply": False,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                },
+            )
+            artifact = verifier.build_rollback_smoke_artifact(proof_dir, "run-4")
+
+        self.assertEqual(artifact["status"], "fail")
+        self.assertFalse(artifact["ok"])
+        self.assertIn("missing rollback smoke action marker", artifact["rollback_outcome"]["reason"])
+
     def test_rollback_smoke_builder_fails_closed_on_post_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
+            write_rollback_smoke_action_marker(proof_dir, "run-2")
+            write_canary_verdict_marker(proof_dir, "run-2")
             write_json(
                 proof_dir / "start_feature_flags.json",
                 {
@@ -1891,6 +1993,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def test_rollback_smoke_builder_passes_on_enabled_to_disabled_transition(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
+            write_rollback_smoke_action_marker(proof_dir, "run-3")
+            write_canary_verdict_marker(proof_dir, "run-3")
             write_json(
                 proof_dir / "start_feature_flags.json",
                 {

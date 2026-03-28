@@ -38,6 +38,7 @@ PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_app
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA = 100.0
 ROLLBACK_SMOKE_ARTIFACT_SCHEMA = "gw15_rollback_smoke_v1"
+ROLLBACK_SMOKE_ACTION_MARKER_SCHEMA = "gw15_rollback_smoke_action_v1"
 ROLLBACK_TARGET_FEATURE_FLAGS = {
     "observeFirstEnabled": False,
     "passiveStateDirectApply": False,
@@ -742,20 +743,55 @@ def load_feature_flag_snapshot(path: pathlib.Path) -> Dict[str, Any]:
     }
 
 
+def load_rollback_smoke_action_marker(path: pathlib.Path, run_id: str) -> Dict[str, Any]:
+    if not path.exists():
+        raise ValueError(f"missing rollback smoke action marker: {path}")
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"rollback smoke action marker must be object: {path}")
+    if str(payload.get("schema", "")).strip() != ROLLBACK_SMOKE_ACTION_MARKER_SCHEMA:
+        raise ValueError(f"rollback smoke action marker schema mismatch: {path}")
+    if str(payload.get("run_id", "")).strip() != run_id:
+        raise ValueError(f"rollback smoke action marker run_id mismatch: {path}")
+    if str(payload.get("action", "")).strip() != "rollback_smoke_attempted":
+        raise ValueError(f"rollback smoke action marker action mismatch: {path}")
+    if str(payload.get("status", "")).strip() != "attempted":
+        raise ValueError(f"rollback smoke action marker status mismatch: {path}")
+    return payload
+
+
 def build_rollback_smoke_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict[str, Any]:
     start_snapshot_path = proof_dir / "start_feature_flags.json"
     end_snapshot_path = proof_dir / "end_feature_flags.json"
+    action_marker_path = proof_dir / "rollback_smoke_action.json"
+    canary_verdict_path = proof_dir / "canary_verdict.json"
     target_state = dict(ROLLBACK_TARGET_FEATURE_FLAGS)
     issues: List[str] = []
 
     pre_snapshot: Dict[str, Any] | None = None
     post_snapshot: Dict[str, Any] | None = None
+    action_marker: Dict[str, Any] | None = None
+    canary_verdict: Dict[str, Any] | None = None
     try:
         pre_snapshot = load_feature_flag_snapshot(start_snapshot_path)
     except Exception as exc:  # noqa: BLE001 - fail closed with reason.
         issues.append(str(exc))
     try:
         post_snapshot = load_feature_flag_snapshot(end_snapshot_path)
+    except Exception as exc:  # noqa: BLE001 - fail closed with reason.
+        issues.append(str(exc))
+    try:
+        action_marker = load_rollback_smoke_action_marker(action_marker_path, run_id)
+    except Exception as exc:  # noqa: BLE001 - fail closed with reason.
+        issues.append(str(exc))
+    try:
+        canary_verdict = load_json(canary_verdict_path)
+        if not isinstance(canary_verdict, dict):
+            raise ValueError(f"canary verdict must be object: {canary_verdict_path}")
+        if str(canary_verdict.get("schema", "")).strip() != CANARY_VERDICT_SCHEMA:
+            raise ValueError(f"canary verdict schema mismatch: {canary_verdict_path}")
+        if str(canary_verdict.get("status", "")).strip() != "pass":
+            raise ValueError("canary verdict did not pass before rollback smoke")
     except Exception as exc:  # noqa: BLE001 - fail closed with reason.
         issues.append(str(exc))
 
@@ -789,9 +825,22 @@ def build_rollback_smoke_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict[
         "schema": ROLLBACK_SMOKE_ARTIFACT_SCHEMA,
         "captured_at": utc_now(),
         "run_id": run_id,
+        "rollback_action_marker": action_marker,
+        "upstream_canary_verdict": canary_verdict,
         "pre_rollback_feature_flags": pre_snapshot,
         "rollback_target_state": target_state,
         "post_rollback_feature_flags": post_snapshot,
+        "rollback_execution": {
+            "action": action_marker,
+            "result": {
+                "status": "pass" if ok else "fail",
+                "reason": reason,
+                "pre_matches_target": pre_matches_target,
+                "post_matches_target": post_matches_target,
+                "observed_transition": observed_transition,
+                "fail_closed": not ok,
+            },
+        },
         "rollback_outcome": {
             "status": "pass" if ok else "fail",
             "reason": reason,

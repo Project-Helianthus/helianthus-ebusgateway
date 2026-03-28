@@ -89,6 +89,7 @@ canary_verdict_path="${proof_dir}/canary_verdict.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
 replay_falsification_path="${proof_dir}/replay_falsification.json"
 rollback_smoke_path="${proof_dir}/rollback_smoke.json"
+rollback_smoke_action_path="${proof_dir}/rollback_smoke_action.json"
 canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
 canary_retries=3
 canary_enabled=0
@@ -101,6 +102,7 @@ proof_window_end_epoch=0
 proof_window_started=0
 proof_window_completed=0
 proof_first_sample_delay_sec=1
+rollback_smoke_built=0
 
 deadline=$(( $(date +%s) + timeout_sec ))
 last_metrics=""
@@ -472,10 +474,32 @@ build_replay_falsification_verdict() {
 }
 
 build_rollback_smoke_artifact() {
-  python3 "${canary_verifier_script}" rollback-smoke \
+  cat > "${rollback_smoke_action_path}" <<EOF
+{"schema":"gw15_rollback_smoke_action_v1","captured_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","run_id":"${canary_run_id}","action":"rollback_smoke_attempted","status":"attempted","source":"passive_smoke_check.sh"}
+EOF
+  local status=0
+  if python3 "${canary_verifier_script}" rollback-smoke \
     --proof-dir "${proof_dir}" \
     --run-id "${canary_run_id}" \
-    --output "${rollback_smoke_path}"
+    --output "${rollback_smoke_path}"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ -f "${rollback_smoke_path}" ]]; then
+    rollback_smoke_built=1
+  fi
+  return "${status}"
+}
+
+finalize_rollback_smoke_artifact() {
+  if [[ "${proof_artifacts_enabled}" != "1" ]]; then
+    return 0
+  fi
+  if [[ "${rollback_smoke_built}" == "1" ]]; then
+    return 0
+  fi
+  build_rollback_smoke_artifact || true
 }
 
 build_replay_behavior_artifact() {
@@ -519,6 +543,8 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     canary_start_pending=1
   fi
 fi
+
+trap finalize_rollback_smoke_artifact EXIT
 
 while [[ "$(date +%s)" -lt "${deadline}" ]]; do
   bus_payload=""
@@ -650,10 +676,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
       echo "proof mode: replay falsification gate failed (see ${replay_falsification_path})" >&2
       exit 1
     fi
-    if ! build_rollback_smoke_artifact; then
-      echo "proof mode: rollback smoke gate failed (see ${rollback_smoke_path})" >&2
-      exit 1
-    fi
+  fi
+  if ! build_rollback_smoke_artifact; then
+    echo "proof mode: rollback smoke gate failed (see ${rollback_smoke_path})" >&2
+    exit 1
   fi
 fi
 

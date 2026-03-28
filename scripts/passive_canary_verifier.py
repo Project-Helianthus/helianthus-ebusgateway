@@ -34,6 +34,7 @@ READ_AVOIDANCE_DIRECT_APPLY_METRIC = "direct_apply_total"
 READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC = "active_reads_avoided_total"
 READ_AVOIDANCE_SAVED_SECONDS_METRIC = "active_read_saved_seconds"
 WARMUP_BEHAVIOR_ARTIFACT_SCHEMA = "p03_warmup_behavior_v1"
+FAMILY_PROOF_ELIGIBILITY_SCHEMA = "p03_family_proof_eligibility_v1"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC = "ebus_passive_completed_transactions_total"
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_apply_candidates_evaluated_total"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
@@ -55,6 +56,13 @@ FEATURE_FLAG_FIELD_ALIASES = {
 FEATURE_FLAG_CONSISTENCY_SCHEMA = "p03_feature_flag_consistency_v1"
 REPLAY_EXPECTED_DISPOSITIONS = {"ambiguity", "falsification"}
 PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)$")
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+CANONICAL_FAMILY_PROOF_CASE_ID = "P03"
+CANONICAL_P03_CANARY_MANIFEST_PATH = REPO_ROOT / "testdata" / "passive_proof" / "p03_canary_manifest.json"
+CANONICAL_REPLAY_CORPUS_PATH = REPO_ROOT / "testdata" / "observe_first_replay_cases.json"
+_CANONICAL_FAMILY_PROOF_CANARY_IDS: Tuple[str, ...] | None = None
+_CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES: Tuple[str, ...] | None = None
+_CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS: Dict[str, Dict[str, Any]] | None = None
 
 
 def utc_now() -> str:
@@ -215,6 +223,169 @@ def load_and_validate_manifest(path: pathlib.Path, require_case_id: str | None =
             raise ValueError(f"manifest {family} canaries={got}; want >= {minimum}")
 
     return payload, canaries
+
+
+def extract_locked_replay_case_names(corpus: Any, source_path: pathlib.Path) -> Tuple[Tuple[str, ...], str]:
+    replay_case_contracts, replay_case_contracts_error = extract_locked_replay_case_contracts(
+        corpus,
+        source_path,
+    )
+    if replay_case_contracts_error:
+        return tuple(), replay_case_contracts_error
+    return tuple(sorted(replay_case_contracts.keys())), ""
+
+
+def extract_locked_replay_case_contracts(
+    corpus: Any,
+    source_path: pathlib.Path,
+) -> Tuple[Dict[str, Dict[str, Any]], str]:
+    if not isinstance(corpus, dict):
+        return {}, f"{source_path}: replay corpus must be a JSON object"
+    cases = corpus.get("cases")
+    if not isinstance(cases, list):
+        return {}, f"{source_path}: replay corpus missing cases array"
+
+    seen_names: set[str] = set()
+    contracts: Dict[str, Dict[str, Any]] = {}
+    for index, raw_case in enumerate(cases):
+        if not isinstance(raw_case, dict):
+            return {}, f"{source_path}: replay case[{index}] must be object"
+        expected = raw_case.get("replay_expected")
+        if expected is None:
+            continue
+        if not isinstance(expected, dict):
+            return {}, f"{source_path}: replay case[{index}] replay_expected contract must be an object"
+        raw_name = raw_case.get("name")
+        if not isinstance(raw_name, str):
+            return {}, f"{source_path}: replay case[{index}] name must be non-empty string"
+        name = raw_name.strip()
+        if name == "":
+            return {}, f"{source_path}: replay case[{index}] missing name"
+        if name in seen_names:
+            return {}, f"{source_path}: replay case[{index}] duplicate replay case name {name!r}"
+        seen_names.add(name)
+        family_raw = raw_case.get("family")
+        if not isinstance(family_raw, str):
+            return {}, f"{source_path}: replay case[{index}] family must be non-empty string"
+        family = family_raw.strip().upper()
+        if family == "":
+            return {}, f"{source_path}: replay case[{index}] missing family"
+        response_class_raw = raw_case.get("response_class")
+        if not isinstance(response_class_raw, str):
+            return {}, f"{source_path}: replay case[{index}] response_class must be non-empty string"
+        response_class = response_class_raw.strip()
+        if response_class == "":
+            return {}, f"{source_path}: replay case[{index}] missing response_class"
+        raw_scenario_tags = raw_case.get("scenario_tags")
+        if not isinstance(raw_scenario_tags, list):
+            return {}, f"{source_path}: replay case[{index}] scenario_tags must be an array"
+        scenario_tags: List[str] = []
+        for tag_index, tag_raw in enumerate(raw_scenario_tags):
+            if not isinstance(tag_raw, str) or tag_raw.strip() == "":
+                return {}, f"{source_path}: replay case[{index}] invalid scenario_tags[{tag_index}]"
+            scenario_tags.append(tag_raw.strip())
+        expected_reason_raw = expected.get("reason")
+        if not isinstance(expected_reason_raw, str):
+            return {}, f"{source_path}: replay case[{index}] replay_expected.reason must be non-empty string"
+        expected_reason = expected_reason_raw.strip()
+        if expected_reason == "":
+            return {}, f"{source_path}: replay case[{index}] replay_expected.reason must be non-empty string"
+        expected_direct_apply = expected.get("direct_apply")
+        if not isinstance(expected_direct_apply, bool):
+            return {}, f"{source_path}: replay case[{index}] replay_expected.direct_apply must be boolean"
+        expected_disposition_raw = expected.get("disposition")
+        if not isinstance(expected_disposition_raw, str):
+            return {}, (
+                f"{source_path}: replay case[{index}] replay_expected.disposition must be non-empty string"
+            )
+        expected_disposition = expected_disposition_raw.strip().lower()
+        if expected_disposition == "":
+            return {}, (
+                f"{source_path}: replay case[{index}] replay_expected.disposition must be non-empty string"
+            )
+        if expected_disposition not in REPLAY_EXPECTED_DISPOSITIONS:
+            return {}, (
+                f"{source_path}: replay case[{index}] unsupported replay_expected.disposition "
+                f"{expected_disposition!r}"
+            )
+        contracts[name] = {
+            "family": family,
+            "response_class": response_class,
+            "scenario_tags": scenario_tags,
+            "expected_reason": expected_reason,
+            "expected_direct_apply": expected_direct_apply,
+            "expected_disposition": expected_disposition,
+        }
+
+    if len(contracts) == 0:
+        return {}, f"{source_path}: canonical replay proof-set has no locked replay cases"
+    return contracts, ""
+
+
+def load_canonical_family_proof_canary_ids() -> Tuple[Tuple[str, ...], str]:
+    global _CANONICAL_FAMILY_PROOF_CANARY_IDS
+
+    if _CANONICAL_FAMILY_PROOF_CANARY_IDS is not None:
+        return _CANONICAL_FAMILY_PROOF_CANARY_IDS, ""
+    try:
+        _, canaries = load_and_validate_manifest(
+            CANONICAL_P03_CANARY_MANIFEST_PATH,
+            require_case_id=CANONICAL_FAMILY_PROOF_CASE_ID,
+        )
+    except Exception as exc:
+        return tuple(), (
+            f"unable to load canonical canary proof-set from {CANONICAL_P03_CANARY_MANIFEST_PATH}: {exc}"
+        )
+    canary_ids = tuple(sorted(item.canary_id for item in canaries))
+    if len(canary_ids) == 0:
+        return tuple(), (
+            f"unable to load canonical canary proof-set from {CANONICAL_P03_CANARY_MANIFEST_PATH}: "
+            "empty canary set"
+        )
+    _CANONICAL_FAMILY_PROOF_CANARY_IDS = canary_ids
+    return _CANONICAL_FAMILY_PROOF_CANARY_IDS, ""
+
+
+def load_canonical_family_proof_replay_case_names() -> Tuple[Tuple[str, ...], str]:
+    global _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES
+
+    if _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES is not None:
+        return _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES, ""
+    try:
+        corpus = load_json(CANONICAL_REPLAY_CORPUS_PATH)
+    except Exception as exc:
+        return tuple(), (
+            f"unable to load canonical replay proof-set from {CANONICAL_REPLAY_CORPUS_PATH}: {exc}"
+        )
+    replay_case_names, replay_case_names_error = extract_locked_replay_case_names(
+        corpus,
+        CANONICAL_REPLAY_CORPUS_PATH,
+    )
+    if replay_case_names_error:
+        return tuple(), replay_case_names_error
+    _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES = replay_case_names
+    return _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES, ""
+
+
+def load_canonical_family_proof_replay_case_contracts() -> Tuple[Dict[str, Dict[str, Any]], str]:
+    global _CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS
+
+    if _CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS is not None:
+        return _CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS, ""
+    try:
+        corpus = load_json(CANONICAL_REPLAY_CORPUS_PATH)
+    except Exception as exc:
+        return {}, (
+            f"unable to load canonical replay proof-set from {CANONICAL_REPLAY_CORPUS_PATH}: {exc}"
+        )
+    replay_case_contracts, replay_case_contracts_error = extract_locked_replay_case_contracts(
+        corpus,
+        CANONICAL_REPLAY_CORPUS_PATH,
+    )
+    if replay_case_contracts_error:
+        return {}, replay_case_contracts_error
+    _CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS = replay_case_contracts
+    return _CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS, ""
 
 
 def normalize_retries(raw: int) -> int:
@@ -881,6 +1052,16 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
     graphql_status = bus_summary.get("status")
     if not isinstance(graphql_status, dict):
         raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status object")
+    transport_class_raw = graphql_status.get("transportClass")
+    if not isinstance(transport_class_raw, str):
+        raise ValueError(
+            f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.transportClass"
+        )
+    transport_class = transport_class_raw.strip()
+    if transport_class == "":
+        raise ValueError(
+            f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.transportClass"
+        )
     warmup = graphql_status.get("warmup")
     if not isinstance(warmup, dict):
         raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.warmup object")
@@ -903,7 +1084,1471 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
         "feature_flag_snapshot": feature_flag_snapshot,
         "startup_phase": startup_phase,
         "warmup_state": warmup_state,
+        "transport_class": transport_class,
     }
+
+
+def required_finite_numeric_value(
+    payload: Dict[str, Any],
+    field_name: str,
+    *,
+    path: pathlib.Path,
+    context: str,
+) -> Tuple[float | None, str]:
+    raw = payload.get(field_name)
+    if not isinstance(raw, (int, float)):
+        return None, f"{path}: {context} missing numeric {field_name}"
+    value = float(raw)
+    if not math.isfinite(value):
+        return None, f"{path}: {context} has non-finite {field_name}"
+    return value, ""
+
+
+def canonicalize_artifact_for_anchor_compare(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        return {
+            key: canonicalize_artifact_for_anchor_compare(value)
+            for key, value in payload.items()
+            if key != "captured_at"
+        }
+    if isinstance(payload, list):
+        return [canonicalize_artifact_for_anchor_compare(value) for value in payload]
+    return payload
+
+
+def resolve_anchor_artifact_path(raw_path: str, *, base_dir: pathlib.Path) -> pathlib.Path:
+    normalized = raw_path.strip()
+    candidate = pathlib.Path(normalized)
+    if not candidate.is_absolute():
+        candidate = base_dir / candidate
+    return candidate.resolve()
+
+
+def validate_family_upstream_canary_verdict(
+    payload: Any,
+    path: pathlib.Path,
+    *,
+    summary_payload: Any | None = None,
+    summary_path: pathlib.Path | None = None,
+) -> Tuple[bool, str]:
+    if not isinstance(payload, dict):
+        return False, f"{path}: canary verdict must be a JSON object"
+    if str(payload.get("schema", "")).strip() != CANARY_VERDICT_SCHEMA:
+        return False, f"{path}: canary verdict schema mismatch"
+    if not isinstance(payload.get("ok"), bool):
+        return False, f"{path}: canary verdict missing boolean ok"
+    status = str(payload.get("status", "")).strip().lower()
+    if status not in ("pass", "fail"):
+        return False, f"{path}: canary verdict missing valid status"
+    criteria = payload.get("criteria")
+    if not isinstance(criteria, dict) or len(criteria) == 0:
+        return False, f"{path}: canary verdict missing criteria object"
+    required_criteria_keys = (
+        "no_mismatches",
+        "overall_interval_conclusive_rate",
+        "per_canary_interval_conclusive_rate",
+        "read_avoidance_accounting",
+        "proof_window_traffic_minimums",
+        "feature_flag_consistency",
+        "warmup_behavior",
+    )
+    missing_criteria = [name for name in required_criteria_keys if not isinstance(criteria.get(name), dict)]
+    if missing_criteria:
+        return False, (
+            f"{path}: canary verdict missing canonical criteria gates: "
+            + ", ".join(missing_criteria)
+        )
+    criterion_results: List[bool] = []
+    for criterion_name, criterion_payload in criteria.items():
+        if not isinstance(criterion_payload, dict):
+            return False, (
+                f"{path}: canary verdict criteria.{criterion_name} must be an object "
+                "(success semantics mismatch)"
+            )
+        criterion_ok = criterion_payload.get("ok")
+        if not isinstance(criterion_ok, bool):
+            return False, (
+                f"{path}: canary verdict criteria.{criterion_name}.ok must be boolean "
+                "(success semantics mismatch)"
+            )
+        criterion_results.append(criterion_ok)
+
+    no_mismatches = criteria.get("no_mismatches")
+    if not isinstance(no_mismatches, dict):
+        return False, f"{path}: canary verdict missing criteria.no_mismatches object"
+    mismatch_count = no_mismatches.get("mismatch_count")
+    if not isinstance(mismatch_count, int):
+        return False, f"{path}: canary verdict missing integer criteria.no_mismatches.mismatch_count"
+    if mismatch_count < 0:
+        return False, f"{path}: canary verdict has negative criteria.no_mismatches.mismatch_count"
+    no_mismatches_ok = no_mismatches.get("ok")
+    if no_mismatches_ok != (mismatch_count == 0):
+        return False, (
+            f"{path}: canary verdict contradictory no_mismatches accounting: "
+            f"criteria.no_mismatches.ok={no_mismatches_ok!r} "
+            f"but mismatch_count={mismatch_count}"
+        )
+    overall_interval = criteria.get("overall_interval_conclusive_rate")
+    if not isinstance(overall_interval, dict):
+        return False, f"{path}: canary verdict missing criteria.overall_interval_conclusive_rate object"
+    overall_waived = overall_interval.get("waived")
+    if not isinstance(overall_waived, bool):
+        return False, (
+            f"{path}: canary verdict missing boolean "
+            "criteria.overall_interval_conclusive_rate.waived"
+        )
+    overall_interval_conclusive = overall_interval.get("interval_conclusive")
+    if not isinstance(overall_interval_conclusive, int):
+        return False, (
+            f"{path}: canary verdict missing integer "
+            "criteria.overall_interval_conclusive_rate.interval_conclusive"
+        )
+    if overall_interval_conclusive < 0:
+        return False, (
+            f"{path}: canary verdict has negative "
+            "criteria.overall_interval_conclusive_rate.interval_conclusive"
+        )
+    overall_interval_total = overall_interval.get("interval_total")
+    if not isinstance(overall_interval_total, int):
+        return False, (
+            f"{path}: canary verdict missing integer "
+            "criteria.overall_interval_conclusive_rate.interval_total"
+        )
+    if overall_interval_total < 0:
+        return False, (
+            f"{path}: canary verdict has negative "
+            "criteria.overall_interval_conclusive_rate.interval_total"
+        )
+    overall_interval_rate = overall_interval.get("interval_conclusive_rate")
+    if not isinstance(overall_interval_rate, (int, float)):
+        return False, (
+            f"{path}: canary verdict missing numeric "
+            "criteria.overall_interval_conclusive_rate.interval_conclusive_rate"
+        )
+    overall_interval_rate_value = float(overall_interval_rate)
+    if not math.isfinite(overall_interval_rate_value):
+        return False, (
+            f"{path}: canary verdict has non-finite "
+            "criteria.overall_interval_conclusive_rate.interval_conclusive_rate"
+        )
+    overall_threshold = overall_interval.get("threshold")
+    if not isinstance(overall_threshold, (int, float)):
+        return False, (
+            f"{path}: canary verdict missing numeric "
+            "criteria.overall_interval_conclusive_rate.threshold"
+        )
+    overall_threshold_value = float(overall_threshold)
+    if not math.isfinite(overall_threshold_value):
+        return False, (
+            f"{path}: canary verdict has non-finite "
+            "criteria.overall_interval_conclusive_rate.threshold"
+        )
+    if not math.isclose(overall_threshold_value, OVERALL_INTERVAL_CONCLUSIVE_MIN, rel_tol=0.0, abs_tol=1e-9):
+        return False, (
+            f"{path}: canary verdict non-canonical "
+            "criteria.overall_interval_conclusive_rate.threshold"
+        )
+    overall_expected_rate = safe_ratio(overall_interval_conclusive, overall_interval_total)
+    if not math.isclose(overall_interval_rate_value, overall_expected_rate, rel_tol=0.0, abs_tol=1e-9):
+        return False, (
+            f"{path}: canary verdict contradictory overall interval accounting: "
+            f"interval_conclusive_rate={overall_interval_rate_value!r} "
+            f"but counts imply {overall_expected_rate!r}"
+        )
+    overall_expected_ok = True if overall_waived else overall_expected_rate + 1e-9 >= overall_threshold_value
+    if overall_interval.get("ok") != overall_expected_ok:
+        return False, (
+            f"{path}: canary verdict contradictory overall interval semantics: "
+            f"ok={overall_interval.get('ok')!r} but derived_ok={overall_expected_ok!r}"
+        )
+
+    per_canary_interval = criteria.get("per_canary_interval_conclusive_rate")
+    if not isinstance(per_canary_interval, dict):
+        return False, (
+            f"{path}: canary verdict missing "
+            "criteria.per_canary_interval_conclusive_rate object"
+        )
+    per_canary_waived = per_canary_interval.get("waived")
+    if not isinstance(per_canary_waived, bool):
+        return False, (
+            f"{path}: canary verdict missing boolean "
+            "criteria.per_canary_interval_conclusive_rate.waived"
+        )
+    per_canary_threshold = per_canary_interval.get("threshold")
+    if not isinstance(per_canary_threshold, (int, float)):
+        return False, (
+            f"{path}: canary verdict missing numeric "
+            "criteria.per_canary_interval_conclusive_rate.threshold"
+        )
+    per_canary_threshold_value = float(per_canary_threshold)
+    if not math.isfinite(per_canary_threshold_value):
+        return False, (
+            f"{path}: canary verdict has non-finite "
+            "criteria.per_canary_interval_conclusive_rate.threshold"
+        )
+    if not math.isclose(per_canary_threshold_value, PER_CANARY_INTERVAL_CONCLUSIVE_MIN, rel_tol=0.0, abs_tol=1e-9):
+        return False, (
+            f"{path}: canary verdict non-canonical "
+            "criteria.per_canary_interval_conclusive_rate.threshold"
+        )
+    failing_canaries = per_canary_interval.get("failing_canaries")
+    if not isinstance(failing_canaries, list):
+        return False, (
+            f"{path}: canary verdict missing list "
+            "criteria.per_canary_interval_conclusive_rate.failing_canaries"
+        )
+    normalized_failing_canaries: List[str] = []
+    for canary_index, canary_name in enumerate(failing_canaries):
+        if not isinstance(canary_name, str) or canary_name.strip() == "":
+            return False, (
+                f"{path}: canary verdict has invalid "
+                "criteria.per_canary_interval_conclusive_rate.failing_canaries"
+                f"[{canary_index}]"
+            )
+        normalized_failing_canaries.append(canary_name.strip())
+    canaries_evaluated = per_canary_interval.get("canaries_evaluated")
+    if not isinstance(canaries_evaluated, int):
+        return False, (
+            f"{path}: canary verdict missing integer "
+            "criteria.per_canary_interval_conclusive_rate.canaries_evaluated"
+        )
+    if canaries_evaluated < 0:
+        return False, (
+            f"{path}: canary verdict has negative "
+            "criteria.per_canary_interval_conclusive_rate.canaries_evaluated"
+        )
+    if canaries_evaluated == 0:
+        return False, (
+            f"{path}: canary verdict missing evaluated canary evidence: "
+            "criteria.per_canary_interval_conclusive_rate.canaries_evaluated must be >= 1"
+        )
+
+    per_canary = payload.get("per_canary")
+    if not isinstance(per_canary, dict):
+        return False, f"{path}: canary verdict missing canonical per_canary object"
+    if len(per_canary) != canaries_evaluated:
+        return False, (
+            f"{path}: canary verdict contradictory per-canary accounting: "
+            f"canaries_evaluated={canaries_evaluated} "
+            f"(per_canary_entries={len(per_canary)})"
+        )
+    canonical_canary_ids, canonical_canary_ids_error = load_canonical_family_proof_canary_ids()
+    if canonical_canary_ids_error != "":
+        return False, f"{path}: {canonical_canary_ids_error}"
+    canonical_canary_id_set = set(canonical_canary_ids)
+    missing_canary_ids = [canary_id for canary_id in canonical_canary_ids if canary_id not in per_canary]
+    unexpected_canary_ids = sorted(
+        [canary_id for canary_id in per_canary.keys() if canary_id not in canonical_canary_id_set]
+    )
+    if missing_canary_ids or unexpected_canary_ids:
+        return False, (
+            f"{path}: canary verdict canonical proof-set canary coverage mismatch: "
+            f"missing={missing_canary_ids or []} unexpected={unexpected_canary_ids or []}"
+        )
+    if canaries_evaluated != len(canonical_canary_ids):
+        return False, (
+            f"{path}: canary verdict canonical proof-set canary count mismatch: "
+            f"canaries_evaluated={canaries_evaluated} "
+            f"canonical_canaries={len(canonical_canary_ids)}"
+        )
+    derived_failing_canaries: List[str] = []
+    for canary_id, canary_payload in per_canary.items():
+        if not isinstance(canary_id, str) or canary_id.strip() == "":
+            return False, f"{path}: canary verdict has invalid per_canary key {canary_id!r}"
+        if not isinstance(canary_payload, dict):
+            return False, f"{path}: canary verdict per_canary.{canary_id} must be an object"
+        interval_conclusive = canary_payload.get("interval_conclusive")
+        if not isinstance(interval_conclusive, int):
+            return False, f"{path}: canary verdict per_canary.{canary_id}.interval_conclusive must be integer"
+        if interval_conclusive < 0:
+            return False, f"{path}: canary verdict per_canary.{canary_id}.interval_conclusive is negative"
+        interval_total = canary_payload.get("interval_total")
+        if not isinstance(interval_total, int):
+            return False, f"{path}: canary verdict per_canary.{canary_id}.interval_total must be integer"
+        if interval_total < 0:
+            return False, f"{path}: canary verdict per_canary.{canary_id}.interval_total is negative"
+        interval_rate = canary_payload.get("interval_conclusive_rate")
+        if not isinstance(interval_rate, (int, float)):
+            return False, (
+                f"{path}: canary verdict per_canary.{canary_id}.interval_conclusive_rate "
+                "must be numeric"
+            )
+        interval_rate_value = float(interval_rate)
+        if not math.isfinite(interval_rate_value):
+            return False, (
+                f"{path}: canary verdict per_canary.{canary_id}.interval_conclusive_rate "
+                "is non-finite"
+            )
+        expected_interval_rate = safe_ratio(interval_conclusive, interval_total)
+        if not math.isclose(interval_rate_value, expected_interval_rate, rel_tol=0.0, abs_tol=1e-9):
+            return False, (
+                f"{path}: canary verdict contradictory per-canary interval accounting for "
+                f"{canary_id!r}: interval_conclusive_rate={interval_rate_value!r} "
+                f"but counts imply {expected_interval_rate!r}"
+            )
+        canary_threshold = canary_payload.get("threshold")
+        if not isinstance(canary_threshold, (int, float)):
+            return False, f"{path}: canary verdict per_canary.{canary_id}.threshold must be numeric"
+        canary_threshold_value = float(canary_threshold)
+        if not math.isfinite(canary_threshold_value):
+            return False, f"{path}: canary verdict per_canary.{canary_id}.threshold is non-finite"
+        if not math.isclose(canary_threshold_value, PER_CANARY_INTERVAL_CONCLUSIVE_MIN, rel_tol=0.0, abs_tol=1e-9):
+            return False, f"{path}: canary verdict per_canary.{canary_id}.threshold is non-canonical"
+        canary_ok = canary_payload.get("ok")
+        if not isinstance(canary_ok, bool):
+            return False, f"{path}: canary verdict per_canary.{canary_id}.ok must be boolean"
+        canary_waived = canary_payload.get("waived")
+        if not isinstance(canary_waived, bool):
+            return False, f"{path}: canary verdict per_canary.{canary_id}.waived must be boolean"
+        expected_canary_ok = True if canary_waived else expected_interval_rate + 1e-9 >= canary_threshold_value
+        if canary_ok != expected_canary_ok:
+            return False, (
+                f"{path}: canary verdict contradictory per-canary semantics for {canary_id!r}: "
+                f"ok={canary_ok!r} but derived_ok={expected_canary_ok!r}"
+            )
+        if not canary_ok:
+            derived_failing_canaries.append(canary_id.strip())
+
+    if sorted(normalized_failing_canaries) != sorted(derived_failing_canaries):
+        return False, (
+            f"{path}: canary verdict contradictory failing_canaries accounting: "
+            f"listed={sorted(normalized_failing_canaries)!r} "
+            f"derived={sorted(derived_failing_canaries)!r}"
+        )
+    per_canary_expected_ok = len(derived_failing_canaries) == 0
+    if per_canary_interval.get("ok") != per_canary_expected_ok:
+        return False, (
+            f"{path}: canary verdict contradictory per-canary semantics: "
+            f"ok={per_canary_interval.get('ok')!r} "
+            f"but derived_ok={per_canary_expected_ok!r}"
+        )
+    read_avoidance_gate = criteria.get("read_avoidance_accounting")
+    if not isinstance(read_avoidance_gate, dict):
+        return False, f"{path}: canary verdict missing criteria.read_avoidance_accounting object"
+    read_avoidance_reason = read_avoidance_gate.get("reason")
+    if not isinstance(read_avoidance_reason, str):
+        return False, f"{path}: canary verdict missing string criteria.read_avoidance_accounting.reason"
+    read_direct_delta, read_direct_delta_error = required_finite_numeric_value(
+        read_avoidance_gate,
+        "direct_apply_total_delta",
+        path=path,
+        context="canary verdict criteria.read_avoidance_accounting",
+    )
+    if read_direct_delta_error:
+        return False, read_direct_delta_error
+    read_avoided_delta, read_avoided_delta_error = required_finite_numeric_value(
+        read_avoidance_gate,
+        "active_reads_avoided_total_delta",
+        path=path,
+        context="canary verdict criteria.read_avoidance_accounting",
+    )
+    if read_avoided_delta_error:
+        return False, read_avoided_delta_error
+    assert read_direct_delta is not None
+    assert read_avoided_delta is not None
+    if read_direct_delta < 0:
+        return False, (
+            f"{path}: canary verdict criteria.read_avoidance_accounting "
+            "has negative direct_apply_total_delta"
+        )
+    if read_avoided_delta < 0:
+        return False, (
+            f"{path}: canary verdict criteria.read_avoidance_accounting "
+            "has negative active_reads_avoided_total_delta"
+        )
+    if read_avoided_delta + 1e-9 < read_direct_delta:
+        return False, (
+            f"{path}: canary verdict contradictory read_avoidance_accounting evidence: "
+            f"active_reads_avoided_total_delta={read_avoided_delta!r} "
+            f"< direct_apply_total_delta={read_direct_delta!r}"
+        )
+
+    proof_window_gate = criteria.get("proof_window_traffic_minimums")
+    if not isinstance(proof_window_gate, dict):
+        return False, f"{path}: canary verdict missing criteria.proof_window_traffic_minimums object"
+    proof_window_reason = proof_window_gate.get("reason")
+    if not isinstance(proof_window_reason, str):
+        return False, f"{path}: canary verdict missing string criteria.proof_window_traffic_minimums.reason"
+    completed_delta, completed_delta_error = required_finite_numeric_value(
+        proof_window_gate,
+        "completed_transactions_delta",
+        path=path,
+        context="canary verdict criteria.proof_window_traffic_minimums",
+    )
+    if completed_delta_error:
+        return False, completed_delta_error
+    completed_minimum, completed_minimum_error = required_finite_numeric_value(
+        proof_window_gate,
+        "completed_transactions_minimum",
+        path=path,
+        context="canary verdict criteria.proof_window_traffic_minimums",
+    )
+    if completed_minimum_error:
+        return False, completed_minimum_error
+    candidates_delta, candidates_delta_error = required_finite_numeric_value(
+        proof_window_gate,
+        "direct_apply_candidates_evaluated_delta",
+        path=path,
+        context="canary verdict criteria.proof_window_traffic_minimums",
+    )
+    if candidates_delta_error:
+        return False, candidates_delta_error
+    candidates_minimum, candidates_minimum_error = required_finite_numeric_value(
+        proof_window_gate,
+        "direct_apply_candidates_evaluated_minimum",
+        path=path,
+        context="canary verdict criteria.proof_window_traffic_minimums",
+    )
+    if candidates_minimum_error:
+        return False, candidates_minimum_error
+    assert completed_delta is not None
+    assert completed_minimum is not None
+    assert candidates_delta is not None
+    assert candidates_minimum is not None
+    if completed_delta < 0:
+        return False, (
+            f"{path}: canary verdict criteria.proof_window_traffic_minimums "
+            "has negative completed_transactions_delta"
+        )
+    if candidates_delta < 0:
+        return False, (
+            f"{path}: canary verdict criteria.proof_window_traffic_minimums "
+            "has negative direct_apply_candidates_evaluated_delta"
+        )
+    if not math.isclose(
+        completed_minimum,
+        PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        return False, (
+            f"{path}: canary verdict non-canonical "
+            "criteria.proof_window_traffic_minimums.completed_transactions_minimum"
+        )
+    if not math.isclose(
+        candidates_minimum,
+        PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        return False, (
+            f"{path}: canary verdict non-canonical "
+            "criteria.proof_window_traffic_minimums.direct_apply_candidates_evaluated_minimum"
+        )
+    if proof_window_gate.get("ok") is True:
+        if completed_delta + 1e-9 < completed_minimum:
+            return False, (
+                f"{path}: canary verdict contradictory proof_window_traffic_minimums evidence: "
+                f"completed_transactions_delta={completed_delta!r} "
+                f"< completed_transactions_minimum={completed_minimum!r}"
+            )
+        if candidates_delta + 1e-9 < candidates_minimum:
+            return False, (
+                f"{path}: canary verdict contradictory proof_window_traffic_minimums evidence: "
+                f"direct_apply_candidates_evaluated_delta={candidates_delta!r} "
+                f"< direct_apply_candidates_evaluated_minimum={candidates_minimum!r}"
+            )
+
+    feature_flags_gate = criteria.get("feature_flag_consistency")
+    if not isinstance(feature_flags_gate, dict):
+        return False, f"{path}: canary verdict missing criteria.feature_flag_consistency object"
+    feature_flags_reason = feature_flags_gate.get("reason")
+    if not isinstance(feature_flags_reason, str):
+        return False, f"{path}: canary verdict missing string criteria.feature_flag_consistency.reason"
+    if feature_flags_gate.get("ok") is True:
+        snapshot_count = feature_flags_gate.get("snapshot_count")
+        if not isinstance(snapshot_count, int):
+            return False, (
+                f"{path}: canary verdict missing integer "
+                "criteria.feature_flag_consistency.snapshot_count"
+            )
+        if snapshot_count < 1:
+            return False, (
+                f"{path}: canary verdict missing feature-flag snapshot evidence: "
+                "criteria.feature_flag_consistency.snapshot_count must be >= 1"
+            )
+        phases = feature_flags_gate.get("phases")
+        if not isinstance(phases, list):
+            return False, f"{path}: canary verdict missing list criteria.feature_flag_consistency.phases"
+        normalized_phases: List[str] = []
+        for phase_index, phase_name in enumerate(phases):
+            if not isinstance(phase_name, str) or phase_name.strip() == "":
+                return False, (
+                    f"{path}: canary verdict has invalid criteria.feature_flag_consistency.phases"
+                    f"[{phase_index}]"
+                )
+            normalized_phases.append(phase_name.strip().lower())
+        if len(normalized_phases) != snapshot_count:
+            return False, (
+                f"{path}: canary verdict contradictory feature_flag_consistency evidence: "
+                f"snapshot_count={snapshot_count} phases={len(normalized_phases)}"
+            )
+        for required_phase in ("start", "end"):
+            if required_phase not in normalized_phases:
+                return False, (
+                    f"{path}: canary verdict missing feature-flag {required_phase} phase evidence"
+                )
+
+    warmup_behavior = criteria.get("warmup_behavior")
+    if not isinstance(warmup_behavior, dict):
+        return False, f"{path}: canary verdict missing criteria.warmup_behavior object"
+    warmup_reason = warmup_behavior.get("reason")
+    if not isinstance(warmup_reason, str):
+        return False, f"{path}: canary verdict missing string criteria.warmup_behavior.reason"
+    warmup_waived = warmup_behavior.get("waived")
+    if not isinstance(warmup_waived, bool):
+        return False, f"{path}: canary verdict missing boolean criteria.warmup_behavior.waived"
+    if warmup_behavior.get("ok") is True and not warmup_waived:
+        interval_snapshot_count = warmup_behavior.get("interval_snapshot_count")
+        if not isinstance(interval_snapshot_count, int):
+            return False, (
+                f"{path}: canary verdict missing integer "
+                "criteria.warmup_behavior.interval_snapshot_count"
+            )
+        if interval_snapshot_count < 1:
+            return False, (
+                f"{path}: canary verdict missing warmup interval evidence: "
+                "criteria.warmup_behavior.interval_snapshot_count must be >= 1"
+            )
+        interval_snapshot_prefixes = warmup_behavior.get("interval_snapshot_prefixes")
+        if not isinstance(interval_snapshot_prefixes, list):
+            return False, (
+                f"{path}: canary verdict missing list "
+                "criteria.warmup_behavior.interval_snapshot_prefixes"
+            )
+        if len(interval_snapshot_prefixes) != interval_snapshot_count:
+            return False, (
+                f"{path}: canary verdict contradictory warmup interval evidence: "
+                f"interval_snapshot_count={interval_snapshot_count} "
+                f"interval_snapshot_prefixes={len(interval_snapshot_prefixes)}"
+            )
+        for prefix_index, prefix_name in enumerate(interval_snapshot_prefixes):
+            if not isinstance(prefix_name, str) or prefix_name.strip() == "":
+                return False, (
+                    f"{path}: canary verdict has invalid criteria.warmup_behavior."
+                    f"interval_snapshot_prefixes[{prefix_index}]"
+                )
+        if str(warmup_behavior.get("cold_start_snapshot_prefix", "")).strip().lower() != "start":
+            return False, (
+                f"{path}: canary verdict missing criteria.warmup_behavior.cold_start_snapshot_prefix='start'"
+            )
+        if str(warmup_behavior.get("post_warmup_snapshot_prefix", "")).strip().lower() != "end":
+            return False, (
+                f"{path}: canary verdict missing criteria.warmup_behavior.post_warmup_snapshot_prefix='end'"
+            )
+        cold_start_phase = str(warmup_behavior.get("cold_start_startup_phase", "")).strip().upper()
+        post_warmup_phase = str(warmup_behavior.get("post_warmup_startup_phase", "")).strip().upper()
+        if cold_start_phase == "":
+            return False, (
+                f"{path}: canary verdict missing non-empty "
+                "criteria.warmup_behavior.cold_start_startup_phase"
+            )
+        if cold_start_phase == "LIVE_READY":
+            return False, (
+                f"{path}: canary verdict contradictory warmup evidence: "
+                "criteria.warmup_behavior.cold_start_startup_phase must be pre-LIVE_READY"
+            )
+        if post_warmup_phase != "LIVE_READY":
+            return False, (
+                f"{path}: canary verdict contradictory warmup evidence: "
+                "criteria.warmup_behavior.post_warmup_startup_phase must be LIVE_READY"
+            )
+        cold_start_warmup_state = str(warmup_behavior.get("cold_start_warmup_state", "")).strip().lower()
+        if cold_start_warmup_state == "":
+            return False, (
+                f"{path}: canary verdict missing non-empty "
+                "criteria.warmup_behavior.cold_start_warmup_state"
+            )
+        if cold_start_warmup_state == "available":
+            return False, (
+                f"{path}: canary verdict contradictory warmup evidence: "
+                "criteria.warmup_behavior.cold_start_warmup_state must be pre-available"
+            )
+        if str(warmup_behavior.get("post_warmup_warmup_state", "")).strip().lower() != "available":
+            return False, (
+                f"{path}: canary verdict contradictory warmup evidence: "
+                "criteria.warmup_behavior.post_warmup_warmup_state must be available"
+            )
+
+    derived_ok = all(criterion_results)
+    verdict_ok = bool(payload.get("ok"))
+    if verdict_ok != derived_ok:
+        return False, (
+            f"{path}: canary verdict contradictory success semantics: "
+            f"ok={verdict_ok!r} but criteria imply ok={derived_ok!r}"
+        )
+    if (status == "pass") != derived_ok:
+        return False, (
+            f"{path}: canary verdict contradictory success semantics: "
+            f"status={status!r} but criteria imply {'pass' if derived_ok else 'fail'!r}"
+        )
+    if not isinstance(summary_path, pathlib.Path):
+        return False, f"{path}: missing anchored canary summary artifact path"
+    if not isinstance(summary_payload, dict):
+        return False, f"{path}: missing anchored canary summary artifact: {summary_path}"
+    summary_schema = str(summary_payload.get("schema", "")).strip()
+    if summary_schema != "p03_canary_overall_summary_v1":
+        return False, f"{path}: anchored canary summary schema mismatch at {summary_path}"
+    verdict_summary_schema = str(payload.get("summary_schema", "")).strip()
+    if verdict_summary_schema != summary_schema:
+        return False, (
+            f"{path}: canary verdict summary_schema mismatch: "
+            f"summary_schema={verdict_summary_schema!r} anchored_summary_schema={summary_schema!r}"
+        )
+    summary_run_id = str(summary_payload.get("run_id", "")).strip()
+    verdict_run_id = str(payload.get("run_id", "")).strip()
+    if summary_run_id == "" or verdict_run_id == "" or summary_run_id != verdict_run_id:
+        return False, (
+            f"{path}: canary verdict run_id mismatch: "
+            f"verdict_run_id={verdict_run_id!r} anchored_summary_run_id={summary_run_id!r}"
+        )
+    try:
+        anchored_verdict = build_canary_verdict(summary_payload)
+    except Exception as exc:
+        return False, (
+            f"{path}: unable to derive canary verdict from anchored summary artifact "
+            f"{summary_path}: {exc}"
+        )
+    canonical_payload = canonicalize_artifact_for_anchor_compare(payload)
+    canonical_anchored = canonicalize_artifact_for_anchor_compare(anchored_verdict)
+    if canonical_payload != canonical_anchored:
+        return False, (
+            f"{path}: canary verdict does not match anchored canary summary artifact: "
+            f"{summary_path}"
+        )
+    return True, ""
+
+
+def validate_family_upstream_replay_verdict(
+    payload: Any,
+    path: pathlib.Path,
+    *,
+    behavior_artifact_payload: Any | None = None,
+    behavior_artifact_path: pathlib.Path | None = None,
+) -> Tuple[bool, str]:
+    if not isinstance(payload, dict):
+        return False, f"{path}: replay falsification verdict must be a JSON object"
+    if str(payload.get("schema", "")).strip() != REPLAY_FALSIFICATION_VERDICT_SCHEMA:
+        return False, f"{path}: replay falsification verdict schema mismatch"
+    if not isinstance(payload.get("ok"), bool):
+        return False, f"{path}: replay falsification verdict missing boolean ok"
+    status = str(payload.get("status", "")).strip().lower()
+    if status not in ("pass", "fail"):
+        return False, f"{path}: replay falsification verdict missing valid status"
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        return False, f"{path}: replay falsification verdict missing summary object"
+    summary_total_cases = summary.get("total_cases")
+    if not isinstance(summary_total_cases, int):
+        return False, f"{path}: replay falsification verdict missing summary.total_cases"
+    if summary_total_cases < 0:
+        return False, f"{path}: replay falsification verdict has negative summary.total_cases"
+    if summary_total_cases == 0:
+        return False, (
+            f"{path}: replay falsification verdict missing evaluated replay evidence: "
+            "summary.total_cases must be >= 1"
+        )
+    summary_locked_cases = summary.get("locked_cases")
+    if not isinstance(summary_locked_cases, int):
+        return False, f"{path}: replay falsification verdict missing summary.locked_cases"
+    if summary_locked_cases < 0:
+        return False, f"{path}: replay falsification verdict has negative summary.locked_cases"
+    if summary_locked_cases == 0:
+        return False, (
+            f"{path}: replay falsification verdict missing locked replay cases: "
+            "summary.locked_cases must be >= 1"
+        )
+    summary_pass = summary.get("pass")
+    if not isinstance(summary_pass, int):
+        return False, f"{path}: replay falsification verdict missing summary.pass"
+    if summary_pass < 0:
+        return False, f"{path}: replay falsification verdict has negative summary.pass"
+    summary_fail = summary.get("fail")
+    if not isinstance(summary_fail, int):
+        return False, f"{path}: replay falsification verdict missing summary.fail"
+    if summary_fail < 0:
+        return False, f"{path}: replay falsification verdict has negative summary.fail"
+    summary_informational = summary.get("informational")
+    if not isinstance(summary_informational, int):
+        return False, f"{path}: replay falsification verdict missing summary.informational"
+    if summary_informational < 0:
+        return False, f"{path}: replay falsification verdict has negative summary.informational"
+    summary_behavior_ok = summary.get("behavior_artifact_ok")
+    if not isinstance(summary_behavior_ok, bool):
+        return False, f"{path}: replay falsification verdict missing boolean summary.behavior_artifact_ok"
+    summary_proof_run_ok = summary.get("proof_run_ok")
+    if not isinstance(summary_proof_run_ok, bool):
+        return False, f"{path}: replay falsification verdict missing boolean summary.proof_run_ok"
+    if not isinstance(behavior_artifact_path, pathlib.Path):
+        return False, f"{path}: missing anchored replay behavior artifact path"
+    if not isinstance(behavior_artifact_payload, dict):
+        return False, f"{path}: missing anchored replay behavior artifact: {behavior_artifact_path}"
+    behavior_schema = str(behavior_artifact_payload.get("schema", "")).strip()
+    if behavior_schema != REPLAY_BEHAVIOR_ARTIFACT_SCHEMA:
+        return False, f"{path}: anchored replay behavior artifact schema mismatch at {behavior_artifact_path}"
+    anchored_behavior_artifact_ok = bool(behavior_artifact_payload.get("ok", False))
+    behavior_cases_payload = behavior_artifact_payload.get("cases")
+    if not isinstance(behavior_cases_payload, list):
+        return False, f"{path}: anchored replay behavior artifact missing cases array at {behavior_artifact_path}"
+    behavior_cases_by_name: Dict[str, Dict[str, Any]] = {}
+    for behavior_case_index, behavior_case_payload in enumerate(behavior_cases_payload):
+        if not isinstance(behavior_case_payload, dict):
+            return False, (
+                f"{path}: anchored replay behavior artifact case[{behavior_case_index}] "
+                f"must be an object at {behavior_artifact_path}"
+            )
+        behavior_case_name = str(behavior_case_payload.get("name", "")).strip()
+        if behavior_case_name == "":
+            return False, (
+                f"{path}: anchored replay behavior artifact case[{behavior_case_index}] "
+                f"missing name at {behavior_artifact_path}"
+            )
+        if behavior_case_name in behavior_cases_by_name:
+            return False, (
+                f"{path}: anchored replay behavior artifact duplicate case name "
+                f"{behavior_case_name!r} at {behavior_artifact_path}"
+            )
+        behavior_case_observed = behavior_case_payload.get("observed")
+        if not isinstance(behavior_case_observed, dict):
+            return False, (
+                f"{path}: anchored replay behavior artifact case[{behavior_case_index}] "
+                f"missing observed object at {behavior_artifact_path}"
+            )
+        behavior_case_reason = str(behavior_case_payload.get("reason", "")).strip()
+        if behavior_case_reason == "":
+            return False, (
+                f"{path}: anchored replay behavior artifact case[{behavior_case_index}] "
+                f"missing reason at {behavior_artifact_path}"
+            )
+        behavior_cases_by_name[behavior_case_name] = {
+            "status": str(behavior_case_payload.get("status", "")).strip().lower() or "observed",
+            "reason": behavior_case_reason,
+            "observed": behavior_case_observed,
+        }
+    expected_behavior_artifact_resolved = behavior_artifact_path.resolve()
+    cases = payload.get("cases")
+    if not isinstance(cases, list):
+        return False, f"{path}: replay falsification verdict missing cases array"
+    case_pass_count = 0
+    case_fail_count = 0
+    case_informational_count = 0
+    case_locked_count = 0
+    case_behavior_artifact_ok_all = True
+    case_names: set[str] = set()
+    canonical_replay_case_contracts, canonical_replay_case_contracts_error = (
+        load_canonical_family_proof_replay_case_contracts()
+    )
+    if canonical_replay_case_contracts_error != "":
+        return False, f"{path}: {canonical_replay_case_contracts_error}"
+    for case_index, case_payload in enumerate(cases):
+        if not isinstance(case_payload, dict):
+            return False, f"{path}: replay falsification verdict case[{case_index}] must be object"
+        case_name_raw = case_payload.get("name")
+        if not isinstance(case_name_raw, str):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing non-empty name"
+            )
+        case_name = case_name_raw.strip()
+        if case_name == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing non-empty name"
+            )
+        if case_name in case_names:
+            return False, (
+                f"{path}: replay falsification verdict duplicate case name {case_name!r}"
+            )
+        case_names.add(case_name)
+        case_family_raw = case_payload.get("family")
+        if not isinstance(case_family_raw, str):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing non-empty family"
+            )
+        case_family = case_family_raw.strip()
+        if case_family == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing non-empty family"
+            )
+        response_class_raw = case_payload.get("response_class")
+        if not isinstance(response_class_raw, str):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing non-empty response_class"
+            )
+        response_class = response_class_raw.strip()
+        if response_class == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing non-empty response_class"
+            )
+        scenario_tags = case_payload.get("scenario_tags")
+        if not isinstance(scenario_tags, list):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing scenario_tags list"
+            )
+        normalized_scenario_tags: List[str] = []
+        for tag_index, tag in enumerate(scenario_tags):
+            if not isinstance(tag, str) or tag.strip() == "":
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] has invalid "
+                    f"scenario_tags[{tag_index}]"
+                )
+            normalized_scenario_tags.append(tag.strip())
+        if not isinstance(case_payload.get("reason"), str):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing string reason"
+            )
+        case_status = str(case_payload.get("status", "")).strip().lower()
+        if case_status not in ("pass", "fail", "informational"):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing valid status"
+            )
+        expected = case_payload.get("expected")
+        if not isinstance(expected, dict):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing expected object"
+            )
+        expected_direct_apply = expected.get("direct_apply")
+        if not isinstance(expected_direct_apply, bool):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing boolean expected.direct_apply"
+            )
+        expected_disposition = str(expected.get("disposition", "")).strip().lower()
+        if expected_disposition not in REPLAY_EXPECTED_DISPOSITIONS:
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing valid expected.disposition"
+            )
+        expected_reason_raw = expected.get("reason")
+        if not isinstance(expected_reason_raw, str):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing string expected.reason"
+            )
+        expected_reason = expected_reason_raw.strip()
+        canonical_case_contract = canonical_replay_case_contracts.get(case_name)
+        if isinstance(canonical_case_contract, dict):
+            canonical_case_family = str(canonical_case_contract.get("family", "")).strip()
+            if case_family != canonical_case_family:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "family mismatches canonical replay corpus case contract"
+                )
+            canonical_response_class = str(canonical_case_contract.get("response_class", "")).strip()
+            if response_class != canonical_response_class:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "response_class mismatches canonical replay corpus case contract"
+                )
+            canonical_scenario_tags_raw = canonical_case_contract.get("scenario_tags")
+            canonical_scenario_tags = (
+                list(canonical_scenario_tags_raw) if isinstance(canonical_scenario_tags_raw, list) else None
+            )
+            if canonical_scenario_tags is None or normalized_scenario_tags != canonical_scenario_tags:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "scenario_tags mismatch canonical replay corpus case contract"
+                )
+            canonical_expected_reason = str(canonical_case_contract.get("expected_reason", "")).strip()
+            if expected_reason != canonical_expected_reason:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "expected.reason mismatches canonical replay corpus case contract"
+                )
+            canonical_expected_direct_apply = canonical_case_contract.get("expected_direct_apply")
+            if not isinstance(canonical_expected_direct_apply, bool):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "canonical replay corpus case contract missing expected.direct_apply"
+                )
+            if expected_direct_apply != canonical_expected_direct_apply:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "expected.direct_apply mismatches canonical replay corpus case contract"
+                )
+            canonical_expected_disposition = str(
+                canonical_case_contract.get("expected_disposition", "")
+            ).strip().lower()
+            if canonical_expected_disposition not in REPLAY_EXPECTED_DISPOSITIONS:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "canonical replay corpus case contract missing expected.disposition"
+                )
+            if expected_disposition != canonical_expected_disposition:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "expected.disposition mismatches canonical replay corpus case contract"
+                )
+        behavior_evidence = case_payload.get("behavior_evidence")
+        if not isinstance(behavior_evidence, dict):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence object"
+            )
+        behavior_artifact_path_raw = behavior_evidence.get("behavior_artifact_path")
+        if not isinstance(behavior_artifact_path_raw, str):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.behavior_artifact_path"
+            )
+        behavior_artifact_path_text = behavior_artifact_path_raw.strip()
+        if behavior_artifact_path_text == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.behavior_artifact_path"
+            )
+        resolved_behavior_artifact_path = resolve_anchor_artifact_path(
+            behavior_artifact_path_text,
+            base_dir=path.parent,
+        )
+        if resolved_behavior_artifact_path != expected_behavior_artifact_resolved:
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.behavior_artifact_path mismatches anchored replay_behavior artifact"
+            )
+        if not resolved_behavior_artifact_path.exists():
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.behavior_artifact_path does not exist"
+            )
+        if not isinstance(behavior_evidence.get("behavior_artifact_ok"), bool):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing boolean "
+                "behavior_evidence.behavior_artifact_ok"
+            )
+        if behavior_evidence.get("behavior_artifact_ok") != anchored_behavior_artifact_ok:
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.behavior_artifact_ok mismatches anchored replay behavior artifact"
+            )
+        if str(behavior_evidence.get("behavior_schema", "")).strip() != REPLAY_BEHAVIOR_ARTIFACT_SCHEMA:
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.behavior_schema mismatch"
+            )
+        behavior_case_name_raw = behavior_evidence.get("case_name")
+        if not isinstance(behavior_case_name_raw, str) or behavior_case_name_raw.strip() == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.case_name"
+            )
+        if behavior_case_name_raw.strip() != case_name:
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.case_name mismatch"
+            )
+        behavior_case_anchor = behavior_cases_by_name.get(case_name)
+        if not isinstance(behavior_case_anchor, dict):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing anchored behavior "
+                f"case {case_name!r}"
+            )
+        behavior_observed_present = behavior_evidence.get("observed_present")
+        if not isinstance(behavior_observed_present, bool):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing boolean "
+                "behavior_evidence.observed_present"
+            )
+        behavior_observed_status_raw = behavior_evidence.get("observed_status")
+        if not isinstance(behavior_observed_status_raw, str) or behavior_observed_status_raw.strip() == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.observed_status"
+            )
+        behavior_observed_status = behavior_observed_status_raw.strip().lower()
+        behavior_observed_reason_raw = behavior_evidence.get("observed_reason")
+        if not isinstance(behavior_observed_reason_raw, str) or behavior_observed_reason_raw.strip() == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.observed_reason"
+            )
+        behavior_observed_reason = behavior_observed_reason_raw.strip()
+        case_reason = case_payload.get("reason", "").strip()
+        if case_reason == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing non-empty reason"
+            )
+        if case_status in ("pass", "informational") and case_reason != behavior_observed_reason:
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "reason mismatches behavior_evidence.observed_reason"
+            )
+        if behavior_observed_status != str(behavior_case_anchor.get("status", "")).strip().lower():
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.observed_status mismatches anchored replay behavior artifact"
+            )
+        if behavior_observed_reason != str(behavior_case_anchor.get("reason", "")).strip():
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.observed_reason mismatches anchored replay behavior artifact"
+            )
+        case_behavior_artifact_ok = behavior_evidence.get("behavior_artifact_ok")
+        assert isinstance(case_behavior_artifact_ok, bool)
+        if not case_behavior_artifact_ok:
+            case_behavior_artifact_ok_all = False
+        case_direct_apply = case_payload.get("direct_apply")
+        if case_direct_apply is not None and not isinstance(case_direct_apply, bool):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] direct_apply must be boolean or null"
+            )
+        case_disposition_raw = case_payload.get("disposition")
+        case_disposition = ""
+        if case_disposition_raw is not None:
+            if not isinstance(case_disposition_raw, str):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] disposition must be string or null"
+                )
+            case_disposition = case_disposition_raw.strip().lower()
+            if case_disposition == "":
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] disposition must be non-empty when present"
+                )
+            if case_disposition not in REPLAY_EXPECTED_DISPOSITIONS:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] has unsupported disposition"
+                )
+        observed = case_payload.get("observed")
+        if observed is not None and not isinstance(observed, dict):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] observed must be object or null"
+            )
+        if observed is None:
+            if behavior_observed_present:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_present=true without observed evidence"
+                )
+            if behavior_case_anchor.get("observed") is not None:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "missing observed evidence from anchored replay behavior artifact"
+                )
+            if behavior_observed_status != "missing":
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_status must be 'missing' when observed is null"
+                )
+            if behavior_evidence.get("observed_direct_apply") is not None:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_direct_apply must be null when observed is null"
+                )
+            if behavior_evidence.get("observed_disposition") is not None:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_disposition must be null when observed is null"
+                )
+            if case_direct_apply is not None or case_disposition_raw is not None:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] has replay semantics without observed evidence"
+                )
+            if case_status == "pass":
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] pass case missing observed evidence"
+                )
+        else:
+            if not behavior_observed_present:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_present=false with observed evidence"
+                )
+            if behavior_observed_status == "missing":
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_status='missing' with observed evidence"
+                )
+            anchored_observed = behavior_case_anchor.get("observed")
+            if not isinstance(anchored_observed, dict):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "anchored replay behavior observation is missing or malformed"
+                )
+            if canonicalize_json_value(observed) != canonicalize_json_value(anchored_observed):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "observed evidence mismatches anchored replay behavior artifact"
+                )
+            observed_direct_apply = observed.get("direct_apply")
+            if not isinstance(observed_direct_apply, bool):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] observed.direct_apply must be boolean"
+                )
+            observed_disposition = str(observed.get("disposition", "")).strip().lower()
+            if observed_disposition not in REPLAY_EXPECTED_DISPOSITIONS:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] observed.disposition must be valid"
+                )
+            behavior_observed_direct_apply = behavior_evidence.get("observed_direct_apply")
+            if not isinstance(behavior_observed_direct_apply, bool):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] missing boolean "
+                    "behavior_evidence.observed_direct_apply"
+                )
+            if behavior_observed_direct_apply != observed_direct_apply:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_direct_apply mismatches observed.direct_apply"
+                )
+            behavior_observed_disposition_raw = behavior_evidence.get("observed_disposition")
+            if not isinstance(behavior_observed_disposition_raw, str):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] missing string "
+                    "behavior_evidence.observed_disposition"
+                )
+            behavior_observed_disposition = behavior_observed_disposition_raw.strip().lower()
+            if behavior_observed_disposition not in REPLAY_EXPECTED_DISPOSITIONS:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_disposition must be valid"
+                )
+            if behavior_observed_disposition != observed_disposition:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_disposition mismatches observed.disposition"
+                )
+            if case_direct_apply is None or case_direct_apply != observed_direct_apply:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "direct_apply mismatches observed.direct_apply"
+                )
+            if case_disposition == "" or case_disposition != observed_disposition:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "disposition mismatches observed.disposition"
+                )
+        if case_status == "pass":
+            if case_direct_apply is None or case_disposition == "":
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] pass case missing replay semantics"
+                )
+            if case_direct_apply != expected_direct_apply:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] pass case "
+                    "direct_apply mismatches expected.direct_apply"
+                )
+            if case_disposition != expected_disposition:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] pass case "
+                    "disposition mismatches expected.disposition"
+                )
+        if case_status == "fail":
+            case_fail_count += 1
+            case_locked_count += 1
+        elif case_status == "pass":
+            case_pass_count += 1
+            case_locked_count += 1
+        else:
+            case_informational_count += 1
+
+    canonical_replay_case_names = tuple(sorted(canonical_replay_case_contracts.keys()))
+    canonical_replay_case_name_set = set(canonical_replay_case_names)
+    missing_replay_case_names = [name for name in canonical_replay_case_names if name not in case_names]
+    unexpected_replay_case_names = sorted(
+        [name for name in case_names if name not in canonical_replay_case_name_set]
+    )
+    if missing_replay_case_names or unexpected_replay_case_names:
+        return False, (
+            f"{path}: replay falsification verdict canonical proof-set case coverage mismatch: "
+            f"missing={missing_replay_case_names or []} unexpected={unexpected_replay_case_names or []}"
+        )
+    canonical_locked_case_total = len(canonical_replay_case_names)
+    if summary_total_cases != canonical_locked_case_total:
+        return False, (
+            f"{path}: replay falsification verdict canonical proof-set case count mismatch: "
+            f"summary.total_cases={summary_total_cases} "
+            f"canonical_locked_cases={canonical_locked_case_total}"
+        )
+    if summary_locked_cases != canonical_locked_case_total:
+        return False, (
+            f"{path}: replay falsification verdict canonical proof-set locked case count mismatch: "
+            f"summary.locked_cases={summary_locked_cases} "
+            f"canonical_locked_cases={canonical_locked_case_total}"
+        )
+
+    if summary_total_cases != len(cases):
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.total_cases="
+            f"{summary_total_cases} (cases={len(cases)})"
+        )
+    if summary_locked_cases > summary_total_cases:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.locked_cases="
+            f"{summary_locked_cases} (total_cases={summary_total_cases})"
+        )
+    if summary_locked_cases != case_locked_count:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.locked_cases="
+            f"{summary_locked_cases} (case_locked_count={case_locked_count})"
+        )
+    if summary_informational != case_informational_count:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.informational="
+            f"{summary_informational} (case_informational_count={case_informational_count})"
+        )
+    if summary_locked_cases + summary_informational != summary_total_cases:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary lock accounting: "
+            f"locked_cases={summary_locked_cases} informational={summary_informational} "
+            f"total_cases={summary_total_cases}"
+        )
+    if summary_pass + summary_fail != summary_locked_cases:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary pass/fail lock accounting: "
+            f"pass={summary_pass} fail={summary_fail} locked_cases={summary_locked_cases}"
+        )
+    if summary_pass + summary_fail > summary_total_cases:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary pass/fail totals: "
+            f"pass={summary_pass} fail={summary_fail} total_cases={summary_total_cases}"
+        )
+    if summary_pass != case_pass_count:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.pass={summary_pass} "
+            f"(case_pass_count={case_pass_count})"
+        )
+    if summary_fail != case_fail_count:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.fail={summary_fail} "
+            f"(case_fail_count={case_fail_count})"
+        )
+    if summary_behavior_ok != case_behavior_artifact_ok_all:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.behavior_artifact_ok="
+            f"{summary_behavior_ok!r} (derived_behavior_artifact_ok={case_behavior_artifact_ok_all!r})"
+        )
+
+    verdict_ok = bool(payload.get("ok"))
+    summary_success = summary_fail == 0
+    if verdict_ok != summary_success:
+        return False, (
+            f"{path}: replay falsification verdict contradictory success semantics: "
+            f"ok={verdict_ok!r} but summary.fail={summary_fail}"
+        )
+    if (status == "pass") != summary_success:
+        return False, (
+            f"{path}: replay falsification verdict contradictory success semantics: "
+            f"status={status!r} but summary.fail={summary_fail}"
+        )
+    if summary_success and (not summary_behavior_ok or not summary_proof_run_ok):
+        return False, (
+            f"{path}: replay falsification verdict contradictory success semantics: "
+            "summary indicates success but behavior/proof_run flags are false"
+        )
+    return True, ""
+
+
+def build_family_proof_eligibility_artifact_for_run(
+    proof_dir: pathlib.Path,
+    run_id: str,
+    case_id: str,
+    kind: str,
+    passive_mode: str,
+    gateway_transport: str,
+    proxy_transport: str = "",
+    ebusd_transport: str = "",
+) -> Dict[str, Any]:
+    normalized_case_id = str(case_id).strip()
+    normalized_kind = str(kind).strip()
+    normalized_passive_mode = str(passive_mode).strip().lower()
+    normalized_gateway_transport = str(gateway_transport).strip().lower()
+    normalized_proxy_transport = str(proxy_transport).strip().lower()
+    normalized_ebusd_transport = str(ebusd_transport).strip().lower()
+
+    reasons: List[str] = []
+    status = "blocked"
+
+    if normalized_kind == "":
+        reasons.append("missing family kind")
+    if normalized_passive_mode == "":
+        reasons.append("missing passive mode")
+    if normalized_gateway_transport == "":
+        reasons.append("missing gateway transport")
+    if normalized_case_id == "":
+        reasons.append("missing case_id")
+    elif normalized_case_id != CANONICAL_FAMILY_PROOF_CASE_ID:
+        reasons.append(
+            f"family proof case_id mismatch: got {normalized_case_id!r}; "
+            f"want {CANONICAL_FAMILY_PROOF_CASE_ID!r}"
+        )
+
+    canary_verdict_path = proof_dir / "canary_verdict.json"
+    canary_summary_path = proof_dir / "canary_summary.json"
+    replay_behavior_path = proof_dir / "replay_behavior.json"
+    replay_verdict_path = proof_dir / "replay_falsification.json"
+    if not canary_summary_path.exists():
+        reasons.append(f"missing canary summary artifact: {canary_summary_path}")
+        canary_summary = None
+    else:
+        try:
+            canary_summary = load_json(canary_summary_path)
+        except Exception as exc:
+            reasons.append(f"invalid canary summary artifact: {canary_summary_path}: {exc}")
+            canary_summary = None
+    if not replay_behavior_path.exists():
+        reasons.append(f"missing replay behavior artifact: {replay_behavior_path}")
+        replay_behavior = None
+    else:
+        try:
+            replay_behavior = load_replay_behavior_artifact(replay_behavior_path)
+        except Exception as exc:
+            reasons.append(f"invalid replay behavior artifact: {replay_behavior_path}: {exc}")
+            replay_behavior = None
+    if not canary_verdict_path.exists():
+        reasons.append(f"missing canary verdict artifact: {canary_verdict_path}")
+        canary_verdict = None
+    else:
+        try:
+            canary_verdict = load_json(canary_verdict_path)
+        except Exception as exc:
+            reasons.append(f"invalid canary verdict artifact: {canary_verdict_path}: {exc}")
+            canary_verdict = None
+        if canary_verdict is not None:
+            canary_valid, canary_reason = validate_family_upstream_canary_verdict(
+                canary_verdict,
+                canary_verdict_path,
+                summary_payload=canary_summary,
+                summary_path=canary_summary_path,
+            )
+            if not canary_valid:
+                reasons.append(f"invalid canary verdict artifact: {canary_reason}")
+                canary_verdict = None
+    if not replay_verdict_path.exists():
+        reasons.append(f"missing replay falsification artifact: {replay_verdict_path}")
+        replay_verdict = None
+    else:
+        try:
+            replay_verdict = load_json(replay_verdict_path)
+        except Exception as exc:
+            reasons.append(f"invalid replay falsification artifact: {replay_verdict_path}: {exc}")
+            replay_verdict = None
+        if replay_verdict is not None:
+            replay_valid, replay_reason = validate_family_upstream_replay_verdict(
+                replay_verdict,
+                replay_verdict_path,
+                behavior_artifact_payload=replay_behavior,
+                behavior_artifact_path=replay_behavior_path,
+            )
+            if not replay_valid:
+                reasons.append(f"invalid replay falsification artifact: {replay_reason}")
+                replay_verdict = None
+
+    start_snapshot = None
+    end_snapshot = None
+    try:
+        start_snapshot = load_structured_warmup_snapshot(proof_dir, "start")
+    except Exception as exc:
+        reasons.append(str(exc))
+    try:
+        end_snapshot = load_structured_warmup_snapshot(proof_dir, "end")
+    except Exception as exc:
+        reasons.append(str(exc))
+
+    start_transport_class = ""
+    end_transport_class = ""
+    if isinstance(start_snapshot, dict):
+        start_transport_class = str(start_snapshot.get("transport_class", "")).strip().lower()
+    if isinstance(end_snapshot, dict):
+        end_transport_class = str(end_snapshot.get("transport_class", "")).strip().lower()
+    transport_class = ""
+    if start_transport_class == "" and end_transport_class == "":
+        reasons.append("missing transport class in structured warmup snapshots")
+    elif start_transport_class == "" or end_transport_class == "":
+        reasons.append(
+            "incomplete transport class across structured warmup snapshots: "
+            f"start={start_transport_class!r} end={end_transport_class!r}"
+        )
+    elif start_transport_class != end_transport_class:
+        reasons.append(
+            "ambiguous transport class across structured warmup snapshots: "
+            f"start={start_transport_class!r} end={end_transport_class!r}"
+        )
+    else:
+        transport_class = start_transport_class
+
+    if isinstance(start_snapshot, dict):
+        if start_snapshot.get("startup_phase") == "LIVE_READY":
+            reasons.append("family proof cold_start is not pre-LIVE_READY")
+        if str(start_snapshot.get("warmup_state", "")).strip().lower() == "available":
+            reasons.append("family proof cold_start is not pre-available")
+    if isinstance(end_snapshot, dict):
+        if end_snapshot.get("startup_phase") != "LIVE_READY":
+            reasons.append("family proof post_warmup is not LIVE_READY")
+        if str(end_snapshot.get("warmup_state", "")).strip().lower() != "available":
+            reasons.append("family proof post_warmup is not warmup available")
+
+    canary_ok = bool(isinstance(canary_verdict, dict) and canary_verdict.get("ok", False))
+    replay_ok = bool(isinstance(replay_verdict, dict) and replay_verdict.get("ok", False))
+    if not canary_ok:
+        reasons.append("canary verdict gate failed")
+    if not replay_ok:
+        reasons.append("replay falsification gate failed")
+
+    is_p03_family = (
+        normalized_kind == "proxy-single-client"
+        and normalized_passive_mode == "required"
+        and normalized_gateway_transport == "ens"
+        and transport_class == "ens"
+    )
+    family_identity_missing = normalized_kind == "" or normalized_passive_mode == "" or transport_class == ""
+    family_identity_ambiguous = any(
+        reason.startswith("ambiguous transport class across structured warmup snapshots:")
+        for reason in reasons
+    )
+    family_scope_mismatch = False
+    if family_identity_missing or family_identity_ambiguous:
+        status = "blocked"
+    elif not is_p03_family:
+        family_scope_mismatch = True
+        status = "not_proven"
+        reasons.append(
+            f"family scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r} "
+            f"gateway_transport={normalized_gateway_transport!r} transport_class={transport_class!r}; "
+            "want proxy-single-client/required/ens/ens"
+        )
+
+    if len(reasons) == 0:
+        status = "proven_for_default_flip"
+    elif not (family_scope_mismatch and len(reasons) == 1):
+        status = "blocked"
+
+    artifact = {
+        "schema": FAMILY_PROOF_ELIGIBILITY_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": str(run_id).strip(),
+        "case_id": normalized_case_id,
+        "proof_scope": {
+            "kind": normalized_kind,
+            "passive_mode": normalized_passive_mode,
+            "gateway_transport": normalized_gateway_transport,
+            "proxy_transport": normalized_proxy_transport or None,
+            "ebusd_transport": normalized_ebusd_transport or None,
+            "transport_class": transport_class or None,
+            "family_key": f"{normalized_kind}/{normalized_passive_mode}/{transport_class}" if transport_class else None,
+        },
+        "family_identity": {
+            "kind": normalized_kind or None,
+            "passive_mode": normalized_passive_mode or None,
+            "transport_class": transport_class or None,
+            "family_key": f"{normalized_kind}/{normalized_passive_mode}/{transport_class}" if transport_class else None,
+            "source": "structured_warmup_snapshots+run_metadata",
+        },
+        "evidence": {
+            "start_snapshot_paths": start_snapshot["snapshot_paths"] if isinstance(start_snapshot, dict) else {},
+            "end_snapshot_paths": end_snapshot["snapshot_paths"] if isinstance(end_snapshot, dict) else {},
+            "canary_summary_path": str(canary_summary_path),
+            "canary_verdict_path": str(canary_verdict_path),
+            "replay_behavior_path": str(replay_behavior_path),
+            "replay_falsification_path": str(replay_verdict_path),
+        },
+        "upstream_proof": {
+            "canary_ok": canary_ok,
+            "replay_ok": replay_ok,
+            "cold_start_startup_phase": start_snapshot.get("startup_phase") if isinstance(start_snapshot, dict) else None,
+            "post_warmup_startup_phase": end_snapshot.get("startup_phase") if isinstance(end_snapshot, dict) else None,
+            "cold_start_warmup_state": start_snapshot.get("warmup_state") if isinstance(start_snapshot, dict) else None,
+            "post_warmup_warmup_state": end_snapshot.get("warmup_state") if isinstance(end_snapshot, dict) else None,
+        },
+        "eligibility": {
+            "status": status,
+            "eligible_for_default_flip": status == "proven_for_default_flip",
+            "proven_for_default_flip": status == "proven_for_default_flip",
+            "not_proven": status == "not_proven",
+            "blocked": status == "blocked",
+            "reason": "; ".join(reasons),
+        },
+        "ok": status == "proven_for_default_flip",
+    }
+    return artifact
 
 
 def build_warmup_behavior_artifact_for_phases(
@@ -1404,6 +3049,12 @@ def build_replay_falsification_verdict(
                 "behavior_artifact_path": str(behavior_artifact_path),
                 "behavior_artifact_ok": bool(behavior.get("ok", False)),
                 "behavior_schema": str(behavior.get("schema", "")).strip(),
+                "case_name": name,
+                "observed_present": observed_entry is not None,
+                "observed_status": str((observed_entry or {}).get("status", "missing")).strip().lower() or "missing",
+                "observed_reason": str((observed_entry or {}).get("reason", "")).strip() or "missing replay behavior observation",
+                "observed_direct_apply": None,
+                "observed_disposition": None,
             },
         }
 
@@ -1445,6 +3096,10 @@ def build_replay_falsification_verdict(
         case_result["disposition"] = observed_disposition
         case_result["reason"] = observed_entry["reason"] or reason_expected
         case_result["observed"] = observed
+        case_result["behavior_evidence"]["observed_status"] = observed_entry["status"]
+        case_result["behavior_evidence"]["observed_reason"] = case_result["reason"]
+        case_result["behavior_evidence"]["observed_direct_apply"] = observed_direct_apply
+        case_result["behavior_evidence"]["observed_disposition"] = observed_disposition
 
         if observed_direct_apply != direct_apply_expected:
             case_result["status"] = "fail"
@@ -2029,6 +3684,22 @@ def replay_verdict_command(args: argparse.Namespace) -> int:
     return 0 if bool(verdict.get("ok", False)) else 1
 
 
+def family_eligibility_command(args: argparse.Namespace) -> int:
+    artifact = build_family_proof_eligibility_artifact_for_run(
+        pathlib.Path(args.proof_dir),
+        args.run_id,
+        args.case_id,
+        args.kind,
+        args.passive_mode,
+        args.gateway_transport,
+        proxy_transport=args.proxy_transport,
+        ebusd_transport=args.ebusd_transport,
+    )
+    write_json(pathlib.Path(args.output), artifact)
+    status = str((((artifact.get("eligibility") or {})).get("status", ""))).strip().lower()
+    return 0 if status in ("proven_for_default_flip", "not_proven") else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2071,6 +3742,21 @@ def build_parser() -> argparse.ArgumentParser:
     replay_verdict.add_argument("--behavior-artifact", default=None)
     replay_verdict.add_argument("--output", required=True)
     replay_verdict.set_defaults(func=replay_verdict_command)
+
+    family_eligibility = sub.add_parser(
+        "family-eligibility",
+        help="build family-scoped proof eligibility artifact from proof window artifacts",
+    )
+    family_eligibility.add_argument("--proof-dir", required=True)
+    family_eligibility.add_argument("--run-id", required=True)
+    family_eligibility.add_argument("--case-id", required=True)
+    family_eligibility.add_argument("--kind", required=True)
+    family_eligibility.add_argument("--passive-mode", required=True)
+    family_eligibility.add_argument("--gateway-transport", required=True)
+    family_eligibility.add_argument("--proxy-transport", default="")
+    family_eligibility.add_argument("--ebusd-transport", default="")
+    family_eligibility.add_argument("--output", required=True)
+    family_eligibility.set_defaults(func=family_eligibility_command)
     return parser
 
 

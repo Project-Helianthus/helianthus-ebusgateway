@@ -2206,7 +2206,8 @@ def family_eligibility_command(args: argparse.Namespace) -> int:
         ebusd_transport=args.ebusd_transport,
     )
     write_json(pathlib.Path(args.output), artifact)
-    return 0 if bool(artifact.get("ok", False)) else 1
+    status = str((((artifact.get("eligibility") or {})).get("status", ""))).strip().lower()
+    return 0 if status in ("proven_for_default_flip", "not_proven") else 1
 
 
 def build_parser() -> argparse.ArgumentParser:

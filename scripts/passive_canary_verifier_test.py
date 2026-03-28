@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import json
 import os
 import pathlib
@@ -2309,6 +2310,29 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "not_proven")
         self.assertIn("transport_class='tcp'", artifact["eligibility"]["reason"])
 
+    def test_family_eligibility_command_allows_explicit_not_proven_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "family_proof_eligibility.json"
+            write_family_proof_artifacts(proof_dir, transport_class="tcp")
+            exit_code = verifier.family_eligibility_command(
+                argparse.Namespace(
+                    proof_dir=str(proof_dir),
+                    run_id="run-1",
+                    case_id="P03",
+                    kind="proxy-single-client",
+                    passive_mode="required",
+                    gateway_transport="tcp",
+                    proxy_transport="tcp",
+                    ebusd_transport="ebusd-tcp",
+                    output=str(output_path),
+                )
+            )
+            self.assertEqual(exit_code, 0)
+            artifact = verifier.load_json(output_path)
+            self.assertFalse(artifact["ok"])
+            self.assertEqual(artifact["eligibility"]["status"], "not_proven")
+
 
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(
@@ -2835,6 +2859,20 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             family_eligibility["family_identity"]["family_key"],
             "proxy-single-client/required/ens",
         )
+
+    def test_smoke_emits_family_eligibility_artifact_for_not_proven_family(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "MATRIX_CASE_KIND": "proxy-dual-client",
+            },
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        family_eligibility = artifacts.get("family_eligibility")
+        self.assertIsInstance(family_eligibility, dict)
+        self.assertFalse(family_eligibility["ok"])
+        self.assertEqual(family_eligibility["eligibility"]["status"], "not_proven")
+        self.assertIn("family scope mismatch", family_eligibility["eligibility"]["reason"])
 
     def test_smoke_holds_until_proof_window_end_and_requires_interval_phase(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

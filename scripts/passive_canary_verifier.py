@@ -2835,7 +2835,7 @@ def build_promotion_eligibility_artifact_for_run(
             reasons.append("family proof eligibility missing proof_scope.passive_mode")
         if family_scope.get("gateway_transport") in (None, ""):
             reasons.append("family proof eligibility missing proof_scope.gateway_transport")
-        if family_scope.get("proxy_transport") in (None, ""):
+        if proxy_transport_required and family_scope.get("proxy_transport") in (None, ""):
             reasons.append("family proof eligibility missing proof_scope.proxy_transport")
         if family_scope.get("transport_class") in (None, ""):
             reasons.append("family proof eligibility missing proof_scope.transport_class")
@@ -2908,8 +2908,6 @@ def build_promotion_eligibility_artifact_for_run(
                     "family proof eligibility proof_scope.proxy_transport mismatch: "
                     f"got {family_proxy_transport!r}; want {normalized_proxy_transport!r}"
                 )
-        if family_proxy_transport == "":
-            reasons.append("family proof eligibility missing proof_scope.proxy_transport")
         if normalized_ebusd_transport == "":
             reasons.append("missing promotion topology metadata: ebusd_transport")
         elif family_scope_has_ebusd_transport and family_ebusd_transport != normalized_ebusd_transport:

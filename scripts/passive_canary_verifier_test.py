@@ -3505,7 +3505,7 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                     "kind": "proxy-single-client",
                     "passive_mode": "required",
                     "gateway_transport": "ens",
-                    "proxy_transport": "ens",
+                    "proxy_transport": "",
                     "ebusd_transport": "ebusd-tcp",
                 },
                 {
@@ -3562,7 +3562,7 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                     "kind": "direct-adapter",
                     "passive_mode": "required",
                     "gateway_transport": "ens",
-                    "proxy_transport": "ens",
+                    "proxy_transport": "",
                     "ebusd_transport": CANONICAL_NO_EBUSD_TRANSPORT,
                 },
                 {

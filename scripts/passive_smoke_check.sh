@@ -118,6 +118,7 @@ canary_baseline_path="${proof_dir}/canary_baseline.json"
 canary_summary_path="${proof_dir}/canary_summary.json"
 canary_verdict_path="${proof_dir}/canary_verdict.json"
 publisher_cadence_path="${proof_dir}/publisher_cadence.json"
+cross_plane_skew_path="${proof_dir}/cross_plane_skew.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
 replay_falsification_path="${proof_dir}/replay_falsification.json"
 family_eligibility_path="${proof_dir}/family_proof_eligibility.json"
@@ -617,6 +618,15 @@ build_publisher_cadence_artifact() {
     --output "${publisher_cadence_path}"
 }
 
+build_cross_plane_skew_artifact() {
+  python3 "${canary_verifier_script}" cross-plane-skew \
+    --proof-dir "${proof_dir}" \
+    --run-id "${canary_run_id}" \
+    --configured-proof-sample-interval-sec "${proof_sample_interval_sec}" \
+    --publisher-cadence "${publisher_cadence_path}" \
+    --output "${cross_plane_skew_path}"
+}
+
 build_replay_behavior_artifact() {
   if ! (
     cd "${REPO_ROOT}" && \
@@ -799,6 +809,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_publisher_cadence_artifact; then
       echo "proof mode: publisher cadence gate failed (see ${publisher_cadence_path})" >&2
+      exit 1
+    fi
+    if ! build_cross_plane_skew_artifact; then
+      echo "proof mode: cross-plane skew gate failed (see ${cross_plane_skew_path})" >&2
       exit 1
     fi
   fi

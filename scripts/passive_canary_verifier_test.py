@@ -4156,6 +4156,245 @@ class PublisherCadenceArtifactTests(unittest.TestCase):
         self.assertFalse(output_path.exists())
 
 
+class CrossPlaneSkewArtifactTests(unittest.TestCase):
+    def write_cross_plane_skew_proof_window(
+        self,
+        proof_dir: pathlib.Path,
+        *,
+        publisher_cadence_sec: object = 3600.0,
+        configured_proof_sample_interval_sec: object = 300.0,
+    ) -> None:
+        PublisherCadenceArtifactTests.write_publisher_cadence_proof_window(
+            self,
+            proof_dir,
+            start_cadence_sec=publisher_cadence_sec,
+            end_cadence_sec=publisher_cadence_sec,
+        )
+        exit_code, stderr = PublisherCadenceArtifactTests.run_publisher_cadence_command(
+            self,
+            proof_dir,
+            proof_dir / "publisher_cadence.json",
+        )
+        self.assertEqual(exit_code, 0, msg=stderr)
+        self.assertTrue((proof_dir / "publisher_cadence.json").exists())
+
+    @staticmethod
+    def set_nested_value(payload: dict[str, object], path: tuple[str, ...], value: object) -> None:
+        target: dict[str, object] = payload
+        for key in path[:-1]:
+            nested = target.get(key)
+            if not isinstance(nested, dict):
+                raise AssertionError(f"missing nested path component {'.'.join(path)}")
+            target = nested
+        target[path[-1]] = value
+
+    @staticmethod
+    def delete_nested_value(payload: dict[str, object], path: tuple[str, ...]) -> None:
+        target: dict[str, object] = payload
+        for key in path[:-1]:
+            nested = target.get(key)
+            if not isinstance(nested, dict):
+                raise AssertionError(f"missing nested path component {'.'.join(path)}")
+            target = nested
+        del target[path[-1]]
+
+    def run_cross_plane_skew_command(
+        self,
+        proof_dir: pathlib.Path,
+        output_path: pathlib.Path,
+        *,
+        configured_proof_sample_interval_sec: object,
+    ) -> tuple[int, str]:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            try:
+                exit_code = verifier.main(
+                    [
+                        "cross-plane-skew",
+                        "--proof-dir",
+                        str(proof_dir),
+                        "--run-id",
+                        "run-1",
+                        "--output",
+                        str(output_path),
+                        "--configured-proof-sample-interval-sec",
+                        str(configured_proof_sample_interval_sec),
+                    ]
+                )
+            except SystemExit as exc:
+                exit_code = int(exc.code) if isinstance(exc.code, int) else 1
+        return exit_code, stderr.getvalue()
+
+    def test_cross_plane_skew_command_accepts_same_phase_semantic_timestamps_and_bounds_against_maximum(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "cross_plane_skew.json"
+            self.write_cross_plane_skew_proof_window(
+                proof_dir,
+                publisher_cadence_sec=60.0,
+                configured_proof_sample_interval_sec=300.0,
+            )
+            start_bus = verifier.load_json(proof_dir / "start_bus_observability.json")
+            start_graphql = verifier.load_json(proof_dir / "start_graphql_bus_watch.json")
+            end_bus = verifier.load_json(proof_dir / "end_bus_observability.json")
+            end_graphql = verifier.load_json(proof_dir / "end_graphql_bus_watch.json")
+
+            for payload, payload_kind, timestamp in (
+                (start_bus, "bus", "2026-03-28T00:00:00Z"),
+                (start_graphql, "graphql", "2026-03-28T00:00:01Z"),
+                (end_bus, "bus", "2026-03-28T00:01:00Z"),
+                (end_graphql, "graphql", "2026-03-28T00:01:01Z"),
+            ):
+                if payload_kind == "bus":
+                    self.set_nested_value(payload, ("summary", "last_updated_at"), timestamp)
+                    self.set_nested_value(payload, ("summary", "status", "last_updated_at"), timestamp)
+                    self.set_nested_value(
+                        payload,
+                        ("summary", "status", "startup", "last_updated_at"),
+                        "1999-01-01T00:00:00Z",
+                    )
+                    self.set_nested_value(
+                        payload,
+                        ("summary", "status", "feature_flags", "last_updated_at"),
+                        "1999-01-01T00:00:00Z",
+                    )
+                else:
+                    self.set_nested_value(payload, ("data", "busSummary", "lastUpdatedAt"), timestamp)
+                    self.set_nested_value(payload, ("data", "busSummary", "status", "lastUpdatedAt"), timestamp)
+                    self.set_nested_value(
+                        payload,
+                        ("data", "busSummary", "status", "startup", "lastUpdatedAt"),
+                        "1999-01-01T00:00:00Z",
+                    )
+                    self.set_nested_value(
+                        payload,
+                        ("data", "busSummary", "status", "featureFlags", "lastUpdatedAt"),
+                        "1999-01-01T00:00:00Z",
+                    )
+                    self.set_nested_value(payload, ("data", "watchSummary", "lastUpdatedAt"), timestamp)
+
+            write_json(proof_dir / "start_bus_observability.json", start_bus)
+            write_json(proof_dir / "start_graphql_bus_watch.json", start_graphql)
+            write_json(proof_dir / "end_bus_observability.json", end_bus)
+            write_json(proof_dir / "end_graphql_bus_watch.json", end_graphql)
+
+            exit_code, stderr = self.run_cross_plane_skew_command(
+                proof_dir,
+                output_path,
+                configured_proof_sample_interval_sec=300.0,
+            )
+            artifact = verifier.load_json(output_path)
+
+        self.assertEqual(exit_code, 0, msg=stderr)
+        self.assertTrue(artifact["ok"])
+        self.assertEqual(artifact["status"], "pass")
+        self.assertEqual(artifact["proof_metadata"]["configured_proof_sample_interval_sec"], 300.0)
+        self.assertEqual(artifact["proof_metadata"]["publisher_cadence_sec"], 60.0)
+        self.assertEqual(artifact["summary"]["target_max_skew_sec"], 300.0)
+        self.assertTrue(artifact["summary"]["phases_within_target"])
+        self.assertEqual(artifact["publisher_cadence"]["ok"], True)
+        self.assertEqual(
+            artifact["evidence"]["same_phase_semantic_last_updated_at_fields"],
+            [
+                "bus_observability.summary_last_updated_at",
+                "bus_observability.status_last_updated_at",
+                "graphql_bus_watch.summary_last_updated_at",
+                "graphql_bus_watch.status_last_updated_at",
+                "graphql_bus_watch.watch_summary_last_updated_at",
+            ],
+        )
+        self.assertIn("cross_plane_skew.json", str(output_path))
+
+    def test_cross_plane_skew_command_blocks_missing_publisher_cadence_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "cross_plane_skew.json"
+            self.write_cross_plane_skew_proof_window(proof_dir)
+            (proof_dir / "publisher_cadence.json").unlink()
+
+            exit_code, _stderr = self.run_cross_plane_skew_command(
+                proof_dir,
+                output_path,
+                configured_proof_sample_interval_sec=300.0,
+            )
+            artifact = verifier.load_json(output_path)
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(artifact["status"], "fail")
+        self.assertFalse(artifact["ok"])
+        self.assertFalse(artifact["publisher_cadence"]["ok"])
+        self.assertIn("publisher cadence", " ".join(artifact["reasons"]).lower())
+
+    def test_cross_plane_skew_command_blocks_malformed_proof_sample_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "cross_plane_skew.json"
+            self.write_cross_plane_skew_proof_window(proof_dir)
+
+            exit_code, _stderr = self.run_cross_plane_skew_command(
+                proof_dir,
+                output_path,
+                configured_proof_sample_interval_sec=-1.0,
+            )
+            artifact = verifier.load_json(output_path)
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(artifact["status"], "fail")
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["proof_metadata"]["configured_proof_sample_interval_sec"], -1.0)
+        self.assertIn("invalid configured_proof_sample_interval_sec", " ".join(artifact["reasons"]).lower())
+
+    def test_cross_plane_skew_command_blocks_missing_same_phase_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "cross_plane_skew.json"
+            self.write_cross_plane_skew_proof_window(proof_dir)
+            end_graphql = verifier.load_json(proof_dir / "end_graphql_bus_watch.json")
+            self.delete_nested_value(end_graphql, ("data", "watchSummary", "lastUpdatedAt"))
+            write_json(proof_dir / "end_graphql_bus_watch.json", end_graphql)
+
+            exit_code, _stderr = self.run_cross_plane_skew_command(
+                proof_dir,
+                output_path,
+                configured_proof_sample_interval_sec=300.0,
+            )
+            artifact = verifier.load_json(output_path)
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(artifact["status"], "fail")
+        self.assertFalse(artifact["ok"])
+        self.assertIn("watchsummary", " ".join(artifact["reasons"]).lower())
+
+    def test_cross_plane_skew_command_blocks_skew_exceeded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "cross_plane_skew.json"
+            self.write_cross_plane_skew_proof_window(
+                proof_dir,
+                publisher_cadence_sec=60.0,
+                configured_proof_sample_interval_sec=300.0,
+            )
+            end_graphql = verifier.load_json(proof_dir / "end_graphql_bus_watch.json")
+            self.set_nested_value(
+                end_graphql,
+                ("data", "watchSummary", "lastUpdatedAt"),
+                "2026-03-28T01:10:00Z",
+            )
+            write_json(proof_dir / "end_graphql_bus_watch.json", end_graphql)
+
+            exit_code, _stderr = self.run_cross_plane_skew_command(
+                proof_dir,
+                output_path,
+                configured_proof_sample_interval_sec=300.0,
+            )
+            artifact = verifier.load_json(output_path)
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(artifact["status"], "fail")
+        self.assertFalse(artifact["ok"])
+        self.assertIn("skew exceeded", " ".join(artifact["reasons"]).lower())
+
+
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(
         self,
@@ -4727,6 +4966,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 family_eligibility_path = proof_dir / "family_proof_eligibility.json"
                 promotion_eligibility_path = proof_dir / "promotion_eligibility.json"
                 publisher_cadence_path = proof_dir / "publisher_cadence.json"
+                cross_plane_skew_path = proof_dir / "cross_plane_skew.json"
                 phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -4747,6 +4987,10 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 if publisher_cadence_path.exists():
                     artifacts["publisher_cadence"] = json.loads(
                         publisher_cadence_path.read_text(encoding="utf-8")
+                    )
+                if cross_plane_skew_path.exists():
+                    artifacts["cross_plane_skew"] = json.loads(
+                        cross_plane_skew_path.read_text(encoding="utf-8")
                     )
                 if phase_log_path.exists():
                     artifacts["phase_log"] = [
@@ -4829,6 +5073,25 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             promotion_eligibility["promotion_scope"]["ebusd_transport"],
             CANONICAL_NO_EBUSD_TRANSPORT,
         )
+
+    def test_smoke_emits_cross_plane_skew_artifact_when_canary_verdict_is_good(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "PASSIVE_PROOF_HOLD_SEC": "0",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "8",
+                "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+                "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "300",
+                "FAKE_PUBLISHER_CADENCE_SEC": "60",
+            },
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        cross_plane_skew = artifacts.get("cross_plane_skew")
+        self.assertIsInstance(cross_plane_skew, dict)
+        self.assertTrue(cross_plane_skew["ok"])
+        self.assertEqual(cross_plane_skew["status"], "pass")
+        self.assertEqual(cross_plane_skew["summary"]["target_max_skew_sec"], 300.0)
+        self.assertTrue(cross_plane_skew["summary"]["phases_within_target"])
 
     def test_smoke_emits_family_eligibility_artifact_for_not_proven_family(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

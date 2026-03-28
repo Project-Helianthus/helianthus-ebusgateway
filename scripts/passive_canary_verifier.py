@@ -36,6 +36,23 @@ READ_AVOIDANCE_SAVED_SECONDS_METRIC = "active_read_saved_seconds"
 WARMUP_BEHAVIOR_ARTIFACT_SCHEMA = "p03_warmup_behavior_v1"
 PUBLISHER_CADENCE_ARTIFACT_SCHEMA = "p03_publisher_cadence_v1"
 PUBLISHER_CADENCE_SOURCE_ANCHOR = "config.semantic_state_interval"
+CROSS_PLANE_SKEW_ARTIFACT_SCHEMA = "p03_cross_plane_skew_v1"
+CROSS_PLANE_SKEW_SEMANTIC_FIELDS = (
+    "bus_observability.summary_last_updated_at",
+    "bus_observability.status_last_updated_at",
+    "graphql_bus_watch.summary_last_updated_at",
+    "graphql_bus_watch.status_last_updated_at",
+    "graphql_bus_watch.watch_summary_last_updated_at",
+)
+CROSS_PLANE_SKEW_EXCLUDED_SURFACES = (
+    "bus_observability.status.startup.last_updated_at",
+    "bus_observability.status.feature_flags.last_updated_at",
+    "graphql_bus_watch.status.startup.lastUpdatedAt",
+    "graphql_bus_watch.status.featureFlags.lastUpdatedAt",
+    "captured_at",
+    "mtimes",
+    "harness_poll_interval",
+)
 FAMILY_PROOF_ELIGIBILITY_SCHEMA = "p03_family_proof_eligibility_v1"
 PROMOTION_ELIGIBILITY_SCHEMA = "p03_promotion_eligibility_v1"
 CANONICAL_NO_EBUSD_TRANSPORT = "no-ebusd"
@@ -651,6 +668,14 @@ def normalize_timestamp_value(raw: Any, snapshot_path: pathlib.Path, source_name
     if value.endswith("+00:00") or value.endswith("-00:00"):
         return value[:-6] + "Z"
     return value
+
+
+def parse_timestamp_to_utc(raw: Any, snapshot_path: pathlib.Path, source_name: str, field_name: str) -> datetime:
+    normalized = normalize_timestamp_value(raw, snapshot_path, source_name, field_name)
+    parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError(f"{snapshot_path}: {source_name} {field_name} must contain timezone information")
+    return parsed.astimezone(timezone.utc)
 
 
 def extract_timestamp_alias(raw: Any, snapshot_path: pathlib.Path, source_name: str, aliases: Iterable[str]) -> str | None:
@@ -3487,6 +3512,281 @@ def build_publisher_cadence_artifact_for_phases(
     }
 
 
+def collect_cross_plane_semantic_timestamps(
+    snapshot: Dict[str, Any],
+    snapshot_path: pathlib.Path,
+) -> Dict[str, Any]:
+    timestamps = snapshot.get("timestamps")
+    if not isinstance(timestamps, dict):
+        raise ValueError(f"{snapshot_path}: structured warmup snapshot missing timestamps object")
+    bus_timestamps = timestamps.get("bus_observability")
+    graphql_timestamps = timestamps.get("graphql_bus_watch")
+    if not isinstance(bus_timestamps, dict):
+        raise ValueError(f"{snapshot_path}: structured warmup snapshot missing bus_observability timestamps")
+    if not isinstance(graphql_timestamps, dict):
+        raise ValueError(f"{snapshot_path}: structured warmup snapshot missing graphql_bus_watch timestamps")
+
+    semantic_last_updated_at = {
+        "bus_observability": {
+            "summary_last_updated_at": normalize_timestamp_value(
+                bus_timestamps.get("summary_last_updated_at"),
+                snapshot_path,
+                "bus observability",
+                "summary.last_updated_at",
+            ),
+            "status_last_updated_at": normalize_timestamp_value(
+                bus_timestamps.get("status_last_updated_at"),
+                snapshot_path,
+                "bus observability",
+                "status.last_updated_at",
+            ),
+        },
+        "graphql_bus_watch": {
+            "summary_last_updated_at": normalize_timestamp_value(
+                graphql_timestamps.get("summary_last_updated_at"),
+                snapshot_path,
+                "graphql",
+                "summary.last_updated_at",
+            ),
+            "status_last_updated_at": normalize_timestamp_value(
+                graphql_timestamps.get("status_last_updated_at"),
+                snapshot_path,
+                "graphql",
+                "status.last_updated_at",
+            ),
+            "watch_summary_last_updated_at": normalize_timestamp_value(
+                graphql_timestamps.get("watch_summary_last_updated_at"),
+                snapshot_path,
+                "graphql",
+                "watch_summary.last_updated_at",
+            ),
+        },
+    }
+
+    timeline: List[Tuple[str, datetime]] = []
+    for surface_name in CROSS_PLANE_SKEW_SEMANTIC_FIELDS:
+        plane_name, field_name = surface_name.split(".", 1)
+        plane_snapshot = semantic_last_updated_at.get(plane_name)
+        if not isinstance(plane_snapshot, dict):
+            raise ValueError(f"{snapshot_path}: structured warmup snapshot missing {plane_name} semantic timestamps")
+        raw_value = plane_snapshot.get(field_name)
+        timeline.append(
+            (
+                surface_name,
+                parse_timestamp_to_utc(
+                    raw_value,
+                    snapshot_path,
+                    plane_name.replace("_", " "),
+                    field_name,
+                ),
+            )
+        )
+
+    oldest_surface, oldest_timestamp = min(timeline, key=lambda item: item[1])
+    newest_surface, newest_timestamp = max(timeline, key=lambda item: item[1])
+    observed_skew_sec = max(0.0, (newest_timestamp - oldest_timestamp).total_seconds())
+    observed_skew_ms = observed_skew_sec * 1000.0
+
+    return {
+        "semantic_last_updated_at": semantic_last_updated_at,
+        "timeline": [
+            {
+                "surface": surface,
+                "last_updated_at": timestamp.isoformat().replace("+00:00", "Z"),
+            }
+            for surface, timestamp in timeline
+        ],
+        "oldest_surface": oldest_surface,
+        "oldest_last_updated_at": oldest_timestamp.isoformat().replace("+00:00", "Z"),
+        "newest_surface": newest_surface,
+        "newest_last_updated_at": newest_timestamp.isoformat().replace("+00:00", "Z"),
+        "observed_skew_sec": observed_skew_sec,
+        "observed_skew_ms": observed_skew_ms,
+    }
+
+
+def build_cross_plane_skew_artifact_for_phases(
+    proof_dir: pathlib.Path,
+    run_id: str,
+    configured_proof_sample_interval_sec: float,
+    publisher_cadence_path: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    if not isinstance(proof_dir, pathlib.Path):
+        raise ValueError("proof_dir must be a pathlib.Path")
+    if publisher_cadence_path is None:
+        publisher_cadence_path = proof_dir / "publisher_cadence.json"
+    if not isinstance(publisher_cadence_path, pathlib.Path):
+        raise ValueError("publisher_cadence_path must be a pathlib.Path")
+
+    structured_phase_prefixes = sorted(
+        {
+            path.name[: -len("_bus_observability.json")]
+            for path in proof_dir.glob("**/*_bus_observability.json")
+            if path.is_file()
+        },
+        key=phase_sort_key,
+    )
+    reasons: List[str] = []
+    if "start" not in structured_phase_prefixes or "end" not in structured_phase_prefixes:
+        reasons.append("missing current-run start/end structured cross-plane skew artifacts (stale artifact rejection)")
+
+    publisher_cadence_payload: Dict[str, Any] | None = None
+    publisher_cadence_ok = False
+    publisher_cadence_reason = ""
+    publisher_cadence_details: Dict[str, Any] = {}
+    publisher_cadence_sec: float | None = None
+    publisher_cadence_source = ""
+    if not publisher_cadence_path.exists():
+        reasons.append(f"missing required publisher cadence artifact: {publisher_cadence_path}")
+    else:
+        try:
+            publisher_cadence_payload = load_json(publisher_cadence_path)
+            publisher_cadence_ok, publisher_cadence_reason, publisher_cadence_details = evaluate_publisher_cadence(
+                publisher_cadence_payload
+            )
+            if not publisher_cadence_ok:
+                reasons.append(publisher_cadence_reason)
+            else:
+                publisher_cadence_sec = float(publisher_cadence_details["start_publisher_cadence_sec"])
+                publisher_cadence_source = str(publisher_cadence_details["publisher_cadence_source"]).strip()
+        except Exception as exc:
+            reasons.append(f"invalid publisher cadence artifact: {publisher_cadence_path}: {exc}")
+
+    configured_interval_sec: float | None = None
+    try:
+        configured_interval_sec = float(configured_proof_sample_interval_sec)
+    except (TypeError, ValueError):
+        reasons.append(
+            f"invalid configured_proof_sample_interval_sec {configured_proof_sample_interval_sec!r}"
+        )
+    else:
+        if not math.isfinite(configured_interval_sec) or configured_interval_sec <= 0:
+            reasons.append(
+                f"invalid configured_proof_sample_interval_sec {configured_interval_sec!r}"
+            )
+
+    target_max_skew_sec: float | None = None
+    target_max_skew_ms: float | None = None
+    if publisher_cadence_sec is not None and configured_interval_sec is not None:
+        target_max_skew_sec = max(publisher_cadence_sec, configured_interval_sec)
+        target_max_skew_ms = target_max_skew_sec * 1000.0
+
+    phases: List[Dict[str, Any]] = []
+    phase_failures: List[str] = []
+    max_observed_skew_sec = 0.0
+    max_observed_skew_ms = 0.0
+    max_observed_phase = ""
+    phases_exceeding_target: List[str] = []
+
+    for phase in structured_phase_prefixes:
+        try:
+            snapshot = load_structured_warmup_snapshot(proof_dir, phase)
+            snapshot_path = pathlib.Path(snapshot["snapshot_paths"]["bus_observability"])
+            phase_timestamps = collect_cross_plane_semantic_timestamps(snapshot, snapshot_path)
+            observed_skew_sec = float(phase_timestamps["observed_skew_sec"])
+            observed_skew_ms = float(phase_timestamps["observed_skew_ms"])
+            within_target = True
+            if target_max_skew_sec is not None:
+                within_target = observed_skew_sec <= target_max_skew_sec + 1e-9
+            if not within_target:
+                phases_exceeding_target.append(phase)
+            if observed_skew_sec > max_observed_skew_sec:
+                max_observed_skew_sec = observed_skew_sec
+                max_observed_skew_ms = observed_skew_ms
+                max_observed_phase = phase
+            phases.append(
+                {
+                    "phase": phase,
+                    "snapshot_prefix": snapshot["snapshot_prefix"],
+                    "snapshot_paths": snapshot["snapshot_paths"],
+                    "semantic_last_updated_at": phase_timestamps["semantic_last_updated_at"],
+                    "timeline": phase_timestamps["timeline"],
+                    "oldest_surface": phase_timestamps["oldest_surface"],
+                    "oldest_last_updated_at": phase_timestamps["oldest_last_updated_at"],
+                    "newest_surface": phase_timestamps["newest_surface"],
+                    "newest_last_updated_at": phase_timestamps["newest_last_updated_at"],
+                    "observed_skew_sec": observed_skew_sec,
+                    "observed_skew_ms": observed_skew_ms,
+                    "target_max_skew_sec": target_max_skew_sec,
+                    "target_max_skew_ms": target_max_skew_ms,
+                    "within_target": within_target,
+                }
+            )
+        except Exception as exc:
+            phase_failures.append(f"{phase}: {exc}")
+
+    if not phases:
+        phase_failures.append("missing current-run cross-plane skew phase evidence")
+
+    ok = (
+        len(reasons) == 0
+        and len(phase_failures) == 0
+        and len(phases_exceeding_target) == 0
+        and target_max_skew_sec is not None
+    )
+    status = "pass" if ok else "fail"
+    if phases_exceeding_target:
+        reasons.append(
+            "observed cross-plane skew exceeded target bound in phases: "
+            + ", ".join(phases_exceeding_target)
+        )
+
+    summary = {
+        "phase_count": len(phases),
+        "max_observed_phase": max_observed_phase or None,
+        "max_observed_skew_sec": max_observed_skew_sec if phases else None,
+        "max_observed_skew_ms": max_observed_skew_ms if phases else None,
+        "target_max_skew_sec": target_max_skew_sec,
+        "target_max_skew_ms": target_max_skew_ms,
+        "configured_proof_sample_interval_sec": configured_interval_sec,
+        "publisher_cadence_sec": publisher_cadence_sec,
+        "publisher_cadence_source": publisher_cadence_source or None,
+        "phases_within_target": len(phases_exceeding_target) == 0,
+        "phases_exceeding_target": phases_exceeding_target,
+        "publisher_cadence_ok": publisher_cadence_ok,
+    }
+
+    return {
+        "schema": CROSS_PLANE_SKEW_ARTIFACT_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": str(run_id).strip(),
+        "claim_scope": "bounded_proof_window_cross_plane_skew",
+        "source": "proof_artifact_cross_plane_skew",
+        "target_bound_sec": target_max_skew_sec,
+        "target_bound_ms": target_max_skew_ms,
+        "proof_metadata": {
+            "configured_proof_sample_interval_sec": configured_interval_sec,
+            "publisher_cadence_sec": publisher_cadence_sec,
+            "publisher_cadence_source": publisher_cadence_source or None,
+            "target_max_skew_sec": target_max_skew_sec,
+            "target_max_skew_ms": target_max_skew_ms,
+        },
+        "publisher_cadence": {
+            "path": str(publisher_cadence_path),
+            "schema": str((publisher_cadence_payload or {}).get("schema", "")).strip() or None,
+            "ok": publisher_cadence_ok,
+            "reason": publisher_cadence_reason or None,
+            "publisher_cadence_sec": publisher_cadence_sec,
+            "publisher_cadence_source": publisher_cadence_source or None,
+            "graphql_publisher_cadence_sec": publisher_cadence_details.get("start_publisher_cadence_sec"),
+            "graphql_publisher_cadence_source": publisher_cadence_details.get("publisher_cadence_source"),
+            "details": publisher_cadence_details,
+        },
+        "evidence": {
+            "publisher_cadence_path": str(publisher_cadence_path),
+            "structured_snapshot_prefixes": structured_phase_prefixes,
+            "phase_snapshot_paths": [phase["snapshot_paths"] for phase in phases],
+            "same_phase_semantic_last_updated_at_fields": list(CROSS_PLANE_SKEW_SEMANTIC_FIELDS),
+            "excluded_surface_groups": list(CROSS_PLANE_SKEW_EXCLUDED_SURFACES),
+        },
+        "phases": phases,
+        "summary": summary,
+        "reasons": reasons + phase_failures,
+        "ok": ok,
+        "status": status,
+    }
+
+
 def evaluate_publisher_cadence(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
     if not isinstance(payload, dict):
         return False, "missing publisher cadence payload", {}
@@ -4687,6 +4987,18 @@ def publisher_cadence_command(args: argparse.Namespace) -> int:
     return 0 if bool(artifact.get("ok", False)) else 1
 
 
+def cross_plane_skew_command(args: argparse.Namespace) -> int:
+    publisher_cadence_path = pathlib.Path(args.publisher_cadence) if args.publisher_cadence else None
+    artifact = build_cross_plane_skew_artifact_for_phases(
+        pathlib.Path(args.proof_dir),
+        args.run_id,
+        args.configured_proof_sample_interval_sec,
+        publisher_cadence_path=publisher_cadence_path,
+    )
+    write_json(pathlib.Path(args.output), artifact)
+    return 0 if bool(artifact.get("ok", False)) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -4768,6 +5080,17 @@ def build_parser() -> argparse.ArgumentParser:
     publisher_cadence.add_argument("--run-id", required=True)
     publisher_cadence.add_argument("--output", required=True)
     publisher_cadence.set_defaults(func=publisher_cadence_command)
+
+    cross_plane_skew = sub.add_parser(
+        "cross-plane-skew",
+        help="build cross-plane skew proof artifact from proof window snapshots",
+    )
+    cross_plane_skew.add_argument("--proof-dir", required=True)
+    cross_plane_skew.add_argument("--run-id", required=True)
+    cross_plane_skew.add_argument("--configured-proof-sample-interval-sec", type=float, required=True)
+    cross_plane_skew.add_argument("--publisher-cadence", default=None)
+    cross_plane_skew.add_argument("--output", required=True)
+    cross_plane_skew.set_defaults(func=cross_plane_skew_command)
     return parser
 
 

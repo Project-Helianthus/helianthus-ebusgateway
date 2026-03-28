@@ -36,6 +36,7 @@ READ_AVOIDANCE_SAVED_SECONDS_METRIC = "active_read_saved_seconds"
 WARMUP_BEHAVIOR_ARTIFACT_SCHEMA = "p03_warmup_behavior_v1"
 FAMILY_PROOF_ELIGIBILITY_SCHEMA = "p03_family_proof_eligibility_v1"
 PROMOTION_ELIGIBILITY_SCHEMA = "p03_promotion_eligibility_v1"
+CANONICAL_NO_EBUSD_TRANSPORT = "no-ebusd"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC = "ebus_passive_completed_transactions_total"
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_apply_candidates_evaluated_total"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
@@ -159,6 +160,10 @@ def promotion_topology_label(kind: str, gateway_transport: str, proxy_transport:
         return normalized_kind
     if normalized_ebusd_transport == "ebusd-tcp":
         return "via-ebusd-tcp"
+    if normalized_ebusd_transport == CANONICAL_NO_EBUSD_TRANSPORT:
+        return "ebusd-free"
+    if normalized_ebusd_transport == "":
+        return "missing-ebusd-transport"
     if normalized_ebusd_transport not in ("",):
         return f"contradictory-ebusd-{normalized_ebusd_transport}"
     if normalized_kind == "proxy-single-client":
@@ -2502,7 +2507,7 @@ def build_family_proof_eligibility_artifact_for_run(
     canonical_proven_scope = (
         canonical_family_shape
         and normalized_proxy_transport == "ens"
-        and normalized_ebusd_transport == ""
+        and normalized_ebusd_transport == CANONICAL_NO_EBUSD_TRANSPORT
     )
     family_identity_missing = normalized_kind == "" or normalized_passive_mode == "" or transport_class == ""
     family_identity_ambiguous = any(
@@ -2522,12 +2527,14 @@ def build_family_proof_eligibility_artifact_for_run(
                 "family proof proof_scope.proxy_transport mismatch: "
                 f"got {normalized_proxy_transport!r}; want 'ens'"
             )
-        if normalized_ebusd_transport == "ebusd-tcp":
+        if normalized_ebusd_transport == "":
+            reasons.append("family proof missing proof_scope.ebusd_transport for canonical no-ebusd scope")
+        elif normalized_ebusd_transport == "ebusd-tcp":
             reasons.append("family proof proof_scope.ebusd_transport mismatch: topology='via-ebusd-tcp'")
-        elif normalized_ebusd_transport != "":
+        elif normalized_ebusd_transport != CANONICAL_NO_EBUSD_TRANSPORT:
             reasons.append(
                 "family proof proof_scope.ebusd_transport mismatch: "
-                f"got {normalized_ebusd_transport!r}; want absent"
+                f"got {normalized_ebusd_transport!r}; want {CANONICAL_NO_EBUSD_TRANSPORT!r}"
             )
     elif not canonical_family_shape:
         family_scope_mismatch = True
@@ -2770,7 +2777,7 @@ def build_promotion_eligibility_artifact_for_run(
         if normalized_kind and normalized_passive_mode and transport_class
         else ""
     )
-    family_scope_has_ebusd_transport = isinstance(family_scope, dict) and "ebusd_transport" in family_scope
+    family_scope_has_ebusd_transport = isinstance(family_scope, dict) and family_ebusd_transport != ""
 
     if not isinstance(family_eligibility, dict):
         reasons.append("family proof eligibility artifact is not a JSON object")
@@ -2883,17 +2890,13 @@ def build_promotion_eligibility_artifact_for_run(
             )
         if family_proxy_transport == "":
             reasons.append("family proof eligibility missing proof_scope.proxy_transport")
-        if family_ebusd_transport:
-            if normalized_ebusd_transport == "":
-                reasons.append(
-                    "family proof eligibility proof_scope.ebusd_transport mismatch: "
-                    f"got {family_ebusd_transport!r}; want absent"
-                )
-            elif family_ebusd_transport != normalized_ebusd_transport:
-                reasons.append(
-                    "family proof eligibility proof_scope.ebusd_transport mismatch: "
-                    f"got {family_ebusd_transport!r}; want {normalized_ebusd_transport!r}"
-                )
+        if normalized_ebusd_transport == "":
+            reasons.append("missing promotion topology metadata: ebusd_transport")
+        elif family_scope_has_ebusd_transport and family_ebusd_transport != normalized_ebusd_transport:
+            reasons.append(
+                "family proof eligibility proof_scope.ebusd_transport mismatch: "
+                f"got {family_ebusd_transport!r}; want {normalized_ebusd_transport!r}"
+            )
         if family_transport_class and transport_class and family_transport_class != transport_class:
             reasons.append(
                 "family proof eligibility proof_scope.transport_class mismatch: "
@@ -2957,14 +2960,14 @@ def build_promotion_eligibility_artifact_for_run(
         and normalized_passive_mode == "required"
         and normalized_gateway_transport == "ens"
         and normalized_proxy_transport == "ens"
-        and normalized_ebusd_transport == ""
+        and normalized_ebusd_transport == CANONICAL_NO_EBUSD_TRANSPORT
         and transport_class == "ens"
     )
     scope_reason = (
         f"promotion scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r} "
         f"gateway_transport={normalized_gateway_transport!r} proxy_transport={normalized_proxy_transport!r} "
         f"ebusd_transport={normalized_ebusd_transport!r} transport_class={transport_class!r} "
-        f"topology={promotion_topology!r}; want proxy-single-client/required/ens with ebusd_transport absent"
+        f"topology={promotion_topology!r}; want proxy-single-client/required/ens with ebusd_transport={CANONICAL_NO_EBUSD_TRANSPORT!r}"
     )
     if len(reasons) == 0:
         if family_claims_proven and canonical_proven_scope:

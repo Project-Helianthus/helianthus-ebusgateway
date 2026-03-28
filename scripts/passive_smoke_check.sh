@@ -10,6 +10,7 @@ case_kind="${MATRIX_CASE_KIND:-}"
 gateway_transport="${MATRIX_GATEWAY_TRANSPORT:-}"
 proxy_transport="${MATRIX_PROXY_TRANSPORT:-}"
 ebusd_transport="${MATRIX_EBUSD_TRANSPORT:-}"
+uses_ebusd="${MATRIX_USES_EBUSD:-}"
 if [[ -z "${case_id}" ]]; then
   echo "passive smoke: MATRIX_CASE_ID is required" >&2
   exit 2
@@ -59,6 +60,15 @@ if [[ "${gw15_proof_mode}" == "1" && "${case_id}" == "P03" ]]; then
   fi
   if [[ -z "${proxy_transport}" ]]; then
     missing_topology_envs+=("MATRIX_PROXY_TRANSPORT")
+  fi
+  if [[ -z "${ebusd_transport}" && "${uses_ebusd}" == "0" ]]; then
+    ebusd_transport="no-ebusd"
+  fi
+  if [[ -z "${ebusd_transport}" && -z "${uses_ebusd}" ]]; then
+    missing_topology_envs+=("MATRIX_USES_EBUSD")
+  fi
+  if [[ -z "${ebusd_transport}" ]]; then
+    missing_topology_envs+=("MATRIX_EBUSD_TRANSPORT")
   fi
   if [[ "${#missing_topology_envs[@]}" -gt 0 ]]; then
     echo "proof mode: missing P03 topology metadata: ${missing_topology_envs[*]}" >&2

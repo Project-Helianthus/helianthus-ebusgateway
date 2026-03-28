@@ -26,6 +26,8 @@ P03_ALLOWED_METHODS = {"get_register", "get_ext_register"}
 CANARY_VERDICT_SCHEMA = "p03_canary_verdict_v1"
 REPLAY_BEHAVIOR_ARTIFACT_SCHEMA = "observe_first_replay_behavior_v1"
 REPLAY_FALSIFICATION_VERDICT_SCHEMA = "observe_first_replay_falsification_verdict_v1"
+TIMING_REFERENCE_ARTIFACT_SCHEMA = "observe_first_timing_reference_v1"
+TIMING_REFERENCE_VERDICT_SCHEMA = "observe_first_timing_reference_verdict_v1"
 OVERALL_INTERVAL_CONCLUSIVE_MIN = 0.90
 PER_CANARY_INTERVAL_CONCLUSIVE_MIN = 0.75
 CANARY_NONCE_PARAM = "_canary_nonce"
@@ -38,6 +40,10 @@ PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_app
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA = 100.0
 REPLAY_EXPECTED_DISPOSITIONS = {"ambiguity", "falsification"}
+BUS_BUSY_WINDOWS = ("1m", "5m", "15m", "1h")
+TIMING_REFERENCE_BUSY_SECONDS_TOLERANCE = 1e-6
+TIMING_REFERENCE_BUSY_RATIO_TOLERANCE = 1e-6
+TIMING_REFERENCE_PERIODICITY_SECONDS_TOLERANCE = 1e-6
 PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)$")
 
 
@@ -284,6 +290,223 @@ def parse_prometheus_samples(metrics_text: str) -> Dict[str, List[float]]:
             continue
         samples.setdefault(metric_name, []).append(value)
     return samples
+
+
+def parse_prometheus_labeled_samples(metrics_text: str) -> List[Dict[str, Any]]:
+    if metrics_text.strip() == "":
+        raise ValueError("metrics payload is empty")
+    samples: List[Dict[str, Any]] = []
+    label_re = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"])*)"')
+    for raw_line in metrics_text.splitlines():
+        line = raw_line.strip()
+        if line == "" or line.startswith("#"):
+            continue
+        match = PROM_SAMPLE_RE.match(line)
+        if not match:
+            continue
+        metric_name = match.group(1)
+        label_blob = match.group(2)
+        raw_value = match.group(3)
+        try:
+            value = float(raw_value)
+        except ValueError:
+            continue
+        labels: Dict[str, str] = {}
+        if label_blob:
+            for key, raw in label_re.findall(label_blob):
+                labels[key] = bytes(raw, "utf-8").decode("unicode_escape")
+        samples.append({"name": metric_name, "labels": labels, "value": value})
+    return samples
+
+
+def find_prometheus_sample_value(
+    samples: List[Dict[str, Any]],
+    metric_name: str,
+    **labels: str,
+) -> float | None:
+    for sample in samples:
+        if sample.get("name") != metric_name:
+            continue
+        sample_labels = sample.get("labels")
+        if not isinstance(sample_labels, dict):
+            continue
+        if all(str(sample_labels.get(key, "")) == str(value) for key, value in labels.items()):
+            value = sample.get("value")
+            if isinstance(value, (int, float)):
+                return float(value)
+    return None
+
+
+def duration_to_seconds(raw: Any) -> float:
+    if isinstance(raw, bool):
+        raise ValueError(f"invalid duration value: {raw!r}")
+    if isinstance(raw, (int, float)):
+        return float(raw) / 1_000_000_000.0
+    text = str(raw).strip()
+    if text == "":
+        raise ValueError("duration value is empty")
+    if re.fullmatch(r"-?[0-9]+(?:\.[0-9]+)?", text):
+        return float(text)
+    match = re.fullmatch(r"(-?[0-9]+(?:\.[0-9]+)?)(ns|us|µs|ms|s|m|h)", text)
+    if not match:
+        raise ValueError(f"unsupported duration value: {raw!r}")
+    value = float(match.group(1))
+    unit = match.group(2)
+    scale = {
+        "ns": 1e-9,
+        "us": 1e-6,
+        "µs": 1e-6,
+        "ms": 1e-3,
+        "s": 1.0,
+        "m": 60.0,
+        "h": 3600.0,
+    }[unit]
+    return value * scale
+
+
+def parse_rfc3339_time(raw: Any) -> datetime:
+    text = str(raw).strip()
+    if text == "":
+        raise ValueError("timestamp value is empty")
+    normalized = text.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def load_bus_observability_snapshot(path: pathlib.Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise ValueError(f"missing bus observability snapshot at {path}")
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError("bus observability snapshot must be a JSON object")
+
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+    status = summary.get("status")
+    if not isinstance(status, dict):
+        status = payload.get("status")
+    if not isinstance(status, dict):
+        raise ValueError(f"bus observability snapshot missing status at {path}")
+    timing_quality = status.get("timing_quality")
+    if not isinstance(timing_quality, dict):
+        raise ValueError(f"bus observability snapshot missing timing_quality at {path}")
+
+    periodicity = payload.get("periodicity")
+    if not isinstance(periodicity, list):
+        periodicity = []
+
+    return {
+        "payload": payload,
+        "summary": summary,
+        "status": status,
+        "timing_quality": timing_quality,
+        "periodicity": periodicity,
+    }
+
+
+def normalize_timing_quality(payload: Dict[str, Any]) -> Dict[str, str]:
+    return {
+        "active": str(payload.get("active", "")).strip(),
+        "passive": str(payload.get("passive", "")).strip(),
+        "busy": str(payload.get("busy", "")).strip(),
+        "periodicity": str(payload.get("periodicity", "")).strip(),
+    }
+
+
+def get_any_field(payload: Dict[str, Any], *names: str) -> Any:
+    for name in names:
+        if name in payload:
+            return payload[name]
+    return None
+
+
+def normalize_periodicity_entry(payload: Dict[str, Any]) -> Dict[str, Any]:
+    source_bucket = get_any_field(payload, "SourceBucket", "source_bucket", "sourceBucket")
+    target_bucket = get_any_field(payload, "TargetBucket", "target_bucket", "targetBucket")
+    primary = get_any_field(payload, "Primary", "primary")
+    secondary = get_any_field(payload, "Secondary", "secondary")
+    family = get_any_field(payload, "Family", "family")
+    state = get_any_field(payload, "State", "state")
+    last_seen = get_any_field(payload, "LastSeen", "last_seen", "lastSeen")
+    last_interval = get_any_field(payload, "LastInterval", "last_interval", "lastInterval")
+    mean_interval = get_any_field(payload, "MeanInterval", "mean_interval", "meanInterval")
+    min_interval = get_any_field(payload, "MinInterval", "min_interval", "minInterval")
+    max_interval = get_any_field(payload, "MaxInterval", "max_interval", "maxInterval")
+    sample_count = get_any_field(payload, "SampleCount", "sample_count", "sampleCount")
+    if source_bucket is None or target_bucket is None or primary is None or secondary is None:
+        raise ValueError("periodicity entry missing tuple identity")
+    if family is None or state is None:
+        raise ValueError("periodicity entry missing family/state")
+    if last_seen is None or last_interval is None or mean_interval is None or min_interval is None or max_interval is None:
+        raise ValueError("periodicity entry missing timing fields")
+    if sample_count is None:
+        raise ValueError("periodicity entry missing sample_count")
+    return {
+        "source_bucket": str(source_bucket).strip(),
+        "target_bucket": str(target_bucket).strip(),
+        "primary": int(primary),
+        "secondary": int(secondary),
+        "family": str(family).strip(),
+        "state": str(state).strip(),
+        "last_seen": parse_rfc3339_time(last_seen).isoformat(),
+        "sample_count": int(sample_count),
+        "last_interval_seconds": duration_to_seconds(last_interval),
+        "mean_interval_seconds": duration_to_seconds(mean_interval),
+        "min_interval_seconds": duration_to_seconds(min_interval),
+        "max_interval_seconds": duration_to_seconds(max_interval),
+    }
+
+
+def normalize_bus_timing_snapshot(snapshot: Dict[str, Any], metrics_text: str) -> Dict[str, Any]:
+    labeled_samples = parse_prometheus_labeled_samples(metrics_text)
+    busy_seconds_total = find_prometheus_sample_value(labeled_samples, "ebus_bus_busy_seconds_total")
+    if busy_seconds_total is None:
+        raise ValueError("missing required metric sample: ebus_bus_busy_seconds_total")
+    busy_ratios: Dict[str, float] = {}
+    for window in BUS_BUSY_WINDOWS:
+        busy_ratio = find_prometheus_sample_value(labeled_samples, "ebus_bus_busy_ratio", window=window)
+        if busy_ratio is None:
+            raise ValueError(f"missing required metric sample: ebus_bus_busy_ratio{{window={window!r}}}")
+        busy_ratios[window] = float(busy_ratio)
+
+    periodicity_entries_raw = snapshot.get("periodicity")
+    if not isinstance(periodicity_entries_raw, list):
+        raise ValueError("bus observability snapshot missing periodicity entries")
+    periodicity_entries = [normalize_periodicity_entry(entry) for entry in periodicity_entries_raw if isinstance(entry, dict)]
+    if not periodicity_entries:
+        raise ValueError("bus observability snapshot missing periodicity entries")
+    periodicity_entries.sort(
+        key=lambda item: (
+            item["source_bucket"],
+            item["target_bucket"],
+            item["primary"],
+            item["secondary"],
+            item["family"],
+        )
+    )
+    summary = snapshot.get("summary")
+    periodicity_summary = None
+    if isinstance(summary, dict):
+        periodicity_summary = summary.get("periodicity")
+    periodicity_count = None
+    periodicity_capacity = None
+    if isinstance(periodicity_summary, dict):
+        periodicity_count = periodicity_summary.get("count")
+        periodicity_capacity = periodicity_summary.get("capacity")
+
+    return {
+        "timing_quality": normalize_timing_quality(snapshot["timing_quality"]),
+        "busy_seconds_total": float(busy_seconds_total),
+        "busy_ratio_by_window": busy_ratios,
+        "periodicity": {
+            "count": int(periodicity_count) if periodicity_count is not None else len(periodicity_entries),
+            "capacity": int(periodicity_capacity) if periodicity_capacity is not None else None,
+            "entries": periodicity_entries,
+        },
+    }
 
 
 def aggregate_metric_total(samples: Dict[str, List[float]], metric_name: str, *, required: bool) -> float | None:
@@ -935,6 +1158,286 @@ def build_replay_falsification_verdict(
     }
 
 
+def load_timing_reference_artifact(path: pathlib.Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise ValueError(f"missing timing reference artifact at {path}")
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError("timing reference artifact must be a JSON object")
+    if str(payload.get("schema", "")).strip() != TIMING_REFERENCE_ARTIFACT_SCHEMA:
+        raise ValueError("timing reference artifact schema mismatch")
+    if str(payload.get("source", "")).strip() != "wire_bounded_proof_window":
+        raise ValueError("timing reference artifact source mismatch")
+    timing_quality = payload.get("timing_quality")
+    busy = payload.get("busy")
+    periodicity = payload.get("periodicity")
+    locked_tolerances = payload.get("locked_tolerances")
+    start = payload.get("start")
+    end = payload.get("end")
+    if not isinstance(timing_quality, dict):
+        raise ValueError("timing reference artifact missing timing_quality")
+    if not isinstance(busy, dict):
+        raise ValueError("timing reference artifact missing busy")
+    if not isinstance(periodicity, dict):
+        raise ValueError("timing reference artifact missing periodicity")
+    if not isinstance(locked_tolerances, dict):
+        raise ValueError("timing reference artifact missing locked_tolerances")
+    if not isinstance(start, dict):
+        raise ValueError("timing reference artifact missing start observation")
+    if not isinstance(end, dict):
+        raise ValueError("timing reference artifact missing end observation")
+    return payload
+
+
+def build_timing_reference_artifact(proof_dir: pathlib.Path) -> Dict[str, Any]:
+    if not isinstance(proof_dir, pathlib.Path):
+        raise ValueError("proof_dir must be a pathlib.Path")
+    start_bus_path = proof_dir / "start_bus_observability.json"
+    end_bus_path = proof_dir / "end_bus_observability.json"
+    start_metrics_path = proof_dir / "start_metrics.prom"
+    end_metrics_path = proof_dir / "end_metrics.prom"
+    for path in (start_bus_path, end_bus_path, start_metrics_path, end_metrics_path):
+        if not path.exists():
+            raise ValueError(f"missing required timing proof artifact: {path}")
+
+    start_snapshot = load_bus_observability_snapshot(start_bus_path)
+    end_snapshot = load_bus_observability_snapshot(end_bus_path)
+    start_metrics = start_metrics_path.read_text(encoding="utf-8")
+    end_metrics = end_metrics_path.read_text(encoding="utf-8")
+    start_observation = normalize_bus_timing_snapshot(start_snapshot, start_metrics)
+    end_observation = normalize_bus_timing_snapshot(end_snapshot, end_metrics)
+
+    return {
+        "schema": TIMING_REFERENCE_ARTIFACT_SCHEMA,
+        "captured_at": utc_now(),
+        "source": "wire_bounded_proof_window",
+        "evidence": {
+            "start_bus_observability_path": str(start_bus_path),
+            "end_bus_observability_path": str(end_bus_path),
+            "start_metrics_path": str(start_metrics_path),
+            "end_metrics_path": str(end_metrics_path),
+        },
+        "locked_tolerances": {
+            "busy_seconds_total_abs": TIMING_REFERENCE_BUSY_SECONDS_TOLERANCE,
+            "busy_ratio_abs": TIMING_REFERENCE_BUSY_RATIO_TOLERANCE,
+            "periodicity_interval_seconds_abs": TIMING_REFERENCE_PERIODICITY_SECONDS_TOLERANCE,
+            "periodicity_last_seen_seconds_abs": 0.0,
+        },
+        "timing_quality": end_observation["timing_quality"],
+        "busy": end_observation,
+        "periodicity": end_observation["periodicity"],
+        "start": start_observation,
+        "end": end_observation,
+    }
+
+
+def _compare_seconds_with_tolerance(
+    observed: float,
+    expected: float,
+    tolerance: float,
+    *,
+    field_name: str,
+) -> Tuple[bool, str]:
+    if not math.isfinite(observed):
+        return False, f"{field_name} observed value {observed!r} is not finite"
+    if not math.isfinite(expected):
+        return False, f"{field_name} expected value {expected!r} is not finite"
+    if abs(observed - expected) > tolerance + 1e-12:
+        return False, f"{field_name} observed={observed} expected={expected} tolerance={tolerance}"
+    return True, ""
+
+
+def _compare_timing_observation(
+    observed: Dict[str, Any],
+    reference: Dict[str, Any],
+    tolerances: Dict[str, Any],
+    *,
+    phase: str,
+) -> Tuple[bool, str, Dict[str, Any]]:
+    if not isinstance(observed, dict):
+        return False, f"missing observed {phase} timing observation", {}
+    if not isinstance(reference, dict):
+        return False, f"missing reference {phase} timing observation", {}
+
+    observed_timing = observed.get("timing_quality")
+    reference_timing = reference.get("timing_quality")
+    if not isinstance(observed_timing, dict) or not isinstance(reference_timing, dict):
+        return False, f"{phase} timing_quality missing", {}
+    if observed_timing != reference_timing:
+        return False, f"{phase} timing_quality mismatch", {"observed": observed_timing, "reference": reference_timing}
+
+    busy_seconds_tol = float(tolerances.get("busy_seconds_total_abs", TIMING_REFERENCE_BUSY_SECONDS_TOLERANCE))
+    busy_ratio_tol = float(tolerances.get("busy_ratio_abs", TIMING_REFERENCE_BUSY_RATIO_TOLERANCE))
+    interval_tol = float(
+        tolerances.get("periodicity_interval_seconds_abs", TIMING_REFERENCE_PERIODICITY_SECONDS_TOLERANCE)
+    )
+    last_seen_tol = float(tolerances.get("periodicity_last_seen_seconds_abs", 0.0))
+
+    observed_busy_seconds = observed.get("busy_seconds_total")
+    reference_busy_seconds = reference.get("busy_seconds_total")
+    if not isinstance(observed_busy_seconds, (int, float)) or not isinstance(reference_busy_seconds, (int, float)):
+        return False, f"{phase} busy_seconds_total missing", {}
+    busy_ok, busy_reason = _compare_seconds_with_tolerance(
+        float(observed_busy_seconds),
+        float(reference_busy_seconds),
+        busy_seconds_tol,
+        field_name=f"{phase} busy_seconds_total",
+    )
+    if not busy_ok:
+        return False, busy_reason, {}
+
+    observed_ratios = observed.get("busy_ratio_by_window")
+    reference_ratios = reference.get("busy_ratio_by_window")
+    if not isinstance(observed_ratios, dict) or not isinstance(reference_ratios, dict):
+        return False, f"{phase} busy_ratio_by_window missing", {}
+    if set(observed_ratios) != set(reference_ratios):
+        return False, f"{phase} busy_ratio_by_window windows mismatch", {"observed": observed_ratios, "reference": reference_ratios}
+    for window in BUS_BUSY_WINDOWS:
+        if window not in observed_ratios or window not in reference_ratios:
+            return False, f"{phase} busy_ratio[{window}] missing", {}
+        ratio_ok, ratio_reason = _compare_seconds_with_tolerance(
+            float(observed_ratios[window]),
+            float(reference_ratios[window]),
+            busy_ratio_tol,
+            field_name=f"{phase} busy_ratio[{window}]",
+        )
+        if not ratio_ok:
+            return False, ratio_reason, {}
+
+    observed_periodicity = observed.get("periodicity")
+    reference_periodicity = reference.get("periodicity")
+    if not isinstance(observed_periodicity, dict) or not isinstance(reference_periodicity, dict):
+        return False, f"{phase} periodicity missing", {}
+    observed_entries = observed_periodicity.get("entries")
+    reference_entries = reference_periodicity.get("entries")
+    if not isinstance(observed_entries, list) or not isinstance(reference_entries, list):
+        return False, f"{phase} periodicity entries missing", {}
+    observed_count = int(observed_periodicity.get("count", len(observed_entries)) or 0)
+    reference_count = int(reference_periodicity.get("count", len(reference_entries)) or 0)
+    if observed_count != reference_count:
+        return False, f"{phase} periodicity count mismatch", {"observed": observed_count, "reference": reference_count}
+
+    def entry_key(item: Dict[str, Any]) -> Tuple[str, str, int, int, str]:
+        return (
+            str(item.get("source_bucket", "")).strip(),
+            str(item.get("target_bucket", "")).strip(),
+            int(item.get("primary", 0) or 0),
+            int(item.get("secondary", 0) or 0),
+            str(item.get("family", "")).strip(),
+        )
+
+    observed_by_key = {entry_key(item): item for item in observed_entries if isinstance(item, dict)}
+    reference_by_key = {entry_key(item): item for item in reference_entries if isinstance(item, dict)}
+    if set(observed_by_key) != set(reference_by_key):
+        return False, f"{phase} periodicity tuple set mismatch", {"observed": sorted(map(list, observed_by_key)), "reference": sorted(map(list, reference_by_key))}
+
+    for key in sorted(reference_by_key):
+        observed_item = observed_by_key[key]
+        reference_item = reference_by_key[key]
+        for field in ("source_bucket", "target_bucket", "family", "state"):
+            if str(observed_item.get(field, "")).strip() != str(reference_item.get(field, "")).strip():
+                return False, f"{phase} periodicity {key} field {field} mismatch", {"observed": observed_item, "reference": reference_item}
+        if int(observed_item.get("sample_count", 0) or 0) != int(reference_item.get("sample_count", 0) or 0):
+            return False, f"{phase} periodicity {key} sample_count mismatch", {"observed": observed_item, "reference": reference_item}
+        last_seen_observed = parse_rfc3339_time(observed_item.get("last_seen"))
+        last_seen_reference = parse_rfc3339_time(reference_item.get("last_seen"))
+        if abs((last_seen_observed - last_seen_reference).total_seconds()) > last_seen_tol + 1e-12:
+            return False, f"{phase} periodicity {key} last_seen mismatch", {"observed": observed_item, "reference": reference_item}
+        for field in (
+            "last_interval_seconds",
+            "mean_interval_seconds",
+            "min_interval_seconds",
+            "max_interval_seconds",
+        ):
+            compare_ok, compare_reason = _compare_seconds_with_tolerance(
+                float(observed_item.get(field, 0.0) or 0.0),
+                float(reference_item.get(field, 0.0) or 0.0),
+                interval_tol,
+                field_name=f"{phase} periodicity {key} {field}",
+            )
+            if not compare_ok:
+                return False, compare_reason, {}
+
+    return True, "", {
+        "busy_seconds_total": float(observed.get("busy_seconds_total", 0.0)),
+        "busy_ratio_by_window": observed.get("busy_ratio_by_window"),
+        "periodicity_count": observed_count,
+    }
+
+
+def build_timing_reference_verdict(reference_artifact: Any, proof_dir: pathlib.Path) -> Dict[str, Any]:
+    if not isinstance(proof_dir, pathlib.Path):
+        raise ValueError("proof_dir must be a pathlib.Path")
+    if not isinstance(reference_artifact, dict):
+        raise ValueError("reference artifact must be a JSON object")
+
+    loaded_reference = reference_artifact
+    if "schema" not in loaded_reference:
+        raise ValueError("reference artifact missing schema")
+    if str(loaded_reference.get("schema", "")).strip() != TIMING_REFERENCE_ARTIFACT_SCHEMA:
+        raise ValueError("reference artifact schema mismatch")
+
+    start_bus_path = proof_dir / "start_bus_observability.json"
+    end_bus_path = proof_dir / "end_bus_observability.json"
+    start_metrics_path = proof_dir / "start_metrics.prom"
+    end_metrics_path = proof_dir / "end_metrics.prom"
+    for path in (start_bus_path, end_bus_path, start_metrics_path, end_metrics_path):
+        if not path.exists():
+            raise ValueError(f"missing required timing proof artifact: {path}")
+
+    start_snapshot = load_bus_observability_snapshot(start_bus_path)
+    end_snapshot = load_bus_observability_snapshot(end_bus_path)
+    start_metrics = start_metrics_path.read_text(encoding="utf-8")
+    end_metrics = end_metrics_path.read_text(encoding="utf-8")
+    observed_start = normalize_bus_timing_snapshot(start_snapshot, start_metrics)
+    observed_end = normalize_bus_timing_snapshot(end_snapshot, end_metrics)
+
+    tolerances = loaded_reference.get("locked_tolerances")
+    if not isinstance(tolerances, dict):
+        raise ValueError("reference artifact missing locked_tolerances")
+
+    start_ok, start_reason, start_details = _compare_timing_observation(
+        observed_start,
+        loaded_reference.get("start"),
+        tolerances,
+        phase="start",
+    )
+    end_ok, end_reason, end_details = _compare_timing_observation(
+        observed_end,
+        loaded_reference.get("end"),
+        tolerances,
+        phase="end",
+    )
+    ok = start_ok and end_ok
+    reasons = [reason for reason in (start_reason, end_reason) if reason]
+
+    return {
+        "schema": TIMING_REFERENCE_VERDICT_SCHEMA,
+        "captured_at": utc_now(),
+        "ok": ok,
+        "status": "pass" if ok else "fail",
+        "reference_schema": str(loaded_reference.get("schema", "")).strip(),
+        "summary": {
+            "start_ok": start_ok,
+            "end_ok": end_ok,
+            "reasons": reasons,
+        },
+        "criteria": {
+            "start": {
+                "ok": start_ok,
+                "reason": start_reason,
+                **start_details,
+            },
+            "end": {
+                "ok": end_ok,
+                "reason": end_reason,
+                **end_details,
+            },
+        },
+        "reference": loaded_reference,
+    }
+
+
 def classify_canary_value(
     canary: CanarySpec,
     value_hex: str,
@@ -1379,6 +1882,19 @@ def replay_verdict_command(args: argparse.Namespace) -> int:
     return 0 if bool(verdict.get("ok", False)) else 1
 
 
+def timing_reference_command(args: argparse.Namespace) -> int:
+    reference = build_timing_reference_artifact(pathlib.Path(args.proof_dir))
+    write_json(pathlib.Path(args.output), reference)
+    return 0
+
+
+def timing_reference_verdict_command(args: argparse.Namespace) -> int:
+    reference = load_timing_reference_artifact(pathlib.Path(args.reference))
+    verdict = build_timing_reference_verdict(reference, pathlib.Path(args.proof_dir))
+    write_json(pathlib.Path(args.output), verdict)
+    return 0 if bool(verdict.get("ok", False)) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1421,6 +1937,20 @@ def build_parser() -> argparse.ArgumentParser:
     replay_verdict.add_argument("--behavior-artifact", default=None)
     replay_verdict.add_argument("--output", required=True)
     replay_verdict.set_defaults(func=replay_verdict_command)
+
+    timing_reference = sub.add_parser("timing-reference", help="build bounded proof-window timing reference")
+    timing_reference.add_argument("--proof-dir", required=True)
+    timing_reference.add_argument("--output", required=True)
+    timing_reference.set_defaults(func=timing_reference_command)
+
+    timing_reference_verdict = sub.add_parser(
+        "timing-reference-verdict",
+        help="verify bounded proof-window timing reference against proof artifacts",
+    )
+    timing_reference_verdict.add_argument("--reference", required=True)
+    timing_reference_verdict.add_argument("--proof-dir", required=True)
+    timing_reference_verdict.add_argument("--output", required=True)
+    timing_reference_verdict.set_defaults(func=timing_reference_verdict_command)
     return parser
 
 

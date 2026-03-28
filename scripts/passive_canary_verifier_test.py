@@ -1251,6 +1251,108 @@ class ReplayFalsificationVerdictTests(unittest.TestCase):
         self.assertIn("expected", by_name["timeout_no_progress"]["reason"])
 
 
+class TimingReferenceVerdictTests(unittest.TestCase):
+    def write_timing_proof_artifacts(self, proof_dir: pathlib.Path) -> dict:
+        start_metrics = [
+            'ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0',
+            "ebus_bus_busy_seconds_total 0.05",
+            'ebus_bus_busy_ratio{window="1m"} 0.0008333333333333334',
+            'ebus_bus_busy_ratio{window="5m"} 0.0003333333333333333',
+            'ebus_bus_busy_ratio{window="15m"} 0.00011111111111111112',
+            'ebus_bus_busy_ratio{window="1h"} 0.00002777777777777778',
+        ]
+        end_metrics = [
+            'ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0',
+            "ebus_bus_busy_seconds_total 0.10",
+            'ebus_bus_busy_ratio{window="1m"} 0.0016666666666666668',
+            'ebus_bus_busy_ratio{window="5m"} 0.0006666666666666666',
+            'ebus_bus_busy_ratio{window="15m"} 0.00022222222222222223',
+            'ebus_bus_busy_ratio{window="1h"} 0.00005555555555555556',
+        ]
+        periodicity = [
+            {
+                "SourceBucket": "0x10",
+                "TargetBucket": "0x08",
+                "Primary": 181,
+                "Secondary": 36,
+                "Family": "B524",
+                "State": "available",
+                "LastSeen": "2026-03-28T00:00:00Z",
+                "SampleCount": 3,
+                "LastInterval": 50_000_000,
+                "MeanInterval": 50_000_000,
+                "MinInterval": 50_000_000,
+                "MaxInterval": 50_000_000,
+            }
+        ]
+        for phase, metrics_lines in (("start", start_metrics), ("end", end_metrics)):
+            write_metrics(proof_dir / f"{phase}_metrics.prom", metrics_lines)
+            write_json(
+                proof_dir / f"{phase}_bus_observability.json",
+                {
+                    "summary": {
+                        "status": {
+                            "startup": {"phase": "LIVE_READY"},
+                            "timing_quality": {
+                                "active": "wire_estimated",
+                                "passive": "wire_estimated",
+                                "busy": "wire_estimated",
+                                "periodicity": "wire_estimated",
+                            },
+                            "feature_flags": {"observeFirstEnabled": True},
+                        },
+                        "periodicity": {"count": 1, "capacity": 8},
+                        "counters": {"series_budget_overflow_total": 0, "periodicity_budget_overflow_total": 0},
+                    },
+                    "periodicity": periodicity,
+                },
+            )
+        return {"start_metrics": start_metrics, "end_metrics": end_metrics, "periodicity": periodicity}
+
+    def test_timing_reference_artifact_and_verdict_pass_on_matching_proof_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_timing_proof_artifacts(proof_dir)
+            reference = verifier.build_timing_reference_artifact(proof_dir)
+            verdict = verifier.build_timing_reference_verdict(reference, proof_dir)
+
+        self.assertEqual(reference["schema"], verifier.TIMING_REFERENCE_ARTIFACT_SCHEMA)
+        self.assertEqual(verdict["schema"], verifier.TIMING_REFERENCE_VERDICT_SCHEMA)
+        self.assertTrue(verdict["ok"])
+        self.assertEqual(verdict["criteria"]["start"]["busy_seconds_total"], 0.05)
+        self.assertEqual(verdict["criteria"]["end"]["busy_seconds_total"], 0.10)
+
+    def test_timing_reference_verdict_fails_closed_on_ratio_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_timing_proof_artifacts(proof_dir)
+            reference = verifier.build_timing_reference_artifact(proof_dir)
+            write_metrics(
+                proof_dir / "end_metrics.prom",
+                [
+                    'ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0',
+                    "ebus_bus_busy_seconds_total 0.10",
+                    'ebus_bus_busy_ratio{window="1m"} 0.009999999999999998',
+                    'ebus_bus_busy_ratio{window="5m"} 0.0006666666666666666',
+                    'ebus_bus_busy_ratio{window="15m"} 0.00022222222222222223',
+                    'ebus_bus_busy_ratio{window="1h"} 0.00005555555555555556',
+                ],
+            )
+            verdict = verifier.build_timing_reference_verdict(reference, proof_dir)
+
+        self.assertFalse(verdict["ok"])
+        self.assertEqual(verdict["status"], "fail")
+        self.assertIn("busy_ratio[1m]", verdict["summary"]["reasons"][0])
+
+    def test_timing_reference_verdict_fails_closed_when_reference_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_timing_proof_artifacts(proof_dir)
+            with self.assertRaises(ValueError) as ctx:
+                verifier.load_timing_reference_artifact(proof_dir / "missing_reference.json")
+            self.assertIn("missing timing reference artifact", str(ctx.exception))
+
+
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(
         self,
@@ -1489,12 +1591,17 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                       candidates_total=$((metrics_count * 120))
 
                       if [[ "${metrics_quality}" == "missing_read_avoidance" ]]; then
-                        cat <<EOF
+                      cat <<EOF
                     ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0
                     ebus_passive_tap_connected 1
                     ebus_passive_warmup_state{state="available"} 1
                     ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1
-                    EOF
+                    ebus_bus_busy_seconds_total 0.05
+                    ebus_bus_busy_ratio{window="1m"} 0.0008333333333333334
+                    ebus_bus_busy_ratio{window="5m"} 0.0003333333333333333
+                    ebus_bus_busy_ratio{window="15m"} 0.00011111111111111112
+                    ebus_bus_busy_ratio{window="1h"} 0.00002777777777777778
+EOF
                         exit 0
                       fi
                       if [[ "${metrics_quality}" == "corrupt_read_avoidance" ]]; then
@@ -1507,7 +1614,12 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 1
                     ebus_passive_completed_transactions_total ${completed_total}
                     ebus_passive_direct_apply_candidates_evaluated_total ${candidates_total}
-                    EOF
+                    ebus_bus_busy_seconds_total 0.05
+                    ebus_bus_busy_ratio{window="1m"} 0.0008333333333333334
+                    ebus_bus_busy_ratio{window="5m"} 0.0003333333333333333
+                    ebus_bus_busy_ratio{window="15m"} 0.00011111111111111112
+                    ebus_bus_busy_ratio{window="1h"} 0.00002777777777777778
+EOF
                         exit 0
                       fi
                       if [[ "${metrics_mode}" == "healthy_once_then_bad" ]]; then
@@ -1530,14 +1642,19 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           cat <<EOF
                     ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0
                     ebus_passive_tap_connected 1
-                    ebus_passive_warmup_state{state="available"} 0
-                    ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 0
-                    direct_apply_total{family="B524",freshness_profile="state_fast"} 2
-                    active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 3
-                    active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1
-                    ebus_passive_completed_transactions_total ${completed_total}
-                    ebus_passive_direct_apply_candidates_evaluated_total ${candidates_total}
-                    EOF
+                          ebus_passive_warmup_state{state="available"} 0
+                          ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 0
+                          direct_apply_total{family="B524",freshness_profile="state_fast"} 2
+                          active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 3
+                          active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1
+                          ebus_passive_completed_transactions_total ${completed_total}
+                          ebus_passive_direct_apply_candidates_evaluated_total ${candidates_total}
+                          ebus_bus_busy_seconds_total 0.05
+                          ebus_bus_busy_ratio{window="1m"} 0.0008333333333333334
+                          ebus_bus_busy_ratio{window="5m"} 0.0003333333333333333
+                          ebus_bus_busy_ratio{window="15m"} 0.00011111111111111112
+                          ebus_bus_busy_ratio{window="1h"} 0.00002777777777777778
+EOF
                           exit 0
                         fi
                       fi
@@ -1551,7 +1668,12 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1
                     ebus_passive_completed_transactions_total ${completed_total}
                     ebus_passive_direct_apply_candidates_evaluated_total ${candidates_total}
-                    EOF
+                    ebus_bus_busy_seconds_total 0.05
+                    ebus_bus_busy_ratio{window="1m"} 0.0008333333333333334
+                    ebus_bus_busy_ratio{window="5m"} 0.0003333333333333333
+                    ebus_bus_busy_ratio{window="15m"} 0.00011111111111111112
+                    ebus_bus_busy_ratio{window="1h"} 0.00002777777777777778
+EOF
                       exit 0
                     fi
 
@@ -1570,8 +1692,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         fi
                       fi
                       cat <<EOF
-                    {"status":{"startup":{"phase":"${phase}"},"feature_flags":{"observeFirstEnabled":true}}}
-                    EOF
+                    {"summary":{"status":{"startup":{"phase":"${phase}"},"timing_quality":{"active":"wire_estimated","passive":"wire_estimated","busy":"wire_estimated","periodicity":"wire_estimated"},"feature_flags":{"observeFirstEnabled":true}},"periodicity":{"count":1,"capacity":8},"counters":{"series_budget_overflow_total":0,"periodicity_budget_overflow_total":0}},"periodicity":[{"SourceBucket":"0x10","TargetBucket":"0x08","Primary":181,"Secondary":36,"Family":"B524","State":"available","LastSeen":"2026-03-28T00:00:00Z","SampleCount":3,"LastInterval":50000000,"MeanInterval":50000000,"MinInterval":50000000,"MaxInterval":50000000}]}
+EOF
                       exit 0
                     fi
 
@@ -1579,12 +1701,12 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                       if [[ "${data}" == *"busSummary"* ]]; then
                         cat <<'EOF'
                     {"data":{"busSummary":{"status":{"featureFlags":{"observeFirstEnabled":true}}},"watchSummary":{"inventory":{"totalEntries":1},"activationCounts":{"catalogDescriptors":1,"activeKeys":1,"sourceClasses":[]},"directApplyEligibilityClasses":[],"degraded":{"active":false,"shadowingEnabled":false,"pinnedBudgetDegraded":false,"compactorDegraded":false,"reasons":[]}}}}
-                    EOF
+EOF
                         exit 0
                       fi
                       cat <<'EOF'
                     {"data":{"devices":[{"address":"0x15","deviceId":"BASV2"}]}}
-                    EOF
+EOF
                       exit 0
                     fi
 
@@ -1640,6 +1762,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 verdict_path = proof_dir / "canary_verdict.json"
                 replay_behavior_path = proof_dir / "replay_behavior.json"
                 replay_verdict_path = proof_dir / "replay_falsification.json"
+                timing_reference_path = proof_dir / "timing_reference.json"
+                timing_reference_verdict_path = proof_dir / "timing_reference_verdict.json"
                 phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -1649,6 +1773,12 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     artifacts["replay_behavior"] = json.loads(replay_behavior_path.read_text(encoding="utf-8"))
                 if replay_verdict_path.exists():
                     artifacts["replay_verdict"] = json.loads(replay_verdict_path.read_text(encoding="utf-8"))
+                if timing_reference_path.exists():
+                    artifacts["timing_reference"] = json.loads(timing_reference_path.read_text(encoding="utf-8"))
+                if timing_reference_verdict_path.exists():
+                    artifacts["timing_reference_verdict"] = json.loads(
+                        timing_reference_verdict_path.read_text(encoding="utf-8")
+                    )
                 if phase_log_path.exists():
                     artifacts["phase_log"] = [
                         line.strip()
@@ -1704,6 +1834,12 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertIsInstance(replay_verdict, dict)
         self.assertTrue(replay_verdict["ok"])
         self.assertEqual(replay_verdict["summary"]["behavior_artifact_ok"], True)
+        timing_reference = artifacts.get("timing_reference")
+        self.assertIsInstance(timing_reference, dict)
+        self.assertEqual(timing_reference["schema"], verifier.TIMING_REFERENCE_ARTIFACT_SCHEMA)
+        timing_reference_verdict = artifacts.get("timing_reference_verdict")
+        self.assertIsInstance(timing_reference_verdict, dict)
+        self.assertTrue(timing_reference_verdict["ok"])
 
     def test_smoke_holds_until_proof_window_end_and_requires_interval_phase(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

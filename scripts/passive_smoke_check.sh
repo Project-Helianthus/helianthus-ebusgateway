@@ -88,6 +88,8 @@ canary_summary_path="${proof_dir}/canary_summary.json"
 canary_verdict_path="${proof_dir}/canary_verdict.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
 replay_falsification_path="${proof_dir}/replay_falsification.json"
+timing_reference_path="${proof_dir}/timing_reference.json"
+timing_reference_verdict_path="${proof_dir}/timing_reference_verdict.json"
 canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
 canary_retries=3
 canary_enabled=0
@@ -480,6 +482,19 @@ build_replay_behavior_artifact() {
   fi
 }
 
+build_timing_reference_artifact() {
+  python3 "${canary_verifier_script}" timing-reference \
+    --proof-dir "${proof_dir}" \
+    --output "${timing_reference_path}"
+}
+
+build_timing_reference_verdict() {
+  python3 "${canary_verifier_script}" timing-reference-verdict \
+    --reference "${timing_reference_path}" \
+    --proof-dir "${proof_dir}" \
+    --output "${timing_reference_verdict_path}"
+}
+
 reset_active_proof_window() {
   proof_window_started=0
   proof_window_start_epoch=0
@@ -640,6 +655,14 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_replay_falsification_verdict; then
       echo "proof mode: replay falsification gate failed (see ${replay_falsification_path})" >&2
+      exit 1
+    fi
+    if ! build_timing_reference_artifact; then
+      echo "proof mode: failed to build timing reference artifact (see ${timing_reference_path})" >&2
+      exit 1
+    fi
+    if ! build_timing_reference_verdict; then
+      echo "proof mode: timing reference gate failed (see ${timing_reference_verdict_path})" >&2
       exit 1
     fi
   fi

@@ -2290,6 +2290,25 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "not_proven")
         self.assertIn("family scope mismatch", artifact["eligibility"]["reason"])
 
+    def test_family_proof_eligibility_rejects_non_ens_transport_class(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="tcp")
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "tcp",
+                proxy_transport="tcp",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "not_proven")
+        self.assertIn("transport_class='tcp'", artifact["eligibility"]["reason"])
+
 
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(

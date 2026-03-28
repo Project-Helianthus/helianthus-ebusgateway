@@ -999,7 +999,11 @@ def build_family_proof_eligibility_artifact_for_run(
     if not replay_ok:
         reasons.append("replay falsification gate failed")
 
-    is_p03_family = normalized_kind == "proxy-single-client" and normalized_passive_mode == "required"
+    is_p03_family = (
+        normalized_kind == "proxy-single-client"
+        and normalized_passive_mode == "required"
+        and transport_class == "ens"
+    )
     family_identity_missing = normalized_kind == "" or normalized_passive_mode == "" or transport_class == ""
     family_identity_ambiguous = any(
         reason.startswith("ambiguous transport class across structured warmup snapshots:")
@@ -1010,8 +1014,8 @@ def build_family_proof_eligibility_artifact_for_run(
     elif not is_p03_family:
         status = "not_proven"
         reasons.append(
-            f"family scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r}; "
-            "want proxy-single-client/required"
+            f"family scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r} "
+            f"transport_class={transport_class!r}; want proxy-single-client/required/ens"
         )
 
     if len(reasons) == 0:

@@ -433,12 +433,38 @@ def load_rollback_execution_artifact(path: pathlib.Path, expected_run_id: str) -
         raise ValueError(f"rollback execution artifact missing evidence.gateway_base_url: {path}")
     if str(evidence.get("remote_case_dir", "")).strip() == "":
         raise ValueError(f"rollback execution artifact missing evidence.remote_case_dir: {path}")
-    if str(evidence.get("proof_gateway_log_path", "")).strip() == "":
-        raise ValueError(f"rollback execution artifact missing evidence.proof_gateway_log_path: {path}")
-    if str(evidence.get("rollback_gateway_log_path", "")).strip() == "":
-        raise ValueError(f"rollback execution artifact missing evidence.rollback_gateway_log_path: {path}")
-    parse_iso8601_timestamp(evidence.get("started_at"), f"{path}:evidence.started_at")
-    parse_iso8601_timestamp(evidence.get("completed_at"), f"{path}:evidence.completed_at")
+
+    artifact_dir = path.resolve().parent
+
+    def require_local_log_bundle(field_name: str) -> pathlib.Path:
+        raw_path = str(evidence.get(field_name, "")).strip()
+        if raw_path == "":
+            raise ValueError(f"rollback execution artifact missing evidence.{field_name}: {path}")
+        candidate = pathlib.Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = artifact_dir / candidate
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(artifact_dir)
+        except ValueError as exc:
+            raise ValueError(
+                f"rollback execution artifact {field_name} must stay within artifact directory: {path}"
+            ) from exc
+        if not resolved.is_file():
+            raise ValueError(f"rollback execution artifact missing {field_name} bundle: {path}")
+        if resolved.stat().st_size <= 0:
+            raise ValueError(f"rollback execution artifact empty {field_name} bundle: {path}")
+        return resolved
+
+    proof_log_path = require_local_log_bundle("proof_gateway_log_path")
+    rollback_log_path = require_local_log_bundle("rollback_gateway_log_path")
+    if proof_log_path == rollback_log_path:
+        raise ValueError(f"rollback execution artifact log bundles must be distinct: {path}")
+
+    started_at_dt = parse_iso8601_timestamp(evidence.get("started_at"), f"{path}:evidence.started_at")
+    completed_at_dt = parse_iso8601_timestamp(evidence.get("completed_at"), f"{path}:evidence.completed_at")
+    if completed_at_dt < started_at_dt:
+        raise ValueError(f"rollback execution artifact completed_at must be >= started_at: {path}")
     restart_exit_code = evidence.get("restart_exit_code")
     if not isinstance(restart_exit_code, int):
         raise ValueError(f"rollback execution artifact missing integer restart_exit_code: {path}")

@@ -4395,6 +4395,71 @@ class CrossPlaneSkewArtifactTests(unittest.TestCase):
         self.assertIn("skew exceeded", " ".join(artifact["reasons"]).lower())
 
 
+class RollbackExecutionArtifactValidationTests(unittest.TestCase):
+    def _write_rollback_execution_artifact(
+        self,
+        artifact_path: pathlib.Path,
+        *,
+        started_at: str = "2026-03-28T00:00:00Z",
+        completed_at: str = "2026-03-28T00:00:10Z",
+        proof_gateway_log_path: str | None = None,
+        rollback_gateway_log_path: str | None = None,
+    ) -> None:
+        if proof_gateway_log_path is None:
+            proof_gateway_log_path = str(artifact_path.parent / "gateway_pre_rollback.log")
+        if rollback_gateway_log_path is None:
+            rollback_gateway_log_path = str(artifact_path.parent / "gateway_rollback.log")
+        write_json(
+            artifact_path,
+            {
+                "schema": verifier.ROLLBACK_EXECUTION_ARTIFACT_SCHEMA,
+                "captured_at": "2026-03-28T00:00:20Z",
+                "source": "passive_matrix_case_ha.sh rollback-execute",
+                "claim_scope": "bounded_ha_harness_rollback_execution_source",
+                "ok": False,
+                "run_id": "run-123",
+                "case_id": "P03",
+                "exec_case_id": "T103",
+                "action": "gateway_restart_with_rollback_target",
+                "reason": "gateway_health_check_failed",
+                "requested_to_flags": dict(verifier.ROLLBACK_TARGET_FEATURE_FLAGS),
+                "evidence": {
+                    "gateway_base_url": "http://gateway:8080",
+                    "remote_case_dir": "/tmp/remote-case",
+                    "proof_gateway_log_path": proof_gateway_log_path,
+                    "rollback_gateway_log_path": rollback_gateway_log_path,
+                    "started_at": started_at,
+                    "completed_at": completed_at,
+                    "restart_exit_code": 1,
+                    "restart_succeeded": False,
+                    "gateway_health_check_ok": False,
+                },
+            },
+        )
+
+    def test_load_rollback_execution_rejects_completed_before_started(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_path = pathlib.Path(temp_dir) / "rollback_execution.json"
+            (artifact_path.parent / "gateway_pre_rollback.log").write_text("pre\n", encoding="utf-8")
+            (artifact_path.parent / "gateway_rollback.log").write_text("rollback\n", encoding="utf-8")
+            self._write_rollback_execution_artifact(
+                artifact_path,
+                started_at="2026-03-28T00:00:10Z",
+                completed_at="2026-03-28T00:00:00Z",
+            )
+
+            with self.assertRaisesRegex(ValueError, "completed_at must be >= started_at"):
+                verifier.load_rollback_execution_artifact(artifact_path, "run-123")
+
+    def test_load_rollback_execution_rejects_missing_log_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_path = pathlib.Path(temp_dir) / "rollback_execution.json"
+            self._write_rollback_execution_artifact(artifact_path)
+
+            with self.assertRaisesRegex(ValueError, "missing proof_gateway_log_path bundle"):
+                verifier.load_rollback_execution_artifact(artifact_path, "run-123")
+
+
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(
         self,
@@ -4710,7 +4775,9 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     exec_case_id="${MATRIX_CASE_EXEC_ID:-T103}"
                     gateway_base_url="${MATRIX_GATEWAY_BASE_URL:-http://fake-gateway:18083}"
                     remote_case_dir="${FAKE_ROLLBACK_REMOTE_CASE_DIR:-/tmp/fake-remote-case}"
-                    gateway_log_path="${FAKE_ROLLBACK_GATEWAY_LOG_PATH:-${remote_case_dir}/logs/gateway_rollback.log}"
+                    artifact_dir=""
+                    proof_gateway_log_path=""
+                    rollback_gateway_log_path=""
 
                     if [[ -z "${artifact_path}" ]]; then
                       echo "ROLLBACK_EXECUTION_ARTIFACT_PATH is required" >&2
@@ -4722,16 +4789,21 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     fi
 
                     mkdir -p "$(dirname "${artifact_path}")"
+                    artifact_dir="$(dirname "${artifact_path}")"
+                    proof_gateway_log_path="${artifact_dir}/gateway_pre_rollback.log"
+                    rollback_gateway_log_path="${artifact_dir}/gateway_rollback.log"
                     case "${mode}" in
                       pass)
+                        printf '%s\n' 'proof log' > "${proof_gateway_log_path}"
+                        printf '%s\n' 'rollback log' > "${rollback_gateway_log_path}"
                         "${real_python}" "${verifier_script}" rollback-execution \
                           --run-id "${run_id}" \
                           --case-id "${case_id}" \
                           --exec-case-id "${exec_case_id}" \
                           --gateway-base-url "${gateway_base_url}" \
                           --remote-case-dir "${remote_case_dir}" \
-                          --proof-gateway-log-path "${remote_case_dir}/logs/gateway_pre_rollback.log" \
-                          --rollback-gateway-log-path "${gateway_log_path}" \
+                          --proof-gateway-log-path "${proof_gateway_log_path}" \
+                          --rollback-gateway-log-path "${rollback_gateway_log_path}" \
                           --started-at "2026-03-28T00:00:00Z" \
                           --completed-at "2026-03-28T00:00:10Z" \
                           --ok true \
@@ -4750,14 +4822,16 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         printf '%s\n' '{"schema":"observe_first_rollback_execution_v1","ok":true}' > "${artifact_path}"
                         ;;
                       fail)
+                        printf '%s\n' 'proof log' > "${proof_gateway_log_path}"
+                        printf '%s\n' 'rollback log' > "${rollback_gateway_log_path}"
                         "${real_python}" "${verifier_script}" rollback-execution \
                           --run-id "${run_id}" \
                           --case-id "${case_id}" \
                           --exec-case-id "${exec_case_id}" \
                           --gateway-base-url "${gateway_base_url}" \
                           --remote-case-dir "${remote_case_dir}" \
-                          --proof-gateway-log-path "${remote_case_dir}/logs/gateway_pre_rollback.log" \
-                          --rollback-gateway-log-path "${gateway_log_path}" \
+                          --proof-gateway-log-path "${proof_gateway_log_path}" \
+                          --rollback-gateway-log-path "${rollback_gateway_log_path}" \
                           --started-at "2026-03-28T00:00:00Z" \
                           --completed-at "2026-03-28T00:00:10Z" \
                           --ok false \

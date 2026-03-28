@@ -350,14 +350,26 @@ restart_gateway_with_passive_mode() {
 }
 
 gateway_graphql_health_check() {
+  local attempts="${MATRIX_GW15_ROLLBACK_GRAPHQL_HEALTH_RETRIES:-5}"
+  local sleep_sec="${MATRIX_GW15_ROLLBACK_GRAPHQL_HEALTH_RETRY_SLEEP_SEC:-2}"
   local response=""
-  response="$(
-    curl -fsS -m 8 -H 'Content-Type: application/json' \
-      -d '{"query":"{ __typename }"}' \
-      "${MATRIX_GRAPHQL_URL:-${gateway_base_url}/graphql}" 2>/dev/null || true
-  )"
-  [[ -n "${response}" ]] || return 1
-  printf '%s' "${response}" | grep -q '"__typename"'
+  local attempt=0
+
+  while [[ "${attempt}" -lt "${attempts}" ]]; do
+    response="$(
+      curl -fsS -m 8 -H 'Content-Type: application/json' \
+        -d '{"query":"{ __typename }"}' \
+        "${MATRIX_GRAPHQL_URL:-${gateway_base_url}/graphql}" 2>/dev/null || true
+    )"
+    if [[ -n "${response}" ]] && printf '%s' "${response}" | grep -q '"__typename"'; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    if [[ "${attempt}" -lt "${attempts}" ]]; then
+      sleep "${sleep_sec}"
+    fi
+  done
+  return 1
 }
 
 write_rollback_execution_artifact() {
@@ -415,7 +427,7 @@ run_rollback_execute() {
   fi
 
   started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  local_log_dir="$(cd "$(dirname "${artifact_path}")/.." && pwd)"
+  local_log_dir="$(cd "$(dirname "${artifact_path}")" && pwd)"
   mkdir -p "${local_log_dir}"
   proof_gateway_log_bundle_path="${local_log_dir}/gateway_pre_rollback.log"
   rollback_gateway_log_bundle_path="${local_log_dir}/gateway_rollback.log"

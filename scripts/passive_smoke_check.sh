@@ -119,6 +119,7 @@ canary_summary_path="${proof_dir}/canary_summary.json"
 canary_verdict_path="${proof_dir}/canary_verdict.json"
 publisher_cadence_path="${proof_dir}/publisher_cadence.json"
 cross_plane_skew_path="${proof_dir}/cross_plane_skew.json"
+wire_timing_reference_path="${proof_dir}/wire_timing_reference.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
 replay_falsification_path="${proof_dir}/replay_falsification.json"
 family_eligibility_path="${proof_dir}/family_proof_eligibility.json"
@@ -627,6 +628,17 @@ build_cross_plane_skew_artifact() {
     --output "${cross_plane_skew_path}"
 }
 
+build_wire_timing_reference_artifact() {
+  if ! (
+    cd "${REPO_ROOT}" && \
+      WIRE_TIMING_REFERENCE_ARTIFACT_PATH="${wire_timing_reference_path}" \
+      WIRE_TIMING_REFERENCE_PROXY_LOG_PATH="${log_dir}/proxy.log" \
+      go test -run TestWireTimingReferenceArtifact -count=1 . >/dev/null
+  ); then
+    return 1
+  fi
+}
+
 build_replay_behavior_artifact() {
   if ! (
     cd "${REPO_ROOT}" && \
@@ -813,6 +825,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_cross_plane_skew_artifact; then
       echo "proof mode: cross-plane skew gate failed (see ${cross_plane_skew_path})" >&2
+      exit 1
+    fi
+    if ! build_wire_timing_reference_artifact; then
+      echo "proof mode: wire timing reference producer failed (see ${wire_timing_reference_path})" >&2
       exit 1
     fi
   fi

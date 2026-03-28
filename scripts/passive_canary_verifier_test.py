@@ -4409,6 +4409,32 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             fake_bin.mkdir(parents=True, exist_ok=True)
             log_dir = temp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
+            fake_proxy_log = log_dir / "proxy.log"
+            fake_proxy_log.write_text(
+                "\n".join(
+                    [
+                        "2026/03/28 00:00:00 session=1 start initiator=0x31",
+                        "2026/03/28 00:00:00 session=1 send symbol=0x15",
+                        "2026/03/28 00:00:00 session=1 send symbol=0xB5",
+                        "2026/03/28 00:00:00 session=1 send symbol=0x09",
+                        "2026/03/28 00:00:00 session=1 send symbol=0x01",
+                        "2026/03/28 00:00:00 session=1 send symbol=0x24",
+                        "2026/03/28 00:00:00 session=1 send symbol=0xD3",
+                        "2026/03/28 00:00:00 session=1 send symbol=0x00",
+                        "2026/03/28 00:00:00 session=1 send symbol=0xAA",
+                        "2026/03/28 00:00:00 wire_rx symbol=0x31",
+                        "2026/03/28 00:00:00 wire_rx symbol=0x15",
+                        "2026/03/28 00:00:00 wire_rx symbol=0xB5",
+                        "2026/03/28 00:00:00 wire_rx symbol=0x09",
+                        "2026/03/28 00:00:00 wire_rx symbol=0x01",
+                        "2026/03/28 00:00:00 wire_rx symbol=0x24",
+                        "2026/03/28 00:00:00 wire_rx symbol=0xD3",
+                        "2026/03/28 00:00:00 wire_rx symbol=0xAA",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             canonical_canary_ids_literal = json.dumps(canonical_family_proof_canary_ids())
 
             fake_python = fake_bin / "python3"
@@ -4532,6 +4558,70 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
 
                     real_go="${REAL_GO:?REAL_GO is required}"
                     if [[ "${1:-}" == "test" ]]; then
+                      timing_out_path="${WIRE_TIMING_REFERENCE_ARTIFACT_PATH:-}"
+                      if [[ -n "${timing_out_path}" ]]; then
+                        proxy_log_path="${WIRE_TIMING_REFERENCE_PROXY_LOG_PATH:-}"
+                        if [[ -z "${proxy_log_path}" ]]; then
+                          echo "WIRE_TIMING_REFERENCE_PROXY_LOG_PATH is required" >&2
+                          exit 2
+                        fi
+                        if [[ ! -f "${proxy_log_path}" ]]; then
+                          echo "proxy log missing: ${proxy_log_path}" >&2
+                          exit 2
+                        fi
+                        if [[ " $* " != *" TestWireTimingReferenceArtifact "* ]]; then
+                          echo "timing reference producer must invoke TestWireTimingReferenceArtifact" >&2
+                          exit 2
+                        fi
+                        last_arg="${@: -1}"
+                        if [[ "${last_arg}" != "." ]]; then
+                          echo "timing reference producer must target package ." >&2
+                          exit 2
+                        fi
+                        mkdir -p "$(dirname "${timing_out_path}")"
+                        cat > "${timing_out_path}" <<EOF
+                    {
+                      "schema": "observe_first_wire_timing_reference_v1",
+                      "captured_at": "2026-03-28T00:00:00+00:00",
+                      "source": "proxy_log_session_send_plus_wire_rx",
+                      "claim_scope": "bounded_proof_window_timing_reference_source",
+                      "ok": true,
+                      "evidence": {
+                        "proxy_log_path": "${proxy_log_path}",
+                        "proxy_log_line_count": 42,
+                        "session_start_count": 2,
+                        "send_symbol_count": 16,
+                        "wire_symbol_count": 42,
+                        "synthetic_symbol_spacing_ms": 4,
+                        "timestamp_resolution": "proxy_log_seconds_plus_symbol_spacing"
+                      },
+                      "summary": {
+                        "classified_event_count": 3,
+                        "transaction_count": 3,
+                        "master_frame_count": 0,
+                        "abandoned_count": 0,
+                        "busy_seconds_total": 1.2,
+                        "families_with_intervals": 1
+                      },
+                      "periodicity": [
+                        {
+                          "source_bucket": "0x08",
+                          "target_bucket": "0x15",
+                          "primary": 181,
+                          "secondary": 9,
+                          "family": "B509",
+                          "sample_count": 2,
+                          "last_seen": "2026-03-28T00:00:10Z",
+                          "last_interval_sec": 10,
+                          "mean_interval_sec": 10,
+                          "min_interval_sec": 10,
+                          "max_interval_sec": 10
+                        }
+                      ]
+                    }
+                    EOF
+                        exit 0
+                      fi
                       out_path="${REPLAY_BEHAVIOR_ARTIFACT_PATH:-}"
                       if [[ -z "${out_path}" ]]; then
                         echo "REPLAY_BEHAVIOR_ARTIFACT_PATH is required" >&2
@@ -4967,6 +5057,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 promotion_eligibility_path = proof_dir / "promotion_eligibility.json"
                 publisher_cadence_path = proof_dir / "publisher_cadence.json"
                 cross_plane_skew_path = proof_dir / "cross_plane_skew.json"
+                wire_timing_reference_path = proof_dir / "wire_timing_reference.json"
                 phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -4991,6 +5082,10 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 if cross_plane_skew_path.exists():
                     artifacts["cross_plane_skew"] = json.loads(
                         cross_plane_skew_path.read_text(encoding="utf-8")
+                    )
+                if wire_timing_reference_path.exists():
+                    artifacts["wire_timing_reference"] = json.loads(
+                        wire_timing_reference_path.read_text(encoding="utf-8")
                     )
                 if phase_log_path.exists():
                     artifacts["phase_log"] = [
@@ -5092,6 +5187,28 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertEqual(cross_plane_skew["status"], "pass")
         self.assertEqual(cross_plane_skew["summary"]["target_max_skew_sec"], 300.0)
         self.assertTrue(cross_plane_skew["summary"]["phases_within_target"])
+
+    def test_smoke_emits_wire_timing_reference_artifact_when_canary_verdict_is_good(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed("pass")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        wire_timing_reference = artifacts.get("wire_timing_reference")
+        self.assertIsInstance(wire_timing_reference, dict)
+        self.assertTrue(wire_timing_reference["ok"])
+        self.assertEqual(
+            wire_timing_reference["schema"],
+            "observe_first_wire_timing_reference_v1",
+        )
+        self.assertEqual(
+            wire_timing_reference["source"],
+            "proxy_log_session_send_plus_wire_rx",
+        )
+        self.assertTrue(
+            wire_timing_reference["evidence"]["proxy_log_path"].endswith("/proxy.log")
+        )
+        self.assertEqual(
+            wire_timing_reference["summary"]["families_with_intervals"],
+            1,
+        )
 
     def test_smoke_emits_family_eligibility_artifact_for_not_proven_family(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

@@ -2912,6 +2912,71 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
                 self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
                 self.assertIn(expected_reason, artifact["eligibility"]["reason"])
 
+    def test_family_proof_eligibility_blocks_coherent_forged_replay_expected_contract_fields(self) -> None:
+        forged_cases = (
+            ("expected.disposition", "falsification", "expected.disposition mismatches canonical replay corpus case contract"),
+            ("expected.direct_apply", True, "expected.direct_apply mismatches canonical replay corpus case contract"),
+        )
+
+        for field_name, forged_value, expected_reason in forged_cases:
+            with self.subTest(field_name=field_name):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    proof_dir = pathlib.Path(temp_dir)
+                    write_family_proof_artifacts(proof_dir, transport_class="ens")
+                    replay_path = proof_dir / "replay_falsification.json"
+                    behavior_path = proof_dir / "replay_behavior.json"
+                    replay_payload = verifier.load_json(replay_path)
+                    behavior_payload = verifier.load_json(behavior_path)
+
+                    replay_case = None
+                    for case_payload in replay_payload["cases"]:
+                        if str(case_payload.get("name", "")).strip() == "b524_value_bearing_enh":
+                            replay_case = case_payload
+                            break
+                    if replay_case is None:
+                        raise AssertionError("missing replay verdict case b524_value_bearing_enh")
+
+                    behavior_case = None
+                    for case_payload in behavior_payload["cases"]:
+                        if str(case_payload.get("name", "")).strip() == "b524_value_bearing_enh":
+                            behavior_case = case_payload
+                            break
+                    if behavior_case is None:
+                        raise AssertionError("missing replay behavior case b524_value_bearing_enh")
+
+                    if field_name == "expected.disposition":
+                        replay_case["expected"]["disposition"] = forged_value
+                        replay_case["disposition"] = forged_value
+                        replay_case["observed"]["disposition"] = forged_value
+                        replay_case["behavior_evidence"]["observed_disposition"] = forged_value
+                        behavior_case["observed"]["disposition"] = forged_value
+                    elif field_name == "expected.direct_apply":
+                        replay_case["expected"]["direct_apply"] = forged_value
+                        replay_case["direct_apply"] = forged_value
+                        replay_case["observed"]["direct_apply"] = forged_value
+                        replay_case["behavior_evidence"]["observed_direct_apply"] = forged_value
+                        behavior_case["observed"]["direct_apply"] = forged_value
+                    else:
+                        raise AssertionError(f"unsupported field_name {field_name!r}")
+
+                    write_json(replay_path, replay_payload)
+                    write_json(behavior_path, behavior_payload)
+                    artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                        proof_dir,
+                        "run-1",
+                        "P03",
+                        "proxy-single-client",
+                        "required",
+                        "ens",
+                        proxy_transport="ens",
+                        ebusd_transport="ebusd-tcp",
+                    )
+
+                self.assertFalse(artifact["ok"])
+                self.assertEqual(artifact["eligibility"]["status"], "blocked")
+                self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
+                self.assertIn(expected_reason, artifact["eligibility"]["reason"])
+
     def test_family_proof_eligibility_blocks_forged_full_canonical_replay_without_behavior_evidence_anchors(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)

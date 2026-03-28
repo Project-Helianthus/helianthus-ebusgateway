@@ -290,11 +290,31 @@ def extract_locked_replay_case_contracts(
         expected_reason = expected_reason_raw.strip()
         if expected_reason == "":
             return {}, f"{source_path}: replay case[{index}] replay_expected.reason must be non-empty string"
+        expected_direct_apply = expected.get("direct_apply")
+        if not isinstance(expected_direct_apply, bool):
+            return {}, f"{source_path}: replay case[{index}] replay_expected.direct_apply must be boolean"
+        expected_disposition_raw = expected.get("disposition")
+        if not isinstance(expected_disposition_raw, str):
+            return {}, (
+                f"{source_path}: replay case[{index}] replay_expected.disposition must be non-empty string"
+            )
+        expected_disposition = expected_disposition_raw.strip().lower()
+        if expected_disposition == "":
+            return {}, (
+                f"{source_path}: replay case[{index}] replay_expected.disposition must be non-empty string"
+            )
+        if expected_disposition not in REPLAY_EXPECTED_DISPOSITIONS:
+            return {}, (
+                f"{source_path}: replay case[{index}] unsupported replay_expected.disposition "
+                f"{expected_disposition!r}"
+            )
         contracts[name] = {
             "family": family,
             "response_class": response_class,
             "scenario_tags": scenario_tags,
             "expected_reason": expected_reason,
+            "expected_direct_apply": expected_direct_apply,
+            "expected_disposition": expected_disposition,
         }
 
     if len(contracts) == 0:
@@ -1929,6 +1949,30 @@ def validate_family_upstream_replay_verdict(
                 return False, (
                     f"{path}: replay falsification verdict case[{case_index}] "
                     "expected.reason mismatches canonical replay corpus case contract"
+                )
+            canonical_expected_direct_apply = canonical_case_contract.get("expected_direct_apply")
+            if not isinstance(canonical_expected_direct_apply, bool):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "canonical replay corpus case contract missing expected.direct_apply"
+                )
+            if expected_direct_apply != canonical_expected_direct_apply:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "expected.direct_apply mismatches canonical replay corpus case contract"
+                )
+            canonical_expected_disposition = str(
+                canonical_case_contract.get("expected_disposition", "")
+            ).strip().lower()
+            if canonical_expected_disposition not in REPLAY_EXPECTED_DISPOSITIONS:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "canonical replay corpus case contract missing expected.disposition"
+                )
+            if expected_disposition != canonical_expected_disposition:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "expected.disposition mismatches canonical replay corpus case contract"
                 )
         behavior_evidence = case_payload.get("behavior_evidence")
         if not isinstance(behavior_evidence, dict):

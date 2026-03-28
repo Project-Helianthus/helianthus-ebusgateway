@@ -4694,6 +4694,92 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             )
             fake_go.chmod(0o755)
 
+            fake_rollback_executor = fake_bin / "rollback_executor"
+            fake_rollback_executor.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+
+                    real_python="${REAL_PYTHON3:?REAL_PYTHON3 is required}"
+                    verifier_script="${FAKE_CANARY_VERIFIER_SCRIPT:?FAKE_CANARY_VERIFIER_SCRIPT is required}"
+                    artifact_path="${ROLLBACK_EXECUTION_ARTIFACT_PATH:-}"
+                    run_id="${ROLLBACK_EXECUTION_RUN_ID:-}"
+                    mode="${FAKE_ROLLBACK_EXECUTION_MODE:-pass}"
+                    case_id="${MATRIX_CASE_ID:-P03}"
+                    exec_case_id="${MATRIX_CASE_EXEC_ID:-T103}"
+                    gateway_base_url="${MATRIX_GATEWAY_BASE_URL:-http://fake-gateway:18083}"
+                    remote_case_dir="${FAKE_ROLLBACK_REMOTE_CASE_DIR:-/tmp/fake-remote-case}"
+                    gateway_log_path="${FAKE_ROLLBACK_GATEWAY_LOG_PATH:-${remote_case_dir}/logs/gateway_rollback.log}"
+
+                    if [[ -z "${artifact_path}" ]]; then
+                      echo "ROLLBACK_EXECUTION_ARTIFACT_PATH is required" >&2
+                      exit 2
+                    fi
+                    if [[ -z "${run_id}" ]]; then
+                      echo "ROLLBACK_EXECUTION_RUN_ID is required" >&2
+                      exit 2
+                    fi
+
+                    mkdir -p "$(dirname "${artifact_path}")"
+                    case "${mode}" in
+                      pass)
+                        "${real_python}" "${verifier_script}" rollback-execution \
+                          --run-id "${run_id}" \
+                          --case-id "${case_id}" \
+                          --exec-case-id "${exec_case_id}" \
+                          --gateway-base-url "${gateway_base_url}" \
+                          --remote-case-dir "${remote_case_dir}" \
+                          --gateway-log-path "${gateway_log_path}" \
+                          --started-at "2026-03-28T00:00:00Z" \
+                          --completed-at "2026-03-28T00:00:10Z" \
+                          --ok true \
+                          --reason ok \
+                          --restart-exit-code 0 \
+                          --restart-succeeded true \
+                          --gateway-health-check-ok true \
+                          --source "passive_matrix_case_ha.sh rollback-execute" \
+                          --action "gateway_restart_with_rollback_target" \
+                          --output "${artifact_path}"
+                        ;;
+                      missing)
+                        exit 0
+                        ;;
+                      malformed)
+                        printf '%s\n' '{"schema":"observe_first_rollback_execution_v1","ok":true}' > "${artifact_path}"
+                        ;;
+                      fail)
+                        "${real_python}" "${verifier_script}" rollback-execution \
+                          --run-id "${run_id}" \
+                          --case-id "${case_id}" \
+                          --exec-case-id "${exec_case_id}" \
+                          --gateway-base-url "${gateway_base_url}" \
+                          --remote-case-dir "${remote_case_dir}" \
+                          --gateway-log-path "${gateway_log_path}" \
+                          --started-at "2026-03-28T00:00:00Z" \
+                          --completed-at "2026-03-28T00:00:10Z" \
+                          --ok false \
+                          --reason gateway_restart_failed \
+                          --restart-exit-code 1 \
+                          --restart-succeeded false \
+                          --gateway-health-check-ok false \
+                          --source "passive_matrix_case_ha.sh rollback-execute" \
+                          --action "gateway_restart_with_rollback_target" \
+                          --output "${artifact_path}"
+                        exit 1
+                        ;;
+                      *)
+                        echo "unsupported FAKE_ROLLBACK_EXECUTION_MODE=${mode}" >&2
+                        exit 2
+                        ;;
+                    esac
+                    exit 0
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_rollback_executor.chmod(0o755)
+
             fake_curl = fake_bin / "curl"
             fake_curl.write_text(
                 textwrap.dedent(
@@ -5026,9 +5112,11 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     "MATRIX_METRICS_URL": "http://fake-gateway:18083/metrics",
                     "REAL_PYTHON3": sys.executable,
                     "REAL_GO": real_go,
+                    "FAKE_CANARY_VERIFIER_SCRIPT": str(SCRIPT_DIR / "passive_canary_verifier.py"),
                     "FAKE_CANARY_STATUS": canary_status,
                     "FAKE_CANARY_PHASE_LOG": str(temp_path / "fake_canary_phase_log.txt"),
                     "FAKE_METRICS_STATE_FILE": str(temp_path / "fake_metrics_count.txt"),
+                    "PASSIVE_ROLLBACK_EXECUTOR_SCRIPT": str(fake_rollback_executor),
                     "PATH": f"{fake_bin}:{env.get('PATH', '')}",
                 }
             )
@@ -5058,6 +5146,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 publisher_cadence_path = proof_dir / "publisher_cadence.json"
                 cross_plane_skew_path = proof_dir / "cross_plane_skew.json"
                 wire_timing_reference_path = proof_dir / "wire_timing_reference.json"
+                rollback_execution_path = proof_dir / "rollback_execution.json"
                 phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -5086,6 +5175,10 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 if wire_timing_reference_path.exists():
                     artifacts["wire_timing_reference"] = json.loads(
                         wire_timing_reference_path.read_text(encoding="utf-8")
+                    )
+                if rollback_execution_path.exists():
+                    artifacts["rollback_execution"] = json.loads(
+                        rollback_execution_path.read_text(encoding="utf-8")
                     )
                 if phase_log_path.exists():
                     artifacts["phase_log"] = [
@@ -5209,6 +5302,49 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             wire_timing_reference["summary"]["families_with_intervals"],
             1,
         )
+
+    def test_smoke_emits_rollback_execution_artifact_when_canary_verdict_is_good(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed("pass")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        rollback_execution = artifacts.get("rollback_execution")
+        self.assertIsInstance(rollback_execution, dict)
+        self.assertTrue(rollback_execution["ok"])
+        self.assertEqual(
+            rollback_execution["schema"],
+            "observe_first_rollback_execution_v1",
+        )
+        self.assertEqual(
+            rollback_execution["requested_to_flags"]["observeFirstEnabled"],
+            False,
+        )
+        self.assertEqual(
+            rollback_execution["evidence"]["restart_exit_code"],
+            0,
+        )
+
+    def test_smoke_fails_closed_when_rollback_execution_artifact_is_missing(self) -> None:
+        result = self.run_smoke_with_fake_tools(
+            "pass",
+            extra_env={"FAKE_ROLLBACK_EXECUTION_MODE": "missing"},
+        )
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("rollback execution producer failed", result.stderr)
+
+    def test_smoke_fails_closed_when_rollback_execution_artifact_is_malformed(self) -> None:
+        result = self.run_smoke_with_fake_tools(
+            "pass",
+            extra_env={"FAKE_ROLLBACK_EXECUTION_MODE": "malformed"},
+        )
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("rollback execution producer failed", result.stderr)
+
+    def test_smoke_fails_closed_when_rollback_execution_executor_fails(self) -> None:
+        result = self.run_smoke_with_fake_tools(
+            "pass",
+            extra_env={"FAKE_ROLLBACK_EXECUTION_MODE": "fail"},
+        )
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("rollback execution producer failed", result.stderr)
 
     def test_smoke_emits_family_eligibility_artifact_for_not_proven_family(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

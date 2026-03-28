@@ -95,6 +95,7 @@ enforce_gw15_proof_flag_state() {
   [[ "${gw15_proof_mode}" == "1" ]] || return 0
 
   local observe state config policy
+  local rollback_execution="${MATRIX_GW15_ROLLBACK_EXECUTION:-0}"
   observe="$(normalize_bool_flag "${MATRIX_OBSERVE_FIRST_ENABLED}")" || {
     echo "invalid MATRIX_OBSERVE_FIRST_ENABLED=${MATRIX_OBSERVE_FIRST_ENABLED}" >&2
     return 1
@@ -109,21 +110,40 @@ enforce_gw15_proof_flag_state() {
   }
   policy="$(printf '%s' "${MATRIX_EXTERNAL_WRITE_POLICY}" | xargs)"
 
-  if [[ "${observe}" != "true" ]]; then
-    echo "GW-15 proof mode requires MATRIX_OBSERVE_FIRST_ENABLED=true" >&2
-    return 1
-  fi
-  if [[ "${state}" != "true" ]]; then
-    echo "GW-15 proof mode requires MATRIX_PASSIVE_STATE_DIRECT_APPLY=true" >&2
-    return 1
-  fi
-  if [[ "${config}" != "false" ]]; then
-    echo "GW-15 proof mode requires MATRIX_PASSIVE_CONFIG_DIRECT_APPLY=false" >&2
-    return 1
-  fi
-  if [[ "${policy}" != "record_only" ]]; then
-    echo "GW-15 proof mode requires MATRIX_EXTERNAL_WRITE_POLICY=record_only" >&2
-    return 1
+  if [[ "${rollback_execution}" == "1" ]]; then
+    if [[ "${observe}" != "false" ]]; then
+      echo "GW-15 rollback execution requires MATRIX_OBSERVE_FIRST_ENABLED=false" >&2
+      return 1
+    fi
+    if [[ "${state}" != "false" ]]; then
+      echo "GW-15 rollback execution requires MATRIX_PASSIVE_STATE_DIRECT_APPLY=false" >&2
+      return 1
+    fi
+    if [[ "${config}" != "false" ]]; then
+      echo "GW-15 rollback execution requires MATRIX_PASSIVE_CONFIG_DIRECT_APPLY=false" >&2
+      return 1
+    fi
+    if [[ "${policy}" != "record_only" ]]; then
+      echo "GW-15 rollback execution requires MATRIX_EXTERNAL_WRITE_POLICY=record_only" >&2
+      return 1
+    fi
+  else
+    if [[ "${observe}" != "true" ]]; then
+      echo "GW-15 proof mode requires MATRIX_OBSERVE_FIRST_ENABLED=true" >&2
+      return 1
+    fi
+    if [[ "${state}" != "true" ]]; then
+      echo "GW-15 proof mode requires MATRIX_PASSIVE_STATE_DIRECT_APPLY=true" >&2
+      return 1
+    fi
+    if [[ "${config}" != "false" ]]; then
+      echo "GW-15 proof mode requires MATRIX_PASSIVE_CONFIG_DIRECT_APPLY=false" >&2
+      return 1
+    fi
+    if [[ "${policy}" != "record_only" ]]; then
+      echo "GW-15 proof mode requires MATRIX_EXTERNAL_WRITE_POLICY=record_only" >&2
+      return 1
+    fi
   fi
 }
 
@@ -306,6 +326,7 @@ run_local_ops() {
 }
 
 restart_gateway_with_passive_mode() {
+  local gateway_log_path="${1:-${MATRIX_GATEWAY_LOG_PATH:-${remote_case_dir}/logs/gateway.log}}"
   local protocol network address
   local observe_first_flags=""
   enforce_gw15_proof_flag_state
@@ -324,14 +345,111 @@ restart_gateway_with_passive_mode() {
     --semantic-cache-path '${remote_case_dir}/state/semantic_cache.json' \
     ${observe_first_flags} \
     --http-addr ':${gateway_http_port}' --mdns=false --broadcast=true \
-    > '${remote_case_dir}/logs/gateway.log' 2>&1 & echo \$! > '${remote_case_dir}/state/gateway.pid'"
+    > '${gateway_log_path}' 2>&1 & echo \$! > '${remote_case_dir}/state/gateway.pid'"
   remote_exec "for i in \$(seq 1 60); do kill -0 \$(cat '${remote_case_dir}/state/gateway.pid') || exit 2; ss -ltn '( sport = :${gateway_http_port} )' | grep -q LISTEN && exit 0; sleep 1; done; exit 1"
+}
+
+gateway_graphql_health_check() {
+  local response=""
+  response="$(
+    curl -fsS -m 8 -H 'Content-Type: application/json' \
+      -d '{"query":"{ __typename }"}' \
+      "${MATRIX_GRAPHQL_URL:-${gateway_base_url}/graphql}" 2>/dev/null || true
+  )"
+  [[ -n "${response}" ]] || return 1
+  printf '%s' "${response}" | grep -q '"__typename"'
+}
+
+write_rollback_execution_artifact() {
+  local artifact_path="$1"
+  local started_at="$2"
+  local completed_at="$3"
+  local ok="$4"
+  local reason="$5"
+  local restart_exit_code="$6"
+  local restart_succeeded="$7"
+  local gateway_health_check_ok="$8"
+  local gateway_log_path="$9"
+
+  python3 "${PASSIVE_CHECK_SCRIPT%/*}/passive_canary_verifier.py" rollback-execution \
+    --run-id "${ROLLBACK_EXECUTION_RUN_ID}" \
+    --case-id "${canonical_case_id}" \
+    --exec-case-id "${exec_case_id}" \
+    --gateway-base-url "${gateway_base_url}" \
+    --remote-case-dir "${remote_case_dir}" \
+    --gateway-log-path "${gateway_log_path}" \
+    --started-at "${started_at}" \
+    --completed-at "${completed_at}" \
+    --ok "${ok}" \
+    --reason "${reason}" \
+    --restart-exit-code "${restart_exit_code}" \
+    --restart-succeeded "${restart_succeeded}" \
+    --gateway-health-check-ok "${gateway_health_check_ok}" \
+    --source "passive_matrix_case_ha.sh rollback-execute" \
+    --action "gateway_restart_with_rollback_target" \
+    --output "${artifact_path}"
+}
+
+run_rollback_execute() {
+  local artifact_path="${ROLLBACK_EXECUTION_ARTIFACT_PATH:-}"
+  local started_at completed_at
+  local ok="false"
+  local reason="gateway_restart_failed"
+  local restart_exit_code=1
+  local restart_succeeded="false"
+  local gateway_health_check_ok="false"
+  local rollback_gateway_log_path="${remote_case_dir}/logs/gateway_rollback.log"
+
+  if [[ -z "${artifact_path}" ]]; then
+    echo "ROLLBACK_EXECUTION_ARTIFACT_PATH is required" >&2
+    return 2
+  fi
+  if [[ -z "${ROLLBACK_EXECUTION_RUN_ID:-}" ]]; then
+    echo "ROLLBACK_EXECUTION_RUN_ID is required" >&2
+    return 2
+  fi
+
+  started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  if MATRIX_GW15_ROLLBACK_EXECUTION=1 \
+    MATRIX_GATEWAY_LOG_PATH="${rollback_gateway_log_path}" \
+    MATRIX_OBSERVE_FIRST_ENABLED=false \
+    MATRIX_PASSIVE_STATE_DIRECT_APPLY=false \
+    MATRIX_PASSIVE_CONFIG_DIRECT_APPLY=false \
+    MATRIX_EXTERNAL_WRITE_POLICY=record_only \
+    "$0" gateway-start; then
+    restart_exit_code=0
+    restart_succeeded="true"
+    if gateway_graphql_health_check; then
+      gateway_health_check_ok="true"
+      ok="true"
+      reason="ok"
+    else
+      reason="gateway_health_check_failed"
+    fi
+  else
+    restart_exit_code=$?
+  fi
+  completed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  write_rollback_execution_artifact \
+    "${artifact_path}" \
+    "${started_at}" \
+    "${completed_at}" \
+    "${ok}" \
+    "${reason}" \
+    "${restart_exit_code}" \
+    "${restart_succeeded}" \
+    "${gateway_health_check_ok}" \
+    "${rollback_gateway_log_path}"
+  [[ "${ok}" == "true" ]]
 }
 
 case "${ACTION}" in
   gateway-start)
     run_local_ops gateway-start
     restart_gateway_with_passive_mode
+    ;;
+  rollback-execute)
+    run_rollback_execute
     ;;
   gateway-stop|proxy-start|proxy-stop|ebusd-start|ebusd-stop)
     run_local_ops "${ACTION}"

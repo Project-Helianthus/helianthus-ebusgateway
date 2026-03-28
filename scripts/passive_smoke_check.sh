@@ -120,10 +120,12 @@ canary_verdict_path="${proof_dir}/canary_verdict.json"
 publisher_cadence_path="${proof_dir}/publisher_cadence.json"
 cross_plane_skew_path="${proof_dir}/cross_plane_skew.json"
 wire_timing_reference_path="${proof_dir}/wire_timing_reference.json"
+rollback_execution_path="${proof_dir}/rollback_execution.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
 replay_falsification_path="${proof_dir}/replay_falsification.json"
 family_eligibility_path="${proof_dir}/family_proof_eligibility.json"
 promotion_eligibility_path="${proof_dir}/promotion_eligibility.json"
+rollback_executor_script="${PASSIVE_ROLLBACK_EXECUTOR_SCRIPT:-${SCRIPT_DIR}/passive_matrix_case_ha.sh}"
 canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
 canary_retries=3
 canary_enabled=0
@@ -639,6 +641,19 @@ build_wire_timing_reference_artifact() {
   fi
 }
 
+build_rollback_execution_artifact() {
+  if ! (
+    ROLLBACK_EXECUTION_ARTIFACT_PATH="${rollback_execution_path}" \
+    ROLLBACK_EXECUTION_RUN_ID="${canary_run_id}" \
+    "${rollback_executor_script}" rollback-execute
+  ); then
+    return 1
+  fi
+  python3 "${canary_verifier_script}" validate-rollback-execution \
+    --artifact "${rollback_execution_path}" \
+    --run-id "${canary_run_id}" >/dev/null
+}
+
 build_replay_behavior_artifact() {
   if ! (
     cd "${REPO_ROOT}" && \
@@ -829,6 +844,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_wire_timing_reference_artifact; then
       echo "proof mode: wire timing reference producer failed (see ${wire_timing_reference_path})" >&2
+      exit 1
+    fi
+    if ! build_rollback_execution_artifact; then
+      echo "proof mode: rollback execution producer failed (see ${rollback_execution_path})" >&2
       exit 1
     fi
   fi

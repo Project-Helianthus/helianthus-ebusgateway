@@ -37,6 +37,14 @@ WARMUP_BEHAVIOR_ARTIFACT_SCHEMA = "p03_warmup_behavior_v1"
 PUBLISHER_CADENCE_ARTIFACT_SCHEMA = "p03_publisher_cadence_v1"
 PUBLISHER_CADENCE_SOURCE_ANCHOR = "config.semantic_state_interval"
 CROSS_PLANE_SKEW_ARTIFACT_SCHEMA = "p03_cross_plane_skew_v1"
+ROLLBACK_EXECUTION_ARTIFACT_SCHEMA = "observe_first_rollback_execution_v1"
+ROLLBACK_TARGET_FEATURE_FLAGS = {
+    "observeFirstEnabled": False,
+    "passiveStateDirectApply": False,
+    "passiveConfigDirectApply": False,
+    "externalWritePolicy": "record_only",
+    "normalizations": [],
+}
 CROSS_PLANE_SKEW_SEMANTIC_FIELDS = (
     "bus_observability.summary_last_updated_at",
     "bus_observability.status_last_updated_at",
@@ -98,6 +106,28 @@ def load_json(path: pathlib.Path) -> Any:
 def write_json(path: pathlib.Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def parse_iso8601_timestamp(value: Any, field_name: str) -> datetime:
+    text = str(value).strip()
+    if text == "":
+        raise ValueError(f"{field_name} must be non-empty RFC3339 timestamp")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be RFC3339 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field_name} must include timezone")
+    return parsed
+
+
+def parse_cli_bool(value: Any, field_name: str) -> bool:
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"{field_name} must be boolean-like, got {value!r}")
 
 
 def normalize_hex(value: str) -> str:
@@ -278,6 +308,142 @@ def load_and_validate_manifest(path: pathlib.Path, require_case_id: str | None =
             raise ValueError(f"manifest {family} canaries={got}; want >= {minimum}")
 
     return payload, canaries
+
+
+def build_rollback_execution_artifact(
+    *,
+    run_id: str,
+    case_id: str,
+    exec_case_id: str,
+    gateway_base_url: str,
+    remote_case_dir: str,
+    gateway_log_path: str,
+    started_at: str,
+    completed_at: str,
+    ok: bool,
+    reason: str,
+    restart_exit_code: int,
+    restart_succeeded: bool,
+    gateway_health_check_ok: bool,
+    source: str,
+    action: str,
+) -> Dict[str, Any]:
+    normalized_run_id = str(run_id).strip()
+    normalized_case_id = str(case_id).strip()
+    normalized_exec_case_id = str(exec_case_id).strip()
+    normalized_gateway_base_url = str(gateway_base_url).strip()
+    normalized_remote_case_dir = str(remote_case_dir).strip()
+    normalized_gateway_log_path = str(gateway_log_path).strip()
+    normalized_reason = str(reason).strip()
+    normalized_source = str(source).strip()
+    normalized_action = str(action).strip()
+
+    if normalized_run_id == "":
+        raise ValueError("run_id must be non-empty")
+    if normalized_case_id == "":
+        raise ValueError("case_id must be non-empty")
+    if normalized_exec_case_id == "":
+        raise ValueError("exec_case_id must be non-empty")
+    if normalized_gateway_base_url == "":
+        raise ValueError("gateway_base_url must be non-empty")
+    if normalized_remote_case_dir == "":
+        raise ValueError("remote_case_dir must be non-empty")
+    if normalized_gateway_log_path == "":
+        raise ValueError("gateway_log_path must be non-empty")
+    if normalized_reason == "":
+        raise ValueError("reason must be non-empty")
+    if normalized_source == "":
+        raise ValueError("source must be non-empty")
+    if normalized_action == "":
+        raise ValueError("action must be non-empty")
+
+    started_at_dt = parse_iso8601_timestamp(started_at, "started_at")
+    completed_at_dt = parse_iso8601_timestamp(completed_at, "completed_at")
+    if completed_at_dt < started_at_dt:
+        raise ValueError("completed_at must be >= started_at")
+    if ok and (not restart_succeeded or not gateway_health_check_ok or restart_exit_code != 0):
+        raise ValueError(
+            "ok rollback execution artifact must record restart_exit_code=0, restart_succeeded=true, and gateway_health_check_ok=true"
+        )
+
+    return {
+        "schema": ROLLBACK_EXECUTION_ARTIFACT_SCHEMA,
+        "captured_at": utc_now(),
+        "source": normalized_source,
+        "claim_scope": "bounded_ha_harness_rollback_execution_source",
+        "ok": bool(ok),
+        "run_id": normalized_run_id,
+        "case_id": normalized_case_id,
+        "exec_case_id": normalized_exec_case_id,
+        "action": normalized_action,
+        "reason": normalized_reason,
+        "requested_to_flags": dict(ROLLBACK_TARGET_FEATURE_FLAGS),
+        "evidence": {
+            "gateway_base_url": normalized_gateway_base_url,
+            "remote_case_dir": normalized_remote_case_dir,
+            "gateway_log_path": normalized_gateway_log_path,
+            "started_at": started_at_dt.isoformat(),
+            "completed_at": completed_at_dt.isoformat(),
+            "restart_exit_code": restart_exit_code,
+            "restart_succeeded": bool(restart_succeeded),
+            "gateway_health_check_ok": bool(gateway_health_check_ok),
+        },
+    }
+
+
+def load_rollback_execution_artifact(path: pathlib.Path, expected_run_id: str) -> Dict[str, Any]:
+    if not path.exists():
+        raise ValueError(f"missing rollback execution artifact: {path}")
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"rollback execution artifact must be object: {path}")
+    if str(payload.get("schema", "")).strip() != ROLLBACK_EXECUTION_ARTIFACT_SCHEMA:
+        raise ValueError(f"rollback execution artifact schema mismatch: {path}")
+    if str(payload.get("run_id", "")).strip() != str(expected_run_id).strip():
+        raise ValueError(f"rollback execution artifact run_id mismatch: {path}")
+    if str(payload.get("case_id", "")).strip() == "":
+        raise ValueError(f"rollback execution artifact missing case_id: {path}")
+    if str(payload.get("exec_case_id", "")).strip() == "":
+        raise ValueError(f"rollback execution artifact missing exec_case_id: {path}")
+    if str(payload.get("source", "")).strip() == "":
+        raise ValueError(f"rollback execution artifact missing source: {path}")
+    if str(payload.get("action", "")).strip() == "":
+        raise ValueError(f"rollback execution artifact missing action: {path}")
+    reason = str(payload.get("reason", "")).strip()
+    if reason == "":
+        raise ValueError(f"rollback execution artifact missing reason: {path}")
+
+    parse_iso8601_timestamp(payload.get("captured_at"), f"{path}:captured_at")
+    if not isinstance(payload.get("ok"), bool):
+        raise ValueError(f"rollback execution artifact missing boolean ok: {path}")
+
+    target_feature_flags = payload.get("requested_to_flags")
+    if target_feature_flags != ROLLBACK_TARGET_FEATURE_FLAGS:
+        raise ValueError(f"rollback execution artifact requested_to_flags mismatch: {path}")
+
+    evidence = payload.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError(f"rollback execution artifact missing evidence: {path}")
+    if str(evidence.get("gateway_base_url", "")).strip() == "":
+        raise ValueError(f"rollback execution artifact missing evidence.gateway_base_url: {path}")
+    if str(evidence.get("remote_case_dir", "")).strip() == "":
+        raise ValueError(f"rollback execution artifact missing evidence.remote_case_dir: {path}")
+    if str(evidence.get("gateway_log_path", "")).strip() == "":
+        raise ValueError(f"rollback execution artifact missing evidence.gateway_log_path: {path}")
+    parse_iso8601_timestamp(evidence.get("started_at"), f"{path}:evidence.started_at")
+    parse_iso8601_timestamp(evidence.get("completed_at"), f"{path}:evidence.completed_at")
+    restart_exit_code = evidence.get("restart_exit_code")
+    if not isinstance(restart_exit_code, int):
+        raise ValueError(f"rollback execution artifact missing integer restart_exit_code: {path}")
+    restart_succeeded = evidence.get("restart_succeeded")
+    health_check_ok = evidence.get("gateway_health_check_ok")
+    if not isinstance(restart_succeeded, bool):
+        raise ValueError(f"rollback execution artifact missing boolean restart_succeeded: {path}")
+    if not isinstance(health_check_ok, bool):
+        raise ValueError(f"rollback execution artifact missing boolean gateway_health_check_ok: {path}")
+    if bool(payload.get("ok")) and (restart_exit_code != 0 or not restart_succeeded or not health_check_ok):
+        raise ValueError(f"rollback execution artifact ok status is inconsistent with evidence booleans: {path}")
+    return payload
 
 
 def extract_locked_replay_case_names(corpus: Any, source_path: pathlib.Path) -> Tuple[Tuple[str, ...], str]:
@@ -4999,6 +5165,33 @@ def cross_plane_skew_command(args: argparse.Namespace) -> int:
     return 0 if bool(artifact.get("ok", False)) else 1
 
 
+def rollback_execution_command(args: argparse.Namespace) -> int:
+    artifact = build_rollback_execution_artifact(
+        run_id=args.run_id,
+        case_id=args.case_id,
+        exec_case_id=args.exec_case_id,
+        gateway_base_url=args.gateway_base_url,
+        remote_case_dir=args.remote_case_dir,
+        gateway_log_path=args.gateway_log_path,
+        started_at=args.started_at,
+        completed_at=args.completed_at,
+        ok=parse_cli_bool(args.ok, "ok"),
+        reason=args.reason,
+        restart_exit_code=args.restart_exit_code,
+        restart_succeeded=parse_cli_bool(args.restart_succeeded, "restart_succeeded"),
+        gateway_health_check_ok=parse_cli_bool(args.gateway_health_check_ok, "gateway_health_check_ok"),
+        source=args.source,
+        action=args.action,
+    )
+    write_json(pathlib.Path(args.output), artifact)
+    return 0
+
+
+def validate_rollback_execution_command(args: argparse.Namespace) -> int:
+    load_rollback_execution_artifact(pathlib.Path(args.artifact), args.run_id)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -5091,6 +5284,36 @@ def build_parser() -> argparse.ArgumentParser:
     cross_plane_skew.add_argument("--publisher-cadence", default=None)
     cross_plane_skew.add_argument("--output", required=True)
     cross_plane_skew.set_defaults(func=cross_plane_skew_command)
+
+    rollback_execution = sub.add_parser(
+        "rollback-execution",
+        help="emit bounded rollback execution artifact from a real harness restart",
+    )
+    rollback_execution.add_argument("--run-id", required=True)
+    rollback_execution.add_argument("--case-id", required=True)
+    rollback_execution.add_argument("--exec-case-id", required=True)
+    rollback_execution.add_argument("--gateway-base-url", required=True)
+    rollback_execution.add_argument("--remote-case-dir", required=True)
+    rollback_execution.add_argument("--gateway-log-path", required=True)
+    rollback_execution.add_argument("--started-at", required=True)
+    rollback_execution.add_argument("--completed-at", required=True)
+    rollback_execution.add_argument("--ok", required=True)
+    rollback_execution.add_argument("--reason", required=True)
+    rollback_execution.add_argument("--restart-exit-code", required=True, type=int)
+    rollback_execution.add_argument("--restart-succeeded", required=True)
+    rollback_execution.add_argument("--gateway-health-check-ok", required=True)
+    rollback_execution.add_argument("--source", required=True)
+    rollback_execution.add_argument("--action", required=True)
+    rollback_execution.add_argument("--output", required=True)
+    rollback_execution.set_defaults(func=rollback_execution_command)
+
+    validate_rollback_execution = sub.add_parser(
+        "validate-rollback-execution",
+        help="validate rollback execution artifact shape and same-run provenance",
+    )
+    validate_rollback_execution.add_argument("--artifact", required=True)
+    validate_rollback_execution.add_argument("--run-id", required=True)
+    validate_rollback_execution.set_defaults(func=validate_rollback_execution_command)
     return parser
 
 

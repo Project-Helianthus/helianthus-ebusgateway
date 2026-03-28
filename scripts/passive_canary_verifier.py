@@ -37,6 +37,21 @@ PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC = "ebus_passive_completed_transaction
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_apply_candidates_evaluated_total"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA = 100.0
+FEATURE_FLAG_FIELDS = (
+    "observeFirstEnabled",
+    "passiveStateDirectApply",
+    "passiveConfigDirectApply",
+    "externalWritePolicy",
+    "normalizations",
+)
+FEATURE_FLAG_FIELD_ALIASES = {
+    "observeFirstEnabled": ("observeFirstEnabled", "observe_first_enabled"),
+    "passiveStateDirectApply": ("passiveStateDirectApply", "passive_state_direct_apply"),
+    "passiveConfigDirectApply": ("passiveConfigDirectApply", "passive_config_direct_apply"),
+    "externalWritePolicy": ("externalWritePolicy", "external_write_policy"),
+    "normalizations": ("normalizations",),
+}
+FEATURE_FLAG_CONSISTENCY_SCHEMA = "p03_feature_flag_consistency_v1"
 REPLAY_EXPECTED_DISPOSITIONS = {"ambiguity", "falsification"}
 PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)$")
 
@@ -355,6 +370,97 @@ def proof_phase_metrics_snapshot_path(proof_dir: pathlib.Path, phase: str) -> pa
     raise ValueError(f"unsupported canary phase for metrics snapshot lookup: {phase!r}")
 
 
+def proof_phase_feature_flag_snapshot_path(proof_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    normalized = phase.strip().lower()
+    if normalized in ("start", "end"):
+        return proof_dir / f"{normalized}_feature_flags.json"
+    if is_interval_phase(normalized):
+        return proof_dir / "samples" / f"{normalized}_feature_flags.json"
+    raise ValueError(f"unsupported canary phase for feature flag snapshot lookup: {phase!r}")
+
+
+def canonicalize_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): canonicalize_json_value(value[key]) for key in sorted(value.keys())}
+    if isinstance(value, list):
+        return [canonicalize_json_value(item) for item in value]
+    return value
+
+
+def normalize_feature_flag_state(raw: Any, snapshot_path: pathlib.Path, source_name: str) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{snapshot_path}: {source_name} feature flags must be a JSON object")
+    state: Dict[str, Any] = {}
+    for field in FEATURE_FLAG_FIELDS:
+        alias_names = FEATURE_FLAG_FIELD_ALIASES.get(field, (field,))
+        present_name = None
+        for candidate in alias_names:
+            if candidate in raw:
+                present_name = candidate
+                break
+        if present_name is None:
+            raise ValueError(f"{snapshot_path}: {source_name} feature flags missing {field}")
+        value = raw[present_name]
+        if value is None:
+            raise ValueError(f"{snapshot_path}: {source_name} feature flags field {field!r} is null")
+        state[field] = canonicalize_json_value(value)
+    return state
+
+
+def canonical_feature_flag_key(state: Dict[str, Any]) -> str:
+    return json.dumps(state, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def compare_feature_flag_states(
+    left_state: Dict[str, Any],
+    right_state: Dict[str, Any],
+) -> Tuple[bool, str | None]:
+    for field in FEATURE_FLAG_FIELDS:
+        if left_state.get(field) != right_state.get(field):
+            return False, field
+    return True, None
+
+
+def load_feature_flag_snapshot(snapshot_path: pathlib.Path, phase: str) -> Dict[str, Any]:
+    if not snapshot_path.exists():
+        raise ValueError(f"missing required feature flag proof artifact: {snapshot_path}")
+    payload = load_json(snapshot_path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"{snapshot_path}: feature flag snapshot must be a JSON object")
+
+    graphql_state = normalize_feature_flag_state(
+        payload.get("graphql_feature_flags"),
+        snapshot_path,
+        "graphql",
+    )
+    bus_state = normalize_feature_flag_state(
+        payload.get("bus_observability_feature_flags"),
+        snapshot_path,
+        "bus_observability",
+    )
+    canonical_graphql_key = canonical_feature_flag_key(graphql_state)
+    canonical_bus_key = canonical_feature_flag_key(bus_state)
+    if canonical_graphql_key != canonical_bus_key:
+        mismatch_field = None
+        for field in FEATURE_FLAG_FIELDS:
+            if graphql_state[field] != bus_state[field]:
+                mismatch_field = field
+                break
+        raise ValueError(
+            f"{snapshot_path}: canonical feature flag state drift between GraphQL and bus-observability "
+            f"at phase {phase} ({mismatch_field or 'unknown field'})"
+        )
+
+    return {
+        "phase": phase,
+        "feature_flags_snapshot_path": str(snapshot_path),
+        "graphql_feature_flags": graphql_state,
+        "bus_observability_feature_flags": bus_state,
+        "canonical_feature_flags": graphql_state,
+        "canonical_feature_flags_key": canonical_graphql_key,
+    }
+
+
 def build_phase_read_avoidance_observation(
     output_path: pathlib.Path,
     phase: str,
@@ -383,6 +489,10 @@ def build_phase_read_avoidance_observation(
 
 def build_window_read_avoidance_accounting(proof_dir: pathlib.Path) -> Dict[str, Any]:
     return build_window_read_avoidance_accounting_for_phases(proof_dir, ["start", "end"])
+
+
+def build_window_feature_flag_consistency(proof_dir: pathlib.Path) -> Dict[str, Any]:
+    return build_window_feature_flag_consistency_for_phases(proof_dir, ["start", "end"])
 
 
 def build_window_read_avoidance_accounting_for_phases(proof_dir: pathlib.Path, phases: Iterable[str]) -> Dict[str, Any]:
@@ -573,6 +683,62 @@ def build_window_read_avoidance_accounting_for_phases(proof_dir: pathlib.Path, p
     }
 
 
+def build_window_feature_flag_consistency_for_phases(
+    proof_dir: pathlib.Path,
+    phases: Iterable[str],
+) -> Dict[str, Any]:
+    ordered_phases: List[str] = []
+    seen_phases = set()
+    for raw_phase in phases:
+        phase = str(raw_phase).strip().lower()
+        if phase == "" or phase in seen_phases:
+            continue
+        if phase in ("start", "end") or is_interval_phase(phase):
+            ordered_phases.append(phase)
+            seen_phases.add(phase)
+    if "start" not in seen_phases:
+        ordered_phases.insert(0, "start")
+    if "end" not in seen_phases:
+        ordered_phases.append("end")
+
+    snapshots: List[Dict[str, Any]] = []
+    previous_key: str | None = None
+    previous_phase: str | None = None
+    for phase in ordered_phases:
+        snapshot_path = proof_phase_feature_flag_snapshot_path(proof_dir, phase)
+        snapshot = load_feature_flag_snapshot(snapshot_path, phase)
+        canonical_key = str(snapshot["canonical_feature_flags_key"])
+        if previous_key is not None and canonical_key != previous_key:
+            previous_state = snapshots[-1]["canonical_feature_flags"]
+            current_state = snapshot["canonical_feature_flags"]
+            drift_field = None
+            for field in FEATURE_FLAG_FIELDS:
+                if previous_state[field] != current_state[field]:
+                    drift_field = field
+                    break
+            raise ValueError(
+                "feature flag drift detected across proof window: "
+                f"{drift_field or 'unknown field'} changed at phase {phase} "
+                f"(previous phase {previous_phase})"
+            )
+        snapshots.append(snapshot)
+        previous_key = canonical_key
+        previous_phase = phase
+
+    return {
+        "schema": FEATURE_FLAG_CONSISTENCY_SCHEMA,
+        "captured_at": utc_now(),
+        "source": "proof_artifact_feature_flags",
+        "claim_scope": "bounded_proof_window_feature_flag_consistency",
+        "evidence": {
+            "feature_flag_snapshot_paths": [item["feature_flags_snapshot_path"] for item in snapshots],
+            "phases": [item["phase"] for item in snapshots],
+        },
+        "snapshots": snapshots,
+        "ok": True,
+    }
+
+
 def evaluate_read_avoidance_accounting(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
     if not isinstance(payload, dict):
         return False, "missing read_avoidance_accounting payload", {}
@@ -660,6 +826,85 @@ def evaluate_proof_window_traffic_minimums(payload: Any) -> Tuple[bool, str, Dic
             "completed_transactions_minimum": PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA,
             "direct_apply_candidates_evaluated_delta": candidates_value,
             "direct_apply_candidates_evaluated_minimum": PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA,
+        },
+    )
+
+
+def evaluate_feature_flag_consistency(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return False, "missing feature_flag_consistency payload", {}
+    snapshots = payload.get("snapshots")
+    if not isinstance(snapshots, list):
+        return False, "feature_flag_consistency missing snapshots", {}
+    if len(snapshots) == 0:
+        return False, "feature_flag_consistency missing snapshots", {}
+
+    previous_key: str | None = None
+    previous_phase: str | None = None
+    phase_names: List[str] = []
+    for index, snapshot in enumerate(snapshots):
+        if not isinstance(snapshot, dict):
+            return False, f"feature_flag_consistency snapshot[{index}] must be a JSON object", {}
+        phase = str(snapshot.get("phase", "")).strip()
+        if phase == "":
+            return False, f"feature_flag_consistency snapshot[{index}] missing phase", {}
+        phase_names.append(phase)
+        graphql_state = snapshot.get("graphql_feature_flags")
+        bus_state = snapshot.get("bus_observability_feature_flags")
+        canonical_state = snapshot.get("canonical_feature_flags")
+        if not isinstance(graphql_state, dict):
+            return False, f"feature_flag_consistency snapshot {phase} missing graphql_feature_flags", {}
+        if not isinstance(bus_state, dict):
+            return False, f"feature_flag_consistency snapshot {phase} missing bus_observability_feature_flags", {}
+        if not isinstance(canonical_state, dict):
+            return False, f"feature_flag_consistency snapshot {phase} missing canonical_feature_flags", {}
+
+        snapshot_path = pathlib.Path(str(snapshot.get("feature_flags_snapshot_path", "")).strip() or ".")
+        try:
+            canonical_graphql_key = canonical_feature_flag_key(
+                normalize_feature_flag_state(graphql_state, snapshot_path, "graphql")
+            )
+            canonical_bus_key = canonical_feature_flag_key(
+                normalize_feature_flag_state(bus_state, snapshot_path, "bus_observability")
+            )
+            canonical_state_key = canonical_feature_flag_key(
+                normalize_feature_flag_state(canonical_state, snapshot_path, "canonical")
+            )
+        except Exception as exc:
+            return False, str(exc), {}
+        if canonical_graphql_key != canonical_state_key or canonical_bus_key != canonical_state_key:
+            return (
+                False,
+                f"feature_flag_consistency snapshot {phase} is malformed or internally inconsistent",
+                {},
+            )
+
+        if previous_key is not None and canonical_state_key != previous_key:
+            drift_field = None
+            previous_state = snapshots[index - 1]["canonical_feature_flags"]
+            for field in FEATURE_FLAG_FIELDS:
+                if previous_state.get(field) != canonical_state.get(field):
+                    drift_field = field
+                    break
+            return (
+                False,
+                f"feature flag drift detected across proof window: {drift_field or 'unknown field'} changed "
+                f"at phase {phase} (previous phase {previous_phase})",
+                {
+                    "drift_field": drift_field,
+                    "previous_phase": previous_phase,
+                    "current_phase": phase,
+                },
+            )
+        previous_key = canonical_state_key
+        previous_phase = phase
+
+    return (
+        True,
+        "",
+        {
+            "snapshot_count": len(snapshots),
+            "phases": phase_names,
         },
     )
 
@@ -1163,6 +1408,7 @@ def summarize_run(
     ordered_phases = [phase for _, phase, _ in sorted(phase_payloads, key=lambda item: item[0])]
     read_avoidance_accounting = build_window_read_avoidance_accounting_for_phases(proof_dir, ordered_phases)
     proof_window_traffic_minimums = read_avoidance_accounting.get("proof_window_traffic_minimums")
+    feature_flag_consistency = build_window_feature_flag_consistency_for_phases(proof_dir, ordered_phases)
 
     return {
         "schema": "p03_canary_overall_summary_v1",
@@ -1171,6 +1417,7 @@ def summarize_run(
         "verification_mode": "active_direct_read",
         "read_avoidance_accounting": read_avoidance_accounting,
         "proof_window_traffic_minimums": proof_window_traffic_minimums,
+        "feature_flag_consistency": feature_flag_consistency,
         "phase_files_total": len(list((proof_dir).glob(f"{CANARY_PHASE_PREFIX}*.json"))),
         "phase_files_used": len(phase_files),
         "phase_files_stale_ignored": stale_ignored,
@@ -1207,6 +1454,9 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
     )
     proof_window_ok, proof_window_reason, proof_window_details = evaluate_proof_window_traffic_minimums(
         summary.get("proof_window_traffic_minimums")
+    )
+    feature_flags_ok, feature_flags_reason, feature_flags_details = evaluate_feature_flag_consistency(
+        summary.get("feature_flag_consistency")
     )
 
     mismatch_count = int(totals.get("mismatch", 0) or 0)
@@ -1253,7 +1503,14 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     per_canary_ok = len(failing_canaries) == 0
-    verdict_ok = no_mismatches_ok and overall_interval_ok and per_canary_ok and read_avoidance_ok and proof_window_ok
+    verdict_ok = (
+        no_mismatches_ok
+        and overall_interval_ok
+        and per_canary_ok
+        and read_avoidance_ok
+        and proof_window_ok
+        and feature_flags_ok
+    )
 
     return {
         "schema": CANARY_VERDICT_SCHEMA,
@@ -1291,6 +1548,11 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
                 "ok": proof_window_ok,
                 "reason": proof_window_reason,
                 **proof_window_details,
+            },
+            "feature_flag_consistency": {
+                "ok": feature_flags_ok,
+                "reason": feature_flags_reason,
+                **feature_flags_details,
             },
         },
         "per_canary": per_canary_details,

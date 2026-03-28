@@ -27,6 +27,23 @@ def write_metrics(path: pathlib.Path, lines: list[str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def canonical_feature_flags(
+    *,
+    observe_first_enabled: bool = True,
+    passive_state_direct_apply: bool = False,
+    passive_config_direct_apply: bool = False,
+    external_write_policy: str = "record_only",
+    normalizations: object = (),
+) -> dict:
+    return {
+        "observeFirstEnabled": observe_first_enabled,
+        "passiveStateDirectApply": passive_state_direct_apply,
+        "passiveConfigDirectApply": passive_config_direct_apply,
+        "externalWritePolicy": external_write_policy,
+        "normalizations": normalizations,
+    }
+
+
 def write_replay_behavior_artifact(proof_dir: pathlib.Path) -> dict:
     artifact = {
         "schema": "observe_first_replay_behavior_v1",
@@ -470,6 +487,8 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 f"ebus_passive_direct_apply_candidates_evaluated_total {end_direct_apply_candidates}",
             ],
         )
+        self.write_feature_flag_snapshot(proof_dir, "start")
+        self.write_feature_flag_snapshot(proof_dir, "end")
 
     def write_sample_read_avoidance_metrics(
         self,
@@ -492,6 +511,33 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 f"ebus_passive_direct_apply_candidates_evaluated_total {direct_apply_candidates}",
             ],
         )
+        self.write_feature_flag_snapshot(proof_dir, phase)
+
+    def write_feature_flag_snapshot(
+        self,
+        proof_dir: pathlib.Path,
+        phase: str,
+        *,
+        graphql_flags: dict | None = None,
+        bus_flags: dict | None = None,
+    ) -> None:
+        if graphql_flags is None:
+            graphql_flags = canonical_feature_flags()
+        if bus_flags is None:
+            bus_flags = canonical_feature_flags()
+        snapshot_path = (
+            proof_dir / f"{phase}_feature_flags.json"
+            if phase in ("start", "end")
+            else proof_dir / "samples" / f"{phase}_feature_flags.json"
+        )
+        write_json(
+            snapshot_path,
+            {
+                "captured_at": "2026-03-28T00:00:00+00:00",
+                "graphql_feature_flags": graphql_flags,
+                "bus_observability_feature_flags": bus_flags,
+            },
+        )
 
     def write_run_phase_artifacts(
         self,
@@ -509,6 +555,7 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 "results": [{"id": "a", "status": "pass"}],
             },
         )
+        self.write_feature_flag_snapshot(proof_dir, "start")
         if include_interval:
             write_json(
                 proof_dir / "canary_phase_sample_0001.json",
@@ -518,6 +565,7 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                     "results": [{"id": "a", "status": interval_status}],
                 },
             )
+            self.write_feature_flag_snapshot(proof_dir, "sample_0001")
         write_json(
             proof_dir / "canary_phase_end.json",
             {
@@ -526,6 +574,7 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 "results": [{"id": "a", "status": "pass"}],
             },
         )
+        self.write_feature_flag_snapshot(proof_dir, "end")
 
     def test_verify_phase_marks_read_avoidance_accounting_non_authoritative(self) -> None:
         _, canaries = verifier.load_and_validate_manifest(
@@ -968,6 +1017,105 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             self.assertFalse(thresholds["ebus_passive_completed_transactions_total"]["ok"])
             self.assertFalse(thresholds["ebus_passive_direct_apply_candidates_evaluated_total"]["ok"])
 
+    def test_summary_fails_closed_when_feature_flag_snapshot_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=2,
+                end_direct_apply=2,
+                end_avoided=3,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            (proof_dir / "start_feature_flags.json").unlink()
+
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("feature flag proof artifact", str(ctx.exception))
+
+    def test_summary_fails_closed_when_feature_flag_snapshot_is_malformed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=2,
+                end_direct_apply=2,
+                end_avoided=3,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            write_json(
+                proof_dir / "end_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:00+00:00",
+                    "graphql_feature_flags": canonical_feature_flags(),
+                    "bus_observability_feature_flags": {
+                        "observeFirstEnabled": True,
+                    },
+                },
+            )
+
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("missing passiveStateDirectApply", str(ctx.exception))
+
+    def test_summary_fails_closed_when_feature_flags_drift_mid_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=2,
+                end_direct_apply=2,
+                end_avoided=3,
+            )
+            self.write_sample_read_avoidance_metrics(
+                proof_dir,
+                "sample_0001",
+                direct_apply=2,
+                avoided=3,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=True)
+            write_json(
+                proof_dir / "samples" / "sample_0001_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:00+00:00",
+                    "graphql_feature_flags": canonical_feature_flags(observe_first_enabled=False),
+                    "bus_observability_feature_flags": canonical_feature_flags(observe_first_enabled=False),
+                },
+            )
+
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1")
+            self.assertIn("feature flag drift", str(ctx.exception))
+            self.assertIn("observeFirstEnabled", str(ctx.exception))
+
+    def test_summary_collects_matching_feature_flag_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=2,
+                end_direct_apply=2,
+                end_avoided=3,
+            )
+            self.write_sample_read_avoidance_metrics(
+                proof_dir,
+                "sample_0001",
+                direct_apply=2,
+                avoided=3,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=True)
+
+            summary = verifier.summarize_run(proof_dir, "run-1")
+            feature_flags = summary["feature_flag_consistency"]
+            self.assertTrue(feature_flags["ok"])
+            self.assertEqual(feature_flags["schema"], verifier.FEATURE_FLAG_CONSISTENCY_SCHEMA)
+            self.assertEqual(feature_flags["evidence"]["phases"], ["start", "sample_0001", "end"])
+            self.assertEqual(len(feature_flags["snapshots"]), 3)
+
 
 class CanaryVerdictTests(unittest.TestCase):
     def build_summary_payload(
@@ -996,6 +1144,42 @@ class CanaryVerdictTests(unittest.TestCase):
                     "ebus_passive_completed_transactions_total": completed_transactions_delta,
                     "ebus_passive_direct_apply_candidates_evaluated_total": direct_apply_candidates_delta,
                 }
+            },
+            "feature_flag_consistency": {
+                "schema": verifier.FEATURE_FLAG_CONSISTENCY_SCHEMA,
+                "captured_at": "2026-03-28T00:00:00+00:00",
+                "source": "proof_artifact_feature_flags",
+                "claim_scope": "bounded_proof_window_feature_flag_consistency",
+                "evidence": {
+                    "feature_flag_snapshot_paths": [
+                        "/tmp/proof/start_feature_flags.json",
+                        "/tmp/proof/end_feature_flags.json",
+                    ],
+                    "phases": ["start", "end"],
+                },
+                "snapshots": [
+                    {
+                        "phase": "start",
+                        "feature_flags_snapshot_path": "/tmp/proof/start_feature_flags.json",
+                        "graphql_feature_flags": canonical_feature_flags(),
+                        "bus_observability_feature_flags": canonical_feature_flags(),
+                        "canonical_feature_flags": canonical_feature_flags(),
+                        "canonical_feature_flags_key": json.dumps(
+                            canonical_feature_flags(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+                        ),
+                    },
+                    {
+                        "phase": "end",
+                        "feature_flags_snapshot_path": "/tmp/proof/end_feature_flags.json",
+                        "graphql_feature_flags": canonical_feature_flags(),
+                        "bus_observability_feature_flags": canonical_feature_flags(),
+                        "canonical_feature_flags": canonical_feature_flags(),
+                        "canonical_feature_flags_key": json.dumps(
+                            canonical_feature_flags(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+                        ),
+                    },
+                ],
+                "ok": True,
             },
             "interval_phase_required": interval_required,
             "totals": {
@@ -1147,6 +1331,19 @@ class CanaryVerdictTests(unittest.TestCase):
         verdict = verifier.build_canary_verdict(summary)
         self.assertFalse(verdict["ok"])
         self.assertFalse(verdict["criteria"]["proof_window_traffic_minimums"]["ok"])
+
+    def test_verdict_fails_closed_when_feature_flag_consistency_is_missing(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=False,
+            interval_results=0,
+            interval_conclusive=0,
+            per_canary_interval={"a": {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}},
+        )
+        summary.pop("feature_flag_consistency", None)
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["feature_flag_consistency"]["ok"])
 
     def test_verdict_fails_when_proof_window_traffic_minimums_are_below_threshold(self) -> None:
         summary = self.build_summary_payload(
@@ -1570,7 +1767,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         fi
                       fi
                       cat <<EOF
-                    {"status":{"startup":{"phase":"${phase}"},"feature_flags":{"observeFirstEnabled":true}}}
+                    {"summary":{"status":{"startup":{"phase":"${phase}"},"feature_flags":{"observe_first_enabled":true,"passive_state_direct_apply":false,"passive_config_direct_apply":false,"external_write_policy":"record_only","normalizations":[]}}}}
                     EOF
                       exit 0
                     fi
@@ -1578,7 +1775,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     if [[ "${url}" == *"/graphql" ]]; then
                       if [[ "${data}" == *"busSummary"* ]]; then
                         cat <<'EOF'
-                    {"data":{"busSummary":{"status":{"featureFlags":{"observeFirstEnabled":true}}},"watchSummary":{"inventory":{"totalEntries":1},"activationCounts":{"catalogDescriptors":1,"activeKeys":1,"sourceClasses":[]},"directApplyEligibilityClasses":[],"degraded":{"active":false,"shadowingEnabled":false,"pinnedBudgetDegraded":false,"compactorDegraded":false,"reasons":[]}}}}
+                    {"data":{"busSummary":{"status":{"featureFlags":{"observeFirstEnabled":true,"passiveStateDirectApply":false,"passiveConfigDirectApply":false,"externalWritePolicy":"record_only","normalizations":[]}}},"watchSummary":{"inventory":{"totalEntries":1},"activationCounts":{"catalogDescriptors":1,"activeKeys":1,"sourceClasses":[]},"directApplyEligibilityClasses":[],"degraded":{"active":false,"shadowingEnabled":false,"pinnedBudgetDegraded":false,"compactorDegraded":false,"reasons":[]}}}}
                     EOF
                         exit 0
                       fi

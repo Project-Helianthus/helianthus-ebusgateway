@@ -709,10 +709,19 @@ func (cache *ShadowCache) BootstrapRuntimeDescriptor(descriptor WatchDescriptor,
 			return nil
 		}
 
+		existingSources := currentActivations.ActiveSources(normalized.Key)
+		sourceAdded := false
 		for _, source := range activationSources {
+			if !watchActivationSourcesContain(existingSources, source) {
+				sourceAdded = true
+				existingSources = append(existingSources, source)
+			}
 			if err := currentActivations.Activate(source, normalized.Key); err != nil {
 				return err
 			}
+		}
+		if !sourceAdded {
+			return nil
 		}
 		footprint := cache.staticPinnedFootprint()
 		cache.pinnedBudgetDegraded.Store(footprint > cache.staticPinnedBudget())
@@ -747,6 +756,15 @@ func shouldUpgradeRuntimeDescriptor(existing, incoming WatchDescriptor) bool {
 		return false
 	}
 	return incoming.DecoderID != runtimeDescriptorDecoderPassiveFallback
+}
+
+func watchActivationSourcesContain(sources []WatchActivationSource, target WatchActivationSource) bool {
+	for _, source := range sources {
+		if source == target {
+			return true
+		}
+	}
+	return false
 }
 
 func bootstrapRuntimeActivationSet(

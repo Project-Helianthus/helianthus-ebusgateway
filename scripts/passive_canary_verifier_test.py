@@ -2395,6 +2395,100 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "blocked")
         self.assertIn("family proof case_id mismatch", artifact["eligibility"]["reason"])
 
+    def test_family_proof_eligibility_rejects_warmup_transition_anomalies(self) -> None:
+        def rewrite_json(path: pathlib.Path, mutator) -> None:
+            payload = verifier.load_json(path)
+            mutator(payload)
+            write_json(path, payload)
+
+        def set_nested_value(path: pathlib.Path, keys: list[str], value: object) -> None:
+            def mutator(payload: dict) -> None:
+                target = payload
+                for key in keys[:-1]:
+                    target = target[key]
+                target[keys[-1]] = value
+
+            rewrite_json(path, mutator)
+
+        cases = (
+            (
+                "split start/end transport class",
+                lambda proof_dir: (
+                    set_nested_value(
+                        proof_dir / "end_graphql_bus_watch.json",
+                        ["data", "busSummary", "status", "transportClass"],
+                        "tcp",
+                    )
+                ),
+                "ambiguous transport class across structured warmup snapshots",
+            ),
+            (
+                "cold start already LIVE_READY",
+                lambda proof_dir: (
+                    set_nested_value(
+                        proof_dir / "start_bus_observability.json",
+                        ["summary", "status", "startup", "phase"],
+                        "LIVE_READY",
+                    )
+                ),
+                "family proof cold_start is not pre-LIVE_READY",
+            ),
+            (
+                "cold start already available",
+                lambda proof_dir: (
+                    set_nested_value(
+                        proof_dir / "start_graphql_bus_watch.json",
+                        ["data", "busSummary", "status", "warmup", "state"],
+                        "available",
+                    )
+                ),
+                "family proof cold_start is not pre-available",
+            ),
+            (
+                "end not LIVE_READY",
+                lambda proof_dir: (
+                    set_nested_value(
+                        proof_dir / "end_bus_observability.json",
+                        ["summary", "status", "startup", "phase"],
+                        "LIVE_WARMUP",
+                    )
+                ),
+                "family proof post_warmup is not LIVE_READY",
+            ),
+            (
+                "end not available",
+                lambda proof_dir: (
+                    set_nested_value(
+                        proof_dir / "end_graphql_bus_watch.json",
+                        ["data", "busSummary", "status", "warmup", "state"],
+                        "warming_up",
+                    )
+                ),
+                "family proof post_warmup is not warmup available",
+            ),
+        )
+
+        for label, mutator, expected_reason in cases:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    proof_dir = pathlib.Path(temp_dir)
+                    write_family_proof_artifacts(proof_dir, transport_class="ens")
+                    mutator(proof_dir)
+                    artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                        proof_dir,
+                        "run-1",
+                        "P03",
+                        "proxy-single-client",
+                        "required",
+                        "ens",
+                        proxy_transport="ens",
+                        ebusd_transport="ens",
+                    )
+
+                self.assertFalse(artifact["ok"])
+                self.assertEqual(artifact["eligibility"]["status"], "blocked")
+                self.assertIn(expected_reason, artifact["eligibility"]["reason"])
+
     def test_family_proof_eligibility_rejects_missing_family_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
@@ -3259,7 +3353,7 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
             write_family_proof_artifacts(proof_dir, transport_class="ens")
-            write_family_proof_eligibility_artifact(proof_dir)
+            write_family_proof_eligibility_artifact(proof_dir, ebusd_transport="")
             artifact = verifier.build_promotion_eligibility_artifact_for_run(
                 proof_dir,
                 "run-1",
@@ -3268,7 +3362,7 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                 "required",
                 "ens",
                 proxy_transport="ens",
-                ebusd_transport="ebusd-tcp",
+                ebusd_transport="",
             )
 
         self.assertEqual(artifact["schema"], verifier.PROMOTION_ELIGIBILITY_SCHEMA)
@@ -3276,6 +3370,88 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "eligible_for_default_flip")
         self.assertEqual(artifact["promotion_scope"]["family_key"], "proxy-single-client/required/ens")
         self.assertEqual(artifact["matrix_topology"]["transport_class"], "ens")
+
+    def test_promotion_eligibility_rejects_explicitly_banned_topologies(self) -> None:
+        cases = (
+            (
+                "via-ebusd-tcp",
+                {
+                    "kind": "proxy-single-client",
+                    "passive_mode": "required",
+                    "gateway_transport": "ens",
+                    "proxy_transport": "ens",
+                    "ebusd_transport": "ebusd-tcp",
+                },
+                "topology='via-ebusd-tcp'",
+            ),
+            (
+                "contradictory ebusd transport axis",
+                {
+                    "kind": "proxy-single-client",
+                    "passive_mode": "required",
+                    "gateway_transport": "ens",
+                    "proxy_transport": "ens",
+                    "ebusd_transport": "ens",
+                },
+                "ebusd_transport='ens'",
+            ),
+            (
+                "proxy-dual-client",
+                {
+                    "kind": "proxy-dual-client",
+                    "passive_mode": "optional",
+                    "gateway_transport": "ens",
+                    "proxy_transport": "ens",
+                    "ebusd_transport": "",
+                },
+                "topology='proxy-dual-client'",
+            ),
+            (
+                "direct-adapter",
+                {
+                    "kind": "direct-adapter",
+                    "passive_mode": "required",
+                    "gateway_transport": "ens",
+                    "proxy_transport": "",
+                    "ebusd_transport": "",
+                },
+                "topology='direct-adapter'",
+            ),
+        )
+
+        for label, topology, expected_reason in cases:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    proof_dir = pathlib.Path(temp_dir)
+                    write_family_proof_artifacts(
+                        proof_dir,
+                        transport_class="ens",
+                        kind=topology["kind"],
+                        passive_mode=topology["passive_mode"],
+                    )
+                    write_family_proof_eligibility_artifact(
+                        proof_dir,
+                        kind=topology["kind"],
+                        passive_mode=topology["passive_mode"],
+                        gateway_transport=topology["gateway_transport"],
+                        proxy_transport=topology["proxy_transport"],
+                        ebusd_transport=topology["ebusd_transport"],
+                    )
+                    artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                        proof_dir,
+                        "run-1",
+                        "P03",
+                        topology["kind"],
+                        topology["passive_mode"],
+                        topology["gateway_transport"],
+                        proxy_transport=topology["proxy_transport"],
+                        ebusd_transport=topology["ebusd_transport"],
+                    )
+
+                self.assertFalse(artifact["ok"])
+                self.assertEqual(artifact["eligibility"]["status"], "not_proven")
+                self.assertIn("promotion scope mismatch", artifact["eligibility"]["reason"])
+                self.assertIn(expected_reason, artifact["eligibility"]["reason"])
 
     def test_promotion_eligibility_rejects_unproven_family(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3768,7 +3944,6 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     "MATRIX_PASSIVE_MODE": "required",
                     "MATRIX_GATEWAY_TRANSPORT": "ens",
                     "MATRIX_PROXY_TRANSPORT": "ens",
-                    "MATRIX_EBUSD_TRANSPORT": "ebusd-tcp",
                     "MATRIX_GW15_PROOF_MODE": "1",
                     "PASSIVE_SMOKE_TIMEOUT_SEC": "6",
                     "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
@@ -3918,7 +4093,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertEqual(promotion_eligibility["eligibility"]["status"], "not_proven")
         self.assertIn("promotion scope mismatch", promotion_eligibility["eligibility"]["reason"])
 
-    def test_smoke_derives_family_metadata_defaults_when_env_is_missing(self) -> None:
+    def test_smoke_fails_closed_when_topology_metadata_is_missing(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(
             "pass",
             extra_env={
@@ -3927,14 +4102,10 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 "MATRIX_PROXY_TRANSPORT": "",
             },
         )
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
-        family_eligibility = artifacts.get("family_eligibility")
-        self.assertIsInstance(family_eligibility, dict)
-        self.assertTrue(family_eligibility["ok"])
-        self.assertEqual(
-            family_eligibility["proof_scope"]["family_key"],
-            "proxy-single-client/required/ens",
-        )
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("missing P03 topology metadata", result.stderr)
+        self.assertNotIn("family_eligibility", artifacts)
+        self.assertNotIn("promotion_eligibility", artifacts)
 
     def test_smoke_holds_until_proof_window_end_and_requires_interval_phase(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

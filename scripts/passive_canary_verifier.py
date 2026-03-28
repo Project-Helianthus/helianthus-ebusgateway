@@ -149,6 +149,25 @@ def is_read_only_canary_method(method: str) -> bool:
     return normalized in P03_ALLOWED_METHODS
 
 
+def promotion_topology_label(kind: str, gateway_transport: str, proxy_transport: str, ebusd_transport: str) -> str:
+    normalized_kind = str(kind).strip().lower()
+    normalized_gateway_transport = str(gateway_transport).strip().lower()
+    normalized_proxy_transport = str(proxy_transport).strip().lower()
+    normalized_ebusd_transport = str(ebusd_transport).strip().lower()
+
+    if normalized_kind in ("direct-adapter", "proxy-dual-client"):
+        return normalized_kind
+    if normalized_ebusd_transport == "ebusd-tcp":
+        return "via-ebusd-tcp"
+    if normalized_ebusd_transport not in ("",):
+        return f"contradictory-ebusd-{normalized_ebusd_transport}"
+    if normalized_kind == "proxy-single-client":
+        if normalized_gateway_transport == "ens" and normalized_proxy_transport == "ens":
+            return "proxy-single-client"
+        return "proxy-single-client"
+    return normalized_kind or "unknown"
+
+
 def normalize_canary(raw: Any, index: int) -> CanarySpec:
     if not isinstance(raw, dict):
         raise ValueError(f"canary[{index}] must be object")
@@ -2562,6 +2581,7 @@ def build_promotion_eligibility_artifact_for_run(
     proxy_transport: str = "",
     ebusd_transport: str = "",
 ) -> Dict[str, Any]:
+    normalized_run_id = str(run_id).strip()
     normalized_case_id = str(case_id).strip()
     normalized_kind = str(kind).strip()
     normalized_passive_mode = str(passive_mode).strip().lower()
@@ -2818,69 +2838,50 @@ def build_promotion_eligibility_artifact_for_run(
     if not replay_ok:
         reasons.append("replay falsification gate failed")
 
+    if isinstance(family_eligibility, dict):
+        family_run_id = str(family_eligibility.get("run_id", "")).strip()
+        if family_run_id == "":
+            reasons.append("family proof eligibility missing run_id")
+        elif family_run_id != normalized_run_id:
+            reasons.append(
+                "family proof eligibility run_id mismatch: "
+                f"got {family_run_id!r}; want {normalized_run_id!r}"
+            )
+
+    family_claims_proven = family_eligibility_status == "proven_for_default_flip"
+    promotion_topology = promotion_topology_label(
+        normalized_kind,
+        normalized_gateway_transport,
+        normalized_proxy_transport,
+        normalized_ebusd_transport,
+    )
     canonical_proven_scope = (
         normalized_kind == "proxy-single-client"
         and normalized_passive_mode == "required"
         and normalized_gateway_transport == "ens"
+        and normalized_proxy_transport == "ens"
+        and normalized_ebusd_transport == ""
         and transport_class == "ens"
     )
-    family_identity_missing = (
-        normalized_case_id == ""
-        or normalized_kind == ""
-        or normalized_passive_mode == ""
-        or normalized_gateway_transport == ""
-        or transport_class == ""
-        or family_key == ""
+    scope_reason = (
+        f"promotion scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r} "
+        f"gateway_transport={normalized_gateway_transport!r} proxy_transport={normalized_proxy_transport!r} "
+        f"ebusd_transport={normalized_ebusd_transport!r} transport_class={transport_class!r} "
+        f"topology={promotion_topology!r}; want proxy-single-client/required/ens with ebusd_transport absent"
     )
-    family_identity_ambiguous = any(
-        reason.startswith("ambiguous transport class across structured warmup snapshots:")
-        for reason in reasons
-    )
-    family_scope_mismatch = False
-    if family_identity_missing or family_identity_ambiguous:
-        status = "blocked"
-    elif not canonical_proven_scope:
-        family_scope_mismatch = True
-
-    family_claims_proven = family_eligibility_status == "proven_for_default_flip"
-    family_claims_not_proven = family_eligibility_status == "not_proven"
     if len(reasons) == 0:
         if family_claims_proven and canonical_proven_scope:
             status = "eligible_for_default_flip"
-        elif family_claims_proven:
-            status = "blocked"
-            reasons.append(
-                "family proof eligibility claims proven scope but current matrix topology is not the canonical "
-                "proxy-single-client/required/ens/ens family"
-            )
-        elif family_claims_not_proven and family_scope_mismatch:
-            status = "not_proven"
-            reasons.append(
-                f"promotion scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r} "
-                f"gateway_transport={normalized_gateway_transport!r} transport_class={transport_class!r}; "
-                "want proxy-single-client/required/ens/ens"
-            )
-        elif family_claims_not_proven:
-            status = "blocked"
-            reasons.append(
-                "family proof eligibility rejects canonical P03 proven scope"
-            )
         else:
-            status = "blocked"
-    elif family_scope_mismatch and len(reasons) == 1 and family_claims_not_proven:
-        status = "not_proven"
-        reasons.append(
-            f"promotion scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r} "
-            f"gateway_transport={normalized_gateway_transport!r} transport_class={transport_class!r}; "
-            "want proxy-single-client/required/ens/ens"
-        )
+            reasons.append(scope_reason)
+            status = "not_proven"
     else:
         status = "blocked"
 
     artifact = {
         "schema": PROMOTION_ELIGIBILITY_SCHEMA,
         "captured_at": utc_now(),
-        "run_id": str(run_id).strip(),
+        "run_id": normalized_run_id,
         "case_id": normalized_case_id,
         "matrix_topology": {
             "case_id": normalized_case_id or None,

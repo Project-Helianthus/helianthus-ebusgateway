@@ -49,21 +49,20 @@ log_dir="${MATRIX_LOG_DIR:-${REPO_ROOT}/results/${case_id}/logs}"
 gw15_proof_mode="${MATRIX_GW15_PROOF_MODE:-0}"
 proof_hold_sec_raw="${PASSIVE_PROOF_HOLD_SEC:-${MATRIX_GW15_PROOF_HOLD_SEC:-0}}"
 
-# For the currently supported proof-mode invocation (P03), derive family
-# metadata defaults so eligibility gating does not fail on missing env plumbing.
 if [[ "${gw15_proof_mode}" == "1" && "${case_id}" == "P03" ]]; then
+  missing_topology_envs=()
   if [[ -z "${case_kind}" ]]; then
-    case_kind="proxy-single-client"
+    missing_topology_envs+=("MATRIX_CASE_KIND")
   fi
   if [[ -z "${gateway_transport}" ]]; then
-    if [[ -n "${proxy_transport}" ]]; then
-      gateway_transport="${proxy_transport}"
-    else
-      gateway_transport="ens"
-    fi
+    missing_topology_envs+=("MATRIX_GATEWAY_TRANSPORT")
   fi
   if [[ -z "${proxy_transport}" ]]; then
-    proxy_transport="${gateway_transport}"
+    missing_topology_envs+=("MATRIX_PROXY_TRANSPORT")
+  fi
+  if [[ "${#missing_topology_envs[@]}" -gt 0 ]]; then
+    echo "proof mode: missing P03 topology metadata: ${missing_topology_envs[*]}" >&2
+    exit 2
   fi
 fi
 

@@ -85,6 +85,7 @@ canary_manifest_validation_path="${proof_dir}/canary_manifest_validation.json"
 canary_baseline_path="${proof_dir}/canary_baseline.json"
 canary_summary_path="${proof_dir}/canary_summary.json"
 canary_verdict_path="${proof_dir}/canary_verdict.json"
+replay_falsification_path="${proof_dir}/replay_falsification.json"
 canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
 canary_retries=3
 canary_enabled=0
@@ -459,6 +460,13 @@ build_canary_verdict() {
     --output "${canary_verdict_path}"
 }
 
+build_replay_falsification_verdict() {
+  python3 "${canary_verifier_script}" replay-verdict \
+    --manifest "${canary_manifest_path}" \
+    --proof-dir "${proof_dir}" \
+    --output "${replay_falsification_path}"
+}
+
 reset_active_proof_window() {
   proof_window_started=0
   proof_window_start_epoch=0
@@ -611,6 +619,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_canary_verdict; then
       echo "proof mode: canary verdict gate failed (see ${canary_verdict_path})" >&2
+      exit 1
+    fi
+    if ! build_replay_falsification_verdict; then
+      echo "proof mode: replay falsification gate failed (see ${replay_falsification_path})" >&2
       exit 1
     fi
   fi

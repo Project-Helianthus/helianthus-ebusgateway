@@ -663,13 +663,58 @@ def evaluate_proof_window_traffic_minimums(payload: Any) -> Tuple[bool, str, Dic
     )
 
 
-def build_replay_falsification_verdict(corpus: Any) -> Dict[str, Any]:
+def build_replay_falsification_verdict(corpus: Any, proof_dir: pathlib.Path) -> Dict[str, Any]:
     if not isinstance(corpus, dict):
         raise ValueError("replay corpus must be a JSON object")
+    if not isinstance(proof_dir, pathlib.Path):
+        raise ValueError("proof_dir must be a pathlib.Path")
 
     cases = corpus.get("cases")
     if not isinstance(cases, list):
         raise ValueError("replay corpus missing cases array")
+
+    summary_path = proof_dir / "canary_summary.json"
+    verdict_path = proof_dir / "canary_verdict.json"
+    if not summary_path.exists():
+        raise ValueError(f"missing proof summary artifact at {summary_path}")
+    if not verdict_path.exists():
+        raise ValueError(f"missing proof verdict artifact at {verdict_path}")
+
+    summary = load_json(summary_path)
+    verdict = load_json(verdict_path)
+    if not isinstance(summary, dict):
+        raise ValueError("proof summary must be a JSON object")
+    if not isinstance(verdict, dict):
+        raise ValueError("proof verdict must be a JSON object")
+    summary_run_id = str(summary.get("run_id", "")).strip()
+    verdict_run_id = str(verdict.get("run_id", "")).strip()
+    if summary_run_id == "" or verdict_run_id == "":
+        raise ValueError("proof summary/verdict missing run_id")
+    if summary_run_id != verdict_run_id:
+        raise ValueError("proof summary/verdict run_id mismatch")
+    if str(summary.get("schema", "")).strip() != "p03_canary_overall_summary_v1":
+        raise ValueError("proof summary schema mismatch")
+    if str(verdict.get("summary_schema", "")).strip() != "p03_canary_overall_summary_v1":
+        raise ValueError("proof verdict summary_schema mismatch")
+
+    proof_window_ok, proof_window_reason, proof_window_details = evaluate_proof_window_traffic_minimums(
+        summary.get("proof_window_traffic_minimums")
+    )
+    read_avoidance_ok, read_avoidance_reason, read_avoidance_details = evaluate_read_avoidance_accounting(
+        summary.get("read_avoidance_accounting")
+    )
+    canary_gate_ok = bool(verdict.get("ok", False))
+    canary_gate_status = str(verdict.get("status", "")).strip().lower()
+    proof_gate_ok = canary_gate_ok and proof_window_ok and read_avoidance_ok and canary_gate_status == "pass"
+    proof_gate_reason = ""
+    if not canary_gate_ok:
+        proof_gate_reason = "proof canary verdict did not pass"
+    elif not proof_window_ok:
+        proof_gate_reason = proof_window_reason
+    elif not read_avoidance_ok:
+        proof_gate_reason = read_avoidance_reason
+    elif canary_gate_status != "pass":
+        proof_gate_reason = f"proof canary verdict status {canary_gate_status!r}"
 
     verdict_cases: List[Dict[str, Any]] = []
     locked_total = 0
@@ -696,6 +741,18 @@ def build_replay_falsification_verdict(corpus: Any) -> Dict[str, Any]:
             "direct_apply": None,
             "disposition": None,
             "reason": "",
+            "proof_evidence": {
+                "run_id": summary_run_id,
+                "summary_schema": str(summary.get("schema", "")).strip(),
+                "canary_verdict_status": canary_gate_status,
+                "canary_verdict_ok": canary_gate_ok,
+                "read_avoidance_accounting_ok": read_avoidance_ok,
+                "read_avoidance_accounting_reason": read_avoidance_reason,
+                "proof_window_traffic_minimums_ok": proof_window_ok,
+                "proof_window_traffic_minimums_reason": proof_window_reason,
+                "read_avoidance_accounting": read_avoidance_details,
+                "proof_window_traffic_minimums": proof_window_details,
+            },
         }
 
         if expected is None:
@@ -748,6 +805,12 @@ def build_replay_falsification_verdict(corpus: Any) -> Dict[str, Any]:
             fail_total += 1
             verdict_cases.append(case_result)
             continue
+        if not proof_gate_ok:
+            case_result["status"] = "fail"
+            case_result["reason"] = proof_gate_reason or "proof run evidence did not satisfy replay gate"
+            fail_total += 1
+            verdict_cases.append(case_result)
+            continue
 
         case_result["status"] = "pass"
         pass_total += 1
@@ -765,6 +828,7 @@ def build_replay_falsification_verdict(corpus: Any) -> Dict[str, Any]:
             "pass": pass_total,
             "fail": fail_total,
             "informational": len(verdict_cases) - locked_total,
+            "proof_run_ok": proof_gate_ok,
         },
         "cases": verdict_cases,
     }
@@ -1204,7 +1268,7 @@ def verdict_command(args: argparse.Namespace) -> int:
 
 def replay_verdict_command(args: argparse.Namespace) -> int:
     corpus = load_json(pathlib.Path(args.manifest))
-    verdict = build_replay_falsification_verdict(corpus)
+    verdict = build_replay_falsification_verdict(corpus, pathlib.Path(args.proof_dir))
     write_json(pathlib.Path(args.output), verdict)
     return 0 if bool(verdict.get("ok", False)) else 1
 
@@ -1244,6 +1308,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     replay_verdict = sub.add_parser("replay-verdict", help="build replay falsification verdict from corpus")
     replay_verdict.add_argument("--manifest", required=True)
+    replay_verdict.add_argument("--proof-dir", required=True)
     replay_verdict.add_argument("--output", required=True)
     replay_verdict.set_defaults(func=replay_verdict_command)
     return parser

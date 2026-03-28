@@ -1904,7 +1904,12 @@ def validate_family_upstream_replay_verdict(
                 f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.observed_reason"
             )
         behavior_observed_reason = behavior_observed_reason_raw.strip()
-        if case_payload.get("reason", "").strip() != behavior_observed_reason:
+        case_reason = case_payload.get("reason", "").strip()
+        if case_reason == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing non-empty reason"
+            )
+        if case_status in ("pass", "informational") and case_reason != behavior_observed_reason:
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] "
                 "reason mismatches behavior_evidence.observed_reason"

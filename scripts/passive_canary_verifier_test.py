@@ -2258,6 +2258,76 @@ class ReplayFalsificationVerdictTests(unittest.TestCase):
         self.assertEqual(by_name["timeout_no_progress"]["status"], "fail")
         self.assertIn("expected", by_name["timeout_no_progress"]["reason"])
 
+    def test_replay_verdict_validation_accepts_self_generated_failing_reason_mismatch(self) -> None:
+        corpus = verifier.load_json(SCRIPT_DIR.parent / "testdata" / "observe_first_replay_cases.json")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            artifact = write_replay_behavior_artifact(proof_dir)
+            artifact["ok"] = False
+            artifact["cases"][2]["observed"]["disposition"] = "ambiguity"
+            write_json(proof_dir / "replay_behavior.json", artifact)
+            verdict = verifier.build_replay_falsification_verdict(corpus, proof_dir)
+            behavior_payload = verifier.load_replay_behavior_artifact(proof_dir / "replay_behavior.json")
+            valid, reason = verifier.validate_family_upstream_replay_verdict(
+                verdict,
+                proof_dir / "replay_falsification.json",
+                behavior_artifact_payload=behavior_payload,
+                behavior_artifact_path=proof_dir / "replay_behavior.json",
+            )
+
+        by_name = {case["name"]: case for case in verdict["cases"]}
+        timeout_case = by_name["timeout_no_progress"]
+        self.assertEqual(timeout_case["status"], "fail")
+        self.assertNotEqual(timeout_case["reason"], timeout_case["behavior_evidence"]["observed_reason"])
+        self.assertTrue(valid, reason)
+
+    def test_replay_verdict_validation_rejects_forged_fail_observed_reason_anchor(self) -> None:
+        corpus = verifier.load_json(SCRIPT_DIR.parent / "testdata" / "observe_first_replay_cases.json")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            artifact = write_replay_behavior_artifact(proof_dir)
+            artifact["ok"] = False
+            artifact["cases"][2]["observed"]["disposition"] = "ambiguity"
+            write_json(proof_dir / "replay_behavior.json", artifact)
+            verdict = verifier.build_replay_falsification_verdict(corpus, proof_dir)
+            by_name = {case["name"]: case for case in verdict["cases"]}
+            by_name["timeout_no_progress"]["behavior_evidence"]["observed_reason"] = (
+                "forged replay behavior anchor reason"
+            )
+            behavior_payload = verifier.load_replay_behavior_artifact(proof_dir / "replay_behavior.json")
+            valid, reason = verifier.validate_family_upstream_replay_verdict(
+                verdict,
+                proof_dir / "replay_falsification.json",
+                behavior_artifact_payload=behavior_payload,
+                behavior_artifact_path=proof_dir / "replay_behavior.json",
+            )
+
+        self.assertFalse(valid)
+        self.assertIn(
+            "behavior_evidence.observed_reason mismatches anchored replay behavior artifact",
+            reason,
+        )
+
+    def test_replay_verdict_validation_rejects_pass_reason_mismatch(self) -> None:
+        corpus = verifier.load_json(SCRIPT_DIR.parent / "testdata" / "observe_first_replay_cases.json")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_replay_behavior_artifact(proof_dir)
+            verdict = verifier.build_replay_falsification_verdict(corpus, proof_dir)
+            pass_case = verdict["cases"][0]
+            self.assertEqual(pass_case["status"], "pass")
+            pass_case["reason"] = "forged pass reason"
+            behavior_payload = verifier.load_replay_behavior_artifact(proof_dir / "replay_behavior.json")
+            valid, reason = verifier.validate_family_upstream_replay_verdict(
+                verdict,
+                proof_dir / "replay_falsification.json",
+                behavior_artifact_payload=behavior_payload,
+                behavior_artifact_path=proof_dir / "replay_behavior.json",
+            )
+
+        self.assertFalse(valid)
+        self.assertIn("reason mismatches behavior_evidence.observed_reason", reason)
+
 
 class FamilyProofEligibilityArtifactTests(unittest.TestCase):
     def test_family_proof_eligibility_accepts_proven_family(self) -> None:

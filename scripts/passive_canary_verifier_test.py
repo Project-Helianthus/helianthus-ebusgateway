@@ -104,6 +104,138 @@ def write_replay_behavior_artifact(proof_dir: pathlib.Path) -> dict:
     return artifact
 
 
+def write_family_proof_artifacts(
+    proof_dir: pathlib.Path,
+    *,
+    transport_class: str = "ens",
+    kind: str = "proxy-single-client",
+    passive_mode: str = "required",
+) -> dict:
+    write_metrics(
+        proof_dir / "start_metrics.prom",
+        [
+            'ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0',
+            'ebus_passive_tap_connected 1',
+            'ebus_passive_warmup_state{state="warming_up"} 1',
+            'ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1',
+        ],
+    )
+    write_metrics(
+        proof_dir / "end_metrics.prom",
+        [
+            'ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} 0',
+            'ebus_passive_tap_connected 1',
+            'ebus_passive_warmup_state{state="available"} 1',
+            'ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1',
+        ],
+    )
+    write_json(
+        proof_dir / "start_bus_observability.json",
+        {
+            "summary": {
+                "status": {
+                    "startup": {"phase": "LIVE_WARMUP", "cache_epoch": 1, "live_epoch": 0},
+                    "feature_flags": canonical_feature_flags(),
+                }
+            }
+        },
+    )
+    write_json(
+        proof_dir / "end_bus_observability.json",
+        {
+            "summary": {
+                "status": {
+                    "startup": {"phase": "LIVE_READY", "cache_epoch": 1, "live_epoch": 1},
+                    "feature_flags": canonical_feature_flags(),
+                }
+            }
+        },
+    )
+    write_json(
+        proof_dir / "start_graphql_bus_watch.json",
+        {
+            "data": {
+                "busSummary": {
+                    "status": {
+                        "transportClass": transport_class,
+                        "warmup": {
+                            "state": "warming_up",
+                            "blocker": "",
+                            "elapsedSeconds": 0.0,
+                            "completedTransactions": 0,
+                            "requiredTransactions": 0,
+                            "completionMode": "proof_window",
+                        },
+                        "featureFlags": canonical_feature_flags(),
+                    }
+                }
+            }
+        },
+    )
+    write_json(
+        proof_dir / "end_graphql_bus_watch.json",
+        {
+            "data": {
+                "busSummary": {
+                    "status": {
+                        "transportClass": transport_class,
+                        "warmup": {
+                            "state": "available",
+                            "blocker": "",
+                            "elapsedSeconds": 0.0,
+                            "completedTransactions": 0,
+                            "requiredTransactions": 0,
+                            "completionMode": "proof_window",
+                        },
+                        "featureFlags": canonical_feature_flags(),
+                    }
+                }
+            }
+        },
+    )
+    write_json(
+        proof_dir / "start_feature_flags.json",
+        {
+            "captured_at": "2026-03-28T00:00:00+00:00",
+            "graphql_feature_flags": canonical_feature_flags(),
+            "bus_observability_feature_flags": canonical_feature_flags(),
+        },
+    )
+    write_json(
+        proof_dir / "end_feature_flags.json",
+        {
+            "captured_at": "2026-03-28T00:00:00+00:00",
+            "graphql_feature_flags": canonical_feature_flags(),
+            "bus_observability_feature_flags": canonical_feature_flags(),
+        },
+    )
+
+    summary_builder = CanaryVerdictTests("runTest")
+    summary = summary_builder.build_summary_payload(
+        mismatch_count=0,
+        interval_required=True,
+        interval_results=10,
+        interval_conclusive=9,
+        per_canary_interval={"a": {"pass": 9, "mismatch": 0, "inconclusive": 1, "conclusive": 9}},
+        transport_class=transport_class,
+    )
+    verdict = verifier.build_canary_verdict(summary)
+    write_json(proof_dir / "canary_summary.json", summary)
+    write_json(proof_dir / "canary_verdict.json", verdict)
+    write_replay_behavior_artifact(proof_dir)
+    corpus = verifier.load_json(SCRIPT_DIR.parent / "testdata" / "observe_first_replay_cases.json")
+    replay_verdict = verifier.build_replay_falsification_verdict(corpus, proof_dir)
+    write_json(proof_dir / "replay_falsification.json", replay_verdict)
+    return {
+        "summary": summary,
+        "verdict": verdict,
+        "replay_verdict": replay_verdict,
+        "kind": kind,
+        "passive_mode": passive_mode,
+        "transport_class": transport_class,
+    }
+
+
 class ManifestValidationTests(unittest.TestCase):
     def test_manifest_matches_canonical_proxy_p03_stable_set(self) -> None:
         _, canaries = verifier.load_and_validate_manifest(
@@ -553,6 +685,7 @@ class StaleArtifactRejectionTests(unittest.TestCase):
         warmup_state: str,
         cache_epoch: int = 1,
         live_epoch: int = 1,
+        transport_class: str = "ens",
         graphql_feature_flags: dict | None = None,
         bus_feature_flags: dict | None = None,
     ) -> None:
@@ -583,6 +716,7 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 "data": {
                     "busSummary": {
                         "status": {
+                            "transportClass": transport_class,
                             "warmup": {
                                 "state": warmup_state,
                                 "blocker": "",
@@ -631,6 +765,7 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             warmup_state="warming_up",
             cache_epoch=1,
             live_epoch=0,
+            transport_class="ens",
         )
         write_json(
             proof_dir / "canary_phase_start.json",
@@ -648,6 +783,7 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 warmup_state="warming_up",
                 cache_epoch=1,
                 live_epoch=1,
+                transport_class="ens",
             )
             write_json(
                 proof_dir / "canary_phase_sample_0001.json",
@@ -664,6 +800,7 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             warmup_state="available",
             cache_epoch=1,
             live_epoch=1,
+            transport_class="ens",
         )
         write_json(
             proof_dir / "canary_phase_end.json",
@@ -1491,6 +1628,7 @@ class CanaryVerdictTests(unittest.TestCase):
         per_canary_interval: dict[str, dict[str, int]],
         completed_transactions_delta: float = 1_200,
         direct_apply_candidates_delta: float = 120,
+        transport_class: str = "ens",
     ) -> dict:
         per_canary = {canary_id: {"last_status": "pass"} for canary_id in per_canary_interval}
         warmup_established = interval_results > 0
@@ -1535,6 +1673,7 @@ class CanaryVerdictTests(unittest.TestCase):
             "data": {
                 "busSummary": {
                     "status": {
+                        "transportClass": transport_class,
                         "warmup": {
                             "state": "warming_up",
                             "blocker": "",
@@ -1564,6 +1703,7 @@ class CanaryVerdictTests(unittest.TestCase):
             "data": {
                 "busSummary": {
                     "status": {
+                        "transportClass": transport_class,
                         "warmup": {
                             "state": "available",
                             "blocker": "",
@@ -2090,6 +2230,67 @@ class ReplayFalsificationVerdictTests(unittest.TestCase):
         self.assertIn("expected", by_name["timeout_no_progress"]["reason"])
 
 
+class FamilyProofEligibilityArtifactTests(unittest.TestCase):
+    def test_family_proof_eligibility_accepts_proven_family(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertEqual(artifact["schema"], verifier.FAMILY_PROOF_ELIGIBILITY_SCHEMA)
+        self.assertTrue(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "proven_for_default_flip")
+        self.assertEqual(artifact["family_identity"]["family_key"], "proxy-single-client/required/ens")
+        self.assertEqual(artifact["family_identity"]["transport_class"], "ens")
+
+    def test_family_proof_eligibility_rejects_missing_family_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="")
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("missing transport class", artifact["eligibility"]["reason"])
+
+    def test_family_proof_eligibility_rejects_overclaim_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-dual-client",
+                "optional",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "not_proven")
+        self.assertIn("family scope mismatch", artifact["eligibility"]["reason"])
+
+
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(
         self,
@@ -2438,6 +2639,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                       "data": {
                         "busSummary": {
                           "status": {
+                            "transportClass": "ens",
                             "warmup": {
                               "state": "${warmup_state}",
                               "blocker": "",
@@ -2492,7 +2694,11 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             env.update(
                 {
                     "MATRIX_CASE_ID": "P03",
+                    "MATRIX_CASE_KIND": "proxy-single-client",
                     "MATRIX_PASSIVE_MODE": "required",
+                    "MATRIX_GATEWAY_TRANSPORT": "ens",
+                    "MATRIX_PROXY_TRANSPORT": "ens",
+                    "MATRIX_EBUSD_TRANSPORT": "ebusd-tcp",
                     "MATRIX_GW15_PROOF_MODE": "1",
                     "PASSIVE_SMOKE_TIMEOUT_SEC": "6",
                     "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
@@ -2530,6 +2736,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 verdict_path = proof_dir / "canary_verdict.json"
                 replay_behavior_path = proof_dir / "replay_behavior.json"
                 replay_verdict_path = proof_dir / "replay_falsification.json"
+                family_eligibility_path = proof_dir / "family_proof_eligibility.json"
                 phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -2539,6 +2746,10 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     artifacts["replay_behavior"] = json.loads(replay_behavior_path.read_text(encoding="utf-8"))
                 if replay_verdict_path.exists():
                     artifacts["replay_verdict"] = json.loads(replay_verdict_path.read_text(encoding="utf-8"))
+                if family_eligibility_path.exists():
+                    artifacts["family_eligibility"] = json.loads(
+                        family_eligibility_path.read_text(encoding="utf-8")
+                    )
                 if phase_log_path.exists():
                     artifacts["phase_log"] = [
                         line.strip()
@@ -2594,6 +2805,17 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertIsInstance(replay_verdict, dict)
         self.assertTrue(replay_verdict["ok"])
         self.assertEqual(replay_verdict["summary"]["behavior_artifact_ok"], True)
+
+    def test_smoke_emits_family_eligibility_artifact_when_canary_verdict_is_good(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed("pass")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        family_eligibility = artifacts.get("family_eligibility")
+        self.assertIsInstance(family_eligibility, dict)
+        self.assertTrue(family_eligibility["ok"])
+        self.assertEqual(
+            family_eligibility["family_identity"]["family_key"],
+            "proxy-single-client/required/ens",
+        )
 
     def test_smoke_holds_until_proof_window_end_and_requires_interval_phase(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(
@@ -2662,7 +2884,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             "pass",
             extra_env={
                 "PASSIVE_PROOF_HOLD_SEC": "4",
-                "PASSIVE_SMOKE_TIMEOUT_SEC": "8",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "12",
                 "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
                 "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "3600",
                 "FAKE_METRICS_MODE": "initially_unhealthy_then_healthy",

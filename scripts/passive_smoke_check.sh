@@ -6,6 +6,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 case_id="${MATRIX_CASE_CANONICAL_ID:-${MATRIX_CASE_ID:-}}"
 passive_mode="${MATRIX_PASSIVE_MODE:-}"
+case_kind="${MATRIX_CASE_KIND:-}"
+gateway_transport="${MATRIX_GATEWAY_TRANSPORT:-}"
+proxy_transport="${MATRIX_PROXY_TRANSPORT:-}"
+ebusd_transport="${MATRIX_EBUSD_TRANSPORT:-}"
 if [[ -z "${case_id}" ]]; then
   echo "passive smoke: MATRIX_CASE_ID is required" >&2
   exit 2
@@ -88,6 +92,7 @@ canary_summary_path="${proof_dir}/canary_summary.json"
 canary_verdict_path="${proof_dir}/canary_verdict.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
 replay_falsification_path="${proof_dir}/replay_falsification.json"
+family_eligibility_path="${proof_dir}/family_proof_eligibility.json"
 canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
 canary_retries=3
 canary_enabled=0
@@ -470,6 +475,19 @@ build_replay_falsification_verdict() {
     --output "${replay_falsification_path}"
 }
 
+build_family_proof_eligibility_artifact() {
+  python3 "${canary_verifier_script}" family-eligibility \
+    --proof-dir "${proof_dir}" \
+    --run-id "${canary_run_id}" \
+    --case-id "${case_id}" \
+    --kind "${case_kind}" \
+    --passive-mode "${passive_mode}" \
+    --gateway-transport "${gateway_transport}" \
+    --proxy-transport "${proxy_transport}" \
+    --ebusd-transport "${ebusd_transport}" \
+    --output "${family_eligibility_path}"
+}
+
 build_replay_behavior_artifact() {
   if ! (
     cd "${REPO_ROOT}" && \
@@ -640,6 +658,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_replay_falsification_verdict; then
       echo "proof mode: replay falsification gate failed (see ${replay_falsification_path})" >&2
+      exit 1
+    fi
+    if ! build_family_proof_eligibility_artifact; then
+      echo "proof mode: family eligibility gate failed (see ${family_eligibility_path})" >&2
       exit 1
     fi
   fi

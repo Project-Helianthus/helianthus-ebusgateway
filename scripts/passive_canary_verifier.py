@@ -34,6 +34,7 @@ READ_AVOIDANCE_DIRECT_APPLY_METRIC = "direct_apply_total"
 READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC = "active_reads_avoided_total"
 READ_AVOIDANCE_SAVED_SECONDS_METRIC = "active_read_saved_seconds"
 WARMUP_BEHAVIOR_ARTIFACT_SCHEMA = "p03_warmup_behavior_v1"
+FAMILY_PROOF_ELIGIBILITY_SCHEMA = "p03_family_proof_eligibility_v1"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC = "ebus_passive_completed_transactions_total"
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_apply_candidates_evaluated_total"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
@@ -881,6 +882,7 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
     graphql_status = bus_summary.get("status")
     if not isinstance(graphql_status, dict):
         raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status object")
+    transport_class = str(graphql_status.get("transportClass", "")).strip()
     warmup = graphql_status.get("warmup")
     if not isinstance(warmup, dict):
         raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.warmup object")
@@ -903,7 +905,166 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
         "feature_flag_snapshot": feature_flag_snapshot,
         "startup_phase": startup_phase,
         "warmup_state": warmup_state,
+        "transport_class": transport_class,
     }
+
+
+def build_family_proof_eligibility_artifact_for_run(
+    proof_dir: pathlib.Path,
+    run_id: str,
+    case_id: str,
+    kind: str,
+    passive_mode: str,
+    gateway_transport: str,
+    proxy_transport: str = "",
+    ebusd_transport: str = "",
+) -> Dict[str, Any]:
+    normalized_case_id = str(case_id).strip()
+    normalized_kind = str(kind).strip()
+    normalized_passive_mode = str(passive_mode).strip().lower()
+    normalized_gateway_transport = str(gateway_transport).strip().lower()
+    normalized_proxy_transport = str(proxy_transport).strip().lower()
+    normalized_ebusd_transport = str(ebusd_transport).strip().lower()
+
+    reasons: List[str] = []
+    status = "blocked"
+
+    if normalized_kind == "":
+        reasons.append("missing family kind")
+    if normalized_passive_mode == "":
+        reasons.append("missing passive mode")
+    if normalized_gateway_transport == "":
+        reasons.append("missing gateway transport")
+
+    canary_verdict_path = proof_dir / "canary_verdict.json"
+    replay_verdict_path = proof_dir / "replay_falsification.json"
+    if not canary_verdict_path.exists():
+        reasons.append(f"missing canary verdict artifact: {canary_verdict_path}")
+        canary_verdict = None
+    else:
+        canary_verdict = load_json(canary_verdict_path)
+        if not isinstance(canary_verdict, dict):
+            reasons.append(f"{canary_verdict_path}: canary verdict must be a JSON object")
+            canary_verdict = None
+    if not replay_verdict_path.exists():
+        reasons.append(f"missing replay falsification artifact: {replay_verdict_path}")
+        replay_verdict = None
+    else:
+        replay_verdict = load_json(replay_verdict_path)
+        if not isinstance(replay_verdict, dict):
+            reasons.append(f"{replay_verdict_path}: replay falsification verdict must be a JSON object")
+            replay_verdict = None
+
+    start_snapshot = None
+    end_snapshot = None
+    try:
+        start_snapshot = load_structured_warmup_snapshot(proof_dir, "start")
+    except Exception as exc:
+        reasons.append(str(exc))
+    try:
+        end_snapshot = load_structured_warmup_snapshot(proof_dir, "end")
+    except Exception as exc:
+        reasons.append(str(exc))
+
+    start_transport_class = ""
+    end_transport_class = ""
+    if isinstance(start_snapshot, dict):
+        start_transport_class = str(start_snapshot.get("transport_class", "")).strip().lower()
+    if isinstance(end_snapshot, dict):
+        end_transport_class = str(end_snapshot.get("transport_class", "")).strip().lower()
+    if start_transport_class == "" and end_transport_class == "":
+        reasons.append("missing transport class in structured warmup snapshots")
+    elif start_transport_class != "" and end_transport_class != "" and start_transport_class != end_transport_class:
+        reasons.append(
+            "ambiguous transport class across structured warmup snapshots: "
+            f"start={start_transport_class!r} end={end_transport_class!r}"
+        )
+    transport_class = start_transport_class or end_transport_class
+
+    if isinstance(start_snapshot, dict):
+        if start_snapshot.get("startup_phase") == "LIVE_READY":
+            reasons.append("family proof cold_start is not pre-LIVE_READY")
+        if str(start_snapshot.get("warmup_state", "")).strip().lower() == "available":
+            reasons.append("family proof cold_start is not pre-available")
+    if isinstance(end_snapshot, dict):
+        if end_snapshot.get("startup_phase") != "LIVE_READY":
+            reasons.append("family proof post_warmup is not LIVE_READY")
+        if str(end_snapshot.get("warmup_state", "")).strip().lower() != "available":
+            reasons.append("family proof post_warmup is not warmup available")
+
+    canary_ok = bool(isinstance(canary_verdict, dict) and canary_verdict.get("ok", False))
+    replay_ok = bool(isinstance(replay_verdict, dict) and replay_verdict.get("ok", False))
+    if not canary_ok:
+        reasons.append("canary verdict gate failed")
+    if not replay_ok:
+        reasons.append("replay falsification gate failed")
+
+    is_p03_family = normalized_kind == "proxy-single-client" and normalized_passive_mode == "required"
+    family_identity_missing = normalized_kind == "" or normalized_passive_mode == "" or transport_class == ""
+    family_identity_ambiguous = any(
+        reason.startswith("ambiguous transport class across structured warmup snapshots:")
+        for reason in reasons
+    )
+    if family_identity_missing or family_identity_ambiguous:
+        status = "blocked"
+    elif not is_p03_family:
+        status = "not_proven"
+        reasons.append(
+            f"family scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r}; "
+            "want proxy-single-client/required"
+        )
+
+    if len(reasons) == 0:
+        status = "proven_for_default_flip"
+    elif status != "not_proven":
+        status = "blocked"
+
+    artifact = {
+        "schema": FAMILY_PROOF_ELIGIBILITY_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": str(run_id).strip(),
+        "case_id": normalized_case_id,
+        "proof_scope": {
+            "kind": normalized_kind,
+            "passive_mode": normalized_passive_mode,
+            "gateway_transport": normalized_gateway_transport,
+            "proxy_transport": normalized_proxy_transport or None,
+            "ebusd_transport": normalized_ebusd_transport or None,
+            "transport_class": transport_class or None,
+            "family_key": f"{normalized_kind}/{normalized_passive_mode}/{transport_class}" if transport_class else None,
+        },
+        "family_identity": {
+            "kind": normalized_kind or None,
+            "passive_mode": normalized_passive_mode or None,
+            "transport_class": transport_class or None,
+            "family_key": f"{normalized_kind}/{normalized_passive_mode}/{transport_class}" if transport_class else None,
+            "source": "structured_warmup_snapshots+run_metadata",
+        },
+        "evidence": {
+            "start_snapshot_paths": start_snapshot["snapshot_paths"] if isinstance(start_snapshot, dict) else {},
+            "end_snapshot_paths": end_snapshot["snapshot_paths"] if isinstance(end_snapshot, dict) else {},
+            "canary_verdict_path": str(canary_verdict_path),
+            "replay_falsification_path": str(replay_verdict_path),
+        },
+        "upstream_proof": {
+            "canary_ok": canary_ok,
+            "replay_ok": replay_ok,
+            "cold_start_startup_phase": start_snapshot.get("startup_phase") if isinstance(start_snapshot, dict) else None,
+            "post_warmup_startup_phase": end_snapshot.get("startup_phase") if isinstance(end_snapshot, dict) else None,
+            "cold_start_warmup_state": start_snapshot.get("warmup_state") if isinstance(start_snapshot, dict) else None,
+            "post_warmup_warmup_state": end_snapshot.get("warmup_state") if isinstance(end_snapshot, dict) else None,
+        },
+        "eligibility": {
+            "status": status,
+            "eligible_for_default_flip": status == "proven_for_default_flip",
+            "proven_for_default_flip": status == "proven_for_default_flip",
+            "not_proven": status == "not_proven",
+            "blocked": status == "blocked",
+            "reason": "; ".join(reasons),
+        },
+        "ok": status == "proven_for_default_flip",
+    }
+    return artifact
 
 
 def build_warmup_behavior_artifact_for_phases(
@@ -2029,6 +2190,21 @@ def replay_verdict_command(args: argparse.Namespace) -> int:
     return 0 if bool(verdict.get("ok", False)) else 1
 
 
+def family_eligibility_command(args: argparse.Namespace) -> int:
+    artifact = build_family_proof_eligibility_artifact_for_run(
+        pathlib.Path(args.proof_dir),
+        args.run_id,
+        args.case_id,
+        args.kind,
+        args.passive_mode,
+        args.gateway_transport,
+        proxy_transport=args.proxy_transport,
+        ebusd_transport=args.ebusd_transport,
+    )
+    write_json(pathlib.Path(args.output), artifact)
+    return 0 if bool(artifact.get("ok", False)) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2071,6 +2247,21 @@ def build_parser() -> argparse.ArgumentParser:
     replay_verdict.add_argument("--behavior-artifact", default=None)
     replay_verdict.add_argument("--output", required=True)
     replay_verdict.set_defaults(func=replay_verdict_command)
+
+    family_eligibility = sub.add_parser(
+        "family-eligibility",
+        help="build family-scoped proof eligibility artifact from proof window artifacts",
+    )
+    family_eligibility.add_argument("--proof-dir", required=True)
+    family_eligibility.add_argument("--run-id", required=True)
+    family_eligibility.add_argument("--case-id", required=True)
+    family_eligibility.add_argument("--kind", required=True)
+    family_eligibility.add_argument("--passive-mode", required=True)
+    family_eligibility.add_argument("--gateway-transport", required=True)
+    family_eligibility.add_argument("--proxy-transport", default="")
+    family_eligibility.add_argument("--ebusd-transport", default="")
+    family_eligibility.add_argument("--output", required=True)
+    family_eligibility.set_defaults(func=family_eligibility_command)
     return parser
 
 

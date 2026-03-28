@@ -909,6 +909,45 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
     }
 
 
+def validate_family_upstream_canary_verdict(payload: Any, path: pathlib.Path) -> Tuple[bool, str]:
+    if not isinstance(payload, dict):
+        return False, f"{path}: canary verdict must be a JSON object"
+    if str(payload.get("schema", "")).strip() != CANARY_VERDICT_SCHEMA:
+        return False, f"{path}: canary verdict schema mismatch"
+    if not isinstance(payload.get("ok"), bool):
+        return False, f"{path}: canary verdict missing boolean ok"
+    status = str(payload.get("status", "")).strip().lower()
+    if status not in ("pass", "fail"):
+        return False, f"{path}: canary verdict missing valid status"
+    criteria = payload.get("criteria")
+    if not isinstance(criteria, dict) or len(criteria) == 0:
+        return False, f"{path}: canary verdict missing criteria object"
+    return True, ""
+
+
+def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) -> Tuple[bool, str]:
+    if not isinstance(payload, dict):
+        return False, f"{path}: replay falsification verdict must be a JSON object"
+    if str(payload.get("schema", "")).strip() != REPLAY_FALSIFICATION_VERDICT_SCHEMA:
+        return False, f"{path}: replay falsification verdict schema mismatch"
+    if not isinstance(payload.get("ok"), bool):
+        return False, f"{path}: replay falsification verdict missing boolean ok"
+    status = str(payload.get("status", "")).strip().lower()
+    if status not in ("pass", "fail"):
+        return False, f"{path}: replay falsification verdict missing valid status"
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        return False, f"{path}: replay falsification verdict missing summary object"
+    if not isinstance(summary.get("locked_cases"), int):
+        return False, f"{path}: replay falsification verdict missing summary.locked_cases"
+    if not isinstance(summary.get("fail"), int):
+        return False, f"{path}: replay falsification verdict missing summary.fail"
+    cases = payload.get("cases")
+    if not isinstance(cases, list):
+        return False, f"{path}: replay falsification verdict missing cases array"
+    return True, ""
+
+
 def build_family_proof_eligibility_artifact_for_run(
     proof_dir: pathlib.Path,
     run_id: str,
@@ -947,9 +986,14 @@ def build_family_proof_eligibility_artifact_for_run(
         except Exception as exc:
             reasons.append(f"invalid canary verdict artifact: {canary_verdict_path}: {exc}")
             canary_verdict = None
-        if canary_verdict is not None and not isinstance(canary_verdict, dict):
-            reasons.append(f"{canary_verdict_path}: canary verdict must be a JSON object")
-            canary_verdict = None
+        if canary_verdict is not None:
+            canary_valid, canary_reason = validate_family_upstream_canary_verdict(
+                canary_verdict,
+                canary_verdict_path,
+            )
+            if not canary_valid:
+                reasons.append(f"invalid canary verdict artifact: {canary_reason}")
+                canary_verdict = None
     if not replay_verdict_path.exists():
         reasons.append(f"missing replay falsification artifact: {replay_verdict_path}")
         replay_verdict = None
@@ -959,9 +1003,14 @@ def build_family_proof_eligibility_artifact_for_run(
         except Exception as exc:
             reasons.append(f"invalid replay falsification artifact: {replay_verdict_path}: {exc}")
             replay_verdict = None
-        if replay_verdict is not None and not isinstance(replay_verdict, dict):
-            reasons.append(f"{replay_verdict_path}: replay falsification verdict must be a JSON object")
-            replay_verdict = None
+        if replay_verdict is not None:
+            replay_valid, replay_reason = validate_family_upstream_replay_verdict(
+                replay_verdict,
+                replay_verdict_path,
+            )
+            if not replay_valid:
+                reasons.append(f"invalid replay falsification artifact: {replay_reason}")
+                replay_verdict = None
 
     start_snapshot = None
     end_snapshot = None

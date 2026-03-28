@@ -2376,6 +2376,27 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "blocked")
         self.assertIn("invalid canary verdict artifact", artifact["eligibility"]["reason"])
 
+    def test_family_proof_eligibility_blocks_schema_less_ok_canary_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            write_json(proof_dir / "canary_verdict.json", {"ok": True})
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("invalid canary verdict artifact", artifact["eligibility"]["reason"])
+        self.assertIn("schema mismatch", artifact["eligibility"]["reason"])
+
     def test_family_eligibility_command_blocks_out_of_scope_family_with_malformed_replay_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
@@ -2400,6 +2421,34 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertFalse(artifact["ok"])
         self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
+
+    def test_family_eligibility_command_blocks_out_of_scope_family_with_schema_less_ok_upstream_verdicts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "family_proof_eligibility.json"
+            write_family_proof_artifacts(proof_dir, transport_class="tcp")
+            write_json(proof_dir / "canary_verdict.json", {"ok": True})
+            write_json(proof_dir / "replay_falsification.json", {"ok": True})
+            exit_code = verifier.family_eligibility_command(
+                argparse.Namespace(
+                    proof_dir=str(proof_dir),
+                    run_id="run-1",
+                    case_id="P03",
+                    kind="proxy-dual-client",
+                    passive_mode="optional",
+                    gateway_transport="tcp",
+                    proxy_transport="tcp",
+                    ebusd_transport="ebusd-tcp",
+                    output=str(output_path),
+                )
+            )
+            artifact = verifier.load_json(output_path)
+
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("invalid canary verdict artifact", artifact["eligibility"]["reason"])
         self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
 
     def test_family_eligibility_command_blocks_corrupt_out_of_scope_family(self) -> None:

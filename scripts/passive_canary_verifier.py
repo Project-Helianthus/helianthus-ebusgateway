@@ -942,16 +942,24 @@ def build_family_proof_eligibility_artifact_for_run(
         reasons.append(f"missing canary verdict artifact: {canary_verdict_path}")
         canary_verdict = None
     else:
-        canary_verdict = load_json(canary_verdict_path)
-        if not isinstance(canary_verdict, dict):
+        try:
+            canary_verdict = load_json(canary_verdict_path)
+        except Exception as exc:
+            reasons.append(f"invalid canary verdict artifact: {canary_verdict_path}: {exc}")
+            canary_verdict = None
+        if canary_verdict is not None and not isinstance(canary_verdict, dict):
             reasons.append(f"{canary_verdict_path}: canary verdict must be a JSON object")
             canary_verdict = None
     if not replay_verdict_path.exists():
         reasons.append(f"missing replay falsification artifact: {replay_verdict_path}")
         replay_verdict = None
     else:
-        replay_verdict = load_json(replay_verdict_path)
-        if not isinstance(replay_verdict, dict):
+        try:
+            replay_verdict = load_json(replay_verdict_path)
+        except Exception as exc:
+            reasons.append(f"invalid replay falsification artifact: {replay_verdict_path}: {exc}")
+            replay_verdict = None
+        if replay_verdict is not None and not isinstance(replay_verdict, dict):
             reasons.append(f"{replay_verdict_path}: replay falsification verdict must be a JSON object")
             replay_verdict = None
 

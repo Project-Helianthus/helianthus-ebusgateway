@@ -1105,6 +1105,11 @@ def validate_family_upstream_canary_verdict(payload: Any, path: pathlib.Path) ->
             f"{path}: canary verdict has negative "
             "criteria.per_canary_interval_conclusive_rate.canaries_evaluated"
         )
+    if canaries_evaluated == 0:
+        return False, (
+            f"{path}: canary verdict missing evaluated canary evidence: "
+            "criteria.per_canary_interval_conclusive_rate.canaries_evaluated must be >= 1"
+        )
 
     per_canary = payload.get("per_canary")
     if not isinstance(per_canary, dict):
@@ -1234,11 +1239,21 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
         return False, f"{path}: replay falsification verdict missing summary.total_cases"
     if summary_total_cases < 0:
         return False, f"{path}: replay falsification verdict has negative summary.total_cases"
+    if summary_total_cases == 0:
+        return False, (
+            f"{path}: replay falsification verdict missing evaluated replay evidence: "
+            "summary.total_cases must be >= 1"
+        )
     summary_locked_cases = summary.get("locked_cases")
     if not isinstance(summary_locked_cases, int):
         return False, f"{path}: replay falsification verdict missing summary.locked_cases"
     if summary_locked_cases < 0:
         return False, f"{path}: replay falsification verdict has negative summary.locked_cases"
+    if summary_locked_cases == 0:
+        return False, (
+            f"{path}: replay falsification verdict missing locked replay cases: "
+            "summary.locked_cases must be >= 1"
+        )
     summary_pass = summary.get("pass")
     if not isinstance(summary_pass, int):
         return False, f"{path}: replay falsification verdict missing summary.pass"

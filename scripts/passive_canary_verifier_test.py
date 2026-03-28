@@ -2473,6 +2473,35 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertIn("invalid canary verdict artifact", artifact["eligibility"]["reason"])
         self.assertIn("missing canonical criteria gates", artifact["eligibility"]["reason"])
 
+    def test_family_proof_eligibility_blocks_schema_valid_but_zero_evidence_canary_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            canary_path = proof_dir / "canary_verdict.json"
+            payload = verifier.load_json(canary_path)
+            payload["ok"] = True
+            payload["status"] = "pass"
+            payload["criteria"]["per_canary_interval_conclusive_rate"]["ok"] = True
+            payload["criteria"]["per_canary_interval_conclusive_rate"]["failing_canaries"] = []
+            payload["criteria"]["per_canary_interval_conclusive_rate"]["canaries_evaluated"] = 0
+            payload["per_canary"] = {}
+            write_json(canary_path, payload)
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("invalid canary verdict artifact", artifact["eligibility"]["reason"])
+        self.assertIn("missing evaluated canary evidence", artifact["eligibility"]["reason"])
+
     def test_family_proof_eligibility_blocks_contradictory_ok_canary_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
@@ -2594,6 +2623,37 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "blocked")
         self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
         self.assertIn("missing non-empty name", artifact["eligibility"]["reason"])
+
+    def test_family_proof_eligibility_blocks_schema_valid_but_zero_evidence_replay_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            replay_path = proof_dir / "replay_falsification.json"
+            payload = verifier.load_json(replay_path)
+            payload["ok"] = True
+            payload["status"] = "pass"
+            payload["summary"]["total_cases"] = 0
+            payload["summary"]["locked_cases"] = 0
+            payload["summary"]["pass"] = 0
+            payload["summary"]["fail"] = 0
+            payload["summary"]["informational"] = 0
+            payload["cases"] = []
+            write_json(replay_path, payload)
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
+        self.assertIn("missing evaluated replay evidence", artifact["eligibility"]["reason"])
 
     def test_family_proof_eligibility_blocks_contradictory_replay_summary_pass_accounting(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

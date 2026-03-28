@@ -3420,6 +3420,24 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertEqual(family_eligibility["eligibility"]["status"], "not_proven")
         self.assertIn("family scope mismatch", family_eligibility["eligibility"]["reason"])
 
+    def test_smoke_derives_family_metadata_defaults_when_env_is_missing(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "MATRIX_CASE_KIND": "",
+                "MATRIX_GATEWAY_TRANSPORT": "",
+                "MATRIX_PROXY_TRANSPORT": "",
+            },
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        family_eligibility = artifacts.get("family_eligibility")
+        self.assertIsInstance(family_eligibility, dict)
+        self.assertTrue(family_eligibility["ok"])
+        self.assertEqual(
+            family_eligibility["proof_scope"]["family_key"],
+            "proxy-single-client/required/ens",
+        )
+
     def test_smoke_holds_until_proof_window_end_and_requires_interval_phase(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(
             "pass",

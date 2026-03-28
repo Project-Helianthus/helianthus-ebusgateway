@@ -49,6 +49,24 @@ log_dir="${MATRIX_LOG_DIR:-${REPO_ROOT}/results/${case_id}/logs}"
 gw15_proof_mode="${MATRIX_GW15_PROOF_MODE:-0}"
 proof_hold_sec_raw="${PASSIVE_PROOF_HOLD_SEC:-${MATRIX_GW15_PROOF_HOLD_SEC:-0}}"
 
+# For the currently supported proof-mode invocation (P03), derive family
+# metadata defaults so eligibility gating does not fail on missing env plumbing.
+if [[ "${gw15_proof_mode}" == "1" && "${case_id}" == "P03" ]]; then
+  if [[ -z "${case_kind}" ]]; then
+    case_kind="proxy-single-client"
+  fi
+  if [[ -z "${gateway_transport}" ]]; then
+    if [[ -n "${proxy_transport}" ]]; then
+      gateway_transport="${proxy_transport}"
+    else
+      gateway_transport="ens"
+    fi
+  fi
+  if [[ -z "${proxy_transport}" ]]; then
+    proxy_transport="${gateway_transport}"
+  fi
+fi
+
 normalize_bool_flag() {
   local value="${1:-}"
   local lowered

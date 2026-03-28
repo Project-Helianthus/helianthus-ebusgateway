@@ -24,6 +24,7 @@ CANARY_PHASE_PREFIX = "canary_phase_"
 MANIFEST_SCHEMA = "p03_canary_manifest_v1"
 P03_ALLOWED_METHODS = {"get_register", "get_ext_register"}
 CANARY_VERDICT_SCHEMA = "p03_canary_verdict_v1"
+REPLAY_FALSIFICATION_VERDICT_SCHEMA = "observe_first_replay_falsification_verdict_v1"
 OVERALL_INTERVAL_CONCLUSIVE_MIN = 0.90
 PER_CANARY_INTERVAL_CONCLUSIVE_MIN = 0.75
 CANARY_NONCE_PARAM = "_canary_nonce"
@@ -35,6 +36,7 @@ PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC = "ebus_passive_completed_transaction
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_apply_candidates_evaluated_total"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA = 100.0
+REPLAY_EXPECTED_DISPOSITIONS = {"ambiguity", "falsification"}
 PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)$")
 
 
@@ -661,6 +663,113 @@ def evaluate_proof_window_traffic_minimums(payload: Any) -> Tuple[bool, str, Dic
     )
 
 
+def build_replay_falsification_verdict(corpus: Any) -> Dict[str, Any]:
+    if not isinstance(corpus, dict):
+        raise ValueError("replay corpus must be a JSON object")
+
+    cases = corpus.get("cases")
+    if not isinstance(cases, list):
+        raise ValueError("replay corpus missing cases array")
+
+    verdict_cases: List[Dict[str, Any]] = []
+    locked_total = 0
+    pass_total = 0
+    fail_total = 0
+    for index, raw_case in enumerate(cases):
+        if not isinstance(raw_case, dict):
+            raise ValueError(f"replay case[{index}] must be object")
+
+        name = str(raw_case.get("name", "")).strip()
+        family = str(raw_case.get("family", "")).strip().upper()
+        response_class = str(raw_case.get("response_class", "")).strip()
+        scenario_tags = raw_case.get("scenario_tags")
+        if not isinstance(scenario_tags, list):
+            scenario_tags = []
+
+        expected = raw_case.get("replay_expected")
+        case_result: Dict[str, Any] = {
+            "name": name,
+            "family": family,
+            "response_class": response_class,
+            "scenario_tags": [str(tag).strip() for tag in scenario_tags if str(tag).strip()],
+            "status": "informational",
+            "direct_apply": None,
+            "disposition": None,
+            "reason": "",
+        }
+
+        if expected is None:
+            verdict_cases.append(case_result)
+            continue
+        if not isinstance(expected, dict):
+            case_result["status"] = "fail"
+            case_result["reason"] = "replay_expected contract must be an object"
+            fail_total += 1
+            locked_total += 1
+            verdict_cases.append(case_result)
+            continue
+
+        locked_total += 1
+        direct_apply = expected.get("direct_apply")
+        disposition = str(expected.get("disposition", "")).strip().lower()
+        reason = str(expected.get("reason", "")).strip()
+        case_result["direct_apply"] = direct_apply
+        case_result["disposition"] = disposition
+        case_result["reason"] = reason
+
+        if not isinstance(direct_apply, bool):
+            case_result["status"] = "fail"
+            case_result["reason"] = "replay_expected direct_apply must be boolean"
+            fail_total += 1
+            verdict_cases.append(case_result)
+            continue
+        if direct_apply:
+            case_result["status"] = "fail"
+            case_result["reason"] = "ambiguous or garbled replay must not be direct_apply eligible"
+            fail_total += 1
+            verdict_cases.append(case_result)
+            continue
+        if disposition not in REPLAY_EXPECTED_DISPOSITIONS:
+            case_result["status"] = "fail"
+            case_result["reason"] = f"unsupported replay disposition {disposition!r}"
+            fail_total += 1
+            verdict_cases.append(case_result)
+            continue
+
+        if family == "B524" and disposition != "ambiguity":
+            case_result["status"] = "fail"
+            case_result["reason"] = "B524 dual-namespace replay must be reported as ambiguity"
+            fail_total += 1
+            verdict_cases.append(case_result)
+            continue
+        if response_class == "error_or_ambiguous" and disposition != "falsification":
+            case_result["status"] = "fail"
+            case_result["reason"] = "garbled replay must be reported as falsification"
+            fail_total += 1
+            verdict_cases.append(case_result)
+            continue
+
+        case_result["status"] = "pass"
+        pass_total += 1
+        verdict_cases.append(case_result)
+
+    ok = fail_total == 0
+    return {
+        "schema": REPLAY_FALSIFICATION_VERDICT_SCHEMA,
+        "captured_at": utc_now(),
+        "ok": ok,
+        "status": "pass" if ok else "fail",
+        "summary": {
+            "total_cases": len(verdict_cases),
+            "locked_cases": locked_total,
+            "pass": pass_total,
+            "fail": fail_total,
+            "informational": len(verdict_cases) - locked_total,
+        },
+        "cases": verdict_cases,
+    }
+
+
 def classify_canary_value(
     canary: CanarySpec,
     value_hex: str,
@@ -1093,6 +1202,13 @@ def verdict_command(args: argparse.Namespace) -> int:
     return 0 if bool(verdict.get("ok", False)) else 1
 
 
+def replay_verdict_command(args: argparse.Namespace) -> int:
+    corpus = load_json(pathlib.Path(args.manifest))
+    verdict = build_replay_falsification_verdict(corpus)
+    write_json(pathlib.Path(args.output), verdict)
+    return 0 if bool(verdict.get("ok", False)) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1125,6 +1241,11 @@ def build_parser() -> argparse.ArgumentParser:
     verdict.add_argument("--summary", required=True)
     verdict.add_argument("--output", required=True)
     verdict.set_defaults(func=verdict_command)
+
+    replay_verdict = sub.add_parser("replay-verdict", help="build replay falsification verdict from corpus")
+    replay_verdict.add_argument("--manifest", required=True)
+    replay_verdict.add_argument("--output", required=True)
+    replay_verdict.set_defaults(func=replay_verdict_command)
     return parser
 
 

@@ -8,11 +8,25 @@ import (
 )
 
 type replayCorpus struct {
-	Name            string `json:"name"`
-	ValidationScope string `json:"validation_scope"`
-	Cases           []struct {
-		Name string `json:"name"`
-	} `json:"cases"`
+	Name            string             `json:"name"`
+	ValidationScope string             `json:"validation_scope"`
+	Cases           []replayCorpusCase `json:"cases"`
+}
+
+type replayCorpusCase struct {
+	Name           string                   `json:"name"`
+	Transport      string                   `json:"transport"`
+	Family         string                   `json:"family"`
+	ResponseClass  string                   `json:"response_class"`
+	ScenarioTags   []string                 `json:"scenario_tags"`
+	Expected       *replayCorpusExpectation `json:"expected,omitempty"`
+	ReplayExpected *replayCorpusExpectation `json:"replay_expected,omitempty"`
+}
+
+type replayCorpusExpectation struct {
+	DirectApply bool   `json:"direct_apply"`
+	Disposition string `json:"disposition"`
+	Reason      string `json:"reason"`
 }
 
 type mirroredGatewayCorpus struct {
@@ -35,8 +49,8 @@ func TestObserveFirstReplayCorpusManifest(t *testing.T) {
 	if corpus.Name != "observe_first_gateway_replay_cases_v1" {
 		t.Fatalf("manifest name = %q; want observe_first_gateway_replay_cases_v1", corpus.Name)
 	}
-	if corpus.ValidationScope != "fixture_presence_and_shape_only" {
-		t.Fatalf("validation_scope = %q; want fixture_presence_and_shape_only", corpus.ValidationScope)
+	if corpus.ValidationScope != "fixture_presence_and_locked_falsification_contract" {
+		t.Fatalf("validation_scope = %q; want fixture_presence_and_locked_falsification_contract", corpus.ValidationScope)
 	}
 
 	required := map[string]bool{
@@ -64,6 +78,55 @@ func TestObserveFirstReplayCorpusManifest(t *testing.T) {
 	for name, seen := range required {
 		if !seen {
 			t.Fatalf("required replay corpus case %q missing from %s", name, path)
+		}
+	}
+}
+
+func TestObserveFirstReplayCorpusLockedFalsificationExpectations(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join("testdata", "observe_first_replay_cases.json")
+	var corpus replayCorpus
+	readReplayJSON(t, path, &corpus)
+
+	lookup := func(name string) replayCorpusCase {
+		t.Helper()
+		for _, tc := range corpus.Cases {
+			if tc.Name == name {
+				return tc
+			}
+		}
+		t.Fatalf("replay case %q missing from %s", name, path)
+		return replayCorpusCase{}
+	}
+
+	b524 := lookup("b524_value_bearing_enh")
+	if b524.ReplayExpected == nil {
+		t.Fatalf("%s replay_expected contract missing", b524.Name)
+	}
+	if b524.ReplayExpected.DirectApply {
+		t.Fatalf("%s direct_apply = true; want false", b524.Name)
+	}
+	if b524.ReplayExpected.Disposition != "ambiguity" {
+		t.Fatalf("%s disposition = %q; want ambiguity", b524.Name, b524.ReplayExpected.Disposition)
+	}
+	if b524.ReplayExpected.Reason == "" {
+		t.Fatalf("%s expected reason missing", b524.Name)
+	}
+
+	for _, name := range []string{"collision_episode", "timeout_no_progress"} {
+		tc := lookup(name)
+		if tc.ReplayExpected == nil {
+			t.Fatalf("%s replay_expected contract missing", tc.Name)
+		}
+		if tc.ReplayExpected.DirectApply {
+			t.Fatalf("%s direct_apply = true; want false", tc.Name)
+		}
+		if tc.ReplayExpected.Disposition != "falsification" {
+			t.Fatalf("%s disposition = %q; want falsification", tc.Name, tc.ReplayExpected.Disposition)
+		}
+		if tc.ReplayExpected.Reason == "" {
+			t.Fatalf("%s expected reason missing", tc.Name)
 		}
 	}
 }

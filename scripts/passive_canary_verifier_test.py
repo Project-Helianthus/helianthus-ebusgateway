@@ -149,6 +149,26 @@ class ManifestValidationTests(unittest.TestCase):
                 verifier.load_and_validate_manifest(manifest_path, "P03")
             self.assertIn("read-only", str(ctx.exception))
 
+    def test_replay_corpus_locks_negative_falsification_expectations(self) -> None:
+        corpus = verifier.load_json(SCRIPT_DIR.parent / "testdata" / "observe_first_replay_cases.json")
+        verdict = verifier.build_replay_falsification_verdict(corpus)
+
+        self.assertEqual(verdict["schema"], verifier.REPLAY_FALSIFICATION_VERDICT_SCHEMA)
+        self.assertTrue(verdict["ok"])
+        self.assertEqual(verdict["summary"]["locked_cases"], 3)
+        self.assertEqual(verdict["summary"]["fail"], 0)
+
+        by_name = {case["name"]: case for case in verdict["cases"]}
+        self.assertEqual(by_name["b524_value_bearing_enh"]["status"], "pass")
+        self.assertFalse(by_name["b524_value_bearing_enh"]["direct_apply"])
+        self.assertEqual(by_name["b524_value_bearing_enh"]["disposition"], "ambiguity")
+        self.assertEqual(by_name["collision_episode"]["status"], "pass")
+        self.assertFalse(by_name["collision_episode"]["direct_apply"])
+        self.assertEqual(by_name["collision_episode"]["disposition"], "falsification")
+        self.assertEqual(by_name["timeout_no_progress"]["status"], "pass")
+        self.assertFalse(by_name["timeout_no_progress"]["direct_apply"])
+        self.assertEqual(by_name["timeout_no_progress"]["disposition"], "falsification")
+
 
 class RetryClassificationTests(unittest.TestCase):
     def test_invoke_canary_adds_internal_nonce_without_mutating_manifest_params(self) -> None:

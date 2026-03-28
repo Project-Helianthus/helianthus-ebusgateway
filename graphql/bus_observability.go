@@ -50,14 +50,16 @@ type BusObservabilityStartup struct {
 }
 
 type BusObservabilityStatus struct {
-	LastUpdatedAt  *time.Time
-	TransportClass string
-	Capability     BusObservabilityCapability
-	Warmup         BusObservabilityWarmup
-	TimingQuality  BusObservabilityTimingQuality
-	Degraded       BusObservabilityDegraded
-	Startup        *BusObservabilityStartup
-	FeatureFlags   ObserveFirstFeatureFlagState
+	LastUpdatedAt          *time.Time
+	TransportClass         string
+	PublisherCadenceSec    float64
+	PublisherCadenceSource string
+	Capability             BusObservabilityCapability
+	Warmup                 BusObservabilityWarmup
+	TimingQuality          BusObservabilityTimingQuality
+	Degraded               BusObservabilityDegraded
+	Startup                *BusObservabilityStartup
+	FeatureFlags           ObserveFirstFeatureFlagState
 }
 
 type ObserveFirstFeatureFlagState struct {
@@ -672,6 +674,34 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 						return "", nil
 					}
 					return value.TransportClass, nil
+				},
+			},
+			"publisherCadenceSec": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Float),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*BusObservabilityStatus)
+					if ok && status != nil {
+						return status.PublisherCadenceSec, nil
+					}
+					value, ok := params.Source.(BusObservabilityStatus)
+					if !ok {
+						return 0.0, nil
+					}
+					return value.PublisherCadenceSec, nil
+				},
+			},
+			"publisherCadenceSource": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*BusObservabilityStatus)
+					if ok && status != nil {
+						return status.PublisherCadenceSource, nil
+					}
+					value, ok := params.Source.(BusObservabilityStatus)
+					if !ok {
+						return "", nil
+					}
+					return value.PublisherCadenceSource, nil
 				},
 			},
 			"capability": &graphqlgo.Field{

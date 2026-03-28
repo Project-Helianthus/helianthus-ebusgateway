@@ -44,15 +44,19 @@ type BusObservabilityStartup struct {
 	LiveEpoch     uint64     `json:"live_epoch"`
 }
 
+const busObservabilityPublisherCadenceSource = "config.semantic_state_interval"
+
 type BusObservabilityStatus struct {
-	LastUpdatedAt  *time.Time                    `json:"last_updated_at,omitempty"`
-	TransportClass string                        `json:"transport_class"`
-	Capability     BusObservabilityCapability    `json:"capability"`
-	Warmup         BusObservabilityWarmup        `json:"warmup"`
-	TimingQuality  BusObservabilityTimingQuality `json:"timing_quality"`
-	Degraded       BusObservabilityDegraded      `json:"degraded"`
-	Startup        *BusObservabilityStartup      `json:"startup,omitempty"`
-	FeatureFlags   ObserveFirstFeatureFlagState  `json:"feature_flags"`
+	LastUpdatedAt          *time.Time                    `json:"last_updated_at,omitempty"`
+	TransportClass         string                        `json:"transport_class"`
+	PublisherCadenceSec    float64                       `json:"publisher_cadence_sec"`
+	PublisherCadenceSource string                        `json:"publisher_cadence_source"`
+	Capability             BusObservabilityCapability    `json:"capability"`
+	Warmup                 BusObservabilityWarmup        `json:"warmup"`
+	TimingQuality          BusObservabilityTimingQuality `json:"timing_quality"`
+	Degraded               BusObservabilityDegraded      `json:"degraded"`
+	Startup                *BusObservabilityStartup      `json:"startup,omitempty"`
+	FeatureFlags           ObserveFirstFeatureFlagState  `json:"feature_flags"`
 }
 
 type BusObservabilityBoundedList struct {
@@ -159,8 +163,10 @@ func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus Passi
 	return BusObservabilitySummary{
 		LastUpdatedAt: cloneTimePtr(store.lastUpdatedAtPtrLocked()),
 		Status: BusObservabilityStatus{
-			LastUpdatedAt:  store.lastUpdatedAtPtrLocked(),
-			TransportClass: store.transportClass,
+			LastUpdatedAt:          store.lastUpdatedAtPtrLocked(),
+			TransportClass:         store.transportClass,
+			PublisherCadenceSec:    store.cfg.SemanticStateInterval.Seconds(),
+			PublisherCadenceSource: busObservabilityPublisherCadenceSource,
 			Capability: BusObservabilityCapability{
 				ActiveSupported:    true,
 				PassiveSupported:   passiveSupported,

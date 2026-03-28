@@ -303,6 +303,23 @@ func TestBusObservabilityStoreKeepsFeatureFlagTimestampProcessLifetimeImmutableA
 	}
 }
 
+func TestBusObservabilityStoreExposesPublisherCadenceFromSemanticStateInterval(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SemanticStateInterval = 7 * time.Minute
+	store := NewBusObservabilityStore(cfg)
+
+	snapshot := store.Snapshot()
+	if snapshot.Summary.Status.LastUpdatedAt == nil {
+		t.Fatal("Snapshot() missing status timestamp; want populated snapshot")
+	}
+	if got, want := snapshot.Summary.Status.PublisherCadenceSec, cfg.SemanticStateInterval.Seconds(); got != want {
+		t.Fatalf("PublisherCadenceSec = %v; want %v", got, want)
+	}
+	if got, want := snapshot.Summary.Status.PublisherCadenceSource, busObservabilityPublisherCadenceSource; got != want {
+		t.Fatalf("PublisherCadenceSource = %q; want %q", got, want)
+	}
+}
+
 func TestBusObservabilityStoreIncludesStartupSurfaceInSnapshot(t *testing.T) {
 	cfg := DefaultConfig()
 	store := NewBusObservabilityStore(cfg)

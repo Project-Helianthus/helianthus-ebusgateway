@@ -32,6 +32,7 @@ func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.BroadcastListen = true
 	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
+	cfg.SemanticStateInterval = 7 * time.Minute
 
 	store := ebusgateway.NewBusObservabilityStore(cfg)
 	if store == nil {
@@ -105,6 +106,12 @@ func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 		t.Fatalf("summary status.last_updated_at missing")
 	} else if _, err := time.Parse(time.RFC3339Nano, got); err != nil {
 		t.Fatalf("summary status.last_updated_at parse: %v", err)
+	}
+	if got, _ := status["publisher_cadence_sec"].(float64); got != 420 {
+		t.Fatalf("summary publisher_cadence_sec = %v; want 420", status["publisher_cadence_sec"])
+	}
+	if got, _ := status["publisher_cadence_source"].(string); got != "config.semantic_state_interval" {
+		t.Fatalf("summary publisher_cadence_source = %q; want config.semantic_state_interval", got)
 	}
 	timingQuality, ok := status["timing_quality"].(map[string]any)
 	if !ok {

@@ -3198,6 +3198,29 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
         self.assertIn("missing anchored replay behavior artifact", artifact["eligibility"]["reason"])
 
+    def test_family_proof_eligibility_blocks_string_false_replay_behavior_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            replay_path = proof_dir / "replay_behavior.json"
+            payload = verifier.load_json(replay_path)
+            payload["ok"] = "false"
+            write_json(replay_path, payload)
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("replay behavior artifact missing boolean ok", artifact["eligibility"]["reason"])
+
     def test_family_proof_eligibility_blocks_forged_replay_behavior_artifact_path_strings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
@@ -3700,6 +3723,34 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
                 self.assertFalse(artifact["ok"])
                 self.assertEqual(artifact["eligibility"]["status"], "blocked")
                 self.assertIn(expected_reason, artifact["eligibility"]["reason"])
+
+    def test_promotion_eligibility_blocks_string_false_replay_behavior_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            write_family_proof_eligibility_artifact(
+                proof_dir,
+                proxy_transport="ens",
+                ebusd_transport=CANONICAL_NO_EBUSD_TRANSPORT,
+            )
+            replay_path = proof_dir / "replay_behavior.json"
+            payload = verifier.load_json(replay_path)
+            payload["ok"] = "false"
+            write_json(replay_path, payload)
+            artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport=CANONICAL_NO_EBUSD_TRANSPORT,
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("replay behavior artifact missing boolean ok", artifact["eligibility"]["reason"])
 
     def test_promotion_eligibility_blocks_contradictory_upstream_family_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

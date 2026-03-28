@@ -1822,7 +1822,11 @@ def validate_family_upstream_replay_verdict(
     behavior_schema = str(behavior_artifact_payload.get("schema", "")).strip()
     if behavior_schema != REPLAY_BEHAVIOR_ARTIFACT_SCHEMA:
         return False, f"{path}: anchored replay behavior artifact schema mismatch at {behavior_artifact_path}"
-    anchored_behavior_artifact_ok = bool(behavior_artifact_payload.get("ok", False))
+    anchored_behavior_artifact_ok = behavior_artifact_payload.get("ok")
+    if not isinstance(anchored_behavior_artifact_ok, bool):
+        return False, (
+            f"{path}: anchored replay behavior artifact missing boolean ok at {behavior_artifact_path}"
+        )
     behavior_cases_payload = behavior_artifact_payload.get("cases")
     if not isinstance(behavior_cases_payload, list):
         return False, f"{path}: anchored replay behavior artifact missing cases array at {behavior_artifact_path}"
@@ -3419,6 +3423,8 @@ def load_replay_behavior_artifact(path: pathlib.Path) -> Dict[str, Any]:
         raise ValueError("replay behavior artifact schema mismatch")
     if str(payload.get("source", "")).strip() != "go_replay_harness":
         raise ValueError("replay behavior artifact source mismatch")
+    if not isinstance(payload.get("ok"), bool):
+        raise ValueError("replay behavior artifact missing boolean ok")
     cases = payload.get("cases")
     if not isinstance(cases, list):
         raise ValueError("replay behavior artifact missing cases array")
@@ -3447,6 +3453,8 @@ def build_replay_falsification_verdict(
     behavior_cases_raw = behavior.get("cases")
     if not isinstance(behavior_cases_raw, list):
         raise ValueError("replay behavior artifact missing cases array")
+    if not isinstance(behavior.get("ok"), bool):
+        raise ValueError("replay behavior artifact missing boolean ok")
 
     expected_cases: Dict[str, Dict[str, Any]] = {}
     locked_order: List[str] = []
@@ -3537,7 +3545,7 @@ def build_replay_falsification_verdict(
             "observed": None,
             "behavior_evidence": {
                 "behavior_artifact_path": str(behavior_artifact_path),
-                "behavior_artifact_ok": bool(behavior.get("ok", False)),
+                "behavior_artifact_ok": behavior.get("ok"),
                 "behavior_schema": str(behavior.get("schema", "")).strip(),
                 "case_name": name,
                 "observed_present": observed_entry is not None,

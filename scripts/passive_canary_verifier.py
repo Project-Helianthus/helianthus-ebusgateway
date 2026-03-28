@@ -34,6 +34,8 @@ READ_AVOIDANCE_DIRECT_APPLY_METRIC = "direct_apply_total"
 READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC = "active_reads_avoided_total"
 READ_AVOIDANCE_SAVED_SECONDS_METRIC = "active_read_saved_seconds"
 WARMUP_BEHAVIOR_ARTIFACT_SCHEMA = "p03_warmup_behavior_v1"
+PUBLISHER_CADENCE_ARTIFACT_SCHEMA = "p03_publisher_cadence_v1"
+PUBLISHER_CADENCE_SOURCE_ANCHOR = "config.semantic_state_interval"
 FAMILY_PROOF_ELIGIBILITY_SCHEMA = "p03_family_proof_eligibility_v1"
 PROMOTION_ELIGIBILITY_SCHEMA = "p03_promotion_eligibility_v1"
 CANONICAL_NO_EBUSD_TRANSPORT = "no-ebusd"
@@ -1291,6 +1293,52 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
         "graphql",
         "data.watchSummary.lastUpdatedAt",
     )
+    bus_publisher_cadence_sec, bus_publisher_cadence_error = required_finite_numeric_value(
+        graphql_status,
+        "publisherCadenceSec",
+        path=graphql_path,
+        context="graphql data.busSummary.status",
+    )
+    if bus_publisher_cadence_error:
+        raise ValueError(bus_publisher_cadence_error)
+    bus_publisher_cadence_source = str(graphql_status.get("publisherCadenceSource", "")).strip()
+    if bus_publisher_cadence_source == "":
+        raise ValueError(
+            f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.publisherCadenceSource"
+        )
+    bus_observability_status = summary.get("status")
+    if not isinstance(bus_observability_status, dict):
+        raise ValueError(f"{bus_path}: bus observability snapshot missing summary.status object")
+    bus_status_publisher_cadence_sec, bus_status_publisher_cadence_error = required_finite_numeric_value(
+        bus_observability_status,
+        "publisher_cadence_sec",
+        path=bus_path,
+        context="bus observability summary.status",
+    )
+    if bus_status_publisher_cadence_error:
+        raise ValueError(bus_status_publisher_cadence_error)
+    bus_status_publisher_cadence_source = str(
+        bus_observability_status.get("publisher_cadence_source", "")
+    ).strip()
+    if bus_status_publisher_cadence_source == "":
+        raise ValueError(
+            f"{bus_path}: bus observability snapshot missing summary.status.publisher_cadence_source"
+        )
+    if abs(bus_publisher_cadence_sec - bus_status_publisher_cadence_sec) > 1e-9:
+        raise ValueError(
+            f"{graphql_path}: publisher cadence mismatch between graphql and bus observability snapshots: "
+            f"graphql={bus_publisher_cadence_sec} bus={bus_status_publisher_cadence_sec}"
+        )
+    if bus_publisher_cadence_source != bus_status_publisher_cadence_source:
+        raise ValueError(
+            f"{graphql_path}: publisher cadence source mismatch between graphql and bus observability snapshots: "
+            f"graphql={bus_publisher_cadence_source!r} bus={bus_status_publisher_cadence_source!r}"
+        )
+    if bus_publisher_cadence_source != PUBLISHER_CADENCE_SOURCE_ANCHOR:
+        raise ValueError(
+            f"{graphql_path}: publisher cadence source anchor mismatch: "
+            f"got {bus_publisher_cadence_source!r}; want {PUBLISHER_CADENCE_SOURCE_ANCHOR!r}"
+        )
     transport_class_raw = graphql_status.get("transportClass")
     if not isinstance(transport_class_raw, str):
         raise ValueError(
@@ -1324,6 +1372,12 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
         "startup_phase": startup_phase,
         "warmup_state": warmup_state,
         "transport_class": transport_class,
+        "publisher_cadence": {
+            "publisher_cadence_sec": bus_status_publisher_cadence_sec,
+            "publisher_cadence_source": bus_status_publisher_cadence_source,
+            "graphql_publisher_cadence_sec": bus_publisher_cadence_sec,
+            "graphql_publisher_cadence_source": bus_publisher_cadence_source,
+        },
         "timestamps": {
             "bus_observability": {
                 "summary_last_updated_at": summary_last_updated_at,
@@ -3335,6 +3389,168 @@ def build_warmup_behavior_artifact_for_phases(
     }
 
 
+def build_publisher_cadence_artifact_for_phases(
+    proof_dir: pathlib.Path,
+    run_id: str,
+) -> Dict[str, Any]:
+    if not isinstance(proof_dir, pathlib.Path):
+        raise ValueError("proof_dir must be a pathlib.Path")
+
+    structured_phase_prefixes = sorted(
+        {
+            path.name[: -len("_bus_observability.json")]
+            for path in proof_dir.glob("**/*_bus_observability.json")
+            if path.is_file()
+        },
+        key=phase_sort_key,
+    )
+    if "start" not in structured_phase_prefixes or "end" not in structured_phase_prefixes:
+        raise ValueError("missing current-run start/end structured publisher cadence artifacts")
+
+    start_snapshot = load_structured_warmup_snapshot(proof_dir, "start")
+    end_snapshot = load_structured_warmup_snapshot(proof_dir, "end")
+    start_cadence = start_snapshot.get("publisher_cadence")
+    end_cadence = end_snapshot.get("publisher_cadence")
+    if not isinstance(start_cadence, dict):
+        raise ValueError("publisher cadence start snapshot missing cadence payload")
+    if not isinstance(end_cadence, dict):
+        raise ValueError("publisher cadence end snapshot missing cadence payload")
+
+    start_sec = start_cadence.get("publisher_cadence_sec")
+    end_sec = end_cadence.get("publisher_cadence_sec")
+    start_source = str(start_cadence.get("publisher_cadence_source", "")).strip()
+    end_source = str(end_cadence.get("publisher_cadence_source", "")).strip()
+    if not isinstance(start_sec, (int, float)):
+        raise ValueError("publisher cadence start snapshot missing numeric publisher_cadence_sec")
+    if not isinstance(end_sec, (int, float)):
+        raise ValueError("publisher cadence end snapshot missing numeric publisher_cadence_sec")
+    start_value = float(start_sec)
+    end_value = float(end_sec)
+    if not math.isfinite(start_value) or start_value <= 0:
+        raise ValueError(f"publisher cadence start snapshot has invalid publisher_cadence_sec {start_value!r}")
+    if not math.isfinite(end_value) or end_value <= 0:
+        raise ValueError(f"publisher cadence end snapshot has invalid publisher_cadence_sec {end_value!r}")
+    if start_source == "":
+        raise ValueError("publisher cadence start snapshot missing publisher_cadence_source")
+    if end_source == "":
+        raise ValueError("publisher cadence end snapshot missing publisher_cadence_source")
+    if start_source != end_source:
+        raise ValueError(
+            "publisher cadence source mismatch across proof window: "
+            f"start={start_source!r} end={end_source!r}"
+        )
+    if abs(start_value - end_value) > 1e-9:
+        raise ValueError(
+            "publisher cadence mismatch across proof window: "
+            f"start={start_value} end={end_value}"
+        )
+    if start_source != PUBLISHER_CADENCE_SOURCE_ANCHOR:
+        raise ValueError(
+            "publisher cadence source anchor mismatch: "
+            f"got {start_source!r}; want {PUBLISHER_CADENCE_SOURCE_ANCHOR!r}"
+        )
+
+    return {
+        "schema": PUBLISHER_CADENCE_ARTIFACT_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": run_id,
+        "claim_scope": "bounded_proof_window_publisher_cadence",
+        "source": "proof_artifact_publisher_cadence",
+        "evidence": {
+            "start_snapshot_paths": start_snapshot["snapshot_paths"],
+            "end_snapshot_paths": end_snapshot["snapshot_paths"],
+            "structured_snapshot_prefixes": structured_phase_prefixes,
+        },
+        "start": {
+            "snapshot_prefix": start_snapshot["snapshot_prefix"],
+            "snapshot_paths": start_snapshot["snapshot_paths"],
+            "bus_observability": start_snapshot["bus_observability"],
+            "graphql_bus_watch": start_snapshot["graphql_bus_watch"],
+            "publisher_cadence": start_cadence,
+            "timestamps": start_snapshot["timestamps"],
+        },
+        "end": {
+            "snapshot_prefix": end_snapshot["snapshot_prefix"],
+            "snapshot_paths": end_snapshot["snapshot_paths"],
+            "bus_observability": end_snapshot["bus_observability"],
+            "graphql_bus_watch": end_snapshot["graphql_bus_watch"],
+            "publisher_cadence": end_cadence,
+            "timestamps": end_snapshot["timestamps"],
+        },
+        "coherence": {
+            "source_anchor": start_source,
+            "same_source_across_window": True,
+            "same_value_across_window": True,
+            "bus_graphql_agree": True,
+        },
+        "ok": True,
+    }
+
+
+def evaluate_publisher_cadence(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return False, "missing publisher cadence payload", {}
+    if str(payload.get("schema", "")).strip() != PUBLISHER_CADENCE_ARTIFACT_SCHEMA:
+        return False, "publisher cadence schema mismatch", {}
+    if payload.get("ok") is not True:
+        return False, "publisher cadence artifact is not ok", {}
+
+    start = payload.get("start")
+    end = payload.get("end")
+    coherence = payload.get("coherence")
+    if not isinstance(start, dict):
+        return False, "publisher cadence missing start payload", {}
+    if not isinstance(end, dict):
+        return False, "publisher cadence missing end payload", {}
+    if not isinstance(coherence, dict):
+        return False, "publisher cadence missing coherence payload", {}
+
+    start_cadence = start.get("publisher_cadence")
+    end_cadence = end.get("publisher_cadence")
+    if not isinstance(start_cadence, dict):
+        return False, "publisher cadence start missing cadence payload", {}
+    if not isinstance(end_cadence, dict):
+        return False, "publisher cadence end missing cadence payload", {}
+
+    start_sec, start_sec_error = required_finite_numeric_value(
+        start_cadence,
+        "publisher_cadence_sec",
+        path=pathlib.Path("publisher_cadence.json"),
+        context="publisher cadence start",
+    )
+    if start_sec_error:
+        return False, start_sec_error, {}
+    end_sec, end_sec_error = required_finite_numeric_value(
+        end_cadence,
+        "publisher_cadence_sec",
+        path=pathlib.Path("publisher_cadence.json"),
+        context="publisher cadence end",
+    )
+    if end_sec_error:
+        return False, end_sec_error, {}
+
+    start_source = str(start_cadence.get("publisher_cadence_source", "")).strip()
+    end_source = str(end_cadence.get("publisher_cadence_source", "")).strip()
+    if start_source == "":
+        return False, "publisher cadence start missing publisher_cadence_source", {}
+    if end_source == "":
+        return False, "publisher cadence end missing publisher_cadence_source", {}
+    if start_source != end_source:
+        return False, "publisher cadence source mismatch across proof window", {}
+    if start_source != PUBLISHER_CADENCE_SOURCE_ANCHOR:
+        return False, "publisher cadence source anchor mismatch", {}
+    if abs(start_sec - end_sec) > 1e-9:
+        return False, "publisher cadence value mismatch across proof window", {}
+
+    details = {
+        "start_publisher_cadence_sec": start_sec,
+        "end_publisher_cadence_sec": end_sec,
+        "publisher_cadence_source": start_source,
+        "source_anchor": coherence.get("source_anchor"),
+    }
+    return True, "", details
+
+
 def evaluate_warmup_behavior(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
     if not isinstance(payload, dict):
         return False, "missing warmup_behavior payload", {}
@@ -4462,6 +4678,15 @@ def promotion_eligibility_command(args: argparse.Namespace) -> int:
     return 0 if status in ("eligible_for_default_flip", "not_proven") else 1
 
 
+def publisher_cadence_command(args: argparse.Namespace) -> int:
+    artifact = build_publisher_cadence_artifact_for_phases(
+        pathlib.Path(args.proof_dir),
+        args.run_id,
+    )
+    write_json(pathlib.Path(args.output), artifact)
+    return 0 if bool(artifact.get("ok", False)) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -4534,6 +4759,15 @@ def build_parser() -> argparse.ArgumentParser:
     promotion_eligibility.add_argument("--ebusd-transport", default="")
     promotion_eligibility.add_argument("--output", required=True)
     promotion_eligibility.set_defaults(func=promotion_eligibility_command)
+
+    publisher_cadence = sub.add_parser(
+        "publisher-cadence",
+        help="build publisher cadence proof artifact from proof window snapshots",
+    )
+    publisher_cadence.add_argument("--proof-dir", required=True)
+    publisher_cadence.add_argument("--run-id", required=True)
+    publisher_cadence.add_argument("--output", required=True)
+    publisher_cadence.set_defaults(func=publisher_cadence_command)
     return parser
 
 

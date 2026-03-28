@@ -117,6 +117,7 @@ canary_manifest_validation_path="${proof_dir}/canary_manifest_validation.json"
 canary_baseline_path="${proof_dir}/canary_baseline.json"
 canary_summary_path="${proof_dir}/canary_summary.json"
 canary_verdict_path="${proof_dir}/canary_verdict.json"
+publisher_cadence_path="${proof_dir}/publisher_cadence.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
 replay_falsification_path="${proof_dir}/replay_falsification.json"
 family_eligibility_path="${proof_dir}/family_proof_eligibility.json"
@@ -217,6 +218,7 @@ if [[ "${gw15_proof_mode}" == "1" ]]; then
 fi
 
 graphql_bus_watch_query='{"query":"{ busSummary { lastUpdatedAt status { lastUpdatedAt transportClass startup { lastUpdatedAt phase cacheEpoch liveEpoch } featureFlags { lastUpdatedAt observeFirstEnabled passiveStateDirectApply passiveConfigDirectApply externalWritePolicy normalizations } capability { passiveSupported passiveAvailable passiveState passiveReason endpointState tapConnected } warmup { state blocker elapsedSeconds completedTransactions requiredTransactions completionMode } degraded { active reasons } } } watchSummary { lastUpdatedAt inventory { totalEntries pinnedEntries evictableEntries staticPinnedFootprint writeConfirmPinnedActive } activationCounts { catalogDescriptors activeKeys sourceClasses { class count } } directApplyEligibilityClasses { class count } degraded { active shadowingEnabled pinnedBudgetDegraded compactorDegraded reasons } } }"}'
+graphql_bus_watch_query='{"query":"{ busSummary { lastUpdatedAt status { lastUpdatedAt transportClass startup { lastUpdatedAt phase cacheEpoch liveEpoch } publisherCadenceSec publisherCadenceSource featureFlags { lastUpdatedAt observeFirstEnabled passiveStateDirectApply passiveConfigDirectApply externalWritePolicy normalizations } capability { passiveSupported passiveAvailable passiveState passiveReason endpointState tapConnected } warmup { state blocker elapsedSeconds completedTransactions requiredTransactions completionMode } degraded { active reasons } } } watchSummary { lastUpdatedAt inventory { totalEntries pinnedEntries evictableEntries staticPinnedFootprint writeConfirmPinnedActive } activationCounts { catalogDescriptors activeKeys sourceClasses { class count } } directApplyEligibilityClasses { class count } degraded { active shadowingEnabled pinnedBudgetDegraded compactorDegraded reasons } } }"}'
 
 validate_snapshot() {
   METRICS_PAYLOAD="${1}" \
@@ -424,12 +426,65 @@ feature_flags = status.get("featureFlags")
 if not isinstance(feature_flags, dict):
     raise SystemExit(1)
 
+publisher_cadence_sec = status.get("publisherCadenceSec")
+if not isinstance(publisher_cadence_sec, (int, float)):
+    raise SystemExit(1)
+if float(publisher_cadence_sec) <= 0:
+    raise SystemExit(1)
+publisher_cadence_source = str(status.get("publisherCadenceSource", "")).strip()
+if publisher_cadence_source == "":
+    raise SystemExit(1)
+
 for value in (
     bus_summary.get("lastUpdatedAt"),
     status.get("lastUpdatedAt"),
     startup.get("lastUpdatedAt"),
     feature_flags.get("lastUpdatedAt"),
     watch_summary.get("lastUpdatedAt"),
+):
+    if not isinstance(value, str) or value.strip() == "":
+        raise SystemExit(1)
+
+raise SystemExit(0)
+PY
+}
+
+bus_observability_payload_valid() {
+  local payload="${1:-}"
+  BUS_PAYLOAD="${payload}" python3 - <<'PY'
+import json
+import os
+import sys
+
+payload_text = os.environ.get("BUS_PAYLOAD", "")
+try:
+    payload = json.loads(payload_text)
+except Exception:
+    raise SystemExit(1)
+
+summary = payload.get("summary")
+if not isinstance(summary, dict):
+    raise SystemExit(1)
+status = summary.get("status")
+if not isinstance(status, dict):
+    raise SystemExit(1)
+startup = status.get("startup")
+if not isinstance(startup, dict):
+    raise SystemExit(1)
+
+publisher_cadence_sec = status.get("publisher_cadence_sec")
+if not isinstance(publisher_cadence_sec, (int, float)):
+    raise SystemExit(1)
+if float(publisher_cadence_sec) <= 0:
+    raise SystemExit(1)
+publisher_cadence_source = str(status.get("publisher_cadence_source", "")).strip()
+if publisher_cadence_source == "":
+    raise SystemExit(1)
+
+for value in (
+    summary.get("last_updated_at"),
+    status.get("last_updated_at"),
+    startup.get("last_updated_at"),
 ):
     if not isinstance(value, str) or value.strip() == "":
         raise SystemExit(1)
@@ -466,8 +521,10 @@ capture_proof_snapshot() {
   fi
 
   if bus_payload="$(curl -fsS -m 8 "${bus_observability_url}" 2>/dev/null)"; then
-    printf '%s\n' "${bus_payload}" > "${bus_file}"
-    have_bus=1
+    if bus_observability_payload_valid "${bus_payload}"; then
+      printf '%s\n' "${bus_payload}" > "${bus_file}"
+      have_bus=1
+    fi
   fi
 
   if graphql_payload="$(curl -fsS -m 8 -H 'Content-Type: application/json' -d "${graphql_bus_watch_query}" "${graphql_url}" 2>/dev/null)"; then
@@ -551,6 +608,13 @@ build_promotion_eligibility_artifact() {
     --proxy-transport "${proxy_transport}" \
     --ebusd-transport "${ebusd_transport}" \
     --output "${promotion_eligibility_path}"
+}
+
+build_publisher_cadence_artifact() {
+  python3 "${canary_verifier_script}" publisher-cadence \
+    --proof-dir "${proof_dir}" \
+    --run-id "${canary_run_id}" \
+    --output "${publisher_cadence_path}"
 }
 
 build_replay_behavior_artifact() {
@@ -731,6 +795,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_promotion_eligibility_artifact; then
       echo "proof mode: promotion eligibility gate failed (see ${promotion_eligibility_path})" >&2
+      exit 1
+    fi
+    if ! build_publisher_cadence_artifact; then
+      echo "proof mode: publisher cadence gate failed (see ${publisher_cadence_path})" >&2
       exit 1
     fi
   fi

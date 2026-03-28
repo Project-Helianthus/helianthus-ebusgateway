@@ -882,7 +882,16 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
     graphql_status = bus_summary.get("status")
     if not isinstance(graphql_status, dict):
         raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status object")
-    transport_class = str(graphql_status.get("transportClass", "")).strip()
+    transport_class_raw = graphql_status.get("transportClass")
+    if not isinstance(transport_class_raw, str):
+        raise ValueError(
+            f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.transportClass"
+        )
+    transport_class = transport_class_raw.strip()
+    if transport_class == "":
+        raise ValueError(
+            f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.transportClass"
+        )
     warmup = graphql_status.get("warmup")
     if not isinstance(warmup, dict):
         raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.warmup object")
@@ -936,6 +945,22 @@ def validate_family_upstream_canary_verdict(payload: Any, path: pathlib.Path) ->
                 "(success semantics mismatch)"
             )
         criterion_results.append(criterion_ok)
+
+    no_mismatches = criteria.get("no_mismatches")
+    if not isinstance(no_mismatches, dict):
+        return False, f"{path}: canary verdict missing criteria.no_mismatches object"
+    mismatch_count = no_mismatches.get("mismatch_count")
+    if not isinstance(mismatch_count, int):
+        return False, f"{path}: canary verdict missing integer criteria.no_mismatches.mismatch_count"
+    if mismatch_count < 0:
+        return False, f"{path}: canary verdict has negative criteria.no_mismatches.mismatch_count"
+    no_mismatches_ok = no_mismatches.get("ok")
+    if no_mismatches_ok != (mismatch_count == 0):
+        return False, (
+            f"{path}: canary verdict contradictory no_mismatches accounting: "
+            f"criteria.no_mismatches.ok={no_mismatches_ok!r} "
+            f"but mismatch_count={mismatch_count}"
+        )
 
     derived_ok = all(criterion_results)
     verdict_ok = bool(payload.get("ok"))
@@ -994,6 +1019,7 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
     cases = payload.get("cases")
     if not isinstance(cases, list):
         return False, f"{path}: replay falsification verdict missing cases array"
+    case_pass_count = 0
     case_fail_count = 0
     for case_index, case_payload in enumerate(cases):
         if not isinstance(case_payload, dict):
@@ -1005,6 +1031,8 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
             )
         if case_status == "fail":
             case_fail_count += 1
+        elif case_status == "pass":
+            case_pass_count += 1
 
     if summary_total_cases != len(cases):
         return False, (
@@ -1020,6 +1048,11 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
         return False, (
             f"{path}: replay falsification verdict contradictory summary pass/fail totals: "
             f"pass={summary_pass} fail={summary_fail} total_cases={summary_total_cases}"
+        )
+    if summary_pass != case_pass_count:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.pass={summary_pass} "
+            f"(case_pass_count={case_pass_count})"
         )
     if summary_fail != case_fail_count:
         return False, (
@@ -1165,6 +1198,7 @@ def build_family_proof_eligibility_artifact_for_run(
     is_p03_family = (
         normalized_kind == "proxy-single-client"
         and normalized_passive_mode == "required"
+        and normalized_gateway_transport == "ens"
         and transport_class == "ens"
     )
     family_identity_missing = normalized_kind == "" or normalized_passive_mode == "" or transport_class == ""
@@ -1180,7 +1214,8 @@ def build_family_proof_eligibility_artifact_for_run(
         status = "not_proven"
         reasons.append(
             f"family scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r} "
-            f"transport_class={transport_class!r}; want proxy-single-client/required/ens"
+            f"gateway_transport={normalized_gateway_transport!r} transport_class={transport_class!r}; "
+            "want proxy-single-client/required/ens/ens"
         )
 
     if len(reasons) == 0:

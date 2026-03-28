@@ -1286,7 +1286,12 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
     for case_index, case_payload in enumerate(cases):
         if not isinstance(case_payload, dict):
             return False, f"{path}: replay falsification verdict case[{case_index}] must be object"
-        case_name = str(case_payload.get("name", "")).strip()
+        case_name_raw = case_payload.get("name")
+        if not isinstance(case_name_raw, str):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing non-empty name"
+            )
+        case_name = case_name_raw.strip()
         if case_name == "":
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing non-empty name"
@@ -1296,12 +1301,22 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
                 f"{path}: replay falsification verdict duplicate case name {case_name!r}"
             )
         case_names.add(case_name)
-        case_family = str(case_payload.get("family", "")).strip()
+        case_family_raw = case_payload.get("family")
+        if not isinstance(case_family_raw, str):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing non-empty family"
+            )
+        case_family = case_family_raw.strip()
         if case_family == "":
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing non-empty family"
             )
-        response_class = str(case_payload.get("response_class", "")).strip()
+        response_class_raw = case_payload.get("response_class")
+        if not isinstance(response_class_raw, str):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing non-empty response_class"
+            )
+        response_class = response_class_raw.strip()
         if response_class == "":
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing non-empty response_class"
@@ -1350,7 +1365,12 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence object"
             )
-        behavior_artifact_path = str(behavior_evidence.get("behavior_artifact_path", "")).strip()
+        behavior_artifact_path_raw = behavior_evidence.get("behavior_artifact_path")
+        if not isinstance(behavior_artifact_path_raw, str):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.behavior_artifact_path"
+            )
+        behavior_artifact_path = behavior_artifact_path_raw.strip()
         if behavior_artifact_path == "":
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.behavior_artifact_path"

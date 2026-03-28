@@ -33,6 +33,7 @@ READ_AVOIDANCE_ACCOUNTING_SCHEMA = "p03_read_avoidance_accounting_v1"
 READ_AVOIDANCE_DIRECT_APPLY_METRIC = "direct_apply_total"
 READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC = "active_reads_avoided_total"
 READ_AVOIDANCE_SAVED_SECONDS_METRIC = "active_read_saved_seconds"
+WARMUP_BEHAVIOR_ARTIFACT_SCHEMA = "p03_warmup_behavior_v1"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC = "ebus_passive_completed_transactions_total"
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_apply_candidates_evaluated_total"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
@@ -370,6 +371,31 @@ def proof_phase_metrics_snapshot_path(proof_dir: pathlib.Path, phase: str) -> pa
     raise ValueError(f"unsupported canary phase for metrics snapshot lookup: {phase!r}")
 
 
+def proof_phase_result_path(proof_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    normalized = phase.strip().lower()
+    if normalized == "":
+        raise ValueError("unsupported empty canary phase for result lookup")
+    return proof_dir / f"canary_phase_{normalized}.json"
+
+
+def proof_phase_bus_observability_snapshot_path(proof_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    normalized = phase.strip().lower()
+    if normalized in ("start", "end"):
+        return proof_dir / f"{normalized}_bus_observability.json"
+    if is_interval_phase(normalized):
+        return proof_dir / "samples" / f"{normalized}_bus_observability.json"
+    raise ValueError(f"unsupported canary phase for bus observability snapshot lookup: {phase!r}")
+
+
+def proof_phase_graphql_bus_watch_snapshot_path(proof_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    normalized = phase.strip().lower()
+    if normalized in ("start", "end"):
+        return proof_dir / f"{normalized}_graphql_bus_watch.json"
+    if is_interval_phase(normalized):
+        return proof_dir / "samples" / f"{normalized}_graphql_bus_watch.json"
+    raise ValueError(f"unsupported canary phase for graphql bus watch snapshot lookup: {phase!r}")
+
+
 def proof_phase_feature_flag_snapshot_path(proof_dir: pathlib.Path, phase: str) -> pathlib.Path:
     normalized = phase.strip().lower()
     if normalized in ("start", "end"):
@@ -377,6 +403,24 @@ def proof_phase_feature_flag_snapshot_path(proof_dir: pathlib.Path, phase: str) 
     if is_interval_phase(normalized):
         return proof_dir / "samples" / f"{normalized}_feature_flags.json"
     raise ValueError(f"unsupported canary phase for feature flag snapshot lookup: {phase!r}")
+
+
+def proof_phase_bus_observability_path(proof_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    normalized = phase.strip().lower()
+    if normalized in ("start", "end"):
+        return proof_dir / f"{normalized}_bus_observability.json"
+    if is_interval_phase(normalized):
+        return proof_dir / "samples" / f"{normalized}_bus_observability.json"
+    raise ValueError(f"unsupported bus-observability phase lookup: {phase!r}")
+
+
+def proof_phase_graphql_bus_watch_path(proof_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    normalized = phase.strip().lower()
+    if normalized in ("start", "end"):
+        return proof_dir / f"{normalized}_graphql_bus_watch.json"
+    if is_interval_phase(normalized):
+        return proof_dir / "samples" / f"{normalized}_graphql_bus_watch.json"
+    raise ValueError(f"unsupported GraphQL bus-watch phase lookup: {phase!r}")
 
 
 def canonicalize_json_value(value: Any) -> Any:
@@ -472,6 +516,44 @@ def load_feature_flag_snapshot(snapshot_path: pathlib.Path, phase: str) -> Dict[
         "bus_observability_feature_flags": bus_state,
         "canonical_feature_flags": graphql_state,
         "canonical_feature_flags_key": canonical_graphql_key,
+    }
+
+
+def load_phase_status_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict[str, Any]:
+    bus_path = proof_phase_bus_observability_path(proof_dir, phase)
+    graphql_path = proof_phase_graphql_bus_watch_path(proof_dir, phase)
+    if not bus_path.exists():
+        raise ValueError(f"missing required bus-observability proof artifact: {bus_path}")
+    if not graphql_path.exists():
+        raise ValueError(f"missing required GraphQL proof artifact: {graphql_path}")
+
+    bus_payload = load_json(bus_path)
+    graphql_payload = load_json(graphql_path)
+    if not isinstance(bus_payload, dict):
+        raise ValueError(f"{bus_path}: bus-observability payload must be a JSON object")
+    if not isinstance(graphql_payload, dict):
+        raise ValueError(f"{graphql_path}: GraphQL payload must be a JSON object")
+
+    startup = (((bus_payload.get("summary") or {}).get("status") or {}).get("startup") or {})
+    if not isinstance(startup, dict):
+        raise ValueError(f"{bus_path}: missing summary.status.startup object")
+    startup_phase = str(startup.get("phase", "")).strip()
+    if startup_phase == "":
+        raise ValueError(f"{bus_path}: missing summary.status.startup.phase")
+
+    warmup = (((((graphql_payload.get("data") or {}).get("busSummary") or {}).get("status") or {}).get("warmup")) or {})
+    if not isinstance(warmup, dict):
+        raise ValueError(f"{graphql_path}: missing data.busSummary.status.warmup object")
+    warmup_state = str(warmup.get("state", "")).strip()
+    if warmup_state == "":
+        raise ValueError(f"{graphql_path}: missing data.busSummary.status.warmup.state")
+
+    return {
+        "phase": phase,
+        "bus_observability_path": str(bus_path),
+        "graphql_bus_watch_path": str(graphql_path),
+        "startup_phase": startup_phase,
+        "warmup_state": warmup_state,
     }
 
 
@@ -751,6 +833,275 @@ def build_window_feature_flag_consistency_for_phases(
         "snapshots": snapshots,
         "ok": True,
     }
+
+
+def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict[str, Any]:
+    normalized = phase.strip().lower()
+    if normalized == "":
+        raise ValueError("unsupported empty canary phase for structured warmup snapshot lookup")
+
+    metrics_path = proof_phase_metrics_snapshot_path(proof_dir, normalized)
+    bus_path = proof_phase_bus_observability_snapshot_path(proof_dir, normalized)
+    graphql_path = proof_phase_graphql_bus_watch_snapshot_path(proof_dir, normalized)
+    feature_flag_path = proof_phase_feature_flag_snapshot_path(proof_dir, normalized)
+    for snapshot_path, label in (
+        (metrics_path, "metrics"),
+        (bus_path, "bus observability"),
+        (graphql_path, "graphql bus watch"),
+        (feature_flag_path, "feature flags"),
+    ):
+        if not snapshot_path.exists():
+            raise ValueError(f"missing required warmup proof artifact ({label}): {snapshot_path}")
+
+    bus_payload = load_json(bus_path)
+    if not isinstance(bus_payload, dict):
+        raise ValueError(f"{bus_path}: bus observability snapshot must be a JSON object")
+    summary = bus_payload.get("summary")
+    if not isinstance(summary, dict):
+        raise ValueError(f"{bus_path}: bus observability snapshot missing summary object")
+    status = summary.get("status")
+    if not isinstance(status, dict):
+        raise ValueError(f"{bus_path}: bus observability snapshot missing summary.status object")
+    startup = status.get("startup")
+    if not isinstance(startup, dict):
+        raise ValueError(f"{bus_path}: bus observability snapshot missing summary.status.startup object")
+    startup_phase = str(startup.get("phase", "")).strip().upper()
+    if startup_phase == "":
+        raise ValueError(f"{bus_path}: bus observability snapshot missing summary.status.startup.phase")
+
+    graphql_payload = load_json(graphql_path)
+    if not isinstance(graphql_payload, dict):
+        raise ValueError(f"{graphql_path}: graphql bus watch snapshot must be a JSON object")
+    data = graphql_payload.get("data")
+    if not isinstance(data, dict):
+        raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data object")
+    bus_summary = data.get("busSummary")
+    if not isinstance(bus_summary, dict):
+        raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary object")
+    graphql_status = bus_summary.get("status")
+    if not isinstance(graphql_status, dict):
+        raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status object")
+    warmup = graphql_status.get("warmup")
+    if not isinstance(warmup, dict):
+        raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.warmup object")
+    warmup_state = str(warmup.get("state", "")).strip().lower()
+    if warmup_state == "":
+        raise ValueError(f"{graphql_path}: graphql bus watch snapshot missing data.busSummary.status.warmup.state")
+
+    feature_flag_snapshot = load_feature_flag_snapshot(feature_flag_path, normalized)
+
+    return {
+        "snapshot_prefix": normalized,
+        "snapshot_paths": {
+            "metrics": str(metrics_path),
+            "bus_observability": str(bus_path),
+            "graphql_bus_watch": str(graphql_path),
+            "feature_flags": str(feature_flag_path),
+        },
+        "bus_observability": bus_payload,
+        "graphql_bus_watch": graphql_payload,
+        "feature_flag_snapshot": feature_flag_snapshot,
+        "startup_phase": startup_phase,
+        "warmup_state": warmup_state,
+    }
+
+
+def build_warmup_behavior_artifact_for_phases(
+    proof_dir: pathlib.Path,
+    run_id: str,
+    require_interval_phase: bool,
+) -> Dict[str, Any]:
+    structured_phase_prefixes = sorted(
+        {
+            path.name[: -len("_bus_observability.json")]
+            for path in proof_dir.glob("**/*_bus_observability.json")
+            if path.is_file()
+        },
+        key=phase_sort_key,
+    )
+    if "start" not in structured_phase_prefixes or "end" not in structured_phase_prefixes:
+        raise ValueError("missing current-run start/end structured warmup artifacts (stale artifact rejection)")
+
+    interval_phase_prefixes = [phase for phase in structured_phase_prefixes if is_interval_phase(phase)]
+    cold_start = load_structured_warmup_snapshot(proof_dir, "start")
+    post_warmup = load_structured_warmup_snapshot(proof_dir, "end")
+    interval_snapshots = [load_structured_warmup_snapshot(proof_dir, phase) for phase in interval_phase_prefixes]
+
+    cold_start_proven = cold_start["startup_phase"] != "LIVE_READY" and cold_start["warmup_state"] != "available"
+    post_warmup_proven = post_warmup["startup_phase"] == "LIVE_READY" and post_warmup["warmup_state"] == "available"
+    interval_established = len(interval_snapshots) >= 1
+    transition_established = cold_start_proven and post_warmup_proven and interval_established
+    transition_evidence = {
+        "start_snapshot_paths": cold_start["snapshot_paths"],
+        "end_snapshot_paths": post_warmup["snapshot_paths"],
+        "interval_snapshot_paths": [snapshot["snapshot_paths"] for snapshot in interval_snapshots],
+        "structured_snapshot_prefixes": structured_phase_prefixes,
+    }
+
+    return {
+        "schema": WARMUP_BEHAVIOR_ARTIFACT_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": run_id,
+        "claim_scope": "bounded_proof_window_warmup_behavior",
+        "evidence": transition_evidence,
+        "cold_start": {
+            "snapshot_prefix": cold_start["snapshot_prefix"],
+            "snapshot_paths": cold_start["snapshot_paths"],
+            "bus_observability": cold_start["bus_observability"],
+            "graphql_bus_watch": cold_start["graphql_bus_watch"],
+            "feature_flag_snapshot": cold_start["feature_flag_snapshot"],
+            "startup_phase": cold_start["startup_phase"],
+            "warmup_state": cold_start["warmup_state"],
+        },
+        "post_warmup": {
+            "snapshot_prefix": post_warmup["snapshot_prefix"],
+            "snapshot_paths": post_warmup["snapshot_paths"],
+            "bus_observability": post_warmup["bus_observability"],
+            "graphql_bus_watch": post_warmup["graphql_bus_watch"],
+            "feature_flag_snapshot": post_warmup["feature_flag_snapshot"],
+            "startup_phase": post_warmup["startup_phase"],
+            "warmup_state": post_warmup["warmup_state"],
+        },
+        "transition": {
+            "established": transition_established,
+            "from_snapshot_prefix": "start",
+            "to_snapshot_prefix": "end",
+            "cold_start_proven": cold_start_proven,
+            "post_warmup_proven": post_warmup_proven,
+            "interval_snapshot_count": len(interval_snapshots),
+            "interval_snapshot_prefixes": [snapshot["snapshot_prefix"] for snapshot in interval_snapshots],
+            "first_interval_snapshot_prefix": interval_snapshots[0]["snapshot_prefix"] if interval_snapshots else None,
+            "last_interval_snapshot_prefix": interval_snapshots[-1]["snapshot_prefix"] if interval_snapshots else None,
+            "evidence": transition_evidence,
+        },
+        "ok": transition_established,
+    }
+
+
+def evaluate_warmup_behavior(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return False, "missing warmup_behavior payload", {}
+    if str(payload.get("schema", "")).strip() != WARMUP_BEHAVIOR_ARTIFACT_SCHEMA:
+        return False, "warmup_behavior schema mismatch", {}
+
+    cold_start = payload.get("cold_start")
+    post_warmup = payload.get("post_warmup")
+    transition = payload.get("transition")
+    evidence = payload.get("evidence")
+    if not isinstance(cold_start, dict):
+        return False, "warmup_behavior missing cold_start", {}
+    if not isinstance(post_warmup, dict):
+        return False, "warmup_behavior missing post_warmup", {}
+    if not isinstance(transition, dict):
+        return False, "warmup_behavior missing transition", {}
+    if not isinstance(evidence, dict):
+        return False, "warmup_behavior missing evidence", {}
+
+    for side_name, side in (("cold_start", cold_start), ("post_warmup", post_warmup)):
+        snapshot_prefix = str(side.get("snapshot_prefix", "")).strip()
+        snapshot_paths = side.get("snapshot_paths")
+        bus_observability = side.get("bus_observability")
+        graphql_bus_watch = side.get("graphql_bus_watch")
+        feature_flag_snapshot = side.get("feature_flag_snapshot")
+        startup_phase = str(side.get("startup_phase", "")).strip().upper()
+        warmup_state = str(side.get("warmup_state", "")).strip().lower()
+        if snapshot_prefix not in ("start", "end"):
+            return False, f"warmup_behavior {side_name} snapshot prefix mismatch", {}
+        if not isinstance(snapshot_paths, dict):
+            return False, f"warmup_behavior {side_name} missing snapshot_paths", {}
+        for field in ("metrics", "bus_observability", "graphql_bus_watch", "feature_flags"):
+            if not isinstance(snapshot_paths.get(field), str) or snapshot_paths[field].strip() == "":
+                return False, f"warmup_behavior {side_name} missing {field} snapshot path", {}
+        if not isinstance(bus_observability, dict):
+            return False, f"warmup_behavior {side_name} missing bus_observability snapshot", {}
+        if not isinstance(graphql_bus_watch, dict):
+            return False, f"warmup_behavior {side_name} missing graphql_bus_watch snapshot", {}
+        if not isinstance(feature_flag_snapshot, dict):
+            return False, f"warmup_behavior {side_name} missing feature_flag_snapshot", {}
+
+        summary = bus_observability.get("summary")
+        if not isinstance(summary, dict):
+            return False, f"warmup_behavior {side_name} missing bus summary", {}
+        status = summary.get("status")
+        if not isinstance(status, dict):
+            return False, f"warmup_behavior {side_name} missing bus status", {}
+        startup = status.get("startup")
+        if not isinstance(startup, dict):
+            return False, f"warmup_behavior {side_name} missing startup snapshot", {}
+        startup_phase_raw = str(startup.get("phase", "")).strip().upper()
+        if startup_phase_raw == "":
+            return False, f"warmup_behavior {side_name} missing startup phase", {}
+
+        data = graphql_bus_watch.get("data")
+        if not isinstance(data, dict):
+            return False, f"warmup_behavior {side_name} missing graphql data", {}
+        bus_summary = data.get("busSummary")
+        if not isinstance(bus_summary, dict):
+            return False, f"warmup_behavior {side_name} missing graphql busSummary", {}
+        graphql_status = bus_summary.get("status")
+        if not isinstance(graphql_status, dict):
+            return False, f"warmup_behavior {side_name} missing graphql status", {}
+        warmup = graphql_status.get("warmup")
+        if not isinstance(warmup, dict):
+            return False, f"warmup_behavior {side_name} missing graphql warmup", {}
+        warmup_state_raw = str(warmup.get("state", "")).strip().lower()
+        if warmup_state_raw == "":
+            return False, f"warmup_behavior {side_name} missing warmup state", {}
+
+        if startup_phase != startup_phase_raw:
+            return False, f"warmup_behavior {side_name} startup phase mismatch", {}
+        if warmup_state != warmup_state_raw:
+            return False, f"warmup_behavior {side_name} warmup state mismatch", {}
+
+        if side_name == "cold_start":
+            if startup_phase_raw == "LIVE_READY":
+                return False, "warmup_behavior cold_start is not pre-LIVE_READY", {}
+            if warmup_state_raw == "available":
+                return False, "warmup_behavior cold_start is not pre-available", {}
+        else:
+            if startup_phase_raw != "LIVE_READY":
+                return False, "warmup_behavior post_warmup is not LIVE_READY", {}
+            if warmup_state_raw != "available":
+                return False, "warmup_behavior post_warmup is not warmup available", {}
+
+    start_paths = evidence.get("start_snapshot_paths")
+    end_paths = evidence.get("end_snapshot_paths")
+    interval_paths = evidence.get("interval_snapshot_paths")
+    structured_prefixes = evidence.get("structured_snapshot_prefixes")
+    if not isinstance(start_paths, dict):
+        return False, "warmup_behavior missing start structured evidence", {}
+    if not isinstance(end_paths, dict):
+        return False, "warmup_behavior missing end structured evidence", {}
+    if not isinstance(interval_paths, list):
+        return False, "warmup_behavior missing interval structured evidence", {}
+    if not isinstance(structured_prefixes, list):
+        return False, "warmup_behavior missing structured snapshot prefixes", {}
+    if len(interval_paths) < 1:
+        return False, "warmup_behavior transition lacks structured interval evidence", {}
+
+    interval_snapshot_count = transition.get("interval_snapshot_count")
+    interval_snapshot_prefixes = transition.get("interval_snapshot_prefixes")
+    if transition.get("established") is not True:
+        return False, "warmup_behavior transition is not established", {}
+    if not isinstance(interval_snapshot_count, int) or interval_snapshot_count < 1:
+        return False, "warmup_behavior transition lacks structured interval count", {}
+    if not isinstance(interval_snapshot_prefixes, list) or len(interval_snapshot_prefixes) < 1:
+        return False, "warmup_behavior transition lacks interval snapshot prefixes", {}
+
+    return (
+        True,
+        "",
+        {
+            "interval_snapshot_count": interval_snapshot_count,
+            "interval_snapshot_prefixes": interval_snapshot_prefixes,
+            "cold_start_snapshot_prefix": cold_start.get("snapshot_prefix"),
+            "post_warmup_snapshot_prefix": post_warmup.get("snapshot_prefix"),
+            "cold_start_startup_phase": cold_start.get("startup_phase"),
+            "post_warmup_startup_phase": post_warmup.get("startup_phase"),
+            "cold_start_warmup_state": cold_start.get("warmup_state"),
+            "post_warmup_warmup_state": post_warmup.get("warmup_state"),
+        },
+    )
 
 
 def evaluate_read_avoidance_accounting(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
@@ -1423,6 +1774,11 @@ def summarize_run(
     read_avoidance_accounting = build_window_read_avoidance_accounting_for_phases(proof_dir, ordered_phases)
     proof_window_traffic_minimums = read_avoidance_accounting.get("proof_window_traffic_minimums")
     feature_flag_consistency = build_window_feature_flag_consistency_for_phases(proof_dir, ordered_phases)
+    warmup_behavior = build_warmup_behavior_artifact_for_phases(
+        proof_dir,
+        run_id,
+        require_interval_phase,
+    )
 
     return {
         "schema": "p03_canary_overall_summary_v1",
@@ -1432,6 +1788,7 @@ def summarize_run(
         "read_avoidance_accounting": read_avoidance_accounting,
         "proof_window_traffic_minimums": proof_window_traffic_minimums,
         "feature_flag_consistency": feature_flag_consistency,
+        "warmup_behavior": warmup_behavior,
         "phase_files_total": len(list((proof_dir).glob(f"{CANARY_PHASE_PREFIX}*.json"))),
         "phase_files_used": len(phase_files),
         "phase_files_stale_ignored": stale_ignored,
@@ -1472,6 +1829,9 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
     feature_flags_ok, feature_flags_reason, feature_flags_details = evaluate_feature_flag_consistency(
         summary.get("feature_flag_consistency")
     )
+    warmup_behavior_ok, warmup_behavior_reason, warmup_behavior_details = evaluate_warmup_behavior(
+        summary.get("warmup_behavior")
+    )
 
     mismatch_count = int(totals.get("mismatch", 0) or 0)
     no_mismatches_ok = mismatch_count == 0
@@ -1486,6 +1846,13 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
     else:
         overall_interval_ok = True
         overall_interval_waived = True
+    warmup_behavior_required = interval_required
+    if warmup_behavior_required:
+        warmup_behavior_gate_ok = warmup_behavior_ok
+        warmup_behavior_waived = False
+    else:
+        warmup_behavior_gate_ok = True
+        warmup_behavior_waived = True
 
     per_canary_details: Dict[str, Dict[str, Any]] = {}
     failing_canaries: List[str] = []
@@ -1524,6 +1891,7 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
         and read_avoidance_ok
         and proof_window_ok
         and feature_flags_ok
+        and warmup_behavior_gate_ok
     )
 
     return {
@@ -1567,6 +1935,12 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
                 "ok": feature_flags_ok,
                 "reason": feature_flags_reason,
                 **feature_flags_details,
+            },
+            "warmup_behavior": {
+                "ok": warmup_behavior_gate_ok,
+                "waived": warmup_behavior_waived,
+                "reason": warmup_behavior_reason,
+                **warmup_behavior_details,
             },
         },
         "per_canary": per_canary_details,

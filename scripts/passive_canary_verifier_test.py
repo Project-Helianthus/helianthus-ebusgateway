@@ -501,9 +501,14 @@ class StaleArtifactRejectionTests(unittest.TestCase):
         completed_transactions: float = 11_000,
         direct_apply_candidates: float = 1_100,
     ) -> None:
+        metrics_path = proof_dir / "samples" / f"{phase}_metrics.prom"
+        existing_metrics = []
+        if metrics_path.exists():
+            existing_metrics = metrics_path.read_text(encoding="utf-8").splitlines()
         write_metrics(
-            proof_dir / "samples" / f"{phase}_metrics.prom",
+            metrics_path,
             [
+                *existing_metrics,
                 f'direct_apply_total{{family="B524",freshness_profile="state_fast"}} {direct_apply}',
                 f'active_reads_avoided_total{{family="B524",freshness_profile="state_fast"}} {avoided}',
                 f'active_read_saved_seconds{{family="B524",freshness_profile="state_fast"}} {saved_seconds}',
@@ -539,6 +544,78 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             },
         )
 
+    def write_structured_warmup_snapshot_bundle(
+        self,
+        proof_dir: pathlib.Path,
+        phase: str,
+        *,
+        startup_phase: str,
+        warmup_state: str,
+        cache_epoch: int = 1,
+        live_epoch: int = 1,
+        graphql_feature_flags: dict | None = None,
+        bus_feature_flags: dict | None = None,
+    ) -> None:
+        if graphql_feature_flags is None:
+            graphql_feature_flags = canonical_feature_flags()
+        if bus_feature_flags is None:
+            bus_feature_flags = canonical_feature_flags()
+        snapshot_dir = proof_dir if phase in ("start", "end") else proof_dir / "samples"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        write_json(
+            snapshot_dir / f"{phase}_bus_observability.json",
+            {
+                "summary": {
+                    "status": {
+                        "startup": {
+                            "phase": startup_phase,
+                            "cache_epoch": cache_epoch,
+                            "live_epoch": live_epoch,
+                        },
+                        "feature_flags": bus_feature_flags,
+                    }
+                }
+            },
+        )
+        write_json(
+            snapshot_dir / f"{phase}_graphql_bus_watch.json",
+            {
+                "data": {
+                    "busSummary": {
+                        "status": {
+                            "warmup": {
+                                "state": warmup_state,
+                                "blocker": "",
+                                "elapsedSeconds": 0.0,
+                                "completedTransactions": 0,
+                                "requiredTransactions": 0,
+                                "completionMode": "proof_window",
+                            },
+                            "featureFlags": graphql_feature_flags,
+                        }
+                    },
+                    "watchSummary": {
+                        "inventory": {"totalEntries": 1},
+                        "activationCounts": {"catalogDescriptors": 1, "activeKeys": 1, "sourceClasses": []},
+                        "directApplyEligibilityClasses": [],
+                        "degraded": {
+                            "active": False,
+                            "shadowingEnabled": False,
+                            "pinnedBudgetDegraded": False,
+                            "compactorDegraded": False,
+                            "reasons": [],
+                        },
+                    },
+                }
+            },
+        )
+        self.write_feature_flag_snapshot(
+            proof_dir,
+            phase,
+            graphql_flags=graphql_feature_flags,
+            bus_flags=bus_feature_flags,
+        )
+
     def write_run_phase_artifacts(
         self,
         proof_dir: pathlib.Path,
@@ -547,6 +624,14 @@ class StaleArtifactRejectionTests(unittest.TestCase):
         include_interval: bool = False,
         interval_status: str = "pass",
     ) -> None:
+        self.write_structured_warmup_snapshot_bundle(
+            proof_dir,
+            "start",
+            startup_phase="LIVE_WARMUP",
+            warmup_state="warming_up",
+            cache_epoch=1,
+            live_epoch=0,
+        )
         write_json(
             proof_dir / "canary_phase_start.json",
             {
@@ -555,8 +640,15 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 "results": [{"id": "a", "status": "pass"}],
             },
         )
-        self.write_feature_flag_snapshot(proof_dir, "start")
         if include_interval:
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "sample_0001",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=1,
+            )
             write_json(
                 proof_dir / "canary_phase_sample_0001.json",
                 {
@@ -565,7 +657,14 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                     "results": [{"id": "a", "status": interval_status}],
                 },
             )
-            self.write_feature_flag_snapshot(proof_dir, "sample_0001")
+        self.write_structured_warmup_snapshot_bundle(
+            proof_dir,
+            "end",
+            startup_phase="LIVE_READY",
+            warmup_state="available",
+            cache_epoch=1,
+            live_epoch=1,
+        )
         write_json(
             proof_dir / "canary_phase_end.json",
             {
@@ -574,7 +673,6 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 "results": [{"id": "a", "status": "pass"}],
             },
         )
-        self.write_feature_flag_snapshot(proof_dir, "end")
 
     def test_verify_phase_marks_read_avoidance_accounting_non_authoritative(self) -> None:
         _, canaries = verifier.load_and_validate_manifest(
@@ -666,6 +764,22 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 end_direct_apply=3,
                 end_avoided=4,
             )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "start",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=0,
+            )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "end",
+                startup_phase="LIVE_READY",
+                warmup_state="available",
+                cache_epoch=1,
+                live_epoch=1,
+            )
             write_json(
                 proof_dir / "canary_phase_start.json",
                 {
@@ -716,6 +830,22 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 end_direct_apply=4,
                 end_avoided=7,
             )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "start",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=0,
+            )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "end",
+                startup_phase="LIVE_READY",
+                warmup_state="available",
+                cache_epoch=1,
+                live_epoch=1,
+            )
             write_json(
                 proof_dir / "canary_phase_start.json",
                 {
@@ -736,6 +866,46 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             summary = verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
             self.assertEqual(summary["interval_phase_count"], 0)
             self.assertFalse(summary["interval_phase_required"])
+            self.assertIn("warmup_behavior", summary)
+            self.assertFalse(summary["warmup_behavior"]["ok"])
+            self.assertFalse(summary["warmup_behavior"]["transition"]["established"])
+            self.assertEqual(summary["warmup_behavior"]["transition"]["interval_snapshot_count"], 0)
+
+    def test_summary_derives_warmup_behavior_artifact_from_structured_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=4,
+                start_avoided=6,
+                end_direct_apply=4,
+                end_avoided=7,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=True)
+            self.write_sample_read_avoidance_metrics(
+                proof_dir,
+                "sample_0001",
+                direct_apply=4,
+                avoided=7,
+            )
+
+            summary = verifier.summarize_run(proof_dir, "run-1")
+            warmup = summary["warmup_behavior"]
+            self.assertEqual(warmup["schema"], verifier.WARMUP_BEHAVIOR_ARTIFACT_SCHEMA)
+            self.assertTrue(warmup["ok"])
+            self.assertTrue(warmup["transition"]["established"])
+            self.assertEqual(warmup["cold_start"]["snapshot_prefix"], "start")
+            self.assertEqual(warmup["cold_start"]["startup_phase"], "LIVE_WARMUP")
+            self.assertEqual(warmup["cold_start"]["warmup_state"], "warming_up")
+            self.assertEqual(warmup["post_warmup"]["snapshot_prefix"], "end")
+            self.assertEqual(warmup["post_warmup"]["startup_phase"], "LIVE_READY")
+            self.assertEqual(warmup["post_warmup"]["warmup_state"], "available")
+            self.assertEqual(warmup["transition"]["from_snapshot_prefix"], "start")
+            self.assertEqual(warmup["transition"]["to_snapshot_prefix"], "end")
+            self.assertGreaterEqual(warmup["transition"]["interval_snapshot_count"], 1)
+            self.assertEqual(warmup["transition"]["interval_snapshot_prefixes"], ["sample_0001"])
+            self.assertIn("start_bus_observability.json", warmup["evidence"]["start_snapshot_paths"]["bus_observability"])
+            self.assertIn("end_graphql_bus_watch.json", warmup["evidence"]["end_snapshot_paths"]["graphql_bus_watch"])
 
     def test_summary_fails_closed_when_direct_apply_counter_decreases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -808,17 +978,49 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 end_direct_apply=12,
                 end_avoided=18,
             )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "start",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=0,
+            )
             self.write_sample_read_avoidance_metrics(
                 proof_dir,
                 "sample_0001",
                 direct_apply=14,
                 avoided=18,
             )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "sample_0001",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=1,
+            )
             self.write_sample_read_avoidance_metrics(
                 proof_dir,
                 "sample_0002",
                 direct_apply=11,
                 avoided=19,
+            )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "sample_0002",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=1,
+            )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "end",
+                startup_phase="LIVE_READY",
+                warmup_state="available",
+                cache_epoch=1,
+                live_epoch=1,
             )
             write_json(
                 proof_dir / "canary_phase_start.json",
@@ -850,17 +1052,49 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 end_direct_apply=12,
                 end_avoided=16,
             )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "start",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=0,
+            )
             self.write_sample_read_avoidance_metrics(
                 proof_dir,
                 "sample_0001",
                 direct_apply=12,
                 avoided=20,
             )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "sample_0001",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=1,
+            )
             self.write_sample_read_avoidance_metrics(
                 proof_dir,
                 "sample_0002",
                 direct_apply=12,
                 avoided=14,
+            )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "sample_0002",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=1,
+            )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "end",
+                startup_phase="LIVE_READY",
+                warmup_state="available",
+                cache_epoch=1,
+                live_epoch=1,
             )
             write_json(
                 proof_dir / "canary_phase_start.json",
@@ -907,6 +1141,7 @@ class StaleArtifactRejectionTests(unittest.TestCase):
     def test_summary_fails_closed_when_completed_transactions_metric_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
             write_metrics(
                 proof_dir / "start_metrics.prom",
                 [
@@ -923,7 +1158,6 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                     "ebus_passive_direct_apply_candidates_evaluated_total 1200",
                 ],
             )
-            self.write_run_phase_artifacts(proof_dir, include_interval=False)
             with self.assertRaises(ValueError) as ctx:
                 verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
             self.assertIn("ebus_passive_completed_transactions_total", str(ctx.exception))
@@ -940,6 +1174,14 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 start_direct_apply_candidates=1_000,
                 end_direct_apply_candidates=1_050,
             )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "start",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=0,
+            )
             self.write_sample_read_avoidance_metrics(
                 proof_dir,
                 "sample_0001",
@@ -947,12 +1189,36 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 avoided=16,
                 direct_apply_candidates=1_200,
             )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "sample_0001",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=1,
+            )
             self.write_sample_read_avoidance_metrics(
                 proof_dir,
                 "sample_0002",
                 direct_apply=12,
                 avoided=17,
                 direct_apply_candidates=900,
+            )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "sample_0002",
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+                cache_epoch=1,
+                live_epoch=1,
+            )
+            self.write_structured_warmup_snapshot_bundle(
+                proof_dir,
+                "end",
+                startup_phase="LIVE_READY",
+                warmup_state="available",
+                cache_epoch=1,
+                live_epoch=1,
             )
             write_json(
                 proof_dir / "canary_phase_start.json",
@@ -1227,6 +1493,102 @@ class CanaryVerdictTests(unittest.TestCase):
         direct_apply_candidates_delta: float = 120,
     ) -> dict:
         per_canary = {canary_id: {"last_status": "pass"} for canary_id in per_canary_interval}
+        warmup_established = interval_results > 0
+        warmup_interval_prefixes = ["sample_0001"] if warmup_established else []
+        start_snapshot_paths = {
+            "metrics": "/tmp/proof/start_metrics.prom",
+            "bus_observability": "/tmp/proof/start_bus_observability.json",
+            "graphql_bus_watch": "/tmp/proof/start_graphql_bus_watch.json",
+            "feature_flags": "/tmp/proof/start_feature_flags.json",
+        }
+        end_snapshot_paths = {
+            "metrics": "/tmp/proof/end_metrics.prom",
+            "bus_observability": "/tmp/proof/end_bus_observability.json",
+            "graphql_bus_watch": "/tmp/proof/end_graphql_bus_watch.json",
+            "feature_flags": "/tmp/proof/end_feature_flags.json",
+        }
+        start_bus_observability = {
+            "summary": {
+                "status": {
+                    "startup": {
+                        "phase": "LIVE_WARMUP",
+                        "cache_epoch": 1,
+                        "live_epoch": 0,
+                    },
+                    "feature_flags": canonical_feature_flags(),
+                }
+            }
+        }
+        end_bus_observability = {
+            "summary": {
+                "status": {
+                    "startup": {
+                        "phase": "LIVE_READY",
+                        "cache_epoch": 1,
+                        "live_epoch": 1,
+                    },
+                    "feature_flags": canonical_feature_flags(),
+                }
+            }
+        }
+        start_graphql_bus_watch = {
+            "data": {
+                "busSummary": {
+                    "status": {
+                        "warmup": {
+                            "state": "warming_up",
+                            "blocker": "",
+                            "elapsedSeconds": 0.0,
+                            "completedTransactions": 0,
+                            "requiredTransactions": 0,
+                            "completionMode": "proof_window",
+                        },
+                        "featureFlags": canonical_feature_flags(),
+                    }
+                },
+                "watchSummary": {
+                    "inventory": {"totalEntries": 1},
+                    "activationCounts": {"catalogDescriptors": 1, "activeKeys": 1, "sourceClasses": []},
+                    "directApplyEligibilityClasses": [],
+                    "degraded": {
+                        "active": False,
+                        "shadowingEnabled": False,
+                        "pinnedBudgetDegraded": False,
+                        "compactorDegraded": False,
+                        "reasons": [],
+                    },
+                },
+            }
+        }
+        end_graphql_bus_watch = {
+            "data": {
+                "busSummary": {
+                    "status": {
+                        "warmup": {
+                            "state": "available",
+                            "blocker": "",
+                            "elapsedSeconds": 0.0,
+                            "completedTransactions": 0,
+                            "requiredTransactions": 0,
+                            "completionMode": "proof_window",
+                        },
+                        "featureFlags": canonical_feature_flags(),
+                    }
+                },
+                "watchSummary": {
+                    "inventory": {"totalEntries": 1},
+                    "activationCounts": {"catalogDescriptors": 1, "activeKeys": 1, "sourceClasses": []},
+                    "directApplyEligibilityClasses": [],
+                    "degraded": {
+                        "active": False,
+                        "shadowingEnabled": False,
+                        "pinnedBudgetDegraded": False,
+                        "compactorDegraded": False,
+                        "reasons": [],
+                    },
+                },
+            }
+        }
         return {
             "schema": "p03_canary_overall_summary_v1",
             "run_id": "run-1",
@@ -1277,6 +1639,86 @@ class CanaryVerdictTests(unittest.TestCase):
                     },
                 ],
                 "ok": True,
+            },
+            "warmup_behavior": {
+                "schema": verifier.WARMUP_BEHAVIOR_ARTIFACT_SCHEMA,
+                "captured_at": "2026-03-28T00:00:00+00:00",
+                "run_id": "run-1",
+                "claim_scope": "bounded_proof_window_warmup_behavior",
+                "evidence": {
+                    "start_snapshot_paths": start_snapshot_paths,
+                    "end_snapshot_paths": end_snapshot_paths,
+                    "interval_snapshot_paths": [
+                        {
+                            "metrics": "/tmp/proof/samples/sample_0001_metrics.prom",
+                            "bus_observability": "/tmp/proof/samples/sample_0001_bus_observability.json",
+                            "graphql_bus_watch": "/tmp/proof/samples/sample_0001_graphql_bus_watch.json",
+                            "feature_flags": "/tmp/proof/samples/sample_0001_feature_flags.json",
+                        },
+                    ] if warmup_established else [],
+                    "structured_snapshot_prefixes": ["start", *warmup_interval_prefixes, "end"],
+                },
+                "cold_start": {
+                    "snapshot_prefix": "start",
+                    "snapshot_paths": start_snapshot_paths,
+                    "bus_observability": start_bus_observability,
+                    "graphql_bus_watch": start_graphql_bus_watch,
+                    "feature_flag_snapshot": {
+                        "phase": "start",
+                        "feature_flags_snapshot_path": "/tmp/proof/start_feature_flags.json",
+                        "graphql_feature_flags": canonical_feature_flags(),
+                        "bus_observability_feature_flags": canonical_feature_flags(),
+                        "canonical_feature_flags": canonical_feature_flags(),
+                        "canonical_feature_flags_key": json.dumps(
+                            canonical_feature_flags(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+                        ),
+                    },
+                    "startup_phase": "LIVE_WARMUP",
+                    "warmup_state": "warming_up",
+                },
+                "post_warmup": {
+                    "snapshot_prefix": "end",
+                    "snapshot_paths": end_snapshot_paths,
+                    "bus_observability": end_bus_observability,
+                    "graphql_bus_watch": end_graphql_bus_watch,
+                    "feature_flag_snapshot": {
+                        "phase": "end",
+                        "feature_flags_snapshot_path": "/tmp/proof/end_feature_flags.json",
+                        "graphql_feature_flags": canonical_feature_flags(),
+                        "bus_observability_feature_flags": canonical_feature_flags(),
+                        "canonical_feature_flags": canonical_feature_flags(),
+                        "canonical_feature_flags_key": json.dumps(
+                            canonical_feature_flags(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+                        ),
+                    },
+                    "startup_phase": "LIVE_READY",
+                    "warmup_state": "available",
+                },
+                "transition": {
+                    "established": warmup_established,
+                    "from_snapshot_prefix": "start",
+                    "to_snapshot_prefix": "end",
+                    "cold_start_proven": True,
+                    "post_warmup_proven": True,
+                    "interval_snapshot_count": len(warmup_interval_prefixes),
+                    "interval_snapshot_prefixes": warmup_interval_prefixes,
+                    "first_interval_snapshot_prefix": warmup_interval_prefixes[0] if warmup_interval_prefixes else None,
+                    "last_interval_snapshot_prefix": warmup_interval_prefixes[-1] if warmup_interval_prefixes else None,
+                    "evidence": {
+                        "start_snapshot_paths": start_snapshot_paths,
+                        "end_snapshot_paths": end_snapshot_paths,
+                        "interval_snapshot_paths": [
+                            {
+                                "metrics": "/tmp/proof/samples/sample_0001_metrics.prom",
+                                "bus_observability": "/tmp/proof/samples/sample_0001_bus_observability.json",
+                                "graphql_bus_watch": "/tmp/proof/samples/sample_0001_graphql_bus_watch.json",
+                                "feature_flags": "/tmp/proof/samples/sample_0001_feature_flags.json",
+                            },
+                        ] if warmup_established else [],
+                        "structured_snapshot_prefixes": ["start", *warmup_interval_prefixes, "end"],
+                    },
+                },
+                "ok": warmup_established,
             },
             "interval_phase_required": interval_required,
             "totals": {
@@ -1441,6 +1883,83 @@ class CanaryVerdictTests(unittest.TestCase):
         verdict = verifier.build_canary_verdict(summary)
         self.assertFalse(verdict["ok"])
         self.assertFalse(verdict["criteria"]["feature_flag_consistency"]["ok"])
+
+    def test_verdict_fails_closed_when_warmup_behavior_artifact_is_missing(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=True,
+            interval_results=10,
+            interval_conclusive=9,
+            per_canary_interval={"a": {"pass": 9, "mismatch": 0, "inconclusive": 1, "conclusive": 9}},
+        )
+        summary.pop("warmup_behavior", None)
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["warmup_behavior"]["ok"])
+        self.assertIn("missing warmup_behavior payload", verdict["criteria"]["warmup_behavior"]["reason"])
+
+    def test_verdict_fails_closed_when_warmup_transition_is_incomplete(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=True,
+            interval_results=10,
+            interval_conclusive=9,
+            per_canary_interval={"a": {"pass": 9, "mismatch": 0, "inconclusive": 1, "conclusive": 9}},
+        )
+        summary["warmup_behavior"]["transition"]["established"] = False
+        summary["warmup_behavior"]["transition"]["interval_snapshot_count"] = 0
+        summary["warmup_behavior"]["transition"]["interval_snapshot_prefixes"] = []
+        summary["warmup_behavior"]["transition"]["first_interval_snapshot_prefix"] = None
+        summary["warmup_behavior"]["transition"]["last_interval_snapshot_prefix"] = None
+        summary["warmup_behavior"]["transition"]["evidence"]["interval_snapshot_paths"] = []
+        summary["warmup_behavior"]["evidence"]["interval_snapshot_paths"] = []
+        summary["warmup_behavior"]["ok"] = False
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["warmup_behavior"]["ok"])
+        self.assertIn("structured interval evidence", verdict["criteria"]["warmup_behavior"]["reason"])
+
+    def test_verdict_fails_closed_when_cold_start_snapshot_proves_live_ready(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=True,
+            interval_results=10,
+            interval_conclusive=9,
+            per_canary_interval={"a": {"pass": 9, "mismatch": 0, "inconclusive": 1, "conclusive": 9}},
+        )
+        summary["warmup_behavior"]["cold_start"]["startup_phase"] = "LIVE_READY"
+        summary["warmup_behavior"]["cold_start"]["bus_observability"]["summary"]["status"]["startup"]["phase"] = (
+            "LIVE_READY"
+        )
+        summary["warmup_behavior"]["cold_start"]["warmup_state"] = "available"
+        summary["warmup_behavior"]["cold_start"]["graphql_bus_watch"]["data"]["busSummary"]["status"]["warmup"][
+            "state"
+        ] = "available"
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["warmup_behavior"]["ok"])
+        self.assertIn("pre-LIVE_READY", verdict["criteria"]["warmup_behavior"]["reason"])
+
+    def test_verdict_fails_closed_when_post_warmup_snapshot_is_not_available(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=True,
+            interval_results=10,
+            interval_conclusive=9,
+            per_canary_interval={"a": {"pass": 9, "mismatch": 0, "inconclusive": 1, "conclusive": 9}},
+        )
+        summary["warmup_behavior"]["post_warmup"]["startup_phase"] = "LIVE_WARMUP"
+        summary["warmup_behavior"]["post_warmup"]["bus_observability"]["summary"]["status"]["startup"]["phase"] = (
+            "LIVE_WARMUP"
+        )
+        summary["warmup_behavior"]["post_warmup"]["warmup_state"] = "warming_up"
+        summary["warmup_behavior"]["post_warmup"]["graphql_bus_watch"]["data"]["busSummary"]["status"]["warmup"][
+            "state"
+        ] = "warming_up"
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["warmup_behavior"]["ok"])
+        self.assertIn("LIVE_READY", verdict["criteria"]["warmup_behavior"]["reason"])
 
     def test_verdict_fails_closed_when_canonical_normalizations_are_missing(self) -> None:
         summary = self.build_summary_payload(
@@ -1876,7 +2395,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     fi
 
                     if [[ "${url}" == *"/portal/api/v1/bus/observability" ]]; then
-                      startup_mode="${FAKE_BUS_STARTUP_MODE:-always_live_ready}"
+                      startup_mode="${FAKE_BUS_STARTUP_MODE:-initially_live_warmup_then_live_ready}"
                       phase="LIVE_READY"
                       if [[ "${startup_mode}" == "initially_live_warmup_then_live_ready" ]]; then
                         state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
@@ -1897,15 +2416,65 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
 
                     if [[ "${url}" == *"/graphql" ]]; then
                       if [[ "${data}" == *"busSummary"* ]]; then
-                        cat <<'EOF'
-                    {"data":{"busSummary":{"status":{"featureFlags":{"observeFirstEnabled":true,"passiveStateDirectApply":false,"passiveConfigDirectApply":false,"externalWritePolicy":"record_only","normalizations":[]}}},"watchSummary":{"inventory":{"totalEntries":1},"activationCounts":{"catalogDescriptors":1,"activeKeys":1,"sourceClasses":[]},"directApplyEligibilityClasses":[],"degraded":{"active":false,"shadowingEnabled":false,"pinnedBudgetDegraded":false,"compactorDegraded":false,"reasons":[]}}}}
+                      startup_mode="${FAKE_BUS_STARTUP_MODE:-initially_live_warmup_then_live_ready}"
+                      phase="LIVE_READY"
+                      if [[ "${startup_mode}" == "initially_live_warmup_then_live_ready" ]]; then
+                        state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
+                        warmup_calls="${FAKE_BUS_LIVE_WARMUP_CALLS:-1}"
+                        metrics_count=0
+                        if [[ -f "${state_file}" ]]; then
+                          metrics_count="$(cat "${state_file}")"
+                        fi
+                        if [[ "${metrics_count}" -le "${warmup_calls}" ]]; then
+                          phase="LIVE_WARMUP"
+                        fi
+                      fi
+                      warmup_state="warming_up"
+                      if [[ "${phase}" == "LIVE_READY" ]]; then
+                        warmup_state="available"
+                      fi
+                      cat <<EOF
+                    {
+                      "data": {
+                        "busSummary": {
+                          "status": {
+                            "warmup": {
+                              "state": "${warmup_state}",
+                              "blocker": "",
+                              "elapsedSeconds": 0,
+                              "completedTransactions": 0,
+                              "requiredTransactions": 0,
+                              "completionMode": "proof_window"
+                            },
+                            "featureFlags": {
+                              "observeFirstEnabled": true,
+                              "passiveStateDirectApply": false,
+                              "passiveConfigDirectApply": false,
+                              "externalWritePolicy": "record_only",
+                              "normalizations": []
+                            }
+                          }
+                        },
+                        "watchSummary": {
+                          "inventory": {"totalEntries": 1},
+                          "activationCounts": {"catalogDescriptors": 1, "activeKeys": 1, "sourceClasses": []},
+                          "directApplyEligibilityClasses": [],
+                          "degraded": {
+                            "active": false,
+                            "shadowingEnabled": false,
+                            "pinnedBudgetDegraded": false,
+                            "compactorDegraded": false,
+                            "reasons": []
+                          }
+                        }
+                      }
+                    }
                     EOF
                         exit 0
                       fi
-                      cat <<'EOF'
-                    {"data":{"devices":[{"address":"0x15","deviceId":"BASV2"}]}}
-                    EOF
+                      printf '%s\\n' '{"data":{"devices":[{"address":"0x15","deviceId":"BASV2"}]}}'
                       exit 0
+                    fi
                     fi
 
                     echo "unsupported fake curl url: ${url}" >&2
@@ -1940,6 +2509,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     "PATH": f"{fake_bin}:{env.get('PATH', '')}",
                 }
             )
+            pathlib.Path(env["FAKE_METRICS_STATE_FILE"]).write_text("-1\n", encoding="utf-8")
             if extra_env:
                 env.update(extra_env)
             script_path = SCRIPT_DIR / "passive_smoke_check.sh"
@@ -2204,7 +2774,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
                 "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "1",
                 "FAKE_METRICS_MODE": "healthy_then_hard_fail_then_healthy",
-                "FAKE_METRICS_HEALTHY_BEFORE_FAIL_CALLS": "2",
+                "FAKE_METRICS_HEALTHY_BEFORE_FAIL_CALLS": "3",
                 "FAKE_METRICS_HARD_FAIL_CALLS": "3",
             },
         )

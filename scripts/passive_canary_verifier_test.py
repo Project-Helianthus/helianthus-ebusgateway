@@ -2774,7 +2774,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
                 "PASSIVE_PROOF_SAMPLE_INTERVAL_SEC": "1",
                 "FAKE_METRICS_MODE": "healthy_then_hard_fail_then_healthy",
-                "FAKE_METRICS_HEALTHY_BEFORE_FAIL_CALLS": "2",
+                "FAKE_METRICS_HEALTHY_BEFORE_FAIL_CALLS": "3",
                 "FAKE_METRICS_HARD_FAIL_CALLS": "3",
             },
         )

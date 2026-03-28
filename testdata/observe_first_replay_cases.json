@@ -2,7 +2,7 @@
   "name": "observe_first_gateway_replay_cases_v1",
   "status": "m0_seed_corpus",
   "purpose": "Seed replay corpus for future passive tap, reconstructor, dedup, and shadow-cache tests. M0 records required scenario coverage and negative-path expectations without claiming parser or correlation correctness.",
-  "validation_scope": "fixture_presence_and_shape_only",
+  "validation_scope": "fixture_presence_and_locked_falsification_contract",
   "deferred_validation": {
     "owners": [
       "ISSUE-GW-01",
@@ -42,7 +42,12 @@
       "scenario_tags": [
         "passive",
         "shadow_candidate"
-      ]
+      ],
+      "replay_expected": {
+        "direct_apply": false,
+        "disposition": "ambiguity",
+        "reason": "b524 dual-namespace ambiguity rejected from direct-apply"
+      }
     },
     {
       "name": "b555_record_invalidate_ens",
@@ -81,7 +86,12 @@
       "scenario_tags": [
         "collision",
         "epoch_reset_candidate"
-      ]
+      ],
+      "replay_expected": {
+        "direct_apply": false,
+        "disposition": "falsification",
+        "reason": "garbled transaction-boundary replay rejected from direct-apply"
+      }
     },
     {
       "name": "timeout_no_progress",
@@ -91,7 +101,12 @@
       "scenario_tags": [
         "timeout",
         "abandoned_transaction"
-      ]
+      ],
+      "replay_expected": {
+        "direct_apply": false,
+        "disposition": "falsification",
+        "reason": "timeout/no-progress replay rejected from direct-apply"
+      }
     },
     {
       "name": "delayed_reply_value_bearing",

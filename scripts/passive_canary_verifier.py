@@ -24,6 +24,8 @@ CANARY_PHASE_PREFIX = "canary_phase_"
 MANIFEST_SCHEMA = "p03_canary_manifest_v1"
 P03_ALLOWED_METHODS = {"get_register", "get_ext_register"}
 CANARY_VERDICT_SCHEMA = "p03_canary_verdict_v1"
+REPLAY_BEHAVIOR_ARTIFACT_SCHEMA = "observe_first_replay_behavior_v1"
+REPLAY_FALSIFICATION_VERDICT_SCHEMA = "observe_first_replay_falsification_verdict_v1"
 OVERALL_INTERVAL_CONCLUSIVE_MIN = 0.90
 PER_CANARY_INTERVAL_CONCLUSIVE_MIN = 0.75
 CANARY_NONCE_PARAM = "_canary_nonce"
@@ -35,6 +37,7 @@ PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC = "ebus_passive_completed_transaction
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_apply_candidates_evaluated_total"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA = 100.0
+REPLAY_EXPECTED_DISPOSITIONS = {"ambiguity", "falsification"}
 PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)$")
 
 
@@ -661,6 +664,277 @@ def evaluate_proof_window_traffic_minimums(payload: Any) -> Tuple[bool, str, Dic
     )
 
 
+def load_replay_behavior_artifact(path: pathlib.Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise ValueError(f"missing replay behavior artifact at {path}")
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError("replay behavior artifact must be a JSON object")
+    if str(payload.get("schema", "")).strip() != REPLAY_BEHAVIOR_ARTIFACT_SCHEMA:
+        raise ValueError("replay behavior artifact schema mismatch")
+    if str(payload.get("source", "")).strip() != "go_replay_harness":
+        raise ValueError("replay behavior artifact source mismatch")
+    cases = payload.get("cases")
+    if not isinstance(cases, list):
+        raise ValueError("replay behavior artifact missing cases array")
+    return payload
+
+
+def build_replay_falsification_verdict(
+    corpus: Any,
+    proof_dir: pathlib.Path,
+    behavior_artifact_path: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    if not isinstance(corpus, dict):
+        raise ValueError("replay corpus must be a JSON object")
+    if not isinstance(proof_dir, pathlib.Path):
+        raise ValueError("proof_dir must be a pathlib.Path")
+    if behavior_artifact_path is None:
+        behavior_artifact_path = proof_dir / "replay_behavior.json"
+    elif not isinstance(behavior_artifact_path, pathlib.Path):
+        raise ValueError("behavior_artifact_path must be a pathlib.Path")
+
+    cases = corpus.get("cases")
+    if not isinstance(cases, list):
+        raise ValueError("replay corpus missing cases array")
+
+    behavior = load_replay_behavior_artifact(behavior_artifact_path)
+    behavior_cases_raw = behavior.get("cases")
+    if not isinstance(behavior_cases_raw, list):
+        raise ValueError("replay behavior artifact missing cases array")
+
+    expected_cases: Dict[str, Dict[str, Any]] = {}
+    locked_order: List[str] = []
+    for index, raw_case in enumerate(cases):
+        if not isinstance(raw_case, dict):
+            raise ValueError(f"replay case[{index}] must be object")
+        expected = raw_case.get("replay_expected")
+        if expected is None:
+            continue
+        if not isinstance(expected, dict):
+            raise ValueError(f"replay case[{index}] replay_expected contract must be an object")
+        name = str(raw_case.get("name", "")).strip()
+        if name == "":
+            raise ValueError(f"replay case[{index}] missing name")
+        expected_cases[name] = {
+            "family": str(raw_case.get("family", "")).strip().upper(),
+            "response_class": str(raw_case.get("response_class", "")).strip(),
+            "scenario_tags": [
+                str(tag).strip()
+                for tag in (raw_case.get("scenario_tags") or [])
+                if str(tag).strip()
+            ],
+            "expected": expected,
+        }
+        locked_order.append(name)
+
+    observed_cases: Dict[str, Dict[str, Any]] = {}
+    observed_order: List[str] = []
+    for index, raw_case in enumerate(behavior_cases_raw):
+        if not isinstance(raw_case, dict):
+            raise ValueError(f"replay behavior case[{index}] must be object")
+        name = str(raw_case.get("name", "")).strip()
+        if name == "":
+            raise ValueError(f"replay behavior case[{index}] missing name")
+        if name in observed_cases:
+            raise ValueError(f"duplicate replay behavior case: {name}")
+        observed = raw_case.get("observed")
+        if not isinstance(observed, dict):
+            raise ValueError(f"replay behavior case[{index}] missing observed object")
+        direct_apply = observed.get("direct_apply")
+        disposition = str(observed.get("disposition", "")).strip().lower()
+        if not isinstance(direct_apply, bool):
+            raise ValueError(f"replay behavior case[{index}] missing boolean observed.direct_apply")
+        if disposition == "":
+            raise ValueError(f"replay behavior case[{index}] missing observed.disposition")
+        if disposition not in REPLAY_EXPECTED_DISPOSITIONS:
+            raise ValueError(
+                f"replay behavior case[{index}] unsupported observed.disposition {disposition!r}"
+            )
+        observed_cases[name] = {
+            "observed": observed,
+            "status": str(raw_case.get("status", "")).strip().lower() or "observed",
+            "reason": str(raw_case.get("reason", "")).strip(),
+        }
+        observed_order.append(name)
+
+    expected_names = set(expected_cases)
+    missing_names = [name for name in locked_order if name not in observed_cases]
+    unexpected_names = [name for name in observed_order if name not in expected_names]
+    if missing_names or unexpected_names:
+        raise ValueError(
+            "replay behavior cases mismatch: "
+            f"missing={missing_names or []} unexpected={unexpected_names or []}"
+        )
+
+    verdict_cases: List[Dict[str, Any]] = []
+    locked_total = 0
+    pass_total = 0
+    fail_total = 0
+    behavior_ok = True
+    for name in locked_order:
+        case_meta = expected_cases[name]
+        family = case_meta["family"]
+        response_class = case_meta["response_class"]
+        scenario_tags = case_meta["scenario_tags"]
+        expected = case_meta["expected"]
+        observed_entry = observed_cases.get(name)
+        case_result: Dict[str, Any] = {
+            "name": name,
+            "family": family,
+            "response_class": response_class,
+            "scenario_tags": scenario_tags,
+            "status": "informational",
+            "direct_apply": None,
+            "disposition": None,
+            "reason": "",
+            "expected": expected,
+            "observed": None,
+            "behavior_evidence": {
+                "behavior_artifact_path": str(behavior_artifact_path),
+                "behavior_artifact_ok": bool(behavior.get("ok", False)),
+                "behavior_schema": str(behavior.get("schema", "")).strip(),
+            },
+        }
+
+        locked_total += 1
+        direct_apply_expected = expected.get("direct_apply")
+        disposition_expected = str(expected.get("disposition", "")).strip().lower()
+        reason_expected = str(expected.get("reason", "")).strip()
+        if not isinstance(direct_apply_expected, bool):
+            case_result["status"] = "fail"
+            case_result["reason"] = "replay_expected direct_apply must be boolean"
+            fail_total += 1
+            verdict_cases.append(case_result)
+            continue
+        if direct_apply_expected:
+            case_result["status"] = "fail"
+            case_result["reason"] = "ambiguous or garbled replay must not be direct_apply eligible"
+            fail_total += 1
+            verdict_cases.append(case_result)
+            continue
+        if disposition_expected not in REPLAY_EXPECTED_DISPOSITIONS:
+            case_result["status"] = "fail"
+            case_result["reason"] = f"unsupported replay disposition {disposition_expected!r}"
+            fail_total += 1
+            verdict_cases.append(case_result)
+            continue
+
+        if observed_entry is None:
+            case_result["status"] = "fail"
+            case_result["reason"] = f"missing replay behavior observation for {name}"
+            fail_total += 1
+            behavior_ok = False
+            verdict_cases.append(case_result)
+            continue
+
+        observed = observed_entry["observed"]
+        observed_direct_apply = bool(observed.get("direct_apply", False))
+        observed_disposition = str(observed.get("disposition", "")).strip().lower()
+        case_result["direct_apply"] = observed_direct_apply
+        case_result["disposition"] = observed_disposition
+        case_result["reason"] = observed_entry["reason"] or reason_expected
+        case_result["observed"] = observed
+
+        if observed_direct_apply != direct_apply_expected:
+            case_result["status"] = "fail"
+            case_result["reason"] = (
+                f"observed direct_apply={observed_direct_apply!r} "
+                f"!= expected {direct_apply_expected!r}"
+            )
+            fail_total += 1
+            behavior_ok = False
+            verdict_cases.append(case_result)
+            continue
+        if observed_disposition != disposition_expected:
+            case_result["status"] = "fail"
+            case_result["reason"] = (
+                f"observed disposition={observed_disposition!r} "
+                f"!= expected {disposition_expected!r}"
+            )
+            fail_total += 1
+            behavior_ok = False
+            verdict_cases.append(case_result)
+            continue
+
+        if family == "B524" and observed_disposition != "ambiguity":
+            case_result["status"] = "fail"
+            case_result["reason"] = "B524 dual-namespace replay must be reported as ambiguity"
+            fail_total += 1
+            behavior_ok = False
+            verdict_cases.append(case_result)
+            continue
+        if response_class == "error_or_ambiguous" and observed_disposition != "falsification":
+            case_result["status"] = "fail"
+            case_result["reason"] = "garbled replay must be reported as falsification"
+            fail_total += 1
+            behavior_ok = False
+            verdict_cases.append(case_result)
+            continue
+
+        if family == "B524":
+            if observed.get("third_party_eligible") is not True:
+                case_result["status"] = "fail"
+                case_result["reason"] = "B524 replay observation missing third_party_eligible=true"
+                fail_total += 1
+                behavior_ok = False
+                verdict_cases.append(case_result)
+                continue
+            if str(observed.get("direct_apply_policy", "")).strip() != "state_default":
+                case_result["status"] = "fail"
+                case_result["reason"] = "B524 replay observation missing state_default direct_apply_policy"
+                fail_total += 1
+                behavior_ok = False
+                verdict_cases.append(case_result)
+                continue
+            if str(observed.get("raw_disposition", "")).strip() == "":
+                case_result["status"] = "fail"
+                case_result["reason"] = "B524 replay observation missing raw_disposition"
+                fail_total += 1
+                behavior_ok = False
+                verdict_cases.append(case_result)
+                continue
+        else:
+            transaction_events = observed.get("transaction_events")
+            completed_transactions = observed.get("completed_transactions")
+            if not isinstance(transaction_events, int) or transaction_events != 0:
+                case_result["status"] = "fail"
+                case_result["reason"] = "garbled replay must have zero classified transaction events"
+                fail_total += 1
+                behavior_ok = False
+                verdict_cases.append(case_result)
+                continue
+            if not isinstance(completed_transactions, int) or completed_transactions != 0:
+                case_result["status"] = "fail"
+                case_result["reason"] = "garbled replay must have zero completed transactions"
+                fail_total += 1
+                behavior_ok = False
+                verdict_cases.append(case_result)
+                continue
+
+        case_result["status"] = "pass"
+        pass_total += 1
+        verdict_cases.append(case_result)
+
+    ok = fail_total == 0
+    return {
+        "schema": REPLAY_FALSIFICATION_VERDICT_SCHEMA,
+        "captured_at": utc_now(),
+        "ok": ok,
+        "status": "pass" if ok else "fail",
+        "summary": {
+            "total_cases": len(verdict_cases),
+            "locked_cases": locked_total,
+            "pass": pass_total,
+            "fail": fail_total,
+            "informational": len(verdict_cases) - locked_total,
+            "behavior_artifact_ok": behavior_ok,
+            "proof_run_ok": behavior_ok,
+        },
+        "cases": verdict_cases,
+    }
+
+
 def classify_canary_value(
     canary: CanarySpec,
     value_hex: str,
@@ -1093,6 +1367,18 @@ def verdict_command(args: argparse.Namespace) -> int:
     return 0 if bool(verdict.get("ok", False)) else 1
 
 
+def replay_verdict_command(args: argparse.Namespace) -> int:
+    corpus = load_json(pathlib.Path(args.manifest))
+    behavior_artifact_path = pathlib.Path(args.behavior_artifact) if args.behavior_artifact else None
+    verdict = build_replay_falsification_verdict(
+        corpus,
+        pathlib.Path(args.proof_dir),
+        behavior_artifact_path=behavior_artifact_path,
+    )
+    write_json(pathlib.Path(args.output), verdict)
+    return 0 if bool(verdict.get("ok", False)) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1125,6 +1411,16 @@ def build_parser() -> argparse.ArgumentParser:
     verdict.add_argument("--summary", required=True)
     verdict.add_argument("--output", required=True)
     verdict.set_defaults(func=verdict_command)
+
+    replay_verdict = sub.add_parser(
+        "replay-verdict",
+        help="build replay falsification verdict from replay behavior plus locked corpus expectations",
+    )
+    replay_verdict.add_argument("--manifest", required=True)
+    replay_verdict.add_argument("--proof-dir", required=True)
+    replay_verdict.add_argument("--behavior-artifact", default=None)
+    replay_verdict.add_argument("--output", required=True)
+    replay_verdict.set_defaults(func=replay_verdict_command)
     return parser
 
 

@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import subprocess
+import shutil
 import sys
 import tempfile
 import textwrap
@@ -24,6 +25,66 @@ def write_json(path: pathlib.Path, payload: object) -> None:
 def write_metrics(path: pathlib.Path, lines: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_replay_behavior_artifact(proof_dir: pathlib.Path) -> dict:
+    artifact = {
+        "schema": "observe_first_replay_behavior_v1",
+        "captured_at": "2026-03-28T00:00:00+00:00",
+        "source": "go_replay_harness",
+        "ok": True,
+        "summary": {
+            "total_cases": 3,
+            "locked_cases": 3,
+            "observed_cases": 3,
+            "observation_failure_cases": 0,
+        },
+        "cases": [
+            {
+                "name": "b524_value_bearing_enh",
+                "status": "observed",
+                "reason": "observed B524 runtime observer fallback produced unmatched third-party disposition",
+                "observed": {
+                    "direct_apply": False,
+                    "disposition": "ambiguity",
+                    "raw_disposition": "unmatched_third_party",
+                    "third_party_eligible": True,
+                    "direct_apply_policy": "state_default",
+                    "replay_harness": "active_passive_deduplicator",
+                },
+            },
+            {
+                "name": "collision_episode",
+                "status": "observed",
+                "reason": "observed proxy-observer collision stream produced no direct-apply replay path",
+                "observed": {
+                    "direct_apply": False,
+                    "disposition": "falsification",
+                    "transaction_events": 0,
+                    "observed_symbols": 8,
+                    "completed_transactions": 0,
+                    "passive_state": "warming_up",
+                    "replay_harness": "proxy_ens_observer",
+                },
+            },
+            {
+                "name": "timeout_no_progress",
+                "status": "observed",
+                "reason": "observed truncated observer stream produced no progress and no direct-apply path",
+                "observed": {
+                    "direct_apply": False,
+                    "disposition": "falsification",
+                    "transaction_events": 0,
+                    "observed_symbols": 2,
+                    "completed_transactions": 0,
+                    "passive_state": "warming_up",
+                    "replay_harness": "proxy_ens_observer_timeout",
+                },
+            },
+        ],
+    }
+    write_json(proof_dir / "replay_behavior.json", artifact)
+    return artifact
 
 
 class ManifestValidationTests(unittest.TestCase):
@@ -149,6 +210,30 @@ class ManifestValidationTests(unittest.TestCase):
                 verifier.load_and_validate_manifest(manifest_path, "P03")
             self.assertIn("read-only", str(ctx.exception))
 
+    def test_replay_corpus_locks_negative_falsification_expectations(self) -> None:
+        corpus = verifier.load_json(SCRIPT_DIR.parent / "testdata" / "observe_first_replay_cases.json")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_replay_behavior_artifact(proof_dir)
+            verdict = verifier.build_replay_falsification_verdict(corpus, proof_dir)
+
+        self.assertEqual(verdict["schema"], verifier.REPLAY_FALSIFICATION_VERDICT_SCHEMA)
+        self.assertTrue(verdict["ok"])
+        self.assertEqual(verdict["summary"]["locked_cases"], 3)
+        self.assertEqual(verdict["summary"]["fail"], 0)
+        self.assertTrue(verdict["summary"]["behavior_artifact_ok"])
+
+        by_name = {case["name"]: case for case in verdict["cases"]}
+        self.assertEqual(by_name["b524_value_bearing_enh"]["status"], "pass")
+        self.assertFalse(by_name["b524_value_bearing_enh"]["direct_apply"])
+        self.assertEqual(by_name["b524_value_bearing_enh"]["disposition"], "ambiguity")
+        self.assertEqual(by_name["b524_value_bearing_enh"]["observed"]["replay_harness"], "active_passive_deduplicator")
+        self.assertEqual(by_name["collision_episode"]["status"], "pass")
+        self.assertFalse(by_name["collision_episode"]["direct_apply"])
+        self.assertEqual(by_name["collision_episode"]["disposition"], "falsification")
+        self.assertEqual(by_name["timeout_no_progress"]["status"], "pass")
+        self.assertFalse(by_name["timeout_no_progress"]["direct_apply"])
+        self.assertEqual(by_name["timeout_no_progress"]["disposition"], "falsification")
 
 class RetryClassificationTests(unittest.TestCase):
     def test_invoke_canary_adds_internal_nonce_without_mutating_manifest_params(self) -> None:
@@ -1079,6 +1164,93 @@ class CanaryVerdictTests(unittest.TestCase):
         self.assertIn("minimum not met", verdict["criteria"]["proof_window_traffic_minimums"]["reason"])
 
 
+class ReplayFalsificationVerdictTests(unittest.TestCase):
+    def write_proof_artifacts(self, proof_dir: pathlib.Path) -> dict:
+        summary = {
+            "schema": "p03_canary_overall_summary_v1",
+            "run_id": "run-1",
+            "read_avoidance_accounting": {
+                "delta_totals": {
+                    "direct_apply_total": 1,
+                    "active_reads_avoided_total": 2,
+                    "active_read_saved_seconds": 3,
+                },
+                "current_run": {
+                    "direct_apply_total": 1,
+                    "active_reads_avoided_total": 2,
+                    "active_read_saved_seconds": 3,
+                },
+            },
+            "proof_window_traffic_minimums": {
+                "delta_totals": {
+                    "ebus_passive_completed_transactions_total": 1_200,
+                    "ebus_passive_direct_apply_candidates_evaluated_total": 120,
+                },
+                "thresholds": {
+                    "ebus_passive_completed_transactions_total": {"ok": True, "observed_delta": 1_200},
+                    "ebus_passive_direct_apply_candidates_evaluated_total": {"ok": True, "observed_delta": 120},
+                },
+                "ok": True,
+            },
+            "interval_phase_required": False,
+            "totals": {"results": 3, "pass": 3, "mismatch": 0, "inconclusive": 0, "conclusive": 3},
+            "interval_totals": {"results": 0, "pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0},
+            "per_canary": {
+                "b524_value_bearing_enh": {"last_status": "pass"},
+                "collision_episode": {"last_status": "pass"},
+                "timeout_no_progress": {"last_status": "pass"},
+            },
+            "per_canary_interval": {},
+            "overall_conclusive_count": 3,
+            "overall_interval_conclusive_count": 0,
+        }
+        verdict = verifier.build_canary_verdict(summary)
+        write_json(proof_dir / "canary_summary.json", summary)
+        write_json(proof_dir / "canary_verdict.json", verdict)
+        return summary
+
+    def test_replay_verdict_requires_proof_artifacts(self) -> None:
+        corpus = verifier.load_json(SCRIPT_DIR.parent / "testdata" / "observe_first_replay_cases.json")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            with self.assertRaises(ValueError) as ctx:
+                verifier.build_replay_falsification_verdict(corpus, proof_dir)
+            self.assertIn("missing replay behavior artifact", str(ctx.exception))
+
+    def test_replay_verdict_uses_proof_artifacts_and_passes(self) -> None:
+        corpus = verifier.load_json(SCRIPT_DIR.parent / "testdata" / "observe_first_replay_cases.json")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_replay_behavior_artifact(proof_dir)
+            verdict = verifier.build_replay_falsification_verdict(corpus, proof_dir)
+
+        self.assertEqual(verdict["schema"], verifier.REPLAY_FALSIFICATION_VERDICT_SCHEMA)
+        self.assertTrue(verdict["ok"])
+        self.assertTrue(verdict["summary"]["behavior_artifact_ok"])
+        self.assertEqual(verdict["summary"]["locked_cases"], 3)
+        self.assertEqual(verdict["summary"]["fail"], 0)
+        by_name = {case["name"]: case for case in verdict["cases"]}
+        self.assertEqual(by_name["b524_value_bearing_enh"]["observed"]["replay_harness"], "active_passive_deduplicator")
+        self.assertEqual(by_name["collision_episode"]["observed"]["transaction_events"], 0)
+        self.assertEqual(by_name["timeout_no_progress"]["observed"]["completed_transactions"], 0)
+
+    def test_replay_verdict_fails_closed_when_behavior_mismatch_is_observed(self) -> None:
+        corpus = verifier.load_json(SCRIPT_DIR.parent / "testdata" / "observe_first_replay_cases.json")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            artifact = write_replay_behavior_artifact(proof_dir)
+            artifact["cases"][2]["observed"]["disposition"] = "ambiguity"
+            write_json(proof_dir / "replay_behavior.json", artifact)
+
+            verdict = verifier.build_replay_falsification_verdict(corpus, proof_dir)
+
+        self.assertFalse(verdict["ok"])
+        self.assertEqual(verdict["status"], "fail")
+        by_name = {case["name"]: case for case in verdict["cases"]}
+        self.assertEqual(by_name["timeout_no_progress"]["status"], "fail")
+        self.assertIn("expected", by_name["timeout_no_progress"]["reason"])
+
+
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(
         self,
@@ -1096,81 +1268,190 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
 
             fake_python = fake_bin / "python3"
             fake_python.write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/python3",
+                        "import json",
+                        "import os",
+                        "import pathlib",
+                        "import sys",
+                        "",
+                        "real_python = os.environ.get('REAL_PYTHON3')",
+                        "if not real_python:",
+                        "    raise SystemExit('REAL_PYTHON3 is required')",
+                        "",
+                        "args = sys.argv[1:]",
+                        "script_path = args[0] if len(args) >= 1 else ''",
+                        "command = args[1] if len(args) >= 2 else ''",
+                        "",
+                        "def write_json(path_text, payload):",
+                        "    path = pathlib.Path(path_text)",
+                        "    path.parent.mkdir(parents=True, exist_ok=True)",
+                        "    path.write_text(json.dumps(payload, indent=2) + '\\n', encoding='utf-8')",
+                        "",
+                        "if script_path.endswith('/scripts/passive_canary_verifier.py') and command == 'verify-phase':",
+                        "    output = ''",
+                        "    phase = ''",
+                        "    run_id = ''",
+                        "    baseline = ''",
+                        "    i = 2",
+                        "    while i < len(args):",
+                        "        token = args[i]",
+                        "        if token == '--output' and i + 1 < len(args):",
+                        "            output = args[i + 1]",
+                        "            i += 2",
+                        "            continue",
+                        "        if token == '--phase' and i + 1 < len(args):",
+                        "            phase = args[i + 1]",
+                        "            i += 2",
+                        "            continue",
+                        "        if token == '--run-id' and i + 1 < len(args):",
+                        "            run_id = args[i + 1]",
+                        "            i += 2",
+                        "            continue",
+                        "        if token == '--baseline' and i + 1 < len(args):",
+                        "            baseline = args[i + 1]",
+                        "            i += 2",
+                        "            continue",
+                        "        i += 1",
+                        "",
+                        "    if phase == 'end' and int(os.environ.get('FAKE_CANARY_END_DELAY_SEC', '0')) != 0:",
+                        "        import time",
+                        "        time.sleep(int(os.environ['FAKE_CANARY_END_DELAY_SEC']))",
+                        "",
+                        "    status = os.environ.get('FAKE_CANARY_STATUS', 'pass')",
+                        "    pass_count = 1 if status == 'pass' else 0",
+                        "    mismatch_count = 1 if status == 'mismatch' else 0",
+                        "    metrics_count = 'unknown'",
+                        "    metrics_state_file = os.environ.get('FAKE_METRICS_STATE_FILE')",
+                        "    if metrics_state_file and pathlib.Path(metrics_state_file).exists():",
+                        "        metrics_count = pathlib.Path(metrics_state_file).read_text(encoding='utf-8').strip()",
+                        "",
+                        "    payload = {",
+                        "        'schema': 'p03_canary_phase_result_v1',",
+                        "        'run_id': run_id,",
+                        "        'phase': phase,",
+                        "        'results': [{'id': 'canary_1', 'family': 'B524', 'status': status, 'conclusive': True}],",
+                        "        'summary': {'total': 1, 'pass': pass_count, 'mismatch': mismatch_count, 'inconclusive': 0, 'conclusive': 1},",
+                        "    }",
+                        "    if output:",
+                        "        write_json(output, payload)",
+                        "    if baseline:",
+                        "        baseline_path = pathlib.Path(baseline)",
+                        "        baseline_path.parent.mkdir(parents=True, exist_ok=True)",
+                        "        baseline_path.write_text('{\"canary_1\":\"BEEF\"}\\n', encoding='utf-8')",
+                        "    phase_log = os.environ.get('FAKE_CANARY_PHASE_LOG')",
+                        "    if phase_log:",
+                        "        with open(phase_log, 'a', encoding='utf-8') as handle:",
+                        "            handle.write(f'{phase}:{metrics_count}\\n')",
+                        "    matrix_log_dir = os.environ.get('MATRIX_LOG_DIR')",
+                        "    if matrix_log_dir:",
+                        "        write_json(pathlib.Path(matrix_log_dir) / 'proof_artifacts' / f'canary_phase_{phase}.json', payload)",
+                        "    raise SystemExit(0)",
+                        "",
+                        "if script_path.endswith('/scripts/passive_canary_verifier.py') and command == 'replay-verdict':",
+                        "    proof_dir = ''",
+                        "    i = 2",
+                        "    while i < len(args):",
+                        "        token = args[i]",
+                        "        if token == '--proof-dir' and i + 1 < len(args):",
+                        "            proof_dir = args[i + 1]",
+                        "            i += 2",
+                        "            continue",
+                        "        i += 1",
+                        "    if os.environ.get('FAKE_CANARY_PHASE_LOG'):",
+                        "        with open(os.environ['FAKE_CANARY_PHASE_LOG'], 'a', encoding='utf-8') as handle:",
+                        "            handle.write(f'replay:{proof_dir}\\n')",
+                        "    os.execv(real_python, [real_python] + sys.argv[1:])",
+                        "",
+                        "os.execv(real_python, [real_python] + sys.argv[1:])",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+
+            fake_go = fake_bin / "go"
+            fake_go.write_text(
                 textwrap.dedent(
                     """\
                     #!/usr/bin/env bash
                     set -euo pipefail
-                    real_python="${REAL_PYTHON3:?REAL_PYTHON3 is required}"
 
-                    if [[ "$#" -ge 2 && "$1" == *"/scripts/passive_canary_verifier.py" && "$2" == "verify-phase" ]]; then
-                      shift 2
-                      output=""
-                      phase=""
-                      run_id=""
-                      baseline=""
-                      while [[ "$#" -gt 0 ]]; do
-                        case "$1" in
-                          --output) output="$2"; shift 2 ;;
-                          --phase) phase="$2"; shift 2 ;;
-                          --run-id) run_id="$2"; shift 2 ;;
-                          --baseline) baseline="$2"; shift 2 ;;
-                          *) shift ;;
-                        esac
-                      done
-                      if [[ "${phase}" == "end" && "${FAKE_CANARY_END_DELAY_SEC:-0}" != "0" ]]; then
-                        sleep "${FAKE_CANARY_END_DELAY_SEC}"
+                    real_go="${REAL_GO:?REAL_GO is required}"
+                    if [[ "${1:-}" == "test" ]]; then
+                      out_path="${REPLAY_BEHAVIOR_ARTIFACT_PATH:-}"
+                      if [[ -z "${out_path}" ]]; then
+                        echo "REPLAY_BEHAVIOR_ARTIFACT_PATH is required" >&2
+                        exit 2
                       fi
-                      status="${FAKE_CANARY_STATUS:-pass}"
-                      pass_count=0
-                      mismatch_count=0
-                      if [[ "${status}" == "pass" ]]; then
-                        pass_count=1
-                      elif [[ "${status}" == "mismatch" ]]; then
-                        mismatch_count=1
-                      fi
-                      if [[ -n "${FAKE_CANARY_PHASE_LOG:-}" ]]; then
-                        metrics_count="unknown"
-                        if [[ -n "${FAKE_METRICS_STATE_FILE:-}" && -f "${FAKE_METRICS_STATE_FILE}" ]]; then
-                          metrics_count="$(cat "${FAKE_METRICS_STATE_FILE}")"
-                        fi
-                        printf '%s:%s\\n' "${phase}" "${metrics_count}" >> "${FAKE_CANARY_PHASE_LOG}"
-                      fi
-                      mkdir -p "$(dirname "${output}")"
-                      cat > "${output}" <<JSON
+                      mkdir -p "$(dirname "${out_path}")"
+                      cat > "${out_path}" <<'EOF'
                     {
-                      "schema": "p03_canary_phase_result_v1",
-                      "run_id": "${run_id}",
-                      "phase": "${phase}",
-                      "results": [
-                        {
-                          "id": "canary_1",
-                          "family": "B524",
-                          "status": "${status}",
-                          "conclusive": true
-                        }
-                      ],
+                      "schema": "observe_first_replay_behavior_v1",
+                      "captured_at": "2026-03-28T00:00:00+00:00",
+                      "source": "go_replay_harness",
+                      "ok": true,
                       "summary": {
-                        "total": 1,
-                        "pass": ${pass_count},
-                        "mismatch": ${mismatch_count},
-                        "inconclusive": 0,
-                        "conclusive": 1
-                      }
+                        "total_cases": 3,
+                        "locked_cases": 3,
+                        "observed_cases": 3,
+                        "observation_failure_cases": 0
+                      },
+                      "cases": [
+                        {
+                          "name": "b524_value_bearing_enh",
+                          "status": "observed",
+                          "reason": "observed B524 runtime observer fallback produced unmatched third-party disposition",
+                          "observed": {
+                            "direct_apply": false,
+                            "disposition": "ambiguity",
+                            "raw_disposition": "unmatched_third_party",
+                            "third_party_eligible": true,
+                            "direct_apply_policy": "state_default",
+                            "replay_harness": "active_passive_deduplicator"
+                          }
+                        },
+                        {
+                          "name": "collision_episode",
+                          "status": "observed",
+                          "reason": "observed proxy-observer collision stream produced no direct-apply replay path",
+                          "observed": {
+                            "direct_apply": false,
+                            "disposition": "falsification",
+                            "transaction_events": 0,
+                            "observed_symbols": 8,
+                            "completed_transactions": 0,
+                            "passive_state": "warming_up",
+                            "replay_harness": "proxy_ens_observer"
+                          }
+                        },
+                        {
+                          "name": "timeout_no_progress",
+                          "status": "observed",
+                          "reason": "observed truncated observer stream produced no progress and no direct-apply path",
+                          "observed": {
+                            "direct_apply": false,
+                            "disposition": "falsification",
+                            "transaction_events": 0,
+                            "observed_symbols": 2,
+                            "completed_transactions": 0,
+                            "passive_state": "warming_up",
+                            "replay_harness": "proxy_ens_observer_timeout"
+                          }
+                        }
+                      ]
                     }
-                    JSON
-                      if [[ -n "${baseline}" ]]; then
-                        mkdir -p "$(dirname "${baseline}")"
-                        printf '{"canary_1":"BEEF"}\\n' > "${baseline}"
-                      fi
+                    EOF
                       exit 0
                     fi
-
-                    exec "${real_python}" "$@"
+                    exec "${real_go}" "$@"
                     """
                 ),
                 encoding="utf-8",
             )
-            fake_python.chmod(0o755)
+            fake_go.chmod(0o755)
 
             fake_curl = fake_bin / "curl"
             fake_curl.write_text(
@@ -1316,6 +1597,9 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             fake_curl.chmod(0o755)
 
             env = os.environ.copy()
+            real_go = shutil.which("go")
+            if not real_go:
+                self.fail("go binary not found on PATH")
             env.update(
                 {
                     "MATRIX_CASE_ID": "P03",
@@ -1329,6 +1613,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     "MATRIX_GRAPHQL_URL": "http://fake-gateway:18083/graphql",
                     "MATRIX_METRICS_URL": "http://fake-gateway:18083/metrics",
                     "REAL_PYTHON3": sys.executable,
+                    "REAL_GO": real_go,
                     "FAKE_CANARY_STATUS": canary_status,
                     "FAKE_CANARY_PHASE_LOG": str(temp_path / "fake_canary_phase_log.txt"),
                     "FAKE_METRICS_STATE_FILE": str(temp_path / "fake_metrics_count.txt"),
@@ -1353,11 +1638,17 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 proof_dir = log_dir / "proof_artifacts"
                 summary_path = proof_dir / "canary_summary.json"
                 verdict_path = proof_dir / "canary_verdict.json"
+                replay_behavior_path = proof_dir / "replay_behavior.json"
+                replay_verdict_path = proof_dir / "replay_falsification.json"
                 phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
                 if verdict_path.exists():
                     artifacts["verdict"] = json.loads(verdict_path.read_text(encoding="utf-8"))
+                if replay_behavior_path.exists():
+                    artifacts["replay_behavior"] = json.loads(replay_behavior_path.read_text(encoding="utf-8"))
+                if replay_verdict_path.exists():
+                    artifacts["replay_verdict"] = json.loads(replay_verdict_path.read_text(encoding="utf-8"))
                 if phase_log_path.exists():
                     artifacts["phase_log"] = [
                         line.strip()
@@ -1402,6 +1693,17 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def test_smoke_exits_zero_when_canary_verdict_is_good(self) -> None:
         result = self.run_smoke_with_fake_tools("pass")
         self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def test_smoke_emits_replay_falsification_artifact_when_canary_verdict_is_good(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed("pass")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        replay_behavior = artifacts.get("replay_behavior")
+        self.assertIsInstance(replay_behavior, dict)
+        self.assertTrue(replay_behavior["ok"])
+        replay_verdict = artifacts.get("replay_verdict")
+        self.assertIsInstance(replay_verdict, dict)
+        self.assertTrue(replay_verdict["ok"])
+        self.assertEqual(replay_verdict["summary"]["behavior_artifact_ok"], True)
 
     def test_smoke_holds_until_proof_window_end_and_requires_interval_phase(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(
@@ -1503,9 +1805,12 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         phase_log = artifacts.get("phase_log")
         self.assertIsInstance(phase_log, list)
         self.assertGreaterEqual(len(phase_log), 2)
-        self.assertEqual(phase_log[0].split(":", 1)[0], "start")
+        phase_names = [entry.split(":", 1)[0] for entry in phase_log]
+        self.assertEqual(phase_names[0], "start")
         self.assertGreaterEqual(int(phase_log[0].split(":", 1)[1]), 3)
-        self.assertEqual(phase_log[-1].split(":", 1)[0], "end")
+        self.assertIn("end", phase_names)
+        self.assertIn("replay", phase_names)
+        self.assertLess(phase_names.index("end"), phase_names.index("replay"))
         self.assertEqual(artifacts.get("sample_phase_files", []), [])
 
     def test_smoke_hold_zero_waits_for_first_interval_when_interval_phase_is_required(self) -> None:
@@ -1526,9 +1831,12 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         phase_log = artifacts.get("phase_log")
         self.assertIsInstance(phase_log, list)
         self.assertGreaterEqual(len(phase_log), 3)
-        self.assertEqual(phase_log[0].split(":", 1)[0], "start")
-        self.assertIn("sample_0001", [entry.split(":", 1)[0] for entry in phase_log])
-        self.assertEqual(phase_log[-1].split(":", 1)[0], "end")
+        phase_names = [entry.split(":", 1)[0] for entry in phase_log]
+        self.assertEqual(phase_names[0], "start")
+        self.assertIn("sample_0001", phase_names)
+        self.assertIn("end", phase_names)
+        self.assertIn("replay", phase_names)
+        self.assertLess(phase_names.index("end"), phase_names.index("replay"))
         self.assertEqual(artifacts.get("sample_phase_files", []), ["canary_phase_sample_0001.json"])
 
     def test_smoke_fails_when_hold_times_out_before_window_completion_despite_slow_cleanup(self) -> None:

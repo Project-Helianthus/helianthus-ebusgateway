@@ -81,10 +81,13 @@ proof_sample_index=0
 proof_next_sample_epoch=0
 canary_verifier_script="${SCRIPT_DIR}/passive_canary_verifier.py"
 canary_manifest_path="${PASSIVE_P03_CANARY_MANIFEST:-${REPO_ROOT}/testdata/passive_proof/p03_canary_manifest.json}"
+replay_corpus_path="${PASSIVE_REPLAY_CORPUS_MANIFEST:-${REPO_ROOT}/testdata/observe_first_replay_cases.json}"
 canary_manifest_validation_path="${proof_dir}/canary_manifest_validation.json"
 canary_baseline_path="${proof_dir}/canary_baseline.json"
 canary_summary_path="${proof_dir}/canary_summary.json"
 canary_verdict_path="${proof_dir}/canary_verdict.json"
+replay_behavior_path="${proof_dir}/replay_behavior.json"
+replay_falsification_path="${proof_dir}/replay_falsification.json"
 canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
 canary_retries=3
 canary_enabled=0
@@ -459,6 +462,24 @@ build_canary_verdict() {
     --output "${canary_verdict_path}"
 }
 
+build_replay_falsification_verdict() {
+  python3 "${canary_verifier_script}" replay-verdict \
+    --manifest "${replay_corpus_path}" \
+    --proof-dir "${proof_dir}" \
+    --behavior-artifact "${replay_behavior_path}" \
+    --output "${replay_falsification_path}"
+}
+
+build_replay_behavior_artifact() {
+  if ! (
+    cd "${REPO_ROOT}" && \
+      REPLAY_BEHAVIOR_ARTIFACT_PATH="${replay_behavior_path}" \
+      go test -run TestReplayBehaviorArtifact -count=1 . >/dev/null
+  ); then
+    return 1
+  fi
+}
+
 reset_active_proof_window() {
   proof_window_started=0
   proof_window_start_epoch=0
@@ -611,6 +632,14 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_canary_verdict; then
       echo "proof mode: canary verdict gate failed (see ${canary_verdict_path})" >&2
+      exit 1
+    fi
+    if ! build_replay_behavior_artifact; then
+      echo "proof mode: failed to build replay behavior artifact (see ${replay_behavior_path})" >&2
+      exit 1
+    fi
+    if ! build_replay_falsification_verdict; then
+      echo "proof mode: replay falsification gate failed (see ${replay_falsification_path})" >&2
       exit 1
     fi
   fi

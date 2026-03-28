@@ -999,6 +999,22 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
     }
 
 
+def required_finite_numeric_value(
+    payload: Dict[str, Any],
+    field_name: str,
+    *,
+    path: pathlib.Path,
+    context: str,
+) -> Tuple[float | None, str]:
+    raw = payload.get(field_name)
+    if not isinstance(raw, (int, float)):
+        return None, f"{path}: {context} missing numeric {field_name}"
+    value = float(raw)
+    if not math.isfinite(value):
+        return None, f"{path}: {context} has non-finite {field_name}"
+    return value, ""
+
+
 def validate_family_upstream_canary_verdict(payload: Any, path: pathlib.Path) -> Tuple[bool, str]:
     if not isinstance(payload, dict):
         return False, f"{path}: canary verdict must be a JSON object"
@@ -1291,20 +1307,253 @@ def validate_family_upstream_canary_verdict(payload: Any, path: pathlib.Path) ->
             f"ok={per_canary_interval.get('ok')!r} "
             f"but derived_ok={per_canary_expected_ok!r}"
         )
-    for gate_name in (
-        "read_avoidance_accounting",
-        "proof_window_traffic_minimums",
-        "feature_flag_consistency",
-        "warmup_behavior",
+    read_avoidance_gate = criteria.get("read_avoidance_accounting")
+    if not isinstance(read_avoidance_gate, dict):
+        return False, f"{path}: canary verdict missing criteria.read_avoidance_accounting object"
+    read_avoidance_reason = read_avoidance_gate.get("reason")
+    if not isinstance(read_avoidance_reason, str):
+        return False, f"{path}: canary verdict missing string criteria.read_avoidance_accounting.reason"
+    read_direct_delta, read_direct_delta_error = required_finite_numeric_value(
+        read_avoidance_gate,
+        "direct_apply_total_delta",
+        path=path,
+        context="canary verdict criteria.read_avoidance_accounting",
+    )
+    if read_direct_delta_error:
+        return False, read_direct_delta_error
+    read_avoided_delta, read_avoided_delta_error = required_finite_numeric_value(
+        read_avoidance_gate,
+        "active_reads_avoided_total_delta",
+        path=path,
+        context="canary verdict criteria.read_avoidance_accounting",
+    )
+    if read_avoided_delta_error:
+        return False, read_avoided_delta_error
+    assert read_direct_delta is not None
+    assert read_avoided_delta is not None
+    if read_direct_delta < 0:
+        return False, (
+            f"{path}: canary verdict criteria.read_avoidance_accounting "
+            "has negative direct_apply_total_delta"
+        )
+    if read_avoided_delta < 0:
+        return False, (
+            f"{path}: canary verdict criteria.read_avoidance_accounting "
+            "has negative active_reads_avoided_total_delta"
+        )
+    if read_avoided_delta + 1e-9 < read_direct_delta:
+        return False, (
+            f"{path}: canary verdict contradictory read_avoidance_accounting evidence: "
+            f"active_reads_avoided_total_delta={read_avoided_delta!r} "
+            f"< direct_apply_total_delta={read_direct_delta!r}"
+        )
+
+    proof_window_gate = criteria.get("proof_window_traffic_minimums")
+    if not isinstance(proof_window_gate, dict):
+        return False, f"{path}: canary verdict missing criteria.proof_window_traffic_minimums object"
+    proof_window_reason = proof_window_gate.get("reason")
+    if not isinstance(proof_window_reason, str):
+        return False, f"{path}: canary verdict missing string criteria.proof_window_traffic_minimums.reason"
+    completed_delta, completed_delta_error = required_finite_numeric_value(
+        proof_window_gate,
+        "completed_transactions_delta",
+        path=path,
+        context="canary verdict criteria.proof_window_traffic_minimums",
+    )
+    if completed_delta_error:
+        return False, completed_delta_error
+    completed_minimum, completed_minimum_error = required_finite_numeric_value(
+        proof_window_gate,
+        "completed_transactions_minimum",
+        path=path,
+        context="canary verdict criteria.proof_window_traffic_minimums",
+    )
+    if completed_minimum_error:
+        return False, completed_minimum_error
+    candidates_delta, candidates_delta_error = required_finite_numeric_value(
+        proof_window_gate,
+        "direct_apply_candidates_evaluated_delta",
+        path=path,
+        context="canary verdict criteria.proof_window_traffic_minimums",
+    )
+    if candidates_delta_error:
+        return False, candidates_delta_error
+    candidates_minimum, candidates_minimum_error = required_finite_numeric_value(
+        proof_window_gate,
+        "direct_apply_candidates_evaluated_minimum",
+        path=path,
+        context="canary verdict criteria.proof_window_traffic_minimums",
+    )
+    if candidates_minimum_error:
+        return False, candidates_minimum_error
+    assert completed_delta is not None
+    assert completed_minimum is not None
+    assert candidates_delta is not None
+    assert candidates_minimum is not None
+    if completed_delta < 0:
+        return False, (
+            f"{path}: canary verdict criteria.proof_window_traffic_minimums "
+            "has negative completed_transactions_delta"
+        )
+    if candidates_delta < 0:
+        return False, (
+            f"{path}: canary verdict criteria.proof_window_traffic_minimums "
+            "has negative direct_apply_candidates_evaluated_delta"
+        )
+    if not math.isclose(
+        completed_minimum,
+        PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA,
+        rel_tol=0.0,
+        abs_tol=1e-9,
     ):
-        gate_payload = criteria.get(gate_name)
-        if not isinstance(gate_payload, dict):
-            return False, f"{path}: canary verdict missing criteria.{gate_name} object"
-        if not isinstance(gate_payload.get("reason"), str):
-            return False, f"{path}: canary verdict missing string criteria.{gate_name}.reason"
+        return False, (
+            f"{path}: canary verdict non-canonical "
+            "criteria.proof_window_traffic_minimums.completed_transactions_minimum"
+        )
+    if not math.isclose(
+        candidates_minimum,
+        PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        return False, (
+            f"{path}: canary verdict non-canonical "
+            "criteria.proof_window_traffic_minimums.direct_apply_candidates_evaluated_minimum"
+        )
+    if proof_window_gate.get("ok") is True:
+        if completed_delta + 1e-9 < completed_minimum:
+            return False, (
+                f"{path}: canary verdict contradictory proof_window_traffic_minimums evidence: "
+                f"completed_transactions_delta={completed_delta!r} "
+                f"< completed_transactions_minimum={completed_minimum!r}"
+            )
+        if candidates_delta + 1e-9 < candidates_minimum:
+            return False, (
+                f"{path}: canary verdict contradictory proof_window_traffic_minimums evidence: "
+                f"direct_apply_candidates_evaluated_delta={candidates_delta!r} "
+                f"< direct_apply_candidates_evaluated_minimum={candidates_minimum!r}"
+            )
+
+    feature_flags_gate = criteria.get("feature_flag_consistency")
+    if not isinstance(feature_flags_gate, dict):
+        return False, f"{path}: canary verdict missing criteria.feature_flag_consistency object"
+    feature_flags_reason = feature_flags_gate.get("reason")
+    if not isinstance(feature_flags_reason, str):
+        return False, f"{path}: canary verdict missing string criteria.feature_flag_consistency.reason"
+    if feature_flags_gate.get("ok") is True:
+        snapshot_count = feature_flags_gate.get("snapshot_count")
+        if not isinstance(snapshot_count, int):
+            return False, (
+                f"{path}: canary verdict missing integer "
+                "criteria.feature_flag_consistency.snapshot_count"
+            )
+        if snapshot_count < 1:
+            return False, (
+                f"{path}: canary verdict missing feature-flag snapshot evidence: "
+                "criteria.feature_flag_consistency.snapshot_count must be >= 1"
+            )
+        phases = feature_flags_gate.get("phases")
+        if not isinstance(phases, list):
+            return False, f"{path}: canary verdict missing list criteria.feature_flag_consistency.phases"
+        normalized_phases: List[str] = []
+        for phase_index, phase_name in enumerate(phases):
+            if not isinstance(phase_name, str) or phase_name.strip() == "":
+                return False, (
+                    f"{path}: canary verdict has invalid criteria.feature_flag_consistency.phases"
+                    f"[{phase_index}]"
+                )
+            normalized_phases.append(phase_name.strip().lower())
+        if len(normalized_phases) != snapshot_count:
+            return False, (
+                f"{path}: canary verdict contradictory feature_flag_consistency evidence: "
+                f"snapshot_count={snapshot_count} phases={len(normalized_phases)}"
+            )
+        for required_phase in ("start", "end"):
+            if required_phase not in normalized_phases:
+                return False, (
+                    f"{path}: canary verdict missing feature-flag {required_phase} phase evidence"
+                )
+
     warmup_behavior = criteria.get("warmup_behavior")
-    if not isinstance(warmup_behavior, dict) or not isinstance(warmup_behavior.get("waived"), bool):
+    if not isinstance(warmup_behavior, dict):
+        return False, f"{path}: canary verdict missing criteria.warmup_behavior object"
+    warmup_reason = warmup_behavior.get("reason")
+    if not isinstance(warmup_reason, str):
+        return False, f"{path}: canary verdict missing string criteria.warmup_behavior.reason"
+    warmup_waived = warmup_behavior.get("waived")
+    if not isinstance(warmup_waived, bool):
         return False, f"{path}: canary verdict missing boolean criteria.warmup_behavior.waived"
+    if warmup_behavior.get("ok") is True and not warmup_waived:
+        interval_snapshot_count = warmup_behavior.get("interval_snapshot_count")
+        if not isinstance(interval_snapshot_count, int):
+            return False, (
+                f"{path}: canary verdict missing integer "
+                "criteria.warmup_behavior.interval_snapshot_count"
+            )
+        if interval_snapshot_count < 1:
+            return False, (
+                f"{path}: canary verdict missing warmup interval evidence: "
+                "criteria.warmup_behavior.interval_snapshot_count must be >= 1"
+            )
+        interval_snapshot_prefixes = warmup_behavior.get("interval_snapshot_prefixes")
+        if not isinstance(interval_snapshot_prefixes, list):
+            return False, (
+                f"{path}: canary verdict missing list "
+                "criteria.warmup_behavior.interval_snapshot_prefixes"
+            )
+        if len(interval_snapshot_prefixes) != interval_snapshot_count:
+            return False, (
+                f"{path}: canary verdict contradictory warmup interval evidence: "
+                f"interval_snapshot_count={interval_snapshot_count} "
+                f"interval_snapshot_prefixes={len(interval_snapshot_prefixes)}"
+            )
+        for prefix_index, prefix_name in enumerate(interval_snapshot_prefixes):
+            if not isinstance(prefix_name, str) or prefix_name.strip() == "":
+                return False, (
+                    f"{path}: canary verdict has invalid criteria.warmup_behavior."
+                    f"interval_snapshot_prefixes[{prefix_index}]"
+                )
+        if str(warmup_behavior.get("cold_start_snapshot_prefix", "")).strip().lower() != "start":
+            return False, (
+                f"{path}: canary verdict missing criteria.warmup_behavior.cold_start_snapshot_prefix='start'"
+            )
+        if str(warmup_behavior.get("post_warmup_snapshot_prefix", "")).strip().lower() != "end":
+            return False, (
+                f"{path}: canary verdict missing criteria.warmup_behavior.post_warmup_snapshot_prefix='end'"
+            )
+        cold_start_phase = str(warmup_behavior.get("cold_start_startup_phase", "")).strip().upper()
+        post_warmup_phase = str(warmup_behavior.get("post_warmup_startup_phase", "")).strip().upper()
+        if cold_start_phase == "":
+            return False, (
+                f"{path}: canary verdict missing non-empty "
+                "criteria.warmup_behavior.cold_start_startup_phase"
+            )
+        if cold_start_phase == "LIVE_READY":
+            return False, (
+                f"{path}: canary verdict contradictory warmup evidence: "
+                "criteria.warmup_behavior.cold_start_startup_phase must be pre-LIVE_READY"
+            )
+        if post_warmup_phase != "LIVE_READY":
+            return False, (
+                f"{path}: canary verdict contradictory warmup evidence: "
+                "criteria.warmup_behavior.post_warmup_startup_phase must be LIVE_READY"
+            )
+        cold_start_warmup_state = str(warmup_behavior.get("cold_start_warmup_state", "")).strip().lower()
+        if cold_start_warmup_state == "":
+            return False, (
+                f"{path}: canary verdict missing non-empty "
+                "criteria.warmup_behavior.cold_start_warmup_state"
+            )
+        if cold_start_warmup_state == "available":
+            return False, (
+                f"{path}: canary verdict contradictory warmup evidence: "
+                "criteria.warmup_behavior.cold_start_warmup_state must be pre-available"
+            )
+        if str(warmup_behavior.get("post_warmup_warmup_state", "")).strip().lower() != "available":
+            return False, (
+                f"{path}: canary verdict contradictory warmup evidence: "
+                "criteria.warmup_behavior.post_warmup_warmup_state must be available"
+            )
 
     derived_ok = all(criterion_results)
     verdict_ok = bool(payload.get("ok"))
@@ -1382,6 +1631,7 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
     case_fail_count = 0
     case_informational_count = 0
     case_locked_count = 0
+    case_behavior_artifact_ok_all = True
     case_names: set[str] = set()
     for case_index, case_payload in enumerate(cases):
         if not isinstance(case_payload, dict):
@@ -1485,6 +1735,43 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
                 f"{path}: replay falsification verdict case[{case_index}] "
                 "behavior_evidence.behavior_schema mismatch"
             )
+        behavior_case_name_raw = behavior_evidence.get("case_name")
+        if not isinstance(behavior_case_name_raw, str) or behavior_case_name_raw.strip() == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.case_name"
+            )
+        if behavior_case_name_raw.strip() != case_name:
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "behavior_evidence.case_name mismatch"
+            )
+        behavior_observed_present = behavior_evidence.get("observed_present")
+        if not isinstance(behavior_observed_present, bool):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing boolean "
+                "behavior_evidence.observed_present"
+            )
+        behavior_observed_status_raw = behavior_evidence.get("observed_status")
+        if not isinstance(behavior_observed_status_raw, str) or behavior_observed_status_raw.strip() == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.observed_status"
+            )
+        behavior_observed_status = behavior_observed_status_raw.strip().lower()
+        behavior_observed_reason_raw = behavior_evidence.get("observed_reason")
+        if not isinstance(behavior_observed_reason_raw, str) or behavior_observed_reason_raw.strip() == "":
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing behavior_evidence.observed_reason"
+            )
+        behavior_observed_reason = behavior_observed_reason_raw.strip()
+        if case_payload.get("reason", "").strip() != behavior_observed_reason:
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] "
+                "reason mismatches behavior_evidence.observed_reason"
+            )
+        behavior_artifact_ok = behavior_evidence.get("behavior_artifact_ok")
+        assert isinstance(behavior_artifact_ok, bool)
+        if not behavior_artifact_ok:
+            case_behavior_artifact_ok_all = False
         case_direct_apply = case_payload.get("direct_apply")
         if case_direct_apply is not None and not isinstance(case_direct_apply, bool):
             return False, (
@@ -1512,6 +1799,26 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
                 f"{path}: replay falsification verdict case[{case_index}] observed must be object or null"
             )
         if observed is None:
+            if behavior_observed_present:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_present=true without observed evidence"
+                )
+            if behavior_observed_status != "missing":
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_status must be 'missing' when observed is null"
+                )
+            if behavior_evidence.get("observed_direct_apply") is not None:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_direct_apply must be null when observed is null"
+                )
+            if behavior_evidence.get("observed_disposition") is not None:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_disposition must be null when observed is null"
+                )
             if case_direct_apply is not None or case_disposition_raw is not None:
                 return False, (
                     f"{path}: replay falsification verdict case[{case_index}] has replay semantics without observed evidence"
@@ -1521,6 +1828,16 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
                     f"{path}: replay falsification verdict case[{case_index}] pass case missing observed evidence"
                 )
         else:
+            if not behavior_observed_present:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_present=false with observed evidence"
+                )
+            if behavior_observed_status == "missing":
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_status='missing' with observed evidence"
+                )
             observed_direct_apply = observed.get("direct_apply")
             if not isinstance(observed_direct_apply, bool):
                 return False, (
@@ -1530,6 +1847,34 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
             if observed_disposition not in REPLAY_EXPECTED_DISPOSITIONS:
                 return False, (
                     f"{path}: replay falsification verdict case[{case_index}] observed.disposition must be valid"
+                )
+            behavior_observed_direct_apply = behavior_evidence.get("observed_direct_apply")
+            if not isinstance(behavior_observed_direct_apply, bool):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] missing boolean "
+                    "behavior_evidence.observed_direct_apply"
+                )
+            if behavior_observed_direct_apply != observed_direct_apply:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_direct_apply mismatches observed.direct_apply"
+                )
+            behavior_observed_disposition_raw = behavior_evidence.get("observed_disposition")
+            if not isinstance(behavior_observed_disposition_raw, str):
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] missing string "
+                    "behavior_evidence.observed_disposition"
+                )
+            behavior_observed_disposition = behavior_observed_disposition_raw.strip().lower()
+            if behavior_observed_disposition not in REPLAY_EXPECTED_DISPOSITIONS:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_disposition must be valid"
+                )
+            if behavior_observed_disposition != observed_disposition:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "behavior_evidence.observed_disposition mismatches observed.disposition"
                 )
             if case_direct_apply is None or case_direct_apply != observed_direct_apply:
                 return False, (
@@ -1639,6 +1984,11 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
         return False, (
             f"{path}: replay falsification verdict contradictory summary.fail={summary_fail} "
             f"(case_fail_count={case_fail_count})"
+        )
+    if summary_behavior_ok != case_behavior_artifact_ok_all:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.behavior_artifact_ok="
+            f"{summary_behavior_ok!r} (derived_behavior_artifact_ok={case_behavior_artifact_ok_all!r})"
         )
 
     verdict_ok = bool(payload.get("ok"))
@@ -2350,6 +2700,12 @@ def build_replay_falsification_verdict(
                 "behavior_artifact_path": str(behavior_artifact_path),
                 "behavior_artifact_ok": bool(behavior.get("ok", False)),
                 "behavior_schema": str(behavior.get("schema", "")).strip(),
+                "case_name": name,
+                "observed_present": observed_entry is not None,
+                "observed_status": str((observed_entry or {}).get("status", "missing")).strip().lower() or "missing",
+                "observed_reason": str((observed_entry or {}).get("reason", "")).strip() or "missing replay behavior observation",
+                "observed_direct_apply": None,
+                "observed_disposition": None,
             },
         }
 
@@ -2391,6 +2747,10 @@ def build_replay_falsification_verdict(
         case_result["disposition"] = observed_disposition
         case_result["reason"] = observed_entry["reason"] or reason_expected
         case_result["observed"] = observed
+        case_result["behavior_evidence"]["observed_status"] = observed_entry["status"]
+        case_result["behavior_evidence"]["observed_reason"] = case_result["reason"]
+        case_result["behavior_evidence"]["observed_direct_apply"] = observed_direct_apply
+        case_result["behavior_evidence"]["observed_disposition"] = observed_disposition
 
         if observed_direct_apply != direct_apply_expected:
             case_result["status"] = "fail"

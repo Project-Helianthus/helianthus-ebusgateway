@@ -33,6 +33,7 @@ READ_AVOIDANCE_ACCOUNTING_SCHEMA = "p03_read_avoidance_accounting_v1"
 READ_AVOIDANCE_DIRECT_APPLY_METRIC = "direct_apply_total"
 READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC = "active_reads_avoided_total"
 READ_AVOIDANCE_SAVED_SECONDS_METRIC = "active_read_saved_seconds"
+WARMUP_BEHAVIOR_ARTIFACT_SCHEMA = "p03_warmup_behavior_v1"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC = "ebus_passive_completed_transactions_total"
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_apply_candidates_evaluated_total"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
@@ -368,6 +369,13 @@ def proof_phase_metrics_snapshot_path(proof_dir: pathlib.Path, phase: str) -> pa
     if is_interval_phase(normalized):
         return proof_dir / "samples" / f"{normalized}_metrics.prom"
     raise ValueError(f"unsupported canary phase for metrics snapshot lookup: {phase!r}")
+
+
+def proof_phase_result_path(proof_dir: pathlib.Path, phase: str) -> pathlib.Path:
+    normalized = phase.strip().lower()
+    if normalized == "":
+        raise ValueError("unsupported empty canary phase for result lookup")
+    return proof_dir / f"canary_phase_{normalized}.json"
 
 
 def proof_phase_feature_flag_snapshot_path(proof_dir: pathlib.Path, phase: str) -> pathlib.Path:
@@ -751,6 +759,154 @@ def build_window_feature_flag_consistency_for_phases(
         "snapshots": snapshots,
         "ok": True,
     }
+
+
+def build_warmup_behavior_artifact_for_phases(
+    proof_dir: pathlib.Path,
+    run_id: str,
+    phase_payloads: List[Tuple[Tuple[int, int, str], str, Dict[str, Any]]],
+    interval_phase_count: int,
+) -> Dict[str, Any]:
+    ordered_phases: List[str] = []
+    interval_phases: List[str] = []
+    start_payload: Dict[str, Any] | None = None
+    end_payload: Dict[str, Any] | None = None
+    for _, phase, payload in sorted(phase_payloads, key=lambda item: item[0]):
+        ordered_phases.append(phase)
+        if phase == "start":
+            start_payload = payload
+        elif phase == "end":
+            end_payload = payload
+        elif is_interval_phase(phase):
+            interval_phases.append(phase)
+
+    if start_payload is None or end_payload is None:
+        raise ValueError("missing current-run start/end canary artifacts (stale artifact rejection)")
+
+    def summarize_phase(payload: Dict[str, Any], phase_role: str) -> Dict[str, Any]:
+        phase = str(payload.get("phase", "")).strip()
+        entries = payload.get("results")
+        if not isinstance(entries, list):
+            raise ValueError(f"warmup behavior artifact phase {phase_role} missing results array")
+        status_counts = {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}
+        canaries: List[Dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            canary_id = str(entry.get("id", "")).strip()
+            status = str(entry.get("status", "")).strip()
+            if canary_id == "" or status not in ("pass", "mismatch", "inconclusive"):
+                continue
+            status_counts[status] += 1
+            if status in ("pass", "mismatch"):
+                status_counts["conclusive"] += 1
+            canaries.append(
+                {
+                    "id": canary_id,
+                    "family": str(entry.get("family", "")).strip().upper(),
+                    "status": status,
+                    "conclusive": bool(entry.get("conclusive", status in ("pass", "mismatch"))),
+                }
+            )
+        return {
+            "phase": phase,
+            "phase_role": phase_role,
+            "phase_result_path": str(proof_phase_result_path(proof_dir, phase or "start")),
+            "result_count": len(canaries),
+            "status_counts": status_counts,
+            "canaries": canaries,
+        }
+
+    cold_start = summarize_phase(start_payload, "cold_start")
+    post_warmup = summarize_phase(end_payload, "post_warmup_steady_state")
+    transition_established = interval_phase_count >= 1 and len(interval_phases) >= 1
+    transition = {
+        "established": transition_established,
+        "from_phase": "start",
+        "to_phase": "end",
+        "interval_phase_count": interval_phase_count,
+        "interval_phases": interval_phases,
+        "first_interval_phase": interval_phases[0] if interval_phases else None,
+        "last_interval_phase": interval_phases[-1] if interval_phases else None,
+        "evidence": {
+            "start_phase_path": str(proof_phase_result_path(proof_dir, "start")),
+            "end_phase_path": str(proof_phase_result_path(proof_dir, "end")),
+            "interval_phase_paths": [str(proof_phase_result_path(proof_dir, phase)) for phase in interval_phases],
+            "ordered_phases": ordered_phases,
+        },
+    }
+
+    return {
+        "schema": WARMUP_BEHAVIOR_ARTIFACT_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": run_id,
+        "claim_scope": "bounded_proof_window_warmup_behavior",
+        "evidence": transition["evidence"],
+        "cold_start": cold_start,
+        "post_warmup": post_warmup,
+        "transition": transition,
+        "ok": transition_established,
+    }
+
+
+def evaluate_warmup_behavior(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return False, "missing warmup_behavior payload", {}
+    if str(payload.get("schema", "")).strip() != WARMUP_BEHAVIOR_ARTIFACT_SCHEMA:
+        return False, "warmup_behavior schema mismatch", {}
+
+    cold_start = payload.get("cold_start")
+    post_warmup = payload.get("post_warmup")
+    transition = payload.get("transition")
+    evidence = payload.get("evidence")
+    if not isinstance(cold_start, dict):
+        return False, "warmup_behavior missing cold_start", {}
+    if not isinstance(post_warmup, dict):
+        return False, "warmup_behavior missing post_warmup", {}
+    if not isinstance(transition, dict):
+        return False, "warmup_behavior missing transition", {}
+    if not isinstance(evidence, dict):
+        return False, "warmup_behavior missing evidence", {}
+
+    if str(cold_start.get("phase_role", "")).strip() != "cold_start":
+        return False, "warmup_behavior cold_start phase_role mismatch", {}
+    if str(post_warmup.get("phase_role", "")).strip() != "post_warmup_steady_state":
+        return False, "warmup_behavior post_warmup phase_role mismatch", {}
+    if str(cold_start.get("phase", "")).strip() != "start":
+        return False, "warmup_behavior cold_start phase mismatch", {}
+    if str(post_warmup.get("phase", "")).strip() != "end":
+        return False, "warmup_behavior post_warmup phase mismatch", {}
+    if transition.get("established") is not True:
+        return False, "warmup_behavior transition is not established", {}
+
+    interval_phase_count = transition.get("interval_phase_count")
+    if not isinstance(interval_phase_count, int) or interval_phase_count < 1:
+        return False, "warmup_behavior transition lacks interval evidence", {}
+    interval_phases = transition.get("interval_phases")
+    if not isinstance(interval_phases, list) or len(interval_phases) < 1:
+        return False, "warmup_behavior transition lacks interval phases", {}
+
+    for side_name, side in (("cold_start", cold_start), ("post_warmup", post_warmup)):
+        status_counts = side.get("status_counts")
+        canaries = side.get("canaries")
+        if not isinstance(status_counts, dict):
+            return False, f"warmup_behavior {side_name} missing status_counts", {}
+        if not isinstance(canaries, list) or len(canaries) == 0:
+            return False, f"warmup_behavior {side_name} missing canaries", {}
+        for field in ("pass", "mismatch", "inconclusive", "conclusive"):
+            if not isinstance(status_counts.get(field), int):
+                return False, f"warmup_behavior {side_name} missing {field} count", {}
+
+    return (
+        True,
+        "",
+        {
+            "interval_phase_count": interval_phase_count,
+            "interval_phases": interval_phases,
+            "cold_start_phase": cold_start.get("phase"),
+            "post_warmup_phase": post_warmup.get("phase"),
+        },
+    )
 
 
 def evaluate_read_avoidance_accounting(payload: Any) -> Tuple[bool, str, Dict[str, Any]]:
@@ -1423,6 +1579,12 @@ def summarize_run(
     read_avoidance_accounting = build_window_read_avoidance_accounting_for_phases(proof_dir, ordered_phases)
     proof_window_traffic_minimums = read_avoidance_accounting.get("proof_window_traffic_minimums")
     feature_flag_consistency = build_window_feature_flag_consistency_for_phases(proof_dir, ordered_phases)
+    warmup_behavior = build_warmup_behavior_artifact_for_phases(
+        proof_dir,
+        run_id,
+        phase_payloads,
+        interval_phase_count,
+    )
 
     return {
         "schema": "p03_canary_overall_summary_v1",
@@ -1432,6 +1594,7 @@ def summarize_run(
         "read_avoidance_accounting": read_avoidance_accounting,
         "proof_window_traffic_minimums": proof_window_traffic_minimums,
         "feature_flag_consistency": feature_flag_consistency,
+        "warmup_behavior": warmup_behavior,
         "phase_files_total": len(list((proof_dir).glob(f"{CANARY_PHASE_PREFIX}*.json"))),
         "phase_files_used": len(phase_files),
         "phase_files_stale_ignored": stale_ignored,
@@ -1472,6 +1635,9 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
     feature_flags_ok, feature_flags_reason, feature_flags_details = evaluate_feature_flag_consistency(
         summary.get("feature_flag_consistency")
     )
+    warmup_behavior_ok, warmup_behavior_reason, warmup_behavior_details = evaluate_warmup_behavior(
+        summary.get("warmup_behavior")
+    )
 
     mismatch_count = int(totals.get("mismatch", 0) or 0)
     no_mismatches_ok = mismatch_count == 0
@@ -1486,6 +1652,13 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
     else:
         overall_interval_ok = True
         overall_interval_waived = True
+    warmup_behavior_required = interval_required
+    if warmup_behavior_required:
+        warmup_behavior_gate_ok = warmup_behavior_ok
+        warmup_behavior_waived = False
+    else:
+        warmup_behavior_gate_ok = True
+        warmup_behavior_waived = True
 
     per_canary_details: Dict[str, Dict[str, Any]] = {}
     failing_canaries: List[str] = []
@@ -1524,6 +1697,7 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
         and read_avoidance_ok
         and proof_window_ok
         and feature_flags_ok
+        and warmup_behavior_gate_ok
     )
 
     return {
@@ -1567,6 +1741,12 @@ def build_canary_verdict(summary: Dict[str, Any]) -> Dict[str, Any]:
                 "ok": feature_flags_ok,
                 "reason": feature_flags_reason,
                 **feature_flags_details,
+            },
+            "warmup_behavior": {
+                "ok": warmup_behavior_gate_ok,
+                "waived": warmup_behavior_waived,
+                "reason": warmup_behavior_reason,
+                **warmup_behavior_details,
             },
         },
         "per_canary": per_canary_details,

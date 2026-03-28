@@ -736,6 +736,39 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             summary = verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
             self.assertEqual(summary["interval_phase_count"], 0)
             self.assertFalse(summary["interval_phase_required"])
+            self.assertIn("warmup_behavior", summary)
+            self.assertFalse(summary["warmup_behavior"]["ok"])
+            self.assertFalse(summary["warmup_behavior"]["transition"]["established"])
+
+    def test_summary_derives_warmup_behavior_artifact_from_phase_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=4,
+                start_avoided=6,
+                end_direct_apply=4,
+                end_avoided=7,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=True)
+            self.write_sample_read_avoidance_metrics(
+                proof_dir,
+                "sample_0001",
+                direct_apply=4,
+                avoided=7,
+            )
+
+            summary = verifier.summarize_run(proof_dir, "run-1")
+            warmup = summary["warmup_behavior"]
+            self.assertEqual(warmup["schema"], verifier.WARMUP_BEHAVIOR_ARTIFACT_SCHEMA)
+            self.assertTrue(warmup["ok"])
+            self.assertTrue(warmup["transition"]["established"])
+            self.assertEqual(warmup["cold_start"]["phase_role"], "cold_start")
+            self.assertEqual(warmup["post_warmup"]["phase_role"], "post_warmup_steady_state")
+            self.assertEqual(warmup["transition"]["from_phase"], "start")
+            self.assertEqual(warmup["transition"]["to_phase"], "end")
+            self.assertGreaterEqual(warmup["transition"]["interval_phase_count"], 1)
+            self.assertEqual(warmup["transition"]["interval_phases"], ["sample_0001"])
 
     def test_summary_fails_closed_when_direct_apply_counter_decreases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1227,6 +1260,17 @@ class CanaryVerdictTests(unittest.TestCase):
         direct_apply_candidates_delta: float = 120,
     ) -> dict:
         per_canary = {canary_id: {"last_status": "pass"} for canary_id in per_canary_interval}
+        warmup_established = interval_results > 0
+        warmup_interval_phases = ["sample_0001"] if warmup_established else []
+        warmup_canaries = [
+            {
+                "id": canary_id,
+                "family": "B524" if canary_id == "a" else "B509",
+                "status": "pass",
+                "conclusive": True,
+            }
+            for canary_id in per_canary_interval
+        ]
         return {
             "schema": "p03_canary_overall_summary_v1",
             "run_id": "run-1",
@@ -1277,6 +1321,64 @@ class CanaryVerdictTests(unittest.TestCase):
                     },
                 ],
                 "ok": True,
+            },
+            "warmup_behavior": {
+                "schema": verifier.WARMUP_BEHAVIOR_ARTIFACT_SCHEMA,
+                "captured_at": "2026-03-28T00:00:00+00:00",
+                "run_id": "run-1",
+                "claim_scope": "bounded_proof_window_warmup_behavior",
+                "evidence": {
+                    "start_phase_path": "/tmp/proof/canary_phase_start.json",
+                    "end_phase_path": "/tmp/proof/canary_phase_end.json",
+                    "interval_phase_paths": [
+                        "/tmp/proof/canary_phase_sample_0001.json",
+                    ] if warmup_established else [],
+                    "ordered_phases": ["start", *warmup_interval_phases, "end"],
+                },
+                "cold_start": {
+                    "phase": "start",
+                    "phase_role": "cold_start",
+                    "phase_result_path": "/tmp/proof/canary_phase_start.json",
+                    "result_count": len(warmup_canaries),
+                    "status_counts": {
+                        "pass": len(warmup_canaries),
+                        "mismatch": 0,
+                        "inconclusive": 0,
+                        "conclusive": len(warmup_canaries),
+                    },
+                    "canaries": warmup_canaries,
+                },
+                "post_warmup": {
+                    "phase": "end",
+                    "phase_role": "post_warmup_steady_state",
+                    "phase_result_path": "/tmp/proof/canary_phase_end.json",
+                    "result_count": len(warmup_canaries),
+                    "status_counts": {
+                        "pass": len(warmup_canaries),
+                        "mismatch": 0,
+                        "inconclusive": 0,
+                        "conclusive": len(warmup_canaries),
+                    },
+                    "canaries": warmup_canaries,
+                },
+                "transition": {
+                    "established": warmup_established,
+                    "from_phase": "start",
+                    "to_phase": "end",
+                    "interval_phase_count": interval_results,
+                    "interval_phases": warmup_interval_phases,
+                    "first_interval_phase": warmup_interval_phases[0] if warmup_interval_phases else None,
+                    "last_interval_phase": warmup_interval_phases[-1] if warmup_interval_phases else None,
+                    "evidence": {
+                        "start_phase_path": "/tmp/proof/canary_phase_start.json",
+                        "end_phase_path": "/tmp/proof/canary_phase_end.json",
+                        "interval_phase_paths": [
+                            "/tmp/proof/canary_phase_sample_0001.json",
+                        ] if warmup_established else [],
+                        "ordered_phases": ["start", *warmup_interval_phases, "end"],
+                    },
+                },
+                "ok": warmup_established,
             },
             "interval_phase_required": interval_required,
             "totals": {
@@ -1441,6 +1543,40 @@ class CanaryVerdictTests(unittest.TestCase):
         verdict = verifier.build_canary_verdict(summary)
         self.assertFalse(verdict["ok"])
         self.assertFalse(verdict["criteria"]["feature_flag_consistency"]["ok"])
+
+    def test_verdict_fails_closed_when_warmup_behavior_artifact_is_missing(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=True,
+            interval_results=10,
+            interval_conclusive=9,
+            per_canary_interval={"a": {"pass": 9, "mismatch": 0, "inconclusive": 1, "conclusive": 9}},
+        )
+        summary.pop("warmup_behavior", None)
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["warmup_behavior"]["ok"])
+        self.assertIn("missing warmup_behavior payload", verdict["criteria"]["warmup_behavior"]["reason"])
+
+    def test_verdict_fails_closed_when_warmup_transition_is_incomplete(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=True,
+            interval_results=10,
+            interval_conclusive=9,
+            per_canary_interval={"a": {"pass": 9, "mismatch": 0, "inconclusive": 1, "conclusive": 9}},
+        )
+        summary["warmup_behavior"]["transition"]["established"] = False
+        summary["warmup_behavior"]["transition"]["interval_phase_count"] = 0
+        summary["warmup_behavior"]["transition"]["interval_phases"] = []
+        summary["warmup_behavior"]["transition"]["first_interval_phase"] = None
+        summary["warmup_behavior"]["transition"]["last_interval_phase"] = None
+        summary["warmup_behavior"]["transition"]["evidence"]["interval_phase_paths"] = []
+        summary["warmup_behavior"]["ok"] = False
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertFalse(verdict["criteria"]["warmup_behavior"]["ok"])
+        self.assertIn("not established", verdict["criteria"]["warmup_behavior"]["reason"])
 
     def test_verdict_fails_closed_when_canonical_normalizations_are_missing(self) -> None:
         summary = self.build_summary_payload(

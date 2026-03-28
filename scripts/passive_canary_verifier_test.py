@@ -3604,6 +3604,61 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "blocked")
         self.assertIn("proof_scope.ebusd_transport mismatch", artifact["eligibility"]["reason"])
 
+    def test_promotion_eligibility_blocks_missing_upstream_ebusd_transport_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            write_family_proof_eligibility_artifact(proof_dir, proxy_transport="ens", ebusd_transport="")
+            family_path = proof_dir / "family_proof_eligibility.json"
+            family_artifact = verifier.load_json(family_path)
+            del family_artifact["proof_scope"]["ebusd_transport"]
+            write_json(family_path, family_artifact)
+            artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("missing proof_scope.ebusd_transport", artifact["eligibility"]["reason"])
+
+    def test_promotion_eligibility_blocks_malformed_upstream_boolean_flags(self) -> None:
+        cases = (
+            ("canary_ok", "family proof eligibility upstream canary_ok must be boolean"),
+            ("replay_ok", "family proof eligibility upstream replay_ok must be boolean"),
+        )
+
+        for field, expected_reason in cases:
+            with self.subTest(field=field):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    proof_dir = pathlib.Path(temp_dir)
+                    write_family_proof_artifacts(proof_dir, transport_class="ens")
+                    write_family_proof_eligibility_artifact(proof_dir, proxy_transport="ens", ebusd_transport="")
+                    family_path = proof_dir / "family_proof_eligibility.json"
+                    family_artifact = verifier.load_json(family_path)
+                    family_artifact["upstream_proof"][field] = "false"
+                    write_json(family_path, family_artifact)
+                    artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                        proof_dir,
+                        "run-1",
+                        "P03",
+                        "proxy-single-client",
+                        "required",
+                        "ens",
+                        proxy_transport="ens",
+                        ebusd_transport="",
+                    )
+
+                self.assertFalse(artifact["ok"])
+                self.assertEqual(artifact["eligibility"]["status"], "blocked")
+                self.assertIn(expected_reason, artifact["eligibility"]["reason"])
+
     def test_promotion_eligibility_blocks_contradictory_upstream_family_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)

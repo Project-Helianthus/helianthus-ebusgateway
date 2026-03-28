@@ -2770,6 +2770,7 @@ def build_promotion_eligibility_artifact_for_run(
         if normalized_kind and normalized_passive_mode and transport_class
         else ""
     )
+    family_scope_has_ebusd_transport = isinstance(family_scope, dict) and "ebusd_transport" in family_scope
 
     if not isinstance(family_eligibility, dict):
         reasons.append("family proof eligibility artifact is not a JSON object")
@@ -2814,6 +2815,8 @@ def build_promotion_eligibility_artifact_for_run(
             reasons.append("family proof eligibility missing proof_scope.transport_class")
         if family_scope.get("family_key") in (None, ""):
             reasons.append("family proof eligibility missing proof_scope.family_key")
+        if not family_scope_has_ebusd_transport:
+            reasons.append("family proof eligibility missing proof_scope.ebusd_transport")
 
     if isinstance(family_eligibility, dict) and isinstance(family_identity, dict):
         if family_identity.get("kind") in (None, ""):
@@ -2903,16 +2906,22 @@ def build_promotion_eligibility_artifact_for_run(
             )
 
     if isinstance(family_upstream, dict):
-        family_canary_ok = bool(family_upstream.get("canary_ok", False))
-        family_replay_ok = bool(family_upstream.get("replay_ok", False))
+        family_canary_ok_raw = family_upstream.get("canary_ok")
+        family_replay_ok_raw = family_upstream.get("replay_ok")
+        if not isinstance(family_canary_ok_raw, bool):
+            reasons.append("family proof eligibility upstream canary_ok must be boolean")
+        if not isinstance(family_replay_ok_raw, bool):
+            reasons.append("family proof eligibility upstream replay_ok must be boolean")
+        family_canary_ok = family_canary_ok_raw if isinstance(family_canary_ok_raw, bool) else False
+        family_replay_ok = family_replay_ok_raw if isinstance(family_replay_ok_raw, bool) else False
         canary_ok = bool(isinstance(canary_verdict, dict) and canary_verdict.get("ok", False))
         replay_ok = bool(isinstance(replay_verdict, dict) and replay_verdict.get("ok", False))
-        if family_canary_ok != canary_ok:
+        if isinstance(family_canary_ok_raw, bool) and family_canary_ok != canary_ok:
             reasons.append(
                 "family proof eligibility upstream canary_ok mismatch: "
                 f"got {family_canary_ok!r}; want {canary_ok!r}"
             )
-        if family_replay_ok != replay_ok:
+        if isinstance(family_replay_ok_raw, bool) and family_replay_ok != replay_ok:
             reasons.append(
                 "family proof eligibility upstream replay_ok mismatch: "
                 f"got {family_replay_ok!r}; want {replay_ok!r}"

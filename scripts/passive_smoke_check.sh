@@ -88,6 +88,7 @@ canary_summary_path="${proof_dir}/canary_summary.json"
 canary_verdict_path="${proof_dir}/canary_verdict.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
 replay_falsification_path="${proof_dir}/replay_falsification.json"
+rollback_smoke_path="${proof_dir}/rollback_smoke.json"
 canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
 canary_retries=3
 canary_enabled=0
@@ -470,6 +471,13 @@ build_replay_falsification_verdict() {
     --output "${replay_falsification_path}"
 }
 
+build_rollback_smoke_artifact() {
+  python3 "${canary_verifier_script}" rollback-smoke \
+    --proof-dir "${proof_dir}" \
+    --run-id "${canary_run_id}" \
+    --output "${rollback_smoke_path}"
+}
+
 build_replay_behavior_artifact() {
   if ! (
     cd "${REPO_ROOT}" && \
@@ -640,6 +648,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_replay_falsification_verdict; then
       echo "proof mode: replay falsification gate failed (see ${replay_falsification_path})" >&2
+      exit 1
+    fi
+    if ! build_rollback_smoke_artifact; then
+      echo "proof mode: rollback smoke gate failed (see ${rollback_smoke_path})" >&2
       exit 1
     fi
   fi

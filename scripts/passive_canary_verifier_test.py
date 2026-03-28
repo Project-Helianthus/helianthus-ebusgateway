@@ -1470,9 +1470,30 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           ;;
                         *)
                           shift
-                          ;;
+                        ;;
                       esac
                     done
+
+                    feature_flag_state_file="${FAKE_FEATURE_FLAGS_STATE_FILE:?FAKE_FEATURE_FLAGS_STATE_FILE is required}"
+                    next_feature_flag_state() {
+                      local count=0
+                      if [[ -f "${feature_flag_state_file}" ]]; then
+                        count="$(cat "${feature_flag_state_file}")"
+                      fi
+                      count=$((count + 1))
+                      printf '%s\\n' "${count}" > "${feature_flag_state_file}"
+                      if [[ "${count}" -le 2 ]]; then
+                        observe_first_enabled_json=true
+                        passive_state_direct_apply_json=true
+                        passive_config_direct_apply_json=false
+                        external_write_policy="record_only"
+                      else
+                        observe_first_enabled_json=false
+                        passive_state_direct_apply_json=false
+                        passive_config_direct_apply_json=false
+                        external_write_policy="record_only"
+                      fi
+                    }
 
                     if [[ "${url}" == *"/metrics" ]]; then
                       timed_out=0
@@ -1558,6 +1579,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     if [[ "${url}" == *"/portal/api/v1/bus/observability" ]]; then
                       startup_mode="${FAKE_BUS_STARTUP_MODE:-always_live_ready}"
                       phase="LIVE_READY"
+                      next_feature_flag_state
                       if [[ "${startup_mode}" == "initially_live_warmup_then_live_ready" ]]; then
                         state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
                         warmup_calls="${FAKE_BUS_LIVE_WARMUP_CALLS:-1}"
@@ -1570,15 +1592,16 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         fi
                       fi
                       cat <<EOF
-                    {"status":{"startup":{"phase":"${phase}"},"feature_flags":{"observeFirstEnabled":true}}}
+                    {"status":{"startup":{"phase":"${phase}"},"feature_flags":{"observeFirstEnabled":${observe_first_enabled_json},"passiveStateDirectApply":${passive_state_direct_apply_json},"passiveConfigDirectApply":${passive_config_direct_apply_json},"externalWritePolicy":"${external_write_policy}","normalizations":[]}},"summary":{"status":{"feature_flags":{"observeFirstEnabled":${observe_first_enabled_json},"passiveStateDirectApply":${passive_state_direct_apply_json},"passiveConfigDirectApply":${passive_config_direct_apply_json},"externalWritePolicy":"${external_write_policy}","normalizations":[]}}}}
                     EOF
                       exit 0
                     fi
 
                     if [[ "${url}" == *"/graphql" ]]; then
                       if [[ "${data}" == *"busSummary"* ]]; then
-                        cat <<'EOF'
-                    {"data":{"busSummary":{"status":{"featureFlags":{"observeFirstEnabled":true}}},"watchSummary":{"inventory":{"totalEntries":1},"activationCounts":{"catalogDescriptors":1,"activeKeys":1,"sourceClasses":[]},"directApplyEligibilityClasses":[],"degraded":{"active":false,"shadowingEnabled":false,"pinnedBudgetDegraded":false,"compactorDegraded":false,"reasons":[]}}}}
+                        next_feature_flag_state
+                        cat <<EOF
+                    {"data":{"busSummary":{"status":{"featureFlags":{"observeFirstEnabled":${observe_first_enabled_json},"passiveStateDirectApply":${passive_state_direct_apply_json},"passiveConfigDirectApply":${passive_config_direct_apply_json},"externalWritePolicy":"${external_write_policy}","normalizations":[]}}},"watchSummary":{"inventory":{"totalEntries":1},"activationCounts":{"catalogDescriptors":1,"activeKeys":1,"sourceClasses":[]},"directApplyEligibilityClasses":[],"degraded":{"active":false,"shadowingEnabled":false,"pinnedBudgetDegraded":false,"compactorDegraded":false,"reasons":[]}}}}
                     EOF
                         exit 0
                       fi
@@ -1617,6 +1640,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     "FAKE_CANARY_STATUS": canary_status,
                     "FAKE_CANARY_PHASE_LOG": str(temp_path / "fake_canary_phase_log.txt"),
                     "FAKE_METRICS_STATE_FILE": str(temp_path / "fake_metrics_count.txt"),
+                    "FAKE_FEATURE_FLAGS_STATE_FILE": str(temp_path / "fake_feature_flags_count.txt"),
                     "PATH": f"{fake_bin}:{env.get('PATH', '')}",
                 }
             )
@@ -1640,6 +1664,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 verdict_path = proof_dir / "canary_verdict.json"
                 replay_behavior_path = proof_dir / "replay_behavior.json"
                 replay_verdict_path = proof_dir / "replay_falsification.json"
+                rollback_smoke_path = proof_dir / "rollback_smoke.json"
                 phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -1649,6 +1674,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     artifacts["replay_behavior"] = json.loads(replay_behavior_path.read_text(encoding="utf-8"))
                 if replay_verdict_path.exists():
                     artifacts["replay_verdict"] = json.loads(replay_verdict_path.read_text(encoding="utf-8"))
+                if rollback_smoke_path.exists():
+                    artifacts["rollback_smoke"] = json.loads(rollback_smoke_path.read_text(encoding="utf-8"))
                 if phase_log_path.exists():
                     artifacts["phase_log"] = [
                         line.strip()
@@ -1704,6 +1731,22 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertIsInstance(replay_verdict, dict)
         self.assertTrue(replay_verdict["ok"])
         self.assertEqual(replay_verdict["summary"]["behavior_artifact_ok"], True)
+
+    def test_smoke_emits_rollback_smoke_artifact_when_canary_verdict_is_good(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed("pass")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        rollback_smoke = artifacts.get("rollback_smoke")
+        self.assertIsInstance(rollback_smoke, dict)
+        self.assertTrue(rollback_smoke["ok"])
+        self.assertEqual(rollback_smoke["status"], "pass")
+        self.assertEqual(
+            rollback_smoke["rollback_outcome"]["post_matches_target"],
+            True,
+        )
+        self.assertEqual(
+            rollback_smoke["rollback_outcome"]["observed_transition"],
+            True,
+        )
 
     def test_smoke_holds_until_proof_window_end_and_requires_interval_phase(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(
@@ -1766,6 +1809,137 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("proof mode: failed to build canary summary", result.stderr)
+
+    def test_rollback_smoke_builder_fails_closed_on_missing_end_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_json(
+                proof_dir / "start_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:00+00:00",
+                    "graphql_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": True,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                    "bus_observability_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": True,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                },
+            )
+            artifact = verifier.build_rollback_smoke_artifact(proof_dir, "run-1")
+
+        self.assertEqual(artifact["status"], "fail")
+        self.assertFalse(artifact["ok"])
+        self.assertIn("missing feature flag snapshot", artifact["rollback_outcome"]["reason"])
+
+    def test_rollback_smoke_builder_fails_closed_on_post_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_json(
+                proof_dir / "start_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:00+00:00",
+                    "graphql_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": True,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                    "bus_observability_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": True,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                },
+            )
+            write_json(
+                proof_dir / "end_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:01+00:00",
+                    "graphql_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": True,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                    "bus_observability_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": True,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                },
+            )
+            artifact = verifier.build_rollback_smoke_artifact(proof_dir, "run-2")
+
+        self.assertEqual(artifact["status"], "fail")
+        self.assertFalse(artifact["ok"])
+        self.assertIn("rollback target", artifact["rollback_outcome"]["reason"])
+
+    def test_rollback_smoke_builder_passes_on_enabled_to_disabled_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_json(
+                proof_dir / "start_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:00+00:00",
+                    "graphql_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": True,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                    "bus_observability_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": True,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                },
+            )
+            write_json(
+                proof_dir / "end_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:01+00:00",
+                    "graphql_feature_flags": {
+                        "observeFirstEnabled": False,
+                        "passiveStateDirectApply": False,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                    "bus_observability_feature_flags": {
+                        "observeFirstEnabled": False,
+                        "passiveStateDirectApply": False,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": [],
+                    },
+                },
+            )
+            artifact = verifier.build_rollback_smoke_artifact(proof_dir, "run-3")
+
+        self.assertEqual(artifact["schema"], verifier.ROLLBACK_SMOKE_ARTIFACT_SCHEMA)
+        self.assertTrue(artifact["ok"])
+        self.assertEqual(artifact["status"], "pass")
+        self.assertEqual(artifact["rollback_outcome"]["reason"], "ok")
+        self.assertTrue(artifact["rollback_outcome"]["pre_matches_target"] is False)
+        self.assertTrue(artifact["rollback_outcome"]["post_matches_target"] is True)
+        self.assertTrue(artifact["rollback_outcome"]["observed_transition"] is True)
 
     def test_smoke_defers_start_canary_until_bus_startup_phase_is_live_ready(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

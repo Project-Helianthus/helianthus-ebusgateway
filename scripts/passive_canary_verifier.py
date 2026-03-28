@@ -37,6 +37,14 @@ PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC = "ebus_passive_completed_transaction
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_apply_candidates_evaluated_total"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA = 100.0
+ROLLBACK_SMOKE_ARTIFACT_SCHEMA = "gw15_rollback_smoke_v1"
+ROLLBACK_TARGET_FEATURE_FLAGS = {
+    "observeFirstEnabled": False,
+    "passiveStateDirectApply": False,
+    "passiveConfigDirectApply": False,
+    "externalWritePolicy": "record_only",
+    "normalizations": [],
+}
 REPLAY_EXPECTED_DISPOSITIONS = {"ambiguity", "falsification"}
 PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)$")
 
@@ -662,6 +670,140 @@ def evaluate_proof_window_traffic_minimums(payload: Any) -> Tuple[bool, str, Dic
             "direct_apply_candidates_evaluated_minimum": PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA,
         },
     )
+
+
+def canonicalize_feature_flag_state(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError(f"feature flag state must be object, got {type(payload).__name__}")
+
+    observe_first_enabled = payload.get("observeFirstEnabled")
+    passive_state_direct_apply = payload.get("passiveStateDirectApply")
+    passive_config_direct_apply = payload.get("passiveConfigDirectApply")
+    external_write_policy = payload.get("externalWritePolicy")
+    if not isinstance(observe_first_enabled, bool):
+        raise ValueError("feature flag state missing boolean observeFirstEnabled")
+    if not isinstance(passive_state_direct_apply, bool):
+        raise ValueError("feature flag state missing boolean passiveStateDirectApply")
+    if not isinstance(passive_config_direct_apply, bool):
+        raise ValueError("feature flag state missing boolean passiveConfigDirectApply")
+    if not isinstance(external_write_policy, str) or not external_write_policy.strip():
+        raise ValueError("feature flag state missing externalWritePolicy")
+
+    normalizations_raw = payload.get("normalizations")
+    normalizations: List[str] = []
+    if normalizations_raw is not None:
+        if not isinstance(normalizations_raw, list):
+            raise ValueError("feature flag state normalizations must be array")
+        for item in normalizations_raw:
+            text = str(item).strip()
+            if text:
+                normalizations.append(text)
+
+    return {
+        "observeFirstEnabled": observe_first_enabled,
+        "passiveStateDirectApply": passive_state_direct_apply,
+        "passiveConfigDirectApply": passive_config_direct_apply,
+        "externalWritePolicy": external_write_policy.strip(),
+        "normalizations": normalizations,
+    }
+
+
+def feature_flag_state_matches_target(state: Dict[str, Any], target: Dict[str, Any]) -> bool:
+    for key in (
+        "observeFirstEnabled",
+        "passiveStateDirectApply",
+        "passiveConfigDirectApply",
+        "externalWritePolicy",
+    ):
+        if state.get(key) != target.get(key):
+            return False
+    actual_normalizations = state.get("normalizations") or []
+    target_normalizations = target.get("normalizations") or []
+    return list(actual_normalizations) == list(target_normalizations)
+
+
+def load_feature_flag_snapshot(path: pathlib.Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise ValueError(f"missing feature flag snapshot: {path}")
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"feature flag snapshot must be object: {path}")
+
+    graphql_raw = payload.get("graphql_feature_flags")
+    bus_raw = payload.get("bus_observability_feature_flags")
+    graphql_state = canonicalize_feature_flag_state(graphql_raw)
+    bus_state = canonicalize_feature_flag_state(bus_raw)
+    return {
+        "captured_at": str(payload.get("captured_at", "")).strip(),
+        "snapshot_path": str(path),
+        "graphql_feature_flags": graphql_state,
+        "bus_observability_feature_flags": bus_state,
+        "source_consensus": graphql_state == bus_state,
+    }
+
+
+def build_rollback_smoke_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict[str, Any]:
+    start_snapshot_path = proof_dir / "start_feature_flags.json"
+    end_snapshot_path = proof_dir / "end_feature_flags.json"
+    target_state = dict(ROLLBACK_TARGET_FEATURE_FLAGS)
+    issues: List[str] = []
+
+    pre_snapshot: Dict[str, Any] | None = None
+    post_snapshot: Dict[str, Any] | None = None
+    try:
+        pre_snapshot = load_feature_flag_snapshot(start_snapshot_path)
+    except Exception as exc:  # noqa: BLE001 - fail closed with reason.
+        issues.append(str(exc))
+    try:
+        post_snapshot = load_feature_flag_snapshot(end_snapshot_path)
+    except Exception as exc:  # noqa: BLE001 - fail closed with reason.
+        issues.append(str(exc))
+
+    pre_selected = None
+    post_selected = None
+    pre_matches_target = False
+    post_matches_target = False
+    observed_transition = False
+    if pre_snapshot is not None:
+        pre_selected = pre_snapshot["graphql_feature_flags"]
+        pre_matches_target = feature_flag_state_matches_target(pre_selected, target_state)
+        if not pre_snapshot["source_consensus"]:
+            issues.append("pre-rollback feature flag sources diverged")
+    if post_snapshot is not None:
+        post_selected = post_snapshot["graphql_feature_flags"]
+        post_matches_target = feature_flag_state_matches_target(post_selected, target_state)
+        if not post_snapshot["source_consensus"]:
+            issues.append("post-rollback feature flag sources diverged")
+    if pre_selected is not None and post_selected is not None:
+        observed_transition = pre_selected != post_selected
+        if not observed_transition:
+            issues.append("rollback smoke did not observe a feature-flag change")
+    if pre_snapshot is not None and pre_matches_target:
+        issues.append("pre-rollback feature flags already match rollback target")
+    if post_snapshot is not None and not post_matches_target:
+        issues.append("post-rollback feature flags do not match rollback target")
+
+    ok = len(issues) == 0
+    reason = "ok" if ok else "; ".join(issues)
+    artifact = {
+        "schema": ROLLBACK_SMOKE_ARTIFACT_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": run_id,
+        "pre_rollback_feature_flags": pre_snapshot,
+        "rollback_target_state": target_state,
+        "post_rollback_feature_flags": post_snapshot,
+        "rollback_outcome": {
+            "status": "pass" if ok else "fail",
+            "reason": reason,
+            "pre_matches_target": pre_matches_target,
+            "post_matches_target": post_matches_target,
+            "observed_transition": observed_transition,
+            "fail_closed": not ok,
+        },
+        "ok": ok,
+        "status": "pass" if ok else "fail",
+    }
+    return artifact
 
 
 def load_replay_behavior_artifact(path: pathlib.Path) -> Dict[str, Any]:
@@ -1379,6 +1521,13 @@ def replay_verdict_command(args: argparse.Namespace) -> int:
     return 0 if bool(verdict.get("ok", False)) else 1
 
 
+def rollback_smoke_command(args: argparse.Namespace) -> int:
+    proof_dir = pathlib.Path(args.proof_dir)
+    artifact = build_rollback_smoke_artifact(proof_dir, str(args.run_id).strip())
+    write_json(pathlib.Path(args.output), artifact)
+    return 0 if bool(artifact.get("ok", False)) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1421,6 +1570,15 @@ def build_parser() -> argparse.ArgumentParser:
     replay_verdict.add_argument("--behavior-artifact", default=None)
     replay_verdict.add_argument("--output", required=True)
     replay_verdict.set_defaults(func=replay_verdict_command)
+
+    rollback_smoke = sub.add_parser(
+        "rollback-smoke",
+        help="build rollback smoke artifact from feature-flag snapshots",
+    )
+    rollback_smoke.add_argument("--proof-dir", required=True)
+    rollback_smoke.add_argument("--run-id", required=True)
+    rollback_smoke.add_argument("--output", required=True)
+    rollback_smoke.set_defaults(func=rollback_smoke_command)
     return parser
 
 

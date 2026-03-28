@@ -1116,6 +1116,44 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             self.assertEqual(feature_flags["evidence"]["phases"], ["start", "sample_0001", "end"])
             self.assertEqual(len(feature_flags["snapshots"]), 3)
 
+    def test_summary_accepts_omitted_normalizations_as_canonical_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=2,
+                end_direct_apply=2,
+                end_avoided=3,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            write_json(
+                proof_dir / "start_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:00+00:00",
+                    "graphql_feature_flags": canonical_feature_flags(),
+                    "bus_observability_feature_flags": canonical_feature_flags(),
+                },
+            )
+            write_json(
+                proof_dir / "end_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:00+00:00",
+                    "graphql_feature_flags": canonical_feature_flags(),
+                    "bus_observability_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": False,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                    },
+                },
+            )
+
+            summary = verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            feature_flags = summary["feature_flag_consistency"]
+            self.assertTrue(feature_flags["ok"])
+            self.assertEqual(feature_flags["snapshots"][1]["bus_observability_feature_flags"]["normalizations"], [])
+
 
 class CanaryVerdictTests(unittest.TestCase):
     def build_summary_payload(
@@ -1767,7 +1805,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         fi
                       fi
                       cat <<EOF
-                    {"summary":{"status":{"startup":{"phase":"${phase}"},"feature_flags":{"observe_first_enabled":true,"passive_state_direct_apply":false,"passive_config_direct_apply":false,"external_write_policy":"record_only","normalizations":[]}}}}
+                    {"summary":{"status":{"startup":{"phase":"${phase}"},"feature_flags":{"observe_first_enabled":true,"passive_state_direct_apply":false,"passive_config_direct_apply":false,"external_write_policy":"record_only"}}}}
                     EOF
                       exit 0
                     fi

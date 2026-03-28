@@ -51,6 +51,9 @@ FEATURE_FLAG_FIELD_ALIASES = {
     "externalWritePolicy": ("externalWritePolicy", "external_write_policy"),
     "normalizations": ("normalizations",),
 }
+FEATURE_FLAG_FIELD_DEFAULTS = {
+    "normalizations": [],
+}
 FEATURE_FLAG_CONSISTENCY_SCHEMA = "p03_feature_flag_consistency_v1"
 REPLAY_EXPECTED_DISPOSITIONS = {"ambiguity", "falsification"}
 PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)$")
@@ -399,9 +402,15 @@ def normalize_feature_flag_state(raw: Any, snapshot_path: pathlib.Path, source_n
                 present_name = candidate
                 break
         if present_name is None:
+            if field in FEATURE_FLAG_FIELD_DEFAULTS:
+                state[field] = canonicalize_json_value(FEATURE_FLAG_FIELD_DEFAULTS[field])
+                continue
             raise ValueError(f"{snapshot_path}: {source_name} feature flags missing {field}")
         value = raw[present_name]
         if value is None:
+            if field in FEATURE_FLAG_FIELD_DEFAULTS:
+                state[field] = canonicalize_json_value(FEATURE_FLAG_FIELD_DEFAULTS[field])
+                continue
             raise ValueError(f"{snapshot_path}: {source_name} feature flags field {field!r} is null")
         state[field] = canonicalize_json_value(value)
     return state

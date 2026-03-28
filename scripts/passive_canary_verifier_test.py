@@ -2333,6 +2333,55 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
             self.assertFalse(artifact["ok"])
             self.assertEqual(artifact["eligibility"]["status"], "not_proven")
 
+    def test_family_proof_eligibility_rejects_incomplete_transport_class_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            end_graphql_path = proof_dir / "end_graphql_bus_watch.json"
+            payload = verifier.load_json(end_graphql_path)
+            payload["data"]["busSummary"]["status"].pop("transportClass", None)
+            write_json(end_graphql_path, payload)
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("incomplete transport class", artifact["eligibility"]["reason"])
+
+    def test_family_eligibility_command_blocks_corrupt_out_of_scope_family(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "family_proof_eligibility.json"
+            write_family_proof_artifacts(proof_dir, transport_class="tcp")
+            (proof_dir / "canary_verdict.json").unlink()
+            exit_code = verifier.family_eligibility_command(
+                argparse.Namespace(
+                    proof_dir=str(proof_dir),
+                    run_id="run-1",
+                    case_id="P03",
+                    kind="proxy-dual-client",
+                    passive_mode="optional",
+                    gateway_transport="tcp",
+                    proxy_transport="tcp",
+                    ebusd_transport="ebusd-tcp",
+                    output=str(output_path),
+                )
+            )
+            artifact = verifier.load_json(output_path)
+
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("missing canary verdict artifact", artifact["eligibility"]["reason"])
+
 
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(

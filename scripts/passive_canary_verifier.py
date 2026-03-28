@@ -972,14 +972,21 @@ def build_family_proof_eligibility_artifact_for_run(
         start_transport_class = str(start_snapshot.get("transport_class", "")).strip().lower()
     if isinstance(end_snapshot, dict):
         end_transport_class = str(end_snapshot.get("transport_class", "")).strip().lower()
+    transport_class = ""
     if start_transport_class == "" and end_transport_class == "":
         reasons.append("missing transport class in structured warmup snapshots")
-    elif start_transport_class != "" and end_transport_class != "" and start_transport_class != end_transport_class:
+    elif start_transport_class == "" or end_transport_class == "":
+        reasons.append(
+            "incomplete transport class across structured warmup snapshots: "
+            f"start={start_transport_class!r} end={end_transport_class!r}"
+        )
+    elif start_transport_class != end_transport_class:
         reasons.append(
             "ambiguous transport class across structured warmup snapshots: "
             f"start={start_transport_class!r} end={end_transport_class!r}"
         )
-    transport_class = start_transport_class or end_transport_class
+    else:
+        transport_class = start_transport_class
 
     if isinstance(start_snapshot, dict):
         if start_snapshot.get("startup_phase") == "LIVE_READY":
@@ -1009,9 +1016,11 @@ def build_family_proof_eligibility_artifact_for_run(
         reason.startswith("ambiguous transport class across structured warmup snapshots:")
         for reason in reasons
     )
+    family_scope_mismatch = False
     if family_identity_missing or family_identity_ambiguous:
         status = "blocked"
     elif not is_p03_family:
+        family_scope_mismatch = True
         status = "not_proven"
         reasons.append(
             f"family scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r} "
@@ -1020,7 +1029,7 @@ def build_family_proof_eligibility_artifact_for_run(
 
     if len(reasons) == 0:
         status = "proven_for_default_flip"
-    elif status != "not_proven":
+    elif not (family_scope_mismatch and len(reasons) == 1):
         status = "blocked"
 
     artifact = {

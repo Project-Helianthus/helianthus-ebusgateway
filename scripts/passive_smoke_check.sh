@@ -474,9 +474,12 @@ build_replay_falsification_verdict() {
 }
 
 build_rollback_smoke_artifact() {
-  cat > "${rollback_smoke_action_path}" <<EOF
-{"schema":"gw15_rollback_smoke_action_v1","captured_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","run_id":"${canary_run_id}","action":"rollback_smoke_attempted","status":"attempted","source":"passive_smoke_check.sh"}
-EOF
+  if ! python3 "${canary_verifier_script}" rollback-smoke-result \
+    --proof-dir "${proof_dir}" \
+    --run-id "${canary_run_id}" \
+    --output "${rollback_smoke_action_path}"; then
+    return 1
+  fi
   local status=0
   if python3 "${canary_verifier_script}" rollback-smoke \
     --proof-dir "${proof_dir}" \

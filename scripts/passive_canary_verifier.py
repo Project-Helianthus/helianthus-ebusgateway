@@ -38,7 +38,7 @@ PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_app
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_MIN_DELTA = 100.0
 ROLLBACK_SMOKE_ARTIFACT_SCHEMA = "gw15_rollback_smoke_v1"
-ROLLBACK_SMOKE_ACTION_MARKER_SCHEMA = "gw15_rollback_smoke_action_v1"
+ROLLBACK_SMOKE_RESULT_PRIMITIVE_SCHEMA = "gw15_rollback_smoke_result_v1"
 ROLLBACK_TARGET_FEATURE_FLAGS = {
     "observeFirstEnabled": False,
     "passiveStateDirectApply": False,
@@ -743,34 +743,15 @@ def load_feature_flag_snapshot(path: pathlib.Path) -> Dict[str, Any]:
     }
 
 
-def load_rollback_smoke_action_marker(path: pathlib.Path, run_id: str) -> Dict[str, Any]:
-    if not path.exists():
-        raise ValueError(f"missing rollback smoke action marker: {path}")
-    payload = load_json(path)
-    if not isinstance(payload, dict):
-        raise ValueError(f"rollback smoke action marker must be object: {path}")
-    if str(payload.get("schema", "")).strip() != ROLLBACK_SMOKE_ACTION_MARKER_SCHEMA:
-        raise ValueError(f"rollback smoke action marker schema mismatch: {path}")
-    if str(payload.get("run_id", "")).strip() != run_id:
-        raise ValueError(f"rollback smoke action marker run_id mismatch: {path}")
-    if str(payload.get("action", "")).strip() != "rollback_smoke_attempted":
-        raise ValueError(f"rollback smoke action marker action mismatch: {path}")
-    if str(payload.get("status", "")).strip() != "attempted":
-        raise ValueError(f"rollback smoke action marker status mismatch: {path}")
-    return payload
-
-
-def build_rollback_smoke_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict[str, Any]:
+def evaluate_rollback_smoke_state(proof_dir: pathlib.Path, run_id: str) -> Dict[str, Any]:
     start_snapshot_path = proof_dir / "start_feature_flags.json"
     end_snapshot_path = proof_dir / "end_feature_flags.json"
-    action_marker_path = proof_dir / "rollback_smoke_action.json"
     canary_verdict_path = proof_dir / "canary_verdict.json"
     target_state = dict(ROLLBACK_TARGET_FEATURE_FLAGS)
     issues: List[str] = []
 
     pre_snapshot: Dict[str, Any] | None = None
     post_snapshot: Dict[str, Any] | None = None
-    action_marker: Dict[str, Any] | None = None
     canary_verdict: Dict[str, Any] | None = None
     try:
         pre_snapshot = load_feature_flag_snapshot(start_snapshot_path)
@@ -778,10 +759,6 @@ def build_rollback_smoke_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict[
         issues.append(str(exc))
     try:
         post_snapshot = load_feature_flag_snapshot(end_snapshot_path)
-    except Exception as exc:  # noqa: BLE001 - fail closed with reason.
-        issues.append(str(exc))
-    try:
-        action_marker = load_rollback_smoke_action_marker(action_marker_path, run_id)
     except Exception as exc:  # noqa: BLE001 - fail closed with reason.
         issues.append(str(exc))
     try:
@@ -821,38 +798,125 @@ def build_rollback_smoke_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict[
 
     ok = len(issues) == 0
     reason = "ok" if ok else "; ".join(issues)
+    return {
+        "target_state": target_state,
+        "pre_snapshot": pre_snapshot,
+        "post_snapshot": post_snapshot,
+        "canary_verdict": canary_verdict,
+        "pre_matches_target": pre_matches_target,
+        "post_matches_target": post_matches_target,
+        "observed_transition": observed_transition,
+        "ok": ok,
+        "reason": reason,
+        "issues": issues,
+    }
+
+
+def load_rollback_smoke_result_primitive(path: pathlib.Path, run_id: str) -> Dict[str, Any]:
+    if not path.exists():
+        raise ValueError(f"missing rollback smoke result primitive: {path}")
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"rollback smoke result primitive must be object: {path}")
+    if str(payload.get("schema", "")).strip() != ROLLBACK_SMOKE_RESULT_PRIMITIVE_SCHEMA:
+        raise ValueError(f"rollback smoke result primitive schema mismatch: {path}")
+    if str(payload.get("run_id", "")).strip() != run_id:
+        raise ValueError(f"rollback smoke result primitive run_id mismatch: {path}")
+    if str(payload.get("status", "")).strip() not in {"pass", "fail"}:
+        raise ValueError(f"rollback smoke result primitive status mismatch: {path}")
+    if not isinstance(payload.get("pre_matches_target"), bool):
+        raise ValueError(f"rollback smoke result primitive missing pre_matches_target: {path}")
+    if not isinstance(payload.get("post_matches_target"), bool):
+        raise ValueError(f"rollback smoke result primitive missing post_matches_target: {path}")
+    if not isinstance(payload.get("observed_transition"), bool):
+        raise ValueError(f"rollback smoke result primitive missing observed_transition: {path}")
+    return payload
+
+
+def build_rollback_smoke_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict[str, Any]:
+    result_primitive_path = proof_dir / "rollback_smoke_action.json"
+    state = evaluate_rollback_smoke_state(proof_dir, run_id)
+    issues: List[str] = list(state["issues"])
+    result_primitive: Dict[str, Any] | None = None
+
+    try:
+        result_primitive = load_rollback_smoke_result_primitive(result_primitive_path, run_id)
+    except Exception as exc:  # noqa: BLE001 - fail closed with reason.
+        issues.append(str(exc))
+
+    canary_status = "missing"
+    if isinstance(state["canary_verdict"], dict):
+        canary_status = str(state["canary_verdict"].get("status", "")).strip() or "missing"
+
+    if not issues:
+        expected_status = "pass" if state["ok"] else "fail"
+        if result_primitive["status"] != expected_status:
+            issues.append("rollback smoke result primitive status mismatch")
+        if result_primitive["reason"] != state["reason"]:
+            issues.append("rollback smoke result primitive reason mismatch")
+        if result_primitive["pre_matches_target"] != state["pre_matches_target"]:
+            issues.append("rollback smoke result primitive pre_matches_target mismatch")
+        if result_primitive["post_matches_target"] != state["post_matches_target"]:
+            issues.append("rollback smoke result primitive post_matches_target mismatch")
+        if result_primitive["observed_transition"] != state["observed_transition"]:
+            issues.append("rollback smoke result primitive observed_transition mismatch")
+        if str(result_primitive.get("canary_status", "")).strip() != canary_status:
+            issues.append("rollback smoke result primitive canary_status mismatch")
+
+    ok = len(issues) == 0
+    reason = "ok" if ok else "; ".join(issues)
     artifact = {
         "schema": ROLLBACK_SMOKE_ARTIFACT_SCHEMA,
         "captured_at": utc_now(),
         "run_id": run_id,
-        "rollback_action_marker": action_marker,
-        "upstream_canary_verdict": canary_verdict,
-        "pre_rollback_feature_flags": pre_snapshot,
-        "rollback_target_state": target_state,
-        "post_rollback_feature_flags": post_snapshot,
+        "rollback_result_primitive": result_primitive,
+        "upstream_canary_verdict": state["canary_verdict"],
+        "pre_rollback_feature_flags": state["pre_snapshot"],
+        "rollback_target_state": state["target_state"],
+        "post_rollback_feature_flags": state["post_snapshot"],
         "rollback_execution": {
-            "action": action_marker,
+            "result_primitive": result_primitive,
             "result": {
                 "status": "pass" if ok else "fail",
                 "reason": reason,
-                "pre_matches_target": pre_matches_target,
-                "post_matches_target": post_matches_target,
-                "observed_transition": observed_transition,
+                "pre_matches_target": state["pre_matches_target"],
+                "post_matches_target": state["post_matches_target"],
+                "observed_transition": state["observed_transition"],
                 "fail_closed": not ok,
             },
         },
         "rollback_outcome": {
             "status": "pass" if ok else "fail",
             "reason": reason,
-            "pre_matches_target": pre_matches_target,
-            "post_matches_target": post_matches_target,
-            "observed_transition": observed_transition,
+            "pre_matches_target": state["pre_matches_target"],
+            "post_matches_target": state["post_matches_target"],
+            "observed_transition": state["observed_transition"],
             "fail_closed": not ok,
         },
         "ok": ok,
         "status": "pass" if ok else "fail",
     }
     return artifact
+
+
+def build_rollback_smoke_result_primitive(proof_dir: pathlib.Path, run_id: str) -> Dict[str, Any]:
+    state = evaluate_rollback_smoke_state(proof_dir, run_id)
+    canary_status = "missing"
+    if isinstance(state["canary_verdict"], dict):
+        canary_status = str(state["canary_verdict"].get("status", "")).strip() or "missing"
+    return {
+        "schema": ROLLBACK_SMOKE_RESULT_PRIMITIVE_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": run_id,
+        "source": "passive_smoke_check.sh",
+        "status": "pass" if state["ok"] else "fail",
+        "reason": state["reason"],
+        "canary_status": canary_status,
+        "pre_matches_target": state["pre_matches_target"],
+        "post_matches_target": state["post_matches_target"],
+        "observed_transition": state["observed_transition"],
+        "fail_closed": not state["ok"],
+    }
 
 
 def load_replay_behavior_artifact(path: pathlib.Path) -> Dict[str, Any]:
@@ -1577,6 +1641,13 @@ def rollback_smoke_command(args: argparse.Namespace) -> int:
     return 0 if bool(artifact.get("ok", False)) else 1
 
 
+def rollback_smoke_result_command(args: argparse.Namespace) -> int:
+    proof_dir = pathlib.Path(args.proof_dir)
+    primitive = build_rollback_smoke_result_primitive(proof_dir, str(args.run_id).strip())
+    write_json(pathlib.Path(args.output), primitive)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1628,6 +1699,15 @@ def build_parser() -> argparse.ArgumentParser:
     rollback_smoke.add_argument("--run-id", required=True)
     rollback_smoke.add_argument("--output", required=True)
     rollback_smoke.set_defaults(func=rollback_smoke_command)
+
+    rollback_smoke_result = sub.add_parser(
+        "rollback-smoke-result",
+        help="build rollback smoke result primitive from feature-flag snapshots",
+    )
+    rollback_smoke_result.add_argument("--proof-dir", required=True)
+    rollback_smoke_result.add_argument("--run-id", required=True)
+    rollback_smoke_result.add_argument("--output", required=True)
+    rollback_smoke_result.set_defaults(func=rollback_smoke_result_command)
     return parser
 
 

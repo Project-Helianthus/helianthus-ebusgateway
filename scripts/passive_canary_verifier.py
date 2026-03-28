@@ -56,6 +56,12 @@ FEATURE_FLAG_FIELD_ALIASES = {
 FEATURE_FLAG_CONSISTENCY_SCHEMA = "p03_feature_flag_consistency_v1"
 REPLAY_EXPECTED_DISPOSITIONS = {"ambiguity", "falsification"}
 PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)$")
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+CANONICAL_FAMILY_PROOF_CASE_ID = "P03"
+CANONICAL_P03_CANARY_MANIFEST_PATH = REPO_ROOT / "testdata" / "passive_proof" / "p03_canary_manifest.json"
+CANONICAL_REPLAY_CORPUS_PATH = REPO_ROOT / "testdata" / "observe_first_replay_cases.json"
+_CANONICAL_FAMILY_PROOF_CANARY_IDS: Tuple[str, ...] | None = None
+_CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES: Tuple[str, ...] | None = None
 
 
 def utc_now() -> str:
@@ -216,6 +222,81 @@ def load_and_validate_manifest(path: pathlib.Path, require_case_id: str | None =
             raise ValueError(f"manifest {family} canaries={got}; want >= {minimum}")
 
     return payload, canaries
+
+
+def extract_locked_replay_case_names(corpus: Any, source_path: pathlib.Path) -> Tuple[Tuple[str, ...], str]:
+    if not isinstance(corpus, dict):
+        return tuple(), f"{source_path}: replay corpus must be a JSON object"
+    cases = corpus.get("cases")
+    if not isinstance(cases, list):
+        return tuple(), f"{source_path}: replay corpus missing cases array"
+
+    names: List[str] = []
+    seen_names: set[str] = set()
+    for index, raw_case in enumerate(cases):
+        if not isinstance(raw_case, dict):
+            return tuple(), f"{source_path}: replay case[{index}] must be object"
+        expected = raw_case.get("replay_expected")
+        if expected is None:
+            continue
+        if not isinstance(expected, dict):
+            return tuple(), f"{source_path}: replay case[{index}] replay_expected contract must be an object"
+        name = str(raw_case.get("name", "")).strip()
+        if name == "":
+            return tuple(), f"{source_path}: replay case[{index}] missing name"
+        if name in seen_names:
+            return tuple(), f"{source_path}: replay case[{index}] duplicate replay case name {name!r}"
+        seen_names.add(name)
+        names.append(name)
+
+    if len(names) == 0:
+        return tuple(), f"{source_path}: canonical replay proof-set has no locked replay cases"
+    return tuple(sorted(names)), ""
+
+
+def load_canonical_family_proof_canary_ids() -> Tuple[Tuple[str, ...], str]:
+    global _CANONICAL_FAMILY_PROOF_CANARY_IDS
+
+    if _CANONICAL_FAMILY_PROOF_CANARY_IDS is not None:
+        return _CANONICAL_FAMILY_PROOF_CANARY_IDS, ""
+    try:
+        _, canaries = load_and_validate_manifest(
+            CANONICAL_P03_CANARY_MANIFEST_PATH,
+            require_case_id=CANONICAL_FAMILY_PROOF_CASE_ID,
+        )
+    except Exception as exc:
+        return tuple(), (
+            f"unable to load canonical canary proof-set from {CANONICAL_P03_CANARY_MANIFEST_PATH}: {exc}"
+        )
+    canary_ids = tuple(sorted(item.canary_id for item in canaries))
+    if len(canary_ids) == 0:
+        return tuple(), (
+            f"unable to load canonical canary proof-set from {CANONICAL_P03_CANARY_MANIFEST_PATH}: "
+            "empty canary set"
+        )
+    _CANONICAL_FAMILY_PROOF_CANARY_IDS = canary_ids
+    return _CANONICAL_FAMILY_PROOF_CANARY_IDS, ""
+
+
+def load_canonical_family_proof_replay_case_names() -> Tuple[Tuple[str, ...], str]:
+    global _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES
+
+    if _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES is not None:
+        return _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES, ""
+    try:
+        corpus = load_json(CANONICAL_REPLAY_CORPUS_PATH)
+    except Exception as exc:
+        return tuple(), (
+            f"unable to load canonical replay proof-set from {CANONICAL_REPLAY_CORPUS_PATH}: {exc}"
+        )
+    replay_case_names, replay_case_names_error = extract_locked_replay_case_names(
+        corpus,
+        CANONICAL_REPLAY_CORPUS_PATH,
+    )
+    if replay_case_names_error:
+        return tuple(), replay_case_names_error
+    _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES = replay_case_names
+    return _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES, ""
 
 
 def normalize_retries(raw: int) -> int:
@@ -1120,6 +1201,25 @@ def validate_family_upstream_canary_verdict(payload: Any, path: pathlib.Path) ->
             f"canaries_evaluated={canaries_evaluated} "
             f"(per_canary_entries={len(per_canary)})"
         )
+    canonical_canary_ids, canonical_canary_ids_error = load_canonical_family_proof_canary_ids()
+    if canonical_canary_ids_error != "":
+        return False, f"{path}: {canonical_canary_ids_error}"
+    canonical_canary_id_set = set(canonical_canary_ids)
+    missing_canary_ids = [canary_id for canary_id in canonical_canary_ids if canary_id not in per_canary]
+    unexpected_canary_ids = sorted(
+        [canary_id for canary_id in per_canary.keys() if canary_id not in canonical_canary_id_set]
+    )
+    if missing_canary_ids or unexpected_canary_ids:
+        return False, (
+            f"{path}: canary verdict canonical proof-set canary coverage mismatch: "
+            f"missing={missing_canary_ids or []} unexpected={unexpected_canary_ids or []}"
+        )
+    if canaries_evaluated != len(canonical_canary_ids):
+        return False, (
+            f"{path}: canary verdict canonical proof-set canary count mismatch: "
+            f"canaries_evaluated={canaries_evaluated} "
+            f"canonical_canaries={len(canonical_canary_ids)}"
+        )
     derived_failing_canaries: List[str] = []
     for canary_id, canary_payload in per_canary.items():
         if not isinstance(canary_id, str) or canary_id.strip() == "":
@@ -1464,6 +1564,35 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
             case_locked_count += 1
         else:
             case_informational_count += 1
+
+    canonical_replay_case_names, canonical_replay_case_names_error = (
+        load_canonical_family_proof_replay_case_names()
+    )
+    if canonical_replay_case_names_error != "":
+        return False, f"{path}: {canonical_replay_case_names_error}"
+    canonical_replay_case_name_set = set(canonical_replay_case_names)
+    missing_replay_case_names = [name for name in canonical_replay_case_names if name not in case_names]
+    unexpected_replay_case_names = sorted(
+        [name for name in case_names if name not in canonical_replay_case_name_set]
+    )
+    if missing_replay_case_names or unexpected_replay_case_names:
+        return False, (
+            f"{path}: replay falsification verdict canonical proof-set case coverage mismatch: "
+            f"missing={missing_replay_case_names or []} unexpected={unexpected_replay_case_names or []}"
+        )
+    canonical_locked_case_total = len(canonical_replay_case_names)
+    if summary_total_cases != canonical_locked_case_total:
+        return False, (
+            f"{path}: replay falsification verdict canonical proof-set case count mismatch: "
+            f"summary.total_cases={summary_total_cases} "
+            f"canonical_locked_cases={canonical_locked_case_total}"
+        )
+    if summary_locked_cases != canonical_locked_case_total:
+        return False, (
+            f"{path}: replay falsification verdict canonical proof-set locked case count mismatch: "
+            f"summary.locked_cases={summary_locked_cases} "
+            f"canonical_locked_cases={canonical_locked_case_total}"
+        )
 
     if summary_total_cases != len(cases):
         return False, (

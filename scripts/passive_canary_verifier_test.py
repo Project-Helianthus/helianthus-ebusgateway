@@ -45,6 +45,14 @@ def canonical_feature_flags(
     }
 
 
+def canonical_family_proof_canary_ids() -> list[str]:
+    _, canaries = verifier.load_and_validate_manifest(
+        SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json",
+        "P03",
+    )
+    return [item.canary_id for item in canaries]
+
+
 def write_replay_behavior_artifact(proof_dir: pathlib.Path) -> dict:
     artifact = {
         "schema": "observe_first_replay_behavior_v1",
@@ -212,12 +220,17 @@ def write_family_proof_artifacts(
     )
 
     summary_builder = CanaryVerdictTests("runTest")
+    canary_ids = canonical_family_proof_canary_ids()
+    per_canary_interval = {
+        canary_id: {"pass": 9, "mismatch": 0, "inconclusive": 1, "conclusive": 9}
+        for canary_id in canary_ids
+    }
     summary = summary_builder.build_summary_payload(
         mismatch_count=0,
         interval_required=True,
-        interval_results=10,
-        interval_conclusive=9,
-        per_canary_interval={"a": {"pass": 9, "mismatch": 0, "inconclusive": 1, "conclusive": 9}},
+        interval_results=10 * len(canary_ids),
+        interval_conclusive=9 * len(canary_ids),
+        per_canary_interval=per_canary_interval,
         transport_class=transport_class,
     )
     verdict = verifier.build_canary_verdict(summary)
@@ -2473,6 +2486,33 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertIn("invalid canary verdict artifact", artifact["eligibility"]["reason"])
         self.assertIn("missing canonical criteria gates", artifact["eligibility"]["reason"])
 
+    def test_family_proof_eligibility_blocks_schema_valid_single_canary_subset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            canary_path = proof_dir / "canary_verdict.json"
+            payload = verifier.load_json(canary_path)
+            keep_id = sorted(payload["per_canary"].keys())[0]
+            payload["per_canary"] = {keep_id: payload["per_canary"][keep_id]}
+            payload["criteria"]["per_canary_interval_conclusive_rate"]["canaries_evaluated"] = 1
+            payload["criteria"]["per_canary_interval_conclusive_rate"]["failing_canaries"] = []
+            write_json(canary_path, payload)
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("invalid canary verdict artifact", artifact["eligibility"]["reason"])
+        self.assertIn("canonical proof-set canary coverage mismatch", artifact["eligibility"]["reason"])
+
     def test_family_proof_eligibility_blocks_schema_valid_but_zero_evidence_canary_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
@@ -2721,6 +2761,37 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
         self.assertIn("contradictory summary pass/fail lock accounting", artifact["eligibility"]["reason"])
 
+    def test_family_proof_eligibility_blocks_schema_valid_single_replay_case_subset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            replay_path = proof_dir / "replay_falsification.json"
+            payload = verifier.load_json(replay_path)
+            payload["cases"] = [payload["cases"][0]]
+            payload["summary"]["total_cases"] = 1
+            payload["summary"]["locked_cases"] = 1
+            payload["summary"]["pass"] = 1
+            payload["summary"]["fail"] = 0
+            payload["summary"]["informational"] = 0
+            payload["ok"] = True
+            payload["status"] = "pass"
+            write_json(replay_path, payload)
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
+        self.assertIn("canonical proof-set case coverage mismatch", artifact["eligibility"]["reason"])
+
     def test_family_eligibility_command_blocks_out_of_scope_family_with_malformed_replay_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
@@ -2816,6 +2887,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             fake_bin.mkdir(parents=True, exist_ok=True)
             log_dir = temp_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
+            canonical_canary_ids_literal = json.dumps(canonical_family_proof_canary_ids())
 
             fake_python = fake_bin / "python3"
             fake_python.write_text(
@@ -2870,27 +2942,33 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         "        import time",
                         "        time.sleep(int(os.environ['FAKE_CANARY_END_DELAY_SEC']))",
                         "",
+                        f"    canary_ids = {canonical_canary_ids_literal}",
                         "    status = os.environ.get('FAKE_CANARY_STATUS', 'pass')",
-                        "    pass_count = 1 if status == 'pass' else 0",
-                        "    mismatch_count = 1 if status == 'mismatch' else 0",
+                        "    pass_count = len(canary_ids) if status == 'pass' else 0",
+                        "    mismatch_count = len(canary_ids) if status == 'mismatch' else 0",
                         "    metrics_count = 'unknown'",
                         "    metrics_state_file = os.environ.get('FAKE_METRICS_STATE_FILE')",
                         "    if metrics_state_file and pathlib.Path(metrics_state_file).exists():",
                         "        metrics_count = pathlib.Path(metrics_state_file).read_text(encoding='utf-8').strip()",
+                        "    results = [",
+                        "        {'id': canary_id, 'family': 'B524', 'status': status, 'conclusive': True}",
+                        "        for canary_id in canary_ids",
+                        "    ]",
                         "",
                         "    payload = {",
                         "        'schema': 'p03_canary_phase_result_v1',",
                         "        'run_id': run_id,",
                         "        'phase': phase,",
-                        "        'results': [{'id': 'canary_1', 'family': 'B524', 'status': status, 'conclusive': True}],",
-                        "        'summary': {'total': 1, 'pass': pass_count, 'mismatch': mismatch_count, 'inconclusive': 0, 'conclusive': 1},",
+                        "        'results': results,",
+                        "        'summary': {'total': len(results), 'pass': pass_count, 'mismatch': mismatch_count, 'inconclusive': 0, 'conclusive': len(results)},",
                         "    }",
                         "    if output:",
                         "        write_json(output, payload)",
                         "    if baseline:",
                         "        baseline_path = pathlib.Path(baseline)",
                         "        baseline_path.parent.mkdir(parents=True, exist_ok=True)",
-                        "        baseline_path.write_text('{\"canary_1\":\"BEEF\"}\\n', encoding='utf-8')",
+                        "        baseline_values = {canary_id: 'BEEF' for canary_id in canary_ids}",
+                        "        baseline_path.write_text(json.dumps(baseline_values, separators=(',', ':')) + '\\n', encoding='utf-8')",
                         "    phase_log = os.environ.get('FAKE_CANARY_PHASE_LOG')",
                         "    if phase_log:",
                         "        with open(phase_log, 'a', encoding='utf-8') as handle:",

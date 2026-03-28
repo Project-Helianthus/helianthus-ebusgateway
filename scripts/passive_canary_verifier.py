@@ -317,7 +317,8 @@ def build_rollback_execution_artifact(
     exec_case_id: str,
     gateway_base_url: str,
     remote_case_dir: str,
-    gateway_log_path: str,
+    proof_gateway_log_path: str,
+    rollback_gateway_log_path: str,
     started_at: str,
     completed_at: str,
     ok: bool,
@@ -333,7 +334,8 @@ def build_rollback_execution_artifact(
     normalized_exec_case_id = str(exec_case_id).strip()
     normalized_gateway_base_url = str(gateway_base_url).strip()
     normalized_remote_case_dir = str(remote_case_dir).strip()
-    normalized_gateway_log_path = str(gateway_log_path).strip()
+    normalized_proof_gateway_log_path = str(proof_gateway_log_path).strip()
+    normalized_rollback_gateway_log_path = str(rollback_gateway_log_path).strip()
     normalized_reason = str(reason).strip()
     normalized_source = str(source).strip()
     normalized_action = str(action).strip()
@@ -348,8 +350,10 @@ def build_rollback_execution_artifact(
         raise ValueError("gateway_base_url must be non-empty")
     if normalized_remote_case_dir == "":
         raise ValueError("remote_case_dir must be non-empty")
-    if normalized_gateway_log_path == "":
-        raise ValueError("gateway_log_path must be non-empty")
+    if normalized_proof_gateway_log_path == "":
+        raise ValueError("proof_gateway_log_path must be non-empty")
+    if normalized_rollback_gateway_log_path == "":
+        raise ValueError("rollback_gateway_log_path must be non-empty")
     if normalized_reason == "":
         raise ValueError("reason must be non-empty")
     if normalized_source == "":
@@ -381,7 +385,8 @@ def build_rollback_execution_artifact(
         "evidence": {
             "gateway_base_url": normalized_gateway_base_url,
             "remote_case_dir": normalized_remote_case_dir,
-            "gateway_log_path": normalized_gateway_log_path,
+            "proof_gateway_log_path": normalized_proof_gateway_log_path,
+            "rollback_gateway_log_path": normalized_rollback_gateway_log_path,
             "started_at": started_at_dt.isoformat(),
             "completed_at": completed_at_dt.isoformat(),
             "restart_exit_code": restart_exit_code,
@@ -428,8 +433,10 @@ def load_rollback_execution_artifact(path: pathlib.Path, expected_run_id: str) -
         raise ValueError(f"rollback execution artifact missing evidence.gateway_base_url: {path}")
     if str(evidence.get("remote_case_dir", "")).strip() == "":
         raise ValueError(f"rollback execution artifact missing evidence.remote_case_dir: {path}")
-    if str(evidence.get("gateway_log_path", "")).strip() == "":
-        raise ValueError(f"rollback execution artifact missing evidence.gateway_log_path: {path}")
+    if str(evidence.get("proof_gateway_log_path", "")).strip() == "":
+        raise ValueError(f"rollback execution artifact missing evidence.proof_gateway_log_path: {path}")
+    if str(evidence.get("rollback_gateway_log_path", "")).strip() == "":
+        raise ValueError(f"rollback execution artifact missing evidence.rollback_gateway_log_path: {path}")
     parse_iso8601_timestamp(evidence.get("started_at"), f"{path}:evidence.started_at")
     parse_iso8601_timestamp(evidence.get("completed_at"), f"{path}:evidence.completed_at")
     restart_exit_code = evidence.get("restart_exit_code")
@@ -5172,7 +5179,8 @@ def rollback_execution_command(args: argparse.Namespace) -> int:
         exec_case_id=args.exec_case_id,
         gateway_base_url=args.gateway_base_url,
         remote_case_dir=args.remote_case_dir,
-        gateway_log_path=args.gateway_log_path,
+        proof_gateway_log_path=args.proof_gateway_log_path,
+        rollback_gateway_log_path=args.rollback_gateway_log_path,
         started_at=args.started_at,
         completed_at=args.completed_at,
         ok=parse_cli_bool(args.ok, "ok"),
@@ -5294,7 +5302,8 @@ def build_parser() -> argparse.ArgumentParser:
     rollback_execution.add_argument("--exec-case-id", required=True)
     rollback_execution.add_argument("--gateway-base-url", required=True)
     rollback_execution.add_argument("--remote-case-dir", required=True)
-    rollback_execution.add_argument("--gateway-log-path", required=True)
+    rollback_execution.add_argument("--proof-gateway-log-path", required=True)
+    rollback_execution.add_argument("--rollback-gateway-log-path", required=True)
     rollback_execution.add_argument("--started-at", required=True)
     rollback_execution.add_argument("--completed-at", required=True)
     rollback_execution.add_argument("--ok", required=True)

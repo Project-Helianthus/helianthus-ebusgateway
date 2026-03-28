@@ -369,7 +369,8 @@ write_rollback_execution_artifact() {
   local restart_exit_code="$6"
   local restart_succeeded="$7"
   local gateway_health_check_ok="$8"
-  local gateway_log_path="$9"
+  local proof_gateway_log_path="$9"
+  local rollback_gateway_log_path="${10}"
 
   python3 "${PASSIVE_CHECK_SCRIPT%/*}/passive_canary_verifier.py" rollback-execution \
     --run-id "${ROLLBACK_EXECUTION_RUN_ID}" \
@@ -377,7 +378,8 @@ write_rollback_execution_artifact() {
     --exec-case-id "${exec_case_id}" \
     --gateway-base-url "${gateway_base_url}" \
     --remote-case-dir "${remote_case_dir}" \
-    --gateway-log-path "${gateway_log_path}" \
+    --proof-gateway-log-path "${proof_gateway_log_path}" \
+    --rollback-gateway-log-path "${rollback_gateway_log_path}" \
     --started-at "${started_at}" \
     --completed-at "${completed_at}" \
     --ok "${ok}" \
@@ -399,6 +401,9 @@ run_rollback_execute() {
   local restart_succeeded="false"
   local gateway_health_check_ok="false"
   local rollback_gateway_log_path="${remote_case_dir}/logs/gateway_rollback.log"
+  local local_log_dir=""
+  local proof_gateway_log_bundle_path=""
+  local rollback_gateway_log_bundle_path=""
 
   if [[ -z "${artifact_path}" ]]; then
     echo "ROLLBACK_EXECUTION_ARTIFACT_PATH is required" >&2
@@ -410,6 +415,44 @@ run_rollback_execute() {
   fi
 
   started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  local_log_dir="$(cd "$(dirname "${artifact_path}")/.." && pwd)"
+  mkdir -p "${local_log_dir}"
+  proof_gateway_log_bundle_path="${local_log_dir}/gateway_pre_rollback.log"
+  rollback_gateway_log_bundle_path="${local_log_dir}/gateway_rollback.log"
+  if remote_exec "test -f '${remote_case_dir}/logs/gateway.log'"; then
+    if ! remote_exec "cat '${remote_case_dir}/logs/gateway.log'" > "${proof_gateway_log_bundle_path}"; then
+      reason="failed_to_bundle_pre_rollback_gateway_log"
+      completed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+      write_rollback_execution_artifact \
+        "${artifact_path}" \
+        "${started_at}" \
+        "${completed_at}" \
+        "${ok}" \
+        "${reason}" \
+        "${restart_exit_code}" \
+        "${restart_succeeded}" \
+        "${gateway_health_check_ok}" \
+        "${proof_gateway_log_bundle_path}" \
+        "${rollback_gateway_log_bundle_path}"
+      return 1
+    fi
+  else
+    reason="missing_pre_rollback_gateway_log"
+    completed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    write_rollback_execution_artifact \
+      "${artifact_path}" \
+      "${started_at}" \
+      "${completed_at}" \
+      "${ok}" \
+      "${reason}" \
+      "${restart_exit_code}" \
+      "${restart_succeeded}" \
+      "${gateway_health_check_ok}" \
+      "${proof_gateway_log_bundle_path}" \
+      "${rollback_gateway_log_bundle_path}"
+    return 1
+  fi
+
   if MATRIX_GW15_ROLLBACK_EXECUTION=1 \
     MATRIX_GATEWAY_LOG_PATH="${rollback_gateway_log_path}" \
     MATRIX_OBSERVE_FIRST_ENABLED=false \
@@ -429,6 +472,15 @@ run_rollback_execute() {
   else
     restart_exit_code=$?
   fi
+  remote_exec "cat '${rollback_gateway_log_path}'" > "${rollback_gateway_log_bundle_path}" || true
+  if [[ ! -s "${rollback_gateway_log_bundle_path}" ]]; then
+    if [[ "${reason}" == "ok" ]]; then
+      ok="false"
+      reason="missing_rollback_gateway_log_bundle"
+    elif [[ "${reason}" == "gateway_restart_failed" ]]; then
+      reason="gateway_restart_failed_and_missing_rollback_gateway_log_bundle"
+    fi
+  fi
   completed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   write_rollback_execution_artifact \
     "${artifact_path}" \
@@ -439,7 +491,8 @@ run_rollback_execute() {
     "${restart_exit_code}" \
     "${restart_succeeded}" \
     "${gateway_health_check_ok}" \
-    "${rollback_gateway_log_path}"
+    "${proof_gateway_log_bundle_path}" \
+    "${rollback_gateway_log_bundle_path}"
   [[ "${ok}" == "true" ]]
 }
 

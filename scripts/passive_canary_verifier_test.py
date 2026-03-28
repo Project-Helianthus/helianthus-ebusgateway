@@ -4730,7 +4730,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           --exec-case-id "${exec_case_id}" \
                           --gateway-base-url "${gateway_base_url}" \
                           --remote-case-dir "${remote_case_dir}" \
-                          --gateway-log-path "${gateway_log_path}" \
+                          --proof-gateway-log-path "${remote_case_dir}/logs/gateway_pre_rollback.log" \
+                          --rollback-gateway-log-path "${gateway_log_path}" \
                           --started-at "2026-03-28T00:00:00Z" \
                           --completed-at "2026-03-28T00:00:10Z" \
                           --ok true \
@@ -4755,7 +4756,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           --exec-case-id "${exec_case_id}" \
                           --gateway-base-url "${gateway_base_url}" \
                           --remote-case-dir "${remote_case_dir}" \
-                          --gateway-log-path "${gateway_log_path}" \
+                          --proof-gateway-log-path "${remote_case_dir}/logs/gateway_pre_rollback.log" \
+                          --rollback-gateway-log-path "${gateway_log_path}" \
                           --started-at "2026-03-28T00:00:00Z" \
                           --completed-at "2026-03-28T00:00:10Z" \
                           --ok false \
@@ -5320,6 +5322,12 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertEqual(
             rollback_execution["evidence"]["restart_exit_code"],
             0,
+        )
+        self.assertTrue(
+            rollback_execution["evidence"]["proof_gateway_log_path"].endswith("/gateway_pre_rollback.log")
+        )
+        self.assertTrue(
+            rollback_execution["evidence"]["rollback_gateway_log_path"].endswith("/gateway_rollback.log")
         )
 
     def test_smoke_fails_closed_when_rollback_execution_artifact_is_missing(self) -> None:

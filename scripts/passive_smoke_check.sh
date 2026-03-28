@@ -216,7 +216,7 @@ if [[ "${gw15_proof_mode}" == "1" ]]; then
   fi
 fi
 
-graphql_bus_watch_query='{"query":"{ busSummary { status { transportClass featureFlags { observeFirstEnabled passiveStateDirectApply passiveConfigDirectApply externalWritePolicy normalizations } capability { passiveSupported passiveAvailable passiveState passiveReason endpointState tapConnected } warmup { state blocker elapsedSeconds completedTransactions requiredTransactions completionMode } degraded { active reasons } } } watchSummary { inventory { totalEntries pinnedEntries evictableEntries staticPinnedFootprint writeConfirmPinnedActive } activationCounts { catalogDescriptors activeKeys sourceClasses { class count } } directApplyEligibilityClasses { class count } degraded { active shadowingEnabled pinnedBudgetDegraded compactorDegraded reasons } } }"}'
+graphql_bus_watch_query='{"query":"{ busSummary { lastUpdatedAt status { lastUpdatedAt transportClass startup { lastUpdatedAt phase cacheEpoch liveEpoch } featureFlags { lastUpdatedAt observeFirstEnabled passiveStateDirectApply passiveConfigDirectApply externalWritePolicy normalizations } capability { passiveSupported passiveAvailable passiveState passiveReason endpointState tapConnected } warmup { state blocker elapsedSeconds completedTransactions requiredTransactions completionMode } degraded { active reasons } } } watchSummary { lastUpdatedAt inventory { totalEntries pinnedEntries evictableEntries staticPinnedFootprint writeConfirmPinnedActive } activationCounts { catalogDescriptors activeKeys sourceClasses { class count } } directApplyEligibilityClasses { class count } degraded { active shadowingEnabled pinnedBudgetDegraded compactorDegraded reasons } } }"}'
 
 validate_snapshot() {
   METRICS_PAYLOAD="${1}" \
@@ -405,10 +405,34 @@ data = payload.get("data")
 if not isinstance(data, dict):
     raise SystemExit(1)
 
-if data.get("busSummary") is None:
+bus_summary = data.get("busSummary")
+if not isinstance(bus_summary, dict):
     raise SystemExit(1)
-if data.get("watchSummary") is None:
+watch_summary = data.get("watchSummary")
+if not isinstance(watch_summary, dict):
     raise SystemExit(1)
+
+status = bus_summary.get("status")
+if not isinstance(status, dict):
+    raise SystemExit(1)
+
+startup = status.get("startup")
+if not isinstance(startup, dict):
+    raise SystemExit(1)
+
+feature_flags = status.get("featureFlags")
+if not isinstance(feature_flags, dict):
+    raise SystemExit(1)
+
+for value in (
+    bus_summary.get("lastUpdatedAt"),
+    status.get("lastUpdatedAt"),
+    startup.get("lastUpdatedAt"),
+    feature_flags.get("lastUpdatedAt"),
+    watch_summary.get("lastUpdatedAt"),
+):
+    if not isinstance(value, str) or value.strip() == "":
+        raise SystemExit(1)
 
 raise SystemExit(0)
 PY

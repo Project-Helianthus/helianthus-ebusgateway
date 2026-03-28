@@ -180,6 +180,39 @@ func TestBusObservabilityStoreMarksPassiveDisabledAsCapabilityWithdrawn(t *testi
 	}
 }
 
+func TestBusObservabilityStoreSnapshotDoesNotAdvanceTimestampOnRepeatedCapabilityWithdrawnReads(t *testing.T) {
+	cfg := DefaultConfig()
+	base := time.Now().UTC().Truncate(time.Second)
+	now := base
+	store := NewBusObservabilityStore(cfg)
+	store.now = func() time.Time { return now }
+
+	first := store.Snapshot()
+	if first.Summary.LastUpdatedAt == nil {
+		t.Fatal("first Summary.LastUpdatedAt = nil; want unavailable mutation timestamp")
+	}
+	if first.Summary.Status.LastUpdatedAt == nil {
+		t.Fatal("first Status.LastUpdatedAt = nil; want unavailable mutation timestamp")
+	}
+	firstSummary := *first.Summary.LastUpdatedAt
+	firstStatus := *first.Summary.Status.LastUpdatedAt
+
+	now = base.Add(2 * time.Minute)
+	second := store.Snapshot()
+	if second.Summary.LastUpdatedAt == nil {
+		t.Fatal("second Summary.LastUpdatedAt = nil; want stable unavailable timestamp")
+	}
+	if second.Summary.Status.LastUpdatedAt == nil {
+		t.Fatal("second Status.LastUpdatedAt = nil; want stable unavailable timestamp")
+	}
+	if !second.Summary.LastUpdatedAt.Equal(firstSummary) {
+		t.Fatalf("second Summary.LastUpdatedAt = %s; want stable %s", second.Summary.LastUpdatedAt, firstSummary)
+	}
+	if !second.Summary.Status.LastUpdatedAt.Equal(firstStatus) {
+		t.Fatalf("second Status.LastUpdatedAt = %s; want stable %s", second.Summary.Status.LastUpdatedAt, firstStatus)
+	}
+}
+
 func TestBusObservabilityStoreExportsNormalizedFeatureFlags(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ObserveFirstEnabled = true
@@ -222,14 +255,64 @@ func TestBusObservabilityStoreExportsNormalizedFeatureFlags(t *testing.T) {
 	}
 }
 
+func TestBusObservabilityStoreKeepsFeatureFlagTimestampProcessLifetimeImmutableAcrossBusMutations(t *testing.T) {
+	cfg := DefaultConfig()
+	store := NewBusObservabilityStore(cfg)
+
+	base := time.Now().UTC().Truncate(time.Second)
+	mutated := base.Add(2 * time.Minute)
+	store.now = func() time.Time { return mutated }
+
+	store.mu.Lock()
+	store.lastUpdatedAt = base
+	store.featureFlagsUpdatedAt = base
+	store.mu.Unlock()
+
+	if err := store.OnBusEvent(protocol.BusEvent{
+		Kind: protocol.BusEventAttemptComplete,
+		Request: protocol.Frame{
+			Source:    0x08,
+			Target:    0x15,
+			Primary:   0xB5,
+			Secondary: 0x09,
+			Data:      []byte{0x03},
+		},
+		HasRequest: true,
+	}); err != nil {
+		t.Fatalf("OnBusEvent error = %v", err)
+	}
+
+	snapshot := store.Snapshot()
+	if snapshot.Summary.LastUpdatedAt == nil {
+		t.Fatal("Summary.LastUpdatedAt = nil; want mutation timestamp")
+	}
+	if !snapshot.Summary.LastUpdatedAt.Equal(mutated) {
+		t.Fatalf("Summary.LastUpdatedAt = %s; want %s", snapshot.Summary.LastUpdatedAt, mutated)
+	}
+	if snapshot.Summary.Status.LastUpdatedAt == nil {
+		t.Fatal("Status.LastUpdatedAt = nil; want mutation timestamp")
+	}
+	if !snapshot.Summary.Status.LastUpdatedAt.Equal(mutated) {
+		t.Fatalf("Status.LastUpdatedAt = %s; want %s", snapshot.Summary.Status.LastUpdatedAt, mutated)
+	}
+	if snapshot.Summary.Status.FeatureFlags.LastUpdatedAt == nil {
+		t.Fatal("FeatureFlags.LastUpdatedAt = nil; want provider-owned timestamp")
+	}
+	if !snapshot.Summary.Status.FeatureFlags.LastUpdatedAt.Equal(base) {
+		t.Fatalf("FeatureFlags.LastUpdatedAt = %s; want stable %s", snapshot.Summary.Status.FeatureFlags.LastUpdatedAt, base)
+	}
+}
+
 func TestBusObservabilityStoreIncludesStartupSurfaceInSnapshot(t *testing.T) {
 	cfg := DefaultConfig()
 	store := NewBusObservabilityStore(cfg)
+	startupUpdatedAt := time.Now().UTC().Truncate(time.Second)
 	store.SetStartupSurfaceProvider(func() *BusObservabilityStartup {
 		return &BusObservabilityStartup{
-			Phase:      string(graphql.SemanticStartupPhaseLiveReady),
-			CacheEpoch: 2,
-			LiveEpoch:  5,
+			LastUpdatedAt: &startupUpdatedAt,
+			Phase:         string(graphql.SemanticStartupPhaseLiveReady),
+			CacheEpoch:    2,
+			LiveEpoch:     5,
 		}
 	})
 
@@ -243,6 +326,12 @@ func TestBusObservabilityStoreIncludesStartupSurfaceInSnapshot(t *testing.T) {
 	}
 	if startup.CacheEpoch != 2 || startup.LiveEpoch != 5 {
 		t.Fatalf("Startup epochs = (%d,%d); want (2,5)", startup.CacheEpoch, startup.LiveEpoch)
+	}
+	if startup.LastUpdatedAt == nil {
+		t.Fatal("Startup.LastUpdatedAt = nil; want provider-owned timestamp")
+	}
+	if !startup.LastUpdatedAt.Equal(startupUpdatedAt) {
+		t.Fatalf("Startup.LastUpdatedAt = %s; want %s", startup.LastUpdatedAt, startupUpdatedAt)
 	}
 }
 
@@ -266,6 +355,42 @@ func TestBusObservabilityStoreKeepsUnsupportedPassiveTransportOutOfStartupTimeou
 	}
 	if strings.Contains(metrics, `ebus_passive_capability_unavailable_reason{reason="startup_timeout"} 1`) {
 		t.Fatalf("RenderPrometheus reported startup_timeout for ebusd-tcp passive mode:\n%s", metrics)
+	}
+}
+
+func TestBusObservabilityStoreSnapshotDoesNotAdvanceTimestampOnRepeatedUnsupportedReads(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportEbusdTCP
+
+	base := time.Now().UTC().Truncate(time.Second)
+	now := base
+	store := NewBusObservabilityStore(cfg)
+	store.now = func() time.Time { return now }
+
+	first := store.Snapshot()
+	if first.Summary.LastUpdatedAt == nil {
+		t.Fatal("first Summary.LastUpdatedAt = nil; want unavailable mutation timestamp")
+	}
+	if first.Summary.Status.LastUpdatedAt == nil {
+		t.Fatal("first Status.LastUpdatedAt = nil; want unavailable mutation timestamp")
+	}
+	firstSummary := *first.Summary.LastUpdatedAt
+	firstStatus := *first.Summary.Status.LastUpdatedAt
+
+	now = base.Add(2 * time.Minute)
+	second := store.Snapshot()
+	if second.Summary.LastUpdatedAt == nil {
+		t.Fatal("second Summary.LastUpdatedAt = nil; want stable unavailable timestamp")
+	}
+	if second.Summary.Status.LastUpdatedAt == nil {
+		t.Fatal("second Status.LastUpdatedAt = nil; want stable unavailable timestamp")
+	}
+	if !second.Summary.LastUpdatedAt.Equal(firstSummary) {
+		t.Fatalf("second Summary.LastUpdatedAt = %s; want stable %s", second.Summary.LastUpdatedAt, firstSummary)
+	}
+	if !second.Summary.Status.LastUpdatedAt.Equal(firstStatus) {
+		t.Fatalf("second Status.LastUpdatedAt = %s; want stable %s", second.Summary.Status.LastUpdatedAt, firstStatus)
 	}
 }
 

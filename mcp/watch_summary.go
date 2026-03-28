@@ -1,5 +1,7 @@
 package mcp
 
+import "time"
+
 type WatchSummaryClassCount struct {
 	Class string `json:"class"`
 	Count int    `json:"count"`
@@ -30,6 +32,7 @@ type WatchSummaryDegraded struct {
 }
 
 type WatchSummary struct {
+	LastUpdatedAt                 *time.Time                   `json:"last_updated_at,omitempty"`
 	Inventory                     WatchSummaryInventory        `json:"inventory"`
 	ActivationCounts              WatchSummaryActivationCounts `json:"activation_counts"`
 	FreshnessClasses              []WatchSummaryClassCount     `json:"freshness_classes,omitempty"`
@@ -46,6 +49,7 @@ func cloneWatchSummary(source *WatchSummary) *WatchSummary {
 		return nil
 	}
 	out := *source
+	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
 	out.Inventory = cloneWatchSummaryInventory(source.Inventory)
 	out.ActivationCounts = cloneWatchSummaryActivationCounts(source.ActivationCounts)
 	out.FreshnessClasses = cloneWatchSummaryClassCounts(source.FreshnessClasses)

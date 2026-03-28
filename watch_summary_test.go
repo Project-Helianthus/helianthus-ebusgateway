@@ -212,6 +212,62 @@ func TestShadowCacheWatchSummary_ReportsPinnedBudgetDegradedMarker(t *testing.T)
 	}
 }
 
+func TestShadowCacheWatchSummary_ExposesMutationTimestampWithoutReadTimeDrift(t *testing.T) {
+	base := time.Now().UTC().Truncate(time.Second)
+	key := NewB509WatchKey(0x15, 0x1201)
+	catalog, err := NewWatchCatalog([]WatchDescriptor{
+		{
+			Key:               key,
+			SemanticClass:     WatchSemanticClassState,
+			FreshnessProfile:  WatchFreshnessProfileStateFast,
+			DecoderID:         "test.watch.timestamp",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWatchCatalog error = %v", err)
+	}
+	activations := NewWatchActivationSet(catalog)
+	if err := activations.Activate(WatchActivationSourcePoller, key); err != nil {
+		t.Fatalf("Activate poller error = %v", err)
+	}
+
+	cache := NewShadowCache(ShadowCacheOptions{
+		Catalog:      catalog,
+		Activations:  activations,
+		FeatureFlags: NormalizeObserveFirstFeatureFlags(true, true, false, ObserveFirstExternalWritePolicyRecordOnly),
+		Now:          func() time.Time { return base },
+	})
+
+	initial := cache.WatchSummary()
+	if initial.LastUpdatedAt == nil {
+		t.Fatal("initial LastUpdatedAt = nil; want cache mutation time")
+	}
+	if !initial.LastUpdatedAt.Equal(base) {
+		t.Fatalf("initial LastUpdatedAt = %s; want %s", initial.LastUpdatedAt, base)
+	}
+
+	mutated := base.Add(3 * time.Minute)
+	cache.now = func() time.Time { return mutated }
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, mutated, []byte{0x10})
+
+	afterWrite := cache.WatchSummary()
+	if afterWrite.LastUpdatedAt == nil {
+		t.Fatal("after write LastUpdatedAt = nil; want mutation time")
+	}
+	if !afterWrite.LastUpdatedAt.Equal(mutated) {
+		t.Fatalf("after write LastUpdatedAt = %s; want %s", afterWrite.LastUpdatedAt, mutated)
+	}
+
+	later := mutated.Add(10 * time.Minute)
+	cache.now = func() time.Time { return later }
+	afterRead := cache.WatchSummary()
+	if !afterRead.LastUpdatedAt.Equal(mutated) {
+		t.Fatalf("read advanced LastUpdatedAt to %s; want stable %s", afterRead.LastUpdatedAt, mutated)
+	}
+}
+
 func classCountsToMap(items []WatchSummaryClassCount) map[string]int {
 	out := make(map[string]int, len(items))
 	for _, item := range items {

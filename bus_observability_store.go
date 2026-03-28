@@ -63,6 +63,10 @@ type BusObservabilityStore struct {
 	transportClass       string
 	activeTimingQuality  string
 	passiveTimingQuality string
+	lastUpdatedAt        time.Time
+	// Effective observe-first flags are config-derived and process-lifetime immutable.
+	// This clock records when that normalized process configuration was captured.
+	featureFlagsUpdatedAt time.Time
 
 	frames     map[frameSeriesKey]uint64
 	errors     map[errorSeriesKey]uint64
@@ -220,17 +224,19 @@ func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 	cfg = applyDefaults(cfg)
 	now := time.Now()
 	store := &BusObservabilityStore{
-		cfg:                  cfg,
-		now:                  time.Now,
-		transportClass:       string(canonicalTransportProtocol(cfg.TransportConfig.Protocol)),
-		activeTimingQuality:  timingQualityForActive(cfg),
-		passiveTimingQuality: timingQualityForPassive(cfg),
-		frames:               make(map[frameSeriesKey]uint64),
-		errors:               make(map[errorSeriesKey]uint64),
-		frameBytes:           make(map[frameBytesSeriesKey]uint64),
-		recent:               make([]BusMessageRecord, cfg.ObserveFirstRecentMessageCapacity),
-		addressBuckets:       make(map[byte]string),
-		periodicity:          make(map[periodicityKey]*BusPeriodicityEntry),
+		cfg:                   cfg,
+		now:                   time.Now,
+		transportClass:        string(canonicalTransportProtocol(cfg.TransportConfig.Protocol)),
+		activeTimingQuality:   timingQualityForActive(cfg),
+		passiveTimingQuality:  timingQualityForPassive(cfg),
+		lastUpdatedAt:         now,
+		featureFlagsUpdatedAt: now,
+		frames:                make(map[frameSeriesKey]uint64),
+		errors:                make(map[errorSeriesKey]uint64),
+		frameBytes:            make(map[frameBytesSeriesKey]uint64),
+		recent:                make([]BusMessageRecord, cfg.ObserveFirstRecentMessageCapacity),
+		addressBuckets:        make(map[byte]string),
+		periodicity:           make(map[periodicityKey]*BusPeriodicityEntry),
 		watchEfficiency: watchEfficiencyRuntime{
 			buckets:   make(map[watchEfficiencyBucketKey]*watchEfficiencyBucketRuntime),
 			ambiguous: make(map[watchEfficiencyAmbiguousKey]uint64),
@@ -279,11 +285,14 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
+	mutated := false
 	switch event.Kind {
 	case protocol.BusEventAttemptComplete:
 		store.recordActiveFrameLocked(event)
+		mutated = true
 	case protocol.BusEventTimeout, protocol.BusEventNACK, protocol.BusEventCRCMismatch, protocol.BusEventEchoMismatch:
 		store.recordActiveErrorLocked(event)
+		mutated = true
 	case protocol.BusEventRetry:
 		if event.Outcome == protocol.BusOutcomeCollision {
 			store.incrementErrorLocked(errorSeriesKey{
@@ -291,7 +300,11 @@ func (store *BusObservabilityStore) OnBusEvent(event protocol.BusEvent) error {
 				Class: "collision",
 				Phase: "request",
 			})
+			mutated = true
 		}
+	}
+	if mutated {
+		store.touchLocked(store.now())
 	}
 	return nil
 }
@@ -385,7 +398,7 @@ func (store *BusObservabilityStore) runPassiveLoop() {
 	nextSubscription:
 		if closedUnexpectedly {
 			store.mu.Lock()
-			store.passiveNoteTimeoutLocked("socket_loss")
+			store.passiveNoteTimeoutLocked(store.now(), "socket_loss")
 			store.mu.Unlock()
 		}
 	}
@@ -422,6 +435,11 @@ func (store *BusObservabilityStore) OnPassiveClassifiedEvent(event PassiveClassi
 		store.recordPassiveAbandonedLocked(event)
 	case PassiveClassifiedEventDiscontinuity:
 		store.recordPassiveDiscontinuityLocked(event)
+	}
+	if !event.ObservedAt.IsZero() {
+		store.touchLocked(event.ObservedAt)
+	} else {
+		store.touchLocked(store.now())
 	}
 }
 
@@ -1085,6 +1103,11 @@ func (store *BusObservabilityStore) recordPassiveAbandonedLocked(event PassiveCl
 		Phase: phase,
 	})
 	store.passive.terminalEvents++
+	if !event.ObservedAt.IsZero() {
+		store.touchLocked(event.ObservedAt)
+	} else {
+		store.touchLocked(store.now())
+	}
 }
 
 func (store *BusObservabilityStore) recordPassiveDiscontinuityLocked(event PassiveClassifiedEvent) {
@@ -1100,7 +1123,7 @@ func (store *BusObservabilityStore) recordPassiveDiscontinuityLocked(event Passi
 	case PassiveDiscontinuityConnected:
 		store.passiveStartWarmupLocked(event.ObservedAt, false)
 	case PassiveDiscontinuityDisconnected:
-		store.passiveNoteTimeoutLocked("socket_loss")
+		store.passiveNoteTimeoutLocked(event.ObservedAt, "socket_loss")
 	case PassiveDiscontinuityTransportReset, PassiveDiscontinuityDecodeFault:
 		store.passiveStartWarmupLocked(event.ObservedAt, true)
 	case PassiveDiscontinuityCriticalSubscriberFault:
@@ -1277,10 +1300,15 @@ func (store *BusObservabilityStore) localAddressSnapshotLocked() LocalAddressSna
 
 func (store *BusObservabilityStore) evictStalePeriodicityLocked(now time.Time) {
 	cutoff := now.Add(-store.cfg.ObserveFirstPeriodicityStaleTTL)
+	mutated := false
 	for key, entry := range store.periodicity {
 		if entry.LastSeen.Before(cutoff) {
 			delete(store.periodicity, key)
+			mutated = true
 		}
+	}
+	if mutated {
+		store.touchLocked(now)
 	}
 }
 
@@ -1316,47 +1344,78 @@ func (store *BusObservabilityStore) refreshPassiveStateLocked(now time.Time, tap
 	if store.passive.state == "" {
 		store.passive.state = "unavailable"
 		store.passive.processStartedAt = now
+		store.touchLocked(now)
 	}
 	if !store.cfg.BroadcastListen {
-		store.setPassiveStateLocked("unavailable")
-		store.passive.unavailableReason = "capability_withdrawn"
-		store.passive.startupWindowClosed = true
+		stateChanged := store.passive.state != "unavailable"
+		store.setPassiveStateLocked(now, "unavailable")
+		metadataChanged := false
+		if store.passive.unavailableReason != "capability_withdrawn" {
+			store.passive.unavailableReason = "capability_withdrawn"
+			metadataChanged = true
+		}
+		if !store.passive.startupWindowClosed {
+			store.passive.startupWindowClosed = true
+			metadataChanged = true
+		}
+		if metadataChanged && !stateChanged {
+			store.touchLocked(now)
+		}
 		return
 	}
 	if reason := passiveTransportUnavailableReason(store.cfg); reason != "" {
-		store.setPassiveStateLocked("unavailable")
-		store.passive.unavailableReason = reason
-		store.passive.startupWindowClosed = true
+		stateChanged := store.passive.state != "unavailable"
+		store.setPassiveStateLocked(now, "unavailable")
+		metadataChanged := false
+		if store.passive.unavailableReason != reason {
+			store.passive.unavailableReason = reason
+			metadataChanged = true
+		}
+		if !store.passive.startupWindowClosed {
+			store.passive.startupWindowClosed = true
+			metadataChanged = true
+		}
+		if metadataChanged && !stateChanged {
+			store.touchLocked(now)
+		}
 		return
 	}
 	if !store.passive.startupWindowClosed && !now.Before(store.passive.processStartedAt.Add(store.cfg.ObserveFirstWarmupOuterWindow)) {
 		if store.passive.state == "warming_up" && store.passive.fallbackHealthy {
-			store.setPassiveStateLocked("available")
+			store.setPassiveStateLocked(now, "available")
 			store.passive.lastCompletionMode = "fallback_path"
 			store.passive.probeOutcomes["confirmed"]++
 		} else if store.passive.state != "available" {
-			store.setPassiveStateLocked("unavailable")
+			store.setPassiveStateLocked(now, "unavailable")
 			store.passive.unavailableReason = "startup_timeout"
 			store.passive.probeOutcomes["timed_out"]++
+			store.touchLocked(now)
 		}
 		store.passive.startupWindowClosed = true
 	}
 	if store.passive.state == "warming_up" && !store.passive.sessionDeadline.IsZero() && !now.Before(store.passive.sessionDeadline) {
 		if store.passive.fallbackHealthy {
-			store.setPassiveStateLocked("available")
+			store.setPassiveStateLocked(now, "available")
 			store.passive.lastCompletionMode = "fallback_path"
 			store.passive.probeOutcomes["confirmed"]++
 		} else {
-			store.setPassiveStateLocked("unavailable")
+			store.setPassiveStateLocked(now, "unavailable")
 			if store.passive.unavailableReason == "" {
 				store.passive.unavailableReason = "reconnect_timeout"
 			}
 			store.passive.probeOutcomes["timed_out"]++
+			store.touchLocked(now)
 		}
 	}
 	if tapStatus.EndpointState == PassiveEndpointStateUnsupportedOrMisconfigured {
-		store.setPassiveStateLocked("unavailable")
-		store.passive.unavailableReason = "unsupported_or_misconfigured"
+		stateChanged := store.passive.state != "unavailable"
+		store.setPassiveStateLocked(now, "unavailable")
+		if store.passive.unavailableReason != "unsupported_or_misconfigured" {
+			store.passive.unavailableReason = "unsupported_or_misconfigured"
+			if !stateChanged {
+				store.touchLocked(now)
+			}
+		}
 	}
 	store.promotePassiveIfReadyLocked(now, tapStatus)
 }
@@ -1380,7 +1439,7 @@ func (store *BusObservabilityStore) promotePassiveIfReadyLocked(now time.Time, t
 	if tapStatus.ConnectCount == 0 && !store.passive.fallbackHealthy {
 		return
 	}
-	store.setPassiveStateLocked("available")
+	store.setPassiveStateLocked(now, "available")
 	store.passive.lastCompletionMode = "thresholds_met"
 	store.passive.unavailableReason = ""
 	store.passive.probeOutcomes["confirmed"]++
@@ -1411,18 +1470,20 @@ func (store *BusObservabilityStore) passiveStartWarmupLocked(observedAt time.Tim
 	} else {
 		store.passive.sessionDeadline = observedAt.Add(store.cfg.ObserveFirstWarmupOuterWindow)
 	}
-	store.setPassiveStateLocked("warming_up")
+	store.setPassiveStateLocked(observedAt, "warming_up")
+	store.touchLocked(observedAt)
 }
 
-func (store *BusObservabilityStore) passiveNoteTimeoutLocked(reason string) {
-	store.setPassiveStateLocked("unavailable")
+func (store *BusObservabilityStore) passiveNoteTimeoutLocked(at time.Time, reason string) {
+	store.setPassiveStateLocked(at, "unavailable")
 	store.passive.unavailableReason = reason
 	store.passive.completedTransactions = 0
 	store.passive.requiredTransactions = 0
 	store.passive.settlingDeadline = time.Time{}
+	store.touchLocked(at)
 }
 
-func (store *BusObservabilityStore) setPassiveStateLocked(next string) {
+func (store *BusObservabilityStore) setPassiveStateLocked(at time.Time, next string) {
 	if store.passive.state == next {
 		return
 	}
@@ -1435,6 +1496,17 @@ func (store *BusObservabilityStore) setPassiveStateLocked(next string) {
 		store.passive.completedTransactions = 0
 		store.passive.terminalEvents = 0
 		store.passive.settlingDeadline = time.Time{}
+	}
+	store.touchLocked(at)
+}
+
+func (store *BusObservabilityStore) touchLocked(at time.Time) {
+	if store == nil || at.IsZero() {
+		return
+	}
+	at = at.UTC()
+	if store.lastUpdatedAt.IsZero() || at.After(store.lastUpdatedAt) {
+		store.lastUpdatedAt = at
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
@@ -36,6 +37,15 @@ func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 	if store == nil {
 		t.Fatal("NewBusObservabilityStore() = nil")
 	}
+	startupAt := time.Date(2026, time.March, 12, 17, 45, 0, 0, time.UTC)
+	store.SetStartupSurfaceProvider(func() *ebusgateway.BusObservabilityStartup {
+		return &ebusgateway.BusObservabilityStartup{
+			LastUpdatedAt: &startupAt,
+			Phase:         "LIVE_READY",
+			CacheEpoch:    4,
+			LiveEpoch:     9,
+		}
+	})
 	if err := store.OnBusEvent(protocol.BusEvent{
 		Kind: protocol.BusEventAttemptComplete,
 		Request: protocol.Frame{
@@ -86,6 +96,16 @@ func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 	if got, _ := capability["passive_reason"].(string); got != "unsupported_or_misconfigured" {
 		t.Fatalf("summary passive_reason = %q; want unsupported_or_misconfigured", got)
 	}
+	if got, _ := summaryData["last_updated_at"].(string); got == "" {
+		t.Fatalf("summary last_updated_at missing")
+	} else if _, err := time.Parse(time.RFC3339Nano, got); err != nil {
+		t.Fatalf("summary last_updated_at parse: %v", err)
+	}
+	if got, _ := status["last_updated_at"].(string); got == "" {
+		t.Fatalf("summary status.last_updated_at missing")
+	} else if _, err := time.Parse(time.RFC3339Nano, got); err != nil {
+		t.Fatalf("summary status.last_updated_at parse: %v", err)
+	}
 	timingQuality, ok := status["timing_quality"].(map[string]any)
 	if !ok {
 		t.Fatalf("summary timing_quality type = %T; want map", status["timing_quality"])
@@ -99,6 +119,29 @@ func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 	}
 	if got, _ := degraded["active"].(bool); !got {
 		t.Fatalf("summary degraded.active = %v; want true", degraded["active"])
+	}
+	featureFlags, ok := status["feature_flags"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary feature_flags type = %T; want map", status["feature_flags"])
+	}
+	if got, _ := featureFlags["last_updated_at"].(string); got == "" {
+		t.Fatalf("summary feature_flags.last_updated_at missing")
+	} else if _, err := time.Parse(time.RFC3339Nano, got); err != nil {
+		t.Fatalf("summary feature_flags.last_updated_at parse: %v", err)
+	}
+	startup, ok := status["startup"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary startup type = %T; want map", status["startup"])
+	}
+	if got, _ := startup["last_updated_at"].(string); got == "" {
+		t.Fatalf("summary startup.last_updated_at missing")
+	} else if _, err := time.Parse(time.RFC3339Nano, got); err != nil {
+		t.Fatalf("summary startup.last_updated_at parse: %v", err)
+	} else if got != startupAt.Format(time.RFC3339Nano) {
+		t.Fatalf("summary startup.last_updated_at = %q; want %s", got, startupAt.Format(time.RFC3339Nano))
+	}
+	if got, _ := startup["phase"].(string); got != "LIVE_READY" {
+		t.Fatalf("summary startup.phase = %q; want LIVE_READY", got)
 	}
 
 	messagesEnvelope := mcpCallToolEnvelope(t, server.Handler(), mcpToolBusMessagesList, `{"limit":1}`)

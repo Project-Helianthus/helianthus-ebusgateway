@@ -52,7 +52,8 @@ func (adapter mcpBusObservabilityProviderAdapter) Snapshot() mcp.BusObservabilit
 
 func mapGraphQLBusSummary(summary ebusgateway.BusObservabilitySummary) *graphql.BusSummary {
 	return &graphql.BusSummary{
-		Status: mapGraphQLBusStatus(summary.Status),
+		LastUpdatedAt: cloneTimePtr(summary.LastUpdatedAt),
+		Status:        mapGraphQLBusStatus(summary.Status),
 		Messages: graphql.BusBoundedListSummary{
 			Count:    summary.Messages.Count,
 			Capacity: summary.Messages.Capacity,
@@ -70,7 +71,8 @@ func mapGraphQLBusSummary(summary ebusgateway.BusObservabilitySummary) *graphql.
 
 func mapMCPBusSummary(summary ebusgateway.BusObservabilitySummary) *mcp.BusSummary {
 	return &mcp.BusSummary{
-		Status: mapMCPBusStatus(summary.Status),
+		LastUpdatedAt: cloneTimePtr(summary.LastUpdatedAt),
+		Status:        mapMCPBusStatus(summary.Status),
 		Messages: mcp.BusBoundedListSummary{
 			Count:    summary.Messages.Count,
 			Capacity: summary.Messages.Capacity,
@@ -88,6 +90,7 @@ func mapMCPBusSummary(summary ebusgateway.BusObservabilitySummary) *mcp.BusSumma
 
 func mapGraphQLBusStatus(status ebusgateway.BusObservabilityStatus) *graphql.BusObservabilityStatus {
 	return &graphql.BusObservabilityStatus{
+		LastUpdatedAt:  cloneTimePtr(status.LastUpdatedAt),
 		TransportClass: status.TransportClass,
 		Capability: graphql.BusObservabilityCapability{
 			ActiveSupported:    status.Capability.ActiveSupported,
@@ -123,6 +126,7 @@ func mapGraphQLBusStatus(status ebusgateway.BusObservabilityStatus) *graphql.Bus
 			PassiveStateDirectApply:  status.FeatureFlags.PassiveStateDirectApply,
 			PassiveConfigDirectApply: status.FeatureFlags.PassiveConfigDirectApply,
 			ExternalWritePolicy:      string(status.FeatureFlags.ExternalWritePolicy),
+			LastUpdatedAt:            cloneTimePtr(status.FeatureFlags.LastUpdatedAt),
 			Normalizations:           append([]string(nil), status.FeatureFlags.Normalizations...),
 		},
 	}
@@ -130,6 +134,7 @@ func mapGraphQLBusStatus(status ebusgateway.BusObservabilityStatus) *graphql.Bus
 
 func mapMCPBusStatus(status ebusgateway.BusObservabilityStatus) *mcp.BusObservabilityStatus {
 	return &mcp.BusObservabilityStatus{
+		LastUpdatedAt:  cloneTimePtr(status.LastUpdatedAt),
 		TransportClass: status.TransportClass,
 		Capability: mcp.BusObservabilityCapability{
 			ActiveSupported:    status.Capability.ActiveSupported,
@@ -165,6 +170,7 @@ func mapMCPBusStatus(status ebusgateway.BusObservabilityStatus) *mcp.BusObservab
 			PassiveStateDirectApply:  status.FeatureFlags.PassiveStateDirectApply,
 			PassiveConfigDirectApply: status.FeatureFlags.PassiveConfigDirectApply,
 			ExternalWritePolicy:      string(status.FeatureFlags.ExternalWritePolicy),
+			LastUpdatedAt:            cloneTimePtr(status.FeatureFlags.LastUpdatedAt),
 			Normalizations:           append([]string(nil), status.FeatureFlags.Normalizations...),
 		},
 	}
@@ -175,9 +181,10 @@ func mapGraphQLBusStartup(startup *ebusgateway.BusObservabilityStartup) *graphql
 		return nil
 	}
 	return &graphql.BusObservabilityStartup{
-		Phase:      startup.Phase,
-		CacheEpoch: startup.CacheEpoch,
-		LiveEpoch:  startup.LiveEpoch,
+		LastUpdatedAt: cloneTimePtr(startup.LastUpdatedAt),
+		Phase:         startup.Phase,
+		CacheEpoch:    startup.CacheEpoch,
+		LiveEpoch:     startup.LiveEpoch,
 	}
 }
 
@@ -186,9 +193,10 @@ func mapMCPBusStartup(startup *ebusgateway.BusObservabilityStartup) *mcp.BusObse
 		return nil
 	}
 	return &mcp.BusObservabilityStartup{
-		Phase:      startup.Phase,
-		CacheEpoch: startup.CacheEpoch,
-		LiveEpoch:  startup.LiveEpoch,
+		LastUpdatedAt: cloneTimePtr(startup.LastUpdatedAt),
+		Phase:         startup.Phase,
+		CacheEpoch:    startup.CacheEpoch,
+		LiveEpoch:     startup.LiveEpoch,
 	}
 }
 
@@ -291,6 +299,14 @@ func timestampString(value time.Time) string {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func cloneTimePtr(source *time.Time) *time.Time {
+	if source == nil {
+		return nil
+	}
+	updatedAt := source.UTC()
+	return &updatedAt
 }
 
 func durationString(value time.Duration) string {

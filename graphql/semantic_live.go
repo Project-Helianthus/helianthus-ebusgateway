@@ -74,6 +74,7 @@ type LiveSemanticProvider struct {
 	energyPassiveStateProvider func() string
 
 	phase              SemanticStartupPhase
+	startupUpdatedAt   time.Time
 	cacheEpoch         uint64
 	liveEpoch          uint64
 	zonePublished      bool
@@ -96,9 +97,10 @@ func NewLiveSemanticProvider() *LiveSemanticProvider {
 	semanticLiveEpoch.Set(0)
 
 	return &LiveSemanticProvider{
-		phase:       SemanticStartupPhaseBootInit,
-		fm5Mode:     Fm5SemanticModeAbsent,
-		energyMerge: newEnergyMergeStore(),
+		phase:            SemanticStartupPhaseBootInit,
+		startupUpdatedAt: time.Now().UTC(),
+		fm5Mode:          Fm5SemanticModeAbsent,
+		energyMerge:      newEnergyMergeStore(),
 	}
 }
 
@@ -163,6 +165,15 @@ func (provider *LiveSemanticProvider) StartupEpochs() (cacheEpoch uint64, liveEp
 	provider.mu.RLock()
 	defer provider.mu.RUnlock()
 	return provider.cacheEpoch, provider.liveEpoch
+}
+
+func (provider *LiveSemanticProvider) StartupUpdatedAt() time.Time {
+	if provider == nil {
+		return time.Time{}
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	return provider.startupUpdatedAt
 }
 
 func (provider *LiveSemanticProvider) Zones() []Zone {
@@ -722,6 +733,7 @@ func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDat
 	case semanticDataSourceCache:
 		provider.cacheEpoch++
 		semanticCacheEpoch.Set(int64(provider.cacheEpoch))
+		provider.touchStartupUpdatedAtLocked()
 		if provider.liveEpoch == 0 && provider.phase != SemanticStartupPhaseDegraded {
 			return provider.transitionPhaseLocked(SemanticStartupPhaseCacheLoadedStale, reason)
 		}
@@ -740,6 +752,7 @@ func (provider *LiveSemanticProvider) recordEpochUpdateLocked(source semanticDat
 		}
 		provider.liveEpoch++
 		semanticLiveEpoch.Set(int64(provider.liveEpoch))
+		provider.touchStartupUpdatedAtLocked()
 		if provider.liveEpoch == 1 {
 			return provider.transitionPhaseLocked(SemanticStartupPhaseLiveWarmup, reason)
 		}
@@ -775,6 +788,7 @@ func (provider *LiveSemanticProvider) transitionPhaseLocked(next SemanticStartup
 	}
 	previous := provider.phase
 	provider.phase = next
+	provider.touchStartupUpdatedAtLocked()
 	semanticStartupPhaseTransitionsTotal.Add(fmt.Sprintf("%s->%s", previous, next), 1)
 	semanticStartupCurrentPhase.Set(string(next))
 	return &phaseTransitionLog{
@@ -783,6 +797,16 @@ func (provider *LiveSemanticProvider) transitionPhaseLocked(next SemanticStartup
 		reason:     reason,
 		cacheEpoch: provider.cacheEpoch,
 		liveEpoch:  provider.liveEpoch,
+	}
+}
+
+func (provider *LiveSemanticProvider) touchStartupUpdatedAtLocked() {
+	if provider == nil {
+		return
+	}
+	now := time.Now().UTC()
+	if provider.startupUpdatedAt.IsZero() || now.After(provider.startupUpdatedAt) {
+		provider.startupUpdatedAt = now
 	}
 }
 

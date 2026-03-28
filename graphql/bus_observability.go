@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	graphqlgo "github.com/graphql-go/graphql"
@@ -42,12 +43,14 @@ type BusObservabilityDegraded struct {
 }
 
 type BusObservabilityStartup struct {
-	Phase      string
-	CacheEpoch uint64
-	LiveEpoch  uint64
+	LastUpdatedAt *time.Time
+	Phase         string
+	CacheEpoch    uint64
+	LiveEpoch     uint64
 }
 
 type BusObservabilityStatus struct {
+	LastUpdatedAt  *time.Time
 	TransportClass string
 	Capability     BusObservabilityCapability
 	Warmup         BusObservabilityWarmup
@@ -62,6 +65,7 @@ type ObserveFirstFeatureFlagState struct {
 	PassiveStateDirectApply  bool
 	PassiveConfigDirectApply bool
 	ExternalWritePolicy      string
+	LastUpdatedAt            *time.Time
 	Normalizations           []string
 }
 
@@ -76,10 +80,11 @@ type BusObservabilityCounters struct {
 }
 
 type BusSummary struct {
-	Status      *BusObservabilityStatus
-	Messages    BusBoundedListSummary
-	Periodicity BusBoundedListSummary
-	Counters    BusObservabilityCounters
+	LastUpdatedAt *time.Time
+	Status        *BusObservabilityStatus
+	Messages      BusBoundedListSummary
+	Periodicity   BusBoundedListSummary
+	Counters      BusObservabilityCounters
 }
 
 type BusMessage struct {
@@ -203,6 +208,7 @@ func cloneBusSummary(source *BusSummary) *BusSummary {
 		return nil
 	}
 	out := *source
+	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
 	out.Status = cloneBusObservabilityStatus(source.Status)
 	return &out
 }
@@ -212,13 +218,12 @@ func cloneBusObservabilityStatus(source *BusObservabilityStatus) *BusObservabili
 		return nil
 	}
 	out := *source
+	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
 	out.Startup = cloneBusObservabilityStartup(source.Startup)
 	if len(source.Degraded.Reasons) > 0 {
 		out.Degraded.Reasons = append([]string(nil), source.Degraded.Reasons...)
 	}
-	if len(source.FeatureFlags.Normalizations) > 0 {
-		out.FeatureFlags.Normalizations = append([]string(nil), source.FeatureFlags.Normalizations...)
-	}
+	out.FeatureFlags = cloneObserveFirstFeatureFlagState(source.FeatureFlags)
 	return &out
 }
 
@@ -227,7 +232,32 @@ func cloneBusObservabilityStartup(source *BusObservabilityStartup) *BusObservabi
 		return nil
 	}
 	out := *source
+	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
 	return &out
+}
+
+func cloneObserveFirstFeatureFlagState(source ObserveFirstFeatureFlagState) ObserveFirstFeatureFlagState {
+	out := source
+	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
+	if len(source.Normalizations) > 0 {
+		out.Normalizations = append([]string(nil), source.Normalizations...)
+	}
+	return out
+}
+
+func cloneTimePtr(source *time.Time) *time.Time {
+	if source == nil {
+		return nil
+	}
+	updatedAt := source.UTC()
+	return &updatedAt
+}
+
+func graphqlTimeString(source *time.Time) any {
+	if source == nil || source.IsZero() {
+		return nil
+	}
+	return source.UTC().Format(time.RFC3339Nano)
 }
 
 func cloneBusMessages(source []BusMessage) []BusMessage {
@@ -516,6 +546,20 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return value.Phase, nil
 				},
 			},
+			"lastUpdatedAt": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					startup, ok := params.Source.(*BusObservabilityStartup)
+					if ok && startup != nil {
+						return graphqlTimeString(startup.LastUpdatedAt), nil
+					}
+					value, ok := params.Source.(BusObservabilityStartup)
+					if !ok {
+						return nil, nil
+					}
+					return graphqlTimeString(value.LastUpdatedAt), nil
+				},
+			},
 			"cacheEpoch": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -598,6 +642,16 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 						return []string{}, nil
 					}
 					return append([]string(nil), state.Normalizations...), nil
+				},
+			},
+			"lastUpdatedAt": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					state, ok := params.Source.(ObserveFirstFeatureFlagState)
+					if !ok {
+						return nil, nil
+					}
+					return graphqlTimeString(state.LastUpdatedAt), nil
 				},
 			},
 		},
@@ -704,6 +758,20 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return value.FeatureFlags, nil
 				},
 			},
+			"lastUpdatedAt": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*BusObservabilityStatus)
+					if ok && status != nil {
+						return graphqlTimeString(status.LastUpdatedAt), nil
+					}
+					value, ok := params.Source.(BusObservabilityStatus)
+					if !ok {
+						return nil, nil
+					}
+					return graphqlTimeString(value.LastUpdatedAt), nil
+				},
+			},
 		},
 	})
 
@@ -762,6 +830,20 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 	busSummaryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "BusSummary",
 		Fields: graphqlgo.Fields{
+			"lastUpdatedAt": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					summary, ok := params.Source.(*BusSummary)
+					if ok && summary != nil {
+						return graphqlTimeString(summary.LastUpdatedAt), nil
+					}
+					value, ok := params.Source.(BusSummary)
+					if !ok {
+						return nil, nil
+					}
+					return graphqlTimeString(value.LastUpdatedAt), nil
+				},
+			},
 			"status": &graphqlgo.Field{
 				Type: statusType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

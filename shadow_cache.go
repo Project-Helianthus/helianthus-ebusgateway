@@ -176,6 +176,7 @@ type ShadowCache struct {
 	shutdownCompactorTimeout time.Duration
 	featureFlags             ObserveFirstFeatureFlags
 	now                      func() time.Time
+	lastUpdatedAt            time.Time
 
 	mu              sync.Mutex
 	entries         map[string]*shadowEntry
@@ -252,6 +253,7 @@ func NewShadowCache(options ShadowCacheOptions) *ShadowCache {
 		shutdownCompactorTimeout: options.ShutdownCompactorTimeout,
 		featureFlags:             NormalizeObserveFirstFeatureFlagsFromView(options.FeatureFlags),
 		now:                      options.Now,
+		lastUpdatedAt:            options.Now(),
 		entries:                  make(map[string]*shadowEntry),
 		evictableLRU:             list.New(),
 		compactorList:            list.New(),
@@ -541,6 +543,7 @@ func (cache *ShadowCache) Write(write ShadowWrite) ShadowWriteResult {
 	cache.bumpLastWriteGenerationLocked(entry, state)
 	cache.applyPinClassLocked(entry, desiredPin)
 	cache.storeSnapshotLocked(entry, state)
+	cache.touchLocked(write.ObservedAt)
 
 	return ShadowWriteResult{
 		Accepted:            true,
@@ -616,6 +619,7 @@ func (cache *ShadowCache) Invalidate(invalidation ShadowInvalidation) ShadowInva
 	cache.bumpLastWriteGenerationLocked(entry, state)
 	cache.applyPinClassLocked(entry, desiredPin)
 	cache.storeSnapshotLocked(entry, state)
+	cache.touchLocked(invalidation.InvalidatedAt)
 
 	return ShadowInvalidationResult{
 		Generation: entry.generation,
@@ -631,6 +635,7 @@ func (cache *ShadowCache) RevalidatePinnedBudget() ShadowCacheSummary {
 	footprint := cache.staticPinnedFootprint()
 	cache.pinnedBudgetDegraded.Store(footprint > cache.staticPinnedBudget())
 	cache.syncAllPinsLocked()
+	cache.touchLocked(cache.now())
 	cache.mu.Unlock()
 	return cache.Summary()
 }
@@ -642,6 +647,7 @@ func (cache *ShadowCache) RefreshActivations() {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	cache.syncAllPinsLocked()
+	cache.touchLocked(cache.now())
 }
 
 // BootstrapRuntimeDescriptor registers a descriptor/source pair into the runtime
@@ -699,17 +705,28 @@ func (cache *ShadowCache) BootstrapRuntimeDescriptor(descriptor WatchDescriptor,
 			footprint := cache.staticPinnedFootprint()
 			cache.pinnedBudgetDegraded.Store(footprint > cache.staticPinnedBudget())
 			cache.syncAllPinsLocked()
+			cache.touchLocked(cache.now())
 			return nil
 		}
 
+		existingSources := currentActivations.ActiveSources(normalized.Key)
+		sourceAdded := false
 		for _, source := range activationSources {
+			if !watchActivationSourcesContain(existingSources, source) {
+				sourceAdded = true
+				existingSources = append(existingSources, source)
+			}
 			if err := currentActivations.Activate(source, normalized.Key); err != nil {
 				return err
 			}
 		}
+		if !sourceAdded {
+			return nil
+		}
 		footprint := cache.staticPinnedFootprint()
 		cache.pinnedBudgetDegraded.Store(footprint > cache.staticPinnedBudget())
 		cache.syncAllPinsLocked()
+		cache.touchLocked(cache.now())
 		return nil
 	}
 
@@ -729,6 +746,7 @@ func (cache *ShadowCache) BootstrapRuntimeDescriptor(descriptor WatchDescriptor,
 	footprint := cache.staticPinnedFootprint()
 	cache.pinnedBudgetDegraded.Store(footprint > cache.staticPinnedBudget())
 	cache.syncAllPinsLocked()
+	cache.touchLocked(cache.now())
 
 	return nil
 }
@@ -738,6 +756,15 @@ func shouldUpgradeRuntimeDescriptor(existing, incoming WatchDescriptor) bool {
 		return false
 	}
 	return incoming.DecoderID != runtimeDescriptorDecoderPassiveFallback
+}
+
+func watchActivationSourcesContain(sources []WatchActivationSource, target WatchActivationSource) bool {
+	for _, source := range sources {
+		if source == target {
+			return true
+		}
+	}
+	return false
 }
 
 func bootstrapRuntimeActivationSet(
@@ -827,6 +854,24 @@ func (cache *ShadowCache) Summary() ShadowCacheSummary {
 		EvictableEntries:         evictable,
 		StaticPinnedFootprint:    cache.staticPinnedFootprint(),
 		WriteConfirmPinnedActive: writeConfirm,
+	}
+}
+
+func (cache *ShadowCache) lastUpdatedAtPtrLocked() *time.Time {
+	if cache == nil || cache.lastUpdatedAt.IsZero() {
+		return nil
+	}
+	updatedAt := cache.lastUpdatedAt.UTC()
+	return &updatedAt
+}
+
+func (cache *ShadowCache) touchLocked(at time.Time) {
+	if cache == nil || at.IsZero() {
+		return
+	}
+	at = at.UTC()
+	if cache.lastUpdatedAt.IsZero() || at.After(cache.lastUpdatedAt) {
+		cache.lastUpdatedAt = at
 	}
 }
 
@@ -1026,6 +1071,7 @@ func (cache *ShadowCache) writeConfirmPinnedCountLocked() int {
 func (cache *ShadowCache) compactBatch(batch []string, now time.Time) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
+	mutated := false
 
 	for _, canonical := range batch {
 		entry := cache.entries[canonical]
@@ -1044,6 +1090,7 @@ func (cache *ShadowCache) compactBatch(batch []string, now time.Time) {
 			entry.value = nil
 			cache.bumpLastWriteGenerationLocked(entry, state)
 			cache.storeSnapshotLocked(entry, state)
+			mutated = true
 		case ShadowEntryStateTombstone:
 			if entry.invalidatedAt.IsZero() || now.Sub(entry.invalidatedAt) < cache.tombstoneHardLifespan {
 				continue
@@ -1051,7 +1098,11 @@ func (cache *ShadowCache) compactBatch(batch []string, now time.Time) {
 			cache.advanceGenerationLocked(entry, state)
 			cache.storeAbsentSnapshotLocked(state)
 			cache.removeEntryLocked(canonical)
+			mutated = true
 		}
+	}
+	if mutated {
+		cache.touchLocked(now)
 	}
 }
 

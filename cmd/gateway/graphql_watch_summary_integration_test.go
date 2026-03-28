@@ -70,6 +70,7 @@ func TestGraphQLWatchSummaryProviderAdapter_ParityWithMCPAdapter(t *testing.T) {
 
 func graphQLWatchSummaryToMCPShape(summary graphql.WatchSummary) mcp.WatchSummary {
 	return mcp.WatchSummary{
+		LastUpdatedAt: cloneTimePtr(summary.LastUpdatedAt),
 		Inventory: mcp.WatchSummaryInventory{
 			TotalEntries:             summary.Inventory.TotalEntries,
 			PinnedEntries:            summary.Inventory.PinnedEntries,

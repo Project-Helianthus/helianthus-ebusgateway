@@ -822,6 +822,83 @@ func TestShadowCacheBootstrapRuntimeDescriptorExistingKeyPromotionRecomputesBudg
 	}
 }
 
+func TestShadowCacheBootstrapRuntimeDescriptorRepeatedSameSourceDoesNotAdvanceFreshness(t *testing.T) {
+	t.Parallel()
+
+	key := NewB509WatchKey(0x08, 0x0200)
+	base := time.Unix(100, 0)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, base, ShadowCacheOptions{})
+
+	descriptor, ok := catalog.DescriptorByCanonical(key.Canonical())
+	if !ok {
+		t.Fatal("DescriptorByCanonical(key) missing")
+	}
+
+	initial := cache.WatchSummary()
+	if initial.LastUpdatedAt == nil {
+		t.Fatal("initial LastUpdatedAt = nil")
+	}
+	if !initial.LastUpdatedAt.Equal(base) {
+		t.Fatalf("initial LastUpdatedAt = %s; want %s", initial.LastUpdatedAt, base)
+	}
+
+	later := base.Add(5 * time.Minute)
+	cache.now = func() time.Time { return later }
+	if err := cache.BootstrapRuntimeDescriptor(descriptor, WatchActivationSourceTooling); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor(same source) error = %v", err)
+	}
+
+	after := cache.WatchSummary()
+	if after.LastUpdatedAt == nil {
+		t.Fatal("after LastUpdatedAt = nil")
+	}
+	if !after.LastUpdatedAt.Equal(base) {
+		t.Fatalf("repeated bootstrap advanced LastUpdatedAt to %s; want stable %s", after.LastUpdatedAt, base)
+	}
+}
+
+func TestShadowCacheBootstrapRuntimeDescriptorNewSourceAdvancesFreshness(t *testing.T) {
+	t.Parallel()
+
+	key := NewB509WatchKey(0x08, 0x0200)
+	base := time.Unix(100, 0)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, base, ShadowCacheOptions{})
+
+	descriptor, ok := catalog.DescriptorByCanonical(key.Canonical())
+	if !ok {
+		t.Fatal("DescriptorByCanonical(key) missing")
+	}
+
+	initial := cache.WatchSummary()
+	if initial.LastUpdatedAt == nil {
+		t.Fatal("initial LastUpdatedAt = nil")
+	}
+	if !initial.LastUpdatedAt.Equal(base) {
+		t.Fatalf("initial LastUpdatedAt = %s; want %s", initial.LastUpdatedAt, base)
+	}
+
+	mutated := base.Add(5 * time.Minute)
+	cache.now = func() time.Time { return mutated }
+	if err := cache.BootstrapRuntimeDescriptor(descriptor, WatchActivationSourcePoller); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor(new source) error = %v", err)
+	}
+
+	after := cache.WatchSummary()
+	if after.LastUpdatedAt == nil {
+		t.Fatal("after LastUpdatedAt = nil")
+	}
+	if !after.LastUpdatedAt.Equal(mutated) {
+		t.Fatalf("new source LastUpdatedAt = %s; want %s", after.LastUpdatedAt, mutated)
+	}
+
+	observation := cache.activations.Observe(key)
+	if got, want := observation.Sources, []WatchActivationSource{WatchActivationSourcePoller, WatchActivationSourceTooling}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Observe(key).Sources = %v; want %v", got, want)
+	}
+}
+
 func TestShadowCacheBootstrapRuntimeDescriptorConcurrentFirstUsePreservesBothKeys(t *testing.T) {
 	t.Parallel()
 

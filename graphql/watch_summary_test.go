@@ -7,11 +7,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type countingWatchSummaryProvider struct {
-	mu    sync.Mutex
-	calls int
+	mu        sync.Mutex
+	calls     int
+	updatedAt time.Time
 }
 
 func (provider *countingWatchSummaryProvider) Snapshot() WatchSummary {
@@ -22,6 +24,7 @@ func (provider *countingWatchSummaryProvider) Snapshot() WatchSummary {
 	call := provider.calls
 
 	return WatchSummary{
+		LastUpdatedAt: &provider.updatedAt,
 		ActivationCounts: WatchSummaryActivationCounts{
 			ActiveKeys: call,
 		},
@@ -40,7 +43,8 @@ func (provider *countingWatchSummaryProvider) CallCount() int {
 
 func TestWatchSummaryQuery_SharedSnapshotPerOperation(t *testing.T) {
 	builder := NewBuilder(mockRegistry{}, nil)
-	provider := &countingWatchSummaryProvider{}
+	updatedAt := time.Date(2026, time.March, 13, 9, 30, 0, 0, time.UTC)
+	provider := &countingWatchSummaryProvider{updatedAt: updatedAt}
 	builder.SetWatchSummaryProvider(provider)
 
 	handler, err := NewInvokeHandler(builder, nil, nil)
@@ -48,7 +52,7 @@ func TestWatchSummaryQuery_SharedSnapshotPerOperation(t *testing.T) {
 		t.Fatalf("NewInvokeHandler error = %v", err)
 	}
 
-	request := `{"query":"{ first: watchSummary { activationCounts { activeKeys } } second: watchSummary { activationCounts { activeKeys } } }"}`
+	request := `{"query":"{ first: watchSummary { lastUpdatedAt activationCounts { activeKeys } } second: watchSummary { lastUpdatedAt activationCounts { activeKeys } } }"}`
 	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(request))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -61,11 +65,13 @@ func TestWatchSummaryQuery_SharedSnapshotPerOperation(t *testing.T) {
 	var response struct {
 		Data struct {
 			First struct {
+				LastUpdatedAt    string `json:"lastUpdatedAt"`
 				ActivationCounts struct {
 					ActiveKeys int `json:"activeKeys"`
 				} `json:"activationCounts"`
 			} `json:"first"`
 			Second struct {
+				LastUpdatedAt    string `json:"lastUpdatedAt"`
 				ActivationCounts struct {
 					ActiveKeys int `json:"activeKeys"`
 				} `json:"activationCounts"`
@@ -87,6 +93,14 @@ func TestWatchSummaryQuery_SharedSnapshotPerOperation(t *testing.T) {
 			"watchSummary activationCounts.activeKeys = (%d,%d); want (1,1)",
 			response.Data.First.ActivationCounts.ActiveKeys,
 			response.Data.Second.ActivationCounts.ActiveKeys,
+		)
+	}
+	if response.Data.First.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) || response.Data.Second.LastUpdatedAt != updatedAt.Format(time.RFC3339Nano) {
+		t.Fatalf(
+			"watchSummary lastUpdatedAt = (%s,%s); want %s",
+			response.Data.First.LastUpdatedAt,
+			response.Data.Second.LastUpdatedAt,
+			updatedAt.Format(time.RFC3339Nano),
 		)
 	}
 }

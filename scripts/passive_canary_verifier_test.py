@@ -47,6 +47,70 @@ def canonical_feature_flags(
     }
 
 
+def phase_timestamps(phase: str) -> dict[str, dict[str, str]]:
+    if phase == "start":
+        bus_time = "2026-03-28T00:00:00Z"
+        graphql_time = "2026-03-28T00:00:01Z"
+        watch_time = "2026-03-28T00:00:02Z"
+    elif phase == "end":
+        bus_time = "2026-03-28T00:05:00Z"
+        graphql_time = "2026-03-28T00:05:01Z"
+        watch_time = "2026-03-28T00:05:02Z"
+    elif phase.startswith("sample_"):
+        suffix = phase.removeprefix("sample_")
+        if not suffix.isdigit():
+            raise ValueError(f"unsupported phase {phase}")
+        minute = int(suffix) + 1
+        bus_time = f"2026-03-28T00:{minute:02d}:00Z"
+        graphql_time = f"2026-03-28T00:{minute:02d}:01Z"
+        watch_time = f"2026-03-28T00:{minute:02d}:02Z"
+    else:
+        raise ValueError(f"unsupported phase {phase}")
+    return {
+        "bus_observability": {
+            "summary_last_updated_at": bus_time,
+            "status_last_updated_at": bus_time,
+            "startup_last_updated_at": bus_time,
+            "feature_flags_last_updated_at": bus_time,
+        },
+        "graphql_bus_watch": {
+            "summary_last_updated_at": graphql_time,
+            "status_last_updated_at": graphql_time,
+            "startup_last_updated_at": graphql_time,
+            "feature_flags_last_updated_at": graphql_time,
+            "watch_summary_last_updated_at": watch_time,
+        },
+    }
+
+
+def bus_feature_flags_snapshot(phase: str) -> dict:
+    flags = canonical_feature_flags()
+    flags["last_updated_at"] = phase_timestamps(phase)["bus_observability"]["feature_flags_last_updated_at"]
+    return flags
+
+
+def graphql_feature_flags_snapshot(phase: str) -> dict:
+    flags = canonical_feature_flags()
+    flags["lastUpdatedAt"] = phase_timestamps(phase)["graphql_bus_watch"]["feature_flags_last_updated_at"]
+    return flags
+
+
+def watch_summary_snapshot(phase: str) -> dict:
+    return {
+        "lastUpdatedAt": phase_timestamps(phase)["graphql_bus_watch"]["watch_summary_last_updated_at"],
+        "inventory": {"totalEntries": 1},
+        "activationCounts": {"catalogDescriptors": 1, "activeKeys": 1, "sourceClasses": []},
+        "directApplyEligibilityClasses": [],
+        "degraded": {
+            "active": False,
+            "shadowingEnabled": False,
+            "pinnedBudgetDegraded": False,
+            "compactorDegraded": False,
+            "reasons": [],
+        },
+    }
+
+
 def canonical_family_proof_canary_ids() -> list[str]:
     _, canaries = verifier.load_and_validate_manifest(
         SCRIPT_DIR.parent / "testdata" / "passive_proof" / "p03_canary_manifest.json",
@@ -144,9 +208,16 @@ def write_family_proof_artifacts(
         proof_dir / "start_bus_observability.json",
         {
             "summary": {
+                "last_updated_at": phase_timestamps("start")["bus_observability"]["summary_last_updated_at"],
                 "status": {
-                    "startup": {"phase": "LIVE_WARMUP", "cache_epoch": 1, "live_epoch": 0},
-                    "feature_flags": canonical_feature_flags(),
+                    "last_updated_at": phase_timestamps("start")["bus_observability"]["status_last_updated_at"],
+                    "startup": {
+                        "phase": "LIVE_WARMUP",
+                        "cache_epoch": 1,
+                        "live_epoch": 0,
+                        "last_updated_at": phase_timestamps("start")["bus_observability"]["startup_last_updated_at"],
+                    },
+                    "feature_flags": bus_feature_flags_snapshot("start"),
                 }
             }
         },
@@ -155,9 +226,16 @@ def write_family_proof_artifacts(
         proof_dir / "end_bus_observability.json",
         {
             "summary": {
+                "last_updated_at": phase_timestamps("end")["bus_observability"]["summary_last_updated_at"],
                 "status": {
-                    "startup": {"phase": "LIVE_READY", "cache_epoch": 1, "live_epoch": 1},
-                    "feature_flags": canonical_feature_flags(),
+                    "last_updated_at": phase_timestamps("end")["bus_observability"]["status_last_updated_at"],
+                    "startup": {
+                        "phase": "LIVE_READY",
+                        "cache_epoch": 1,
+                        "live_epoch": 1,
+                        "last_updated_at": phase_timestamps("end")["bus_observability"]["startup_last_updated_at"],
+                    },
+                    "feature_flags": bus_feature_flags_snapshot("end"),
                 }
             }
         },
@@ -167,8 +245,16 @@ def write_family_proof_artifacts(
         {
             "data": {
                 "busSummary": {
+                    "lastUpdatedAt": phase_timestamps("start")["graphql_bus_watch"]["summary_last_updated_at"],
                     "status": {
+                        "lastUpdatedAt": phase_timestamps("start")["graphql_bus_watch"]["status_last_updated_at"],
                         "transportClass": transport_class,
+                        "startup": {
+                            "phase": "LIVE_WARMUP",
+                            "cacheEpoch": 1,
+                            "liveEpoch": 0,
+                            "lastUpdatedAt": phase_timestamps("start")["graphql_bus_watch"]["startup_last_updated_at"],
+                        },
                         "warmup": {
                             "state": "warming_up",
                             "blocker": "",
@@ -177,9 +263,10 @@ def write_family_proof_artifacts(
                             "requiredTransactions": 0,
                             "completionMode": "proof_window",
                         },
-                        "featureFlags": canonical_feature_flags(),
+                        "featureFlags": graphql_feature_flags_snapshot("start"),
                     }
-                }
+                },
+                "watchSummary": watch_summary_snapshot("start"),
             }
         },
     )
@@ -188,8 +275,16 @@ def write_family_proof_artifacts(
         {
             "data": {
                 "busSummary": {
+                    "lastUpdatedAt": phase_timestamps("end")["graphql_bus_watch"]["summary_last_updated_at"],
                     "status": {
+                        "lastUpdatedAt": phase_timestamps("end")["graphql_bus_watch"]["status_last_updated_at"],
                         "transportClass": transport_class,
+                        "startup": {
+                            "phase": "LIVE_READY",
+                            "cacheEpoch": 1,
+                            "liveEpoch": 1,
+                            "lastUpdatedAt": phase_timestamps("end")["graphql_bus_watch"]["startup_last_updated_at"],
+                        },
                         "warmup": {
                             "state": "available",
                             "blocker": "",
@@ -198,9 +293,10 @@ def write_family_proof_artifacts(
                             "requiredTransactions": 0,
                             "completionMode": "proof_window",
                         },
-                        "featureFlags": canonical_feature_flags(),
+                        "featureFlags": graphql_feature_flags_snapshot("end"),
                     }
-                }
+                },
+                "watchSummary": watch_summary_snapshot("end"),
             }
         },
     )
@@ -208,16 +304,16 @@ def write_family_proof_artifacts(
         proof_dir / "start_feature_flags.json",
         {
             "captured_at": "2026-03-28T00:00:00+00:00",
-            "graphql_feature_flags": canonical_feature_flags(),
-            "bus_observability_feature_flags": canonical_feature_flags(),
+            "graphql_feature_flags": graphql_feature_flags_snapshot("start"),
+            "bus_observability_feature_flags": bus_feature_flags_snapshot("start"),
         },
     )
     write_json(
         proof_dir / "end_feature_flags.json",
         {
             "captured_at": "2026-03-28T00:00:00+00:00",
-            "graphql_feature_flags": canonical_feature_flags(),
-            "bus_observability_feature_flags": canonical_feature_flags(),
+            "graphql_feature_flags": graphql_feature_flags_snapshot("end"),
+            "bus_observability_feature_flags": bus_feature_flags_snapshot("end"),
         },
     )
 
@@ -715,9 +811,21 @@ class StaleArtifactRejectionTests(unittest.TestCase):
         bus_flags: dict | None = None,
     ) -> None:
         if graphql_flags is None:
-            graphql_flags = canonical_feature_flags()
+            graphql_flags = graphql_feature_flags_snapshot(phase)
+        else:
+            graphql_flags = dict(graphql_flags)
+            graphql_flags.setdefault(
+                "lastUpdatedAt",
+                phase_timestamps(phase)["graphql_bus_watch"]["feature_flags_last_updated_at"],
+            )
         if bus_flags is None:
-            bus_flags = canonical_feature_flags()
+            bus_flags = bus_feature_flags_snapshot(phase)
+        else:
+            bus_flags = dict(bus_flags)
+            bus_flags.setdefault(
+                "last_updated_at",
+                phase_timestamps(phase)["bus_observability"]["feature_flags_last_updated_at"],
+            )
         snapshot_path = (
             proof_dir / f"{phase}_feature_flags.json"
             if phase in ("start", "end")
@@ -746,20 +854,35 @@ class StaleArtifactRejectionTests(unittest.TestCase):
         bus_feature_flags: dict | None = None,
     ) -> None:
         if graphql_feature_flags is None:
-            graphql_feature_flags = canonical_feature_flags()
+            graphql_feature_flags = graphql_feature_flags_snapshot(phase)
+        else:
+            graphql_feature_flags = dict(graphql_feature_flags)
+            graphql_feature_flags.setdefault(
+                "lastUpdatedAt",
+                phase_timestamps(phase)["graphql_bus_watch"]["feature_flags_last_updated_at"],
+            )
         if bus_feature_flags is None:
-            bus_feature_flags = canonical_feature_flags()
+            bus_feature_flags = bus_feature_flags_snapshot(phase)
+        else:
+            bus_feature_flags = dict(bus_feature_flags)
+            bus_feature_flags.setdefault(
+                "last_updated_at",
+                phase_timestamps(phase)["bus_observability"]["feature_flags_last_updated_at"],
+            )
         snapshot_dir = proof_dir if phase in ("start", "end") else proof_dir / "samples"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         write_json(
             snapshot_dir / f"{phase}_bus_observability.json",
             {
                 "summary": {
+                    "last_updated_at": phase_timestamps(phase)["bus_observability"]["summary_last_updated_at"],
                     "status": {
+                        "last_updated_at": phase_timestamps(phase)["bus_observability"]["status_last_updated_at"],
                         "startup": {
                             "phase": startup_phase,
                             "cache_epoch": cache_epoch,
                             "live_epoch": live_epoch,
+                            "last_updated_at": phase_timestamps(phase)["bus_observability"]["startup_last_updated_at"],
                         },
                         "feature_flags": bus_feature_flags,
                     }
@@ -771,8 +894,16 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             {
                 "data": {
                     "busSummary": {
+                        "lastUpdatedAt": phase_timestamps(phase)["graphql_bus_watch"]["summary_last_updated_at"],
                         "status": {
+                            "lastUpdatedAt": phase_timestamps(phase)["graphql_bus_watch"]["status_last_updated_at"],
                             "transportClass": transport_class,
+                            "startup": {
+                                "phase": startup_phase,
+                                "cacheEpoch": cache_epoch,
+                                "liveEpoch": live_epoch,
+                                "lastUpdatedAt": phase_timestamps(phase)["graphql_bus_watch"]["startup_last_updated_at"],
+                            },
                             "warmup": {
                                 "state": warmup_state,
                                 "blocker": "",
@@ -784,18 +915,7 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                             "featureFlags": graphql_feature_flags,
                         }
                     },
-                    "watchSummary": {
-                        "inventory": {"totalEntries": 1},
-                        "activationCounts": {"catalogDescriptors": 1, "activeKeys": 1, "sourceClasses": []},
-                        "directApplyEligibilityClasses": [],
-                        "degraded": {
-                            "active": False,
-                            "shadowingEnabled": False,
-                            "pinnedBudgetDegraded": False,
-                            "compactorDegraded": False,
-                            "reasons": [],
-                        },
-                    },
+                    "watchSummary": watch_summary_snapshot(phase),
                 }
             },
         )
@@ -1536,13 +1656,15 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 avoided=3,
             )
             self.write_run_phase_artifacts(proof_dir, include_interval=True)
-            write_json(
-                proof_dir / "samples" / "sample_0001_feature_flags.json",
-                {
-                    "captured_at": "2026-03-28T00:00:00+00:00",
-                    "graphql_feature_flags": canonical_feature_flags(observe_first_enabled=False),
-                    "bus_observability_feature_flags": canonical_feature_flags(observe_first_enabled=False),
-                },
+            sample_graphql_flags = graphql_feature_flags_snapshot("sample_0001")
+            sample_graphql_flags["observeFirstEnabled"] = False
+            sample_bus_flags = bus_feature_flags_snapshot("sample_0001")
+            sample_bus_flags["observeFirstEnabled"] = False
+            self.write_feature_flag_snapshot(
+                proof_dir,
+                "sample_0001",
+                graphql_flags=sample_graphql_flags,
+                bus_flags=sample_bus_flags,
             )
 
             with self.assertRaises(ValueError) as ctx:
@@ -1586,26 +1708,14 @@ class StaleArtifactRejectionTests(unittest.TestCase):
                 end_avoided=3,
             )
             self.write_run_phase_artifacts(proof_dir, include_interval=False)
-            write_json(
-                proof_dir / "start_feature_flags.json",
-                {
-                    "captured_at": "2026-03-28T00:00:00+00:00",
-                    "graphql_feature_flags": canonical_feature_flags(),
-                    "bus_observability_feature_flags": canonical_feature_flags(),
-                },
-            )
-            write_json(
-                proof_dir / "end_feature_flags.json",
-                {
-                    "captured_at": "2026-03-28T00:00:00+00:00",
-                    "graphql_feature_flags": canonical_feature_flags(),
-                    "bus_observability_feature_flags": {
-                        "observeFirstEnabled": True,
-                        "passiveStateDirectApply": False,
-                        "passiveConfigDirectApply": False,
-                        "externalWritePolicy": "record_only",
-                    },
-                },
+            self.write_feature_flag_snapshot(proof_dir, "start")
+            end_bus_flags = bus_feature_flags_snapshot("end")
+            end_bus_flags.pop("normalizations")
+            self.write_feature_flag_snapshot(
+                proof_dir,
+                "end",
+                graphql_flags=graphql_feature_flags_snapshot("end"),
+                bus_flags=end_bus_flags,
             )
 
             summary = verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
@@ -1703,33 +1813,47 @@ class CanaryVerdictTests(unittest.TestCase):
         }
         start_bus_observability = {
             "summary": {
+                "last_updated_at": phase_timestamps("start")["bus_observability"]["summary_last_updated_at"],
                 "status": {
+                    "last_updated_at": phase_timestamps("start")["bus_observability"]["status_last_updated_at"],
                     "startup": {
                         "phase": "LIVE_WARMUP",
                         "cache_epoch": 1,
                         "live_epoch": 0,
+                        "last_updated_at": phase_timestamps("start")["bus_observability"]["startup_last_updated_at"],
                     },
-                    "feature_flags": canonical_feature_flags(),
+                    "feature_flags": bus_feature_flags_snapshot("start"),
                 }
             }
         }
         end_bus_observability = {
             "summary": {
+                "last_updated_at": phase_timestamps("end")["bus_observability"]["summary_last_updated_at"],
                 "status": {
+                    "last_updated_at": phase_timestamps("end")["bus_observability"]["status_last_updated_at"],
                     "startup": {
                         "phase": "LIVE_READY",
                         "cache_epoch": 1,
                         "live_epoch": 1,
+                        "last_updated_at": phase_timestamps("end")["bus_observability"]["startup_last_updated_at"],
                     },
-                    "feature_flags": canonical_feature_flags(),
+                    "feature_flags": bus_feature_flags_snapshot("end"),
                 }
             }
         }
         start_graphql_bus_watch = {
             "data": {
                 "busSummary": {
+                    "lastUpdatedAt": phase_timestamps("start")["graphql_bus_watch"]["summary_last_updated_at"],
                     "status": {
+                        "lastUpdatedAt": phase_timestamps("start")["graphql_bus_watch"]["status_last_updated_at"],
                         "transportClass": transport_class,
+                        "startup": {
+                            "phase": "LIVE_WARMUP",
+                            "cacheEpoch": 1,
+                            "liveEpoch": 0,
+                            "lastUpdatedAt": phase_timestamps("start")["graphql_bus_watch"]["startup_last_updated_at"],
+                        },
                         "warmup": {
                             "state": "warming_up",
                             "blocker": "",
@@ -1738,10 +1862,11 @@ class CanaryVerdictTests(unittest.TestCase):
                             "requiredTransactions": 0,
                             "completionMode": "proof_window",
                         },
-                        "featureFlags": canonical_feature_flags(),
+                        "featureFlags": graphql_feature_flags_snapshot("start"),
                     }
                 },
                 "watchSummary": {
+                    "lastUpdatedAt": phase_timestamps("start")["graphql_bus_watch"]["watch_summary_last_updated_at"],
                     "inventory": {"totalEntries": 1},
                     "activationCounts": {"catalogDescriptors": 1, "activeKeys": 1, "sourceClasses": []},
                     "directApplyEligibilityClasses": [],
@@ -1758,8 +1883,16 @@ class CanaryVerdictTests(unittest.TestCase):
         end_graphql_bus_watch = {
             "data": {
                 "busSummary": {
+                    "lastUpdatedAt": phase_timestamps("end")["graphql_bus_watch"]["summary_last_updated_at"],
                     "status": {
+                        "lastUpdatedAt": phase_timestamps("end")["graphql_bus_watch"]["status_last_updated_at"],
                         "transportClass": transport_class,
+                        "startup": {
+                            "phase": "LIVE_READY",
+                            "cacheEpoch": 1,
+                            "liveEpoch": 1,
+                            "lastUpdatedAt": phase_timestamps("end")["graphql_bus_watch"]["startup_last_updated_at"],
+                        },
                         "warmup": {
                             "state": "available",
                             "blocker": "",
@@ -1768,10 +1901,11 @@ class CanaryVerdictTests(unittest.TestCase):
                             "requiredTransactions": 0,
                             "completionMode": "proof_window",
                         },
-                        "featureFlags": canonical_feature_flags(),
+                        "featureFlags": graphql_feature_flags_snapshot("end"),
                     }
                 },
                 "watchSummary": {
+                    "lastUpdatedAt": phase_timestamps("end")["graphql_bus_watch"]["watch_summary_last_updated_at"],
                     "inventory": {"totalEntries": 1},
                     "activationCounts": {"catalogDescriptors": 1, "activeKeys": 1, "sourceClasses": []},
                     "directApplyEligibilityClasses": [],
@@ -1816,8 +1950,10 @@ class CanaryVerdictTests(unittest.TestCase):
                     {
                         "phase": "start",
                         "feature_flags_snapshot_path": "/tmp/proof/start_feature_flags.json",
-                        "graphql_feature_flags": canonical_feature_flags(),
-                        "bus_observability_feature_flags": canonical_feature_flags(),
+                        "graphql_feature_flags": graphql_feature_flags_snapshot("start"),
+                        "bus_observability_feature_flags": bus_feature_flags_snapshot("start"),
+                        "graphql_feature_flags_last_updated_at": phase_timestamps("start")["graphql_bus_watch"]["feature_flags_last_updated_at"],
+                        "bus_observability_feature_flags_last_updated_at": phase_timestamps("start")["bus_observability"]["feature_flags_last_updated_at"],
                         "canonical_feature_flags": canonical_feature_flags(),
                         "canonical_feature_flags_key": json.dumps(
                             canonical_feature_flags(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
@@ -1826,8 +1962,10 @@ class CanaryVerdictTests(unittest.TestCase):
                     {
                         "phase": "end",
                         "feature_flags_snapshot_path": "/tmp/proof/end_feature_flags.json",
-                        "graphql_feature_flags": canonical_feature_flags(),
-                        "bus_observability_feature_flags": canonical_feature_flags(),
+                        "graphql_feature_flags": graphql_feature_flags_snapshot("end"),
+                        "bus_observability_feature_flags": bus_feature_flags_snapshot("end"),
+                        "graphql_feature_flags_last_updated_at": phase_timestamps("end")["graphql_bus_watch"]["feature_flags_last_updated_at"],
+                        "bus_observability_feature_flags_last_updated_at": phase_timestamps("end")["bus_observability"]["feature_flags_last_updated_at"],
                         "canonical_feature_flags": canonical_feature_flags(),
                         "canonical_feature_flags_key": json.dumps(
                             canonical_feature_flags(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
@@ -1871,6 +2009,7 @@ class CanaryVerdictTests(unittest.TestCase):
                     },
                     "startup_phase": "LIVE_WARMUP",
                     "warmup_state": "warming_up",
+                    "timestamps": phase_timestamps("start"),
                 },
                 "post_warmup": {
                     "snapshot_prefix": "end",
@@ -1889,6 +2028,7 @@ class CanaryVerdictTests(unittest.TestCase):
                     },
                     "startup_phase": "LIVE_READY",
                     "warmup_state": "available",
+                    "timestamps": phase_timestamps("end"),
                 },
                 "transition": {
                     "established": warmup_established,
@@ -4204,6 +4344,12 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     if [[ "${url}" == *"/portal/api/v1/bus/observability" ]]; then
                       startup_mode="${FAKE_BUS_STARTUP_MODE:-initially_live_warmup_then_live_ready}"
                       phase="LIVE_READY"
+                      summary_last_updated_at="2026-03-28T00:05:00Z"
+                      status_last_updated_at="2026-03-28T00:05:00Z"
+                      startup_last_updated_at="2026-03-28T00:05:00Z"
+                      feature_flags_last_updated_at="2026-03-28T00:00:00Z"
+                      cache_epoch=1
+                      live_epoch=1
                       if [[ "${startup_mode}" == "initially_live_warmup_then_live_ready" ]]; then
                         state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
                         warmup_calls="${FAKE_BUS_LIVE_WARMUP_CALLS:-1}"
@@ -4213,10 +4359,14 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         fi
                         if [[ "${metrics_count}" -le "${warmup_calls}" ]]; then
                           phase="LIVE_WARMUP"
+                          summary_last_updated_at="2026-03-28T00:00:00Z"
+                          status_last_updated_at="2026-03-28T00:00:00Z"
+                          startup_last_updated_at="2026-03-28T00:00:00Z"
+                          live_epoch=0
                         fi
                       fi
                       cat <<EOF
-                    {"summary":{"status":{"startup":{"phase":"${phase}"},"feature_flags":{"observe_first_enabled":true,"passive_state_direct_apply":false,"passive_config_direct_apply":false,"external_write_policy":"record_only"}}}}
+                    {"summary":{"last_updated_at":"${summary_last_updated_at}","status":{"last_updated_at":"${status_last_updated_at}","startup":{"phase":"${phase}","cache_epoch":${cache_epoch},"live_epoch":${live_epoch},"last_updated_at":"${startup_last_updated_at}"},"feature_flags":{"observe_first_enabled":true,"passive_state_direct_apply":false,"passive_config_direct_apply":false,"external_write_policy":"record_only","normalizations":[],"last_updated_at":"${feature_flags_last_updated_at}"}}}}
                     EOF
                       exit 0
                     fi
@@ -4225,6 +4375,13 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                       if [[ "${data}" == *"busSummary"* ]]; then
                       startup_mode="${FAKE_BUS_STARTUP_MODE:-initially_live_warmup_then_live_ready}"
                       phase="LIVE_READY"
+                      bus_summary_last_updated_at="2026-03-28T00:05:01Z"
+                      bus_status_last_updated_at="2026-03-28T00:05:01Z"
+                      startup_last_updated_at="2026-03-28T00:05:01Z"
+                      feature_flags_last_updated_at="2026-03-28T00:00:01Z"
+                      watch_summary_last_updated_at="2026-03-28T00:05:02Z"
+                      cache_epoch=1
+                      live_epoch=1
                       if [[ "${startup_mode}" == "initially_live_warmup_then_live_ready" ]]; then
                         state_file="${FAKE_METRICS_STATE_FILE:?FAKE_METRICS_STATE_FILE is required}"
                         warmup_calls="${FAKE_BUS_LIVE_WARMUP_CALLS:-1}"
@@ -4234,6 +4391,11 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         fi
                         if [[ "${metrics_count}" -le "${warmup_calls}" ]]; then
                           phase="LIVE_WARMUP"
+                          bus_summary_last_updated_at="2026-03-28T00:00:01Z"
+                          bus_status_last_updated_at="2026-03-28T00:00:01Z"
+                          startup_last_updated_at="2026-03-28T00:00:01Z"
+                          watch_summary_last_updated_at="2026-03-28T00:00:02Z"
+                          live_epoch=0
                         fi
                       fi
                       warmup_state="warming_up"
@@ -4244,8 +4406,16 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     {
                       "data": {
                         "busSummary": {
+                          "lastUpdatedAt": "${bus_summary_last_updated_at}",
                           "status": {
+                            "lastUpdatedAt": "${bus_status_last_updated_at}",
                             "transportClass": "ens",
+                            "startup": {
+                              "phase": "${phase}",
+                              "cacheEpoch": ${cache_epoch},
+                              "liveEpoch": ${live_epoch},
+                              "lastUpdatedAt": "${startup_last_updated_at}"
+                            },
                             "warmup": {
                               "state": "${warmup_state}",
                               "blocker": "",
@@ -4255,6 +4425,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                               "completionMode": "proof_window"
                             },
                             "featureFlags": {
+                              "lastUpdatedAt": "${feature_flags_last_updated_at}",
                               "observeFirstEnabled": true,
                               "passiveStateDirectApply": false,
                               "passiveConfigDirectApply": false,
@@ -4264,6 +4435,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           }
                         },
                         "watchSummary": {
+                          "lastUpdatedAt": "${watch_summary_last_updated_at}",
                           "inventory": {"totalEntries": 1},
                           "activationCounts": {"catalogDescriptors": 1, "activeKeys": 1, "sourceClasses": []},
                           "directApplyEligibilityClasses": [],

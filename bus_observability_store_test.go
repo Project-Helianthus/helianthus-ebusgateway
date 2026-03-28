@@ -441,6 +441,30 @@ func TestBusObservabilityStoreExportsBusyMetricsWhenPassiveAvailable(t *testing.
 	}
 }
 
+func TestBusObservabilityStoreCompletedTransactionsCounterTracksOnlyTransactions(t *testing.T) {
+	cfg := DefaultConfig()
+	store := NewBusObservabilityStore(cfg)
+	base := time.Now().UTC()
+
+	store.OnPassiveClassifiedEvent(observabilityPassiveBroadcastEvent(base, 0x15, 0xB5, 0x16))
+	store.OnPassiveClassifiedEvent(observabilityPassiveMasterFrameEvent(base.Add(time.Second), 0x15, 0x26, 0xB5, 0x09))
+
+	store.mu.RLock()
+	completed := store.passive.completedTransactionsTotal
+	store.mu.RUnlock()
+	if completed != 0 {
+		t.Fatalf("completedTransactionsTotal after broadcast/frame = %d; want 0", completed)
+	}
+
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(2*time.Second), 0x10, 0x08, 0xB5, 0x24))
+	store.mu.RLock()
+	completed = store.passive.completedTransactionsTotal
+	store.mu.RUnlock()
+	if completed != 1 {
+		t.Fatalf("completedTransactionsTotal after transaction = %d; want 1", completed)
+	}
+}
+
 func TestBusObservabilityStoreRebootsWarmupFromConnectedSnapshotAfterSocketLoss(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BroadcastListen = true
@@ -995,6 +1019,38 @@ func observabilityPassiveTransactionEvent(observedAt time.Time, source, target, 
 			ResponseEnd:   observedAt.Add(-5 * time.Millisecond),
 			Terminal:      observedAt,
 		},
+		ObservedAt: observedAt,
+	}
+}
+
+func observabilityPassiveBroadcastEvent(observedAt time.Time, source, primary, secondary byte) PassiveClassifiedEvent {
+	return PassiveClassifiedEvent{
+		Kind:      PassiveClassifiedEventBroadcastFrame,
+		FrameType: protocol.FrameTypeBroadcast,
+		Request: protocol.Frame{
+			Source:    source,
+			Target:    0xFF,
+			Primary:   primary,
+			Secondary: secondary,
+			Data:      []byte{0x01},
+		},
+		HasRequest: true,
+		ObservedAt: observedAt,
+	}
+}
+
+func observabilityPassiveMasterFrameEvent(observedAt time.Time, source, target, primary, secondary byte) PassiveClassifiedEvent {
+	return PassiveClassifiedEvent{
+		Kind:      PassiveClassifiedEventMasterFrame,
+		FrameType: protocol.FrameTypeInitiatorInitiator,
+		Request: protocol.Frame{
+			Source:    source,
+			Target:    target,
+			Primary:   primary,
+			Secondary: secondary,
+			Data:      []byte{0x01},
+		},
+		HasRequest: true,
 		ObservedAt: observedAt,
 	}
 }

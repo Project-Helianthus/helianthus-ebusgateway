@@ -993,7 +993,9 @@ func (store *BusObservabilityStore) recordPassiveFrameLocked(event PassiveClassi
 	if !event.HasRequest {
 		return
 	}
-	store.passive.completedTransactionsTotal++
+	if event.Kind == PassiveClassifiedEventTransaction {
+		store.passive.completedTransactionsTotal++
+	}
 	store.bootstrapPassiveWarmupFromTrafficLocked(event)
 	now := event.ObservedAt
 	local := store.localAddressSnapshotLocked()

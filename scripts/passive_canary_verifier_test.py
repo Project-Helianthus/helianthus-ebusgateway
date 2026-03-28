@@ -3629,6 +3629,65 @@ class PromotionEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "blocked")
         self.assertIn("ok/status mismatch", artifact["eligibility"]["reason"])
 
+    def test_promotion_eligibility_blocks_contradictory_family_identity_and_scope_fields(self) -> None:
+        def set_nested_value(payload: dict, keys: list[str], value: object) -> None:
+            target = payload
+            for key in keys[:-1]:
+                target = target[key]
+            target[keys[-1]] = value
+
+        cases = (
+            (
+                "family_identity.kind",
+                ["family_identity", "kind"],
+                "proxy-dual-client",
+                "family_identity.kind mismatch",
+            ),
+            (
+                "family_identity.passive_mode",
+                ["family_identity", "passive_mode"],
+                "optional",
+                "family_identity.passive_mode mismatch",
+            ),
+            (
+                "family_identity.transport_class",
+                ["family_identity", "transport_class"],
+                "tcp",
+                "family_identity.transport_class mismatch",
+            ),
+            (
+                "proof_scope.family_key",
+                ["proof_scope", "family_key"],
+                "proxy-dual-client/optional/ens",
+                "proof_scope.family_key mismatch",
+            ),
+        )
+
+        for label, path, value, expected_reason in cases:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    proof_dir = pathlib.Path(temp_dir)
+                    write_family_proof_artifacts(proof_dir, transport_class="ens")
+                    write_family_proof_eligibility_artifact(proof_dir, ebusd_transport="")
+                    family_path = proof_dir / "family_proof_eligibility.json"
+                    family_artifact = verifier.load_json(family_path)
+                    set_nested_value(family_artifact, path, value)
+                    write_json(family_path, family_artifact)
+                    artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                        proof_dir,
+                        "run-1",
+                        "P03",
+                        "proxy-single-client",
+                        "required",
+                        "ens",
+                        proxy_transport="ens",
+                        ebusd_transport="",
+                    )
+
+                self.assertFalse(artifact["ok"])
+                self.assertEqual(artifact["eligibility"]["status"], "blocked")
+                self.assertIn(expected_reason, artifact["eligibility"]["reason"])
+
     def test_promotion_eligibility_rejects_missing_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)

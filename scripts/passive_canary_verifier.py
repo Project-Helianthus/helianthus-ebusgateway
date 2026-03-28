@@ -2761,6 +2761,15 @@ def build_promotion_eligibility_artifact_for_run(
     family_gateway_transport = str((family_scope or {}).get("gateway_transport", "")).strip().lower()
     family_proxy_transport = str((family_scope or {}).get("proxy_transport", "")).strip().lower()
     family_ebusd_transport = str(((family_scope or {}).get("ebusd_transport", "") or "")).strip().lower()
+    family_identity_kind = str((family_identity or {}).get("kind", "")).strip()
+    family_identity_passive_mode = str((family_identity or {}).get("passive_mode", "")).strip().lower()
+    family_identity_transport_class = str((family_identity or {}).get("transport_class", "")).strip().lower()
+    family_identity_key = str((family_identity or {}).get("family_key", "")).strip()
+    expected_family_key = (
+        f"{normalized_kind}/{normalized_passive_mode}/{transport_class}"
+        if normalized_kind and normalized_passive_mode and transport_class
+        else ""
+    )
 
     if not isinstance(family_eligibility, dict):
         reasons.append("family proof eligibility artifact is not a JSON object")
@@ -2805,6 +2814,41 @@ def build_promotion_eligibility_artifact_for_run(
             reasons.append("family proof eligibility missing proof_scope.transport_class")
         if family_scope.get("family_key") in (None, ""):
             reasons.append("family proof eligibility missing proof_scope.family_key")
+
+    if isinstance(family_eligibility, dict) and isinstance(family_identity, dict):
+        if family_identity.get("kind") in (None, ""):
+            reasons.append("family proof eligibility missing family_identity.kind")
+        elif family_identity_kind != normalized_kind:
+            reasons.append(
+                "family proof eligibility family_identity.kind mismatch: "
+                f"got {family_identity_kind!r}; want {normalized_kind!r}"
+            )
+        if family_identity.get("passive_mode") in (None, ""):
+            reasons.append("family proof eligibility missing family_identity.passive_mode")
+        elif family_identity_passive_mode != normalized_passive_mode:
+            reasons.append(
+                "family proof eligibility family_identity.passive_mode mismatch: "
+                f"got {family_identity_passive_mode!r}; want {normalized_passive_mode!r}"
+            )
+        if family_identity.get("transport_class") in (None, ""):
+            reasons.append("family proof eligibility missing family_identity.transport_class")
+        elif transport_class and family_identity_transport_class != transport_class:
+            reasons.append(
+                "family proof eligibility family_identity.transport_class mismatch: "
+                f"got {family_identity_transport_class!r}; want {transport_class!r}"
+            )
+        if family_identity.get("family_key") in (None, ""):
+            reasons.append("family proof eligibility missing family_identity.family_key")
+        elif expected_family_key and family_identity_key != expected_family_key:
+            reasons.append(
+                "family proof eligibility family_identity.family_key mismatch: "
+                f"got {family_identity_key!r}; want {expected_family_key!r}"
+            )
+        if family_identity_key and family_key and family_identity_key != family_key:
+            reasons.append(
+                "family proof eligibility family_identity.family_key mismatch: "
+                f"got {family_identity_key!r}; want {family_key!r}"
+            )
 
     if isinstance(family_eligibility, dict) and isinstance(family_scope, dict):
         if str(family_eligibility.get("case_id", "")).strip() != normalized_case_id:
@@ -2851,6 +2895,11 @@ def build_promotion_eligibility_artifact_for_run(
             reasons.append(
                 "family proof eligibility proof_scope.transport_class mismatch: "
                 f"got {family_transport_class!r}; want {transport_class!r}"
+            )
+        if family_key and expected_family_key and family_key != expected_family_key:
+            reasons.append(
+                "family proof eligibility proof_scope.family_key mismatch: "
+                f"got {family_key!r}; want {expected_family_key!r}"
             )
 
     if isinstance(family_upstream, dict):

@@ -1347,17 +1347,37 @@ func (store *BusObservabilityStore) refreshPassiveStateLocked(now time.Time, tap
 		store.touchLocked(now)
 	}
 	if !store.cfg.BroadcastListen {
+		stateChanged := store.passive.state != "unavailable"
 		store.setPassiveStateLocked(now, "unavailable")
-		store.passive.unavailableReason = "capability_withdrawn"
-		store.passive.startupWindowClosed = true
-		store.touchLocked(now)
+		metadataChanged := false
+		if store.passive.unavailableReason != "capability_withdrawn" {
+			store.passive.unavailableReason = "capability_withdrawn"
+			metadataChanged = true
+		}
+		if !store.passive.startupWindowClosed {
+			store.passive.startupWindowClosed = true
+			metadataChanged = true
+		}
+		if metadataChanged && !stateChanged {
+			store.touchLocked(now)
+		}
 		return
 	}
 	if reason := passiveTransportUnavailableReason(store.cfg); reason != "" {
+		stateChanged := store.passive.state != "unavailable"
 		store.setPassiveStateLocked(now, "unavailable")
-		store.passive.unavailableReason = reason
-		store.passive.startupWindowClosed = true
-		store.touchLocked(now)
+		metadataChanged := false
+		if store.passive.unavailableReason != reason {
+			store.passive.unavailableReason = reason
+			metadataChanged = true
+		}
+		if !store.passive.startupWindowClosed {
+			store.passive.startupWindowClosed = true
+			metadataChanged = true
+		}
+		if metadataChanged && !stateChanged {
+			store.touchLocked(now)
+		}
 		return
 	}
 	if !store.passive.startupWindowClosed && !now.Before(store.passive.processStartedAt.Add(store.cfg.ObserveFirstWarmupOuterWindow)) {
@@ -1388,9 +1408,14 @@ func (store *BusObservabilityStore) refreshPassiveStateLocked(now time.Time, tap
 		}
 	}
 	if tapStatus.EndpointState == PassiveEndpointStateUnsupportedOrMisconfigured {
+		stateChanged := store.passive.state != "unavailable"
 		store.setPassiveStateLocked(now, "unavailable")
-		store.passive.unavailableReason = "unsupported_or_misconfigured"
-		store.touchLocked(now)
+		if store.passive.unavailableReason != "unsupported_or_misconfigured" {
+			store.passive.unavailableReason = "unsupported_or_misconfigured"
+			if !stateChanged {
+				store.touchLocked(now)
+			}
+		}
 	}
 	store.promotePassiveIfReadyLocked(now, tapStatus)
 }

@@ -62,6 +62,7 @@ CANONICAL_P03_CANARY_MANIFEST_PATH = REPO_ROOT / "testdata" / "passive_proof" / 
 CANONICAL_REPLAY_CORPUS_PATH = REPO_ROOT / "testdata" / "observe_first_replay_cases.json"
 _CANONICAL_FAMILY_PROOF_CANARY_IDS: Tuple[str, ...] | None = None
 _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES: Tuple[str, ...] | None = None
+_CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS: Dict[str, Dict[str, Any]] | None = None
 
 
 def utc_now() -> str:
@@ -225,36 +226,80 @@ def load_and_validate_manifest(path: pathlib.Path, require_case_id: str | None =
 
 
 def extract_locked_replay_case_names(corpus: Any, source_path: pathlib.Path) -> Tuple[Tuple[str, ...], str]:
+    replay_case_contracts, replay_case_contracts_error = extract_locked_replay_case_contracts(
+        corpus,
+        source_path,
+    )
+    if replay_case_contracts_error:
+        return tuple(), replay_case_contracts_error
+    return tuple(sorted(replay_case_contracts.keys())), ""
+
+
+def extract_locked_replay_case_contracts(
+    corpus: Any,
+    source_path: pathlib.Path,
+) -> Tuple[Dict[str, Dict[str, Any]], str]:
     if not isinstance(corpus, dict):
-        return tuple(), f"{source_path}: replay corpus must be a JSON object"
+        return {}, f"{source_path}: replay corpus must be a JSON object"
     cases = corpus.get("cases")
     if not isinstance(cases, list):
-        return tuple(), f"{source_path}: replay corpus missing cases array"
+        return {}, f"{source_path}: replay corpus missing cases array"
 
-    names: List[str] = []
     seen_names: set[str] = set()
+    contracts: Dict[str, Dict[str, Any]] = {}
     for index, raw_case in enumerate(cases):
         if not isinstance(raw_case, dict):
-            return tuple(), f"{source_path}: replay case[{index}] must be object"
+            return {}, f"{source_path}: replay case[{index}] must be object"
         expected = raw_case.get("replay_expected")
         if expected is None:
             continue
         if not isinstance(expected, dict):
-            return tuple(), f"{source_path}: replay case[{index}] replay_expected contract must be an object"
+            return {}, f"{source_path}: replay case[{index}] replay_expected contract must be an object"
         raw_name = raw_case.get("name")
         if not isinstance(raw_name, str):
-            return tuple(), f"{source_path}: replay case[{index}] name must be non-empty string"
+            return {}, f"{source_path}: replay case[{index}] name must be non-empty string"
         name = raw_name.strip()
         if name == "":
-            return tuple(), f"{source_path}: replay case[{index}] missing name"
+            return {}, f"{source_path}: replay case[{index}] missing name"
         if name in seen_names:
-            return tuple(), f"{source_path}: replay case[{index}] duplicate replay case name {name!r}"
+            return {}, f"{source_path}: replay case[{index}] duplicate replay case name {name!r}"
         seen_names.add(name)
-        names.append(name)
+        family_raw = raw_case.get("family")
+        if not isinstance(family_raw, str):
+            return {}, f"{source_path}: replay case[{index}] family must be non-empty string"
+        family = family_raw.strip().upper()
+        if family == "":
+            return {}, f"{source_path}: replay case[{index}] missing family"
+        response_class_raw = raw_case.get("response_class")
+        if not isinstance(response_class_raw, str):
+            return {}, f"{source_path}: replay case[{index}] response_class must be non-empty string"
+        response_class = response_class_raw.strip()
+        if response_class == "":
+            return {}, f"{source_path}: replay case[{index}] missing response_class"
+        raw_scenario_tags = raw_case.get("scenario_tags")
+        if not isinstance(raw_scenario_tags, list):
+            return {}, f"{source_path}: replay case[{index}] scenario_tags must be an array"
+        scenario_tags: List[str] = []
+        for tag_index, tag_raw in enumerate(raw_scenario_tags):
+            if not isinstance(tag_raw, str) or tag_raw.strip() == "":
+                return {}, f"{source_path}: replay case[{index}] invalid scenario_tags[{tag_index}]"
+            scenario_tags.append(tag_raw.strip())
+        expected_reason_raw = expected.get("reason")
+        if not isinstance(expected_reason_raw, str):
+            return {}, f"{source_path}: replay case[{index}] replay_expected.reason must be non-empty string"
+        expected_reason = expected_reason_raw.strip()
+        if expected_reason == "":
+            return {}, f"{source_path}: replay case[{index}] replay_expected.reason must be non-empty string"
+        contracts[name] = {
+            "family": family,
+            "response_class": response_class,
+            "scenario_tags": scenario_tags,
+            "expected_reason": expected_reason,
+        }
 
-    if len(names) == 0:
-        return tuple(), f"{source_path}: canonical replay proof-set has no locked replay cases"
-    return tuple(sorted(names)), ""
+    if len(contracts) == 0:
+        return {}, f"{source_path}: canonical replay proof-set has no locked replay cases"
+    return contracts, ""
 
 
 def load_canonical_family_proof_canary_ids() -> Tuple[Tuple[str, ...], str]:
@@ -300,6 +345,27 @@ def load_canonical_family_proof_replay_case_names() -> Tuple[Tuple[str, ...], st
         return tuple(), replay_case_names_error
     _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES = replay_case_names
     return _CANONICAL_FAMILY_PROOF_REPLAY_CASE_NAMES, ""
+
+
+def load_canonical_family_proof_replay_case_contracts() -> Tuple[Dict[str, Dict[str, Any]], str]:
+    global _CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS
+
+    if _CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS is not None:
+        return _CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS, ""
+    try:
+        corpus = load_json(CANONICAL_REPLAY_CORPUS_PATH)
+    except Exception as exc:
+        return {}, (
+            f"unable to load canonical replay proof-set from {CANONICAL_REPLAY_CORPUS_PATH}: {exc}"
+        )
+    replay_case_contracts, replay_case_contracts_error = extract_locked_replay_case_contracts(
+        corpus,
+        CANONICAL_REPLAY_CORPUS_PATH,
+    )
+    if replay_case_contracts_error:
+        return {}, replay_case_contracts_error
+    _CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS = replay_case_contracts
+    return _CANONICAL_FAMILY_PROOF_REPLAY_CASE_CONTRACTS, ""
 
 
 def normalize_retries(raw: int) -> int:
@@ -1749,6 +1815,11 @@ def validate_family_upstream_replay_verdict(
     case_locked_count = 0
     case_behavior_artifact_ok_all = True
     case_names: set[str] = set()
+    canonical_replay_case_contracts, canonical_replay_case_contracts_error = (
+        load_canonical_family_proof_replay_case_contracts()
+    )
+    if canonical_replay_case_contracts_error != "":
+        return False, f"{path}: {canonical_replay_case_contracts_error}"
     for case_index, case_payload in enumerate(cases):
         if not isinstance(case_payload, dict):
             return False, f"{path}: replay falsification verdict case[{case_index}] must be object"
@@ -1792,12 +1863,14 @@ def validate_family_upstream_replay_verdict(
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing scenario_tags list"
             )
+        normalized_scenario_tags: List[str] = []
         for tag_index, tag in enumerate(scenario_tags):
             if not isinstance(tag, str) or tag.strip() == "":
                 return False, (
                     f"{path}: replay falsification verdict case[{case_index}] has invalid "
                     f"scenario_tags[{tag_index}]"
                 )
+            normalized_scenario_tags.append(tag.strip())
         if not isinstance(case_payload.get("reason"), str):
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing string reason"
@@ -1822,10 +1895,41 @@ def validate_family_upstream_replay_verdict(
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing valid expected.disposition"
             )
-        if not isinstance(expected.get("reason"), str):
+        expected_reason_raw = expected.get("reason")
+        if not isinstance(expected_reason_raw, str):
             return False, (
                 f"{path}: replay falsification verdict case[{case_index}] missing string expected.reason"
             )
+        expected_reason = expected_reason_raw.strip()
+        canonical_case_contract = canonical_replay_case_contracts.get(case_name)
+        if isinstance(canonical_case_contract, dict):
+            canonical_case_family = str(canonical_case_contract.get("family", "")).strip()
+            if case_family != canonical_case_family:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "family mismatches canonical replay corpus case contract"
+                )
+            canonical_response_class = str(canonical_case_contract.get("response_class", "")).strip()
+            if response_class != canonical_response_class:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "response_class mismatches canonical replay corpus case contract"
+                )
+            canonical_scenario_tags_raw = canonical_case_contract.get("scenario_tags")
+            canonical_scenario_tags = (
+                list(canonical_scenario_tags_raw) if isinstance(canonical_scenario_tags_raw, list) else None
+            )
+            if canonical_scenario_tags is None or normalized_scenario_tags != canonical_scenario_tags:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "scenario_tags mismatch canonical replay corpus case contract"
+                )
+            canonical_expected_reason = str(canonical_case_contract.get("expected_reason", "")).strip()
+            if expected_reason != canonical_expected_reason:
+                return False, (
+                    f"{path}: replay falsification verdict case[{case_index}] "
+                    "expected.reason mismatches canonical replay corpus case contract"
+                )
         behavior_evidence = case_payload.get("behavior_evidence")
         if not isinstance(behavior_evidence, dict):
             return False, (
@@ -2082,11 +2186,7 @@ def validate_family_upstream_replay_verdict(
         else:
             case_informational_count += 1
 
-    canonical_replay_case_names, canonical_replay_case_names_error = (
-        load_canonical_family_proof_replay_case_names()
-    )
-    if canonical_replay_case_names_error != "":
-        return False, f"{path}: {canonical_replay_case_names_error}"
+    canonical_replay_case_names = tuple(sorted(canonical_replay_case_contracts.keys()))
     canonical_replay_case_name_set = set(canonical_replay_case_names)
     missing_replay_case_names = [name for name in canonical_replay_case_names if name not in case_names]
     unexpected_replay_case_names = sorted(

@@ -2875,6 +2875,43 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
                 self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
                 self.assertIn(expected_reason, artifact["eligibility"]["reason"])
 
+    def test_family_proof_eligibility_blocks_forged_replay_case_semantic_contract_fields(self) -> None:
+        forged_cases = (
+            ("family", "FORGED", "family mismatches canonical replay corpus case contract"),
+            ("response_class", "forged_response", "response_class mismatches canonical replay corpus case contract"),
+            ("scenario_tags", ["passive", "forged_semantic_tag"], "scenario_tags mismatch canonical replay corpus case contract"),
+            ("expected.reason", "forged replay expected reason", "expected.reason mismatches canonical replay corpus case contract"),
+        )
+
+        for field_name, forged_value, expected_reason in forged_cases:
+            with self.subTest(field_name=field_name):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    proof_dir = pathlib.Path(temp_dir)
+                    write_family_proof_artifacts(proof_dir, transport_class="ens")
+                    replay_path = proof_dir / "replay_falsification.json"
+                    payload = verifier.load_json(replay_path)
+                    case_payload = payload["cases"][0]
+                    if field_name == "expected.reason":
+                        case_payload["expected"]["reason"] = forged_value
+                    else:
+                        case_payload[field_name] = forged_value
+                    write_json(replay_path, payload)
+                    artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                        proof_dir,
+                        "run-1",
+                        "P03",
+                        "proxy-single-client",
+                        "required",
+                        "ens",
+                        proxy_transport="ens",
+                        ebusd_transport="ebusd-tcp",
+                    )
+
+                self.assertFalse(artifact["ok"])
+                self.assertEqual(artifact["eligibility"]["status"], "blocked")
+                self.assertIn("invalid replay falsification artifact", artifact["eligibility"]["reason"])
+                self.assertIn(expected_reason, artifact["eligibility"]["reason"])
+
     def test_family_proof_eligibility_blocks_forged_full_canonical_replay_without_behavior_evidence_anchors(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)

@@ -922,6 +922,33 @@ def validate_family_upstream_canary_verdict(payload: Any, path: pathlib.Path) ->
     criteria = payload.get("criteria")
     if not isinstance(criteria, dict) or len(criteria) == 0:
         return False, f"{path}: canary verdict missing criteria object"
+    criterion_results: List[bool] = []
+    for criterion_name, criterion_payload in criteria.items():
+        if not isinstance(criterion_payload, dict):
+            return False, (
+                f"{path}: canary verdict criteria.{criterion_name} must be an object "
+                "(success semantics mismatch)"
+            )
+        criterion_ok = criterion_payload.get("ok")
+        if not isinstance(criterion_ok, bool):
+            return False, (
+                f"{path}: canary verdict criteria.{criterion_name}.ok must be boolean "
+                "(success semantics mismatch)"
+            )
+        criterion_results.append(criterion_ok)
+
+    derived_ok = all(criterion_results)
+    verdict_ok = bool(payload.get("ok"))
+    if verdict_ok != derived_ok:
+        return False, (
+            f"{path}: canary verdict contradictory success semantics: "
+            f"ok={verdict_ok!r} but criteria imply ok={derived_ok!r}"
+        )
+    if (status == "pass") != derived_ok:
+        return False, (
+            f"{path}: canary verdict contradictory success semantics: "
+            f"status={status!r} but criteria imply {'pass' if derived_ok else 'fail'!r}"
+        )
     return True, ""
 
 
@@ -938,13 +965,85 @@ def validate_family_upstream_replay_verdict(payload: Any, path: pathlib.Path) ->
     summary = payload.get("summary")
     if not isinstance(summary, dict):
         return False, f"{path}: replay falsification verdict missing summary object"
-    if not isinstance(summary.get("locked_cases"), int):
+    summary_total_cases = summary.get("total_cases")
+    if not isinstance(summary_total_cases, int):
+        return False, f"{path}: replay falsification verdict missing summary.total_cases"
+    if summary_total_cases < 0:
+        return False, f"{path}: replay falsification verdict has negative summary.total_cases"
+    summary_locked_cases = summary.get("locked_cases")
+    if not isinstance(summary_locked_cases, int):
         return False, f"{path}: replay falsification verdict missing summary.locked_cases"
-    if not isinstance(summary.get("fail"), int):
+    if summary_locked_cases < 0:
+        return False, f"{path}: replay falsification verdict has negative summary.locked_cases"
+    summary_pass = summary.get("pass")
+    if not isinstance(summary_pass, int):
+        return False, f"{path}: replay falsification verdict missing summary.pass"
+    if summary_pass < 0:
+        return False, f"{path}: replay falsification verdict has negative summary.pass"
+    summary_fail = summary.get("fail")
+    if not isinstance(summary_fail, int):
         return False, f"{path}: replay falsification verdict missing summary.fail"
+    if summary_fail < 0:
+        return False, f"{path}: replay falsification verdict has negative summary.fail"
+    summary_behavior_ok = summary.get("behavior_artifact_ok")
+    if not isinstance(summary_behavior_ok, bool):
+        return False, f"{path}: replay falsification verdict missing boolean summary.behavior_artifact_ok"
+    summary_proof_run_ok = summary.get("proof_run_ok")
+    if not isinstance(summary_proof_run_ok, bool):
+        return False, f"{path}: replay falsification verdict missing boolean summary.proof_run_ok"
     cases = payload.get("cases")
     if not isinstance(cases, list):
         return False, f"{path}: replay falsification verdict missing cases array"
+    case_fail_count = 0
+    for case_index, case_payload in enumerate(cases):
+        if not isinstance(case_payload, dict):
+            return False, f"{path}: replay falsification verdict case[{case_index}] must be object"
+        case_status = str(case_payload.get("status", "")).strip().lower()
+        if case_status not in ("pass", "fail", "informational"):
+            return False, (
+                f"{path}: replay falsification verdict case[{case_index}] missing valid status"
+            )
+        if case_status == "fail":
+            case_fail_count += 1
+
+    if summary_total_cases != len(cases):
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.total_cases="
+            f"{summary_total_cases} (cases={len(cases)})"
+        )
+    if summary_locked_cases > summary_total_cases:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.locked_cases="
+            f"{summary_locked_cases} (total_cases={summary_total_cases})"
+        )
+    if summary_pass + summary_fail > summary_total_cases:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary pass/fail totals: "
+            f"pass={summary_pass} fail={summary_fail} total_cases={summary_total_cases}"
+        )
+    if summary_fail != case_fail_count:
+        return False, (
+            f"{path}: replay falsification verdict contradictory summary.fail={summary_fail} "
+            f"(case_fail_count={case_fail_count})"
+        )
+
+    verdict_ok = bool(payload.get("ok"))
+    summary_success = summary_fail == 0
+    if verdict_ok != summary_success:
+        return False, (
+            f"{path}: replay falsification verdict contradictory success semantics: "
+            f"ok={verdict_ok!r} but summary.fail={summary_fail}"
+        )
+    if (status == "pass") != summary_success:
+        return False, (
+            f"{path}: replay falsification verdict contradictory success semantics: "
+            f"status={status!r} but summary.fail={summary_fail}"
+        )
+    if summary_success and (not summary_behavior_ok or not summary_proof_run_ok):
+        return False, (
+            f"{path}: replay falsification verdict contradictory success semantics: "
+            "summary indicates success but behavior/proof_run flags are false"
+        )
     return True, ""
 
 

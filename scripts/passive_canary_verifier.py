@@ -241,7 +241,10 @@ def extract_locked_replay_case_names(corpus: Any, source_path: pathlib.Path) -> 
             continue
         if not isinstance(expected, dict):
             return tuple(), f"{source_path}: replay case[{index}] replay_expected contract must be an object"
-        name = str(raw_case.get("name", "")).strip()
+        raw_name = raw_case.get("name")
+        if not isinstance(raw_name, str):
+            return tuple(), f"{source_path}: replay case[{index}] name must be non-empty string"
+        name = raw_name.strip()
         if name == "":
             return tuple(), f"{source_path}: replay case[{index}] missing name"
         if name in seen_names:
@@ -2037,6 +2040,13 @@ def build_family_proof_eligibility_artifact_for_run(
         reasons.append("missing passive mode")
     if normalized_gateway_transport == "":
         reasons.append("missing gateway transport")
+    if normalized_case_id == "":
+        reasons.append("missing case_id")
+    elif normalized_case_id != CANONICAL_FAMILY_PROOF_CASE_ID:
+        reasons.append(
+            f"family proof case_id mismatch: got {normalized_case_id!r}; "
+            f"want {CANONICAL_FAMILY_PROOF_CASE_ID!r}"
+        )
 
     canary_verdict_path = proof_dir / "canary_verdict.json"
     replay_verdict_path = proof_dir / "replay_falsification.json"

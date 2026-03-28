@@ -398,6 +398,21 @@ class ManifestValidationTests(unittest.TestCase):
         self.assertFalse(by_name["timeout_no_progress"]["direct_apply"])
         self.assertEqual(by_name["timeout_no_progress"]["disposition"], "falsification")
 
+    def test_extract_locked_replay_case_names_rejects_non_string_case_names(self) -> None:
+        source_path = pathlib.Path("/tmp/corrupt_observe_first_replay_cases.json")
+        for invalid_name in (None, 17):
+            with self.subTest(invalid_name=invalid_name):
+                corpus = verifier.load_json(SCRIPT_DIR.parent / "testdata" / "observe_first_replay_cases.json")
+                locked_index = next(
+                    index
+                    for index, case_payload in enumerate(corpus["cases"])
+                    if isinstance(case_payload, dict) and case_payload.get("replay_expected") is not None
+                )
+                corpus["cases"][locked_index]["name"] = invalid_name
+                names, error = verifier.extract_locked_replay_case_names(corpus, source_path)
+                self.assertEqual(names, tuple())
+                self.assertIn("name must be non-empty string", error)
+
 class RetryClassificationTests(unittest.TestCase):
     def test_invoke_canary_adds_internal_nonce_without_mutating_manifest_params(self) -> None:
         _, canaries = verifier.load_and_validate_manifest(
@@ -2265,6 +2280,25 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["eligibility"]["status"], "proven_for_default_flip")
         self.assertEqual(artifact["family_identity"]["family_key"], "proxy-single-client/required/ens")
         self.assertEqual(artifact["family_identity"]["transport_class"], "ens")
+
+    def test_family_proof_eligibility_rejects_non_canonical_case_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P99",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("family proof case_id mismatch", artifact["eligibility"]["reason"])
 
     def test_family_proof_eligibility_rejects_missing_family_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

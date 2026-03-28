@@ -1154,6 +1154,65 @@ class StaleArtifactRejectionTests(unittest.TestCase):
             self.assertTrue(feature_flags["ok"])
             self.assertEqual(feature_flags["snapshots"][1]["bus_observability_feature_flags"]["normalizations"], [])
 
+    def test_summary_fails_closed_when_graphql_normalizations_are_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=2,
+                end_direct_apply=2,
+                end_avoided=3,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            write_json(
+                proof_dir / "start_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:00+00:00",
+                    "graphql_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": False,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                    },
+                    "bus_observability_feature_flags": canonical_feature_flags(),
+                },
+            )
+
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("graphql feature flags missing normalizations", str(ctx.exception))
+
+    def test_summary_fails_closed_when_graphql_normalizations_are_null(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            self.write_required_read_avoidance_metrics(
+                proof_dir,
+                start_direct_apply=1,
+                start_avoided=2,
+                end_direct_apply=2,
+                end_avoided=3,
+            )
+            self.write_run_phase_artifacts(proof_dir, include_interval=False)
+            write_json(
+                proof_dir / "start_feature_flags.json",
+                {
+                    "captured_at": "2026-03-28T00:00:00+00:00",
+                    "graphql_feature_flags": {
+                        "observeFirstEnabled": True,
+                        "passiveStateDirectApply": False,
+                        "passiveConfigDirectApply": False,
+                        "externalWritePolicy": "record_only",
+                        "normalizations": None,
+                    },
+                    "bus_observability_feature_flags": canonical_feature_flags(),
+                },
+            )
+
+            with self.assertRaises(ValueError) as ctx:
+                verifier.summarize_run(proof_dir, "run-1", require_interval_phase=False)
+            self.assertIn("graphql feature flags field 'normalizations' is null", str(ctx.exception))
+
 
 class CanaryVerdictTests(unittest.TestCase):
     def build_summary_payload(
@@ -1382,6 +1441,32 @@ class CanaryVerdictTests(unittest.TestCase):
         verdict = verifier.build_canary_verdict(summary)
         self.assertFalse(verdict["ok"])
         self.assertFalse(verdict["criteria"]["feature_flag_consistency"]["ok"])
+
+    def test_verdict_fails_closed_when_canonical_normalizations_are_missing(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=False,
+            interval_results=0,
+            interval_conclusive=0,
+            per_canary_interval={"a": {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}},
+        )
+        summary["feature_flag_consistency"]["snapshots"][0]["canonical_feature_flags"].pop("normalizations", None)
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertIn("canonical feature flags missing normalizations", verdict["criteria"]["feature_flag_consistency"]["reason"])
+
+    def test_verdict_fails_closed_when_canonical_normalizations_are_null(self) -> None:
+        summary = self.build_summary_payload(
+            mismatch_count=0,
+            interval_required=False,
+            interval_results=0,
+            interval_conclusive=0,
+            per_canary_interval={"a": {"pass": 0, "mismatch": 0, "inconclusive": 0, "conclusive": 0}},
+        )
+        summary["feature_flag_consistency"]["snapshots"][0]["canonical_feature_flags"]["normalizations"] = None
+        verdict = verifier.build_canary_verdict(summary)
+        self.assertFalse(verdict["ok"])
+        self.assertIn("canonical feature flags field 'normalizations' is null", verdict["criteria"]["feature_flag_consistency"]["reason"])
 
     def test_verdict_fails_when_proof_window_traffic_minimums_are_below_threshold(self) -> None:
         summary = self.build_summary_payload(

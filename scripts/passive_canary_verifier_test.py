@@ -250,6 +250,31 @@ def write_family_proof_artifacts(
     }
 
 
+def write_family_proof_eligibility_artifact(
+    proof_dir: pathlib.Path,
+    *,
+    run_id: str = "run-1",
+    case_id: str = "P03",
+    kind: str = "proxy-single-client",
+    passive_mode: str = "required",
+    gateway_transport: str = "ens",
+    proxy_transport: str = "ens",
+    ebusd_transport: str = "ebusd-tcp",
+) -> dict:
+    artifact = verifier.build_family_proof_eligibility_artifact_for_run(
+        proof_dir,
+        run_id,
+        case_id,
+        kind,
+        passive_mode,
+        gateway_transport,
+        proxy_transport=proxy_transport,
+        ebusd_transport=ebusd_transport,
+    )
+    write_json(proof_dir / "family_proof_eligibility.json", artifact)
+    return artifact
+
+
 class ManifestValidationTests(unittest.TestCase):
     def test_manifest_matches_canonical_proxy_p03_stable_set(self) -> None:
         _, canaries = verifier.load_and_validate_manifest(
@@ -3229,6 +3254,106 @@ class FamilyProofEligibilityArtifactTests(unittest.TestCase):
         self.assertIn("missing canary verdict artifact", artifact["eligibility"]["reason"])
 
 
+class PromotionEligibilityArtifactTests(unittest.TestCase):
+    def test_promotion_eligibility_accepts_proven_family(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            write_family_proof_eligibility_artifact(proof_dir)
+            artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertEqual(artifact["schema"], verifier.PROMOTION_ELIGIBILITY_SCHEMA)
+        self.assertTrue(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "eligible_for_default_flip")
+        self.assertEqual(artifact["promotion_scope"]["family_key"], "proxy-single-client/required/ens")
+        self.assertEqual(artifact["matrix_topology"]["transport_class"], "ens")
+
+    def test_promotion_eligibility_rejects_unproven_family(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(
+                proof_dir,
+                transport_class="ens",
+                kind="proxy-dual-client",
+                passive_mode="optional",
+            )
+            write_family_proof_eligibility_artifact(
+                proof_dir,
+                kind="proxy-dual-client",
+                passive_mode="optional",
+            )
+            artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-dual-client",
+                "optional",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "not_proven")
+        self.assertIn("promotion scope mismatch", artifact["eligibility"]["reason"])
+
+    def test_promotion_eligibility_rejects_missing_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            write_family_proof_eligibility_artifact(proof_dir)
+            artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("missing family kind", artifact["eligibility"]["reason"])
+
+    def test_promotion_eligibility_rejects_failing_upstream_proof_criterion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_family_proof_artifacts(proof_dir, transport_class="ens")
+            write_family_proof_eligibility_artifact(proof_dir)
+            canary_path = proof_dir / "canary_verdict.json"
+            payload = verifier.load_json(canary_path)
+            payload["criteria"]["no_mismatches"]["mismatch_count"] = 1
+            payload["criteria"]["no_mismatches"]["ok"] = False
+            payload["ok"] = False
+            payload["status"] = "fail"
+            write_json(canary_path, payload)
+            artifact = verifier.build_promotion_eligibility_artifact_for_run(
+                proof_dir,
+                "run-1",
+                "P03",
+                "proxy-single-client",
+                "required",
+                "ens",
+                proxy_transport="ens",
+                ebusd_transport="ebusd-tcp",
+            )
+
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["eligibility"]["status"], "blocked")
+        self.assertIn("invalid canary verdict artifact", artifact["eligibility"]["reason"])
+
+
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(
         self,
@@ -3682,6 +3807,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 replay_behavior_path = proof_dir / "replay_behavior.json"
                 replay_verdict_path = proof_dir / "replay_falsification.json"
                 family_eligibility_path = proof_dir / "family_proof_eligibility.json"
+                promotion_eligibility_path = proof_dir / "promotion_eligibility.json"
                 phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -3694,6 +3820,10 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 if family_eligibility_path.exists():
                     artifacts["family_eligibility"] = json.loads(
                         family_eligibility_path.read_text(encoding="utf-8")
+                    )
+                if promotion_eligibility_path.exists():
+                    artifacts["promotion_eligibility"] = json.loads(
+                        promotion_eligibility_path.read_text(encoding="utf-8")
                     )
                 if phase_log_path.exists():
                     artifacts["phase_log"] = [
@@ -3761,6 +3891,13 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             family_eligibility["family_identity"]["family_key"],
             "proxy-single-client/required/ens",
         )
+        promotion_eligibility = artifacts.get("promotion_eligibility")
+        self.assertIsInstance(promotion_eligibility, dict)
+        self.assertTrue(promotion_eligibility["ok"])
+        self.assertEqual(
+            promotion_eligibility["eligibility"]["status"],
+            "eligible_for_default_flip",
+        )
 
     def test_smoke_emits_family_eligibility_artifact_for_not_proven_family(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(
@@ -3775,6 +3912,11 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         self.assertFalse(family_eligibility["ok"])
         self.assertEqual(family_eligibility["eligibility"]["status"], "not_proven")
         self.assertIn("family scope mismatch", family_eligibility["eligibility"]["reason"])
+        promotion_eligibility = artifacts.get("promotion_eligibility")
+        self.assertIsInstance(promotion_eligibility, dict)
+        self.assertFalse(promotion_eligibility["ok"])
+        self.assertEqual(promotion_eligibility["eligibility"]["status"], "not_proven")
+        self.assertIn("promotion scope mismatch", promotion_eligibility["eligibility"]["reason"])
 
     def test_smoke_derives_family_metadata_defaults_when_env_is_missing(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

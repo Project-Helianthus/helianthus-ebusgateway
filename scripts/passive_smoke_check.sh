@@ -111,6 +111,7 @@ canary_verdict_path="${proof_dir}/canary_verdict.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
 replay_falsification_path="${proof_dir}/replay_falsification.json"
 family_eligibility_path="${proof_dir}/family_proof_eligibility.json"
+promotion_eligibility_path="${proof_dir}/promotion_eligibility.json"
 canary_retries_raw="${PASSIVE_CANARY_MAX_RETRIES:-3}"
 canary_retries=3
 canary_enabled=0
@@ -506,6 +507,19 @@ build_family_proof_eligibility_artifact() {
     --output "${family_eligibility_path}"
 }
 
+build_promotion_eligibility_artifact() {
+  python3 "${canary_verifier_script}" promotion-eligibility \
+    --proof-dir "${proof_dir}" \
+    --run-id "${canary_run_id}" \
+    --case-id "${case_id}" \
+    --kind "${case_kind}" \
+    --passive-mode "${passive_mode}" \
+    --gateway-transport "${gateway_transport}" \
+    --proxy-transport "${proxy_transport}" \
+    --ebusd-transport "${ebusd_transport}" \
+    --output "${promotion_eligibility_path}"
+}
+
 build_replay_behavior_artifact() {
   if ! (
     cd "${REPO_ROOT}" && \
@@ -680,6 +694,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_family_proof_eligibility_artifact; then
       echo "proof mode: family eligibility gate failed (see ${family_eligibility_path})" >&2
+      exit 1
+    fi
+    if ! build_promotion_eligibility_artifact; then
+      echo "proof mode: promotion eligibility gate failed (see ${promotion_eligibility_path})" >&2
       exit 1
     fi
   fi

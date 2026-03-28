@@ -35,6 +35,7 @@ READ_AVOIDANCE_ACTIVE_AVOIDED_METRIC = "active_reads_avoided_total"
 READ_AVOIDANCE_SAVED_SECONDS_METRIC = "active_read_saved_seconds"
 WARMUP_BEHAVIOR_ARTIFACT_SCHEMA = "p03_warmup_behavior_v1"
 FAMILY_PROOF_ELIGIBILITY_SCHEMA = "p03_family_proof_eligibility_v1"
+PROMOTION_ELIGIBILITY_SCHEMA = "p03_promotion_eligibility_v1"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_METRIC = "ebus_passive_completed_transactions_total"
 PROOF_WINDOW_DIRECT_APPLY_CANDIDATES_EVALUATED_METRIC = "ebus_passive_direct_apply_candidates_evaluated_total"
 PROOF_WINDOW_COMPLETED_TRANSACTIONS_MIN_DELTA = 1000.0
@@ -2551,6 +2552,378 @@ def build_family_proof_eligibility_artifact_for_run(
     return artifact
 
 
+def build_promotion_eligibility_artifact_for_run(
+    proof_dir: pathlib.Path,
+    run_id: str,
+    case_id: str,
+    kind: str,
+    passive_mode: str,
+    gateway_transport: str,
+    proxy_transport: str = "",
+    ebusd_transport: str = "",
+) -> Dict[str, Any]:
+    normalized_case_id = str(case_id).strip()
+    normalized_kind = str(kind).strip()
+    normalized_passive_mode = str(passive_mode).strip().lower()
+    normalized_gateway_transport = str(gateway_transport).strip().lower()
+    normalized_proxy_transport = str(proxy_transport).strip().lower()
+    normalized_ebusd_transport = str(ebusd_transport).strip().lower()
+
+    reasons: List[str] = []
+    status = "blocked"
+
+    if normalized_case_id == "":
+        reasons.append("missing case_id")
+    elif normalized_case_id != CANONICAL_FAMILY_PROOF_CASE_ID:
+        reasons.append(
+            f"promotion case_id mismatch: got {normalized_case_id!r}; "
+            f"want {CANONICAL_FAMILY_PROOF_CASE_ID!r}"
+        )
+    if normalized_kind == "":
+        reasons.append("missing family kind")
+    if normalized_passive_mode == "":
+        reasons.append("missing passive mode")
+    if normalized_gateway_transport == "":
+        reasons.append("missing gateway transport")
+
+    family_eligibility_path = proof_dir / "family_proof_eligibility.json"
+    canary_verdict_path = proof_dir / "canary_verdict.json"
+    canary_summary_path = proof_dir / "canary_summary.json"
+    replay_behavior_path = proof_dir / "replay_behavior.json"
+    replay_verdict_path = proof_dir / "replay_falsification.json"
+
+    family_eligibility = None
+    if not family_eligibility_path.exists():
+        reasons.append(f"missing family proof eligibility artifact: {family_eligibility_path}")
+    else:
+        try:
+            family_eligibility = load_json(family_eligibility_path)
+        except Exception as exc:
+            reasons.append(f"invalid family proof eligibility artifact: {family_eligibility_path}: {exc}")
+
+    if not canary_summary_path.exists():
+        reasons.append(f"missing canary summary artifact: {canary_summary_path}")
+        canary_summary = None
+    else:
+        try:
+            canary_summary = load_json(canary_summary_path)
+        except Exception as exc:
+            reasons.append(f"invalid canary summary artifact: {canary_summary_path}: {exc}")
+            canary_summary = None
+    if not replay_behavior_path.exists():
+        reasons.append(f"missing replay behavior artifact: {replay_behavior_path}")
+        replay_behavior = None
+    else:
+        try:
+            replay_behavior = load_replay_behavior_artifact(replay_behavior_path)
+        except Exception as exc:
+            reasons.append(f"invalid replay behavior artifact: {replay_behavior_path}: {exc}")
+            replay_behavior = None
+    if not canary_verdict_path.exists():
+        reasons.append(f"missing canary verdict artifact: {canary_verdict_path}")
+        canary_verdict = None
+    else:
+        try:
+            canary_verdict = load_json(canary_verdict_path)
+        except Exception as exc:
+            reasons.append(f"invalid canary verdict artifact: {canary_verdict_path}: {exc}")
+            canary_verdict = None
+        if canary_verdict is not None:
+            canary_valid, canary_reason = validate_family_upstream_canary_verdict(
+                canary_verdict,
+                canary_verdict_path,
+                summary_payload=canary_summary,
+                summary_path=canary_summary_path,
+            )
+            if not canary_valid:
+                reasons.append(f"invalid canary verdict artifact: {canary_reason}")
+                canary_verdict = None
+    if not replay_verdict_path.exists():
+        reasons.append(f"missing replay falsification artifact: {replay_verdict_path}")
+        replay_verdict = None
+    else:
+        try:
+            replay_verdict = load_json(replay_verdict_path)
+        except Exception as exc:
+            reasons.append(f"invalid replay falsification artifact: {replay_verdict_path}: {exc}")
+            replay_verdict = None
+        if replay_verdict is not None:
+            replay_valid, replay_reason = validate_family_upstream_replay_verdict(
+                replay_verdict,
+                replay_verdict_path,
+                behavior_artifact_payload=replay_behavior,
+                behavior_artifact_path=replay_behavior_path,
+            )
+            if not replay_valid:
+                reasons.append(f"invalid replay falsification artifact: {replay_reason}")
+                replay_verdict = None
+
+    start_snapshot = None
+    end_snapshot = None
+    try:
+        start_snapshot = load_structured_warmup_snapshot(proof_dir, "start")
+    except Exception as exc:
+        reasons.append(str(exc))
+    try:
+        end_snapshot = load_structured_warmup_snapshot(proof_dir, "end")
+    except Exception as exc:
+        reasons.append(str(exc))
+
+    start_transport_class = ""
+    end_transport_class = ""
+    if isinstance(start_snapshot, dict):
+        start_transport_class = str(start_snapshot.get("transport_class", "")).strip().lower()
+    if isinstance(end_snapshot, dict):
+        end_transport_class = str(end_snapshot.get("transport_class", "")).strip().lower()
+    transport_class = ""
+    if start_transport_class == "" and end_transport_class == "":
+        reasons.append("missing transport class in structured warmup snapshots")
+    elif start_transport_class == "" or end_transport_class == "":
+        reasons.append(
+            "incomplete transport class across structured warmup snapshots: "
+            f"start={start_transport_class!r} end={end_transport_class!r}"
+        )
+    elif start_transport_class != end_transport_class:
+        reasons.append(
+            "ambiguous transport class across structured warmup snapshots: "
+            f"start={start_transport_class!r} end={end_transport_class!r}"
+        )
+    else:
+        transport_class = start_transport_class
+
+    if isinstance(start_snapshot, dict):
+        if start_snapshot.get("startup_phase") == "LIVE_READY":
+            reasons.append("promotion proof cold_start is not pre-LIVE_READY")
+        if str(start_snapshot.get("warmup_state", "")).strip().lower() == "available":
+            reasons.append("promotion proof cold_start is not pre-available")
+    if isinstance(end_snapshot, dict):
+        if end_snapshot.get("startup_phase") != "LIVE_READY":
+            reasons.append("promotion proof post_warmup is not LIVE_READY")
+        if str(end_snapshot.get("warmup_state", "")).strip().lower() != "available":
+            reasons.append("promotion proof post_warmup is not warmup available")
+
+    family_scope = family_eligibility.get("proof_scope") if isinstance(family_eligibility, dict) else None
+    family_identity = family_eligibility.get("family_identity") if isinstance(family_eligibility, dict) else None
+    family_eligibility_block = (
+        family_eligibility.get("eligibility") if isinstance(family_eligibility, dict) else None
+    )
+    family_upstream = family_eligibility.get("upstream_proof") if isinstance(family_eligibility, dict) else None
+    family_ok = bool(isinstance(family_eligibility, dict) and family_eligibility.get("ok", False))
+    family_eligibility_status = str(
+        ((family_eligibility_block or {}).get("status", "")) if isinstance(family_eligibility_block, dict) else ""
+    ).strip().lower()
+    family_key = str((family_scope or {}).get("family_key", "")).strip()
+    family_transport_class = str((family_scope or {}).get("transport_class", "")).strip().lower()
+    family_kind = str((family_scope or {}).get("kind", "")).strip()
+    family_passive_mode = str((family_scope or {}).get("passive_mode", "")).strip().lower()
+    family_gateway_transport = str((family_scope or {}).get("gateway_transport", "")).strip().lower()
+    family_proxy_transport = str((family_scope or {}).get("proxy_transport", "")).strip().lower()
+    family_ebusd_transport = str((family_scope or {}).get("ebusd_transport", "")).strip().lower()
+
+    if not isinstance(family_eligibility, dict):
+        reasons.append("family proof eligibility artifact is not a JSON object")
+    elif str(family_eligibility.get("schema", "")).strip() != FAMILY_PROOF_ELIGIBILITY_SCHEMA:
+        reasons.append("family proof eligibility schema mismatch")
+    elif not isinstance(family_eligibility.get("ok"), bool):
+        reasons.append("family proof eligibility missing boolean ok")
+    elif not isinstance(family_scope, dict):
+        reasons.append("family proof eligibility missing proof_scope object")
+    elif not isinstance(family_identity, dict):
+        reasons.append("family proof eligibility missing family_identity object")
+    elif not isinstance(family_eligibility_block, dict):
+        reasons.append("family proof eligibility missing eligibility object")
+    elif not isinstance(family_upstream, dict):
+        reasons.append("family proof eligibility missing upstream_proof object")
+
+    if family_ok and family_eligibility_status != "proven_for_default_flip":
+        reasons.append(
+            "family proof eligibility ok/status mismatch: "
+            f"ok={family_ok!r} status={family_eligibility_status!r}"
+        )
+    if family_eligibility_status in {"blocked", "not_proven", "proven_for_default_flip"}:
+        pass
+    elif isinstance(family_eligibility_block, dict):
+        reasons.append(f"family proof eligibility has invalid status: {family_eligibility_status!r}")
+
+    if family_scope and isinstance(family_scope, dict):
+        if family_scope.get("kind") in (None, ""):
+            reasons.append("family proof eligibility missing proof_scope.kind")
+        if family_scope.get("passive_mode") in (None, ""):
+            reasons.append("family proof eligibility missing proof_scope.passive_mode")
+        if family_scope.get("gateway_transport") in (None, ""):
+            reasons.append("family proof eligibility missing proof_scope.gateway_transport")
+        if family_scope.get("transport_class") in (None, ""):
+            reasons.append("family proof eligibility missing proof_scope.transport_class")
+        if family_scope.get("family_key") in (None, ""):
+            reasons.append("family proof eligibility missing proof_scope.family_key")
+
+    if isinstance(family_eligibility, dict) and isinstance(family_scope, dict):
+        if str(family_eligibility.get("case_id", "")).strip() != normalized_case_id:
+            reasons.append(
+                "family proof eligibility case_id mismatch: "
+                f"got {family_eligibility.get('case_id', '')!r}; want {normalized_case_id!r}"
+            )
+        if family_kind and family_kind != normalized_kind:
+            reasons.append(
+                "family proof eligibility proof_scope.kind mismatch: "
+                f"got {family_kind!r}; want {normalized_kind!r}"
+            )
+        if family_passive_mode and family_passive_mode != normalized_passive_mode:
+            reasons.append(
+                "family proof eligibility proof_scope.passive_mode mismatch: "
+                f"got {family_passive_mode!r}; want {normalized_passive_mode!r}"
+            )
+        if family_gateway_transport and family_gateway_transport != normalized_gateway_transport:
+            reasons.append(
+                "family proof eligibility proof_scope.gateway_transport mismatch: "
+                f"got {family_gateway_transport!r}; want {normalized_gateway_transport!r}"
+            )
+        if family_proxy_transport and normalized_proxy_transport and family_proxy_transport != normalized_proxy_transport:
+            reasons.append(
+                "family proof eligibility proof_scope.proxy_transport mismatch: "
+                f"got {family_proxy_transport!r}; want {normalized_proxy_transport!r}"
+            )
+        if family_ebusd_transport and normalized_ebusd_transport and family_ebusd_transport != normalized_ebusd_transport:
+            reasons.append(
+                "family proof eligibility proof_scope.ebusd_transport mismatch: "
+                f"got {family_ebusd_transport!r}; want {normalized_ebusd_transport!r}"
+            )
+        if family_transport_class and transport_class and family_transport_class != transport_class:
+            reasons.append(
+                "family proof eligibility proof_scope.transport_class mismatch: "
+                f"got {family_transport_class!r}; want {transport_class!r}"
+            )
+
+    if isinstance(family_upstream, dict):
+        family_canary_ok = bool(family_upstream.get("canary_ok", False))
+        family_replay_ok = bool(family_upstream.get("replay_ok", False))
+        canary_ok = bool(isinstance(canary_verdict, dict) and canary_verdict.get("ok", False))
+        replay_ok = bool(isinstance(replay_verdict, dict) and replay_verdict.get("ok", False))
+        if family_canary_ok != canary_ok:
+            reasons.append(
+                "family proof eligibility upstream canary_ok mismatch: "
+                f"got {family_canary_ok!r}; want {canary_ok!r}"
+            )
+        if family_replay_ok != replay_ok:
+            reasons.append(
+                "family proof eligibility upstream replay_ok mismatch: "
+                f"got {family_replay_ok!r}; want {replay_ok!r}"
+            )
+    else:
+        canary_ok = bool(isinstance(canary_verdict, dict) and canary_verdict.get("ok", False))
+        replay_ok = bool(isinstance(replay_verdict, dict) and replay_verdict.get("ok", False))
+
+    if not canary_ok:
+        reasons.append("canary verdict gate failed")
+    if not replay_ok:
+        reasons.append("replay falsification gate failed")
+
+    canonical_proven_scope = (
+        normalized_kind == "proxy-single-client"
+        and normalized_passive_mode == "required"
+        and normalized_gateway_transport == "ens"
+        and transport_class == "ens"
+    )
+    family_identity_missing = (
+        normalized_case_id == ""
+        or normalized_kind == ""
+        or normalized_passive_mode == ""
+        or normalized_gateway_transport == ""
+        or transport_class == ""
+        or family_key == ""
+    )
+    family_identity_ambiguous = any(
+        reason.startswith("ambiguous transport class across structured warmup snapshots:")
+        for reason in reasons
+    )
+    family_scope_mismatch = False
+    if family_identity_missing or family_identity_ambiguous:
+        status = "blocked"
+    elif not canonical_proven_scope:
+        family_scope_mismatch = True
+
+    family_claims_proven = family_eligibility_status == "proven_for_default_flip"
+    family_claims_not_proven = family_eligibility_status == "not_proven"
+    if len(reasons) == 0:
+        if family_claims_proven and canonical_proven_scope:
+            status = "eligible_for_default_flip"
+        elif family_claims_proven:
+            status = "blocked"
+            reasons.append(
+                "family proof eligibility claims proven scope but current matrix topology is not the canonical "
+                "proxy-single-client/required/ens/ens family"
+            )
+        elif family_claims_not_proven and family_scope_mismatch:
+            status = "not_proven"
+            reasons.append(
+                f"promotion scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r} "
+                f"gateway_transport={normalized_gateway_transport!r} transport_class={transport_class!r}; "
+                "want proxy-single-client/required/ens/ens"
+            )
+        elif family_claims_not_proven:
+            status = "blocked"
+            reasons.append(
+                "family proof eligibility rejects canonical P03 proven scope"
+            )
+        else:
+            status = "blocked"
+    elif family_scope_mismatch and len(reasons) == 1 and family_claims_not_proven:
+        status = "not_proven"
+        reasons.append(
+            f"promotion scope mismatch: kind={normalized_kind!r} passive_mode={normalized_passive_mode!r} "
+            f"gateway_transport={normalized_gateway_transport!r} transport_class={transport_class!r}; "
+            "want proxy-single-client/required/ens/ens"
+        )
+    else:
+        status = "blocked"
+
+    artifact = {
+        "schema": PROMOTION_ELIGIBILITY_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": str(run_id).strip(),
+        "case_id": normalized_case_id,
+        "matrix_topology": {
+            "case_id": normalized_case_id or None,
+            "kind": normalized_kind or None,
+            "passive_mode": normalized_passive_mode or None,
+            "gateway_transport": normalized_gateway_transport or None,
+            "proxy_transport": normalized_proxy_transport or None,
+            "ebusd_transport": normalized_ebusd_transport or None,
+            "transport_class": transport_class or None,
+            "family_key": f"{normalized_kind}/{normalized_passive_mode}/{transport_class}" if transport_class else None,
+        },
+        "family_proof_eligibility": {
+            "path": str(family_eligibility_path),
+            "schema": family_eligibility.get("schema") if isinstance(family_eligibility, dict) else None,
+            "ok": family_ok,
+            "eligibility": family_eligibility_block,
+            "proof_scope": family_scope,
+            "family_identity": family_identity,
+            "upstream_proof": family_upstream,
+        },
+        "promotion_scope": {
+            "case_id": normalized_case_id,
+            "kind": normalized_kind,
+            "passive_mode": normalized_passive_mode,
+            "gateway_transport": normalized_gateway_transport,
+            "proxy_transport": normalized_proxy_transport or None,
+            "ebusd_transport": normalized_ebusd_transport or None,
+            "transport_class": transport_class or None,
+            "family_key": f"{normalized_kind}/{normalized_passive_mode}/{transport_class}" if transport_class else None,
+        },
+        "eligibility": {
+            "status": status,
+            "eligible_for_default_flip": status == "eligible_for_default_flip",
+            "proven_for_default_flip": status == "eligible_for_default_flip",
+            "not_proven": status == "not_proven",
+            "blocked": status == "blocked",
+            "reason": "; ".join(reasons),
+        },
+        "ok": status == "eligible_for_default_flip",
+    }
+    return artifact
+
+
 def build_warmup_behavior_artifact_for_phases(
     proof_dir: pathlib.Path,
     run_id: str,
@@ -3700,6 +4073,22 @@ def family_eligibility_command(args: argparse.Namespace) -> int:
     return 0 if status in ("proven_for_default_flip", "not_proven") else 1
 
 
+def promotion_eligibility_command(args: argparse.Namespace) -> int:
+    artifact = build_promotion_eligibility_artifact_for_run(
+        pathlib.Path(args.proof_dir),
+        args.run_id,
+        args.case_id,
+        args.kind,
+        args.passive_mode,
+        args.gateway_transport,
+        proxy_transport=args.proxy_transport,
+        ebusd_transport=args.ebusd_transport,
+    )
+    write_json(pathlib.Path(args.output), artifact)
+    status = str((((artifact.get("eligibility") or {})).get("status", ""))).strip().lower()
+    return 0 if status in ("eligible_for_default_flip", "not_proven") else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -3757,6 +4146,21 @@ def build_parser() -> argparse.ArgumentParser:
     family_eligibility.add_argument("--ebusd-transport", default="")
     family_eligibility.add_argument("--output", required=True)
     family_eligibility.set_defaults(func=family_eligibility_command)
+
+    promotion_eligibility = sub.add_parser(
+        "promotion-eligibility",
+        help="build promotion eligibility artifact from family proof eligibility and proof window artifacts",
+    )
+    promotion_eligibility.add_argument("--proof-dir", required=True)
+    promotion_eligibility.add_argument("--run-id", required=True)
+    promotion_eligibility.add_argument("--case-id", required=True)
+    promotion_eligibility.add_argument("--kind", required=True)
+    promotion_eligibility.add_argument("--passive-mode", required=True)
+    promotion_eligibility.add_argument("--gateway-transport", required=True)
+    promotion_eligibility.add_argument("--proxy-transport", default="")
+    promotion_eligibility.add_argument("--ebusd-transport", default="")
+    promotion_eligibility.add_argument("--output", required=True)
+    promotion_eligibility.set_defaults(func=promotion_eligibility_command)
     return parser
 
 

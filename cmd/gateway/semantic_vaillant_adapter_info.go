@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"expvar"
 	"fmt"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
@@ -32,8 +34,8 @@ type vaillantAdapterInfoState struct {
 	mu sync.Mutex
 
 	bus      *protocol.Bus
-	info     transport.InfoRequester
 	provider *graphql.LiveSemanticProvider
+	info     transport.InfoRequester
 
 	identity *transport.AdapterVersion
 	hwID     string
@@ -53,15 +55,14 @@ type vaillantAdapterInfoState struct {
 }
 
 func newVaillantAdapterInfoState(bus *protocol.Bus, rawTransport transport.RawTransport, provider *graphql.LiveSemanticProvider) *vaillantAdapterInfoState {
-	info, ok := rawTransport.(transport.InfoRequester)
-	if !ok {
-		return nil
-	}
-	return &vaillantAdapterInfoState{
+	state := &vaillantAdapterInfoState{
 		bus:      bus,
-		info:     info,
 		provider: provider,
 	}
+	if info, ok := rawTransport.(transport.InfoRequester); ok {
+		state.info = info
+	}
+	return state
 }
 
 func (s *vaillantAdapterInfoState) run(ctx context.Context) {
@@ -98,30 +99,50 @@ func (s *vaillantAdapterInfoState) refreshCycle(ctx context.Context) {
 func (s *vaillantAdapterInfoState) needsIdentityRefresh() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.identity == nil
+	if s.info == nil {
+		return false
+	}
+	if s.identity == nil {
+		return true
+	}
+	if !s.identity.SupportsInfo {
+		return false
+	}
+	return s.hwID == "" || s.hwConfig == ""
 }
 
 func (s *vaillantAdapterInfoState) refreshIdentity(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.info == nil {
+		adapterInfoSupported.Set(0)
+		adapterInfoHealth.Set(0)
+		return
+	}
 
 	// Query version (ID 0x00).
 	data, err := s.queryInfo(ctx, transport.AdapterInfoVersion)
 	if err != nil {
 		log.Printf("adapter_info: version query failed: %v", err)
+		s.invalidateIdentityLocked()
 		adapterInfoHealth.Set(0)
 		return
 	}
 	version, err := transport.ParseAdapterVersion(data)
 	if err != nil {
 		log.Printf("adapter_info: version parse failed: %v", err)
+		s.invalidateIdentityLocked()
+		adapterInfoHealth.Set(0)
 		return
 	}
 	s.identity = &version
 	adapterInfoSupported.Set(boolToInt64(version.SupportsInfo))
-	adapterInfoHealth.Set(1)
+	s.lastIdentity = time.Now()
 
 	if !version.SupportsInfo {
+		s.hwID = ""
+		s.hwConfig = ""
+		adapterInfoHealth.Set(1)
 		return
 	}
 
@@ -130,6 +151,7 @@ func (s *vaillantAdapterInfoState) refreshIdentity(ctx context.Context) {
 		s.hwID = hex.EncodeToString(hwData)
 	} else {
 		log.Printf("adapter_info: hw_id query failed: %v", err)
+		s.hwID = ""
 	}
 
 	// Query hardware config (ID 0x02).
@@ -137,9 +159,10 @@ func (s *vaillantAdapterInfoState) refreshIdentity(ctx context.Context) {
 		s.hwConfig = hex.EncodeToString(confData)
 	} else {
 		log.Printf("adapter_info: hw_config query failed: %v", err)
+		s.hwConfig = ""
 	}
 
-	s.lastIdentity = time.Now()
+	adapterInfoHealth.Set(boolToInt64(s.hwID != "" && s.hwConfig != ""))
 }
 
 func (s *vaillantAdapterInfoState) refreshTelemetry(ctx context.Context) {
@@ -156,6 +179,10 @@ func (s *vaillantAdapterInfoState) refreshTelemetry(ctx context.Context) {
 		v := float64(binary.BigEndian.Uint16(data[:2]))
 		s.tempC = &v
 		adapterTemperatureC.Set(v)
+	} else if s.shouldRebootstrap(err) {
+		s.invalidateIdentityLocked()
+		adapterInfoHealth.Set(0)
+		return
 	}
 
 	// Supply voltage (ID 0x04).
@@ -165,6 +192,10 @@ func (s *vaillantAdapterInfoState) refreshTelemetry(ctx context.Context) {
 			s.supplyMV = &raw
 			adapterSupplyVoltageMV.Set(float64(raw))
 		}
+	} else if s.shouldRebootstrap(err) {
+		s.invalidateIdentityLocked()
+		adapterInfoHealth.Set(0)
+		return
 	}
 
 	// Bus voltage (ID 0x05).
@@ -179,6 +210,10 @@ func (s *vaillantAdapterInfoState) refreshTelemetry(ctx context.Context) {
 			s.busMinDV = &v
 			adapterBusVoltageMinDV.Set(float64(v))
 		}
+	} else if s.shouldRebootstrap(err) {
+		s.invalidateIdentityLocked()
+		adapterInfoHealth.Set(0)
+		return
 	}
 
 	// Reset info (ID 0x06) — gated.
@@ -190,6 +225,10 @@ func (s *vaillantAdapterInfoState) refreshTelemetry(ctx context.Context) {
 				s.restartCount = &info.RestartCount
 				adapterRestartCount.Set(float64(info.RestartCount))
 			}
+		} else if s.shouldRebootstrap(err) {
+			s.invalidateIdentityLocked()
+			adapterInfoHealth.Set(0)
+			return
 		}
 	}
 
@@ -201,6 +240,10 @@ func (s *vaillantAdapterInfoState) refreshTelemetry(ctx context.Context) {
 				s.wifiRSSI = &v
 				adapterWiFiRSSIDBm.Set(float64(v))
 			}
+		} else if s.shouldRebootstrap(err) {
+			s.invalidateIdentityLocked()
+			adapterInfoHealth.Set(0)
+			return
 		}
 	}
 
@@ -297,6 +340,26 @@ func (s *vaillantAdapterInfoState) publish() {
 	}
 
 	s.provider.SetAdapterHardwareInfo(info)
+}
+
+func (s *vaillantAdapterInfoState) shouldRebootstrap(err error) bool {
+	return errors.Is(err, ebuserrors.ErrTransportClosed)
+}
+
+func (s *vaillantAdapterInfoState) invalidateIdentityLocked() {
+	s.identity = nil
+	s.hwID = ""
+	s.hwConfig = ""
+	s.tempC = nil
+	s.supplyMV = nil
+	s.busMaxDV = nil
+	s.busMinDV = nil
+	s.resetCause = nil
+	s.resetCode = nil
+	s.restartCount = nil
+	s.wifiRSSI = nil
+	s.lastIdentity = time.Time{}
+	s.lastTelemetry = time.Time{}
 }
 
 func boolToInt64(b bool) int64 {

@@ -83,8 +83,8 @@ func (s *vaillantAdapterInfoState) run(ctx context.Context) {
 	const jitter = 5 * time.Second
 
 	for {
-		// Add random jitter to avoid thundering-herd on the bus.
-		interval := baseInterval + time.Duration(rand.Int63n(int64(jitter)))
+		// Symmetric jitter (±5s) to avoid thundering-herd without biasing cadence.
+		interval := baseInterval - jitter + time.Duration(rand.Int63n(int64(2*jitter)))
 		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():

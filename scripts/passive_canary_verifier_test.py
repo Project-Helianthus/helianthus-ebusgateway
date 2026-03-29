@@ -54,6 +54,14 @@ def phase_timestamps(phase: str) -> dict[str, dict[str, str]]:
         bus_time = "2026-03-28T00:00:00Z"
         graphql_time = "2026-03-28T00:00:01Z"
         watch_time = "2026-03-28T00:00:02Z"
+    elif phase == "rollback_pre":
+        bus_time = "2026-03-28T00:06:00Z"
+        graphql_time = "2026-03-28T00:06:01Z"
+        watch_time = "2026-03-28T00:06:02Z"
+    elif phase == "rollback_post":
+        bus_time = "2026-03-28T00:07:00Z"
+        graphql_time = "2026-03-28T00:07:01Z"
+        watch_time = "2026-03-28T00:07:02Z"
     elif phase == "end":
         bus_time = "2026-03-28T00:05:00Z"
         graphql_time = "2026-03-28T00:05:01Z"
@@ -223,7 +231,7 @@ def write_structured_warmup_snapshot_bundle(
             "last_updated_at",
             phase_timestamps(phase)["bus_observability"]["feature_flags_last_updated_at"],
         )
-    snapshot_dir = proof_dir if phase in ("start", "end") else proof_dir / "samples"
+    snapshot_dir = proof_dir if phase in ("start", "end", "rollback_pre", "rollback_post") else proof_dir / "samples"
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     write_json(
         snapshot_dir / f"{phase}_bus_observability.json",
@@ -280,10 +288,90 @@ def write_structured_warmup_snapshot_bundle(
     write_json(
         snapshot_dir / f"{phase}_feature_flags.json",
         {
-            "captured_at": "2026-03-28T00:00:00+00:00",
+            "captured_at": phase_timestamps(phase)["bus_observability"]["summary_last_updated_at"],
             "graphql_feature_flags": graphql_feature_flags,
             "bus_observability_feature_flags": bus_feature_flags,
         },
+    )
+
+
+def write_rollback_execution_artifact(
+    proof_dir: pathlib.Path,
+    run_id: str,
+    *,
+    ok: bool = True,
+    reason: str = "ok",
+    restart_exit_code: int = 0,
+    restart_succeeded: bool = True,
+    gateway_health_check_ok: bool = True,
+) -> dict:
+    proof_gateway_log_path = proof_dir / "gateway_pre_rollback.log"
+    rollback_gateway_log_path = proof_dir / "gateway_rollback.log"
+    proof_gateway_log_path.write_text("pre\n", encoding="utf-8")
+    rollback_gateway_log_path.write_text("rollback\n", encoding="utf-8")
+    artifact = verifier.build_rollback_execution_artifact(
+        run_id=run_id,
+        case_id="P03",
+        exec_case_id="T103",
+        gateway_base_url="http://gateway:8080",
+        remote_case_dir="/tmp/remote-case",
+        proof_gateway_log_path=str(proof_gateway_log_path),
+        rollback_gateway_log_path=str(rollback_gateway_log_path),
+        started_at="2026-03-28T00:06:00Z",
+        completed_at="2026-03-28T00:06:10Z",
+        ok=ok,
+        reason=reason,
+        restart_exit_code=restart_exit_code,
+        restart_succeeded=restart_succeeded,
+        gateway_health_check_ok=gateway_health_check_ok,
+        source="passive_matrix_case_ha.sh rollback-execute",
+        action="gateway_restart_with_rollback_target",
+    )
+    write_json(proof_dir / "rollback_execution.json", artifact)
+    return artifact
+
+
+def write_rollback_snapshot_bundle(
+    proof_dir: pathlib.Path,
+    phase: str,
+    *,
+    observe_first_enabled: bool,
+    passive_state_direct_apply: bool,
+    passive_config_direct_apply: bool = False,
+    external_write_policy: str = "record_only",
+    startup_phase: str = "LIVE_READY",
+    warmup_state: str = "available",
+) -> None:
+    write_metrics(
+        proof_dir / f"{phase}_metrics.prom",
+        [
+            'ebus_passive_tap_connected 1',
+            'ebus_passive_warmup_state{state="available"} 1',
+        ],
+    )
+    graphql_feature_flags = canonical_feature_flags(
+        observe_first_enabled=observe_first_enabled,
+        passive_state_direct_apply=passive_state_direct_apply,
+        passive_config_direct_apply=passive_config_direct_apply,
+        external_write_policy=external_write_policy,
+        normalizations=[],
+    )
+    graphql_feature_flags["lastUpdatedAt"] = phase_timestamps(phase)["graphql_bus_watch"]["feature_flags_last_updated_at"]
+    bus_feature_flags = {
+        "observe_first_enabled": observe_first_enabled,
+        "passive_state_direct_apply": passive_state_direct_apply,
+        "passive_config_direct_apply": passive_config_direct_apply,
+        "external_write_policy": external_write_policy,
+        "normalizations": [],
+        "last_updated_at": phase_timestamps(phase)["bus_observability"]["feature_flags_last_updated_at"],
+    }
+    write_structured_warmup_snapshot_bundle(
+        proof_dir,
+        phase,
+        startup_phase=startup_phase,
+        warmup_state=warmup_state,
+        graphql_feature_flags=graphql_feature_flags,
+        bus_feature_flags=bus_feature_flags,
     )
 
 
@@ -4460,6 +4548,226 @@ class RollbackExecutionArtifactValidationTests(unittest.TestCase):
                 verifier.load_rollback_execution_artifact(artifact_path, "run-123")
 
 
+class RollbackResultArtifactTests(unittest.TestCase):
+    def test_build_rollback_result_passes_with_execution_and_ordered_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_rollback_execution_artifact(proof_dir, "run-123")
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_pre",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+            )
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_post",
+                observe_first_enabled=False,
+                passive_state_direct_apply=False,
+            )
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertTrue(artifact["ok"])
+        self.assertEqual(artifact["status"], "pass")
+        self.assertEqual(artifact["source"], "rollback_execution_plus_structured_snapshots")
+        self.assertEqual(artifact["claim_scope"], "bounded_proof_window_rollback_result")
+        self.assertTrue(artifact["criteria"]["rollback_post_matches_target"]["ok"])
+        self.assertTrue(artifact["criteria"]["rollback_pre_captured_before_execution"]["ok"])
+        self.assertTrue(artifact["criteria"]["rollback_post_captured_after_execution"]["ok"])
+        self.assertTrue(artifact["criteria"]["rollback_observed_transition"]["ok"])
+
+    def test_build_rollback_result_fails_closed_when_execution_artifact_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_pre",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+            )
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_post",
+                observe_first_enabled=False,
+                passive_state_direct_apply=False,
+            )
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertFalse(artifact["ok"])
+        self.assertIn("missing rollback execution artifact", artifact["reason"])
+
+    def test_build_rollback_result_fails_closed_when_execution_artifact_malformed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_json(proof_dir / "rollback_execution.json", {"schema": verifier.ROLLBACK_EXECUTION_ARTIFACT_SCHEMA})
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_pre",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+            )
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_post",
+                observe_first_enabled=False,
+                passive_state_direct_apply=False,
+            )
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertFalse(artifact["ok"])
+        self.assertIn("run_id mismatch", artifact["reason"])
+
+    def test_build_rollback_result_fails_closed_when_execution_not_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_rollback_execution_artifact(
+                proof_dir,
+                "run-123",
+                ok=False,
+                reason="gateway_restart_failed",
+                restart_exit_code=1,
+                restart_succeeded=False,
+                gateway_health_check_ok=False,
+            )
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_pre",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+            )
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_post",
+                observe_first_enabled=False,
+                passive_state_direct_apply=False,
+            )
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertFalse(artifact["ok"])
+        self.assertIn("rollback execution artifact did not complete successfully", artifact["reason"])
+
+    def test_build_rollback_result_fails_closed_when_post_state_mismatches_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_rollback_execution_artifact(proof_dir, "run-123")
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_pre",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+            )
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_post",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+            )
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertFalse(artifact["ok"])
+        self.assertIn("rollback post snapshot does not match rollback target state", artifact["reason"])
+
+    def test_build_rollback_result_fails_closed_when_pre_snapshot_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_rollback_execution_artifact(proof_dir, "run-123")
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_post",
+                observe_first_enabled=False,
+                passive_state_direct_apply=False,
+            )
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertFalse(artifact["ok"])
+        self.assertIn("missing required warmup proof artifact (metrics)", artifact["reason"])
+        self.assertFalse(artifact["criteria"]["rollback_pre_not_already_target"]["ok"])
+
+    def test_build_rollback_result_fails_closed_when_post_snapshot_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_rollback_execution_artifact(proof_dir, "run-123")
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_pre",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+            )
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertFalse(artifact["ok"])
+        self.assertIn("missing required warmup proof artifact (metrics)", artifact["reason"])
+        self.assertFalse(artifact["criteria"]["rollback_post_matches_target"]["ok"])
+
+    def test_build_rollback_result_fails_closed_when_transition_is_not_observed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_rollback_execution_artifact(proof_dir, "run-123")
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_pre",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+                passive_config_direct_apply=False,
+                external_write_policy="record_only",
+            )
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_post",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+                passive_config_direct_apply=False,
+                external_write_policy="record_only",
+            )
+            execution_artifact = json.loads((proof_dir / "rollback_execution.json").read_text(encoding="utf-8"))
+            execution_artifact["requested_to_flags"] = {
+                "observeFirstEnabled": True,
+                "passiveStateDirectApply": True,
+                "passiveConfigDirectApply": False,
+                "externalWritePolicy": "record_only",
+                "normalizations": [],
+            }
+            write_json(proof_dir / "rollback_execution.json", execution_artifact)
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertFalse(artifact["ok"])
+        self.assertIn("rollback pre/post snapshots did not observe a feature-flag transition", artifact["reason"])
+        self.assertFalse(artifact["criteria"]["rollback_observed_transition"]["ok"])
+
+    def test_build_rollback_result_fails_closed_when_post_snapshot_is_not_live_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_rollback_execution_artifact(proof_dir, "run-123")
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_pre",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+            )
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_post",
+                observe_first_enabled=False,
+                passive_state_direct_apply=False,
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+            )
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertFalse(artifact["ok"])
+        self.assertIn("rollback post snapshot not live-ready", artifact["reason"])
+        self.assertFalse(artifact["criteria"]["rollback_post_live_ready"]["ok"])
+
+
 class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
     def _run_smoke_with_fake_tools(
         self,
@@ -4778,6 +5086,9 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     artifact_dir=""
                     proof_gateway_log_path=""
                     rollback_gateway_log_path=""
+                    rollback_switch_file="${FAKE_ROLLBACK_SWITCH_FILE:?FAKE_ROLLBACK_SWITCH_FILE is required}"
+                    started_at=""
+                    completed_at=""
 
                     if [[ -z "${artifact_path}" ]]; then
                       echo "ROLLBACK_EXECUTION_ARTIFACT_PATH is required" >&2
@@ -4792,10 +5103,17 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     artifact_dir="$(dirname "${artifact_path}")"
                     proof_gateway_log_path="${artifact_dir}/gateway_pre_rollback.log"
                     rollback_gateway_log_path="${artifact_dir}/gateway_rollback.log"
+                    started_at="$("${real_python}" - <<'PY'
+from datetime import datetime, timezone
+print(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+PY
+)"
+                    completed_at="${started_at}"
                     case "${mode}" in
                       pass)
                         printf '%s\n' 'proof log' > "${proof_gateway_log_path}"
                         printf '%s\n' 'rollback log' > "${rollback_gateway_log_path}"
+                        : > "${rollback_switch_file}"
                         "${real_python}" "${verifier_script}" rollback-execution \
                           --run-id "${run_id}" \
                           --case-id "${case_id}" \
@@ -4804,8 +5122,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           --remote-case-dir "${remote_case_dir}" \
                           --proof-gateway-log-path "${proof_gateway_log_path}" \
                           --rollback-gateway-log-path "${rollback_gateway_log_path}" \
-                          --started-at "2026-03-28T00:00:00Z" \
-                          --completed-at "2026-03-28T00:00:10Z" \
+                          --started-at "${started_at}" \
+                          --completed-at "${completed_at}" \
                           --ok true \
                           --reason ok \
                           --restart-exit-code 0 \
@@ -4832,8 +5150,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           --remote-case-dir "${remote_case_dir}" \
                           --proof-gateway-log-path "${proof_gateway_log_path}" \
                           --rollback-gateway-log-path "${rollback_gateway_log_path}" \
-                          --started-at "2026-03-28T00:00:00Z" \
-                          --completed-at "2026-03-28T00:00:10Z" \
+                          --started-at "${started_at}" \
+                          --completed-at "${completed_at}" \
                           --ok false \
                           --reason gateway_restart_failed \
                           --restart-exit-code 1 \
@@ -4865,6 +5183,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
 
                     url="${@: -1}"
                     data=""
+                    rollback_switch_file="${FAKE_ROLLBACK_SWITCH_FILE:?FAKE_ROLLBACK_SWITCH_FILE is required}"
                     while [[ "$#" -gt 0 ]]; do
                       case "$1" in
                         -d)
@@ -4876,6 +5195,18 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           ;;
                       esac
                     done
+
+                    load_feature_flag_state() {
+                      observe_first_enabled_json=true
+                      passive_state_direct_apply_json=true
+                      passive_config_direct_apply_json=false
+                      external_write_policy="record_only"
+                      if [[ -f "${rollback_switch_file}" ]]; then
+                        observe_first_enabled_json=false
+                        passive_state_direct_apply_json=false
+                        passive_config_direct_apply_json=false
+                      fi
+                    }
 
                     if [[ "${url}" == *"/metrics" ]]; then
                       timed_out=0
@@ -4959,6 +5290,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     fi
 
                     if [[ "${url}" == *"/portal/api/v1/bus/observability" ]]; then
+                      load_feature_flag_state
                       startup_mode="${FAKE_BUS_STARTUP_MODE:-initially_live_warmup_then_live_ready}"
                       phase="LIVE_READY"
                       summary_last_updated_at="2026-03-28T00:05:00Z"
@@ -4996,11 +5328,11 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                       fi
                       if [[ "${include_publisher_cadence}" == "1" ]]; then
                         cat <<EOF
-                    {"summary":{"last_updated_at":"${summary_last_updated_at}","status":{"last_updated_at":"${status_last_updated_at}","startup":{"phase":"${phase}","cache_epoch":${cache_epoch},"live_epoch":${live_epoch},"last_updated_at":"${startup_last_updated_at}"},"publisher_cadence_sec":${publisher_cadence_sec},"publisher_cadence_source":"${publisher_cadence_source}","feature_flags":{"observe_first_enabled":true,"passive_state_direct_apply":false,"passive_config_direct_apply":false,"external_write_policy":"record_only","normalizations":[],"last_updated_at":"${feature_flags_last_updated_at}"}}}}
+                    {"summary":{"last_updated_at":"${summary_last_updated_at}","status":{"last_updated_at":"${status_last_updated_at}","startup":{"phase":"${phase}","cache_epoch":${cache_epoch},"live_epoch":${live_epoch},"last_updated_at":"${startup_last_updated_at}"},"publisher_cadence_sec":${publisher_cadence_sec},"publisher_cadence_source":"${publisher_cadence_source}","feature_flags":{"observe_first_enabled":${observe_first_enabled_json},"passive_state_direct_apply":${passive_state_direct_apply_json},"passive_config_direct_apply":${passive_config_direct_apply_json},"external_write_policy":"${external_write_policy}","normalizations":[],"last_updated_at":"${feature_flags_last_updated_at}"}}}}
                     EOF
                       else
                         cat <<EOF
-                    {"summary":{"last_updated_at":"${summary_last_updated_at}","status":{"last_updated_at":"${status_last_updated_at}","startup":{"phase":"${phase}","cache_epoch":${cache_epoch},"live_epoch":${live_epoch},"last_updated_at":"${startup_last_updated_at}"},"feature_flags":{"observe_first_enabled":true,"passive_state_direct_apply":false,"passive_config_direct_apply":false,"external_write_policy":"record_only","normalizations":[],"last_updated_at":"${feature_flags_last_updated_at}"}}}}
+                    {"summary":{"last_updated_at":"${summary_last_updated_at}","status":{"last_updated_at":"${status_last_updated_at}","startup":{"phase":"${phase}","cache_epoch":${cache_epoch},"live_epoch":${live_epoch},"last_updated_at":"${startup_last_updated_at}"},"feature_flags":{"observe_first_enabled":${observe_first_enabled_json},"passive_state_direct_apply":${passive_state_direct_apply_json},"passive_config_direct_apply":${passive_config_direct_apply_json},"external_write_policy":"${external_write_policy}","normalizations":[],"last_updated_at":"${feature_flags_last_updated_at}"}}}}
                     EOF
                       fi
                       exit 0
@@ -5008,6 +5340,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
 
                     if [[ "${url}" == *"/graphql" ]]; then
                       if [[ "${data}" == *"busSummary"* ]]; then
+                      load_feature_flag_state
                       startup_mode="${FAKE_BUS_STARTUP_MODE:-initially_live_warmup_then_live_ready}"
                       phase="LIVE_READY"
                       bus_summary_last_updated_at="2026-03-28T00:05:01Z"
@@ -5076,10 +5409,10 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                             },
                             "featureFlags": {
                               "lastUpdatedAt": "${feature_flags_last_updated_at}",
-                              "observeFirstEnabled": true,
-                              "passiveStateDirectApply": false,
-                              "passiveConfigDirectApply": false,
-                              "externalWritePolicy": "record_only",
+                              "observeFirstEnabled": ${observe_first_enabled_json},
+                              "passiveStateDirectApply": ${passive_state_direct_apply_json},
+                              "passiveConfigDirectApply": ${passive_config_direct_apply_json},
+                              "externalWritePolicy": "${external_write_policy}",
                               "normalizations": []
                             }
                           }
@@ -5125,10 +5458,10 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                             },
                             "featureFlags": {
                               "lastUpdatedAt": "${feature_flags_last_updated_at}",
-                              "observeFirstEnabled": true,
-                              "passiveStateDirectApply": false,
-                              "passiveConfigDirectApply": false,
-                              "externalWritePolicy": "record_only",
+                              "observeFirstEnabled": ${observe_first_enabled_json},
+                              "passiveStateDirectApply": ${passive_state_direct_apply_json},
+                              "passiveConfigDirectApply": ${passive_config_direct_apply_json},
+                              "externalWritePolicy": "${external_write_policy}",
                               "normalizations": []
                             }
                           }
@@ -5192,6 +5525,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     "FAKE_CANARY_STATUS": canary_status,
                     "FAKE_CANARY_PHASE_LOG": str(temp_path / "fake_canary_phase_log.txt"),
                     "FAKE_METRICS_STATE_FILE": str(temp_path / "fake_metrics_count.txt"),
+                    "FAKE_ROLLBACK_SWITCH_FILE": str(temp_path / "fake_rollback_switch.txt"),
                     "PASSIVE_ROLLBACK_EXECUTOR_SCRIPT": str(fake_rollback_executor),
                     "PATH": f"{fake_bin}:{env.get('PATH', '')}",
                 }
@@ -5223,6 +5557,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 cross_plane_skew_path = proof_dir / "cross_plane_skew.json"
                 wire_timing_reference_path = proof_dir / "wire_timing_reference.json"
                 rollback_execution_path = proof_dir / "rollback_execution.json"
+                rollback_result_path = proof_dir / "rollback_result.json"
                 phase_log_path = temp_path / "fake_canary_phase_log.txt"
                 if summary_path.exists():
                     artifacts["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -5255,6 +5590,10 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                 if rollback_execution_path.exists():
                     artifacts["rollback_execution"] = json.loads(
                         rollback_execution_path.read_text(encoding="utf-8")
+                    )
+                if rollback_result_path.exists():
+                    artifacts["rollback_result"] = json.loads(
+                        rollback_result_path.read_text(encoding="utf-8")
                     )
                 if phase_log_path.exists():
                     artifacts["phase_log"] = [
@@ -5379,6 +5718,27 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             1,
         )
 
+    def test_smoke_emits_rollback_result_artifact_when_canary_verdict_is_good(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed("pass")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        rollback_result = artifacts.get("rollback_result")
+        self.assertIsInstance(rollback_result, dict)
+        self.assertTrue(rollback_result["ok"])
+        self.assertEqual(
+            rollback_result["schema"],
+            "observe_first_rollback_result_v1",
+        )
+        self.assertEqual(
+            rollback_result["source"],
+            "rollback_execution_plus_structured_snapshots",
+        )
+        self.assertEqual(
+            rollback_result["claim_scope"],
+            "bounded_proof_window_rollback_result",
+        )
+        self.assertTrue(rollback_result["criteria"]["rollback_post_matches_target"]["ok"])
+        self.assertTrue(rollback_result["criteria"]["rollback_observed_transition"]["ok"])
+
     def test_smoke_emits_rollback_execution_artifact_when_canary_verdict_is_good(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed("pass")
         self.assertEqual(result.returncode, 0, msg=result.stderr)
@@ -5405,28 +5765,40 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
         )
 
     def test_smoke_fails_closed_when_rollback_execution_artifact_is_missing(self) -> None:
-        result = self.run_smoke_with_fake_tools(
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
             "pass",
             extra_env={"FAKE_ROLLBACK_EXECUTION_MODE": "missing"},
         )
         self.assertNotEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("rollback execution producer failed", result.stderr)
+        self.assertIn("rollback result gate failed", result.stderr)
+        rollback_result = artifacts.get("rollback_result")
+        self.assertIsInstance(rollback_result, dict)
+        self.assertFalse(rollback_result["ok"])
+        self.assertEqual(rollback_result["status"], "fail")
 
     def test_smoke_fails_closed_when_rollback_execution_artifact_is_malformed(self) -> None:
-        result = self.run_smoke_with_fake_tools(
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
             "pass",
             extra_env={"FAKE_ROLLBACK_EXECUTION_MODE": "malformed"},
         )
         self.assertNotEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("rollback execution producer failed", result.stderr)
+        self.assertIn("rollback result gate failed", result.stderr)
+        rollback_result = artifacts.get("rollback_result")
+        self.assertIsInstance(rollback_result, dict)
+        self.assertFalse(rollback_result["ok"])
+        self.assertEqual(rollback_result["status"], "fail")
 
     def test_smoke_fails_closed_when_rollback_execution_executor_fails(self) -> None:
-        result = self.run_smoke_with_fake_tools(
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
             "pass",
             extra_env={"FAKE_ROLLBACK_EXECUTION_MODE": "fail"},
         )
         self.assertNotEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("rollback execution producer failed", result.stderr)
+        self.assertIn("rollback result gate failed", result.stderr)
+        rollback_result = artifacts.get("rollback_result")
+        self.assertIsInstance(rollback_result, dict)
+        self.assertFalse(rollback_result["ok"])
+        self.assertEqual(rollback_result["status"], "fail")
 
     def test_smoke_emits_family_eligibility_artifact_for_not_proven_family(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

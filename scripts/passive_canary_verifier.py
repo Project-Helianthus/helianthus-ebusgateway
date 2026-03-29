@@ -46,6 +46,13 @@ ROLLBACK_TARGET_FEATURE_FLAGS = {
     "externalWritePolicy": "record_only",
     "normalizations": [],
 }
+ROLLBACK_PROOF_FEATURE_FLAGS = {
+    "observeFirstEnabled": True,
+    "passiveStateDirectApply": True,
+    "passiveConfigDirectApply": False,
+    "externalWritePolicy": "record_only",
+    "normalizations": [],
+}
 CROSS_PLANE_SKEW_SEMANTIC_FIELDS = (
     "bus_observability.summary_last_updated_at",
     "bus_observability.status_last_updated_at",
@@ -507,7 +514,7 @@ def build_rollback_result_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict
     rollback_post: Dict[str, Any] | None = None
     rollback_target_state: Dict[str, Any] | None = None
     execution_ok = False
-    pre_matches_target = False
+    pre_matches_proof_state = False
     post_matches_target = False
     observed_transition = False
     pre_live_ready = False
@@ -574,11 +581,18 @@ def build_rollback_result_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict
         else:
             rollback_post = snapshot
 
-    if rollback_target_state is not None and rollback_pre is not None:
+    if rollback_pre is not None:
         pre_state = rollback_pre["feature_flag_snapshot"]["canonical_feature_flags"]
-        pre_matches_target, mismatch_field = compare_feature_flag_states(pre_state, rollback_target_state)
-        if pre_matches_target:
-            reasons.append("rollback pre snapshot already matches rollback target state")
+        pre_matches_proof_state, mismatch_field = compare_feature_flag_states(
+            pre_state,
+            ROLLBACK_PROOF_FEATURE_FLAGS,
+        )
+        if not pre_matches_proof_state:
+            reasons.append(
+                "rollback pre snapshot does not match expected proof-mode state"
+                if mismatch_field is None
+                else f"rollback pre snapshot does not match expected proof-mode state ({mismatch_field})"
+            )
         pre_live_ready = rollback_pre["startup_phase"] == "LIVE_READY"
         if not pre_live_ready:
             reasons.append(
@@ -663,15 +677,15 @@ def build_rollback_result_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict
                     else str(rollback_execution.get("reason", "")).strip() or "rollback execution failed"
                 ),
             },
-            "rollback_pre_not_already_target": {
-                "ok": rollback_pre is not None and rollback_target_state is not None and not pre_matches_target,
+            "rollback_pre_matches_proof_state": {
+                "ok": rollback_pre is not None and pre_matches_proof_state,
                 "reason": (
-                    "missing rollback pre snapshot or rollback target state"
-                    if rollback_pre is None or rollback_target_state is None
+                    "missing rollback pre snapshot"
+                    if rollback_pre is None
                     else (
-                        "rollback pre snapshot already matches rollback target state"
-                        if pre_matches_target
-                        else "ok"
+                        "ok"
+                        if pre_matches_proof_state
+                        else "rollback pre snapshot does not match expected proof-mode state"
                     )
                 ),
             },

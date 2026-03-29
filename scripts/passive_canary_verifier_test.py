@@ -49,6 +49,16 @@ def canonical_feature_flags(
     }
 
 
+def rollback_proof_mode_feature_flags() -> dict:
+    return canonical_feature_flags(
+        observe_first_enabled=True,
+        passive_state_direct_apply=True,
+        passive_config_direct_apply=False,
+        external_write_policy="record_only",
+        normalizations=[],
+    )
+
+
 def phase_timestamps(phase: str) -> dict[str, dict[str, str]]:
     if phase == "start":
         bus_time = "2026-03-28T00:00:00Z"
@@ -4558,6 +4568,7 @@ class RollbackResultArtifactTests(unittest.TestCase):
     def test_build_rollback_result_passes_with_execution_and_ordered_transition(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
+            expected_proof_state = rollback_proof_mode_feature_flags()
             write_rollback_execution_artifact(proof_dir, "run-123")
             write_rollback_snapshot_bundle(
                 proof_dir,
@@ -4578,6 +4589,11 @@ class RollbackResultArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["status"], "pass")
         self.assertEqual(artifact["source"], "rollback_execution_plus_structured_snapshots")
         self.assertEqual(artifact["claim_scope"], "bounded_proof_window_rollback_result")
+        self.assertEqual(
+            artifact["rollback_pre"]["feature_flag_snapshot"]["canonical_feature_flags"],
+            expected_proof_state,
+        )
+        self.assertTrue(artifact["criteria"]["rollback_pre_matches_proof_state"]["ok"])
         self.assertTrue(artifact["criteria"]["rollback_pre_live_ready"]["ok"])
         self.assertTrue(artifact["criteria"]["rollback_post_matches_target"]["ok"])
         self.assertTrue(artifact["criteria"]["rollback_pre_captured_before_execution"]["ok"])
@@ -4719,7 +4735,41 @@ class RollbackResultArtifactTests(unittest.TestCase):
 
         self.assertFalse(artifact["ok"])
         self.assertIn("missing required warmup proof artifact (metrics)", artifact["reason"])
-        self.assertFalse(artifact["criteria"]["rollback_pre_not_already_target"]["ok"])
+        self.assertFalse(artifact["criteria"]["rollback_pre_matches_proof_state"]["ok"])
+
+    def test_build_rollback_result_fails_closed_when_pre_snapshot_is_drifted_from_proof_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            drifted_proof_state = rollback_proof_mode_feature_flags()
+            drifted_proof_state["passiveConfigDirectApply"] = True
+            write_rollback_execution_artifact(proof_dir, "run-123")
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_pre",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+                passive_config_direct_apply=True,
+            )
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_post",
+                observe_first_enabled=False,
+                passive_state_direct_apply=False,
+            )
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertFalse(artifact["ok"])
+        self.assertIn("rollback pre snapshot does not match expected proof-mode state", artifact["reason"])
+        self.assertFalse(artifact["criteria"]["rollback_pre_matches_proof_state"]["ok"])
+        self.assertEqual(
+            artifact["rollback_pre"]["feature_flag_snapshot"]["canonical_feature_flags"],
+            drifted_proof_state,
+        )
+        self.assertNotEqual(
+            artifact["rollback_pre"]["feature_flag_snapshot"]["canonical_feature_flags"],
+            rollback_proof_mode_feature_flags(),
+        )
 
     def test_build_rollback_result_fails_closed_when_post_snapshot_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

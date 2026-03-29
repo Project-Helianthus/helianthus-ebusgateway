@@ -81,12 +81,51 @@ type BusObservabilityCounters struct {
 	PeriodicityBudgetOverflowTotal uint64
 }
 
+type BusErrorAggregate struct {
+	Scope string
+	Class string
+	Phase string
+	Count uint64
+}
+
+type BusFrameAggregate struct {
+	Scope     string
+	Source    string
+	Target    string
+	Family    string
+	FrameType string
+	Count     uint64
+}
+
+type BusBusyWindow struct {
+	Window string
+	Ratio  float64
+}
+
+type BusBusyAggregate struct {
+	TotalSeconds float64
+	Windows      []BusBusyWindow
+}
+
+type BusReconstructorRecovery struct {
+	Reason string
+	Count  uint64
+}
+
+type BusReconstructorAggregate struct {
+	Recoveries []BusReconstructorRecovery
+}
+
 type BusSummary struct {
 	LastUpdatedAt *time.Time
 	Status        *BusObservabilityStatus
 	Messages      BusBoundedListSummary
 	Periodicity   BusBoundedListSummary
 	Counters      BusObservabilityCounters
+	Errors        []BusErrorAggregate
+	Frames        []BusFrameAggregate
+	Busy          *BusBusyAggregate
+	Reconstructor *BusReconstructorAggregate
 }
 
 type BusMessage struct {

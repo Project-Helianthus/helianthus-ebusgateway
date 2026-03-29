@@ -5,6 +5,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import shutil
 import sys
@@ -20,6 +21,10 @@ if str(SCRIPT_DIR) not in sys.path:
 import passive_canary_verifier as verifier  # noqa: E402
 
 CANONICAL_NO_EBUSD_TRANSPORT = verifier.CANONICAL_NO_EBUSD_TRANSPORT
+
+
+def normalize_shell_fixture(text: str) -> str:
+    return re.sub(r"(?m)^[ \t]+EOF$", "EOF", textwrap.dedent(text))
 
 
 def write_json(path: pathlib.Path, payload: object) -> None:
@@ -4499,6 +4504,362 @@ class CrossPlaneSkewArtifactTests(unittest.TestCase):
         self.assertIn("skew exceeded", " ".join(artifact["reasons"]).lower())
 
 
+class TimingReferenceVerdictCommandTests(unittest.TestCase):
+    @staticmethod
+    def build_periodicity_entry(
+        *,
+        source_bucket: str = "0x08",
+        target_bucket: str = "0x15",
+        primary: int = 181,
+        secondary: int = 9,
+        family: str = "B509",
+        sample_count: int = 12,
+        mean_interval: object = 10.0,
+        last_interval: object = 10.0,
+        min_interval: object = 10.0,
+        max_interval: object = 10.0,
+        state: str | None = None,
+        bus_style: bool = False,
+    ) -> dict:
+        entry = {
+            "source_bucket": source_bucket,
+            "target_bucket": target_bucket,
+            "primary": primary,
+            "secondary": secondary,
+            "family": family,
+            "sample_count": sample_count,
+            "last_seen": "2026-03-28T00:05:10Z",
+        }
+        if state is not None:
+            entry["state"] = state
+        if bus_style:
+            entry["mean_interval"] = mean_interval
+            entry["last_interval"] = last_interval
+            entry["min_interval"] = min_interval
+            entry["max_interval"] = max_interval
+        else:
+            entry["mean_interval_sec"] = mean_interval
+            entry["last_interval_sec"] = last_interval
+            entry["min_interval_sec"] = min_interval
+            entry["max_interval_sec"] = max_interval
+        return entry
+
+    @staticmethod
+    def write_wire_reference_artifact(
+        proof_dir: pathlib.Path,
+        *,
+        busy_seconds_total: float = 1.0,
+        periodicity_sample_count: int = 12,
+        periodicity_mean_interval_sec: float = 10.0,
+        proxy_log_path: pathlib.Path | None = None,
+    ) -> None:
+        if proxy_log_path is None:
+            proxy_log_path = proof_dir / "proxy.log"
+        proxy_log_path.parent.mkdir(parents=True, exist_ok=True)
+        proxy_log_path.write_text("wire\n", encoding="utf-8")
+        write_json(
+            proof_dir / "wire_timing_reference.json",
+            {
+                "schema": "observe_first_wire_timing_reference_v1",
+                "captured_at": "2026-03-28T00:00:00+00:00",
+                "source": "proxy_log_session_send_plus_wire_rx",
+                "claim_scope": "bounded_proof_window_timing_reference_source",
+                "ok": True,
+                "evidence": {
+                    "proxy_log_path": str(proxy_log_path),
+                    "proxy_log_line_count": 42,
+                    "session_start_count": 2,
+                    "send_symbol_count": 16,
+                    "wire_symbol_count": 42,
+                    "synthetic_symbol_spacing_ms": 4,
+                    "timestamp_resolution": "proxy_log_seconds_plus_symbol_spacing",
+                },
+                "summary": {
+                    "classified_event_count": 3,
+                    "transaction_count": 3,
+                    "master_frame_count": 0,
+                    "abandoned_count": 0,
+                    "busy_seconds_total": busy_seconds_total,
+                    "families_with_intervals": 1,
+                },
+                "periodicity": [
+                    {
+                        **TimingReferenceVerdictCommandTests.build_periodicity_entry(
+                            sample_count=periodicity_sample_count,
+                            mean_interval=periodicity_mean_interval_sec,
+                        )
+                    }
+                ],
+            }
+        )
+
+    @staticmethod
+    def attach_bus_periodicity(path: pathlib.Path, *, entry: dict) -> None:
+        payload = verifier.load_json(path)
+        if not isinstance(payload, dict):
+            raise AssertionError(f"unexpected payload at {path}")
+        payload["periodicity"] = [entry]
+        summary = payload.get("summary")
+        if not isinstance(summary, dict):
+            raise AssertionError(f"missing summary at {path}")
+        status = summary.get("status")
+        if not isinstance(status, dict):
+            raise AssertionError(f"missing summary.status at {path}")
+        status["periodicity"] = [entry]
+        write_json(path, payload)
+
+    def write_timing_reference_evidence_artifacts(
+        self,
+        proof_dir: pathlib.Path,
+        *,
+        start_busy: float = 1.0,
+        end_busy: float = 2.0,
+        include_end_busy: bool = True,
+        periodicity_sample_count: int = 12,
+        periodicity_mean_interval: object = "10s",
+        bus_periodicity_state: str = "available",
+    ) -> None:
+        start_metrics = [
+            "ebus_passive_tap_connected 1",
+            f"ebus_bus_busy_seconds_total {start_busy}",
+        ]
+        end_metrics = ["ebus_passive_tap_connected 1"]
+        if include_end_busy:
+            end_metrics.append(f"ebus_bus_busy_seconds_total {end_busy}")
+        periodicity_entry = self.build_periodicity_entry(
+            sample_count=periodicity_sample_count,
+            mean_interval=periodicity_mean_interval,
+            last_interval=periodicity_mean_interval,
+            min_interval=periodicity_mean_interval,
+            max_interval=periodicity_mean_interval,
+            state=bus_periodicity_state,
+            bus_style=True,
+        )
+        write_metrics(proof_dir / "start_metrics.prom", start_metrics)
+        write_metrics(proof_dir / "end_metrics.prom", end_metrics)
+        write_structured_warmup_snapshot_bundle(
+            proof_dir,
+            "start",
+            startup_phase="LIVE_WARMUP",
+            warmup_state="warming_up",
+            cache_epoch=1,
+            live_epoch=0,
+            transport_class="ens",
+            publisher_cadence_sec=60.0,
+        )
+        write_structured_warmup_snapshot_bundle(
+            proof_dir,
+            "end",
+            startup_phase="LIVE_READY",
+            warmup_state="available",
+            cache_epoch=1,
+            live_epoch=1,
+            transport_class="ens",
+            publisher_cadence_sec=60.0,
+        )
+        start_bus_path = proof_dir / "start_bus_observability.json"
+        end_bus_path = proof_dir / "end_bus_observability.json"
+        self.attach_bus_periodicity(start_bus_path, entry=periodicity_entry)
+        self.attach_bus_periodicity(end_bus_path, entry=periodicity_entry)
+
+    def run_timing_reference_verdict_command(
+        self,
+        proof_dir: pathlib.Path,
+        output_path: pathlib.Path,
+        *,
+        wire_reference_path: pathlib.Path | None = None,
+    ) -> tuple[int, str]:
+        stderr = io.StringIO()
+        if wire_reference_path is None:
+            wire_reference_path = proof_dir / "wire_timing_reference.json"
+        with contextlib.redirect_stderr(stderr):
+            exit_code = verifier.main(
+                [
+                    "timing-reference-verdict",
+                    "--proof-dir",
+                    str(proof_dir),
+                    "--run-id",
+                    "run-1",
+                    "--wire-reference-path",
+                    str(wire_reference_path),
+                    "--output",
+                    str(output_path),
+                ]
+            )
+        return exit_code, stderr.getvalue()
+
+    def test_timing_reference_verdict_command_passes_with_matching_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "timing_reference_verdict.json"
+            self.write_wire_reference_artifact(proof_dir)
+            self.write_timing_reference_evidence_artifacts(
+                proof_dir,
+                start_busy=1.0,
+                end_busy=2.0,
+                include_end_busy=True,
+            )
+
+            exit_code, stderr = self.run_timing_reference_verdict_command(proof_dir, output_path)
+            artifact = verifier.load_json(output_path)
+
+        self.assertEqual(exit_code, 0, msg=stderr)
+        self.assertEqual(artifact["schema"], verifier.TIMING_REFERENCE_VERDICT_SCHEMA)
+        self.assertTrue(artifact["ok"])
+        self.assertEqual(artifact["status"], "pass")
+        self.assertEqual(artifact["summary"]["stable_reference_tuple_count"], 1)
+        self.assertEqual(artifact["summary"]["matched_tuple_count"], 1)
+
+    def test_timing_reference_verdict_command_fails_closed_when_busy_metric_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "timing_reference_verdict.json"
+            self.write_wire_reference_artifact(proof_dir)
+            self.write_timing_reference_evidence_artifacts(
+                proof_dir,
+                start_busy=1.0,
+                include_end_busy=False,
+            )
+
+            exit_code, stderr = self.run_timing_reference_verdict_command(proof_dir, output_path)
+            artifact = verifier.load_json(output_path)
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(artifact["schema"], verifier.TIMING_REFERENCE_VERDICT_SCHEMA)
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["status"], "fail")
+        self.assertIn("missing required metric sample", artifact["reason"])
+
+    def test_timing_reference_verdict_command_fails_closed_when_periodicity_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "timing_reference_verdict.json"
+            self.write_wire_reference_artifact(
+                proof_dir,
+                periodicity_mean_interval_sec=10.0,
+            )
+            self.write_timing_reference_evidence_artifacts(
+                proof_dir,
+                start_busy=1.0,
+                end_busy=2.0,
+                periodicity_mean_interval="14.5s",
+            )
+
+            exit_code, stderr = self.run_timing_reference_verdict_command(proof_dir, output_path)
+            artifact = verifier.load_json(output_path)
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(artifact["schema"], verifier.TIMING_REFERENCE_VERDICT_SCHEMA)
+        self.assertFalse(artifact["ok"])
+        self.assertEqual(artifact["status"], "fail")
+        self.assertIn("periodicity timing mismatch exceeds tolerance", artifact["reason"])
+
+    def test_timing_reference_verdict_command_fails_closed_when_reference_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "timing_reference_verdict.json"
+            self.write_timing_reference_evidence_artifacts(proof_dir)
+
+            exit_code, stderr = self.run_timing_reference_verdict_command(proof_dir, output_path)
+            artifact = verifier.load_json(output_path)
+
+        self.assertNotEqual(exit_code, 0, msg=stderr)
+        self.assertFalse(artifact["ok"])
+        self.assertIn("missing wire timing reference artifact", artifact["reason"])
+
+    def test_timing_reference_verdict_command_fails_closed_when_reference_is_malformed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "timing_reference_verdict.json"
+            write_json(proof_dir / "wire_timing_reference.json", {"schema": "unexpected"})
+            self.write_timing_reference_evidence_artifacts(proof_dir)
+
+            exit_code, stderr = self.run_timing_reference_verdict_command(proof_dir, output_path)
+            artifact = verifier.load_json(output_path)
+
+        self.assertNotEqual(exit_code, 0, msg=stderr)
+        self.assertFalse(artifact["ok"])
+        self.assertIn("schema mismatch", artifact["reason"])
+
+    def test_timing_reference_verdict_command_fails_closed_when_observed_tuple_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "timing_reference_verdict.json"
+            self.write_wire_reference_artifact(proof_dir)
+            self.write_timing_reference_evidence_artifacts(proof_dir)
+            end_bus_path = proof_dir / "end_bus_observability.json"
+            payload = verifier.load_json(end_bus_path)
+            payload.pop("periodicity", None)
+            summary = payload.get("summary", {})
+            status = summary.get("status", {})
+            status["periodicity"] = []
+            write_json(end_bus_path, payload)
+
+            exit_code, stderr = self.run_timing_reference_verdict_command(proof_dir, output_path)
+            artifact = verifier.load_json(output_path)
+
+        self.assertNotEqual(exit_code, 0, msg=stderr)
+        self.assertFalse(artifact["ok"])
+        self.assertIn("missing observed periodicity tuple", artifact["reason"])
+
+    def test_timing_reference_verdict_command_fails_closed_when_observed_tuple_is_not_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "timing_reference_verdict.json"
+            self.write_wire_reference_artifact(proof_dir)
+            self.write_timing_reference_evidence_artifacts(
+                proof_dir,
+                bus_periodicity_state="warming_up",
+            )
+
+            exit_code, stderr = self.run_timing_reference_verdict_command(proof_dir, output_path)
+            artifact = verifier.load_json(output_path)
+
+        self.assertNotEqual(exit_code, 0, msg=stderr)
+        self.assertFalse(artifact["ok"])
+        self.assertIn("must be state=available", artifact["reason"])
+
+    def test_timing_reference_verdict_command_accepts_go_style_duration_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "timing_reference_verdict.json"
+            self.write_wire_reference_artifact(
+                proof_dir,
+                periodicity_mean_interval_sec=60.0,
+            )
+            self.write_timing_reference_evidence_artifacts(
+                proof_dir,
+                start_busy=1.0,
+                end_busy=2.0,
+                periodicity_mean_interval="1m0s",
+            )
+
+            exit_code, stderr = self.run_timing_reference_verdict_command(proof_dir, output_path)
+            artifact = verifier.load_json(output_path)
+
+        self.assertEqual(exit_code, 0, msg=stderr)
+        self.assertTrue(artifact["ok"])
+
+    def test_timing_reference_verdict_command_fails_closed_when_proxy_log_is_outside_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            output_path = proof_dir / "timing_reference_verdict.json"
+            outside_dir = pathlib.Path(tempfile.mkdtemp())
+            self.addCleanup(shutil.rmtree, outside_dir, ignore_errors=True)
+            self.write_wire_reference_artifact(
+                proof_dir,
+                proxy_log_path=outside_dir / "proxy.log",
+            )
+            self.write_timing_reference_evidence_artifacts(proof_dir)
+
+            exit_code, stderr = self.run_timing_reference_verdict_command(proof_dir, output_path)
+            artifact = verifier.load_json(output_path)
+
+        self.assertNotEqual(exit_code, 0, msg=stderr)
+        self.assertFalse(artifact["ok"])
+        self.assertIn("must stay within the current proof log bundle", artifact["reason"])
+
+
 class RollbackExecutionArtifactValidationTests(unittest.TestCase):
     def _write_rollback_execution_artifact(
         self,
@@ -5031,7 +5392,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
 
             fake_go = fake_bin / "go"
             fake_go.write_text(
-                textwrap.dedent(
+                normalize_shell_fixture(
                     """\
                     #!/usr/bin/env bash
                     set -euo pipefail
@@ -5041,6 +5402,10 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                       timing_out_path="${WIRE_TIMING_REFERENCE_ARTIFACT_PATH:-}"
                       if [[ -n "${timing_out_path}" ]]; then
                         proxy_log_path="${WIRE_TIMING_REFERENCE_PROXY_LOG_PATH:-}"
+                        proof_dir="$(dirname "${timing_out_path}")"
+                        start_metrics_path="${proof_dir}/start_metrics.prom"
+                        end_metrics_path="${proof_dir}/end_metrics.prom"
+                        reference_busy_seconds=2.0
                         if [[ -z "${proxy_log_path}" ]]; then
                           echo "WIRE_TIMING_REFERENCE_PROXY_LOG_PATH is required" >&2
                           exit 2
@@ -5057,6 +5422,11 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         if [[ "${last_arg}" != "." ]]; then
                           echo "timing reference producer must target package ." >&2
                           exit 2
+                        fi
+                        start_busy_total="$(awk '$1 == \"ebus_bus_busy_seconds_total\" {print $2}' \"${start_metrics_path}\" 2>/dev/null | tail -n 1)"
+                        end_busy_total="$(awk '$1 == \"ebus_bus_busy_seconds_total\" {print $2}' \"${end_metrics_path}\" 2>/dev/null | tail -n 1)"
+                        if [[ -n "${start_busy_total}" && -n "${end_busy_total}" ]]; then
+                          reference_busy_seconds="$(awk -v start=\"${start_busy_total}\" -v end=\"${end_busy_total}\" 'BEGIN { delta = end - start; if (delta > 0) printf \"%.6f\", delta; else printf \"2.000000\" }')"
                         fi
                         mkdir -p "$(dirname "${timing_out_path}")"
                         cat > "${timing_out_path}" <<EOF
@@ -5075,14 +5445,14 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         "synthetic_symbol_spacing_ms": 4,
                         "timestamp_resolution": "proxy_log_seconds_plus_symbol_spacing"
                       },
-                      "summary": {
-                        "classified_event_count": 3,
-                        "transaction_count": 3,
-                        "master_frame_count": 0,
-                        "abandoned_count": 0,
-                        "busy_seconds_total": 1.2,
-                        "families_with_intervals": 1
-                      },
+                        "summary": {
+                          "classified_event_count": 3,
+                          "transaction_count": 3,
+                          "master_frame_count": 0,
+                          "abandoned_count": 0,
+                          "busy_seconds_total": ${reference_busy_seconds},
+                          "families_with_intervals": 1
+                        },
                       "periodicity": [
                         {
                           "source_bucket": "0x08",
@@ -5090,7 +5460,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                           "primary": 181,
                           "secondary": 9,
                           "family": "B509",
-                          "sample_count": 2,
+                          "sample_count": 12,
                           "last_seen": "2026-03-28T00:00:10Z",
                           "last_interval_sec": 10,
                           "mean_interval_sec": 10,
@@ -5176,7 +5546,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
 
             fake_rollback_executor = fake_bin / "rollback_executor"
             fake_rollback_executor.write_text(
-                textwrap.dedent(
+                normalize_shell_fixture(
                     """\
                     #!/usr/bin/env bash
                     set -euo pipefail
@@ -5283,7 +5653,7 @@ PY
 
             fake_curl = fake_bin / "curl"
             fake_curl.write_text(
-                textwrap.dedent(
+                normalize_shell_fixture(
                     """\
                     #!/usr/bin/env bash
                     set -euo pipefail
@@ -5356,6 +5726,7 @@ PY
                       printf '%s\\n' "${metrics_count}" > "${state_file}"
                       completed_total=$((metrics_count * 1200))
                       candidates_total=$((metrics_count * 120))
+                      busy_total_seconds=$((metrics_count))
 
                       if [[ "${metrics_quality}" == "missing_read_avoidance" ]]; then
                         cat <<EOF
@@ -5363,7 +5734,22 @@ PY
                     ebus_passive_tap_connected 1
                     ebus_passive_warmup_state{state="available"} 1
                     ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1
+                    ebus_bus_busy_seconds_total ${busy_total_seconds}
                     EOF
+                        exit 0
+                      fi
+                      if [[ "${metrics_quality}" == "missing_timing_busy" ]]; then
+                        cat <<EOF
+                    ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} ${timed_out}
+                    ebus_passive_tap_connected 1
+                    ebus_passive_warmup_state{state="available"} 1
+                    ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1
+                    direct_apply_total{family="B524",freshness_profile="state_fast"} 2
+                    active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 3
+                    active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1
+                    ebus_passive_completed_transactions_total ${completed_total}
+                    ebus_passive_direct_apply_candidates_evaluated_total ${candidates_total}
+EOF
                         exit 0
                       fi
                       if [[ "${metrics_quality}" == "corrupt_read_avoidance" ]]; then
@@ -5374,6 +5760,7 @@ PY
                     ebus_passive_capability_probe_outcomes_total{outcome="confirmed"} 1
                     direct_apply_total{family="B524",freshness_profile="state_fast"} not_a_number
                     active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 1
+                    ebus_bus_busy_seconds_total ${busy_total_seconds}
                     ebus_passive_completed_transactions_total ${completed_total}
                     ebus_passive_direct_apply_candidates_evaluated_total ${candidates_total}
                     EOF
@@ -5404,13 +5791,14 @@ PY
                     direct_apply_total{family="B524",freshness_profile="state_fast"} 2
                     active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 3
                     active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1
+                    ebus_bus_busy_seconds_total ${busy_total_seconds}
                     ebus_passive_completed_transactions_total ${completed_total}
                     ebus_passive_direct_apply_candidates_evaluated_total ${candidates_total}
                     EOF
                           exit 0
                         fi
                       fi
-                      cat <<EOF
+                    cat <<EOF
                     ebus_passive_capability_probe_outcomes_total{outcome="timed_out"} ${timed_out}
                     ebus_passive_tap_connected 1
                     ebus_passive_warmup_state{state="available"} 1
@@ -5418,6 +5806,7 @@ PY
                     direct_apply_total{family="B524",freshness_profile="state_fast"} 2
                     active_reads_avoided_total{family="B524",freshness_profile="state_fast"} 3
                     active_read_saved_seconds{family="B524",freshness_profile="state_fast"} 1
+                    ebus_bus_busy_seconds_total ${busy_total_seconds}
                     ebus_passive_completed_transactions_total ${completed_total}
                     ebus_passive_direct_apply_candidates_evaluated_total ${candidates_total}
                     EOF
@@ -5463,12 +5852,48 @@ PY
                         publisher_cadence_sec="not_a_number"
                       fi
                       if [[ "${include_publisher_cadence}" == "1" ]]; then
+                        periodicity_state="warming_up"
+                        if [[ "${phase}" == "LIVE_READY" ]]; then
+                          periodicity_state="available"
+                        fi
+                        periodicity_block='{
+  "source_bucket":"0x08",
+  "target_bucket":"0x15",
+  "primary":181,
+  "secondary":9,
+  "family":"B509",
+  "state":"'"${periodicity_state}"'",
+  "sample_count":12,
+  "mean_interval":"10s",
+  "last_seen":"2026-03-28T00:05:10Z",
+  "last_interval":"10s",
+  "min_interval":"10s",
+  "max_interval":"10s"
+}'
                         cat <<EOF
-                    {"summary":{"last_updated_at":"${summary_last_updated_at}","status":{"last_updated_at":"${status_last_updated_at}","startup":{"phase":"${phase}","cache_epoch":${cache_epoch},"live_epoch":${live_epoch},"last_updated_at":"${startup_last_updated_at}"},"publisher_cadence_sec":${publisher_cadence_sec},"publisher_cadence_source":"${publisher_cadence_source}","feature_flags":{"observe_first_enabled":${observe_first_enabled_json},"passive_state_direct_apply":${passive_state_direct_apply_json},"passive_config_direct_apply":${passive_config_direct_apply_json},"external_write_policy":"${external_write_policy}","normalizations":[],"last_updated_at":"${feature_flags_last_updated_at}"}}}}
+                    {"summary":{"last_updated_at":"${summary_last_updated_at}","status":{"last_updated_at":"${status_last_updated_at}","startup":{"phase":"${phase}","cache_epoch":${cache_epoch},"live_epoch":${live_epoch},"last_updated_at":"${startup_last_updated_at}"},"publisher_cadence_sec":${publisher_cadence_sec},"publisher_cadence_source":"${publisher_cadence_source}","feature_flags":{"observe_first_enabled":${observe_first_enabled_json},"passive_state_direct_apply":${passive_state_direct_apply_json},"passive_config_direct_apply":${passive_config_direct_apply_json},"external_write_policy":"${external_write_policy}","normalizations":[],"last_updated_at":"${feature_flags_last_updated_at}"}}},"periodicity":[${periodicity_block}]}
                     EOF
                       else
+                        periodicity_state="warming_up"
+                        if [[ "${phase}" == "LIVE_READY" ]]; then
+                          periodicity_state="available"
+                        fi
+                        periodicity_block='{
+  "source_bucket":"0x08",
+  "target_bucket":"0x15",
+  "primary":181,
+  "secondary":9,
+  "family":"B509",
+  "state":"'"${periodicity_state}"'",
+  "sample_count":12,
+  "mean_interval":"10s",
+  "last_seen":"2026-03-28T00:05:10Z",
+  "last_interval":"10s",
+  "min_interval":"10s",
+  "max_interval":"10s"
+}'
                         cat <<EOF
-                    {"summary":{"last_updated_at":"${summary_last_updated_at}","status":{"last_updated_at":"${status_last_updated_at}","startup":{"phase":"${phase}","cache_epoch":${cache_epoch},"live_epoch":${live_epoch},"last_updated_at":"${startup_last_updated_at}"},"feature_flags":{"observe_first_enabled":${observe_first_enabled_json},"passive_state_direct_apply":${passive_state_direct_apply_json},"passive_config_direct_apply":${passive_config_direct_apply_json},"external_write_policy":"${external_write_policy}","normalizations":[],"last_updated_at":"${feature_flags_last_updated_at}"}}}}
+                    {"summary":{"last_updated_at":"${summary_last_updated_at}","status":{"last_updated_at":"${status_last_updated_at}","startup":{"phase":"${phase}","cache_epoch":${cache_epoch},"live_epoch":${live_epoch},"last_updated_at":"${startup_last_updated_at}"},"feature_flags":{"observe_first_enabled":${observe_first_enabled_json},"passive_state_direct_apply":${passive_state_direct_apply_json},"passive_config_direct_apply":${passive_config_direct_apply_json},"external_write_policy":"${external_write_policy}","normalizations":[],"last_updated_at":"${feature_flags_last_updated_at}"}}},"periodicity":[${periodicity_block}]}
                     EOF
                       fi
                       exit 0
@@ -5519,6 +5944,20 @@ PY
                       if [[ "${phase}" == "LIVE_READY" ]]; then
                         warmup_state="available"
                       fi
+                      periodicity_block='{
+  "source_bucket":"0x08",
+  "target_bucket":"0x15",
+  "primary":181,
+  "secondary":9,
+  "family":"B509",
+  "state":"'"${warmup_state}"'",
+  "sample_count":12,
+  "mean_interval":"10s",
+  "last_seen":"2026-03-28T00:05:10Z",
+  "last_interval":"10s",
+  "min_interval":"10s",
+  "max_interval":"10s"
+}'
                       if [[ "${include_publisher_cadence}" == "1" ]]; then
                         cat <<EOF
                     {
@@ -5551,7 +5990,8 @@ PY
                               "passiveConfigDirectApply": ${passive_config_direct_apply_json},
                               "externalWritePolicy": "${external_write_policy}",
                               "normalizations": []
-                            }
+                            },
+                            "periodicity": [${periodicity_block}]
                           }
                         },
                         "watchSummary": {
@@ -5600,7 +6040,8 @@ PY
                               "passiveConfigDirectApply": ${passive_config_direct_apply_json},
                               "externalWritePolicy": "${external_write_policy}",
                               "normalizations": []
-                            }
+                            },
+                            "periodicity": [${periodicity_block}]
                           }
                         },
                         "watchSummary": {
@@ -5692,6 +6133,7 @@ PY
                 promotion_eligibility_path = proof_dir / "promotion_eligibility.json"
                 publisher_cadence_path = proof_dir / "publisher_cadence.json"
                 cross_plane_skew_path = proof_dir / "cross_plane_skew.json"
+                timing_reference_verdict_path = proof_dir / "timing_reference_verdict.json"
                 wire_timing_reference_path = proof_dir / "wire_timing_reference.json"
                 rollback_execution_path = proof_dir / "rollback_execution.json"
                 rollback_result_path = proof_dir / "rollback_result.json"
@@ -5723,6 +6165,10 @@ PY
                 if wire_timing_reference_path.exists():
                     artifacts["wire_timing_reference"] = json.loads(
                         wire_timing_reference_path.read_text(encoding="utf-8")
+                    )
+                if timing_reference_verdict_path.exists():
+                    artifacts["timing_reference_verdict"] = json.loads(
+                        timing_reference_verdict_path.read_text(encoding="utf-8")
                     )
                 if rollback_execution_path.exists():
                     artifacts["rollback_execution"] = json.loads(
@@ -5854,6 +6300,33 @@ PY
             wire_timing_reference["summary"]["families_with_intervals"],
             1,
         )
+
+    def test_smoke_emits_timing_reference_verdict_artifact_when_canary_verdict_is_good(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed("pass")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        timing_reference_verdict = artifacts.get("timing_reference_verdict")
+        self.assertIsInstance(timing_reference_verdict, dict)
+        self.assertEqual(timing_reference_verdict["schema"], verifier.TIMING_REFERENCE_VERDICT_SCHEMA)
+        self.assertTrue(timing_reference_verdict["ok"])
+        self.assertEqual(timing_reference_verdict["status"], "pass")
+        self.assertEqual(timing_reference_verdict["summary"]["stable_reference_tuple_count"], 1)
+        self.assertEqual(timing_reference_verdict["summary"]["matched_tuple_count"], 1)
+        self.assertTrue(timing_reference_verdict["criteria"]["busy_within_tolerance"]["ok"])
+        self.assertTrue(timing_reference_verdict["criteria"]["periodicity_within_tolerance"]["ok"])
+
+    def test_smoke_exits_non_zero_when_timing_reference_verdict_fails(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={"FAKE_METRICS_QUALITY_MODE": "missing_timing_busy"},
+        )
+        self.assertNotEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("timing-reference verdict gate failed", result.stderr)
+        timing_reference_verdict = artifacts.get("timing_reference_verdict")
+        self.assertIsInstance(timing_reference_verdict, dict)
+        self.assertEqual(timing_reference_verdict["schema"], verifier.TIMING_REFERENCE_VERDICT_SCHEMA)
+        self.assertFalse(timing_reference_verdict["ok"])
+        self.assertEqual(timing_reference_verdict["status"], "fail")
+        self.assertIn("missing required metric sample", timing_reference_verdict["reason"])
 
     def test_smoke_emits_rollback_result_artifact_when_canary_verdict_is_good(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed("pass")

@@ -39,6 +39,12 @@ PUBLISHER_CADENCE_SOURCE_ANCHOR = "config.semantic_state_interval"
 CROSS_PLANE_SKEW_ARTIFACT_SCHEMA = "p03_cross_plane_skew_v1"
 ROLLBACK_EXECUTION_ARTIFACT_SCHEMA = "observe_first_rollback_execution_v1"
 ROLLBACK_RESULT_ARTIFACT_SCHEMA = "observe_first_rollback_result_v1"
+TIMING_REFERENCE_VERDICT_SCHEMA = "p03_timing_reference_verdict_v1"
+TIMING_REFERENCE_BUSY_RELATIVE_ERROR_MAX = 0.15
+TIMING_REFERENCE_PERIODICITY_RELATIVE_ERROR_MAX = 0.20
+TIMING_REFERENCE_PERIODICITY_ABSOLUTE_ERROR_SEC_MAX = 2.0
+TIMING_REFERENCE_PERIODICITY_MIN_SAMPLES = 10
+TIMING_REFERENCE_BUSY_METRIC = "ebus_bus_busy_seconds_total"
 ROLLBACK_TARGET_FEATURE_FLAGS = {
     "observeFirstEnabled": False,
     "passiveStateDirectApply": False,
@@ -93,6 +99,7 @@ FEATURE_FLAG_FIELD_ALIASES = {
 FEATURE_FLAG_CONSISTENCY_SCHEMA = "p03_feature_flag_consistency_v1"
 REPLAY_EXPECTED_DISPOSITIONS = {"ambiguity", "falsification"}
 PROM_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)$")
+GO_DURATION_COMPONENT_RE = re.compile(r"(\d+(?:\.\d+)?)(ns|us|µs|μs|ms|s|m|h)")
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 CANONICAL_FAMILY_PROOF_CASE_ID = "P03"
 CANONICAL_P03_CANARY_MANIFEST_PATH = REPO_ROOT / "testdata" / "passive_proof" / "p03_canary_manifest.json"
@@ -146,6 +153,53 @@ def timestamp_not_before_boundary(captured_at: datetime, boundary: datetime, bou
     if timestamp_has_subsecond_precision(boundary_raw):
         return captured_at >= boundary
     return captured_at.replace(microsecond=0) >= boundary.replace(microsecond=0)
+
+
+def parse_duration_seconds(value: Any, field_name: str) -> float:
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if abs(seconds) >= 1e6:
+            seconds /= 1e9
+    else:
+        text = str(value).strip()
+        if text == "":
+            raise ValueError(f"{field_name} must be non-empty duration")
+        try:
+            seconds = float(text)
+        except ValueError:
+            if text.startswith(("+", "-")):
+                raise ValueError(f"{field_name} must be non-negative finite duration")
+            seconds = 0.0
+            consumed = 0
+            factors = {
+                "ns": 1e-9,
+                "us": 1e-6,
+                "µs": 1e-6,
+                "μs": 1e-6,
+                "ms": 1e-3,
+                "s": 1.0,
+                "m": 60.0,
+                "h": 3600.0,
+            }
+            for match in GO_DURATION_COMPONENT_RE.finditer(text):
+                if match.start() != consumed:
+                    raise ValueError(f"{field_name} must be non-negative finite duration")
+                amount = float(match.group(1))
+                unit = match.group(2)
+                seconds += amount * factors[unit]
+                consumed = match.end()
+            if consumed != len(text) or consumed == 0:
+                raise ValueError(f"{field_name} must be non-negative finite duration")
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError(f"{field_name} must be non-negative finite duration")
+    return seconds
+
+
+def extract_mapping_value(payload: Dict[str, Any], aliases: Tuple[str, ...]) -> Any:
+    for alias in aliases:
+        if alias in payload:
+            return payload.get(alias)
+    return None
 
 
 def parse_cli_bool(value: Any, field_name: str) -> bool:
@@ -755,6 +809,380 @@ def build_rollback_result_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict
                         if not post_live_ready
                         else "ok"
                     )
+                ),
+            },
+        },
+        "ok": status == "pass",
+        "status": status,
+        "reason": reason,
+    }
+
+
+def load_wire_timing_reference_artifact(path: pathlib.Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise ValueError(f"missing wire timing reference artifact at {path}")
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError("wire timing reference artifact must be a JSON object")
+    if str(payload.get("schema", "")).strip() != "observe_first_wire_timing_reference_v1":
+        raise ValueError("wire timing reference artifact schema mismatch")
+    if str(payload.get("source", "")).strip() != "proxy_log_session_send_plus_wire_rx":
+        raise ValueError("wire timing reference artifact source mismatch")
+    if bool(payload.get("ok")) is not True:
+        raise ValueError("wire timing reference artifact is not ok")
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        raise ValueError("wire timing reference artifact missing summary object")
+    busy_seconds_total = summary.get("busy_seconds_total")
+    if not isinstance(busy_seconds_total, (int, float)) or not math.isfinite(float(busy_seconds_total)):
+        raise ValueError("wire timing reference artifact missing finite summary.busy_seconds_total")
+    if float(busy_seconds_total) <= 0:
+        raise ValueError("wire timing reference artifact summary.busy_seconds_total must be > 0")
+    families_with_intervals = summary.get("families_with_intervals")
+    if not isinstance(families_with_intervals, int) or families_with_intervals <= 0:
+        raise ValueError("wire timing reference artifact missing positive summary.families_with_intervals")
+    periodicity = payload.get("periodicity")
+    if not isinstance(periodicity, list):
+        raise ValueError("wire timing reference artifact missing periodicity array")
+    evidence = payload.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("wire timing reference artifact missing evidence object")
+    if str(evidence.get("proxy_log_path", "")).strip() == "":
+        raise ValueError("wire timing reference artifact missing evidence.proxy_log_path")
+    return payload
+
+
+def proof_log_bundle_root(proof_dir: pathlib.Path) -> pathlib.Path:
+    resolved = proof_dir.resolve()
+    if resolved.name == "proof_artifacts":
+        return resolved.parent
+    return resolved
+
+
+def require_wire_reference_proxy_log_path(
+    proof_dir: pathlib.Path,
+    wire_reference_path: pathlib.Path,
+    wire_reference: Dict[str, Any],
+) -> pathlib.Path:
+    evidence = wire_reference.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("wire timing reference artifact missing evidence object")
+    raw_proxy_log_path = str(evidence.get("proxy_log_path", "")).strip()
+    if raw_proxy_log_path == "":
+        raise ValueError("wire timing reference artifact missing evidence.proxy_log_path")
+    candidate = pathlib.Path(raw_proxy_log_path)
+    if not candidate.is_absolute():
+        candidate = wire_reference_path.parent / candidate
+    resolved = candidate.resolve()
+    bundle_root = proof_log_bundle_root(proof_dir)
+    try:
+        resolved.relative_to(bundle_root)
+    except ValueError as exc:
+        raise ValueError(
+            "wire timing reference artifact evidence.proxy_log_path must stay within the current proof log bundle"
+        ) from exc
+    if resolved.name != "proxy.log":
+        raise ValueError("wire timing reference artifact evidence.proxy_log_path must reference proxy.log")
+    if not resolved.is_file():
+        raise ValueError("wire timing reference artifact evidence.proxy_log_path is missing")
+    if resolved.stat().st_size <= 0:
+        raise ValueError("wire timing reference artifact evidence.proxy_log_path is empty")
+    return resolved
+
+
+def normalize_periodicity_entry(
+    raw: Dict[str, Any],
+    field_name: str,
+    *,
+    require_available_state: bool = False,
+    require_complete_intervals: bool = False,
+) -> Dict[str, Any]:
+    source_bucket = str(
+        extract_mapping_value(raw, ("source_bucket", "sourceBucket", "SourceBucket")) or ""
+    ).strip().upper()
+    target_bucket = str(
+        extract_mapping_value(raw, ("target_bucket", "targetBucket", "TargetBucket")) or ""
+    ).strip().upper()
+    family = str(extract_mapping_value(raw, ("family", "Family")) or "").strip().upper()
+    primary_raw = extract_mapping_value(raw, ("primary", "Primary"))
+    secondary_raw = extract_mapping_value(raw, ("secondary", "Secondary"))
+    sample_count_raw = extract_mapping_value(raw, ("sample_count", "sampleCount", "SampleCount"))
+    state_raw = extract_mapping_value(raw, ("state", "State"))
+    last_interval_raw = extract_mapping_value(
+        raw,
+        ("last_interval_sec", "last_interval", "lastInterval", "LastInterval"),
+    )
+    mean_interval_raw = extract_mapping_value(
+        raw,
+        ("mean_interval_sec", "mean_interval", "meanInterval", "MeanInterval"),
+    )
+    min_interval_raw = extract_mapping_value(
+        raw,
+        ("min_interval_sec", "min_interval", "minInterval", "MinInterval"),
+    )
+    max_interval_raw = extract_mapping_value(
+        raw,
+        ("max_interval_sec", "max_interval", "maxInterval", "MaxInterval"),
+    )
+    if source_bucket == "" or target_bucket == "" or family == "":
+        raise ValueError(f"{field_name} missing tuple identity")
+    if not isinstance(primary_raw, int) or not isinstance(secondary_raw, int):
+        raise ValueError(f"{field_name} missing integer primary/secondary")
+    if not isinstance(sample_count_raw, int) or sample_count_raw < 0:
+        raise ValueError(f"{field_name} missing non-negative sample_count")
+    state = None
+    if state_raw is not None:
+        state = str(state_raw).strip().lower()
+        if state == "":
+            raise ValueError(f"{field_name} has empty state")
+    if require_available_state and state != "available":
+        raise ValueError(f"{field_name} must be state=available")
+    if require_complete_intervals:
+        last_interval_sec = parse_duration_seconds(last_interval_raw, f"{field_name}.last_interval")
+        min_interval_sec = parse_duration_seconds(min_interval_raw, f"{field_name}.min_interval")
+        max_interval_sec = parse_duration_seconds(max_interval_raw, f"{field_name}.max_interval")
+    else:
+        last_interval_sec = (
+            None if last_interval_raw is None else parse_duration_seconds(last_interval_raw, f"{field_name}.last_interval")
+        )
+        min_interval_sec = (
+            None if min_interval_raw is None else parse_duration_seconds(min_interval_raw, f"{field_name}.min_interval")
+        )
+        max_interval_sec = (
+            None if max_interval_raw is None else parse_duration_seconds(max_interval_raw, f"{field_name}.max_interval")
+        )
+    mean_interval_sec = parse_duration_seconds(mean_interval_raw, f"{field_name}.mean_interval")
+    return {
+        "key": f"{source_bucket}>{target_bucket}:{primary_raw}:{secondary_raw}:{family}",
+        "source_bucket": source_bucket,
+        "target_bucket": target_bucket,
+        "family": family,
+        "primary": primary_raw,
+        "secondary": secondary_raw,
+        "sample_count": sample_count_raw,
+        "state": state,
+        "last_interval_sec": last_interval_sec,
+        "mean_interval_sec": mean_interval_sec,
+        "min_interval_sec": min_interval_sec,
+        "max_interval_sec": max_interval_sec,
+    }
+
+
+def build_timing_reference_verdict(
+    proof_dir: pathlib.Path,
+    run_id: str,
+    wire_reference_path: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    if wire_reference_path is None:
+        wire_reference_path = proof_dir / "wire_timing_reference.json"
+    reasons: List[str] = []
+    start_bundle: Dict[str, Any] | None = None
+    end_bundle: Dict[str, Any] | None = None
+    wire_reference: Dict[str, Any] | None = None
+    wire_reference_valid = False
+    wire_proxy_log_path: str | None = None
+    observed_busy_seconds = 0.0
+    reference_busy_seconds = 0.0
+    busy_relative_error: float | None = None
+    busy_within_tolerance = False
+    stable_reference_tuple_count = 0
+    matched_tuple_count = 0
+    tuple_comparisons: List[Dict[str, Any]] = []
+
+    try:
+        wire_reference = load_wire_timing_reference_artifact(wire_reference_path)
+        wire_proxy_log_path = str(
+            require_wire_reference_proxy_log_path(proof_dir, wire_reference_path, wire_reference)
+        )
+        wire_reference_valid = True
+    except Exception as exc:  # noqa: BLE001
+        reasons.append(str(exc))
+
+    for phase_name, slot_name in (("start", "start"), ("end", "end")):
+        try:
+            snapshot = load_structured_snapshot_bundle(proof_dir, phase_name)
+        except Exception as exc:  # noqa: BLE001
+            reasons.append(str(exc))
+            continue
+        if slot_name == "start":
+            start_bundle = snapshot
+        else:
+            end_bundle = snapshot
+
+    if start_bundle is not None and end_bundle is not None:
+        try:
+            start_samples = parse_prometheus_samples(
+                pathlib.Path(start_bundle["snapshot_paths"]["metrics"]).read_text(encoding="utf-8")
+            )
+            end_samples = parse_prometheus_samples(
+                pathlib.Path(end_bundle["snapshot_paths"]["metrics"]).read_text(encoding="utf-8")
+            )
+            start_busy_total = aggregate_metric_total(start_samples, TIMING_REFERENCE_BUSY_METRIC, required=True)
+            end_busy_total = aggregate_metric_total(end_samples, TIMING_REFERENCE_BUSY_METRIC, required=True)
+            if start_busy_total is None or end_busy_total is None:
+                reasons.append("missing busy metrics for timing comparator")
+            elif end_busy_total < start_busy_total:
+                reasons.append("busy metric regressed across proof window")
+            else:
+                observed_busy_seconds = end_busy_total - start_busy_total
+        except Exception as exc:  # noqa: BLE001
+            reasons.append(str(exc))
+
+    if wire_reference_valid and wire_reference is not None:
+        reference_busy_seconds = float(((wire_reference.get("summary") or {}).get("busy_seconds_total")) or 0.0)
+
+    if reference_busy_seconds > 0 and observed_busy_seconds >= 0:
+        busy_relative_error = abs(observed_busy_seconds - reference_busy_seconds) / reference_busy_seconds
+        busy_within_tolerance = busy_relative_error <= TIMING_REFERENCE_BUSY_RELATIVE_ERROR_MAX
+        if not busy_within_tolerance:
+            reasons.append(
+                "busy timing mismatch exceeds tolerance "
+                f"(observed={observed_busy_seconds:.6f}s reference={reference_busy_seconds:.6f}s "
+                f"relative_error={busy_relative_error:.6f} max={TIMING_REFERENCE_BUSY_RELATIVE_ERROR_MAX:.6f})"
+            )
+
+    if wire_reference_valid and wire_reference is not None and end_bundle is not None:
+        reference_entries: Dict[str, Dict[str, Any]] = {}
+        for index, raw_entry in enumerate(wire_reference.get("periodicity") or []):
+            if not isinstance(raw_entry, dict):
+                reasons.append(f"wire timing reference periodicity[{index}] must be object")
+                continue
+            try:
+                normalized = normalize_periodicity_entry(raw_entry, f"wire_timing_reference.periodicity[{index}]")
+            except Exception as exc:  # noqa: BLE001
+                reasons.append(str(exc))
+                continue
+            if normalized["key"] in reference_entries:
+                reasons.append(f"duplicate wire timing reference periodicity tuple {normalized['key']}")
+                continue
+            reference_entries[normalized["key"]] = normalized
+
+        bus_observability = end_bundle["bus_observability"] or {}
+        observed_raw = bus_observability.get("periodicity")
+        if not isinstance(observed_raw, list):
+            observed_raw = (((bus_observability.get("summary") or {}).get("status") or {}).get("periodicity"))
+        if not isinstance(observed_raw, list):
+            reasons.append("end bus observability snapshot missing periodicity list")
+        else:
+            observed_entries: Dict[str, Dict[str, Any]] = {}
+            for index, raw_entry in enumerate(observed_raw):
+                if not isinstance(raw_entry, dict):
+                    reasons.append(f"end bus periodicity[{index}] must be object")
+                    continue
+                try:
+                    normalized = normalize_periodicity_entry(
+                        raw_entry,
+                        f"end.bus_observability.periodicity[{index}]",
+                        require_available_state=True,
+                        require_complete_intervals=True,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    reasons.append(str(exc))
+                    continue
+                if normalized["key"] in observed_entries:
+                    reasons.append(f"duplicate observed periodicity tuple {normalized['key']}")
+                    continue
+                observed_entries[normalized["key"]] = normalized
+
+            for key, reference_entry in reference_entries.items():
+                if reference_entry["sample_count"] < TIMING_REFERENCE_PERIODICITY_MIN_SAMPLES:
+                    continue
+                stable_reference_tuple_count += 1
+                observed_entry = observed_entries.get(key)
+                if observed_entry is None:
+                    reasons.append(f"missing observed periodicity tuple {key}")
+                    tuple_comparisons.append({"key": key, "ok": False, "reason": "missing_observed_tuple"})
+                    continue
+                if observed_entry["sample_count"] < TIMING_REFERENCE_PERIODICITY_MIN_SAMPLES:
+                    reasons.append(
+                        f"observed periodicity tuple {key} has sample_count={observed_entry['sample_count']}; "
+                        f"want >= {TIMING_REFERENCE_PERIODICITY_MIN_SAMPLES}"
+                    )
+                    tuple_comparisons.append({"key": key, "ok": False, "reason": "observed_sample_count_below_min"})
+                    continue
+                tolerance_sec = max(
+                    reference_entry["mean_interval_sec"] * TIMING_REFERENCE_PERIODICITY_RELATIVE_ERROR_MAX,
+                    TIMING_REFERENCE_PERIODICITY_ABSOLUTE_ERROR_SEC_MAX,
+                )
+                delta_sec = abs(observed_entry["mean_interval_sec"] - reference_entry["mean_interval_sec"])
+                ok = delta_sec <= tolerance_sec
+                if not ok:
+                    reasons.append(
+                        "periodicity timing mismatch exceeds tolerance "
+                        f"for {key} (observed={observed_entry['mean_interval_sec']:.6f}s "
+                        f"reference={reference_entry['mean_interval_sec']:.6f}s "
+                        f"delta={delta_sec:.6f}s max={tolerance_sec:.6f}s)"
+                    )
+                else:
+                    matched_tuple_count += 1
+                tuple_comparisons.append(
+                    {
+                        "key": key,
+                        "ok": ok,
+                        "observed_mean_interval_sec": observed_entry["mean_interval_sec"],
+                        "reference_mean_interval_sec": reference_entry["mean_interval_sec"],
+                        "delta_sec": delta_sec,
+                        "tolerance_sec": tolerance_sec,
+                        "observed_sample_count": observed_entry["sample_count"],
+                        "reference_sample_count": reference_entry["sample_count"],
+                    }
+                )
+            if stable_reference_tuple_count == 0:
+                reasons.append(
+                    f"wire timing reference has no stable periodicity tuples with >= {TIMING_REFERENCE_PERIODICITY_MIN_SAMPLES} samples"
+                )
+
+    status = "pass" if len(reasons) == 0 else "fail"
+    reason = "ok" if status == "pass" else "; ".join(reasons)
+    periodicity_within_tolerance = stable_reference_tuple_count > 0 and matched_tuple_count == stable_reference_tuple_count
+
+    return {
+        "schema": TIMING_REFERENCE_VERDICT_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": run_id,
+        "source": "wire_timing_reference_plus_structured_snapshots",
+        "claim_scope": "bounded_proof_window_busy_periodicity_comparator",
+        "evidence": {
+            "wire_timing_reference_path": str(wire_reference_path),
+            "wire_proxy_log_path": wire_proxy_log_path,
+            "start_snapshot_paths": None if start_bundle is None else start_bundle["snapshot_paths"],
+            "end_snapshot_paths": None if end_bundle is None else end_bundle["snapshot_paths"],
+        },
+        "summary": {
+            "reference_busy_seconds_total": reference_busy_seconds,
+            "observed_busy_seconds_total": observed_busy_seconds,
+            "busy_relative_error": busy_relative_error,
+            "busy_relative_error_max": TIMING_REFERENCE_BUSY_RELATIVE_ERROR_MAX,
+            "stable_reference_tuple_count": stable_reference_tuple_count,
+            "matched_tuple_count": matched_tuple_count,
+            "periodicity_relative_error_max": TIMING_REFERENCE_PERIODICITY_RELATIVE_ERROR_MAX,
+            "periodicity_absolute_error_sec_max": TIMING_REFERENCE_PERIODICITY_ABSOLUTE_ERROR_SEC_MAX,
+            "periodicity_min_samples": TIMING_REFERENCE_PERIODICITY_MIN_SAMPLES,
+        },
+        "periodicity": tuple_comparisons,
+        "criteria": {
+            "wire_reference_valid": {
+                "ok": wire_reference_valid,
+                "reason": "ok" if wire_reference_valid else "missing or invalid wire timing reference artifact",
+            },
+            "busy_within_tolerance": {
+                "ok": wire_reference_valid and start_bundle is not None and end_bundle is not None and busy_within_tolerance,
+                "reason": "ok" if busy_within_tolerance else "busy timing mismatch exceeds tolerance or evidence is incomplete",
+            },
+            "stable_periodicity_reference_present": {
+                "ok": stable_reference_tuple_count > 0,
+                "reason": (
+                    "ok"
+                    if stable_reference_tuple_count > 0
+                    else f"wire timing reference has no stable periodicity tuples with >= {TIMING_REFERENCE_PERIODICITY_MIN_SAMPLES} samples"
+                ),
+            },
+            "periodicity_within_tolerance": {
+                "ok": periodicity_within_tolerance,
+                "reason": (
+                    "ok"
+                    if periodicity_within_tolerance
+                    else "periodicity timing mismatch exceeds tolerance or evidence is incomplete"
                 ),
             },
         },
@@ -5516,6 +5944,21 @@ def cross_plane_skew_command(args: argparse.Namespace) -> int:
     return 0 if bool(artifact.get("ok", False)) else 1
 
 
+def timing_reference_verdict_command(args: argparse.Namespace) -> int:
+    wire_reference_path = (
+        pathlib.Path(args.wire_reference_path)
+        if args.wire_reference_path
+        else pathlib.Path(args.proof_dir) / "wire_timing_reference.json"
+    )
+    artifact = build_timing_reference_verdict(
+        pathlib.Path(args.proof_dir),
+        args.run_id,
+        wire_reference_path=wire_reference_path,
+    )
+    write_json(pathlib.Path(args.output), artifact)
+    return 0 if bool(artifact.get("ok", False)) else 1
+
+
 def rollback_execution_command(args: argparse.Namespace) -> int:
     artifact = build_rollback_execution_artifact(
         run_id=args.run_id,
@@ -5642,6 +6085,16 @@ def build_parser() -> argparse.ArgumentParser:
     cross_plane_skew.add_argument("--publisher-cadence", default=None)
     cross_plane_skew.add_argument("--output", required=True)
     cross_plane_skew.set_defaults(func=cross_plane_skew_command)
+
+    timing_reference_verdict = sub.add_parser(
+        "timing-reference-verdict",
+        help="build timing-reference comparator artifact from wire timing evidence",
+    )
+    timing_reference_verdict.add_argument("--proof-dir", required=True)
+    timing_reference_verdict.add_argument("--run-id", required=True)
+    timing_reference_verdict.add_argument("--wire-reference-path", default=None)
+    timing_reference_verdict.add_argument("--output", required=True)
+    timing_reference_verdict.set_defaults(func=timing_reference_verdict_command)
 
     rollback_execution = sub.add_parser(
         "rollback-execution",

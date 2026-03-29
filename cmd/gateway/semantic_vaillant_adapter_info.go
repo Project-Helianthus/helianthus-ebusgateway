@@ -61,6 +61,8 @@ func newVaillantAdapterInfoState(bus *protocol.Bus, rawTransport transport.RawTr
 	}
 	if info, ok := rawTransport.(transport.InfoRequester); ok {
 		state.info = info
+	} else if provider != nil {
+		provider.SetAdapterHardwareInfo(&graphql.AdapterHardwareInfo{})
 	}
 	return state
 }

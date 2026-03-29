@@ -264,11 +264,9 @@ func TestVaillantAdapterInfoStateUnsupportedTransportPublishesContract(t *testin
 		t.Fatal("newVaillantAdapterInfoState() returned nil")
 	}
 
-	state.refreshCycle(ctx)
-
 	info := provider.AdapterHardwareInfo()
 	if info == nil {
-		t.Fatal("AdapterHardwareInfo() = nil; want unsupported contract")
+		t.Fatal("AdapterHardwareInfo() after constructor = nil; want unsupported contract")
 	}
 	if info.InfoSupported {
 		t.Fatal("InfoSupported = true; want false for unsupported transport")
@@ -285,5 +283,15 @@ func TestVaillantAdapterInfoStateUnsupportedTransportPublishesContract(t *testin
 		t.Fatal("mcp AdapterHardwareInfo() = nil; want unsupported contract")
 	} else if mcpInfo.InfoSupported {
 		t.Fatal("mcp adapter info InfoSupported = true; want false")
+	}
+
+	state.refreshCycle(ctx)
+
+	info = provider.AdapterHardwareInfo()
+	if info == nil {
+		t.Fatal("AdapterHardwareInfo() after refreshCycle = nil; want unsupported contract")
+	}
+	if info.InfoSupported {
+		t.Fatal("InfoSupported after refreshCycle = true; want false for unsupported transport")
 	}
 }

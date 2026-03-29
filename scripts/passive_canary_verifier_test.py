@@ -4572,6 +4572,7 @@ class RollbackResultArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["status"], "pass")
         self.assertEqual(artifact["source"], "rollback_execution_plus_structured_snapshots")
         self.assertEqual(artifact["claim_scope"], "bounded_proof_window_rollback_result")
+        self.assertTrue(artifact["criteria"]["rollback_pre_live_ready"]["ok"])
         self.assertTrue(artifact["criteria"]["rollback_post_matches_target"]["ok"])
         self.assertTrue(artifact["criteria"]["rollback_pre_captured_before_execution"]["ok"])
         self.assertTrue(artifact["criteria"]["rollback_post_captured_after_execution"]["ok"])
@@ -4741,6 +4742,31 @@ class RollbackResultArtifactTests(unittest.TestCase):
         self.assertFalse(artifact["ok"])
         self.assertIn("rollback pre/post snapshots did not observe a feature-flag transition", artifact["reason"])
         self.assertFalse(artifact["criteria"]["rollback_observed_transition"]["ok"])
+
+    def test_build_rollback_result_fails_closed_when_pre_snapshot_is_not_live_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_rollback_execution_artifact(proof_dir, "run-123")
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_pre",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+                startup_phase="LIVE_WARMUP",
+                warmup_state="warming_up",
+            )
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_post",
+                observe_first_enabled=False,
+                passive_state_direct_apply=False,
+            )
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertFalse(artifact["ok"])
+        self.assertIn("rollback pre snapshot not live-ready", artifact["reason"])
+        self.assertFalse(artifact["criteria"]["rollback_pre_live_ready"]["ok"])
 
     def test_build_rollback_result_fails_closed_when_post_snapshot_is_not_live_ready(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

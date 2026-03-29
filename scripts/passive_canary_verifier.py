@@ -491,6 +491,7 @@ def build_rollback_result_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict
     pre_matches_target = False
     post_matches_target = False
     observed_transition = False
+    pre_live_ready = False
     post_live_ready = False
     pre_snapshot_ordered = False
     post_snapshot_ordered = False
@@ -552,6 +553,11 @@ def build_rollback_result_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict
         pre_matches_target, mismatch_field = compare_feature_flag_states(pre_state, rollback_target_state)
         if pre_matches_target:
             reasons.append("rollback pre snapshot already matches rollback target state")
+        pre_live_ready = rollback_pre["startup_phase"] == "LIVE_READY"
+        if not pre_live_ready:
+            reasons.append(
+                f"rollback pre snapshot not live-ready: startup_phase={rollback_pre['startup_phase']!r}"
+            )
 
     if rollback_target_state is not None and rollback_post is not None:
         post_state = rollback_post["feature_flag_snapshot"]["canonical_feature_flags"]
@@ -631,6 +637,18 @@ def build_rollback_result_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict
                     else (
                         "rollback pre snapshot already matches rollback target state"
                         if pre_matches_target
+                        else "ok"
+                    )
+                ),
+            },
+            "rollback_pre_live_ready": {
+                "ok": rollback_pre is not None and pre_live_ready,
+                "reason": (
+                    "missing rollback pre snapshot"
+                    if rollback_pre is None
+                    else (
+                        f"rollback pre snapshot not live-ready: startup_phase={rollback_pre['startup_phase']!r}"
+                        if not pre_live_ready
                         else "ok"
                     )
                 ),

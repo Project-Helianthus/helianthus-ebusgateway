@@ -101,7 +101,6 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	gateway.Start(ctx)
 
 	builder := graphql.NewBuilder(gateway.Registry, nil)
-	builder.SetStatusProvider(newRuntimeStatusProvider(cfg))
 	if busObservability != nil {
 		builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(busObservability))
 	}
@@ -110,6 +109,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	gateway.RefreshRouterPlanes()
 
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
+	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
 	if busObservability != nil && semanticRuntime.Provider() != nil {
@@ -494,7 +494,7 @@ func startHTTPServer(
 	if err != nil {
 		return nil, nil, err
 	}
-	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg))
+	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg, semanticProvider))
 	if busObservability != nil {
 		mcpServer.SetBusObservabilityProvider(newMCPBusObservabilityProvider(busObservability))
 	}

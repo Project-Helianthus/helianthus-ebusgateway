@@ -30,12 +30,13 @@ var (
 	adapterInfoQueriesTotal = expvar.NewMap("ebus_adapter_info_queries_total")
 )
 
+var errAdapterInfoUnsupported = errors.New("adapter info unsupported")
+
 type vaillantAdapterInfoState struct {
 	mu sync.Mutex
 
 	bus      *protocol.Bus
 	provider *graphql.LiveSemanticProvider
-	info     transport.InfoRequester
 
 	identity *transport.AdapterVersion
 	hwID     string
@@ -59,10 +60,17 @@ func newVaillantAdapterInfoState(bus *protocol.Bus, rawTransport transport.RawTr
 		bus:      bus,
 		provider: provider,
 	}
-	if info, ok := rawTransport.(transport.InfoRequester); ok {
-		state.info = info
-	} else if provider != nil {
+	if provider != nil {
+		// Seed a stable fail-closed contract immediately so GraphQL/MCP/Portal
+		// never expose nil while INFO bootstrap is still pending.
 		provider.SetAdapterHardwareInfo(&graphql.AdapterHardwareInfo{})
+		if _, ok := rawTransport.(transport.InfoRequester); !ok {
+			adapterInfoSupported.Set(0)
+			adapterInfoHealth.Set(0)
+			state.clearTelemetryLocked()
+		}
+	}
+	if _, ok := rawTransport.(transport.InfoRequester); !ok {
 		adapterInfoSupported.Set(0)
 		adapterInfoHealth.Set(0)
 		state.clearTelemetryLocked()
@@ -104,9 +112,6 @@ func (s *vaillantAdapterInfoState) refreshCycle(ctx context.Context) {
 func (s *vaillantAdapterInfoState) needsIdentityRefresh() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.info == nil {
-		return false
-	}
 	if s.identity == nil {
 		return true
 	}
@@ -119,16 +124,15 @@ func (s *vaillantAdapterInfoState) needsIdentityRefresh() bool {
 func (s *vaillantAdapterInfoState) refreshIdentity(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.info == nil {
-		adapterInfoSupported.Set(0)
-		adapterInfoHealth.Set(0)
-		s.clearTelemetryLocked()
-		return
-	}
-
 	// Query version (ID 0x00).
 	data, err := s.queryInfo(ctx, transport.AdapterInfoVersion)
 	if err != nil {
+		if errors.Is(err, errAdapterInfoUnsupported) {
+			adapterInfoSupported.Set(0)
+			adapterInfoHealth.Set(0)
+			s.clearTelemetryLocked()
+			return
+		}
 		log.Printf("adapter_info: version query failed: %v", err)
 		s.invalidateIdentityLocked()
 		adapterInfoHealth.Set(0)
@@ -259,7 +263,12 @@ func (s *vaillantAdapterInfoState) queryInfo(ctx context.Context, id transport.A
 	var result []byte
 	var queryErr error
 	err := s.bus.RawTransportOp(ctx, func(rt transport.RawTransport) error {
-		data, err := s.info.RequestInfo(id)
+		requester, ok := rt.(transport.InfoRequester)
+		if !ok {
+			queryErr = errAdapterInfoUnsupported
+			return nil
+		}
+		data, err := requester.RequestInfo(id)
 		if err != nil {
 			adapterInfoQueriesTotal.Add(fmt.Sprintf("%s:error", id), 1)
 			queryErr = err

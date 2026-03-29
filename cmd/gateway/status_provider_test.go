@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 )
 
 func TestFormatConfiguredInitiator(t *testing.T) {
@@ -32,7 +33,7 @@ func TestRuntimeStatusProviderIncludesInitiatorAddress(t *testing.T) {
 	cfg.ScanSource = 0xF7
 	cfg.ScanSourceAuto = false
 
-	provider := newRuntimeStatusProvider(cfg)
+	provider := newRuntimeStatusProvider(cfg, nil)
 	daemon := provider.DaemonStatus()
 	adapter := provider.AdapterStatus()
 	if daemon.InitiatorAddress != "0xF7" {
@@ -40,5 +41,39 @@ func TestRuntimeStatusProviderIncludesInitiatorAddress(t *testing.T) {
 	}
 	if adapter.InitiatorAddress != "" {
 		t.Fatalf("adapter initiatorAddress = %q; want empty", adapter.InitiatorAddress)
+	}
+}
+
+func TestRuntimeStatusProviderReflectsAdapterFirmwareVersion(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	semantic := graphql.NewLiveSemanticProvider()
+	semantic.SetAdapterHardwareInfo(&graphql.AdapterHardwareInfo{
+		FirmwareVersion:    "0x31",
+		InfoSupported:      true,
+		VersionResponseLen: 5,
+	})
+
+	provider := newRuntimeStatusProvider(cfg, semantic)
+	adapter := provider.AdapterStatus()
+	if adapter.Status != "running" {
+		t.Fatalf("adapter status = %q; want running", adapter.Status)
+	}
+	if adapter.FirmwareVersion != "0x31" {
+		t.Fatalf("adapter firmwareVersion = %q; want 0x31", adapter.FirmwareVersion)
+	}
+}
+
+func TestRuntimeStatusProviderKeepsUnknownWithoutAdapterIdentity(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	semantic := graphql.NewLiveSemanticProvider()
+	semantic.SetAdapterHardwareInfo(&graphql.AdapterHardwareInfo{})
+
+	provider := newRuntimeStatusProvider(cfg, semantic)
+	adapter := provider.AdapterStatus()
+	if adapter.Status != "unknown" {
+		t.Fatalf("adapter status = %q; want unknown", adapter.Status)
+	}
+	if adapter.FirmwareVersion != "" {
+		t.Fatalf("adapter firmwareVersion = %q; want empty", adapter.FirmwareVersion)
 	}
 }

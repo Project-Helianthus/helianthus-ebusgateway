@@ -1811,6 +1811,7 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		boiler:         boilerCopy,
 		system:         systemCopy,
 		schedules:      schedulesCopy,
+		adapterInfo:    cloneMCPAdapterHardwareInfo(snapshot.adapterInfo),
 		devices:        cloneDeviceInfoList(snapshot.devices),
 	}
 }

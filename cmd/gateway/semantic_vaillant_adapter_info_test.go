@@ -319,6 +319,64 @@ func TestVaillantAdapterInfoStateSupportedTransportSeedsEmptyContractBeforeRefre
 	}
 }
 
+func TestVaillantAdapterInfoStateUsesBusRawTransportRequesterWhenConstructorTransportCannotProbeInfo(t *testing.T) {
+	raw := &stubAdapterInfoTransport{
+		responses: map[transport.AdapterInfoID][]adapterInfoResponse{
+			transport.AdapterInfoVersion: {
+				{data: []byte{0x31, 0x01, 0x12, 0x34, 0x0C}},
+			},
+			transport.AdapterInfoHardwareID: {
+				{data: []byte{0xDE, 0xAD}},
+			},
+			transport.AdapterInfoHardwareConf: {
+				{data: []byte{0xBE, 0xEF}},
+			},
+			transport.AdapterInfoTemperature: {
+				{data: []byte{0x00, 0x19}},
+			},
+			transport.AdapterInfoSupplyVolt: {
+				{data: []byte{0x09, 0xC4}},
+			},
+			transport.AdapterInfoBusVoltage: {
+				{data: []byte{0x96, 0x82}},
+			},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bus := protocol.NewBus(raw, protocol.DefaultBusConfig(), 0)
+	bus.Run(ctx)
+
+	provider := graphql.NewLiveSemanticProvider()
+	state := newVaillantAdapterInfoState(bus, stubRawTransport{}, provider)
+	if state == nil {
+		t.Fatal("newVaillantAdapterInfoState() returned nil")
+	}
+
+	state.refreshCycle(ctx)
+
+	info := provider.AdapterHardwareInfo()
+	if info == nil {
+		t.Fatal("AdapterHardwareInfo() after refreshCycle = nil")
+	}
+	if got := info.FirmwareVersion; got != "0x31" {
+		t.Fatalf("FirmwareVersion after refreshCycle = %q; want 0x31", got)
+	}
+	if !info.InfoSupported {
+		t.Fatal("InfoSupported after refreshCycle = false; want true")
+	}
+	if got := info.HardwareID; got != "dead" {
+		t.Fatalf("HardwareID after refreshCycle = %q; want dead", got)
+	}
+	if info.LastIdentityQuery == nil {
+		t.Fatal("LastIdentityQuery after refreshCycle = nil; want timestamp")
+	}
+	if got := raw.callCount(transport.AdapterInfoVersion); got != 1 {
+		t.Fatalf("AdapterInfoVersion call count = %d; want 1", got)
+	}
+}
+
 func TestVaillantAdapterInfoStateUnsupportedTransitionClearsTelemetry(t *testing.T) {
 	raw := &stubAdapterInfoTransport{
 		responses: map[transport.AdapterInfoID][]adapterInfoResponse{

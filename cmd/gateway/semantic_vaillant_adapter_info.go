@@ -35,9 +35,8 @@ var errAdapterInfoUnsupported = errors.New("adapter info unsupported")
 type vaillantAdapterInfoState struct {
 	mu sync.Mutex
 
-	bus         *protocol.Bus
-	provider    *graphql.LiveSemanticProvider
-	infoCapable bool
+	bus      *protocol.Bus
+	provider *graphql.LiveSemanticProvider
 
 	identity *transport.AdapterVersion
 	hwID     string
@@ -61,20 +60,17 @@ func newVaillantAdapterInfoState(bus *protocol.Bus, rawTransport transport.RawTr
 		bus:      bus,
 		provider: provider,
 	}
-	if _, ok := rawTransport.(transport.InfoRequester); ok {
-		state.infoCapable = true
-	}
 	if provider != nil {
 		// Seed a stable fail-closed contract immediately so GraphQL/MCP/Portal
 		// never expose nil while INFO bootstrap is still pending.
 		provider.SetAdapterHardwareInfo(&graphql.AdapterHardwareInfo{})
-		if !state.infoCapable {
+		if _, ok := rawTransport.(transport.InfoRequester); !ok {
 			adapterInfoSupported.Set(0)
 			adapterInfoHealth.Set(0)
 			state.clearTelemetryLocked()
 		}
 	}
-	if !state.infoCapable {
+	if _, ok := rawTransport.(transport.InfoRequester); !ok {
 		adapterInfoSupported.Set(0)
 		adapterInfoHealth.Set(0)
 		state.clearTelemetryLocked()
@@ -116,9 +112,6 @@ func (s *vaillantAdapterInfoState) refreshCycle(ctx context.Context) {
 func (s *vaillantAdapterInfoState) needsIdentityRefresh() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.infoCapable {
-		return false
-	}
 	if s.identity == nil {
 		return true
 	}
@@ -131,16 +124,15 @@ func (s *vaillantAdapterInfoState) needsIdentityRefresh() bool {
 func (s *vaillantAdapterInfoState) refreshIdentity(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.infoCapable {
-		adapterInfoSupported.Set(0)
-		adapterInfoHealth.Set(0)
-		s.clearTelemetryLocked()
-		return
-	}
-
 	// Query version (ID 0x00).
 	data, err := s.queryInfo(ctx, transport.AdapterInfoVersion)
 	if err != nil {
+		if errors.Is(err, errAdapterInfoUnsupported) {
+			adapterInfoSupported.Set(0)
+			adapterInfoHealth.Set(0)
+			s.clearTelemetryLocked()
+			return
+		}
 		log.Printf("adapter_info: version query failed: %v", err)
 		s.invalidateIdentityLocked()
 		adapterInfoHealth.Set(0)

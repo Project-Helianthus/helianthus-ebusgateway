@@ -13,12 +13,20 @@ type runtimeStatusProvider struct {
 	semantic graphql.SemanticProvider
 }
 
+type runtimeGatewayIdentityProvider struct {
+	instanceGUID string
+}
+
 func (p runtimeStatusProvider) DaemonStatus() graphql.ServiceStatus {
 	return p.daemon
 }
 
 func (p runtimeStatusProvider) AdapterStatus() graphql.ServiceStatus {
 	return adapterGraphQLStatusFromSemantic(p.semantic)
+}
+
+func (p runtimeGatewayIdentityProvider) GatewayIdentity() graphql.GatewayIdentity {
+	return graphql.GatewayIdentity{InstanceGUID: p.instanceGUID}
 }
 
 func newRuntimeStatusProvider(cfg ebusgateway.Config, semantic graphql.SemanticProvider) graphql.StatusProvider {
@@ -31,6 +39,10 @@ func newRuntimeStatusProvider(cfg ebusgateway.Config, semantic graphql.SemanticP
 		},
 		semantic: semantic,
 	}
+}
+
+func newRuntimeGatewayIdentityProvider(cfg ebusgateway.Config) graphql.GatewayIdentityProvider {
+	return runtimeGatewayIdentityProvider{instanceGUID: cfg.InstanceGUID}
 }
 
 type runtimeMCPStatusProvider struct {

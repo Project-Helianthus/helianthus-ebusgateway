@@ -24,6 +24,14 @@
 - Suitable for onboarding and issue-focused runtime/API changes.
 - Smoke mode is intentionally opt-in and environment-backed (`EBUS_SMOKE=1` + local config file).
 
+## Stable Instance Identity
+
+- The gateway can expose an installation-scoped stable GUID with `-instance-guid <uuid>`.
+- When configured, the same GUID is published through GraphQL at `gatewayIdentity.instanceGuid`.
+- Zeroconf advertisement keeps `_helianthus-graphql._tcp` and adds TXT `instance_guid=<uuid>`.
+- Home Assistant should treat this GUID as canonical identity and treat `host`, `port`, `path`, and `transport`
+  as rediscoverable transport coordinates.
+
 ## Helianthus Dependency Chain
 
 ```text
@@ -87,6 +95,10 @@ go run ./cmd/gateway \
 curl -fsS http://127.0.0.1:8080/graphql \
   -H 'content-type: application/json' \
   --data '{"query":"{ __typename }"}'
+
+curl -fsS http://127.0.0.1:8080/graphql \
+  -H 'content-type: application/json' \
+  --data '{"query":"{ gatewayIdentity { instanceGuid } }"}'
 
 curl -fsS http://127.0.0.1:8080/mcp \
   -H 'content-type: application/json' \
@@ -158,6 +170,7 @@ go run ./cmd/gateway -address tcp-plain://203.0.113.10:9999 -http-addr :8080
 | `-mcp-path` | `/mcp` | MCP JSON-RPC endpoint |
 | `-ui-path` | `/ui` | set empty to disable UI |
 | `-portal-path` | `/portal` | set empty to disable dynamic portal surface |
+| `-instance-guid` | _empty_ | lowercase UUIDv4 published via GraphQL and Zeroconf |
 | `-mdns` | `true` | set `false` outside trusted LAN |
 | `-dump-upload-path` | _disabled_ | unknown-device dump upload endpoint path |
 

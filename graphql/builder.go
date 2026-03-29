@@ -9,6 +9,7 @@ type Builder struct {
 	registry Registry
 	changes  <-chan struct{}
 	status   StatusProvider
+	identity GatewayIdentityProvider
 	semantic SemanticProvider
 	bus      BusObservabilityProvider
 	watch    WatchSummaryProvider
@@ -25,6 +26,7 @@ func NewBuilder(reg Registry, changes <-chan struct{}) *Builder {
 		registry: reg,
 		changes:  changes,
 		status:   staticStatusProvider{},
+		identity: staticGatewayIdentityProvider{},
 		semantic: staticSemanticProvider{},
 		bus:      staticBusObservabilityProvider{},
 		watch:    staticWatchSummaryProvider{},
@@ -123,6 +125,28 @@ func (b *Builder) SetStatusProvider(provider StatusProvider) {
 	b.mu.Lock()
 	b.status = provider
 	b.mu.Unlock()
+}
+
+func (b *Builder) SetGatewayIdentityProvider(provider GatewayIdentityProvider) {
+	if b == nil || provider == nil {
+		return
+	}
+	b.mu.Lock()
+	b.identity = provider
+	b.mu.Unlock()
+}
+
+func (b *Builder) gatewayIdentityProvider() GatewayIdentityProvider {
+	if b == nil {
+		return staticGatewayIdentityProvider{}
+	}
+	b.mu.RLock()
+	provider := b.identity
+	b.mu.RUnlock()
+	if provider == nil {
+		return staticGatewayIdentityProvider{}
+	}
+	return provider
 }
 
 func (b *Builder) statusProvider() StatusProvider {

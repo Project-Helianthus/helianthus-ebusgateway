@@ -63,6 +63,17 @@ func TestRuntimeStatusProviderReflectsAdapterFirmwareVersion(t *testing.T) {
 	}
 }
 
+func TestRuntimeGatewayIdentityProviderExposesConfiguredGUID(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.InstanceGUID = "4d9336aa-f125-4f12-8b07-fcd18dbfcb10"
+
+	provider := newRuntimeGatewayIdentityProvider(cfg)
+	identity := provider.GatewayIdentity()
+	if identity.InstanceGUID != "4d9336aa-f125-4f12-8b07-fcd18dbfcb10" {
+		t.Fatalf("gateway identity GUID = %q; want configured GUID", identity.InstanceGUID)
+	}
+}
+
 func TestRuntimeStatusProviderKeepsUnknownWithoutAdapterIdentity(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	semantic := graphql.NewLiveSemanticProvider()

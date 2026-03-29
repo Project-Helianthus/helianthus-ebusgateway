@@ -20,6 +20,7 @@ import (
 )
 
 var canonicalQueryRootFields = []string{
+	"gatewayIdentity",
 	"zones",
 	"dhw",
 	"energyTotals",
@@ -43,6 +44,14 @@ type testBusObservabilityProvider struct {
 
 func (provider testBusObservabilityProvider) Snapshot() BusObservabilitySnapshot {
 	return cloneBusObservabilitySnapshot(provider.snapshot)
+}
+
+type testGatewayIdentityProvider struct {
+	identity GatewayIdentity
+}
+
+func (provider testGatewayIdentityProvider) GatewayIdentity() GatewayIdentity {
+	return provider.identity
 }
 
 type driftingBusObservabilityProvider struct {
@@ -130,6 +139,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	})
 
 	builder := NewBuilder(gateway.Registry, nil)
+	builder.SetGatewayIdentityProvider(testGatewayIdentityProvider{
+		identity: GatewayIdentity{InstanceGUID: "4d9336aa-f125-4f12-8b07-fcd18dbfcb10"},
+	})
 	if err := builder.Start(context.Background()); err != nil {
 		t.Fatalf("builder.Start error = %v", err)
 	}
@@ -1067,6 +1079,29 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					},
 				},
 			},
+		})
+
+		t.Run("gateway_identity", func(t *testing.T) {
+			request := graphqlclient.NewRequest(`
+				query {
+					gatewayIdentity {
+						instanceGuid
+					}
+				}
+			`)
+
+			var response struct {
+				GatewayIdentity struct {
+					InstanceGUID string `json:"instanceGuid"`
+				} `json:"gatewayIdentity"`
+			}
+
+			if err := client.Run(context.Background(), request, &response); err != nil {
+				t.Fatalf("gateway identity query error = %v", err)
+			}
+			if response.GatewayIdentity.InstanceGUID != "4d9336aa-f125-4f12-8b07-fcd18dbfcb10" {
+				t.Fatalf("gateway identity instanceGuid = %q; want configured GUID", response.GatewayIdentity.InstanceGUID)
+			}
 		})
 
 		handler, err := NewHandler(builder)

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,6 +35,7 @@ var (
 	startPassiveTransactionReconstructor      = ebusgateway.StartPassiveTransactionReconstructor
 	startBroadcastListenerWithReconstructorFn = ebusgateway.StartBroadcastListenerWithReconstructor
 	startHTTPServerFn                         = startHTTPServer
+	instanceGUIDPattern                       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 )
 
 type runtimeWatchObserver struct {
@@ -104,6 +106,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if busObservability != nil {
 		builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(busObservability))
 	}
+	builder.SetGatewayIdentityProvider(newRuntimeGatewayIdentityProvider(cfg))
 	hub := graphql.NewBroadcastHub(nil)
 	gateway.AddRouterPlane(hub)
 	gateway.RefreshRouterPlanes()
@@ -357,6 +360,29 @@ func applyTransportSourcePolicy(cfg *ebusgateway.Config) {
 	}
 }
 
+func normalizeInstanceGUID(value string) (string, error) {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	if normalized == "" {
+		return "", nil
+	}
+	if !instanceGUIDPattern.MatchString(normalized) {
+		return "", fmt.Errorf("invalid instance-guid %q", value)
+	}
+	return normalized, nil
+}
+
+func gatewayMDNSText(cfg ebusgateway.Config) []string {
+	text := []string{
+		"path=" + cfg.GraphQLPath,
+		"transport=http",
+		"version=1",
+	}
+	if cfg.InstanceGUID != "" {
+		text = append(text, "instance_guid="+cfg.InstanceGUID)
+	}
+	return text
+}
+
 func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	if fs == nil || cfg == nil {
 		return
@@ -416,6 +442,14 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.StringVar(&cfg.DumpUploadPath, "dump-upload-path", cfg.DumpUploadPath, "register dump upload endpoint path")
 	fs.BoolVar(&cfg.MDNSAdvertise, "mdns", cfg.MDNSAdvertise, "advertise graphql endpoint via mdns")
 	fs.StringVar(&cfg.MDNSInstance, "mdns-instance", cfg.MDNSInstance, "mdns instance name")
+	fs.Func("instance-guid", "stable gateway instance UUIDv4 (lowercase)", func(value string) error {
+		normalized, err := normalizeInstanceGUID(value)
+		if err != nil {
+			return err
+		}
+		cfg.InstanceGUID = normalized
+		return nil
+	})
 	fs.StringVar(&cfg.DumpOutputDir, "dump-output-dir", cfg.DumpOutputDir, "unknown device dump output dir")
 	fs.StringVar(&cfg.DumpUploadURL, "dump-upload-url", cfg.DumpUploadURL, "unknown device dump upload url (internal)")
 	fs.BoolVar(&cfg.DumpIncludePII, "dump-include-pii", cfg.DumpIncludePII, "include identifiers in unknown device dumps")
@@ -705,11 +739,7 @@ func startHTTPServer(
 			Instance: cfg.MDNSInstance,
 			Service:  mdns.ServiceTypeGateway,
 			Port:     port,
-			Text: []string{
-				"path=" + cfg.GraphQLPath,
-				"transport=http",
-				"version=1",
-			},
+			Text:     gatewayMDNSText(cfg),
 		})
 		if err != nil {
 			_ = server.Close()

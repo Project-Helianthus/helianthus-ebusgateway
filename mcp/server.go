@@ -352,6 +352,32 @@ type ScheduleWriter interface {
 	SetDhwTimeProgram(ctx context.Context, weekday int, slots []TimeProgramSlot) (*TimeProgramWriteResult, error)
 }
 
+type AdapterHardwareInfo struct {
+	FirmwareVersion    string   `json:"firmware_version"`
+	FirmwareChecksum   string   `json:"firmware_checksum"`
+	BootloaderVersion  string   `json:"bootloader_version"`
+	BootloaderChecksum string   `json:"bootloader_checksum"`
+	HardwareID         string   `json:"hardware_id"`
+	HardwareConfig     string   `json:"hardware_config"`
+	Features           byte     `json:"features"`
+	Jumpers            byte     `json:"jumpers"`
+	JumperFlags        []string `json:"jumper_flags"`
+	IsWiFi             bool     `json:"is_wifi"`
+	IsEthernet         bool     `json:"is_ethernet"`
+	TemperatureC       *float64 `json:"temperature_c,omitempty"`
+	SupplyVoltageMV    *int     `json:"supply_voltage_mv,omitempty"`
+	BusVoltageMaxDV    *int     `json:"bus_voltage_max_dv,omitempty"`
+	BusVoltageMinDV    *int     `json:"bus_voltage_min_dv,omitempty"`
+	ResetCause         *string  `json:"reset_cause,omitempty"`
+	ResetCauseCode     *byte    `json:"reset_cause_code,omitempty"`
+	RestartCount       *byte    `json:"restart_count,omitempty"`
+	WiFiRSSIDBm        *int     `json:"wifi_rssi_dbm,omitempty"`
+	LastIdentityQuery  *string  `json:"last_identity_query,omitempty"`
+	LastTelemetryQuery *string  `json:"last_telemetry_query,omitempty"`
+	VersionResponseLen int      `json:"version_response_len"`
+	InfoSupported      bool     `json:"info_supported"`
+}
+
 type SemanticProvider interface {
 	Zones() []Zone
 	DHW() *DhwStatus
@@ -364,6 +390,7 @@ type SemanticProvider interface {
 	BoilerStatus() *BoilerStatus
 	System() *SystemStatus
 	Schedules() *ScheduleStatus
+	AdapterHardwareInfo() *AdapterHardwareInfo
 }
 
 type Server struct {
@@ -401,6 +428,7 @@ const (
 	toolSemanticSchedulesGetName     = "ebus.v1.semantic.schedules.get"
 	toolSemanticSchedulesSetZoneName = "ebus.v1.semantic.schedules.set_zone_time_program"
 	toolSemanticSchedulesSetDhwName  = "ebus.v1.semantic.schedules.set_dhw_time_program"
+	toolSemanticAdapterInfoGetName   = "ebus.v1.semantic.adapter_info.get"
 	toolSemanticSnapshotName         = "ebus.v1.semantic.snapshot.get"
 	toolSnapshotCaptureName          = "ebus.v1.snapshot.capture"
 	toolSnapshotDropName             = "ebus.v1.snapshot.drop"
@@ -492,6 +520,10 @@ func (staticSemanticProvider) Schedules() *ScheduleStatus {
 	return nil
 }
 
+func (staticSemanticProvider) AdapterHardwareInfo() *AdapterHardwareInfo {
+	return nil
+}
+
 func (staticWatchSummaryProvider) Snapshot() WatchSummary {
 	return WatchSummary{}
 }
@@ -535,6 +567,7 @@ type snapshotState struct {
 	boiler         *BoilerStatus
 	system         *SystemStatus
 	schedules      *ScheduleStatus
+	adapterInfo    *AdapterHardwareInfo
 	devices        []deviceInfo
 }
 
@@ -742,6 +775,17 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			},
 		},
 		{
+			Name:        toolSemanticAdapterInfoGetName,
+			Description: "Get adapter hardware identity and telemetry (firmware, temperature, voltages, WiFi RSSI, reset info).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
 			Name:        toolSemanticSchedulesGetName,
 			Description: "Get semantic weekly timer schedules snapshot (B555 protocol).",
 			InputSchema: map[string]any{
@@ -815,7 +859,7 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 						"type": "array",
 						"items": map[string]any{
 							"type": "string",
-							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders", "schedules"},
+							"enum": []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders", "schedules", "adapter_info"},
 						},
 					},
 					"timeout_ms": map[string]any{"type": "integer", "minimum": 1},
@@ -1264,6 +1308,12 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotSystem(snapshot), nil, consistency)), false), nil
+	case toolSemanticAdapterInfoGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotAdapterInfo(snapshot), nil, consistency)), false), nil
 	case toolSemanticSchedulesGetName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -1652,6 +1702,7 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		boiler:         s.snapshotBoilerStatus(nil),
 		system:         s.snapshotSystem(nil),
 		schedules:      s.snapshotSchedules(nil),
+		adapterInfo:    s.snapshotAdapterInfo(nil),
 		devices:        s.listDevices(nil),
 	}
 
@@ -1760,6 +1811,7 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		boiler:         boilerCopy,
 		system:         systemCopy,
 		schedules:      schedulesCopy,
+		adapterInfo:    cloneMCPAdapterHardwareInfo(snapshot.adapterInfo),
 		devices:        cloneDeviceInfoList(snapshot.devices),
 	}
 }
@@ -2700,6 +2752,75 @@ func cloneMCPScheduleStatus(status *ScheduleStatus) *ScheduleStatus {
 	return &cp
 }
 
+func (s *Server) snapshotAdapterInfo(snapshot *snapshotState) *AdapterHardwareInfo {
+	if snapshot != nil {
+		if snapshot.adapterInfo == nil {
+			return nil
+		}
+		return cloneMCPAdapterHardwareInfo(snapshot.adapterInfo)
+	}
+	if s == nil || s.semantic == nil {
+		return nil
+	}
+	source := s.semantic.AdapterHardwareInfo()
+	if source == nil {
+		return nil
+	}
+	return cloneMCPAdapterHardwareInfo(source)
+}
+
+func cloneMCPAdapterHardwareInfo(info *AdapterHardwareInfo) *AdapterHardwareInfo {
+	if info == nil {
+		return nil
+	}
+	cp := *info
+	if info.JumperFlags != nil {
+		cp.JumperFlags = make([]string, len(info.JumperFlags))
+		copy(cp.JumperFlags, info.JumperFlags)
+	}
+	if info.TemperatureC != nil {
+		v := *info.TemperatureC
+		cp.TemperatureC = &v
+	}
+	if info.SupplyVoltageMV != nil {
+		v := *info.SupplyVoltageMV
+		cp.SupplyVoltageMV = &v
+	}
+	if info.BusVoltageMaxDV != nil {
+		v := *info.BusVoltageMaxDV
+		cp.BusVoltageMaxDV = &v
+	}
+	if info.BusVoltageMinDV != nil {
+		v := *info.BusVoltageMinDV
+		cp.BusVoltageMinDV = &v
+	}
+	if info.ResetCause != nil {
+		v := *info.ResetCause
+		cp.ResetCause = &v
+	}
+	if info.ResetCauseCode != nil {
+		v := *info.ResetCauseCode
+		cp.ResetCauseCode = &v
+	}
+	if info.RestartCount != nil {
+		v := *info.RestartCount
+		cp.RestartCount = &v
+	}
+	if info.WiFiRSSIDBm != nil {
+		v := *info.WiFiRSSIDBm
+		cp.WiFiRSSIDBm = &v
+	}
+	if info.LastIdentityQuery != nil {
+		v := *info.LastIdentityQuery
+		cp.LastIdentityQuery = &v
+	}
+	if info.LastTelemetryQuery != nil {
+		v := *info.LastTelemetryQuery
+		cp.LastTelemetryQuery = &v
+	}
+	return &cp
+}
+
 func cloneMCPBoilerStatus(status *BoilerStatus) *BoilerStatus {
 	if status == nil {
 		return nil
@@ -3011,7 +3132,7 @@ func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, 
 
 func parseSemanticSnapshotOptions(args map[string]any) (semanticSnapshotOptions, error) {
 	options := semanticSnapshotOptions{
-		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders", "schedules"},
+		planes:       []string{"runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders", "schedules", "adapter_info"},
 		timeout:      defaultSnapshotReadTTL,
 		allowPartial: false,
 	}
@@ -3077,7 +3198,7 @@ func parseSemanticSnapshotPlanes(raw any) ([]string, error) {
 		}
 		normalized := strings.ToLower(strings.TrimSpace(value))
 		switch normalized {
-		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders", "schedules":
+		case "runtime_status", "zones", "dhw", "energy_totals", "boiler_status", "system", "circuits", "radio_devices", "fm5_mode", "solar", "cylinders", "schedules", "adapter_info":
 		default:
 			return nil, fmt.Errorf("unsupported plane %q: %w", value, ebuserrors.ErrInvalidPayload)
 		}
@@ -3126,6 +3247,8 @@ func (s *Server) readSemanticPlane(ctx context.Context, plane string, snapshot *
 		value = s.snapshotCylinders(snapshot)
 	case "schedules":
 		value = s.snapshotSchedules(snapshot)
+	case "adapter_info":
+		value = s.snapshotAdapterInfo(snapshot)
 	default:
 		return nil, fmt.Errorf("unsupported plane %q: %w", plane, ebuserrors.ErrInvalidPayload)
 	}

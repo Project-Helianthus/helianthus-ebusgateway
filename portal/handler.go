@@ -101,7 +101,34 @@ type SemanticSnapshot struct {
 	FM5Mode      string                `json:"fm5_semantic_mode,omitempty"`
 	Solar        *SemanticSolarStatus  `json:"solar,omitempty"`
 	Cylinders    []SemanticCylinder    `json:"cylinders,omitempty"`
+	AdapterInfo  *SemanticAdapterInfo  `json:"adapter_info,omitempty"`
 	CapturedUTC  string                `json:"captured_utc"`
+}
+
+type SemanticAdapterInfo struct {
+	FirmwareVersion    string   `json:"firmware_version"`
+	FirmwareChecksum   string   `json:"firmware_checksum,omitempty"`
+	BootloaderVersion  string   `json:"bootloader_version,omitempty"`
+	BootloaderChecksum string   `json:"bootloader_checksum,omitempty"`
+	HardwareID         string   `json:"hardware_id,omitempty"`
+	HardwareConfig     string   `json:"hardware_config,omitempty"`
+	Features           byte     `json:"features"`
+	Jumpers            byte     `json:"jumpers"`
+	JumperFlags        []string `json:"jumper_flags,omitempty"`
+	IsWiFi             bool     `json:"is_wifi"`
+	IsEthernet         bool     `json:"is_ethernet"`
+	TemperatureC       *float64 `json:"temperature_c,omitempty"`
+	SupplyVoltageMV    *int     `json:"supply_voltage_mv,omitempty"`
+	BusVoltageMaxDV    *int     `json:"bus_voltage_max_dv,omitempty"`
+	BusVoltageMinDV    *int     `json:"bus_voltage_min_dv,omitempty"`
+	ResetCause         *string  `json:"reset_cause,omitempty"`
+	ResetCauseCode     *int     `json:"reset_cause_code,omitempty"`
+	RestartCount       *int     `json:"restart_count,omitempty"`
+	WiFiRSSIDBm        *int     `json:"wifi_rssi_dbm,omitempty"`
+	LastIdentityQuery  string   `json:"last_identity_query,omitempty"`
+	LastTelemetryQuery string   `json:"last_telemetry_query,omitempty"`
+	VersionResponseLen int      `json:"version_response_len"`
+	InfoSupported      bool     `json:"info_supported"`
 }
 
 type SemanticZoneState struct {

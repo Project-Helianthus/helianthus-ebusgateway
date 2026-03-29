@@ -196,6 +196,7 @@ type testSemanticProvider struct {
 	boiler        *BoilerStatus
 	system        *SystemStatus
 	schedules     *ScheduleStatus
+	adapterInfo   *AdapterHardwareInfo
 	zonesDelay    time.Duration
 	circuitsDelay time.Duration
 	radioDelay    time.Duration
@@ -281,6 +282,10 @@ func (p testSemanticProvider) Schedules() *ScheduleStatus {
 		return nil
 	}
 	return cloneMCPScheduleStatus(p.schedules)
+}
+
+func (p testSemanticProvider) AdapterHardwareInfo() *AdapterHardwareInfo {
+	return cloneMCPAdapterHardwareInfo(p.adapterInfo)
 }
 
 func (p testSemanticProvider) EnergyTotals() *EnergyTotals {
@@ -1188,8 +1193,8 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			t.Fatalf("snapshot data type = %T; want map", envelope["data"])
 		}
 		completed, ok := data["completed_planes"].([]any)
-		if !ok || len(completed) != 12 {
-			t.Fatalf("snapshot completed_planes = %#v; want 12 entries", data["completed_planes"])
+		if !ok || len(completed) != 13 {
+			t.Fatalf("snapshot completed_planes = %#v; want 13 entries", data["completed_planes"])
 		}
 		planes, ok := data["planes"].(map[string]any)
 		if !ok {
@@ -1562,6 +1567,132 @@ func TestServer_SnapshotConsistencyMode(t *testing.T) {
 		Params:  json.RawMessage(`{"name":"ebus.v1.registry.devices.list","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
 	})
 	assertToolErrorCode(t, missing, "NOT_FOUND")
+}
+
+func TestServer_SnapshotConsistencyAdapterInfo(t *testing.T) {
+	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	original := &AdapterHardwareInfo{
+		FirmwareVersion:    "1.2.3",
+		HardwareID:         "deadbeef",
+		HardwareConfig:     "c0ffee",
+		JumperFlags:        []string{"JP1", "JP2"},
+		TemperatureC:       floatPtr(24.5),
+		SupplyVoltageMV:    intPtr(2500),
+		BusVoltageMaxDV:    intPtr(150),
+		BusVoltageMinDV:    intPtr(130),
+		ResetCause:         stringPtr("power_on"),
+		ResetCauseCode:     bytePtr(0x04),
+		RestartCount:       bytePtr(0x07),
+		WiFiRSSIDBm:        intPtr(-62),
+		LastIdentityQuery:  stringPtr("2026-03-12T13:00:00Z"),
+		LastTelemetryQuery: stringPtr("2026-03-12T13:01:00Z"),
+		VersionResponseLen: 8,
+		InfoSupported:      true,
+	}
+	changed := &AdapterHardwareInfo{
+		FirmwareVersion:    "9.9.9",
+		HardwareID:         "changed",
+		HardwareConfig:     "changed",
+		JumperFlags:        []string{"JP9"},
+		VersionResponseLen: 2,
+		InfoSupported:      false,
+	}
+
+	server.SetSemanticProvider(testSemanticProvider{adapterInfo: original})
+
+	capture := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+	}))
+	captureData, ok := capture["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("capture data type = %T; want map", capture["data"])
+	}
+	snapshotID, _ := captureData["snapshot_id"].(string)
+	if snapshotID == "" {
+		t.Fatal("capture snapshot_id empty")
+	}
+
+	server.SetSemanticProvider(testSemanticProvider{adapterInfo: changed})
+
+	live := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.semantic.adapter_info.get","arguments":{}}`),
+	}))
+	liveData, ok := live["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("live adapter_info data type = %T; want map", live["data"])
+	}
+	if got, _ := liveData["hardware_id"].(string); got != "changed" {
+		t.Fatalf("live adapter_info hardware_id = %q; want changed", got)
+	}
+	if got, _ := liveData["info_supported"].(bool); got {
+		t.Fatalf("live adapter_info info_supported = %v; want false", got)
+	}
+
+	snapshot := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      3,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.semantic.adapter_info.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+	}))
+	snapshotData, ok := snapshot["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot adapter_info data type = %T; want map", snapshot["data"])
+	}
+	if got, _ := snapshotData["hardware_id"].(string); got != "deadbeef" {
+		t.Fatalf("snapshot adapter_info hardware_id = %q; want deadbeef", got)
+	}
+	if got, _ := snapshotData["hardware_config"].(string); got != "c0ffee" {
+		t.Fatalf("snapshot adapter_info hardware_config = %q; want c0ffee", got)
+	}
+	if got, _ := snapshotData["info_supported"].(bool); !got {
+		t.Fatalf("snapshot adapter_info info_supported = %v; want true", got)
+	}
+	if got, _ := snapshotData["version_response_len"].(float64); int(got) != 8 {
+		t.Fatalf("snapshot adapter_info version_response_len = %v; want 8", snapshotData["version_response_len"])
+	}
+	jumperFlags, ok := snapshotData["jumper_flags"].([]any)
+	if !ok || len(jumperFlags) != 2 {
+		t.Fatalf("snapshot adapter_info jumper_flags = %#v; want 2 entries", snapshotData["jumper_flags"])
+	}
+	if got, _ := jumperFlags[0].(string); got != "JP1" {
+		t.Fatalf("snapshot adapter_info jumper_flags[0] = %q; want JP1", got)
+	}
+	if got, _ := jumperFlags[1].(string); got != "JP2" {
+		t.Fatalf("snapshot adapter_info jumper_flags[1] = %q; want JP2", got)
+	}
+
+	snapshotPlane := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      4,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["adapter_info"],"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+	}))
+	snapshotPlaneData, ok := snapshotPlane["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot plane data type = %T; want map", snapshotPlane["data"])
+	}
+	planes, ok := snapshotPlaneData["planes"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot plane planes type = %T; want map", snapshotPlaneData["planes"])
+	}
+	adapterPlane, ok := planes["adapter_info"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot plane adapter_info type = %T; want map", planes["adapter_info"])
+	}
+	if got, _ := adapterPlane["hardware_id"].(string); got != "deadbeef" {
+		t.Fatalf("snapshot plane adapter_info hardware_id = %q; want deadbeef", got)
+	}
 }
 
 func TestServer_BusObservabilitySnapshotConsistency(t *testing.T) {
@@ -2294,6 +2425,11 @@ func floatPtr(value float64) *float64 {
 }
 
 func intPtr(value int) *int {
+	v := value
+	return &v
+}
+
+func bytePtr(value byte) *byte {
 	v := value
 	return &v
 }

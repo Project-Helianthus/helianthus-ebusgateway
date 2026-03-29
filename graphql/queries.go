@@ -11,31 +11,32 @@ import (
 )
 
 type graphqlSchemaTypes struct {
-	fieldType          *graphqlgo.Object
-	responseType       *graphqlgo.Object
-	methodType         *graphqlgo.Object
-	projectionNodeType *graphqlgo.Object
-	projectionEdgeType *graphqlgo.Object
-	projectionType     *graphqlgo.Object
-	planeType          *graphqlgo.Object
-	deviceType         *graphqlgo.Object
-	broadcastType      *graphqlgo.Object
-	statusType         *graphqlgo.Object
-	zoneType           *graphqlgo.Object
-	dhwType            *graphqlgo.Object
-	circuitStatusType  *graphqlgo.Object
-	radioDeviceType    *graphqlgo.Object
-	fm5SemanticMode    *graphqlgo.Enum
-	solarStatusType    *graphqlgo.Object
-	cylinderStatusType *graphqlgo.Object
-	energyTotals       *graphqlgo.Object
-	boilerStatusType   *graphqlgo.Object
-	systemStatusType   *graphqlgo.Object
-	scheduleStatusType *graphqlgo.Object
-	busSummaryType     *graphqlgo.Object
-	busMessagesType    *graphqlgo.Object
-	busPeriodicityType *graphqlgo.Object
-	watchSummaryType   *graphqlgo.Object
+	fieldType               *graphqlgo.Object
+	responseType            *graphqlgo.Object
+	methodType              *graphqlgo.Object
+	projectionNodeType      *graphqlgo.Object
+	projectionEdgeType      *graphqlgo.Object
+	projectionType          *graphqlgo.Object
+	planeType               *graphqlgo.Object
+	deviceType              *graphqlgo.Object
+	broadcastType           *graphqlgo.Object
+	statusType              *graphqlgo.Object
+	zoneType                *graphqlgo.Object
+	dhwType                 *graphqlgo.Object
+	circuitStatusType       *graphqlgo.Object
+	radioDeviceType         *graphqlgo.Object
+	fm5SemanticMode         *graphqlgo.Enum
+	solarStatusType         *graphqlgo.Object
+	cylinderStatusType      *graphqlgo.Object
+	energyTotals            *graphqlgo.Object
+	boilerStatusType        *graphqlgo.Object
+	systemStatusType        *graphqlgo.Object
+	scheduleStatusType      *graphqlgo.Object
+	adapterHardwareInfoType *graphqlgo.Object
+	busSummaryType          *graphqlgo.Object
+	busMessagesType         *graphqlgo.Object
+	busPeriodicityType      *graphqlgo.Object
+	watchSummaryType        *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {
@@ -2672,35 +2673,167 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		},
 	})
 
+	adapterHardwareInfoType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "AdapterHardwareInfo",
+		Fields: graphqlgo.Fields{
+			"firmwareVersion":    &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"firmwareChecksum":   &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"bootloaderVersion":  &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"bootloaderChecksum": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"hardwareID":         &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"hardwareConfig":     &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+			"features":           &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+			"jumpers":            &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+			"jumperFlags": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.String))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil {
+						return []string{}, nil
+					}
+					if info.JumperFlags == nil {
+						return []string{}, nil
+					}
+					return info.JumperFlags, nil
+				},
+			},
+			"isWifi":     &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Boolean)},
+			"isEthernet": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Boolean)},
+			"temperatureC": &graphqlgo.Field{
+				Type: graphqlgo.Float,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil || info.TemperatureC == nil {
+						return nil, nil
+					}
+					return *info.TemperatureC, nil
+				},
+			},
+			"supplyVoltageMv": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil || info.SupplyVoltageMV == nil {
+						return nil, nil
+					}
+					return *info.SupplyVoltageMV, nil
+				},
+			},
+			"busVoltageMaxDv": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil || info.BusVoltageMaxDV == nil {
+						return nil, nil
+					}
+					return *info.BusVoltageMaxDV, nil
+				},
+			},
+			"busVoltageMinDv": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil || info.BusVoltageMinDV == nil {
+						return nil, nil
+					}
+					return *info.BusVoltageMinDV, nil
+				},
+			},
+			"resetCause": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil || info.ResetCause == nil {
+						return nil, nil
+					}
+					return *info.ResetCause, nil
+				},
+			},
+			"resetCauseCode": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil || info.ResetCauseCode == nil {
+						return nil, nil
+					}
+					return int(*info.ResetCauseCode), nil
+				},
+			},
+			"restartCount": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil || info.RestartCount == nil {
+						return nil, nil
+					}
+					return int(*info.RestartCount), nil
+				},
+			},
+			"wifiRssiDbm": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil || info.WiFiRSSIDBm == nil {
+						return nil, nil
+					}
+					return *info.WiFiRSSIDBm, nil
+				},
+			},
+			"lastIdentityQuery": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil || info.LastIdentityQuery == nil {
+						return nil, nil
+					}
+					return info.LastIdentityQuery.UTC().Format("2006-01-02T15:04:05Z"), nil
+				},
+			},
+			"lastTelemetryQuery": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					info, ok := params.Source.(*AdapterHardwareInfo)
+					if !ok || info == nil || info.LastTelemetryQuery == nil {
+						return nil, nil
+					}
+					return info.LastTelemetryQuery.UTC().Format("2006-01-02T15:04:05Z"), nil
+				},
+			},
+			"versionResponseLen": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+			"infoSupported":      &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Boolean)},
+		},
+	})
+
 	busSummaryType, busMessagesType, busPeriodicityType := buildBusObservabilityTypes()
 	watchSummaryType := buildWatchSummaryType()
 
 	return graphqlSchemaTypes{
-		fieldType:          fieldType,
-		responseType:       responseType,
-		methodType:         methodType,
-		projectionNodeType: projectionNodeType,
-		projectionEdgeType: projectionEdgeType,
-		projectionType:     projectionType,
-		planeType:          planeType,
-		deviceType:         deviceType,
-		broadcastType:      buildBroadcastType(),
-		statusType:         statusType,
-		zoneType:           zoneType,
-		dhwType:            dhwType,
-		circuitStatusType:  circuitStatusType,
-		radioDeviceType:    radioDeviceType,
-		fm5SemanticMode:    fm5SemanticModeType,
-		solarStatusType:    solarStatusType,
-		cylinderStatusType: cylinderStatusType,
-		energyTotals:       energyTotalsType,
-		boilerStatusType:   boilerStatusType,
-		systemStatusType:   systemStatusType,
-		scheduleStatusType: scheduleStatusType,
-		busSummaryType:     busSummaryType,
-		busMessagesType:    busMessagesType,
-		busPeriodicityType: busPeriodicityType,
-		watchSummaryType:   watchSummaryType,
+		fieldType:               fieldType,
+		responseType:            responseType,
+		methodType:              methodType,
+		projectionNodeType:      projectionNodeType,
+		projectionEdgeType:      projectionEdgeType,
+		projectionType:          projectionType,
+		planeType:               planeType,
+		deviceType:              deviceType,
+		broadcastType:           buildBroadcastType(),
+		statusType:              statusType,
+		zoneType:                zoneType,
+		dhwType:                 dhwType,
+		circuitStatusType:       circuitStatusType,
+		radioDeviceType:         radioDeviceType,
+		fm5SemanticMode:         fm5SemanticModeType,
+		solarStatusType:         solarStatusType,
+		cylinderStatusType:      cylinderStatusType,
+		energyTotals:            energyTotalsType,
+		boilerStatusType:        boilerStatusType,
+		systemStatusType:        systemStatusType,
+		scheduleStatusType:      scheduleStatusType,
+		adapterHardwareInfoType: adapterHardwareInfoType,
+		busSummaryType:          busSummaryType,
+		busMessagesType:         busMessagesType,
+		busPeriodicityType:      busPeriodicityType,
+		watchSummaryType:        watchSummaryType,
 	}
 }
 
@@ -2808,6 +2941,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				Type: types.scheduleStatusType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().Schedules(), nil
+				},
+			},
+			"adapterHardwareInfo": &graphqlgo.Field{
+				Type: types.adapterHardwareInfoType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().AdapterHardwareInfo(), nil
 				},
 			},
 			"busSummary": &graphqlgo.Field{

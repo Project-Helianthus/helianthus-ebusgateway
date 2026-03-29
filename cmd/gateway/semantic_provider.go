@@ -409,6 +409,57 @@ func (adapter mcpSemanticProviderAdapter) Schedules() *mcp.ScheduleStatus {
 	return out
 }
 
+func (adapter mcpSemanticProviderAdapter) AdapterHardwareInfo() *mcp.AdapterHardwareInfo {
+	if adapter.provider == nil {
+		return nil
+	}
+	info := adapter.provider.AdapterHardwareInfo()
+	if info == nil {
+		return nil
+	}
+	out := &mcp.AdapterHardwareInfo{
+		FirmwareVersion:    info.FirmwareVersion,
+		FirmwareChecksum:   info.FirmwareChecksum,
+		BootloaderVersion:  info.BootloaderVersion,
+		BootloaderChecksum: info.BootloaderChecksum,
+		HardwareID:         info.HardwareID,
+		HardwareConfig:     info.HardwareConfig,
+		Features:           info.Features,
+		Jumpers:            info.Jumpers,
+		IsWiFi:             info.IsWiFi,
+		IsEthernet:         info.IsEthernet,
+		TemperatureC:       cloneFloatPtr(info.TemperatureC),
+		SupplyVoltageMV:    cloneIntPtr(info.SupplyVoltageMV),
+		BusVoltageMaxDV:    cloneIntPtr(info.BusVoltageMaxDV),
+		BusVoltageMinDV:    cloneIntPtr(info.BusVoltageMinDV),
+		ResetCause:         cloneStringPtr(info.ResetCause),
+		WiFiRSSIDBm:        cloneIntPtr(info.WiFiRSSIDBm),
+		VersionResponseLen: info.VersionResponseLen,
+		InfoSupported:      info.InfoSupported,
+	}
+	if info.JumperFlags != nil {
+		out.JumperFlags = make([]string, len(info.JumperFlags))
+		copy(out.JumperFlags, info.JumperFlags)
+	}
+	if info.ResetCauseCode != nil {
+		v := *info.ResetCauseCode
+		out.ResetCauseCode = &v
+	}
+	if info.RestartCount != nil {
+		v := *info.RestartCount
+		out.RestartCount = &v
+	}
+	if info.LastIdentityQuery != nil {
+		s := info.LastIdentityQuery.UTC().Format("2006-01-02T15:04:05Z")
+		out.LastIdentityQuery = &s
+	}
+	if info.LastTelemetryQuery != nil {
+		s := info.LastTelemetryQuery.UTC().Format("2006-01-02T15:04:05Z")
+		out.LastTelemetryQuery = &s
+	}
+	return out
+}
+
 func cloneFloatPtr(value *float64) *float64 {
 	if value == nil {
 		return nil

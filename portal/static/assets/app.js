@@ -142,13 +142,16 @@ function explorerDecode(rawHex, rawLen, type) {
 
 class PortalShell extends HTMLElement {
   connectedCallback() {
+    const lifecycleToken = this.beginBootstrapLifecycle();
+    const lifecycleAbort = this.bootstrapLifecycleAbort;
     this.render();
     setTheme(loadTheme());
     this.bindEvents();
-    this.loadStatus();
+    void this.loadStatus(lifecycleToken, lifecycleAbort);
   }
 
   disconnectedCallback() {
+    this.endBootstrapLifecycle();
     if (this.streamSource) {
       this.streamSource.close();
       this.streamSource = undefined;
@@ -160,6 +163,10 @@ class PortalShell extends HTMLElement {
     if (this.timelineTimer) {
       clearTimeout(this.timelineTimer);
       this.timelineTimer = undefined;
+    }
+    if (this.adapterInfoInterval) {
+      clearInterval(this.adapterInfoInterval);
+      this.adapterInfoInterval = undefined;
     }
     if (this.provenanceInterval) {
       clearInterval(this.provenanceInterval);
@@ -185,6 +192,55 @@ class PortalShell extends HTMLElement {
       this._explorerSSE.close();
       this._explorerSSE = undefined;
     }
+  }
+
+  beginBootstrapLifecycle() {
+    if (this.bootstrapLifecycleAbort) {
+      this.bootstrapLifecycleAbort.abort();
+    }
+    this.bootstrapLifecycleAbort = new AbortController();
+    this.bootstrapLifecycleToken = (this.bootstrapLifecycleToken || 0) + 1;
+    return this.bootstrapLifecycleToken;
+  }
+
+  endBootstrapLifecycle() {
+    if (this.bootstrapLifecycleAbort) {
+      this.bootstrapLifecycleAbort.abort();
+      this.bootstrapLifecycleAbort = undefined;
+    }
+    this.bootstrapLifecycleToken = (this.bootstrapLifecycleToken || 0) + 1;
+    this.clearAdapterInfoInterval();
+  }
+
+  isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort) {
+    return (
+      this.isConnected &&
+      this.bootstrapLifecycleToken === lifecycleToken &&
+      this.bootstrapLifecycleAbort === lifecycleAbort &&
+      !lifecycleAbort?.signal?.aborted
+    );
+  }
+
+  clearAdapterInfoInterval() {
+    if (this.adapterInfoInterval) {
+      clearInterval(this.adapterInfoInterval);
+      this.adapterInfoInterval = undefined;
+    }
+  }
+
+  armAdapterInfoInterval(lifecycleToken, lifecycleAbort) {
+    if (!this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort)) {
+      this.clearAdapterInfoInterval();
+      return;
+    }
+    this.clearAdapterInfoInterval();
+    this.adapterInfoInterval = setInterval(() => {
+      if (!this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort)) {
+        this.clearAdapterInfoInterval();
+        return;
+      }
+      void this.refreshAdapterInfo();
+    }, 30000);
   }
 
   bindEvents() {
@@ -280,6 +336,7 @@ class PortalShell extends HTMLElement {
       "section-bus": ["section-bus"],
       "section-projection": ["section-projection"],
       "section-explorer": ["section-explorer"],
+      "section-adapter": ["section-adapter"],
       "section-timeline": ["section-timeline", "section-provenance"],
       "section-snapshots": ["section-snapshots", "section-snapshot-diff", "section-sessions"],
       "section-issue-builder": ["section-issue-builder"],
@@ -295,7 +352,8 @@ class PortalShell extends HTMLElement {
     });
   }
 
-  async loadStatus() {
+  async loadStatus(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     const statusEl = this.querySelector('[data-role="status"]');
     const metaEl = this.querySelector('[data-role="meta"]');
     const listEl = this.querySelector('[data-role="registry-list"]');
@@ -312,12 +370,16 @@ class PortalShell extends HTMLElement {
     const sessionsList = this.querySelector('[data-role="sessions-list"]');
     const issuePreview = this.querySelector('[data-role="issue-preview"]');
     try {
+      const requestInit = lifecycleAbort ? { signal: lifecycleAbort.signal } : undefined;
       const [healthRes, bootstrapRes] = await Promise.all([
-        fetch("api/v1/health"),
-        fetch("api/v1/bootstrap"),
+        fetch("api/v1/health", requestInit),
+        fetch("api/v1/bootstrap", requestInit),
       ]);
       const health = await healthRes.json();
       const bootstrap = await bootstrapRes.json();
+      if (!isActive()) {
+        return;
+      }
       if (statusEl) {
         statusEl.textContent = `Gateway ${health.status}`;
       }
@@ -338,10 +400,10 @@ class PortalShell extends HTMLElement {
         searchInput.title = capabilities.search ? "" : "Search is unavailable (no data providers)";
       }
       if (capabilities.registry && listEl) {
-        await this.loadRegistryPreview(listEl);
+        await this.loadRegistryPreview(listEl, lifecycleToken, lifecycleAbort);
       }
       if (capabilities.semantic && semanticEl) {
-        await this.loadSemanticPreview(semanticEl);
+        await this.loadSemanticPreview(semanticEl, lifecycleToken, lifecycleAbort);
       }
       if (busObservabilityEl) {
         busObservabilityEl.innerHTML = capabilities.bus_observability
@@ -349,7 +411,12 @@ class PortalShell extends HTMLElement {
           : "<li>Bus observability unavailable.</li>";
       }
       if (capabilities.bus_observability) {
-        await this.refreshBusObservability();
+        if (!(await this.refreshBusObservability(lifecycleToken, lifecycleAbort))) {
+          return;
+        }
+        if (!isActive()) {
+          return;
+        }
         if (this.busObservabilityInterval) {
           clearInterval(this.busObservabilityInterval);
         }
@@ -358,7 +425,9 @@ class PortalShell extends HTMLElement {
         }, 3000);
       }
       if (capabilities.projection && projectionEl) {
-        await this.loadProjectionPreview(projectionEl);
+        if (!(await this.loadProjectionPreview(projectionEl, lifecycleToken, lifecycleAbort))) {
+          return;
+        }
       }
       if (searchList) {
         searchList.innerHTML = capabilities.search
@@ -366,7 +435,9 @@ class PortalShell extends HTMLElement {
           : "<li>Search unavailable: no readable layers enabled.</li>";
       }
       if (capabilities.stream) {
-        this.startStream();
+        if (!this.startStream(lifecycleToken, lifecycleAbort)) {
+          return;
+        }
       }
       if (timelineList) {
         timelineList.innerHTML = capabilities.timeline
@@ -374,7 +445,12 @@ class PortalShell extends HTMLElement {
           : "<li>Timeline unavailable: stream capability disabled.</li>";
       }
       if (capabilities.timeline) {
-        await this.refreshTimeline();
+        if (!(await this.refreshTimeline(lifecycleToken, lifecycleAbort))) {
+          return;
+        }
+        if (!isActive()) {
+          return;
+        }
         if (this.timelineInterval) {
           clearInterval(this.timelineInterval);
         }
@@ -388,7 +464,12 @@ class PortalShell extends HTMLElement {
           : "<li>Provenance unavailable: stream capability disabled.</li>";
       }
       if (capabilities.provenance) {
-        await this.refreshProvenance();
+        if (!(await this.refreshProvenance(lifecycleToken, lifecycleAbort))) {
+          return;
+        }
+        if (!isActive()) {
+          return;
+        }
         if (this.provenanceInterval) {
           clearInterval(this.provenanceInterval);
         }
@@ -402,7 +483,12 @@ class PortalShell extends HTMLElement {
           : "<li>Snapshots unavailable: stream capability disabled.</li>";
       }
       if (capabilities.snapshots) {
-        await this.refreshSnapshots();
+        if (!(await this.refreshSnapshots(lifecycleToken, lifecycleAbort))) {
+          return;
+        }
+        if (!isActive()) {
+          return;
+        }
         const retention = await this.fetchSnapshotRetention();
         if (retentionInput && retention > 0) {
           retentionInput.value = String(retention);
@@ -425,7 +511,9 @@ class PortalShell extends HTMLElement {
           : "<li>Sessions unavailable.</li>";
       }
       if (capabilities.sessions) {
-        await this.refreshSessions();
+        if (!(await this.refreshSessions(lifecycleToken, lifecycleAbort))) {
+          return;
+        }
       }
       if (issuePreview) {
         issuePreview.textContent = capabilities.issue_builder
@@ -433,9 +521,24 @@ class PortalShell extends HTMLElement {
           : "Issue builder unavailable.";
       }
       if (capabilities.explorer) {
-        this.initExplorer();
+        if (!(await this.initExplorer(lifecycleToken, lifecycleAbort))) {
+          return;
+        }
+      }
+      if (capabilities.semantic) {
+        if (!isActive()) {
+          return;
+        }
+        await this.refreshAdapterInfo();
+        if (!isActive()) {
+          return;
+        }
+        this.armAdapterInfoInterval(lifecycleToken, lifecycleAbort);
       }
     } catch (err) {
+      if (!this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort)) {
+        return;
+      }
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
       }
@@ -453,6 +556,7 @@ class PortalShell extends HTMLElement {
     this.setNavState("bus", cap.bus_observability);
     this.setNavState("projection", cap.projection);
     this.setNavState("explorer", cap.explorer);
+    this.setNavState("adapter", cap.semantic);
     this.setNavState("timeline", cap.timeline || cap.provenance);
     this.setNavState("snapshots", cap.snapshots || cap.snapshot_diff);
     this.setNavState("issue-builder", cap.issue_builder);
@@ -472,11 +576,12 @@ class PortalShell extends HTMLElement {
     }
   }
 
-  async refreshBusObservability() {
+  async refreshBusObservability(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     const listEl = this.querySelector('[data-role="bus-observability"]');
     const bannerEl = this.querySelector('[data-role="bus-banner"]');
     if (!listEl || !bannerEl) {
-      return;
+      return true;
     }
     try {
       const response = await fetch("api/v1/bus/observability");
@@ -484,6 +589,9 @@ class PortalShell extends HTMLElement {
         throw new Error(`status ${response.status}`);
       }
       const payload = await response.json();
+      if (!isActive()) {
+        return false;
+      }
       const summary = payload && payload.status ? payload : payload?.summary;
       if (!summary || !summary.status) {
         throw new Error("missing status");
@@ -548,14 +656,21 @@ class PortalShell extends HTMLElement {
       }
       listEl.innerHTML = rows.map((row) => `<li>${row}</li>`).join("");
     } catch (err) {
+      if (!isActive()) {
+        return false;
+      }
       bannerEl.className = "bus-banner bus-state-unavailable";
       bannerEl.textContent = "Bus observability endpoint unavailable";
       listEl.innerHTML = "<li>Bus observability fetch failed.</li>";
       console.error("bus observability query failed", err);
     }
+    return true;
   }
 
-  startStream() {
+  startStream(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    if (!this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort)) {
+      return false;
+    }
     const streamStatus = this.querySelector('[data-role="stream-status"]');
     if (this.streamSource) {
       this.streamSource.close();
@@ -564,6 +679,9 @@ class PortalShell extends HTMLElement {
     const source = new EventSource("api/v1/stream?max_events_per_second=2&interval_ms=1000");
     this.streamSource = source;
     source.addEventListener("update", (event) => {
+      if (!this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort)) {
+        return;
+      }
       if (!streamStatus) {
         return;
       }
@@ -574,17 +692,21 @@ class PortalShell extends HTMLElement {
         streamStatus.textContent = `Stream live: layer=${layer} at=${at}`;
         this.scheduleTimelineRefresh();
         this.scheduleProvenanceRefresh();
-        this.refreshBusObservability();
-        this.refreshSnapshots();
+        this.refreshBusObservability(lifecycleToken, lifecycleAbort);
+        this.refreshSnapshots(lifecycleToken, lifecycleAbort);
       } catch (err) {
         streamStatus.textContent = "Stream payload parse error";
       }
     });
     source.onerror = () => {
+      if (!this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort)) {
+        return;
+      }
       if (streamStatus) {
         streamStatus.textContent = "Stream disconnected";
       }
     };
+    return true;
   }
 
   scheduleTimelineRefresh() {
@@ -596,11 +718,12 @@ class PortalShell extends HTMLElement {
     }, 220);
   }
 
-  async refreshTimeline() {
+  async refreshTimeline(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     const timelineList = this.querySelector('[data-role="timeline-list"]');
     const correlationInput = this.querySelector('[data-role="timeline-correlation"]');
     if (!timelineList) {
-      return;
+      return true;
     }
     try {
       const correlation = correlationInput ? String(correlationInput.value || "").trim() : "";
@@ -611,10 +734,13 @@ class PortalShell extends HTMLElement {
       }
       const response = await fetch(`api/v1/timeline/events?${query.toString()}`);
       const payload = await response.json();
+      if (!isActive()) {
+        return false;
+      }
       const items = Array.isArray(payload.items) ? payload.items : [];
       if (items.length === 0) {
         timelineList.innerHTML = "<li>No timeline events yet.</li>";
-        return;
+        return true;
       }
       timelineList.innerHTML = items
         .map((item) => {
@@ -629,9 +755,13 @@ class PortalShell extends HTMLElement {
         })
         .join("");
     } catch (err) {
+      if (!isActive()) {
+        return false;
+      }
       timelineList.innerHTML = "<li>Timeline query failed.</li>";
       console.error("timeline query failed", err);
     }
+    return true;
   }
 
   scheduleProvenanceRefresh() {
@@ -643,11 +773,12 @@ class PortalShell extends HTMLElement {
     }, 220);
   }
 
-  async refreshProvenance() {
+  async refreshProvenance(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     const provenanceList = this.querySelector('[data-role="provenance-list"]');
     const provenanceCorrelation = this.querySelector('[data-role="provenance-correlation"]');
     if (!provenanceList) {
-      return;
+      return true;
     }
     try {
       const correlation = provenanceCorrelation ? String(provenanceCorrelation.value || "").trim() : "";
@@ -658,10 +789,13 @@ class PortalShell extends HTMLElement {
       }
       const response = await fetch(`api/v1/provenance/events?${query.toString()}`);
       const payload = await response.json();
+      if (!isActive()) {
+        return false;
+      }
       const items = Array.isArray(payload.items) ? payload.items : [];
       if (items.length === 0) {
         provenanceList.innerHTML = "<li>No provenance records yet.</li>";
-        return;
+        return true;
       }
       provenanceList.innerHTML = items
         .map((item) => {
@@ -676,9 +810,13 @@ class PortalShell extends HTMLElement {
         })
         .join("");
     } catch (err) {
+      if (!isActive()) {
+        return false;
+      }
       provenanceList.innerHTML = "<li>Provenance query failed.</li>";
       console.error("provenance query failed", err);
     }
+    return true;
   }
 
   async fetchSnapshotRetention() {
@@ -691,18 +829,22 @@ class PortalShell extends HTMLElement {
     }
   }
 
-  async refreshSnapshots() {
+  async refreshSnapshots(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     const list = this.querySelector('[data-role="snapshots-list"]');
     if (!list) {
-      return;
+      return true;
     }
     try {
       const response = await fetch("api/v1/snapshots?limit=6");
       const payload = await response.json();
+      if (!isActive()) {
+        return false;
+      }
       const items = Array.isArray(payload.items) ? payload.items : [];
       if (items.length === 0) {
         list.innerHTML = "<li>No snapshots captured yet.</li>";
-        return;
+        return true;
       }
       list.innerHTML = items
         .map((item) => {
@@ -728,9 +870,13 @@ class PortalShell extends HTMLElement {
         fromInput.value = String(items[1].id);
       }
     } catch (err) {
+      if (!isActive()) {
+        return false;
+      }
       list.innerHTML = "<li>Snapshot list query failed.</li>";
       console.error("snapshot query failed", err);
     }
+    return true;
   }
 
   async viewSnapshot(id) {
@@ -863,18 +1009,22 @@ class PortalShell extends HTMLElement {
     }
   }
 
-  async refreshSessions() {
+  async refreshSessions(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     const sessionsList = this.querySelector('[data-role="sessions-list"]');
     if (!sessionsList) {
-      return;
+      return true;
     }
     try {
       const response = await fetch("api/v1/sessions?limit=8");
       const payload = await response.json();
+      if (!isActive()) {
+        return false;
+      }
       const items = Array.isArray(payload.items) ? payload.items : [];
       if (items.length === 0) {
         sessionsList.innerHTML = "<li>No saved sessions.</li>";
-        return;
+        return true;
       }
       sessionsList.innerHTML = items
         .map((item) => {
@@ -885,9 +1035,13 @@ class PortalShell extends HTMLElement {
         })
         .join("");
     } catch (err) {
+      if (!isActive()) {
+        return false;
+      }
       sessionsList.innerHTML = "<li>Sessions query failed.</li>";
       console.error("sessions query failed", err);
     }
+    return true;
   }
 
   async saveSession() {
@@ -1053,14 +1207,18 @@ class PortalShell extends HTMLElement {
     }
   }
 
-  async loadRegistryPreview(listEl) {
+  async loadRegistryPreview(listEl, lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     try {
       const response = await fetch("api/v1/registry/devices?limit=8");
       const payload = await response.json();
+      if (!isActive()) {
+        return false;
+      }
       const items = Array.isArray(payload.items) ? payload.items : [];
       if (items.length === 0) {
         listEl.innerHTML = "<li>No devices discovered yet.</li>";
-        return;
+        return true;
       }
       listEl.innerHTML = items
         .map((item) => {
@@ -1081,15 +1239,23 @@ class PortalShell extends HTMLElement {
         })
         .join("");
     } catch (err) {
+      if (!isActive()) {
+        return false;
+      }
       listEl.innerHTML = "<li>Registry preview unavailable.</li>";
       console.error("registry preview failed", err);
     }
+    return true;
   }
 
-  async loadSemanticPreview(listEl) {
+  async loadSemanticPreview(listEl, lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     try {
       const response = await fetch("api/v1/semantic/snapshot");
       const payload = await response.json();
+      if (!isActive()) {
+        return false;
+      }
       const zones = Array.isArray(payload.zones) ? payload.zones : [];
       const circuits = Array.isArray(payload.circuits) ? payload.circuits : [];
       const radioDevices = Array.isArray(payload.radio_devices) ? payload.radio_devices : [];
@@ -1190,17 +1356,128 @@ class PortalShell extends HTMLElement {
       }
       listEl.innerHTML = rows.join("");
     } catch (err) {
+      if (!isActive()) {
+        return false;
+      }
       listEl.innerHTML = "<li>Semantic preview unavailable.</li>";
       console.error("semantic preview failed", err);
     }
+    return true;
   }
 
-  async loadProjectionPreview(listEl) {
+  async refreshAdapterInfo() {
+    const identityBody = this.querySelector('[data-role="adapter-identity-body"]');
+    const telemetryBody = this.querySelector('[data-role="adapter-telemetry-body"]');
+    const statusEl = this.querySelector('[data-role="adapter-refresh-status"]');
+    try {
+      const response = await fetch("api/v1/semantic/snapshot");
+      const payload = await response.json();
+      const info = payload.adapter_info;
+      if (!info) {
+        if (identityBody) {
+          identityBody.innerHTML = `<tr><td colspan="2">Adapter info not available (INFO protocol not supported or adapter not connected).</td></tr>`;
+        }
+        if (telemetryBody) {
+          telemetryBody.innerHTML = `<tr><td colspan="2">No telemetry data.</td></tr>`;
+        }
+        if (statusEl) {
+          statusEl.textContent = `Last refresh: ${new Date().toLocaleTimeString()} (no data)`;
+        }
+        return;
+      }
+      if (identityBody) {
+        const rows = [];
+        rows.push(this.adapterRow("Firmware Version", info.firmware_version || "n/a"));
+        if (info.firmware_checksum) {
+          rows.push(this.adapterRow("Firmware Checksum", info.firmware_checksum));
+        }
+        if (info.bootloader_version) {
+          rows.push(this.adapterRow("Bootloader Version", info.bootloader_version));
+        }
+        if (info.bootloader_checksum) {
+          rows.push(this.adapterRow("Bootloader Checksum", info.bootloader_checksum));
+        }
+        if (info.hardware_id) {
+          rows.push(this.adapterRow("Hardware ID", info.hardware_id));
+        }
+        if (info.hardware_config) {
+          rows.push(this.adapterRow("Hardware Config", info.hardware_config));
+        }
+        const connectionType = info.is_wifi
+          ? "WiFi"
+          : info.is_ethernet
+            ? "Ethernet"
+            : info.info_supported === false
+              ? "Unsupported/Unknown"
+              : "Serial";
+        rows.push(this.adapterRow("Connection Type", connectionType));
+        if (info.jumper_flags && info.jumper_flags.length > 0) {
+          rows.push(this.adapterRow("Jumper Flags", info.jumper_flags.join(", ")));
+        }
+        rows.push(this.adapterRow("INFO Supported", info.info_supported ? "Yes" : "No"));
+        rows.push(this.adapterRow("Version Response Length", String(info.version_response_len)));
+        identityBody.innerHTML = rows.join("");
+      }
+      if (telemetryBody) {
+        const rows = [];
+        if (info.temperature_c != null) {
+          rows.push(this.adapterRow("Temperature", formatTemperature(info.temperature_c)));
+        }
+        if (info.supply_voltage_mv != null) {
+          rows.push(this.adapterRow("Supply Voltage", `${info.supply_voltage_mv} mV`));
+        }
+        if (info.bus_voltage_max_dv != null) {
+          rows.push(this.adapterRow("Bus Voltage Max", `${formatFixed(info.bus_voltage_max_dv * 0.1, 1)} V`));
+        }
+        if (info.bus_voltage_min_dv != null) {
+          rows.push(this.adapterRow("Bus Voltage Min", `${formatFixed(info.bus_voltage_min_dv * 0.1, 1)} V`));
+        }
+        if (info.reset_cause != null) {
+          rows.push(this.adapterRow("Reset Cause", escapeHtml(info.reset_cause)));
+        }
+        if (info.restart_count != null) {
+          rows.push(this.adapterRow("Restart Count", String(info.restart_count)));
+        }
+        if (info.wifi_rssi_dbm != null) {
+          rows.push(this.adapterRow("WiFi RSSI", `${info.wifi_rssi_dbm} dBm`));
+        }
+        if (rows.length === 0) {
+          rows.push(`<tr><td colspan="2">No telemetry data available yet.</td></tr>`);
+        }
+        telemetryBody.innerHTML = rows.join("");
+      }
+      if (statusEl) {
+        const parts = [];
+        if (info.last_identity_query) {
+          parts.push(`identity: ${new Date(info.last_identity_query).toLocaleTimeString()}`);
+        }
+        if (info.last_telemetry_query) {
+          parts.push(`telemetry: ${new Date(info.last_telemetry_query).toLocaleTimeString()}`);
+        }
+        statusEl.textContent = `Last refresh: ${new Date().toLocaleTimeString()}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`;
+      }
+    } catch (err) {
+      console.error("adapter info refresh failed", err);
+      if (statusEl) {
+        statusEl.textContent = `Last refresh: ${new Date().toLocaleTimeString()} (error)`;
+      }
+    }
+  }
+
+  adapterRow(label, value) {
+    return `<tr><td><strong>${escapeHtml(label)}</strong></td><td>${escapeHtml(value)}</td></tr>`;
+  }
+
+  async loadProjectionPreview(listEl, lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     const gridEl = this.querySelector('[data-role="projection-uml-grid"]');
     const controls = this.querySelector('[data-role="projection-controls"]');
     try {
       const response = await fetch("api/v1/projection/devices?limit=30");
       const payload = await response.json();
+      if (!isActive()) {
+        return false;
+      }
       const items = Array.isArray(payload.items) ? payload.items : [];
       this.projectionDevices = items;
       if (items.length === 0) {
@@ -1211,7 +1488,7 @@ class PortalShell extends HTMLElement {
         if (gridEl) {
           gridEl.innerHTML = `<p class="projection-empty">Projection graph unavailable. No device projections published yet.</p>`;
         }
-        return;
+        return true;
       }
       listEl.innerHTML = items
         .map((item) => {
@@ -1227,14 +1504,20 @@ class PortalShell extends HTMLElement {
       if (controls) {
         controls.classList.remove("disabled");
       }
-      await this.loadAllProjectionPlanes();
+      if (!(await this.loadAllProjectionPlanes(lifecycleToken, lifecycleAbort))) {
+        return false;
+      }
     } catch (err) {
+      if (!isActive()) {
+        return false;
+      }
       listEl.innerHTML = "<li>Projection preview unavailable.</li>";
       if (gridEl) {
         gridEl.innerHTML = `<p class="projection-empty">Projection preview request failed.</p>`;
       }
       console.error("projection preview failed", err);
     }
+    return true;
   }
 
   populateProjectionDeviceOptions() {
@@ -1257,29 +1540,30 @@ class PortalShell extends HTMLElement {
       .join("");
   }
 
-  async loadAllProjectionPlanes() {
+  async loadAllProjectionPlanes(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     const gridEl = this.querySelector('[data-role="projection-uml-grid"]');
     const deviceSelect = this.querySelector('[data-role="projection-device-select"]');
     if (!gridEl || !deviceSelect) {
-      return;
+      return true;
     }
     const addressRaw = String(deviceSelect.value || "").trim();
     if (!addressRaw) {
       gridEl.innerHTML = `<p class="projection-empty">Select a device to view projection planes.</p>`;
-      return;
+      return true;
     }
     const items = Array.isArray(this.projectionDevices) ? this.projectionDevices : [];
     const device = items.find((item) => String(item.address) === addressRaw) || null;
     if (!device) {
       gridEl.innerHTML = `<p class="projection-empty">Device not found.</p>`;
-      return;
+      return true;
     }
     const nonEmpty = Array.isArray(device.projections)
       ? device.projections.filter((p) => (p.edge_count || 0) > 0)
       : [];
     if (nonEmpty.length === 0) {
       gridEl.innerHTML = `<p class="projection-empty">No non-empty projection planes for this device.</p>`;
-      return;
+      return true;
     }
     gridEl.innerHTML = `<p class="projection-empty">Loading ${nonEmpty.length} plane(s)...</p>`;
     try {
@@ -1292,14 +1576,21 @@ class PortalShell extends HTMLElement {
           .catch(() => null);
       });
       const graphs = await Promise.all(fetches);
+      if (!isActive()) {
+        return false;
+      }
       const results = nonEmpty
         .map((p, i) => ({ plane: p.plane, graph: graphs[i] }))
         .filter((r) => r.graph);
       this.renderProjectionUML(gridEl, device, results);
     } catch (err) {
+      if (!isActive()) {
+        return false;
+      }
       gridEl.innerHTML = `<p class="projection-empty">Projection graph request failed.</p>`;
       console.error("projection planes failed", err);
     }
+    return true;
   }
 
   renderProjectionUML(target, device, planeResults) {
@@ -1405,12 +1696,18 @@ class PortalShell extends HTMLElement {
     }
   }
 
-  async initExplorer() {
+  async initExplorer(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     const deviceSelect = this.querySelector('[data-role="explorer-device"]');
-    if (!deviceSelect) return;
+    if (!deviceSelect) {
+      return true;
+    }
     try {
       const res = await fetch("api/v1/registry/devices");
       const payload = await res.json();
+      if (!isActive()) {
+        return false;
+      }
       const devices = Array.isArray(payload.items) ? payload.items : [];
       deviceSelect.innerHTML = '<option value="">Select device...</option>' +
         devices.map((d) => {
@@ -1419,10 +1716,14 @@ class PortalShell extends HTMLElement {
           return `<option value="${escapeHtml(String(d.address))}">${addr} ${name}</option>`;
         }).join("");
     } catch (err) {
+      if (!isActive()) {
+        return false;
+      }
       console.error("explorer: failed to load devices", err);
     }
     const quickDiv = this.querySelector('[data-role="explorer-quick"]');
     if (quickDiv) quickDiv.style.display = "";
+    return true;
   }
 
   async startExplorerScan() {
@@ -1685,6 +1986,7 @@ class PortalShell extends HTMLElement {
             <button data-role="nav-bus" data-nav-target="section-bus" disabled><span class="nav-bullet"></span> Bus</button>
             <button data-role="nav-projection" data-nav-target="section-projection" disabled><span class="nav-bullet"></span> Projection</button>
             <button data-role="nav-explorer" data-nav-target="section-explorer" disabled><span class="nav-bullet"></span> Explorer</button>
+            <button data-role="nav-adapter" data-nav-target="section-adapter" disabled><span class="nav-bullet"></span> Adapter</button>
             <button data-role="nav-timeline" data-nav-target="section-timeline" disabled><span class="nav-bullet"></span> Timeline</button>
             <button data-role="nav-snapshots" data-nav-target="section-snapshots" disabled><span class="nav-bullet"></span> Snapshots</button>
             <button data-role="nav-issue-builder" data-nav-target="section-issue-builder" disabled><span class="nav-bullet"></span> Issue Builder</button>
@@ -1803,6 +2105,26 @@ class PortalShell extends HTMLElement {
                   <span class="muted-inline" data-role="explorer-quick-result"></span>
                 </div>
               </div>
+            </section>
+            <section id="section-adapter" class="registry-preview">
+              <h2>Adapter Hardware Info</h2>
+              <div data-role="adapter-identity" class="adapter-panel">
+                <h3>Identity</h3>
+                <table class="explorer-table">
+                  <tbody data-role="adapter-identity-body">
+                    <tr><td colspan="2">Loading adapter info...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div data-role="adapter-telemetry" class="adapter-panel">
+                <h3>Telemetry</h3>
+                <table class="explorer-table">
+                  <tbody data-role="adapter-telemetry-body">
+                    <tr><td colspan="2">Waiting for telemetry data...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="muted-inline" data-role="adapter-refresh-status">Last refresh: never</div>
             </section>
             <section id="section-search" class="registry-preview">
               <h2>Search Results</h2>

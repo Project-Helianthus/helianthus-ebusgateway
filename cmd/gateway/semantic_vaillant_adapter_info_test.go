@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"expvar"
 	"sync"
 	"testing"
 
@@ -68,8 +69,6 @@ func (s *stubAdapterInfoTransport) callCount(id transport.AdapterInfoID) int {
 }
 
 func TestVaillantAdapterInfoStateRefreshCycleRetriesPartialIdentity(t *testing.T) {
-	t.Parallel()
-
 	raw := &stubAdapterInfoTransport{
 		responses: map[transport.AdapterInfoID][]adapterInfoResponse{
 			transport.AdapterInfoVersion: {
@@ -156,8 +155,6 @@ func TestVaillantAdapterInfoStateRefreshCycleRetriesPartialIdentity(t *testing.T
 }
 
 func TestVaillantAdapterInfoStateRefreshCycleRebootstrapsAfterTransportClose(t *testing.T) {
-	t.Parallel()
-
 	raw := &stubAdapterInfoTransport{
 		responses: map[transport.AdapterInfoID][]adapterInfoResponse{
 			transport.AdapterInfoVersion: {
@@ -249,8 +246,6 @@ func TestVaillantAdapterInfoStateRefreshCycleRebootstrapsAfterTransportClose(t *
 }
 
 func TestVaillantAdapterInfoStateUnsupportedTransportPublishesContract(t *testing.T) {
-	t.Parallel()
-
 	raw := stubRawTransport{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -297,8 +292,6 @@ func TestVaillantAdapterInfoStateUnsupportedTransportPublishesContract(t *testin
 }
 
 func TestVaillantAdapterInfoStateUnsupportedTransitionClearsTelemetry(t *testing.T) {
-	t.Parallel()
-
 	raw := &stubAdapterInfoTransport{
 		responses: map[transport.AdapterInfoID][]adapterInfoResponse{
 			transport.AdapterInfoVersion: {
@@ -456,4 +449,200 @@ func TestVaillantAdapterInfoStateUnsupportedTransitionClearsTelemetry(t *testing
 	if got := raw.callCount(transport.AdapterInfoWiFiRSSI); got != 1 {
 		t.Fatalf("AdapterInfoWiFiRSSI call count = %d; want 1", got)
 	}
+}
+
+func TestVaillantAdapterInfoStateExpvarTelemetryResetsOnUnsupportedAndInvalidation(t *testing.T) {
+	rawUnsupported := &stubAdapterInfoTransport{
+		responses: map[transport.AdapterInfoID][]adapterInfoResponse{
+			transport.AdapterInfoVersion: {
+				{data: []byte{0x31, 0x01, 0x12, 0x34, 0x18, 0x10, 0xAB, 0xCD}},
+				{data: []byte{0x32, 0x00}},
+			},
+			transport.AdapterInfoHardwareID: {
+				{data: []byte{0xDE, 0xAD}},
+			},
+			transport.AdapterInfoHardwareConf: {
+				{data: []byte{0xBE, 0xEF}},
+			},
+			transport.AdapterInfoTemperature: {
+				{data: []byte{0x00, 0x19}},
+			},
+			transport.AdapterInfoSupplyVolt: {
+				{data: []byte{0x09, 0xC4}},
+			},
+			transport.AdapterInfoBusVoltage: {
+				{data: []byte{0x96, 0x82}},
+			},
+			transport.AdapterInfoResetInfo: {
+				{data: []byte{0x04, 0x07}},
+			},
+			transport.AdapterInfoWiFiRSSI: {
+				{data: []byte{0xA6}},
+			},
+		},
+	}
+	ctxUnsupported, cancelUnsupported := context.WithCancel(context.Background())
+	defer cancelUnsupported()
+
+	busUnsupported := protocol.NewBus(rawUnsupported, protocol.DefaultBusConfig(), 0)
+	busUnsupported.Run(ctxUnsupported)
+
+	providerUnsupported := graphql.NewLiveSemanticProvider()
+	stateUnsupported := newVaillantAdapterInfoState(busUnsupported, rawUnsupported, providerUnsupported)
+	if stateUnsupported == nil {
+		t.Fatal("newVaillantAdapterInfoState() returned nil")
+	}
+
+	stateUnsupported.refreshCycle(ctxUnsupported)
+	if got := expvarFloatValue(t, "ebus_adapter_temperature_celsius"); got != 25 {
+		t.Fatalf("temperature expvar before unsupported transition = %v; want 25", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_supply_voltage_millivolts"); got != 2500 {
+		t.Fatalf("supply voltage expvar before unsupported transition = %v; want 2500", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_bus_voltage_max_decivolts"); got != 150 {
+		t.Fatalf("bus voltage max expvar before unsupported transition = %v; want 150", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_restart_count"); got != 7 {
+		t.Fatalf("restart count expvar before unsupported transition = %v; want 7", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_wifi_rssi_dbm"); got != -90 {
+		t.Fatalf("wifi rssi expvar before unsupported transition = %v; want -90", got)
+	}
+
+	stateUnsupported.refreshIdentity(ctxUnsupported)
+	stateUnsupported.publish()
+
+	if got := expvarIntValue(t, "ebus_adapter_info_supported"); got != 0 {
+		t.Fatalf("supported expvar after unsupported transition = %d; want 0", got)
+	}
+	if got := expvarIntValue(t, "ebus_adapter_info_health"); got != 1 {
+		t.Fatalf("health expvar after unsupported transition = %d; want 1", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_temperature_celsius"); got != 0 {
+		t.Fatalf("temperature expvar after unsupported transition = %v; want 0", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_supply_voltage_millivolts"); got != 0 {
+		t.Fatalf("supply voltage expvar after unsupported transition = %v; want 0", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_bus_voltage_max_decivolts"); got != 0 {
+		t.Fatalf("bus voltage max expvar after unsupported transition = %v; want 0", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_bus_voltage_min_decivolts"); got != 0 {
+		t.Fatalf("bus voltage min expvar after unsupported transition = %v; want 0", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_restart_count"); got != 0 {
+		t.Fatalf("restart count expvar after unsupported transition = %v; want 0", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_wifi_rssi_dbm"); got != 0 {
+		t.Fatalf("wifi rssi expvar after unsupported transition = %v; want 0", got)
+	}
+
+	rawInvalidated := &stubAdapterInfoTransport{
+		responses: map[transport.AdapterInfoID][]adapterInfoResponse{
+			transport.AdapterInfoVersion: {
+				{data: []byte{0x31, 0x01, 0x12, 0x34, 0x18, 0x10, 0xAB, 0xCD}},
+				{err: ebuserrors.ErrTransportClosed},
+			},
+			transport.AdapterInfoHardwareID: {
+				{data: []byte{0xAA, 0xAA}},
+			},
+			transport.AdapterInfoHardwareConf: {
+				{data: []byte{0xCC, 0xCC}},
+			},
+			transport.AdapterInfoTemperature: {
+				{data: []byte{0x00, 0x19}},
+				{err: ebuserrors.ErrTransportClosed},
+			},
+			transport.AdapterInfoSupplyVolt: {
+				{data: []byte{0x09, 0xC4}},
+			},
+			transport.AdapterInfoBusVoltage: {
+				{data: []byte{0x96, 0x82}},
+			},
+			transport.AdapterInfoResetInfo: {
+				{data: []byte{0x04, 0x07}},
+			},
+			transport.AdapterInfoWiFiRSSI: {
+				{data: []byte{0xA6}},
+			},
+		},
+	}
+	ctxInvalidated, cancelInvalidated := context.WithCancel(context.Background())
+	defer cancelInvalidated()
+
+	busInvalidated := protocol.NewBus(rawInvalidated, protocol.DefaultBusConfig(), 0)
+	busInvalidated.Run(ctxInvalidated)
+
+	providerInvalidated := graphql.NewLiveSemanticProvider()
+	stateInvalidated := newVaillantAdapterInfoState(busInvalidated, rawInvalidated, providerInvalidated)
+	if stateInvalidated == nil {
+		t.Fatal("newVaillantAdapterInfoState() returned nil")
+	}
+
+	stateInvalidated.refreshCycle(ctxInvalidated)
+	if got := expvarFloatValue(t, "ebus_adapter_temperature_celsius"); got != 25 {
+		t.Fatalf("temperature expvar before invalidation = %v; want 25", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_restart_count"); got != 7 {
+		t.Fatalf("restart count expvar before invalidation = %v; want 7", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_wifi_rssi_dbm"); got != -90 {
+		t.Fatalf("wifi rssi expvar before invalidation = %v; want -90", got)
+	}
+
+	stateInvalidated.refreshCycle(ctxInvalidated)
+
+	if got := expvarIntValue(t, "ebus_adapter_info_supported"); got != 0 {
+		t.Fatalf("supported expvar after invalidation = %d; want 0", got)
+	}
+	if got := expvarIntValue(t, "ebus_adapter_info_health"); got != 0 {
+		t.Fatalf("health expvar after invalidation = %d; want 0", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_temperature_celsius"); got != 0 {
+		t.Fatalf("temperature expvar after invalidation = %v; want 0", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_supply_voltage_millivolts"); got != 0 {
+		t.Fatalf("supply voltage expvar after invalidation = %v; want 0", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_bus_voltage_max_decivolts"); got != 0 {
+		t.Fatalf("bus voltage max expvar after invalidation = %v; want 0", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_bus_voltage_min_decivolts"); got != 0 {
+		t.Fatalf("bus voltage min expvar after invalidation = %v; want 0", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_restart_count"); got != 0 {
+		t.Fatalf("restart count expvar after invalidation = %v; want 0", got)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_wifi_rssi_dbm"); got != 0 {
+		t.Fatalf("wifi rssi expvar after invalidation = %v; want 0", got)
+	}
+}
+
+func expvarIntValue(t *testing.T, name string) int64 {
+	t.Helper()
+
+	variable := expvar.Get(name)
+	if variable == nil {
+		t.Fatalf("expvar %q = nil", name)
+	}
+	counter, ok := variable.(*expvar.Int)
+	if !ok {
+		t.Fatalf("expvar %q type = %T; want *expvar.Int", name, variable)
+	}
+	return counter.Value()
+}
+
+func expvarFloatValue(t *testing.T, name string) float64 {
+	t.Helper()
+
+	variable := expvar.Get(name)
+	if variable == nil {
+		t.Fatalf("expvar %q = nil", name)
+	}
+	counter, ok := variable.(*expvar.Float)
+	if !ok {
+		t.Fatalf("expvar %q type = %T; want *expvar.Float", name, variable)
+	}
+	return counter.Value()
 }

@@ -141,13 +141,16 @@ function explorerDecode(rawHex, rawLen, type) {
 
 class PortalShell extends HTMLElement {
   connectedCallback() {
+    const lifecycleToken = this.beginBootstrapLifecycle();
+    const lifecycleAbort = this.bootstrapLifecycleAbort;
     this.render();
     setTheme(loadTheme());
     this.bindEvents();
-    this.loadStatus();
+    void this.loadStatus(lifecycleToken, lifecycleAbort);
   }
 
   disconnectedCallback() {
+    this.endBootstrapLifecycle();
     if (this.streamSource) {
       this.streamSource.close();
       this.streamSource = undefined;
@@ -188,6 +191,55 @@ class PortalShell extends HTMLElement {
       this._explorerSSE.close();
       this._explorerSSE = undefined;
     }
+  }
+
+  beginBootstrapLifecycle() {
+    if (this.bootstrapLifecycleAbort) {
+      this.bootstrapLifecycleAbort.abort();
+    }
+    this.bootstrapLifecycleAbort = new AbortController();
+    this.bootstrapLifecycleToken = (this.bootstrapLifecycleToken || 0) + 1;
+    return this.bootstrapLifecycleToken;
+  }
+
+  endBootstrapLifecycle() {
+    if (this.bootstrapLifecycleAbort) {
+      this.bootstrapLifecycleAbort.abort();
+      this.bootstrapLifecycleAbort = undefined;
+    }
+    this.bootstrapLifecycleToken = (this.bootstrapLifecycleToken || 0) + 1;
+    this.clearAdapterInfoInterval();
+  }
+
+  isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort) {
+    return (
+      this.isConnected &&
+      this.bootstrapLifecycleToken === lifecycleToken &&
+      this.bootstrapLifecycleAbort === lifecycleAbort &&
+      !lifecycleAbort?.signal?.aborted
+    );
+  }
+
+  clearAdapterInfoInterval() {
+    if (this.adapterInfoInterval) {
+      clearInterval(this.adapterInfoInterval);
+      this.adapterInfoInterval = undefined;
+    }
+  }
+
+  armAdapterInfoInterval(lifecycleToken, lifecycleAbort) {
+    if (!this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort)) {
+      this.clearAdapterInfoInterval();
+      return;
+    }
+    this.clearAdapterInfoInterval();
+    this.adapterInfoInterval = setInterval(() => {
+      if (!this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort)) {
+        this.clearAdapterInfoInterval();
+        return;
+      }
+      void this.refreshAdapterInfo();
+    }, 30000);
   }
 
   bindEvents() {
@@ -299,7 +351,7 @@ class PortalShell extends HTMLElement {
     });
   }
 
-  async loadStatus() {
+  async loadStatus(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
     const statusEl = this.querySelector('[data-role="status"]');
     const metaEl = this.querySelector('[data-role="meta"]');
     const listEl = this.querySelector('[data-role="registry-list"]');
@@ -316,9 +368,10 @@ class PortalShell extends HTMLElement {
     const sessionsList = this.querySelector('[data-role="sessions-list"]');
     const issuePreview = this.querySelector('[data-role="issue-preview"]');
     try {
+      const requestInit = lifecycleAbort ? { signal: lifecycleAbort.signal } : undefined;
       const [healthRes, bootstrapRes] = await Promise.all([
-        fetch("api/v1/health"),
-        fetch("api/v1/bootstrap"),
+        fetch("api/v1/health", requestInit),
+        fetch("api/v1/bootstrap", requestInit),
       ]);
       const health = await healthRes.json();
       const bootstrap = await bootstrapRes.json();
@@ -440,15 +493,19 @@ class PortalShell extends HTMLElement {
         this.initExplorer();
       }
       if (capabilities.semantic) {
-        await this.refreshAdapterInfo();
-        if (this.adapterInfoInterval) {
-          clearInterval(this.adapterInfoInterval);
+        if (!this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort)) {
+          return;
         }
-        this.adapterInfoInterval = setInterval(() => {
-          this.refreshAdapterInfo();
-        }, 30000);
+        await this.refreshAdapterInfo();
+        if (!this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort)) {
+          return;
+        }
+        this.armAdapterInfoInterval(lifecycleToken, lifecycleAbort);
       }
     } catch (err) {
+      if (!this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort)) {
+        return;
+      }
       if (statusEl) {
         statusEl.textContent = "Gateway unavailable";
       }

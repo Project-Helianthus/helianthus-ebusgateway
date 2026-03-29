@@ -63,6 +63,9 @@ func newVaillantAdapterInfoState(bus *protocol.Bus, rawTransport transport.RawTr
 		state.info = info
 	} else if provider != nil {
 		provider.SetAdapterHardwareInfo(&graphql.AdapterHardwareInfo{})
+		adapterInfoSupported.Set(0)
+		adapterInfoHealth.Set(0)
+		state.clearTelemetryLocked()
 	}
 	return state
 }
@@ -119,6 +122,7 @@ func (s *vaillantAdapterInfoState) refreshIdentity(ctx context.Context) {
 	if s.info == nil {
 		adapterInfoSupported.Set(0)
 		adapterInfoHealth.Set(0)
+		s.clearTelemetryLocked()
 		return
 	}
 
@@ -349,6 +353,8 @@ func (s *vaillantAdapterInfoState) shouldRebootstrap(err error) bool {
 
 func (s *vaillantAdapterInfoState) invalidateIdentityLocked() {
 	s.identity = nil
+	adapterInfoSupported.Set(0)
+	adapterInfoHealth.Set(0)
 	s.clearTelemetryLocked()
 	s.lastIdentity = time.Time{}
 }
@@ -365,6 +371,12 @@ func (s *vaillantAdapterInfoState) clearTelemetryLocked() {
 	s.restartCount = nil
 	s.wifiRSSI = nil
 	s.lastTelemetry = time.Time{}
+	adapterTemperatureC.Set(0)
+	adapterSupplyVoltageMV.Set(0)
+	adapterBusVoltageMaxDV.Set(0)
+	adapterBusVoltageMinDV.Set(0)
+	adapterRestartCount.Set(0)
+	adapterWiFiRSSIDBm.Set(0)
 }
 
 func boolToInt64(b bool) int64 {

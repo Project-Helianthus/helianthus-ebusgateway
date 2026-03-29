@@ -26,11 +26,7 @@ function flush() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-test("PortalShell ignores stale bootstrap completions when arming adapter polling", async () => {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const sourcePath = path.resolve(here, "../src/app.js");
-  const source = await readFile(sourcePath, "utf8");
-
+function createPortalShellHarness({ source, sourcePath, elements, fetchImpl }) {
   const intervalCalls = [];
   const clearedIntervals = [];
   const fetchRequests = [];
@@ -81,55 +77,20 @@ test("PortalShell ignores stale bootstrap completions when arming adapter pollin
     URLSearchParams,
     TextDecoder,
   };
+
+  sandbox.fetch = (url, requestInit) => {
+    fetchRequests.push(url);
+    fetchSignals.push(requestInit?.signal ?? null);
+    return fetchImpl(url, requestInit);
+  };
   sandbox.globalThis = sandbox;
+
   vm.createContext(sandbox);
   vm.runInContext(`${source}\n;globalThis.__PortalShell = PortalShell;`, sandbox, {
     filename: pathToFileURL(sourcePath).href,
   });
 
   const PortalShell = sandbox.__PortalShell;
-  const firstHealth = createDeferredResponse({ status: "ok" });
-  const firstBootstrap = createDeferredResponse({
-    capabilities: { semantic: true },
-    endpoints: { graphql: "/graphql" },
-  });
-  const secondHealth = createDeferredResponse({ status: "ok" });
-  const secondBootstrap = createDeferredResponse({
-    capabilities: { semantic: true },
-    endpoints: { graphql: "/graphql" },
-  });
-  const adapterSnapshot = createDeferredResponse({
-    adapter_info: {
-      firmware_version: "0x31",
-      info_supported: true,
-      temperature_c: 25,
-    },
-  });
-  const fetchQueue = [
-    firstHealth.promise,
-    firstBootstrap.promise,
-    secondHealth.promise,
-    secondBootstrap.promise,
-    adapterSnapshot.promise,
-  ];
-  sandbox.fetch = (url, requestInit) => {
-    fetchRequests.push(url);
-    fetchSignals.push(requestInit?.signal ?? null);
-    const next = fetchQueue.shift();
-    if (!next) {
-      throw new Error(`unexpected fetch for ${url}`);
-    }
-    return next;
-  };
-
-  const elements = new Map([
-    ["[data-role=\"status\"]", { textContent: "" }],
-    ["[data-role=\"meta\"]", { textContent: "" }],
-    ["[data-role=\"adapter-identity-body\"]", { innerHTML: "" }],
-    ["[data-role=\"adapter-telemetry-body\"]", { innerHTML: "" }],
-    ["[data-role=\"adapter-refresh-status\"]", { textContent: "" }],
-  ]);
-
   const shell = new PortalShell();
   shell._isConnected = true;
   shell.render = () => {};
@@ -137,38 +98,144 @@ test("PortalShell ignores stale bootstrap completions when arming adapter pollin
   shell.querySelector = (selector) => elements.get(selector) || null;
   shell.querySelectorAll = () => [];
 
+  return {
+    shell,
+    intervalCalls,
+    clearedIntervals,
+    fetchRequests,
+    fetchSignals,
+  };
+}
+
+test("PortalShell ignores stale bootstrap completions when arming bus observability polling", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sourcePath = path.resolve(here, "../src/app.js");
+  const source = await readFile(sourcePath, "utf8");
+
+  const firstHealth = createDeferredResponse({ status: "ok" });
+  const firstBootstrap = createDeferredResponse({
+    capabilities: { bus_observability: true },
+    endpoints: { graphql: "/graphql" },
+  });
+  const firstBusObservability = createDeferredResponse({ status: {} });
+  const secondHealth = createDeferredResponse({ status: "ok" });
+  const secondBootstrap = createDeferredResponse({
+    capabilities: { bus_observability: true },
+    endpoints: { graphql: "/graphql" },
+  });
+  const secondBusObservability = createDeferredResponse({ status: {} });
+  const fetchQueue = [
+    firstHealth.promise,
+    firstBootstrap.promise,
+    firstBusObservability.promise,
+    secondHealth.promise,
+    secondBootstrap.promise,
+    secondBusObservability.promise,
+  ];
+
+  const elements = new Map([
+    ["[data-role=\"status\"]", { textContent: "" }],
+    ["[data-role=\"meta\"]", { textContent: "" }],
+    ["[data-role=\"bus-banner\"]", { className: "", textContent: "" }],
+    ["[data-role=\"bus-observability\"]", { innerHTML: "" }],
+  ]);
+
+  const {
+    shell,
+    intervalCalls,
+    clearedIntervals,
+    fetchRequests,
+    fetchSignals,
+  } = createPortalShellHarness({
+    source,
+    sourcePath,
+    elements,
+    fetchImpl() {
+      const next = fetchQueue.shift();
+      if (!next) {
+        throw new Error("unexpected fetch");
+      }
+      return next;
+    },
+  });
+
   shell.connectedCallback();
-  shell._isConnected = false;
-  shell.disconnectedCallback();
-  assert.equal(fetchSignals[0]?.aborted, true, "first bootstrap signal should be aborted on detach");
-  assert.equal(fetchSignals[1]?.aborted, true, "second bootstrap signal should be aborted on detach");
-
-  shell._isConnected = true;
-  shell.connectedCallback();
-  assert.equal(fetchSignals[2]?.aborted, false, "reconnect should use a fresh, live bootstrap signal");
-  assert.equal(fetchSignals[3]?.aborted, false, "reconnect should use a fresh, live bootstrap signal");
-
-  secondHealth.resolve();
-  secondBootstrap.resolve();
-  adapterSnapshot.resolve();
-  await flush();
-  await flush();
-
-  assert.equal(intervalCalls.length, 1, "expected one adapter polling interval after reconnect");
-  assert.equal(shell.bootstrapLifecycleToken, 3, "reconnect should advance the lifecycle token across disconnect/reconnect");
-
   firstHealth.resolve();
   firstBootstrap.resolve();
   await flush();
+  shell._isConnected = false;
+  shell.disconnectedCallback();
+  assert.equal(fetchSignals[0]?.aborted, true, "first bootstrap health request should abort on detach");
+  assert.equal(fetchSignals[1]?.aborted, true, "first bootstrap bootstrap request should abort on detach");
+
+  shell._isConnected = true;
+  shell.connectedCallback();
+
+  secondHealth.resolve();
+  secondBootstrap.resolve();
+  secondBusObservability.resolve();
+  await flush();
   await flush();
 
-  assert.equal(intervalCalls.length, 1, "stale bootstrap completion must not arm a second interval");
-  assert.equal(clearedIntervals.length, 0, "stale bootstrap completion should not clear the live interval");
+  assert.equal(fetchSignals[3]?.aborted, false, "reconnect should use a fresh health signal");
+  assert.equal(fetchSignals[4]?.aborted, false, "reconnect should use a fresh bootstrap signal");
+
+  const liveHandle = shell.busObservabilityInterval;
+  assert.ok(liveHandle, "expected live bus observability interval after reconnect");
+  assert.equal(intervalCalls.length, 1, "expected one bus observability interval after reconnect");
+  assert.equal(liveHandle.delay, 3000, "bus observability interval should use the 3s poll cadence");
+
+  firstBusObservability.resolve();
+  await flush();
+  await flush();
+
+  assert.equal(shell.busObservabilityInterval, liveHandle, "stale bootstrap completion must not replace the live bus interval");
+  assert.equal(intervalCalls.length, 1, "stale bootstrap completion must not arm a second bus interval");
+  assert.equal(clearedIntervals.length, 0, "stale bootstrap completion must not clear the live bus interval");
   assert.deepEqual(fetchRequests, [
     "api/v1/health",
     "api/v1/bootstrap",
+    "api/v1/bus/observability",
     "api/v1/health",
     "api/v1/bootstrap",
-    "api/v1/semantic/snapshot",
+    "api/v1/bus/observability",
   ]);
+});
+
+test("PortalShell renders unsupported adapter info with an unsupported label", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sourcePath = path.resolve(here, "../src/app.js");
+  const source = await readFile(sourcePath, "utf8");
+
+  const snapshot = createDeferredResponse({
+    adapter_info: {
+      firmware_version: "0x31",
+      info_supported: false,
+      is_wifi: false,
+      is_ethernet: false,
+    },
+  });
+
+  const elements = new Map([
+    ["[data-role=\"adapter-identity-body\"]", { innerHTML: "" }],
+    ["[data-role=\"adapter-telemetry-body\"]", { innerHTML: "" }],
+    ["[data-role=\"adapter-refresh-status\"]", { textContent: "" }],
+  ]);
+
+  const { shell } = createPortalShellHarness({
+    source,
+    sourcePath,
+    elements,
+    fetchImpl() {
+      return snapshot.promise;
+    },
+  });
+
+  const refresh = shell.refreshAdapterInfo();
+  snapshot.resolve();
+  await refresh;
+
+  const identityBody = elements.get("[data-role=\"adapter-identity-body\"]");
+  assert.ok(identityBody.innerHTML.includes("Unsupported/Unknown"), "unsupported adapter info should show an unsupported label");
+  assert.ok(!identityBody.innerHTML.includes("Serial"), "unsupported adapter info must not be labeled as Serial");
 });

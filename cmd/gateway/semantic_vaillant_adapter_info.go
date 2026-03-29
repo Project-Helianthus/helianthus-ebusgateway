@@ -142,8 +142,7 @@ func (s *vaillantAdapterInfoState) refreshIdentity(ctx context.Context) {
 	s.lastIdentity = time.Now()
 
 	if !version.SupportsInfo {
-		s.hwID = ""
-		s.hwConfig = ""
+		s.clearTelemetryLocked()
 		adapterInfoHealth.Set(1)
 		return
 	}
@@ -350,6 +349,11 @@ func (s *vaillantAdapterInfoState) shouldRebootstrap(err error) bool {
 
 func (s *vaillantAdapterInfoState) invalidateIdentityLocked() {
 	s.identity = nil
+	s.clearTelemetryLocked()
+	s.lastIdentity = time.Time{}
+}
+
+func (s *vaillantAdapterInfoState) clearTelemetryLocked() {
 	s.hwID = ""
 	s.hwConfig = ""
 	s.tempC = nil
@@ -360,7 +364,6 @@ func (s *vaillantAdapterInfoState) invalidateIdentityLocked() {
 	s.resetCode = nil
 	s.restartCount = nil
 	s.wifiRSSI = nil
-	s.lastIdentity = time.Time{}
 	s.lastTelemetry = time.Time{}
 }
 

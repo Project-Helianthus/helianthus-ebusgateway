@@ -295,3 +295,165 @@ func TestVaillantAdapterInfoStateUnsupportedTransportPublishesContract(t *testin
 		t.Fatal("InfoSupported after refreshCycle = true; want false for unsupported transport")
 	}
 }
+
+func TestVaillantAdapterInfoStateUnsupportedTransitionClearsTelemetry(t *testing.T) {
+	t.Parallel()
+
+	raw := &stubAdapterInfoTransport{
+		responses: map[transport.AdapterInfoID][]adapterInfoResponse{
+			transport.AdapterInfoVersion: {
+				{data: []byte{0x31, 0x01, 0x12, 0x34, 0x18, 0x10, 0xAB, 0xCD}},
+				{data: []byte{0x32, 0x00}},
+			},
+			transport.AdapterInfoHardwareID: {
+				{data: []byte{0xDE, 0xAD}},
+			},
+			transport.AdapterInfoHardwareConf: {
+				{data: []byte{0xBE, 0xEF}},
+			},
+			transport.AdapterInfoTemperature: {
+				{data: []byte{0x00, 0x19}},
+			},
+			transport.AdapterInfoSupplyVolt: {
+				{data: []byte{0x09, 0xC4}},
+			},
+			transport.AdapterInfoBusVoltage: {
+				{data: []byte{0x96, 0x82}},
+			},
+			transport.AdapterInfoResetInfo: {
+				{data: []byte{0x04, 0x07}},
+			},
+			transport.AdapterInfoWiFiRSSI: {
+				{data: []byte{0xA6}},
+			},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bus := protocol.NewBus(raw, protocol.DefaultBusConfig(), 0)
+	bus.Run(ctx)
+
+	provider := graphql.NewLiveSemanticProvider()
+	state := newVaillantAdapterInfoState(bus, raw, provider)
+	if state == nil {
+		t.Fatal("newVaillantAdapterInfoState() returned nil")
+	}
+
+	state.refreshCycle(ctx)
+
+	info := provider.AdapterHardwareInfo()
+	if info == nil {
+		t.Fatal("AdapterHardwareInfo() after supported refresh = nil")
+	}
+	if !info.InfoSupported {
+		t.Fatal("InfoSupported after supported refresh = false; want true")
+	}
+	if got := info.HardwareID; got != "dead" {
+		t.Fatalf("HardwareID after supported refresh = %q; want dead", got)
+	}
+	if got := info.HardwareConfig; got != "beef" {
+		t.Fatalf("HardwareConfig after supported refresh = %q; want beef", got)
+	}
+	if info.TemperatureC == nil || *info.TemperatureC != 25 {
+		t.Fatalf("TemperatureC after supported refresh = %v; want 25", info.TemperatureC)
+	}
+	if info.SupplyVoltageMV == nil || *info.SupplyVoltageMV != 2500 {
+		t.Fatalf("SupplyVoltageMV after supported refresh = %v; want 2500", info.SupplyVoltageMV)
+	}
+	if info.BusVoltageMaxDV == nil || *info.BusVoltageMaxDV != 150 {
+		t.Fatalf("BusVoltageMaxDV after supported refresh = %v; want 150", info.BusVoltageMaxDV)
+	}
+	if info.BusVoltageMinDV == nil || *info.BusVoltageMinDV != 130 {
+		t.Fatalf("BusVoltageMinDV after supported refresh = %v; want 130", info.BusVoltageMinDV)
+	}
+	if info.ResetCause == nil || *info.ResetCause != "clear" {
+		t.Fatalf("ResetCause after supported refresh = %v; want clear", info.ResetCause)
+	}
+	if info.ResetCauseCode == nil || *info.ResetCauseCode != 0x04 {
+		t.Fatalf("ResetCauseCode after supported refresh = %v; want 0x04", info.ResetCauseCode)
+	}
+	if info.RestartCount == nil || *info.RestartCount != 0x07 {
+		t.Fatalf("RestartCount after supported refresh = %v; want 0x07", info.RestartCount)
+	}
+	if info.WiFiRSSIDBm == nil || *info.WiFiRSSIDBm != -90 {
+		t.Fatalf("WiFiRSSIDBm after supported refresh = %v; want -90", info.WiFiRSSIDBm)
+	}
+	if info.LastTelemetryQuery == nil {
+		t.Fatal("LastTelemetryQuery after supported refresh = nil; want timestamp")
+	}
+
+	state.refreshIdentity(ctx)
+	state.publish()
+
+	info = provider.AdapterHardwareInfo()
+	if info == nil {
+		t.Fatal("AdapterHardwareInfo() after unsupported refresh = nil")
+	}
+	if info.InfoSupported {
+		t.Fatal("InfoSupported after unsupported refresh = true; want false")
+	}
+	if got := info.FirmwareVersion; got != "0x32" {
+		t.Fatalf("FirmwareVersion after unsupported refresh = %q; want 0x32", got)
+	}
+	if got := info.HardwareID; got != "" {
+		t.Fatalf("HardwareID after unsupported refresh = %q; want empty", got)
+	}
+	if got := info.HardwareConfig; got != "" {
+		t.Fatalf("HardwareConfig after unsupported refresh = %q; want empty", got)
+	}
+	if info.TemperatureC != nil {
+		t.Fatalf("TemperatureC after unsupported refresh = %v; want nil", info.TemperatureC)
+	}
+	if info.SupplyVoltageMV != nil {
+		t.Fatalf("SupplyVoltageMV after unsupported refresh = %v; want nil", info.SupplyVoltageMV)
+	}
+	if info.BusVoltageMaxDV != nil {
+		t.Fatalf("BusVoltageMaxDV after unsupported refresh = %v; want nil", info.BusVoltageMaxDV)
+	}
+	if info.BusVoltageMinDV != nil {
+		t.Fatalf("BusVoltageMinDV after unsupported refresh = %v; want nil", info.BusVoltageMinDV)
+	}
+	if info.ResetCause != nil {
+		t.Fatalf("ResetCause after unsupported refresh = %v; want nil", info.ResetCause)
+	}
+	if info.ResetCauseCode != nil {
+		t.Fatalf("ResetCauseCode after unsupported refresh = %v; want nil", info.ResetCauseCode)
+	}
+	if info.RestartCount != nil {
+		t.Fatalf("RestartCount after unsupported refresh = %v; want nil", info.RestartCount)
+	}
+	if info.WiFiRSSIDBm != nil {
+		t.Fatalf("WiFiRSSIDBm after unsupported refresh = %v; want nil", info.WiFiRSSIDBm)
+	}
+	if info.LastTelemetryQuery != nil {
+		t.Fatalf("LastTelemetryQuery after unsupported refresh = %v; want nil", info.LastTelemetryQuery)
+	}
+	if info.LastIdentityQuery == nil {
+		t.Fatal("LastIdentityQuery after unsupported refresh = nil; want timestamp")
+	}
+	if got := raw.callCount(transport.AdapterInfoVersion); got != 2 {
+		t.Fatalf("AdapterInfoVersion call count = %d; want 2", got)
+	}
+	if got := raw.callCount(transport.AdapterInfoHardwareID); got != 1 {
+		t.Fatalf("AdapterInfoHardwareID call count = %d; want 1", got)
+	}
+	if got := raw.callCount(transport.AdapterInfoHardwareConf); got != 1 {
+		t.Fatalf("AdapterInfoHardwareConf call count = %d; want 1", got)
+	}
+	if got := raw.callCount(transport.AdapterInfoTemperature); got != 1 {
+		t.Fatalf("AdapterInfoTemperature call count = %d; want 1", got)
+	}
+	if got := raw.callCount(transport.AdapterInfoSupplyVolt); got != 1 {
+		t.Fatalf("AdapterInfoSupplyVolt call count = %d; want 1", got)
+	}
+	if got := raw.callCount(transport.AdapterInfoBusVoltage); got != 1 {
+		t.Fatalf("AdapterInfoBusVoltage call count = %d; want 1", got)
+	}
+	if got := raw.callCount(transport.AdapterInfoResetInfo); got != 1 {
+		t.Fatalf("AdapterInfoResetInfo call count = %d; want 1", got)
+	}
+	if got := raw.callCount(transport.AdapterInfoWiFiRSSI); got != 1 {
+		t.Fatalf("AdapterInfoWiFiRSSI call count = %d; want 1", got)
+	}
+}

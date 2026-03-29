@@ -161,6 +161,10 @@ class PortalShell extends HTMLElement {
       clearTimeout(this.timelineTimer);
       this.timelineTimer = undefined;
     }
+    if (this.adapterInfoInterval) {
+      clearInterval(this.adapterInfoInterval);
+      this.adapterInfoInterval = undefined;
+    }
     if (this.provenanceInterval) {
       clearInterval(this.provenanceInterval);
       this.provenanceInterval = undefined;

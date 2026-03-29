@@ -270,6 +270,7 @@ type vaillantSemanticPoller struct {
 	adapterInfo    *vaillantAdapterInfoState
 	startupBarrier <-chan struct{}
 
+	systemConfigWriteFn    func(ctx context.Context, fieldName, rawValue string) graphql.ConfigMutationResult
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	b524ProbeFn            func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
 	sendFrameFn            func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error)
@@ -2995,6 +2996,12 @@ const (
 	systemRegHcEmergencyTemperature       = uint16(0x0026)
 	systemRegHwcMaxFlowTempDesired        = uint16(0x0046)
 	systemRegMaxRoomHumidity              = uint16(0x000E)
+	systemRegMaintenanceDate              = uint16(0x002C)
+	systemRegInstallerName1               = uint16(0x006C)
+	systemRegInstallerName2               = uint16(0x006D)
+	systemRegInstallerPhone1              = uint16(0x006F)
+	systemRegInstallerPhone2              = uint16(0x0070)
+	systemRegInstallerMenuCode            = uint16(0x0076)
 
 	// System properties registers (GG=0x00, II=0x00).
 	systemRegSystemScheme            = uint16(0x0036)
@@ -3012,6 +3019,7 @@ const (
 	boilerB509RegFlowTemperature       = uint16(0x1800)
 	boilerB509RegFanHours              = uint16(0x1B00)
 	boilerB509RegDeactivationsIFC      = uint16(0x1F00)
+	boilerB509RegHoursTillService      = uint16(0x2004)
 	boilerB509RegDeactivationsLimit    = uint16(0x2000)
 	boilerB509RegDhwHours              = uint16(0x2200)
 	boilerB509RegDhwStarts             = uint16(0x2300)
@@ -3021,11 +3029,13 @@ const (
 	boilerB509RegModulationPct         = uint16(0x2E00)
 	boilerB509RegFlowTempDesiredC      = uint16(0x3900)
 	boilerB509RegExternalPumpActive    = uint16(0x3F00)
+	boilerB509RegInstallerMenuCode     = uint16(0x4904)
 	boilerB509RegCentralHeatingPump    = uint16(0x4400)
 	boilerB509RegDiverterValvePosition = uint16(0x5400)
 	boilerB509RegDhwWaterFlowLpm       = uint16(0x5500)
 	boilerB509RegDhwDemandActive       = uint16(0x5800)
 	boilerB509RegCirculationPumpActive = uint16(0x7B00)
+	boilerB509RegPhoneNumber           = uint16(0x8104)
 	boilerB509RegFanSpeedRpm           = uint16(0x8300)
 	boilerB509RegStorageLoadPumpPct    = uint16(0x9E00)
 	boilerB509RegIonisationVoltageUa   = uint16(0xA400)
@@ -3096,6 +3106,12 @@ type vaillantSystemSnapshot struct {
 	HcEmergencyTemperature       *float64
 	HwcMaxFlowTempDesired        *float64
 	MaxRoomHumidity              *uint16
+	MaintenanceDate              *string
+	InstallerName1               *string
+	InstallerName2               *string
+	InstallerPhone1              *string
+	InstallerPhone2              *string
+	InstallerMenuCode            *uint16
 
 	// Properties
 	SystemScheme            *uint16
@@ -3581,6 +3597,32 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 		updated = true
 	}
 
+	// Installer/maintenance config (slow-config reads).
+	if value, ok := p.readB524DateHDA3(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegMaintenanceDate); ok {
+		snapshot.MaintenanceDate = &value
+		updated = true
+	}
+	if value, ok := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerName1); ok {
+		snapshot.InstallerName1 = &value
+		updated = true
+	}
+	if value, ok := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerName2); ok {
+		snapshot.InstallerName2 = &value
+		updated = true
+	}
+	if value, ok := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerPhone1); ok {
+		snapshot.InstallerPhone1 = &value
+		updated = true
+	}
+	if value, ok := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerPhone2); ok {
+		snapshot.InstallerPhone2 = &value
+		updated = true
+	}
+	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerMenuCode); ok && raw != nil {
+		snapshot.InstallerMenuCode = cloneUint16Ptr(raw)
+		updated = true
+	}
+
 	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegSystemScheme); ok && raw != nil {
 		snapshot.SystemScheme = cloneUint16Ptr(raw)
 		updated = true
@@ -3819,6 +3861,12 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 			HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
 			HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
 			MaxRoomHumidity:              uint16ToIntPtr(snapshot.MaxRoomHumidity),
+			MaintenanceDate:              cloneStringPtr(snapshot.MaintenanceDate),
+			InstallerName1:               cloneStringPtr(snapshot.InstallerName1),
+			InstallerName2:               cloneStringPtr(snapshot.InstallerName2),
+			InstallerPhone1:              cloneStringPtr(snapshot.InstallerPhone1),
+			InstallerPhone2:              cloneStringPtr(snapshot.InstallerPhone2),
+			InstallerMenuCode:            uint16ToIntPtr(snapshot.InstallerMenuCode),
 		},
 		Properties: graphql.SystemProperties{
 			SystemScheme:            uint16ToIntPtr(snapshot.SystemScheme),
@@ -4354,6 +4402,29 @@ func mergeSystemSnapshotNonDestructive(existing, incoming *vaillantSystemSnapsho
 	if incoming.MaxRoomHumidity != nil {
 		merged.MaxRoomHumidity = cloneUint16Ptr(incoming.MaxRoomHumidity)
 	}
+	if incoming.MaintenanceDate != nil {
+		v := *incoming.MaintenanceDate
+		merged.MaintenanceDate = &v
+	}
+	if incoming.InstallerName1 != nil {
+		v := *incoming.InstallerName1
+		merged.InstallerName1 = &v
+	}
+	if incoming.InstallerName2 != nil {
+		v := *incoming.InstallerName2
+		merged.InstallerName2 = &v
+	}
+	if incoming.InstallerPhone1 != nil {
+		v := *incoming.InstallerPhone1
+		merged.InstallerPhone1 = &v
+	}
+	if incoming.InstallerPhone2 != nil {
+		v := *incoming.InstallerPhone2
+		merged.InstallerPhone2 = &v
+	}
+	if incoming.InstallerMenuCode != nil {
+		merged.InstallerMenuCode = cloneUint16Ptr(incoming.InstallerMenuCode)
+	}
 	if incoming.SystemScheme != nil {
 		merged.SystemScheme = cloneUint16Ptr(incoming.SystemScheme)
 	}
@@ -4383,10 +4454,17 @@ func cloneSystemSnapshot(snapshot *vaillantSystemSnapshot) *vaillantSystemSnapsh
 		HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
 		HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
 		MaxRoomHumidity:              cloneUint16Ptr(snapshot.MaxRoomHumidity),
+		MaintenanceDate:              cloneStringPtr(snapshot.MaintenanceDate),
+		InstallerName1:               cloneStringPtr(snapshot.InstallerName1),
+		InstallerName2:               cloneStringPtr(snapshot.InstallerName2),
+		InstallerPhone1:              cloneStringPtr(snapshot.InstallerPhone1),
+		InstallerPhone2:              cloneStringPtr(snapshot.InstallerPhone2),
+		InstallerMenuCode:            cloneUint16Ptr(snapshot.InstallerMenuCode),
 		SystemScheme:                 cloneUint16Ptr(snapshot.SystemScheme),
 		ModuleConfigurationVR71:      cloneUint16Ptr(snapshot.ModuleConfigurationVR71),
 	}
 }
+
 
 func uint16ToIntPtr(value *uint16) *int {
 	if value == nil {
@@ -4461,6 +4539,12 @@ func systemStatusEquals(a, b *graphql.SystemStatus) bool {
 		floatPtrEquals(a.Config.HcEmergencyTemperature, b.Config.HcEmergencyTemperature) &&
 		floatPtrEquals(a.Config.HwcMaxFlowTempDesired, b.Config.HwcMaxFlowTempDesired) &&
 		intPtrEquals(a.Config.MaxRoomHumidity, b.Config.MaxRoomHumidity) &&
+		stringPtrEquals(a.Config.MaintenanceDate, b.Config.MaintenanceDate) &&
+		stringPtrEquals(a.Config.InstallerName1, b.Config.InstallerName1) &&
+		stringPtrEquals(a.Config.InstallerName2, b.Config.InstallerName2) &&
+		stringPtrEquals(a.Config.InstallerPhone1, b.Config.InstallerPhone1) &&
+		stringPtrEquals(a.Config.InstallerPhone2, b.Config.InstallerPhone2) &&
+		intPtrEquals(a.Config.InstallerMenuCode, b.Config.InstallerMenuCode) &&
 		intPtrEquals(a.Properties.SystemScheme, b.Properties.SystemScheme) &&
 		intPtrEquals(a.Properties.ModuleConfigurationVR71, b.Properties.ModuleConfigurationVR71)
 }
@@ -5426,6 +5510,52 @@ var boilerConfigFieldSpecs = map[string]boilerConfigFieldSpec{
 	"partloadHwcKW":  {addrs: []uint16{boilerB509RegPartloadHwcKW}, min: 0, max: 40, codec: boilerConfigCodecUCH},
 }
 
+func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName string, rawValue string) graphql.ConfigMutationResult {
+	if p == nil || p.systemConfigWriteFn == nil {
+		return graphql.ConfigMutationResult{Success: false, Error: "system config writer unavailable"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	result := p.systemConfigWriteFn(ctx, fieldName, rawValue)
+	if !result.Success {
+		return result
+	}
+
+	p.mu.Lock()
+	p.system = systemSnapshotWithConfigValue(p.system, fieldName, rawValue)
+	p.mu.Unlock()
+
+	p.publishSystem(semanticSnapshotSourceLive)
+	return result
+}
+
+func systemSnapshotWithConfigValue(existing *vaillantSystemSnapshot, fieldName, rawValue string) *vaillantSystemSnapshot {
+	snapshot := cloneSystemSnapshot(existing)
+	if snapshot == nil {
+		snapshot = &vaillantSystemSnapshot{}
+	}
+	switch fieldName {
+	case "maintenanceDate":
+		snapshot.MaintenanceDate = &rawValue
+	case "installerName1":
+		snapshot.InstallerName1 = &rawValue
+	case "installerName2":
+		snapshot.InstallerName2 = &rawValue
+	case "installerPhone1":
+		snapshot.InstallerPhone1 = &rawValue
+	case "installerPhone2":
+		snapshot.InstallerPhone2 = &rawValue
+	case "installerMenuCode":
+		if v, err := strconv.Atoi(rawValue); err == nil {
+			u := uint16(v)
+			snapshot.InstallerMenuCode = &u
+		}
+	}
+	return snapshot
+}
+
 func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName string, rawValue string) graphql.BoilerConfigMutationResult {
 	if p == nil {
 		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler config writer unavailable"}
@@ -6206,6 +6336,36 @@ func (p *vaillantSemanticPoller) readB524CString(ctx context.Context, opcode, gr
 		}
 	}
 	return string(trimmed), true
+}
+
+func (p *vaillantSemanticPoller) readB524CStringSanitized(ctx context.Context, opcode, group, instance byte, addr uint16) (string, bool) {
+	value, ok := p.readB524CString(ctx, opcode, group, instance, addr)
+	if !ok {
+		return "", false
+	}
+	sanitized := make([]byte, len(value))
+	for i := 0; i < len(value); i++ {
+		if value[i] > 0x7F {
+			sanitized[i] = '?'
+		} else {
+			sanitized[i] = value[i]
+		}
+	}
+	return string(sanitized), true
+}
+
+func (p *vaillantSemanticPoller) readB524DateHDA3(ctx context.Context, opcode, group, instance byte, addr uint16) (string, bool) {
+	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
+	if !ok || len(raw) < 3 {
+		return "", false
+	}
+	day, month, yearOffset := int(raw[0]), int(raw[1]), int(raw[2])
+	if day < 1 || day > 31 || month < 1 || month > 12 || yearOffset > 99 {
+		return "", false
+	}
+	year := 2000 + yearOffset
+	iso := fmt.Sprintf("%04d-%02d-%02d", year, month, day)
+	return iso, true
 }
 
 func (p *vaillantSemanticPoller) readB524ZoneNamePart(ctx context.Context, instance byte, addr uint16) (string, bool) {
@@ -7054,6 +7214,12 @@ func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {
 			HcEmergencyTemperature:       cloneFloatPtr(status.Config.HcEmergencyTemperature),
 			HwcMaxFlowTempDesired:        cloneFloatPtr(status.Config.HwcMaxFlowTempDesired),
 			MaxRoomHumidity:              cloneIntPtr(status.Config.MaxRoomHumidity),
+			MaintenanceDate:              cloneStringPtr(status.Config.MaintenanceDate),
+			InstallerName1:               cloneStringPtr(status.Config.InstallerName1),
+			InstallerName2:               cloneStringPtr(status.Config.InstallerName2),
+			InstallerPhone1:              cloneStringPtr(status.Config.InstallerPhone1),
+			InstallerPhone2:              cloneStringPtr(status.Config.InstallerPhone2),
+			InstallerMenuCode:            cloneIntPtr(status.Config.InstallerMenuCode),
 		},
 		Properties: &mcp.SystemProperties{
 			SystemScheme:            cloneIntPtr(status.Properties.SystemScheme),

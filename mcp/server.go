@@ -151,11 +151,14 @@ type BoilerState struct {
 }
 
 type BoilerConfig struct {
-	DhwOperatingMode *string  `json:"dhw_operating_mode,omitempty"`
-	FlowsetHcMaxC    *float64 `json:"flowset_hc_max_c,omitempty"`
-	FlowsetHwcMaxC   *float64 `json:"flowset_hwc_max_c,omitempty"`
-	PartloadHcKW     *float64 `json:"partload_hc_kw,omitempty"`
-	PartloadHwcKW    *float64 `json:"partload_hwc_kw,omitempty"`
+	DhwOperatingMode  *string  `json:"dhw_operating_mode,omitempty"`
+	FlowsetHcMaxC     *float64 `json:"flowset_hc_max_c,omitempty"`
+	FlowsetHwcMaxC    *float64 `json:"flowset_hwc_max_c,omitempty"`
+	PartloadHcKW      *float64 `json:"partload_hc_kw,omitempty"`
+	PartloadHwcKW     *float64 `json:"partload_hwc_kw,omitempty"`
+	InstallerMenuCode *int     `json:"installer_menu_code,omitempty"`
+	PhoneNumber       *string  `json:"phone_number,omitempty"`
+	HoursTillService  *int     `json:"hours_till_service,omitempty"`
 }
 
 type BoilerDiagnostics struct {
@@ -196,6 +199,12 @@ type SystemConfig struct {
 	HcEmergencyTemperature       *float64 `json:"hc_emergency_temperature,omitempty"`
 	HwcMaxFlowTempDesired        *float64 `json:"hwc_max_flow_temp_desired,omitempty"`
 	MaxRoomHumidity              *int     `json:"max_room_humidity,omitempty"`
+	MaintenanceDate              *string  `json:"maintenance_date,omitempty"`
+	InstallerName1               *string  `json:"installer_name_1,omitempty"`
+	InstallerName2               *string  `json:"installer_name_2,omitempty"`
+	InstallerPhone1              *string  `json:"installer_phone_1,omitempty"`
+	InstallerPhone2              *string  `json:"installer_phone_2,omitempty"`
+	InstallerMenuCode            *int     `json:"installer_menu_code,omitempty"`
 }
 
 type SystemProperties struct {
@@ -352,6 +361,16 @@ type ScheduleWriter interface {
 	SetDhwTimeProgram(ctx context.Context, weekday int, slots []TimeProgramSlot) (*TimeProgramWriteResult, error)
 }
 
+type ConfigSetResult struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+type ConfigWriter interface {
+	SetSystemConfig(ctx context.Context, field string, value string) ConfigSetResult
+	SetBoilerConfig(ctx context.Context, field string, value string) ConfigSetResult
+}
+
 type AdapterHardwareInfo struct {
 	FirmwareVersion    string   `json:"firmware_version"`
 	FirmwareChecksum   string   `json:"firmware_checksum"`
@@ -401,6 +420,7 @@ type Server struct {
 	watch          WatchSummaryProvider
 	semantic       SemanticProvider
 	scheduleWriter ScheduleWriter
+	configWriter   ConfigWriter
 	idempotencyMu  sync.Mutex
 	idempotency    map[string]idempotencyEntry
 	snapshotMu     sync.RWMutex
@@ -428,6 +448,8 @@ const (
 	toolSemanticSchedulesGetName     = "ebus.v1.semantic.schedules.get"
 	toolSemanticSchedulesSetZoneName = "ebus.v1.semantic.schedules.set_zone_time_program"
 	toolSemanticSchedulesSetDhwName  = "ebus.v1.semantic.schedules.set_dhw_time_program"
+	toolSemanticSystemSetConfigName  = "ebus.v1.semantic.system.set_config"
+	toolSemanticBoilerSetConfigName  = "ebus.v1.semantic.boiler_status.set_config"
 	toolSemanticAdapterInfoGetName   = "ebus.v1.semantic.adapter_info.get"
 	toolSemanticSnapshotName         = "ebus.v1.semantic.snapshot.get"
 	toolSnapshotCaptureName          = "ebus.v1.snapshot.capture"
@@ -850,6 +872,32 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			},
 		},
 		{
+			Name:        toolSemanticSystemSetConfigName,
+			Description: "Write a system configuration field (B524 controller). Accepts camelCase field names matching GraphQL mutation fields.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"field": map[string]any{"type": "string", "description": "camelCase field name (e.g. installerName1, maintenanceDate, installerMenuCode)"},
+					"value": map[string]any{"type": "string", "description": "Value to write (string representation)"},
+				},
+				"required":             []string{"field", "value"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolSemanticBoilerSetConfigName,
+			Description: "Write a boiler configuration field (B509 BAI00). Accepts camelCase field names matching GraphQL mutation fields.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"field": map[string]any{"type": "string", "description": "camelCase field name (e.g. installerMenuCode, phoneNumber)"},
+					"value": map[string]any{"type": "string", "description": "Value to write (string representation)"},
+				},
+				"required":             []string{"field", "value"},
+				"additionalProperties": false,
+			},
+		},
+		{
 			Name:        toolSemanticSnapshotName,
 			Description: "Get a consistent semantic snapshot across selected semantic planes.",
 			InputSchema: map[string]any{
@@ -1091,6 +1139,13 @@ func (s *Server) SetScheduleWriter(writer ScheduleWriter) {
 	s.scheduleWriter = writer
 }
 
+func (s *Server) SetConfigWriter(writer ConfigWriter) {
+	if s == nil || writer == nil {
+		return
+	}
+	s.configWriter = writer
+}
+
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(s.ServeHTTP)
 }
@@ -1320,6 +1375,28 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotSchedules(snapshot), nil, consistency)), false), nil
+	case toolSemanticSystemSetConfigName:
+		if s.configWriter == nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, fmt.Errorf("system config writer not available"))), true), nil
+		}
+		field, _ := call.Arguments["field"].(string)
+		value, _ := call.Arguments["value"].(string)
+		if field == "" {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, fmt.Errorf("field is required"))), true), nil
+		}
+		result := s.configWriter.SetSystemConfig(ctx, field, value)
+		return callToolResultText(mustJSON(newToolEnvelope(result, nil)), !result.Success), nil
+	case toolSemanticBoilerSetConfigName:
+		if s.configWriter == nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, fmt.Errorf("boiler config writer not available"))), true), nil
+		}
+		field, _ := call.Arguments["field"].(string)
+		value, _ := call.Arguments["value"].(string)
+		if field == "" {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, fmt.Errorf("field is required"))), true), nil
+		}
+		result := s.configWriter.SetBoilerConfig(ctx, field, value)
+		return callToolResultText(mustJSON(newToolEnvelope(result, nil)), !result.Success), nil
 	case toolSemanticSchedulesSetZoneName:
 		if s.scheduleWriter == nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, fmt.Errorf("schedule writer not available"))), true), nil
@@ -2860,6 +2937,9 @@ func cloneMCPBoilerStatus(status *BoilerStatus) *BoilerStatus {
 		c.FlowsetHwcMaxC = cloneFloatPointer(c.FlowsetHwcMaxC)
 		c.PartloadHcKW = cloneFloatPointer(c.PartloadHcKW)
 		c.PartloadHwcKW = cloneFloatPointer(c.PartloadHwcKW)
+		c.InstallerMenuCode = cloneIntPointer(c.InstallerMenuCode)
+		c.PhoneNumber = cloneStringPointer(c.PhoneNumber)
+		c.HoursTillService = cloneIntPointer(c.HoursTillService)
 		cp.Config = &c
 	}
 	if cp.Diagnostics != nil {
@@ -3049,6 +3129,30 @@ func cloneMCPSystemStatus(status *SystemStatus) *SystemStatus {
 		if config.MaxRoomHumidity != nil {
 			v := *config.MaxRoomHumidity
 			config.MaxRoomHumidity = &v
+		}
+		if config.MaintenanceDate != nil {
+			v := *config.MaintenanceDate
+			config.MaintenanceDate = &v
+		}
+		if config.InstallerName1 != nil {
+			v := *config.InstallerName1
+			config.InstallerName1 = &v
+		}
+		if config.InstallerName2 != nil {
+			v := *config.InstallerName2
+			config.InstallerName2 = &v
+		}
+		if config.InstallerPhone1 != nil {
+			v := *config.InstallerPhone1
+			config.InstallerPhone1 = &v
+		}
+		if config.InstallerPhone2 != nil {
+			v := *config.InstallerPhone2
+			config.InstallerPhone2 = &v
+		}
+		if config.InstallerMenuCode != nil {
+			v := *config.InstallerMenuCode
+			config.InstallerMenuCode = &v
 		}
 		cp.Config = &config
 	}

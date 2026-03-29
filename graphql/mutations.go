@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
@@ -54,6 +56,10 @@ type BoilerConfigWriter interface {
 	SetBoilerConfig(ctx context.Context, fieldName string, rawValue string) BoilerConfigMutationResult
 }
 
+type SystemConfigWriter interface {
+	SetSystemConfig(ctx context.Context, fieldName string, rawValue string) ConfigMutationResult
+}
+
 type ScheduleWriter interface {
 	SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error)
 	SetDhwTimeProgram(ctx context.Context, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error)
@@ -67,10 +73,12 @@ type ConfigMutationResult struct {
 type configValueType int
 
 const (
-	configValueFloat32 configValueType = iota
+	configValueFloat32  configValueType = iota
 	configValueUint16
 	configValueBoolU8
 	configValueEnumU16
+	configValueCString
+	configValueDateHDA3
 )
 
 type configFieldSpec struct {
@@ -79,6 +87,7 @@ type configFieldSpec struct {
 	valueType configValueType
 	min       float64
 	max       float64
+	maxLen    int
 	enum      map[string]uint16
 }
 
@@ -116,6 +125,12 @@ var systemConfigFieldSpecs = map[string]configFieldSpec{
 	"hcBivalencePointC":    {group: 0x00, addr: 0x0023, valueType: configValueFloat32, min: -20.0, max: 30.0},
 	"hcEmergencyTempC":     {group: 0x00, addr: 0x0026, valueType: configValueFloat32, min: 20.0, max: 80.0},
 	"hwcMaxFlowTempC":      {group: 0x00, addr: 0x0046, valueType: configValueFloat32, min: 15.0, max: 80.0},
+	"maintenanceDate":      {group: 0x00, addr: 0x002C, valueType: configValueDateHDA3},
+	"installerName1":       {group: 0x00, addr: 0x006C, valueType: configValueCString, maxLen: 6},
+	"installerName2":       {group: 0x00, addr: 0x006D, valueType: configValueCString, maxLen: 6},
+	"installerPhone1":      {group: 0x00, addr: 0x006F, valueType: configValueCString, maxLen: 6},
+	"installerPhone2":      {group: 0x00, addr: 0x0070, valueType: configValueCString, maxLen: 6},
+	"installerMenuCode":    {group: 0x00, addr: 0x0076, valueType: configValueUint16, min: 0, max: 999},
 }
 
 type paramSchemaProvider interface {
@@ -137,7 +152,7 @@ func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *
 
 	var mutationType *graphqlgo.Object
 	if registry != nil && invoker != nil {
-		mutationType = buildMutationType(registry, invoker, builder.boilerConfigWriter(), builder.scheduleWriter())
+		mutationType = buildMutationType(registry, invoker, builder.boilerConfigWriter(), builder.systemConfigWriter(), builder.scheduleWriter())
 	}
 
 	var subscriptionType *graphqlgo.Object
@@ -168,7 +183,7 @@ func NewInvokeHandler(builder *Builder, registry InvokeRegistry, invoker Invoker
 	}), nil
 }
 
-func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, scheduleWriter ScheduleWriter) *graphqlgo.Object {
+func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, systemWriter SystemConfigWriter, scheduleWriter ScheduleWriter) *graphqlgo.Object {
 	jsonScalar := jsonScalarType()
 	errorType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "InvokeError",
@@ -431,7 +446,7 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return setSystemConfigResolve(params, registry, invoker), nil
+					return setSystemConfigResolve(params, registry, invoker, systemWriter), nil
 				},
 			},
 			"setZoneConfig": &graphqlgo.Field{
@@ -491,9 +506,16 @@ func setCircuitConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegi
 	return applyConfigMutation(params.Context, registry, invoker, spec, instance, fieldValue)
 }
 
-func setSystemConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker) ConfigMutationResult {
+func setSystemConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, systemWriter SystemConfigWriter) ConfigMutationResult {
 	fieldName, _ := params.Args["field"].(string)
 	fieldValue, _ := params.Args["value"].(string)
+	if systemWriter != nil {
+		ctx := params.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return systemWriter.SetSystemConfig(ctx, fieldName, fieldValue)
+	}
 	spec, err := resolveConfigFieldSpec("system", fieldName, systemConfigFieldSpecs)
 	if err != nil {
 		return configMutationError(err)
@@ -745,6 +767,24 @@ func scheduleWriteMutationError(err error) *mcp.TimeProgramWriteResult {
 	}
 }
 
+// ApplyConfigMutation performs a B524 set_ext_register write with read-back verification.
+func ApplyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, fieldName string, rawValue string, specs map[string]configFieldSpec) ConfigMutationResult {
+	spec, err := resolveConfigFieldSpec("system", fieldName, specs)
+	if err != nil {
+		return configMutationError(err)
+	}
+	return applyConfigMutation(ctx, registry, invoker, spec, 0x00, rawValue)
+}
+
+// SystemConfigFieldSpecs returns a copy of the system config field specs map.
+func SystemConfigFieldSpecs() map[string]configFieldSpec {
+	cp := make(map[string]configFieldSpec, len(systemConfigFieldSpecs))
+	for k, v := range systemConfigFieldSpecs {
+		cp[k] = v
+	}
+	return cp
+}
+
 func resolveConfigFieldSpec(scope, fieldName string, specs map[string]configFieldSpec) (configFieldSpec, error) {
 	if spec, ok := specs[fieldName]; ok {
 		return spec, nil
@@ -802,9 +842,48 @@ func encodeConfigValue(spec configFieldSpec, raw string) ([]byte, error) {
 		payload := make([]byte, 2)
 		binary.LittleEndian.PutUint16(payload, mapped)
 		return payload, nil
+	case configValueCString:
+		return encodeCStringValue(raw, spec.maxLen)
+	case configValueDateHDA3:
+		return encodeDateHDA3Value(raw)
 	default:
 		return nil, fmt.Errorf("unsupported value encoding: %w", ebuserrors.ErrInvalidPayload)
 	}
+}
+
+func encodeCStringValue(raw string, maxLen int) ([]byte, error) {
+	trimmed := strings.TrimSpace(raw)
+	for i := 0; i < len(trimmed); i++ {
+		if trimmed[i] > 0x7F {
+			return nil, fmt.Errorf("non-ASCII byte at position %d: %w", i, ebuserrors.ErrInvalidPayload)
+		}
+	}
+	if maxLen > 0 && len(trimmed) > maxLen {
+		return nil, fmt.Errorf("string length %d exceeds maxLen %d: %w", len(trimmed), maxLen, ebuserrors.ErrInvalidPayload)
+	}
+	padLen := len(trimmed) + 1
+	if maxLen > 0 && padLen < maxLen+1 {
+		padLen = maxLen + 1
+	}
+	payload := make([]byte, padLen)
+	copy(payload, trimmed)
+	return payload, nil
+}
+
+func encodeDateHDA3Value(raw string) ([]byte, error) {
+	trimmed := strings.TrimSpace(raw)
+	t, err := time.Parse("2006-01-02", trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("invalid date %q (expected YYYY-MM-DD): %w", raw, ebuserrors.ErrInvalidPayload)
+	}
+	year := t.Year()
+	if year < 2000 || year > 2099 {
+		return nil, fmt.Errorf("year %d out of range [2000, 2099]: %w", year, ebuserrors.ErrInvalidPayload)
+	}
+	if trimmed == "2015-01-01" {
+		return nil, fmt.Errorf("sentinel date 2015-01-01 rejected: %w", ebuserrors.ErrInvalidPayload)
+	}
+	return []byte{byte(t.Day()), byte(t.Month()), byte(year - 2000)}, nil
 }
 
 func parseBoolString(raw string) (bool, bool) {
@@ -1019,6 +1098,13 @@ func confirmDecodableReadback(spec configFieldSpec, payload []byte) error {
 			return fmt.Errorf("bool payload out of range: %w", ebuserrors.ErrInvalidPayload)
 		}
 		return nil
+	case configValueCString:
+		return nil
+	case configValueDateHDA3:
+		if len(payload) < 3 {
+			return fmt.Errorf("date payload too short: %w", ebuserrors.ErrInvalidPayload)
+		}
+		return nil
 	case configValueEnumU16:
 		value, ok := decodePayloadUint16(payload)
 		if !ok {
@@ -1048,6 +1134,15 @@ func configReadbackMatchesWrite(spec configFieldSpec, written, readback []byte) 
 		return okWant && okGot && want == got
 	case configValueBoolU8:
 		return len(written) > 0 && len(readback) > 0 && (readback[0] == 0 || readback[0] == 1) && readback[0] == written[0]
+	case configValueCString:
+		wTrimmed := bytes.TrimRight(written, "\x00")
+		rTrimmed := bytes.TrimRight(readback, "\x00")
+		return bytes.Equal(wTrimmed, rTrimmed)
+	case configValueDateHDA3:
+		if len(written) < 3 || len(readback) < 3 {
+			return false
+		}
+		return bytes.Equal(written[:3], readback[:3])
 	default:
 		return false
 	}

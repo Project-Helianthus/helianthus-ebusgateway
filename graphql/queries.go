@@ -1598,6 +1598,36 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return *config.PartloadHwcKW, nil
 				},
 			},
+			"installerMenuCode": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(BoilerConfig)
+					if !ok || config.InstallerMenuCode == nil {
+						return nil, nil
+					}
+					return *config.InstallerMenuCode, nil
+				},
+			},
+			"phoneNumber": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(BoilerConfig)
+					if !ok || config.PhoneNumber == nil {
+						return nil, nil
+					}
+					return *config.PhoneNumber, nil
+				},
+			},
+			"hoursTillService": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(BoilerConfig)
+					if !ok || config.HoursTillService == nil {
+						return nil, nil
+					}
+					return *config.HoursTillService, nil
+				},
+			},
 		},
 	})
 
@@ -1903,6 +1933,66 @@ func buildSchemaTypes() graphqlSchemaTypes {
 						return nil, nil
 					}
 					return *config.MaxRoomHumidity, nil
+				},
+			},
+			"maintenanceDate": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.MaintenanceDate == nil {
+						return nil, nil
+					}
+					return *config.MaintenanceDate, nil
+				},
+			},
+			"installerName1": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.InstallerName1 == nil {
+						return nil, nil
+					}
+					return *config.InstallerName1, nil
+				},
+			},
+			"installerName2": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.InstallerName2 == nil {
+						return nil, nil
+					}
+					return *config.InstallerName2, nil
+				},
+			},
+			"installerPhone1": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.InstallerPhone1 == nil {
+						return nil, nil
+					}
+					return *config.InstallerPhone1, nil
+				},
+			},
+			"installerPhone2": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.InstallerPhone2 == nil {
+						return nil, nil
+					}
+					return *config.InstallerPhone2, nil
+				},
+			},
+			"installerMenuCode": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					config, ok := params.Source.(SystemConfig)
+					if !ok || config.InstallerMenuCode == nil {
+						return nil, nil
+					}
+					return *config.InstallerMenuCode, nil
 				},
 			},
 		},

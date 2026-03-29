@@ -120,6 +120,7 @@ canary_verdict_path="${proof_dir}/canary_verdict.json"
 publisher_cadence_path="${proof_dir}/publisher_cadence.json"
 cross_plane_skew_path="${proof_dir}/cross_plane_skew.json"
 wire_timing_reference_path="${proof_dir}/wire_timing_reference.json"
+timing_reference_verdict_path="${proof_dir}/timing_reference_verdict.json"
 rollback_execution_path="${proof_dir}/rollback_execution.json"
 rollback_result_path="${proof_dir}/rollback_result.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
@@ -642,6 +643,14 @@ build_wire_timing_reference_artifact() {
   fi
 }
 
+build_timing_reference_verdict_artifact() {
+  python3 "${canary_verifier_script}" timing-reference-verdict \
+    --proof-dir "${proof_dir}" \
+    --run-id "${canary_run_id}" \
+    --wire-reference-path "${wire_timing_reference_path}" \
+    --output "${timing_reference_verdict_path}"
+}
+
 build_rollback_execution_artifact() {
   if ! (
     ROLLBACK_EXECUTION_ARTIFACT_PATH="${rollback_execution_path}" \
@@ -902,6 +911,10 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
     fi
     if ! build_wire_timing_reference_artifact; then
       echo "proof mode: wire timing reference producer failed (see ${wire_timing_reference_path})" >&2
+      exit 1
+    fi
+    if ! build_timing_reference_verdict_artifact; then
+      echo "proof mode: timing-reference verdict gate failed (see ${timing_reference_verdict_path})" >&2
       exit 1
     fi
     if ! build_rollback_result_artifact; then

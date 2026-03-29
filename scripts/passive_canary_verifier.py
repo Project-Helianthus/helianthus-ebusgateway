@@ -122,6 +122,25 @@ def parse_iso8601_timestamp(value: Any, field_name: str) -> datetime:
     return parsed
 
 
+def timestamp_has_subsecond_precision(value: Any) -> bool:
+    text = str(value).strip()
+    if text == "":
+        return False
+    return "." in text
+
+
+def timestamp_not_after_boundary(captured_at: datetime, boundary: datetime, boundary_raw: Any) -> bool:
+    if timestamp_has_subsecond_precision(boundary_raw):
+        return captured_at <= boundary
+    return captured_at.replace(microsecond=0) <= boundary.replace(microsecond=0)
+
+
+def timestamp_not_before_boundary(captured_at: datetime, boundary: datetime, boundary_raw: Any) -> bool:
+    if timestamp_has_subsecond_precision(boundary_raw):
+        return captured_at >= boundary
+    return captured_at.replace(microsecond=0) >= boundary.replace(microsecond=0)
+
+
 def parse_cli_bool(value: Any, field_name: str) -> bool:
     normalized = str(value).strip().lower()
     if normalized in ("1", "true", "yes", "on"):
@@ -520,16 +539,23 @@ def build_rollback_result_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict
         evidence = rollback_execution.get("evidence")
         if isinstance(evidence, dict):
             try:
+                started_at_raw = evidence.get("started_at")
+                completed_at_raw = evidence.get("completed_at")
                 execution_started_at = parse_iso8601_timestamp(
-                    evidence.get("started_at"),
+                    started_at_raw,
                     f"{rollback_execution_path}:evidence.started_at",
                 )
                 execution_completed_at = parse_iso8601_timestamp(
-                    evidence.get("completed_at"),
+                    completed_at_raw,
                     f"{rollback_execution_path}:evidence.completed_at",
                 )
             except Exception as exc:  # noqa: BLE001 - fail closed into artifact reasons.
                 reasons.append(str(exc))
+                started_at_raw = None
+                completed_at_raw = None
+        else:
+            started_at_raw = None
+            completed_at_raw = None
         execution_ok = bool(rollback_execution.get("ok", False))
         if not execution_ok:
             reasons.append(
@@ -587,7 +613,11 @@ def build_rollback_result_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict
             rollback_pre["feature_flag_snapshot"]["captured_at"],
             f"{rollback_pre['feature_flag_snapshot']['feature_flags_snapshot_path']}:captured_at",
         )
-        pre_snapshot_ordered = pre_captured_at <= execution_started_at
+        pre_snapshot_ordered = timestamp_not_after_boundary(
+            pre_captured_at,
+            execution_started_at,
+            started_at_raw,
+        )
         if not pre_snapshot_ordered:
             reasons.append("rollback pre snapshot was captured after rollback execution started")
 
@@ -596,7 +626,11 @@ def build_rollback_result_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict
             rollback_post["feature_flag_snapshot"]["captured_at"],
             f"{rollback_post['feature_flag_snapshot']['feature_flags_snapshot_path']}:captured_at",
         )
-        post_snapshot_ordered = post_captured_at >= execution_completed_at
+        post_snapshot_ordered = timestamp_not_before_boundary(
+            post_captured_at,
+            execution_completed_at,
+            completed_at_raw,
+        )
         if not post_snapshot_ordered:
             reasons.append("rollback post snapshot was captured before rollback execution completed")
 

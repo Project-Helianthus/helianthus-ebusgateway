@@ -341,6 +341,7 @@ def write_rollback_snapshot_bundle(
     external_write_policy: str = "record_only",
     startup_phase: str = "LIVE_READY",
     warmup_state: str = "available",
+    captured_at_override: str | None = None,
 ) -> None:
     write_metrics(
         proof_dir / f"{phase}_metrics.prom",
@@ -373,6 +374,11 @@ def write_rollback_snapshot_bundle(
         graphql_feature_flags=graphql_feature_flags,
         bus_feature_flags=bus_feature_flags,
     )
+    if captured_at_override is not None:
+        feature_flag_path = proof_dir / f"{phase}_feature_flags.json"
+        payload = json.loads(feature_flag_path.read_text(encoding="utf-8"))
+        payload["captured_at"] = captured_at_override
+        write_json(feature_flag_path, payload)
 
 
 def write_family_proof_artifacts(
@@ -4651,6 +4657,31 @@ class RollbackResultArtifactTests(unittest.TestCase):
         self.assertFalse(artifact["ok"])
         self.assertIn("rollback execution artifact did not complete successfully", artifact["reason"])
 
+    def test_build_rollback_result_accepts_same_second_ordering_for_second_precision_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            write_rollback_execution_artifact(proof_dir, "run-123")
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_pre",
+                observe_first_enabled=True,
+                passive_state_direct_apply=True,
+                captured_at_override="2026-03-28T00:06:00.900000Z",
+            )
+            write_rollback_snapshot_bundle(
+                proof_dir,
+                "rollback_post",
+                observe_first_enabled=False,
+                passive_state_direct_apply=False,
+                captured_at_override="2026-03-28T00:06:10.100000Z",
+            )
+
+            artifact = verifier.build_rollback_result_artifact(proof_dir, "run-123")
+
+        self.assertTrue(artifact["ok"])
+        self.assertTrue(artifact["criteria"]["rollback_pre_captured_before_execution"]["ok"])
+        self.assertTrue(artifact["criteria"]["rollback_post_captured_after_execution"]["ok"])
+
     def test_build_rollback_result_fails_closed_when_post_state_mismatches_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             proof_dir = pathlib.Path(temp_dir)
@@ -5234,6 +5265,34 @@ PY
                       fi
                     }
 
+                    maybe_apply_rollback_post_warmup() {
+                      local phase_ref="$1"
+                      local summary_ref="$2"
+                      local status_ref="$3"
+                      local startup_ref="$4"
+                      local watch_ref="$5"
+                      local live_epoch_ref="$6"
+                      local rollback_post_warmup_calls="${FAKE_ROLLBACK_POST_WARMUP_CALLS:-0}"
+                      local rollback_state_file="${FAKE_ROLLBACK_POST_STARTUP_STATE_FILE:?FAKE_ROLLBACK_POST_STARTUP_STATE_FILE is required}"
+                      local rollback_calls=0
+                      if [[ ! -f "${rollback_switch_file}" || "${rollback_post_warmup_calls}" -le 0 ]]; then
+                        return 0
+                      fi
+                      if [[ -f "${rollback_state_file}" ]]; then
+                        rollback_calls="$(cat "${rollback_state_file}")"
+                      fi
+                      rollback_calls=$((rollback_calls + 1))
+                      printf '%s\\n' "${rollback_calls}" > "${rollback_state_file}"
+                      if [[ "${rollback_calls}" -le "${rollback_post_warmup_calls}" ]]; then
+                        printf -v "${phase_ref}" '%s' "LIVE_WARMUP"
+                        printf -v "${summary_ref}" '%s' "2026-03-28T00:00:00Z"
+                        printf -v "${status_ref}" '%s' "2026-03-28T00:00:00Z"
+                        printf -v "${startup_ref}" '%s' "2026-03-28T00:00:00Z"
+                        printf -v "${watch_ref}" '%s' "2026-03-28T00:00:02Z"
+                        printf -v "${live_epoch_ref}" '%s' "0"
+                      fi
+                    }
+
                     if [[ "${url}" == *"/metrics" ]]; then
                       timed_out=0
                       metrics_mode="${FAKE_METRICS_MODE:-always_healthy}"
@@ -5340,6 +5399,7 @@ PY
                           live_epoch=0
                         fi
                       fi
+                      maybe_apply_rollback_post_warmup phase summary_last_updated_at status_last_updated_at startup_last_updated_at summary_last_updated_at live_epoch
                       publisher_cadence_mode="${FAKE_PUBLISHER_CADENCE_MODE:-present}"
                       publisher_cadence_sec="${FAKE_PUBLISHER_CADENCE_SEC:-3600}"
                       publisher_cadence_source="${FAKE_PUBLISHER_CADENCE_SOURCE:-config.semantic_state_interval}"
@@ -5392,6 +5452,7 @@ PY
                           live_epoch=0
                         fi
                       fi
+                      maybe_apply_rollback_post_warmup phase bus_summary_last_updated_at bus_status_last_updated_at startup_last_updated_at watch_summary_last_updated_at live_epoch
                       publisher_cadence_mode="${FAKE_PUBLISHER_CADENCE_MODE:-present}"
                       publisher_cadence_sec="${FAKE_PUBLISHER_CADENCE_SEC:-3600}"
                       publisher_cadence_source="${FAKE_PUBLISHER_CADENCE_SOURCE:-config.semantic_state_interval}"
@@ -5514,7 +5575,6 @@ PY
                       printf '%s\\n' '{"data":{"devices":[{"address":"0x15","deviceId":"BASV2"}]}}'
                       exit 0
                     fi
-                    fi
 
                     echo "unsupported fake curl url: ${url}" >&2
                     exit 22
@@ -5552,6 +5612,7 @@ PY
                     "FAKE_CANARY_PHASE_LOG": str(temp_path / "fake_canary_phase_log.txt"),
                     "FAKE_METRICS_STATE_FILE": str(temp_path / "fake_metrics_count.txt"),
                     "FAKE_ROLLBACK_SWITCH_FILE": str(temp_path / "fake_rollback_switch.txt"),
+                    "FAKE_ROLLBACK_POST_STARTUP_STATE_FILE": str(temp_path / "fake_rollback_post_startup_count.txt"),
                     "PASSIVE_ROLLBACK_EXECUTOR_SCRIPT": str(fake_rollback_executor),
                     "PATH": f"{fake_bin}:{env.get('PATH', '')}",
                 }
@@ -5789,6 +5850,21 @@ PY
         self.assertTrue(
             rollback_execution["evidence"]["rollback_gateway_log_path"].endswith("/gateway_rollback.log")
         )
+
+    def test_smoke_waits_for_rollback_post_live_ready_before_emitting_rollback_result(self) -> None:
+        result, artifacts = self.run_smoke_with_fake_tools_detailed(
+            "pass",
+            extra_env={
+                "FAKE_ROLLBACK_POST_WARMUP_CALLS": "2",
+                "PASSIVE_SMOKE_TIMEOUT_SEC": "10",
+                "PASSIVE_SMOKE_POLL_INTERVAL_SEC": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        rollback_result = artifacts.get("rollback_result")
+        self.assertIsInstance(rollback_result, dict)
+        self.assertTrue(rollback_result["ok"])
+        self.assertTrue(rollback_result["criteria"]["rollback_post_live_ready"]["ok"])
 
     def test_smoke_fails_closed_when_rollback_execution_artifact_is_missing(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(

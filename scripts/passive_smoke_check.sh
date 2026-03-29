@@ -670,16 +670,36 @@ capture_required_snapshot_with_retries() {
   [[ "${captured}" == "1" ]]
 }
 
+capture_live_ready_snapshot_with_retries() {
+  local prefix="$1"
+  local metrics_payload="${2:-}"
+  local captured=0
+  local bus_file="${prefix}_bus_observability.json"
+  local bus_payload=""
+
+  for _ in $(seq 1 8); do
+    if capture_proof_snapshot "${prefix}" "${metrics_payload}" 1 && [[ -f "${bus_file}" ]]; then
+      bus_payload="$(cat "${bus_file}")"
+      if bus_startup_live_ready "${bus_payload}"; then
+        captured=1
+        break
+      fi
+    fi
+    sleep 1
+  done
+  [[ "${captured}" == "1" ]]
+}
+
 build_rollback_result_artifact() {
   local rollback_pre_prefix="${proof_dir}/rollback_pre"
   local rollback_post_prefix="${proof_dir}/rollback_post"
   local execution_status=0
 
-  capture_required_snapshot_with_retries "${rollback_pre_prefix}" "" || true
+  capture_live_ready_snapshot_with_retries "${rollback_pre_prefix}" "" || true
   if ! build_rollback_execution_artifact; then
     execution_status=$?
   fi
-  capture_required_snapshot_with_retries "${rollback_post_prefix}" "" || true
+  capture_live_ready_snapshot_with_retries "${rollback_post_prefix}" "" || true
   if python3 "${canary_verifier_script}" rollback-result \
     --proof-dir "${proof_dir}" \
     --run-id "${canary_run_id}" \

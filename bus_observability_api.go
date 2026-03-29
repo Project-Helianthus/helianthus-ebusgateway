@@ -69,12 +69,51 @@ type BusObservabilityCounters struct {
 	PeriodicityBudgetOverflowTotal uint64 `json:"periodicity_budget_overflow_total"`
 }
 
+type BusErrorAggregate struct {
+	Scope string `json:"scope"`
+	Class string `json:"class"`
+	Phase string `json:"phase"`
+	Count uint64 `json:"count"`
+}
+
+type BusFrameAggregate struct {
+	Scope     string `json:"scope"`
+	Source    string `json:"source"`
+	Target    string `json:"target"`
+	Family    string `json:"family"`
+	FrameType string `json:"frame_type"`
+	Count     uint64 `json:"count"`
+}
+
+type BusBusyWindow struct {
+	Window string  `json:"window"`
+	Ratio  float64 `json:"ratio"`
+}
+
+type BusBusyAggregate struct {
+	TotalSeconds float64         `json:"total_seconds"`
+	Windows      []BusBusyWindow `json:"windows"`
+}
+
+type BusReconstructorRecovery struct {
+	Reason string `json:"reason"`
+	Count  uint64 `json:"count"`
+}
+
+type BusReconstructorAggregate struct {
+	Recoveries []BusReconstructorRecovery `json:"recoveries"`
+}
+
 type BusObservabilitySummary struct {
 	LastUpdatedAt *time.Time                  `json:"last_updated_at,omitempty"`
 	Status        BusObservabilityStatus      `json:"status"`
 	Messages      BusObservabilityBoundedList `json:"messages"`
 	Periodicity   BusObservabilityBoundedList `json:"periodicity"`
 	Counters      BusObservabilityCounters    `json:"counters"`
+	Errors        []BusErrorAggregate         `json:"errors,omitempty"`
+	Frames        []BusFrameAggregate         `json:"frames,omitempty"`
+	Busy          *BusBusyAggregate           `json:"busy,omitempty"`
+	Reconstructor *BusReconstructorAggregate  `json:"reconstructor,omitempty"`
 }
 
 type BusObservabilitySnapshot struct {
@@ -99,7 +138,7 @@ func (store *BusObservabilityStore) Snapshot() BusObservabilitySnapshot {
 	store.evictStalePeriodicityLocked(now)
 
 	return BusObservabilitySnapshot{
-		Summary:     store.summaryLocked(now, reconstructor.TapStatus, startup),
+		Summary:     store.summaryLocked(now, reconstructor.TapStatus, startup, reconstructor),
 		Messages:    store.recentMessagesLocked(store.recentLen),
 		Periodicity: store.periodicitySnapshotLocked(),
 	}
@@ -145,7 +184,7 @@ func (store *BusObservabilityStore) periodicitySnapshotLocked() []BusPeriodicity
 	return items
 }
 
-func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus PassiveTapStatus, startup *BusObservabilityStartup) BusObservabilitySummary {
+func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus PassiveTapStatus, startup *BusObservabilityStartup, reconstructor PassiveReconstructorSnapshot) BusObservabilitySummary {
 	passiveSupported := store.cfg.BroadcastListen && PassiveTransportSupported(store.cfg)
 	reasons := make([]string, 0, 2)
 	if store.passive.state == "unavailable" && store.passive.unavailableReason != "" {
@@ -210,6 +249,100 @@ func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus Passi
 			SeriesBudgetOverflowTotal:      store.seriesBudgetOverflowTotal,
 			PeriodicityBudgetOverflowTotal: store.periodicityOverflowTotal,
 		},
+		Errors:        store.errorsSnapshotLocked(),
+		Frames:        store.framesSnapshotLocked(),
+		Busy:          store.busySnapshotLocked(now),
+		Reconstructor: reconstructorAggregateFromSnapshot(reconstructor),
+	}
+}
+
+func (store *BusObservabilityStore) errorsSnapshotLocked() []BusErrorAggregate {
+	if len(store.errors) == 0 {
+		return nil
+	}
+	items := make([]BusErrorAggregate, 0, len(store.errors))
+	for key, count := range store.errors {
+		items = append(items, BusErrorAggregate{
+			Scope: key.Scope,
+			Class: key.Class,
+			Phase: key.Phase,
+			Count: count,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Scope != items[j].Scope {
+			return items[i].Scope < items[j].Scope
+		}
+		if items[i].Class != items[j].Class {
+			return items[i].Class < items[j].Class
+		}
+		return items[i].Phase < items[j].Phase
+	})
+	return items
+}
+
+func (store *BusObservabilityStore) framesSnapshotLocked() []BusFrameAggregate {
+	if len(store.frames) == 0 {
+		return nil
+	}
+	items := make([]BusFrameAggregate, 0, len(store.frames))
+	for key, count := range store.frames {
+		items = append(items, BusFrameAggregate{
+			Scope:     key.Scope,
+			Source:    key.Source,
+			Target:    key.Target,
+			Family:    key.Family,
+			FrameType: key.FrameType,
+			Count:     count,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Scope != items[j].Scope {
+			return items[i].Scope < items[j].Scope
+		}
+		if items[i].Source != items[j].Source {
+			return items[i].Source < items[j].Source
+		}
+		if items[i].Target != items[j].Target {
+			return items[i].Target < items[j].Target
+		}
+		if items[i].Family != items[j].Family {
+			return items[i].Family < items[j].Family
+		}
+		return items[i].FrameType < items[j].FrameType
+	})
+	return items
+}
+
+func (store *BusObservabilityStore) busySnapshotLocked(now time.Time) *BusBusyAggregate {
+	windows := make([]BusBusyWindow, 0, len(busyWindows))
+	for _, windowName := range busyWindows {
+		window := parseBusyWindow(windowName)
+		if window <= 0 {
+			continue
+		}
+		busy := windowBusyDuration(store.busySegments, now, window)
+		windows = append(windows, BusBusyWindow{
+			Window: windowName,
+			Ratio:  clippedRatio(busy, window),
+		})
+	}
+	return &BusBusyAggregate{
+		TotalSeconds: store.totalBusy.Seconds(),
+		Windows:      windows,
+	}
+}
+
+func reconstructorAggregateFromSnapshot(snapshot PassiveReconstructorSnapshot) *BusReconstructorAggregate {
+	recoveries := make([]BusReconstructorRecovery, 0, len(reconstructorRecoveryKeys))
+	for _, reason := range reconstructorRecoveryKeys {
+		recoveries = append(recoveries, BusReconstructorRecovery{
+			Reason: reason,
+			Count:  snapshot.RecoveryTotal[reason],
+		})
+	}
+	return &BusReconstructorAggregate{
+		Recoveries: recoveries,
 	}
 }
 

@@ -73,12 +73,51 @@ type BusObservabilityCounters struct {
 	PeriodicityBudgetOverflowTotal uint64 `json:"periodicity_budget_overflow_total"`
 }
 
+type BusErrorAggregate struct {
+	Scope string `json:"scope"`
+	Class string `json:"class"`
+	Phase string `json:"phase"`
+	Count uint64 `json:"count"`
+}
+
+type BusFrameAggregate struct {
+	Scope     string `json:"scope"`
+	Source    string `json:"source"`
+	Target    string `json:"target"`
+	Family    string `json:"family"`
+	FrameType string `json:"frame_type"`
+	Count     uint64 `json:"count"`
+}
+
+type BusBusyWindow struct {
+	Window string  `json:"window"`
+	Ratio  float64 `json:"ratio"`
+}
+
+type BusBusyAggregate struct {
+	TotalSeconds float64         `json:"total_seconds"`
+	Windows      []BusBusyWindow `json:"windows"`
+}
+
+type BusReconstructorRecovery struct {
+	Reason string `json:"reason"`
+	Count  uint64 `json:"count"`
+}
+
+type BusReconstructorAggregate struct {
+	Recoveries []BusReconstructorRecovery `json:"recoveries"`
+}
+
 type BusSummary struct {
-	LastUpdatedAt *time.Time               `json:"last_updated_at,omitempty"`
-	Status        *BusObservabilityStatus  `json:"status,omitempty"`
-	Messages      BusBoundedListSummary    `json:"messages"`
-	Periodicity   BusBoundedListSummary    `json:"periodicity"`
-	Counters      BusObservabilityCounters `json:"counters"`
+	LastUpdatedAt *time.Time                 `json:"last_updated_at,omitempty"`
+	Status        *BusObservabilityStatus    `json:"status,omitempty"`
+	Messages      BusBoundedListSummary      `json:"messages"`
+	Periodicity   BusBoundedListSummary      `json:"periodicity"`
+	Counters      BusObservabilityCounters   `json:"counters"`
+	Errors        []BusErrorAggregate        `json:"errors,omitempty"`
+	Frames        []BusFrameAggregate        `json:"frames,omitempty"`
+	Busy          *BusBusyAggregate          `json:"busy,omitempty"`
+	Reconstructor *BusReconstructorAggregate `json:"reconstructor,omitempty"`
 }
 
 type BusMessage struct {
@@ -147,6 +186,30 @@ func cloneBusSummary(source *BusSummary) *BusSummary {
 	out := *source
 	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
 	out.Status = cloneBusObservabilityStatus(source.Status)
+	if len(source.Errors) > 0 {
+		out.Errors = make([]BusErrorAggregate, len(source.Errors))
+		copy(out.Errors, source.Errors)
+	}
+	if len(source.Frames) > 0 {
+		out.Frames = make([]BusFrameAggregate, len(source.Frames))
+		copy(out.Frames, source.Frames)
+	}
+	if source.Busy != nil {
+		busy := *source.Busy
+		if len(source.Busy.Windows) > 0 {
+			busy.Windows = make([]BusBusyWindow, len(source.Busy.Windows))
+			copy(busy.Windows, source.Busy.Windows)
+		}
+		out.Busy = &busy
+	}
+	if source.Reconstructor != nil {
+		recon := *source.Reconstructor
+		if len(source.Reconstructor.Recoveries) > 0 {
+			recon.Recoveries = make([]BusReconstructorRecovery, len(source.Reconstructor.Recoveries))
+			copy(recon.Recoveries, source.Reconstructor.Recoveries)
+		}
+		out.Reconstructor = &recon
+	}
 	return &out
 }
 

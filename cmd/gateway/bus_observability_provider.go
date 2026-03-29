@@ -51,7 +51,7 @@ func (adapter mcpBusObservabilityProviderAdapter) Snapshot() mcp.BusObservabilit
 }
 
 func mapGraphQLBusSummary(summary ebusgateway.BusObservabilitySummary) *graphql.BusSummary {
-	return &graphql.BusSummary{
+	out := &graphql.BusSummary{
 		LastUpdatedAt: cloneTimePtr(summary.LastUpdatedAt),
 		Status:        mapGraphQLBusStatus(summary.Status),
 		Messages: graphql.BusBoundedListSummary{
@@ -67,10 +67,85 @@ func mapGraphQLBusSummary(summary ebusgateway.BusObservabilitySummary) *graphql.
 			PeriodicityBudgetOverflowTotal: summary.Counters.PeriodicityBudgetOverflowTotal,
 		},
 	}
+	out.Errors = mapGraphQLBusErrors(summary.Errors)
+	out.Frames = mapGraphQLBusFrames(summary.Frames)
+	out.Busy = mapGraphQLBusBusy(summary.Busy)
+	out.Reconstructor = mapGraphQLBusReconstructor(summary.Reconstructor)
+	return out
+}
+
+func mapGraphQLBusErrors(errors []ebusgateway.BusErrorAggregate) []graphql.BusErrorAggregate {
+	if len(errors) == 0 {
+		return nil
+	}
+	items := make([]graphql.BusErrorAggregate, len(errors))
+	for i, e := range errors {
+		items[i] = graphql.BusErrorAggregate{
+			Scope: e.Scope,
+			Class: e.Class,
+			Phase: e.Phase,
+			Count: e.Count,
+		}
+	}
+	return items
+}
+
+func mapGraphQLBusFrames(frames []ebusgateway.BusFrameAggregate) []graphql.BusFrameAggregate {
+	if len(frames) == 0 {
+		return nil
+	}
+	items := make([]graphql.BusFrameAggregate, len(frames))
+	for i, f := range frames {
+		items[i] = graphql.BusFrameAggregate{
+			Scope:     f.Scope,
+			Source:    f.Source,
+			Target:    f.Target,
+			Family:    f.Family,
+			FrameType: f.FrameType,
+			Count:     f.Count,
+		}
+	}
+	return items
+}
+
+func mapGraphQLBusBusy(busy *ebusgateway.BusBusyAggregate) *graphql.BusBusyAggregate {
+	if busy == nil {
+		return nil
+	}
+	out := &graphql.BusBusyAggregate{
+		TotalSeconds: busy.TotalSeconds,
+	}
+	if len(busy.Windows) > 0 {
+		out.Windows = make([]graphql.BusBusyWindow, len(busy.Windows))
+		for i, w := range busy.Windows {
+			out.Windows[i] = graphql.BusBusyWindow{
+				Window: w.Window,
+				Ratio:  w.Ratio,
+			}
+		}
+	}
+	return out
+}
+
+func mapGraphQLBusReconstructor(recon *ebusgateway.BusReconstructorAggregate) *graphql.BusReconstructorAggregate {
+	if recon == nil {
+		return nil
+	}
+	out := &graphql.BusReconstructorAggregate{}
+	if len(recon.Recoveries) > 0 {
+		out.Recoveries = make([]graphql.BusReconstructorRecovery, len(recon.Recoveries))
+		for i, r := range recon.Recoveries {
+			out.Recoveries[i] = graphql.BusReconstructorRecovery{
+				Reason: r.Reason,
+				Count:  r.Count,
+			}
+		}
+	}
+	return out
 }
 
 func mapMCPBusSummary(summary ebusgateway.BusObservabilitySummary) *mcp.BusSummary {
-	return &mcp.BusSummary{
+	out := &mcp.BusSummary{
 		LastUpdatedAt: cloneTimePtr(summary.LastUpdatedAt),
 		Status:        mapMCPBusStatus(summary.Status),
 		Messages: mcp.BusBoundedListSummary{
@@ -86,6 +161,81 @@ func mapMCPBusSummary(summary ebusgateway.BusObservabilitySummary) *mcp.BusSumma
 			PeriodicityBudgetOverflowTotal: summary.Counters.PeriodicityBudgetOverflowTotal,
 		},
 	}
+	out.Errors = mapMCPBusErrors(summary.Errors)
+	out.Frames = mapMCPBusFrames(summary.Frames)
+	out.Busy = mapMCPBusBusy(summary.Busy)
+	out.Reconstructor = mapMCPBusReconstructor(summary.Reconstructor)
+	return out
+}
+
+func mapMCPBusErrors(errors []ebusgateway.BusErrorAggregate) []mcp.BusErrorAggregate {
+	if len(errors) == 0 {
+		return nil
+	}
+	items := make([]mcp.BusErrorAggregate, len(errors))
+	for i, e := range errors {
+		items[i] = mcp.BusErrorAggregate{
+			Scope: e.Scope,
+			Class: e.Class,
+			Phase: e.Phase,
+			Count: e.Count,
+		}
+	}
+	return items
+}
+
+func mapMCPBusFrames(frames []ebusgateway.BusFrameAggregate) []mcp.BusFrameAggregate {
+	if len(frames) == 0 {
+		return nil
+	}
+	items := make([]mcp.BusFrameAggregate, len(frames))
+	for i, f := range frames {
+		items[i] = mcp.BusFrameAggregate{
+			Scope:     f.Scope,
+			Source:    f.Source,
+			Target:    f.Target,
+			Family:    f.Family,
+			FrameType: f.FrameType,
+			Count:     f.Count,
+		}
+	}
+	return items
+}
+
+func mapMCPBusBusy(busy *ebusgateway.BusBusyAggregate) *mcp.BusBusyAggregate {
+	if busy == nil {
+		return nil
+	}
+	out := &mcp.BusBusyAggregate{
+		TotalSeconds: busy.TotalSeconds,
+	}
+	if len(busy.Windows) > 0 {
+		out.Windows = make([]mcp.BusBusyWindow, len(busy.Windows))
+		for i, w := range busy.Windows {
+			out.Windows[i] = mcp.BusBusyWindow{
+				Window: w.Window,
+				Ratio:  w.Ratio,
+			}
+		}
+	}
+	return out
+}
+
+func mapMCPBusReconstructor(recon *ebusgateway.BusReconstructorAggregate) *mcp.BusReconstructorAggregate {
+	if recon == nil {
+		return nil
+	}
+	out := &mcp.BusReconstructorAggregate{}
+	if len(recon.Recoveries) > 0 {
+		out.Recoveries = make([]mcp.BusReconstructorRecovery, len(recon.Recoveries))
+		for i, r := range recon.Recoveries {
+			out.Recoveries[i] = mcp.BusReconstructorRecovery{
+				Reason: r.Reason,
+				Count:  r.Count,
+			}
+		}
+	}
+	return out
 }
 
 func mapGraphQLBusStatus(status ebusgateway.BusObservabilityStatus) *graphql.BusObservabilityStatus {

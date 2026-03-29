@@ -291,7 +291,7 @@ func graphQLSummaryToMCP(summary *graphql.BusSummary) *mcp.BusSummary {
 	if summary == nil {
 		return nil
 	}
-	return &mcp.BusSummary{
+	out := &mcp.BusSummary{
 		LastUpdatedAt: cloneTimePtr(summary.LastUpdatedAt),
 		Status:        graphQLStatusToMCP(summary.Status),
 		Messages: mcp.BusBoundedListSummary{
@@ -307,6 +307,33 @@ func graphQLSummaryToMCP(summary *graphql.BusSummary) *mcp.BusSummary {
 			PeriodicityBudgetOverflowTotal: summary.Counters.PeriodicityBudgetOverflowTotal,
 		},
 	}
+	if len(summary.Errors) > 0 {
+		out.Errors = make([]mcp.BusErrorAggregate, len(summary.Errors))
+		for i, e := range summary.Errors {
+			out.Errors[i] = mcp.BusErrorAggregate{Scope: e.Scope, Class: e.Class, Phase: e.Phase, Count: e.Count}
+		}
+	}
+	if len(summary.Frames) > 0 {
+		out.Frames = make([]mcp.BusFrameAggregate, len(summary.Frames))
+		for i, f := range summary.Frames {
+			out.Frames[i] = mcp.BusFrameAggregate{Scope: f.Scope, Source: f.Source, Target: f.Target, Family: f.Family, FrameType: f.FrameType, Count: f.Count}
+		}
+	}
+	if summary.Busy != nil {
+		busy := &mcp.BusBusyAggregate{TotalSeconds: summary.Busy.TotalSeconds}
+		for _, w := range summary.Busy.Windows {
+			busy.Windows = append(busy.Windows, mcp.BusBusyWindow{Window: w.Window, Ratio: w.Ratio})
+		}
+		out.Busy = busy
+	}
+	if summary.Reconstructor != nil {
+		recon := &mcp.BusReconstructorAggregate{}
+		for _, r := range summary.Reconstructor.Recoveries {
+			recon.Recoveries = append(recon.Recoveries, mcp.BusReconstructorRecovery{Reason: r.Reason, Count: r.Count})
+		}
+		out.Reconstructor = recon
+	}
+	return out
 }
 
 func normalizeMCPBusSnapshot(snapshot mcp.BusObservabilitySnapshot) mcp.BusObservabilitySnapshot {

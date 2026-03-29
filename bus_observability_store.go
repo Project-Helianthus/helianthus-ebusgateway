@@ -16,9 +16,8 @@ import (
 )
 
 const (
-	observeFirstFramesHardCap      = 384
-	observeFirstErrorsHardCap      = 128
-	observeFirstAddressBucketCap   = 8
+	observeFirstFramesHardCap    = 2048
+	observeFirstErrorsHardCap   = 512
 	observeFirstPeriodicitySamples = 3
 	observeFirstBusyWindowHorizon  = time.Hour
 
@@ -1236,14 +1235,7 @@ func (store *BusObservabilityStore) incrementFrameLocked(key frameSeriesKey) {
 	}
 	totalSeries := len(store.frames) + len(store.errors) + len(store.frameBytes)
 	if len(store.frames) >= observeFirstFramesHardCap || totalSeries >= store.cfg.ObserveFirstSeriesBudget {
-		folded := key
-		folded.Source = "other"
-		folded.Target = "other"
-		if _, ok := store.frames[folded]; !ok && (len(store.frames) >= observeFirstFramesHardCap || totalSeries >= store.cfg.ObserveFirstSeriesBudget) {
-			store.seriesBudgetOverflowTotal++
-		}
-		store.frames[folded]++
-		return
+		store.seriesBudgetOverflowTotal++
 	}
 	store.frames[key] = 1
 }
@@ -1256,7 +1248,6 @@ func (store *BusObservabilityStore) incrementErrorLocked(key errorSeriesKey) {
 	totalSeries := len(store.frames) + len(store.errors) + len(store.frameBytes)
 	if len(store.errors) >= observeFirstErrorsHardCap || totalSeries >= store.cfg.ObserveFirstSeriesBudget {
 		store.seriesBudgetOverflowTotal++
-		key.Phase = "terminal"
 	}
 	store.errors[key]++
 }
@@ -1282,9 +1273,8 @@ func (store *BusObservabilityStore) normalizeAddressLocked(address byte) string 
 	if value, ok := store.addressBuckets[address]; ok {
 		return value
 	}
-	if len(store.addressBuckets) >= observeFirstAddressBucketCap {
-		return "other"
-	}
+	// No address cap — eBUS address space is protocol-bounded (max 25 initiator-capable,
+	// max 256 total). Real buses have <10 participants. Every address gets its own bucket.
 	value := fmt.Sprintf("0x%02x", address)
 	store.addressBuckets[address] = value
 	store.addressOrder = append(store.addressOrder, address)
@@ -1511,20 +1501,17 @@ func (store *BusObservabilityStore) touchLocked(at time.Time) {
 }
 
 func classifyFamily(frame protocol.Frame) string {
-	if frame.Primary != 0xB5 {
-		return "other"
-	}
-	switch frame.Secondary {
-	case 0x09:
+	switch {
+	case frame.Primary == 0xB5 && frame.Secondary == 0x09:
 		return "B509"
-	case 0x16:
+	case frame.Primary == 0xB5 && frame.Secondary == 0x16:
 		return "B516"
-	case 0x24:
+	case frame.Primary == 0xB5 && frame.Secondary == 0x24:
 		return "B524"
-	case 0x55:
+	case frame.Primary == 0xB5 && frame.Secondary == 0x55:
 		return "B555"
 	default:
-		return "other"
+		return fmt.Sprintf("0x%02x_0x%02x", frame.Primary, frame.Secondary)
 	}
 }
 

@@ -21,6 +21,7 @@ type graphqlSchemaTypes struct {
 	deviceType              *graphqlgo.Object
 	broadcastType           *graphqlgo.Object
 	statusType              *graphqlgo.Object
+	gatewayIdentityType     *graphqlgo.Object
 	zoneType                *graphqlgo.Object
 	dhwType                 *graphqlgo.Object
 	circuitStatusType       *graphqlgo.Object
@@ -2015,6 +2016,25 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		},
 	})
 
+	gatewayIdentityType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "GatewayIdentity",
+		Fields: graphqlgo.Fields{
+			"instanceGuid": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					identity, ok := params.Source.(GatewayIdentity)
+					if !ok {
+						return nil, nil
+					}
+					if identity.InstanceGUID == "" {
+						return nil, nil
+					}
+					return identity.InstanceGUID, nil
+				},
+			},
+		},
+	})
+
 	fieldType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Field",
 		Fields: graphqlgo.Fields{
@@ -2818,6 +2838,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		deviceType:              deviceType,
 		broadcastType:           buildBroadcastType(),
 		statusType:              statusType,
+		gatewayIdentityType:     gatewayIdentityType,
 		zoneType:                zoneType,
 		dhwType:                 dhwType,
 		circuitStatusType:       circuitStatusType,
@@ -2861,6 +2882,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				Type: graphqlgo.NewNonNull(types.statusType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.statusProvider().DaemonStatus(), nil
+				},
+			},
+			"gatewayIdentity": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.gatewayIdentityType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.gatewayIdentityProvider().GatewayIdentity(), nil
 				},
 			},
 			"adapterStatus": &graphqlgo.Field{

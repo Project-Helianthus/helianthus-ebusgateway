@@ -3,6 +3,7 @@ package ebusgateway
 import (
 	"context"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
@@ -109,6 +110,7 @@ type Config struct {
 	PortalPath                              string
 	MDNSAdvertise                           bool
 	MDNSInstance                            string
+	InstanceGUID                            string
 	DumpOutputDir                           string
 	DumpUploadPath                          string
 	DumpUploadURL                           string
@@ -188,6 +190,7 @@ func DefaultConfig() Config {
 		PortalPath:                              "/portal",
 		MDNSAdvertise:                           true,
 		MDNSInstance:                            "helianthus",
+		InstanceGUID:                            "",
 		DumpOutputDir:                           "./dumps",
 		ObserveFirstEnabled:                     featureFlags.ObserveFirstEnabled(),
 		PassiveStateDirectApply:                 featureFlags.PassiveStateDirectApply(),
@@ -354,6 +357,7 @@ func applyDefaults(cfg Config) Config {
 	if cfg.MDNSInstance == "" {
 		cfg.MDNSInstance = "helianthus"
 	}
+	cfg.InstanceGUID = strings.TrimSpace(cfg.InstanceGUID)
 	if cfg.DumpOutputDir == "" {
 		cfg.DumpOutputDir = "./dumps"
 	}

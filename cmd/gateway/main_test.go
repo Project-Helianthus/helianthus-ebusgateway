@@ -797,6 +797,44 @@ func TestBindFlags_PortalPath(t *testing.T) {
 	}
 }
 
+func TestBindFlags_InstanceGUID(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-instance-guid", "4d9336aa-f125-4f12-8b07-fcd18dbfcb10"}); err != nil {
+		t.Fatalf("parse instance-guid: %v", err)
+	}
+	if cfg.InstanceGUID != "4d9336aa-f125-4f12-8b07-fcd18dbfcb10" {
+		t.Fatalf("InstanceGUID = %q; want parsed UUID", cfg.InstanceGUID)
+	}
+}
+
+func TestBindFlags_InstanceGUIDRejectsInvalidValue(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-instance-guid", "not-a-guid"}); err == nil {
+		t.Fatal("parse invalid instance-guid error = nil; want error")
+	}
+}
+
+func TestGatewayMDNSTextIncludesInstanceGUID(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.GraphQLPath = "/graphql"
+	cfg.InstanceGUID = "4d9336aa-f125-4f12-8b07-fcd18dbfcb10"
+
+	got := gatewayMDNSText(cfg)
+	want := []string{
+		"path=/graphql",
+		"transport=http",
+		"version=1",
+		"instance_guid=4d9336aa-f125-4f12-8b07-fcd18dbfcb10",
+	}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("gatewayMDNSText() = %#v; want %#v", got, want)
+	}
+}
+
 func TestBindFlags_BootLiveTimeout(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)

@@ -27,6 +27,7 @@ var canonicalSemanticSnapshotPlanes = []string{
 	"solar",
 	"cylinders",
 	"schedules",
+	"adapter_info",
 }
 
 func TestToolInventoryGoldenSignatures(t *testing.T) {

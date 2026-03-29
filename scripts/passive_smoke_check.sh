@@ -121,6 +121,7 @@ publisher_cadence_path="${proof_dir}/publisher_cadence.json"
 cross_plane_skew_path="${proof_dir}/cross_plane_skew.json"
 wire_timing_reference_path="${proof_dir}/wire_timing_reference.json"
 rollback_execution_path="${proof_dir}/rollback_execution.json"
+rollback_result_path="${proof_dir}/rollback_result.json"
 replay_behavior_path="${proof_dir}/replay_behavior.json"
 replay_falsification_path="${proof_dir}/replay_falsification.json"
 family_eligibility_path="${proof_dir}/family_proof_eligibility.json"
@@ -654,6 +655,63 @@ build_rollback_execution_artifact() {
     --run-id "${canary_run_id}" >/dev/null
 }
 
+capture_required_snapshot_with_retries() {
+  local prefix="$1"
+  local metrics_payload="${2:-}"
+  local captured=0
+
+  for _ in $(seq 1 5); do
+    if capture_proof_snapshot "${prefix}" "${metrics_payload}" 1; then
+      captured=1
+      break
+    fi
+    sleep 1
+  done
+  [[ "${captured}" == "1" ]]
+}
+
+capture_live_ready_snapshot_with_retries() {
+  local prefix="$1"
+  local metrics_payload="${2:-}"
+  local captured=0
+  local bus_file="${prefix}_bus_observability.json"
+  local bus_payload=""
+
+  for _ in $(seq 1 8); do
+    if capture_proof_snapshot "${prefix}" "${metrics_payload}" 1 && [[ -f "${bus_file}" ]]; then
+      bus_payload="$(cat "${bus_file}")"
+      if bus_startup_live_ready "${bus_payload}"; then
+        captured=1
+        break
+      fi
+    fi
+    sleep 1
+  done
+  [[ "${captured}" == "1" ]]
+}
+
+build_rollback_result_artifact() {
+  local rollback_pre_prefix="${proof_dir}/rollback_pre"
+  local rollback_post_prefix="${proof_dir}/rollback_post"
+  local execution_status=0
+
+  capture_live_ready_snapshot_with_retries "${rollback_pre_prefix}" "" || true
+  if ! build_rollback_execution_artifact; then
+    execution_status=$?
+  fi
+  capture_live_ready_snapshot_with_retries "${rollback_post_prefix}" "" || true
+  if python3 "${canary_verifier_script}" rollback-result \
+    --proof-dir "${proof_dir}" \
+    --run-id "${canary_run_id}" \
+    --output "${rollback_result_path}"; then
+    return 0
+  fi
+  if [[ "${execution_status}" -ne 0 ]]; then
+    return "${execution_status}"
+  fi
+  return 1
+}
+
 build_replay_behavior_artifact() {
   if ! (
     cd "${REPO_ROOT}" && \
@@ -846,8 +904,8 @@ if [[ "${proof_artifacts_enabled}" == "1" ]]; then
       echo "proof mode: wire timing reference producer failed (see ${wire_timing_reference_path})" >&2
       exit 1
     fi
-    if ! build_rollback_execution_artifact; then
-      echo "proof mode: rollback execution producer failed (see ${rollback_execution_path})" >&2
+    if ! build_rollback_result_artifact; then
+      echo "proof mode: rollback result gate failed (see ${rollback_result_path})" >&2
       exit 1
     fi
   fi

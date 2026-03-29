@@ -38,9 +38,17 @@ PUBLISHER_CADENCE_ARTIFACT_SCHEMA = "p03_publisher_cadence_v1"
 PUBLISHER_CADENCE_SOURCE_ANCHOR = "config.semantic_state_interval"
 CROSS_PLANE_SKEW_ARTIFACT_SCHEMA = "p03_cross_plane_skew_v1"
 ROLLBACK_EXECUTION_ARTIFACT_SCHEMA = "observe_first_rollback_execution_v1"
+ROLLBACK_RESULT_ARTIFACT_SCHEMA = "observe_first_rollback_result_v1"
 ROLLBACK_TARGET_FEATURE_FLAGS = {
     "observeFirstEnabled": False,
     "passiveStateDirectApply": False,
+    "passiveConfigDirectApply": False,
+    "externalWritePolicy": "record_only",
+    "normalizations": [],
+}
+ROLLBACK_PROOF_FEATURE_FLAGS = {
+    "observeFirstEnabled": True,
+    "passiveStateDirectApply": True,
     "passiveConfigDirectApply": False,
     "externalWritePolicy": "record_only",
     "normalizations": [],
@@ -119,6 +127,25 @@ def parse_iso8601_timestamp(value: Any, field_name: str) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError(f"{field_name} must include timezone")
     return parsed
+
+
+def timestamp_has_subsecond_precision(value: Any) -> bool:
+    text = str(value).strip()
+    if text == "":
+        return False
+    return "." in text
+
+
+def timestamp_not_after_boundary(captured_at: datetime, boundary: datetime, boundary_raw: Any) -> bool:
+    if timestamp_has_subsecond_precision(boundary_raw):
+        return captured_at <= boundary
+    return captured_at.replace(microsecond=0) <= boundary.replace(microsecond=0)
+
+
+def timestamp_not_before_boundary(captured_at: datetime, boundary: datetime, boundary_raw: Any) -> bool:
+    if timestamp_has_subsecond_precision(boundary_raw):
+        return captured_at >= boundary
+    return captured_at.replace(microsecond=0) >= boundary.replace(microsecond=0)
 
 
 def parse_cli_bool(value: Any, field_name: str) -> bool:
@@ -477,6 +504,264 @@ def load_rollback_execution_artifact(path: pathlib.Path, expected_run_id: str) -
     if bool(payload.get("ok")) and (restart_exit_code != 0 or not restart_succeeded or not health_check_ok):
         raise ValueError(f"rollback execution artifact ok status is inconsistent with evidence booleans: {path}")
     return payload
+
+
+def build_rollback_result_artifact(proof_dir: pathlib.Path, run_id: str) -> Dict[str, Any]:
+    rollback_execution_path = proof_dir / "rollback_execution.json"
+    reasons: List[str] = []
+    rollback_execution: Dict[str, Any] | None = None
+    rollback_pre: Dict[str, Any] | None = None
+    rollback_post: Dict[str, Any] | None = None
+    rollback_target_state: Dict[str, Any] | None = None
+    execution_ok = False
+    pre_matches_proof_state = False
+    post_matches_target = False
+    observed_transition = False
+    pre_live_ready = False
+    post_live_ready = False
+    pre_snapshot_ordered = False
+    post_snapshot_ordered = False
+    execution_started_at: datetime | None = None
+    execution_completed_at: datetime | None = None
+
+    try:
+        rollback_execution = load_rollback_execution_artifact(rollback_execution_path, run_id)
+    except Exception as exc:  # noqa: BLE001 - fail closed into artifact reasons.
+        reasons.append(str(exc))
+    else:
+        target_raw = rollback_execution.get("requested_to_flags")
+        if not isinstance(target_raw, dict):
+            reasons.append(
+                f"rollback execution artifact missing requested_to_flags object: {rollback_execution_path}"
+            )
+        else:
+            try:
+                rollback_target_state = normalize_feature_flag_state(
+                    target_raw,
+                    rollback_execution_path,
+                    "rollback execution requested_to_flags",
+                )
+            except Exception as exc:  # noqa: BLE001 - fail closed into artifact reasons.
+                reasons.append(str(exc))
+        evidence = rollback_execution.get("evidence")
+        if isinstance(evidence, dict):
+            try:
+                started_at_raw = evidence.get("started_at")
+                completed_at_raw = evidence.get("completed_at")
+                execution_started_at = parse_iso8601_timestamp(
+                    started_at_raw,
+                    f"{rollback_execution_path}:evidence.started_at",
+                )
+                execution_completed_at = parse_iso8601_timestamp(
+                    completed_at_raw,
+                    f"{rollback_execution_path}:evidence.completed_at",
+                )
+            except Exception as exc:  # noqa: BLE001 - fail closed into artifact reasons.
+                reasons.append(str(exc))
+                started_at_raw = None
+                completed_at_raw = None
+        else:
+            started_at_raw = None
+            completed_at_raw = None
+        execution_ok = bool(rollback_execution.get("ok", False))
+        if not execution_ok:
+            reasons.append(
+                "rollback execution artifact did not complete successfully: "
+                f"{str(rollback_execution.get('reason', '')).strip() or 'unknown reason'}"
+            )
+
+    for snapshot_prefix, slot_name in (("rollback_pre", "pre"), ("rollback_post", "post")):
+        try:
+            snapshot = load_structured_snapshot_bundle(proof_dir, snapshot_prefix)
+        except Exception as exc:  # noqa: BLE001 - fail closed into artifact reasons.
+            reasons.append(str(exc))
+            continue
+        if slot_name == "pre":
+            rollback_pre = snapshot
+        else:
+            rollback_post = snapshot
+
+    if rollback_pre is not None:
+        pre_state = rollback_pre["feature_flag_snapshot"]["canonical_feature_flags"]
+        pre_matches_proof_state, mismatch_field = compare_feature_flag_states(
+            pre_state,
+            ROLLBACK_PROOF_FEATURE_FLAGS,
+        )
+        if not pre_matches_proof_state:
+            reasons.append(
+                "rollback pre snapshot does not match expected proof-mode state"
+                if mismatch_field is None
+                else f"rollback pre snapshot does not match expected proof-mode state ({mismatch_field})"
+            )
+        pre_live_ready = rollback_pre["startup_phase"] == "LIVE_READY"
+        if not pre_live_ready:
+            reasons.append(
+                f"rollback pre snapshot not live-ready: startup_phase={rollback_pre['startup_phase']!r}"
+            )
+
+    if rollback_target_state is not None and rollback_post is not None:
+        post_state = rollback_post["feature_flag_snapshot"]["canonical_feature_flags"]
+        post_matches_target, mismatch_field = compare_feature_flag_states(post_state, rollback_target_state)
+        if not post_matches_target:
+            reasons.append(
+                "rollback post snapshot does not match rollback target state"
+                if mismatch_field is None
+                else f"rollback post snapshot does not match rollback target state ({mismatch_field})"
+            )
+        post_live_ready = rollback_post["startup_phase"] == "LIVE_READY"
+        if not post_live_ready:
+            reasons.append(
+                f"rollback post snapshot not live-ready: startup_phase={rollback_post['startup_phase']!r}"
+            )
+
+    if rollback_pre is not None and rollback_post is not None:
+        observed_transition = (
+            rollback_pre["feature_flag_snapshot"]["canonical_feature_flags_key"]
+            != rollback_post["feature_flag_snapshot"]["canonical_feature_flags_key"]
+        )
+        if not observed_transition:
+            reasons.append("rollback pre/post snapshots did not observe a feature-flag transition")
+
+    if execution_started_at is not None and rollback_pre is not None:
+        pre_captured_at = parse_iso8601_timestamp(
+            rollback_pre["feature_flag_snapshot"]["captured_at"],
+            f"{rollback_pre['feature_flag_snapshot']['feature_flags_snapshot_path']}:captured_at",
+        )
+        pre_snapshot_ordered = timestamp_not_after_boundary(
+            pre_captured_at,
+            execution_started_at,
+            started_at_raw,
+        )
+        if not pre_snapshot_ordered:
+            reasons.append("rollback pre snapshot was captured after rollback execution started")
+
+    if execution_completed_at is not None and rollback_post is not None:
+        post_captured_at = parse_iso8601_timestamp(
+            rollback_post["feature_flag_snapshot"]["captured_at"],
+            f"{rollback_post['feature_flag_snapshot']['feature_flags_snapshot_path']}:captured_at",
+        )
+        post_snapshot_ordered = timestamp_not_before_boundary(
+            post_captured_at,
+            execution_completed_at,
+            completed_at_raw,
+        )
+        if not post_snapshot_ordered:
+            reasons.append("rollback post snapshot was captured before rollback execution completed")
+
+    status = "pass" if len(reasons) == 0 else "fail"
+    reason = "ok" if status == "pass" else "; ".join(reasons)
+
+    return {
+        "schema": ROLLBACK_RESULT_ARTIFACT_SCHEMA,
+        "captured_at": utc_now(),
+        "run_id": run_id,
+        "source": "rollback_execution_plus_structured_snapshots",
+        "claim_scope": "bounded_proof_window_rollback_result",
+        "evidence": {
+            "rollback_execution_path": str(rollback_execution_path),
+            "rollback_pre_snapshot_paths": None if rollback_pre is None else rollback_pre["snapshot_paths"],
+            "rollback_post_snapshot_paths": None if rollback_post is None else rollback_post["snapshot_paths"],
+        },
+        "rollback_execution": rollback_execution,
+        "rollback_target_state": rollback_target_state,
+        "rollback_pre": rollback_pre,
+        "rollback_post": rollback_post,
+        "criteria": {
+            "rollback_execution_ok": {
+                "ok": execution_ok,
+                "reason": None
+                if execution_ok
+                else (
+                    "missing rollback execution artifact"
+                    if rollback_execution is None
+                    else str(rollback_execution.get("reason", "")).strip() or "rollback execution failed"
+                ),
+            },
+            "rollback_pre_matches_proof_state": {
+                "ok": rollback_pre is not None and pre_matches_proof_state,
+                "reason": (
+                    "missing rollback pre snapshot"
+                    if rollback_pre is None
+                    else (
+                        "ok"
+                        if pre_matches_proof_state
+                        else "rollback pre snapshot does not match expected proof-mode state"
+                    )
+                ),
+            },
+            "rollback_pre_live_ready": {
+                "ok": rollback_pre is not None and pre_live_ready,
+                "reason": (
+                    "missing rollback pre snapshot"
+                    if rollback_pre is None
+                    else (
+                        f"rollback pre snapshot not live-ready: startup_phase={rollback_pre['startup_phase']!r}"
+                        if not pre_live_ready
+                        else "ok"
+                    )
+                ),
+            },
+            "rollback_post_matches_target": {
+                "ok": rollback_post is not None and rollback_target_state is not None and post_matches_target,
+                "reason": (
+                    "missing rollback post snapshot or rollback target state"
+                    if rollback_post is None or rollback_target_state is None
+                    else "ok" if post_matches_target else "rollback post snapshot does not match rollback target state"
+                ),
+            },
+            "rollback_observed_transition": {
+                "ok": rollback_pre is not None and rollback_post is not None and observed_transition,
+                "reason": (
+                    "missing rollback pre/post snapshots"
+                    if rollback_pre is None or rollback_post is None
+                    else (
+                        "rollback pre/post snapshots did not observe a feature-flag transition"
+                        if not observed_transition
+                        else "ok"
+                    )
+                ),
+            },
+            "rollback_pre_captured_before_execution": {
+                "ok": rollback_pre is not None and execution_started_at is not None and pre_snapshot_ordered,
+                "reason": (
+                    "missing rollback pre snapshot or rollback execution started_at"
+                    if rollback_pre is None or execution_started_at is None
+                    else (
+                        "rollback pre snapshot was captured after rollback execution started"
+                        if not pre_snapshot_ordered
+                        else "ok"
+                    )
+                ),
+            },
+            "rollback_post_captured_after_execution": {
+                "ok": rollback_post is not None and execution_completed_at is not None and post_snapshot_ordered,
+                "reason": (
+                    "missing rollback post snapshot or rollback execution completed_at"
+                    if rollback_post is None or execution_completed_at is None
+                    else (
+                        "rollback post snapshot was captured before rollback execution completed"
+                        if not post_snapshot_ordered
+                        else "ok"
+                    )
+                ),
+            },
+            "rollback_post_live_ready": {
+                "ok": rollback_post is not None and post_live_ready,
+                "reason": (
+                    "missing rollback post snapshot"
+                    if rollback_post is None
+                    else (
+                        f"rollback post snapshot not live-ready: startup_phase={rollback_post['startup_phase']!r}"
+                        if not post_live_ready
+                        else "ok"
+                    )
+                ),
+            },
+        },
+        "ok": status == "pass",
+        "status": status,
+        "reason": reason,
+    }
 
 
 def extract_locked_replay_case_names(corpus: Any, source_path: pathlib.Path) -> Tuple[Tuple[str, ...], str]:
@@ -848,6 +1133,18 @@ def proof_phase_graphql_bus_watch_path(proof_dir: pathlib.Path, phase: str) -> p
     raise ValueError(f"unsupported GraphQL bus-watch phase lookup: {phase!r}")
 
 
+def structured_snapshot_paths(proof_dir: pathlib.Path, snapshot_prefix: str) -> Dict[str, pathlib.Path]:
+    normalized = snapshot_prefix.strip().lower()
+    if normalized == "":
+        raise ValueError("unsupported empty structured snapshot prefix")
+    return {
+        "metrics": proof_dir / f"{normalized}_metrics.prom",
+        "bus_observability": proof_dir / f"{normalized}_bus_observability.json",
+        "graphql_bus_watch": proof_dir / f"{normalized}_graphql_bus_watch.json",
+        "feature_flags": proof_dir / f"{normalized}_feature_flags.json",
+    }
+
+
 def canonicalize_json_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): canonicalize_json_value(value[key]) for key in sorted(value.keys())}
@@ -967,6 +1264,12 @@ def load_feature_flag_snapshot(snapshot_path: pathlib.Path, phase: str) -> Dict[
         raise ValueError(f"{snapshot_path}: graphql feature flags missing lastUpdatedAt")
     if bus_last_updated_at is None:
         raise ValueError(f"{snapshot_path}: bus-observability feature flags missing last_updated_at")
+    captured_at = normalize_timestamp_value(
+        payload.get("captured_at"),
+        snapshot_path,
+        "feature flag snapshot",
+        "captured_at",
+    )
     canonical_graphql_key = canonical_feature_flag_key(graphql_state)
     canonical_bus_key = canonical_feature_flag_key(bus_state)
     if canonical_graphql_key != canonical_bus_key:
@@ -983,6 +1286,7 @@ def load_feature_flag_snapshot(snapshot_path: pathlib.Path, phase: str) -> Dict[
     return {
         "phase": phase,
         "feature_flags_snapshot_path": str(snapshot_path),
+        "captured_at": captured_at,
         "graphql_feature_flags": graphql_state,
         "bus_observability_feature_flags": bus_state,
         "graphql_feature_flags_last_updated_at": graphql_last_updated_at,
@@ -1405,15 +1709,22 @@ def build_window_feature_flag_consistency_for_phases(
     }
 
 
-def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict[str, Any]:
-    normalized = phase.strip().lower()
+def load_structured_snapshot_bundle(proof_dir: pathlib.Path, snapshot_prefix: str) -> Dict[str, Any]:
+    normalized = snapshot_prefix.strip().lower()
     if normalized == "":
-        raise ValueError("unsupported empty canary phase for structured warmup snapshot lookup")
+        raise ValueError("unsupported empty structured snapshot prefix")
 
-    metrics_path = proof_phase_metrics_snapshot_path(proof_dir, normalized)
-    bus_path = proof_phase_bus_observability_snapshot_path(proof_dir, normalized)
-    graphql_path = proof_phase_graphql_bus_watch_snapshot_path(proof_dir, normalized)
-    feature_flag_path = proof_phase_feature_flag_snapshot_path(proof_dir, normalized)
+    if normalized in ("start", "end") or is_interval_phase(normalized):
+        metrics_path = proof_phase_metrics_snapshot_path(proof_dir, normalized)
+        bus_path = proof_phase_bus_observability_snapshot_path(proof_dir, normalized)
+        graphql_path = proof_phase_graphql_bus_watch_snapshot_path(proof_dir, normalized)
+        feature_flag_path = proof_phase_feature_flag_snapshot_path(proof_dir, normalized)
+    else:
+        paths = structured_snapshot_paths(proof_dir, normalized)
+        metrics_path = paths["metrics"]
+        bus_path = paths["bus_observability"]
+        graphql_path = paths["graphql_bus_watch"]
+        feature_flag_path = paths["feature_flags"]
     for snapshot_path, label in (
         (metrics_path, "metrics"),
         (bus_path, "bus observability"),
@@ -1618,6 +1929,13 @@ def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict
             },
         },
     }
+
+
+def load_structured_warmup_snapshot(proof_dir: pathlib.Path, phase: str) -> Dict[str, Any]:
+    normalized = phase.strip().lower()
+    if normalized == "":
+        raise ValueError("unsupported empty canary phase for structured warmup snapshot lookup")
+    return load_structured_snapshot_bundle(proof_dir, normalized)
 
 
 def required_finite_numeric_value(
@@ -5226,6 +5544,12 @@ def validate_rollback_execution_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def rollback_result_command(args: argparse.Namespace) -> int:
+    artifact = build_rollback_result_artifact(pathlib.Path(args.proof_dir), str(args.run_id).strip())
+    write_json(pathlib.Path(args.output), artifact)
+    return 0 if bool(artifact.get("ok", False)) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="P03 canary manifest verifier")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -5349,6 +5673,15 @@ def build_parser() -> argparse.ArgumentParser:
     validate_rollback_execution.add_argument("--artifact", required=True)
     validate_rollback_execution.add_argument("--run-id", required=True)
     validate_rollback_execution.set_defaults(func=validate_rollback_execution_command)
+
+    rollback_result = sub.add_parser(
+        "rollback-result",
+        help="build rollback result artifact from rollback execution plus bounded snapshots",
+    )
+    rollback_result.add_argument("--proof-dir", required=True)
+    rollback_result.add_argument("--run-id", required=True)
+    rollback_result.add_argument("--output", required=True)
+    rollback_result.set_defaults(func=rollback_result_command)
     return parser
 
 

@@ -291,6 +291,34 @@ func TestVaillantAdapterInfoStateUnsupportedTransportPublishesContract(t *testin
 	}
 }
 
+func TestVaillantAdapterInfoStateSupportedTransportSeedsEmptyContractBeforeRefresh(t *testing.T) {
+	raw := &stubAdapterInfoTransport{
+		responses: map[transport.AdapterInfoID][]adapterInfoResponse{},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bus := protocol.NewBus(raw, protocol.DefaultBusConfig(), 0)
+	bus.Run(ctx)
+
+	provider := graphql.NewLiveSemanticProvider()
+	state := newVaillantAdapterInfoState(bus, raw, provider)
+	if state == nil {
+		t.Fatal("newVaillantAdapterInfoState() returned nil")
+	}
+
+	info := provider.AdapterHardwareInfo()
+	if info == nil {
+		t.Fatal("AdapterHardwareInfo() after constructor = nil; want seeded empty contract")
+	}
+	if info.FirmwareVersion != "" {
+		t.Fatalf("FirmwareVersion after constructor = %q; want empty", info.FirmwareVersion)
+	}
+	if info.InfoSupported {
+		t.Fatal("InfoSupported after constructor = true; want false until identity refresh succeeds")
+	}
+}
+
 func TestVaillantAdapterInfoStateUnsupportedTransitionClearsTelemetry(t *testing.T) {
 	raw := &stubAdapterInfoTransport{
 		responses: map[transport.AdapterInfoID][]adapterInfoResponse{

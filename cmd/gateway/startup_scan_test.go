@@ -1215,6 +1215,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedSca
 	origLoopExitFn := startupScanLoopExitFn
 	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
 	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	origPostStartupIdentityRetryFn := postStartupIdentityRetryFn
 	restoreGlobals := func() {
 		registryScanFn = origRegistryScanFn
 		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
@@ -1224,14 +1225,16 @@ func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedSca
 		startupScanLoopExitFn = origLoopExitFn
 		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
 		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+		postStartupIdentityRetryFn = origPostStartupIdentityRetryFn
 	}
 
 	var (
-		mu            sync.Mutex
-		preloadRun    int
-		scanRun       int
-		scanCtxErr    error
-		targetHistory [][]byte
+		mu             sync.Mutex
+		preloadRun     int
+		scanRun        int
+		scanCtxErr     error
+		targetHistory  [][]byte
+		retrySchedules int
 	)
 	activeSuccess := make(chan struct{}, 1)
 	registryScanFn = func(scanCtx context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, targets []byte) ([]registry.DeviceEntry, error) {
@@ -1291,6 +1294,11 @@ func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedSca
 	}
 	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {}
 	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+	postStartupIdentityRetryFn = func(context.Context, *ebusgateway.Gateway, *graphql.Builder, ebusgateway.Config, *ebusgateway.TransportConfig) {
+		mu.Lock()
+		retrySchedules++
+		mu.Unlock()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
@@ -1324,6 +1332,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedSca
 	gotPreloadRun := preloadRun
 	gotScanRun := scanRun
 	gotScanCtxErr := scanCtxErr
+	gotRetrySchedules := retrySchedules
 	gotTargetHistory := make([][]byte, len(targetHistory))
 	for i := range targetHistory {
 		gotTargetHistory[i] = append([]byte(nil), targetHistory[i]...)
@@ -1335,6 +1344,9 @@ func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedSca
 	}
 	if gotScanRun != 2 {
 		t.Fatalf("registry scan runs = %d; want 2 (failed full-range retry, then restricted success)", gotScanRun)
+	}
+	if gotRetrySchedules != 1 {
+		t.Fatalf("delayed retry schedules = %d; want 1 for the entire preload-to-active confirmation flow", gotRetrySchedules)
 	}
 	if gotScanCtxErr != nil {
 		t.Fatalf("registry scan received canceled context during follow-up active confirmation: %v", gotScanCtxErr)

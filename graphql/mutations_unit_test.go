@@ -259,7 +259,7 @@ func TestSetBoilerConfigMutation_UnsupportedInReducedProfile(t *testing.T) {
 			"noop": &graphqlgo.Field{Type: graphqlgo.String},
 		},
 	})
-	mutationType := buildMutationType(nil, nil, nil, nil)
+	mutationType := buildMutationType(nil, nil, nil, nil, nil)
 	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
 		Query:    queryType,
 		Mutation: mutationType,
@@ -819,7 +819,7 @@ func buildMutationSchema(t *testing.T, registry InvokeRegistry, invoker Invoker,
 			"noop": &graphqlgo.Field{Type: graphqlgo.String},
 		},
 	})
-	mutationType := buildMutationType(registry, invoker, boilerWriter, scheduleWriter)
+	mutationType := buildMutationType(registry, invoker, boilerWriter, nil, scheduleWriter)
 	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
 		Query:    queryType,
 		Mutation: mutationType,

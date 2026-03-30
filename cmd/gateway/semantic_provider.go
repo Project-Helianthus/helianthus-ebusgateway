@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
@@ -261,11 +263,14 @@ func (adapter mcpSemanticProviderAdapter) BoilerStatus() *mcp.BoilerStatus {
 			DhwTargetTemperatureC:    cloneFloatPtr(status.State.DhwTargetTemperatureC),
 		},
 		Config: &mcp.BoilerConfig{
-			DhwOperatingMode: cloneStringPtr(status.Config.DhwOperatingMode),
-			FlowsetHcMaxC:    cloneFloatPtr(status.Config.FlowsetHcMaxC),
-			FlowsetHwcMaxC:   cloneFloatPtr(status.Config.FlowsetHwcMaxC),
-			PartloadHcKW:     cloneFloatPtr(status.Config.PartloadHcKW),
-			PartloadHwcKW:    cloneFloatPtr(status.Config.PartloadHwcKW),
+			DhwOperatingMode:  cloneStringPtr(status.Config.DhwOperatingMode),
+			FlowsetHcMaxC:     cloneFloatPtr(status.Config.FlowsetHcMaxC),
+			FlowsetHwcMaxC:    cloneFloatPtr(status.Config.FlowsetHwcMaxC),
+			PartloadHcKW:      cloneFloatPtr(status.Config.PartloadHcKW),
+			PartloadHwcKW:     cloneFloatPtr(status.Config.PartloadHwcKW),
+			InstallerMenuCode: cloneIntPtr(status.Config.InstallerMenuCode),
+			PhoneNumber:       cloneStringPtr(status.Config.PhoneNumber),
+			HoursTillService:  cloneIntPtr(status.Config.HoursTillService),
 		},
 		Diagnostics: &mcp.BoilerDiagnostics{
 			HeatingStatusRaw:         cloneIntPtr(status.Diagnostics.HeatingStatusRaw),
@@ -466,4 +471,26 @@ func cloneFloatPtr(value *float64) *float64 {
 	}
 	cp := *value
 	return &cp
+}
+
+// mcpConfigWriterAdapter adapts the semantic poller's config write methods
+// to the MCP ConfigWriter interface.
+type mcpConfigWriterAdapter struct {
+	poller *vaillantSemanticPoller
+}
+
+func (a *mcpConfigWriterAdapter) SetSystemConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {
+	if a == nil || a.poller == nil {
+		return mcp.ConfigSetResult{Error: "system config writer unavailable"}
+	}
+	result := a.poller.SetSystemConfig(ctx, field, value)
+	return mcp.ConfigSetResult{Success: result.Success, Error: result.Error}
+}
+
+func (a *mcpConfigWriterAdapter) SetBoilerConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {
+	if a == nil || a.poller == nil {
+		return mcp.ConfigSetResult{Error: "boiler config writer unavailable"}
+	}
+	result := a.poller.SetBoilerConfig(ctx, field, value)
+	return mcp.ConfigSetResult{Success: result.Success, Error: result.Error}
 }

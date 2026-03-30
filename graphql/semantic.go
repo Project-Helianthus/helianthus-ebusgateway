@@ -221,11 +221,14 @@ type BoilerState struct {
 }
 
 type BoilerConfig struct {
-	DhwOperatingMode *string
-	FlowsetHcMaxC    *float64
-	FlowsetHwcMaxC   *float64
-	PartloadHcKW     *float64
-	PartloadHwcKW    *float64
+	DhwOperatingMode  *string
+	FlowsetHcMaxC     *float64
+	FlowsetHwcMaxC    *float64
+	PartloadHcKW      *float64
+	PartloadHwcKW     *float64
+	InstallerMenuCode *int
+	PhoneNumber       *string
+	HoursTillService  *int
 }
 
 type BoilerDiagnostics struct {
@@ -272,6 +275,10 @@ type SystemConfig struct {
 	HcEmergencyTemperature       *float64
 	HwcMaxFlowTempDesired        *float64
 	MaxRoomHumidity              *int
+	MaintenanceDate   *string
+	InstallerName     *string
+	InstallerPhone    *string
+	InstallerMenuCode *int
 }
 
 type SystemProperties struct {
@@ -633,6 +640,22 @@ func cloneSystemConfig(config SystemConfig) SystemConfig {
 	if config.MaxRoomHumidity != nil {
 		v := *config.MaxRoomHumidity
 		config.MaxRoomHumidity = &v
+	}
+	if config.MaintenanceDate != nil {
+		v := *config.MaintenanceDate
+		config.MaintenanceDate = &v
+	}
+	if config.InstallerName != nil {
+		v := *config.InstallerName
+		config.InstallerName = &v
+	}
+	if config.InstallerPhone != nil {
+		v := *config.InstallerPhone
+		config.InstallerPhone = &v
+	}
+	if config.InstallerMenuCode != nil {
+		v := *config.InstallerMenuCode
+		config.InstallerMenuCode = &v
 	}
 	return config
 }

@@ -681,6 +681,18 @@ func cloneBoilerConfig(config BoilerConfig) BoilerConfig {
 		v := *config.PartloadHwcKW
 		config.PartloadHwcKW = &v
 	}
+	if config.InstallerMenuCode != nil {
+		v := *config.InstallerMenuCode
+		config.InstallerMenuCode = &v
+	}
+	if config.PhoneNumber != nil {
+		v := *config.PhoneNumber
+		config.PhoneNumber = &v
+	}
+	if config.HoursTillService != nil {
+		v := *config.HoursTillService
+		config.HoursTillService = &v
+	}
 	return config
 }
 

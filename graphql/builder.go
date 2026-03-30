@@ -14,6 +14,7 @@ type Builder struct {
 	bus      BusObservabilityProvider
 	watch    WatchSummaryProvider
 	boiler   BoilerConfigWriter
+	system   SystemConfigWriter
 	schedule ScheduleWriter
 
 	mu       sync.RWMutex
@@ -243,6 +244,25 @@ func (b *Builder) boilerConfigWriter() BoilerConfigWriter {
 	}
 	b.mu.RLock()
 	writer := b.boiler
+	b.mu.RUnlock()
+	return writer
+}
+
+func (b *Builder) SetSystemConfigWriter(writer SystemConfigWriter) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.system = writer
+	b.mu.Unlock()
+}
+
+func (b *Builder) systemConfigWriter() SystemConfigWriter {
+	if b == nil {
+		return nil
+	}
+	b.mu.RLock()
+	writer := b.system
 	b.mu.RUnlock()
 	return writer
 }

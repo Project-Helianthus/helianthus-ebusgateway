@@ -33,6 +33,7 @@ const (
 	vaillantB524OpcodeRead       = byte(0x06)
 	vaillantB524OpcodeLocal      = byte(0x02)
 	vaillantB524OpRead           = byte(0x00)
+	vaillantB524OpWrite          = byte(0x01)
 
 	vaillantGroupDHW       = byte(0x01)
 	vaillantGroupCircuits  = byte(0x02)
@@ -2995,6 +2996,12 @@ const (
 	systemRegHcEmergencyTemperature       = uint16(0x0026)
 	systemRegHwcMaxFlowTempDesired        = uint16(0x0046)
 	systemRegMaxRoomHumidity              = uint16(0x000E)
+	systemRegMaintenanceDate              = uint16(0x002C)
+	systemRegInstallerName1               = uint16(0x006C)
+	systemRegInstallerName2               = uint16(0x006D)
+	systemRegInstallerPhone1              = uint16(0x006F)
+	systemRegInstallerPhone2              = uint16(0x0070)
+	systemRegInstallerMenuCode            = uint16(0x0076)
 
 	// System properties registers (GG=0x00, II=0x00).
 	systemRegSystemScheme            = uint16(0x0036)
@@ -3012,6 +3019,7 @@ const (
 	boilerB509RegFlowTemperature       = uint16(0x1800)
 	boilerB509RegFanHours              = uint16(0x1B00)
 	boilerB509RegDeactivationsIFC      = uint16(0x1F00)
+	boilerB509RegHoursTillService      = uint16(0x2004)
 	boilerB509RegDeactivationsLimit    = uint16(0x2000)
 	boilerB509RegDhwHours              = uint16(0x2200)
 	boilerB509RegDhwStarts             = uint16(0x2300)
@@ -3021,11 +3029,13 @@ const (
 	boilerB509RegModulationPct         = uint16(0x2E00)
 	boilerB509RegFlowTempDesiredC      = uint16(0x3900)
 	boilerB509RegExternalPumpActive    = uint16(0x3F00)
+	boilerB509RegInstallerMenuCode     = uint16(0x4904)
 	boilerB509RegCentralHeatingPump    = uint16(0x4400)
 	boilerB509RegDiverterValvePosition = uint16(0x5400)
 	boilerB509RegDhwWaterFlowLpm       = uint16(0x5500)
 	boilerB509RegDhwDemandActive       = uint16(0x5800)
 	boilerB509RegCirculationPumpActive = uint16(0x7B00)
+	boilerB509RegPhoneNumber           = uint16(0x8104)
 	boilerB509RegFanSpeedRpm           = uint16(0x8300)
 	boilerB509RegStorageLoadPumpPct    = uint16(0x9E00)
 	boilerB509RegIonisationVoltageUa   = uint16(0xA400)
@@ -3075,6 +3085,9 @@ type vaillantBoilerSnapshot struct {
 	FanHours                 *float64
 	DeactivationsIFC         *int
 	DeactivationsTemplimiter *int
+	InstallerMenuCode        *int
+	PhoneNumber              *string
+	HoursTillService         *int
 }
 
 type vaillantSystemSnapshot struct {
@@ -3096,6 +3109,10 @@ type vaillantSystemSnapshot struct {
 	HcEmergencyTemperature       *float64
 	HwcMaxFlowTempDesired        *float64
 	MaxRoomHumidity              *uint16
+	MaintenanceDate   *string
+	InstallerName     *string
+	InstallerPhone    *string
+	InstallerMenuCode *uint16
 
 	// Properties
 	SystemScheme            *uint16
@@ -3412,6 +3429,19 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB509(ctx context.Context, bo
 			snapshot.DeactivationsTemplimiter = value
 			updated = true
 		}
+		// Installer/maintenance config.
+		if value := p.readB509UCHInt(ctx, boilerAddress, boilerB509RegInstallerMenuCode); value != nil {
+			snapshot.InstallerMenuCode = value
+			updated = true
+		}
+		if value := p.readB509PhoneBCD(ctx, boilerAddress, boilerB509RegPhoneNumber); value != nil {
+			snapshot.PhoneNumber = value
+			updated = true
+		}
+		if value := p.readB509Hoursum2Int(ctx, boilerAddress, boilerB509RegHoursTillService); value != nil {
+			snapshot.HoursTillService = value
+			updated = true
+		}
 	}
 	return updated
 }
@@ -3466,10 +3496,13 @@ func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSour
 			DhwTargetTemperatureC:    snapshot.DhwTargetTemperatureC,
 		},
 		Config: graphql.BoilerConfig{
-			FlowsetHcMaxC:  snapshot.FlowsetHcMaxC,
-			FlowsetHwcMaxC: snapshot.FlowsetHwcMaxC,
-			PartloadHcKW:   snapshot.PartloadHcKW,
-			PartloadHwcKW:  snapshot.PartloadHwcKW,
+			FlowsetHcMaxC:     snapshot.FlowsetHcMaxC,
+			FlowsetHwcMaxC:    snapshot.FlowsetHwcMaxC,
+			PartloadHcKW:      snapshot.PartloadHcKW,
+			PartloadHwcKW:     snapshot.PartloadHwcKW,
+			InstallerMenuCode: snapshot.InstallerMenuCode,
+			PhoneNumber:       cloneStringPtr(snapshot.PhoneNumber),
+			HoursTillService:  snapshot.HoursTillService,
 		},
 		Diagnostics: graphql.BoilerDiagnostics{
 			HeatingStatusRaw:         snapshot.HeatingStatusRaw,
@@ -3578,6 +3611,42 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 	}
 	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegMaxRoomHumidity); ok && raw != nil {
 		snapshot.MaxRoomHumidity = cloneUint16Ptr(raw)
+		updated = true
+	}
+
+	// Installer/maintenance config (slow-config reads).
+	if value, ok := p.readB524DateHDA3(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegMaintenanceDate); ok {
+		snapshot.MaintenanceDate = &value
+		updated = true
+	}
+	{
+		// Combined installer name from 2 registers × 6 chars.
+		name1, ok1 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerName1)
+		name2, ok2 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerName2)
+		if ok1 || ok2 {
+			var p1, p2 string
+			if ok1 { p1 = name1 }
+			if ok2 { p2 = name2 }
+			combined := strings.TrimRight(p1+p2, " \x00")
+			snapshot.InstallerName = &combined
+			updated = true
+		}
+	}
+	{
+		// Combined installer phone from 2 registers × 6 chars.
+		phone1, ok1 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerPhone1)
+		phone2, ok2 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerPhone2)
+		if ok1 || ok2 {
+			var p1, p2 string
+			if ok1 { p1 = phone1 }
+			if ok2 { p2 = phone2 }
+			combined := strings.TrimRight(p1+p2, " \x00")
+			snapshot.InstallerPhone = &combined
+			updated = true
+		}
+	}
+	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerMenuCode); ok && raw != nil {
+		snapshot.InstallerMenuCode = cloneUint16Ptr(raw)
 		updated = true
 	}
 
@@ -3819,6 +3888,10 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 			HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
 			HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
 			MaxRoomHumidity:              uint16ToIntPtr(snapshot.MaxRoomHumidity),
+			MaintenanceDate:   cloneStringPtr(snapshot.MaintenanceDate),
+			InstallerName:     cloneStringPtr(snapshot.InstallerName),
+			InstallerPhone:    cloneStringPtr(snapshot.InstallerPhone),
+			InstallerMenuCode: uint16ToIntPtr(snapshot.InstallerMenuCode),
 		},
 		Properties: graphql.SystemProperties{
 			SystemScheme:            uint16ToIntPtr(snapshot.SystemScheme),
@@ -4354,6 +4427,21 @@ func mergeSystemSnapshotNonDestructive(existing, incoming *vaillantSystemSnapsho
 	if incoming.MaxRoomHumidity != nil {
 		merged.MaxRoomHumidity = cloneUint16Ptr(incoming.MaxRoomHumidity)
 	}
+	if incoming.MaintenanceDate != nil {
+		v := *incoming.MaintenanceDate
+		merged.MaintenanceDate = &v
+	}
+	if incoming.InstallerName != nil {
+		v := *incoming.InstallerName
+		merged.InstallerName = &v
+	}
+	if incoming.InstallerPhone != nil {
+		v := *incoming.InstallerPhone
+		merged.InstallerPhone = &v
+	}
+	if incoming.InstallerMenuCode != nil {
+		merged.InstallerMenuCode = cloneUint16Ptr(incoming.InstallerMenuCode)
+	}
 	if incoming.SystemScheme != nil {
 		merged.SystemScheme = cloneUint16Ptr(incoming.SystemScheme)
 	}
@@ -4383,10 +4471,15 @@ func cloneSystemSnapshot(snapshot *vaillantSystemSnapshot) *vaillantSystemSnapsh
 		HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
 		HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
 		MaxRoomHumidity:              cloneUint16Ptr(snapshot.MaxRoomHumidity),
+		MaintenanceDate:   cloneStringPtr(snapshot.MaintenanceDate),
+		InstallerName:     cloneStringPtr(snapshot.InstallerName),
+		InstallerPhone:    cloneStringPtr(snapshot.InstallerPhone),
+		InstallerMenuCode: cloneUint16Ptr(snapshot.InstallerMenuCode),
 		SystemScheme:                 cloneUint16Ptr(snapshot.SystemScheme),
 		ModuleConfigurationVR71:      cloneUint16Ptr(snapshot.ModuleConfigurationVR71),
 	}
 }
+
 
 func uint16ToIntPtr(value *uint16) *int {
 	if value == nil {
@@ -4461,6 +4554,10 @@ func systemStatusEquals(a, b *graphql.SystemStatus) bool {
 		floatPtrEquals(a.Config.HcEmergencyTemperature, b.Config.HcEmergencyTemperature) &&
 		floatPtrEquals(a.Config.HwcMaxFlowTempDesired, b.Config.HwcMaxFlowTempDesired) &&
 		intPtrEquals(a.Config.MaxRoomHumidity, b.Config.MaxRoomHumidity) &&
+		stringPtrEquals(a.Config.MaintenanceDate, b.Config.MaintenanceDate) &&
+		stringPtrEquals(a.Config.InstallerName, b.Config.InstallerName) &&
+		stringPtrEquals(a.Config.InstallerPhone, b.Config.InstallerPhone) &&
+		intPtrEquals(a.Config.InstallerMenuCode, b.Config.InstallerMenuCode) &&
 		intPtrEquals(a.Properties.SystemScheme, b.Properties.SystemScheme) &&
 		intPtrEquals(a.Properties.ModuleConfigurationVR71, b.Properties.ModuleConfigurationVR71)
 }
@@ -4676,6 +4773,15 @@ func mergeBoilerSnapshotNonDestructive(existing, incoming *vaillantBoilerSnapsho
 		if incoming.DeactivationsTemplimiter != nil {
 			merged.DeactivationsTemplimiter = cloneBoilerIntPtr(incoming.DeactivationsTemplimiter)
 		}
+		if incoming.InstallerMenuCode != nil {
+			merged.InstallerMenuCode = cloneBoilerIntPtr(incoming.InstallerMenuCode)
+		}
+		if incoming.PhoneNumber != nil {
+			merged.PhoneNumber = cloneStringPtr(incoming.PhoneNumber)
+		}
+		if incoming.HoursTillService != nil {
+			merged.HoursTillService = cloneBoilerIntPtr(incoming.HoursTillService)
+		}
 	}
 
 	// Closed decision: do not map GG=0x02 RR=0x0008 as boiler return temperature.
@@ -4727,6 +4833,9 @@ func cloneBoilerSnapshot(snapshot *vaillantBoilerSnapshot) *vaillantBoilerSnapsh
 		FanHours:                 cloneFloat64Ptr(snapshot.FanHours),
 		DeactivationsIFC:         cloneBoilerIntPtr(snapshot.DeactivationsIFC),
 		DeactivationsTemplimiter: cloneBoilerIntPtr(snapshot.DeactivationsTemplimiter),
+		InstallerMenuCode:        cloneBoilerIntPtr(snapshot.InstallerMenuCode),
+		PhoneNumber:              cloneStringPtr(snapshot.PhoneNumber),
+		HoursTillService:         cloneBoilerIntPtr(snapshot.HoursTillService),
 	}
 }
 
@@ -5426,21 +5535,170 @@ var boilerConfigFieldSpecs = map[string]boilerConfigFieldSpec{
 	"partloadHwcKW":  {addrs: []uint16{boilerB509RegPartloadHwcKW}, min: 0, max: 40, codec: boilerConfigCodecUCH},
 }
 
+// cstringPairSpec defines a paired CString field that spans 2 registers.
+type cstringPairSpec struct {
+	addr1 uint16 // first register (first 6 chars)
+	addr2 uint16 // second register (remaining chars)
+}
+
+var systemCStringPairSpecs = map[string]cstringPairSpec{
+	"installerName":  {addr1: systemRegInstallerName1, addr2: systemRegInstallerName2},
+	"installerPhone": {addr1: systemRegInstallerPhone1, addr2: systemRegInstallerPhone2},
+}
+
+func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName string, rawValue string) graphql.ConfigMutationResult {
+	if p == nil {
+		return graphql.ConfigMutationResult{Success: false, Error: "system config writer unavailable"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Handle paired CString fields (2 registers × 6 chars).
+	if pair, ok := systemCStringPairSpecs[fieldName]; ok {
+		return p.writeSystemCStringPair(ctx, fieldName, rawValue, pair)
+	}
+
+	payload, spec, err := graphql.EncodeSystemConfigValue(fieldName, rawValue)
+	if err != nil {
+		return graphql.ConfigMutationResult{Success: false, Error: err.Error()}
+	}
+
+	return p.writeSystemSingleRegister(ctx, fieldName, rawValue, spec, payload)
+}
+
+func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, fieldName, rawValue string, spec graphql.ConfigFieldSpec, payload []byte) graphql.ConfigMutationResult {
+	opcode := byte(0x02)
+	group := spec.Group()
+	instance := byte(0x00)
+	addr := spec.Addr()
+
+	if err := p.writeB524Value(ctx, opcode, group, instance, addr, payload); err != nil {
+		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write failed: %v", err)}
+	}
+
+	readback, ok := p.readB524ValueLive(ctx, opcode, group, instance, addr)
+	if !ok {
+		return graphql.ConfigMutationResult{Success: false, Error: "b524 write confirm failed: read-back unavailable"}
+	}
+	if err := graphql.ConfirmDecodableReadback(spec, readback); err != nil {
+		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write confirm failed: %v", err)}
+	}
+	if !graphql.ConfigReadbackMatchesWrite(spec, payload, readback) {
+		return graphql.ConfigMutationResult{Success: false, Error: "b524 write confirm failed: read-back mismatch"}
+	}
+
+	normalizedValue := strings.TrimSpace(rawValue)
+	p.mu.Lock()
+	p.system = systemSnapshotWithConfigValue(p.system, fieldName, normalizedValue)
+	p.mu.Unlock()
+
+	p.publishSystem(semanticSnapshotSourceLive)
+	return graphql.ConfigMutationResult{Success: true}
+}
+
+func (p *vaillantSemanticPoller) writeSystemCStringPair(ctx context.Context, fieldName, rawValue string, pair cstringPairSpec) graphql.ConfigMutationResult {
+	trimmed := strings.TrimSpace(rawValue)
+
+	// Validate characters.
+	for i := 0; i < len(trimmed); i++ {
+		b := trimmed[i]
+		if fieldName == "installerPhone" {
+			if !((b >= '0' && b <= '9') || b == '+' || b == '(' || b == ')' || b == ' ') {
+				return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("invalid character '%c' at position %d (allowed: digits, +, (, ), space)", b, i)}
+			}
+		} else {
+			if b < 0x20 || b > 0x7E {
+				return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("invalid byte 0x%02X at position %d", b, i)}
+			}
+		}
+	}
+	if len(trimmed) > 12 {
+		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("string length %d exceeds max 12", len(trimmed))}
+	}
+
+	// Split into 2 parts of max 6 chars each.
+	part1 := trimmed
+	part2 := ""
+	if len(trimmed) > 6 {
+		part1 = trimmed[:6]
+		part2 = trimmed[6:]
+	}
+
+	// Encode each part: null-padded to 7 bytes (6 chars + terminator).
+	encode := func(s string) []byte {
+		buf := make([]byte, 7)
+		copy(buf, s)
+		return buf
+	}
+
+	opcode := byte(0x02)
+	group := byte(0x00)
+	instance := byte(0x00)
+
+	// Write part 1.
+	if err := p.writeB524Value(ctx, opcode, group, instance, pair.addr1, encode(part1)); err != nil {
+		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write part1 failed: %v", err)}
+	}
+	// Write part 2.
+	if err := p.writeB524Value(ctx, opcode, group, instance, pair.addr2, encode(part2)); err != nil {
+		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write part2 failed: %v", err)}
+	}
+
+	p.mu.Lock()
+	p.system = systemSnapshotWithConfigValue(p.system, fieldName, trimmed)
+	p.mu.Unlock()
+
+	p.publishSystem(semanticSnapshotSourceLive)
+	return graphql.ConfigMutationResult{Success: true}
+}
+
+func systemSnapshotWithConfigValue(existing *vaillantSystemSnapshot, fieldName, rawValue string) *vaillantSystemSnapshot {
+	snapshot := cloneSystemSnapshot(existing)
+	if snapshot == nil {
+		snapshot = &vaillantSystemSnapshot{}
+	}
+	switch fieldName {
+	case "maintenanceDate":
+		snapshot.MaintenanceDate = &rawValue
+	case "installerName":
+		snapshot.InstallerName = &rawValue
+	case "installerPhone":
+		snapshot.InstallerPhone = &rawValue
+	case "installerMenuCode":
+		if v, err := strconv.Atoi(rawValue); err == nil {
+			u := uint16(v)
+			snapshot.InstallerMenuCode = &u
+		}
+	}
+	return snapshot
+}
+
 func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName string, rawValue string) graphql.BoilerConfigMutationResult {
 	if p == nil {
 		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler config writer unavailable"}
 	}
 
+	// Handle BCD phone number specially (not float64-based).
+	if fieldName == "phoneNumber" {
+		return p.writeBoilerPhoneBCD(ctx, rawValue)
+	}
+	// Handle boiler installer menu code as integer (not float64-based).
+	if fieldName == "installerMenuCode" {
+		return p.writeBoilerInstallerMenuCode(ctx, rawValue)
+	}
+
 	spec, ok := boilerConfigFieldSpecs[fieldName]
 	if !ok {
-		keys := make([]string, 0, len(boilerConfigFieldSpecs))
+		allKeys := make([]string, 0, len(boilerConfigFieldSpecs)+2)
 		for key := range boilerConfigFieldSpecs {
-			keys = append(keys, key)
+			allKeys = append(allKeys, key)
 		}
-		slices.Sort(keys)
+		allKeys = append(allKeys, "phoneNumber", "installerMenuCode")
+		slices.Sort(allKeys)
 		return graphql.BoilerConfigMutationResult{
 			Success: false,
-			Error:   fmt.Sprintf("unknown boiler field %q (allowed: %s)", fieldName, strings.Join(keys, ", ")),
+			Error:   fmt.Sprintf("unknown boiler field %q (allowed: %s)", fieldName, strings.Join(allKeys, ", ")),
 		}
 	}
 
@@ -5496,6 +5754,113 @@ func (p *vaillantSemanticPoller) fenceB509WriteConfirmShadow(target byte, addr u
 		Source:        ebusgateway.ShadowInvalidationSourceActive,
 		InvalidatedAt: p.now(),
 	})
+}
+
+func (p *vaillantSemanticPoller) writeBoilerPhoneBCD(ctx context.Context, rawValue string) graphql.BoilerConfigMutationResult {
+	// Strip formatting characters, keep only digits.
+	trimmed := strings.TrimSpace(rawValue)
+	var digits []byte
+	for _, b := range []byte(trimmed) {
+		if b >= '0' && b <= '9' {
+			digits = append(digits, b)
+		}
+	}
+	if len(digits) > 16 {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("phone number has %d digits (max 16)", len(digits))}
+	}
+
+	// Encode digits to BCD (2 digits per byte, pad with 0xF).
+	payload := make([]byte, 8)
+	for i := range payload {
+		payload[i] = 0xFF
+	}
+	for i := 0; i < len(digits); i += 2 {
+		hi := digits[i] - '0'
+		var lo byte = 0x0F
+		if i+1 < len(digits) {
+			lo = digits[i+1] - '0'
+		}
+		payload[i/2] = (hi << 4) | lo
+	}
+
+	p.mu.Lock()
+	boilerAddress := p.boilerAddress
+	p.mu.Unlock()
+	if boilerAddress == 0 {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler B509 address unavailable"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if err := p.writeB509Value(ctx, boilerAddress, boilerB509RegPhoneNumber, payload); err != nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
+	}
+
+	decoded := string(digits)
+	p.mu.Lock()
+	p.boiler = boilerSnapshotWithStringConfigValue(p.boiler, "phoneNumber", decoded)
+	p.mu.Unlock()
+
+	p.publishBoilerStatus(semanticSnapshotSourceLive)
+	return graphql.BoilerConfigMutationResult{Success: true}
+}
+
+func (p *vaillantSemanticPoller) writeBoilerInstallerMenuCode(ctx context.Context, rawValue string) graphql.BoilerConfigMutationResult {
+	trimmed := strings.TrimSpace(rawValue)
+	value, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("invalid integer %q: %v", rawValue, err)}
+	}
+	if value < 0 || value > 255 {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("value %d out of range [0, 255]", value)}
+	}
+
+	p.mu.Lock()
+	boilerAddress := p.boilerAddress
+	p.mu.Unlock()
+	if boilerAddress == 0 {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler B509 address unavailable"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	payload := []byte{byte(value)}
+	if err := p.writeB509Value(ctx, boilerAddress, boilerB509RegInstallerMenuCode, payload); err != nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
+	}
+
+	p.mu.Lock()
+	p.boiler = boilerSnapshotWithIntConfigValue(p.boiler, "installerMenuCode", value)
+	p.mu.Unlock()
+
+	p.publishBoilerStatus(semanticSnapshotSourceLive)
+	return graphql.BoilerConfigMutationResult{Success: true}
+}
+
+func boilerSnapshotWithStringConfigValue(existing *vaillantBoilerSnapshot, fieldName, value string) *vaillantBoilerSnapshot {
+	snapshot := cloneBoilerSnapshot(existing)
+	if snapshot == nil {
+		snapshot = &vaillantBoilerSnapshot{}
+	}
+	switch fieldName {
+	case "phoneNumber":
+		snapshot.PhoneNumber = &value
+	}
+	return snapshot
+}
+
+func boilerSnapshotWithIntConfigValue(existing *vaillantBoilerSnapshot, fieldName string, value int) *vaillantBoilerSnapshot {
+	snapshot := cloneBoilerSnapshot(existing)
+	if snapshot == nil {
+		snapshot = &vaillantBoilerSnapshot{}
+	}
+	switch fieldName {
+	case "installerMenuCode":
+		snapshot.InstallerMenuCode = &value
+	}
+	return snapshot
 }
 
 func parseBoilerConfigValue(rawValue string, spec boilerConfigFieldSpec) (float64, error) {
@@ -5701,6 +6066,45 @@ func (p *vaillantSemanticPoller) readB509Hoursum2(ctx context.Context, target by
 	return &value
 }
 
+func (p *vaillantSemanticPoller) readB509Hoursum2Int(ctx context.Context, target byte, addr uint16) *int {
+	value := p.readB509Hoursum2(ctx, target, addr)
+	if value == nil {
+		return nil
+	}
+	v := int(*value)
+	return &v
+}
+
+func (p *vaillantSemanticPoller) readB509PhoneBCD(ctx context.Context, target byte, addr uint16) *string {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	s := decodeBCDPhone(raw)
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func decodeBCDPhone(b []byte) string {
+	var buf strings.Builder
+	for _, v := range b {
+		hi, lo := v>>4, v&0x0F
+		if hi <= 9 {
+			buf.WriteByte('0' + hi)
+		} else {
+			break
+		}
+		if lo <= 9 {
+			buf.WriteByte('0' + lo)
+		} else {
+			break
+		}
+	}
+	return buf.String()
+}
+
 func (p *vaillantSemanticPoller) readB509UCHInt(ctx context.Context, target byte, addr uint16) *int {
 	raw, ok := p.readB509Value(ctx, target, addr)
 	if !ok {
@@ -5889,6 +6293,18 @@ func buildB524ReadSelector(opcode, group, instance byte, addr uint16) []byte {
 		byte(addr),
 		byte(addr >> 8),
 	}
+}
+
+func buildB524WriteSelector(opcode, group, instance byte, addr uint16, data []byte) []byte {
+	selector := []byte{
+		opcode,
+		vaillantB524OpWrite,
+		group,
+		instance,
+		byte(addr),
+		byte(addr >> 8),
+	}
+	return append(selector, data...)
 }
 
 func parseB524ReadPayload(payload []byte, opcode, group, instance byte, addr uint16) ([]byte, bool) {
@@ -6117,6 +6533,116 @@ func matchesB524ReplyInstance(replyInstance, requestedInstance byte) bool {
 	return false
 }
 
+func (p *vaillantSemanticPoller) writeB524Value(ctx context.Context, opcode, group, instance byte, addr uint16, data []byte) error {
+	if p == nil || (p.bus == nil && p.sendFrameFn == nil) {
+		return fmt.Errorf("b524 write unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	source := p.source
+	target := p.controller
+	timeout := p.requestTimeout
+	p.mu.Unlock()
+	if target == 0 {
+		return fmt.Errorf("b524 write target is zero")
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		p.readMu.Lock()
+		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		request := protocol.Frame{
+			Source:    source,
+			Target:    target,
+			Primary:   vaillantExtRegisterPrimary,
+			Secondary: vaillantExtRegisterSecondary,
+			Data:      buildB524WriteSelector(opcode, group, instance, addr, data),
+		}
+		response, err := p.sendSemanticFrame(reqCtx, request)
+		cancel()
+		p.readMu.Unlock()
+
+		if err != nil {
+			lastErr = err
+		} else if response != nil {
+			// B524 write responses are typically short ACKs (< 4 bytes payload).
+			return nil
+		} else {
+			lastErr = fmt.Errorf("b524 write returned nil response")
+		}
+
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(75 * time.Millisecond):
+			}
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("b524 write failed")
+	}
+	return lastErr
+}
+
+func (p *vaillantSemanticPoller) readB524ValueLive(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {
+	if p == nil || (p.bus == nil && p.sendFrameFn == nil) {
+		return nil, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	source := p.source
+	target := p.controller
+	timeout := p.requestTimeout
+	p.mu.Unlock()
+	if target == 0 {
+		return nil, false
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		p.readMu.Lock()
+		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		request := protocol.Frame{
+			Source:    source,
+			Target:    target,
+			Primary:   vaillantExtRegisterPrimary,
+			Secondary: vaillantExtRegisterSecondary,
+			Data:      buildB524ReadSelector(opcode, group, instance, addr),
+		}
+		response, err := p.sendSemanticFrame(reqCtx, request)
+		cancel()
+		p.readMu.Unlock()
+
+		if err == nil && response != nil {
+			payload, ok := parseB524ReadPayload(response.Data, opcode, group, instance, addr)
+			if ok {
+				return payload, true
+			}
+		}
+
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return nil, false
+			case <-time.After(75 * time.Millisecond):
+			}
+		}
+	}
+	return nil, false
+}
+
 func (p *vaillantSemanticPoller) readB524Float32LE(ctx context.Context, opcode, group, instance byte, addr uint16) (float64, bool) {
 	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
 	if !ok || len(raw) < 4 {
@@ -6206,6 +6732,36 @@ func (p *vaillantSemanticPoller) readB524CString(ctx context.Context, opcode, gr
 		}
 	}
 	return string(trimmed), true
+}
+
+func (p *vaillantSemanticPoller) readB524CStringSanitized(ctx context.Context, opcode, group, instance byte, addr uint16) (string, bool) {
+	value, ok := p.readB524CString(ctx, opcode, group, instance, addr)
+	if !ok {
+		return "", false
+	}
+	sanitized := make([]byte, len(value))
+	for i := 0; i < len(value); i++ {
+		if value[i] > 0x7F {
+			sanitized[i] = '?'
+		} else {
+			sanitized[i] = value[i]
+		}
+	}
+	return string(sanitized), true
+}
+
+func (p *vaillantSemanticPoller) readB524DateHDA3(ctx context.Context, opcode, group, instance byte, addr uint16) (string, bool) {
+	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
+	if !ok || len(raw) < 3 {
+		return "", false
+	}
+	day, month, yearOffset := int(raw[0]), int(raw[1]), int(raw[2])
+	if day < 1 || day > 31 || month < 1 || month > 12 || yearOffset > 99 {
+		return "", false
+	}
+	year := 2000 + yearOffset
+	iso := fmt.Sprintf("%04d-%02d-%02d", year, month, day)
+	return iso, true
 }
 
 func (p *vaillantSemanticPoller) readB524ZoneNamePart(ctx context.Context, instance byte, addr uint16) (string, bool) {
@@ -7054,6 +7610,10 @@ func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {
 			HcEmergencyTemperature:       cloneFloatPtr(status.Config.HcEmergencyTemperature),
 			HwcMaxFlowTempDesired:        cloneFloatPtr(status.Config.HwcMaxFlowTempDesired),
 			MaxRoomHumidity:              cloneIntPtr(status.Config.MaxRoomHumidity),
+			MaintenanceDate:   cloneStringPtr(status.Config.MaintenanceDate),
+			InstallerName:     cloneStringPtr(status.Config.InstallerName),
+			InstallerPhone:    cloneStringPtr(status.Config.InstallerPhone),
+			InstallerMenuCode: cloneIntPtr(status.Config.InstallerMenuCode),
 		},
 		Properties: &mcp.SystemProperties{
 			SystemScheme:            cloneIntPtr(status.Properties.SystemScheme),

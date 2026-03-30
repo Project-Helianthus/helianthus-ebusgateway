@@ -5535,6 +5535,17 @@ var boilerConfigFieldSpecs = map[string]boilerConfigFieldSpec{
 	"partloadHwcKW":  {addrs: []uint16{boilerB509RegPartloadHwcKW}, min: 0, max: 40, codec: boilerConfigCodecUCH},
 }
 
+// cstringPairSpec defines a paired CString field that spans 2 registers.
+type cstringPairSpec struct {
+	addr1 uint16 // first register (first 6 chars)
+	addr2 uint16 // second register (remaining chars)
+}
+
+var systemCStringPairSpecs = map[string]cstringPairSpec{
+	"installerName":  {addr1: systemRegInstallerName1, addr2: systemRegInstallerName2},
+	"installerPhone": {addr1: systemRegInstallerPhone1, addr2: systemRegInstallerPhone2},
+}
+
 func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName string, rawValue string) graphql.ConfigMutationResult {
 	if p == nil {
 		return graphql.ConfigMutationResult{Success: false, Error: "system config writer unavailable"}
@@ -5543,12 +5554,21 @@ func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName 
 		ctx = context.Background()
 	}
 
+	// Handle paired CString fields (2 registers × 6 chars).
+	if pair, ok := systemCStringPairSpecs[fieldName]; ok {
+		return p.writeSystemCStringPair(ctx, fieldName, rawValue, pair)
+	}
+
 	payload, spec, err := graphql.EncodeSystemConfigValue(fieldName, rawValue)
 	if err != nil {
 		return graphql.ConfigMutationResult{Success: false, Error: err.Error()}
 	}
 
-	opcode := byte(0x02) // vaillantB524OpcodeLocal
+	return p.writeSystemSingleRegister(ctx, fieldName, rawValue, spec, payload)
+}
+
+func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, fieldName, rawValue string, spec graphql.ConfigFieldSpec, payload []byte) graphql.ConfigMutationResult {
+	opcode := byte(0x02)
 	group := spec.Group()
 	instance := byte(0x00)
 	addr := spec.Addr()
@@ -5571,6 +5591,62 @@ func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName 
 	normalizedValue := strings.TrimSpace(rawValue)
 	p.mu.Lock()
 	p.system = systemSnapshotWithConfigValue(p.system, fieldName, normalizedValue)
+	p.mu.Unlock()
+
+	p.publishSystem(semanticSnapshotSourceLive)
+	return graphql.ConfigMutationResult{Success: true}
+}
+
+func (p *vaillantSemanticPoller) writeSystemCStringPair(ctx context.Context, fieldName, rawValue string, pair cstringPairSpec) graphql.ConfigMutationResult {
+	trimmed := strings.TrimSpace(rawValue)
+
+	// Validate characters.
+	for i := 0; i < len(trimmed); i++ {
+		b := trimmed[i]
+		if fieldName == "installerPhone" {
+			if !((b >= '0' && b <= '9') || b == '+' || b == '(' || b == ')' || b == ' ') {
+				return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("invalid character '%c' at position %d (allowed: digits, +, (, ), space)", b, i)}
+			}
+		} else {
+			if b < 0x20 || b > 0x7E {
+				return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("invalid byte 0x%02X at position %d", b, i)}
+			}
+		}
+	}
+	if len(trimmed) > 12 {
+		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("string length %d exceeds max 12", len(trimmed))}
+	}
+
+	// Split into 2 parts of max 6 chars each.
+	part1 := trimmed
+	part2 := ""
+	if len(trimmed) > 6 {
+		part1 = trimmed[:6]
+		part2 = trimmed[6:]
+	}
+
+	// Encode each part: null-padded to 7 bytes (6 chars + terminator).
+	encode := func(s string) []byte {
+		buf := make([]byte, 7)
+		copy(buf, s)
+		return buf
+	}
+
+	opcode := byte(0x02)
+	group := byte(0x00)
+	instance := byte(0x00)
+
+	// Write part 1.
+	if err := p.writeB524Value(ctx, opcode, group, instance, pair.addr1, encode(part1)); err != nil {
+		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write part1 failed: %v", err)}
+	}
+	// Write part 2.
+	if err := p.writeB524Value(ctx, opcode, group, instance, pair.addr2, encode(part2)); err != nil {
+		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write part2 failed: %v", err)}
+	}
+
+	p.mu.Lock()
+	p.system = systemSnapshotWithConfigValue(p.system, fieldName, trimmed)
 	p.mu.Unlock()
 
 	p.publishSystem(semanticSnapshotSourceLive)

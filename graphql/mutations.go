@@ -81,6 +81,9 @@ const (
 	configValueDateHDA3
 )
 
+// ConfigFieldSpec describes a B524 register for config mutations.
+type ConfigFieldSpec = configFieldSpec
+
 type configFieldSpec struct {
 	group     byte
 	addr      uint16

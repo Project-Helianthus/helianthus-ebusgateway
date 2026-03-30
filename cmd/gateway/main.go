@@ -182,6 +182,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if semanticPoller != nil {
 		scheduleWriter = semanticPoller
 	}
+	var configWriter mcp.ConfigWriter
+	if semanticPoller != nil {
+		configWriter = &mcpConfigWriterAdapter{poller: semanticPoller}
+	}
 	var shadowCache *ebusgateway.ShadowCache
 	if semanticPoller != nil {
 		shadowCache = semanticPoller.shadow
@@ -195,6 +199,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		hub,
 		semanticRuntime.Provider(),
 		scheduleWriter,
+		configWriter,
 		busObservability,
 		shadowCache,
 	)
@@ -494,6 +499,7 @@ func startHTTPServer(
 	hub *graphql.BroadcastHub,
 	semanticProvider graphql.SemanticProvider,
 	scheduleWriter mcp.ScheduleWriter,
+	configWriter mcp.ConfigWriter,
 	busObservability *ebusgateway.BusObservabilityStore,
 	shadowCache *ebusgateway.ShadowCache,
 ) (*http.Server, mdns.Advertiser, error) {
@@ -539,6 +545,9 @@ func startHTTPServer(
 	mcpServer.SetSemanticProvider(newMCPSemanticProvider(semanticProvider))
 	if scheduleWriter != nil {
 		mcpServer.SetScheduleWriter(scheduleWriter)
+	}
+	if configWriter != nil {
+		mcpServer.SetConfigWriter(configWriter)
 	}
 
 	mux := http.NewServeMux()

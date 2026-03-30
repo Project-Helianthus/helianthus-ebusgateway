@@ -6102,7 +6102,7 @@ func decodeBCDPhone(b []byte) string {
 			break
 		}
 	}
-	return strings.TrimRight(buf.String(), "0")
+	return buf.String()
 }
 
 func (p *vaillantSemanticPoller) readB509UCHInt(ctx context.Context, target byte, addr uint16) *int {

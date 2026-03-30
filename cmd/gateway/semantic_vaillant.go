@@ -5679,16 +5679,26 @@ func (p *vaillantSemanticPoller) SetBoilerConfig(ctx context.Context, fieldName 
 		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler config writer unavailable"}
 	}
 
+	// Handle BCD phone number specially (not float64-based).
+	if fieldName == "phoneNumber" {
+		return p.writeBoilerPhoneBCD(ctx, rawValue)
+	}
+	// Handle boiler installer menu code as integer (not float64-based).
+	if fieldName == "installerMenuCode" {
+		return p.writeBoilerInstallerMenuCode(ctx, rawValue)
+	}
+
 	spec, ok := boilerConfigFieldSpecs[fieldName]
 	if !ok {
-		keys := make([]string, 0, len(boilerConfigFieldSpecs))
+		allKeys := make([]string, 0, len(boilerConfigFieldSpecs)+2)
 		for key := range boilerConfigFieldSpecs {
-			keys = append(keys, key)
+			allKeys = append(allKeys, key)
 		}
-		slices.Sort(keys)
+		allKeys = append(allKeys, "phoneNumber", "installerMenuCode")
+		slices.Sort(allKeys)
 		return graphql.BoilerConfigMutationResult{
 			Success: false,
-			Error:   fmt.Sprintf("unknown boiler field %q (allowed: %s)", fieldName, strings.Join(keys, ", ")),
+			Error:   fmt.Sprintf("unknown boiler field %q (allowed: %s)", fieldName, strings.Join(allKeys, ", ")),
 		}
 	}
 
@@ -5744,6 +5754,113 @@ func (p *vaillantSemanticPoller) fenceB509WriteConfirmShadow(target byte, addr u
 		Source:        ebusgateway.ShadowInvalidationSourceActive,
 		InvalidatedAt: p.now(),
 	})
+}
+
+func (p *vaillantSemanticPoller) writeBoilerPhoneBCD(ctx context.Context, rawValue string) graphql.BoilerConfigMutationResult {
+	// Strip formatting characters, keep only digits.
+	trimmed := strings.TrimSpace(rawValue)
+	var digits []byte
+	for _, b := range []byte(trimmed) {
+		if b >= '0' && b <= '9' {
+			digits = append(digits, b)
+		}
+	}
+	if len(digits) > 16 {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("phone number has %d digits (max 16)", len(digits))}
+	}
+
+	// Encode digits to BCD (2 digits per byte, pad with 0xF).
+	payload := make([]byte, 8)
+	for i := range payload {
+		payload[i] = 0xFF
+	}
+	for i := 0; i < len(digits); i += 2 {
+		hi := digits[i] - '0'
+		var lo byte = 0x0F
+		if i+1 < len(digits) {
+			lo = digits[i+1] - '0'
+		}
+		payload[i/2] = (hi << 4) | lo
+	}
+
+	p.mu.Lock()
+	boilerAddress := p.boilerAddress
+	p.mu.Unlock()
+	if boilerAddress == 0 {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler B509 address unavailable"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if err := p.writeB509Value(ctx, boilerAddress, boilerB509RegPhoneNumber, payload); err != nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
+	}
+
+	decoded := string(digits)
+	p.mu.Lock()
+	p.boiler = boilerSnapshotWithStringConfigValue(p.boiler, "phoneNumber", decoded)
+	p.mu.Unlock()
+
+	p.publishBoilerStatus(semanticSnapshotSourceLive)
+	return graphql.BoilerConfigMutationResult{Success: true}
+}
+
+func (p *vaillantSemanticPoller) writeBoilerInstallerMenuCode(ctx context.Context, rawValue string) graphql.BoilerConfigMutationResult {
+	trimmed := strings.TrimSpace(rawValue)
+	value, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("invalid integer %q: %v", rawValue, err)}
+	}
+	if value < 0 || value > 255 {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("value %d out of range [0, 255]", value)}
+	}
+
+	p.mu.Lock()
+	boilerAddress := p.boilerAddress
+	p.mu.Unlock()
+	if boilerAddress == 0 {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler B509 address unavailable"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	payload := []byte{byte(value)}
+	if err := p.writeB509Value(ctx, boilerAddress, boilerB509RegInstallerMenuCode, payload); err != nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
+	}
+
+	p.mu.Lock()
+	p.boiler = boilerSnapshotWithIntConfigValue(p.boiler, "installerMenuCode", value)
+	p.mu.Unlock()
+
+	p.publishBoilerStatus(semanticSnapshotSourceLive)
+	return graphql.BoilerConfigMutationResult{Success: true}
+}
+
+func boilerSnapshotWithStringConfigValue(existing *vaillantBoilerSnapshot, fieldName, value string) *vaillantBoilerSnapshot {
+	snapshot := cloneBoilerSnapshot(existing)
+	if snapshot == nil {
+		snapshot = &vaillantBoilerSnapshot{}
+	}
+	switch fieldName {
+	case "phoneNumber":
+		snapshot.PhoneNumber = &value
+	}
+	return snapshot
+}
+
+func boilerSnapshotWithIntConfigValue(existing *vaillantBoilerSnapshot, fieldName string, value int) *vaillantBoilerSnapshot {
+	snapshot := cloneBoilerSnapshot(existing)
+	if snapshot == nil {
+		snapshot = &vaillantBoilerSnapshot{}
+	}
+	switch fieldName {
+	case "installerMenuCode":
+		snapshot.InstallerMenuCode = &value
+	}
+	return snapshot
 }
 
 func parseBoilerConfigValue(rawValue string, spec boilerConfigFieldSpec) (float64, error) {

@@ -854,8 +854,9 @@ func encodeConfigValue(spec configFieldSpec, raw string) ([]byte, error) {
 func encodeCStringValue(raw string, maxLen int) ([]byte, error) {
 	trimmed := strings.TrimSpace(raw)
 	for i := 0; i < len(trimmed); i++ {
-		if trimmed[i] > 0x7F {
-			return nil, fmt.Errorf("non-ASCII byte at position %d: %w", i, ebuserrors.ErrInvalidPayload)
+		b := trimmed[i]
+		if b < 0x20 || b > 0x7E {
+			return nil, fmt.Errorf("invalid byte 0x%02X at position %d (only printable ASCII 0x20-0x7E allowed): %w", b, i, ebuserrors.ErrInvalidPayload)
 		}
 	}
 	if maxLen > 0 && len(trimmed) > maxLen {

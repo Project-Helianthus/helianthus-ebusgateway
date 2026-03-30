@@ -5523,8 +5523,11 @@ func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName 
 		return result
 	}
 
+	// Use the trimmed value for snapshot patching (canonical form).
+	normalizedValue := strings.TrimSpace(rawValue)
+
 	p.mu.Lock()
-	p.system = systemSnapshotWithConfigValue(p.system, fieldName, rawValue)
+	p.system = systemSnapshotWithConfigValue(p.system, fieldName, normalizedValue)
 	p.mu.Unlock()
 
 	p.publishSystem(semanticSnapshotSourceLive)

@@ -142,9 +142,6 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	semanticCfg := resolveStartupScanSourceConfig(cfg)
 	semanticPoller := startVaillantSemanticPollingFn(ctx, semanticCfg, gateway, semanticRuntime.Provider(), hub, semanticBarrier)
 	if semanticPoller != nil {
-		semanticPoller.systemConfigWriteFn = func(ctx context.Context, fieldName, rawValue string) graphql.ConfigMutationResult {
-			return graphql.ApplyConfigMutation(ctx, gateway.Registry, gateway.Router, fieldName, rawValue, graphql.SystemConfigFieldSpecs())
-		}
 		builder.SetSystemConfigWriter(semanticPoller)
 		builder.SetBoilerConfigWriter(semanticPoller)
 		builder.SetScheduleWriter(semanticPoller)

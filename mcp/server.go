@@ -199,12 +199,10 @@ type SystemConfig struct {
 	HcEmergencyTemperature       *float64 `json:"hc_emergency_temperature,omitempty"`
 	HwcMaxFlowTempDesired        *float64 `json:"hwc_max_flow_temp_desired,omitempty"`
 	MaxRoomHumidity              *int     `json:"max_room_humidity,omitempty"`
-	MaintenanceDate              *string  `json:"maintenance_date,omitempty"`
-	InstallerName1               *string  `json:"installer_name_1,omitempty"`
-	InstallerName2               *string  `json:"installer_name_2,omitempty"`
-	InstallerPhone1              *string  `json:"installer_phone_1,omitempty"`
-	InstallerPhone2              *string  `json:"installer_phone_2,omitempty"`
-	InstallerMenuCode            *int     `json:"installer_menu_code,omitempty"`
+	MaintenanceDate   *string `json:"maintenance_date,omitempty"`
+	InstallerName     *string `json:"installer_name,omitempty"`
+	InstallerPhone    *string `json:"installer_phone,omitempty"`
+	InstallerMenuCode *int    `json:"installer_menu_code,omitempty"`
 }
 
 type SystemProperties struct {
@@ -3134,21 +3132,13 @@ func cloneMCPSystemStatus(status *SystemStatus) *SystemStatus {
 			v := *config.MaintenanceDate
 			config.MaintenanceDate = &v
 		}
-		if config.InstallerName1 != nil {
-			v := *config.InstallerName1
-			config.InstallerName1 = &v
+		if config.InstallerName != nil {
+			v := *config.InstallerName
+			config.InstallerName = &v
 		}
-		if config.InstallerName2 != nil {
-			v := *config.InstallerName2
-			config.InstallerName2 = &v
-		}
-		if config.InstallerPhone1 != nil {
-			v := *config.InstallerPhone1
-			config.InstallerPhone1 = &v
-		}
-		if config.InstallerPhone2 != nil {
-			v := *config.InstallerPhone2
-			config.InstallerPhone2 = &v
+		if config.InstallerPhone != nil {
+			v := *config.InstallerPhone
+			config.InstallerPhone = &v
 		}
 		if config.InstallerMenuCode != nil {
 			v := *config.InstallerMenuCode

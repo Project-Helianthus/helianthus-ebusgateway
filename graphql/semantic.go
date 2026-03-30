@@ -275,12 +275,10 @@ type SystemConfig struct {
 	HcEmergencyTemperature       *float64
 	HwcMaxFlowTempDesired        *float64
 	MaxRoomHumidity              *int
-	MaintenanceDate              *string
-	InstallerName1               *string
-	InstallerName2               *string
-	InstallerPhone1              *string
-	InstallerPhone2              *string
-	InstallerMenuCode            *int
+	MaintenanceDate   *string
+	InstallerName     *string
+	InstallerPhone    *string
+	InstallerMenuCode *int
 }
 
 type SystemProperties struct {
@@ -647,21 +645,13 @@ func cloneSystemConfig(config SystemConfig) SystemConfig {
 		v := *config.MaintenanceDate
 		config.MaintenanceDate = &v
 	}
-	if config.InstallerName1 != nil {
-		v := *config.InstallerName1
-		config.InstallerName1 = &v
+	if config.InstallerName != nil {
+		v := *config.InstallerName
+		config.InstallerName = &v
 	}
-	if config.InstallerName2 != nil {
-		v := *config.InstallerName2
-		config.InstallerName2 = &v
-	}
-	if config.InstallerPhone1 != nil {
-		v := *config.InstallerPhone1
-		config.InstallerPhone1 = &v
-	}
-	if config.InstallerPhone2 != nil {
-		v := *config.InstallerPhone2
-		config.InstallerPhone2 = &v
+	if config.InstallerPhone != nil {
+		v := *config.InstallerPhone
+		config.InstallerPhone = &v
 	}
 	if config.InstallerMenuCode != nil {
 		v := *config.InstallerMenuCode

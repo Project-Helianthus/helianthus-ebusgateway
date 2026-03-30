@@ -126,10 +126,8 @@ var systemConfigFieldSpecs = map[string]configFieldSpec{
 	"hcEmergencyTempC":     {group: 0x00, addr: 0x0026, valueType: configValueFloat32, min: 20.0, max: 80.0},
 	"hwcMaxFlowTempC":      {group: 0x00, addr: 0x0046, valueType: configValueFloat32, min: 15.0, max: 80.0},
 	"maintenanceDate":      {group: 0x00, addr: 0x002C, valueType: configValueDateHDA3},
-	"installerName1":       {group: 0x00, addr: 0x006C, valueType: configValueCString, maxLen: 6},
-	"installerName2":       {group: 0x00, addr: 0x006D, valueType: configValueCString, maxLen: 6},
-	"installerPhone1":      {group: 0x00, addr: 0x006F, valueType: configValueCString, maxLen: 6},
-	"installerPhone2":      {group: 0x00, addr: 0x0070, valueType: configValueCString, maxLen: 6},
+	"installerName":        {group: 0x00, addr: 0x006C, valueType: configValueCString, maxLen: 12},
+	"installerPhone":       {group: 0x00, addr: 0x006F, valueType: configValueCString, maxLen: 12},
 	"installerMenuCode":    {group: 0x00, addr: 0x0076, valueType: configValueUint16, min: 0, max: 999},
 }
 
@@ -783,6 +781,36 @@ func SystemConfigFieldSpecs() map[string]configFieldSpec {
 		cp[k] = v
 	}
 	return cp
+}
+
+// EncodeSystemConfigValue validates and encodes a system config field value.
+// Returns the encoded payload, the field spec (for readback), and any error.
+func EncodeSystemConfigValue(fieldName, rawValue string) ([]byte, configFieldSpec, error) {
+	spec, err := resolveConfigFieldSpec("system", fieldName, systemConfigFieldSpecs)
+	if err != nil {
+		return nil, configFieldSpec{}, err
+	}
+	payload, err := encodeConfigValue(spec, rawValue)
+	if err != nil {
+		return nil, configFieldSpec{}, err
+	}
+	return payload, spec, nil
+}
+
+// ConfigFieldSpecGroup returns the B524 group byte for a field spec.
+func (s configFieldSpec) Group() byte { return s.group }
+
+// ConfigFieldSpecAddr returns the B524 register address for a field spec.
+func (s configFieldSpec) Addr() uint16 { return s.addr }
+
+// ConfirmDecodableReadback validates that a read-back payload is decodable.
+func ConfirmDecodableReadback(spec configFieldSpec, payload []byte) error {
+	return confirmDecodableReadback(spec, payload)
+}
+
+// ConfigReadbackMatchesWrite checks if the read-back matches the written payload.
+func ConfigReadbackMatchesWrite(spec configFieldSpec, written, readback []byte) bool {
+	return configReadbackMatchesWrite(spec, written, readback)
 }
 
 func resolveConfigFieldSpec(scope, fieldName string, specs map[string]configFieldSpec) (configFieldSpec, error) {

@@ -33,6 +33,7 @@ const (
 	vaillantB524OpcodeRead       = byte(0x06)
 	vaillantB524OpcodeLocal      = byte(0x02)
 	vaillantB524OpRead           = byte(0x00)
+	vaillantB524OpWrite          = byte(0x01)
 
 	vaillantGroupDHW       = byte(0x01)
 	vaillantGroupCircuits  = byte(0x02)
@@ -270,7 +271,6 @@ type vaillantSemanticPoller struct {
 	adapterInfo    *vaillantAdapterInfoState
 	startupBarrier <-chan struct{}
 
-	systemConfigWriteFn    func(ctx context.Context, fieldName, rawValue string) graphql.ConfigMutationResult
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	b524ProbeFn            func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
 	sendFrameFn            func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error)
@@ -3085,6 +3085,9 @@ type vaillantBoilerSnapshot struct {
 	FanHours                 *float64
 	DeactivationsIFC         *int
 	DeactivationsTemplimiter *int
+	InstallerMenuCode        *int
+	PhoneNumber              *string
+	HoursTillService         *int
 }
 
 type vaillantSystemSnapshot struct {
@@ -3106,12 +3109,10 @@ type vaillantSystemSnapshot struct {
 	HcEmergencyTemperature       *float64
 	HwcMaxFlowTempDesired        *float64
 	MaxRoomHumidity              *uint16
-	MaintenanceDate              *string
-	InstallerName1               *string
-	InstallerName2               *string
-	InstallerPhone1              *string
-	InstallerPhone2              *string
-	InstallerMenuCode            *uint16
+	MaintenanceDate   *string
+	InstallerName     *string
+	InstallerPhone    *string
+	InstallerMenuCode *uint16
 
 	// Properties
 	SystemScheme            *uint16
@@ -3428,6 +3429,19 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB509(ctx context.Context, bo
 			snapshot.DeactivationsTemplimiter = value
 			updated = true
 		}
+		// Installer/maintenance config.
+		if value := p.readB509UCHInt(ctx, boilerAddress, boilerB509RegInstallerMenuCode); value != nil {
+			snapshot.InstallerMenuCode = value
+			updated = true
+		}
+		if value := p.readB509PhoneBCD(ctx, boilerAddress, boilerB509RegPhoneNumber); value != nil {
+			snapshot.PhoneNumber = value
+			updated = true
+		}
+		if value := p.readB509Hoursum2Int(ctx, boilerAddress, boilerB509RegHoursTillService); value != nil {
+			snapshot.HoursTillService = value
+			updated = true
+		}
 	}
 	return updated
 }
@@ -3482,10 +3496,13 @@ func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSour
 			DhwTargetTemperatureC:    snapshot.DhwTargetTemperatureC,
 		},
 		Config: graphql.BoilerConfig{
-			FlowsetHcMaxC:  snapshot.FlowsetHcMaxC,
-			FlowsetHwcMaxC: snapshot.FlowsetHwcMaxC,
-			PartloadHcKW:   snapshot.PartloadHcKW,
-			PartloadHwcKW:  snapshot.PartloadHwcKW,
+			FlowsetHcMaxC:     snapshot.FlowsetHcMaxC,
+			FlowsetHwcMaxC:    snapshot.FlowsetHwcMaxC,
+			PartloadHcKW:      snapshot.PartloadHcKW,
+			PartloadHwcKW:     snapshot.PartloadHwcKW,
+			InstallerMenuCode: snapshot.InstallerMenuCode,
+			PhoneNumber:       cloneStringPtr(snapshot.PhoneNumber),
+			HoursTillService:  snapshot.HoursTillService,
 		},
 		Diagnostics: graphql.BoilerDiagnostics{
 			HeatingStatusRaw:         snapshot.HeatingStatusRaw,
@@ -3602,21 +3619,31 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 		snapshot.MaintenanceDate = &value
 		updated = true
 	}
-	if value, ok := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerName1); ok {
-		snapshot.InstallerName1 = &value
-		updated = true
+	{
+		// Combined installer name from 2 registers × 6 chars.
+		name1, ok1 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerName1)
+		name2, ok2 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerName2)
+		if ok1 || ok2 {
+			var p1, p2 string
+			if ok1 { p1 = name1 }
+			if ok2 { p2 = name2 }
+			combined := strings.TrimRight(p1+p2, " \x00")
+			snapshot.InstallerName = &combined
+			updated = true
+		}
 	}
-	if value, ok := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerName2); ok {
-		snapshot.InstallerName2 = &value
-		updated = true
-	}
-	if value, ok := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerPhone1); ok {
-		snapshot.InstallerPhone1 = &value
-		updated = true
-	}
-	if value, ok := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerPhone2); ok {
-		snapshot.InstallerPhone2 = &value
-		updated = true
+	{
+		// Combined installer phone from 2 registers × 6 chars.
+		phone1, ok1 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerPhone1)
+		phone2, ok2 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerPhone2)
+		if ok1 || ok2 {
+			var p1, p2 string
+			if ok1 { p1 = phone1 }
+			if ok2 { p2 = phone2 }
+			combined := strings.TrimRight(p1+p2, " \x00")
+			snapshot.InstallerPhone = &combined
+			updated = true
+		}
 	}
 	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerMenuCode); ok && raw != nil {
 		snapshot.InstallerMenuCode = cloneUint16Ptr(raw)
@@ -3861,12 +3888,10 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 			HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
 			HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
 			MaxRoomHumidity:              uint16ToIntPtr(snapshot.MaxRoomHumidity),
-			MaintenanceDate:              cloneStringPtr(snapshot.MaintenanceDate),
-			InstallerName1:               cloneStringPtr(snapshot.InstallerName1),
-			InstallerName2:               cloneStringPtr(snapshot.InstallerName2),
-			InstallerPhone1:              cloneStringPtr(snapshot.InstallerPhone1),
-			InstallerPhone2:              cloneStringPtr(snapshot.InstallerPhone2),
-			InstallerMenuCode:            uint16ToIntPtr(snapshot.InstallerMenuCode),
+			MaintenanceDate:   cloneStringPtr(snapshot.MaintenanceDate),
+			InstallerName:     cloneStringPtr(snapshot.InstallerName),
+			InstallerPhone:    cloneStringPtr(snapshot.InstallerPhone),
+			InstallerMenuCode: uint16ToIntPtr(snapshot.InstallerMenuCode),
 		},
 		Properties: graphql.SystemProperties{
 			SystemScheme:            uint16ToIntPtr(snapshot.SystemScheme),
@@ -4406,21 +4431,13 @@ func mergeSystemSnapshotNonDestructive(existing, incoming *vaillantSystemSnapsho
 		v := *incoming.MaintenanceDate
 		merged.MaintenanceDate = &v
 	}
-	if incoming.InstallerName1 != nil {
-		v := *incoming.InstallerName1
-		merged.InstallerName1 = &v
+	if incoming.InstallerName != nil {
+		v := *incoming.InstallerName
+		merged.InstallerName = &v
 	}
-	if incoming.InstallerName2 != nil {
-		v := *incoming.InstallerName2
-		merged.InstallerName2 = &v
-	}
-	if incoming.InstallerPhone1 != nil {
-		v := *incoming.InstallerPhone1
-		merged.InstallerPhone1 = &v
-	}
-	if incoming.InstallerPhone2 != nil {
-		v := *incoming.InstallerPhone2
-		merged.InstallerPhone2 = &v
+	if incoming.InstallerPhone != nil {
+		v := *incoming.InstallerPhone
+		merged.InstallerPhone = &v
 	}
 	if incoming.InstallerMenuCode != nil {
 		merged.InstallerMenuCode = cloneUint16Ptr(incoming.InstallerMenuCode)
@@ -4454,12 +4471,10 @@ func cloneSystemSnapshot(snapshot *vaillantSystemSnapshot) *vaillantSystemSnapsh
 		HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
 		HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
 		MaxRoomHumidity:              cloneUint16Ptr(snapshot.MaxRoomHumidity),
-		MaintenanceDate:              cloneStringPtr(snapshot.MaintenanceDate),
-		InstallerName1:               cloneStringPtr(snapshot.InstallerName1),
-		InstallerName2:               cloneStringPtr(snapshot.InstallerName2),
-		InstallerPhone1:              cloneStringPtr(snapshot.InstallerPhone1),
-		InstallerPhone2:              cloneStringPtr(snapshot.InstallerPhone2),
-		InstallerMenuCode:            cloneUint16Ptr(snapshot.InstallerMenuCode),
+		MaintenanceDate:   cloneStringPtr(snapshot.MaintenanceDate),
+		InstallerName:     cloneStringPtr(snapshot.InstallerName),
+		InstallerPhone:    cloneStringPtr(snapshot.InstallerPhone),
+		InstallerMenuCode: cloneUint16Ptr(snapshot.InstallerMenuCode),
 		SystemScheme:                 cloneUint16Ptr(snapshot.SystemScheme),
 		ModuleConfigurationVR71:      cloneUint16Ptr(snapshot.ModuleConfigurationVR71),
 	}
@@ -4540,10 +4555,8 @@ func systemStatusEquals(a, b *graphql.SystemStatus) bool {
 		floatPtrEquals(a.Config.HwcMaxFlowTempDesired, b.Config.HwcMaxFlowTempDesired) &&
 		intPtrEquals(a.Config.MaxRoomHumidity, b.Config.MaxRoomHumidity) &&
 		stringPtrEquals(a.Config.MaintenanceDate, b.Config.MaintenanceDate) &&
-		stringPtrEquals(a.Config.InstallerName1, b.Config.InstallerName1) &&
-		stringPtrEquals(a.Config.InstallerName2, b.Config.InstallerName2) &&
-		stringPtrEquals(a.Config.InstallerPhone1, b.Config.InstallerPhone1) &&
-		stringPtrEquals(a.Config.InstallerPhone2, b.Config.InstallerPhone2) &&
+		stringPtrEquals(a.Config.InstallerName, b.Config.InstallerName) &&
+		stringPtrEquals(a.Config.InstallerPhone, b.Config.InstallerPhone) &&
 		intPtrEquals(a.Config.InstallerMenuCode, b.Config.InstallerMenuCode) &&
 		intPtrEquals(a.Properties.SystemScheme, b.Properties.SystemScheme) &&
 		intPtrEquals(a.Properties.ModuleConfigurationVR71, b.Properties.ModuleConfigurationVR71)
@@ -4760,6 +4773,15 @@ func mergeBoilerSnapshotNonDestructive(existing, incoming *vaillantBoilerSnapsho
 		if incoming.DeactivationsTemplimiter != nil {
 			merged.DeactivationsTemplimiter = cloneBoilerIntPtr(incoming.DeactivationsTemplimiter)
 		}
+		if incoming.InstallerMenuCode != nil {
+			merged.InstallerMenuCode = cloneBoilerIntPtr(incoming.InstallerMenuCode)
+		}
+		if incoming.PhoneNumber != nil {
+			merged.PhoneNumber = cloneStringPtr(incoming.PhoneNumber)
+		}
+		if incoming.HoursTillService != nil {
+			merged.HoursTillService = cloneBoilerIntPtr(incoming.HoursTillService)
+		}
 	}
 
 	// Closed decision: do not map GG=0x02 RR=0x0008 as boiler return temperature.
@@ -4811,6 +4833,9 @@ func cloneBoilerSnapshot(snapshot *vaillantBoilerSnapshot) *vaillantBoilerSnapsh
 		FanHours:                 cloneFloat64Ptr(snapshot.FanHours),
 		DeactivationsIFC:         cloneBoilerIntPtr(snapshot.DeactivationsIFC),
 		DeactivationsTemplimiter: cloneBoilerIntPtr(snapshot.DeactivationsTemplimiter),
+		InstallerMenuCode:        cloneBoilerIntPtr(snapshot.InstallerMenuCode),
+		PhoneNumber:              cloneStringPtr(snapshot.PhoneNumber),
+		HoursTillService:         cloneBoilerIntPtr(snapshot.HoursTillService),
 	}
 }
 
@@ -5511,27 +5536,45 @@ var boilerConfigFieldSpecs = map[string]boilerConfigFieldSpec{
 }
 
 func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName string, rawValue string) graphql.ConfigMutationResult {
-	if p == nil || p.systemConfigWriteFn == nil {
+	if p == nil {
 		return graphql.ConfigMutationResult{Success: false, Error: "system config writer unavailable"}
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	result := p.systemConfigWriteFn(ctx, fieldName, rawValue)
-	if !result.Success {
-		return result
+	payload, spec, err := graphql.EncodeSystemConfigValue(fieldName, rawValue)
+	if err != nil {
+		return graphql.ConfigMutationResult{Success: false, Error: err.Error()}
 	}
 
-	// Use the trimmed value for snapshot patching (canonical form).
-	normalizedValue := strings.TrimSpace(rawValue)
+	opcode := byte(0x02) // vaillantB524OpcodeLocal
+	group := spec.Group()
+	instance := byte(0x00)
+	addr := spec.Addr()
 
+	if err := p.writeB524Value(ctx, opcode, group, instance, addr, payload); err != nil {
+		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write failed: %v", err)}
+	}
+
+	readback, ok := p.readB524ValueLive(ctx, opcode, group, instance, addr)
+	if !ok {
+		return graphql.ConfigMutationResult{Success: false, Error: "b524 write confirm failed: read-back unavailable"}
+	}
+	if err := graphql.ConfirmDecodableReadback(spec, readback); err != nil {
+		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write confirm failed: %v", err)}
+	}
+	if !graphql.ConfigReadbackMatchesWrite(spec, payload, readback) {
+		return graphql.ConfigMutationResult{Success: false, Error: "b524 write confirm failed: read-back mismatch"}
+	}
+
+	normalizedValue := strings.TrimSpace(rawValue)
 	p.mu.Lock()
 	p.system = systemSnapshotWithConfigValue(p.system, fieldName, normalizedValue)
 	p.mu.Unlock()
 
 	p.publishSystem(semanticSnapshotSourceLive)
-	return result
+	return graphql.ConfigMutationResult{Success: true}
 }
 
 func systemSnapshotWithConfigValue(existing *vaillantSystemSnapshot, fieldName, rawValue string) *vaillantSystemSnapshot {
@@ -5542,14 +5585,10 @@ func systemSnapshotWithConfigValue(existing *vaillantSystemSnapshot, fieldName, 
 	switch fieldName {
 	case "maintenanceDate":
 		snapshot.MaintenanceDate = &rawValue
-	case "installerName1":
-		snapshot.InstallerName1 = &rawValue
-	case "installerName2":
-		snapshot.InstallerName2 = &rawValue
-	case "installerPhone1":
-		snapshot.InstallerPhone1 = &rawValue
-	case "installerPhone2":
-		snapshot.InstallerPhone2 = &rawValue
+	case "installerName":
+		snapshot.InstallerName = &rawValue
+	case "installerPhone":
+		snapshot.InstallerPhone = &rawValue
 	case "installerMenuCode":
 		if v, err := strconv.Atoi(rawValue); err == nil {
 			u := uint16(v)
@@ -5834,6 +5873,45 @@ func (p *vaillantSemanticPoller) readB509Hoursum2(ctx context.Context, target by
 	return &value
 }
 
+func (p *vaillantSemanticPoller) readB509Hoursum2Int(ctx context.Context, target byte, addr uint16) *int {
+	value := p.readB509Hoursum2(ctx, target, addr)
+	if value == nil {
+		return nil
+	}
+	v := int(*value)
+	return &v
+}
+
+func (p *vaillantSemanticPoller) readB509PhoneBCD(ctx context.Context, target byte, addr uint16) *string {
+	raw, ok := p.readB509Value(ctx, target, addr)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	s := decodeBCDPhone(raw)
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func decodeBCDPhone(b []byte) string {
+	var buf strings.Builder
+	for _, v := range b {
+		hi, lo := v>>4, v&0x0F
+		if hi <= 9 {
+			buf.WriteByte('0' + hi)
+		} else {
+			break
+		}
+		if lo <= 9 {
+			buf.WriteByte('0' + lo)
+		} else {
+			break
+		}
+	}
+	return strings.TrimRight(buf.String(), "0")
+}
+
 func (p *vaillantSemanticPoller) readB509UCHInt(ctx context.Context, target byte, addr uint16) *int {
 	raw, ok := p.readB509Value(ctx, target, addr)
 	if !ok {
@@ -6022,6 +6100,18 @@ func buildB524ReadSelector(opcode, group, instance byte, addr uint16) []byte {
 		byte(addr),
 		byte(addr >> 8),
 	}
+}
+
+func buildB524WriteSelector(opcode, group, instance byte, addr uint16, data []byte) []byte {
+	selector := []byte{
+		opcode,
+		vaillantB524OpWrite,
+		group,
+		instance,
+		byte(addr),
+		byte(addr >> 8),
+	}
+	return append(selector, data...)
 }
 
 func parseB524ReadPayload(payload []byte, opcode, group, instance byte, addr uint16) ([]byte, bool) {
@@ -6248,6 +6338,116 @@ func matchesB524ReplyInstance(replyInstance, requestedInstance byte) bool {
 		return true
 	}
 	return false
+}
+
+func (p *vaillantSemanticPoller) writeB524Value(ctx context.Context, opcode, group, instance byte, addr uint16, data []byte) error {
+	if p == nil || (p.bus == nil && p.sendFrameFn == nil) {
+		return fmt.Errorf("b524 write unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	source := p.source
+	target := p.controller
+	timeout := p.requestTimeout
+	p.mu.Unlock()
+	if target == 0 {
+		return fmt.Errorf("b524 write target is zero")
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		p.readMu.Lock()
+		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		request := protocol.Frame{
+			Source:    source,
+			Target:    target,
+			Primary:   vaillantExtRegisterPrimary,
+			Secondary: vaillantExtRegisterSecondary,
+			Data:      buildB524WriteSelector(opcode, group, instance, addr, data),
+		}
+		response, err := p.sendSemanticFrame(reqCtx, request)
+		cancel()
+		p.readMu.Unlock()
+
+		if err != nil {
+			lastErr = err
+		} else if response != nil {
+			// B524 write responses are typically short ACKs (< 4 bytes payload).
+			return nil
+		} else {
+			lastErr = fmt.Errorf("b524 write returned nil response")
+		}
+
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(75 * time.Millisecond):
+			}
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("b524 write failed")
+	}
+	return lastErr
+}
+
+func (p *vaillantSemanticPoller) readB524ValueLive(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {
+	if p == nil || (p.bus == nil && p.sendFrameFn == nil) {
+		return nil, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	source := p.source
+	target := p.controller
+	timeout := p.requestTimeout
+	p.mu.Unlock()
+	if target == 0 {
+		return nil, false
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		p.readMu.Lock()
+		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		request := protocol.Frame{
+			Source:    source,
+			Target:    target,
+			Primary:   vaillantExtRegisterPrimary,
+			Secondary: vaillantExtRegisterSecondary,
+			Data:      buildB524ReadSelector(opcode, group, instance, addr),
+		}
+		response, err := p.sendSemanticFrame(reqCtx, request)
+		cancel()
+		p.readMu.Unlock()
+
+		if err == nil && response != nil {
+			payload, ok := parseB524ReadPayload(response.Data, opcode, group, instance, addr)
+			if ok {
+				return payload, true
+			}
+		}
+
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return nil, false
+			case <-time.After(75 * time.Millisecond):
+			}
+		}
+	}
+	return nil, false
 }
 
 func (p *vaillantSemanticPoller) readB524Float32LE(ctx context.Context, opcode, group, instance byte, addr uint16) (float64, bool) {
@@ -7217,12 +7417,10 @@ func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {
 			HcEmergencyTemperature:       cloneFloatPtr(status.Config.HcEmergencyTemperature),
 			HwcMaxFlowTempDesired:        cloneFloatPtr(status.Config.HwcMaxFlowTempDesired),
 			MaxRoomHumidity:              cloneIntPtr(status.Config.MaxRoomHumidity),
-			MaintenanceDate:              cloneStringPtr(status.Config.MaintenanceDate),
-			InstallerName1:               cloneStringPtr(status.Config.InstallerName1),
-			InstallerName2:               cloneStringPtr(status.Config.InstallerName2),
-			InstallerPhone1:              cloneStringPtr(status.Config.InstallerPhone1),
-			InstallerPhone2:              cloneStringPtr(status.Config.InstallerPhone2),
-			InstallerMenuCode:            cloneIntPtr(status.Config.InstallerMenuCode),
+			MaintenanceDate:   cloneStringPtr(status.Config.MaintenanceDate),
+			InstallerName:     cloneStringPtr(status.Config.InstallerName),
+			InstallerPhone:    cloneStringPtr(status.Config.InstallerPhone),
+			InstallerMenuCode: cloneIntPtr(status.Config.InstallerMenuCode),
 		},
 		Properties: &mcp.SystemProperties{
 			SystemScheme:            cloneIntPtr(status.Properties.SystemScheme),

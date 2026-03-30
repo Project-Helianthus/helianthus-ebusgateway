@@ -5444,8 +5444,11 @@ func (p *vaillantSemanticPoller) readB509ValueWithMaxAge(ctx context.Context, ta
 		return nil, lastErr
 	})
 	p.emitWatchReadEfficiency(watchRuntime, maxAge, stats)
-	if stats.ActiveFetchAttempted {
-		time.Sleep(25 * time.Millisecond)
+	if stats.ActiveFetchSucceeded {
+		select {
+		case <-ctx.Done():
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 	if err != nil {
 		return nil, false
@@ -6214,8 +6217,11 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 		return nil, lastErr
 	})
 	p.emitWatchReadEfficiency(watchRuntime, maxAge, stats)
-	if stats.ActiveFetchAttempted {
-		time.Sleep(25 * time.Millisecond)
+	if stats.ActiveFetchSucceeded {
+		select {
+		case <-ctx.Done():
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 	if err != nil {
 		return nil, false

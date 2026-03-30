@@ -1933,8 +1933,8 @@ func TestNewVaillantSemanticPoller_AttachesRuntimeShadowCache(t *testing.T) {
 
 	key := ebusgateway.NewB509WatchKey(0x08, 0x0200)
 	maxAge := poller.prepareSemanticReadWatch(key)
-	if maxAge != 10*time.Second {
-		t.Fatalf("prepareSemanticReadWatch(default) = %s; want 10s (descriptor policy, not legacy 500ms)", maxAge)
+	if maxAge != 30*time.Second {
+		t.Fatalf("prepareSemanticReadWatch(default) = %s; want 30s (descriptor policy, not legacy 500ms)", maxAge)
 	}
 
 	result := poller.shadow.Write(ebusgateway.ShadowWrite{
@@ -1992,8 +1992,8 @@ func TestPrepareSemanticReadWatch_UsesObserverDescriptorFreshness(t *testing.T) 
 		nil,
 	)
 	maxAge := poller.prepareSemanticReadWatch(key)
-	if maxAge != 30*time.Second {
-		t.Fatalf("prepareSemanticReadWatch(observed state_slow profile) = %s; want 30s (descriptor policy, not legacy 500ms)", maxAge)
+	if maxAge != 120*time.Second {
+		t.Fatalf("prepareSemanticReadWatch(observed state_slow profile) = %s; want 120s (descriptor policy, not legacy 500ms)", maxAge)
 	}
 
 	result := poller.shadow.Write(ebusgateway.ShadowWrite{
@@ -2061,8 +2061,8 @@ func TestReadB509Value_EmitsWatchEfficiencyShadowHit(t *testing.T) {
 	}
 
 	maxAge := poller.prepareSemanticReadWatch(key)
-	if maxAge != 10*time.Second {
-		t.Fatalf("prepareSemanticReadWatch() = %s; want 10s", maxAge)
+	if maxAge != 30*time.Second {
+		t.Fatalf("prepareSemanticReadWatch() = %s; want 30s", maxAge)
 	}
 	write := poller.shadow.Write(ebusgateway.ShadowWrite{
 		Key:        key,

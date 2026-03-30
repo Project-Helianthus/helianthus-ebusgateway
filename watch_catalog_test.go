@@ -41,8 +41,8 @@ func TestWatchDescriptorEffectiveFreshnessTTLUsesProfileDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EffectiveFreshnessTTL() error = %v", err)
 	}
-	if ttl != 10*time.Second {
-		t.Fatalf("EffectiveFreshnessTTL() = %s; want 10s", ttl)
+	if ttl != 30*time.Second {
+		t.Fatalf("EffectiveFreshnessTTL() = %s; want 30s", ttl)
 	}
 }
 
@@ -66,7 +66,7 @@ func TestWatchDescriptorRejectsInvalidSemanticPairing(t *testing.T) {
 func TestWatchDescriptorRejectsWidenedTTL(t *testing.T) {
 	t.Parallel()
 
-	ttl := 31 * time.Second
+	ttl := 121 * time.Second
 	descriptor := WatchDescriptor{
 		Key:               NewB524WatchKey(0x15, 0x06, 0x01, 0x00, 0x0005),
 		SemanticClass:     WatchSemanticClassState,

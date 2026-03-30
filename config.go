@@ -193,7 +193,7 @@ func DefaultConfig() Config {
 		InstanceGUID:                            "",
 		DumpOutputDir:                           "./dumps",
 		ObserveFirstEnabled:                     featureFlags.ObserveFirstEnabled(),
-		PassiveStateDirectApply:                 featureFlags.PassiveStateDirectApply(),
+		PassiveStateDirectApply:                 true,
 		PassiveConfigDirectApply:                featureFlags.PassiveConfigDirectApply(),
 		ExternalWritePolicy:                     featureFlags.ExternalWritePolicy(),
 		ObserveFirstFlags:                       featureFlags,

@@ -74,8 +74,8 @@ const (
 )
 
 var watchFreshnessProfileDefaults = map[WatchFreshnessProfile]time.Duration{
-	WatchFreshnessProfileStateFast: 10 * time.Second,
-	WatchFreshnessProfileStateSlow: 30 * time.Second,
+	WatchFreshnessProfileStateFast: 30 * time.Second,
+	WatchFreshnessProfileStateSlow: 120 * time.Second,
 	WatchFreshnessProfileConfig:    5 * time.Minute,
 	WatchFreshnessProfileDiscovery: time.Hour,
 	WatchFreshnessProfileDebug:     0,

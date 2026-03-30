@@ -571,13 +571,13 @@ func TestShadowCacheSnapshotEligibilityAndLookupFollowFreshness(t *testing.T) {
 		t.Fatalf("SnapshotEligibility() = %+v; want present and eligible", snapshot)
 	}
 
-	current = base.Add(11 * time.Second)
+	current = base.Add(31 * time.Second)
 	snapshot = cache.SnapshotEligibility(key)
 	if snapshot.Eligible {
 		t.Fatalf("SnapshotEligibility() = %+v; want ineligible after descriptor ttl expiry", snapshot)
 	}
 
-	lookup := cache.Lookup(key, 20*time.Second)
+	lookup := cache.Lookup(key, 60*time.Second)
 	if !lookup.Found {
 		t.Fatal("Lookup() did not return retained entry")
 	}

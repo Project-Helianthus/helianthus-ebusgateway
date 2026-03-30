@@ -973,6 +973,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 	origProbeFn := startupScanB524ProbeFn
 	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
 	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	origPostStartupIdentityRetryFn := postStartupIdentityRetryFn
 	t.Cleanup(func() {
 		registryScanFn = origRegistryScanFn
 		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
@@ -981,6 +982,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 		startupScanB524ProbeFn = origProbeFn
 		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
 		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+		postStartupIdentityRetryFn = origPostStartupIdentityRetryFn
 	})
 
 	var (
@@ -991,6 +993,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 		unexpectedPreloadRuns int
 	)
 	preloadEnrichDone := make(chan struct{}, 1)
+	retryScheduled := make(chan *ebusgateway.TransportConfig, 1)
 	registryScanFn = func(_ context.Context, _ registry.ScanBus, _ *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
 		mu.Lock()
 		scanRun++
@@ -1032,6 +1035,12 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 		}
 	}
 	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+	postStartupIdentityRetryFn = func(_ context.Context, _ *ebusgateway.Gateway, _ *graphql.Builder, _ ebusgateway.Config, targetConfig *ebusgateway.TransportConfig) {
+		select {
+		case retryScheduled <- targetConfig:
+		default:
+		}
+	}
 	loopExited := make(chan struct{}, 1)
 	startupScanLoopExitFn = func() {
 		select {
@@ -1076,6 +1085,15 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 	case <-preloadEnrichDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("startup discovery scan did not complete preload enrichment before teardown")
+	}
+	var gotRetryTarget *ebusgateway.TransportConfig
+	select {
+	case gotRetryTarget = <-retryScheduled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup discovery scan did not schedule delayed retry after preload-only identity enrichment")
+	}
+	if gotRetryTarget == nil || gotRetryTarget.Address != "127.0.0.1:8888" {
+		t.Fatalf("delayed retry target config = %#v; want ebusd preload transport copy", gotRetryTarget)
 	}
 
 	time.Sleep(50 * time.Millisecond)

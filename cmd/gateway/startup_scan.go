@@ -175,6 +175,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 		confirmationPending := false
 		fullRangeRecoveryAttempted := false
 		restrictedConfirmationAfterRecoveryPending := false
+		delayedIdentityRetryScheduled := false
 		for {
 			scanCtx := ctx
 			cancel := func() {}
@@ -234,7 +235,14 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 					if targetConfig != nil {
 						enrichSerialsFn(ctx, gateway.Registry, *targetConfig)
 					}
-					scheduleDelayedIdentityRetryIfNeeded(ctx, gateway, builder, startupCfg, targetConfig)
+					delayedIdentityRetryScheduled = scheduleDelayedIdentityRetryIfNeeded(
+						ctx,
+						gateway,
+						builder,
+						startupCfg,
+						targetConfig,
+						delayedIdentityRetryScheduled,
+					)
 
 					if total > 0 && total != previousTotal {
 						previousTotal = total
@@ -345,7 +353,14 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				if targetConfig != nil {
 					enrichSerialsFn(ctx, gateway.Registry, *targetConfig)
 				}
-				scheduleDelayedIdentityRetryIfNeeded(ctx, gateway, builder, startupCfg, targetConfig)
+				delayedIdentityRetryScheduled = scheduleDelayedIdentityRetryIfNeeded(
+					ctx,
+					gateway,
+					builder,
+					startupCfg,
+					targetConfig,
+					delayedIdentityRetryScheduled,
+				)
 			}
 
 			if total > 0 && total != previousTotal {
@@ -425,12 +440,12 @@ func startupScanHasMissingVaillantSerials(reg *registry.DeviceRegistry) bool {
 	return missing
 }
 
-func scheduleDelayedIdentityRetryIfNeeded(ctx context.Context, gateway *ebusgateway.Gateway, builder *graphql.Builder, cfg ebusgateway.Config, targetConfig *ebusgateway.TransportConfig) {
-	if postStartupIdentityRetryFn == nil || gateway == nil || gateway.Registry == nil {
-		return
+func scheduleDelayedIdentityRetryIfNeeded(ctx context.Context, gateway *ebusgateway.Gateway, builder *graphql.Builder, cfg ebusgateway.Config, targetConfig *ebusgateway.TransportConfig, alreadyScheduled bool) bool {
+	if alreadyScheduled || postStartupIdentityRetryFn == nil || gateway == nil || gateway.Registry == nil {
+		return alreadyScheduled
 	}
 	if !startupScanHasMissingVaillantSerials(gateway.Registry) {
-		return
+		return alreadyScheduled
 	}
 
 	var retryTargetConfig *ebusgateway.TransportConfig
@@ -439,6 +454,7 @@ func scheduleDelayedIdentityRetryIfNeeded(ctx context.Context, gateway *ebusgate
 		retryTargetConfig = &copyConfig
 	}
 	postStartupIdentityRetryFn(ctx, gateway, builder, cfg, retryTargetConfig)
+	return true
 }
 
 func schedulePostStartupIdentityRetry(ctx context.Context, gateway *ebusgateway.Gateway, builder *graphql.Builder, cfg ebusgateway.Config, targetConfig *ebusgateway.TransportConfig) {

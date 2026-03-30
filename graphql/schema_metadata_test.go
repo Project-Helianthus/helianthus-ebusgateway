@@ -76,6 +76,69 @@ func TestBuildSchema_UsesDeviceIDFallbackWhenVaillantPartNumberMissing(t *testin
 	}
 }
 
+func TestBuildSchema_VaillantBoilerDisplayNameIncludesFullProductModel(t *testing.T) {
+	t.Parallel()
+
+	got, err := BuildSchema(mockRegistry{entries: []registry.DeviceEntry{
+		mockEntry{
+			info: registry.DeviceInfo{
+				Address:      0x08,
+				Manufacturer: "Vaillant",
+				DeviceID:     "BAI00",
+				SerialNumber: "21-22-01-0010024604-0001-005034-N9",
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("BuildSchema error = %v", err)
+	}
+	if len(got.Devices) != 1 {
+		t.Fatalf("devices = %d; want 1", len(got.Devices))
+	}
+
+	device := got.Devices[0]
+	if device.DisplayName != "ecoTEC plus VUW 32CS/1-5 (N-INT2)" {
+		t.Fatalf("DisplayName = %q; want full boiler model", device.DisplayName)
+	}
+	if device.ProductFamily != "ecoTEC plus" {
+		t.Fatalf("ProductFamily = %q; want ecoTEC plus", device.ProductFamily)
+	}
+	if device.ProductModel != "VUW 32CS/1-5 (N-INT2)" {
+		t.Fatalf("ProductModel = %q; want VUW 32CS/1-5 (N-INT2)", device.ProductModel)
+	}
+	if device.PartNumber != "0010024604" {
+		t.Fatalf("PartNumber = %q; want 0010024604", device.PartNumber)
+	}
+	if device.Role != "Boiler" {
+		t.Fatalf("Role = %q; want Boiler", device.Role)
+	}
+}
+
+func TestBuildSchema_VaillantBoilerDisplayNameAvoidsDuplicatingFamily(t *testing.T) {
+	t.Parallel()
+
+	got, err := BuildSchema(mockRegistry{entries: []registry.DeviceEntry{
+		mockEntry{
+			info: registry.DeviceInfo{
+				Address:      0x08,
+				Manufacturer: "Vaillant",
+				DeviceID:     "BAI00",
+				SerialNumber: "21-22-01-0010002460-0001-005034-N9",
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("BuildSchema error = %v", err)
+	}
+	if len(got.Devices) != 1 {
+		t.Fatalf("devices = %d; want 1", len(got.Devices))
+	}
+
+	if got.Devices[0].DisplayName != "ecoTEC plus 415" {
+		t.Fatalf("DisplayName = %q; want deduplicated family/model label", got.Devices[0].DisplayName)
+	}
+}
+
 func TestCloneSchema_PreservesDeviceMetadataFields(t *testing.T) {
 	t.Parallel()
 

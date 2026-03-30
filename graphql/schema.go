@@ -267,19 +267,55 @@ func resolveVaillantProduct(partNumber string, catalog productids.Catalog, catal
 	family = strings.TrimSpace(record.Family)
 	model = strings.TrimSpace(record.ProductModel)
 	role = strings.TrimSpace(record.Role)
-	displayName = formatVaillantDisplayName(family, role)
+	displayName = formatVaillantDisplayName(family, model, role)
 	return displayName, family, model, role
 }
 
-func formatVaillantDisplayName(family string, role string) string {
+func formatVaillantDisplayName(family string, model string, role string) string {
+	family = strings.TrimSpace(family)
+	model = strings.TrimSpace(model)
+	role = strings.TrimSpace(role)
+
 	if family == "" {
+		if model != "" {
+			return model
+		}
 		return role
 	}
 	parts := strings.Fields(family)
 	if len(parts) > 0 && looksLikeVaillantFunctionalModule(parts[0]) && role != "" {
 		return parts[0] + " " + role
 	}
+	if shouldUseVaillantFullModel(role) {
+		return joinVaillantFamilyAndModel(family, model)
+	}
 	return family
+}
+
+func shouldUseVaillantFullModel(role string) bool {
+	switch {
+	case strings.EqualFold(role, "Boiler"):
+		return true
+	case strings.EqualFold(role, "Heat Pump"):
+		return true
+	default:
+		return false
+	}
+}
+
+func joinVaillantFamilyAndModel(family string, model string) string {
+	if family == "" {
+		return model
+	}
+	if model == "" {
+		return family
+	}
+	familyFolded := strings.ToLower(strings.TrimSpace(family))
+	modelFolded := strings.ToLower(strings.TrimSpace(model))
+	if modelFolded == familyFolded || strings.HasPrefix(modelFolded, familyFolded+" ") {
+		return model
+	}
+	return family + " " + model
 }
 
 func looksLikeVaillantFunctionalModule(prefix string) bool {

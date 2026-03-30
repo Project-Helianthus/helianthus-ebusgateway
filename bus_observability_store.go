@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	observeFirstFramesHardCap    = 2048
-	observeFirstErrorsHardCap   = 512
+	observeFirstFramesHardCap      = 2048
+	observeFirstErrorsHardCap      = 512
 	observeFirstPeriodicitySamples = 3
 	observeFirstBusyWindowHorizon  = time.Hour
 

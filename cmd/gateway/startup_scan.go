@@ -231,6 +231,10 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 					log.Printf("startup scan preload: imported=%d total=%d (ebusd-tcp)", imported, total)
 
 					enrichIdentityFn(ctx, gateway, startupCfg)
+					if targetConfig != nil {
+						enrichSerialsFn(ctx, gateway.Registry, *targetConfig)
+					}
+					scheduleDelayedIdentityRetryIfNeeded(ctx, gateway, builder, startupCfg, targetConfig)
 
 					if total > 0 && total != previousTotal {
 						previousTotal = total
@@ -341,14 +345,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				if targetConfig != nil {
 					enrichSerialsFn(ctx, gateway.Registry, *targetConfig)
 				}
-				if postStartupIdentityRetryFn != nil && startupScanHasMissingVaillantSerials(gateway.Registry) {
-					var retryTargetConfig *ebusgateway.TransportConfig
-					if targetConfig != nil {
-						copyConfig := *targetConfig
-						retryTargetConfig = &copyConfig
-					}
-					postStartupIdentityRetryFn(ctx, gateway, builder, startupCfg, retryTargetConfig)
-				}
+				scheduleDelayedIdentityRetryIfNeeded(ctx, gateway, builder, startupCfg, targetConfig)
 			}
 
 			if total > 0 && total != previousTotal {
@@ -426,6 +423,22 @@ func startupScanHasMissingVaillantSerials(reg *registry.DeviceRegistry) bool {
 		return false
 	})
 	return missing
+}
+
+func scheduleDelayedIdentityRetryIfNeeded(ctx context.Context, gateway *ebusgateway.Gateway, builder *graphql.Builder, cfg ebusgateway.Config, targetConfig *ebusgateway.TransportConfig) {
+	if postStartupIdentityRetryFn == nil || gateway == nil || gateway.Registry == nil {
+		return
+	}
+	if !startupScanHasMissingVaillantSerials(gateway.Registry) {
+		return
+	}
+
+	var retryTargetConfig *ebusgateway.TransportConfig
+	if targetConfig != nil {
+		copyConfig := *targetConfig
+		retryTargetConfig = &copyConfig
+	}
+	postStartupIdentityRetryFn(ctx, gateway, builder, cfg, retryTargetConfig)
 }
 
 func schedulePostStartupIdentityRetry(ctx context.Context, gateway *ebusgateway.Gateway, builder *graphql.Builder, cfg ebusgateway.Config, targetConfig *ebusgateway.TransportConfig) {

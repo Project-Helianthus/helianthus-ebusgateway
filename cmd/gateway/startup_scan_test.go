@@ -1642,13 +1642,13 @@ func TestStartDiscoveryScanLoop_NonEbusdTransportDoesFullRangeScanWithoutEbusdQu
 	select {
 	case <-activeSuccess:
 	case <-time.After(2 * time.Second):
-		t.Fatal("startup discovery scan did not complete restricted follow-up confirmation")
+		t.Fatal("startup discovery scan did not complete within timeout")
 	}
 
 	select {
 	case <-loopExited:
 	case <-time.After(2 * time.Second):
-		t.Fatal("startup discovery scan did not stop after restricted follow-up confirmation")
+		t.Fatal("startup discovery scan loop did not exit within timeout")
 	}
 
 	mu.Lock()

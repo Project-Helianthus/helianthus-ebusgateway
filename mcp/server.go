@@ -199,10 +199,10 @@ type SystemConfig struct {
 	HcEmergencyTemperature       *float64 `json:"hc_emergency_temperature,omitempty"`
 	HwcMaxFlowTempDesired        *float64 `json:"hwc_max_flow_temp_desired,omitempty"`
 	MaxRoomHumidity              *int     `json:"max_room_humidity,omitempty"`
-	MaintenanceDate   *string `json:"maintenance_date,omitempty"`
-	InstallerName     *string `json:"installer_name,omitempty"`
-	InstallerPhone    *string `json:"installer_phone,omitempty"`
-	InstallerMenuCode *int    `json:"installer_menu_code,omitempty"`
+	MaintenanceDate              *string  `json:"maintenance_date,omitempty"`
+	InstallerName                *string  `json:"installer_name,omitempty"`
+	InstallerPhone               *string  `json:"installer_phone,omitempty"`
+	InstallerMenuCode            *int     `json:"installer_menu_code,omitempty"`
 }
 
 type SystemProperties struct {

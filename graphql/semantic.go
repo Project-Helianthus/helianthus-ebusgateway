@@ -275,10 +275,10 @@ type SystemConfig struct {
 	HcEmergencyTemperature       *float64
 	HwcMaxFlowTempDesired        *float64
 	MaxRoomHumidity              *int
-	MaintenanceDate   *string
-	InstallerName     *string
-	InstallerPhone    *string
-	InstallerMenuCode *int
+	MaintenanceDate              *string
+	InstallerName                *string
+	InstallerPhone               *string
+	InstallerMenuCode            *int
 }
 
 type SystemProperties struct {

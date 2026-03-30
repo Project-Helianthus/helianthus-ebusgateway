@@ -3109,10 +3109,10 @@ type vaillantSystemSnapshot struct {
 	HcEmergencyTemperature       *float64
 	HwcMaxFlowTempDesired        *float64
 	MaxRoomHumidity              *uint16
-	MaintenanceDate   *string
-	InstallerName     *string
-	InstallerPhone    *string
-	InstallerMenuCode *uint16
+	MaintenanceDate              *string
+	InstallerName                *string
+	InstallerPhone               *string
+	InstallerMenuCode            *uint16
 
 	// Properties
 	SystemScheme            *uint16
@@ -3625,8 +3625,12 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 		name2, ok2 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerName2)
 		if ok1 || ok2 {
 			var p1, p2 string
-			if ok1 { p1 = name1 }
-			if ok2 { p2 = name2 }
+			if ok1 {
+				p1 = name1
+			}
+			if ok2 {
+				p2 = name2
+			}
 			combined := strings.TrimRight(p1+p2, " \x00")
 			snapshot.InstallerName = &combined
 			updated = true
@@ -3638,8 +3642,12 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 		phone2, ok2 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerPhone2)
 		if ok1 || ok2 {
 			var p1, p2 string
-			if ok1 { p1 = phone1 }
-			if ok2 { p2 = phone2 }
+			if ok1 {
+				p1 = phone1
+			}
+			if ok2 {
+				p2 = phone2
+			}
 			combined := strings.TrimRight(p1+p2, " \x00")
 			snapshot.InstallerPhone = &combined
 			updated = true
@@ -3888,10 +3896,10 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 			HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
 			HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
 			MaxRoomHumidity:              uint16ToIntPtr(snapshot.MaxRoomHumidity),
-			MaintenanceDate:   cloneStringPtr(snapshot.MaintenanceDate),
-			InstallerName:     cloneStringPtr(snapshot.InstallerName),
-			InstallerPhone:    cloneStringPtr(snapshot.InstallerPhone),
-			InstallerMenuCode: uint16ToIntPtr(snapshot.InstallerMenuCode),
+			MaintenanceDate:              cloneStringPtr(snapshot.MaintenanceDate),
+			InstallerName:                cloneStringPtr(snapshot.InstallerName),
+			InstallerPhone:               cloneStringPtr(snapshot.InstallerPhone),
+			InstallerMenuCode:            uint16ToIntPtr(snapshot.InstallerMenuCode),
 		},
 		Properties: graphql.SystemProperties{
 			SystemScheme:            uint16ToIntPtr(snapshot.SystemScheme),
@@ -4471,15 +4479,14 @@ func cloneSystemSnapshot(snapshot *vaillantSystemSnapshot) *vaillantSystemSnapsh
 		HcEmergencyTemperature:       cloneFloat64Ptr(snapshot.HcEmergencyTemperature),
 		HwcMaxFlowTempDesired:        cloneFloat64Ptr(snapshot.HwcMaxFlowTempDesired),
 		MaxRoomHumidity:              cloneUint16Ptr(snapshot.MaxRoomHumidity),
-		MaintenanceDate:   cloneStringPtr(snapshot.MaintenanceDate),
-		InstallerName:     cloneStringPtr(snapshot.InstallerName),
-		InstallerPhone:    cloneStringPtr(snapshot.InstallerPhone),
-		InstallerMenuCode: cloneUint16Ptr(snapshot.InstallerMenuCode),
+		MaintenanceDate:              cloneStringPtr(snapshot.MaintenanceDate),
+		InstallerName:                cloneStringPtr(snapshot.InstallerName),
+		InstallerPhone:               cloneStringPtr(snapshot.InstallerPhone),
+		InstallerMenuCode:            cloneUint16Ptr(snapshot.InstallerMenuCode),
 		SystemScheme:                 cloneUint16Ptr(snapshot.SystemScheme),
 		ModuleConfigurationVR71:      cloneUint16Ptr(snapshot.ModuleConfigurationVR71),
 	}
 }
-
 
 func uint16ToIntPtr(value *uint16) *int {
 	if value == nil {
@@ -5604,7 +5611,7 @@ func (p *vaillantSemanticPoller) writeSystemCStringPair(ctx context.Context, fie
 	for i := 0; i < len(trimmed); i++ {
 		b := trimmed[i]
 		if fieldName == "installerPhone" {
-			if !((b >= '0' && b <= '9') || b == '+' || b == '(' || b == ')' || b == ' ') {
+			if (b < '0' || b > '9') && b != '+' && b != '(' && b != ')' && b != ' ' {
 				return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("invalid character '%c' at position %d (allowed: digits, +, (, ), space)", b, i)}
 			}
 		} else {
@@ -7610,10 +7617,10 @@ func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {
 			HcEmergencyTemperature:       cloneFloatPtr(status.Config.HcEmergencyTemperature),
 			HwcMaxFlowTempDesired:        cloneFloatPtr(status.Config.HwcMaxFlowTempDesired),
 			MaxRoomHumidity:              cloneIntPtr(status.Config.MaxRoomHumidity),
-			MaintenanceDate:   cloneStringPtr(status.Config.MaintenanceDate),
-			InstallerName:     cloneStringPtr(status.Config.InstallerName),
-			InstallerPhone:    cloneStringPtr(status.Config.InstallerPhone),
-			InstallerMenuCode: cloneIntPtr(status.Config.InstallerMenuCode),
+			MaintenanceDate:              cloneStringPtr(status.Config.MaintenanceDate),
+			InstallerName:                cloneStringPtr(status.Config.InstallerName),
+			InstallerPhone:               cloneStringPtr(status.Config.InstallerPhone),
+			InstallerMenuCode:            cloneIntPtr(status.Config.InstallerMenuCode),
 		},
 		Properties: &mcp.SystemProperties{
 			SystemScheme:            cloneIntPtr(status.Properties.SystemScheme),

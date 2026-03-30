@@ -83,9 +83,15 @@ var (
 	startupScanLoopExitFn       func()
 	enrichVaillantIdentityFn    = enrichVaillantIdentity
 	enrichSerialsFromEbusdFn    = enrichSerialsFromEbusd
+	postStartupIdentityRetryFn  = schedulePostStartupIdentityRetry
 )
 
 const proxyObserveFirstStartupSource byte = 0xF7
+
+var (
+	postStartupIdentityRetryDelay    = 5 * time.Second
+	postStartupIdentityRetryAttempts = 3
+)
 
 func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
 	if b == nil || b.bus == nil {
@@ -335,6 +341,14 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				if targetConfig != nil {
 					enrichSerialsFn(ctx, gateway.Registry, *targetConfig)
 				}
+				if postStartupIdentityRetryFn != nil && startupScanHasMissingVaillantSerials(gateway.Registry) {
+					var retryTargetConfig *ebusgateway.TransportConfig
+					if targetConfig != nil {
+						copyConfig := *targetConfig
+						retryTargetConfig = &copyConfig
+					}
+					postStartupIdentityRetryFn(ctx, gateway, builder, startupCfg, retryTargetConfig)
+				}
 			}
 
 			if total > 0 && total != previousTotal {
@@ -390,6 +404,93 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 		firstPassDone:          firstPassDone,
 		semanticBootstrapReady: semanticBootstrapReady,
 	}
+}
+
+func startupScanHasMissingVaillantSerials(reg *registry.DeviceRegistry) bool {
+	if reg == nil {
+		return false
+	}
+
+	missing := false
+	reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry == nil {
+			return true
+		}
+		if !strings.EqualFold(entry.Manufacturer(), "Vaillant") {
+			return true
+		}
+		if strings.TrimSpace(entry.SerialNumber()) != "" {
+			return true
+		}
+		missing = true
+		return false
+	})
+	return missing
+}
+
+func schedulePostStartupIdentityRetry(ctx context.Context, gateway *ebusgateway.Gateway, builder *graphql.Builder, cfg ebusgateway.Config, targetConfig *ebusgateway.TransportConfig) {
+	if gateway == nil || gateway.Registry == nil {
+		return
+	}
+	if !startupScanHasMissingVaillantSerials(gateway.Registry) {
+		return
+	}
+
+	delay := postStartupIdentityRetryDelay
+	if delay <= 0 {
+		delay = 5 * time.Second
+	}
+	attempts := postStartupIdentityRetryAttempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+
+	go func() {
+		wait := time.NewTimer(delay)
+		defer wait.Stop()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-wait.C:
+		}
+
+		for attempt := 1; attempt <= attempts; attempt++ {
+			if ctx.Err() != nil || !startupScanHasMissingVaillantSerials(gateway.Registry) {
+				return
+			}
+
+			log.Printf("startup scan delayed enrich: attempt=%d missing_vaillant_serials=true", attempt)
+			enrichVaillantIdentityFn(ctx, gateway, cfg)
+			if targetConfig != nil {
+				enrichSerialsFromEbusdFn(ctx, gateway.Registry, *targetConfig)
+			}
+
+			if !startupScanHasMissingVaillantSerials(gateway.Registry) {
+				gateway.RefreshRouterPlanes()
+				if builder != nil {
+					if err := builder.Rebuild(); err != nil {
+						log.Printf("graphql schema rebuild failed after delayed identity enrich: %v", err)
+					}
+				}
+				log.Printf("startup scan delayed enrich: attempt=%d complete", attempt)
+				return
+			}
+
+			if attempt == attempts {
+				log.Printf("startup scan delayed enrich: attempt=%d exhausted", attempt)
+				return
+			}
+
+			retryTimer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				retryTimer.Stop()
+				return
+			case <-retryTimer.C:
+			}
+		}
+	}()
 }
 
 func ebusdScanTargetCandidates(config ebusgateway.TransportConfig) []ebusgateway.TransportConfig {

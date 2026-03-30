@@ -1088,8 +1088,11 @@ func TestStreamEndpoint(t *testing.T) {
 	if !strings.Contains(body, "event: update") {
 		t.Fatalf("stream body missing update event: %q", body)
 	}
-	if !strings.Contains(body, "\"layer\":\"registry\"") {
-		t.Fatalf("stream payload missing registry layer: %q", body)
+	if !strings.Contains(body, "\"layer\":\"composite\"") {
+		t.Fatalf("stream payload missing composite layer: %q", body)
+	}
+	if !strings.Contains(body, "\"registry\":{") {
+		t.Fatalf("stream composite payload missing registry section: %q", body)
 	}
 }
 
@@ -1120,7 +1123,7 @@ func TestTimelineEventsEndpoint(t *testing.T) {
 		t.Fatalf("stream status=%d; want %d", streamRec.Code, http.StatusOK)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/timeline/events?limit=10&layer=registry", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/timeline/events?limit=10&layer=composite", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -1135,8 +1138,8 @@ func TestTimelineEventsEndpoint(t *testing.T) {
 	}
 	items := payload["items"].([]any)
 	first := items[0].(map[string]any)
-	if first["layer"] != "registry" {
-		t.Fatalf("layer=%v; want registry", first["layer"])
+	if first["layer"] != "composite" {
+		t.Fatalf("layer=%v; want composite", first["layer"])
 	}
 
 	correlation := first["correlation_id"].(string)
@@ -1184,7 +1187,7 @@ func TestProvenanceEventsEndpoint(t *testing.T) {
 		t.Fatalf("stream status=%d; want %d", streamRec.Code, http.StatusOK)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/provenance/events?limit=5&layer=registry", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/provenance/events?limit=5&layer=composite", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -1199,8 +1202,8 @@ func TestProvenanceEventsEndpoint(t *testing.T) {
 	}
 	items := payload["items"].([]any)
 	first := items[0].(map[string]any)
-	if first["layer"] != "registry" {
-		t.Fatalf("layer=%v; want registry", first["layer"])
+	if first["layer"] != "composite" {
+		t.Fatalf("layer=%v; want composite", first["layer"])
 	}
 	if first["source"] == "" {
 		t.Fatalf("source missing")

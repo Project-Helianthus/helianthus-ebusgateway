@@ -316,7 +316,7 @@ func TestEbusdScanTargetCandidates(t *testing.T) {
 		}
 	})
 
-	t.Run("non ebusd transport still includes local fallback", func(t *testing.T) {
+	t.Run("non ebusd transport returns no candidates", func(t *testing.T) {
 		t.Parallel()
 
 		candidates := ebusdScanTargetCandidates(ebusgateway.TransportConfig{
@@ -325,14 +325,8 @@ func TestEbusdScanTargetCandidates(t *testing.T) {
 			Address:     "127.0.0.1:19001",
 			DialTimeout: 500 * time.Millisecond,
 		})
-		if len(candidates) != 1 {
-			t.Fatalf("candidate count = %d; want 1", len(candidates))
-		}
-		if got := candidates[0].Address; got != "127.0.0.1:8888" {
-			t.Fatalf("candidate[0].Address = %q; want %q", got, "127.0.0.1:8888")
-		}
-		if got := candidates[0].DialTimeout; got != 500*time.Millisecond {
-			t.Fatalf("fallback dial timeout = %s; want 500ms", got)
+		if len(candidates) != 0 {
+			t.Fatalf("candidate count = %d; want 0 (non-ebusd-tcp transport must not query ebusd)", len(candidates))
 		}
 	})
 
@@ -1515,7 +1509,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadNonVaillantImportFallsThroughToRestr
 	}
 }
 
-func TestStartDiscoveryScanLoop_LocalFallbackImportRetriesFullRangeThenRestrictedConfirmation(t *testing.T) {
+func TestStartDiscoveryScanLoop_NonEbusdTransportDoesFullRangeScanWithoutEbusdQueries(t *testing.T) {
 	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
 		Transport: transport.NewLoopback(),
 	})
@@ -1648,13 +1642,13 @@ func TestStartDiscoveryScanLoop_LocalFallbackImportRetriesFullRangeThenRestricte
 	select {
 	case <-activeSuccess:
 	case <-time.After(2 * time.Second):
-		t.Fatal("startup discovery scan did not complete restricted follow-up confirmation")
+		t.Fatal("startup discovery scan did not complete within timeout")
 	}
 
 	select {
 	case <-loopExited:
 	case <-time.After(2 * time.Second):
-		t.Fatal("startup discovery scan did not stop after restricted follow-up confirmation")
+		t.Fatal("startup discovery scan loop did not exit within timeout")
 	}
 
 	mu.Lock()
@@ -1669,29 +1663,27 @@ func TestStartDiscoveryScanLoop_LocalFallbackImportRetriesFullRangeThenRestricte
 	mu.Unlock()
 
 	if gotScanRun != 3 {
-		t.Fatalf("registry scan runs = %d; want 3 (restricted timeout/import, bounded full-range retry, restricted success)", gotScanRun)
+		t.Fatalf("registry scan runs = %d; want 3 (full-range timeout, full-range empty, full-range success)", gotScanRun)
 	}
 	if gotScanCtxErr != nil {
-		t.Fatalf("registry scan received canceled context during non-ebusd fallback confirmation flow: %v", gotScanCtxErr)
+		t.Fatalf("registry scan received canceled context: %v", gotScanCtxErr)
 	}
 
 	wantTargetHistory := [][]byte{
-		{0x04, 0x08},
 		nil,
-		{0x04, 0x08},
+		nil,
+		nil,
 	}
 	if !reflect.DeepEqual(gotTargetHistory, wantTargetHistory) {
-		t.Fatalf("scan target history = %#v; want %#v", gotTargetHistory, wantTargetHistory)
+		t.Fatalf("scan target history = %#v; want %#v (non-ebusd-tcp must always use full range)", gotTargetHistory, wantTargetHistory)
 	}
 
-	wantTargetQueryHistory := []string{"127.0.0.1:8888", "127.0.0.1:8888"}
-	if !reflect.DeepEqual(gotTargetQueryHistory, wantTargetQueryHistory) {
-		t.Fatalf("scan-result target query history = %#v; want %#v", gotTargetQueryHistory, wantTargetQueryHistory)
+	if len(gotTargetQueryHistory) != 0 {
+		t.Fatalf("scan-result target query history = %#v; want empty (non-ebusd-tcp must not query ebusd)", gotTargetQueryHistory)
 	}
 
-	wantInfoQueryHistory := []string{"127.0.0.1:8888"}
-	if !reflect.DeepEqual(gotInfoQueryHistory, wantInfoQueryHistory) {
-		t.Fatalf("scan-result info query history = %#v; want %#v", gotInfoQueryHistory, wantInfoQueryHistory)
+	if len(gotInfoQueryHistory) != 0 {
+		t.Fatalf("scan-result info query history = %#v; want empty (non-ebusd-tcp must not query ebusd)", gotInfoQueryHistory)
 	}
 }
 

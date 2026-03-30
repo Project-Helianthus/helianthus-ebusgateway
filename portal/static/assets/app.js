@@ -694,6 +694,14 @@ class PortalShell extends HTMLElement {
         this.scheduleProvenanceRefresh();
         this.refreshBusObservability(lifecycleToken, lifecycleAbort);
         this.refreshSnapshots(lifecycleToken, lifecycleAbort);
+        const regCount = payload.payload?.registry?.device_count;
+        if (regCount !== undefined && regCount !== this._lastRegistryDeviceCount) {
+          this._lastRegistryDeviceCount = regCount;
+          const listEl = this.querySelector('[data-role="registry-list"]');
+          if (listEl) {
+            this.loadRegistryPreview(listEl, lifecycleToken, lifecycleAbort);
+          }
+        }
       } catch (err) {
         streamStatus.textContent = "Stream payload parse error";
       }

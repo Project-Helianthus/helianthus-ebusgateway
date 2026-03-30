@@ -65,7 +65,8 @@ type Config struct {
 	ScanSourceAuto     bool
 	ScanTimeout        time.Duration
 	ScanRequestTimeout time.Duration
-	ScanInterval       time.Duration
+	ScanInterval           time.Duration
+	BackgroundScanInterval time.Duration
 	BootLiveTimeout    time.Duration
 	// SemanticInterval is a legacy single-interval semantic polling configuration.
 	// Prefer SemanticDiscoveryInterval / SemanticConfigInterval / SemanticStateInterval.
@@ -153,6 +154,7 @@ func DefaultConfig() Config {
 		// 150ms is too aggressive for real-world ENH over TCP setups.
 		ScanRequestTimeout:                      400 * time.Millisecond,
 		ScanInterval:                            30 * time.Second,
+		BackgroundScanInterval:                  2 * time.Hour,
 		BootLiveTimeout:                         2 * time.Minute,
 		SemanticInterval:                        1 * time.Minute,
 		SemanticDiscoveryInterval:               10 * time.Minute,
@@ -227,6 +229,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.ScanInterval == 0 {
 		cfg.ScanInterval = 30 * time.Second
+	}
+	if cfg.BackgroundScanInterval < 0 {
+		cfg.BackgroundScanInterval = 0
 	}
 	if cfg.BootLiveTimeout == 0 {
 		cfg.BootLiveTimeout = 2 * time.Minute

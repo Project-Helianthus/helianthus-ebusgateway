@@ -523,9 +523,12 @@ func schedulePostStartupIdentityRetry(ctx context.Context, gateway *ebusgateway.
 }
 
 func ebusdScanTargetCandidates(config ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
-	candidates := make([]ebusgateway.TransportConfig, 0, 2)
+	if config.Protocol != ebusgateway.TransportEbusdTCP {
+		return nil
+	}
 
-	if config.Protocol == ebusgateway.TransportEbusdTCP && strings.EqualFold(config.Network, "tcp") {
+	candidates := make([]ebusgateway.TransportConfig, 0, 2)
+	if strings.EqualFold(config.Network, "tcp") {
 		candidates = append(candidates, config)
 	}
 

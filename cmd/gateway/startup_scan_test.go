@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
@@ -559,6 +560,7 @@ func TestStartDiscoveryScanLoop_RerunsPhysicalIdentityEnrichmentAfterNormalScan(
 	origResultInfosFn := ebusdScanResultInfosFn
 	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
 	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	origPostStartupIdentityRetryFn := postStartupIdentityRetryFn
 	t.Cleanup(func() {
 		registryScanFn = origRegistryScanFn
 		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
@@ -566,6 +568,7 @@ func TestStartDiscoveryScanLoop_RerunsPhysicalIdentityEnrichmentAfterNormalScan(
 		ebusdScanResultInfosFn = origResultInfosFn
 		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
 		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+		postStartupIdentityRetryFn = origPostStartupIdentityRetryFn
 	})
 
 	done := make(chan struct{}, 1)
@@ -596,6 +599,7 @@ func TestStartDiscoveryScanLoop_RerunsPhysicalIdentityEnrichmentAfterNormalScan(
 	var mu sync.Mutex
 	var vaillantEnrichCalls int
 	var ebusdEnrichCalls int
+	retryScheduled := make(chan struct{}, 1)
 	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {
 		mu.Lock()
 		vaillantEnrichCalls++
@@ -605,6 +609,12 @@ func TestStartDiscoveryScanLoop_RerunsPhysicalIdentityEnrichmentAfterNormalScan(
 		mu.Lock()
 		ebusdEnrichCalls++
 		mu.Unlock()
+	}
+	postStartupIdentityRetryFn = func(context.Context, *ebusgateway.Gateway, *graphql.Builder, ebusgateway.Config, *ebusgateway.TransportConfig) {
+		select {
+		case retryScheduled <- struct{}{}:
+		default:
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -631,11 +641,16 @@ func TestStartDiscoveryScanLoop_RerunsPhysicalIdentityEnrichmentAfterNormalScan(
 		gotVaillant := vaillantEnrichCalls
 		gotEbusd := ebusdEnrichCalls
 		mu.Unlock()
-		if gotVaillant >= 1 && gotEbusd >= 1 {
+		select {
+		case <-retryScheduled:
+			retryScheduled = nil
+		default:
+		}
+		if gotVaillant >= 1 && gotEbusd >= 1 && retryScheduled == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("enrichment calls after normal scan = vaillant:%d ebusd:%d; want both >= 1", gotVaillant, gotEbusd)
+			t.Fatalf("enrichment calls after normal scan = vaillant:%d ebusd:%d; want both >= 1 and delayed retry scheduled", gotVaillant, gotEbusd)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1083,6 +1098,82 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 		t.Fatalf("startup scan readiness probe received canceled context: %v", finalProbeCtxErr)
 	}
 
+}
+
+func TestSchedulePostStartupIdentityRetryEnrichesMissingVaillantSerials(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	origDelay := postStartupIdentityRetryDelay
+	origAttempts := postStartupIdentityRetryAttempts
+	t.Cleanup(func() {
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+		postStartupIdentityRetryDelay = origDelay
+		postStartupIdentityRetryAttempts = origAttempts
+	})
+
+	gateway.Registry.Register(registry.DeviceInfo{
+		Address:         0x08,
+		Manufacturer:    "Vaillant",
+		DeviceID:        "BAI00",
+		SoftwareVersion: "1201",
+		HardwareVersion: "7603",
+	})
+
+	postStartupIdentityRetryDelay = 10 * time.Millisecond
+	postStartupIdentityRetryAttempts = 1
+
+	done := make(chan struct{}, 1)
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {
+		gateway.Registry.Register(registry.DeviceInfo{
+			Address:         0x08,
+			Manufacturer:    "Vaillant",
+			DeviceID:        "BAI00",
+			SoftwareVersion: "1201",
+			HardwareVersion: "7603",
+			SerialNumber:    "21-22-01-0010024604-0001-005034-N9",
+		})
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	schedulePostStartupIdentityRetry(ctx, gateway, nil, ebusgateway.DefaultConfig(), nil)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delayed identity retry did not invoke enrichment")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		entry, ok := gateway.Registry.Lookup(0x08)
+		if ok && entry != nil && entry.SerialNumber() == "21-22-01-0010024604-0001-005034-N9" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("delayed identity retry did not persist serial onto registry entry")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedScansUntilActiveSuccess(t *testing.T) {

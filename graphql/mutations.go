@@ -1,8 +1,8 @@
 package graphql
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -73,7 +73,7 @@ type ConfigMutationResult struct {
 type configValueType int
 
 const (
-	configValueFloat32  configValueType = iota
+	configValueFloat32 configValueType = iota
 	configValueUint16
 	configValueBoolU8
 	configValueEnumU16

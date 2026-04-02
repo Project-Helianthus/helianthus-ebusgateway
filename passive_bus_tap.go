@@ -423,7 +423,32 @@ func passiveTapEnforcesAbsenceDisconnect(cfg Config) bool {
 }
 
 func passiveTapDecodesWireEscapes(cfg Config) bool {
-	return !passiveTapUsesProxyLikeObserverTransport(cfg)
+	return !passiveTapObserverStreamAlreadyLogical(cfg)
+}
+
+func passiveTapObserverStreamAlreadyLogical(cfg Config) bool {
+	if passiveTapUsesProxyLikeObserverTransport(cfg) {
+		return true
+	}
+
+	config, err := normalizeTransportConfig(cfg.TransportConfig)
+	if err != nil {
+		return false
+	}
+
+	switch config.Protocol {
+	case TransportENH, TransportENS:
+	default:
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(config.Network)) != "tcp" {
+		return false
+	}
+
+	// Remote direct adapter sessions surface observer bytes as logical eBUS
+	// symbols inside ENH RECEIVED frames. Running the local escape decoder on
+	// that already-decoded stream corrupts any 0xA9 data bytes.
+	return passiveObserveFirstDirectAdapterEndpoint(config.Network, config.Address)
 }
 
 func passiveTapUsesProxyLikeObserverTransport(cfg Config) bool {

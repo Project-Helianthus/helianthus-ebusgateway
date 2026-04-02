@@ -330,6 +330,152 @@ func TestPassiveBusTap_ProxyLikeObserverStreamEmitsLogicalSymbolsWithoutDecodeFa
 	}
 }
 
+func TestPassiveTapDecodesWireEscapes_DifferentiatesRemoteDirectAdapterLogicalStreams(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  TransportConfig
+		want bool
+	}{
+		{
+			name: "remote direct adapter ip skips local decode",
+			cfg: TransportConfig{
+				Protocol: TransportENH,
+				Network:  "tcp",
+				Address:  "192.168.100.2:9999",
+			},
+			want: false,
+		},
+		{
+			name: "remote direct adapter hostname skips local decode",
+			cfg: TransportConfig{
+				Protocol: TransportENS,
+				Network:  "tcp",
+				Address:  "adapter.local:9999",
+			},
+			want: false,
+		},
+		{
+			name: "loopback direct adapter still decodes raw wire bytes",
+			cfg: TransportConfig{
+				Protocol: TransportENH,
+				Network:  "tcp",
+				Address:  "127.0.0.1:9999",
+			},
+			want: true,
+		},
+		{
+			name: "proxy-like endpoint skips local decode",
+			cfg: TransportConfig{
+				Protocol: TransportENS,
+				Network:  "tcp",
+				Address:  "127.0.0.1:19001",
+			},
+			want: false,
+		},
+		{
+			name: "custom remote direct port still decodes raw wire bytes",
+			cfg: TransportConfig{
+				Protocol: TransportENH,
+				Network:  "tcp",
+				Address:  "192.168.100.2:19183",
+			},
+			want: true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := DefaultConfig()
+			cfg.TransportConfig = test.cfg
+
+			if got := passiveTapDecodesWireEscapes(cfg); got != test.want {
+				t.Fatalf("passiveTapDecodesWireEscapes() = %v; want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPassiveBusTap_RemoteDirectAdapterEndpointAcceptsLogicalObserverPayloadWithoutDecodeFault(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		protocol TransportProtocol
+		address  string
+	}{
+		{name: "remote direct ip", protocol: TransportENH, address: "192.168.100.2:9999"},
+		{name: "remote direct hostname", protocol: TransportENS, address: "adapter.local:9999"},
+	}
+
+	request := protocol.Frame{
+		Source:    0x10,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{protocol.SymbolEscape},
+	}
+	logicalPayload := proxyObserverTransactionBytes(request, []byte{0x11, 0x22})
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, server := net.Pipe()
+			defer func() { _ = server.Close() }()
+
+			recorder := newPassiveEventRecorder()
+			cfg := DefaultConfig()
+			cfg.TransportConfig = TransportConfig{
+				Protocol:     test.protocol,
+				Network:      "tcp",
+				Address:      test.address,
+				ReadTimeout:  20 * time.Millisecond,
+				WriteTimeout: 20 * time.Millisecond,
+				DialTimeout:  time.Second,
+				Dial: func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+					return client, nil
+				},
+			}
+			cfg.PassiveAbsenceThreshold = time.Second
+			cfg.PassiveReconnectInitialDelay = time.Second
+			cfg.PassiveReconnectMaxDelay = time.Second
+
+			tap, err := StartPassiveBusTap(context.Background(), cfg, recorder)
+			if err != nil {
+				t.Fatalf("StartPassiveBusTap error = %v", err)
+			}
+			defer func() {
+				if err := tap.Close(); err != nil {
+					t.Fatalf("Close error = %v", err)
+				}
+			}()
+
+			go func() {
+				_, _ = server.Write(enhReceivedBytes(logicalPayload))
+			}()
+
+			events := waitForPassiveEvents(t, recorder, 2*time.Second, func(events []PassiveTapEvent) bool {
+				return hasPassiveSymbols(events, logicalPayload...)
+			})
+
+			if got := countPassiveEventKind(events, PassiveTapEventDecodeFault); got != 0 {
+				t.Fatalf("decode fault count = %d; want 0 for direct remote logical ENH observer payload", got)
+			}
+
+			snapshot := tap.Snapshot()
+			if got := snapshot.DecodeFaultCount; got != 0 {
+				t.Fatalf("DecodeFaultCount = %d; want 0", got)
+			}
+		})
+	}
+}
+
 func TestPassiveBusTap_LoopbackENHStillReconnectsOnReadTimeoutSilence(t *testing.T) {
 	t.Parallel()
 

@@ -114,7 +114,7 @@ func (p *vaillantSemanticPoller) refreshDHWFromEbusdGrab(ctx context.Context) bo
 
 func ebusdCommandLines(ctx context.Context, cfg ebusgateway.TransportConfig, command string) ([]string, error) {
 	command = strings.TrimSpace(command)
-	if command == "" || cfg.Address == "" || strings.TrimSpace(strings.ToLower(cfg.Network)) != "tcp" {
+	if command == "" || cfg.Address == "" || !isEbusdTCPTransport(cfg) {
 		return nil, nil
 	}
 

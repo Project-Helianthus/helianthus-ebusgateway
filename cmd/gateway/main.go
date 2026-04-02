@@ -178,6 +178,8 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		}()
 	}
 
+	go startBackgroundFullScanFn(ctx, cfg, gateway, builder, startupScanSignals.semanticBootstrapReady)
+
 	var scheduleWriter mcp.ScheduleWriter
 	if semanticPoller != nil {
 		scheduleWriter = semanticPoller

@@ -2245,44 +2245,24 @@ func parseLayerSelection(raw string) map[string]bool {
 
 func (h *handler) snapshotStreamEvents(layers map[string]bool, intervalMS int) []StreamEventEnvelope {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	events := make([]StreamEventEnvelope, 0, 3)
+	payload := make(map[string]any, 3)
 
 	if layers["registry"] && h.opts.ListRegistry != nil {
 		devices := h.opts.ListRegistry()
-		events = append(events, StreamEventEnvelope{
-			At:            now,
-			Type:          "snapshot",
-			Layer:         "registry",
-			CorrelationID: fmt.Sprintf("reg-%d", time.Now().UnixNano()),
-			Payload: map[string]any{
-				"device_count": len(devices),
-			},
-			Provenance: StreamSource{
-				Source:   "poll:registry",
-				Interval: intervalMS,
-			},
-		})
+		payload["registry"] = map[string]any{
+			"device_count": len(devices),
+		}
 	}
 
 	if layers["semantic"] && h.opts.ListSemantic != nil {
 		snapshot := h.opts.ListSemantic()
-		events = append(events, StreamEventEnvelope{
-			At:            now,
-			Type:          "snapshot",
-			Layer:         "semantic",
-			CorrelationID: fmt.Sprintf("sem-%d", time.Now().UnixNano()),
-			Payload: map[string]any{
-				"zones_count":   len(snapshot.Zones),
-				"has_dhw":       snapshot.DHW != nil,
-				"captured_utc":  snapshot.CapturedUTC,
-				"has_energy":    snapshot.Energy != nil,
-				"energy_series": snapshot.Energy != nil,
-			},
-			Provenance: StreamSource{
-				Source:   "poll:semantic",
-				Interval: intervalMS,
-			},
-		})
+		payload["semantic"] = map[string]any{
+			"zones_count":   len(snapshot.Zones),
+			"has_dhw":       snapshot.DHW != nil,
+			"captured_utc":  snapshot.CapturedUTC,
+			"has_energy":    snapshot.Energy != nil,
+			"energy_series": snapshot.Energy != nil,
+		}
 	}
 
 	if layers["projection"] && h.opts.ListProjections != nil {
@@ -2291,21 +2271,25 @@ func (h *handler) snapshotStreamEvents(layers map[string]bool, intervalMS int) [
 		for _, item := range items {
 			projectionCount += len(item.Projections)
 		}
-		events = append(events, StreamEventEnvelope{
-			At:            now,
-			Type:          "snapshot",
-			Layer:         "projection",
-			CorrelationID: fmt.Sprintf("proj-%d", time.Now().UnixNano()),
-			Payload: map[string]any{
-				"device_count":     len(items),
-				"projection_count": projectionCount,
-			},
-			Provenance: StreamSource{
-				Source:   "poll:projection",
-				Interval: intervalMS,
-			},
-		})
+		payload["projection"] = map[string]any{
+			"device_count":     len(items),
+			"projection_count": projectionCount,
+		}
 	}
 
-	return events
+	if len(payload) == 0 {
+		return nil
+	}
+
+	return []StreamEventEnvelope{{
+		At:            now,
+		Type:          "snapshot",
+		Layer:         "composite",
+		CorrelationID: fmt.Sprintf("snap-%d", time.Now().UnixNano()),
+		Payload:       payload,
+		Provenance: StreamSource{
+			Source:   "poll:composite",
+			Interval: intervalMS,
+		},
+	}}
 }

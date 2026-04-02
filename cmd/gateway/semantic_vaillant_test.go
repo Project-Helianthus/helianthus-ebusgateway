@@ -3744,6 +3744,7 @@ func TestReconcileDiscoveryPresence_SkipsMissDemotionWhenFallbackHydrates(t *tes
 		presence:          make(map[byte]*zonePresenceRecord),
 		zoneMissThreshold: 3,
 		zoneHitThreshold:  2,
+		transportConfig:   ebusgateway.TransportConfig{Protocol: ebusgateway.TransportEbusdTCP},
 	}
 
 	poller.presence[instance] = &zonePresenceRecord{
@@ -3820,6 +3821,7 @@ func TestReconcileDiscoveryPresence_TracksMissesWithPartialFallback(t *testing.T
 		presence:          make(map[byte]*zonePresenceRecord),
 		zoneMissThreshold: 3,
 		zoneHitThreshold:  2,
+		transportConfig:   ebusgateway.TransportConfig{Protocol: ebusgateway.TransportEbusdTCP},
 	}
 	poller.zones[keep] = &vaillantZoneSnapshot{Instance: keep, Present: true}
 	poller.zones[missing] = &vaillantZoneSnapshot{Instance: missing, Present: true}
@@ -3858,6 +3860,7 @@ func TestReconcileDiscoveryPresence_DoesNotDoubleCountFallbackHit(t *testing.T) 
 		presence:          make(map[byte]*zonePresenceRecord),
 		zoneMissThreshold: 3,
 		zoneHitThreshold:  2,
+		transportConfig:   ebusgateway.TransportConfig{Protocol: ebusgateway.TransportEbusdTCP},
 	}
 	poller.refreshFromEbusdGrabFn = func(_ context.Context) (map[byte]bool, bool) {
 		poller.applyZonePresenceProbes(

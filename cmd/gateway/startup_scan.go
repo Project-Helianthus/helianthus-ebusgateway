@@ -523,13 +523,17 @@ func schedulePostStartupIdentityRetry(ctx context.Context, gateway *ebusgateway.
 }
 
 func ebusdScanTargetCandidates(config ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
-	candidates := make([]ebusgateway.TransportConfig, 0, 2)
+	if config.Protocol != ebusgateway.TransportEbusdTCP {
+		return nil
+	}
 
-	if config.Protocol == ebusgateway.TransportEbusdTCP && strings.EqualFold(config.Network, "tcp") {
+	candidates := make([]ebusgateway.TransportConfig, 0, 2)
+	if strings.EqualFold(config.Network, "tcp") {
 		candidates = append(candidates, config)
 	}
 
 	fallback := ebusgateway.TransportConfig{
+		Protocol:    ebusgateway.TransportEbusdTCP,
 		Network:     "tcp",
 		Address:     "127.0.0.1:8888",
 		DialTimeout: config.DialTimeout,
@@ -707,7 +711,7 @@ func ebusdScanResultInfos(ctx context.Context, cfg ebusgateway.TransportConfig) 
 }
 
 func ebusdScanResultRows(ctx context.Context, cfg ebusgateway.TransportConfig) ([]ebusdScanResultRow, error) {
-	if cfg.Address == "" || cfg.Network != "tcp" {
+	if cfg.Address == "" || !isEbusdTCPTransport(cfg) {
 		return nil, nil
 	}
 
@@ -963,4 +967,104 @@ func enrichSerialsFromEbusd(ctx context.Context, reg *registry.DeviceRegistry, c
 	}
 
 	log.Printf("startup scan ebusd enrich: %d/%d device(s) got serial from ebusd scan result", enriched, len(candidates))
+}
+
+// throttledBus wraps a ScanBus with an inter-request delay to reduce bus
+// contention during low-priority background scans.
+type throttledBus struct {
+	bus     registry.ScanBus
+	delay   time.Duration
+	timeout time.Duration
+}
+
+func (b *throttledBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+	if b == nil || b.bus == nil {
+		return nil, fmt.Errorf("throttled bus missing")
+	}
+	if b.delay > 0 {
+		select {
+		case <-time.After(b.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if b.timeout > 0 {
+		ctxTimeout, cancel := context.WithTimeout(ctx, b.timeout)
+		defer cancel()
+		return b.bus.Send(ctxTimeout, frame)
+	}
+	return b.bus.Send(ctx, frame)
+}
+
+const (
+	backgroundScanInitialDelay = 5 * time.Minute
+	backgroundScanThrottle     = 200 * time.Millisecond
+)
+
+var startBackgroundFullScanFn = startBackgroundFullScan
+
+func startBackgroundFullScan(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, ready <-chan struct{}) {
+	if cfg.BackgroundScanInterval <= 0 || gateway == nil || gateway.Bus == nil || gateway.Registry == nil {
+		return
+	}
+
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		return
+	}
+
+	initialDelay := time.NewTimer(backgroundScanInitialDelay)
+	select {
+	case <-initialDelay.C:
+	case <-ctx.Done():
+		initialDelay.Stop()
+		return
+	}
+
+	scanCfg := resolveStartupScanSourceConfig(cfg)
+
+	ticker := time.NewTicker(cfg.BackgroundScanInterval)
+	defer ticker.Stop()
+
+	for {
+		runBackgroundFullScan(ctx, scanCfg, gateway, builder)
+
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func runBackgroundFullScan(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder) {
+	if gateway == nil || gateway.Bus == nil || gateway.Registry == nil {
+		return
+	}
+
+	scanBus := &throttledBus{
+		bus:     gateway.Bus,
+		delay:   backgroundScanThrottle,
+		timeout: cfg.ScanRequestTimeout,
+	}
+
+	beforeTotal := countRegistryDevices(gateway.Registry)
+	devices, err := registryScanFn(ctx, scanBus, gateway.Registry, cfg.ScanSource, nil)
+	if err != nil && ctx.Err() == nil {
+		log.Printf("background scan error: %v", err)
+	}
+	afterTotal := countRegistryDevices(gateway.Registry)
+
+	if afterTotal > beforeTotal {
+		enrichVaillantIdentityFn(ctx, gateway, cfg)
+		gateway.RefreshRouterPlanes()
+		if builder != nil {
+			if err := builder.Rebuild(); err != nil {
+				log.Printf("background scan: graphql rebuild failed: %v", err)
+			}
+		}
+	}
+
+	log.Printf("background scan: found=%d before=%d after=%d", len(devices), beforeTotal, afterTotal)
 }

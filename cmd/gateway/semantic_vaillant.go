@@ -1823,6 +1823,9 @@ func (p *vaillantSemanticPoller) tryRefreshFromEbusdGrabWithInstances(ctx contex
 	if p == nil {
 		return nil, false
 	}
+	if p.transportConfig.Protocol != ebusgateway.TransportEbusdTCP {
+		return nil, false
+	}
 	if p.refreshFromEbusdGrabFn != nil {
 		return p.refreshFromEbusdGrabFn(ctx)
 	}

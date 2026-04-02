@@ -42,8 +42,8 @@ var (
 type DedupTransactionClass string
 
 const (
-	DedupTransactionClassMasterTarget       DedupTransactionClass = "master_target"
-	DedupTransactionClassMasterMaster       DedupTransactionClass = "master_master"
+	DedupTransactionClassInitiatorTarget    DedupTransactionClass = "initiator_target"
+	DedupTransactionClassInitiatorInitiator DedupTransactionClass = "initiator_initiator"
 	DedupTransactionClassBroadcast          DedupTransactionClass = "broadcast"
 	DedupTransactionClassLocalParticipantIn DedupTransactionClass = "local_participant_inbound"
 	DedupTransactionClassAbandonedPartial   DedupTransactionClass = "abandoned_partial"
@@ -662,7 +662,7 @@ func (deduplicator *ActivePassiveDeduplicator) buildPassiveFingerprintLocked(eve
 		return fingerprint, false, DedupDispositionObservabilityOnly
 	case DedupTransactionClassLocalParticipantIn:
 		return fingerprint, false, DedupDispositionLocalParticipantIn
-	case DedupTransactionClassMasterMaster:
+	case DedupTransactionClassInitiatorInitiator:
 		if !deduplicator.localAddr.Known {
 			return fingerprint, false, DedupDispositionObservabilityOnly
 		}
@@ -682,9 +682,9 @@ func (deduplicator *ActivePassiveDeduplicator) passiveTransactionClassLocked(eve
 		if deduplicator.localAddr.Known && event.HasRequest && event.Request.Target == deduplicator.localAddr.Address {
 			return DedupTransactionClassLocalParticipantIn
 		}
-		return DedupTransactionClassMasterMaster
+		return DedupTransactionClassInitiatorInitiator
 	case PassiveClassifiedEventTransaction:
-		return DedupTransactionClassMasterTarget
+		return DedupTransactionClassInitiatorTarget
 	case PassiveClassifiedEventAbandonedTransaction:
 		if event.FrameType == protocol.FrameTypeInitiatorInitiator &&
 			deduplicator.localAddr.Known &&
@@ -745,9 +745,9 @@ func buildActiveFingerprint(
 	case protocol.FrameTypeBroadcast:
 		transactionClass = DedupTransactionClassBroadcast
 	case protocol.FrameTypeInitiatorInitiator:
-		transactionClass = DedupTransactionClassMasterMaster
+		transactionClass = DedupTransactionClassInitiatorInitiator
 	case protocol.FrameTypeInitiatorTarget:
-		transactionClass = DedupTransactionClassMasterTarget
+		transactionClass = DedupTransactionClassInitiatorTarget
 	default:
 		return ActiveTransactionFingerprint{}, false
 	}

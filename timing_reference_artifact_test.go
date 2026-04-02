@@ -154,7 +154,7 @@ func buildWireTimingReferenceArtifactFromProxyLog(proxyLogPath string) (wireTimi
 		}
 
 		family := classifyFamily(request)
-		if family == "" || family == "other" {
+		if family == "" {
 			continue
 		}
 		key := wireTimingPeriodicityKey{

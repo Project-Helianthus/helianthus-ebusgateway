@@ -291,7 +291,7 @@ func TestResolveStartupScanSourceConfig(t *testing.T) {
 func TestEbusdScanTargetCandidates(t *testing.T) {
 	t.Parallel()
 
-	t.Run("ebusd tcp transport prefers configured endpoint and adds local fallback", func(t *testing.T) {
+	t.Run("ebusd tcp transport returns configured endpoint only", func(t *testing.T) {
 		t.Parallel()
 
 		candidates := ebusdScanTargetCandidates(ebusgateway.TransportConfig{
@@ -302,17 +302,11 @@ func TestEbusdScanTargetCandidates(t *testing.T) {
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: 5 * time.Second,
 		})
-		if len(candidates) != 2 {
-			t.Fatalf("candidate count = %d; want 2", len(candidates))
+		if len(candidates) != 1 {
+			t.Fatalf("candidate count = %d; want 1", len(candidates))
 		}
 		if got := candidates[0].Address; got != "192.168.100.4:8888" {
 			t.Fatalf("candidate[0].Address = %q; want %q", got, "192.168.100.4:8888")
-		}
-		if got := candidates[1].Address; got != "127.0.0.1:8888" {
-			t.Fatalf("candidate[1].Address = %q; want %q", got, "127.0.0.1:8888")
-		}
-		if got := candidates[1].DialTimeout; got != 2*time.Second {
-			t.Fatalf("fallback dial timeout = %s; want 2s", got)
 		}
 	})
 
@@ -330,7 +324,7 @@ func TestEbusdScanTargetCandidates(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate local endpoint is not appended", func(t *testing.T) {
+	t.Run("local endpoint preserves config dial timeout", func(t *testing.T) {
 		t.Parallel()
 
 		candidates := ebusdScanTargetCandidates(ebusgateway.TransportConfig{

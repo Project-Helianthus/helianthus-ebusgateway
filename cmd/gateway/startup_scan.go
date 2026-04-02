@@ -526,36 +526,10 @@ func ebusdScanTargetCandidates(config ebusgateway.TransportConfig) []ebusgateway
 	if config.Protocol != ebusgateway.TransportEbusdTCP {
 		return nil
 	}
-
-	candidates := make([]ebusgateway.TransportConfig, 0, 2)
-	if strings.EqualFold(config.Network, "tcp") {
-		candidates = append(candidates, config)
+	if !strings.EqualFold(config.Network, "tcp") || config.Address == "" {
+		return nil
 	}
-
-	fallback := ebusgateway.TransportConfig{
-		Protocol:    ebusgateway.TransportEbusdTCP,
-		Network:     "tcp",
-		Address:     "127.0.0.1:8888",
-		DialTimeout: config.DialTimeout,
-		Dial:        config.Dial,
-	}
-	if fallback.DialTimeout <= 0 || fallback.DialTimeout > 2*time.Second {
-		fallback.DialTimeout = 2 * time.Second
-	}
-
-	alreadyPresent := false
-	for _, candidate := range candidates {
-		if strings.EqualFold(strings.TrimSpace(candidate.Network), fallback.Network) &&
-			strings.TrimSpace(candidate.Address) == fallback.Address {
-			alreadyPresent = true
-			break
-		}
-	}
-	if !alreadyPresent {
-		candidates = append(candidates, fallback)
-	}
-
-	return candidates
+	return []ebusgateway.TransportConfig{config}
 }
 
 func shouldStopDiscoveryScan(total int, confirmationPending bool, confirmationSatisfied bool, confirmationFallbackExhausted bool) bool {

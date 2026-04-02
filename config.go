@@ -55,19 +55,19 @@ type WatchObserver interface {
 }
 
 type Config struct {
-	Transport          transport.RawTransport
-	TransportConfig    TransportConfig
-	BusConfig          protocol.BusConfig
-	QueueCapacity      int
-	Providers          []registry.PlaneProvider
-	ScanOnStart        bool
-	ScanSource         byte
-	ScanSourceAuto     bool
-	ScanTimeout        time.Duration
-	ScanRequestTimeout time.Duration
+	Transport              transport.RawTransport
+	TransportConfig        TransportConfig
+	BusConfig              protocol.BusConfig
+	QueueCapacity          int
+	Providers              []registry.PlaneProvider
+	ScanOnStart            bool
+	ScanSource             byte
+	ScanSourceAuto         bool
+	ScanTimeout            time.Duration
+	ScanRequestTimeout     time.Duration
 	ScanInterval           time.Duration
 	BackgroundScanInterval time.Duration
-	BootLiveTimeout    time.Duration
+	BootLiveTimeout        time.Duration
 	// SemanticInterval is a legacy single-interval semantic polling configuration.
 	// Prefer SemanticDiscoveryInterval / SemanticConfigInterval / SemanticStateInterval.
 	SemanticInterval                        time.Duration

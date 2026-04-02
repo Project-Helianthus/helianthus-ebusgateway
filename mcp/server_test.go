@@ -784,7 +784,7 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 				},
 			},
 			Messages: []BusMessage{
-				{Scope: "active", Family: "B509", FrameType: "master_target", Outcome: "success", ObservedAt: base, SourceAddress: 0x08, TargetAddress: 0x15, RequestLen: 6, ResponseLen: 4},
+				{Scope: "active", Family: "B509", FrameType: "initiator_target", Outcome: "success", ObservedAt: base, SourceAddress: 0x08, TargetAddress: 0x15, RequestLen: 6, ResponseLen: 4},
 				{Scope: "passive", Family: "B524", FrameType: "broadcast", Outcome: "success", ObservedAt: base.Add(2 * time.Second), SourceAddress: 0x15, TargetAddress: 0xfe, RequestLen: 8, ResponseLen: 6},
 				{Scope: "active", Family: "other", FrameType: "abandoned_partial", Outcome: "timeout", ObservedAt: base.Add(4 * time.Second), SourceAddress: 0x26, TargetAddress: 0x08, RequestLen: 7, ResponseLen: 0},
 			},
@@ -1729,7 +1729,7 @@ func TestServer_BusObservabilitySnapshotConsistency(t *testing.T) {
 				Periodicity: BusBoundedListSummary{Count: 1, Capacity: 4},
 			},
 			Messages: []BusMessage{
-				{Scope: "active", Family: "B509", FrameType: "master_target", Outcome: "success", ObservedAt: base, SourceAddress: 0x08, TargetAddress: 0x15, RequestLen: 6, ResponseLen: 4},
+				{Scope: "active", Family: "B509", FrameType: "initiator_target", Outcome: "success", ObservedAt: base, SourceAddress: 0x08, TargetAddress: 0x15, RequestLen: 6, ResponseLen: 4},
 			},
 			Periodicity: []BusPeriodicityEntry{
 				{SourceBucket: "0x08", TargetBucket: "0x15", Primary: 0xB5, Secondary: 0x09, Family: "B509", State: "available", LastSeen: base.Add(30 * time.Second), SampleCount: 3, LastInterval: "30s", MeanInterval: "30s", MinInterval: "30s", MaxInterval: "30s"},
@@ -1782,7 +1782,7 @@ func TestServer_BusObservabilitySnapshotConsistency(t *testing.T) {
 			Periodicity: BusBoundedListSummary{Count: 2, Capacity: 4},
 		},
 		Messages: []BusMessage{
-			{Scope: "active", Family: "B509", FrameType: "master_target", Outcome: "success", ObservedAt: base, SourceAddress: 0x08, TargetAddress: 0x15, RequestLen: 6, ResponseLen: 4},
+			{Scope: "active", Family: "B509", FrameType: "initiator_target", Outcome: "success", ObservedAt: base, SourceAddress: 0x08, TargetAddress: 0x15, RequestLen: 6, ResponseLen: 4},
 			{Scope: "active", Family: "other", FrameType: "abandoned_partial", Outcome: "timeout", ObservedAt: base.Add(time.Minute), SourceAddress: 0x26, TargetAddress: 0x08, RequestLen: 7, ResponseLen: 0},
 		},
 		Periodicity: []BusPeriodicityEntry{

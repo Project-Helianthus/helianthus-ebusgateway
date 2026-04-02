@@ -63,7 +63,7 @@ func TestBusObservabilityStoreRecentRingEvictsOldestButCountersAdvance(t *testin
 	}
 
 	metrics := store.RenderPrometheus()
-	if !strings.Contains(metrics, `ebus_frames_observed_total{dst="0x08",family="B524",frame_type="master_target",scope="active",src="0x10"} 3`) {
+	if !strings.Contains(metrics, `ebus_frames_observed_total{dst="0x08",family="B524",frame_type="initiator_target",scope="active",src="0x10"} 3`) {
 		t.Fatalf("RenderPrometheus missing cumulative frame counter:\n%s", metrics)
 	}
 	if !strings.Contains(metrics, "ebus_observability_recent_messages 2") {

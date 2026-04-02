@@ -1511,7 +1511,7 @@ func classifyFamily(frame protocol.Frame) string {
 	case frame.Primary == 0xB5 && frame.Secondary == 0x55:
 		return "B555"
 	default:
-		return fmt.Sprintf("0x%02x_0x%02x", frame.Primary, frame.Secondary)
+		return fmt.Sprintf("%02X%02X", frame.Primary, frame.Secondary)
 	}
 }
 
@@ -1537,9 +1537,9 @@ func classifyFrameType(frameType protocol.FrameType) string {
 	case protocol.FrameTypeBroadcast:
 		return "broadcast"
 	case protocol.FrameTypeInitiatorInitiator:
-		return "master_master"
+		return "initiator_initiator"
 	case protocol.FrameTypeInitiatorTarget:
-		return "master_target"
+		return "initiator_target"
 	default:
 		return "abandoned_partial"
 	}

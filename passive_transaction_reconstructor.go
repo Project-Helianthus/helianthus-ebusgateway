@@ -59,6 +59,8 @@ const (
 	PassiveAbandonReasonCRCMismatch         PassiveAbandonReason = "crc_mismatch"
 	PassiveAbandonReasonAmbiguousRetransmit PassiveAbandonReason = "ambiguous_retransmission"
 	PassiveAbandonReasonShutdown            PassiveAbandonReason = "shutdown"
+	PassiveAbandonReasonScanTimeout         PassiveAbandonReason = "scan_timeout"
+	PassiveAbandonReasonArbitrationFragment PassiveAbandonReason = "arbitration_fragment"
 )
 
 type PassiveTimingMarkers struct {
@@ -420,7 +422,11 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 
 	frame, ok := parseFrame(reconstructor.state.requestRaw)
 	if !ok {
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedRequest, observedAt, ebuserrors.ErrInvalidPayload))
+		reason := PassiveAbandonReasonCorruptedRequest
+		if len(reconstructor.state.requestRaw) <= 3 {
+			reason = PassiveAbandonReasonArbitrationFragment
+		}
+		events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
 		reconstructor.resetStateLocked()
 		return events
 	}
@@ -459,6 +465,15 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 	return events
 }
 
+// isScanTimeoutLocked returns true when the pending request is a device
+// identity query (0704) that will never receive a response from a
+// non-existent target.  These are expected during background address scans
+// and should not inflate the unexpected_syn error counter.
+func (reconstructor *PassiveTransactionReconstructor) isScanTimeoutLocked() bool {
+	return reconstructor.state.request.Primary == 0x07 &&
+		reconstructor.state.request.Secondary == 0x04
+}
+
 func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
 	switch symbol {
 	case protocol.SymbolAck:
@@ -477,8 +492,12 @@ func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(even
 		reconstructor.resetStateLocked()
 		return events
 	case protocol.SymbolSyn:
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
-		reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
+		if reconstructor.isScanTimeoutLocked() {
+			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonScanTimeout, observedAt, ebuserrors.ErrTimeout))
+		} else {
+			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
+			reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
+		}
 		reconstructor.resetStateLocked()
 		return events
 	default:

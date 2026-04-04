@@ -1096,11 +1096,13 @@ func (store *BusObservabilityStore) recordPassiveAbandonedLocked(event PassiveCl
 		})
 	}
 	class, phase := classifyPassiveAbandon(event.AbandonReason)
-	store.incrementErrorLocked(errorSeriesKey{
-		Scope: "passive",
-		Class: class,
-		Phase: phase,
-	})
+	if class != "" {
+		store.incrementErrorLocked(errorSeriesKey{
+			Scope: "passive",
+			Class: class,
+			Phase: phase,
+		})
+	}
 	store.passive.terminalEvents++
 	if !event.ObservedAt.IsZero() {
 		store.touchLocked(event.ObservedAt)
@@ -1570,10 +1572,16 @@ func classifyPassiveAbandon(reason PassiveAbandonReason) (string, string) {
 		return "unexpected_syn", "request"
 	case PassiveAbandonReasonTransportReset:
 		return "transport_reset", "terminal"
-	case PassiveAbandonReasonDecodeFault, PassiveAbandonReasonCorruptedRequest, PassiveAbandonReasonCorruptedTarget:
+	case PassiveAbandonReasonDecodeFault:
 		return "decode_fault", "request"
+	case PassiveAbandonReasonCorruptedRequest:
+		return "corrupted_request", "request"
+	case PassiveAbandonReasonCorruptedTarget:
+		return "corrupted_target", "request"
 	case PassiveAbandonReasonNoResponse, PassiveAbandonReasonNoProgress, PassiveAbandonReasonDisconnected, PassiveAbandonReasonShutdown:
 		return "timeout", "terminal"
+	case PassiveAbandonReasonScanTimeout, PassiveAbandonReasonArbitrationFragment:
+		return "", "" // expected behavior — not an error
 	default:
 		return "abandoned", "terminal"
 	}

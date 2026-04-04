@@ -2,7 +2,9 @@ package ebusgateway
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -411,6 +413,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 		reconstructor.state.requestRaw = append(reconstructor.state.requestRaw, symbol)
 		reconstructor.state.lastProgressAt = observedAt
 		if len(reconstructor.state.requestRaw) > maxPassiveRequestBytes {
+			log.Printf("passive_corrupted_request len=%d raw=%s", len(reconstructor.state.requestRaw), hex.EncodeToString(reconstructor.state.requestRaw))
 			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedRequest, observedAt, ebuserrors.ErrInvalidPayload))
 			reconstructor.state.phase = passivePhaseAbandoned
 		}
@@ -425,6 +428,8 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 		reason := PassiveAbandonReasonCorruptedRequest
 		if len(reconstructor.state.requestRaw) <= 3 {
 			reason = PassiveAbandonReasonArbitrationFragment
+		} else {
+			log.Printf("passive_corrupted_request len=%d raw=%s", len(reconstructor.state.requestRaw), hex.EncodeToString(reconstructor.state.requestRaw))
 		}
 		events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
 		reconstructor.resetStateLocked()

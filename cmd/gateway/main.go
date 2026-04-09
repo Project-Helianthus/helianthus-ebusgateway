@@ -526,13 +526,20 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	network := cfg.TransportConfig.Network
 	address := cfg.TransportConfig.Address
 
-	// Detect adapter-direct:// URI scheme in the address field.
-	// When the user passes --address=adapter-direct://host:port the
-	// protocol flag is still the default ("enh") because
-	// parseTransportEndpoint runs later inside ebusgateway.New.
-	const schemePrefix = "adapter-direct://"
+	// Detect adapter-direct:// or adapter-direct-ens:// URI scheme in
+	// the address field. When the user passes
+	// --address=adapter-direct://host:port the protocol flag is still
+	// the default ("enh") because parseTransportEndpoint runs later
+	// inside ebusgateway.New.
+	const (
+		schemePrefix    = "adapter-direct://"
+		schemePrefixENS = "adapter-direct-ens://"
+	)
+	addrLower := strings.ToLower(address)
+	uriIsENS := strings.HasPrefix(addrLower, schemePrefixENS)
+	uriIsStd := strings.HasPrefix(addrLower, schemePrefix)
 	if cfg.TransportConfig.Protocol != ebusgateway.TransportAdapterDirect {
-		if !strings.HasPrefix(strings.ToLower(address), schemePrefix) {
+		if !uriIsStd && !uriIsENS {
 			return nil, nil
 		}
 	}
@@ -540,21 +547,31 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	// Always strip the scheme prefix if present, regardless of which
 	// detection branch was taken. Without this, net.Dial receives
 	// "adapter-direct://host:port" as the address and fails.
-	if strings.HasPrefix(strings.ToLower(address), schemePrefix) {
+	if uriIsENS {
+		address = address[len(schemePrefixENS):]
+		network = "tcp"
+	} else if uriIsStd {
 		address = address[len(schemePrefix):]
 		// The URI form implies TCP — force it unconditionally since
 		// the default TransportConfig.Network is "unix" and would
 		// cause net.Dial("unix", "host:port") to fail.
 		network = "tcp"
-	} else if network == "" {
+	} else if network == "" || (network == "unix" && strings.Contains(address, ":")) {
+		// Explicit --transport adapter-direct path: if network is
+		// still the default "unix" but address looks like host:port,
+		// force TCP to avoid net.Dial("unix", "host:port") failures.
 		network = "tcp"
 	}
 	if address == "" {
 		return nil, fmt.Errorf("adapter-direct requires an address (e.g. adapter-direct://boiler.local:9999)")
 	}
 
-	// Determine ENH vs ENS sub-protocol. Default ENH.
+	// Determine ENH vs ENS sub-protocol. ENH is the default.
+	// The adapter-direct-ens:// URI scheme selects ENS explicitly.
 	adapterProtocol := "enh"
+	if uriIsENS {
+		adapterProtocol = "ens"
+	}
 
 	muxCfg := adaptermux.Config{
 		Protocol:     adapterProtocol,
@@ -586,14 +603,15 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	log.Printf("adapter-direct: connected to %s/%s", network, address)
 
 	// Start proxy listener if configured (exposes ENH endpoint for
-	// external clients like ebusd). Context-managed: closes when ctx
-	// cancels, so no explicit closer needed.
+	// external clients like ebusd).
+	var proxyListener *adaptermux.ProxyListener
 	if cfg.ProxyListenAddr != "" {
 		pl, err := adaptermux.NewProxyListener(ctx, mux, cfg.ProxyListenAddr, log.Default())
 		if err != nil {
 			mux.Close()
 			return nil, fmt.Errorf("proxy listener: %w", err)
 		}
+		proxyListener = pl
 		log.Printf("adapter-direct: proxy listener on %s", pl.Addr())
 	}
 
@@ -606,6 +624,14 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	// mux.Close). Returning mux.Close would cause a double-close at
 	// shutdown: gateway.Close -> transport.Close -> mux.Close, then
 	// the deferred closer -> mux.Close again.
+	//
+	// However, the proxy listener is a separate resource not owned by
+	// the gateway. If run() fails after wireAdapterDirect returns but
+	// before context cancellation, the listener would leak. Return its
+	// Close so the caller can defer it.
+	if proxyListener != nil {
+		return proxyListener.Close, nil
+	}
 	return nil, nil
 }
 

@@ -2562,12 +2562,13 @@ func (s *Server) snapshotProtocolSpecimens(family string, limit int) *BusProtoco
 		return &BusProtocolSpecimenList{}
 	}
 	items := s.bus.ProtocolSpecimens(family)
+	total := len(items)
 	if limit > 0 && len(items) > limit {
 		items = items[:limit]
 	}
 	return &BusProtocolSpecimenList{
 		Items: items,
-		Count: len(items),
+		Count: total,
 	}
 }
 

@@ -420,7 +420,7 @@ func (store *BusObservabilityStore) ProtocolSpecimens(family string) []ProtocolS
 		}
 	}
 
-	// Sort by LastSeenAt descending.
+	// Sort by LastSeenAt descending, then deterministic tiebreakers.
 	sort.Slice(items, func(i, j int) bool {
 		if !items[i].LastSeenAt.Equal(items[j].LastSeenAt) {
 			return items[i].LastSeenAt.After(items[j].LastSeenAt)
@@ -428,7 +428,19 @@ func (store *BusObservabilityStore) ProtocolSpecimens(family string) []ProtocolS
 		if items[i].Family != items[j].Family {
 			return items[i].Family < items[j].Family
 		}
-		return items[i].RequestHex < items[j].RequestHex
+		if items[i].Source != items[j].Source {
+			return items[i].Source < items[j].Source
+		}
+		if items[i].Target != items[j].Target {
+			return items[i].Target < items[j].Target
+		}
+		if items[i].Outcome != items[j].Outcome {
+			return items[i].Outcome < items[j].Outcome
+		}
+		if items[i].RequestHex != items[j].RequestHex {
+			return items[i].RequestHex < items[j].RequestHex
+		}
+		return items[i].ResponseHex < items[j].ResponseHex
 	})
 
 	return items

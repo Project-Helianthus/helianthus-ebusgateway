@@ -538,7 +538,7 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	addrLower := strings.ToLower(address)
 	uriIsENS := strings.HasPrefix(addrLower, schemePrefixENS)
 	uriIsStd := strings.HasPrefix(addrLower, schemePrefix)
-	if cfg.TransportConfig.Protocol != ebusgateway.TransportAdapterDirect {
+	if !strings.EqualFold(string(cfg.TransportConfig.Protocol), string(ebusgateway.TransportAdapterDirect)) {
 		if !uriIsStd && !uriIsENS {
 			return nil, nil
 		}

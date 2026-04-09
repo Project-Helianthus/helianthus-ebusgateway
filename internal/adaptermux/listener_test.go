@@ -2,6 +2,7 @@ package adaptermux
 
 import (
 	"context"
+	"io"
 	"log"
 	"net"
 	"testing"
@@ -35,7 +36,7 @@ func fakeAdapterServer(t *testing.T) (addr string, closer func()) {
 
 		// Read INIT request (2 bytes).
 		buf := make([]byte, 2)
-		if _, err := conn.Read(buf); err != nil {
+		if _, err := io.ReadFull(conn, buf); err != nil {
 			return
 		}
 

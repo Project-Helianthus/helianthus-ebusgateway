@@ -391,6 +391,17 @@ func (m *Mux) readLoop() {
 			// ReadTimeout window) — treat as idle, not disconnect.
 			// Matches passive_bus_tap.go behavior (Codex P2 #3059211395).
 			if errors.Is(err, ebuserrors.ErrTimeout) || isNetTimeout(err) {
+				// Enforce ownership timeout on quiet bus — onReceived
+				// won't run to check MaxOwnershipDuration.
+				m.stateMu.Lock()
+				ownerID, _, hasOwner := m.arb.owner()
+				if hasOwner && !m.busOwned.IsZero() &&
+					time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
+					m.arb.releaseOwnership(ownerID)
+					m.gatewayEcho.reset()
+				}
+				m.stateMu.Unlock()
+
 				// On a quiet bus no SYN or transaction-complete events
 				// reach onReceived, so tryGrantAndStart is never called.
 				// Drain pending START requests here to prevent stalls.

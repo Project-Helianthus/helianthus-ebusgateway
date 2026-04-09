@@ -66,13 +66,19 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 
 	select {
 	case t.events <- se:
+	case <-t.done:
+		return
 	default:
 		// Buffer full — drop oldest to prevent backpressure.
 		select {
 		case <-t.events:
 		default:
 		}
-		t.events <- se
+		select {
+		case t.events <- se:
+		case <-t.done:
+			return
+		}
 	}
 }
 

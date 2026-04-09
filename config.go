@@ -15,11 +15,11 @@ import (
 type TransportProtocol string
 
 const (
-	TransportENH      TransportProtocol = "enh"
-	TransportENS      TransportProtocol = "ens"
-	TransportUDPPlain TransportProtocol = "udp-plain"
-	TransportTCPPlain TransportProtocol = "tcp-plain"
-	TransportEbusdTCP       TransportProtocol = "ebusd-tcp"
+	TransportENH           TransportProtocol = "enh"
+	TransportENS           TransportProtocol = "ens"
+	TransportUDPPlain      TransportProtocol = "udp-plain"
+	TransportTCPPlain      TransportProtocol = "tcp-plain"
+	TransportEbusdTCP      TransportProtocol = "ebusd-tcp"
 	TransportAdapterDirect TransportProtocol = "adapter-direct"
 
 	DefaultSemanticZonePresenceMissThreshold = 3

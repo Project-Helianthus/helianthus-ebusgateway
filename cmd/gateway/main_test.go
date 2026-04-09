@@ -1022,6 +1022,7 @@ func TestWireAdapterDirect_URIScheme_ForcesTCP(t *testing.T) {
 	// Default protocol is "enh" (not adapter-direct), but the URI
 	// scheme should trigger adapter-direct mode and force TCP.
 	cfg.TransportConfig.Address = "adapter-direct://192.0.2.1:9999"
+	cfg.TransportConfig.DialTimeout = 100 * time.Millisecond
 
 	_, err := wireAdapterDirect(context.Background(), &cfg)
 	if err == nil {
@@ -1043,6 +1044,7 @@ func TestWireAdapterDirect_ExplicitProtocol_ForcesTCPForHostPort(t *testing.T) {
 	cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
 	cfg.TransportConfig.Network = "unix" // simulates the default
 	cfg.TransportConfig.Address = "192.0.2.1:9999"
+	cfg.TransportConfig.DialTimeout = 100 * time.Millisecond
 
 	_, err := wireAdapterDirect(context.Background(), &cfg)
 	if err == nil {
@@ -1061,6 +1063,7 @@ func TestWireAdapterDirect_ExplicitProtocol_KeepsUnixForSocketPath(t *testing.T)
 	cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
 	cfg.TransportConfig.Network = "unix"
 	cfg.TransportConfig.Address = "/var/run/adapter.sock"
+	cfg.TransportConfig.DialTimeout = 100 * time.Millisecond
 
 	_, err := wireAdapterDirect(context.Background(), &cfg)
 	if err == nil {
@@ -1075,6 +1078,7 @@ func TestWireAdapterDirect_ENSScheme_SelectsENS(t *testing.T) {
 	// Issue 1: adapter-direct-ens:// URI should select ENS protocol.
 	cfg := ebusgateway.DefaultConfig()
 	cfg.TransportConfig.Address = "adapter-direct-ens://192.0.2.1:9999"
+	cfg.TransportConfig.DialTimeout = 100 * time.Millisecond
 
 	_, err := wireAdapterDirect(context.Background(), &cfg)
 	if err == nil {
@@ -1101,6 +1105,7 @@ func TestWireAdapterDirect_ProxyListener_ReturnedAsCloser(t *testing.T) {
 	cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
 	cfg.TransportConfig.Network = "tcp"
 	cfg.TransportConfig.Address = "192.0.2.1:9999"
+	cfg.TransportConfig.DialTimeout = 100 * time.Millisecond
 	cfg.ProxyListenAddr = "" // no proxy listener
 
 	_, err := wireAdapterDirect(context.Background(), &cfg)

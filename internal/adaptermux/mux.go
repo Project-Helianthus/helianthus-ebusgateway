@@ -387,6 +387,12 @@ func (m *Mux) readLoop() {
 				m.handleReset()
 				continue
 			}
+			// Read timeouts on a quiet bus are normal (no data within
+			// ReadTimeout window) — treat as idle, not disconnect.
+			// Matches passive_bus_tap.go behavior (Codex P2 #3059211395).
+			if errors.Is(err, ebuserrors.ErrTimeout) || isNetTimeout(err) {
+				continue
+			}
 			m.logger.Printf("adaptermux: read error: %v", err)
 			if reconnErr := m.reconnect(); reconnErr != nil {
 				m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
@@ -791,4 +797,12 @@ func (m *Mux) broadcastResetToSessions() {
 	for _, sess := range m.sessions {
 		sess.deliverReset()
 	}
+}
+
+// isNetTimeout reports whether err is a net.Error timeout (read deadline
+// exceeded). These are transient idle conditions on a quiet bus, not
+// connection failures.
+func isNetTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }

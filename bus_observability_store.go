@@ -1709,7 +1709,7 @@ func classifyPassiveAbandon(reason PassiveAbandonReason) (string, string) {
 		PassiveAbandonReasonArbitrationFragment, PassiveAbandonReasonSelfEcho,
 		PassiveAbandonReasonAmbiguousRetransmit:
 		// Bus contention artifacts: CRC failures, arbitration noise, and
-		// reconstructor desync are normal on a multi-master passive tap.
+		// reconstructor desync are expected on a shared-bus passive tap.
 		// The CRC check correctly identifies invalid frames — that is not
 		// a software error, it is the bus operating as designed.
 		return "", ""

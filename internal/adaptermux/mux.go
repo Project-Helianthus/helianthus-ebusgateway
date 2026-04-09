@@ -740,7 +740,20 @@ func (m *Mux) tryGrantAndStart() {
 		}
 	}
 
-	// Adapter START succeeded — now confirm ownership.
+	// Adapter START succeeded — verify session is still alive before
+	// confirming ownership (Codex P1 #3060335786: session may have
+	// disconnected or cancelled during StartArbitration).
+	if sessionID != gatewaySessionID {
+		m.sessionsMu.Lock()
+		_, alive := m.sessions[sessionID]
+		m.sessionsMu.Unlock()
+		if !alive {
+			m.logger.Printf("adaptermux: session %d disconnected during START, discarding grant", sessionID)
+			notify <- startResult{granted: false, initiator: initiator, err: errors.New("session disconnected")}
+			return
+		}
+	}
+
 	m.arb.confirmOwnership(sessionID, initiator)
 
 	m.stateMu.Lock()

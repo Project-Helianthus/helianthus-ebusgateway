@@ -91,8 +91,15 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 		return
 	default:
 		// Buffer full — drop oldest symbol to prevent backpressure.
+		// Never evict a reset event — resets are non-droppable boundaries
+		// (Codex P1 #3060335791). If the oldest is a reset, put it back
+		// and drop the new symbol instead.
 		select {
-		case <-t.events:
+		case oldest := <-t.events:
+			if oldest.Kind == transport.StreamEventReset {
+				t.events <- oldest
+				return
+			}
 		default:
 		}
 		select {

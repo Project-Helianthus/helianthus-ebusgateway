@@ -28,6 +28,22 @@ var (
 // the gateway's own echoes), which is what gateway.Bus expects for
 // echo matching.
 func (t *activeTransport) ReadByte() (byte, error) {
+	// Priority: check for reset/error before data.
+	// After handleReset enqueues ErrAdapterReset on activeErrCh and
+	// readLoop enqueues post-reset symbols on activeRecvCh, both
+	// channels may be ready simultaneously.  Go select picks randomly,
+	// so a bare select could deliver a post-reset byte before the
+	// reset error, breaking transaction state.  The non-blocking drain
+	// here guarantees the consumer sees the reset first.
+	select {
+	case err := <-t.mux.activeErrCh:
+		if err != nil {
+			return 0, err
+		}
+		return 0, errors.New("adaptermux: unexpected nil error")
+	default:
+	}
+
 	select {
 	case b := <-t.mux.activeRecvCh:
 		return b, nil
@@ -44,6 +60,22 @@ func (t *activeTransport) ReadByte() (byte, error) {
 // ReadEvent returns stream events including RESETTED boundaries.
 // Satisfies transport.StreamEventReader for passive tap integration.
 func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
+	// Priority: check for reset/error before data (same rationale as
+	// ReadByte — see comment there).
+	select {
+	case err := <-t.mux.activeErrCh:
+		if errors.Is(err, ebuserrors.ErrAdapterReset) {
+			return transport.StreamEvent{
+				Kind: transport.StreamEventReset,
+			}, nil
+		}
+		if err != nil {
+			return transport.StreamEvent{}, err
+		}
+		return transport.StreamEvent{}, errors.New("adaptermux: unexpected nil error")
+	default:
+	}
+
 	select {
 	case b := <-t.mux.activeRecvCh:
 		return transport.StreamEvent{

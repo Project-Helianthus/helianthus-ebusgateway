@@ -169,6 +169,10 @@ func (p *testBusObservabilityProvider) Snapshot() BusObservabilitySnapshot {
 	return cloneBusObservabilitySnapshot(p.snapshot)
 }
 
+func (p *testBusObservabilityProvider) ProtocolSpecimens(family string) []BusProtocolSpecimen {
+	return nil
+}
+
 type testWatchSummaryProvider struct {
 	summary WatchSummary
 }
@@ -405,6 +409,7 @@ func TestServer_BusObservabilityToolsRequireConfiguredProvider(t *testing.T) {
 		toolBusSummaryGetName,
 		toolBusMessagesListName,
 		toolBusPeriodicityListName,
+		toolBusProtocolSpecimensListName,
 	} {
 		if hasToolName(tools, name) {
 			t.Fatalf("tools list unexpectedly included %q without bus provider", name)
@@ -450,10 +455,44 @@ func TestServer_BusObservabilityToolsRequireConfiguredProvider(t *testing.T) {
 		toolBusSummaryGetName,
 		toolBusMessagesListName,
 		toolBusPeriodicityListName,
+		toolBusProtocolSpecimensListName,
 	} {
 		if !hasToolName(tools, name) {
 			t.Fatalf("tools list missing %q after bus provider configured", name)
 		}
+	}
+
+	// Verify protocol_specimens.list returns valid output.
+	res = doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      10,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"` + toolBusProtocolSpecimensListName + `","arguments":{}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("protocol_specimens.list error = %+v", res.Error)
+	}
+
+	// Verify family filter does not error.
+	res = doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      11,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"` + toolBusProtocolSpecimensListName + `","arguments":{"family":"B510","limit":5}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("protocol_specimens.list with family filter error = %+v", res.Error)
+	}
+
+	// Verify invalid family type returns error.
+	res = doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      12,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"` + toolBusProtocolSpecimensListName + `","arguments":{"family":123}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("protocol_specimens.list should return tool result, not RPC error, for invalid family")
 	}
 }
 

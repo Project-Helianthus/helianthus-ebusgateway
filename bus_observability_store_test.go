@@ -1040,21 +1040,15 @@ func TestBusObservabilityStoreTransportLimitationClassifiesBroadcastUnavailable(
 	}
 }
 
-func TestBusObservabilityStoreRenderPrometheusIncludesEnergyBroadcastFreshnessMetrics(t *testing.T) {
+func TestBusObservabilityStoreRenderPrometheusOmitsEnergyBroadcastMetricsWithoutData(t *testing.T) {
 	store := NewBusObservabilityStore(DefaultConfig())
 
 	metrics := store.RenderPrometheus()
-	if !strings.Contains(metrics, `# HELP energy_broadcast_selectors`) {
-		t.Fatalf("RenderPrometheus missing energy_broadcast_selectors help:\n%s", metrics)
+	if strings.Contains(metrics, `energy_broadcast_selectors`) {
+		t.Fatalf("RenderPrometheus emits energy_broadcast_selectors without data:\n%s", metrics)
 	}
-	if !strings.Contains(metrics, `energy_broadcast_selectors{state="never_seen"}`) {
-		t.Fatalf("RenderPrometheus missing energy_broadcast_selectors never_seen sample:\n%s", metrics)
-	}
-	if !strings.Contains(metrics, `# HELP energy_broadcast_freshness_transitions_total`) {
-		t.Fatalf("RenderPrometheus missing energy_broadcast_freshness_transitions_total help:\n%s", metrics)
-	}
-	if !strings.Contains(metrics, `energy_broadcast_freshness_transitions_total{from="never_seen",to="fresh"}`) {
-		t.Fatalf("RenderPrometheus missing energy_broadcast_freshness_transitions_total sample:\n%s", metrics)
+	if strings.Contains(metrics, `energy_broadcast_freshness_transitions_total`) {
+		t.Fatalf("RenderPrometheus emits energy_broadcast_freshness_transitions_total without data:\n%s", metrics)
 	}
 }
 
@@ -1194,5 +1188,345 @@ func observabilityPassiveMasterFrameEvent(observedAt time.Time, source, target, 
 		},
 		HasRequest: true,
 		ObservedAt: observedAt,
+	}
+}
+
+func specimenPassiveStore() *BusObservabilityStore {
+	cfg := DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
+	store := NewBusObservabilityStore(cfg)
+	store.mu.Lock()
+	store.passive.state = "available"
+	store.passive.startupWindowClosed = true
+	store.mu.Unlock()
+	return store
+}
+
+func TestSpecimenCaptureFromPassiveFrame(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// Primary=0x07, Secondary=0x04 => family "0704" (not implemented).
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(10*time.Second), 0x10, 0x08, 0x07, 0x04))
+
+	items := store.ProtocolSpecimens("")
+	if len(items) != 1 {
+		t.Fatalf("ProtocolSpecimens length = %d; want 1", len(items))
+	}
+	if items[0].Family != "0704" {
+		t.Fatalf("ProtocolSpecimens[0].Family = %q; want %q", items[0].Family, "0704")
+	}
+	if items[0].Source != 0x10 {
+		t.Fatalf("ProtocolSpecimens[0].Source = 0x%02x; want 0x10", items[0].Source)
+	}
+	if items[0].Target != 0x08 {
+		t.Fatalf("ProtocolSpecimens[0].Target = 0x%02x; want 0x08", items[0].Target)
+	}
+	if items[0].Count != 1 {
+		t.Fatalf("ProtocolSpecimens[0].Count = %d; want 1", items[0].Count)
+	}
+	if items[0].Outcome != "success" {
+		t.Fatalf("ProtocolSpecimens[0].Outcome = %q; want %q", items[0].Outcome, "success")
+	}
+	if items[0].RequestHex != "01" {
+		t.Fatalf("ProtocolSpecimens[0].RequestHex = %q; want %q", items[0].RequestHex, "01")
+	}
+	if items[0].ResponseHex != "02" {
+		t.Fatalf("ProtocolSpecimens[0].ResponseHex = %q; want %q", items[0].ResponseHex, "02")
+	}
+}
+
+func TestSpecimenDedupIncrements(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(30 * time.Second) }
+
+	// Same frame twice.
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(10*time.Second), 0x10, 0x08, 0x07, 0x04))
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(20*time.Second), 0x10, 0x08, 0x07, 0x04))
+
+	items := store.ProtocolSpecimens("")
+	if len(items) != 1 {
+		t.Fatalf("ProtocolSpecimens length = %d; want 1 (dedup)", len(items))
+	}
+	if items[0].Count != 2 {
+		t.Fatalf("ProtocolSpecimens[0].Count = %d; want 2", items[0].Count)
+	}
+	if !items[0].LastSeenAt.Equal(base.Add(20 * time.Second)) {
+		t.Fatalf("ProtocolSpecimens[0].LastSeenAt = %v; want %v", items[0].LastSeenAt, base.Add(20*time.Second))
+	}
+}
+
+func TestSpecimenRejectsImplementedFamily(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// B509 (0xB5, 0x09) is an implemented family.
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(10*time.Second), 0x10, 0x08, 0xB5, 0x09))
+	// B524 (0xB5, 0x24) is an implemented family.
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(11*time.Second), 0x10, 0x08, 0xB5, 0x24))
+	// B516 (0xB5, 0x16) is an implemented family.
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(12*time.Second), 0x15, 0x26, 0xB5, 0x16))
+	// B555 (0xB5, 0x55) is an implemented family.
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(13*time.Second), 0x15, 0x26, 0xB5, 0x55))
+
+	items := store.ProtocolSpecimens("")
+	if len(items) != 0 {
+		t.Fatalf("ProtocolSpecimens length = %d; want 0 (all implemented families rejected)", len(items))
+	}
+}
+
+func TestSpecimenFamilyFilter(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(30 * time.Second) }
+
+	// Two different non-implemented families.
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(10*time.Second), 0x10, 0x08, 0x07, 0x04))
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(20*time.Second), 0x15, 0x26, 0x08, 0x00))
+
+	all := store.ProtocolSpecimens("")
+	if len(all) != 2 {
+		t.Fatalf("ProtocolSpecimens (all) length = %d; want 2", len(all))
+	}
+
+	filtered := store.ProtocolSpecimens("0704")
+	if len(filtered) != 1 {
+		t.Fatalf("ProtocolSpecimens (filtered 0704) length = %d; want 1", len(filtered))
+	}
+	if filtered[0].Family != "0704" {
+		t.Fatalf("ProtocolSpecimens (filtered)[0].Family = %q; want %q", filtered[0].Family, "0704")
+	}
+
+	empty := store.ProtocolSpecimens("ZZZZ")
+	if len(empty) != 0 {
+		t.Fatalf("ProtocolSpecimens (no match) length = %d; want 0", len(empty))
+	}
+}
+
+func TestSpecimenRingBufferEviction(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+
+	// Push specimenMaxPerFamily + 1 unique entries into one family.
+	for i := 0; i <= specimenMaxPerFamily; i++ {
+		now := base.Add(time.Duration(i) * time.Second)
+		store.now = func() time.Time { return now }
+		event := PassiveClassifiedEvent{
+			Kind:      PassiveClassifiedEventTransaction,
+			FrameType: protocol.FrameTypeInitiatorTarget,
+			Request: protocol.Frame{
+				Source:    0x10,
+				Target:    0x08,
+				Primary:   0x07,
+				Secondary: 0x04,
+				Data:      []byte{byte(i)}, // unique data per entry
+			},
+			Response: protocol.Frame{
+				Source:    0x08,
+				Target:    0x10,
+				Primary:   0x07,
+				Secondary: 0x04,
+				Data:      []byte{0x02},
+			},
+			HasRequest:  true,
+			HasResponse: true,
+			ObservedAt:  now,
+			Timing: PassiveTimingMarkers{
+				RequestStart:  now.Add(-50 * time.Millisecond),
+				RequestEnd:    now.Add(-25 * time.Millisecond),
+				ResponseStart: now.Add(-20 * time.Millisecond),
+				ResponseEnd:   now.Add(-5 * time.Millisecond),
+				Terminal:      now,
+			},
+		}
+		store.OnPassiveClassifiedEvent(event)
+	}
+
+	items := store.ProtocolSpecimens("0704")
+	if len(items) != specimenMaxPerFamily {
+		t.Fatalf("ProtocolSpecimens length = %d; want %d (ring buffer cap)", len(items), specimenMaxPerFamily)
+	}
+
+	// The oldest entry (Data=0x00) should have been evicted.
+	for _, item := range items {
+		if item.RequestHex == "00" {
+			t.Fatalf("ProtocolSpecimens contains evicted entry with RequestHex=00")
+		}
+	}
+}
+
+func TestSpecimenSummaryFields(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(10*time.Second), 0x10, 0x08, 0x07, 0x04))
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(11*time.Second), 0x15, 0x26, 0x08, 0x00))
+
+	snapshot := store.Snapshot()
+	if snapshot.Summary.SpecimenFamilies != 2 {
+		t.Fatalf("Summary.SpecimenFamilies = %d; want 2", snapshot.Summary.SpecimenFamilies)
+	}
+	if snapshot.Summary.SpecimenCount != 2 {
+		t.Fatalf("Summary.SpecimenCount = %d; want 2", snapshot.Summary.SpecimenCount)
+	}
+}
+
+func TestSpecimenMaxFamiliesCapDropsSilently(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// Fill to specimenMaxFamilies (64) by varying both primary and secondary.
+	for i := 0; i < specimenMaxFamilies; i++ {
+		primary := byte(0xA0 + i/256)
+		secondary := byte(i % 256)
+		store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(time.Duration(i)*time.Second), 0x10, 0x08, primary, secondary))
+	}
+	if got := len(store.ProtocolSpecimens("")); got != specimenMaxFamilies {
+		t.Fatalf("specimens after filling %d families = %d; want %d", specimenMaxFamilies, got, specimenMaxFamilies)
+	}
+
+	// 65th family should be silently dropped.
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(100*time.Second), 0x10, 0x08, 0xFF, 0xFF))
+	if got := len(store.ProtocolSpecimens("")); got != specimenMaxFamilies {
+		t.Fatalf("specimens after 65th family = %d; want %d (cap enforced)", got, specimenMaxFamilies)
+	}
+}
+
+func TestScanCollisionClassifiedThroughReconstructor(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// Simulate a scan collision: a 0704 probe whose raw bytes fail parseFrame.
+	// OnPassiveClassifiedEvent receives already-classified events, so we inject
+	// an abandoned event with ScanCollision reason directly.
+	store.OnPassiveClassifiedEvent(PassiveClassifiedEvent{
+		Kind:      PassiveClassifiedEventAbandonedTransaction,
+		FrameType: protocol.FrameTypeInitiatorTarget,
+		Request: protocol.Frame{
+			Source:    0x71,
+			Target:    0x42,
+			Primary:   0x07,
+			Secondary: 0x04,
+			Data:      []byte{0xDE, 0xAD}, // garbled payload
+		},
+		HasRequest:    true,
+		AbandonReason: PassiveAbandonReasonScanCollision,
+		ObservedAt:    base.Add(10 * time.Second),
+	})
+
+	metrics := store.RenderPrometheus()
+	// scan_collision is a non-error — should NOT appear in ebus_errors_total.
+	if strings.Contains(metrics, `class="corrupted_request"`) {
+		t.Fatalf("scan_collision misclassified as corrupted_request:\n%s", metrics)
+	}
+	if strings.Contains(metrics, `class="scan_collision"`) {
+		t.Fatalf("scan_collision should not appear as error class:\n%s", metrics)
+	}
+}
+
+func TestScanRelatedAbandonUsesAggregateTargetBucket(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// Inject scan_timeout abandoned events to different targets.
+	for _, target := range []byte{0x05, 0x06, 0x42} {
+		store.OnPassiveClassifiedEvent(PassiveClassifiedEvent{
+			Kind:      PassiveClassifiedEventAbandonedTransaction,
+			FrameType: protocol.FrameTypeInitiatorTarget,
+			Request: protocol.Frame{
+				Source:    0x71,
+				Target:    target,
+				Primary:   0x07,
+				Secondary: 0x04,
+			},
+			HasRequest:    true,
+			AbandonReason: PassiveAbandonReasonScanTimeout,
+			ObservedAt:    base.Add(10 * time.Second),
+		})
+	}
+
+	metrics := store.RenderPrometheus()
+	// All three should aggregate under dst="scan", not per-address.
+	if !strings.Contains(metrics, `dst="scan"`) {
+		t.Fatalf("scan-related abandoned frames not aggregated under dst=\"scan\":\n%s", metrics)
+	}
+	// Individual addresses should NOT appear for scan events.
+	if strings.Contains(metrics, `dst="0x05"`) || strings.Contains(metrics, `dst="0x42"`) {
+		t.Fatalf("scan-related abandoned frames leaked per-address labels:\n%s", metrics)
+	}
+}
+
+func TestSpecimenConcurrentReadWrite(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	done := make(chan struct{})
+	// Writer goroutine.
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(
+				base.Add(time.Duration(i)*time.Millisecond), 0x10, 0x08, 0x07, 0x04,
+			))
+		}
+	}()
+	// Concurrent reader.
+	for i := 0; i < 200; i++ {
+		_ = store.ProtocolSpecimens("")
+	}
+	<-done
+	items := store.ProtocolSpecimens("")
+	if len(items) == 0 {
+		t.Fatal("ProtocolSpecimens empty after concurrent writes")
+	}
+}
+
+func TestSelfEchoClassifiedAsNonError(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	store.OnPassiveClassifiedEvent(PassiveClassifiedEvent{
+		Kind:          PassiveClassifiedEventAbandonedTransaction,
+		AbandonReason: PassiveAbandonReasonSelfEcho,
+		ObservedAt:    base.Add(10 * time.Second),
+	})
+
+	metrics := store.RenderPrometheus()
+	if strings.Contains(metrics, `class="corrupted_request"`) {
+		t.Fatalf("self_echo misclassified as corrupted_request:\n%s", metrics)
+	}
+	if strings.Contains(metrics, `class="self_echo"`) {
+		t.Fatalf("self_echo should not appear as error class:\n%s", metrics)
+	}
+}
+
+func TestPassiveCorruptedRequestIsNonError(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	store.OnPassiveClassifiedEvent(PassiveClassifiedEvent{
+		Kind:          PassiveClassifiedEventAbandonedTransaction,
+		AbandonReason: PassiveAbandonReasonCorruptedRequest,
+		ObservedAt:    base.Add(10 * time.Second),
+	})
+
+	metrics := store.RenderPrometheus()
+	// CRC failure on passive observation is normal bus contention, not a
+	// software error.  The error counter must NOT be incremented.
+	if strings.Contains(metrics, `class="corrupted_request"`) {
+		t.Fatalf("passive corrupted_request should not be counted as error:\n%s", metrics)
 	}
 }

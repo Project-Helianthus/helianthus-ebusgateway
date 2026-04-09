@@ -117,15 +117,17 @@ type BusReconstructorAggregate struct {
 }
 
 type BusSummary struct {
-	LastUpdatedAt *time.Time
-	Status        *BusObservabilityStatus
-	Messages      BusBoundedListSummary
-	Periodicity   BusBoundedListSummary
-	Counters      BusObservabilityCounters
-	Errors        []BusErrorAggregate
-	Frames        []BusFrameAggregate
-	Busy          *BusBusyAggregate
-	Reconstructor *BusReconstructorAggregate
+	LastUpdatedAt    *time.Time
+	Status           *BusObservabilityStatus
+	Messages         BusBoundedListSummary
+	Periodicity      BusBoundedListSummary
+	Counters         BusObservabilityCounters
+	Errors           []BusErrorAggregate
+	Frames           []BusFrameAggregate
+	Busy             *BusBusyAggregate
+	Reconstructor    *BusReconstructorAggregate
+	SpecimenFamilies int
+	SpecimenCount    int
 }
 
 type BusMessage struct {

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"encoding/hex"
+
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
@@ -24,6 +26,9 @@ const (
 	watchEfficiencySavedWindowSize = 32
 	watchEfficiencySavedMinSamples = 5
 	watchEfficiencySavedStaleTTL   = 15 * time.Minute
+
+	specimenMaxPerFamily = 32
+	specimenMaxFamilies  = 64
 )
 
 var (
@@ -87,6 +92,8 @@ type BusObservabilityStore struct {
 	watchEfficiency           watchEfficiencyRuntime
 
 	passive passiveWarmupRuntime
+
+	specimens map[string]*specimenFamilyBucket // keyed by family
 
 	startupSurfaceProvider func() *BusObservabilityStartup
 
@@ -153,6 +160,28 @@ type periodicityKey struct {
 type busySegment struct {
 	Start time.Time
 	End   time.Time
+}
+
+type specimenEntry struct {
+	Family       string
+	Source       byte
+	Target       byte
+	FrameType    string
+	RequestData  []byte
+	ResponseData []byte
+	RequestLen   int
+	ResponseLen  int
+	Outcome      string
+	FirstSeenAt  time.Time
+	LastSeenAt   time.Time
+	Count        uint64
+	dedupKey     string
+}
+
+type specimenFamilyBucket struct {
+	entries [specimenMaxPerFamily]specimenEntry
+	start   int
+	length  int
 }
 
 type passiveWarmupRuntime struct {
@@ -235,6 +264,7 @@ func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 		frameBytes:            make(map[frameBytesSeriesKey]uint64),
 		recent:                make([]BusMessageRecord, cfg.ObserveFirstRecentMessageCapacity),
 		addressBuckets:        make(map[byte]string),
+		specimens:             make(map[string]*specimenFamilyBucket),
 		periodicity:           make(map[periodicityKey]*BusPeriodicityEntry),
 		watchEfficiency: watchEfficiencyRuntime{
 			buckets:   make(map[watchEfficiencyBucketKey]*watchEfficiencyBucketRuntime),
@@ -314,6 +344,10 @@ func (store *BusObservabilityStore) AttachReconstructor(ctx context.Context, rec
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	if store.cfg.LocalAddressSnapshotter != nil {
+		reconstructor.SetLocalAddressSnapshotter(store.cfg.LocalAddressSnapshotter)
 	}
 
 	store.mu.Lock()
@@ -485,7 +519,7 @@ func (store *BusObservabilityStore) observeWatchReadLocked(event WatchEfficiency
 		observedAt = store.now()
 	}
 
-	bucket, reason, include := resolveWatchEfficiencyBucket(event.Key, event.Descriptor, event.HasDescriptor)
+	bucket, reason, include := resolveWatchEfficiencyBucket(event.Key, event.Descriptor)
 	if reason != "" {
 		family := familyForAmbiguous(event.Key, event.Descriptor)
 		store.watchEfficiency.ambiguous[watchEfficiencyAmbiguousKey{
@@ -539,7 +573,7 @@ func (store *BusObservabilityStore) observeWatchDirectApplyLocked(event WatchEff
 		store.watchEfficiency.directApplyCandidatesEvaluatedTotal++
 	}
 
-	bucket, reason, include := resolveWatchEfficiencyBucket(event.Key, event.Descriptor, event.HasDescriptor)
+	bucket, reason, include := resolveWatchEfficiencyBucket(event.Key, event.Descriptor)
 	if reason != "" {
 		family := familyForAmbiguous(event.Key, event.Descriptor)
 		store.watchEfficiency.ambiguous[watchEfficiencyAmbiguousKey{
@@ -928,18 +962,25 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	}
 
 	energyStates := []string{"never_seen", "fresh", "warming_up", "stale", "unavailable"}
-	writer.writeHelp("energy_broadcast_selectors", "Current energy selector freshness state counts (recomputed at scrape time).")
-	writer.writeType("energy_broadcast_selectors", "gauge")
-	for _, state := range energyStates {
-		writer.writeGaugeSample("energy_broadcast_selectors", float64(readExpvarNamedMapInt("energy_broadcast_selectors", state)), labelMap("state", state))
-	}
+	// Only emit energy broadcast metrics when at least one broadcast energy
+	// value has ever been accepted by the merge store.  Buses without B516
+	// energy response broadcasts produce 25 constant-zero series that clutter
+	// dashboards.
+	energyHasData := readExpvarNamedMapInt("semantic_energy_merges_total", "broadcast") > 0
+	if energyHasData {
+		writer.writeHelp("energy_broadcast_selectors", "Current energy selector freshness state counts (recomputed at scrape time).")
+		writer.writeType("energy_broadcast_selectors", "gauge")
+		for _, state := range energyStates {
+			writer.writeGaugeSample("energy_broadcast_selectors", float64(readExpvarNamedMapInt("energy_broadcast_selectors", state)), labelMap("state", state))
+		}
 
-	writer.writeHelp("energy_broadcast_freshness_transitions_total", "Energy freshness state transitions by selector, including scrape-time recomputation transitions.")
-	writer.writeType("energy_broadcast_freshness_transitions_total", "counter")
-	for _, from := range energyStates {
-		for _, to := range energyStates {
-			key := from + "->" + to
-			writer.writeCounterSample("energy_broadcast_freshness_transitions_total", float64(readExpvarNamedMapInt("energy_broadcast_freshness_transitions_total", key)), labelMap("from", from, "to", to))
+		writer.writeHelp("energy_broadcast_freshness_transitions_total", "Energy freshness state transitions by selector, including scrape-time recomputation transitions.")
+		writer.writeType("energy_broadcast_freshness_transitions_total", "counter")
+		for _, from := range energyStates {
+			for _, to := range energyStates {
+				key := from + "->" + to
+				writer.writeCounterSample("energy_broadcast_freshness_transitions_total", float64(readExpvarNamedMapInt("energy_broadcast_freshness_transitions_total", key)), labelMap("from", from, "to", to))
+			}
 		}
 	}
 
@@ -1046,6 +1087,9 @@ func (store *BusObservabilityStore) recordPassiveFrameLocked(event PassiveClassi
 	store.recordPassiveWarmupSuccessLocked(event)
 	store.recordBusyLocked(event)
 	store.recordPeriodicityLocked(event, family)
+	if !isImplementedFamily(family) && event.HasRequest {
+		store.pushSpecimenLocked(family, event, frameType, "success", event.ObservedAt)
+	}
 }
 
 func (store *BusObservabilityStore) bootstrapPassiveWarmupFromTrafficLocked(event PassiveClassifiedEvent) {
@@ -1067,15 +1111,28 @@ func (store *BusObservabilityStore) bootstrapPassiveWarmupFromTrafficLocked(even
 	store.passiveStartWarmupLocked(observedAt, false)
 }
 
+func isScanRelatedAbandon(reason PassiveAbandonReason) bool {
+	switch reason {
+	case PassiveAbandonReasonScanTimeout, PassiveAbandonReasonScanCollision, PassiveAbandonReasonArbitrationFragment:
+		return true
+	default:
+		return false
+	}
+}
+
 func (store *BusObservabilityStore) recordPassiveAbandonedLocked(event PassiveClassifiedEvent) {
 	if event.HasRequest {
 		family := classifyFamily(event.Request)
 		local := store.localAddressSnapshotLocked()
 		frameType := classifyPassiveFrameType(event, local)
+		targetBucket := store.normalizeAddressLocked(event.Request.Target)
+		if isScanRelatedAbandon(event.AbandonReason) {
+			targetBucket = "scan"
+		}
 		store.incrementFrameLocked(frameSeriesKey{
 			Scope:     "passive",
 			Source:    store.normalizeAddressLocked(event.Request.Source),
-			Target:    store.normalizeAddressLocked(event.Request.Target),
+			Target:    targetBucket,
 			Family:    family,
 			FrameType: frameType,
 		})
@@ -1094,6 +1151,9 @@ func (store *BusObservabilityStore) recordPassiveAbandonedLocked(event PassiveCl
 			RequestLen:  frameWireLen(event.Request),
 			ResponseLen: passiveResponseLen(event),
 		})
+		if !isImplementedFamily(family) {
+			store.pushSpecimenLocked(family, event, frameType, string(event.AbandonReason), event.ObservedAt)
+		}
 	}
 	class, phase := classifyPassiveAbandon(event.AbandonReason)
 	if class != "" {
@@ -1517,6 +1577,75 @@ func classifyFamily(frame protocol.Frame) string {
 	}
 }
 
+func isImplementedFamily(family string) bool {
+	switch family {
+	case "B509", "B516", "B524", "B555":
+		return true
+	default:
+		return false
+	}
+}
+
+func specimenDedupKey(family string, source, target byte, frameType string, requestData []byte, outcome string, hasResponse bool, responseData []byte) string {
+	key := family + fmt.Sprintf("/%02x/%02x/", source, target) + frameType + "/" + hex.EncodeToString(requestData) + "/" + outcome
+	if hasResponse {
+		key += "/" + hex.EncodeToString(responseData)
+	}
+	return key
+}
+
+func (store *BusObservabilityStore) pushSpecimenLocked(family string, event PassiveClassifiedEvent, frameType, outcome string, now time.Time) {
+	bucket, exists := store.specimens[family]
+	if !exists {
+		if len(store.specimens) >= specimenMaxFamilies {
+			return
+		}
+		bucket = &specimenFamilyBucket{}
+		store.specimens[family] = bucket
+	}
+
+	key := specimenDedupKey(family, event.Request.Source, event.Request.Target, frameType, event.Request.Data, outcome, event.HasResponse, event.Response.Data)
+
+	// Search for existing entry with same dedup key.
+	for i := 0; i < bucket.length; i++ {
+		idx := (bucket.start + i) % specimenMaxPerFamily
+		if bucket.entries[idx].dedupKey == key {
+			bucket.entries[idx].Count++
+			bucket.entries[idx].LastSeenAt = now
+			return
+		}
+	}
+
+	// Build new entry.
+	entry := specimenEntry{
+		Family:      family,
+		Source:      event.Request.Source,
+		Target:      event.Request.Target,
+		FrameType:   frameType,
+		RequestData: append([]byte(nil), event.Request.Data...),
+		RequestLen:  frameWireLen(event.Request),
+		Outcome:     outcome,
+		FirstSeenAt: now,
+		LastSeenAt:  now,
+		Count:       1,
+		dedupKey:    key,
+	}
+	if event.HasResponse {
+		entry.ResponseData = append([]byte(nil), event.Response.Data...)
+		entry.ResponseLen = responseWireLen(event.Response)
+	}
+
+	// Ring buffer push.
+	if bucket.length < specimenMaxPerFamily {
+		idx := (bucket.start + bucket.length) % specimenMaxPerFamily
+		bucket.entries[idx] = entry
+		bucket.length++
+	} else {
+		bucket.entries[bucket.start] = entry
+		bucket.start = (bucket.start + 1) % specimenMaxPerFamily
+	}
+}
+
 func classifyActiveFrameType(frame protocol.Frame, local LocalAddressSnapshot) string {
 	if frame.Type() == protocol.FrameTypeInitiatorInitiator && local.Known && frame.Target == local.Address {
 		return "local_participant_inbound"
@@ -1568,20 +1697,22 @@ func classifyPassiveAbandon(reason PassiveAbandonReason) (string, string) {
 		return "nack", "ack"
 	case PassiveAbandonReasonCRCMismatch:
 		return "crc_mismatch", "response"
-	case PassiveAbandonReasonUnexpectedSYN:
-		return "unexpected_syn", "request"
 	case PassiveAbandonReasonTransportReset:
 		return "transport_reset", "terminal"
 	case PassiveAbandonReasonDecodeFault:
 		return "decode_fault", "request"
-	case PassiveAbandonReasonCorruptedRequest:
-		return "corrupted_request", "request"
-	case PassiveAbandonReasonCorruptedTarget:
-		return "corrupted_target", "request"
 	case PassiveAbandonReasonNoResponse, PassiveAbandonReasonNoProgress, PassiveAbandonReasonDisconnected, PassiveAbandonReasonShutdown:
 		return "timeout", "terminal"
-	case PassiveAbandonReasonScanTimeout, PassiveAbandonReasonArbitrationFragment:
-		return "", "" // expected behavior — not an error
+	case PassiveAbandonReasonCorruptedRequest, PassiveAbandonReasonCorruptedTarget,
+		PassiveAbandonReasonUnexpectedSYN, PassiveAbandonReasonUnexpectedSymbol,
+		PassiveAbandonReasonScanTimeout, PassiveAbandonReasonScanCollision,
+		PassiveAbandonReasonArbitrationFragment, PassiveAbandonReasonSelfEcho,
+		PassiveAbandonReasonAmbiguousRetransmit:
+		// Bus contention artifacts: CRC failures, arbitration noise, and
+		// reconstructor desync are expected on a shared-bus passive tap.
+		// The CRC check correctly identifies invalid frames — that is not
+		// a software error, it is the bus operating as designed.
+		return "", ""
 	default:
 		return "abandoned", "terminal"
 	}
@@ -1744,8 +1875,8 @@ func (store *BusObservabilityStore) watchEfficiencySnapshotLocked(now time.Time)
 	return snapshot
 }
 
-func resolveWatchEfficiencyBucket(key WatchKey, descriptor WatchDescriptor, hasDescriptor bool) (watchEfficiencyBucketKey, string, bool) {
-	if !hasDescriptor || descriptor.Key == nil {
+func resolveWatchEfficiencyBucket(key WatchKey, descriptor WatchDescriptor) (watchEfficiencyBucketKey, string, bool) {
+	if descriptor.Key == nil {
 		return watchEfficiencyBucketKey{}, "missing_runtime_descriptor", false
 	}
 	family := string(descriptor.Family())

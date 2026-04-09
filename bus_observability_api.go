@@ -394,7 +394,6 @@ func (store *BusObservabilityStore) ProtocolSpecimens(family string) []ProtocolS
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
-	const maxResults = 100
 	var items []ProtocolSpecimenExport
 
 	for fam, bucket := range store.specimens {
@@ -432,9 +431,6 @@ func (store *BusObservabilityStore) ProtocolSpecimens(family string) []ProtocolS
 		return items[i].RequestHex < items[j].RequestHex
 	})
 
-	if len(items) > maxResults {
-		items = items[:maxResults]
-	}
 	return items
 }
 

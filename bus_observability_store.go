@@ -1582,8 +1582,8 @@ func isImplementedFamily(family string) bool {
 	}
 }
 
-func specimenDedupKey(family string, source, target byte, requestData []byte) string {
-	return family + fmt.Sprintf("/%02x/%02x/", source, target) + hex.EncodeToString(requestData)
+func specimenDedupKey(family string, source, target byte, requestData []byte, outcome string) string {
+	return family + fmt.Sprintf("/%02x/%02x/", source, target) + hex.EncodeToString(requestData) + "/" + outcome
 }
 
 func (store *BusObservabilityStore) pushSpecimenLocked(family string, event PassiveClassifiedEvent, frameType, outcome string, now time.Time) {
@@ -1596,7 +1596,7 @@ func (store *BusObservabilityStore) pushSpecimenLocked(family string, event Pass
 		store.specimens[family] = bucket
 	}
 
-	key := specimenDedupKey(family, event.Request.Source, event.Request.Target, event.Request.Data)
+	key := specimenDedupKey(family, event.Request.Source, event.Request.Target, event.Request.Data, outcome)
 
 	// Search for existing entry with same dedup key.
 	for i := 0; i < bucket.length; i++ {

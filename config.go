@@ -19,7 +19,8 @@ const (
 	TransportENS      TransportProtocol = "ens"
 	TransportUDPPlain TransportProtocol = "udp-plain"
 	TransportTCPPlain TransportProtocol = "tcp-plain"
-	TransportEbusdTCP TransportProtocol = "ebusd-tcp"
+	TransportEbusdTCP       TransportProtocol = "ebusd-tcp"
+	TransportAdapterDirect TransportProtocol = "adapter-direct"
 
 	DefaultSemanticZonePresenceMissThreshold = 3
 	DefaultSemanticZonePresenceHitThreshold  = 2
@@ -56,6 +57,7 @@ type WatchObserver interface {
 
 type Config struct {
 	Transport              transport.RawTransport
+	PassiveTransport       transport.RawTransport // pre-configured passive transport (adapter-direct mode)
 	TransportConfig        TransportConfig
 	BusConfig              protocol.BusConfig
 	QueueCapacity          int

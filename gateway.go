@@ -283,6 +283,8 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 			protocol = TransportTCPPlain
 		}
 	case "unix":
+	case "adapter-direct":
+		protocol = TransportAdapterDirect
 	default:
 		return "", "", "", fmt.Errorf("gateway transport endpoint unsupported scheme %q", scheme)
 	}

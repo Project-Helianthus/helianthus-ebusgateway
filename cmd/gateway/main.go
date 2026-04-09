@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
@@ -82,6 +83,20 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	if len(cfg.Providers) == 0 {
 		cfg.Providers = vaillantproviders.Default()
+	}
+
+	// Wire adapter-direct mode: create multiplexer, configure active
+	// and passive transports before gateway construction.
+	adapterMuxCloser, err := wireAdapterDirect(ctx, &cfg)
+	if err != nil {
+		return fmt.Errorf("adapter-direct: %w", err)
+	}
+	if adapterMuxCloser != nil {
+		defer func() {
+			if err := adapterMuxCloser(); err != nil {
+				log.Printf("adapter-direct close: %v", err)
+			}
+		}()
 	}
 
 	busObservability, deduplicator, err := wireObserveFirstObserversFn(&cfg)
@@ -491,6 +506,69 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		cfg.ScanSourceAuto = cfg.ScanSource == 0x00
 		return nil
 	})
+}
+
+// wireAdapterDirect creates and starts the adapter multiplexer if the
+// transport protocol is adapter-direct. It configures both active and
+// passive transports in cfg before gateway construction.
+//
+// Returns a closer function for the multiplexer, or nil if not in
+// adapter-direct mode.
+func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() error, error) {
+	if cfg.TransportConfig.Protocol != ebusgateway.TransportAdapterDirect {
+		return nil, nil
+	}
+
+	network := cfg.TransportConfig.Network
+	address := cfg.TransportConfig.Address
+	if network == "" {
+		network = "tcp"
+	}
+	if address == "" {
+		return nil, fmt.Errorf("adapter-direct requires an address (e.g. adapter-direct://boiler.local:9999)")
+	}
+
+	// Determine ENH vs ENS sub-protocol. Default ENH.
+	adapterProtocol := "enh"
+
+	muxCfg := adaptermux.Config{
+		Protocol:     adapterProtocol,
+		Network:      network,
+		Address:      address,
+		DialTimeout:  cfg.TransportConfig.DialTimeout,
+		ReadTimeout:  cfg.TransportConfig.ReadTimeout,
+		WriteTimeout: cfg.TransportConfig.WriteTimeout,
+	}
+	if muxCfg.DialTimeout == 0 {
+		muxCfg.DialTimeout = 5 * time.Second
+	}
+	if muxCfg.ReadTimeout == 0 {
+		muxCfg.ReadTimeout = 5 * time.Second
+	}
+	if muxCfg.WriteTimeout == 0 {
+		muxCfg.WriteTimeout = 5 * time.Second
+	}
+
+	mux := adaptermux.New(muxCfg)
+
+	// Create passive transport BEFORE Start() so the callback is wired.
+	passiveTransport := mux.PassiveTransport()
+
+	if err := mux.Start(ctx); err != nil {
+		return nil, fmt.Errorf("start multiplexer: %w", err)
+	}
+
+	log.Printf("adapter-direct: connected to %s/%s", network, address)
+
+	// Configure gateway transports.
+	cfg.Transport = mux.ActiveTransport()
+	cfg.PassiveTransport = passiveTransport
+
+	// Override protocol to ENH for gateway's internal transport handling
+	// (the mux handles the actual adapter protocol internally).
+	cfg.TransportConfig.Protocol = ebusgateway.TransportENH
+
+	return mux.Close, nil
 }
 
 func startHTTPServer(

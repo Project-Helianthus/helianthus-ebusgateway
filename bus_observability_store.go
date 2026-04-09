@@ -346,6 +346,10 @@ func (store *BusObservabilityStore) AttachReconstructor(ctx context.Context, rec
 		ctx = context.Background()
 	}
 
+	if store.cfg.LocalAddressSnapshotter != nil {
+		reconstructor.SetLocalAddressSnapshotter(store.cfg.LocalAddressSnapshotter)
+	}
+
 	store.mu.Lock()
 	if store.ctx != nil {
 		store.mu.Unlock()
@@ -1705,7 +1709,7 @@ func classifyPassiveAbandon(reason PassiveAbandonReason) (string, string) {
 		return "corrupted_target", "request"
 	case PassiveAbandonReasonNoResponse, PassiveAbandonReasonNoProgress, PassiveAbandonReasonDisconnected, PassiveAbandonReasonShutdown:
 		return "timeout", "terminal"
-	case PassiveAbandonReasonScanTimeout, PassiveAbandonReasonScanCollision, PassiveAbandonReasonArbitrationFragment:
+	case PassiveAbandonReasonScanTimeout, PassiveAbandonReasonScanCollision, PassiveAbandonReasonArbitrationFragment, PassiveAbandonReasonSelfEcho:
 		return "", "" // expected behavior — not an error
 	default:
 		return "abandoned", "terminal"

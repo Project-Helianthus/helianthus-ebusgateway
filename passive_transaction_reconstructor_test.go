@@ -197,6 +197,113 @@ func TestPassiveTransactionReconstructor_ReadTimeoutHonorsWatchdog(t *testing.T)
 	}
 }
 
+type testLocalSnapshotter struct {
+	address byte
+	known   bool
+}
+
+func (s testLocalSnapshotter) LocalAddressSnapshot() LocalAddressSnapshot {
+	return LocalAddressSnapshot{Address: s.address, Known: s.known}
+}
+
+func TestReconstructorSelfEchoOnParseFailure(t *testing.T) {
+	t.Parallel()
+
+	reconstructor := newPassiveTransactionReconstructorCore(DefaultConfig())
+	reconstructor.SetLocalAddressSnapshotter(testLocalSnapshotter{address: 0x71, known: true})
+	subscription, err := reconstructor.Subscribe("test", PassiveSubscriberCritical, 8)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	// Build a raw request that starts with local address 0x71 but has invalid CRC.
+	// Format: [source=0x71, target=0x08, primary=0xB5, secondary=0x09, dataLen=1, data=0x01, badCRC=0xFF]
+	raw := []byte{0x71, 0x08, 0xB5, 0x09, 0x01, 0x01, 0xFF}
+	payload := append(raw, protocol.SymbolSyn)
+	feedPassiveSymbols(reconstructor, time.Unix(0, 0), payload)
+
+	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventAbandonedTransaction)
+	if event.AbandonReason != PassiveAbandonReasonSelfEcho {
+		t.Fatalf("abandon reason = %q; want %q", event.AbandonReason, PassiveAbandonReasonSelfEcho)
+	}
+}
+
+func TestReconstructorNoSelfEchoForThirdParty(t *testing.T) {
+	t.Parallel()
+
+	reconstructor := newPassiveTransactionReconstructorCore(DefaultConfig())
+	reconstructor.SetLocalAddressSnapshotter(testLocalSnapshotter{address: 0x71, known: true})
+	subscription, err := reconstructor.Subscribe("test", PassiveSubscriberCritical, 8)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	// Build a raw request that starts with third-party address 0x31 (ebusd) with invalid CRC.
+	raw := []byte{0x31, 0x08, 0xB5, 0x09, 0x01, 0x01, 0xFF}
+	payload := append(raw, protocol.SymbolSyn)
+	feedPassiveSymbols(reconstructor, time.Unix(0, 0), payload)
+
+	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventAbandonedTransaction)
+	if event.AbandonReason != PassiveAbandonReasonCorruptedRequest {
+		t.Fatalf("abandon reason = %q; want %q", event.AbandonReason, PassiveAbandonReasonCorruptedRequest)
+	}
+}
+
+func TestReconstructorSelfEchoACKPhase(t *testing.T) {
+	t.Parallel()
+
+	reconstructor := newPassiveTransactionReconstructorCore(DefaultConfig())
+	reconstructor.SetLocalAddressSnapshotter(testLocalSnapshotter{address: 0x71, known: true})
+	subscription, err := reconstructor.Subscribe("test", PassiveSubscriberCritical, 8)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	// Build a valid frame from our local address, then send SYN during ACK wait
+	// (simulating a collision where the slave never ACKs our request).
+	request := protocol.Frame{
+		Source:    0x71,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{0x01},
+	}
+	// frameBytes includes the trailing SYN which transitions to ACK wait phase.
+	// Then send another SYN to trigger the unexpected_syn/self_echo path.
+	payload := append(frameBytes(request), protocol.SymbolSyn)
+	feedPassiveSymbols(reconstructor, time.Unix(0, 0), payload)
+
+	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventAbandonedTransaction)
+	if event.AbandonReason != PassiveAbandonReasonSelfEcho {
+		t.Fatalf("abandon reason = %q; want %q", event.AbandonReason, PassiveAbandonReasonSelfEcho)
+	}
+}
+
+func TestReconstructorSelfEchoNotTriggeredWithoutSnapshotter(t *testing.T) {
+	t.Parallel()
+
+	reconstructor := newPassiveTransactionReconstructorCore(DefaultConfig())
+	// No snapshotter set — isSelfOriginatedRaw returns false even if source matches.
+	subscription, err := reconstructor.Subscribe("test", PassiveSubscriberCritical, 8)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	raw := []byte{0x71, 0x08, 0xB5, 0x09, 0x01, 0x01, 0xFF}
+	payload := append(raw, protocol.SymbolSyn)
+	feedPassiveSymbols(reconstructor, time.Unix(0, 0), payload)
+
+	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventAbandonedTransaction)
+	if event.AbandonReason != PassiveAbandonReasonCorruptedRequest {
+		t.Fatalf("abandon reason = %q; want %q (no snapshotter, should fall through to corrupted_request)",
+			event.AbandonReason, PassiveAbandonReasonCorruptedRequest)
+	}
+}
+
 func feedPassiveSymbols(reconstructor *PassiveTransactionReconstructor, start time.Time, symbols []byte) {
 	for index, symbol := range symbols {
 		reconstructor.OnPassiveTapEvent(PassiveTapEvent{

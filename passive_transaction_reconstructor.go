@@ -62,6 +62,7 @@ const (
 	PassiveAbandonReasonScanTimeout         PassiveAbandonReason = "scan_timeout"
 	PassiveAbandonReasonScanCollision       PassiveAbandonReason = "scan_collision"
 	PassiveAbandonReasonArbitrationFragment PassiveAbandonReason = "arbitration_fragment"
+	PassiveAbandonReasonSelfEcho            PassiveAbandonReason = "self_echo"
 )
 
 type PassiveTimingMarkers struct {
@@ -152,6 +153,7 @@ type PassiveTransactionReconstructor struct {
 	stateMu               sync.Mutex
 	state                 passiveTransactionState
 	pendingRecoveryReason string
+	localAddrSnapshotter  LocalBusAddressSnapshotter
 
 	subscribersMu sync.Mutex
 	subscribers   map[uint64]*PassiveClassifiedSubscription
@@ -412,7 +414,11 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 		reconstructor.state.requestRaw = append(reconstructor.state.requestRaw, symbol)
 		reconstructor.state.lastProgressAt = observedAt
 		if len(reconstructor.state.requestRaw) > maxPassiveRequestBytes {
-			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedRequest, observedAt, ebuserrors.ErrInvalidPayload))
+			reason := PassiveAbandonReasonCorruptedRequest
+			if reconstructor.isSelfOriginatedRaw() {
+				reason = PassiveAbandonReasonSelfEcho
+			}
+			events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
 			reconstructor.state.phase = passivePhaseAbandoned
 		}
 		return events
@@ -426,6 +432,8 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 		reason := PassiveAbandonReasonCorruptedRequest
 		if len(reconstructor.state.requestRaw) <= 3 {
 			reason = PassiveAbandonReasonArbitrationFragment
+		} else if reconstructor.isSelfOriginatedRaw() {
+			reason = PassiveAbandonReasonSelfEcho
 		} else if isScanProbeRaw(reconstructor.state.requestRaw) {
 			reason = PassiveAbandonReasonScanCollision
 		}
@@ -484,6 +492,43 @@ func (reconstructor *PassiveTransactionReconstructor) isScanTimeoutLocked() bool
 		reconstructor.state.request.Secondary == 0x04
 }
 
+// SetLocalAddressSnapshotter provides the reconstructor with a way to query the
+// gateway's local bus address.  The snapshotter is queried dynamically so the
+// local address can be discovered at runtime (e.g. during the startup scan).
+// Must be called before AttachReconstructor or at least before passive symbols
+// start arriving; it is protected by stateMu.
+func (reconstructor *PassiveTransactionReconstructor) SetLocalAddressSnapshotter(snapshotter LocalBusAddressSnapshotter) {
+	if reconstructor == nil {
+		return
+	}
+	reconstructor.stateMu.Lock()
+	defer reconstructor.stateMu.Unlock()
+	reconstructor.localAddrSnapshotter = snapshotter
+}
+
+// isSelfOriginatedRaw returns true when the raw request bytes begin with
+// the gateway's own bus address.  Self-originated frames that fail parsing
+// are collision artifacts from our own active traffic — the active path
+// already holds the correct result.
+func (reconstructor *PassiveTransactionReconstructor) isSelfOriginatedRaw() bool {
+	if reconstructor.localAddrSnapshotter == nil || len(reconstructor.state.requestRaw) < 1 {
+		return false
+	}
+	snapshot := reconstructor.localAddrSnapshotter.LocalAddressSnapshot()
+	return snapshot.Known && reconstructor.state.requestRaw[0] == snapshot.Address
+}
+
+// isSelfOriginatedParsed returns true when the successfully parsed request
+// frame source matches the gateway's own bus address.  Used in post-parse
+// phases (ACK wait) where the frame parsed but subsequent protocol steps fail.
+func (reconstructor *PassiveTransactionReconstructor) isSelfOriginatedParsed() bool {
+	if reconstructor.localAddrSnapshotter == nil {
+		return false
+	}
+	snapshot := reconstructor.localAddrSnapshotter.LocalAddressSnapshot()
+	return snapshot.Known && reconstructor.state.request.Source == snapshot.Address
+}
+
 func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
 	switch symbol {
 	case protocol.SymbolAck:
@@ -504,6 +549,8 @@ func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(even
 	case protocol.SymbolSyn:
 		if reconstructor.isScanTimeoutLocked() {
 			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonScanTimeout, observedAt, ebuserrors.ErrTimeout))
+		} else if reconstructor.isSelfOriginatedParsed() {
+			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonSelfEcho, observedAt, ebuserrors.ErrTimeout))
 		} else {
 			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
 			reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)

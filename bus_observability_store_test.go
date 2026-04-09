@@ -1491,3 +1491,40 @@ func TestSpecimenConcurrentReadWrite(t *testing.T) {
 		t.Fatal("ProtocolSpecimens empty after concurrent writes")
 	}
 }
+
+func TestSelfEchoClassifiedAsNonError(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	store.OnPassiveClassifiedEvent(PassiveClassifiedEvent{
+		Kind:          PassiveClassifiedEventAbandonedTransaction,
+		AbandonReason: PassiveAbandonReasonSelfEcho,
+		ObservedAt:    base.Add(10 * time.Second),
+	})
+
+	metrics := store.RenderPrometheus()
+	if strings.Contains(metrics, `class="corrupted_request"`) {
+		t.Fatalf("self_echo misclassified as corrupted_request:\n%s", metrics)
+	}
+	if strings.Contains(metrics, `class="self_echo"`) {
+		t.Fatalf("self_echo should not appear as error class:\n%s", metrics)
+	}
+}
+
+func TestSelfEchoDoesNotMaskThirdPartyCorruption(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	store.OnPassiveClassifiedEvent(PassiveClassifiedEvent{
+		Kind:          PassiveClassifiedEventAbandonedTransaction,
+		AbandonReason: PassiveAbandonReasonCorruptedRequest,
+		ObservedAt:    base.Add(10 * time.Second),
+	})
+
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `class="corrupted_request"`) {
+		t.Fatalf("third-party corrupted_request should be counted as error:\n%s", metrics)
+	}
+}

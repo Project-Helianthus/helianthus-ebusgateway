@@ -2008,7 +2008,7 @@ func TestPrepareSemanticReadWatch_UsesObserverDescriptorFreshness(t *testing.T) 
 	}
 }
 
-func TestPrepareSemanticReadWatchRuntime_MissingDescriptorB524DiscoveryEmitsAmbiguous(t *testing.T) {
+func TestPrepareSemanticReadWatchRuntime_FallbackDescriptorB524DiscoveryBucketsCorrectly(t *testing.T) {
 	t.Parallel()
 
 	cfg := ebusgateway.DefaultConfig()
@@ -2033,11 +2033,13 @@ func TestPrepareSemanticReadWatchRuntime_MissingDescriptorB524DiscoveryEmitsAmbi
 	})
 
 	metrics := store.RenderPrometheus()
-	if !strings.Contains(metrics, `ambiguous_total{family="B524",reason="missing_runtime_descriptor"} 1`) {
-		t.Fatalf("RenderPrometheus missing missing_runtime_descriptor ambiguity for descriptor-less B524 discovery key:\n%s", metrics)
+	// The fallback descriptor provides a valid key + freshness profile, so
+	// the event is bucketed correctly even without runtime observer evidence.
+	if strings.Contains(metrics, `ambiguous_total{family="B524",reason="missing_runtime_descriptor"}`) {
+		t.Fatalf("RenderPrometheus incorrectly classified fallback-descriptor B524 read as ambiguous:\n%s", metrics)
 	}
-	if strings.Contains(metrics, `active_read_saved_seconds{family="B524"`) {
-		t.Fatalf("RenderPrometheus unexpectedly bucketed descriptor-less B524 discovery read:\n%s", metrics)
+	if !strings.Contains(metrics, `passive_hits_total{family="B524",freshness_profile="state_fast"} 0`) {
+		t.Fatalf("RenderPrometheus missing bucketed B524 state_fast entry:\n%s", metrics)
 	}
 }
 

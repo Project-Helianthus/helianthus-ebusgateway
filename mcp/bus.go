@@ -109,15 +109,17 @@ type BusReconstructorAggregate struct {
 }
 
 type BusSummary struct {
-	LastUpdatedAt *time.Time                 `json:"last_updated_at,omitempty"`
-	Status        *BusObservabilityStatus    `json:"status,omitempty"`
-	Messages      BusBoundedListSummary      `json:"messages"`
-	Periodicity   BusBoundedListSummary      `json:"periodicity"`
-	Counters      BusObservabilityCounters   `json:"counters"`
-	Errors        []BusErrorAggregate        `json:"errors,omitempty"`
-	Frames        []BusFrameAggregate        `json:"frames,omitempty"`
-	Busy          *BusBusyAggregate          `json:"busy,omitempty"`
-	Reconstructor *BusReconstructorAggregate `json:"reconstructor,omitempty"`
+	LastUpdatedAt    *time.Time                 `json:"last_updated_at,omitempty"`
+	Status           *BusObservabilityStatus    `json:"status,omitempty"`
+	Messages         BusBoundedListSummary      `json:"messages"`
+	Periodicity      BusBoundedListSummary      `json:"periodicity"`
+	Counters         BusObservabilityCounters   `json:"counters"`
+	Errors           []BusErrorAggregate        `json:"errors,omitempty"`
+	Frames           []BusFrameAggregate        `json:"frames,omitempty"`
+	Busy             *BusBusyAggregate          `json:"busy,omitempty"`
+	Reconstructor    *BusReconstructorAggregate `json:"reconstructor,omitempty"`
+	SpecimenFamilies int                        `json:"specimen_families"`
+	SpecimenCount    int                        `json:"specimen_count"`
 }
 
 type BusMessage struct {
@@ -167,8 +169,29 @@ type BusPeriodicityList struct {
 	Items    []BusPeriodicityEntry   `json:"items,omitempty"`
 }
 
+type BusProtocolSpecimen struct {
+	Family      string `json:"family"`
+	Source      string `json:"source"`
+	Target      string `json:"target"`
+	FrameType   string `json:"frame_type"`
+	RequestHex  string `json:"request_hex"`
+	ResponseHex string `json:"response_hex,omitempty"`
+	RequestLen  int    `json:"request_len"`
+	ResponseLen int    `json:"response_len"`
+	Outcome     string `json:"outcome"`
+	FirstSeenAt string `json:"first_seen_at"`
+	LastSeenAt  string `json:"last_seen_at"`
+	Count       uint64 `json:"count"`
+}
+
+type ProtocolSpecimenList struct {
+	Items []BusProtocolSpecimen `json:"items,omitempty"`
+	Count int                   `json:"count"`
+}
+
 type BusObservabilityProvider interface {
 	Snapshot() BusObservabilitySnapshot
+	ProtocolSpecimens(family string) []BusProtocolSpecimen
 }
 
 func cloneBusObservabilitySnapshot(source BusObservabilitySnapshot) BusObservabilitySnapshot {

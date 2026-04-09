@@ -1,6 +1,7 @@
 package ebusgateway
 
 import (
+	"encoding/hex"
 	"sort"
 	"time"
 )
@@ -105,15 +106,32 @@ type BusReconstructorAggregate struct {
 }
 
 type BusObservabilitySummary struct {
-	LastUpdatedAt *time.Time                  `json:"last_updated_at,omitempty"`
-	Status        BusObservabilityStatus      `json:"status"`
-	Messages      BusObservabilityBoundedList `json:"messages"`
-	Periodicity   BusObservabilityBoundedList `json:"periodicity"`
-	Counters      BusObservabilityCounters    `json:"counters"`
-	Errors        []BusErrorAggregate         `json:"errors,omitempty"`
-	Frames        []BusFrameAggregate         `json:"frames,omitempty"`
-	Busy          *BusBusyAggregate           `json:"busy,omitempty"`
-	Reconstructor *BusReconstructorAggregate  `json:"reconstructor,omitempty"`
+	LastUpdatedAt    *time.Time                  `json:"last_updated_at,omitempty"`
+	Status           BusObservabilityStatus      `json:"status"`
+	Messages         BusObservabilityBoundedList `json:"messages"`
+	Periodicity      BusObservabilityBoundedList `json:"periodicity"`
+	Counters         BusObservabilityCounters    `json:"counters"`
+	Errors           []BusErrorAggregate         `json:"errors,omitempty"`
+	Frames           []BusFrameAggregate         `json:"frames,omitempty"`
+	Busy             *BusBusyAggregate           `json:"busy,omitempty"`
+	Reconstructor    *BusReconstructorAggregate  `json:"reconstructor,omitempty"`
+	SpecimenFamilies int                         `json:"specimen_families"`
+	SpecimenCount    int                         `json:"specimen_count"`
+}
+
+type ProtocolSpecimenExport struct {
+	Family      string    `json:"family"`
+	Source      byte      `json:"source"`
+	Target      byte      `json:"target"`
+	FrameType   string    `json:"frame_type"`
+	RequestHex  string    `json:"request_hex"`
+	ResponseHex string    `json:"response_hex,omitempty"`
+	RequestLen  int       `json:"request_len"`
+	ResponseLen int       `json:"response_len"`
+	Outcome     string    `json:"outcome"`
+	FirstSeenAt time.Time `json:"first_seen_at"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+	Count       uint64    `json:"count"`
 }
 
 type BusObservabilitySnapshot struct {
@@ -249,10 +267,12 @@ func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus Passi
 			SeriesBudgetOverflowTotal:      store.seriesBudgetOverflowTotal,
 			PeriodicityBudgetOverflowTotal: store.periodicityOverflowTotal,
 		},
-		Errors:        store.errorsSnapshotLocked(),
-		Frames:        store.framesSnapshotLocked(),
-		Busy:          store.busySnapshotLocked(now),
-		Reconstructor: reconstructorAggregateFromSnapshot(reconstructor),
+		Errors:           store.errorsSnapshotLocked(),
+		Frames:           store.framesSnapshotLocked(),
+		Busy:             store.busySnapshotLocked(now),
+		Reconstructor:    reconstructorAggregateFromSnapshot(reconstructor),
+		SpecimenFamilies: store.specimenFamilyCountLocked(),
+		SpecimenCount:    store.specimenTotalCountLocked(),
 	}
 }
 
@@ -353,6 +373,69 @@ func cloneBusObservabilityStartup(source *BusObservabilityStartup) *BusObservabi
 	out := *source
 	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
 	return &out
+}
+
+func (store *BusObservabilityStore) specimenFamilyCountLocked() int {
+	return len(store.specimens)
+}
+
+func (store *BusObservabilityStore) specimenTotalCountLocked() int {
+	total := 0
+	for _, bucket := range store.specimens {
+		total += bucket.length
+	}
+	return total
+}
+
+func (store *BusObservabilityStore) ProtocolSpecimens(family string) []ProtocolSpecimenExport {
+	if store == nil {
+		return nil
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	const maxResults = 100
+	var items []ProtocolSpecimenExport
+
+	for fam, bucket := range store.specimens {
+		if family != "" && fam != family {
+			continue
+		}
+		for i := 0; i < bucket.length; i++ {
+			idx := (bucket.start + i) % specimenMaxPerFamily
+			entry := &bucket.entries[idx]
+			items = append(items, ProtocolSpecimenExport{
+				Family:      entry.Family,
+				Source:      entry.Source,
+				Target:      entry.Target,
+				FrameType:   entry.FrameType,
+				RequestHex:  hex.EncodeToString(entry.RequestData),
+				ResponseHex: hex.EncodeToString(entry.ResponseData),
+				RequestLen:  entry.RequestLen,
+				ResponseLen: entry.ResponseLen,
+				Outcome:     entry.Outcome,
+				FirstSeenAt: entry.FirstSeenAt,
+				LastSeenAt:  entry.LastSeenAt,
+				Count:       entry.Count,
+			})
+		}
+	}
+
+	// Sort by LastSeenAt descending.
+	sort.Slice(items, func(i, j int) bool {
+		if !items[i].LastSeenAt.Equal(items[j].LastSeenAt) {
+			return items[i].LastSeenAt.After(items[j].LastSeenAt)
+		}
+		if items[i].Family != items[j].Family {
+			return items[i].Family < items[j].Family
+		}
+		return items[i].RequestHex < items[j].RequestHex
+	})
+
+	if len(items) > maxResults {
+		items = items[:maxResults]
+	}
+	return items
 }
 
 func (store *BusObservabilityStore) lastUpdatedAtPtrLocked() *time.Time {

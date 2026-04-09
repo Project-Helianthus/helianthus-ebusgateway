@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -50,6 +51,14 @@ func (adapter mcpBusObservabilityProviderAdapter) Snapshot() mcp.BusObservabilit
 	}
 }
 
+func (adapter mcpBusObservabilityProviderAdapter) ProtocolSpecimens(family string) []mcp.BusProtocolSpecimen {
+	if adapter.store == nil {
+		return nil
+	}
+	exports := adapter.store.ProtocolSpecimens(family)
+	return mapMCPProtocolSpecimens(exports)
+}
+
 func mapGraphQLBusSummary(summary ebusgateway.BusObservabilitySummary) *graphql.BusSummary {
 	out := &graphql.BusSummary{
 		LastUpdatedAt: cloneTimePtr(summary.LastUpdatedAt),
@@ -71,6 +80,8 @@ func mapGraphQLBusSummary(summary ebusgateway.BusObservabilitySummary) *graphql.
 	out.Frames = mapGraphQLBusFrames(summary.Frames)
 	out.Busy = mapGraphQLBusBusy(summary.Busy)
 	out.Reconstructor = mapGraphQLBusReconstructor(summary.Reconstructor)
+	out.SpecimenFamilies = summary.SpecimenFamilies
+	out.SpecimenCount = summary.SpecimenCount
 	return out
 }
 
@@ -165,7 +176,33 @@ func mapMCPBusSummary(summary ebusgateway.BusObservabilitySummary) *mcp.BusSumma
 	out.Frames = mapMCPBusFrames(summary.Frames)
 	out.Busy = mapMCPBusBusy(summary.Busy)
 	out.Reconstructor = mapMCPBusReconstructor(summary.Reconstructor)
+	out.SpecimenFamilies = summary.SpecimenFamilies
+	out.SpecimenCount = summary.SpecimenCount
 	return out
+}
+
+func mapMCPProtocolSpecimens(exports []ebusgateway.ProtocolSpecimenExport) []mcp.BusProtocolSpecimen {
+	if len(exports) == 0 {
+		return nil
+	}
+	items := make([]mcp.BusProtocolSpecimen, len(exports))
+	for i, e := range exports {
+		items[i] = mcp.BusProtocolSpecimen{
+			Family:      e.Family,
+			Source:      fmt.Sprintf("0x%02x", e.Source),
+			Target:      fmt.Sprintf("0x%02x", e.Target),
+			FrameType:   e.FrameType,
+			RequestHex:  e.RequestHex,
+			ResponseHex: e.ResponseHex,
+			RequestLen:  e.RequestLen,
+			ResponseLen: e.ResponseLen,
+			Outcome:     e.Outcome,
+			FirstSeenAt: timestampString(e.FirstSeenAt),
+			LastSeenAt:  timestampString(e.LastSeenAt),
+			Count:       e.Count,
+		}
+	}
+	return items
 }
 
 func mapMCPBusErrors(errors []ebusgateway.BusErrorAggregate) []mcp.BusErrorAggregate {

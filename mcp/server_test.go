@@ -169,6 +169,10 @@ func (p *testBusObservabilityProvider) Snapshot() BusObservabilitySnapshot {
 	return cloneBusObservabilitySnapshot(p.snapshot)
 }
 
+func (p *testBusObservabilityProvider) ProtocolSpecimens(family string) []BusProtocolSpecimen {
+	return nil
+}
+
 type testWatchSummaryProvider struct {
 	summary WatchSummary
 }

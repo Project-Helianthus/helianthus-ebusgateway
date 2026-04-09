@@ -60,6 +60,7 @@ const (
 	PassiveAbandonReasonAmbiguousRetransmit PassiveAbandonReason = "ambiguous_retransmission"
 	PassiveAbandonReasonShutdown            PassiveAbandonReason = "shutdown"
 	PassiveAbandonReasonScanTimeout         PassiveAbandonReason = "scan_timeout"
+	PassiveAbandonReasonScanCollision       PassiveAbandonReason = "scan_collision"
 	PassiveAbandonReasonArbitrationFragment PassiveAbandonReason = "arbitration_fragment"
 )
 
@@ -425,6 +426,8 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 		reason := PassiveAbandonReasonCorruptedRequest
 		if len(reconstructor.state.requestRaw) <= 3 {
 			reason = PassiveAbandonReasonArbitrationFragment
+		} else if isScanProbeRaw(reconstructor.state.requestRaw) {
+			reason = PassiveAbandonReasonScanCollision
 		}
 		events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
 		reconstructor.resetStateLocked()
@@ -463,6 +466,13 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 		reconstructor.resetStateLocked()
 	}
 	return events
+}
+
+// isScanProbeRaw checks raw request bytes for a 0704 device identity query
+// without requiring a full frame parse.  Used to reclassify collision-garbled
+// scan probes as scan_collision instead of corrupted_request.
+func isScanProbeRaw(raw []byte) bool {
+	return len(raw) >= 4 && raw[2] == 0x07 && raw[3] == 0x04
 }
 
 // isScanTimeoutLocked returns true when the pending request is a device

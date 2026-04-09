@@ -432,6 +432,7 @@ const (
 	toolBusSummaryGetName            = "ebus.v1.bus.summary.get"
 	toolBusMessagesListName          = "ebus.v1.bus.messages.list"
 	toolBusPeriodicityListName       = "ebus.v1.bus.periodicity.list"
+	toolBusProtocolSpecimensListName = "ebus.v1.bus.protocol_specimens.list"
 	toolWatchSummaryGetName          = "ebus.v1.watch.summary.get"
 	toolSemanticZonesGetName         = "ebus.v1.semantic.zones.get"
 	toolSemanticCircuitsGetName      = "ebus.v1.semantic.circuits.get"
@@ -635,6 +636,18 @@ func busObservabilityTools() []Tool {
 				"properties": map[string]any{
 					"limit":       map[string]any{"type": "integer", "minimum": 1},
 					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolBusProtocolSpecimensListName,
+			Description: "List protocol specimen entries captured from passively observed eBUS frames for protocol families the gateway does not implement.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"family": map[string]any{"type": "string"},
+					"limit":  map[string]any{"type": "integer", "minimum": 1},
 				},
 				"additionalProperties": false,
 			},
@@ -1291,6 +1304,15 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(nil, err, consistency)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotBusPeriodicityList(snapshot, limit), nil, consistency)), false), nil
+	case toolBusProtocolSpecimensListName:
+		// Specimens are an append-only observability ring buffer — snapshot
+		// consistency does not apply.  Always return live data.
+		limit, err := parseOptionalLimit(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		family := parseOptionalFamily(call.Arguments)
+		return callToolResultText(mustJSON(newToolEnvelope(s.snapshotProtocolSpecimens(family, limit), nil)), false), nil
 	case toolWatchSummaryGetName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -1652,6 +1674,21 @@ func parseOptionalLimit(args map[string]any) (int, error) {
 	default:
 		return 0, fmt.Errorf("invalid limit: %w", ebuserrors.ErrInvalidPayload)
 	}
+}
+
+func parseOptionalFamily(args map[string]any) string {
+	if args == nil {
+		return ""
+	}
+	raw, ok := args["family"]
+	if !ok || raw == nil {
+		return ""
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	return s
 }
 
 func parseTimeProgramSlot(m map[string]any, tempRequired bool) (TimeProgramSlot, error) {
@@ -2515,6 +2552,20 @@ func (s *Server) snapshotBusObservability(snapshot *snapshotState) BusObservabil
 
 func (s *Server) snapshotBusSummary(snapshot *snapshotState) *BusSummary {
 	return s.snapshotBusObservability(snapshot).Summary
+}
+
+func (s *Server) snapshotProtocolSpecimens(family string, limit int) *ProtocolSpecimenList {
+	if s == nil || s.bus == nil {
+		return &ProtocolSpecimenList{}
+	}
+	items := s.bus.ProtocolSpecimens(family)
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return &ProtocolSpecimenList{
+		Items: items,
+		Count: len(items),
+	}
 }
 
 func (s *Server) snapshotBusMessagesList(snapshot *snapshotState, limit int) *BusMessagesList {

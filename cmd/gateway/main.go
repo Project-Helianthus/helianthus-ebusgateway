@@ -584,9 +584,11 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	if muxCfg.DialTimeout == 0 {
 		muxCfg.DialTimeout = 5 * time.Second
 	}
-	if muxCfg.ReadTimeout == 0 {
-		muxCfg.ReadTimeout = 5 * time.Second
-	}
+	// Mux read timeout controls how often the idle-timeout branch runs
+	// (tryGrantAndStart). Keep it short so START grants are not delayed
+	// on a quiet bus. This does not affect bus transaction timing — the
+	// gateway's own transport read timeout handles that on the active path.
+	muxCfg.ReadTimeout = 200 * time.Millisecond
 	if muxCfg.WriteTimeout == 0 {
 		muxCfg.WriteTimeout = 5 * time.Second
 	}

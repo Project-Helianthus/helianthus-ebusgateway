@@ -58,6 +58,7 @@ const (
 	sessionFrameFailed                            // ENHResFailed
 	sessionFrameResetted                          // ENHResResetted
 	sessionFrameErrorEBUS                         // ENHResErrorEBUS
+	sessionFrameInfo                              // ENHResInfo(byte)
 )
 
 // AddSession registers an external TCP connection as an ENH session.
@@ -325,11 +326,12 @@ func (s *session) handleInfo(id byte) {
 		return
 	}
 
-	// Deliver INFO response bytes.
-	if len(data) > 1 {
-		s.mux.logger.Printf("adaptermux: session %d INFO response truncated: %d bytes to 1", s.id, len(data))
+	// Deliver INFO response: length prefix + data bytes, each as
+	// sessionFrameInfo so writeLoop encodes them as ENHResInfo frames.
+	s.deliverInfo(byte(len(data)))
+	for _, b := range data {
+		s.deliverInfo(b)
 	}
-	s.deliverReceived(data[0])
 }
 
 // deliverError sends an ENHResErrorEBUS to the client.
@@ -342,6 +344,18 @@ func (s *session) deliverError() {
 	default:
 		s.mux.logger.Printf("adaptermux: session %d send buffer full, unable to deliver error", s.id)
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal on error delivery
+	}
+}
+
+// deliverInfo enqueues an ENHResInfo byte for the session.
+func (s *session) deliverInfo(b byte) {
+	if s.closed.Load() {
+		return
+	}
+	select {
+	case s.sendCh <- sessionFrame{kind: sessionFrameInfo, payload: b}:
+	default:
+		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
 	}
 }
 
@@ -395,6 +409,10 @@ func (s *session) writeFrame(frame sessionFrame) error {
 
 	case sessionFrameErrorEBUS:
 		encoded := transport.EncodeENH(transport.ENHResErrorEBUS, 0x00)
+		buf = encoded[:]
+
+	case sessionFrameInfo:
+		encoded := transport.EncodeENH(transport.ENHResInfo, frame.payload)
 		buf = encoded[:]
 	}
 

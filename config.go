@@ -58,6 +58,7 @@ type WatchObserver interface {
 type Config struct {
 	Transport              transport.RawTransport
 	PassiveTransport       transport.RawTransport // pre-configured passive transport (adapter-direct mode)
+	ProxyListenAddr        string                 // TCP listen address for ENH proxy clients (empty disables)
 	TransportConfig        TransportConfig
 	BusConfig              protocol.BusConfig
 	QueueCapacity          int

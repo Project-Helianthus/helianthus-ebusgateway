@@ -99,6 +99,12 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		}()
 	}
 
+	// Warn if --proxy-listen is set but adapter-direct transport was not
+	// activated (the proxy endpoint requires the adapter multiplexer).
+	if cfg.ProxyListenAddr != "" && cfg.Transport == nil {
+		log.Printf("warning: --proxy-listen requires adapter-direct transport; proxy endpoint not started")
+	}
+
 	busObservability, deduplicator, err := wireObserveFirstObserversFn(&cfg)
 	if err != nil {
 		return err
@@ -488,6 +494,8 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		return nil
 	})
 
+	fs.StringVar(&cfg.ProxyListenAddr, "proxy-listen", cfg.ProxyListenAddr, "TCP listen address for ENH proxy clients (e.g. :19001, empty disables)")
+
 	fs.Func("source-addr", "source address for scans/semantic reads (e.g. 0xf0, 0x00, or auto)", func(value string) error {
 		value = strings.TrimSpace(strings.ToLower(value))
 		if value == "" {
@@ -573,6 +581,18 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	}
 
 	log.Printf("adapter-direct: connected to %s/%s", network, address)
+
+	// Start proxy listener if configured (exposes ENH endpoint for
+	// external clients like ebusd). Context-managed: closes when ctx
+	// cancels, so no explicit closer needed.
+	if cfg.ProxyListenAddr != "" {
+		pl, err := adaptermux.NewProxyListener(ctx, mux, cfg.ProxyListenAddr, log.Default())
+		if err != nil {
+			mux.Close()
+			return nil, fmt.Errorf("proxy listener: %w", err)
+		}
+		log.Printf("adapter-direct: proxy listener on %s", pl.Addr())
+	}
 
 	// Configure gateway transports.
 	cfg.Transport = mux.ActiveTransport()

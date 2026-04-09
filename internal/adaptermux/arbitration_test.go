@@ -263,12 +263,111 @@ func TestArbitrator_GrantFailureReleasesOwnership(t *testing.T) {
 	}
 
 	// Simulate adapter START failure — caller notifies with granted=false.
-	notify <- startResult{granted: false}
+	notify <- startResult{granted: false, initiator: 0x31}
 
 	select {
 	case result := <-ch:
 		if result.granted {
 			t.Fatal("should not be granted after START failure")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+// --- Fix 1: startResult carries initiator ---
+
+func TestArbitrator_StartResultCarriesInitiator(t *testing.T) {
+	arb := newArbitrator()
+
+	ch := arb.requestStart(1, 0x31)
+
+	_, initiator, notify, granted := arb.tryGrant()
+	if !granted {
+		t.Fatal("expected grant")
+	}
+	if initiator != 0x31 {
+		t.Fatalf("tryGrant initiator = 0x%02x, want 0x31", initiator)
+	}
+
+	notify <- startResult{granted: true, initiator: initiator}
+
+	select {
+	case result := <-ch:
+		if !result.granted {
+			t.Fatal("expected granted=true")
+		}
+		if result.initiator != 0x31 {
+			t.Fatalf("result.initiator = 0x%02x, want 0x31", result.initiator)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestArbitrator_CancelCarriesInitiator(t *testing.T) {
+	arb := newArbitrator()
+
+	ch := arb.requestStart(1, 0x31)
+	arb.cancelStart(1)
+
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("cancelled request should not be granted")
+		}
+		if result.initiator != 0x31 {
+			t.Fatalf("cancel result.initiator = 0x%02x, want 0x31", result.initiator)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestArbitrator_FailAllPendingCarriesInitiator(t *testing.T) {
+	arb := newArbitrator()
+
+	gwCh := arb.requestStart(gatewaySessionID, 0x71)
+	extCh := arb.requestStart(1, 0x31)
+
+	arb.failAllPending(nil)
+
+	select {
+	case result := <-gwCh:
+		if result.initiator != 0x71 {
+			t.Fatalf("gateway result.initiator = 0x%02x, want 0x71", result.initiator)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+
+	select {
+	case result := <-extCh:
+		if result.initiator != 0x31 {
+			t.Fatalf("external result.initiator = 0x%02x, want 0x31", result.initiator)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestArbitrator_DuplicateReplaceCarriesInitiator(t *testing.T) {
+	arb := newArbitrator()
+
+	// First gateway request.
+	ch1 := arb.requestStart(gatewaySessionID, 0x71)
+
+	// Second gateway request replaces the first.
+	_ = arb.requestStart(gatewaySessionID, 0x72)
+
+	// First should be cancelled with its own initiator.
+	select {
+	case result := <-ch1:
+		if result.granted {
+			t.Fatal("first request should be cancelled")
+		}
+		if result.initiator != 0x71 {
+			t.Fatalf("replaced result.initiator = 0x%02x, want 0x71", result.initiator)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout")

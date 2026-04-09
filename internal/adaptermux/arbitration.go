@@ -43,8 +43,9 @@ type startRequest struct {
 
 // startResult is the outcome of a START arbitration request.
 type startResult struct {
-	granted bool
-	err     error
+	granted   bool
+	initiator byte // initiator byte for STARTED/FAILED payload fidelity
+	err       error
 }
 
 // gatewaySessionID is the reserved session ID for the gateway's
@@ -77,14 +78,14 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 	if sessionID == gatewaySessionID {
 		// Cancel any existing gateway request.
 		if a.pendingGateway != nil {
-			a.pendingGateway.notify <- startResult{granted: false}
+			a.pendingGateway.notify <- startResult{granted: false, initiator: a.pendingGateway.initiator}
 		}
 		a.pendingGateway = req
 	} else {
 		// Remove any existing request from this session.
 		for i, existing := range a.pendingExternal {
 			if existing.sessionID == sessionID {
-				existing.notify <- startResult{granted: false}
+				existing.notify <- startResult{granted: false, initiator: existing.initiator}
 				a.pendingExternal = append(a.pendingExternal[:i], a.pendingExternal[i+1:]...)
 				break
 			}
@@ -103,7 +104,7 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 
 	if sessionID == gatewaySessionID {
 		if a.pendingGateway != nil {
-			a.pendingGateway.notify <- startResult{granted: false}
+			a.pendingGateway.notify <- startResult{granted: false, initiator: a.pendingGateway.initiator}
 			a.pendingGateway = nil
 			return true
 		}
@@ -112,7 +113,7 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 
 	for i, req := range a.pendingExternal {
 		if req.sessionID == sessionID {
-			req.notify <- startResult{granted: false}
+			req.notify <- startResult{granted: false, initiator: req.initiator}
 			a.pendingExternal = append(a.pendingExternal[:i], a.pendingExternal[i+1:]...)
 			return true
 		}
@@ -216,12 +217,12 @@ func (a *arbitrator) failAllPending(err error) {
 	defer a.mu.Unlock()
 
 	if a.pendingGateway != nil {
-		a.pendingGateway.notify <- startResult{granted: false, err: err}
+		a.pendingGateway.notify <- startResult{granted: false, initiator: a.pendingGateway.initiator, err: err}
 		a.pendingGateway = nil
 	}
 
 	for _, req := range a.pendingExternal {
-		req.notify <- startResult{granted: false, err: err}
+		req.notify <- startResult{granted: false, initiator: req.initiator, err: err}
 	}
 	a.pendingExternal = a.pendingExternal[:0]
 }

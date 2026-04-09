@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -58,6 +59,7 @@ const (
 	sessionFrameFailed                            // ENHResFailed
 	sessionFrameResetted                          // ENHResResetted
 	sessionFrameErrorEBUS                         // ENHResErrorEBUS
+	sessionFrameErrorHost                         // ENHResErrorHost
 	sessionFrameInfo                              // ENHResInfo(byte)
 )
 
@@ -140,36 +142,39 @@ func (s *session) deliverReceived(symbol byte) {
 }
 
 // deliverReset enqueues an ENHResResetted for the session.
-func (s *session) deliverReset() {
+// payload carries the features byte for INIT negotiation fidelity.
+func (s *session) deliverReset(payload byte) {
 	if s.closed.Load() {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameResetted}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameResetted, payload: payload}:
 	default:
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
 	}
 }
 
 // deliverStarted notifies the session that its START was granted.
-func (s *session) deliverStarted() {
+// payload carries the initiator byte for ENH protocol fidelity.
+func (s *session) deliverStarted(payload byte) {
 	if s.closed.Load() {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameStarted}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameStarted, payload: payload}:
 	default:
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
 	}
 }
 
 // deliverFailed notifies the session that its START failed.
-func (s *session) deliverFailed() {
+// payload carries the initiator byte for ENH protocol fidelity.
+func (s *session) deliverFailed(payload byte) {
 	if s.closed.Load() {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameFailed}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameFailed, payload: payload}:
 	default:
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
 	}
@@ -235,8 +240,8 @@ func (s *session) handleMessage(msg transport.ENHMessage) {
 // handleSend processes a SEND command from the client.
 func (s *session) handleSend(data byte) {
 	if !s.mux.arb.isOwner(s.id) {
-		// Session is not bus owner — reject.
-		s.deliverError()
+		// Session is not bus owner — host-side error, not bus error.
+		s.deliverErrorHost()
 		return
 	}
 
@@ -263,6 +268,13 @@ func (s *session) handleSend(data byte) {
 
 // handleStart processes a START command from the client.
 func (s *session) handleStart(initiator byte) {
+	// START with SYN (0xAA) is a cancel request — the client is
+	// withdrawing its pending START without acquiring the bus.
+	if initiator == protocol.SymbolSyn {
+		s.mux.arb.cancelStart(s.id)
+		return
+	}
+
 	ch := s.mux.arb.requestStart(s.id, initiator)
 
 	// Wait for arbitration result in a tracked goroutine.
@@ -275,9 +287,9 @@ func (s *session) handleStart(initiator byte) {
 				return
 			}
 			if result.granted {
-				s.deliverStarted()
+				s.deliverStarted(result.initiator)
 			} else {
-				s.deliverFailed()
+				s.deliverFailed(result.initiator)
 			}
 		case <-s.done:
 			return
@@ -285,15 +297,21 @@ func (s *session) handleStart(initiator byte) {
 			if s.closed.Load() {
 				return
 			}
-			s.deliverFailed()
+			s.deliverFailed(initiator)
 		}
 	}()
 }
 
 // handleInit processes an INIT command from the client.
 func (s *session) handleInit(features byte) {
-	// Respond with RESETTED to complete the handshake.
-	s.deliverReset()
+	// Reply with the features negotiated with the upstream adapter.
+	// If upstream features are unknown (e.g. ENS transport without
+	// INIT), echo back what the client requested.
+	stored := byte(s.mux.upstreamFeatures.Load())
+	if stored == 0 {
+		stored = features
+	}
+	s.deliverReset(stored)
 }
 
 // handleInfo processes an INFO request from the client.
@@ -303,14 +321,14 @@ func (s *session) handleInfo(id byte) {
 	s.mux.connMu.Unlock()
 
 	if tr == nil {
-		s.deliverError()
+		s.deliverErrorHost()
 		return
 	}
 
 	infoReq, ok := tr.(transport.InfoRequester)
 	if !ok {
 		s.mux.logger.Printf("adaptermux: session %d INFO requested but transport does not support it", s.id)
-		s.deliverError()
+		s.deliverErrorHost()
 		return
 	}
 
@@ -343,6 +361,20 @@ func (s *session) deliverError() {
 	case s.sendCh <- sessionFrame{kind: sessionFrameErrorEBUS}:
 	default:
 		s.mux.logger.Printf("adaptermux: session %d send buffer full, unable to deliver error", s.id)
+		go s.mux.RemoveSession(s.id) // goroutine: overflow removal on error delivery
+	}
+}
+
+// deliverErrorHost sends an ENHResErrorHost to the client.
+// Used for host-side errors (e.g. not bus owner, no transport).
+func (s *session) deliverErrorHost() {
+	if s.closed.Load() {
+		return
+	}
+	select {
+	case s.sendCh <- sessionFrame{kind: sessionFrameErrorHost}:
+	default:
+		s.mux.logger.Printf("adaptermux: session %d send buffer full, unable to deliver host error", s.id)
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal on error delivery
 	}
 }
@@ -396,19 +428,23 @@ func (s *session) writeFrame(frame sessionFrame) error {
 		}
 
 	case sessionFrameStarted:
-		encoded := transport.EncodeENH(transport.ENHResStarted, 0x00)
+		encoded := transport.EncodeENH(transport.ENHResStarted, frame.payload)
 		buf = encoded[:]
 
 	case sessionFrameFailed:
-		encoded := transport.EncodeENH(transport.ENHResFailed, 0x00)
+		encoded := transport.EncodeENH(transport.ENHResFailed, frame.payload)
 		buf = encoded[:]
 
 	case sessionFrameResetted:
-		encoded := transport.EncodeENH(transport.ENHResResetted, 0x00)
+		encoded := transport.EncodeENH(transport.ENHResResetted, frame.payload)
 		buf = encoded[:]
 
 	case sessionFrameErrorEBUS:
 		encoded := transport.EncodeENH(transport.ENHResErrorEBUS, 0x00)
+		buf = encoded[:]
+
+	case sessionFrameErrorHost:
+		encoded := transport.EncodeENH(transport.ENHResErrorHost, 0x00)
 		buf = encoded[:]
 
 	case sessionFrameInfo:

@@ -621,20 +621,19 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	cfg.Transport = mux.ActiveTransport()
 	cfg.PassiveTransport = passiveTransport
 
-	// Do NOT return mux.Close here. The gateway owns the lifecycle
-	// through cfg.Transport.Close() (activeTransport.Close calls
-	// mux.Close). Returning mux.Close would cause a double-close at
-	// shutdown: gateway.Close -> transport.Close -> mux.Close, then
-	// the deferred closer -> mux.Close again.
-	//
-	// However, the proxy listener is a separate resource not owned by
-	// the gateway. If run() fails after wireAdapterDirect returns but
-	// before context cancellation, the listener would leak. Return its
-	// Close so the caller can defer it.
-	if proxyListener != nil {
-		return proxyListener.Close, nil
+	// Return a closer that cleans up both the proxy listener (if any)
+	// and the mux itself. This covers early run() failures where
+	// gateway.Close() never runs (and thus activeTransport.Close
+	// never calls mux.Close). On normal shutdown the gateway's
+	// transport.Close calls mux.Close first — that is safe because
+	// mux.Close is idempotent (sync.Once guarded).
+	closer := func() error {
+		if proxyListener != nil {
+			proxyListener.Close()
+		}
+		return mux.Close()
 	}
-	return nil, nil
+	return closer, nil
 }
 
 func startHTTPServer(

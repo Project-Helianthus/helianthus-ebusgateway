@@ -103,9 +103,10 @@ type Mux struct {
 	logger *log.Logger
 
 	// Adapter connection (guarded by connMu for reconnection).
-	connMu   sync.Mutex
-	conn     net.Conn
-	upstream transport.RawTransport
+	connMu           sync.Mutex
+	conn             net.Conn
+	upstream         transport.RawTransport
+	upstreamFeatures atomic.Uint32 // features byte from upstream INIT handshake
 
 	// Multiplexer state (guarded by stateMu).
 	stateMu  sync.Mutex
@@ -134,9 +135,11 @@ type Mux struct {
 	passiveCallback func(PassiveEvent)
 
 	// Lifecycle.
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // sendRequest is a request from the active path or an external session
@@ -187,39 +190,41 @@ func (m *Mux) Start(ctx context.Context) error {
 }
 
 // Close shuts down the multiplexer and releases all resources.
+// Safe to call multiple times — subsequent calls return the first error.
 func (m *Mux) Close() error {
-	if m.cancel != nil {
-		m.cancel()
-	}
+	m.closeOnce.Do(func() {
+		if m.cancel != nil {
+			m.cancel()
+		}
 
-	// Fail all pending arbitration requests.
-	m.arb.failAllPending(errors.New("adaptermux: closed"))
+		// Fail all pending arbitration requests.
+		m.arb.failAllPending(errors.New("adaptermux: closed"))
 
-	// Collect sessions under lock, close outside lock to avoid holding
-	// sessionsMu during potentially blocking session.close() (5s timeout).
-	m.sessionsMu.Lock()
-	toClose := make([]*session, 0, len(m.sessions))
-	for id, sess := range m.sessions {
-		toClose = append(toClose, sess)
-		delete(m.sessions, id)
-	}
-	m.sessionsMu.Unlock()
+		// Collect sessions under lock, close outside lock to avoid holding
+		// sessionsMu during potentially blocking session.close() (5s timeout).
+		m.sessionsMu.Lock()
+		toClose := make([]*session, 0, len(m.sessions))
+		for id, sess := range m.sessions {
+			toClose = append(toClose, sess)
+			delete(m.sessions, id)
+		}
+		m.sessionsMu.Unlock()
 
-	for _, sess := range toClose {
-		m.arb.removeSession(sess.id)
-		sess.close()
-	}
+		for _, sess := range toClose {
+			m.arb.removeSession(sess.id)
+			sess.close()
+		}
 
-	// Close adapter connection.
-	m.connMu.Lock()
-	var closeErr error
-	if m.conn != nil {
-		closeErr = m.conn.Close()
-	}
-	m.connMu.Unlock()
+		// Close adapter connection.
+		m.connMu.Lock()
+		if m.conn != nil {
+			m.closeErr = m.conn.Close()
+		}
+		m.connMu.Unlock()
 
-	m.wg.Wait()
-	return closeErr
+		m.wg.Wait()
+	})
+	return m.closeErr
 }
 
 // ActiveTransport returns a RawTransport for the gateway's active path.
@@ -279,11 +284,17 @@ func (m *Mux) connect() error {
 	m.upstream = tr
 
 	// Perform INIT handshake — fatal if transport implements Init.
+	// Store the negotiated features byte for session INIT replies.
+	// ENHTransport.Init returns error only — the upstream's actual
+	// features byte is not exposed. Store the requested value (0x01)
+	// as the best-effort fallback.
+	const requestedFeatures byte = 0x01
 	if initer, ok := tr.(interface{ Init(byte) error }); ok {
-		if err := initer.Init(0x01); err != nil {
+		if err := initer.Init(requestedFeatures); err != nil {
 			_ = conn.Close()
 			return fmt.Errorf("adaptermux: INIT handshake failed: %w", err)
 		}
+		m.upstreamFeatures.Store(uint32(requestedFeatures))
 	}
 
 	return nil
@@ -681,13 +692,13 @@ func (m *Mux) tryGrantAndStart() {
 			m.arb.releaseOwnership(sessionID)
 			// Notify requester of failure AFTER adapter START failed
 			// (Codex P1: no premature grant notification).
-			notify <- startResult{granted: false, err: err}
+			notify <- startResult{granted: false, initiator: initiator, err: err}
 			return
 		}
 	}
 
 	// Notify requester of success AFTER adapter START succeeded.
-	notify <- startResult{granted: true}
+	notify <- startResult{granted: true, initiator: initiator}
 }
 
 // sendLoop processes send requests from the active path and external sessions.
@@ -807,12 +818,13 @@ func (m *Mux) deliverSYNToSessions(now time.Time) {
 }
 
 // broadcastResetToSessions sends a RESETTED event to all external sessions.
+// Uses 0x00 payload — reset broadcasts are boundary markers, not INIT replies.
 func (m *Mux) broadcastResetToSessions() {
 	m.sessionsMu.Lock()
 	defer m.sessionsMu.Unlock()
 
 	for _, sess := range m.sessions {
-		sess.deliverReset()
+		sess.deliverReset(0x00)
 	}
 }
 

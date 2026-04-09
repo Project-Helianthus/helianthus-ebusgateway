@@ -503,3 +503,126 @@ func TestBroadcastReset_ConcurrentFeatureUpdate(t *testing.T) {
 		t.Fatal("expected at least one broadcast to be received")
 	}
 }
+
+// --- Codex P2 #3060135587: SEND error classification (host vs bus) ---
+
+// TestSession_SendErrorFromDoSend_HostErrors verifies that when doSend
+// returns a host-side error (ownership lost between pre-check and
+// sendLoop, or adapter disconnected), handleSend delivers ErrorHost
+// instead of ErrorEBUS.
+func TestSession_SendErrorFromDoSend_NotConnected(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Build a mux with injected nil transport to trigger errNotConnected.
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+	mux.ctx, mux.cancel = ctx, cancel
+
+	// Start the sendLoop goroutine (normally done by Start).
+	mux.wg.Add(1)
+	go mux.sendLoop()
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	id := mux.AddSession(server)
+	if id == 0 {
+		t.Fatal("AddSession returned 0 unexpectedly")
+	}
+	defer mux.RemoveSession(id)
+
+	// Grant ownership to this session so it passes the pre-check.
+	ch := mux.arb.requestStart(id, 0x31)
+	_, _, notify, granted := mux.arb.tryGrant()
+	if !granted {
+		t.Fatal("expected grant")
+	}
+	notify <- startResult{granted: true, initiator: 0x31}
+	<-ch // drain the result
+
+	// upstream is nil (never connected) -- doSend will return errNotConnected.
+	// Send a SEND command.
+	sendReq := transport.EncodeENH(transport.ENHReqSend, 0x42)
+	if _, err := client.Write(sendReq[:]); err != nil {
+		t.Fatalf("write SEND: %v", err)
+	}
+
+	// Read the error response.
+	frame := readENHFrame(t, client, 2*time.Second)
+
+	// Must be ErrorHost, not ErrorEBUS.
+	expectedHost := transport.EncodeENH(transport.ENHResErrorHost, 0x00)
+	expectedBus := transport.EncodeENH(transport.ENHResErrorEBUS, 0x00)
+
+	if frame == expectedBus {
+		t.Fatal("SEND with nil transport returned ErrorEBUS — should be ErrorHost")
+	}
+	if frame != expectedHost {
+		t.Fatalf("SEND error frame = %x, want %x (ErrorHost)", frame, expectedHost)
+	}
+}
+
+// --- Codex P2 #3060135596: AddSession rejects after mux shutdown ---
+
+// TestAddSession_RejectsAfterShutdown verifies that AddSession returns 0
+// and closes the connection when the mux context is cancelled.
+func TestAddSession_RejectsAfterShutdown(t *testing.T) {
+	mux, cancel, cleanup := newTestMux(t)
+	defer cleanup()
+
+	// Cancel the mux context to simulate shutdown.
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	id := mux.AddSession(server)
+	if id != 0 {
+		t.Fatalf("AddSession returned %d after shutdown, want 0", id)
+	}
+
+	// The server-side conn should be closed by AddSession.
+	// Verify by attempting to write — should fail.
+	_, err := server.Write([]byte{0x42})
+	if err == nil {
+		t.Fatal("expected write to closed conn to fail, but it succeeded")
+	}
+
+	// No sessions should be registered.
+	mux.sessionsMu.Lock()
+	count := len(mux.sessions)
+	mux.sessionsMu.Unlock()
+	if count != 0 {
+		t.Fatalf("expected 0 sessions after shutdown rejection, got %d", count)
+	}
+}
+
+// TestAddSession_AcceptsBeforeShutdown verifies normal operation —
+// AddSession returns a non-zero ID when the mux is running.
+func TestAddSession_AcceptsBeforeShutdown(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	id := mux.AddSession(server)
+	if id == 0 {
+		t.Fatal("AddSession returned 0 on a running mux")
+	}
+	defer mux.RemoveSession(id)
+
+	// Session should be registered.
+	mux.sessionsMu.Lock()
+	_, ok := mux.sessions[id]
+	mux.sessionsMu.Unlock()
+	if !ok {
+		t.Fatalf("session %d not found in sessions map", id)
+	}
+}

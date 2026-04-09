@@ -160,6 +160,15 @@ type activeEvent struct {
 	err  error // valid when kind == activeEventError
 }
 
+// Sentinel errors returned by doSend for error classification.
+// Host-side errors (ownership, connectivity) are distinct from bus
+// errors (adapter write failures) so callers can deliver the correct
+// ENH response code (ENHResErrorHost vs ENHResErrorEBUS).
+var (
+	errNotBusOwner = errors.New("adaptermux: session is not bus owner")
+	errNotConnected = errors.New("adaptermux: not connected")
+)
+
 // sendRequest is a request from the active path or an external session
 // to send a byte to the adapter.
 type sendRequest struct {
@@ -771,7 +780,7 @@ func (m *Mux) sendLoop() {
 // doSend writes a byte to the adapter for the given session.
 func (m *Mux) doSend(sessionID uint64, data byte) error {
 	if !m.arb.isOwner(sessionID) {
-		return errors.New("adaptermux: session is not bus owner")
+		return errNotBusOwner
 	}
 
 	m.connMu.Lock()
@@ -779,7 +788,7 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 	m.connMu.Unlock()
 
 	if tr == nil {
-		return errors.New("adaptermux: not connected")
+		return errNotConnected
 	}
 
 	// Record echo expectation.

@@ -1512,7 +1512,7 @@ func TestSelfEchoClassifiedAsNonError(t *testing.T) {
 	}
 }
 
-func TestSelfEchoDoesNotMaskThirdPartyCorruption(t *testing.T) {
+func TestPassiveCorruptedRequestIsNonError(t *testing.T) {
 	store := specimenPassiveStore()
 	base := time.Now().UTC()
 	store.now = func() time.Time { return base.Add(10 * time.Second) }
@@ -1524,7 +1524,9 @@ func TestSelfEchoDoesNotMaskThirdPartyCorruption(t *testing.T) {
 	})
 
 	metrics := store.RenderPrometheus()
-	if !strings.Contains(metrics, `class="corrupted_request"`) {
-		t.Fatalf("third-party corrupted_request should be counted as error:\n%s", metrics)
+	// CRC failure on passive observation is normal bus contention, not a
+	// software error.  The error counter must NOT be incremented.
+	if strings.Contains(metrics, `class="corrupted_request"`) {
+		t.Fatalf("passive corrupted_request should not be counted as error:\n%s", metrics)
 	}
 }

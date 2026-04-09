@@ -1697,20 +1697,22 @@ func classifyPassiveAbandon(reason PassiveAbandonReason) (string, string) {
 		return "nack", "ack"
 	case PassiveAbandonReasonCRCMismatch:
 		return "crc_mismatch", "response"
-	case PassiveAbandonReasonUnexpectedSYN:
-		return "unexpected_syn", "request"
 	case PassiveAbandonReasonTransportReset:
 		return "transport_reset", "terminal"
 	case PassiveAbandonReasonDecodeFault:
 		return "decode_fault", "request"
-	case PassiveAbandonReasonCorruptedRequest:
-		return "corrupted_request", "request"
-	case PassiveAbandonReasonCorruptedTarget:
-		return "corrupted_target", "request"
 	case PassiveAbandonReasonNoResponse, PassiveAbandonReasonNoProgress, PassiveAbandonReasonDisconnected, PassiveAbandonReasonShutdown:
 		return "timeout", "terminal"
-	case PassiveAbandonReasonScanTimeout, PassiveAbandonReasonScanCollision, PassiveAbandonReasonArbitrationFragment, PassiveAbandonReasonSelfEcho:
-		return "", "" // expected behavior — not an error
+	case PassiveAbandonReasonCorruptedRequest, PassiveAbandonReasonCorruptedTarget,
+		PassiveAbandonReasonUnexpectedSYN, PassiveAbandonReasonUnexpectedSymbol,
+		PassiveAbandonReasonScanTimeout, PassiveAbandonReasonScanCollision,
+		PassiveAbandonReasonArbitrationFragment, PassiveAbandonReasonSelfEcho,
+		PassiveAbandonReasonAmbiguousRetransmit:
+		// Bus contention artifacts: CRC failures, arbitration noise, and
+		// reconstructor desync are normal on a multi-master passive tap.
+		// The CRC check correctly identifies invalid frames — that is not
+		// a software error, it is the bus operating as designed.
+		return "", ""
 	default:
 		return "abandoned", "terminal"
 	}

@@ -578,10 +578,6 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	cfg.Transport = mux.ActiveTransport()
 	cfg.PassiveTransport = passiveTransport
 
-	// Override protocol to ENH for gateway's internal transport handling
-	// (the mux handles the actual adapter protocol internally).
-	cfg.TransportConfig.Protocol = ebusgateway.TransportENH
-
 	return mux.Close, nil
 }
 

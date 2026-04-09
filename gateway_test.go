@@ -504,6 +504,30 @@ func TestPassiveTransportSupported(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name: "pre-wired passive transport overrides heuristic",
+			cfg: Config{
+				PassiveTransport: transport.NewLoopback(),
+				TransportConfig: TransportConfig{
+					Protocol: TransportENH,
+					Network:  "tcp",
+					Address:  "192.168.100.2:9999",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "pre-wired passive transport overrides ebusd-tcp",
+			cfg: Config{
+				PassiveTransport: transport.NewLoopback(),
+				TransportConfig: TransportConfig{
+					Protocol: TransportEbusdTCP,
+					Network:  "tcp",
+					Address:  "127.0.0.1:8888",
+				},
+			},
+			want: true,
+		},
 	}
 
 	for _, test := range tests {

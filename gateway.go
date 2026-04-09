@@ -226,6 +226,13 @@ func passiveTransportUnavailableReason(cfg Config) string {
 }
 
 func PassiveTransportSupported(cfg Config) bool {
+	// Adapter-direct mode pre-wires PassiveTransport before the gateway
+	// is constructed.  When it is already set the transport is known to
+	// be functional — skip heuristic endpoint classification which would
+	// misclassify the raw adapter address as unsupported.
+	if cfg.PassiveTransport != nil {
+		return true
+	}
 	return passiveTransportUnavailableReason(cfg) == ""
 }
 

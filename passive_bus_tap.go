@@ -255,13 +255,22 @@ func (tap *PassiveBusTap) connect(ctx context.Context) error {
 	tap.status.ConnectAttemptCount++
 	tap.statusMu.Unlock()
 
-	tr, err := resolvePassiveTransport(ctx, tap.cfg)
-	if err != nil {
-		tap.statusMu.Lock()
-		tap.status.ConnectFailureCount++
-		tap.status.LastError = err.Error()
-		tap.statusMu.Unlock()
-		return err
+	var tr transport.RawTransport
+	var err error
+
+	if tap.cfg.PassiveTransport != nil {
+		// Adapter-direct mode: use pre-configured passive transport
+		// from the multiplexer (symbols are already logical, no dial needed).
+		tr = tap.cfg.PassiveTransport
+	} else {
+		tr, err = resolvePassiveTransport(ctx, tap.cfg)
+		if err != nil {
+			tap.statusMu.Lock()
+			tap.status.ConnectFailureCount++
+			tap.status.LastError = err.Error()
+			tap.statusMu.Unlock()
+			return err
+		}
 	}
 	if tap.wrap != nil {
 		tr = tap.wrap(tr)
@@ -419,6 +428,10 @@ func readPassiveTransportEvent(tr transport.RawTransport) (transport.StreamEvent
 }
 
 func passiveTapEnforcesAbsenceDisconnect(cfg Config) bool {
+	// Adapter-direct mode: multiplexer handles reconnection internally.
+	if cfg.PassiveTransport != nil {
+		return false
+	}
 	return !passiveTapUsesProxyLikeObserverTransport(cfg)
 }
 
@@ -427,6 +440,11 @@ func passiveTapDecodesWireEscapes(cfg Config) bool {
 }
 
 func passiveTapObserverStreamAlreadyLogical(cfg Config) bool {
+	// Adapter-direct mode: multiplexer delivers logical bytes
+	// (post-ENH-decode), no escape decoding needed.
+	if cfg.PassiveTransport != nil {
+		return true
+	}
 	if passiveTapUsesProxyLikeObserverTransport(cfg) {
 		return true
 	}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
@@ -82,6 +83,26 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	if len(cfg.Providers) == 0 {
 		cfg.Providers = vaillantproviders.Default()
+	}
+
+	// Wire adapter-direct mode: create multiplexer, configure active
+	// and passive transports before gateway construction.
+	adapterMuxCloser, err := wireAdapterDirect(ctx, &cfg)
+	if err != nil {
+		return fmt.Errorf("adapter-direct: %w", err)
+	}
+	if adapterMuxCloser != nil {
+		defer func() {
+			if err := adapterMuxCloser(); err != nil {
+				log.Printf("adapter-direct close: %v", err)
+			}
+		}()
+	}
+
+	// Warn if --proxy-listen is set but adapter-direct transport was not
+	// activated (the proxy endpoint requires the adapter multiplexer).
+	if cfg.ProxyListenAddr != "" && cfg.Transport == nil {
+		log.Printf("warning: --proxy-listen requires adapter-direct transport; proxy endpoint not started")
 	}
 
 	busObservability, deduplicator, err := wireObserveFirstObserversFn(&cfg)
@@ -473,6 +494,8 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		return nil
 	})
 
+	fs.StringVar(&cfg.ProxyListenAddr, "proxy-listen", cfg.ProxyListenAddr, "TCP listen address for ENH proxy clients (e.g. :19001, empty disables)")
+
 	fs.Func("source-addr", "source address for scans/semantic reads (e.g. 0xf0, 0x00, or auto)", func(value string) error {
 		value = strings.TrimSpace(strings.ToLower(value))
 		if value == "" {
@@ -491,6 +514,126 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		cfg.ScanSourceAuto = cfg.ScanSource == 0x00
 		return nil
 	})
+}
+
+// wireAdapterDirect creates and starts the adapter multiplexer if the
+// transport protocol is adapter-direct. It configures both active and
+// passive transports in cfg before gateway construction.
+//
+// Returns a closer function for the multiplexer, or nil if not in
+// adapter-direct mode.
+func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() error, error) {
+	network := cfg.TransportConfig.Network
+	address := cfg.TransportConfig.Address
+
+	// Detect adapter-direct:// or adapter-direct-ens:// URI scheme in
+	// the address field. When the user passes
+	// --address=adapter-direct://host:port the protocol flag is still
+	// the default ("enh") because parseTransportEndpoint runs later
+	// inside ebusgateway.New.
+	const (
+		schemePrefix    = "adapter-direct://"
+		schemePrefixENS = "adapter-direct-ens://"
+	)
+	addrLower := strings.ToLower(address)
+	uriIsENS := strings.HasPrefix(addrLower, schemePrefixENS)
+	uriIsStd := strings.HasPrefix(addrLower, schemePrefix)
+	if !strings.EqualFold(string(cfg.TransportConfig.Protocol), string(ebusgateway.TransportAdapterDirect)) {
+		if !uriIsStd && !uriIsENS {
+			return nil, nil
+		}
+	}
+
+	// Always strip the scheme prefix if present, regardless of which
+	// detection branch was taken. Without this, net.Dial receives
+	// "adapter-direct://host:port" as the address and fails.
+	if uriIsENS {
+		address = address[len(schemePrefixENS):]
+		network = "tcp"
+	} else if uriIsStd {
+		address = address[len(schemePrefix):]
+		// The URI form implies TCP — force it unconditionally since
+		// the default TransportConfig.Network is "unix" and would
+		// cause net.Dial("unix", "host:port") to fail.
+		network = "tcp"
+	} else if network == "" || (network == "unix" && strings.Contains(address, ":")) {
+		// Explicit --transport adapter-direct path: if network is
+		// still the default "unix" but address looks like host:port,
+		// force TCP to avoid net.Dial("unix", "host:port") failures.
+		network = "tcp"
+	}
+	if address == "" {
+		return nil, fmt.Errorf("adapter-direct requires an address (e.g. adapter-direct://boiler.local:9999)")
+	}
+
+	// Determine ENH vs ENS sub-protocol. ENH is the default.
+	// The adapter-direct-ens:// URI scheme selects ENS explicitly.
+	adapterProtocol := "enh"
+	if uriIsENS {
+		adapterProtocol = "ens"
+	}
+
+	muxCfg := adaptermux.Config{
+		Protocol:     adapterProtocol,
+		Network:      network,
+		Address:      address,
+		DialTimeout:  cfg.TransportConfig.DialTimeout,
+		ReadTimeout:  cfg.TransportConfig.ReadTimeout,
+		WriteTimeout: cfg.TransportConfig.WriteTimeout,
+	}
+	if muxCfg.DialTimeout == 0 {
+		muxCfg.DialTimeout = 5 * time.Second
+	}
+	// Mux read timeout controls how often the idle-timeout branch runs
+	// (tryGrantAndStart). Keep it short so START grants are not delayed
+	// on a quiet bus. This does not affect bus transaction timing — the
+	// gateway's own transport read timeout handles that on the active path.
+	muxCfg.ReadTimeout = 200 * time.Millisecond
+	if muxCfg.WriteTimeout == 0 {
+		muxCfg.WriteTimeout = 5 * time.Second
+	}
+
+	mux := adaptermux.New(muxCfg)
+
+	// Create passive transport BEFORE Start() so the callback is wired.
+	passiveTransport := mux.PassiveTransport()
+
+	if err := mux.Start(ctx); err != nil {
+		return nil, fmt.Errorf("start multiplexer: %w", err)
+	}
+
+	log.Printf("adapter-direct: connected to %s/%s", network, address)
+
+	// Start proxy listener if configured (exposes ENH endpoint for
+	// external clients like ebusd).
+	var proxyListener *adaptermux.ProxyListener
+	if cfg.ProxyListenAddr != "" {
+		pl, err := adaptermux.NewProxyListener(ctx, mux, cfg.ProxyListenAddr, log.Default())
+		if err != nil {
+			mux.Close()
+			return nil, fmt.Errorf("proxy listener: %w", err)
+		}
+		proxyListener = pl
+		log.Printf("adapter-direct: proxy listener on %s", pl.Addr())
+	}
+
+	// Configure gateway transports.
+	cfg.Transport = mux.ActiveTransport()
+	cfg.PassiveTransport = passiveTransport
+
+	// Return a closer that cleans up both the proxy listener (if any)
+	// and the mux itself. This covers early run() failures where
+	// gateway.Close() never runs (and thus activeTransport.Close
+	// never calls mux.Close). On normal shutdown the gateway's
+	// transport.Close calls mux.Close first — that is safe because
+	// mux.Close is idempotent (sync.Once guarded).
+	closer := func() error {
+		if proxyListener != nil {
+			proxyListener.Close()
+		}
+		return mux.Close()
+	}
+	return closer, nil
 }
 
 func startHTTPServer(

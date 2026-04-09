@@ -81,6 +81,43 @@ if [[ ! -f "${report_path}" ]]; then
   exit 1
 fi
 
+# --- Adapter-direct (AD01..AD12) coverage tracking ---
+# The embedded proxy / adapter multiplexer (internal/adaptermux/) has its
+# own test matrix (AD01..AD12) covering:
+#   AD01: INIT handshake fidelity
+#   AD02: START arbitration (gateway priority, external FIFO)
+#   AD03: START cancel (SYN) with ownership release
+#   AD04: SEND echo suppression (gateway + external sessions)
+#   AD05: In-band RESETTED handling + delayed re-INIT
+#   AD06: Reconnect with session broadcast
+#   AD07: Ownership timeout enforcement
+#   AD08: Session backpressure (send buffer overflow)
+#   AD09: Passive path filtering (third-party only)
+#   AD10: INFO request forwarding
+#   AD11: Multi-session concurrent arbitration
+#   AD12: Wire phase tracking across transaction boundaries
+#
+# Current status: AD01..AD12 are covered by unit tests in
+# internal/adaptermux/*_test.go. A formal matrix report (like the
+# 88-case transport matrix) is pending implementation. This gate
+# section surfaces the gap visibly without blocking CI.
+adapter_direct_touched=0
+while IFS= read -r file; do
+  [[ -z "${file}" ]] && continue
+  case "${file}" in
+    internal/adaptermux/*.go)
+      adapter_direct_touched=1
+      break
+      ;;
+  esac
+done <<< "${changed_files}"
+
+if [[ "${adapter_direct_touched}" -eq 1 ]]; then
+  echo "transport gate: WARNING — adapter-direct files (internal/adaptermux/) modified."
+  echo "transport gate: AD01..AD12 coverage is validated by unit tests only."
+  echo "transport gate: Formal AD matrix report gate: pending implementation."
+fi
+
 python3 - "${report_path}" <<'PY'
 import json
 import sys

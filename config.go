@@ -15,11 +15,12 @@ import (
 type TransportProtocol string
 
 const (
-	TransportENH      TransportProtocol = "enh"
-	TransportENS      TransportProtocol = "ens"
-	TransportUDPPlain TransportProtocol = "udp-plain"
-	TransportTCPPlain TransportProtocol = "tcp-plain"
-	TransportEbusdTCP TransportProtocol = "ebusd-tcp"
+	TransportENH           TransportProtocol = "enh"
+	TransportENS           TransportProtocol = "ens"
+	TransportUDPPlain      TransportProtocol = "udp-plain"
+	TransportTCPPlain      TransportProtocol = "tcp-plain"
+	TransportEbusdTCP      TransportProtocol = "ebusd-tcp"
+	TransportAdapterDirect TransportProtocol = "adapter-direct"
 
 	DefaultSemanticZonePresenceMissThreshold = 3
 	DefaultSemanticZonePresenceHitThreshold  = 2
@@ -56,6 +57,8 @@ type WatchObserver interface {
 
 type Config struct {
 	Transport              transport.RawTransport
+	PassiveTransport       transport.RawTransport // pre-configured passive transport (adapter-direct mode)
+	ProxyListenAddr        string                 // TCP listen address for ENH proxy clients (empty disables)
 	TransportConfig        TransportConfig
 	BusConfig              protocol.BusConfig
 	QueueCapacity          int

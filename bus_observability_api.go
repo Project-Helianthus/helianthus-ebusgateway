@@ -434,6 +434,9 @@ func (store *BusObservabilityStore) ProtocolSpecimens(family string) []ProtocolS
 		if items[i].Target != items[j].Target {
 			return items[i].Target < items[j].Target
 		}
+		if items[i].FrameType != items[j].FrameType {
+			return items[i].FrameType < items[j].FrameType
+		}
 		if items[i].Outcome != items[j].Outcome {
 			return items[i].Outcome < items[j].Outcome
 		}

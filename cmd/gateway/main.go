@@ -515,12 +515,26 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 // Returns a closer function for the multiplexer, or nil if not in
 // adapter-direct mode.
 func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() error, error) {
-	if cfg.TransportConfig.Protocol != ebusgateway.TransportAdapterDirect {
-		return nil, nil
-	}
-
 	network := cfg.TransportConfig.Network
 	address := cfg.TransportConfig.Address
+
+	// Detect adapter-direct:// URI scheme in the address field.
+	// When the user passes --address=adapter-direct://host:port the
+	// protocol flag is still the default ("enh") because
+	// parseTransportEndpoint runs later inside ebusgateway.New.
+	const schemePrefix = "adapter-direct://"
+	if cfg.TransportConfig.Protocol != ebusgateway.TransportAdapterDirect {
+		if strings.HasPrefix(strings.ToLower(address), schemePrefix) {
+			// Strip the scheme prefix, preserving original casing
+			// in the host:port portion.
+			address = address[len(schemePrefix):]
+			if network == "" {
+				network = "tcp"
+			}
+		} else {
+			return nil, nil
+		}
+	}
 	if network == "" {
 		network = "tcp"
 	}

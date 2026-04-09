@@ -263,7 +263,7 @@ func TestReconstructorSelfEchoACKPhase(t *testing.T) {
 	defer subscription.Close()
 
 	// Build a valid frame from our local address, then send SYN during ACK wait
-	// (simulating a collision where the slave never ACKs our request).
+	// (simulating a collision where the target never ACKs our request).
 	request := protocol.Frame{
 		Source:    0x71,
 		Target:    0x08,

@@ -515,7 +515,7 @@ func (store *BusObservabilityStore) observeWatchReadLocked(event WatchEfficiency
 		observedAt = store.now()
 	}
 
-	bucket, reason, include := resolveWatchEfficiencyBucket(event.Key, event.Descriptor, event.HasDescriptor)
+	bucket, reason, include := resolveWatchEfficiencyBucket(event.Key, event.Descriptor)
 	if reason != "" {
 		family := familyForAmbiguous(event.Key, event.Descriptor)
 		store.watchEfficiency.ambiguous[watchEfficiencyAmbiguousKey{
@@ -569,7 +569,7 @@ func (store *BusObservabilityStore) observeWatchDirectApplyLocked(event WatchEff
 		store.watchEfficiency.directApplyCandidatesEvaluatedTotal++
 	}
 
-	bucket, reason, include := resolveWatchEfficiencyBucket(event.Key, event.Descriptor, event.HasDescriptor)
+	bucket, reason, include := resolveWatchEfficiencyBucket(event.Key, event.Descriptor)
 	if reason != "" {
 		family := familyForAmbiguous(event.Key, event.Descriptor)
 		store.watchEfficiency.ambiguous[watchEfficiencyAmbiguousKey{
@@ -1582,8 +1582,12 @@ func isImplementedFamily(family string) bool {
 	}
 }
 
-func specimenDedupKey(family string, source, target byte, requestData []byte, outcome string) string {
-	return family + fmt.Sprintf("/%02x/%02x/", source, target) + hex.EncodeToString(requestData) + "/" + outcome
+func specimenDedupKey(family string, source, target byte, requestData []byte, outcome string, hasResponse bool, responseData []byte) string {
+	key := family + fmt.Sprintf("/%02x/%02x/", source, target) + hex.EncodeToString(requestData) + "/" + outcome
+	if hasResponse {
+		key += "/" + hex.EncodeToString(responseData)
+	}
+	return key
 }
 
 func (store *BusObservabilityStore) pushSpecimenLocked(family string, event PassiveClassifiedEvent, frameType, outcome string, now time.Time) {
@@ -1596,7 +1600,7 @@ func (store *BusObservabilityStore) pushSpecimenLocked(family string, event Pass
 		store.specimens[family] = bucket
 	}
 
-	key := specimenDedupKey(family, event.Request.Source, event.Request.Target, event.Request.Data, outcome)
+	key := specimenDedupKey(family, event.Request.Source, event.Request.Target, event.Request.Data, outcome, event.HasResponse, event.Response.Data)
 
 	// Search for existing entry with same dedup key.
 	for i := 0; i < bucket.length; i++ {
@@ -1865,7 +1869,7 @@ func (store *BusObservabilityStore) watchEfficiencySnapshotLocked(now time.Time)
 	return snapshot
 }
 
-func resolveWatchEfficiencyBucket(key WatchKey, descriptor WatchDescriptor, _ bool) (watchEfficiencyBucketKey, string, bool) {
+func resolveWatchEfficiencyBucket(key WatchKey, descriptor WatchDescriptor) (watchEfficiencyBucketKey, string, bool) {
 	if descriptor.Key == nil {
 		return watchEfficiencyBucketKey{}, "missing_runtime_descriptor", false
 	}

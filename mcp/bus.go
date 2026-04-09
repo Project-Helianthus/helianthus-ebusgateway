@@ -184,7 +184,7 @@ type BusProtocolSpecimen struct {
 	Count       uint64 `json:"count"`
 }
 
-type ProtocolSpecimenList struct {
+type BusProtocolSpecimenList struct {
 	Items []BusProtocolSpecimen `json:"items,omitempty"`
 	Count int                   `json:"count"`
 }

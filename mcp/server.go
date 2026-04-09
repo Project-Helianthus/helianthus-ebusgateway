@@ -1311,7 +1311,10 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		if err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
-		family := parseOptionalFamily(call.Arguments)
+		family, err := parseOptionalFamily(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
 		return callToolResultText(mustJSON(newToolEnvelope(s.snapshotProtocolSpecimens(family, limit), nil)), false), nil
 	case toolWatchSummaryGetName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
@@ -1676,19 +1679,19 @@ func parseOptionalLimit(args map[string]any) (int, error) {
 	}
 }
 
-func parseOptionalFamily(args map[string]any) string {
+func parseOptionalFamily(args map[string]any) (string, error) {
 	if args == nil {
-		return ""
+		return "", nil
 	}
 	raw, ok := args["family"]
 	if !ok || raw == nil {
-		return ""
+		return "", nil
 	}
 	s, ok := raw.(string)
 	if !ok {
-		return ""
+		return "", fmt.Errorf("invalid family: %w", ebuserrors.ErrInvalidPayload)
 	}
-	return s
+	return s, nil
 }
 
 func parseTimeProgramSlot(m map[string]any, tempRequired bool) (TimeProgramSlot, error) {
@@ -2554,15 +2557,15 @@ func (s *Server) snapshotBusSummary(snapshot *snapshotState) *BusSummary {
 	return s.snapshotBusObservability(snapshot).Summary
 }
 
-func (s *Server) snapshotProtocolSpecimens(family string, limit int) *ProtocolSpecimenList {
+func (s *Server) snapshotProtocolSpecimens(family string, limit int) *BusProtocolSpecimenList {
 	if s == nil || s.bus == nil {
-		return &ProtocolSpecimenList{}
+		return &BusProtocolSpecimenList{}
 	}
 	items := s.bus.ProtocolSpecimens(family)
 	if limit > 0 && len(items) > limit {
 		items = items[:limit]
 	}
-	return &ProtocolSpecimenList{
+	return &BusProtocolSpecimenList{
 		Items: items,
 		Count: len(items),
 	}

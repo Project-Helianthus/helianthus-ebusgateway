@@ -19,14 +19,14 @@ const (
 	wirePhaseWaitCmdAck                        // waiting for target ACK/NACK
 	wirePhaseWaitResponseLen                   // waiting for response LEN byte
 	wirePhaseWaitResponseBody                  // counting response body + CRC
-	wirePhaseWaitResponseAck                   // waiting for master final ACK
+	wirePhaseWaitResponseAck                   // waiting for initiator final ACK
 )
 
 // isSYNTimeoutBoundary reports whether receiving a SYN in this phase
 // indicates a timeout condition (transaction abandoned by bus timeout).
 func (p wirePhase) isSYNTimeoutBoundary() bool {
 	switch p {
-	case wirePhaseWaitCmdAck, wirePhaseWaitResponseBody, wirePhaseWaitResponseAck:
+	case wirePhaseWaitCmdAck, wirePhaseWaitResponseLen, wirePhaseWaitResponseBody, wirePhaseWaitResponseAck:
 		return true
 	default:
 		return false
@@ -34,7 +34,7 @@ func (p wirePhase) isSYNTimeoutBoundary() bool {
 }
 
 // wirePhaseTracker tracks the byte-level eBUS transaction structure.
-// It follows the eBUS master-slave transaction protocol:
+// It follows the eBUS initiator-target transaction protocol:
 //
 //	SRC DST PB SB LEN DATA[0..LEN-1] CRC → ACK → LEN DATA[0..LEN-1] CRC → ACK
 //

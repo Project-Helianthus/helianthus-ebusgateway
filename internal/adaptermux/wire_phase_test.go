@@ -20,7 +20,7 @@ func TestWirePhase_IdleOnSYN(t *testing.T) {
 }
 
 func TestWirePhase_FullTransaction(t *testing.T) {
-	// Simulate a complete master-slave transaction:
+	// Simulate a complete initiator-target transaction:
 	// SRC=0x71 DST=0x08 PB=0xB5 SB=0x24 LEN=0x02 DATA[0]=0x00 DATA[1]=0x01 CRC=0xXX
 	// → ACK → LEN=0x01 DATA[0]=0x42 CRC=0xXX → ACK
 	var tracker wirePhaseTracker
@@ -77,7 +77,7 @@ func TestWirePhase_FullTransaction(t *testing.T) {
 		t.Fatalf("response CRC: got event %d, want ResponseDone", got)
 	}
 
-	// Final ACK from master.
+	// Final ACK from initiator.
 	got = tracker.advance(protocol.SymbolAck)
 	if got != wirePhaseEventTransactionDone {
 		t.Fatalf("final ACK: got event %d, want TransactionDone", got)

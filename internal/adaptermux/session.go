@@ -182,13 +182,13 @@ func (s *session) readLoop() {
 
 	reader := bufio.NewReader(s.conn)
 	var parser transport.ENHParser
+	buf := make([]byte, 256)
 
 	for {
 		if s.closed.Load() {
 			return
 		}
 
-		buf := make([]byte, 256)
 		n, err := reader.Read(buf)
 		if err != nil {
 			if !s.closed.Load() {

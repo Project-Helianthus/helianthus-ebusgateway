@@ -268,8 +268,11 @@ func (m *Mux) connect() error {
 	switch m.cfg.Protocol {
 	case "ens":
 		tr = transport.NewENSTransport(conn, m.cfg.ReadTimeout, m.cfg.WriteTimeout)
-	default:
+	case "enh", "":
 		tr = transport.NewENHTransport(conn, m.cfg.ReadTimeout, m.cfg.WriteTimeout)
+	default:
+		_ = conn.Close()
+		return fmt.Errorf("adaptermux: unsupported protocol %q (expected \"enh\" or \"ens\")", m.cfg.Protocol)
 	}
 
 	m.conn = conn
@@ -442,12 +445,18 @@ func (m *Mux) onReceived(symbol byte) {
 		m.stateMu.Unlock()
 
 		// --- Phase 2: deliver outside all locks ---
-		// Flush external session echo trackers (outside stateMu to avoid
-		// ABBA deadlock with doSend which acquires sessionsMu→stateMu).
-		m.flushSessionEchoTrackersOnSYN(&passiveEvents, now)
+		// Flush external session echo trackers BEFORE emitting the SYN event,
+		// so flushed bytes (which occurred before the SYN boundary) are
+		// delivered in correct temporal order. Called outside stateMu to
+		// avoid ABBA deadlock with doSend (sessionsMu→stateMu).
+		var flushedEvents []PassiveEvent
+		m.flushSessionEchoTrackersOnSYN(&flushedEvents, now)
+		// Prepend flushed bytes before SYN: flushed events first, then
+		// passiveEvents (which contains the SYN).
+		allPassive := append(flushedEvents, passiveEvents...)
 
 		m.deliverToActive(symbol)
-		for _, pe := range passiveEvents {
+		for _, pe := range allPassive {
 			m.emitPassive(pe)
 		}
 		m.deliverSYNToSessions(now)
@@ -501,13 +510,11 @@ func (m *Mux) onReceived(symbol byte) {
 func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bool, now time.Time) ([]PassiveEvent, bool) {
 	var passiveEvents []PassiveEvent
 
-	// Flush gateway echo tracker at SYN boundary.
-	flushed, _ := m.gatewayEcho.flushOnSYN()
-	for _, b := range flushed {
-		passiveEvents = append(passiveEvents, PassiveEvent{
-			Kind: PassiveEventSymbol, Symbol: b, ObservedAt: now,
-		})
-	}
+	// Flush gateway echo tracker at SYN boundary. Flushed bytes are
+	// confirmed gateway self-traffic — do NOT emit to passive path
+	// (passive is third-party only). They are delivered to external
+	// sessions via deliverSYNToSessions + deliverToSessions elsewhere.
+	m.gatewayEcho.flushOnSYN()
 
 	// Note: external session echo tracker flush is done AFTER stateMu.Unlock()
 	// by the caller (flushSessionEchoTrackersOnSYN) to avoid ABBA deadlock

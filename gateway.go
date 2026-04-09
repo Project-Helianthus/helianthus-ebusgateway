@@ -291,7 +291,7 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 		}
 	case "unix":
 	case "adapter-direct":
-		protocol = TransportAdapterDirect
+		return "", "", "", fmt.Errorf("gateway transport endpoint scheme %q requires preconfigured adapter-direct transport (use wireAdapterDirect)", scheme)
 	default:
 		return "", "", "", fmt.Errorf("gateway transport endpoint unsupported scheme %q", scheme)
 	}

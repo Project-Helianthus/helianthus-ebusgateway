@@ -524,16 +524,16 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	// parseTransportEndpoint runs later inside ebusgateway.New.
 	const schemePrefix = "adapter-direct://"
 	if cfg.TransportConfig.Protocol != ebusgateway.TransportAdapterDirect {
-		if strings.HasPrefix(strings.ToLower(address), schemePrefix) {
-			// Strip the scheme prefix, preserving original casing
-			// in the host:port portion.
-			address = address[len(schemePrefix):]
-			if network == "" {
-				network = "tcp"
-			}
-		} else {
+		if !strings.HasPrefix(strings.ToLower(address), schemePrefix) {
 			return nil, nil
 		}
+	}
+
+	// Always strip the scheme prefix if present, regardless of which
+	// detection branch was taken. Without this, net.Dial receives
+	// "adapter-direct://host:port" as the address and fails.
+	if strings.HasPrefix(strings.ToLower(address), schemePrefix) {
+		address = address[len(schemePrefix):]
 	}
 	if network == "" {
 		network = "tcp"
@@ -578,7 +578,12 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	cfg.Transport = mux.ActiveTransport()
 	cfg.PassiveTransport = passiveTransport
 
-	return mux.Close, nil
+	// Do NOT return mux.Close here. The gateway owns the lifecycle
+	// through cfg.Transport.Close() (activeTransport.Close calls
+	// mux.Close). Returning mux.Close would cause a double-close at
+	// shutdown: gateway.Close -> transport.Close -> mux.Close, then
+	// the deferred closer -> mux.Close again.
+	return nil, nil
 }
 
 func startHTTPServer(

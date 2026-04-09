@@ -27,31 +27,21 @@ var (
 // error occurs. This receives ALL bytes from the adapter (including
 // the gateway's own echoes), which is what gateway.Bus expects for
 // echo matching.
+//
+// activeCh is a single FIFO channel carrying both bytes and errors.
+// handleReset drains the channel and enqueues the reset event before
+// readLoop resumes, so the consumer sees events in exact enqueue
+// order — no priority select needed.
 func (t *activeTransport) ReadByte() (byte, error) {
-	// Priority: check for reset/error before data.
-	// After handleReset enqueues ErrAdapterReset on activeErrCh and
-	// readLoop enqueues post-reset symbols on activeRecvCh, both
-	// channels may be ready simultaneously.  Go select picks randomly,
-	// so a bare select could deliver a post-reset byte before the
-	// reset error, breaking transaction state.  The non-blocking drain
-	// here guarantees the consumer sees the reset first.
 	select {
-	case err := <-t.mux.activeErrCh:
-		if err != nil {
-			return 0, err
+	case ev := <-t.mux.activeCh:
+		if ev.kind == activeEventError {
+			if ev.err != nil {
+				return 0, ev.err
+			}
+			return 0, errors.New("adaptermux: unexpected nil error")
 		}
-		return 0, errors.New("adaptermux: unexpected nil error")
-	default:
-	}
-
-	select {
-	case b := <-t.mux.activeRecvCh:
-		return b, nil
-	case err := <-t.mux.activeErrCh:
-		if err != nil {
-			return 0, err
-		}
-		return 0, errors.New("adaptermux: unexpected nil error")
+		return ev.b, nil
 	case <-t.mux.ctx.Done():
 		return 0, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}
@@ -59,39 +49,26 @@ func (t *activeTransport) ReadByte() (byte, error) {
 
 // ReadEvent returns stream events including RESETTED boundaries.
 // Satisfies transport.StreamEventReader for passive tap integration.
+//
+// Same FIFO guarantee as ReadByte — see comment there.
 func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
-	// Priority: check for reset/error before data (same rationale as
-	// ReadByte — see comment there).
 	select {
-	case err := <-t.mux.activeErrCh:
-		if errors.Is(err, ebuserrors.ErrAdapterReset) {
-			return transport.StreamEvent{
-				Kind: transport.StreamEventReset,
-			}, nil
+	case ev := <-t.mux.activeCh:
+		if ev.kind == activeEventError {
+			if errors.Is(ev.err, ebuserrors.ErrAdapterReset) {
+				return transport.StreamEvent{
+					Kind: transport.StreamEventReset,
+				}, nil
+			}
+			if ev.err != nil {
+				return transport.StreamEvent{}, ev.err
+			}
+			return transport.StreamEvent{}, errors.New("adaptermux: unexpected nil error")
 		}
-		if err != nil {
-			return transport.StreamEvent{}, err
-		}
-		return transport.StreamEvent{}, errors.New("adaptermux: unexpected nil error")
-	default:
-	}
-
-	select {
-	case b := <-t.mux.activeRecvCh:
 		return transport.StreamEvent{
 			Kind: transport.StreamEventByte,
-			Byte: b,
+			Byte: ev.b,
 		}, nil
-	case err := <-t.mux.activeErrCh:
-		if errors.Is(err, ebuserrors.ErrAdapterReset) {
-			return transport.StreamEvent{
-				Kind: transport.StreamEventReset,
-			}, nil
-		}
-		if err != nil {
-			return transport.StreamEvent{}, err
-		}
-		return transport.StreamEvent{}, errors.New("adaptermux: unexpected nil error")
 	case <-t.mux.ctx.Done():
 		return transport.StreamEvent{}, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}

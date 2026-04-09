@@ -126,8 +126,7 @@ type Mux struct {
 
 	// Active path channels.
 	activeSendCh chan sendRequest
-	activeRecvCh chan byte  // capacity 256, overflow logged
-	activeErrCh  chan error // capacity 4, non-blocking send
+	activeCh     chan activeEvent // capacity 256: unified byte+error channel (FIFO ordered)
 
 	// Passive path callback (set via SetPassiveCallback).
 	// The callback must NOT call back into Mux methods (re-entrancy hazard).
@@ -140,6 +139,25 @@ type Mux struct {
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 	closeErr  error
+}
+
+// activeEventKind tags active-path channel events.
+type activeEventKind uint8
+
+const (
+	activeEventByte  activeEventKind = iota // data byte from adapter
+	activeEventError                        // error (reset, disconnect)
+)
+
+// activeEvent is a tagged union carried on the single activeCh channel.
+// Merging bytes and errors into one channel guarantees FIFO ordering:
+// handleReset drains the channel and enqueues the reset event before
+// readLoop resumes enqueuing bytes, so the consumer sees events in
+// exact enqueue order — no Go-select non-determinism.
+type activeEvent struct {
+	kind activeEventKind
+	b    byte  // valid when kind == activeEventByte
+	err  error // valid when kind == activeEventError
 }
 
 // sendRequest is a request from the active path or an external session
@@ -161,8 +179,7 @@ func New(cfg Config) *Mux {
 		gatewayEcho:  newEchoTracker(),
 		sessions:     make(map[uint64]*session),
 		activeSendCh: make(chan sendRequest, 16),
-		activeRecvCh: make(chan byte, 256),   // capacity 256: bus byte buffer
-		activeErrCh:  make(chan error, 4),     // capacity 4: adapter reset events
+		activeCh:     make(chan activeEvent, 256), // unified byte+error channel
 	}
 }
 
@@ -328,11 +345,11 @@ func (m *Mux) reconnect() error {
 
 	// Notify active path of disconnect so gateway.Bus sees the reset
 	// boundary (Codex P2 #3058767932). Drain stale bytes first.
-	m.drainActiveRecvCh()
+	m.drainActiveCh()
 	select {
-	case m.activeErrCh <- ebuserrors.ErrAdapterReset:
+	case m.activeCh <- activeEvent{kind: activeEventError, err: ebuserrors.ErrAdapterReset}:
 	default:
-		m.logger.Printf("adaptermux: active error channel full, dropping disconnect notification")
+		m.logger.Printf("adaptermux: active channel full, dropping disconnect notification")
 	}
 
 	// Close old connection.
@@ -601,29 +618,31 @@ func (m *Mux) handleReset() {
 	m.arb.forceRelease()
 	m.arb.failAllPending(errors.New("adaptermux: adapter reset"))
 
-	// Drain stale bytes from active receive buffer before signaling
-	// reset, so consumers never see pre-reset bytes after the reset
-	// boundary (Codex P1 #3058767928).
-	m.drainActiveRecvCh()
+	// Drain stale bytes from active channel before enqueuing the reset
+	// error. Because activeCh is a single FIFO channel, the consumer is
+	// guaranteed to see the reset before any post-reset bytes that
+	// readLoop enqueues after this function returns.
+	m.drainActiveCh()
 
-	// Notify active path (non-blocking to prevent readLoop deadlock).
+	// Enqueue reset error into the unified channel (non-blocking to
+	// prevent readLoop deadlock).
 	select {
-	case m.activeErrCh <- ebuserrors.ErrAdapterReset:
+	case m.activeCh <- activeEvent{kind: activeEventError, err: ebuserrors.ErrAdapterReset}:
 	default:
-		m.logger.Printf("adaptermux: active error channel full, dropping adapter reset notification")
+		m.logger.Printf("adaptermux: active channel full, dropping adapter reset notification")
 	}
 
 	m.emitPassive(PassiveEvent{Kind: PassiveEventReset, ObservedAt: now})
 	m.broadcastResetToSessions()
 }
 
-// drainActiveRecvCh discards all buffered bytes from the active receive
-// channel. Called before reset/reconnect to ensure consumers don't see
-// stale pre-boundary bytes after a reset event.
-func (m *Mux) drainActiveRecvCh() {
+// drainActiveCh discards all buffered events from the active channel.
+// Called before reset/reconnect to ensure consumers don't see stale
+// pre-boundary bytes after a reset event.
+func (m *Mux) drainActiveCh() {
 	for {
 		select {
-		case <-m.activeRecvCh:
+		case <-m.activeCh:
 		default:
 			return
 		}
@@ -643,13 +662,13 @@ func (m *Mux) flushSessionEchoTrackers() {
 	}
 }
 
-// deliverToActive sends a byte to the active path receive channel.
+// deliverToActive sends a byte to the active path channel.
 // Logs on overflow instead of silently dropping (CRITICAL-1 fix).
 func (m *Mux) deliverToActive(symbol byte) {
 	select {
-	case m.activeRecvCh <- symbol:
+	case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
 	default:
-		m.logger.Printf("adaptermux: active receive buffer full, dropping byte 0x%02X", symbol)
+		m.logger.Printf("adaptermux: active channel full, dropping byte 0x%02X", symbol)
 	}
 }
 

@@ -55,10 +55,19 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 	case PassiveEventReset:
 		se = transport.StreamEvent{Kind: transport.StreamEventReset}
 	case PassiveEventConnected:
-		// No StreamEvent equivalent — skip.
-		return
+		// Deliver as reset: a reconnect establishes a new stream boundary.
+		// The passive reconstructor must discard any partial frame state
+		// accumulated before the disconnect. Consecutive resets (disconnect
+		// followed by connect) are idempotent for stream parsing.
+		//
+		// In adapter-direct mode the PassiveBusTap does not re-call connect()
+		// on mux reconnection — this event is the only signal that the adapter
+		// link was re-established, so it must reach the consumer.
+		se = transport.StreamEvent{Kind: transport.StreamEventReset}
 	case PassiveEventDisconnected:
-		// Deliver as reset so passive tap sees the boundary.
+		// Deliver as reset: a disconnect is a stream boundary. Any partial
+		// frame in flight is now incomplete and must be discarded by the
+		// consumer's reconstructor.
 		se = transport.StreamEvent{Kind: transport.StreamEventReset}
 	default:
 		return

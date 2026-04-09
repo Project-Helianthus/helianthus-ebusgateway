@@ -110,6 +110,14 @@ func (t *activeTransport) Close() error {
 // StartArbitration requests bus ownership for the gateway.
 // Blocks until the request is granted at a SYN boundary or the
 // context is cancelled.
+//
+// Reconnect safety: during adapter reconnect, readLoop is blocked in
+// reconnect() and cannot process SYN boundaries. However, reconnect()
+// calls arb.failAllPending() BEFORE entering the reconnection backoff
+// loop (mux.go line ~344), which sends startResult{granted:false} on
+// the notify channel. This select therefore unblocks promptly on
+// disconnect — pending START requests do not hang for the duration of
+// the reconnection backoff.
 func (t *activeTransport) StartArbitration(initiator byte) error {
 	ch := t.mux.arb.requestStart(gatewaySessionID, initiator)
 

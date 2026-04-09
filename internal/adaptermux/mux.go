@@ -315,6 +315,15 @@ func (m *Mux) reconnect() error {
 	// Fail pending arbitration.
 	m.arb.failAllPending(errors.New("adaptermux: adapter disconnected"))
 
+	// Notify active path of disconnect so gateway.Bus sees the reset
+	// boundary (Codex P2 #3058767932). Drain stale bytes first.
+	m.drainActiveRecvCh()
+	select {
+	case m.activeErrCh <- ebuserrors.ErrAdapterReset:
+	default:
+		m.logger.Printf("adaptermux: active error channel full, dropping disconnect notification")
+	}
+
 	// Close old connection.
 	m.connMu.Lock()
 	if m.conn != nil {
@@ -558,7 +567,12 @@ func (m *Mux) handleReset() {
 	m.arb.forceRelease()
 	m.arb.failAllPending(errors.New("adaptermux: adapter reset"))
 
-	// Notify active path (non-blocking to prevent readLoop deadlock — CRITICAL-2 fix).
+	// Drain stale bytes from active receive buffer before signaling
+	// reset, so consumers never see pre-reset bytes after the reset
+	// boundary (Codex P1 #3058767928).
+	m.drainActiveRecvCh()
+
+	// Notify active path (non-blocking to prevent readLoop deadlock).
 	select {
 	case m.activeErrCh <- ebuserrors.ErrAdapterReset:
 	default:
@@ -567,6 +581,19 @@ func (m *Mux) handleReset() {
 
 	m.emitPassive(PassiveEvent{Kind: PassiveEventReset, ObservedAt: now})
 	m.broadcastResetToSessions()
+}
+
+// drainActiveRecvCh discards all buffered bytes from the active receive
+// channel. Called before reset/reconnect to ensure consumers don't see
+// stale pre-boundary bytes after a reset event.
+func (m *Mux) drainActiveRecvCh() {
+	for {
+		select {
+		case <-m.activeRecvCh:
+		default:
+			return
+		}
+	}
 }
 
 // flushSessionEchoTrackers flushes echo trackers for all external sessions

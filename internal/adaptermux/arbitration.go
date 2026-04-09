@@ -121,16 +121,17 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 	return false
 }
 
-// tryGrant attempts to grant bus ownership to the highest-priority
-// pending request. Called at SYN boundaries and when the bus becomes
+// tryGrant attempts to select the highest-priority pending request
+// for bus ownership. Called at SYN boundaries and when the bus becomes
 // idle.
 //
-// Returns the winning session's ID, initiator address, and the notify
-// channel. The caller MUST send a startResult on the notify channel
-// after StartArbitration succeeds or fails — tryGrant does NOT notify
-// the requester (Codex P1: grant must follow adapter START success).
+// Ownership is NOT set here — the caller MUST call confirmOwnership
+// after the adapter's StartArbitration succeeds (Codex P1 #3060199707:
+// defer ownership until adapter START confirms). The caller MUST also
+// send a startResult on the notify channel after success or failure.
 //
-// Returns (0, 0, nil, false) if no requests are pending.
+// Returns (0, 0, nil, false) if no requests are pending or the bus
+// is already owned.
 func (a *arbitrator) tryGrant() (sessionID uint64, initiator byte, notify chan startResult, granted bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -143,9 +144,6 @@ func (a *arbitrator) tryGrant() (sessionID uint64, initiator byte, notify chan s
 	if a.pendingGateway != nil {
 		req := a.pendingGateway
 		a.pendingGateway = nil
-		a.hasOwner = true
-		a.currentOwner = gatewaySessionID
-		a.currentInitiator = req.initiator
 		return gatewaySessionID, req.initiator, req.notify, true
 	}
 
@@ -153,13 +151,21 @@ func (a *arbitrator) tryGrant() (sessionID uint64, initiator byte, notify chan s
 	if len(a.pendingExternal) > 0 {
 		req := a.pendingExternal[0]
 		a.pendingExternal = a.pendingExternal[1:]
-		a.hasOwner = true
-		a.currentOwner = req.sessionID
-		a.currentInitiator = req.initiator
 		return req.sessionID, req.initiator, req.notify, true
 	}
 
 	return 0, 0, nil, false
+}
+
+// confirmOwnership sets bus ownership after the adapter's
+// StartArbitration has succeeded. Must be called by tryGrantAndStart
+// only on the success path (Codex P1 #3060199707).
+func (a *arbitrator) confirmOwnership(sessionID uint64, initiator byte) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.hasOwner = true
+	a.currentOwner = sessionID
+	a.currentInitiator = initiator
 }
 
 // releaseOwnership releases bus ownership. Called when a transaction

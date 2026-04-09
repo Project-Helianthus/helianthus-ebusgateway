@@ -161,12 +161,13 @@ type activeEvent struct {
 }
 
 // Sentinel errors returned by doSend for error classification.
-// Host-side errors (ownership, connectivity) are distinct from bus
-// errors (adapter write failures) so callers can deliver the correct
-// ENH response code (ENHResErrorHost vs ENHResErrorEBUS).
+// Host-side errors (ownership, connectivity, adapter write) are distinct
+// from bus errors so callers can deliver the correct ENH response code
+// (ENHResErrorHost vs ENHResErrorEBUS).
 var (
-	errNotBusOwner = errors.New("adaptermux: session is not bus owner")
+	errNotBusOwner  = errors.New("adaptermux: session is not bus owner")
 	errNotConnected = errors.New("adaptermux: not connected")
+	errAdapterWrite = errors.New("adaptermux: adapter write failed")
 )
 
 // sendRequest is a request from the active path or an external session
@@ -722,6 +723,26 @@ func (m *Mux) tryGrantAndStart() {
 		return
 	}
 
+	// Forward START to adapter BEFORE setting ownership
+	// (Codex P1 #3060199707: defer ownership until adapter confirms).
+	m.connMu.Lock()
+	tr := m.upstream
+	m.connMu.Unlock()
+
+	if starter, ok := tr.(interface {
+		StartArbitration(byte) error
+	}); ok {
+		if err := starter.StartArbitration(initiator); err != nil {
+			m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
+			// Ownership was never confirmed — no releaseOwnership needed.
+			notify <- startResult{granted: false, initiator: initiator, err: err}
+			return
+		}
+	}
+
+	// Adapter START succeeded — now confirm ownership.
+	m.arb.confirmOwnership(sessionID, initiator)
+
 	m.stateMu.Lock()
 	m.phase.startRequest()
 	m.busDirty = false
@@ -738,24 +759,6 @@ func (m *Mux) tryGrantAndStart() {
 			sess.echoTracker.markRequestStart()
 		}
 		m.sessionsMu.Unlock()
-	}
-
-	// Forward START to adapter.
-	m.connMu.Lock()
-	tr := m.upstream
-	m.connMu.Unlock()
-
-	if starter, ok := tr.(interface {
-		StartArbitration(byte) error
-	}); ok {
-		if err := starter.StartArbitration(initiator); err != nil {
-			m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
-			m.arb.releaseOwnership(sessionID)
-			// Notify requester of failure AFTER adapter START failed
-			// (Codex P1: no premature grant notification).
-			notify <- startResult{granted: false, initiator: initiator, err: err}
-			return
-		}
 	}
 
 	// Notify requester of success AFTER adapter START succeeded.
@@ -822,7 +825,7 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 			}
 			m.sessionsMu.Unlock()
 		}
-		return fmt.Errorf("adaptermux: write to adapter: %w", err)
+		return fmt.Errorf("%w: %v", errAdapterWrite, err)
 	}
 
 	return nil

@@ -268,7 +268,7 @@ func (s *session) handleSend(data byte) {
 	case err := <-result:
 		if err != nil {
 			s.mux.logger.Printf("adaptermux: session %d SEND error: %v", s.id, err)
-			if errors.Is(err, errNotBusOwner) || errors.Is(err, errNotConnected) {
+			if errors.Is(err, errNotBusOwner) || errors.Is(err, errNotConnected) || errors.Is(err, errAdapterWrite) {
 				s.deliverErrorHost()
 			} else {
 				s.deliverError()

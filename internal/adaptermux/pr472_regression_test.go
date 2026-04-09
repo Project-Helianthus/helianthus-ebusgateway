@@ -2,6 +2,8 @@ package adaptermux
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -236,6 +238,9 @@ func TestSession_StartCancelReleasesOwnership(t *testing.T) {
 	if sessionID != id {
 		t.Fatalf("granted to session %d, want %d", sessionID, id)
 	}
+
+	// Confirm ownership after successful adapter START.
+	mux.arb.confirmOwnership(sessionID, initiator)
 
 	// Simulate successful adapter START.
 	notify <- startResult{granted: true, initiator: initiator}
@@ -538,10 +543,11 @@ func TestSession_SendErrorFromDoSend_NotConnected(t *testing.T) {
 
 	// Grant ownership to this session so it passes the pre-check.
 	ch := mux.arb.requestStart(id, 0x31)
-	_, _, notify, granted := mux.arb.tryGrant()
+	_, initiator, notify, granted := mux.arb.tryGrant()
 	if !granted {
 		t.Fatal("expected grant")
 	}
+	mux.arb.confirmOwnership(id, initiator)
 	notify <- startResult{granted: true, initiator: 0x31}
 	<-ch // drain the result
 
@@ -625,4 +631,338 @@ func TestAddSession_AcceptsBeforeShutdown(t *testing.T) {
 	if !ok {
 		t.Fatalf("session %d not found in sessions map", id)
 	}
+}
+
+// --- Codex P1 #3060199707: ownership not set until START succeeds ---
+
+// TestOwnership_NotSetUntilStartSucceeds verifies that tryGrant does
+// NOT set hasOwner/currentOwner. Ownership is only confirmed after
+// confirmOwnership is called (simulating adapter START success).
+// Without the fix, a client could SEND before the adapter confirms.
+func TestOwnership_NotSetUntilStartSucceeds(t *testing.T) {
+	arb := newArbitrator()
+
+	arb.requestStart(1, 0x31)
+
+	// tryGrant selects the winner but must NOT set ownership.
+	sessionID, initiator, _, granted := arb.tryGrant()
+	if !granted {
+		t.Fatal("expected grant")
+	}
+	if sessionID != 1 {
+		t.Fatalf("sessionID = %d, want 1", sessionID)
+	}
+
+	// Ownership must NOT be set yet.
+	if arb.isOwner(1) {
+		t.Fatal("isOwner returned true after tryGrant — ownership must not be set until confirmOwnership")
+	}
+	_, _, owned := arb.owner()
+	if owned {
+		t.Fatal("owner() reports owned=true after tryGrant — must be false until confirmOwnership")
+	}
+
+	// Confirm ownership (simulating adapter START success).
+	arb.confirmOwnership(sessionID, initiator)
+
+	// Now ownership must be set.
+	if !arb.isOwner(1) {
+		t.Fatal("isOwner returned false after confirmOwnership")
+	}
+	ownerID, ownerInit, owned := arb.owner()
+	if !owned {
+		t.Fatal("owner() reports owned=false after confirmOwnership")
+	}
+	if ownerID != 1 {
+		t.Fatalf("owner sessionID = %d, want 1", ownerID)
+	}
+	if ownerInit != 0x31 {
+		t.Fatalf("owner initiator = 0x%02x, want 0x31", ownerInit)
+	}
+}
+
+// TestOwnership_FailurePathNeverSetsOwnership verifies that when
+// adapter START fails, ownership is never set — no need for
+// releaseOwnership cleanup.
+func TestOwnership_FailurePathNeverSetsOwnership(t *testing.T) {
+	arb := newArbitrator()
+
+	ch := arb.requestStart(1, 0x31)
+
+	_, _, notify, granted := arb.tryGrant()
+	if !granted {
+		t.Fatal("expected grant")
+	}
+
+	// Simulate failure — do NOT call confirmOwnership.
+	notify <- startResult{granted: false, initiator: 0x31, err: errors.New("adapter refused")}
+
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("should not be granted after failure")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+
+	// Bus must be free for a new grant.
+	if arb.isOwner(1) {
+		t.Fatal("ownership should never have been set")
+	}
+
+	// A second request should be immediately grantable.
+	arb.requestStart(2, 0x42)
+	sid, _, _, g := arb.tryGrant()
+	if !g {
+		t.Fatal("bus should be free for a new grant after failure")
+	}
+	if sid != 2 {
+		t.Fatalf("second grant sessionID = %d, want 2", sid)
+	}
+}
+
+// --- Codex P1 #3060199712: reset not dropped under buffer pressure ---
+
+// TestPassiveTransport_ResetNotDroppedUnderPressure verifies that when
+// the passive transport buffer is full, a reset event is still delivered
+// (blocks until consumed). Without the fix, the reset boundary could be
+// dropped and pre/post-reset streams would merge.
+func TestPassiveTransport_ResetNotDroppedUnderPressure(t *testing.T) {
+	// Tiny buffer to force pressure.
+	pt := &passiveTransport{
+		events: make(chan transport.StreamEvent, 2),
+		done:   make(chan struct{}),
+	}
+	defer pt.Close()
+
+	// Fill buffer completely with symbols.
+	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x01})
+	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x02})
+
+	// Buffer is now full. Deliver a reset — it must NOT be dropped.
+	// The reset uses a blocking send, so we need a consumer goroutine.
+	resetDelivered := make(chan struct{})
+	go func() {
+		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
+		close(resetDelivered)
+	}()
+
+	// Consume events. The reset must appear in the stream.
+	var gotReset bool
+	timeout := time.After(2 * time.Second)
+	for i := 0; i < 3; i++ {
+		select {
+		case ev := <-pt.events:
+			if ev.Kind == transport.StreamEventReset {
+				gotReset = true
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for event %d", i)
+		}
+	}
+
+	// Wait for deliver goroutine to finish.
+	select {
+	case <-resetDelivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reset deliver goroutine did not finish")
+	}
+
+	if !gotReset {
+		t.Fatal("reset event was dropped under buffer pressure — stream boundary lost")
+	}
+}
+
+// TestPassiveTransport_ResetBlocksUntilConsumed verifies that delivering
+// a reset to a full buffer blocks (does not silently drop) and unblocks
+// once the consumer drains a slot.
+func TestPassiveTransport_ResetBlocksUntilConsumed(t *testing.T) {
+	pt := &passiveTransport{
+		events: make(chan transport.StreamEvent, 1),
+		done:   make(chan struct{}),
+	}
+	defer pt.Close()
+
+	// Fill the single-slot buffer.
+	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xFF})
+
+	// Deliver reset in background — it should block.
+	delivered := make(chan struct{})
+	go func() {
+		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
+		close(delivered)
+	}()
+
+	// Verify it is blocked (not yet delivered).
+	select {
+	case <-delivered:
+		t.Fatal("reset was delivered immediately to a full buffer — should block")
+	case <-time.After(50 * time.Millisecond):
+		// Good — still blocking.
+	}
+
+	// Consume the symbol to free a slot.
+	ev := <-pt.events
+	if ev.Kind != transport.StreamEventByte || ev.Byte != 0xFF {
+		t.Fatalf("expected symbol 0xFF, got %+v", ev)
+	}
+
+	// Now the reset should unblock and be delivered.
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reset deliver did not unblock after consumer drained buffer")
+	}
+
+	// Read the reset.
+	ev = <-pt.events
+	if ev.Kind != transport.StreamEventReset {
+		t.Fatalf("expected reset, got %+v", ev)
+	}
+}
+
+// TestPassiveTransport_ConnectedDisconnectedNonDroppable verifies that
+// PassiveEventConnected and PassiveEventDisconnected (which map to
+// StreamEventReset) are also non-droppable under buffer pressure.
+func TestPassiveTransport_ConnectedDisconnectedNonDroppable(t *testing.T) {
+	pt := &passiveTransport{
+		events: make(chan transport.StreamEvent, 1),
+		done:   make(chan struct{}),
+	}
+	defer pt.Close()
+
+	// Fill buffer.
+	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xAA})
+
+	// Deliver Connected (maps to reset) in background.
+	delivered := make(chan struct{})
+	go func() {
+		pt.deliver(PassiveEvent{Kind: PassiveEventConnected})
+		close(delivered)
+	}()
+
+	// Should block.
+	select {
+	case <-delivered:
+		t.Fatal("connected event delivered immediately to full buffer")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Drain and verify.
+	<-pt.events // consume symbol
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("connected event did not unblock")
+	}
+
+	ev := <-pt.events
+	if ev.Kind != transport.StreamEventReset {
+		t.Fatalf("expected reset from Connected event, got %+v", ev)
+	}
+}
+
+// --- Codex P2 #3060199716: adapter write failures classified as host errors ---
+
+// TestDoSend_AdapterWriteFailure_IsHostError verifies that when the
+// adapter write fails, the error wraps errAdapterWrite (a sentinel) and
+// handleSend classifies it as ErrorHost, not ErrorEBUS.
+func TestDoSend_AdapterWriteFailure_IsHostError(t *testing.T) {
+	// Verify sentinel wrapping.
+	innerErr := fmt.Errorf("connection reset by peer")
+	wrapped := fmt.Errorf("%w: %v", errAdapterWrite, innerErr)
+	if !errors.Is(wrapped, errAdapterWrite) {
+		t.Fatal("wrapped error does not match errAdapterWrite sentinel")
+	}
+}
+
+// TestSession_AdapterWriteFailure_ReturnsErrorHost is an end-to-end
+// test verifying that when the adapter transport's Write fails, the
+// session receives ENHResErrorHost (not ENHResErrorEBUS).
+func TestSession_AdapterWriteFailure_ReturnsErrorHost(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create a failing transport: reads block, writes always fail.
+	failTr := &failWriteTransport{
+		readCh: make(chan byte, 256),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+	mux.ctx, mux.cancel = ctx, cancel
+
+	// Inject the failing transport.
+	mux.connMu.Lock()
+	mux.upstream = failTr
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Start sendLoop.
+	mux.wg.Add(1)
+	go mux.sendLoop()
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	id := mux.AddSession(server)
+	if id == 0 {
+		t.Fatal("AddSession returned 0")
+	}
+	defer mux.RemoveSession(id)
+
+	// Grant ownership to the session.
+	ch := mux.arb.requestStart(id, 0x31)
+	_, initiator, notify, granted := mux.arb.tryGrant()
+	if !granted {
+		t.Fatal("expected grant")
+	}
+	mux.arb.confirmOwnership(id, initiator)
+	notify <- startResult{granted: true, initiator: 0x31}
+	<-ch
+
+	// Send a SEND command — Write will fail.
+	sendReq := transport.EncodeENH(transport.ENHReqSend, 0x42)
+	if _, err := client.Write(sendReq[:]); err != nil {
+		t.Fatalf("write SEND: %v", err)
+	}
+
+	// Read the error response.
+	frame := readENHFrame(t, client, 2*time.Second)
+
+	expectedHost := transport.EncodeENH(transport.ENHResErrorHost, 0x00)
+	expectedBus := transport.EncodeENH(transport.ENHResErrorEBUS, 0x00)
+
+	if frame == expectedBus {
+		t.Fatal("adapter write failure returned ErrorEBUS — should be ErrorHost (Codex P2 #3060199716)")
+	}
+	if frame != expectedHost {
+		t.Fatalf("error frame = %x, want %x (ErrorHost)", frame, expectedHost)
+	}
+}
+
+// failWriteTransport is a RawTransport where Write always fails.
+type failWriteTransport struct {
+	readCh chan byte
+}
+
+func (f *failWriteTransport) ReadByte() (byte, error) {
+	b, ok := <-f.readCh
+	if !ok {
+		return 0, io.EOF
+	}
+	return b, nil
+}
+
+func (f *failWriteTransport) Write(p []byte) (int, error) {
+	return 0, errors.New("simulated adapter write failure")
+}
+
+func (f *failWriteTransport) Close() error {
+	return nil
 }

@@ -24,6 +24,9 @@ func TestArbitrator_GatewayPriority(t *testing.T) {
 		t.Fatalf("initiator = 0x%02x, want 0x71", initiator)
 	}
 
+	// Confirm ownership after adapter START success.
+	arb.confirmOwnership(gatewaySessionID, initiator)
+
 	// Caller notifies after adapter START (simulated).
 	notify <- startResult{granted: true}
 
@@ -57,6 +60,7 @@ func TestArbitrator_GatewayPriority(t *testing.T) {
 		t.Fatalf("initiator = 0x%02x, want 0x31", initiator)
 	}
 
+	arb.confirmOwnership(1, initiator)
 	notify2 <- startResult{granted: true}
 }
 
@@ -67,7 +71,7 @@ func TestArbitrator_ExternalFIFO(t *testing.T) {
 	ch2 := arb.requestStart(2, 0x32)
 
 	// First external (FIFO) should win.
-	sessionID, _, notify, granted := arb.tryGrant()
+	sessionID, initiator, notify, granted := arb.tryGrant()
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -75,6 +79,7 @@ func TestArbitrator_ExternalFIFO(t *testing.T) {
 		t.Fatalf("first grant: sessionID = %d, want 1", sessionID)
 	}
 
+	arb.confirmOwnership(sessionID, initiator)
 	notify <- startResult{granted: true}
 
 	select {
@@ -89,7 +94,7 @@ func TestArbitrator_ExternalFIFO(t *testing.T) {
 	arb.releaseOwnership(1)
 
 	// Second external should be next.
-	sessionID, _, notify2, granted2 := arb.tryGrant()
+	sessionID, initiator, notify2, granted2 := arb.tryGrant()
 	if !granted2 {
 		t.Fatal("expected second grant")
 	}
@@ -97,6 +102,7 @@ func TestArbitrator_ExternalFIFO(t *testing.T) {
 		t.Fatalf("second grant: sessionID = %d, want 2", sessionID)
 	}
 
+	arb.confirmOwnership(sessionID, initiator)
 	notify2 <- startResult{granted: true}
 
 	select {
@@ -139,11 +145,12 @@ func TestArbitrator_RemoveSession(t *testing.T) {
 
 	arb.requestStart(1, 0x31)
 
-	// Grant ownership.
-	_, _, notify, granted := arb.tryGrant()
+	// Grant and confirm ownership.
+	_, initiator, notify, granted := arb.tryGrant()
 	if !granted {
 		t.Fatal("expected grant")
 	}
+	arb.confirmOwnership(1, initiator)
 	notify <- startResult{granted: true}
 
 	// Remove session while owning bus.
@@ -185,7 +192,8 @@ func TestArbitrator_ForceRelease(t *testing.T) {
 	arb := newArbitrator()
 
 	arb.requestStart(1, 0x31)
-	_, _, notify, _ := arb.tryGrant()
+	_, initiator, notify, _ := arb.tryGrant()
+	arb.confirmOwnership(1, initiator)
 	notify <- startResult{granted: true}
 
 	if !arb.isOwner(1) {
@@ -282,7 +290,7 @@ func TestArbitrator_StartResultCarriesInitiator(t *testing.T) {
 
 	ch := arb.requestStart(1, 0x31)
 
-	_, initiator, notify, granted := arb.tryGrant()
+	sessionID, initiator, notify, granted := arb.tryGrant()
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -290,6 +298,7 @@ func TestArbitrator_StartResultCarriesInitiator(t *testing.T) {
 		t.Fatalf("tryGrant initiator = 0x%02x, want 0x31", initiator)
 	}
 
+	arb.confirmOwnership(sessionID, initiator)
 	notify <- startResult{granted: true, initiator: initiator}
 
 	select {

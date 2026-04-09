@@ -73,12 +73,24 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 		return
 	}
 
+	// Reset boundaries are non-droppable — losing a reset merges
+	// pre/post-reset streams and corrupts frame reconstruction
+	// (Codex P1 #3060199712). Block until delivered.
+	if se.Kind == transport.StreamEventReset {
+		select {
+		case t.events <- se:
+		case <-t.done:
+		}
+		return
+	}
+
+	// Regular symbols: non-blocking with overflow drop.
 	select {
 	case t.events <- se:
 	case <-t.done:
 		return
 	default:
-		// Buffer full — drop oldest to prevent backpressure.
+		// Buffer full — drop oldest symbol to prevent backpressure.
 		select {
 		case <-t.events:
 		default:

@@ -48,14 +48,17 @@ func TestSession_StartedCarriesInitiator(t *testing.T) {
 	// goroutine has called requestStart — wait a bit, then grant.
 	time.Sleep(50 * time.Millisecond)
 
-	// tryGrant pulls the pending request and grants ownership.
-	_, initiator, notify, granted := mux.arb.tryGrant()
+	// tryGrant pulls the pending request (ownership not yet set).
+	sessionID, initiator, notify, granted := mux.arb.tryGrant()
 	if !granted {
 		t.Fatal("expected grant from arbitrator")
 	}
 	if initiator != 0x31 {
 		t.Fatalf("tryGrant initiator = 0x%02x, want 0x31", initiator)
 	}
+
+	// Confirm ownership after adapter START success.
+	mux.arb.confirmOwnership(sessionID, initiator)
 
 	// Simulate successful adapter START.
 	notify <- startResult{granted: true, initiator: initiator}
@@ -94,8 +97,8 @@ func TestSession_FailedCarriesInitiator(t *testing.T) {
 	// Simulate failed adapter START.
 	notify <- startResult{granted: false, initiator: initiator}
 
-	// Release ownership since tryGrant set it.
-	mux.arb.releaseOwnership(id)
+	// No releaseOwnership needed — tryGrant no longer sets ownership
+	// (Codex P1 #3060199707). Call is a harmless no-op.
 
 	frame := readENHFrame(t, client, 2*time.Second)
 	expected := transport.EncodeENH(transport.ENHResFailed, 0x42)

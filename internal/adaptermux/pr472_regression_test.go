@@ -1,0 +1,505 @@
+package adaptermux
+
+import (
+	"context"
+	"io"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+)
+
+// --- Fix 1 regression: handleReset schedules delayed re-INIT ---
+
+// mockInitTransport is a RawTransport that records Init calls.
+// It satisfies both RawTransport and the Init(byte)error interface.
+type mockInitTransport struct {
+	mu        sync.Mutex
+	initCalls []byte // features bytes passed to Init
+	readCh    chan byte
+	closed    bool
+}
+
+func newMockInitTransport() *mockInitTransport {
+	return &mockInitTransport{
+		readCh: make(chan byte, 256),
+	}
+}
+
+func (m *mockInitTransport) Init(features byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.initCalls = append(m.initCalls, features)
+	return nil
+}
+
+func (m *mockInitTransport) ReadByte() (byte, error) {
+	b, ok := <-m.readCh
+	if !ok {
+		return 0, io.EOF
+	}
+	return b, nil
+}
+
+func (m *mockInitTransport) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (m *mockInitTransport) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.closed {
+		m.closed = true
+		close(m.readCh)
+	}
+	return nil
+}
+
+func (m *mockInitTransport) getInitCalls() []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]byte, len(m.initCalls))
+	copy(result, m.initCalls)
+	return result
+}
+
+// TestHandleReset_SchedulesDelayedReINIT verifies that handleReset()
+// spawns a goroutine that calls Init on the upstream transport after
+// a 200ms stabilization delay. Without the fix, no re-INIT occurs
+// after in-band RESETTED and the transport stays in reset state.
+func TestHandleReset_SchedulesDelayedReINIT(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mock := newMockInitTransport()
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0", // not used — we inject the transport
+		ReadTimeout: 200 * time.Millisecond,
+	})
+	mux.ctx, mux.cancel = ctx, cancel
+
+	// Inject mock transport and set upstream features.
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Verify no Init calls before handleReset.
+	if calls := mock.getInitCalls(); len(calls) != 0 {
+		t.Fatalf("expected 0 Init calls before handleReset, got %d", len(calls))
+	}
+
+	// Trigger handleReset — this should schedule a delayed re-INIT.
+	mux.handleReset()
+
+	// Before 200ms, no re-INIT should have occurred.
+	time.Sleep(50 * time.Millisecond)
+	if calls := mock.getInitCalls(); len(calls) != 0 {
+		t.Fatalf("expected 0 Init calls 50ms after handleReset, got %d", len(calls))
+	}
+
+	// After 300ms (200ms delay + margin), exactly 1 re-INIT should occur.
+	time.Sleep(250 * time.Millisecond)
+	calls := mock.getInitCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 Init call 300ms after handleReset, got %d", len(calls))
+	}
+	if calls[0] != 0x01 {
+		t.Fatalf("re-INIT features = 0x%02x, want 0x01", calls[0])
+	}
+
+	// Cleanup: cancel context and wait for goroutines.
+	cancel()
+	mux.wg.Wait()
+}
+
+// TestHandleReset_ReINITCancelledOnShutdown verifies that the delayed
+// re-INIT goroutine exits cleanly when the mux context is cancelled
+// during the 200ms wait.
+func TestHandleReset_ReINITCancelledOnShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	mock := newMockInitTransport()
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	mux.handleReset()
+
+	// Cancel context before the 200ms delay elapses.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	// Wait for all goroutines to finish.
+	done := make(chan struct{})
+	go func() {
+		mux.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("re-INIT goroutine did not exit after context cancel")
+	}
+
+	// No Init calls should have been made.
+	if calls := mock.getInitCalls(); len(calls) != 0 {
+		t.Fatalf("expected 0 Init calls after early cancel, got %d", len(calls))
+	}
+}
+
+// TestHandleReset_ReINITFallsBackToDefault verifies that when
+// upstreamFeatures is 0 (e.g. ENS transport), the re-INIT uses
+// the default features byte 0x01.
+func TestHandleReset_ReINITFallsBackToDefault(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mock := newMockInitTransport()
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0) // unknown features
+
+	mux.handleReset()
+
+	time.Sleep(300 * time.Millisecond)
+
+	calls := mock.getInitCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 Init call, got %d", len(calls))
+	}
+	if calls[0] != 0x01 {
+		t.Fatalf("fallback re-INIT features = 0x%02x, want 0x01", calls[0])
+	}
+
+	cancel()
+	mux.wg.Wait()
+}
+
+// --- Fix 2 regression: START cancel releases ownership ---
+
+// TestSession_StartCancelReleasesOwnership verifies that sending
+// START with SYN (0xAA) not only cancels the pending request but
+// also releases bus ownership if the session already owns the bus.
+// Without the fix, a session that owns the bus and sends START 0xAA
+// would retain ownership, blocking other sessions indefinitely.
+func TestSession_StartCancelReleasesOwnership(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Step 1: Request START and grant ownership to this session.
+	startReq := transport.EncodeENH(transport.ENHReqStart, 0x31)
+	if _, err := client.Write(startReq[:]); err != nil {
+		t.Fatalf("write START: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Grant ownership via arbitrator.
+	sessionID, initiator, notify, granted := mux.arb.tryGrant()
+	if !granted {
+		t.Fatal("expected grant from arbitrator")
+	}
+	if sessionID != id {
+		t.Fatalf("granted to session %d, want %d", sessionID, id)
+	}
+
+	// Simulate successful adapter START.
+	notify <- startResult{granted: true, initiator: initiator}
+
+	// Drain the STARTED response.
+	_ = readENHFrame(t, client, 2*time.Second)
+
+	// Verify session now owns the bus.
+	if !mux.arb.isOwner(id) {
+		t.Fatal("session should own the bus after grant")
+	}
+
+	// Step 2: Send START with SYN to cancel+release.
+	cancelReq := transport.EncodeENH(transport.ENHReqStart, protocol.SymbolSyn)
+	if _, err := client.Write(cancelReq[:]); err != nil {
+		t.Fatalf("write START cancel: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Step 3: Verify ownership is released.
+	if mux.arb.isOwner(id) {
+		t.Fatal("session should NOT own the bus after START cancel (SYN) — ownership was not released")
+	}
+}
+
+// --- Fix 4 regression: broadcastResetToSessions carries features ---
+
+// TestBroadcastReset_CarriesUpstreamFeatures verifies that
+// broadcastResetToSessions() sends the actual upstream features byte
+// to external sessions, not 0x00. Without the fix, sessions receive
+// 0x00 on reset boundaries regardless of the negotiated features.
+func TestBroadcastReset_CarriesUpstreamFeatures(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	// Set upstream features to 0x03 (non-default value).
+	mux.upstreamFeatures.Store(0x03)
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Trigger reset broadcast.
+	mux.broadcastResetToSessions()
+
+	// Read the RESETTED frame from the session.
+	frame := readENHFrame(t, client, 2*time.Second)
+
+	// Should carry 0x03, not 0x00.
+	expected := transport.EncodeENH(transport.ENHResResetted, 0x03)
+	if frame != expected {
+		t.Fatalf("RESETTED frame = %x, want %x (upstream features 0x03)", frame, expected)
+	}
+
+	// Verify it is NOT the old 0x00 behavior.
+	old := transport.EncodeENH(transport.ENHResResetted, 0x00)
+	if frame == old {
+		t.Fatal("RESETTED broadcast still sends 0x00 — fix not applied")
+	}
+}
+
+// TestBroadcastReset_ZeroFeaturesPassesThrough verifies that when
+// upstreamFeatures is 0 (e.g. ENS transport), the broadcast sends
+// 0x00 (which is correct — no features negotiated).
+func TestBroadcastReset_ZeroFeaturesPassesThrough(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	// Force upstream features to 0.
+	mux.upstreamFeatures.Store(0)
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	mux.broadcastResetToSessions()
+
+	frame := readENHFrame(t, client, 2*time.Second)
+	expected := transport.EncodeENH(transport.ENHResResetted, 0x00)
+	if frame != expected {
+		t.Fatalf("RESETTED frame = %x, want %x (zero features)", frame, expected)
+	}
+}
+
+// TestBroadcastReset_MultipleSessionsAllGetFeatures verifies that
+// all connected sessions receive the upstream features on reset.
+func TestBroadcastReset_MultipleSessionsAllGetFeatures(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	mux.upstreamFeatures.Store(0x05)
+
+	const numSessions = 3
+	type sessConn struct {
+		client net.Conn
+		id     uint64
+	}
+	sessions := make([]sessConn, numSessions)
+
+	for i := 0; i < numSessions; i++ {
+		client, server := net.Pipe()
+		id := mux.AddSession(server)
+		sessions[i] = sessConn{client: client, id: id}
+	}
+	defer func() {
+		for _, sc := range sessions {
+			mux.RemoveSession(sc.id)
+			sc.client.Close()
+		}
+	}()
+
+	mux.broadcastResetToSessions()
+
+	expected := transport.EncodeENH(transport.ENHResResetted, 0x05)
+	for i, sc := range sessions {
+		frame := readENHFrame(t, sc.client, 2*time.Second)
+		if frame != expected {
+			t.Fatalf("session %d: RESETTED frame = %x, want %x", i, frame, expected)
+		}
+	}
+}
+
+// --- Fix 1+4 combined: handleReset triggers broadcast with features ---
+
+// TestHandleReset_BroadcastCarriesFeatures verifies the end-to-end
+// path: handleReset() calls broadcastResetToSessions() which now
+// sends upstreamFeatures. This catches regressions in both the
+// handleReset path and the broadcast features fix working together.
+func TestHandleReset_BroadcastCarriesFeatures(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mock := newMockInitTransport()
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x07)
+
+	// Add a session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Trigger handleReset.
+	mux.handleReset()
+
+	// Session should receive RESETTED with features 0x07.
+	frame := readENHFrame(t, client, 2*time.Second)
+	expected := transport.EncodeENH(transport.ENHResResetted, 0x07)
+	if frame != expected {
+		t.Fatalf("RESETTED after handleReset = %x, want %x (features 0x07)", frame, expected)
+	}
+
+	// Wait for re-INIT goroutine to complete.
+	cancel()
+	mux.wg.Wait()
+}
+
+// --- Fix 2: START cancel without prior ownership is harmless ---
+
+// TestSession_StartCancelWithoutOwnershipIsNoOp verifies that sending
+// START cancel (SYN) when the session does NOT own the bus is harmless
+// (no panic, no state corruption).
+func TestSession_StartCancelWithoutOwnershipIsNoOp(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Session does not own the bus. Send START cancel — should be a no-op.
+	cancelReq := transport.EncodeENH(transport.ENHReqStart, protocol.SymbolSyn)
+	if _, err := client.Write(cancelReq[:]); err != nil {
+		t.Fatalf("write START cancel: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// No ownership should exist.
+	if mux.arb.isOwner(id) {
+		t.Fatal("session should not own bus after cancel-only (no prior ownership)")
+	}
+
+	// Mux should still be functional — verify by requesting a new START.
+	startReq := transport.EncodeENH(transport.ENHReqStart, 0x42)
+	if _, err := client.Write(startReq[:]); err != nil {
+		t.Fatalf("write START after cancel: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if !mux.arb.hasPending() {
+		t.Fatal("expected pending START after post-cancel request")
+	}
+}
+
+// --- Fix 4: concurrent safety of broadcastResetToSessions ---
+
+// TestBroadcastReset_ConcurrentFeatureUpdate verifies that reading
+// upstreamFeatures in broadcastResetToSessions is safe under
+// concurrent atomic updates (race detector validation).
+func TestBroadcastReset_ConcurrentFeatureUpdate(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	mux.upstreamFeatures.Store(0x01)
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Read responses in background to prevent send buffer overflow.
+	var received atomic.Int32
+	go func() {
+		buf := make([]byte, 2)
+		for {
+			_, err := io.ReadFull(client, buf)
+			if err != nil {
+				return
+			}
+			received.Add(1)
+		}
+	}()
+
+	// Concurrently update features while broadcasting.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			mux.upstreamFeatures.Store(uint32(i % 256))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			mux.broadcastResetToSessions()
+		}
+	}()
+	wg.Wait()
+
+	// Give reader time to drain.
+	time.Sleep(100 * time.Millisecond)
+
+	if received.Load() == 0 {
+		t.Fatal("expected at least one broadcast to be received")
+	}
+}

@@ -270,8 +270,11 @@ func (s *session) handleSend(data byte) {
 func (s *session) handleStart(initiator byte) {
 	// START with SYN (0xAA) is a cancel request — the client is
 	// withdrawing its pending START without acquiring the bus.
+	// Also release ownership in case the session already owns the bus
+	// (proxy does both cancel+release on SYN cancel).
 	if initiator == protocol.SymbolSyn {
 		s.mux.arb.cancelStart(s.id)
+		s.mux.arb.releaseOwnership(s.id)
 		return
 	}
 

@@ -311,6 +311,11 @@ func (m *Mux) connect() error {
 			_ = conn.Close()
 			return fmt.Errorf("adaptermux: INIT handshake failed: %w", err)
 		}
+		// NOTE: ENHTransport.Init() does not expose the upstream RESETTED
+		// response payload. We store the requested features (0x01) as a
+		// best-effort fallback. Faithful upstream feature negotiation requires
+		// extending the ebusgo transport.Init interface to return the response
+		// payload — tracked as a known contract divergence from the proxy.
 		m.upstreamFeatures.Store(uint32(requestedFeatures))
 	}
 
@@ -634,6 +639,34 @@ func (m *Mux) handleReset() {
 
 	m.emitPassive(PassiveEvent{Kind: PassiveEventReset, ObservedAt: now})
 	m.broadcastResetToSessions()
+
+	// Schedule delayed re-INIT after in-band RESETTED (200ms stabilization).
+	// Without re-INIT the upstream transport stays in reset state and
+	// ownership cannot be re-acquired until a physical TCP disconnect
+	// triggers reconnect(). The 200ms delay is from proxy convention.
+	m.wg.Add(1)
+	go func() { // goroutine: delayed re-INIT after adapter RESETTED
+		defer m.wg.Done()
+		select {
+		case <-time.After(200 * time.Millisecond):
+		case <-m.ctx.Done():
+			return
+		}
+		m.connMu.Lock()
+		tr := m.upstream
+		m.connMu.Unlock()
+		if initer, ok := tr.(interface{ Init(byte) error }); ok {
+			features := byte(m.upstreamFeatures.Load())
+			if features == 0 {
+				features = 0x01
+			}
+			if err := initer.Init(features); err != nil {
+				m.logger.Printf("adaptermux: re-INIT after RESETTED failed: %v", err)
+			} else {
+				m.logger.Printf("adaptermux: re-INIT after RESETTED succeeded")
+			}
+		}
+	}()
 }
 
 // drainActiveCh discards all buffered events from the active channel.
@@ -837,13 +870,16 @@ func (m *Mux) deliverSYNToSessions(now time.Time) {
 }
 
 // broadcastResetToSessions sends a RESETTED event to all external sessions.
-// Uses 0x00 payload — reset broadcasts are boundary markers, not INIT replies.
+// Carries upstreamFeatures so external clients see consistent feature
+// signaling on reset boundaries (not 0x00).
 func (m *Mux) broadcastResetToSessions() {
+	features := byte(m.upstreamFeatures.Load())
+
 	m.sessionsMu.Lock()
 	defer m.sessionsMu.Unlock()
 
 	for _, sess := range m.sessions {
-		sess.deliverReset(0x00)
+		sess.deliverReset(features)
 	}
 }
 

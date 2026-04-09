@@ -124,15 +124,18 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 // pending request. Called at SYN boundaries and when the bus becomes
 // idle.
 //
-// Returns the winning session's ID and initiator address, or (0, 0)
-// if no requests are pending.
-func (a *arbitrator) tryGrant() (sessionID uint64, initiator byte, granted bool) {
+// Returns the winning session's ID, initiator address, and the notify
+// channel. The caller MUST send a startResult on the notify channel
+// after StartArbitration succeeds or fails — tryGrant does NOT notify
+// the requester (Codex P1: grant must follow adapter START success).
+//
+// Returns (0, 0, nil, false) if no requests are pending.
+func (a *arbitrator) tryGrant() (sessionID uint64, initiator byte, notify chan startResult, granted bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if a.hasOwner {
-		// Bus is currently owned. Wait for release.
-		return 0, 0, false
+		return 0, 0, nil, false
 	}
 
 	// Gateway-priority: check gateway first.
@@ -142,8 +145,7 @@ func (a *arbitrator) tryGrant() (sessionID uint64, initiator byte, granted bool)
 		a.hasOwner = true
 		a.currentOwner = gatewaySessionID
 		a.currentInitiator = req.initiator
-		req.notify <- startResult{granted: true}
-		return gatewaySessionID, req.initiator, true
+		return gatewaySessionID, req.initiator, req.notify, true
 	}
 
 	// External FIFO: grant to first external request.
@@ -153,11 +155,10 @@ func (a *arbitrator) tryGrant() (sessionID uint64, initiator byte, granted bool)
 		a.hasOwner = true
 		a.currentOwner = req.sessionID
 		a.currentInitiator = req.initiator
-		req.notify <- startResult{granted: true}
-		return req.sessionID, req.initiator, true
+		return req.sessionID, req.initiator, req.notify, true
 	}
 
-	return 0, 0, false
+	return 0, 0, nil, false
 }
 
 // releaseOwnership releases bus ownership. Called when a transaction

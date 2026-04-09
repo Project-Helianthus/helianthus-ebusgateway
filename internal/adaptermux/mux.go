@@ -445,18 +445,15 @@ func (m *Mux) onReceived(symbol byte) {
 		m.stateMu.Unlock()
 
 		// --- Phase 2: deliver outside all locks ---
-		// Flush external session echo trackers BEFORE emitting the SYN event,
-		// so flushed bytes (which occurred before the SYN boundary) are
-		// delivered in correct temporal order. Called outside stateMu to
+		// Flush external session echo trackers. Called outside stateMu to
 		// avoid ABBA deadlock with doSend (sessionsMu→stateMu).
-		var flushedEvents []PassiveEvent
-		m.flushSessionEchoTrackersOnSYN(&flushedEvents, now)
-		// Prepend flushed bytes before SYN: flushed events first, then
-		// passiveEvents (which contains the SYN).
-		allPassive := append(flushedEvents, passiveEvents...)
+		// The flushed bytes are NOT emitted to passive — they were already
+		// delivered live in onReceived (they're third-party from gateway's
+		// perspective). Re-emitting would produce duplicates (Codex P1).
+		m.flushSessionEchoTrackers()
 
 		m.deliverToActive(symbol)
-		for _, pe := range allPassive {
+		for _, pe := range passiveEvents {
 			m.emitPassive(pe)
 		}
 		m.deliverSYNToSessions(now)
@@ -572,20 +569,16 @@ func (m *Mux) handleReset() {
 	m.broadcastResetToSessions()
 }
 
-// flushSessionEchoTrackersOnSYN flushes echo trackers for all external
-// sessions at a SYN boundary. Flushed bytes are appended as passive events
-// (they represent real bus traffic from external sessions). Must be called
-// WITHOUT stateMu held to avoid ABBA deadlock.
-func (m *Mux) flushSessionEchoTrackersOnSYN(passiveEvents *[]PassiveEvent, now time.Time) {
+// flushSessionEchoTrackers flushes echo trackers for all external sessions
+// at a SYN boundary. The flushed bytes are discarded — they were already
+// delivered live to passive consumers in onReceived. This call only resets
+// tracker state for the next transaction cycle. Must be called WITHOUT
+// stateMu held to avoid ABBA deadlock with doSend.
+func (m *Mux) flushSessionEchoTrackers() {
 	m.sessionsMu.Lock()
 	defer m.sessionsMu.Unlock()
 	for _, sess := range m.sessions {
-		flushed, _ := sess.echoTracker.flushOnSYN()
-		for _, b := range flushed {
-			*passiveEvents = append(*passiveEvents, PassiveEvent{
-				Kind: PassiveEventSymbol, Symbol: b, ObservedAt: now,
-			})
-		}
+		sess.echoTracker.flushOnSYN()
 	}
 }
 
@@ -602,7 +595,7 @@ func (m *Mux) deliverToActive(symbol byte) {
 // tryGrantAndStart attempts to grant bus ownership and forward the
 // START request to the adapter.
 func (m *Mux) tryGrantAndStart() {
-	sessionID, initiator, granted := m.arb.tryGrant()
+	sessionID, initiator, notify, granted := m.arb.tryGrant()
 	if !granted {
 		return
 	}
@@ -636,17 +629,15 @@ func (m *Mux) tryGrantAndStart() {
 		if err := starter.StartArbitration(initiator); err != nil {
 			m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
 			m.arb.releaseOwnership(sessionID)
-			// Notify external session that START was revoked (MEDIUM-5 fix).
-			if sessionID != gatewaySessionID {
-				m.sessionsMu.Lock()
-				if sess, ok := m.sessions[sessionID]; ok {
-					sess.deliverFailed()
-				}
-				m.sessionsMu.Unlock()
-			}
+			// Notify requester of failure AFTER adapter START failed
+			// (Codex P1: no premature grant notification).
+			notify <- startResult{granted: false, err: err}
 			return
 		}
 	}
+
+	// Notify requester of success AFTER adapter START succeeded.
+	notify <- startResult{granted: true}
 }
 
 // sendLoop processes send requests from the active path and external sessions.

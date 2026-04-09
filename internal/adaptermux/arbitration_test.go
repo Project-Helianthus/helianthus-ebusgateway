@@ -10,10 +10,10 @@ func TestArbitrator_GatewayPriority(t *testing.T) {
 
 	// Both gateway and external request START.
 	gwCh := arb.requestStart(gatewaySessionID, 0x71)
-	extCh := arb.requestStart(1, 0x31)
+	_ = arb.requestStart(1, 0x31)
 
 	// Grant: gateway should win.
-	sessionID, initiator, granted := arb.tryGrant()
+	sessionID, initiator, notify, granted := arb.tryGrant()
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -24,7 +24,9 @@ func TestArbitrator_GatewayPriority(t *testing.T) {
 		t.Fatalf("initiator = 0x%02x, want 0x71", initiator)
 	}
 
-	// Gateway should receive granted.
+	// Caller notifies after adapter START (simulated).
+	notify <- startResult{granted: true}
+
 	select {
 	case result := <-gwCh:
 		if !result.granted {
@@ -35,7 +37,7 @@ func TestArbitrator_GatewayPriority(t *testing.T) {
 	}
 
 	// External should still be pending (bus is owned by gateway).
-	_, _, granted2 := arb.tryGrant()
+	_, _, _, granted2 := arb.tryGrant()
 	if granted2 {
 		t.Fatal("should not grant while bus is owned")
 	}
@@ -44,7 +46,7 @@ func TestArbitrator_GatewayPriority(t *testing.T) {
 	arb.releaseOwnership(gatewaySessionID)
 
 	// Now external should win.
-	sessionID, initiator, granted3 := arb.tryGrant()
+	sessionID, initiator, notify2, granted3 := arb.tryGrant()
 	if !granted3 {
 		t.Fatal("expected grant for external")
 	}
@@ -55,31 +57,25 @@ func TestArbitrator_GatewayPriority(t *testing.T) {
 		t.Fatalf("initiator = 0x%02x, want 0x31", initiator)
 	}
 
-	select {
-	case result := <-extCh:
-		if !result.granted {
-			t.Fatal("external should be granted")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for external grant")
-	}
+	notify2 <- startResult{granted: true}
 }
 
 func TestArbitrator_ExternalFIFO(t *testing.T) {
 	arb := newArbitrator()
 
-	// Two external sessions request START.
 	ch1 := arb.requestStart(1, 0x31)
 	ch2 := arb.requestStart(2, 0x32)
 
 	// First external (FIFO) should win.
-	sessionID, _, granted := arb.tryGrant()
+	sessionID, _, notify, granted := arb.tryGrant()
 	if !granted {
 		t.Fatal("expected grant")
 	}
 	if sessionID != 1 {
 		t.Fatalf("first grant: sessionID = %d, want 1", sessionID)
 	}
+
+	notify <- startResult{granted: true}
 
 	select {
 	case result := <-ch1:
@@ -93,13 +89,15 @@ func TestArbitrator_ExternalFIFO(t *testing.T) {
 	arb.releaseOwnership(1)
 
 	// Second external should be next.
-	sessionID, _, granted = arb.tryGrant()
-	if !granted {
+	sessionID, _, notify2, granted2 := arb.tryGrant()
+	if !granted2 {
 		t.Fatal("expected second grant")
 	}
 	if sessionID != 2 {
 		t.Fatalf("second grant: sessionID = %d, want 2", sessionID)
 	}
+
+	notify2 <- startResult{granted: true}
 
 	select {
 	case result := <-ch2:
@@ -130,7 +128,7 @@ func TestArbitrator_CancelStart(t *testing.T) {
 	}
 
 	// Nothing to grant now.
-	_, _, granted := arb.tryGrant()
+	_, _, _, granted := arb.tryGrant()
 	if granted {
 		t.Fatal("should not grant after cancel")
 	}
@@ -142,15 +140,15 @@ func TestArbitrator_RemoveSession(t *testing.T) {
 	arb.requestStart(1, 0x31)
 
 	// Grant ownership.
-	_, _, granted := arb.tryGrant()
+	_, _, notify, granted := arb.tryGrant()
 	if !granted {
 		t.Fatal("expected grant")
 	}
+	notify <- startResult{granted: true}
 
 	// Remove session while owning bus.
 	arb.removeSession(1)
 
-	// Bus should be released.
 	if arb.isOwner(1) {
 		t.Fatal("session should no longer own bus")
 	}
@@ -187,7 +185,8 @@ func TestArbitrator_ForceRelease(t *testing.T) {
 	arb := newArbitrator()
 
 	arb.requestStart(1, 0x31)
-	arb.tryGrant()
+	_, _, notify, _ := arb.tryGrant()
+	notify <- startResult{granted: true}
 
 	if !arb.isOwner(1) {
 		t.Fatal("session 1 should own bus")
@@ -219,14 +218,16 @@ func TestArbitrator_DuplicateGatewayRequest(t *testing.T) {
 		t.Fatal("timeout")
 	}
 
-	// Second should be granted.
-	_, initiator, granted := arb.tryGrant()
+	// Second should be grantable.
+	_, initiator, notify, granted := arb.tryGrant()
 	if !granted {
 		t.Fatal("expected grant")
 	}
 	if initiator != 0x72 {
 		t.Fatalf("initiator = 0x%02x, want 0x72", initiator)
 	}
+
+	notify <- startResult{granted: true}
 
 	select {
 	case result := <-ch2:
@@ -241,12 +242,35 @@ func TestArbitrator_DuplicateGatewayRequest(t *testing.T) {
 func TestArbitrator_NoPendingNothingToGrant(t *testing.T) {
 	arb := newArbitrator()
 
-	_, _, granted := arb.tryGrant()
+	_, _, _, granted := arb.tryGrant()
 	if granted {
 		t.Fatal("should not grant with no pending requests")
 	}
 
 	if arb.hasPending() {
 		t.Fatal("should have no pending requests")
+	}
+}
+
+func TestArbitrator_GrantFailureReleasesOwnership(t *testing.T) {
+	arb := newArbitrator()
+
+	ch := arb.requestStart(1, 0x31)
+
+	_, _, notify, granted := arb.tryGrant()
+	if !granted {
+		t.Fatal("expected grant")
+	}
+
+	// Simulate adapter START failure — caller notifies with granted=false.
+	notify <- startResult{granted: false}
+
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("should not be granted after START failure")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
 	}
 }

@@ -542,8 +542,11 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	// "adapter-direct://host:port" as the address and fails.
 	if strings.HasPrefix(strings.ToLower(address), schemePrefix) {
 		address = address[len(schemePrefix):]
-	}
-	if network == "" {
+		// The URI form implies TCP — force it unconditionally since
+		// the default TransportConfig.Network is "unix" and would
+		// cause net.Dial("unix", "host:port") to fail.
+		network = "tcp"
+	} else if network == "" {
 		network = "tcp"
 	}
 	if address == "" {

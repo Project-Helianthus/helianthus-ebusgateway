@@ -391,6 +391,12 @@ func (m *Mux) readLoop() {
 			// ReadTimeout window) — treat as idle, not disconnect.
 			// Matches passive_bus_tap.go behavior (Codex P2 #3059211395).
 			if errors.Is(err, ebuserrors.ErrTimeout) || isNetTimeout(err) {
+				// On a quiet bus no SYN or transaction-complete events
+				// reach onReceived, so tryGrantAndStart is never called.
+				// Drain pending START requests here to prevent stalls.
+				if m.arb.hasPending() {
+					m.tryGrantAndStart()
+				}
 				continue
 			}
 			m.logger.Printf("adaptermux: read error: %v", err)

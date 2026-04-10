@@ -700,35 +700,12 @@ func (m *Mux) handleReset() {
 	m.emitPassive(PassiveEvent{Kind: PassiveEventReset, ObservedAt: now})
 	m.broadcastResetToSessions()
 
-	// Schedule delayed re-INIT after in-band RESETTED (200ms stabilization).
-	// Without re-INIT the upstream transport stays in reset state and
-	// ownership cannot be re-acquired until a physical TCP disconnect
-	// triggers reconnect(). The 200ms delay is from proxy convention.
-	m.wg.Add(1)
-	go func() { // goroutine: delayed re-INIT after adapter RESETTED
-		defer m.wg.Done()
-		select {
-		case <-time.After(200 * time.Millisecond):
-		case <-m.ctx.Done():
-			return
-		}
-		m.connMu.Lock()
-		tr := m.upstream
-		m.connMu.Unlock()
-		if initer, ok := tr.(interface{ Init(byte) (byte, error) }); ok {
-			reqFeatures := byte(m.upstreamFeatures.Load())
-			if reqFeatures == 0 {
-				reqFeatures = 0x01
-			}
-			features, err := initer.Init(reqFeatures)
-			if err != nil {
-				m.logger.Printf("adaptermux: re-INIT after RESETTED failed: %v", err)
-			} else {
-				m.upstreamFeatures.Store(uint32(features))
-				m.logger.Printf("adaptermux: re-INIT after RESETTED succeeded, features=0x%02X", features)
-			}
-		}
-	}()
+	// NOTE: We intentionally do NOT re-INIT after in-band RESETTED.
+	// Re-INIT sends ENHReqInit which the adapter answers with another
+	// RESETTED, creating an infinite reset loop on ENS adapters.
+	// The INIT handshake is performed once in connect() at TCP connection
+	// time and again in reconnect() after a TCP disconnect. In-band
+	// RESETTED only requires state cleanup (above), not re-negotiation.
 }
 
 // drainActiveCh discards all buffered events from the active channel.

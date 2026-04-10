@@ -15,7 +15,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
-// --- Fix 1 regression: handleReset schedules delayed re-INIT ---
+// --- Fix 1 regression: handleReset does NOT re-INIT (reset loop prevention) ---
 
 // mockInitTransport is a RawTransport that records Init calls.
 // It satisfies both RawTransport and the Init(byte)(byte,error) interface.
@@ -74,64 +74,15 @@ func (m *mockInitTransport) getInitCalls() []byte {
 	return result
 }
 
-// TestHandleReset_SchedulesDelayedReINIT verifies that handleReset()
-// spawns a goroutine that calls Init on the upstream transport after
-// a 200ms stabilization delay. Without the fix, no re-INIT occurs
-// after in-band RESETTED and the transport stays in reset state.
-func TestHandleReset_SchedulesDelayedReINIT(t *testing.T) {
+// TestHandleReset_NoReINIT verifies that handleReset() does NOT call
+// Init on the upstream transport. Re-INIT after in-band RESETTED
+// causes an infinite reset loop on ENS adapters: Init sends ENHReqInit,
+// adapter responds with RESETTED, which triggers another handleReset,
+// ad infinitum. INIT is only performed at TCP connection time in
+// connect(). upstreamFeatures must be preserved across in-band resets.
+func TestHandleReset_NoReINIT(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	mock := newMockInitTransport()
-
-	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0", // not used — we inject the transport
-		ReadTimeout: 200 * time.Millisecond,
-	})
-	mux.ctx, mux.cancel = ctx, cancel
-
-	// Inject mock transport and set upstream features.
-	mux.connMu.Lock()
-	mux.upstream = mock
-	mux.connMu.Unlock()
-	mux.upstreamFeatures.Store(0x01)
-
-	// Verify no Init calls before handleReset.
-	if calls := mock.getInitCalls(); len(calls) != 0 {
-		t.Fatalf("expected 0 Init calls before handleReset, got %d", len(calls))
-	}
-
-	// Trigger handleReset — this should schedule a delayed re-INIT.
-	mux.handleReset()
-
-	// Before 200ms, no re-INIT should have occurred.
-	time.Sleep(50 * time.Millisecond)
-	if calls := mock.getInitCalls(); len(calls) != 0 {
-		t.Fatalf("expected 0 Init calls 50ms after handleReset, got %d", len(calls))
-	}
-
-	// After 300ms (200ms delay + margin), exactly 1 re-INIT should occur.
-	time.Sleep(250 * time.Millisecond)
-	calls := mock.getInitCalls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 Init call 300ms after handleReset, got %d", len(calls))
-	}
-	if calls[0] != 0x01 {
-		t.Fatalf("re-INIT features = 0x%02x, want 0x01", calls[0])
-	}
-
-	// Cleanup: cancel context and wait for goroutines.
-	cancel()
-	mux.wg.Wait()
-}
-
-// TestHandleReset_ReINITCancelledOnShutdown verifies that the delayed
-// re-INIT goroutine exits cleanly when the mux context is cancelled
-// during the 200ms wait.
-func TestHandleReset_ReINITCancelledOnShutdown(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
 
 	mock := newMockInitTransport()
 
@@ -148,106 +99,22 @@ func TestHandleReset_ReINITCancelledOnShutdown(t *testing.T) {
 	mux.connMu.Unlock()
 	mux.upstreamFeatures.Store(0x01)
 
+	// Trigger handleReset multiple times to simulate repeated in-band RESETTED.
+	mux.handleReset()
+	mux.handleReset()
 	mux.handleReset()
 
-	// Cancel context before the 200ms delay elapses.
-	time.Sleep(50 * time.Millisecond)
-	cancel()
+	// Wait well past the old 200ms re-INIT delay.
+	time.Sleep(400 * time.Millisecond)
 
-	// Wait for all goroutines to finish.
-	done := make(chan struct{})
-	go func() {
-		mux.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("re-INIT goroutine did not exit after context cancel")
-	}
-
-	// No Init calls should have been made.
+	// No Init calls should have occurred — re-INIT was removed.
 	if calls := mock.getInitCalls(); len(calls) != 0 {
-		t.Fatalf("expected 0 Init calls after early cancel, got %d", len(calls))
-	}
-}
-
-// TestHandleReset_ReINITFallsBackToDefault verifies that when
-// upstreamFeatures is 0 (e.g. ENS transport), the re-INIT uses
-// the default features byte 0x01.
-func TestHandleReset_ReINITFallsBackToDefault(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	mock := newMockInitTransport()
-
-	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
-	})
-	mux.ctx, mux.cancel = ctx, cancel
-
-	mux.connMu.Lock()
-	mux.upstream = mock
-	mux.connMu.Unlock()
-	mux.upstreamFeatures.Store(0) // unknown features
-
-	mux.handleReset()
-
-	time.Sleep(300 * time.Millisecond)
-
-	calls := mock.getInitCalls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 Init call, got %d", len(calls))
-	}
-	if calls[0] != 0x01 {
-		t.Fatalf("fallback re-INIT features = 0x%02x, want 0x01", calls[0])
+		t.Fatalf("expected 0 Init calls after handleReset, got %d (reset loop not fixed)", len(calls))
 	}
 
-	cancel()
-	mux.wg.Wait()
-}
-
-// TestHandleReset_ReINITStoresUpstreamFeatures verifies that the
-// features byte returned by Init is stored in upstreamFeatures,
-// replacing the previously stored value (PR-B breaking change fix).
-func TestHandleReset_ReINITStoresUpstreamFeatures(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	mock := newMockInitTransport()
-	mock.returnFeatures = 0x03 // adapter returns different features
-
-	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
-	})
-	mux.ctx, mux.cancel = ctx, cancel
-
-	mux.connMu.Lock()
-	mux.upstream = mock
-	mux.connMu.Unlock()
-	mux.upstreamFeatures.Store(0x01) // initial features
-
-	mux.handleReset()
-
-	// Wait for re-INIT to complete.
-	time.Sleep(300 * time.Millisecond)
-
-	calls := mock.getInitCalls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 Init call, got %d", len(calls))
-	}
-
-	// Verify the returned features (0x03) were stored, not the
-	// requested features (0x01).
-	stored := byte(mux.upstreamFeatures.Load())
-	if stored != 0x03 {
-		t.Fatalf("upstreamFeatures after re-INIT = 0x%02X, want 0x03", stored)
+	// upstreamFeatures must be preserved (not cleared).
+	if f := mux.upstreamFeatures.Load(); f != 0x01 {
+		t.Fatalf("upstreamFeatures = 0x%02X after handleReset, want 0x01 (should be preserved)", f)
 	}
 
 	cancel()
@@ -420,9 +287,9 @@ func TestBroadcastReset_MultipleSessionsAllGetFeatures(t *testing.T) {
 // --- Fix 1+4 combined: handleReset triggers broadcast with features ---
 
 // TestHandleReset_BroadcastCarriesFeatures verifies the end-to-end
-// path: handleReset() calls broadcastResetToSessions() which now
-// sends upstreamFeatures. This catches regressions in both the
-// handleReset path and the broadcast features fix working together.
+// path: handleReset() calls broadcastResetToSessions() which sends
+// upstreamFeatures. This catches regressions in both the handleReset
+// path and the broadcast features fix working together.
 func TestHandleReset_BroadcastCarriesFeatures(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -458,7 +325,7 @@ func TestHandleReset_BroadcastCarriesFeatures(t *testing.T) {
 		t.Fatalf("RESETTED after handleReset = %x, want %x (features 0x07)", frame, expected)
 	}
 
-	// Wait for re-INIT goroutine to complete.
+	// No re-INIT goroutine to wait for — handleReset no longer spawns one.
 	cancel()
 	mux.wg.Wait()
 }

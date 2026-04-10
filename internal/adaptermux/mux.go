@@ -847,16 +847,39 @@ func (m *Mux) tryGrantAndStart() {
 		// StartArbitration (e.g. ENS or test mocks without RequestStart).
 		if err := starter.StartArbitration(initiator); err != nil {
 			m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
+			// P1 fix (#3063005909): only send failure if we still own
+			// the pending slot.  cancelPendingStart may have cleared
+			// m.pendingStart and already sent a failure on notify while
+			// StartArbitration was blocking.  A second send on the
+			// cap-1 channel would block the caller indefinitely.
 			m.stateMu.Lock()
 			if m.pendingStart != nil && m.pendingStart.notify == notify {
 				m.pendingStart = nil
+				m.stateMu.Unlock()
+				notify <- startResult{granted: false, initiator: initiator, err: err}
+			} else {
+				if m.pendingStartAbsorb > 0 {
+					m.pendingStartAbsorb--
+				}
+				m.stateMu.Unlock()
 			}
-			m.stateMu.Unlock()
-			notify <- startResult{granted: false, initiator: initiator, err: err}
 			return
 		}
 		// Blocking path: adapter already confirmed — handle inline.
+		// P1 fix (#3063005909): verify ownership before completing.
+		// cancelPendingStart may have run while StartArbitration was
+		// blocking, clearing pendingStart and sending a failure on
+		// notify.  Completing here would double-send on the cap-1
+		// channel and re-grant the bus to a cancelled session.
 		m.stateMu.Lock()
+		if m.pendingStart == nil || m.pendingStart.notify != notify {
+			// Already cancelled — don't double-send.
+			if m.pendingStartAbsorb > 0 {
+				m.pendingStartAbsorb--
+			}
+			m.stateMu.Unlock()
+			return
+		}
 		m.pendingStart = nil
 		m.stateMu.Unlock()
 		m.completeArbitrationGrant(sessionID, initiator, notify)

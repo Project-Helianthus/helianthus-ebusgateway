@@ -1567,3 +1567,228 @@ func TestConcurrentTryGrantAndStart(t *testing.T) {
 		// Good — still waiting.
 	}
 }
+
+// --- P1 #3063005909: blocking StartArbitration fallback must verify pending ownership ---
+
+// gatedBlockingStartTransport implements StartArbitration with a gate
+// that blocks until closed, plus an optional error to return.
+type gatedBlockingStartTransport struct {
+	readCh    chan byte
+	startGate chan struct{} // blocks StartArbitration until closed
+	startErr  error        // error to return after gate opens
+	mu        sync.Mutex
+	calls     []byte
+}
+
+func (g *gatedBlockingStartTransport) ReadByte() (byte, error) {
+	v, ok := <-g.readCh
+	if !ok {
+		return 0, io.EOF
+	}
+	return v, nil
+}
+
+func (g *gatedBlockingStartTransport) Write(p []byte) (int, error) { return len(p), nil }
+func (g *gatedBlockingStartTransport) Close() error                { return nil }
+
+func (g *gatedBlockingStartTransport) StartArbitration(initiator byte) error {
+	<-g.startGate
+	g.mu.Lock()
+	g.calls = append(g.calls, initiator)
+	g.mu.Unlock()
+	return g.startErr
+}
+
+// TestBlockingFallbackSuccessAfterCancel_NoDoubleSend verifies P1
+// #3063005909: when cancelPendingStart clears pendingStart while
+// the blocking StartArbitration is in flight, the success path must
+// not complete the grant or send on the cap-1 notify channel.
+func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
+	mock := &gatedBlockingStartTransport{
+		readCh:    make(chan byte, 256),
+		startGate: make(chan struct{}),
+		startErr:  nil, // success
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Request START.
+	ch := mux.arb.requestStart(id, 0x55)
+
+	// tryGrantAndStart blocks inside StartArbitration.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mux.tryGrantAndStart()
+	}()
+
+	// Wait for StartArbitration to be entered.
+	time.Sleep(30 * time.Millisecond)
+
+	// Cancel the pending request while StartArbitration blocks.
+	mux.cancelPendingStart(id)
+
+	// Release StartArbitration — returns success.
+	// Without the fix, tryGrantAndStart would call
+	// completeArbitrationGrant and double-send on notify.
+	close(mock.startGate)
+
+	// tryGrantAndStart must return promptly.
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good.
+	case <-time.After(3 * time.Second):
+		t.Fatal("tryGrantAndStart blocked — likely double-send on notify channel")
+	}
+
+	// Drain the cancel result.
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false from cancel path")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for cancel result")
+	}
+
+	// No second result must appear.
+	select {
+	case extra := <-ch:
+		t.Fatalf("unexpected second result on notify channel: %+v", extra)
+	default:
+		// Good — no double-send.
+	}
+
+	// Bus ownership must NOT be granted to the cancelled session.
+	if mux.arb.isOwner(id) {
+		t.Fatal("cancelled session should not own the bus")
+	}
+
+	// pendingStartAbsorb should have been decremented (cancel increments,
+	// success-path-guard decrements).
+	mux.stateMu.Lock()
+	absorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d, want 0", absorb)
+	}
+}
+
+// TestBlockingFallbackErrorAfterCancel_NoDoubleSend verifies P1
+// #3063005909: when cancelPendingStart clears pendingStart while
+// StartArbitration is blocking, the error path must not send a second
+// failure on the cap-1 notify channel.
+func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
+	mock := &gatedBlockingStartTransport{
+		readCh:    make(chan byte, 256),
+		startGate: make(chan struct{}),
+		startErr:  errors.New("adapter bus fault"),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Request START.
+	ch := mux.arb.requestStart(id, 0x55)
+
+	// tryGrantAndStart blocks inside StartArbitration.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mux.tryGrantAndStart()
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+
+	// Cancel while blocking.
+	mux.cancelPendingStart(id)
+
+	// Release — returns error.
+	close(mock.startGate)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good.
+	case <-time.After(3 * time.Second):
+		t.Fatal("tryGrantAndStart blocked — likely double-send on notify channel")
+	}
+
+	// Drain the cancel result.
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false from cancel path")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for cancel result")
+	}
+
+	// No second result.
+	select {
+	case extra := <-ch:
+		t.Fatalf("unexpected second result on notify channel: %+v", extra)
+	default:
+		// Good.
+	}
+
+	// pendingStartAbsorb must be decremented.
+	mux.stateMu.Lock()
+	absorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d, want 0", absorb)
+	}
+}

@@ -146,6 +146,11 @@ type Mux struct {
 	activeSendCh chan sendRequest
 	activeCh     chan activeEvent // capacity 4096: unified byte+error channel (FIFO ordered)
 
+	// INFO cache — populated once after INIT, served to active path
+	// and sessions without hitting the upstream transport's readMu.
+	infoCacheMu sync.RWMutex
+	infoCache   map[transport.AdapterInfoID][]byte
+
 	// Passive path callback (set via SetPassiveCallback).
 	// The callback must NOT call back into Mux methods (re-entrancy hazard).
 	passiveMu       sync.Mutex
@@ -206,6 +211,7 @@ func New(cfg Config) *Mux {
 		arb:          newArbitrator(),
 		gatewayEcho:  newEchoTracker(),
 		sessions:     make(map[uint64]*session),
+		infoCache:    make(map[transport.AdapterInfoID][]byte),
 		activeSendCh: make(chan sendRequest, 16),
 		activeCh:     make(chan activeEvent, 4096), // unified byte+error channel (4096: survives ~16s of bus traffic during arbitration waits)
 	}
@@ -352,7 +358,71 @@ func (m *Mux) connect() error {
 		m.logger.Printf("adaptermux: INIT handshake succeeded, upstream features=0x%02X", features)
 	}
 
+	// Populate INFO cache after successful INIT — called while connMu
+	// is held, so no concurrent readLoop can interfere with the INFO
+	// request/response exchange on the transport.
+	m.populateInfoCache(tr)
+
 	return nil
+}
+
+// populateInfoCache queries the upstream transport for INFO metadata
+// and stores responses in the mux-level cache. Sessions and the active
+// path read from the cache instead of touching the upstream transport,
+// avoiding readMu contention during normal operation.
+//
+// Called from connect() after a successful INIT handshake. The upstream
+// transport must support InfoRequester; if it does not, the cache is
+// left empty and CachedInfo returns an error.
+func (m *Mux) populateInfoCache(tr transport.RawTransport) {
+	infoReq, ok := tr.(transport.InfoRequester)
+	if !ok {
+		return
+	}
+
+	cache := make(map[transport.AdapterInfoID][]byte)
+
+	// Try version first — if it fails, adapter doesn't support INFO.
+	data, err := infoReq.RequestInfo(transport.AdapterInfoVersion)
+	if err != nil {
+		m.logger.Printf("adaptermux: INFO not supported by adapter")
+		return
+	}
+	cache[transport.AdapterInfoVersion] = append([]byte(nil), data...)
+
+	// Query remaining IDs (0x01–0x07).
+	for id := transport.AdapterInfoHardwareID; id <= transport.AdapterInfoWiFiRSSI; id++ {
+		data, err := infoReq.RequestInfo(id)
+		if err != nil {
+			continue
+		}
+		cache[id] = append([]byte(nil), data...)
+	}
+
+	m.infoCacheMu.Lock()
+	m.infoCache = cache
+	m.infoCacheMu.Unlock()
+
+	m.logger.Printf("adaptermux: INFO cache populated (%d entries)", len(cache))
+}
+
+// CachedInfo returns a copy of the cached INFO response for the given
+// ID. Returns an error if the cache is empty (adapter doesn't support
+// INFO) or the requested ID was not cached.
+func (m *Mux) CachedInfo(id transport.AdapterInfoID) ([]byte, error) {
+	m.infoCacheMu.RLock()
+	defer m.infoCacheMu.RUnlock()
+
+	if len(m.infoCache) == 0 {
+		return nil, errors.New("adaptermux: INFO not available")
+	}
+	data, ok := m.infoCache[id]
+	if !ok {
+		return nil, fmt.Errorf("adaptermux: INFO id 0x%02X not cached", byte(id))
+	}
+	result := make([]byte, len(data))
+	copy(result, data)
+	return result, nil
 }
 
 // reconnect tears down the current connection and re-establishes it.

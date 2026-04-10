@@ -19,9 +19,16 @@ type activeTransport struct {
 
 // Compile-time interface checks.
 var (
-	_ transport.RawTransport    = (*activeTransport)(nil)
+	_ transport.RawTransport      = (*activeTransport)(nil)
 	_ transport.StreamEventReader = (*activeTransport)(nil)
+	_ transport.InfoRequester     = (*activeTransport)(nil)
 )
+
+// NOTE: activeTransport intentionally does NOT implement
+// transport.Reconnectable. The upstream transport's Reconnect() acquires
+// readMu, and calling it from the active path (which blocks in ReadByte
+// on readLoop's output) would deadlock. The mux handles reconnection
+// internally via reconnect().
 
 // ReadByte blocks until a byte is received from the adapter or an
 // error occurs. This receives ALL bytes from the adapter (including
@@ -134,4 +141,30 @@ func (t *activeTransport) StartArbitration(initiator byte) error {
 		t.mux.arb.cancelStart(gatewaySessionID)
 		return fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}
+}
+
+// RequestInfo returns cached INFO data for the given ID.
+// Delegates to the mux-level cache (populated at connect time) instead
+// of querying the upstream transport, avoiding readMu contention with
+// the readLoop.
+func (t *activeTransport) RequestInfo(id transport.AdapterInfoID) ([]byte, error) {
+	return t.mux.CachedInfo(id)
+}
+
+// ArbitrationSendsSource reports whether the upstream adapter's START
+// arbitration already places the source byte on the wire. Delegates to
+// the upstream transport if it implements the interface; returns false
+// otherwise (conservative default — caller will send the source byte).
+func (t *activeTransport) ArbitrationSendsSource() bool {
+	t.mux.connMu.Lock()
+	tr := t.mux.upstream
+	t.mux.connMu.Unlock()
+
+	if tr == nil {
+		return false
+	}
+	if checker, ok := tr.(interface{ ArbitrationSendsSource() bool }); ok {
+		return checker.ArbitrationSendsSource()
+	}
+	return false
 }

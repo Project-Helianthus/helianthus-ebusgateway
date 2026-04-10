@@ -311,22 +311,17 @@ func (m *Mux) connect() error {
 	m.upstream = tr
 
 	// Perform INIT handshake — fatal if transport implements Init.
-	// Store the negotiated features byte for session INIT replies.
-	// ENHTransport.Init returns error only — the upstream's actual
-	// features byte is not exposed. Store the requested value (0x01)
-	// as the best-effort fallback.
+	// Store the negotiated features byte from the upstream RESETTED
+	// response for session INIT reply fidelity.
 	const requestedFeatures byte = 0x01
-	if initer, ok := tr.(interface{ Init(byte) error }); ok {
-		if err := initer.Init(requestedFeatures); err != nil {
+	if initer, ok := tr.(interface{ Init(byte) (byte, error) }); ok {
+		features, err := initer.Init(requestedFeatures)
+		if err != nil {
 			_ = conn.Close()
 			return fmt.Errorf("adaptermux: INIT handshake failed: %w", err)
 		}
-		// NOTE: ENHTransport.Init() does not expose the upstream RESETTED
-		// response payload. We store the requested features (0x01) as a
-		// best-effort fallback. Faithful upstream feature negotiation requires
-		// extending the ebusgo transport.Init interface to return the response
-		// payload — tracked as a known contract divergence from the proxy.
-		m.upstreamFeatures.Store(uint32(requestedFeatures))
+		m.upstreamFeatures.Store(uint32(features))
+		m.logger.Printf("adaptermux: INIT handshake succeeded, upstream features=0x%02X", features)
 	}
 
 	return nil
@@ -665,15 +660,17 @@ func (m *Mux) handleReset() {
 		m.connMu.Lock()
 		tr := m.upstream
 		m.connMu.Unlock()
-		if initer, ok := tr.(interface{ Init(byte) error }); ok {
-			features := byte(m.upstreamFeatures.Load())
-			if features == 0 {
-				features = 0x01
+		if initer, ok := tr.(interface{ Init(byte) (byte, error) }); ok {
+			reqFeatures := byte(m.upstreamFeatures.Load())
+			if reqFeatures == 0 {
+				reqFeatures = 0x01
 			}
-			if err := initer.Init(features); err != nil {
+			features, err := initer.Init(reqFeatures)
+			if err != nil {
 				m.logger.Printf("adaptermux: re-INIT after RESETTED failed: %v", err)
 			} else {
-				m.logger.Printf("adaptermux: re-INIT after RESETTED succeeded")
+				m.upstreamFeatures.Store(uint32(features))
+				m.logger.Printf("adaptermux: re-INIT after RESETTED succeeded, features=0x%02X", features)
 			}
 		}
 	}()

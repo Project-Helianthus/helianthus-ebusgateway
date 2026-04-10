@@ -40,8 +40,8 @@ func fakeAdapterServer(t *testing.T) (addr string, closer func()) {
 			return
 		}
 
-		// Respond with RESETTED.
-		resetted := transport.EncodeENH(transport.ENHResResetted, 0x00)
+		// Respond with RESETTED carrying upstream features=0x01.
+		resetted := transport.EncodeENH(transport.ENHResResetted, 0x01)
 		if _, err := conn.Write(resetted[:]); err != nil {
 			return
 		}

@@ -3,6 +3,7 @@ package adaptermux
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -397,6 +398,110 @@ func TestMux_CloseWithoutStart(t *testing.T) {
 	// Double close also safe.
 	err2 := mux.Close()
 	_ = err2
+}
+
+// --- P1 fix: reset/disconnect errors deliver RESETTED not FAILED ---
+
+func TestIsResetOrDisconnectError(t *testing.T) {
+	tests := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New("arbitration collision"), false},
+		{errors.New("adapter refused"), false},
+		{errors.New("adaptermux: adapter reset"), true},
+		{errors.New("adaptermux: adapter disconnected"), true},
+		{errors.New("RESET during arbitration"), true},
+		{errors.New("connection disconnect"), true},
+	}
+	for _, tt := range tests {
+		got := isResetOrDisconnectError(tt.err)
+		label := "<nil>"
+		if tt.err != nil {
+			label = tt.err.Error()
+		}
+		if got != tt.want {
+			t.Errorf("isResetOrDisconnectError(%q) = %v, want %v", label, got, tt.want)
+		}
+	}
+}
+
+func TestSession_StartFailedByResetDeliversResetted(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Send START.
+	startReq := transport.EncodeENH(transport.ENHReqStart, 0x31)
+	if _, err := client.Write(startReq[:]); err != nil {
+		t.Fatalf("write START: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	_, _, notify, granted := mux.arb.tryGrant()
+	if !granted {
+		t.Fatal("expected grant")
+	}
+
+	// Simulate failure caused by adapter reset (not collision).
+	notify <- startResult{granted: false, initiator: 0x31, err: errors.New("adaptermux: adapter reset")}
+
+	frame := readENHFrame(t, client, 2*time.Second)
+
+	// Should be RESETTED (not FAILED) since the cause was a reset.
+	features := byte(mux.upstreamFeatures.Load())
+	expected := transport.EncodeENH(transport.ENHResResetted, features)
+	if frame != expected {
+		t.Fatalf("reset-caused START failure: got %x, want %x (RESETTED)", frame, expected)
+	}
+
+	// Verify it is NOT FAILED.
+	notExpected := transport.EncodeENH(transport.ENHResFailed, 0x31)
+	if frame == notExpected {
+		t.Fatal("reset-caused START failure should deliver RESETTED, not FAILED")
+	}
+}
+
+func TestSession_StartFailedByCollisionDeliversFailed(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Send START.
+	startReq := transport.EncodeENH(transport.ENHReqStart, 0x42)
+	if _, err := client.Write(startReq[:]); err != nil {
+		t.Fatalf("write START: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	_, initiator, notify, granted := mux.arb.tryGrant()
+	if !granted {
+		t.Fatal("expected grant")
+	}
+
+	// Simulate collision failure (not reset).
+	notify <- startResult{granted: false, initiator: initiator, err: errors.New("adapter refused")}
+
+	frame := readENHFrame(t, client, 2*time.Second)
+
+	// Should be FAILED (collision), not RESETTED.
+	expected := transport.EncodeENH(transport.ENHResFailed, 0x42)
+	if frame != expected {
+		t.Fatalf("collision START failure: got %x, want %x (FAILED)", frame, expected)
+	}
 }
 
 // Verify Close is safe from concurrent goroutines.

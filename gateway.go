@@ -3,6 +3,7 @@ package ebusgateway
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"strings"
@@ -353,7 +354,7 @@ func transportFromConn(protocolName TransportProtocol, conn net.Conn, readTimeou
 }
 
 type initTransport interface {
-	Init(features byte) error
+	Init(features byte) (byte, error)
 }
 
 func initTransportIfSupported(tr transport.RawTransport) error {
@@ -364,9 +365,11 @@ func initTransportIfSupported(tr transport.RawTransport) error {
 	// Match ebusd behavior: request additional infos (bit0) during INIT.
 	// Some adapters gate optional capabilities behind this feature flag.
 	const defaultInitFeatures = byte(0x01)
-	if err := initializer.Init(defaultInitFeatures); err != nil {
+	features, err := initializer.Init(defaultInitFeatures)
+	if err != nil {
 		return fmt.Errorf("gateway transport init failed: %w", err)
 	}
+	log.Printf("gateway: transport INIT succeeded, upstream features=0x%02X", features)
 	return nil
 }
 

@@ -113,9 +113,18 @@ while IFS= read -r file; do
 done <<< "${changed_files}"
 
 if [[ "${adapter_direct_touched}" -eq 1 ]]; then
-  echo "transport gate: WARNING — adapter-direct files (internal/adaptermux/) modified."
-  echo "transport gate: AD01..AD12 coverage is validated by unit tests only."
-  echo "transport gate: Formal AD matrix report gate: pending implementation."
+  # AD gate: adaptermux changes require AD01..AD12 coverage evidence.
+  # Until the formal AD matrix report is implemented, allow explicit
+  # bypass via HELIANTHUS_AD_GATE_SKIP with a documented reason.
+  if [[ -n "${HELIANTHUS_AD_GATE_SKIP:-}" ]]; then
+    echo "transport gate: AD gate bypassed — ${HELIANTHUS_AD_GATE_SKIP}"
+  else
+    echo "transport gate: FAIL — adapter-direct files (internal/adaptermux/) modified."
+    echo "transport gate: AD01..AD12 coverage evidence required."
+    echo "transport gate: Unit tests in internal/adaptermux/*_test.go must pass."
+    echo "transport gate: Set HELIANTHUS_AD_GATE_SKIP='<reason>' to bypass with documented reason."
+    exit 1
+  fi
 fi
 
 python3 - "${report_path}" <<'PY'

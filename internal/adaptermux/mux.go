@@ -915,6 +915,15 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.sessionsMu.Unlock()
 	}
 
+	// Drain stale bytes from activeCh before notifying gateway.Bus.
+	// This mirrors ENHTransport.StartArbitration's parser.Reset() which
+	// discards pre-arbitration traffic. Without this, gateway.Bus reads
+	// stale bytes from activeCh and gets echo mismatches (ErrBusCollision)
+	// causing adapter-direct scan failures.
+	if sessionID == gatewaySessionID {
+		m.drainActiveCh()
+	}
+
 	// Notify requester of success.
 	notify <- startResult{granted: true, initiator: initiator}
 }

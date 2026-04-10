@@ -108,6 +108,8 @@ func (m *Mux) RemoveSession(id uint64) {
 
 	if ok {
 		m.arb.removeSession(id)
+		m.cancelPendingStart(id)
+		m.tryGrantAndStart()
 		sess.close()
 		m.logger.Printf("adaptermux: session %d disconnected", id)
 	}

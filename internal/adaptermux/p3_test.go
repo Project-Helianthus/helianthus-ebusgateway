@@ -305,7 +305,9 @@ func TestArbitrationResponse_Failed(t *testing.T) {
 
 // TestArbitrationResponse_SessionDisconnected verifies that if a
 // session disconnects while a START is pending at the adapter, the
-// STARTED response does not confirm ownership for a dead session.
+// pending START is cancelled immediately (not deferred to adapter
+// response), the absorb counter is set, and the stale adapter
+// response is absorbed without affecting arbitration.
 func TestArbitrationResponse_SessionDisconnected(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
@@ -331,12 +333,24 @@ func TestArbitrationResponse_SessionDisconnected(t *testing.T) {
 	}
 
 	// Disconnect the session BEFORE adapter responds.
+	// RemoveSession must call cancelPendingStart to immediately clear
+	// pendingStart and unblock arbitration (P3 fix: #3062875632).
 	mux.RemoveSession(id)
 
-	// Inject STARTED from adapter.
-	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x55}
+	// pendingStart must be nil immediately after RemoveSession.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	absorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart should be nil immediately after RemoveSession")
+	}
+	if absorb != 1 {
+		t.Fatalf("pendingStartAbsorb = %d after RemoveSession, want 1", absorb)
+	}
 
-	// The result should be failure (session disconnected).
+	// The result should be failure, delivered immediately by
+	// cancelPendingStart (not deferred to adapter response).
 	select {
 	case result := <-ch:
 		if result.granted {
@@ -346,9 +360,70 @@ func TestArbitrationResponse_SessionDisconnected(t *testing.T) {
 		t.Fatal("timeout waiting for START result")
 	}
 
+	// Inject STARTED from adapter — must be absorbed as stale.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x55}
+	time.Sleep(50 * time.Millisecond)
+
+	// absorb counter should be decremented back to 0.
+	mux.stateMu.Lock()
+	absorb = mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d after absorbing stale STARTED, want 0", absorb)
+	}
+
 	// Verify NO ownership set.
 	if mux.arb.isOwner(id) {
 		t.Fatal("dead session should NOT own the bus")
+	}
+}
+
+// TestRemoveSession_UnblocksNextRequest verifies that RemoveSession
+// calls tryGrantAndStart after clearing the pending START, so the
+// next queued session is serviced immediately without waiting for the
+// adapter's stale response (P3 fix: #3062875632).
+func TestRemoveSession_UnblocksNextRequest(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Session A — will be disconnected.
+	clientA, serverA := net.Pipe()
+	defer clientA.Close()
+	idA := mux.AddSession(serverA)
+
+	// Session B — should be serviced after A disconnects.
+	clientB, serverB := net.Pipe()
+	defer clientB.Close()
+	idB := mux.AddSession(serverB)
+	defer mux.RemoveSession(idB)
+
+	// Queue START requests for both sessions.
+	mux.arb.requestStart(idA, 0x55)
+	mux.arb.requestStart(idB, 0x66)
+
+	// Feed SYN to trigger tryGrantAndStart — grants A first.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pendingStart is for session A.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == idA
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart for session A")
+	}
+
+	// Disconnect A while its START is pending at the adapter.
+	mux.RemoveSession(idA)
+	time.Sleep(50 * time.Millisecond)
+
+	// pendingStart should now be for session B — tryGrantAndStart
+	// was called by RemoveSession and picked up B's queued request.
+	mux.stateMu.Lock()
+	hasPendingB := mux.pendingStart != nil && mux.pendingStart.sessionID == idB
+	mux.stateMu.Unlock()
+	if !hasPendingB {
+		t.Fatal("expected pendingStart to advance to session B after RemoveSession(A)")
 	}
 }
 

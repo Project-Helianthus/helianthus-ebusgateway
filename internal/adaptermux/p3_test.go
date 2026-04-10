@@ -1,0 +1,1794 @@
+package adaptermux
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+)
+
+// --- P3 test infrastructure ---
+
+// p3MockTransport simulates an ENH transport that supports non-blocking
+// RequestStart and surfaces STARTED/FAILED via ReadEvent (StreamEvent).
+// It does NOT implement StartArbitration, so the blocking fallback is
+// never used.
+type p3MockTransport struct {
+	mu     sync.Mutex
+	closed bool
+
+	// eventCh is the stream of events read by readLoop.
+	// Tests push StreamEvents here to simulate adapter responses.
+	eventCh chan transport.StreamEvent
+
+	// startRequests records RequestStart calls.
+	startRequests []byte
+
+	// writtenBytes records Write calls.
+	writtenBytes []byte
+}
+
+func newP3MockTransport() *p3MockTransport {
+	return &p3MockTransport{
+		eventCh: make(chan transport.StreamEvent, 256),
+	}
+}
+
+func (t *p3MockTransport) RequestStart(initiator byte) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.startRequests = append(t.startRequests, initiator)
+	return nil
+}
+
+func (t *p3MockTransport) ReadEvent() (transport.StreamEvent, error) {
+	ev, ok := <-t.eventCh
+	if !ok {
+		return transport.StreamEvent{}, io.EOF
+	}
+	return ev, nil
+}
+
+func (t *p3MockTransport) ReadByte() (byte, error) {
+	for {
+		ev, err := t.ReadEvent()
+		if err != nil {
+			return 0, err
+		}
+		if ev.Kind == transport.StreamEventByte {
+			return ev.Byte, nil
+		}
+		// Skip non-byte events (STARTED, FAILED, RESET)
+	}
+}
+
+func (t *p3MockTransport) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.writtenBytes = append(t.writtenBytes, p...)
+	return len(p), nil
+}
+
+func (t *p3MockTransport) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.closed {
+		t.closed = true
+		close(t.eventCh)
+	}
+	return nil
+}
+
+func (t *p3MockTransport) Init(features byte) (byte, error) {
+	return features, nil
+}
+
+func (t *p3MockTransport) getStartRequests() []byte {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make([]byte, len(t.startRequests))
+	copy(result, t.startRequests)
+	return result
+}
+
+// newP3TestMux creates a Mux with a p3MockTransport injected, fully
+// started with readLoop and sendLoop goroutines running.
+func newP3TestMux(t *testing.T) (*Mux, *p3MockTransport, context.CancelFunc, func()) {
+	t.Helper()
+
+	mock := newP3MockTransport()
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	mux.ctx, mux.cancel = ctx, cancel
+
+	// Inject mock transport.
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Start readLoop and sendLoop.
+	mux.wg.Add(2)
+	go mux.readLoop()
+	go mux.sendLoop()
+
+	cleanup := func() {
+		cancel()
+		mock.Close()
+		mux.wg.Wait()
+	}
+
+	return mux, mock, cancel, cleanup
+}
+
+// --- P3 tests ---
+
+// TestObserverContinuityDuringArbitration verifies that bus bytes
+// continue to flow to passive observers while a START request is
+// pending at the adapter level. This is the core P3 fix: readLoop
+// must NOT block during arbitration.
+func TestObserverContinuityDuringArbitration(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Collect passive events.
+	var passiveMu sync.Mutex
+	var passiveSymbols []byte
+	mux.SetPassiveCallback(func(pe PassiveEvent) {
+		if pe.Kind == PassiveEventSymbol {
+			passiveMu.Lock()
+			passiveSymbols = append(passiveSymbols, pe.Symbol)
+			passiveMu.Unlock()
+		}
+	})
+
+	// Request a START for the gateway. This will call RequestStart
+	// on the mock transport (non-blocking) and register a pendingStart.
+	mux.arb.requestStart(gatewaySessionID, 0x31)
+
+	// Feed a SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+
+	// Wait for the START to be processed.
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify RequestStart was called.
+	starts := mock.getStartRequests()
+	if len(starts) == 0 {
+		t.Fatal("expected RequestStart to be called")
+	}
+	if starts[0] != 0x31 {
+		t.Fatalf("RequestStart initiator = 0x%02X, want 0x31", starts[0])
+	}
+
+	// Verify pendingStart is set.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart to be set after RequestStart")
+	}
+
+	// NOW: while START is pending, feed bus bytes. These MUST flow
+	// to the passive observer without blocking.
+	busBytes := []byte{0xAA, 0x10, 0x08, 0x07, 0x04, 0x00, 0x55, 0x66, 0x77, 0x88, 0xCC}
+	for _, b := range busBytes {
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+	}
+
+	// Wait for delivery.
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify passive observer received all bytes.
+	passiveMu.Lock()
+	received := make([]byte, len(passiveSymbols))
+	copy(received, passiveSymbols)
+	passiveMu.Unlock()
+
+	// The first SYN that triggered tryGrantAndStart should also be in
+	// the passive stream, plus all the bus bytes.
+	expectedLen := 1 + len(busBytes) // initial SYN + bus bytes
+	if len(received) < expectedLen {
+		t.Fatalf("passive received %d symbols, want at least %d (observer continuity broken)", len(received), expectedLen)
+	}
+
+	// Now resolve the pending START with STARTED.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x31}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify ownership was confirmed.
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("gateway should own the bus after STARTED")
+	}
+}
+
+// TestArbitrationResponse_Started verifies that a STARTED event from
+// the adapter confirms ownership and notifies the requester.
+func TestArbitrationResponse_Started(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Request START for the gateway.
+	ch := mux.arb.requestStart(gatewaySessionID, 0x42)
+
+	// Feed SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pendingStart exists.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart after SYN")
+	}
+
+	// Inject STARTED from adapter.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x42}
+
+	// Wait for result.
+	select {
+	case result := <-ch:
+		if !result.granted {
+			t.Fatal("expected granted=true after STARTED")
+		}
+		if result.initiator != 0x42 {
+			t.Fatalf("result.initiator = 0x%02X, want 0x42", result.initiator)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for START result")
+	}
+
+	// Verify ownership set.
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("gateway should own bus after STARTED")
+	}
+
+	// Verify pendingStart cleared.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart should be nil after STARTED")
+	}
+}
+
+// TestArbitrationResponse_Failed verifies that a FAILED event from
+// the adapter notifies the requester of failure without setting ownership.
+func TestArbitrationResponse_Failed(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	ch := mux.arb.requestStart(gatewaySessionID, 0x42)
+
+	// Feed SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Inject FAILED from adapter (winner byte = 0x10).
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x10}
+
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false after FAILED")
+		}
+		// initiator carries the winner address from the FAILED event.
+		if result.initiator != 0x10 {
+			t.Fatalf("result.initiator = 0x%02X, want 0x10 (winner)", result.initiator)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for START result")
+	}
+
+	// Verify NO ownership.
+	if mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("gateway should NOT own bus after FAILED")
+	}
+}
+
+// TestArbitrationResponse_SessionDisconnected verifies that if a
+// session disconnects while a START is pending at the adapter, the
+// pending START is cancelled immediately (not deferred to adapter
+// response), the absorb counter is set, and the stale adapter
+// response is absorbed without affecting arbitration.
+func TestArbitrationResponse_SessionDisconnected(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+
+	// Request START for the external session.
+	ch := mux.arb.requestStart(id, 0x55)
+
+	// Feed SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pendingStart is for this session.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == id
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart for external session")
+	}
+
+	// Disconnect the session BEFORE adapter responds.
+	// RemoveSession must call cancelPendingStart to immediately clear
+	// pendingStart and unblock arbitration (P3 fix: #3062875632).
+	mux.RemoveSession(id)
+
+	// pendingStart must be nil immediately after RemoveSession.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	absorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart should be nil immediately after RemoveSession")
+	}
+	if absorb != 1 {
+		t.Fatalf("pendingStartAbsorb = %d after RemoveSession, want 1", absorb)
+	}
+
+	// The result should be failure, delivered immediately by
+	// cancelPendingStart (not deferred to adapter response).
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false for disconnected session")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for START result")
+	}
+
+	// Inject STARTED from adapter — must be absorbed as stale.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x55}
+	time.Sleep(50 * time.Millisecond)
+
+	// absorb counter should be decremented back to 0.
+	mux.stateMu.Lock()
+	absorb = mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d after absorbing stale STARTED, want 0", absorb)
+	}
+
+	// Verify NO ownership set.
+	if mux.arb.isOwner(id) {
+		t.Fatal("dead session should NOT own the bus")
+	}
+}
+
+// TestRemoveSession_UnblocksNextRequest verifies that RemoveSession
+// calls tryGrantAndStart after clearing the pending START, so the
+// next queued session is serviced immediately without waiting for the
+// adapter's stale response (P3 fix: #3062875632).
+func TestRemoveSession_UnblocksNextRequest(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Session A — will be disconnected.
+	clientA, serverA := net.Pipe()
+	defer clientA.Close()
+	idA := mux.AddSession(serverA)
+
+	// Session B — should be serviced after A disconnects.
+	clientB, serverB := net.Pipe()
+	defer clientB.Close()
+	idB := mux.AddSession(serverB)
+	defer mux.RemoveSession(idB)
+
+	// Queue START requests for both sessions.
+	mux.arb.requestStart(idA, 0x55)
+	mux.arb.requestStart(idB, 0x66)
+
+	// Feed SYN to trigger tryGrantAndStart — grants A first.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pendingStart is for session A.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == idA
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart for session A")
+	}
+
+	// Disconnect A while its START is pending at the adapter.
+	mux.RemoveSession(idA)
+	time.Sleep(50 * time.Millisecond)
+
+	// pendingStart should now be for session B — tryGrantAndStart
+	// was called by RemoveSession and picked up B's queued request.
+	mux.stateMu.Lock()
+	hasPendingB := mux.pendingStart != nil && mux.pendingStart.sessionID == idB
+	mux.stateMu.Unlock()
+	if !hasPendingB {
+		t.Fatal("expected pendingStart to advance to session B after RemoveSession(A)")
+	}
+}
+
+// TestCancelPendingStart verifies that cancelPendingStart clears an
+// in-flight pending START for the given session and notifies failure.
+func TestCancelPendingStart(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Request START.
+	ch := mux.arb.requestStart(id, 0x33)
+
+	// Feed SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pending.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == id
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart for session")
+	}
+
+	// Cancel the pending START via SYN cancel path.
+	// This simulates session.handleStart receiving START with SYN.
+	mux.arb.cancelStart(id)
+	mux.arb.releaseOwnership(id)
+	mux.cancelPendingStart(id)
+
+	// The arbitration result should be failure.
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false after cancel")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for cancel result")
+	}
+
+	// Verify pendingStart is cleared.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart should be nil after cancel")
+	}
+}
+
+// TestCancelPendingStart_WrongSession verifies that cancelPendingStart
+// is a no-op when the pending START belongs to a different session.
+func TestCancelPendingStart_WrongSession(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Request START for the gateway.
+	mux.arb.requestStart(gatewaySessionID, 0x31)
+
+	// Feed SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pending is for gateway.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == gatewaySessionID
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart for gateway")
+	}
+
+	// Try to cancel with a different session ID — should be no-op.
+	mux.cancelPendingStart(42)
+
+	// pendingStart should still be set.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("pendingStart should NOT be cleared by wrong session cancel")
+	}
+}
+
+// TestCancelPendingStart_DuringRequestStart verifies the P1 fix:
+// pendingStart is registered BEFORE RequestStart so that a concurrent
+// cancel during RequestStart finds and clears the pending entry.
+// Without the fix, neither arb.cancelStart (already dequeued) nor
+// cancelPendingStart (not yet stored) could see the in-flight request.
+func TestCancelPendingStart_DuringRequestStart(t *testing.T) {
+	// Use a delayed mock transport that blocks inside RequestStart
+	// long enough for us to issue a cancel.
+	mock := &delayedStartTransport{
+		p3MockTransport: newP3MockTransport(),
+		startGate:       make(chan struct{}),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Request START for the external session.
+	ch := mux.arb.requestStart(id, 0x55)
+
+	// Call tryGrantAndStart in a goroutine — it will block inside
+	// RequestStart until we release startGate.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mux.tryGrantAndStart()
+	}()
+
+	// Wait for RequestStart to be entered (the goroutine blocks on startGate).
+	time.Sleep(30 * time.Millisecond)
+
+	// P1 fix validation: pendingStart MUST be set even though
+	// RequestStart has not returned yet.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == id
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("P1 regression: pendingStart must be set BEFORE RequestStart returns")
+	}
+
+	// Cancel the pending START — simulates a client sending START
+	// cancel (0xAA) while RequestStart is in flight.
+	mux.cancelPendingStart(id)
+
+	// Now release RequestStart so tryGrantAndStart can return.
+	close(mock.startGate)
+	wg.Wait()
+
+	// The result should be failure (cancelled).
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false — START was cancelled during RequestStart")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for cancel result")
+	}
+
+	// Verify NO ownership set — the cancelled request must not
+	// grant the bus, even if a STARTED arrives later.
+	if mux.arb.isOwner(id) {
+		t.Fatal("cancelled session should NOT own the bus")
+	}
+}
+
+// delayedStartTransport wraps p3MockTransport with a blocking gate
+// in RequestStart, allowing tests to exercise the cancellation race.
+type delayedStartTransport struct {
+	*p3MockTransport
+	startGate chan struct{} // blocks RequestStart until closed
+}
+
+func (d *delayedStartTransport) RequestStart(initiator byte) error {
+	// Block until the test releases the gate.
+	<-d.startGate
+	return d.p3MockTransport.RequestStart(initiator)
+}
+
+// TestOnlyOnePendingStart verifies that tryGrantAndStart is a no-op
+// when there is already a pending START in flight.
+func TestOnlyOnePendingStart(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Request two STARTs.
+	ch1 := mux.arb.requestStart(gatewaySessionID, 0x31)
+
+	// Add an external session and request a second START.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+	ch2 := mux.arb.requestStart(id, 0x42)
+
+	// Feed SYN to trigger tryGrantAndStart — should grant first (gateway priority).
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify exactly one RequestStart call (gateway has priority).
+	starts := mock.getStartRequests()
+	if len(starts) != 1 {
+		t.Fatalf("expected 1 RequestStart call, got %d", len(starts))
+	}
+	if starts[0] != 0x31 {
+		t.Fatalf("first RequestStart initiator = 0x%02X, want 0x31 (gateway)", starts[0])
+	}
+
+	// Feed another SYN — tryGrantAndStart should be no-op (pendingStart set).
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Still only 1 RequestStart call.
+	starts = mock.getStartRequests()
+	if len(starts) != 1 {
+		t.Fatalf("expected still 1 RequestStart call after second SYN, got %d", len(starts))
+	}
+
+	// Resolve first pending with STARTED.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x31}
+
+	select {
+	case result := <-ch1:
+		if !result.granted {
+			t.Fatal("expected gateway START to be granted")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for gateway START result")
+	}
+
+	// handleArbitrationResponse should have called tryGrantAndStart
+	// for the remaining external request. Feed a SYN to release
+	// ownership first (bus is now owned by gateway).
+	mux.arb.releaseOwnership(gatewaySessionID)
+
+	// Feed SYN to trigger the next grant attempt.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Now the external session's START should have been requested.
+	starts = mock.getStartRequests()
+	if len(starts) != 2 {
+		t.Fatalf("expected 2 RequestStart calls after resolving first, got %d", len(starts))
+	}
+	if starts[1] != 0x42 {
+		t.Fatalf("second RequestStart initiator = 0x%02X, want 0x42 (external)", starts[1])
+	}
+
+	// Resolve second with STARTED.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x42}
+
+	select {
+	case result := <-ch2:
+		if !result.granted {
+			t.Fatal("expected external START to be granted")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for external START result")
+	}
+}
+
+// TestArbitrationResponse_StaleIsHarmless verifies that receiving a
+// STARTED/FAILED when no pending START exists logs but does not panic.
+func TestArbitrationResponse_StaleIsHarmless(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Inject STARTED without any pending START.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x42}
+
+	// Wait for readLoop to process it.
+	time.Sleep(50 * time.Millisecond)
+
+	// No crash, no panic. Verify mux is still functional.
+	if mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("no ownership should be set from stale response")
+	}
+
+	// Inject FAILED without pending START.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x10}
+	time.Sleep(50 * time.Millisecond)
+
+	// Still no crash.
+}
+
+// TestHandleReset_ClearsPendingStart verifies that handleReset clears
+// any in-flight pending START and notifies the requester of failure.
+func TestHandleReset_ClearsPendingStart(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	ch := mux.arb.requestStart(gatewaySessionID, 0x31)
+
+	// Feed SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pending.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart")
+	}
+
+	// Trigger RESETTED.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventReset}
+	time.Sleep(50 * time.Millisecond)
+
+	// The pending START should have been cancelled.
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected failure after reset")
+		}
+		if result.err == nil {
+			t.Fatal("expected error on reset-cancelled START")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for cancelled START result")
+	}
+
+	// Verify pendingStart cleared.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart should be nil after reset")
+	}
+}
+
+// TestP3_ActivePathReceivesDuringPending verifies that the active
+// path (activeCh) also receives bytes while a START is pending.
+func TestP3_ActivePathReceivesDuringPending(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Request START.
+	mux.arb.requestStart(gatewaySessionID, 0x31)
+
+	// Feed SYN + data bytes.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+
+	// Feed data bytes while START is pending.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08}
+	time.Sleep(50 * time.Millisecond)
+
+	// Drain active channel and count received bytes.
+	var activeCount int
+	drainTimeout := time.After(200 * time.Millisecond)
+drain:
+	for {
+		select {
+		case <-mux.activeCh:
+			activeCount++
+		case <-drainTimeout:
+			break drain
+		}
+	}
+
+	// Should have received: SYN + 0x10 + 0x08 = 3 bytes minimum.
+	if activeCount < 3 {
+		t.Fatalf("active path received %d bytes during pending START, want >= 3", activeCount)
+	}
+}
+
+// TestP3_ExternalSessionReceivesDuringPending verifies that external
+// sessions receive bus bytes while a gateway START is pending.
+func TestP3_ExternalSessionReceivesDuringPending(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Add external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Read session output in background.
+	var receivedCount atomic.Int32
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			_, err := client.Read(buf)
+			if err != nil {
+				return
+			}
+			receivedCount.Add(1)
+		}
+	}()
+
+	// Request gateway START.
+	mux.arb.requestStart(gatewaySessionID, 0x31)
+
+	// Feed SYN + data bytes.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+
+	// Feed 5 data bytes while START is pending.
+	for i := byte(0); i < 5; i++ {
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10 + i}
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// External session should have received bytes (SYN + 5 data = 6).
+	count := receivedCount.Load()
+	if count < 5 {
+		t.Fatalf("external session received %d bytes during pending gateway START, want >= 5", count)
+	}
+}
+
+// TestP3_Close_ClearsPendingStart verifies that Close() cancels any
+// in-flight pending START.
+func TestP3_Close_ClearsPendingStart(t *testing.T) {
+	mock := newP3MockTransport()
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Manually set a pending START.
+	ch := make(chan startResult, 1)
+	mux.stateMu.Lock()
+	mux.pendingStart = &pendingStartState{
+		sessionID: gatewaySessionID,
+		initiator: 0x31,
+		notify:    ch,
+	}
+	mux.stateMu.Unlock()
+
+	// Close the mux.
+	cancel()
+	mock.Close()
+	mux.Close()
+
+	// The pending START should have been cancelled.
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected failure after close")
+		}
+		if result.err == nil {
+			t.Fatal("expected error on close-cancelled START")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for close-cancelled START result")
+	}
+}
+
+// TestP3_FallbackStartArbitration verifies that transports implementing
+// only StartArbitration (not RequestStart) still work via the blocking
+// fallback path.
+func TestP3_FallbackStartArbitration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Use mockInitTransport which has StartArbitration via Init but
+	// NOT RequestStart. We add StartArbitration to it.
+	mock := &blockingStartTransport{
+		readCh: make(chan byte, 256),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Request START.
+	ch := mux.arb.requestStart(gatewaySessionID, 0x31)
+
+	// Call tryGrantAndStart directly (simulating SYN handler).
+	mux.tryGrantAndStart()
+
+	// Should have used the blocking fallback.
+	calls := mock.getStartCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 StartArbitration call, got %d", len(calls))
+	}
+	if calls[0] != 0x31 {
+		t.Fatalf("StartArbitration initiator = 0x%02X, want 0x31", calls[0])
+	}
+
+	// Result should be immediately available (blocking path).
+	select {
+	case result := <-ch:
+		if !result.granted {
+			t.Fatal("expected granted=true from blocking fallback")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for blocking fallback result")
+	}
+
+	// Ownership should be set.
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("gateway should own bus after blocking fallback START")
+	}
+}
+
+// blockingStartTransport implements StartArbitration but NOT RequestStart.
+type blockingStartTransport struct {
+	mu         sync.Mutex
+	readCh     chan byte
+	startCalls []byte
+}
+
+func (b *blockingStartTransport) ReadByte() (byte, error) {
+	v, ok := <-b.readCh
+	if !ok {
+		return 0, io.EOF
+	}
+	return v, nil
+}
+
+func (b *blockingStartTransport) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (b *blockingStartTransport) Close() error {
+	return nil
+}
+
+func (b *blockingStartTransport) StartArbitration(initiator byte) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.startCalls = append(b.startCalls, initiator)
+	return nil
+}
+
+func (b *blockingStartTransport) getStartCalls() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	result := make([]byte, len(b.startCalls))
+	copy(result, b.startCalls)
+	return result
+}
+
+// --- P1 #3062452008: RequestStart failure after cancelPendingStart must not double-send ---
+
+// failingStartTransport wraps p3MockTransport with a blocking gate
+// that, when released, makes RequestStart return an error. This exercises
+// the race where cancelPendingStart sends on notify BEFORE RequestStart
+// returns an error — the error path must not send a second time.
+type failingStartTransport struct {
+	*p3MockTransport
+	startGate chan struct{} // blocks RequestStart until closed
+	startErr  error        // error to return after gate opens
+}
+
+func (f *failingStartTransport) RequestStart(initiator byte) error {
+	<-f.startGate
+	return f.startErr
+}
+
+// TestRequestStartFailAfterCancel_NoDoubleSend verifies the P1 fix:
+// when cancelPendingStart already cleared pendingStart and sent on
+// notify, a subsequent RequestStart error must NOT send a second result
+// on the cap-1 channel (which would block forever, pinning readLoop).
+func TestRequestStartFailAfterCancel_NoDoubleSend(t *testing.T) {
+	mock := &failingStartTransport{
+		p3MockTransport: newP3MockTransport(),
+		startGate:       make(chan struct{}),
+		startErr:        errors.New("adapter disconnected"),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Request START for the external session.
+	ch := mux.arb.requestStart(id, 0x55)
+
+	// Call tryGrantAndStart in a goroutine — blocks inside RequestStart.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mux.tryGrantAndStart()
+	}()
+
+	// Wait for RequestStart to be entered.
+	time.Sleep(30 * time.Millisecond)
+
+	// Verify pendingStart is set.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == id
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("pendingStart must be set before RequestStart returns")
+	}
+
+	// Simulate session disconnect: cancelPendingStart clears pendingStart
+	// and sends failure on notify.
+	mux.cancelPendingStart(id)
+
+	// Release RequestStart — it will return startErr.
+	// Without the fix, tryGrantAndStart would send a second result on
+	// the cap-1 channel, blocking forever.
+	close(mock.startGate)
+
+	// tryGrantAndStart must return promptly (not block on double-send).
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good — tryGrantAndStart returned without blocking.
+	case <-time.After(3 * time.Second):
+		t.Fatal("tryGrantAndStart blocked — likely double-send on notify channel")
+	}
+
+	// Drain the result — should be the cancel failure from cancelPendingStart.
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false from cancel path")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for cancel result on notify channel")
+	}
+
+	// Channel must be empty — no second result from the error path.
+	select {
+	case extra := <-ch:
+		t.Fatalf("unexpected second result on notify channel: %+v", extra)
+	default:
+		// Good — no double-send.
+	}
+}
+
+// TestAbsorbDecrementOnRequestStartFailAfterCancel verifies P1 #3062745920:
+// when cancelPendingStart increments pendingStartAbsorb and then RequestStart
+// fails (adapter never received the START), the absorb counter must be
+// decremented. Otherwise the next real arbitration response for a newer
+// request would be incorrectly consumed as stale, leaving that request
+// unresolved.
+func TestAbsorbDecrementOnRequestStartFailAfterCancel(t *testing.T) {
+	mock := &failingStartTransport{
+		p3MockTransport: newP3MockTransport(),
+		startGate:       make(chan struct{}),
+		startErr:        errors.New("adapter write error"),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// --- Phase 1: Request A — will be cancelled then fail ---
+	chA := mux.arb.requestStart(id, 0x55)
+
+	// Start tryGrantAndStart — blocks inside RequestStart.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mux.tryGrantAndStart()
+	}()
+
+	// Wait for RequestStart to be entered and pendingStart to be set.
+	time.Sleep(30 * time.Millisecond)
+
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == id
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("pendingStart must be set before RequestStart returns")
+	}
+
+	// Cancel the pending request — this increments pendingStartAbsorb.
+	mux.cancelPendingStart(id)
+
+	// Verify absorb counter was incremented.
+	mux.stateMu.Lock()
+	absorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if absorb != 1 {
+		t.Fatalf("pendingStartAbsorb = %d after cancel, want 1", absorb)
+	}
+
+	// Release RequestStart — it will return an error.
+	// The error path detects the pending was already cancelled and
+	// must decrement the absorb counter.
+	close(mock.startGate)
+
+	// Wait for tryGrantAndStart to finish.
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("tryGrantAndStart blocked")
+	}
+
+	// Drain cancel result from A.
+	select {
+	case result := <-chA:
+		if result.granted {
+			t.Fatal("expected granted=false from cancel path")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for cancel result")
+	}
+
+	// KEY ASSERTION: absorb counter must be 0 — the adapter never
+	// received the START, so no stale response will arrive.
+	mux.stateMu.Lock()
+	absorb = mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d after RequestStart fail, want 0 "+
+			"(adapter never received START, no stale response expected)", absorb)
+	}
+
+	// --- Phase 2: Request B — must NOT be consumed as stale ---
+	// Re-add session since arb state may have been cleared.
+	client2, server2 := net.Pipe()
+	defer client2.Close()
+	id2 := mux.AddSession(server2)
+	defer mux.RemoveSession(id2)
+
+	// Use a normal transport for B so RequestStart succeeds.
+	normalMock := newP3MockTransport()
+	mux.connMu.Lock()
+	mux.upstream = normalMock
+	mux.connMu.Unlock()
+
+	chB := mux.arb.requestStart(id2, 0x71)
+
+	// Grant and start B.
+	mux.tryGrantAndStart()
+
+	// Verify pendingStart is set for B.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil && mux.pendingStart.sessionID == id2
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("pendingStart must be set for request B")
+	}
+
+	// Deliver STARTED for B — must be processed normally, NOT absorbed.
+	mux.handleArbitrationResponse(true, 0x71)
+
+	select {
+	case result := <-chB:
+		if !result.granted {
+			t.Fatal("expected granted=true for request B after STARTED")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for STARTED result on request B — " +
+			"response was likely consumed as stale due to non-zero absorb counter")
+	}
+}
+
+// TestHandleArbitrationResponse_StaleStartedIgnored verifies that a STARTED
+// event whose confirmed initiator does not match the pending request is
+// treated as stale: ownership must NOT be granted, and pendingStart must
+// remain set so the real response can still be processed.
+func TestHandleArbitrationResponse_StaleStartedIgnored(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Request START with initiator 0x71 for the gateway session.
+	ch := mux.arb.requestStart(gatewaySessionID, 0x71)
+
+	// Feed SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pendingStart exists with initiator 0x71.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil
+	var pendingInit byte
+	if hasPending {
+		pendingInit = mux.pendingStart.initiator
+	}
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart after SYN")
+	}
+	if pendingInit != 0x71 {
+		t.Fatalf("pendingStart.initiator = 0x%02X, want 0x71", pendingInit)
+	}
+
+	// Inject a STARTED with wrong initiator 0x31 (stale from a
+	// cancelled request). This must NOT grant ownership.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x31}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Ownership must NOT be set.
+	if mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("stale STARTED should not grant ownership")
+	}
+
+	// pendingStart must still be set (restored after stale rejection).
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("pendingStart should be restored after stale STARTED")
+	}
+
+	// No result should have been sent on the notify channel.
+	select {
+	case result := <-ch:
+		t.Fatalf("unexpected result on notify channel: %+v", result)
+	default:
+		// Good — stale STARTED was ignored.
+	}
+
+	// Now inject the correct STARTED for 0x71. This must succeed.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+
+	select {
+	case result := <-ch:
+		if !result.granted {
+			t.Fatal("expected granted=true after correct STARTED")
+		}
+		if result.initiator != 0x71 {
+			t.Fatalf("result.initiator = 0x%02X, want 0x71", result.initiator)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for START result after correct STARTED")
+	}
+
+	// Verify ownership now confirmed.
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("gateway should own bus after correct STARTED")
+	}
+
+	// pendingStart must be cleared.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart should be nil after correct STARTED")
+	}
+}
+
+// TestHandleArbitrationResponse_StaleFailedIgnored verifies that a FAILED
+// event from a cancelled request does not incorrectly fail a newer pending
+// request. On ENH, FAILED carries the WINNER's address (not the loser's),
+// so initiator matching cannot be used. The epoch counter detects staleness.
+//
+// Race scenario:
+//  1. Request A → pendingStart (epoch=1), START sent to adapter
+//  2. cancelPendingStart clears A, sends failure to A
+//  3. Request B → pendingStart (epoch=2), START sent to adapter
+//  4. Stale FAILED for A arrives — must NOT fail B
+func TestHandleArbitrationResponse_StaleFailedIgnored(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// --- Phase 1: Request A (gateway, initiator 0x71) ---
+	chA := mux.arb.requestStart(gatewaySessionID, 0x71)
+
+	// Feed SYN to trigger tryGrantAndStart for A.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pendingStart exists.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart after SYN for request A")
+	}
+
+	// --- Phase 2: Cancel A via cancelPendingStart ---
+	mux.cancelPendingStart(gatewaySessionID)
+
+	// A's channel must receive a failure.
+	select {
+	case resultA := <-chA:
+		if resultA.granted {
+			t.Fatal("cancelled request A should not be granted")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for cancel result on request A")
+	}
+
+	// pendingStart must be nil after cancel; absorb counter must be 1.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	absorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart should be nil after cancelPendingStart")
+	}
+	if absorb != 1 {
+		t.Fatalf("pendingStartAbsorb = %d after cancel, want 1", absorb)
+	}
+
+	// --- Phase 3: Request B (gateway, initiator 0x71) ---
+	chB := mux.arb.requestStart(gatewaySessionID, 0x71)
+
+	// Feed SYN to trigger tryGrantAndStart for B.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pendingStart exists for B.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart after SYN for request B")
+	}
+
+	// --- Phase 4: Inject stale FAILED for A ---
+	// FAILED data=0x10 (the winner of that old arbitration round — irrelevant).
+	// This must be absorbed by the counter, NOT fail request B.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x10}
+	time.Sleep(50 * time.Millisecond)
+
+	// B's channel must NOT have received anything.
+	select {
+	case result := <-chB:
+		t.Fatalf("stale FAILED incorrectly resolved request B: %+v", result)
+	default:
+		// Good — stale FAILED was absorbed.
+	}
+
+	// pendingStart must still be set (B's request preserved).
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	absorb = mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("pendingStart should still be set after stale FAILED")
+	}
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d after absorbing stale FAILED, want 0", absorb)
+	}
+
+	// --- Phase 5: Correct STARTED for B ---
+	// The real response for B arrives. This must succeed.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+
+	select {
+	case result := <-chB:
+		if !result.granted {
+			t.Fatal("expected granted=true after correct STARTED for B")
+		}
+		if result.initiator != 0x71 {
+			t.Fatalf("result.initiator = 0x%02X, want 0x71", result.initiator)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for START result after correct STARTED for B")
+	}
+
+	// Verify ownership confirmed for B.
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("gateway should own bus after correct STARTED for B")
+	}
+
+	// pendingStart must be cleared.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart should be nil after correct STARTED for B")
+	}
+}
+
+// TestConcurrentTryGrantAndStart exercises the race fixed by P1
+// #3062924968: two goroutines calling tryGrantAndStart concurrently
+// must not both dequeue a request from the arbiter. Before the fix,
+// both could pass the pendingStart nil-guard, each call tryGrant(),
+// and one would overwrite the other's pendingStart — leaving the
+// first waiter without a terminal result.
+//
+// The test uses a delayedStartTransport to block inside RequestStart
+// so we can observe exactly one grant despite concurrent callers.
+func TestConcurrentTryGrantAndStart(t *testing.T) {
+	delayed := &delayedStartTransport{
+		p3MockTransport: newP3MockTransport(),
+		startGate:       make(chan struct{}),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	// Inject delayed transport (NOT started with readLoop — we drive
+	// tryGrantAndStart manually to control concurrency).
+	mux.connMu.Lock()
+	mux.upstream = delayed
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Create two external sessions with pending START requests.
+	clientA, serverA := net.Pipe()
+	defer clientA.Close()
+	idA := mux.AddSession(serverA)
+	defer mux.RemoveSession(idA)
+	chA := mux.arb.requestStart(idA, 0xA1)
+
+	clientB, serverB := net.Pipe()
+	defer clientB.Close()
+	idB := mux.AddSession(serverB)
+	defer mux.RemoveSession(idB)
+	chB := mux.arb.requestStart(idB, 0xB2)
+
+	// Launch two concurrent tryGrantAndStart calls.  The gate is
+	// closed, so the first one to reach RequestStart will block.
+	var wg sync.WaitGroup
+	var callCount atomic.Int32
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			mux.tryGrantAndStart()
+			callCount.Add(1)
+		}()
+	}
+
+	// Give both goroutines time to race into tryGrantAndStart.
+	time.Sleep(50 * time.Millisecond)
+
+	// Open the gate so RequestStart completes.
+	close(delayed.startGate)
+
+	// Wait for both goroutines.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for concurrent tryGrantAndStart calls")
+	}
+
+	// Exactly one RequestStart must have been issued.
+	starts := delayed.getStartRequests()
+	if len(starts) != 1 {
+		t.Fatalf("expected exactly 1 RequestStart, got %d: %v", len(starts), starts)
+	}
+
+	// pendingStart must be set for exactly one session.
+	mux.stateMu.Lock()
+	pending := mux.pendingStart
+	mux.stateMu.Unlock()
+	if pending == nil {
+		t.Fatal("pendingStart must be set after tryGrantAndStart")
+	}
+
+	// The other request must still be in the arbiter queue (not lost).
+	if !mux.arb.hasPending() {
+		t.Fatal("second request must still be pending in arbiter")
+	}
+
+	// Verify the pending session got dequeued correctly.
+	if pending.sessionID != idA && pending.sessionID != idB {
+		t.Fatalf("pendingStart.sessionID = %d, want %d or %d", pending.sessionID, idA, idB)
+	}
+
+	// Verify the non-dequeued request's channel has not received yet.
+	otherCh := chB
+	if pending.sessionID == idB {
+		otherCh = chA
+	}
+	select {
+	case r := <-otherCh:
+		t.Fatalf("other request's channel should not have received yet, got %+v", r)
+	default:
+		// Good — still waiting.
+	}
+}
+
+// --- P1 #3063005909: blocking StartArbitration fallback must verify pending ownership ---
+
+// gatedBlockingStartTransport implements StartArbitration with a gate
+// that blocks until closed, plus an optional error to return.
+type gatedBlockingStartTransport struct {
+	readCh    chan byte
+	startGate chan struct{} // blocks StartArbitration until closed
+	startErr  error        // error to return after gate opens
+	mu        sync.Mutex
+	calls     []byte
+}
+
+func (g *gatedBlockingStartTransport) ReadByte() (byte, error) {
+	v, ok := <-g.readCh
+	if !ok {
+		return 0, io.EOF
+	}
+	return v, nil
+}
+
+func (g *gatedBlockingStartTransport) Write(p []byte) (int, error) { return len(p), nil }
+func (g *gatedBlockingStartTransport) Close() error                { return nil }
+
+func (g *gatedBlockingStartTransport) StartArbitration(initiator byte) error {
+	<-g.startGate
+	g.mu.Lock()
+	g.calls = append(g.calls, initiator)
+	g.mu.Unlock()
+	return g.startErr
+}
+
+// TestBlockingFallbackSuccessAfterCancel_NoDoubleSend verifies P1
+// #3063005909: when cancelPendingStart clears pendingStart while
+// the blocking StartArbitration is in flight, the success path must
+// not complete the grant or send on the cap-1 notify channel.
+func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
+	mock := &gatedBlockingStartTransport{
+		readCh:    make(chan byte, 256),
+		startGate: make(chan struct{}),
+		startErr:  nil, // success
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Request START.
+	ch := mux.arb.requestStart(id, 0x55)
+
+	// tryGrantAndStart blocks inside StartArbitration.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mux.tryGrantAndStart()
+	}()
+
+	// Wait for StartArbitration to be entered.
+	time.Sleep(30 * time.Millisecond)
+
+	// Cancel the pending request while StartArbitration blocks.
+	mux.cancelPendingStart(id)
+
+	// Release StartArbitration — returns success.
+	// Without the fix, tryGrantAndStart would call
+	// completeArbitrationGrant and double-send on notify.
+	close(mock.startGate)
+
+	// tryGrantAndStart must return promptly.
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good.
+	case <-time.After(3 * time.Second):
+		t.Fatal("tryGrantAndStart blocked — likely double-send on notify channel")
+	}
+
+	// Drain the cancel result.
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false from cancel path")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for cancel result")
+	}
+
+	// No second result must appear.
+	select {
+	case extra := <-ch:
+		t.Fatalf("unexpected second result on notify channel: %+v", extra)
+	default:
+		// Good — no double-send.
+	}
+
+	// Bus ownership must NOT be granted to the cancelled session.
+	if mux.arb.isOwner(id) {
+		t.Fatal("cancelled session should not own the bus")
+	}
+
+	// pendingStartAbsorb should have been decremented (cancel increments,
+	// success-path-guard decrements).
+	mux.stateMu.Lock()
+	absorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d, want 0", absorb)
+	}
+}
+
+// TestBlockingFallbackErrorAfterCancel_NoDoubleSend verifies P1
+// #3063005909: when cancelPendingStart clears pendingStart while
+// StartArbitration is blocking, the error path must not send a second
+// failure on the cap-1 notify channel.
+func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
+	mock := &gatedBlockingStartTransport{
+		readCh:    make(chan byte, 256),
+		startGate: make(chan struct{}),
+		startErr:  errors.New("adapter bus fault"),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Request START.
+	ch := mux.arb.requestStart(id, 0x55)
+
+	// tryGrantAndStart blocks inside StartArbitration.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mux.tryGrantAndStart()
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+
+	// Cancel while blocking.
+	mux.cancelPendingStart(id)
+
+	// Release — returns error.
+	close(mock.startGate)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good.
+	case <-time.After(3 * time.Second):
+		t.Fatal("tryGrantAndStart blocked — likely double-send on notify channel")
+	}
+
+	// Drain the cancel result.
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false from cancel path")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for cancel result")
+	}
+
+	// No second result.
+	select {
+	case extra := <-ch:
+		t.Fatalf("unexpected second result on notify channel: %+v", extra)
+	default:
+		// Good.
+	}
+
+	// pendingStartAbsorb must be decremented.
+	mux.stateMu.Lock()
+	absorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d, want 0", absorb)
+	}
+}

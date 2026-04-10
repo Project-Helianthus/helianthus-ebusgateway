@@ -108,6 +108,8 @@ func (m *Mux) RemoveSession(id uint64) {
 
 	if ok {
 		m.arb.removeSession(id)
+		m.cancelPendingStart(id)
+		m.tryGrantAndStart()
 		sess.close()
 		m.logger.Printf("adaptermux: session %d disconnected", id)
 	}
@@ -285,9 +287,12 @@ func (s *session) handleStart(initiator byte) {
 	// withdrawing its pending START without acquiring the bus.
 	// Also release ownership in case the session already owns the bus
 	// (proxy does both cancel+release on SYN cancel).
+	// P1 fix: also cancel any in-flight pending START at the adapter
+	// level if it belongs to this session.
 	if initiator == protocol.SymbolSyn {
 		s.mux.arb.cancelStart(s.id)
 		s.mux.arb.releaseOwnership(s.id)
+		s.mux.cancelPendingStart(s.id)
 		return
 	}
 

@@ -93,6 +93,22 @@ const (
 	PassiveEventReset                                    // adapter RESETTED
 )
 
+// arbitrationRequester is the non-blocking START interface.
+// ENHTransport.RequestStart only acquires writeMu (not readMu),
+// so readLoop continues receiving bus bytes during arbitration.
+type arbitrationRequester interface {
+	RequestStart(initiator byte) error
+}
+
+// pendingStartState tracks an in-flight START request sent to the
+// adapter but not yet confirmed via STARTED/FAILED response.
+// Protected by stateMu.
+type pendingStartState struct {
+	sessionID uint64
+	initiator byte
+	notify    chan startResult
+}
+
 // Mux is the adapter multiplexer. It owns a single ENH/ENS connection
 // to the adapter hardware and provides:
 //   - Active path: RawTransport for gateway.Bus
@@ -109,11 +125,13 @@ type Mux struct {
 	upstreamFeatures atomic.Uint32 // features byte from upstream INIT handshake
 
 	// Multiplexer state (guarded by stateMu).
-	stateMu  sync.Mutex
-	phase    wirePhaseTracker
-	arb      *arbitrator
-	busOwned time.Time // when current owner acquired the bus
-	busDirty bool      // owner has sent bytes since acquiring
+	stateMu      sync.Mutex
+	phase        wirePhaseTracker
+	arb          *arbitrator
+	busOwned     time.Time          // when current owner acquired the bus
+	busDirty     bool               // owner has sent bytes since acquiring
+	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
+	pendingStartAbsorb int               // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
 
 	// Gateway echo tracker (for the internal active path).
 	// Protected by stateMu.
@@ -222,6 +240,16 @@ func (m *Mux) Close() error {
 	m.closeOnce.Do(func() {
 		if m.cancel != nil {
 			m.cancel()
+		}
+
+		// Cancel in-flight pending START if any.
+		m.stateMu.Lock()
+		pendingToCancel := m.pendingStart
+		m.pendingStart = nil
+		m.pendingStartAbsorb = 0
+		m.stateMu.Unlock()
+		if pendingToCancel != nil {
+			pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: closed")}
 		}
 
 		// Fail all pending arbitration requests.
@@ -341,7 +369,15 @@ func (m *Mux) reconnect() error {
 	m.arb.forceRelease()
 	m.gatewayEcho.reset()
 	m.busDirty = false
+	pendingToCancel := m.pendingStart
+	m.pendingStart = nil
+	m.pendingStartAbsorb = 0
 	m.stateMu.Unlock()
+
+	// Cancel in-flight pending START if any.
+	if pendingToCancel != nil {
+		pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: adapter disconnected")}
+	}
 
 	// Reset external session echo trackers (HIGH-6 fix).
 	m.sessionsMu.Lock()
@@ -456,12 +492,21 @@ func (m *Mux) readLoop() {
 			continue
 		}
 
-		if event.Kind == transport.StreamEventReset {
+		switch event.Kind {
+		case transport.StreamEventStarted:
+			m.handleArbitrationResponse(true, event.Data)
+			continue
+		case transport.StreamEventFailed:
+			m.handleArbitrationResponse(false, event.Data)
+			continue
+		case transport.StreamEventReset:
 			m.handleReset()
 			continue
+		case transport.StreamEventByte:
+			m.onReceived(event.Byte)
+		default:
+			m.onReceived(event.Byte)
 		}
-
-		m.onReceived(event.Byte)
 	}
 }
 
@@ -616,7 +661,15 @@ func (m *Mux) handleReset() {
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
 	m.busDirty = false
+	pendingToCancel := m.pendingStart
+	m.pendingStart = nil
+	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
 	m.stateMu.Unlock()
+
+	// Cancel in-flight pending START if any.
+	if pendingToCancel != nil {
+		pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: adapter reset")}
+	}
 
 	// Reset external session echo trackers.
 	m.sessionsMu.Lock()
@@ -713,45 +766,156 @@ func (m *Mux) deliverToActive(symbol byte) {
 }
 
 // tryGrantAndStart attempts to grant bus ownership and forward the
-// START request to the adapter.
+// START request to the adapter using RequestStart (non-blocking).
+//
+// P3 rearchitecture: instead of calling StartArbitration (which holds
+// readMu and blocks readLoop), we call RequestStart (which only holds
+// writeMu) and register a pendingStart. The adapter's STARTED/FAILED
+// response is handled asynchronously by readLoop via
+// handleArbitrationResponse. This ensures passive observers continue
+// to receive bus bytes during gateway arbitration.
+//
+// Guard: only one pending START at a time. If pendingStart is non-nil,
+// this method is a no-op — the next tryGrantAndStart will fire after
+// the current one resolves.
 func (m *Mux) tryGrantAndStart() {
-	sessionID, initiator, notify, granted := m.arb.tryGrant()
-	if !granted {
+	// P1 fix (#3062924968): serialize the pendingStart guard, the
+	// arb.tryGrant() dequeue, and the pendingStart assignment in a
+	// single stateMu critical section.  Without this, two concurrent
+	// callers (readLoop + RemoveSession goroutine) can both pass the
+	// nil-guard, dequeue different requests, and one overwrites the
+	// other's pendingStart — leaving the first waiter without a
+	// terminal result.
+	//
+	// Lock order: stateMu → arb.mu (tryGrant acquires arb.mu
+	// internally).  No path holds arb.mu then acquires stateMu,
+	// so this is ABBA-safe.
+	m.stateMu.Lock()
+	if m.pendingStart != nil {
+		m.stateMu.Unlock()
 		return
 	}
 
-	// Forward START to adapter BEFORE setting ownership
-	// (Codex P1 #3060199707: defer ownership until adapter confirms).
+	sessionID, initiator, notify, granted := m.arb.tryGrant()
+	if !granted {
+		m.stateMu.Unlock()
+		return
+	}
+
+	m.pendingStart = &pendingStartState{
+		sessionID: sessionID,
+		initiator: initiator,
+		notify:    notify,
+	}
+	m.stateMu.Unlock()
+
+	// Forward START to adapter via non-blocking RequestStart.
 	m.connMu.Lock()
 	tr := m.upstream
 	m.connMu.Unlock()
 
-	if starter, ok := tr.(interface {
-		StartArbitration(byte) error
-	}); ok {
-		if err := starter.StartArbitration(initiator); err != nil {
-			m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
-			// Ownership was never confirmed — no releaseOwnership needed.
-			notify <- startResult{granted: false, initiator: initiator, err: err}
+	if requester, ok := tr.(arbitrationRequester); ok {
+
+		if err := requester.RequestStart(initiator); err != nil {
+			m.logger.Printf("adaptermux: RequestStart failed for session %d: %v", sessionID, err)
+			// P1 fix: only send failure if we still own the pending slot.
+			// cancelPendingStart (session disconnect / cancel on another
+			// goroutine) may have already cleared m.pendingStart and sent
+			// on notify while RequestStart was in progress. A second send
+			// on the cap-1 channel would block forever, pinning readLoop.
+			m.stateMu.Lock()
+			if m.pendingStart != nil && m.pendingStart.notify == notify {
+				m.pendingStart = nil
+				m.stateMu.Unlock()
+				notify <- startResult{granted: false, initiator: initiator, err: err}
+			} else {
+				// RequestStart failed AND pending was already cancelled.
+				// Since the adapter never received the START, no stale
+				// response will arrive — decrement absorb counter so the
+				// next real arbitration response is not incorrectly consumed.
+				if m.pendingStartAbsorb > 0 {
+					m.pendingStartAbsorb--
+				}
+				m.stateMu.Unlock()
+			}
 			return
 		}
+	} else if starter, ok := tr.(interface {
+		StartArbitration(byte) error
+	}); ok {
+		// Fallback for transports that only implement the blocking
+		// StartArbitration (e.g. ENS or test mocks without RequestStart).
+		if err := starter.StartArbitration(initiator); err != nil {
+			m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
+			// P1 fix (#3063005909): only send failure if we still own
+			// the pending slot.  cancelPendingStart may have cleared
+			// m.pendingStart and already sent a failure on notify while
+			// StartArbitration was blocking.  A second send on the
+			// cap-1 channel would block the caller indefinitely.
+			m.stateMu.Lock()
+			if m.pendingStart != nil && m.pendingStart.notify == notify {
+				m.pendingStart = nil
+				m.stateMu.Unlock()
+				notify <- startResult{granted: false, initiator: initiator, err: err}
+			} else {
+				if m.pendingStartAbsorb > 0 {
+					m.pendingStartAbsorb--
+				}
+				m.stateMu.Unlock()
+			}
+			return
+		}
+		// Blocking path: adapter already confirmed — handle inline.
+		// P1 fix (#3063005909): verify ownership before completing.
+		// cancelPendingStart may have run while StartArbitration was
+		// blocking, clearing pendingStart and sending a failure on
+		// notify.  Completing here would double-send on the cap-1
+		// channel and re-grant the bus to a cancelled session.
+		m.stateMu.Lock()
+		if m.pendingStart == nil || m.pendingStart.notify != notify {
+			// Already cancelled — don't double-send.
+			if m.pendingStartAbsorb > 0 {
+				m.pendingStartAbsorb--
+			}
+			m.stateMu.Unlock()
+			return
+		}
+		m.pendingStart = nil
+		m.stateMu.Unlock()
+		m.completeArbitrationGrant(sessionID, initiator, notify)
+		return
+	} else {
+		m.logger.Printf("adaptermux: transport does not support arbitration")
+		m.stateMu.Lock()
+		if m.pendingStart != nil && m.pendingStart.notify == notify {
+			m.pendingStart = nil
+		}
+		m.stateMu.Unlock()
+		notify <- startResult{granted: false, initiator: initiator, err: errors.New("adaptermux: transport does not support arbitration")}
 	}
+}
 
-	// Adapter START succeeded — verify session is still alive before
-	// confirming ownership (Codex P1 #3060335786: session may have
-	// disconnected or cancelled during StartArbitration).
+// completeArbitrationGrant finalizes a successful arbitration grant.
+// Used by the blocking StartArbitration fallback path and by
+// handleArbitrationResponse on STARTED.
+func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify chan startResult) {
+	// Verify session is still alive before confirming ownership
+	// (P2 TOCTOU fix: liveness check + confirmOwnership under same lock).
 	if sessionID != gatewaySessionID {
 		m.sessionsMu.Lock()
 		_, alive := m.sessions[sessionID]
+		if alive {
+			m.arb.confirmOwnership(sessionID, initiator)
+		}
 		m.sessionsMu.Unlock()
 		if !alive {
 			m.logger.Printf("adaptermux: session %d disconnected during START, discarding grant", sessionID)
 			notify <- startResult{granted: false, initiator: initiator, err: errors.New("session disconnected")}
 			return
 		}
+	} else {
+		m.arb.confirmOwnership(sessionID, initiator)
 	}
-
-	m.arb.confirmOwnership(sessionID, initiator)
 
 	m.stateMu.Lock()
 	m.phase.startRequest()
@@ -771,8 +935,82 @@ func (m *Mux) tryGrantAndStart() {
 		m.sessionsMu.Unlock()
 	}
 
-	// Notify requester of success AFTER adapter START succeeded.
+	// Notify requester of success.
 	notify <- startResult{granted: true, initiator: initiator}
+}
+
+// handleArbitrationResponse processes a STARTED or FAILED event from
+// the adapter, resolving the pending START registered by tryGrantAndStart.
+func (m *Mux) handleArbitrationResponse(started bool, data byte) {
+	m.stateMu.Lock()
+
+	// Absorb stale responses from cancelled RequestStart calls.
+	// cancelPendingStart increments pendingStartAbsorb when it clears a
+	// pending request, because the adapter will still deliver STARTED or
+	// FAILED for that old RequestStart. Without this, a stale FAILED
+	// (which carries the WINNER's address, not the loser's, making
+	// initiator matching impossible) would incorrectly fail a newer
+	// pending request.
+	if m.pendingStartAbsorb > 0 {
+		m.pendingStartAbsorb--
+		m.stateMu.Unlock()
+		kind := "FAILED"
+		if started {
+			kind = "STARTED"
+		}
+		m.logger.Printf("adaptermux: absorbed stale %s from cancelled request (data=0x%02X)", kind, data)
+		return
+	}
+
+	pending := m.pendingStart
+	if pending == nil {
+		m.stateMu.Unlock()
+		m.logger.Printf("adaptermux: stale arbitration response (no pending START)")
+		return
+	}
+
+	if started {
+		// Validate the STARTED response belongs to our pending request.
+		// A stale STARTED from a cancelled request can arrive after a new
+		// request is pending — do not grant ownership in that case.
+		if data != pending.initiator {
+			// Do NOT clear pendingStart — our real response hasn't arrived yet.
+			m.stateMu.Unlock()
+			m.logger.Printf("adaptermux: stale STARTED for initiator 0x%02X (pending 0x%02X), ignoring", data, pending.initiator)
+			return
+		}
+		m.pendingStart = nil
+		m.stateMu.Unlock()
+		m.completeArbitrationGrant(pending.sessionID, pending.initiator, pending.notify)
+	} else {
+		m.pendingStart = nil
+		m.stateMu.Unlock()
+		pending.notify <- startResult{granted: false, initiator: data}
+	}
+
+	// After resolving, check if more requests are pending.
+	if m.arb.hasPending() {
+		m.tryGrantAndStart()
+	}
+}
+
+// cancelPendingStart cancels an in-flight pending START if it belongs
+// to the given session. Called by handleStart on SYN cancel (P1 fix:
+// START cancel must also clear pending adapter-level START).
+func (m *Mux) cancelPendingStart(sessionID uint64) {
+	m.stateMu.Lock()
+	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID {
+		pending := m.pendingStart
+		m.pendingStart = nil
+		// The adapter will still send STARTED or FAILED for the cancelled
+		// RequestStart. Increment absorb counter so handleArbitrationResponse
+		// discards that stale response instead of failing a newer request.
+		m.pendingStartAbsorb++
+		m.stateMu.Unlock()
+		pending.notify <- startResult{granted: false, initiator: pending.initiator}
+		return
+	}
+	m.stateMu.Unlock()
 }
 
 // sendLoop processes send requests from the active path and external sessions.

@@ -840,6 +840,14 @@ func (m *Mux) tryGrantAndStart() {
 		// Blocking path: adapter already confirmed — handle inline.
 		m.completeArbitrationGrant(sessionID, initiator, notify)
 		return
+	} else {
+		m.logger.Printf("adaptermux: transport does not support arbitration")
+		m.stateMu.Lock()
+		if m.pendingStart != nil && m.pendingStart.notify == notify {
+			m.pendingStart = nil
+		}
+		m.stateMu.Unlock()
+		notify <- startResult{granted: false, initiator: initiator, err: errors.New("adaptermux: transport does not support arbitration")}
 	}
 }
 

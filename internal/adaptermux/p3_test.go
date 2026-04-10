@@ -57,15 +57,16 @@ func (t *p3MockTransport) ReadEvent() (transport.StreamEvent, error) {
 }
 
 func (t *p3MockTransport) ReadByte() (byte, error) {
-	ev, err := t.ReadEvent()
-	if err != nil {
-		return 0, err
+	for {
+		ev, err := t.ReadEvent()
+		if err != nil {
+			return 0, err
+		}
+		if ev.Kind == transport.StreamEventByte {
+			return ev.Byte, nil
+		}
+		// Skip non-byte events (STARTED, FAILED, RESET)
 	}
-	if ev.Kind == transport.StreamEventByte {
-		return ev.Byte, nil
-	}
-	// Skip non-byte events for ReadByte compatibility.
-	return t.ReadByte()
 }
 
 func (t *p3MockTransport) Write(p []byte) (int, error) {

@@ -435,6 +435,103 @@ func TestCancelPendingStart_WrongSession(t *testing.T) {
 	}
 }
 
+// TestCancelPendingStart_DuringRequestStart verifies the P1 fix:
+// pendingStart is registered BEFORE RequestStart so that a concurrent
+// cancel during RequestStart finds and clears the pending entry.
+// Without the fix, neither arb.cancelStart (already dequeued) nor
+// cancelPendingStart (not yet stored) could see the in-flight request.
+func TestCancelPendingStart_DuringRequestStart(t *testing.T) {
+	// Use a delayed mock transport that blocks inside RequestStart
+	// long enough for us to issue a cancel.
+	mock := &delayedStartTransport{
+		p3MockTransport: newP3MockTransport(),
+		startGate:       make(chan struct{}),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Request START for the external session.
+	ch := mux.arb.requestStart(id, 0x55)
+
+	// Call tryGrantAndStart in a goroutine — it will block inside
+	// RequestStart until we release startGate.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mux.tryGrantAndStart()
+	}()
+
+	// Wait for RequestStart to be entered (the goroutine blocks on startGate).
+	time.Sleep(30 * time.Millisecond)
+
+	// P1 fix validation: pendingStart MUST be set even though
+	// RequestStart has not returned yet.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == id
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("P1 regression: pendingStart must be set BEFORE RequestStart returns")
+	}
+
+	// Cancel the pending START — simulates a client sending START
+	// cancel (0xAA) while RequestStart is in flight.
+	mux.cancelPendingStart(id)
+
+	// Now release RequestStart so tryGrantAndStart can return.
+	close(mock.startGate)
+	wg.Wait()
+
+	// The result should be failure (cancelled).
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false — START was cancelled during RequestStart")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for cancel result")
+	}
+
+	// Verify NO ownership set — the cancelled request must not
+	// grant the bus, even if a STARTED arrives later.
+	if mux.arb.isOwner(id) {
+		t.Fatal("cancelled session should NOT own the bus")
+	}
+}
+
+// delayedStartTransport wraps p3MockTransport with a blocking gate
+// in RequestStart, allowing tests to exercise the cancellation race.
+type delayedStartTransport struct {
+	*p3MockTransport
+	startGate chan struct{} // blocks RequestStart until closed
+}
+
+func (d *delayedStartTransport) RequestStart(initiator byte) error {
+	// Block until the test releases the gate.
+	<-d.startGate
+	return d.p3MockTransport.RequestStart(initiator)
+}
+
 // TestOnlyOnePendingStart verifies that tryGrantAndStart is a no-op
 // when there is already a pending START in flight.
 func TestOnlyOnePendingStart(t *testing.T) {

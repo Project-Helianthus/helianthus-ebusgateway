@@ -794,8 +794,27 @@ func (m *Mux) tryGrantAndStart() {
 	m.connMu.Unlock()
 
 	if requester, ok := tr.(arbitrationRequester); ok {
+		// P1 fix: register pending START BEFORE dispatching RequestStart
+		// so that a concurrent cancel (cancelPendingStart) during the
+		// RequestStart call can find and clear this entry. Without this,
+		// there is a window where neither arb.cancelStart (already
+		// dequeued) nor cancelPendingStart (not yet stored) can see
+		// the in-flight request, allowing a later STARTED to grant
+		// ownership to a cancelled session.
+		m.stateMu.Lock()
+		m.pendingStart = &pendingStartState{
+			sessionID: sessionID,
+			initiator: initiator,
+			notify:    notify,
+		}
+		m.stateMu.Unlock()
+
 		if err := requester.RequestStart(initiator); err != nil {
 			m.logger.Printf("adaptermux: RequestStart failed for session %d: %v", sessionID, err)
+			// RequestStart failed — clear pending and notify failure.
+			m.stateMu.Lock()
+			m.pendingStart = nil
+			m.stateMu.Unlock()
 			notify <- startResult{granted: false, initiator: initiator, err: err}
 			return
 		}
@@ -813,16 +832,6 @@ func (m *Mux) tryGrantAndStart() {
 		m.completeArbitrationGrant(sessionID, initiator, notify)
 		return
 	}
-
-	// Register pending START — readLoop will resolve it when
-	// STARTED/FAILED arrives from the adapter.
-	m.stateMu.Lock()
-	m.pendingStart = &pendingStartState{
-		sessionID: sessionID,
-		initiator: initiator,
-		notify:    notify,
-	}
-	m.stateMu.Unlock()
 }
 
 // completeArbitrationGrant finalizes a successful arbitration grant.

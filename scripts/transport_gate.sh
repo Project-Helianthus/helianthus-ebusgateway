@@ -85,18 +85,18 @@ fi
 # --- Adapter-direct (AD01..AD12) coverage tracking ---
 # The embedded proxy / adapter multiplexer (internal/adaptermux/) has its
 # own test matrix (AD01..AD12) covering:
-#   AD01: INIT handshake fidelity
-#   AD02: START arbitration (gateway priority, external FIFO)
-#   AD03: START cancel (SYN) with ownership release
-#   AD04: SEND echo suppression (gateway + external sessions)
-#   AD05: In-band RESETTED handling + delayed re-INIT
-#   AD06: Reconnect with session broadcast
-#   AD07: Ownership timeout enforcement
-#   AD08: Session backpressure (send buffer overflow)
-#   AD09: Passive path filtering (third-party only)
-#   AD10: INFO request forwarding
-#   AD11: Multi-session concurrent arbitration
-#   AD12: Wire phase tracking across transaction boundaries
+#   AD01: Active path sends/receives transactions
+#   AD02: Passive path zero self-echo
+#   AD03: Passive path reconstructs third-party traffic
+#   AD04: RESETTED propagates to all consumers
+#   AD05: ebusd connects, receives broadcasts
+#   AD06: ebusd sends START/SEND successfully
+#   AD07: Gateway and ebusd compete fairly at SYN
+#   AD08: Per-session echo suppression
+#   AD09: Adapter disconnect triggers reconnection recovery
+#   AD10: Migration preserves semantics
+#   AD11: Rollback restores behavior
+#   AD12: No 0xA9/0xAA escape corruption
 #
 # Current status: AD01..AD12 are covered by unit tests in
 # internal/adaptermux/*_test.go. A formal matrix report (like the

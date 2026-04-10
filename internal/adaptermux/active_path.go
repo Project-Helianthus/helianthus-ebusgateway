@@ -19,8 +19,10 @@ type activeTransport struct {
 
 // Compile-time interface checks.
 var (
-	_ transport.RawTransport    = (*activeTransport)(nil)
+	_ transport.RawTransport      = (*activeTransport)(nil)
 	_ transport.StreamEventReader = (*activeTransport)(nil)
+	_ transport.InfoRequester     = (*activeTransport)(nil)
+	_ transport.Reconnectable     = (*activeTransport)(nil)
 )
 
 // ReadByte blocks until a byte is received from the adapter or an
@@ -134,4 +136,57 @@ func (t *activeTransport) StartArbitration(initiator byte) error {
 		t.mux.arb.cancelStart(gatewaySessionID)
 		return fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}
+}
+
+// RequestInfo delegates INFO queries to the upstream transport.
+// The gateway uses this (via Bus.RawTransportOp) to query adapter
+// hardware telemetry (firmware version, temperature, voltages).
+// Without this delegation, adapter-direct mode reports
+// "INFO Supported: No" and "Connection Type: Unknown".
+func (t *activeTransport) RequestInfo(id transport.AdapterInfoID) ([]byte, error) {
+	t.mux.connMu.Lock()
+	tr := t.mux.upstream
+	t.mux.connMu.Unlock()
+	if tr == nil {
+		return nil, errors.New("adaptermux: not connected")
+	}
+	infoReq, ok := tr.(transport.InfoRequester)
+	if !ok {
+		return nil, errors.New("adaptermux: upstream does not support INFO")
+	}
+	return infoReq.RequestInfo(id)
+}
+
+// ArbitrationSendsSource reports whether the upstream adapter's START
+// arbitration already placed the source byte on the wire. ENH/ENS
+// transports return true, meaning the caller must NOT include the
+// source byte in the outgoing telegram payload.
+func (t *activeTransport) ArbitrationSendsSource() bool {
+	t.mux.connMu.Lock()
+	tr := t.mux.upstream
+	t.mux.connMu.Unlock()
+	if tr == nil {
+		return false
+	}
+	if checker, ok := tr.(interface{ ArbitrationSendsSource() bool }); ok {
+		return checker.ArbitrationSendsSource()
+	}
+	return false
+}
+
+// Reconnect delegates reconnection to the upstream transport.
+// The mux already handles reconnection internally (via its reconnect
+// loop), so this is a pass-through for callers that check the
+// Reconnectable interface on the gateway transport.
+func (t *activeTransport) Reconnect() error {
+	t.mux.connMu.Lock()
+	tr := t.mux.upstream
+	t.mux.connMu.Unlock()
+	if tr == nil {
+		return errors.New("adaptermux: not connected")
+	}
+	if reconnectable, ok := tr.(transport.Reconnectable); ok {
+		return reconnectable.Reconnect()
+	}
+	return errors.New("adaptermux: upstream does not support reconnect")
 }

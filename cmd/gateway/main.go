@@ -585,10 +585,11 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		muxCfg.DialTimeout = 5 * time.Second
 	}
 	// Mux read timeout controls how often the idle-timeout branch runs
-	// (tryGrantAndStart). Keep it short so START grants are not delayed
-	// on a quiet bus. This does not affect bus transaction timing — the
-	// gateway's own transport read timeout handles that on the active path.
-	muxCfg.ReadTimeout = 200 * time.Millisecond
+	// (tryGrantAndStart) AND how quickly activeCh receives bytes from
+	// the upstream ENH transport. 50ms matches the eBUS SYN interval so
+	// waitForSyn (which needs 2 SYNs) completes within ~100ms instead
+	// of ~400ms at 200ms, preventing scan-abort after collision retry.
+	muxCfg.ReadTimeout = 50 * time.Millisecond
 	if muxCfg.WriteTimeout == 0 {
 		muxCfg.WriteTimeout = 5 * time.Second
 	}

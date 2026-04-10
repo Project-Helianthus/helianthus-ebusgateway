@@ -2,6 +2,7 @@ package adaptermux
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -908,4 +909,118 @@ func (b *blockingStartTransport) getStartCalls() []byte {
 	result := make([]byte, len(b.startCalls))
 	copy(result, b.startCalls)
 	return result
+}
+
+// --- P1 #3062452008: RequestStart failure after cancelPendingStart must not double-send ---
+
+// failingStartTransport wraps p3MockTransport with a blocking gate
+// that, when released, makes RequestStart return an error. This exercises
+// the race where cancelPendingStart sends on notify BEFORE RequestStart
+// returns an error — the error path must not send a second time.
+type failingStartTransport struct {
+	*p3MockTransport
+	startGate chan struct{} // blocks RequestStart until closed
+	startErr  error        // error to return after gate opens
+}
+
+func (f *failingStartTransport) RequestStart(initiator byte) error {
+	<-f.startGate
+	return f.startErr
+}
+
+// TestRequestStartFailAfterCancel_NoDoubleSend verifies the P1 fix:
+// when cancelPendingStart already cleared pendingStart and sent on
+// notify, a subsequent RequestStart error must NOT send a second result
+// on the cap-1 channel (which would block forever, pinning readLoop).
+func TestRequestStartFailAfterCancel_NoDoubleSend(t *testing.T) {
+	mock := &failingStartTransport{
+		p3MockTransport: newP3MockTransport(),
+		startGate:       make(chan struct{}),
+		startErr:        errors.New("adapter disconnected"),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// Request START for the external session.
+	ch := mux.arb.requestStart(id, 0x55)
+
+	// Call tryGrantAndStart in a goroutine — blocks inside RequestStart.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mux.tryGrantAndStart()
+	}()
+
+	// Wait for RequestStart to be entered.
+	time.Sleep(30 * time.Millisecond)
+
+	// Verify pendingStart is set.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == id
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("pendingStart must be set before RequestStart returns")
+	}
+
+	// Simulate session disconnect: cancelPendingStart clears pendingStart
+	// and sends failure on notify.
+	mux.cancelPendingStart(id)
+
+	// Release RequestStart — it will return startErr.
+	// Without the fix, tryGrantAndStart would send a second result on
+	// the cap-1 channel, blocking forever.
+	close(mock.startGate)
+
+	// tryGrantAndStart must return promptly (not block on double-send).
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good — tryGrantAndStart returned without blocking.
+	case <-time.After(3 * time.Second):
+		t.Fatal("tryGrantAndStart blocked — likely double-send on notify channel")
+	}
+
+	// Drain the result — should be the cancel failure from cancelPendingStart.
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false from cancel path")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for cancel result on notify channel")
+	}
+
+	// Channel must be empty — no second result from the error path.
+	select {
+	case extra := <-ch:
+		t.Fatalf("unexpected second result on notify channel: %+v", extra)
+	default:
+		// Good — no double-send.
+	}
 }

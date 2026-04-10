@@ -811,11 +811,20 @@ func (m *Mux) tryGrantAndStart() {
 
 		if err := requester.RequestStart(initiator); err != nil {
 			m.logger.Printf("adaptermux: RequestStart failed for session %d: %v", sessionID, err)
-			// RequestStart failed — clear pending and notify failure.
+			// P1 fix: only send failure if we still own the pending slot.
+			// cancelPendingStart (session disconnect / cancel on another
+			// goroutine) may have already cleared m.pendingStart and sent
+			// on notify while RequestStart was in progress. A second send
+			// on the cap-1 channel would block forever, pinning readLoop.
 			m.stateMu.Lock()
-			m.pendingStart = nil
-			m.stateMu.Unlock()
-			notify <- startResult{granted: false, initiator: initiator, err: err}
+			if m.pendingStart != nil && m.pendingStart.notify == notify {
+				m.pendingStart = nil
+				m.stateMu.Unlock()
+				notify <- startResult{granted: false, initiator: initiator, err: err}
+			} else {
+				m.stateMu.Unlock()
+				// Already cancelled by cancelPendingStart — don't double-send.
+			}
 			return
 		}
 	} else if starter, ok := tr.(interface {

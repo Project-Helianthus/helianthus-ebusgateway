@@ -18,12 +18,13 @@ import (
 // --- Fix 1 regression: handleReset schedules delayed re-INIT ---
 
 // mockInitTransport is a RawTransport that records Init calls.
-// It satisfies both RawTransport and the Init(byte)error interface.
+// It satisfies both RawTransport and the Init(byte)(byte,error) interface.
 type mockInitTransport struct {
-	mu        sync.Mutex
-	initCalls []byte // features bytes passed to Init
-	readCh    chan byte
-	closed    bool
+	mu             sync.Mutex
+	initCalls      []byte // features bytes passed to Init
+	returnFeatures byte   // features byte to return from Init (0 = echo request)
+	readCh         chan byte
+	closed         bool
 }
 
 func newMockInitTransport() *mockInitTransport {
@@ -32,11 +33,15 @@ func newMockInitTransport() *mockInitTransport {
 	}
 }
 
-func (m *mockInitTransport) Init(features byte) error {
+func (m *mockInitTransport) Init(features byte) (byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.initCalls = append(m.initCalls, features)
-	return nil
+	ret := m.returnFeatures
+	if ret == 0 {
+		ret = features
+	}
+	return ret, nil
 }
 
 func (m *mockInitTransport) ReadByte() (byte, error) {
@@ -199,6 +204,50 @@ func TestHandleReset_ReINITFallsBackToDefault(t *testing.T) {
 	}
 	if calls[0] != 0x01 {
 		t.Fatalf("fallback re-INIT features = 0x%02x, want 0x01", calls[0])
+	}
+
+	cancel()
+	mux.wg.Wait()
+}
+
+// TestHandleReset_ReINITStoresUpstreamFeatures verifies that the
+// features byte returned by Init is stored in upstreamFeatures,
+// replacing the previously stored value (PR-B breaking change fix).
+func TestHandleReset_ReINITStoresUpstreamFeatures(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mock := newMockInitTransport()
+	mock.returnFeatures = 0x03 // adapter returns different features
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01) // initial features
+
+	mux.handleReset()
+
+	// Wait for re-INIT to complete.
+	time.Sleep(300 * time.Millisecond)
+
+	calls := mock.getInitCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 Init call, got %d", len(calls))
+	}
+
+	// Verify the returned features (0x03) were stored, not the
+	// requested features (0x01).
+	stored := byte(mux.upstreamFeatures.Load())
+	if stored != 0x03 {
+		t.Fatalf("upstreamFeatures after re-INIT = 0x%02X, want 0x03", stored)
 	}
 
 	cancel()

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -303,6 +304,11 @@ func (s *session) handleStart(initiator byte) {
 			}
 			if result.granted {
 				s.deliverStarted(result.initiator)
+			} else if result.err != nil && isResetOrDisconnectError(result.err) {
+				// Reset/disconnect caused the START failure — deliver
+				// RESETTED so the client sees the correct boundary event
+				// instead of a spurious collision (P1 fix).
+				s.deliverReset(byte(s.mux.upstreamFeatures.Load()))
 			} else {
 				s.deliverFailed(result.initiator)
 			}
@@ -473,4 +479,17 @@ func (s *session) writeFrame(frame sessionFrame) error {
 
 	_, err := s.conn.Write(buf)
 	return err
+}
+
+// isResetOrDisconnectError reports whether err represents a bus reset
+// or adapter disconnect, as opposed to an arbitration collision. When
+// a pending START fails due to reset/disconnect, the session should
+// see RESETTED (not FAILED) so the client can distinguish boundary
+// events from normal collision backoff.
+func isResetOrDisconnectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "reset") || strings.Contains(msg, "disconnect")
 }

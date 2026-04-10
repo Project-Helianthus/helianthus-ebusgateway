@@ -596,7 +596,12 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	mux := adaptermux.New(muxCfg)
 
 	// Create passive transport BEFORE Start() so the callback is wired.
-	passiveTransport := mux.PassiveTransport()
+	// Only create it when BroadcastListen is enabled — otherwise no
+	// consumer reads from the passive channel and reset delivery blocks
+	// readLoop (P0 deadlock fix).
+	if cfg.BroadcastListen {
+		cfg.PassiveTransport = mux.PassiveTransport()
+	}
 
 	if err := mux.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start multiplexer: %w", err)
@@ -619,7 +624,6 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 
 	// Configure gateway transports.
 	cfg.Transport = mux.ActiveTransport()
-	cfg.PassiveTransport = passiveTransport
 
 	// Return a closer that cleans up both the proxy listener (if any)
 	// and the mux itself. This covers early run() failures where

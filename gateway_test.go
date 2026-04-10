@@ -667,10 +667,10 @@ type mockInitTransport struct {
 	features []byte
 }
 
-func (m *mockInitTransport) Init(features byte) error {
+func (m *mockInitTransport) Init(features byte) (byte, error) {
 	m.called = true
 	m.features = append(m.features, features)
-	return nil
+	return features, nil
 }
 
 func (m *mockInitTransport) ReadByte() (byte, error) { return 0, nil }

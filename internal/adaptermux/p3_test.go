@@ -1792,3 +1792,124 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 		t.Fatalf("pendingStartAbsorb = %d, want 0", absorb)
 	}
 }
+
+// TestDrainActiveChOnGrant verifies that stale bytes in activeCh are
+// drained when the gateway is granted bus ownership. Without this,
+// gateway.Bus reads pre-arbitration bus traffic instead of its own echo
+// after StartArbitration returns, causing echo mismatches and scan
+// failures in adapter-direct mode.
+func TestDrainActiveChOnGrant(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Inject stale bytes into activeCh to simulate pre-arbitration bus
+	// traffic that accumulated while the gateway was waiting for SYN.
+	staleBytes := []byte{0xAA, 0x10, 0x08, 0x07, 0x04}
+	for _, b := range staleBytes {
+		select {
+		case mux.activeCh <- activeEvent{kind: activeEventByte, b: b}:
+		default:
+			t.Fatalf("activeCh unexpectedly full injecting stale byte 0x%02X", b)
+		}
+	}
+
+	// Verify stale bytes are present.
+	if len(mux.activeCh) != len(staleBytes) {
+		t.Fatalf("activeCh has %d events, want %d before arbitration", len(mux.activeCh), len(staleBytes))
+	}
+
+	// Request START for the gateway.
+	ch := mux.arb.requestStart(gatewaySessionID, 0x71)
+
+	// Feed SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pendingStart is set.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart after SYN")
+	}
+
+	// Resolve with STARTED — this should drain activeCh before notifying.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify the grant was received.
+	select {
+	case result := <-ch:
+		if !result.granted {
+			t.Fatalf("expected granted=true, got false (err=%v)", result.err)
+		}
+	default:
+		t.Fatal("no result on notify channel after STARTED")
+	}
+
+	// Core assertion: activeCh must be empty after the grant.
+	// The drain in completeArbitrationGrant should have discarded all
+	// stale bytes before the notify was sent.
+	remaining := len(mux.activeCh)
+	if remaining != 0 {
+		t.Fatalf("activeCh has %d stale events after grant, want 0 (drain failed)", remaining)
+	}
+
+	// Verify ownership was granted correctly.
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("gateway should own the bus after STARTED")
+	}
+}
+
+// TestDrainActiveChOnGrant_ExternalSession verifies that activeCh is
+// NOT drained when an external session (not gateway) is granted ownership.
+// External sessions use their own net.Conn, not activeCh.
+func TestDrainActiveChOnGrant_ExternalSession(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+
+	// Inject bytes into activeCh.
+	staleBytes := []byte{0xAA, 0xBB, 0xCC}
+	for _, b := range staleBytes {
+		select {
+		case mux.activeCh <- activeEvent{kind: activeEventByte, b: b}:
+		default:
+			t.Fatalf("activeCh full injecting 0x%02X", b)
+		}
+	}
+
+	// Request START for the external session.
+	ch := mux.arb.requestStart(id, 0x50)
+
+	// Feed SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Resolve with STARTED.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x50}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify the grant was received.
+	select {
+	case result := <-ch:
+		if !result.granted {
+			t.Fatalf("expected granted=true, got false (err=%v)", result.err)
+		}
+	default:
+		t.Fatal("no result on notify channel after STARTED")
+	}
+
+	// activeCh must still have the stale bytes plus the SYN that triggered
+	// tryGrantAndStart (readLoop dispatches the SYN to activeCh too).
+	// External sessions must NOT drain activeCh.
+	remaining := len(mux.activeCh)
+	expectedMin := len(staleBytes) // at least the injected bytes must survive
+	if remaining < expectedMin {
+		t.Fatalf("activeCh has %d events after external grant, want at least %d (should not be drained)", remaining, expectedMin)
+	}
+}

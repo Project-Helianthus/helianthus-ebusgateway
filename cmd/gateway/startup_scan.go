@@ -176,6 +176,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 		fullRangeRecoveryAttempted := false
 		restrictedConfirmationAfterRecoveryPending := false
 		delayedIdentityRetryScheduled := false
+		directScanConfirmationRetries := 0
 		for {
 			scanCtx := ctx
 			cancel := func() {}
@@ -389,8 +390,21 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				usedRestrictedTargets &&
 				!retryingFullRange &&
 				restrictedConfirmationAfterRecoveryPending
+			// Direct (non-ebusd-tcp) scans never set usedRestrictedTargets,
+			// so the ebusd-specific fallback path above cannot fire.  Track
+			// consecutive confirmation failures and treat them as exhausted
+			// after two passes to prevent an infinite scan loop when the
+			// B524 coherent-root probe fails under bus contention.
+			if confirmationPending && !confirmationSatisfied && !usedRestrictedTargets && total > 0 {
+				directScanConfirmationRetries++
+				if directScanConfirmationRetries >= 2 {
+					confirmationFallbackExhausted = true
+					log.Printf("startup scan: direct-scan confirmation exhausted after %d retries, proceeding with bootstrap", directScanConfirmationRetries)
+				}
+			}
 			if confirmationSatisfied || confirmationFallbackExhausted {
 				restrictedConfirmationAfterRecoveryPending = false
+				directScanConfirmationRetries = 0
 			}
 
 			if confirmationPending && usedRestrictedTargets && !retryingFullRange && !fullRangeRecoveryAttempted &&
@@ -602,13 +616,27 @@ func startupScanHasCoherentVaillantRoot(ctx context.Context, cfg ebusgateway.Con
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	timeout := cfg.SemanticRequestTimeout
-	if timeout <= 0 {
-		timeout = 2 * time.Second
+	perProbe := cfg.SemanticRequestTimeout
+	if perProbe <= 0 {
+		perProbe = 2 * time.Second
 	}
-	if cfg.ScanRequestTimeout > timeout {
-		timeout = cfg.ScanRequestTimeout
+	if cfg.ScanRequestTimeout > perProbe {
+		perProbe = cfg.ScanRequestTimeout
 	}
+	// Each candidate is tested with len(b524CapabilityProbes) serial probes.
+	// The outer context must allow enough wall-clock time for every
+	// candidate*probe combination; the previous single-timeout value
+	// starved slow adapter-direct transports where bus contention makes
+	// individual probes take close to the per-request timeout.
+	numCandidates := countRegistryDevices(gateway.Registry)
+	if numCandidates < 1 {
+		numCandidates = 1
+	}
+	numProbes := len(b524CapabilityProbes)
+	if numProbes < 1 {
+		numProbes = 1
+	}
+	timeout := perProbe * time.Duration(numCandidates*numProbes+1)
 	probeCtx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()
 	poller := &vaillantSemanticPoller{

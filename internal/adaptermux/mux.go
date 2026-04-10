@@ -144,7 +144,7 @@ type Mux struct {
 
 	// Active path channels.
 	activeSendCh chan sendRequest
-	activeCh     chan activeEvent // capacity 256: unified byte+error channel (FIFO ordered)
+	activeCh     chan activeEvent // capacity 4096: unified byte+error channel (FIFO ordered)
 
 	// Passive path callback (set via SetPassiveCallback).
 	// The callback must NOT call back into Mux methods (re-entrancy hazard).
@@ -207,7 +207,7 @@ func New(cfg Config) *Mux {
 		gatewayEcho:  newEchoTracker(),
 		sessions:     make(map[uint64]*session),
 		activeSendCh: make(chan sendRequest, 16),
-		activeCh:     make(chan activeEvent, 256), // unified byte+error channel
+		activeCh:     make(chan activeEvent, 4096), // unified byte+error channel (4096: survives ~16s of bus traffic during arbitration waits)
 	}
 }
 
@@ -494,9 +494,11 @@ func (m *Mux) readLoop() {
 
 		switch event.Kind {
 		case transport.StreamEventStarted:
+			m.logger.Printf("adaptermux: readLoop got StreamEventStarted data=0x%02X", event.Data)
 			m.handleArbitrationResponse(true, event.Data)
 			continue
 		case transport.StreamEventFailed:
+			m.logger.Printf("adaptermux: readLoop got StreamEventFailed data=0x%02X", event.Data)
 			m.handleArbitrationResponse(false, event.Data)
 			continue
 		case transport.StreamEventReset:
@@ -792,6 +794,7 @@ func (m *Mux) tryGrantAndStart() {
 	// so this is ABBA-safe.
 	m.stateMu.Lock()
 	if m.pendingStart != nil {
+		m.logger.Printf("adaptermux: tryGrantAndStart skipped — pendingStart already set for session %d", m.pendingStart.sessionID)
 		m.stateMu.Unlock()
 		return
 	}
@@ -815,7 +818,7 @@ func (m *Mux) tryGrantAndStart() {
 	m.connMu.Unlock()
 
 	if requester, ok := tr.(arbitrationRequester); ok {
-
+		m.logger.Printf("adaptermux: RequestStart(0x%02X) sent for session %d", initiator, sessionID)
 		if err := requester.RequestStart(initiator); err != nil {
 			m.logger.Printf("adaptermux: RequestStart failed for session %d: %v", sessionID, err)
 			// P1 fix: only send failure if we still own the pending slot.
@@ -942,6 +945,7 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 // handleArbitrationResponse processes a STARTED or FAILED event from
 // the adapter, resolving the pending START registered by tryGrantAndStart.
 func (m *Mux) handleArbitrationResponse(started bool, data byte) {
+	m.logger.Printf("adaptermux: arbitration response started=%v data=0x%02X", started, data)
 	m.stateMu.Lock()
 
 	// Absorb stale responses from cancelled RequestStart calls.

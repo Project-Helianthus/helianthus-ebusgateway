@@ -39,7 +39,8 @@ requires_transport_gate() {
     smoke.go|\
     smoke_config.go|\
     cmd/smoke/*|\
-    cmd/ebusdscan/*)
+    cmd/ebusdscan/*|\
+    internal/adaptermux/*)
       return 0
       ;;
   esac

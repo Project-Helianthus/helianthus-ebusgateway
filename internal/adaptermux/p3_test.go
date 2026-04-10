@@ -1026,6 +1026,150 @@ func TestRequestStartFailAfterCancel_NoDoubleSend(t *testing.T) {
 	}
 }
 
+// TestAbsorbDecrementOnRequestStartFailAfterCancel verifies P1 #3062745920:
+// when cancelPendingStart increments pendingStartAbsorb and then RequestStart
+// fails (adapter never received the START), the absorb counter must be
+// decremented. Otherwise the next real arbitration response for a newer
+// request would be incorrectly consumed as stale, leaving that request
+// unresolved.
+func TestAbsorbDecrementOnRequestStartFailAfterCancel(t *testing.T) {
+	mock := &failingStartTransport{
+		p3MockTransport: newP3MockTransport(),
+		startGate:       make(chan struct{}),
+		startErr:        errors.New("adapter write error"),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Add an external session.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	// --- Phase 1: Request A — will be cancelled then fail ---
+	chA := mux.arb.requestStart(id, 0x55)
+
+	// Start tryGrantAndStart — blocks inside RequestStart.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mux.tryGrantAndStart()
+	}()
+
+	// Wait for RequestStart to be entered and pendingStart to be set.
+	time.Sleep(30 * time.Millisecond)
+
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == id
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("pendingStart must be set before RequestStart returns")
+	}
+
+	// Cancel the pending request — this increments pendingStartAbsorb.
+	mux.cancelPendingStart(id)
+
+	// Verify absorb counter was incremented.
+	mux.stateMu.Lock()
+	absorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if absorb != 1 {
+		t.Fatalf("pendingStartAbsorb = %d after cancel, want 1", absorb)
+	}
+
+	// Release RequestStart — it will return an error.
+	// The error path detects the pending was already cancelled and
+	// must decrement the absorb counter.
+	close(mock.startGate)
+
+	// Wait for tryGrantAndStart to finish.
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("tryGrantAndStart blocked")
+	}
+
+	// Drain cancel result from A.
+	select {
+	case result := <-chA:
+		if result.granted {
+			t.Fatal("expected granted=false from cancel path")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for cancel result")
+	}
+
+	// KEY ASSERTION: absorb counter must be 0 — the adapter never
+	// received the START, so no stale response will arrive.
+	mux.stateMu.Lock()
+	absorb = mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d after RequestStart fail, want 0 "+
+			"(adapter never received START, no stale response expected)", absorb)
+	}
+
+	// --- Phase 2: Request B — must NOT be consumed as stale ---
+	// Re-add session since arb state may have been cleared.
+	client2, server2 := net.Pipe()
+	defer client2.Close()
+	id2 := mux.AddSession(server2)
+	defer mux.RemoveSession(id2)
+
+	// Use a normal transport for B so RequestStart succeeds.
+	normalMock := newP3MockTransport()
+	mux.connMu.Lock()
+	mux.upstream = normalMock
+	mux.connMu.Unlock()
+
+	chB := mux.arb.requestStart(id2, 0x71)
+
+	// Grant and start B.
+	mux.tryGrantAndStart()
+
+	// Verify pendingStart is set for B.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil && mux.pendingStart.sessionID == id2
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("pendingStart must be set for request B")
+	}
+
+	// Deliver STARTED for B — must be processed normally, NOT absorbed.
+	mux.handleArbitrationResponse(true, 0x71)
+
+	select {
+	case result := <-chB:
+		if !result.granted {
+			t.Fatal("expected granted=true for request B after STARTED")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for STARTED result on request B — " +
+			"response was likely consumed as stale due to non-zero absorb counter")
+	}
+}
+
 // TestHandleArbitrationResponse_StaleStartedIgnored verifies that a STARTED
 // event whose confirmed initiator does not match the pending request is
 // treated as stale: ownership must NOT be granted, and pendingStart must

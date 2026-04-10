@@ -826,8 +826,14 @@ func (m *Mux) tryGrantAndStart() {
 				m.stateMu.Unlock()
 				notify <- startResult{granted: false, initiator: initiator, err: err}
 			} else {
+				// RequestStart failed AND pending was already cancelled.
+				// Since the adapter never received the START, no stale
+				// response will arrive — decrement absorb counter so the
+				// next real arbitration response is not incorrectly consumed.
+				if m.pendingStartAbsorb > 0 {
+					m.pendingStartAbsorb--
+				}
 				m.stateMu.Unlock()
-				// Already cancelled by cancelPendingStart — don't double-send.
 			}
 			return
 		}

@@ -909,6 +909,19 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	}
 
 	if started {
+		// Validate the STARTED response belongs to our pending request.
+		// A stale STARTED from a cancelled request can arrive after a new
+		// request is pending — do not grant ownership in that case.
+		if data != pending.initiator {
+			m.logger.Printf("adaptermux: stale STARTED for initiator 0x%02X (pending 0x%02X), ignoring", data, pending.initiator)
+			// Put pending back — our real response hasn't arrived yet.
+			m.stateMu.Lock()
+			if m.pendingStart == nil {
+				m.pendingStart = pending
+			}
+			m.stateMu.Unlock()
+			return
+		}
 		m.completeArbitrationGrant(pending.sessionID, pending.initiator, pending.notify)
 	} else {
 		pending.notify <- startResult{granted: false, initiator: data}

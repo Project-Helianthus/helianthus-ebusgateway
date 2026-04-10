@@ -1025,3 +1025,90 @@ func TestRequestStartFailAfterCancel_NoDoubleSend(t *testing.T) {
 		// Good — no double-send.
 	}
 }
+
+// TestHandleArbitrationResponse_StaleStartedIgnored verifies that a STARTED
+// event whose confirmed initiator does not match the pending request is
+// treated as stale: ownership must NOT be granted, and pendingStart must
+// remain set so the real response can still be processed.
+func TestHandleArbitrationResponse_StaleStartedIgnored(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Request START with initiator 0x71 for the gateway session.
+	ch := mux.arb.requestStart(gatewaySessionID, 0x71)
+
+	// Feed SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pendingStart exists with initiator 0x71.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil
+	var pendingInit byte
+	if hasPending {
+		pendingInit = mux.pendingStart.initiator
+	}
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart after SYN")
+	}
+	if pendingInit != 0x71 {
+		t.Fatalf("pendingStart.initiator = 0x%02X, want 0x71", pendingInit)
+	}
+
+	// Inject a STARTED with wrong initiator 0x31 (stale from a
+	// cancelled request). This must NOT grant ownership.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x31}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Ownership must NOT be set.
+	if mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("stale STARTED should not grant ownership")
+	}
+
+	// pendingStart must still be set (restored after stale rejection).
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("pendingStart should be restored after stale STARTED")
+	}
+
+	// No result should have been sent on the notify channel.
+	select {
+	case result := <-ch:
+		t.Fatalf("unexpected result on notify channel: %+v", result)
+	default:
+		// Good — stale STARTED was ignored.
+	}
+
+	// Now inject the correct STARTED for 0x71. This must succeed.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+
+	select {
+	case result := <-ch:
+		if !result.granted {
+			t.Fatal("expected granted=true after correct STARTED")
+		}
+		if result.initiator != 0x71 {
+			t.Fatalf("result.initiator = 0x%02X, want 0x71", result.initiator)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for START result after correct STARTED")
+	}
+
+	// Verify ownership now confirmed.
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("gateway should own bus after correct STARTED")
+	}
+
+	// pendingStart must be cleared.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart should be nil after correct STARTED")
+	}
+}

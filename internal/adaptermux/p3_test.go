@@ -1112,3 +1112,128 @@ func TestHandleArbitrationResponse_StaleStartedIgnored(t *testing.T) {
 		t.Fatal("pendingStart should be nil after correct STARTED")
 	}
 }
+
+// TestHandleArbitrationResponse_StaleFailedIgnored verifies that a FAILED
+// event from a cancelled request does not incorrectly fail a newer pending
+// request. On ENH, FAILED carries the WINNER's address (not the loser's),
+// so initiator matching cannot be used. The epoch counter detects staleness.
+//
+// Race scenario:
+//  1. Request A → pendingStart (epoch=1), START sent to adapter
+//  2. cancelPendingStart clears A, sends failure to A
+//  3. Request B → pendingStart (epoch=2), START sent to adapter
+//  4. Stale FAILED for A arrives — must NOT fail B
+func TestHandleArbitrationResponse_StaleFailedIgnored(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// --- Phase 1: Request A (gateway, initiator 0x71) ---
+	chA := mux.arb.requestStart(gatewaySessionID, 0x71)
+
+	// Feed SYN to trigger tryGrantAndStart for A.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pendingStart exists.
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart after SYN for request A")
+	}
+
+	// --- Phase 2: Cancel A via cancelPendingStart ---
+	mux.cancelPendingStart(gatewaySessionID)
+
+	// A's channel must receive a failure.
+	select {
+	case resultA := <-chA:
+		if resultA.granted {
+			t.Fatal("cancelled request A should not be granted")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for cancel result on request A")
+	}
+
+	// pendingStart must be nil after cancel; absorb counter must be 1.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	absorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart should be nil after cancelPendingStart")
+	}
+	if absorb != 1 {
+		t.Fatalf("pendingStartAbsorb = %d after cancel, want 1", absorb)
+	}
+
+	// --- Phase 3: Request B (gateway, initiator 0x71) ---
+	chB := mux.arb.requestStart(gatewaySessionID, 0x71)
+
+	// Feed SYN to trigger tryGrantAndStart for B.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify pendingStart exists for B.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart after SYN for request B")
+	}
+
+	// --- Phase 4: Inject stale FAILED for A ---
+	// FAILED data=0x10 (the winner of that old arbitration round — irrelevant).
+	// This must be absorbed by the counter, NOT fail request B.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x10}
+	time.Sleep(50 * time.Millisecond)
+
+	// B's channel must NOT have received anything.
+	select {
+	case result := <-chB:
+		t.Fatalf("stale FAILED incorrectly resolved request B: %+v", result)
+	default:
+		// Good — stale FAILED was absorbed.
+	}
+
+	// pendingStart must still be set (B's request preserved).
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	absorb = mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("pendingStart should still be set after stale FAILED")
+	}
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d after absorbing stale FAILED, want 0", absorb)
+	}
+
+	// --- Phase 5: Correct STARTED for B ---
+	// The real response for B arrives. This must succeed.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+
+	select {
+	case result := <-chB:
+		if !result.granted {
+			t.Fatal("expected granted=true after correct STARTED for B")
+		}
+		if result.initiator != 0x71 {
+			t.Fatalf("result.initiator = 0x%02X, want 0x71", result.initiator)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for START result after correct STARTED for B")
+	}
+
+	// Verify ownership confirmed for B.
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("gateway should own bus after correct STARTED for B")
+	}
+
+	// pendingStart must be cleared.
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart should be nil after correct STARTED for B")
+	}
+}

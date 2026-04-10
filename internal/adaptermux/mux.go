@@ -130,7 +130,8 @@ type Mux struct {
 	arb          *arbitrator
 	busOwned     time.Time          // when current owner acquired the bus
 	busDirty     bool               // owner has sent bytes since acquiring
-	pendingStart *pendingStartState // in-flight START awaiting STARTED/FAILED
+	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
+	pendingStartAbsorb int               // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
 
 	// Gateway echo tracker (for the internal active path).
 	// Protected by stateMu.
@@ -245,6 +246,7 @@ func (m *Mux) Close() error {
 		m.stateMu.Lock()
 		pendingToCancel := m.pendingStart
 		m.pendingStart = nil
+		m.pendingStartAbsorb = 0
 		m.stateMu.Unlock()
 		if pendingToCancel != nil {
 			pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: closed")}
@@ -369,6 +371,7 @@ func (m *Mux) reconnect() error {
 	m.busDirty = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
+	m.pendingStartAbsorb = 0
 	m.stateMu.Unlock()
 
 	// Cancel in-flight pending START if any.
@@ -660,6 +663,7 @@ func (m *Mux) handleReset() {
 	m.busDirty = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
+	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
 	m.stateMu.Unlock()
 
 	// Cancel in-flight pending START if any.
@@ -899,11 +903,28 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 // the adapter, resolving the pending START registered by tryGrantAndStart.
 func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	m.stateMu.Lock()
-	pending := m.pendingStart
-	m.pendingStart = nil
-	m.stateMu.Unlock()
 
+	// Absorb stale responses from cancelled RequestStart calls.
+	// cancelPendingStart increments pendingStartAbsorb when it clears a
+	// pending request, because the adapter will still deliver STARTED or
+	// FAILED for that old RequestStart. Without this, a stale FAILED
+	// (which carries the WINNER's address, not the loser's, making
+	// initiator matching impossible) would incorrectly fail a newer
+	// pending request.
+	if m.pendingStartAbsorb > 0 {
+		m.pendingStartAbsorb--
+		m.stateMu.Unlock()
+		kind := "FAILED"
+		if started {
+			kind = "STARTED"
+		}
+		m.logger.Printf("adaptermux: absorbed stale %s from cancelled request (data=0x%02X)", kind, data)
+		return
+	}
+
+	pending := m.pendingStart
 	if pending == nil {
+		m.stateMu.Unlock()
 		m.logger.Printf("adaptermux: stale arbitration response (no pending START)")
 		return
 	}
@@ -913,17 +934,17 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 		// A stale STARTED from a cancelled request can arrive after a new
 		// request is pending — do not grant ownership in that case.
 		if data != pending.initiator {
-			m.logger.Printf("adaptermux: stale STARTED for initiator 0x%02X (pending 0x%02X), ignoring", data, pending.initiator)
-			// Put pending back — our real response hasn't arrived yet.
-			m.stateMu.Lock()
-			if m.pendingStart == nil {
-				m.pendingStart = pending
-			}
+			// Do NOT clear pendingStart — our real response hasn't arrived yet.
 			m.stateMu.Unlock()
+			m.logger.Printf("adaptermux: stale STARTED for initiator 0x%02X (pending 0x%02X), ignoring", data, pending.initiator)
 			return
 		}
+		m.pendingStart = nil
+		m.stateMu.Unlock()
 		m.completeArbitrationGrant(pending.sessionID, pending.initiator, pending.notify)
 	} else {
+		m.pendingStart = nil
+		m.stateMu.Unlock()
 		pending.notify <- startResult{granted: false, initiator: data}
 	}
 
@@ -941,6 +962,10 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID {
 		pending := m.pendingStart
 		m.pendingStart = nil
+		// The adapter will still send STARTED or FAILED for the cancelled
+		// RequestStart. Increment absorb counter so handleArbitrationResponse
+		// discards that stale response instead of failing a newer request.
+		m.pendingStartAbsorb++
 		m.stateMu.Unlock()
 		pending.notify <- startResult{granted: false, initiator: pending.initiator}
 		return

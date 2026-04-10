@@ -1456,3 +1456,114 @@ func TestHandleArbitrationResponse_StaleFailedIgnored(t *testing.T) {
 		t.Fatal("pendingStart should be nil after correct STARTED for B")
 	}
 }
+
+// TestConcurrentTryGrantAndStart exercises the race fixed by P1
+// #3062924968: two goroutines calling tryGrantAndStart concurrently
+// must not both dequeue a request from the arbiter. Before the fix,
+// both could pass the pendingStart nil-guard, each call tryGrant(),
+// and one would overwrite the other's pendingStart — leaving the
+// first waiter without a terminal result.
+//
+// The test uses a delayedStartTransport to block inside RequestStart
+// so we can observe exactly one grant despite concurrent callers.
+func TestConcurrentTryGrantAndStart(t *testing.T) {
+	delayed := &delayedStartTransport{
+		p3MockTransport: newP3MockTransport(),
+		startGate:       make(chan struct{}),
+	}
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	// Inject delayed transport (NOT started with readLoop — we drive
+	// tryGrantAndStart manually to control concurrency).
+	mux.connMu.Lock()
+	mux.upstream = delayed
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Create two external sessions with pending START requests.
+	clientA, serverA := net.Pipe()
+	defer clientA.Close()
+	idA := mux.AddSession(serverA)
+	defer mux.RemoveSession(idA)
+	chA := mux.arb.requestStart(idA, 0xA1)
+
+	clientB, serverB := net.Pipe()
+	defer clientB.Close()
+	idB := mux.AddSession(serverB)
+	defer mux.RemoveSession(idB)
+	chB := mux.arb.requestStart(idB, 0xB2)
+
+	// Launch two concurrent tryGrantAndStart calls.  The gate is
+	// closed, so the first one to reach RequestStart will block.
+	var wg sync.WaitGroup
+	var callCount atomic.Int32
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			mux.tryGrantAndStart()
+			callCount.Add(1)
+		}()
+	}
+
+	// Give both goroutines time to race into tryGrantAndStart.
+	time.Sleep(50 * time.Millisecond)
+
+	// Open the gate so RequestStart completes.
+	close(delayed.startGate)
+
+	// Wait for both goroutines.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for concurrent tryGrantAndStart calls")
+	}
+
+	// Exactly one RequestStart must have been issued.
+	starts := delayed.getStartRequests()
+	if len(starts) != 1 {
+		t.Fatalf("expected exactly 1 RequestStart, got %d: %v", len(starts), starts)
+	}
+
+	// pendingStart must be set for exactly one session.
+	mux.stateMu.Lock()
+	pending := mux.pendingStart
+	mux.stateMu.Unlock()
+	if pending == nil {
+		t.Fatal("pendingStart must be set after tryGrantAndStart")
+	}
+
+	// The other request must still be in the arbiter queue (not lost).
+	if !mux.arb.hasPending() {
+		t.Fatal("second request must still be pending in arbiter")
+	}
+
+	// Verify the pending session got dequeued correctly.
+	if pending.sessionID != idA && pending.sessionID != idB {
+		t.Fatalf("pendingStart.sessionID = %d, want %d or %d", pending.sessionID, idA, idB)
+	}
+
+	// Verify the non-dequeued request's channel has not received yet.
+	otherCh := chB
+	if pending.sessionID == idB {
+		otherCh = chA
+	}
+	select {
+	case r := <-otherCh:
+		t.Fatalf("other request's channel should not have received yet, got %+v", r)
+	default:
+		// Good — still waiting.
+	}
+}

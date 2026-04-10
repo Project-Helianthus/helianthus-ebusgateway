@@ -779,18 +779,35 @@ func (m *Mux) deliverToActive(symbol byte) {
 // this method is a no-op — the next tryGrantAndStart will fire after
 // the current one resolves.
 func (m *Mux) tryGrantAndStart() {
-	// Guard: only one in-flight START at a time.
+	// P1 fix (#3062924968): serialize the pendingStart guard, the
+	// arb.tryGrant() dequeue, and the pendingStart assignment in a
+	// single stateMu critical section.  Without this, two concurrent
+	// callers (readLoop + RemoveSession goroutine) can both pass the
+	// nil-guard, dequeue different requests, and one overwrites the
+	// other's pendingStart — leaving the first waiter without a
+	// terminal result.
+	//
+	// Lock order: stateMu → arb.mu (tryGrant acquires arb.mu
+	// internally).  No path holds arb.mu then acquires stateMu,
+	// so this is ABBA-safe.
 	m.stateMu.Lock()
 	if m.pendingStart != nil {
 		m.stateMu.Unlock()
 		return
 	}
-	m.stateMu.Unlock()
 
 	sessionID, initiator, notify, granted := m.arb.tryGrant()
 	if !granted {
+		m.stateMu.Unlock()
 		return
 	}
+
+	m.pendingStart = &pendingStartState{
+		sessionID: sessionID,
+		initiator: initiator,
+		notify:    notify,
+	}
+	m.stateMu.Unlock()
 
 	// Forward START to adapter via non-blocking RequestStart.
 	m.connMu.Lock()
@@ -798,20 +815,6 @@ func (m *Mux) tryGrantAndStart() {
 	m.connMu.Unlock()
 
 	if requester, ok := tr.(arbitrationRequester); ok {
-		// P1 fix: register pending START BEFORE dispatching RequestStart
-		// so that a concurrent cancel (cancelPendingStart) during the
-		// RequestStart call can find and clear this entry. Without this,
-		// there is a window where neither arb.cancelStart (already
-		// dequeued) nor cancelPendingStart (not yet stored) can see
-		// the in-flight request, allowing a later STARTED to grant
-		// ownership to a cancelled session.
-		m.stateMu.Lock()
-		m.pendingStart = &pendingStartState{
-			sessionID: sessionID,
-			initiator: initiator,
-			notify:    notify,
-		}
-		m.stateMu.Unlock()
 
 		if err := requester.RequestStart(initiator); err != nil {
 			m.logger.Printf("adaptermux: RequestStart failed for session %d: %v", sessionID, err)
@@ -844,10 +847,18 @@ func (m *Mux) tryGrantAndStart() {
 		// StartArbitration (e.g. ENS or test mocks without RequestStart).
 		if err := starter.StartArbitration(initiator); err != nil {
 			m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
+			m.stateMu.Lock()
+			if m.pendingStart != nil && m.pendingStart.notify == notify {
+				m.pendingStart = nil
+			}
+			m.stateMu.Unlock()
 			notify <- startResult{granted: false, initiator: initiator, err: err}
 			return
 		}
 		// Blocking path: adapter already confirmed — handle inline.
+		m.stateMu.Lock()
+		m.pendingStart = nil
+		m.stateMu.Unlock()
 		m.completeArbitrationGrant(sessionID, initiator, notify)
 		return
 	} else {

@@ -1045,7 +1045,11 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	} else {
 		m.pendingStart = nil
 		m.stateMu.Unlock()
-		pending.notify <- startResult{granted: false, initiator: data}
+		pending.notify <- startResult{
+			granted:   false,
+			initiator: data,
+			err:       fmt.Errorf("adaptermux: arbitration lost to 0x%02X: %w", data, ebuserrors.ErrBusCollision),
+		}
 	}
 
 	// After resolving, check if more requests are pending.

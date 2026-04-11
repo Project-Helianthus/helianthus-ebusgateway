@@ -326,8 +326,17 @@ func (m *Mux) connect() error {
 	}
 
 	// Set TCP options (log failures instead of discarding).
+	// NOTE: SetNoDelay(false) enables Nagle's algorithm, which coalesces
+	// small writes into larger TCP packets. This is critical for adapter
+	// compatibility: doSend writes one byte at a time (2 ENH bytes per
+	// TCP write). With NoDelay=true, each byte becomes a separate TCP
+	// packet (11 packets for a B524 request). Some adapter firmware
+	// can't process rapid-fire individual ENHReqSend commands and drops
+	// bytes or times out. With Nagle, the TCP stack batches multiple
+	// 2-byte ENH commands into fewer packets, matching how the separate
+	// proxy forwarded frames (all bytes in one Write call).
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		if err := tcpConn.SetNoDelay(true); err != nil {
+		if err := tcpConn.SetNoDelay(false); err != nil {
 			m.logger.Printf("adaptermux: SetNoDelay: %v", err)
 		}
 		if err := tcpConn.SetKeepAlive(true); err != nil {

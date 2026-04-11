@@ -895,9 +895,53 @@ func (m *Mux) flushSessionEchoTrackers() {
 	}
 }
 
+// drainUpstreamBuffer reads and discards bytes from the TCP socket buffer.
+// Called from completeArbitrationGrant (on the readLoop goroutine) after
+// drainActiveCh to flush stale bytes that haven't been read yet.
+// Uses a very short read deadline (2ms) to avoid blocking.
+func (m *Mux) drainUpstreamBuffer() int {
+	m.connMu.Lock()
+	conn := m.conn
+	tr := m.upstream
+	readTimeout := m.cfg.ReadTimeout
+	m.connMu.Unlock()
+
+	if tr == nil || conn == nil {
+		return 0
+	}
+
+	tcpConn, isTCP := conn.(*net.TCPConn)
+	if !isTCP {
+		return 0
+	}
+
+	n := 0
+	for {
+		// Very short deadline — just drain what's already buffered.
+		if err := tcpConn.SetReadDeadline(time.Now().Add(2 * time.Millisecond)); err != nil {
+			break
+		}
+		event, err := m.readUpstream()
+		if err != nil {
+			break // timeout → buffer empty
+		}
+		n++
+		// Deliver SYN to passive (needed for bus timing) but NOT to activeCh.
+		if event.Kind == transport.StreamEventByte && event.Byte == protocol.SymbolSyn {
+			m.emitPassive(PassiveEvent{Kind: PassiveEventSymbol, Symbol: event.Byte, ObservedAt: time.Now()})
+		}
+		// Discard other bytes (stale bus traffic).
+	}
+
+	// Restore normal read deadline.
+	if err := tcpConn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+		m.logger.Printf("adaptermux: restore read deadline: %v", err)
+	}
+	return n
+}
+
 // deliverToActive sends a byte to the active path channel.
 // Logs on overflow instead of silently dropping (CRITICAL-1 fix).
-//
 func (m *Mux) deliverToActive(symbol byte) {
 	select {
 	case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
@@ -1098,15 +1142,18 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.sessionsMu.Unlock()
 	}
 
-	// Drain stale bytes from activeCh before notifying gateway.Bus.
-	// This mirrors ENHTransport.StartArbitration's parser.Reset() which
-	// discards pre-arbitration traffic. Without this, gateway.Bus reads
-	// stale bytes from activeCh and gets echo mismatches (ErrBusCollision)
-	// causing adapter-direct scan failures.
+	// Drain stale bytes from BOTH the Go channel AND the TCP buffer.
+	// drainActiveCh clears bytes already delivered to the Go channel.
+	// drainUpstreamBuffer reads and discards any bytes remaining in the
+	// TCP socket buffer that readLoop hasn't processed yet. Without both
+	// drains, stale bus traffic bytes (VRC700 broadcasts, SYN idle) reach
+	// activeCh after the grant, causing echo mismatches in bus.sendRawWithEcho.
 	if sessionID == gatewaySessionID {
 		drained := m.drainActiveCh()
+		tcpDrained := m.drainUpstreamBuffer()
+		drained += tcpDrained
 		if drained > 0 {
-			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
+			m.logger.Printf("adaptermux: drained %d bytes from activeCh + %d from TCP on grant", drained-tcpDrained, tcpDrained)
 		}
 	}
 

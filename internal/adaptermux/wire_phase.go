@@ -185,9 +185,19 @@ func (t *wirePhaseTracker) advanceWaitResponseBody(symbol byte) wirePhaseEvent {
 	return wirePhaseEventNone
 }
 
-func (t *wirePhaseTracker) advanceWaitResponseAck(_ byte) wirePhaseEvent {
-	// Any non-SYN symbol in WaitResponseAck phase = final ACK.
-	// (SYN is handled by the caller before reaching this point.)
+func (t *wirePhaseTracker) advanceWaitResponseAck(symbol byte) wirePhaseEvent {
+	// SYN is handled by the caller before reaching this point.
+	if symbol == protocol.SymbolNack {
+		// NACK: the initiator rejected the response CRC. The target
+		// will retry the response (LEN DATA CRC). Transition to
+		// WaitResponseLen instead of idle to keep phase tracking
+		// active during the retry — otherwise, third-party traffic
+		// arriving during idle interleaves with the retried response
+		// bytes in activeCh.
+		t.phase = wirePhaseWaitResponseLen
+		return wirePhaseEventNone
+	}
+	// ACK (0x00) or any other non-SYN symbol: transaction complete.
 	t.reset(wirePhaseIdle)
 	return wirePhaseEventTransactionDone
 }

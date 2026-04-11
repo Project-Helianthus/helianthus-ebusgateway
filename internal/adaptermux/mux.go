@@ -673,6 +673,7 @@ func (m *Mux) onReceived(symbol byte) {
 	ownerID, _, hasOwner := m.arb.owner()
 	if hasOwner && !m.busOwned.IsZero() &&
 		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
+		m.logger.Printf("adaptermux: MaxOwnershipDuration release owner=%d elapsed=%v", ownerID, time.Since(m.busOwned))
 		m.arb.releaseOwnership(ownerID)
 		m.gatewayEcho.reset()
 		hasOwner = false
@@ -771,6 +772,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// readLoop resuming and the owner goroutine starting to Write).
 	if phaseEvent == wirePhaseEventSYNIdle && hasOwner {
 		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
+			m.logger.Printf("adaptermux: idle SYN release owner=%d elapsed=%v dirty=%v", ownerID, time.Since(m.busOwned), m.busDirty)
 			m.arb.releaseOwnership(ownerID)
 		}
 	}
@@ -1034,8 +1036,14 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.arb.confirmOwnership(sessionID, initiator)
 	}
 
+	// Check ArbitrationSendsSource BEFORE acquiring stateMu to avoid
+	// ABBA deadlock: arbitrationSendsSource acquires connMu, and doSend
+	// acquires connMu → stateMu. Reversing that order here (stateMu →
+	// connMu) would deadlock.
+	sendsSource := m.arbitrationSendsSource()
+
 	m.stateMu.Lock()
-	if m.arbitrationSendsSource() {
+	if sendsSource {
 		// The adapter firmware already placed the SRC byte on the wire
 		// during arbitration (StreamEventStarted). Pre-load it into the
 		// phase tracker so byte counting is correct — without this, DST
@@ -1174,6 +1182,8 @@ func (m *Mux) sendLoop() {
 // doSend writes a byte to the adapter for the given session.
 func (m *Mux) doSend(sessionID uint64, data byte) error {
 	if !m.arb.isOwner(sessionID) {
+		curOwner, _, hasOwner := m.arb.owner()
+		m.logger.Printf("adaptermux: doSend not-owner session=%d hasOwner=%v curOwner=%d busOwned=%v", sessionID, hasOwner, curOwner, m.busOwned)
 		return errNotBusOwner
 	}
 

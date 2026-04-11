@@ -133,6 +133,7 @@ type Mux struct {
 	arb          *arbitrator
 	busOwned     time.Time          // when current owner acquired the bus
 	busDirty     bool               // owner has sent bytes since acquiring
+	suppressSyn  bool               // suppress stale SYNs from activeCh until first byte sent
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int               // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
 
@@ -876,7 +877,23 @@ func (m *Mux) flushSessionEchoTrackers() {
 
 // deliverToActive sends a byte to the active path channel.
 // Logs on overflow instead of silently dropping (CRITICAL-1 fix).
+//
+// Suppresses stale SYN bytes during the grant-to-first-byte handoff
+// window. After arbitration grant, the TCP socket buffer may contain
+// SYN bytes from bus idle traffic that predates the adapter's START.
+// drainActiveCh clears the Go channel, but these bytes haven't been
+// read yet. Without suppression, the gateway reads a stale SYN as
+// an echo mismatch (ErrBusCollision) on its very first request byte.
 func (m *Mux) deliverToActive(symbol byte) {
+	if symbol == protocol.SymbolSyn {
+		m.stateMu.Lock()
+		suppress := m.suppressSyn
+		m.stateMu.Unlock()
+		if suppress {
+			m.logger.Printf("adaptermux: suppressed stale SYN from activeCh (grant handoff)")
+			return
+		}
+	}
 	select {
 	case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
 	default:
@@ -1056,6 +1073,13 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	}
 	m.busDirty = false
 	m.busOwned = time.Now()
+	// Suppress stale SYN bytes from activeCh during the grant-to-first-byte
+	// handoff window. After arbitration grant, the TCP buffer may still contain
+	// SYN bytes from bus idle traffic that arrived before the adapter processed
+	// START. drainActiveCh clears the Go channel but not the TCP socket buffer.
+	// These stale SYNs would be read by the gateway as echo mismatches,
+	// causing ErrBusCollision on the very first byte.
+	m.suppressSyn = true
 	if sessionID == gatewaySessionID {
 		m.gatewayEcho.markRequestStart()
 	}
@@ -1198,11 +1222,12 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 
 	m.logger.Printf("adaptermux: doSend session=%d byte=0x%02X", sessionID, data)
 
-	// Record echo expectation.
+	// Record echo expectation and clear SYN suppression.
 	if sessionID == gatewaySessionID {
 		m.stateMu.Lock()
 		m.gatewayEcho.recordSent(data)
 		m.busDirty = true
+		m.suppressSyn = false // first byte sent — stale SYN window closed
 		m.stateMu.Unlock()
 	} else {
 		m.sessionsMu.Lock()

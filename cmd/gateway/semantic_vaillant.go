@@ -6438,6 +6438,7 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 
 		p.readMu.Lock()
 		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		t0 := time.Now()
 		response, err := p.bus.Send(reqCtx, protocol.Frame{
 			Source:    source,
 			Target:    target,
@@ -6445,19 +6446,24 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 			Secondary: vaillantExtRegisterSecondary,
 			Data:      buildB524ReadSelector(opcode, group, instance, addr),
 		})
+		elapsed := time.Since(t0)
 		cancel()
 		p.readMu.Unlock()
 
 		if err != nil {
+			log.Printf("b524_probe target=0x%02X attempt=%d elapsed=%v err=%v", target, attempt, elapsed, err)
 			if ctx.Err() != nil {
 				return false // parent context cancelled
 			}
 			continue // retry on transient errors
 		}
 		if response == nil {
+			log.Printf("b524_probe target=0x%02X attempt=%d elapsed=%v nil_response", target, attempt, elapsed)
 			continue
 		}
-		return isB524ProbeCoherent(response.Data, group, addr)
+		coherent := isB524ProbeCoherent(response.Data, group, addr)
+		log.Printf("b524_probe target=0x%02X attempt=%d elapsed=%v coherent=%v response_len=%d", target, attempt, elapsed, coherent, len(response.Data))
+		return coherent
 	}
 	return false
 }

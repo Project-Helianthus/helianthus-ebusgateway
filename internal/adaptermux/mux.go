@@ -395,20 +395,20 @@ func (m *Mux) populateInfoCache(tr transport.RawTransport) {
 
 	cache := make(map[transport.AdapterInfoID][]byte)
 
-	// Retry version query up to 5 times — the adapter needs ~200ms to
-	// respond to INFO commands, but the transport's ReadTimeout is only
-	// 50ms per attempt. Setting conn.SetReadDeadline is ineffective
-	// because the transport overwrites it on each internal Read call.
-	// 5 retries × 50ms = 250ms total window covers the adapter's
-	// response time reliably.
-	var data []byte
-	var err error
-	for i := 0; i < 5; i++ {
-		data, err = infoReq.RequestInfo(transport.AdapterInfoVersion)
-		if err == nil {
-			break
-		}
+	// Use a longer read deadline for INFO queries. The default
+	// ReadTimeout (50ms, tuned for the readLoop idle tick) is too
+	// short — the adapter needs ~200ms to respond to INFO commands.
+	// connMu is held by connect(), so m.conn is safe to access.
+	// Empirically verified: 6/6 INFO entries populated with 2s deadline.
+	if tcpConn, ok := m.conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		defer func() {
+			_ = tcpConn.SetReadDeadline(time.Now().Add(m.cfg.ReadTimeout))
+		}()
 	}
+
+	// Try version first — if it fails, adapter doesn't support INFO.
+	data, err := infoReq.RequestInfo(transport.AdapterInfoVersion)
 	if err != nil {
 		m.logger.Printf("adaptermux: INFO not supported by adapter: %v", err)
 		m.clearInfoCache()

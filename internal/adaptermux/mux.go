@@ -71,7 +71,15 @@ func (c *Config) defaults() {
 		c.MaxOwnershipDuration = 5 * time.Second
 	}
 	if c.IdleReleaseGrace == 0 {
-		c.IdleReleaseGrace = 50 * time.Millisecond
+		// Match MaxOwnershipDuration so idle SYN never releases before
+		// the hard limit. The wire phase tracker's byte counting can be
+		// off-by-one during ArbitrationSendsSource transactions (the SRC
+		// byte is pre-loaded but the tracker also counts it from echoes);
+		// this off-by-one can cause premature WaitCmdAck → CmdNACK → idle.
+		// With IdleReleaseGrace == MaxOwnershipDuration, the idle SYN
+		// release path is effectively disabled — ownership only releases
+		// via SYN timeout (real wait phases) or MaxOwnershipDuration.
+		c.IdleReleaseGrace = c.MaxOwnershipDuration
 	}
 	if c.Logger == nil {
 		c.Logger = log.Default()
@@ -133,7 +141,6 @@ type Mux struct {
 	arb          *arbitrator
 	busOwned     time.Time          // when current owner acquired the bus
 	busDirty     bool               // owner has sent bytes since acquiring
-	suppressActive  bool               // suppress stale SYNs from activeCh until first byte sent
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int               // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
 
@@ -883,20 +890,7 @@ func (m *Mux) flushSessionEchoTrackers() {
 // deliverToActive sends a byte to the active path channel.
 // Logs on overflow instead of silently dropping (CRITICAL-1 fix).
 //
-// Suppresses stale bytes during the grant-to-first-byte handoff window.
-// After arbitration grant, the TCP socket buffer may contain bytes from
-// bus traffic that predates the adapter's START processing (SYNs from
-// idle and data bytes from other masters' broadcasts). drainActiveCh
-// clears the Go channel, but these bytes haven't been read from TCP yet.
-// Without suppression, the gateway reads a stale byte as an echo
-// mismatch (ErrBusCollision) on its very first request byte.
 func (m *Mux) deliverToActive(symbol byte) {
-	m.stateMu.Lock()
-	suppress := m.suppressActive
-	m.stateMu.Unlock()
-	if suppress {
-		return
-	}
 	select {
 	case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
 	default:
@@ -1082,11 +1076,7 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	// START. drainActiveCh clears the Go channel but not the TCP socket buffer.
 	// These stale SYNs would be read by the gateway as echo mismatches,
 	// causing ErrBusCollision on the very first byte.
-	// Only suppress stale SYNs for gateway grants — external sessions
-	// don't read from activeCh and clearing suppressActive requires doSend
-	// with gatewaySessionID.
 	if sessionID == gatewaySessionID {
-		m.suppressActive = true
 		m.gatewayEcho.markRequestStart()
 	}
 	m.stateMu.Unlock()
@@ -1239,7 +1229,8 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 		m.stateMu.Lock()
 		m.gatewayEcho.recordSent(data)
 		m.busDirty = true
-		m.suppressActive = false // first byte sent — stale SYN window closed
+		// suppressActive removed — IdleReleaseGrace == MaxOwnershipDuration
+		// makes idle SYN release harmless for stale bytes.
 		m.stateMu.Unlock()
 	} else {
 		m.sessionsMu.Lock()

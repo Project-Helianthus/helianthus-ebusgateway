@@ -410,7 +410,8 @@ func (m *Mux) populateInfoCache(tr transport.RawTransport) {
 	cache := make(map[transport.AdapterInfoID][]byte)
 
 	// Try version first — if it fails, adapter doesn't support INFO.
-	// The transport uses a 2s read timeout for both INFO and the readLoop.
+	// Called via the setup transport (2s timeout); connect() replaces
+	// m.upstream with a fast-timeout transport for readLoop afterward.
 	data, err := infoReq.RequestInfo(transport.AdapterInfoVersion)
 	if err != nil {
 		m.logger.Printf("adaptermux: INFO not supported by adapter: %v", err)

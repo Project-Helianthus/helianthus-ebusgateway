@@ -765,8 +765,12 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	}
 
 	// Release ownership on idle SYN after grace period.
+	// Use only the time check — the previous `!busDirty` fast-path
+	// released ownership immediately on the first SYN after grant,
+	// before the owner had time to send any bytes (race between
+	// readLoop resuming and the owner goroutine starting to Write).
 	if phaseEvent == wirePhaseEventSYNIdle && hasOwner {
-		if !m.busDirty || time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
+		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
 			m.arb.releaseOwnership(ownerID)
 		}
 	}

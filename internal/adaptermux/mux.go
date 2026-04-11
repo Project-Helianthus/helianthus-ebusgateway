@@ -366,6 +366,21 @@ func (m *Mux) connect() error {
 	return nil
 }
 
+// isVolatileInfoID reports whether an INFO ID returns telemetry data that
+// changes frequently (temperature, voltage, RSSI). These IDs are excluded
+// from the startup cache because cached values become stale immediately.
+func isVolatileInfoID(id transport.AdapterInfoID) bool {
+	switch id {
+	case transport.AdapterInfoTemperature,
+		transport.AdapterInfoSupplyVolt,
+		transport.AdapterInfoBusVoltage,
+		transport.AdapterInfoWiFiRSSI:
+		return true
+	default:
+		return false
+	}
+}
+
 // populateInfoCache queries the upstream transport for INFO metadata
 // and stores responses in the mux-level cache. Sessions and the active
 // path read from the cache instead of touching the upstream transport,
@@ -373,10 +388,15 @@ func (m *Mux) connect() error {
 //
 // Called from connect() after a successful INIT handshake. The upstream
 // transport must support InfoRequester; if it does not, the cache is
-// left empty and CachedInfo returns an error.
+// cleared and CachedInfo returns an error.
+//
+// Volatile telemetry IDs (temperature, voltage, RSSI) are excluded
+// from the cache because their values change frequently and a startup
+// snapshot would silently go stale.
 func (m *Mux) populateInfoCache(tr transport.RawTransport) {
 	infoReq, ok := tr.(transport.InfoRequester)
 	if !ok {
+		m.clearInfoCache()
 		return
 	}
 
@@ -386,12 +406,16 @@ func (m *Mux) populateInfoCache(tr transport.RawTransport) {
 	data, err := infoReq.RequestInfo(transport.AdapterInfoVersion)
 	if err != nil {
 		m.logger.Printf("adaptermux: INFO not supported by adapter")
+		m.clearInfoCache()
 		return
 	}
 	cache[transport.AdapterInfoVersion] = append([]byte(nil), data...)
 
-	// Query remaining IDs (0x01–0x07).
+	// Query remaining stable IDs (0x01–0x07), skipping volatile telemetry.
 	for id := transport.AdapterInfoHardwareID; id <= transport.AdapterInfoWiFiRSSI; id++ {
+		if isVolatileInfoID(id) {
+			continue
+		}
 		data, err := infoReq.RequestInfo(id)
 		if err != nil {
 			continue
@@ -404,6 +428,14 @@ func (m *Mux) populateInfoCache(tr transport.RawTransport) {
 	m.infoCacheMu.Unlock()
 
 	m.logger.Printf("adaptermux: INFO cache populated (%d entries)", len(cache))
+}
+
+// clearInfoCache removes all cached INFO entries so that CachedInfo
+// returns an error until the cache is repopulated.
+func (m *Mux) clearInfoCache() {
+	m.infoCacheMu.Lock()
+	m.infoCache = nil
+	m.infoCacheMu.Unlock()
 }
 
 // CachedInfo returns a copy of the cached INFO response for the given
@@ -428,6 +460,10 @@ func (m *Mux) CachedInfo(id transport.AdapterInfoID) ([]byte, error) {
 // reconnect tears down the current connection and re-establishes it.
 // Called from the read loop on adapter disconnect.
 func (m *Mux) reconnect() error {
+	// Invalidate INFO cache immediately so CachedInfo returns errors
+	// during the disconnect window rather than serving stale data.
+	m.clearInfoCache()
+
 	m.emitPassive(PassiveEvent{
 		Kind:       PassiveEventDisconnected,
 		ObservedAt: time.Now(),
@@ -733,6 +769,11 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 // handleReset handles an adapter RESETTED event.
 func (m *Mux) handleReset() {
 	now := time.Now()
+
+	// Invalidate INFO cache — adapter state changed and cached values
+	// (especially ResetInfo) may no longer be accurate. The cache will
+	// be repopulated on the next reconnect via connect().
+	m.clearInfoCache()
 
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)

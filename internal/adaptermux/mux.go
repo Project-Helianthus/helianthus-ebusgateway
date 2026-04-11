@@ -358,7 +358,7 @@ func (m *Mux) connect() error {
 	}
 
 	m.conn = conn
-	m.upstream = &tracingTransport{inner: tr, logger: m.logger}
+	m.upstream = tr
 
 	// Perform INIT handshake — fatal if transport implements Init.
 	// Store the negotiated features byte from the upstream RESETTED
@@ -720,7 +720,6 @@ func (m *Mux) onReceived(symbol byte) {
 	}
 	if hasOwner && !m.busOwned.IsZero() &&
 		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
-		m.logger.Printf("adaptermux: MaxOwnershipDuration release owner=%d elapsed=%v", ownerID, time.Since(m.busOwned))
 		m.arb.releaseOwnership(ownerID)
 		m.gatewayEcho.reset()
 		hasOwner = false
@@ -809,7 +808,6 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 
 	// Release ownership if SYN timeout.
 	if phaseEvent == wirePhaseEventSYNTimeout && hasOwner {
-		m.logger.Printf("adaptermux: SYN timeout release owner=%d elapsed=%v dirty=%v", ownerID, time.Since(m.busOwned), m.busDirty)
 		m.arb.releaseOwnership(ownerID)
 	}
 
@@ -820,7 +818,6 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// readLoop resuming and the owner goroutine starting to Write).
 	if phaseEvent == wirePhaseEventSYNIdle && hasOwner {
 		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
-			m.logger.Printf("adaptermux: idle SYN release owner=%d elapsed=%v dirty=%v", ownerID, time.Since(m.busOwned), m.busDirty)
 			m.arb.releaseOwnership(ownerID)
 		}
 	}
@@ -919,51 +916,6 @@ func (m *Mux) flushSessionEchoTrackers() {
 	for _, sess := range m.sessions {
 		sess.echoTracker.flushOnSYN()
 	}
-}
-
-// drainUpstreamBuffer reads and discards bytes from the TCP socket buffer.
-// Called from completeArbitrationGrant (on the readLoop goroutine) after
-// drainActiveCh to flush stale bytes that haven't been read yet.
-// Uses a very short read deadline (2ms) to avoid blocking.
-func (m *Mux) drainUpstreamBuffer() int {
-	m.connMu.Lock()
-	conn := m.conn
-	tr := m.upstream
-	readTimeout := m.cfg.ReadTimeout
-	m.connMu.Unlock()
-
-	if tr == nil || conn == nil {
-		return 0
-	}
-
-	tcpConn, isTCP := conn.(*net.TCPConn)
-	if !isTCP {
-		return 0
-	}
-
-	n := 0
-	for {
-		// Very short deadline — just drain what's already buffered.
-		if err := tcpConn.SetReadDeadline(time.Now().Add(2 * time.Millisecond)); err != nil {
-			break
-		}
-		event, err := m.readUpstream()
-		if err != nil {
-			break // timeout → buffer empty
-		}
-		n++
-		// Deliver SYN to passive (needed for bus timing) but NOT to activeCh.
-		if event.Kind == transport.StreamEventByte && event.Byte == protocol.SymbolSyn {
-			m.emitPassive(PassiveEvent{Kind: PassiveEventSymbol, Symbol: event.Byte, ObservedAt: time.Now()})
-		}
-		// Discard other bytes (stale bus traffic).
-	}
-
-	// Restore normal read deadline.
-	if err := tcpConn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
-		m.logger.Printf("adaptermux: restore read deadline: %v", err)
-	}
-	return n
 }
 
 // deliverToActive sends a byte to the active path channel.
@@ -1169,10 +1121,6 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	}
 
 	// Drain stale bytes from activeCh before notifying gateway.Bus.
-	// Only drain the Go channel — do NOT drain the TCP buffer directly.
-	// drainUpstreamBuffer was removed because it consumed critical events
-	// (RESETTED) from the TCP stream without handling them, leaving the
-	// adapter in an inconsistent state where writes were silently dropped.
 	if sessionID == gatewaySessionID {
 		drained := m.drainActiveCh()
 		if drained > 0 {
@@ -1281,13 +1229,6 @@ func (m *Mux) sendLoop() {
 // doSend writes a byte to the adapter for the given session.
 func (m *Mux) doSend(sessionID uint64, data byte) error {
 	if !m.arb.isOwner(sessionID) {
-		m.stateMu.Lock()
-		busOwned := m.busOwned
-		busDirty := m.busDirty
-		phase := m.phase.phase
-		m.stateMu.Unlock()
-		curOwner, _, hasOwner := m.arb.owner()
-		m.logger.Printf("adaptermux: doSend not-owner session=%d byte=0x%02X hasOwner=%v curOwner=%d busOwned=%v dirty=%v phase=%d", sessionID, data, hasOwner, curOwner, busOwned, busDirty, phase)
 		return errNotBusOwner
 	}
 
@@ -1299,16 +1240,11 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 		return errNotConnected
 	}
 
-	// Per-byte doSend logging removed — too noisy for production.
-	// The doSend wrote/not-owner diagnostic logs remain for debugging.
-
-	// Record echo expectation and clear SYN suppression.
+	// Record echo expectation and mark bus dirty.
 	if sessionID == gatewaySessionID {
 		m.stateMu.Lock()
 		m.gatewayEcho.recordSent(data)
 		m.busDirty = true
-		// suppressActive removed — IdleReleaseGrace == MaxOwnershipDuration
-		// makes idle SYN release harmless for stale bytes.
 		m.stateMu.Unlock()
 	} else {
 		m.sessionsMu.Lock()
@@ -1338,7 +1274,6 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 		return fmt.Errorf("%w: %v", errAdapterWrite, err)
 	}
 
-	// Per-byte "wrote" logging removed — too noisy for production.
 	return nil
 }
 

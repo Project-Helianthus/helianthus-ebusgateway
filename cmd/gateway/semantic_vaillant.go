@@ -6449,35 +6449,23 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 			Secondary: vaillantExtRegisterSecondary,
 			Data:      data,
 		}
-		// Build the full telegram as bus.sendTransaction would see it.
-		telegram := []byte{frame.Source, frame.Target, frame.Primary, frame.Secondary, byte(len(frame.Data))}
-		telegram = append(telegram, frame.Data...)
-		telegram = append(telegram, protocol.CRC(telegram))
-		log.Printf("b524_telegram target=0x%02X src=0x%02X telegram=[% X] crc=0x%02X len=%d",
-			target, source, telegram, telegram[len(telegram)-1], len(telegram))
 
 		p.readMu.Lock()
 		reqCtx, cancel := context.WithTimeout(ctx, timeout)
-		t0 := time.Now()
 		response, err := p.bus.Send(reqCtx, frame)
-		elapsed := time.Since(t0)
 		cancel()
 		p.readMu.Unlock()
 
 		if err != nil {
-			log.Printf("b524_probe target=0x%02X attempt=%d elapsed=%v err=%v", target, attempt, elapsed, err)
 			if ctx.Err() != nil {
 				return false // parent context cancelled
 			}
 			continue // retry on transient errors
 		}
 		if response == nil {
-			log.Printf("b524_probe target=0x%02X attempt=%d elapsed=%v nil_response", target, attempt, elapsed)
 			continue
 		}
-		coherent := isB524ProbeCoherent(response.Data, group, addr)
-		log.Printf("b524_probe target=0x%02X attempt=%d elapsed=%v coherent=%v response_len=%d", target, attempt, elapsed, coherent, len(response.Data))
-		return coherent
+		return isB524ProbeCoherent(response.Data, group, addr)
 	}
 	return false
 }

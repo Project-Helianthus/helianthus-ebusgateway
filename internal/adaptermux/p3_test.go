@@ -2003,6 +2003,10 @@ func TestPassive_NoGarbageDuringGatewayTransaction(t *testing.T) {
 	}
 
 	// Step 5: Release ownership (SYN boundary) and verify passive resumes.
+	// Wire phase advance is skipped during gateway ownership, so SYN
+	// during ownership is always SYNIdle. IdleReleaseGrace (default
+	// 200ms) must elapse since busOwned for the idle SYN to release.
+	time.Sleep(200 * time.Millisecond)
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(50 * time.Millisecond)
 

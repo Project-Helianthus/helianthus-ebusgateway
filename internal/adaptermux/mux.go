@@ -360,7 +360,7 @@ func (m *Mux) connect() error {
 	}
 
 	m.conn = conn
-	m.upstream = tr
+	m.upstream = &tracingTransport{inner: tr, logger: m.logger}
 
 	// Perform INIT handshake — fatal if transport implements Init.
 	// Store the negotiated features byte from the upstream RESETTED

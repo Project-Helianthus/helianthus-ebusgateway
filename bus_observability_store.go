@@ -42,7 +42,7 @@ var (
 		"capability_withdrawn",
 	}
 	passiveProbeOutcomes      = []string{"confirmed", "withdrawn", "timed_out"}
-	passiveCompletionModes    = []string{"thresholds_met", "fallback_path"}
+	passiveCompletionModes    = []string{"thresholds_met", "fallback_path", "warmup_disabled"}
 	passiveWarmupBlockers     = []string{"connected_observation_window", "completed_transactions", "healthy_symbol_ingress", "post_reset_settling", "startup_outer_window"}
 	busyWindows               = []string{"1m", "5m", "15m", "1h"}
 	dedupDegradedReasons      = []string{"fingerprint_emission_failure", "observer_panic", "epoch_reset", "critical_overflow", "explicit_discontinuity", "dedup_output_overflow"}
@@ -1476,7 +1476,14 @@ func (store *BusObservabilityStore) promotePassiveIfReadyLocked(now time.Time, t
 	if store.passive.state != "warming_up" {
 		return
 	}
+	// requiredTransactions == 0 means warmup is disabled (adapter-direct
+	// mode) — promote immediately without waiting for transactions.
 	if store.passive.requiredTransactions == 0 {
+		store.setPassiveStateLocked(now, "available")
+		store.passive.lastCompletionMode = "warmup_disabled"
+		store.passive.unavailableReason = ""
+		store.passive.probeOutcomes["confirmed"]++
+		store.passive.startupWindowClosed = true
 		return
 	}
 	if store.passive.connectedWindow > 0 && now.Before(store.passive.sessionStartedAt.Add(store.passive.connectedWindow)) && store.passive.settlingDeadline.IsZero() {

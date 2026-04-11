@@ -602,6 +602,15 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	// readLoop (P0 deadlock fix).
 	if cfg.BroadcastListen {
 		cfg.PassiveTransport = mux.PassiveTransport()
+
+		// Skip passive warmup in adapter-direct mode. The passive stream
+		// only sees third-party traffic (gateway bytes are suppressed by
+		// the mux), so warmup thresholds are never met organically. Zero
+		// thresholds tell the store to promote immediately.
+		cfg.ObserveFirstWarmupCompletedTransactions = 0
+		cfg.ObserveFirstWarmupConnectedWindow = 0
+		cfg.ObserveFirstWarmupPostResetTransactions = 0
+		cfg.ObserveFirstWarmupPostResetWindow = 0
 	}
 
 	if err := mux.Start(ctx); err != nil {

@@ -85,9 +85,6 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 // The gateway must hold bus ownership (via StartArbitration) before
 // calling Write.
 func (t *activeTransport) Write(p []byte) (int, error) {
-	if len(p) > 0 {
-		t.mux.logger.Printf("adaptermux: activeTransport.Write len=%d first=0x%02X", len(p), p[0])
-	}
 	for i, b := range p {
 		result := make(chan error, 1)
 		select {
@@ -155,19 +152,14 @@ func (t *activeTransport) RequestInfo(id transport.AdapterInfoID) ([]byte, error
 }
 
 // ArbitrationSendsSource reports whether the upstream adapter's START
-// arbitration already places the source byte on the wire. Delegates to
-// the upstream transport if it implements the interface; returns false
-// otherwise (conservative default — caller will send the source byte).
+// arbitration already places the source byte on the wire.
+//
+// Delegates to mux.arbitrationSendsSource() which applies protocol-
+// level overrides (e.g., ENS mode forces false because the ENS adapter
+// does not transmit the source byte during arbitration). This ensures
+// bus.sendTransaction's includeSource decision matches the mux wire
+// phase tracker — a mismatch causes off-by-one byte counting that
+// triggers premature ownership release mid-request.
 func (t *activeTransport) ArbitrationSendsSource() bool {
-	t.mux.connMu.Lock()
-	tr := t.mux.upstream
-	t.mux.connMu.Unlock()
-
-	if tr == nil {
-		return false
-	}
-	if checker, ok := tr.(interface{ ArbitrationSendsSource() bool }); ok {
-		return checker.ArbitrationSendsSource()
-	}
-	return false
+	return t.mux.arbitrationSendsSource()
 }

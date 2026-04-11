@@ -6407,8 +6407,8 @@ func isB524ProbeCoherent(payload []byte, group byte, addr uint16) bool {
 }
 
 // probeB524Register sends a single B524 read request to target and checks
-// if the response is coherent. Uses one-shot Bus.Send (no retry, no circuit
-// breaker) per discovery probe contract.
+// if the response is coherent. Retries up to 3 times with 200ms backoff
+// to handle adapter-direct bus contention.
 func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
 	if p == nil || p.bus == nil {
 		return false

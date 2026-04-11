@@ -409,7 +409,7 @@ func (m *Mux) populateInfoCache(tr transport.RawTransport) {
 	// Try version first — if it fails, adapter doesn't support INFO.
 	data, err := infoReq.RequestInfo(transport.AdapterInfoVersion)
 	if err != nil {
-		m.logger.Printf("adaptermux: INFO not supported by adapter")
+		m.logger.Printf("adaptermux: INFO not supported by adapter: %v", err)
 		m.clearInfoCache()
 		return
 	}
@@ -1090,8 +1090,11 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	// START. drainActiveCh clears the Go channel but not the TCP socket buffer.
 	// These stale SYNs would be read by the gateway as echo mismatches,
 	// causing ErrBusCollision on the very first byte.
-	m.suppressSyn = true
+	// Only suppress stale SYNs for gateway grants — external sessions
+	// don't read from activeCh and clearing suppressSyn requires doSend
+	// with gatewaySessionID.
 	if sessionID == gatewaySessionID {
+		m.suppressSyn = true
 		m.gatewayEcho.markRequestStart()
 	}
 	m.stateMu.Unlock()
@@ -1218,8 +1221,13 @@ func (m *Mux) sendLoop() {
 // doSend writes a byte to the adapter for the given session.
 func (m *Mux) doSend(sessionID uint64, data byte) error {
 	if !m.arb.isOwner(sessionID) {
+		m.stateMu.Lock()
+		busOwned := m.busOwned
+		busDirty := m.busDirty
+		phase := m.phase.phase
+		m.stateMu.Unlock()
 		curOwner, _, hasOwner := m.arb.owner()
-		m.logger.Printf("adaptermux: doSend not-owner session=%d byte=0x%02X hasOwner=%v curOwner=%d busOwned=%v dirty=%v phase=%d", sessionID, data, hasOwner, curOwner, m.busOwned, m.busDirty, m.phase.phase)
+		m.logger.Printf("adaptermux: doSend not-owner session=%d byte=0x%02X hasOwner=%v curOwner=%d busOwned=%v dirty=%v phase=%d", sessionID, data, hasOwner, curOwner, busOwned, busDirty, phase)
 		return errNotBusOwner
 	}
 
@@ -1231,7 +1239,8 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 		return errNotConnected
 	}
 
-	m.logger.Printf("adaptermux: doSend session=%d byte=0x%02X", sessionID, data)
+	// Per-byte doSend logging removed — too noisy for production.
+	// The doSend wrote/not-owner diagnostic logs remain for debugging.
 
 	// Record echo expectation and clear SYN suppression.
 	if sessionID == gatewaySessionID {
@@ -1268,7 +1277,7 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 		return fmt.Errorf("%w: %v", errAdapterWrite, err)
 	}
 
-	m.logger.Printf("adaptermux: doSend wrote 0x%02X to adapter", data)
+	// Per-byte "wrote" logging removed — too noisy for production.
 	return nil
 }
 

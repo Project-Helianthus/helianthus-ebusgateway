@@ -445,7 +445,18 @@ func (m *Mux) clearInfoCache() {
 // arbitrationSendsSource reports whether the upstream adapter already
 // places the initiator byte on the wire during START arbitration.
 // When true, the wire phase tracker must pre-load the SRC byte.
+//
+// NOTE: ENS transport constructor sets this to true, but the ENS
+// protocol spec says source must still be in the telegram payload.
+// For adapter-direct ENS connections, the mux protocol override ("ens")
+// forces this to false regardless of what the transport reports.
 func (m *Mux) arbitrationSendsSource() bool {
+	// ENS adapters do NOT place the source byte on the wire during START.
+	// The source byte participates in arbitration but is not transmitted
+	// as a data byte — it must still be included in the telegram payload.
+	if m.cfg.Protocol == "ens" {
+		return false
+	}
 	m.connMu.Lock()
 	tr := m.upstream
 	m.connMu.Unlock()

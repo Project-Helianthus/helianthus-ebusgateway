@@ -163,11 +163,7 @@ func (t *activeTransport) RequestInfo(id transport.AdapterInfoID) ([]byte, error
 
 // ArbitrationSendsSource reports whether the upstream adapter's START
 // arbitration already places the source byte on the wire.
-//
-// Delegates to upstreamArbitrationSendsSource (the transport value,
-// not the mux-level override). bus.sendTransaction uses this to decide
-// whether to include SRC in the telegram — the adapter firmware sends
-// SRC during arbitration for both ENH and ENS over TCP.
+// Both wire phase tracker and bus.sendTransaction use the same value.
 func (t *activeTransport) ArbitrationSendsSource() bool {
-	return t.mux.upstreamArbitrationSendsSource()
+	return t.mux.arbitrationSendsSource()
 }

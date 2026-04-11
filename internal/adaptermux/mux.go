@@ -461,24 +461,11 @@ func (m *Mux) clearInfoCache() {
 // When true, the wire phase tracker must pre-load the SRC byte and
 // bus.sendTransaction must exclude SRC from the telegram.
 //
-// For wire phase tracking, always return false so the tracker uses
-// startRequest() (no pre-loaded SRC). The wire phase is then off-by-one
-// for ArbitrationSendsSource transports, but this is harmless with
-// IdleReleaseGrace == MaxOwnershipDuration. The activeTransport's
-// ArbitrationSendsSource() returns the upstream value (true for ENH/ENS)
-// so bus.sendTransaction correctly excludes SRC from the telegram.
-//
-// This deliberate mismatch mimics the proxy's behavior: the proxy
-// isolated the gateway from bus traffic via separate TCP connections.
-// Here, IdleReleaseGrace prevents the wire phase off-by-one from
-// causing premature ownership release.
+// arbitrationSendsSource checks the upstream transport.
+// Returns true for ENH/ENS (adapter sends SRC during arbitration).
+// Used by both wire phase tracker (startRequestWithSource) and
+// activeTransport.ArbitrationSendsSource (bus.sendTransaction includeSource).
 func (m *Mux) arbitrationSendsSource() bool {
-	return false // wire phase tracking only — see comment above
-}
-
-// upstreamArbitrationSendsSource checks the upstream transport.
-// Used by activeTransport.ArbitrationSendsSource() for bus.sendTransaction.
-func (m *Mux) upstreamArbitrationSendsSource() bool {
 	m.connMu.Lock()
 	tr := m.upstream
 	m.connMu.Unlock()

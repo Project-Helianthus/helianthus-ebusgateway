@@ -1184,7 +1184,7 @@ func (m *Mux) sendLoop() {
 func (m *Mux) doSend(sessionID uint64, data byte) error {
 	if !m.arb.isOwner(sessionID) {
 		curOwner, _, hasOwner := m.arb.owner()
-		m.logger.Printf("adaptermux: doSend not-owner session=%d hasOwner=%v curOwner=%d busOwned=%v", sessionID, hasOwner, curOwner, m.busOwned)
+		m.logger.Printf("adaptermux: doSend not-owner session=%d byte=0x%02X hasOwner=%v curOwner=%d busOwned=%v dirty=%v phase=%d", sessionID, data, hasOwner, curOwner, m.busOwned, m.busDirty, m.phase.phase)
 		return errNotBusOwner
 	}
 

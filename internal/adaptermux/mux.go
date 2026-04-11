@@ -71,14 +71,13 @@ func (c *Config) defaults() {
 		c.MaxOwnershipDuration = 5 * time.Second
 	}
 	if c.IdleReleaseGrace == 0 {
-		// 200ms gives adapter-direct transactions enough time to complete
-		// before idle SYN releases ownership. The wire phase off-by-one
-		// (from the ArbitrationSendsSource mismatch) causes premature idle
-		// at byte 9 of B524 requests. With 200ms grace, the remaining
-		// bytes + target response (~100ms total) complete before release.
-		// Previously 50ms was too tight (released mid-request) and 5s was
-		// too long (blocked scan throughput — 5s hold per probe).
-		c.IdleReleaseGrace = 200 * time.Millisecond
+		// 1s covers the adapter firmware's bus timeout (~550ms) for probes
+		// where the wire phase off-by-one (from ArbitrationSendsSource
+		// mismatch) causes premature idle. Without this, SYNIdle releases
+		// ownership before the bus.Send context can detect the timeout and
+		// retry. Previously: 50ms released mid-request, 200ms released
+		// before adapter timeout SYN, 5s blocked scan throughput.
+		c.IdleReleaseGrace = 1 * time.Second
 	}
 	if c.Logger == nil {
 		c.Logger = log.Default()

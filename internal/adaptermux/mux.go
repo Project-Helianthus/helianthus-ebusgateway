@@ -37,7 +37,7 @@ type Config struct {
 	ReconnectMaxDelay time.Duration
 
 	// MaxOwnershipDuration is the hard limit on continuous bus ownership.
-	// Default: 2s (from proxy convention).
+	// Default: 10s.
 	MaxOwnershipDuration time.Duration
 
 	// IdleReleaseGrace is the grace period after bus acquisition before
@@ -335,34 +335,34 @@ func (m *Mux) connect() error {
 		}
 	}
 
-	// Create ENH/ENS transport in two phases:
-	// Phase 1: 2s read timeout for INIT + INFO queries (adapter needs ~200ms).
-	// Phase 2: replace with cfg.ReadTimeout (50ms) for the readLoop idle tick.
-	newTransport := func(readTimeout time.Duration) transport.RawTransport {
-		switch m.cfg.Protocol {
-		case "ens":
-			return transport.NewENSTransport(conn, readTimeout, m.cfg.WriteTimeout)
-		case "enh", "":
-			return transport.NewENHTransport(conn, readTimeout, m.cfg.WriteTimeout)
-		default:
-			return nil
-		}
-	}
-
-	// Phase 1: setup transport with 2s timeout for INIT + INFO.
-	const infoTimeout = 2 * time.Second
-	setupTr := newTransport(infoTimeout)
-	if setupTr == nil {
+	// Create a single ENH/ENS transport with a 2s read timeout. This timeout
+	// is used for both the INIT/INFO setup phase and the readLoop. On a quiet
+	// bus the readLoop idle handler fires every 2s instead of 50ms, which is
+	// acceptable — the idle handler also runs on every received byte, and on
+	// an active bus bytes arrive well within 2s.
+	//
+	// Using a single transport avoids the parser-state corruption risk of the
+	// dual-transport approach: if the setup transport's ENH parser buffered
+	// partial frames or pending events beyond the INFO response, replacing it
+	// with a fresh transport would silently lose those bytes.
+	const transportTimeout = 2 * time.Second
+	var tr transport.RawTransport
+	switch m.cfg.Protocol {
+	case "ens":
+		tr = transport.NewENSTransport(conn, transportTimeout, m.cfg.WriteTimeout)
+	case "enh", "":
+		tr = transport.NewENHTransport(conn, transportTimeout, m.cfg.WriteTimeout)
+	default:
 		_ = conn.Close()
 		return fmt.Errorf("adaptermux: unsupported protocol %q (expected \"enh\" or \"ens\")", m.cfg.Protocol)
 	}
 
 	m.conn = conn
-	m.upstream = setupTr
+	m.upstream = tr
 
 	// Perform INIT handshake — fatal if transport implements Init.
 	const requestedFeatures byte = 0x01
-	if initer, ok := setupTr.(interface{ Init(byte) (byte, error) }); ok {
+	if initer, ok := tr.(interface{ Init(byte) (byte, error) }); ok {
 		features, err := initer.Init(requestedFeatures)
 		if err != nil {
 			_ = conn.Close()
@@ -372,15 +372,8 @@ func (m *Mux) connect() error {
 		m.logger.Printf("adaptermux: INIT handshake succeeded, upstream features=0x%02X", features)
 	}
 
-	// Populate INFO cache with the 2s-timeout transport.
-	m.populateInfoCache(setupTr)
-
-	// Phase 2: replace with fast-timeout transport for readLoop.
-	// Any bytes buffered in the setup transport's parser (e.g., a trailing
-	// SYN from the INFO exchange) are harmlessly lost — the readLoop will
-	// pick up the next SYN from the bus.
-	readTr := newTransport(m.cfg.ReadTimeout)
-	m.upstream = readTr
+	// Populate INFO cache with the same transport (2s timeout is sufficient).
+	m.populateInfoCache(tr)
 
 	return nil
 }
@@ -409,9 +402,7 @@ func (m *Mux) populateInfoCache(tr transport.RawTransport) {
 	cache := make(map[transport.AdapterInfoID][]byte)
 
 	// Try version first — if it fails, adapter doesn't support INFO.
-	// NOTE: The caller (connect) creates the transport with a 2s timeout
-	// for this INFO phase, then replaces it with a 50ms transport for
-	// the readLoop. No conn.SetReadDeadline manipulation needed here.
+	// The transport uses a 2s read timeout for both INFO and the readLoop.
 	data, err := infoReq.RequestInfo(transport.AdapterInfoVersion)
 	if err != nil {
 		m.logger.Printf("adaptermux: INFO not supported by adapter: %v", err)

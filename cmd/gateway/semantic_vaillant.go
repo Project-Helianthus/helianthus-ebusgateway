@@ -6423,25 +6423,33 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 		timeout = 2 * time.Second
 	}
 
-	p.readMu.Lock()
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
-	response, err := p.bus.Send(reqCtx, protocol.Frame{
-		Source:    source,
-		Target:    target,
-		Primary:   vaillantExtRegisterPrimary,
-		Secondary: vaillantExtRegisterSecondary,
-		Data:      buildB524ReadSelector(opcode, group, instance, addr),
-	})
-	cancel()
-	p.readMu.Unlock()
+	// Retry probes up to 3 times — adapter-direct mode has bus contention
+	// that can cause individual probes to timeout on busy buses.
+	for attempt := 0; attempt < 3; attempt++ {
+		p.readMu.Lock()
+		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		response, err := p.bus.Send(reqCtx, protocol.Frame{
+			Source:    source,
+			Target:    target,
+			Primary:   vaillantExtRegisterPrimary,
+			Secondary: vaillantExtRegisterSecondary,
+			Data:      buildB524ReadSelector(opcode, group, instance, addr),
+		})
+		cancel()
+		p.readMu.Unlock()
 
-	if err != nil {
-		return false
+		if err != nil {
+			if ctx.Err() != nil {
+				return false // parent context cancelled
+			}
+			continue // retry on transient errors
+		}
+		if response == nil {
+			continue
+		}
+		return isB524ProbeCoherent(response.Data, group, addr)
 	}
-	if response == nil {
-		return false
-	}
-	return isB524ProbeCoherent(response.Data, group, addr)
+	return false
 }
 
 // discoverB524Root finds the B524 semantic root by probing candidates with

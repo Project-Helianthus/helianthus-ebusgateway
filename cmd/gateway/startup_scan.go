@@ -88,6 +88,13 @@ var (
 
 const proxyObserveFirstStartupSource byte = 0xF7
 
+// startupScanMaxUnconfirmedPasses is the number of consecutive scan passes
+// where devices are present but confirmation remains unsatisfied before the
+// safety-net forces semanticBootstrapReady.  This covers edge cases where the
+// directScanConfirmationRetries counter cannot accumulate (e.g. intermittent
+// B524 probe success that resets the counter before it reaches the threshold).
+const startupScanMaxUnconfirmedPasses = 5
+
 var (
 	postStartupIdentityRetryDelay    = 5 * time.Second
 	postStartupIdentityRetryAttempts = 3
@@ -177,6 +184,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 		restrictedConfirmationAfterRecoveryPending := false
 		delayedIdentityRetryScheduled := false
 		directScanConfirmationRetries := 0
+		scanPassesWithDevices := 0
 		for {
 			scanCtx := ctx
 			cancel := func() {}
@@ -402,6 +410,27 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 					log.Printf("startup scan: direct-scan confirmation exhausted after %d retries, proceeding with bootstrap", directScanConfirmationRetries)
 				}
 			}
+			// Safety net: count consecutive scan passes where devices exist
+			// but confirmation remains unresolved.  If this counter exceeds
+			// startupScanMaxUnconfirmedPasses the loop forces bootstrap
+			// regardless of confirmation state.  This covers scenarios the
+			// directScanConfirmationRetries path cannot reach (e.g. ebusd-tcp
+			// preload with intermittent B524 probe success preventing the
+			// retry counter from accumulating).
+			if total > 0 && !confirmationSatisfied {
+				scanPassesWithDevices++
+			} else {
+				scanPassesWithDevices = 0
+			}
+			if scanPassesWithDevices >= startupScanMaxUnconfirmedPasses && !confirmationFallbackExhausted {
+				confirmationFallbackExhausted = true
+				log.Printf("startup scan: unconfirmed passes=%d reached safety limit, proceeding with bootstrap", scanPassesWithDevices)
+			}
+			log.Printf(
+				"startup scan: confirmation pending=%v satisfied=%v exhausted=%v vaillant=%v restricted=%v retries=%d passes=%d total=%d",
+				confirmationPending, confirmationSatisfied, confirmationFallbackExhausted,
+				requiresRootAwareConfirmation, usedRestrictedTargets, directScanConfirmationRetries, scanPassesWithDevices, total,
+			)
 			if confirmationSatisfied || confirmationFallbackExhausted {
 				restrictedConfirmationAfterRecoveryPending = false
 				directScanConfirmationRetries = 0

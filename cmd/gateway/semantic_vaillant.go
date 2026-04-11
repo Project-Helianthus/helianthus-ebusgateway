@@ -6420,12 +6420,22 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 	p.mu.Unlock()
 
 	if timeout <= 0 {
-		timeout = 2 * time.Second
+		timeout = 5 * time.Second
 	}
 
 	// Retry probes up to 3 times — adapter-direct mode has bus contention
 	// that can cause individual probes to timeout on busy buses.
 	for attempt := 0; attempt < 3; attempt++ {
+		// Back off between retries to avoid colliding with the same
+		// bus contention pattern (50ms arbitration + waitForSyn).
+		if attempt > 0 {
+			select {
+			case <-time.After(200 * time.Millisecond):
+			case <-ctx.Done():
+				return false
+			}
+		}
+
 		p.readMu.Lock()
 		reqCtx, cancel := context.WithTimeout(ctx, timeout)
 		response, err := p.bus.Send(reqCtx, protocol.Frame{

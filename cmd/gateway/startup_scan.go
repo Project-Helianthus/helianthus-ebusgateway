@@ -399,10 +399,12 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				!retryingFullRange &&
 				restrictedConfirmationAfterRecoveryPending
 			// Direct (non-ebusd-tcp) scans never set usedRestrictedTargets,
-			// so the ebusd-specific fallback path above cannot fire.  Track
-			// consecutive confirmation failures and treat them as exhausted
-			// after two passes to prevent an infinite scan loop when the
-			// B524 coherent-root probe fails under bus contention.
+			// so the ebusd-specific fallback path above cannot fire.  The
+			// !usedRestrictedTargets guard below correctly scopes this
+			// counter to direct scans only (adapter-direct, ENH, ENS).
+			// Track consecutive confirmation failures and treat them as
+			// exhausted after two passes to prevent an infinite scan loop
+			// when the B524 coherent-root probe fails under bus contention.
 			if confirmationPending && !confirmationSatisfied && !usedRestrictedTargets && total > 0 {
 				directScanConfirmationRetries++
 				if directScanConfirmationRetries >= 2 {
@@ -652,11 +654,11 @@ func startupScanHasCoherentVaillantRoot(ctx context.Context, cfg ebusgateway.Con
 	if cfg.ScanRequestTimeout > perProbe {
 		perProbe = cfg.ScanRequestTimeout
 	}
-	// Each candidate is tested with len(b524CapabilityProbes) serial probes.
-	// The outer context must allow enough wall-clock time for every
-	// candidate*probe combination; the previous single-timeout value
-	// starved slow adapter-direct transports where bus contention makes
-	// individual probes take close to the per-request timeout.
+	// Each candidate is tested with len(b524CapabilityProbes) serial probes,
+	// and each probe retries up to 3 times with 200ms backoff. The outer
+	// context must allow enough wall-clock time for the worst-case path:
+	// every candidate × every probe × every retry.
+	const probeRetryCount = 3
 	numCandidates := countRegistryDevices(gateway.Registry)
 	if numCandidates < 1 {
 		numCandidates = 1
@@ -665,7 +667,7 @@ func startupScanHasCoherentVaillantRoot(ctx context.Context, cfg ebusgateway.Con
 	if numProbes < 1 {
 		numProbes = 1
 	}
-	timeout := perProbe * time.Duration(numCandidates*numProbes+1)
+	timeout := perProbe * time.Duration(numCandidates*numProbes*probeRetryCount+1)
 	probeCtx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()
 	poller := &vaillantSemanticPoller{

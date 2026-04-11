@@ -1142,18 +1142,15 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.sessionsMu.Unlock()
 	}
 
-	// Drain stale bytes from BOTH the Go channel AND the TCP buffer.
-	// drainActiveCh clears bytes already delivered to the Go channel.
-	// drainUpstreamBuffer reads and discards any bytes remaining in the
-	// TCP socket buffer that readLoop hasn't processed yet. Without both
-	// drains, stale bus traffic bytes (VRC700 broadcasts, SYN idle) reach
-	// activeCh after the grant, causing echo mismatches in bus.sendRawWithEcho.
+	// Drain stale bytes from activeCh before notifying gateway.Bus.
+	// Only drain the Go channel — do NOT drain the TCP buffer directly.
+	// drainUpstreamBuffer was removed because it consumed critical events
+	// (RESETTED) from the TCP stream without handling them, leaving the
+	// adapter in an inconsistent state where writes were silently dropped.
 	if sessionID == gatewaySessionID {
 		drained := m.drainActiveCh()
-		tcpDrained := m.drainUpstreamBuffer()
-		drained += tcpDrained
 		if drained > 0 {
-			m.logger.Printf("adaptermux: drained %d bytes from activeCh + %d from TCP on grant", drained-tcpDrained, tcpDrained)
+			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
 		}
 	}
 

@@ -71,13 +71,11 @@ func (c *Config) defaults() {
 		c.MaxOwnershipDuration = 5 * time.Second
 	}
 	if c.IdleReleaseGrace == 0 {
-		// 1s covers the adapter firmware's bus timeout (~550ms) for probes
-		// where the wire phase off-by-one (from ArbitrationSendsSource
-		// mismatch) causes premature idle. Without this, SYNIdle releases
-		// ownership before the bus.Send context can detect the timeout and
-		// retry. Previously: 50ms released mid-request, 200ms released
-		// before adapter timeout SYN, 5s blocked scan throughput.
-		c.IdleReleaseGrace = 1 * time.Second
+		// 200ms is enough for any eBUS transaction to complete (~100ms for
+		// the longest B524 frame) while releasing promptly after each scan
+		// probe. The wire phase is not advanced during gateway ownership,
+		// so there's no premature idle/WaitCmdAck issue.
+		c.IdleReleaseGrace = 200 * time.Millisecond
 	}
 	if c.Logger == nil {
 		c.Logger = log.Default()
@@ -461,11 +459,18 @@ func (m *Mux) clearInfoCache() {
 // When true, the wire phase tracker must pre-load the SRC byte and
 // bus.sendTransaction must exclude SRC from the telegram.
 //
-// arbitrationSendsSource checks the upstream transport.
-// Returns true for ENH/ENS (adapter sends SRC during arbitration).
-// Used by both wire phase tracker (startRequestWithSource) and
-// activeTransport.ArbitrationSendsSource (bus.sendTransaction includeSource).
+// arbitrationSendsSource for the wire phase tracker.
+// Always returns false — the wire phase is not advanced during gateway
+// ownership (skipped in onReceived), so the pre-loaded SRC value
+// doesn't matter. For external sessions, startRequest() is used.
 func (m *Mux) arbitrationSendsSource() bool {
+	return false
+}
+
+// upstreamArbitrationSendsSource checks the upstream transport.
+// Returns true for ENH/ENS (adapter sends SRC during arbitration).
+// Used by activeTransport.ArbitrationSendsSource for bus.sendTransaction.
+func (m *Mux) upstreamArbitrationSendsSource() bool {
 	m.connMu.Lock()
 	tr := m.upstream
 	m.connMu.Unlock()
@@ -689,9 +694,20 @@ func (m *Mux) onReceived(symbol byte) {
 	// --- Phase 1: state update under stateMu ---
 	m.stateMu.Lock()
 
-	phaseEvent := m.phase.advance(symbol)
-
 	ownerID, _, hasOwner := m.arb.owner()
+
+	// Skip wire phase tracking during gateway ownership. The gateway's
+	// bus.Send handles the transaction directly via echo matching. The
+	// wire phase tracker's byte counting can be off-by-one when the SRC
+	// byte is pre-loaded (ArbitrationSendsSource), causing premature
+	// WaitCmdAck → CmdNACK → idle during B524 requests. By skipping
+	// advance() during gateway ownership, the phase stays in
+	// CollectRequest until ownership is released, preventing premature
+	// idle SYN or SYN timeout releases mid-transaction.
+	var phaseEvent wirePhaseEvent
+	if !hasOwner || ownerID != gatewaySessionID {
+		phaseEvent = m.phase.advance(symbol)
+	}
 	if hasOwner && !m.busOwned.IsZero() &&
 		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 		m.logger.Printf("adaptermux: MaxOwnershipDuration release owner=%d elapsed=%v", ownerID, time.Since(m.busOwned))

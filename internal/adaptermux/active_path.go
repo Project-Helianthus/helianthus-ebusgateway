@@ -166,7 +166,7 @@ func (t *activeTransport) RequestInfo(id transport.AdapterInfoID) ([]byte, error
 
 // ArbitrationSendsSource reports whether the upstream adapter's START
 // arbitration already places the source byte on the wire.
-// Both wire phase tracker and bus.sendTransaction use the same value.
+// Uses the upstream transport value (true for ENH/ENS) for bus.sendTransaction.
 func (t *activeTransport) ArbitrationSendsSource() bool {
-	return t.mux.arbitrationSendsSource()
+	return t.mux.upstreamArbitrationSendsSource()
 }

@@ -1,6 +1,7 @@
 package adaptermux
 
 import (
+	"errors"
 	"log"
 	"sync"
 	"testing"
@@ -8,11 +9,26 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
+// testWriter adapts testing.T to io.Writer for log output.
+type testWriter struct{ t *testing.T }
+
+func (w testWriter) Write(p []byte) (int, error) {
+	w.t.Helper()
+	w.t.Log(string(p))
+	return len(p), nil
+}
+
 // testLogger returns a logger that writes to the test log.
 func testLogger(t *testing.T) *log.Logger {
 	t.Helper()
-	return log.Default()
+	return log.New(testWriter{t}, "", 0)
 }
+
+// errUnsupportedInfoID is returned by mock transports for INFO IDs
+// that the mock doesn't have a response for, matching real adapter
+// behavior for unsupported IDs. Distinct from errNotConnected which
+// represents a transport-level failure.
+var errUnsupportedInfoID = errors.New("mock: unsupported INFO ID")
 
 // mockInfoTransport is a minimal RawTransport that also implements
 // InfoRequester for testing the INFO cache without a real adapter.
@@ -39,7 +55,7 @@ func (m *mockInfoTransport) RequestInfo(id transport.AdapterInfoID) ([]byte, err
 	data, ok := m.responses[id]
 	if !ok {
 		// Real adapters return an error for unsupported INFO IDs.
-		return nil, errNotConnected
+		return nil, errUnsupportedInfoID
 	}
 	return data, nil
 }
@@ -72,10 +88,11 @@ func TestPopulateInfoCache(t *testing.T) {
 
 	tr := &mockInfoTransport{
 		responses: map[transport.AdapterInfoID][]byte{
-			transport.AdapterInfoVersion:    {0x23, 0x01},
-			transport.AdapterInfoHardwareID: {0x10, 0x20, 0x30},
-			transport.AdapterInfoTemperature: {0x1C},
-			// WiFiRSSI intentionally absent — should be skipped
+			transport.AdapterInfoVersion:     {0x23, 0x01},
+			transport.AdapterInfoHardwareID:  {0x10, 0x20, 0x30},
+			transport.AdapterInfoHardwareConf: {0x05},
+			transport.AdapterInfoTemperature: {0x1C}, // volatile — excluded from cache
+			transport.AdapterInfoWiFiRSSI:    {0xE0}, // volatile — excluded from cache
 		},
 	}
 
@@ -84,8 +101,10 @@ func TestPopulateInfoCache(t *testing.T) {
 	mux.infoCacheMu.RLock()
 	defer mux.infoCacheMu.RUnlock()
 
+	// Only stable IDs (Version, HardwareID, HardwareConf) should be cached.
+	// Volatile IDs (Temperature, WiFiRSSI) are excluded.
 	if len(mux.infoCache) != 3 {
-		t.Fatalf("infoCache has %d entries, want 3", len(mux.infoCache))
+		t.Fatalf("infoCache has %d entries, want 3 (volatile IDs excluded)", len(mux.infoCache))
 	}
 
 	// Verify version was cached correctly.
@@ -96,6 +115,14 @@ func TestPopulateInfoCache(t *testing.T) {
 	// Verify hardware ID was cached.
 	if got := mux.infoCache[transport.AdapterInfoHardwareID]; len(got) != 3 {
 		t.Fatalf("hardware ID cache = %v, want 3 bytes", got)
+	}
+
+	// Verify volatile IDs were NOT cached.
+	if _, ok := mux.infoCache[transport.AdapterInfoTemperature]; ok {
+		t.Fatal("volatile AdapterInfoTemperature should not be in cache")
+	}
+	if _, ok := mux.infoCache[transport.AdapterInfoWiFiRSSI]; ok {
+		t.Fatal("volatile AdapterInfoWiFiRSSI should not be in cache")
 	}
 }
 
@@ -124,11 +151,11 @@ func TestPopulateInfoCache_VersionFails_SkipsAll(t *testing.T) {
 
 	tr := &mockInfoTransport{
 		responses: map[transport.AdapterInfoID][]byte{
-			// Version absent — will cause RequestInfo to return nil, nil
+			// HardwareID is present but should NOT be cached when version fails.
 			transport.AdapterInfoHardwareID: {0xAA},
 		},
 		errors: map[transport.AdapterInfoID]error{
-			transport.AdapterInfoVersion: errNotConnected, // simulate version failure
+			transport.AdapterInfoVersion: errUnsupportedInfoID, // simulate version failure
 		},
 	}
 

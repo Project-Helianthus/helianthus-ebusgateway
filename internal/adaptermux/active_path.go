@@ -19,9 +19,16 @@ type activeTransport struct {
 
 // Compile-time interface checks.
 var (
-	_ transport.RawTransport    = (*activeTransport)(nil)
+	_ transport.RawTransport      = (*activeTransport)(nil)
 	_ transport.StreamEventReader = (*activeTransport)(nil)
+	_ transport.InfoRequester     = (*activeTransport)(nil)
 )
+
+// NOTE: activeTransport intentionally does NOT implement
+// transport.Reconnectable. The upstream transport's Reconnect() acquires
+// readMu, and calling it from the active path (which blocks in ReadByte
+// on readLoop's output) would deadlock. The mux handles reconnection
+// internally via reconnect().
 
 // ReadByte blocks until a byte is received from the adapter or an
 // error occurs. This receives ALL bytes from the adapter (including
@@ -74,10 +81,19 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 	}
 }
 
-// Write sends bytes to the adapter through the multiplexer.
+// Write sends bytes to the adapter through the multiplexer's sendLoop.
 // The gateway must hold bus ownership (via StartArbitration) before
 // calling Write.
+//
+// Each byte goes through doSend/sendLoop which records echo expectations
+// and tracks ownership per byte. bus.sendRawWithEcho calls Write with
+// 1 byte at a time, so there is no batching benefit from bypassing
+// sendLoop — and the sendLoop path provides proper ownership tracking.
 func (t *activeTransport) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+
 	for i, b := range p {
 		result := make(chan error, 1)
 		select {
@@ -134,4 +150,19 @@ func (t *activeTransport) StartArbitration(initiator byte) error {
 		t.mux.arb.cancelStart(gatewaySessionID)
 		return fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}
+}
+
+// RequestInfo returns cached INFO data for the given ID.
+// Delegates to the mux-level cache (populated at connect time) instead
+// of querying the upstream transport, avoiding readMu contention with
+// the readLoop.
+func (t *activeTransport) RequestInfo(id transport.AdapterInfoID) ([]byte, error) {
+	return t.mux.CachedInfo(id)
+}
+
+// ArbitrationSendsSource reports whether the upstream adapter's START
+// arbitration already places the source byte on the wire.
+// Delegates to the unified mux method (true for ENH/ENS) for bus.sendTransaction.
+func (t *activeTransport) ArbitrationSendsSource() bool {
+	return t.mux.arbitrationSendsSource()
 }

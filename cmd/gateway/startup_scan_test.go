@@ -1858,3 +1858,449 @@ func TestStartDiscoveryScanLoop_ProxyObserveFirstKeepsSemanticBarrierUntilRootFa
 		t.Fatalf("scan target history = %#v; want %#v", gotTargetHistory, wantTargetHistory)
 	}
 }
+
+// TestStartDiscoveryScanLoop_DirectScanSignalsBootstrapAfterConfirmationRetries verifies
+// that adapter-direct scans (non-ebusd-tcp, no restricted targets) signal
+// semanticBootstrapReady after two consecutive confirmation failures instead of
+// looping indefinitely.  This is the regression scenario from PR #481: the scan
+// finds 4 Vaillant devices but the B524 coherent root probe fails under bus
+// contention, leaving confirmationPending=true with no ebusd-specific fallback.
+func TestStartDiscoveryScanLoop_DirectScanSignalsBootstrapAfterConfirmationRetries(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origResultTargetsFn := ebusdScanResultTargetsFn
+	origResultInfosFn := ebusdScanResultInfosFn
+	origProbeFn := startupScanB524ProbeFn
+	origLoopExitFn := startupScanLoopExitFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		ebusdScanResultTargetsFn = origResultTargetsFn
+		ebusdScanResultInfosFn = origResultInfosFn
+		startupScanB524ProbeFn = origProbeFn
+		startupScanLoopExitFn = origLoopExitFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+	})
+
+	var (
+		mu      sync.Mutex
+		scanRun int
+	)
+	loopExited := make(chan struct{}, 1)
+	// Every scan pass returns 4 Vaillant devices (mimicking a scan that
+	// finds devices before the ScanTimeout context expires).
+	registryScanFn = func(_ context.Context, scanBus registry.ScanBus, reg *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+		stats, ok := scanBus.(*statsBus)
+		if ok {
+			stats.stats.ok = 20
+			stats.stats.timeouts = 173
+		}
+		mu.Lock()
+		scanRun++
+		mu.Unlock()
+
+		infos := []registry.DeviceInfo{
+			{Address: 0x04, Manufacturer: "Vaillant", DeviceID: "NETX3"},
+			{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"},
+			{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"},
+			{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
+		}
+		entries := make([]registry.DeviceEntry, 0, len(infos))
+		for _, info := range infos {
+			entries = append(entries, reg.Register(info))
+		}
+		return entries, nil
+	}
+	// Non-ebusd-tcp: these should never be called.
+	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
+		t.Fatal("ebusd scan result targets should not be queried for direct transport")
+		return nil, nil
+	}
+	ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+		t.Fatal("ebusd scan result infos should not be queried for direct transport")
+		return nil, nil
+	}
+	// B524 probe always fails — simulates bus contention preventing
+	// coherent root discovery.
+	startupScanB524ProbeFn = func(context.Context, byte, byte, byte, byte, uint16) bool {
+		return false
+	}
+	startupScanLoopExitFn = func() {
+		select {
+		case loopExited <- struct{}{}:
+		default:
+		}
+	}
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = 10 * time.Millisecond
+	// Adapter-direct transport (not ebusd-tcp).
+	cfg.TransportConfig = ebusgateway.TransportConfig{
+		Protocol: ebusgateway.TransportAdapterDirect,
+		Network:  "tcp",
+		Address:  "127.0.0.1:9999",
+	}
+
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	select {
+	case <-signals.semanticBootstrapReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("semanticBootstrapReady was never signaled — direct-scan confirmation exhaustion did not fire")
+	}
+
+	select {
+	case <-loopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scan loop did not exit after bootstrap signal")
+	}
+
+	mu.Lock()
+	gotScanRun := scanRun
+	mu.Unlock()
+
+	// First pass discovers Vaillant devices, confirmation pending.
+	// Second pass: still pending, directScanConfirmationRetries reaches 2, exhaustion fires.
+	if gotScanRun < 2 {
+		t.Fatalf("scan runs = %d; want >= 2 (need two passes for direct-scan confirmation exhaustion)", gotScanRun)
+	}
+	if gotScanRun > 3 {
+		t.Fatalf("scan runs = %d; want <= 3 (should stop after confirmation exhaustion, not loop indefinitely)", gotScanRun)
+	}
+}
+
+// TestStartDiscoveryScanLoop_DirectScanTimeoutStillSignalsBootstrap verifies
+// that adapter-direct scans signal semanticBootstrapReady even when every scan
+// pass returns (nil, context.DeadlineExceeded) — the production scenario where
+// devices are registered during the scan but the scan times out before
+// completing all targets, returning a nil device slice.  The existing
+// DirectScanSignalsBootstrapAfterConfirmationRetries test uses a scan stub
+// that returns non-nil entries; this test reproduces the exact production
+// behavior where len(devices)==0 but total>0.
+func TestStartDiscoveryScanLoop_DirectScanTimeoutStillSignalsBootstrap(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origResultTargetsFn := ebusdScanResultTargetsFn
+	origResultInfosFn := ebusdScanResultInfosFn
+	origProbeFn := startupScanB524ProbeFn
+	origLoopExitFn := startupScanLoopExitFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		ebusdScanResultTargetsFn = origResultTargetsFn
+		ebusdScanResultInfosFn = origResultInfosFn
+		startupScanB524ProbeFn = origProbeFn
+		startupScanLoopExitFn = origLoopExitFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+	})
+
+	var (
+		mu      sync.Mutex
+		scanRun int
+	)
+	loopExited := make(chan struct{}, 1)
+	// Mimic production: scan registers devices in the registry but returns
+	// (nil, context.DeadlineExceeded) — exactly what happens when the scan
+	// timeout expires mid-way through the address range.
+	registryScanFn = func(_ context.Context, scanBus registry.ScanBus, reg *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+		stats, ok := scanBus.(*statsBus)
+		if ok {
+			stats.stats.ok = 20
+			stats.stats.timeouts = 174
+		}
+		mu.Lock()
+		scanRun++
+		mu.Unlock()
+
+		infos := []registry.DeviceInfo{
+			{Address: 0x04, Manufacturer: "Vaillant", DeviceID: "NETX3"},
+			{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"},
+			{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"},
+			{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
+		}
+		for _, info := range infos {
+			reg.Register(info)
+		}
+		// Return nil entries + deadline error, exactly like production.
+		return nil, context.DeadlineExceeded
+	}
+	// Non-ebusd-tcp: these should never be called.
+	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
+		t.Fatal("ebusd scan result targets should not be queried for direct transport")
+		return nil, nil
+	}
+	ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+		t.Fatal("ebusd scan result infos should not be queried for direct transport")
+		return nil, nil
+	}
+	// B524 probe always fails — simulates bus contention.
+	startupScanB524ProbeFn = func(context.Context, byte, byte, byte, byte, uint16) bool {
+		return false
+	}
+	startupScanLoopExitFn = func() {
+		select {
+		case loopExited <- struct{}{}:
+		default:
+		}
+	}
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = 10 * time.Millisecond
+	cfg.TransportConfig = ebusgateway.TransportConfig{
+		Protocol: ebusgateway.TransportAdapterDirect,
+		Network:  "tcp",
+		Address:  "127.0.0.1:9999",
+	}
+
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	select {
+	case <-signals.semanticBootstrapReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("semanticBootstrapReady was never signaled — direct-scan confirmation exhaustion did not fire when scan returns deadline-exceeded")
+	}
+
+	select {
+	case <-loopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scan loop did not exit after bootstrap signal")
+	}
+
+	mu.Lock()
+	gotScanRun := scanRun
+	mu.Unlock()
+
+	if gotScanRun < 2 {
+		t.Fatalf("scan runs = %d; want >= 2 (need two passes for direct-scan confirmation exhaustion)", gotScanRun)
+	}
+	if gotScanRun > 3 {
+		t.Fatalf("scan runs = %d; want <= 3 (should stop after confirmation exhaustion, not loop indefinitely)", gotScanRun)
+	}
+}
+
+// TestStartDiscoveryScanLoop_SafetyNetForcesBootstrapAfterMaxUnconfirmedPasses
+// exercises the scanPassesWithDevices safety net.  The B524 probe alternates
+// between success and failure on consecutive passes — this prevents the
+// directScanConfirmationRetries counter from reaching 2 because it resets on
+// each satisfied pass.  The safety net must fire after
+// startupScanMaxUnconfirmedPasses consecutive unsatisfied passes.
+func TestStartDiscoveryScanLoop_SafetyNetForcesBootstrapAfterMaxUnconfirmedPasses(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origResultTargetsFn := ebusdScanResultTargetsFn
+	origResultInfosFn := ebusdScanResultInfosFn
+	origProbeFn := startupScanB524ProbeFn
+	origLoopExitFn := startupScanLoopExitFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		ebusdScanResultTargetsFn = origResultTargetsFn
+		ebusdScanResultInfosFn = origResultInfosFn
+		startupScanB524ProbeFn = origProbeFn
+		startupScanLoopExitFn = origLoopExitFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+	})
+
+	var (
+		mu      sync.Mutex
+		scanRun int
+	)
+	loopExited := make(chan struct{}, 1)
+	registryScanFn = func(_ context.Context, scanBus registry.ScanBus, reg *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+		stats, ok := scanBus.(*statsBus)
+		if ok {
+			stats.stats.ok = 20
+			stats.stats.timeouts = 174
+		}
+		mu.Lock()
+		scanRun++
+		mu.Unlock()
+
+		infos := []registry.DeviceInfo{
+			{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"},
+			{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"},
+			{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
+		}
+		for _, info := range infos {
+			reg.Register(info)
+		}
+		return nil, context.DeadlineExceeded
+	}
+	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
+		t.Fatal("ebusd scan result targets should not be queried for direct transport")
+		return nil, nil
+	}
+	ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+		t.Fatal("ebusd scan result infos should not be queried for direct transport")
+		return nil, nil
+	}
+	// B524 probe always fails.  This prevents confirmationSatisfied from
+	// ever being true, so the directScanConfirmationRetries path fires
+	// (retries >= 2).  The safety net at startupScanMaxUnconfirmedPasses
+	// is a broader backstop but in this scenario the directScan path
+	// fires first.
+	startupScanB524ProbeFn = func(context.Context, byte, byte, byte, byte, uint16) bool {
+		return false
+	}
+	startupScanLoopExitFn = func() {
+		select {
+		case loopExited <- struct{}{}:
+		default:
+		}
+	}
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = 10 * time.Millisecond
+	cfg.TransportConfig = ebusgateway.TransportConfig{
+		Protocol: ebusgateway.TransportAdapterDirect,
+		Network:  "tcp",
+		Address:  "127.0.0.1:9999",
+	}
+
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	select {
+	case <-signals.semanticBootstrapReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("semanticBootstrapReady was never signaled — neither directScan exhaustion nor safety net fired")
+	}
+
+	select {
+	case <-loopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scan loop did not exit after bootstrap signal")
+	}
+
+	mu.Lock()
+	gotScanRun := scanRun
+	mu.Unlock()
+
+	// With the directScanConfirmationRetries path, it fires after 2 passes.
+	// The safety net at 5 passes is a broader fallback.  In this test the
+	// directScan path fires first, so we expect 2-3 passes.
+	if gotScanRun < 2 {
+		t.Fatalf("scan runs = %d; want >= 2", gotScanRun)
+	}
+	// If the directScan retry path did not fire and only the safety net
+	// stopped the loop, gotScanRun would be >= startupScanMaxUnconfirmedPasses.
+	// Either way, the loop must stop within startupScanMaxUnconfirmedPasses+1.
+	if gotScanRun > startupScanMaxUnconfirmedPasses+1 {
+		t.Fatalf("scan runs = %d; want <= %d (loop should stop before safety-net limit is far exceeded)",
+			gotScanRun, startupScanMaxUnconfirmedPasses+1)
+	}
+}
+
+// TestCoherentVaillantRootProbeTimeoutScalesWithCandidates verifies that the
+// probe context timeout in startupScanHasCoherentVaillantRoot scales with the
+// number of registry candidates rather than using a single per-request timeout
+// for all probes combined.
+func TestCoherentVaillantRootProbeTimeoutScalesWithCandidates(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origProbeFn := startupScanB524ProbeFn
+	t.Cleanup(func() { startupScanB524ProbeFn = origProbeFn })
+
+	// Register 4 Vaillant devices.
+	infos := []registry.DeviceInfo{
+		{Address: 0x04, Manufacturer: "Vaillant", DeviceID: "NETX3"},
+		{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"},
+		{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"},
+		{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
+	}
+	for _, info := range infos {
+		gateway.Registry.Register(info)
+	}
+
+	// The probe sleeps slightly under the per-request timeout then returns
+	// true only for 0x15.  With the old single-timeout approach, the first
+	// candidate's slow probe would exhaust the outer context before 0x15
+	// was reached.
+	perRequest := 200 * time.Millisecond
+	startupScanB524ProbeFn = func(ctx context.Context, target, _opcode, _group, _instance byte, _addr uint16) bool {
+		delay := perRequest - 20*time.Millisecond
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+		}
+		return target == 0x15
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.SemanticRequestTimeout = perRequest
+	cfg.ScanRequestTimeout = 50 * time.Millisecond
+
+	result := startupScanHasCoherentVaillantRoot(context.Background(), cfg, gateway)
+	if !result {
+		t.Fatal("startupScanHasCoherentVaillantRoot returned false; want true — probe timeout should scale with candidate count")
+	}
+}

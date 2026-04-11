@@ -381,17 +381,27 @@ func applyDefaults(cfg Config) Config {
 	if cfg.ObserveFirstSeriesBudget <= 0 {
 		cfg.ObserveFirstSeriesBudget = DefaultObserveFirstSeriesBudget
 	}
-	if cfg.ObserveFirstWarmupConnectedWindow <= 0 {
-		cfg.ObserveFirstWarmupConnectedWindow = DefaultObserveFirstWarmupConnectedWindow
-	}
-	if cfg.ObserveFirstWarmupCompletedTransactions <= 0 {
-		cfg.ObserveFirstWarmupCompletedTransactions = DefaultObserveFirstWarmupCompletedTransactions
-	}
-	if cfg.ObserveFirstWarmupPostResetWindow <= 0 {
-		cfg.ObserveFirstWarmupPostResetWindow = DefaultObserveFirstWarmupPostResetWindow
-	}
-	if cfg.ObserveFirstWarmupPostResetTransactions <= 0 {
-		cfg.ObserveFirstWarmupPostResetTransactions = DefaultObserveFirstWarmupPostResetTransactions
+	// When PassiveTransport is pre-configured (adapter-direct mode), zero
+	// warmup thresholds are intentional — warmup is skipped because the
+	// passive stream only sees third-party traffic and warmup would stall.
+	// Preserve the explicit zeros; only apply defaults for other modes.
+	//
+	// This guard is correct: PassiveTransport is ONLY set by
+	// wireAdapterDirect() in main.go — proxy and ebusd-tcp modes leave
+	// it nil, so warmup defaults are always applied for those transports.
+	if cfg.PassiveTransport == nil {
+		if cfg.ObserveFirstWarmupConnectedWindow <= 0 {
+			cfg.ObserveFirstWarmupConnectedWindow = DefaultObserveFirstWarmupConnectedWindow
+		}
+		if cfg.ObserveFirstWarmupCompletedTransactions <= 0 {
+			cfg.ObserveFirstWarmupCompletedTransactions = DefaultObserveFirstWarmupCompletedTransactions
+		}
+		if cfg.ObserveFirstWarmupPostResetWindow <= 0 {
+			cfg.ObserveFirstWarmupPostResetWindow = DefaultObserveFirstWarmupPostResetWindow
+		}
+		if cfg.ObserveFirstWarmupPostResetTransactions <= 0 {
+			cfg.ObserveFirstWarmupPostResetTransactions = DefaultObserveFirstWarmupPostResetTransactions
+		}
 	}
 	if cfg.ObserveFirstWarmupOuterWindow <= 0 {
 		cfg.ObserveFirstWarmupOuterWindow = DefaultObserveFirstWarmupOuterWindow

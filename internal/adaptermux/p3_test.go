@@ -1913,3 +1913,122 @@ func TestDrainActiveChOnGrant_ExternalSession(t *testing.T) {
 		t.Fatalf("activeCh has %d events after external grant, want at least %d (should not be drained)", remaining, expectedMin)
 	}
 }
+
+// TestPassive_NoGarbageDuringGatewayTransaction verifies that when the
+// gateway owns the bus, ALL received bytes are suppressed from the
+// passive path — not just echo-matched request bytes. Response bytes
+// (target ACK, response LEN, DATA, CRC, final ACK) must also be
+// suppressed. Without this, the reconstructor parses orphaned response
+// bytes as garbage frames with Source=0x00 and fake protocol IDs.
+func TestPassive_NoGarbageDuringGatewayTransaction(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Collect passive events.
+	var passiveMu sync.Mutex
+	var passiveSymbols []byte
+	mux.SetPassiveCallback(func(pe PassiveEvent) {
+		if pe.Kind == PassiveEventSymbol {
+			passiveMu.Lock()
+			passiveSymbols = append(passiveSymbols, pe.Symbol)
+			passiveMu.Unlock()
+		}
+	})
+
+	// Step 1: Request START for gateway and grant ownership.
+	ch := mux.arb.requestStart(gatewaySessionID, 0x71)
+
+	// Feed SYN to trigger tryGrantAndStart.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// Inject STARTED from adapter.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+
+	select {
+	case result := <-ch:
+		if !result.granted {
+			t.Fatalf("expected granted=true, got false (err=%v)", result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for START grant")
+	}
+
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("gateway should own bus after STARTED")
+	}
+
+	// Record how many passive symbols we have so far (the initial SYN).
+	passiveMu.Lock()
+	preCount := len(passiveSymbols)
+	passiveMu.Unlock()
+
+	// Step 2: Simulate gateway's request echoes being received.
+	// These are the echoed bytes of a B524 register read request:
+	// SRC=0x71, DST=0x08, PB=0xB5, SB=0x24, NN=0x03, DATA..., CRC
+	requestEchoes := []byte{0x71, 0x08, 0xB5, 0x24, 0x03, 0x00, 0x09, 0x00, 0x42}
+	for _, b := range requestEchoes {
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+	}
+
+	// Step 3: Simulate target's response bytes (these are NOT gateway echoes).
+	// ACK from target, then response: LEN=0x02, DATA=0x55 0x66, CRC=0xAB,
+	// then final SYN-ACK from gateway.
+	responseBytes := []byte{
+		protocol.SymbolAck, // target ACK
+		0x02,               // response LEN
+		0x55,               // response DATA[0]
+		0x66,               // response DATA[1]
+		0xAB,               // response CRC
+		protocol.SymbolAck, // gateway final ACK
+	}
+	for _, b := range responseBytes {
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+	}
+
+	// Wait for all events to be processed.
+	time.Sleep(100 * time.Millisecond)
+
+	// Step 4: Verify that NO bytes leaked to passive during gateway ownership.
+	passiveMu.Lock()
+	postCount := len(passiveSymbols)
+	leaked := passiveSymbols[preCount:]
+	leakedCopy := make([]byte, len(leaked))
+	copy(leakedCopy, leaked)
+	passiveMu.Unlock()
+
+	if postCount != preCount {
+		t.Fatalf("passive received %d bytes during gateway ownership, want 0; leaked: %v",
+			postCount-preCount, leakedCopy)
+	}
+
+	// Step 5: Release ownership (SYN boundary) and verify passive resumes.
+	// Wire phase advance is skipped during gateway ownership, so SYN
+	// during ownership is always SYNIdle. IdleReleaseGrace (default
+	// 200ms) must elapse since busOwned for the idle SYN to release.
+	time.Sleep(200 * time.Millisecond)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	// After SYN, ownership should be released and passive should get the SYN.
+	passiveMu.Lock()
+	afterRelease := len(passiveSymbols)
+	passiveMu.Unlock()
+
+	if afterRelease <= postCount {
+		t.Fatal("passive should resume receiving after ownership release (SYN not delivered)")
+	}
+
+	// Feed a third-party byte after release — must appear on passive.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
+	time.Sleep(50 * time.Millisecond)
+
+	passiveMu.Lock()
+	finalCount := len(passiveSymbols)
+	lastByte := passiveSymbols[finalCount-1]
+	passiveMu.Unlock()
+
+	if lastByte != 0x10 {
+		t.Fatalf("passive last byte = 0x%02X, want 0x10 (third-party byte after release)", lastByte)
+	}
+}

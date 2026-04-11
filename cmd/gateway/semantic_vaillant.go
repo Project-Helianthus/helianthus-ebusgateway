@@ -18,6 +18,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
@@ -6407,8 +6408,8 @@ func isB524ProbeCoherent(payload []byte, group byte, addr uint16) bool {
 }
 
 // probeB524Register sends a single B524 read request to target and checks
-// if the response is coherent. Uses one-shot Bus.Send (no retry, no circuit
-// breaker) per discovery probe contract.
+// if the response is coherent. Retries up to 3 times with 200ms backoff
+// to handle adapter-direct bus contention.
 func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
 	if p == nil || p.bus == nil {
 		return false
@@ -6419,29 +6420,60 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 	timeout := p.requestTimeout
 	p.mu.Unlock()
 
-	if timeout <= 0 {
-		timeout = 2 * time.Second
+	// B524 probes need at least 5s per attempt in adapter-direct mode:
+	// arbitration(~200ms) + frame(~220ms) + adapter-timeout(~550ms) +
+	// collision-retry(~200ms) + second-attempt(~970ms) ≈ 2.1s minimum.
+	// The config default SemanticRequestTimeout=2s is insufficient.
+	const minB524ProbeTimeout = 5 * time.Second
+	if timeout < minB524ProbeTimeout {
+		timeout = minB524ProbeTimeout
 	}
 
-	p.readMu.Lock()
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
-	response, err := p.bus.Send(reqCtx, protocol.Frame{
-		Source:    source,
-		Target:    target,
-		Primary:   vaillantExtRegisterPrimary,
-		Secondary: vaillantExtRegisterSecondary,
-		Data:      buildB524ReadSelector(opcode, group, instance, addr),
-	})
-	cancel()
-	p.readMu.Unlock()
+	// Retry probes up to 3 times — adapter-direct mode has bus contention
+	// that can cause individual probes to timeout on busy buses.
+	for attempt := 0; attempt < 3; attempt++ {
+		// Back off between retries to avoid colliding with the same
+		// bus contention pattern (50ms arbitration + waitForSyn).
+		if attempt > 0 {
+			select {
+			case <-time.After(200 * time.Millisecond):
+			case <-ctx.Done():
+				return false
+			}
+		}
 
-	if err != nil {
-		return false
+		data := buildB524ReadSelector(opcode, group, instance, addr)
+		frame := protocol.Frame{
+			Source:    source,
+			Target:    target,
+			Primary:   vaillantExtRegisterPrimary,
+			Secondary: vaillantExtRegisterSecondary,
+			Data:      data,
+		}
+
+		p.readMu.Lock()
+		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		response, err := p.bus.Send(reqCtx, frame)
+		cancel()
+		p.readMu.Unlock()
+
+		if err != nil {
+			if ctx.Err() != nil {
+				return false // parent context cancelled
+			}
+			// Don't retry definitive rejections (NACK, no device) —
+			// these are permanent, not transient bus contention.
+			if ebuserrors.IsDefinitive(err) {
+				return false
+			}
+			continue // retry on transient errors
+		}
+		if response == nil {
+			continue
+		}
+		return isB524ProbeCoherent(response.Data, group, addr)
 	}
-	if response == nil {
-		return false
-	}
-	return isB524ProbeCoherent(response.Data, group, addr)
+	return false
 }
 
 // discoverB524Root finds the B524 semantic root by probing candidates with

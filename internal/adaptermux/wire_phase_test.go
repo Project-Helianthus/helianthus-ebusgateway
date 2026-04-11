@@ -166,6 +166,33 @@ func TestWirePhase_SYNDuringCollectRequest(t *testing.T) {
 	}
 }
 
+func TestWirePhase_SYNDuringFreshGrant_IsIdle(t *testing.T) {
+	// After startRequestWithSource (ArbitrationSendsSource=true),
+	// requestBytesSeen=1 (only pre-loaded SRC). SYN at this point is
+	// normal inter-transaction bus idle, NOT a timeout.
+	var tracker wirePhaseTracker
+	tracker.startRequestWithSource(0x71)
+
+	got := tracker.advance(protocol.SymbolSyn)
+	if got != wirePhaseEventSYNIdle {
+		t.Fatalf("SYN during fresh grant: got event %d, want SYNIdle (%d)", got, wirePhaseEventSYNIdle)
+	}
+}
+
+func TestWirePhase_SYNDuringActiveCollect_IsTimeout(t *testing.T) {
+	// After sending real bytes (requestBytesSeen > 1), SYN during
+	// CollectRequest IS a timeout — the request was interrupted.
+	var tracker wirePhaseTracker
+	tracker.startRequestWithSource(0x71)
+
+	tracker.advance(0x15) // DST — requestBytesSeen=2 now
+
+	got := tracker.advance(protocol.SymbolSyn)
+	if got != wirePhaseEventSYNTimeout {
+		t.Fatalf("SYN during active collect: got event %d, want SYNTimeout (%d)", got, wirePhaseEventSYNTimeout)
+	}
+}
+
 func TestWirePhase_EscapeByteInPayload(t *testing.T) {
 	// Verify that 0xA9 (SymbolEscape) in payload data is handled
 	// correctly as a regular data byte by the phase tracker.
@@ -189,6 +216,102 @@ func TestWirePhase_EscapeByteInPayload(t *testing.T) {
 	got := tracker.advance(0xCC)
 	if got != wirePhaseEventRequestComplete {
 		t.Fatalf("CRC: got event %d, want RequestComplete", got)
+	}
+}
+
+func TestWirePhase_StartRequestWithSource_B524(t *testing.T) {
+	// Simulate a B524 request to BASV2 (0x15) where ArbitrationSendsSource
+	// is true — SRC (0x71) was already sent during arbitration and is NOT
+	// echoed as a data byte. The tracker must pre-load SRC so byte
+	// counting matches the actual on-wire frame.
+	//
+	// On-wire frame: SRC(0x71) DST(0x15) PB(0xB5) SB(0x24) LEN(0x06) D0-D5 CRC
+	// Bytes seen by tracker (no SRC echo): DST PB SB LEN D0 D1 D2 D3 D4 D5 CRC
+	var tracker wirePhaseTracker
+	tracker.startRequestWithSource(0x71)
+
+	if tracker.requestBytesSeen != 1 {
+		t.Fatalf("requestBytesSeen after startRequestWithSource = %d; want 1", tracker.requestBytesSeen)
+	}
+	if tracker.requestSrc != 0x71 {
+		t.Fatalf("requestSrc = 0x%02X; want 0x71", tracker.requestSrc)
+	}
+
+	// Feed the 11 bytes the gateway sends (SRC excluded).
+	request := []byte{
+		0x15,       // DST = BASV2
+		0xB5,       // PB  = vaillant manufacturer
+		0x24,       // SB  = extended register access
+		0x06,       // LEN = 6 data bytes
+		0x02, 0x00, // D0-D1: opcode=local, read
+		0x00, 0x00, // D2-D3: group=0, instance=0
+		0x01, 0x00, // D4-D5: addr=0x0001
+		0x42,       // CRC (placeholder)
+	}
+
+	var lastEvent wirePhaseEvent
+	for i, b := range request {
+		lastEvent = tracker.advance(b)
+		if i < len(request)-1 && lastEvent == wirePhaseEventRequestComplete {
+			t.Fatalf("premature RequestComplete at byte %d (0x%02X)", i+1, b)
+		}
+	}
+
+	if lastEvent != wirePhaseEventRequestComplete {
+		t.Fatalf("after 11 bytes: event = %d; want wirePhaseEventRequestComplete (%d)", lastEvent, wirePhaseEventRequestComplete)
+	}
+	if tracker.phase != wirePhaseWaitCmdAck {
+		t.Fatalf("phase = %d; want wirePhaseWaitCmdAck (%d)", tracker.phase, wirePhaseWaitCmdAck)
+	}
+	if tracker.requestDst != 0x15 {
+		t.Fatalf("requestDst = 0x%02X; want 0x15", tracker.requestDst)
+	}
+
+	// ACK from target.
+	event := tracker.advance(protocol.SymbolAck)
+	if event != wirePhaseEventCmdACK {
+		t.Fatalf("ACK event = %d; want wirePhaseEventCmdACK (%d)", event, wirePhaseEventCmdACK)
+	}
+}
+
+func TestWirePhase_StartRequestWithSource_vs_StartRequest(t *testing.T) {
+	// Without pre-loaded SRC, the tracker miscounts: "LEN" is captured
+	// from a data byte, causing premature WaitCmdAck.
+	var bad wirePhaseTracker
+	bad.startRequest() // no SRC pre-loaded
+
+	request := []byte{
+		0x15, 0xB5, 0x24, 0x06,
+		0x02, 0x00, 0x00, 0x00, 0x01, 0x00,
+		0x42,
+	}
+
+	premature := false
+	for i, b := range request {
+		ev := bad.advance(b)
+		if ev == wirePhaseEventRequestComplete && i < len(request)-1 {
+			premature = true
+			break
+		}
+	}
+	if !premature {
+		t.Fatal("expected premature RequestComplete with startRequest() (no SRC), but got correct counting")
+	}
+
+	// With pre-loaded SRC, counting is correct.
+	var good wirePhaseTracker
+	good.startRequestWithSource(0x71)
+
+	premature = false
+	for i, b := range request {
+		ev := good.advance(b)
+		if ev == wirePhaseEventRequestComplete && i < len(request)-1 {
+			premature = true
+			break
+		}
+	}
+	if premature {
+		t.Fatal("startRequestWithSource still produced premature RequestComplete")
 	}
 }
 
@@ -218,5 +341,56 @@ func TestWirePhase_ZeroLengthResponse(t *testing.T) {
 	got = tracker.advance(protocol.SymbolAck) // final ACK
 	if got != wirePhaseEventTransactionDone {
 		t.Fatalf("final ACK: got event %d, want TransactionDone", got)
+	}
+}
+
+func TestWirePhase_NACKResponseRetry(t *testing.T) {
+	// Simulate initiator-target transaction where initiator NACKs the
+	// response CRC and target retries. The wire phase must track the
+	// retry response instead of resetting to idle.
+	var tracker wirePhaseTracker
+	tracker.startRequest()
+
+	// Send request: SRC DST PB SB LEN=1 DATA[0] CRC
+	for _, b := range []byte{0x71, 0x08, 0xB5, 0x24, 0x01, 0x42} {
+		tracker.advance(b)
+	}
+	tracker.advance(0xCC) // CRC → RequestComplete → WaitCmdAck
+
+	// Target ACK.
+	tracker.advance(protocol.SymbolAck) // → WaitResponseLen
+
+	// First response: LEN=1 DATA CRC.
+	tracker.advance(0x01) // LEN=1
+	tracker.advance(0xAB) // DATA[0]
+	got := tracker.advance(0xDD) // CRC → ResponseDone → WaitResponseAck
+	if got != wirePhaseEventResponseDone {
+		t.Fatalf("first response CRC: event=%d, want ResponseDone", got)
+	}
+
+	// Initiator NACKs — CRC was bad. Must transition to WaitResponseLen.
+	got = tracker.advance(protocol.SymbolNack)
+	if got != wirePhaseEventNone {
+		t.Fatalf("NACK: event=%d, want None (retry expected)", got)
+	}
+	if tracker.phase != wirePhaseWaitResponseLen {
+		t.Fatalf("phase after NACK=%d, want WaitResponseLen (%d)", tracker.phase, wirePhaseWaitResponseLen)
+	}
+
+	// Retry response: LEN=1 DATA CRC.
+	tracker.advance(0x01) // LEN=1
+	tracker.advance(0xAB) // DATA[0]
+	got = tracker.advance(0xEE) // CRC → ResponseDone → WaitResponseAck
+	if got != wirePhaseEventResponseDone {
+		t.Fatalf("retry response CRC: event=%d, want ResponseDone", got)
+	}
+
+	// Initiator ACK — transaction done.
+	got = tracker.advance(protocol.SymbolAck)
+	if got != wirePhaseEventTransactionDone {
+		t.Fatalf("retry ACK: event=%d, want TransactionDone", got)
+	}
+	if !tracker.isIdle() {
+		t.Fatal("expected idle after retry ACK")
 	}
 }

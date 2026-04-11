@@ -37,11 +37,11 @@ type Config struct {
 	ReconnectMaxDelay time.Duration
 
 	// MaxOwnershipDuration is the hard limit on continuous bus ownership.
-	// Default: 2s (from proxy convention).
+	// Default: 10s.
 	MaxOwnershipDuration time.Duration
 
 	// IdleReleaseGrace is the grace period after bus acquisition before
-	// idle SYN can release ownership. Default: 50ms.
+	// idle SYN can release ownership. Default: 200ms.
 	IdleReleaseGrace time.Duration
 
 	// Logger for multiplexer events. If nil, log.Default() is used.
@@ -65,10 +65,17 @@ func (c *Config) defaults() {
 		c.ReconnectMaxDelay = 30 * time.Second
 	}
 	if c.MaxOwnershipDuration == 0 {
-		c.MaxOwnershipDuration = 2 * time.Second
+		// 10s is strictly larger than any request timeout (5s for B524
+		// probes, 2s semantic default) to prevent the ownership guard
+		// from firing before a legitimate request completes.
+		c.MaxOwnershipDuration = 10 * time.Second
 	}
 	if c.IdleReleaseGrace == 0 {
-		c.IdleReleaseGrace = 50 * time.Millisecond
+		// 200ms is enough for any eBUS transaction to complete (~100ms for
+		// the longest B524 frame) while releasing promptly after each scan
+		// probe. The wire phase is not advanced during gateway ownership,
+		// so there's no premature idle/WaitCmdAck issue.
+		c.IdleReleaseGrace = 200 * time.Millisecond
 	}
 	if c.Logger == nil {
 		c.Logger = log.Default()
@@ -129,7 +136,6 @@ type Mux struct {
 	phase        wirePhaseTracker
 	arb          *arbitrator
 	busOwned     time.Time          // when current owner acquired the bus
-	busDirty     bool               // owner has sent bytes since acquiring
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int               // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
 
@@ -145,6 +151,11 @@ type Mux struct {
 	// Active path channels.
 	activeSendCh chan sendRequest
 	activeCh     chan activeEvent // capacity 4096: unified byte+error channel (FIFO ordered)
+
+	// INFO cache — populated once after INIT, served to active path
+	// and sessions without hitting the upstream transport's readMu.
+	infoCacheMu sync.RWMutex
+	infoCache   map[transport.AdapterInfoID][]byte
 
 	// Passive path callback (set via SetPassiveCallback).
 	// The callback must NOT call back into Mux methods (re-entrancy hazard).
@@ -206,6 +217,7 @@ func New(cfg Config) *Mux {
 		arb:          newArbitrator(),
 		gatewayEcho:  newEchoTracker(),
 		sessions:     make(map[uint64]*session),
+		infoCache:    make(map[transport.AdapterInfoID][]byte),
 		activeSendCh: make(chan sendRequest, 16),
 		activeCh:     make(chan activeEvent, 4096), // unified byte+error channel (4096: survives ~16s of bus traffic during arbitration waits)
 	}
@@ -323,26 +335,37 @@ func (m *Mux) connect() error {
 		}
 	}
 
-	// Create ENH/ENS transport.
-	var tr transport.RawTransport
-	switch m.cfg.Protocol {
-	case "ens":
-		tr = transport.NewENSTransport(conn, m.cfg.ReadTimeout, m.cfg.WriteTimeout)
-	case "enh", "":
-		tr = transport.NewENHTransport(conn, m.cfg.ReadTimeout, m.cfg.WriteTimeout)
-	default:
+	// Create ENH/ENS transport in two phases:
+	// Phase 1: 2s read timeout for INIT + INFO queries (adapter needs ~200ms).
+	// Phase 2: replace with cfg.ReadTimeout for the readLoop idle tick.
+	//
+	// The parser-state concern is theoretical: RequestInfo holds readMu
+	// exclusively and the readLoop hasn't started, so no bus bytes arrive
+	// during the setup phase. After INFO completes, the parser is clean.
+	newTransport := func(readTimeout time.Duration) transport.RawTransport {
+		switch m.cfg.Protocol {
+		case "ens":
+			return transport.NewENSTransport(conn, readTimeout, m.cfg.WriteTimeout)
+		case "enh", "":
+			return transport.NewENHTransport(conn, readTimeout, m.cfg.WriteTimeout)
+		default:
+			return nil
+		}
+	}
+
+	const infoTimeout = 2 * time.Second
+	setupTr := newTransport(infoTimeout)
+	if setupTr == nil {
 		_ = conn.Close()
 		return fmt.Errorf("adaptermux: unsupported protocol %q (expected \"enh\" or \"ens\")", m.cfg.Protocol)
 	}
 
 	m.conn = conn
-	m.upstream = tr
+	m.upstream = setupTr
 
 	// Perform INIT handshake — fatal if transport implements Init.
-	// Store the negotiated features byte from the upstream RESETTED
-	// response for session INIT reply fidelity.
 	const requestedFeatures byte = 0x01
-	if initer, ok := tr.(interface{ Init(byte) (byte, error) }); ok {
+	if initer, ok := setupTr.(interface{ Init(byte) (byte, error) }); ok {
 		features, err := initer.Init(requestedFeatures)
 		if err != nil {
 			_ = conn.Close()
@@ -352,12 +375,124 @@ func (m *Mux) connect() error {
 		m.logger.Printf("adaptermux: INIT handshake succeeded, upstream features=0x%02X", features)
 	}
 
+	// Populate INFO cache with the 2s-timeout transport.
+	m.populateInfoCache(setupTr)
+
+	// Phase 2: replace with fast-timeout transport for readLoop.
+	// RequestInfo held readMu exclusively and the readLoop hasn't started,
+	// so the setup transport's parser is clean — no pending bus bytes.
+	m.upstream = newTransport(m.cfg.ReadTimeout)
+
 	return nil
+}
+
+
+// populateInfoCache queries the upstream transport for INFO metadata
+// and stores responses in the mux-level cache. Sessions and the active
+// path read from the cache instead of touching the upstream transport,
+// avoiding readMu contention during normal operation.
+//
+// Called from connect() after a successful INIT handshake (connMu held
+// by caller). The upstream transport must support InfoRequester; if it
+// does not, the cache is cleared and CachedInfo returns an error.
+//
+// All INFO IDs (0x00–0x07) are cached, including volatile telemetry
+// (temperature, voltage, RSSI). These are startup snapshots that go
+// stale until reconnect, but refreshTelemetry needs them from the
+// cache to avoid readMu contention with readLoop.
+func (m *Mux) populateInfoCache(tr transport.RawTransport) {
+	infoReq, ok := tr.(transport.InfoRequester)
+	if !ok {
+		m.clearInfoCache()
+		return
+	}
+
+	cache := make(map[transport.AdapterInfoID][]byte)
+
+	// Try version first — if it fails, adapter doesn't support INFO.
+	// Called via the setup transport (2s timeout); connect() replaces
+	// m.upstream with a fast-timeout transport for readLoop afterward.
+	data, err := infoReq.RequestInfo(transport.AdapterInfoVersion)
+	if err != nil {
+		m.logger.Printf("adaptermux: INFO not supported by adapter: %v", err)
+		m.clearInfoCache()
+		return
+	}
+	cache[transport.AdapterInfoVersion] = append([]byte(nil), data...)
+
+	// Query all remaining IDs (0x01–0x07) including volatile telemetry.
+	for id := transport.AdapterInfoHardwareID; id <= transport.AdapterInfoWiFiRSSI; id++ {
+		data, err := infoReq.RequestInfo(id)
+		if err != nil {
+			continue
+		}
+		cache[id] = append([]byte(nil), data...)
+	}
+
+	m.infoCacheMu.Lock()
+	m.infoCache = cache
+	m.infoCacheMu.Unlock()
+
+	m.logger.Printf("adaptermux: INFO cache populated (%d entries)", len(cache))
+}
+
+// clearInfoCache removes all cached INFO entries so that CachedInfo
+// returns an error until the cache is repopulated.
+func (m *Mux) clearInfoCache() {
+	m.infoCacheMu.Lock()
+	m.infoCache = nil
+	m.infoCacheMu.Unlock()
+}
+
+// arbitrationSendsSource checks the upstream transport to determine
+// whether the adapter already places the initiator byte on the wire
+// during START arbitration. Returns true for ENH/ENS adapters.
+//
+// Used by both the wire phase tracker (completeArbitrationGrant) and
+// activeTransport.ArbitrationSendsSource (for bus.sendTransaction).
+// External proxy sessions need correct phase tracking via
+// startRequestWithSource when the upstream sends SRC. For the gateway
+// session, onReceived skips phase.advance during ownership, so the
+// pre-loaded SRC value is harmless but consistent.
+func (m *Mux) arbitrationSendsSource() bool {
+	m.connMu.Lock()
+	tr := m.upstream
+	m.connMu.Unlock()
+	if tr == nil {
+		return false
+	}
+	if checker, ok := tr.(interface{ ArbitrationSendsSource() bool }); ok {
+		return checker.ArbitrationSendsSource()
+	}
+	return false
+}
+
+// CachedInfo returns a copy of the cached INFO response for the given
+// ID. Returns an error if the cache is empty (adapter doesn't support
+// INFO) or the requested ID was not cached.
+func (m *Mux) CachedInfo(id transport.AdapterInfoID) ([]byte, error) {
+	m.infoCacheMu.RLock()
+	defer m.infoCacheMu.RUnlock()
+
+	if len(m.infoCache) == 0 {
+		return nil, errors.New("adaptermux: INFO not available")
+	}
+	data, ok := m.infoCache[id]
+	if !ok {
+		return nil, fmt.Errorf("adaptermux: INFO id 0x%02X not cached", byte(id))
+	}
+	result := make([]byte, len(data))
+	copy(result, data)
+	return result, nil
 }
 
 // reconnect tears down the current connection and re-establishes it.
 // Called from the read loop on adapter disconnect.
 func (m *Mux) reconnect() error {
+	// Invalidate INFO cache immediately so CachedInfo returns errors
+	// during the disconnect window rather than serving stale data.
+	m.clearInfoCache()
+
 	m.emitPassive(PassiveEvent{
 		Kind:       PassiveEventDisconnected,
 		ObservedAt: time.Now(),
@@ -368,7 +503,6 @@ func (m *Mux) reconnect() error {
 	m.phase.reset(wirePhaseIdle)
 	m.arb.forceRelease()
 	m.gatewayEcho.reset()
-	m.busDirty = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
@@ -543,9 +677,30 @@ func (m *Mux) onReceived(symbol byte) {
 	// --- Phase 1: state update under stateMu ---
 	m.stateMu.Lock()
 
-	phaseEvent := m.phase.advance(symbol)
-
 	ownerID, _, hasOwner := m.arb.owner()
+
+	// Skip wire phase tracking for non-SYN bytes during gateway ownership.
+	// The gateway's bus.Send handles the transaction directly via echo
+	// matching. Skipping advance() for data bytes prevents premature
+	// WaitCmdAck → CmdNACK → idle from off-by-one byte counting.
+	//
+	// SYN is always processed: ownership release depends on the SYN
+	// handler (SYNIdle + IdleReleaseGrace or SYNTimeout). During gateway
+	// ownership, treat SYN as SYNIdle since the data-phase tracking is
+	// skipped.
+	var phaseEvent wirePhaseEvent
+	if symbol == protocol.SymbolSyn {
+		if hasOwner && ownerID == gatewaySessionID {
+			// Gateway owns bus, phase tracking skipped for data bytes.
+			// Treat SYN as idle so IdleReleaseGrace controls release.
+			phaseEvent = wirePhaseEventSYNIdle
+			m.phase.reset(wirePhaseIdle)
+		} else {
+			phaseEvent = m.phase.advance(symbol)
+		}
+	} else if !hasOwner || ownerID != gatewaySessionID {
+		phaseEvent = m.phase.advance(symbol)
+	}
 	if hasOwner && !m.busOwned.IsZero() &&
 		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 		m.arb.releaseOwnership(ownerID)
@@ -580,20 +735,20 @@ func (m *Mux) onReceived(symbol byte) {
 		return
 	}
 
-	// Non-SYN byte: check gateway echo suppression.
-	isGatewayEcho := false
-	if hasOwner && ownerID == gatewaySessionID {
-		result, flushed := m.gatewayEcho.matchEcho(symbol)
-		switch result {
-		case echoMatchSuppressed:
-			isGatewayEcho = true
-		case echoMatchFlushed:
-			for _, b := range flushed {
-				passiveEvents = append(passiveEvents, PassiveEvent{
-					Kind: PassiveEventSymbol, Symbol: b, ObservedAt: now,
-				})
-			}
-		}
+	// Non-SYN byte: suppress from passive when gateway owns the bus.
+	//
+	// When the gateway owns the bus, ALL received bytes belong to the
+	// gateway's transaction: echoed request bytes AND the target's
+	// response bytes (ACK, LEN, DATA, CRC, final ACK). Without full
+	// suppression, orphaned response bytes leak to the passive path
+	// and the reconstructor parses them as garbage frames (Source=0x00,
+	// fake protocol IDs).
+	//
+	// The echo tracker still runs for internal state tracking, but its
+	// result is not used for passive filtering — we suppress everything.
+	isGatewayOwned := hasOwner && ownerID == gatewaySessionID
+	if isGatewayOwned {
+		m.gatewayEcho.matchEcho(symbol) // track echo state internally
 	}
 
 	m.stateMu.Unlock()
@@ -601,7 +756,7 @@ func (m *Mux) onReceived(symbol byte) {
 	// --- Phase 2: deliver outside all locks ---
 	m.deliverToActive(symbol)
 
-	if !isGatewayEcho {
+	if !isGatewayOwned {
 		passiveEvents = append(passiveEvents, PassiveEvent{
 			Kind: PassiveEventSymbol, Symbol: symbol, ObservedAt: now,
 		})
@@ -641,7 +796,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 
 	// Release ownership on idle SYN after grace period.
 	if phaseEvent == wirePhaseEventSYNIdle && hasOwner {
-		if !m.busDirty || time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
+		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
 			m.arb.releaseOwnership(ownerID)
 		}
 	}
@@ -659,10 +814,15 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 func (m *Mux) handleReset() {
 	now := time.Now()
 
+	// NOTE: We do NOT clear the INFO cache on in-band RESETTED.
+	// Stable INFO entries (version, hardware ID) do not change on
+	// in-band reset — the adapter's identity is constant. The cache
+	// is only cleared on TCP disconnect (in reconnect()), which calls
+	// connect() to repopulate it after re-establishing the connection.
+
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
-	m.busDirty = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
@@ -670,7 +830,7 @@ func (m *Mux) handleReset() {
 
 	// Cancel in-flight pending START if any.
 	if pendingToCancel != nil {
-		pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: adapter reset")}
+		pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset)}
 	}
 
 	// Reset external session echo trackers.
@@ -681,7 +841,7 @@ func (m *Mux) handleReset() {
 	m.sessionsMu.Unlock()
 
 	m.arb.forceRelease()
-	m.arb.failAllPending(errors.New("adaptermux: adapter reset"))
+	m.arb.failAllPending(fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset))
 
 	// Drain stale bytes from active channel before enqueuing the reset
 	// error. Because activeCh is a single FIFO channel, the consumer is
@@ -711,12 +871,15 @@ func (m *Mux) handleReset() {
 // drainActiveCh discards all buffered events from the active channel.
 // Called before reset/reconnect to ensure consumers don't see stale
 // pre-boundary bytes after a reset event.
-func (m *Mux) drainActiveCh() {
+// Returns the number of events drained.
+func (m *Mux) drainActiveCh() int {
+	n := 0
 	for {
 		select {
 		case <-m.activeCh:
+			n++
 		default:
-			return
+			return n
 		}
 	}
 }
@@ -897,10 +1060,30 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.arb.confirmOwnership(sessionID, initiator)
 	}
 
+	// Check ArbitrationSendsSource BEFORE acquiring stateMu to avoid
+	// ABBA deadlock: arbitrationSendsSource acquires connMu, and doSend
+	// acquires connMu → stateMu. Reversing that order here (stateMu →
+	// connMu) would deadlock.
+	sendsSource := m.arbitrationSendsSource()
+
 	m.stateMu.Lock()
-	m.phase.startRequest()
-	m.busDirty = false
+	if sendsSource {
+		// The adapter firmware already placed the SRC byte on the wire
+		// during arbitration (StreamEventStarted). Pre-load it into the
+		// phase tracker so byte counting is correct — without this, DST
+		// is captured as SRC, LEN is read from a data byte, and the
+		// tracker prematurely enters WaitCmdAck.
+		m.phase.startRequestWithSource(initiator)
+	} else {
+		m.phase.startRequest()
+	}
 	m.busOwned = time.Now()
+	// Suppress stale SYN bytes from activeCh during the grant-to-first-byte
+	// handoff window. After arbitration grant, the TCP buffer may still contain
+	// SYN bytes from bus idle traffic that arrived before the adapter processed
+	// START. drainActiveCh clears the Go channel but not the TCP socket buffer.
+	// These stale SYNs would be read by the gateway as echo mismatches,
+	// causing ErrBusCollision on the very first byte.
 	if sessionID == gatewaySessionID {
 		m.gatewayEcho.markRequestStart()
 	}
@@ -916,12 +1099,11 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	}
 
 	// Drain stale bytes from activeCh before notifying gateway.Bus.
-	// This mirrors ENHTransport.StartArbitration's parser.Reset() which
-	// discards pre-arbitration traffic. Without this, gateway.Bus reads
-	// stale bytes from activeCh and gets echo mismatches (ErrBusCollision)
-	// causing adapter-direct scan failures.
 	if sessionID == gatewaySessionID {
-		m.drainActiveCh()
+		drained := m.drainActiveCh()
+		if drained > 0 {
+			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
+		}
 	}
 
 	// Notify requester of success.
@@ -975,7 +1157,11 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	} else {
 		m.pendingStart = nil
 		m.stateMu.Unlock()
-		pending.notify <- startResult{granted: false, initiator: data}
+		pending.notify <- startResult{
+			granted:   false,
+			initiator: data,
+			err:       fmt.Errorf("adaptermux: arbitration lost to 0x%02X: %w", data, ebuserrors.ErrBusCollision),
+		}
 	}
 
 	// After resolving, check if more requests are pending.
@@ -1036,7 +1222,6 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 	if sessionID == gatewaySessionID {
 		m.stateMu.Lock()
 		m.gatewayEcho.recordSent(data)
-		m.busDirty = true
 		m.stateMu.Unlock()
 	} else {
 		m.sessionsMu.Lock()
@@ -1044,9 +1229,6 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 			sess.echoTracker.recordSent(data)
 		}
 		m.sessionsMu.Unlock()
-		m.stateMu.Lock()
-		m.busDirty = true
-		m.stateMu.Unlock()
 	}
 
 	_, err := tr.Write([]byte{data})

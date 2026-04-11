@@ -87,7 +87,17 @@ func (t *wirePhaseTracker) advance(symbol byte) wirePhaseEvent {
 			return wirePhaseEventSYNTimeout
 		}
 		if t.phase == wirePhaseCollectRequest {
-			// SYN during request collection — incomplete request.
+			// SYN during request collection. Distinguish between:
+			// - Fresh grant (requestBytesSeen <= 1): only the pre-loaded
+			//   SRC from ArbitrationSendsSource, no real bytes transmitted
+			//   yet. This SYN is normal inter-transaction bus idle traffic
+			//   arriving before the gateway starts sending. Treat as idle.
+			// - Active request (requestBytesSeen > 1): real bytes are on
+			//   the wire but the request wasn't completed. Treat as timeout.
+			if t.requestBytesSeen <= 1 {
+				t.reset(wirePhaseIdle)
+				return wirePhaseEventSYNIdle
+			}
 			t.reset(wirePhaseIdle)
 			return wirePhaseEventSYNTimeout
 		}
@@ -175,9 +185,19 @@ func (t *wirePhaseTracker) advanceWaitResponseBody(symbol byte) wirePhaseEvent {
 	return wirePhaseEventNone
 }
 
-func (t *wirePhaseTracker) advanceWaitResponseAck(_ byte) wirePhaseEvent {
-	// Any non-SYN symbol in WaitResponseAck phase = final ACK.
-	// (SYN is handled by the caller before reaching this point.)
+func (t *wirePhaseTracker) advanceWaitResponseAck(symbol byte) wirePhaseEvent {
+	// SYN is handled by the caller before reaching this point.
+	if symbol == protocol.SymbolNack {
+		// NACK: the initiator rejected the response CRC. The target
+		// will retry the response (LEN DATA CRC). Transition to
+		// WaitResponseLen instead of idle to keep phase tracking
+		// active during the retry — otherwise, third-party traffic
+		// arriving during idle interleaves with the retried response
+		// bytes in activeCh.
+		t.phase = wirePhaseWaitResponseLen
+		return wirePhaseEventNone
+	}
+	// ACK (0x00) or any other non-SYN symbol: transaction complete.
 	t.reset(wirePhaseIdle)
 	return wirePhaseEventTransactionDone
 }
@@ -186,6 +206,19 @@ func (t *wirePhaseTracker) advanceWaitResponseAck(_ byte) wirePhaseEvent {
 // Called when the multiplexer grants bus ownership to a session.
 func (t *wirePhaseTracker) startRequest() {
 	t.reset(wirePhaseCollectRequest)
+}
+
+// startRequestWithSource initializes the tracker with the SRC byte
+// pre-loaded. Use this when ArbitrationSendsSource() is true — the
+// adapter firmware already placed the initiator byte on the wire
+// during arbitration (StreamEventStarted), so onReceived never sees
+// it. Without this, the tracker is off-by-one: DST is captured as
+// SRC, PB as DST, and the LEN field is read from a data byte,
+// causing premature WaitCmdAck transitions and false CmdNACK events.
+func (t *wirePhaseTracker) startRequestWithSource(src byte) {
+	t.reset(wirePhaseCollectRequest)
+	t.requestBytesSeen = 1
+	t.requestSrc = src
 }
 
 // isIdle reports whether the bus is in the idle state.

@@ -88,6 +88,13 @@ var (
 
 const proxyObserveFirstStartupSource byte = 0xF7
 
+// startupScanMaxUnconfirmedPasses is the number of consecutive scan passes
+// where devices are present but confirmation remains unsatisfied before the
+// safety-net forces semanticBootstrapReady.  This covers edge cases where the
+// directScanConfirmationRetries counter cannot accumulate (e.g. intermittent
+// B524 probe success that resets the counter before it reaches the threshold).
+const startupScanMaxUnconfirmedPasses = 5
+
 var (
 	postStartupIdentityRetryDelay    = 5 * time.Second
 	postStartupIdentityRetryAttempts = 3
@@ -176,6 +183,8 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 		fullRangeRecoveryAttempted := false
 		restrictedConfirmationAfterRecoveryPending := false
 		delayedIdentityRetryScheduled := false
+		directScanConfirmationRetries := 0
+		scanPassesWithDevices := 0
 		for {
 			scanCtx := ctx
 			cancel := func() {}
@@ -389,8 +398,44 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				usedRestrictedTargets &&
 				!retryingFullRange &&
 				restrictedConfirmationAfterRecoveryPending
+			// Direct (non-ebusd-tcp) scans never set usedRestrictedTargets,
+			// so the ebusd-specific fallback path above cannot fire.  The
+			// !usedRestrictedTargets guard below correctly scopes this
+			// counter to direct scans only (adapter-direct, ENH, ENS).
+			// Track consecutive confirmation failures and treat them as
+			// exhausted after two passes to prevent an infinite scan loop
+			// when the B524 coherent-root probe fails under bus contention.
+			if confirmationPending && !confirmationSatisfied && !usedRestrictedTargets && total > 0 {
+				directScanConfirmationRetries++
+				if directScanConfirmationRetries >= 2 {
+					confirmationFallbackExhausted = true
+					log.Printf("startup scan: direct-scan confirmation exhausted after %d retries, proceeding with bootstrap", directScanConfirmationRetries)
+				}
+			}
+			// Safety net: count consecutive scan passes where devices exist
+			// but confirmation remains unresolved.  If this counter exceeds
+			// startupScanMaxUnconfirmedPasses the loop forces bootstrap
+			// regardless of confirmation state.  This covers scenarios the
+			// directScanConfirmationRetries path cannot reach (e.g. ebusd-tcp
+			// preload with intermittent B524 probe success preventing the
+			// retry counter from accumulating).
+			if total > 0 && !confirmationSatisfied {
+				scanPassesWithDevices++
+			} else {
+				scanPassesWithDevices = 0
+			}
+			if scanPassesWithDevices >= startupScanMaxUnconfirmedPasses && !confirmationFallbackExhausted {
+				confirmationFallbackExhausted = true
+				log.Printf("startup scan: unconfirmed passes=%d reached safety limit, proceeding with bootstrap", scanPassesWithDevices)
+			}
+			log.Printf(
+				"startup scan: confirmation pending=%v satisfied=%v exhausted=%v vaillant=%v restricted=%v retries=%d passes=%d total=%d",
+				confirmationPending, confirmationSatisfied, confirmationFallbackExhausted,
+				requiresRootAwareConfirmation, usedRestrictedTargets, directScanConfirmationRetries, scanPassesWithDevices, total,
+			)
 			if confirmationSatisfied || confirmationFallbackExhausted {
 				restrictedConfirmationAfterRecoveryPending = false
+				directScanConfirmationRetries = 0
 			}
 
 			if confirmationPending && usedRestrictedTargets && !retryingFullRange && !fullRangeRecoveryAttempted &&
@@ -602,13 +647,33 @@ func startupScanHasCoherentVaillantRoot(ctx context.Context, cfg ebusgateway.Con
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	timeout := cfg.SemanticRequestTimeout
-	if timeout <= 0 {
-		timeout = 2 * time.Second
+	perProbe := cfg.SemanticRequestTimeout
+	if perProbe <= 0 {
+		perProbe = 2 * time.Second
 	}
-	if cfg.ScanRequestTimeout > timeout {
-		timeout = cfg.ScanRequestTimeout
+	if cfg.ScanRequestTimeout > perProbe {
+		perProbe = cfg.ScanRequestTimeout
 	}
+	// probeB524Register clamps its internal timeout to minB524ProbeTimeout
+	// (5s). The outer context must use at least this value to avoid
+	// expiring before the individual probe finishes.
+	if perProbe < 5*time.Second {
+		perProbe = 5 * time.Second
+	}
+	// Each candidate is tested with len(b524CapabilityProbes) serial probes,
+	// and each probe retries up to 3 times with 200ms backoff. The outer
+	// context must allow enough wall-clock time for the worst-case path:
+	// every candidate × every probe × every retry.
+	const probeRetryCount = 3
+	numCandidates := countRegistryDevices(gateway.Registry)
+	if numCandidates < 1 {
+		numCandidates = 1
+	}
+	numProbes := len(b524CapabilityProbes)
+	if numProbes < 1 {
+		numProbes = 1
+	}
+	timeout := perProbe * time.Duration(numCandidates*numProbes*probeRetryCount+1)
 	probeCtx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()
 	poller := &vaillantSemanticPoller{

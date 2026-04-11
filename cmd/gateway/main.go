@@ -27,7 +27,7 @@ import (
 )
 
 var (
-	buildVersion                              = "dev"
+	buildVersion                              = "0.4.0"
 	buildID                                   = "unknown"
 	wireObserveFirstObserversFn               = wireObserveFirstObservers
 	startDiscoveryScanLoopFn                  = startDiscoveryScanLoop
@@ -585,10 +585,11 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		muxCfg.DialTimeout = 5 * time.Second
 	}
 	// Mux read timeout controls how often the idle-timeout branch runs
-	// (tryGrantAndStart). Keep it short so START grants are not delayed
-	// on a quiet bus. This does not affect bus transaction timing — the
-	// gateway's own transport read timeout handles that on the active path.
-	muxCfg.ReadTimeout = 200 * time.Millisecond
+	// (tryGrantAndStart) AND how quickly activeCh receives bytes from
+	// the upstream ENH transport. 50ms matches the eBUS SYN interval so
+	// waitForSyn (which needs 2 SYNs) completes within ~100ms instead
+	// of ~400ms at 200ms, preventing scan-abort after collision retry.
+	muxCfg.ReadTimeout = 50 * time.Millisecond
 	if muxCfg.WriteTimeout == 0 {
 		muxCfg.WriteTimeout = 5 * time.Second
 	}
@@ -601,6 +602,15 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	// readLoop (P0 deadlock fix).
 	if cfg.BroadcastListen {
 		cfg.PassiveTransport = mux.PassiveTransport()
+
+		// Skip passive warmup in adapter-direct mode. The passive stream
+		// only sees third-party traffic (gateway bytes are suppressed by
+		// the mux), so warmup thresholds are never met organically. Zero
+		// thresholds tell the store to promote immediately.
+		cfg.ObserveFirstWarmupCompletedTransactions = 0
+		cfg.ObserveFirstWarmupConnectedWindow = 0
+		cfg.ObserveFirstWarmupPostResetTransactions = 0
+		cfg.ObserveFirstWarmupPostResetWindow = 0
 	}
 
 	if err := mux.Start(ctx); err != nil {

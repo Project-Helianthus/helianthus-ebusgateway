@@ -341,32 +341,18 @@ func (s *session) handleInit(features byte) {
 }
 
 // handleInfo processes an INFO request from the client.
+// Reads from the mux-level INFO cache (populated at connect time)
+// instead of querying the upstream transport directly, avoiding
+// readMu contention with the readLoop.
 func (s *session) handleInfo(id byte) {
-	s.mux.connMu.Lock()
-	tr := s.mux.upstream
-	s.mux.connMu.Unlock()
-
-	if tr == nil {
-		s.deliverErrorHost()
-		return
-	}
-
-	infoReq, ok := tr.(transport.InfoRequester)
-	if !ok {
-		s.mux.logger.Printf("adaptermux: session %d INFO requested but transport does not support it", s.id)
-		s.deliverErrorHost()
-		return
-	}
-
-	data, err := infoReq.RequestInfo(transport.AdapterInfoID(id))
+	data, err := s.mux.CachedInfo(transport.AdapterInfoID(id))
 	if err != nil {
-		s.mux.logger.Printf("adaptermux: session %d INFO request failed: %v", s.id, err)
-		s.deliverError()
+		s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X: %v", s.id, id, err)
+		s.deliverErrorHost()
 		return
 	}
 	if len(data) == 0 {
-		s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X returned empty response", s.id, id)
-		s.deliverError()
+		s.deliverErrorHost()
 		return
 	}
 

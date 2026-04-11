@@ -696,16 +696,26 @@ func (m *Mux) onReceived(symbol byte) {
 
 	ownerID, _, hasOwner := m.arb.owner()
 
-	// Skip wire phase tracking during gateway ownership. The gateway's
-	// bus.Send handles the transaction directly via echo matching. The
-	// wire phase tracker's byte counting can be off-by-one when the SRC
-	// byte is pre-loaded (ArbitrationSendsSource), causing premature
-	// WaitCmdAck → CmdNACK → idle during B524 requests. By skipping
-	// advance() during gateway ownership, the phase stays in
-	// CollectRequest until ownership is released, preventing premature
-	// idle SYN or SYN timeout releases mid-transaction.
+	// Skip wire phase tracking for non-SYN bytes during gateway ownership.
+	// The gateway's bus.Send handles the transaction directly via echo
+	// matching. Skipping advance() for data bytes prevents premature
+	// WaitCmdAck → CmdNACK → idle from off-by-one byte counting.
+	//
+	// SYN is always processed: ownership release depends on the SYN
+	// handler (SYNIdle + IdleReleaseGrace or SYNTimeout). During gateway
+	// ownership, treat SYN as SYNIdle since the data-phase tracking is
+	// skipped.
 	var phaseEvent wirePhaseEvent
-	if !hasOwner || ownerID != gatewaySessionID {
+	if symbol == protocol.SymbolSyn {
+		if hasOwner && ownerID == gatewaySessionID {
+			// Gateway owns bus, phase tracking skipped for data bytes.
+			// Treat SYN as idle so IdleReleaseGrace controls release.
+			phaseEvent = wirePhaseEventSYNIdle
+			m.phase.reset(wirePhaseIdle)
+		} else {
+			phaseEvent = m.phase.advance(symbol)
+		}
+	} else if !hasOwner || ownerID != gatewaySessionID {
 		phaseEvent = m.phase.advance(symbol)
 	}
 	if hasOwner && !m.busOwned.IsZero() &&

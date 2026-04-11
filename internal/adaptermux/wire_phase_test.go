@@ -166,6 +166,33 @@ func TestWirePhase_SYNDuringCollectRequest(t *testing.T) {
 	}
 }
 
+func TestWirePhase_SYNDuringFreshGrant_IsIdle(t *testing.T) {
+	// After startRequestWithSource (ArbitrationSendsSource=true),
+	// requestBytesSeen=1 (only pre-loaded SRC). SYN at this point is
+	// normal inter-transaction bus idle, NOT a timeout.
+	var tracker wirePhaseTracker
+	tracker.startRequestWithSource(0x71)
+
+	got := tracker.advance(protocol.SymbolSyn)
+	if got != wirePhaseEventSYNIdle {
+		t.Fatalf("SYN during fresh grant: got event %d, want SYNIdle (%d)", got, wirePhaseEventSYNIdle)
+	}
+}
+
+func TestWirePhase_SYNDuringActiveCollect_IsTimeout(t *testing.T) {
+	// After sending real bytes (requestBytesSeen > 1), SYN during
+	// CollectRequest IS a timeout — the request was interrupted.
+	var tracker wirePhaseTracker
+	tracker.startRequestWithSource(0x71)
+
+	tracker.advance(0x15) // DST — requestBytesSeen=2 now
+
+	got := tracker.advance(protocol.SymbolSyn)
+	if got != wirePhaseEventSYNTimeout {
+		t.Fatalf("SYN during active collect: got event %d, want SYNTimeout (%d)", got, wirePhaseEventSYNTimeout)
+	}
+}
+
 func TestWirePhase_EscapeByteInPayload(t *testing.T) {
 	// Verify that 0xA9 (SymbolEscape) in payload data is handled
 	// correctly as a regular data byte by the phase tracker.

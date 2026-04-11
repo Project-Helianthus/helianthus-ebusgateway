@@ -87,7 +87,17 @@ func (t *wirePhaseTracker) advance(symbol byte) wirePhaseEvent {
 			return wirePhaseEventSYNTimeout
 		}
 		if t.phase == wirePhaseCollectRequest {
-			// SYN during request collection — incomplete request.
+			// SYN during request collection. Distinguish between:
+			// - Fresh grant (requestBytesSeen <= 1): only the pre-loaded
+			//   SRC from ArbitrationSendsSource, no real bytes transmitted
+			//   yet. This SYN is normal inter-transaction bus idle traffic
+			//   arriving before the gateway starts sending. Treat as idle.
+			// - Active request (requestBytesSeen > 1): real bytes are on
+			//   the wire but the request wasn't completed. Treat as timeout.
+			if t.requestBytesSeen <= 1 {
+				t.reset(wirePhaseIdle)
+				return wirePhaseEventSYNIdle
+			}
 			t.reset(wirePhaseIdle)
 			return wirePhaseEventSYNTimeout
 		}

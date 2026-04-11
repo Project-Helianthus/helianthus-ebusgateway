@@ -762,6 +762,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 
 	// Release ownership if SYN timeout.
 	if phaseEvent == wirePhaseEventSYNTimeout && hasOwner {
+		m.logger.Printf("adaptermux: SYN timeout release owner=%d elapsed=%v dirty=%v", ownerID, time.Since(m.busOwned), m.busDirty)
 		m.arb.releaseOwnership(ownerID)
 	}
 

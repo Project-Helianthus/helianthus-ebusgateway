@@ -18,6 +18,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
@@ -6459,6 +6460,11 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 		if err != nil {
 			if ctx.Err() != nil {
 				return false // parent context cancelled
+			}
+			// Don't retry definitive rejections (NACK, no device) —
+			// these are permanent, not transient bus contention.
+			if ebuserrors.IsDefinitive(err) {
+				return false
 			}
 			continue // retry on transient errors
 		}

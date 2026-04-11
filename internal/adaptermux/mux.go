@@ -41,7 +41,7 @@ type Config struct {
 	MaxOwnershipDuration time.Duration
 
 	// IdleReleaseGrace is the grace period after bus acquisition before
-	// idle SYN can release ownership. Default: 50ms.
+	// idle SYN can release ownership. Default: 200ms.
 	IdleReleaseGrace time.Duration
 
 	// Logger for multiplexer events. If nil, log.Default() is used.
@@ -393,21 +393,22 @@ func (m *Mux) populateInfoCache(tr transport.RawTransport) {
 		return
 	}
 
-	// Use a longer read deadline for INFO queries. The default
-	// ReadTimeout (50ms, tuned for the readLoop idle tick) is too
-	// short — the adapter needs ~200ms to respond to INFO commands.
-	// connMu is held by connect(), so m.conn is safe to access.
-	if tcpConn, ok := m.conn.(*net.TCPConn); ok {
-		_ = tcpConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		defer func() {
-			_ = tcpConn.SetReadDeadline(time.Now().Add(m.cfg.ReadTimeout))
-		}()
-	}
-
 	cache := make(map[transport.AdapterInfoID][]byte)
 
-	// Try version first — if it fails, adapter doesn't support INFO.
-	data, err := infoReq.RequestInfo(transport.AdapterInfoVersion)
+	// Retry version query up to 5 times — the adapter needs ~200ms to
+	// respond to INFO commands, but the transport's ReadTimeout is only
+	// 50ms per attempt. Setting conn.SetReadDeadline is ineffective
+	// because the transport overwrites it on each internal Read call.
+	// 5 retries × 50ms = 250ms total window covers the adapter's
+	// response time reliably.
+	var data []byte
+	var err error
+	for i := 0; i < 5; i++ {
+		data, err = infoReq.RequestInfo(transport.AdapterInfoVersion)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		m.logger.Printf("adaptermux: INFO not supported by adapter: %v", err)
 		m.clearInfoCache()
@@ -809,10 +810,11 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 func (m *Mux) handleReset() {
 	now := time.Now()
 
-	// Invalidate INFO cache — adapter state changed and cached values
-	// (especially ResetInfo) may no longer be accurate. The cache will
-	// be repopulated on the next reconnect via connect().
-	m.clearInfoCache()
+	// NOTE: We do NOT clear the INFO cache on in-band RESETTED.
+	// Stable INFO entries (version, hardware ID) do not change on
+	// in-band reset — the adapter's identity is constant. The cache
+	// is only cleared on TCP disconnect (in reconnect()), which calls
+	// connect() to repopulate it after re-establishing the connection.
 
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)

@@ -85,6 +85,9 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 // The gateway must hold bus ownership (via StartArbitration) before
 // calling Write.
 func (t *activeTransport) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		t.mux.logger.Printf("adaptermux: activeTransport.Write len=%d first=0x%02X", len(p), p[0])
+	}
 	for i, b := range p {
 		result := make(chan error, 1)
 		select {

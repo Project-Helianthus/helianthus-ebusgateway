@@ -623,6 +623,11 @@ func (m *Mux) onReceived(symbol byte) {
 		hasOwner = false
 	}
 
+	// Debug: log bytes received while gateway owns the bus (non-SYN only).
+	if hasOwner && ownerID == gatewaySessionID && symbol != protocol.SymbolSyn {
+		m.logger.Printf("adaptermux: rx byte=0x%02X (gateway owns bus)", symbol)
+	}
+
 	// Collect passive events under lock, emit after unlock (Issue#3 fix).
 	var passiveEvents []PassiveEvent
 	var shouldTryGrant bool
@@ -650,20 +655,20 @@ func (m *Mux) onReceived(symbol byte) {
 		return
 	}
 
-	// Non-SYN byte: check gateway echo suppression.
-	isGatewayEcho := false
-	if hasOwner && ownerID == gatewaySessionID {
-		result, flushed := m.gatewayEcho.matchEcho(symbol)
-		switch result {
-		case echoMatchSuppressed:
-			isGatewayEcho = true
-		case echoMatchFlushed:
-			for _, b := range flushed {
-				passiveEvents = append(passiveEvents, PassiveEvent{
-					Kind: PassiveEventSymbol, Symbol: b, ObservedAt: now,
-				})
-			}
-		}
+	// Non-SYN byte: suppress from passive when gateway owns the bus.
+	//
+	// When the gateway owns the bus, ALL received bytes belong to the
+	// gateway's transaction: echoed request bytes AND the target's
+	// response bytes (ACK, LEN, DATA, CRC, final ACK). Without full
+	// suppression, orphaned response bytes leak to the passive path
+	// and the reconstructor parses them as garbage frames (Source=0x00,
+	// fake protocol IDs).
+	//
+	// The echo tracker still runs for internal state tracking, but its
+	// result is not used for passive filtering — we suppress everything.
+	isGatewayOwned := hasOwner && ownerID == gatewaySessionID
+	if isGatewayOwned {
+		m.gatewayEcho.matchEcho(symbol) // track echo state internally
 	}
 
 	m.stateMu.Unlock()
@@ -671,7 +676,7 @@ func (m *Mux) onReceived(symbol byte) {
 	// --- Phase 2: deliver outside all locks ---
 	m.deliverToActive(symbol)
 
-	if !isGatewayEcho {
+	if !isGatewayOwned {
 		passiveEvents = append(passiveEvents, PassiveEvent{
 			Kind: PassiveEventSymbol, Symbol: symbol, ObservedAt: now,
 		})
@@ -781,12 +786,15 @@ func (m *Mux) handleReset() {
 // drainActiveCh discards all buffered events from the active channel.
 // Called before reset/reconnect to ensure consumers don't see stale
 // pre-boundary bytes after a reset event.
-func (m *Mux) drainActiveCh() {
+// Returns the number of events drained.
+func (m *Mux) drainActiveCh() int {
+	n := 0
 	for {
 		select {
 		case <-m.activeCh:
+			n++
 		default:
-			return
+			return n
 		}
 	}
 }
@@ -991,7 +999,10 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	// stale bytes from activeCh and gets echo mismatches (ErrBusCollision)
 	// causing adapter-direct scan failures.
 	if sessionID == gatewaySessionID {
-		m.drainActiveCh()
+		drained := m.drainActiveCh()
+		if drained > 0 {
+			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
+		}
 	}
 
 	// Notify requester of success.
@@ -1106,6 +1117,8 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 		return errNotConnected
 	}
 
+	m.logger.Printf("adaptermux: doSend session=%d byte=0x%02X", sessionID, data)
+
 	// Record echo expectation.
 	if sessionID == gatewaySessionID {
 		m.stateMu.Lock()
@@ -1140,6 +1153,7 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 		return fmt.Errorf("%w: %v", errAdapterWrite, err)
 	}
 
+	m.logger.Printf("adaptermux: doSend wrote 0x%02X to adapter", data)
 	return nil
 }
 

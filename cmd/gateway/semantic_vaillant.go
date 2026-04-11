@@ -6419,8 +6419,13 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 	timeout := p.requestTimeout
 	p.mu.Unlock()
 
-	if timeout <= 0 {
-		timeout = 5 * time.Second
+	// B524 probes need at least 5s per attempt in adapter-direct mode:
+	// arbitration(~200ms) + frame(~220ms) + adapter-timeout(~550ms) +
+	// collision-retry(~200ms) + second-attempt(~970ms) ≈ 2.1s minimum.
+	// The config default SemanticRequestTimeout=2s is insufficient.
+	const minB524ProbeTimeout = 5 * time.Second
+	if timeout < minB524ProbeTimeout {
+		timeout = minB524ProbeTimeout
 	}
 
 	// Retry probes up to 3 times — adapter-direct mode has bus contention

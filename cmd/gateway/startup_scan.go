@@ -654,6 +654,12 @@ func startupScanHasCoherentVaillantRoot(ctx context.Context, cfg ebusgateway.Con
 	if cfg.ScanRequestTimeout > perProbe {
 		perProbe = cfg.ScanRequestTimeout
 	}
+	// probeB524Register clamps its internal timeout to minB524ProbeTimeout
+	// (5s). The outer context must use at least this value to avoid
+	// expiring before the individual probe finishes.
+	if perProbe < 5*time.Second {
+		perProbe = 5 * time.Second
+	}
 	// Each candidate is tested with len(b524CapabilityProbes) serial probes,
 	// and each probe retries up to 3 times with 200ms backoff. The outer
 	// context must allow enough wall-clock time for the worst-case path:

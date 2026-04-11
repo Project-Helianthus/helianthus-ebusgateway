@@ -81,42 +81,41 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 	}
 }
 
-// Write sends bytes to the adapter through the multiplexer.
+// Write sends bytes to the adapter through the multiplexer's sendLoop.
 // The gateway must hold bus ownership (via StartArbitration) before
 // calling Write.
 //
-// Sends ALL bytes to the upstream transport in a single Write call
-// (batched). This ensures the ENH transport encodes all bytes into
-// one TCP segment, matching how the separate proxy forwarded frames.
-// Byte-by-byte writes via doSend/sendLoop introduced inter-byte
-// pauses that caused the wire phase tracker to detect idle states
-// during the request transmission.
+// Each byte goes through doSend/sendLoop which records echo expectations
+// and tracks ownership per byte. bus.sendRawWithEcho calls Write with
+// 1 byte at a time, so there is no batching benefit from bypassing
+// sendLoop — and the sendLoop path provides proper ownership tracking.
 func (t *activeTransport) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
 
-	// Ownership check.
-	if !t.mux.arb.isOwner(gatewaySessionID) {
-		return 0, errNotBusOwner
-	}
+	for i, b := range p {
+		result := make(chan error, 1)
+		select {
+		case t.mux.activeSendCh <- sendRequest{
+			sessionID: gatewaySessionID,
+			data:      b,
+			result:    result,
+		}:
+		case <-t.mux.ctx.Done():
+			return i, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
+		}
 
-	// Record echo expectations for all bytes.
-	t.mux.stateMu.Lock()
-	for _, b := range p {
-		t.mux.gatewayEcho.recordSent(b)
+		select {
+		case err := <-result:
+			if err != nil {
+				return i, err
+			}
+		case <-t.mux.ctx.Done():
+			return i, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
+		}
 	}
-	t.mux.busDirty = true
-	t.mux.stateMu.Unlock()
-
-	// Write all bytes to upstream in one call (batched ENH encoding).
-	t.mux.connMu.Lock()
-	tr := t.mux.upstream
-	t.mux.connMu.Unlock()
-	if tr == nil {
-		return 0, errNotConnected
-	}
-	return tr.Write(p)
+	return len(p), nil
 }
 
 // Close shuts down the multiplexer.
@@ -163,7 +162,7 @@ func (t *activeTransport) RequestInfo(id transport.AdapterInfoID) ([]byte, error
 
 // ArbitrationSendsSource reports whether the upstream adapter's START
 // arbitration already places the source byte on the wire.
-// Uses the upstream transport value (true for ENH/ENS) for bus.sendTransaction.
+// Delegates to the unified mux method (true for ENH/ENS) for bus.sendTransaction.
 func (t *activeTransport) ArbitrationSendsSource() bool {
-	return t.mux.upstreamArbitrationSendsSource()
+	return t.mux.arbitrationSendsSource()
 }

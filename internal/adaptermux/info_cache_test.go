@@ -91,8 +91,8 @@ func TestPopulateInfoCache(t *testing.T) {
 			transport.AdapterInfoVersion:     {0x23, 0x01},
 			transport.AdapterInfoHardwareID:  {0x10, 0x20, 0x30},
 			transport.AdapterInfoHardwareConf: {0x05},
-			transport.AdapterInfoTemperature: {0x1C}, // volatile — excluded from cache
-			transport.AdapterInfoWiFiRSSI:    {0xE0}, // volatile — excluded from cache
+			transport.AdapterInfoTemperature: {0x1C}, // volatile — cached as startup snapshot
+			transport.AdapterInfoWiFiRSSI:    {0xE0}, // volatile — cached as startup snapshot
 		},
 	}
 
@@ -101,10 +101,11 @@ func TestPopulateInfoCache(t *testing.T) {
 	mux.infoCacheMu.RLock()
 	defer mux.infoCacheMu.RUnlock()
 
-	// Only stable IDs (Version, HardwareID, HardwareConf) should be cached.
-	// Volatile IDs (Temperature, WiFiRSSI) are excluded.
-	if len(mux.infoCache) != 3 {
-		t.Fatalf("infoCache has %d entries, want 3 (volatile IDs excluded)", len(mux.infoCache))
+	// All IDs should be cached including volatile telemetry (startup
+	// snapshots that go stale until reconnect — refreshTelemetry needs
+	// them from the cache to avoid readMu contention).
+	if len(mux.infoCache) != 5 {
+		t.Fatalf("infoCache has %d entries, want 5 (all IDs cached)", len(mux.infoCache))
 	}
 
 	// Verify version was cached correctly.
@@ -117,12 +118,12 @@ func TestPopulateInfoCache(t *testing.T) {
 		t.Fatalf("hardware ID cache = %v, want 3 bytes", got)
 	}
 
-	// Verify volatile IDs were NOT cached.
-	if _, ok := mux.infoCache[transport.AdapterInfoTemperature]; ok {
-		t.Fatal("volatile AdapterInfoTemperature should not be in cache")
+	// Verify volatile IDs ARE cached (startup snapshots).
+	if _, ok := mux.infoCache[transport.AdapterInfoTemperature]; !ok {
+		t.Fatal("AdapterInfoTemperature should be in cache (startup snapshot)")
 	}
-	if _, ok := mux.infoCache[transport.AdapterInfoWiFiRSSI]; ok {
-		t.Fatal("volatile AdapterInfoWiFiRSSI should not be in cache")
+	if _, ok := mux.infoCache[transport.AdapterInfoWiFiRSSI]; !ok {
+		t.Fatal("AdapterInfoWiFiRSSI should be in cache (startup snapshot)")
 	}
 }
 
@@ -223,7 +224,8 @@ func TestCachedInfo_IDNotCached(t *testing.T) {
 	mux.infoCache[transport.AdapterInfoVersion] = []byte{0x23, 0x01}
 	mux.infoCacheMu.Unlock()
 
-	_, err := mux.CachedInfo(transport.AdapterInfoWiFiRSSI)
+	// Use an out-of-range ID that would never be populated.
+	_, err := mux.CachedInfo(transport.AdapterInfoID(0x08))
 	if err == nil {
 		t.Fatal("CachedInfo should return error for uncached ID")
 	}

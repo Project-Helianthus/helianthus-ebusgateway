@@ -192,6 +192,102 @@ func TestWirePhase_EscapeByteInPayload(t *testing.T) {
 	}
 }
 
+func TestWirePhase_StartRequestWithSource_B524(t *testing.T) {
+	// Simulate a B524 request to BASV2 (0x15) where ArbitrationSendsSource
+	// is true — SRC (0x71) was already sent during arbitration and is NOT
+	// echoed as a data byte. The tracker must pre-load SRC so byte
+	// counting matches the actual on-wire frame.
+	//
+	// On-wire frame: SRC(0x71) DST(0x15) PB(0xB5) SB(0x24) LEN(0x06) D0-D5 CRC
+	// Bytes seen by tracker (no SRC echo): DST PB SB LEN D0 D1 D2 D3 D4 D5 CRC
+	var tracker wirePhaseTracker
+	tracker.startRequestWithSource(0x71)
+
+	if tracker.requestBytesSeen != 1 {
+		t.Fatalf("requestBytesSeen after startRequestWithSource = %d; want 1", tracker.requestBytesSeen)
+	}
+	if tracker.requestSrc != 0x71 {
+		t.Fatalf("requestSrc = 0x%02X; want 0x71", tracker.requestSrc)
+	}
+
+	// Feed the 11 bytes the gateway sends (SRC excluded).
+	request := []byte{
+		0x15,       // DST = BASV2
+		0xB5,       // PB  = vaillant manufacturer
+		0x24,       // SB  = extended register access
+		0x06,       // LEN = 6 data bytes
+		0x02, 0x00, // D0-D1: opcode=local, read
+		0x00, 0x00, // D2-D3: group=0, instance=0
+		0x01, 0x00, // D4-D5: addr=0x0001
+		0x42,       // CRC (placeholder)
+	}
+
+	var lastEvent wirePhaseEvent
+	for i, b := range request {
+		lastEvent = tracker.advance(b)
+		if i < len(request)-1 && lastEvent == wirePhaseEventRequestComplete {
+			t.Fatalf("premature RequestComplete at byte %d (0x%02X)", i+1, b)
+		}
+	}
+
+	if lastEvent != wirePhaseEventRequestComplete {
+		t.Fatalf("after 11 bytes: event = %d; want wirePhaseEventRequestComplete (%d)", lastEvent, wirePhaseEventRequestComplete)
+	}
+	if tracker.phase != wirePhaseWaitCmdAck {
+		t.Fatalf("phase = %d; want wirePhaseWaitCmdAck (%d)", tracker.phase, wirePhaseWaitCmdAck)
+	}
+	if tracker.requestDst != 0x15 {
+		t.Fatalf("requestDst = 0x%02X; want 0x15", tracker.requestDst)
+	}
+
+	// ACK from target.
+	event := tracker.advance(protocol.SymbolAck)
+	if event != wirePhaseEventCmdACK {
+		t.Fatalf("ACK event = %d; want wirePhaseEventCmdACK (%d)", event, wirePhaseEventCmdACK)
+	}
+}
+
+func TestWirePhase_StartRequestWithSource_vs_StartRequest(t *testing.T) {
+	// Without pre-loaded SRC, the tracker miscounts: "LEN" is captured
+	// from a data byte, causing premature WaitCmdAck.
+	var bad wirePhaseTracker
+	bad.startRequest() // no SRC pre-loaded
+
+	request := []byte{
+		0x15, 0xB5, 0x24, 0x06,
+		0x02, 0x00, 0x00, 0x00, 0x01, 0x00,
+		0x42,
+	}
+
+	premature := false
+	for i, b := range request {
+		ev := bad.advance(b)
+		if ev == wirePhaseEventRequestComplete && i < len(request)-1 {
+			premature = true
+			break
+		}
+	}
+	if !premature {
+		t.Fatal("expected premature RequestComplete with startRequest() (no SRC), but got correct counting")
+	}
+
+	// With pre-loaded SRC, counting is correct.
+	var good wirePhaseTracker
+	good.startRequestWithSource(0x71)
+
+	premature = false
+	for i, b := range request {
+		ev := good.advance(b)
+		if ev == wirePhaseEventRequestComplete && i < len(request)-1 {
+			premature = true
+			break
+		}
+	}
+	if premature {
+		t.Fatal("startRequestWithSource still produced premature RequestComplete")
+	}
+}
+
 func TestWirePhase_ZeroLengthResponse(t *testing.T) {
 	var tracker wirePhaseTracker
 	tracker.startRequest()

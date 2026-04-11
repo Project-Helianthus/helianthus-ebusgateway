@@ -438,6 +438,22 @@ func (m *Mux) clearInfoCache() {
 	m.infoCacheMu.Unlock()
 }
 
+// arbitrationSendsSource reports whether the upstream adapter already
+// places the initiator byte on the wire during START arbitration.
+// When true, the wire phase tracker must pre-load the SRC byte.
+func (m *Mux) arbitrationSendsSource() bool {
+	m.connMu.Lock()
+	tr := m.upstream
+	m.connMu.Unlock()
+	if tr == nil {
+		return false
+	}
+	if checker, ok := tr.(interface{ ArbitrationSendsSource() bool }); ok {
+		return checker.ArbitrationSendsSource()
+	}
+	return false
+}
+
 // CachedInfo returns a copy of the cached INFO response for the given
 // ID. Returns an error if the cache is empty (adapter doesn't support
 // INFO) or the requested ID was not cached.
@@ -1017,7 +1033,16 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	}
 
 	m.stateMu.Lock()
-	m.phase.startRequest()
+	if m.arbitrationSendsSource() {
+		// The adapter firmware already placed the SRC byte on the wire
+		// during arbitration (StreamEventStarted). Pre-load it into the
+		// phase tracker so byte counting is correct — without this, DST
+		// is captured as SRC, LEN is read from a data byte, and the
+		// tracker prematurely enters WaitCmdAck.
+		m.phase.startRequestWithSource(initiator)
+	} else {
+		m.phase.startRequest()
+	}
 	m.busDirty = false
 	m.busOwned = time.Now()
 	if sessionID == gatewaySessionID {

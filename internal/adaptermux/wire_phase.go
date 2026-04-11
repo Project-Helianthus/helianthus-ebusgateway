@@ -188,6 +188,19 @@ func (t *wirePhaseTracker) startRequest() {
 	t.reset(wirePhaseCollectRequest)
 }
 
+// startRequestWithSource initializes the tracker with the SRC byte
+// pre-loaded. Use this when ArbitrationSendsSource() is true — the
+// adapter firmware already placed the initiator byte on the wire
+// during arbitration (StreamEventStarted), so onReceived never sees
+// it. Without this, the tracker is off-by-one: DST is captured as
+// SRC, PB as DST, and the LEN field is read from a data byte,
+// causing premature WaitCmdAck transitions and false CmdNACK events.
+func (t *wirePhaseTracker) startRequestWithSource(src byte) {
+	t.reset(wirePhaseCollectRequest)
+	t.requestBytesSeen = 1
+	t.requestSrc = src
+}
+
 // isIdle reports whether the bus is in the idle state.
 func (t *wirePhaseTracker) isIdle() bool {
 	return t.phase == wirePhaseIdle

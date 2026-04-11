@@ -84,29 +84,39 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 // Write sends bytes to the adapter through the multiplexer.
 // The gateway must hold bus ownership (via StartArbitration) before
 // calling Write.
+//
+// Sends ALL bytes to the upstream transport in a single Write call
+// (batched). This ensures the ENH transport encodes all bytes into
+// one TCP segment, matching how the separate proxy forwarded frames.
+// Byte-by-byte writes via doSend/sendLoop introduced inter-byte
+// pauses that caused the wire phase tracker to detect idle states
+// during the request transmission.
 func (t *activeTransport) Write(p []byte) (int, error) {
-	for i, b := range p {
-		result := make(chan error, 1)
-		select {
-		case t.mux.activeSendCh <- sendRequest{
-			sessionID: gatewaySessionID,
-			data:      b,
-			result:    result,
-		}:
-		case <-t.mux.ctx.Done():
-			return i, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
-		}
-
-		select {
-		case err := <-result:
-			if err != nil {
-				return i, err
-			}
-		case <-t.mux.ctx.Done():
-			return i, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
-		}
+	if len(p) == 0 {
+		return 0, nil
 	}
-	return len(p), nil
+
+	// Ownership check.
+	if !t.mux.arb.isOwner(gatewaySessionID) {
+		return 0, errNotBusOwner
+	}
+
+	// Record echo expectations for all bytes.
+	t.mux.stateMu.Lock()
+	for _, b := range p {
+		t.mux.gatewayEcho.recordSent(b)
+	}
+	t.mux.busDirty = true
+	t.mux.stateMu.Unlock()
+
+	// Write all bytes to upstream in one call (batched ENH encoding).
+	t.mux.connMu.Lock()
+	tr := t.mux.upstream
+	t.mux.connMu.Unlock()
+	if tr == nil {
+		return 0, errNotConnected
+	}
+	return tr.Write(p)
 }
 
 // Close shuts down the multiplexer.

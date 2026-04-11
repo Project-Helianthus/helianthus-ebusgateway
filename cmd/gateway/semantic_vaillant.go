@@ -6436,16 +6436,25 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 			}
 		}
 
-		p.readMu.Lock()
-		reqCtx, cancel := context.WithTimeout(ctx, timeout)
-		t0 := time.Now()
-		response, err := p.bus.Send(reqCtx, protocol.Frame{
+		data := buildB524ReadSelector(opcode, group, instance, addr)
+		frame := protocol.Frame{
 			Source:    source,
 			Target:    target,
 			Primary:   vaillantExtRegisterPrimary,
 			Secondary: vaillantExtRegisterSecondary,
-			Data:      buildB524ReadSelector(opcode, group, instance, addr),
-		})
+			Data:      data,
+		}
+		// Build the full telegram as bus.sendTransaction would see it.
+		telegram := []byte{frame.Source, frame.Target, frame.Primary, frame.Secondary, byte(len(frame.Data))}
+		telegram = append(telegram, frame.Data...)
+		telegram = append(telegram, protocol.CRC(telegram))
+		log.Printf("b524_telegram target=0x%02X src=0x%02X telegram=[% X] crc=0x%02X len=%d",
+			target, source, telegram, telegram[len(telegram)-1], len(telegram))
+
+		p.readMu.Lock()
+		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		t0 := time.Now()
+		response, err := p.bus.Send(reqCtx, frame)
 		elapsed := time.Since(t0)
 		cancel()
 		p.readMu.Unlock()

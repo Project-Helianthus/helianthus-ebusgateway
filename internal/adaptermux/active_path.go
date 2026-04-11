@@ -98,8 +98,11 @@ func (t *activeTransport) Write(p []byte) (int, error) {
 
 	// Ownership check.
 	if !t.mux.arb.isOwner(gatewaySessionID) {
+		curOwner, _, hasOwner := t.mux.arb.owner()
+		t.mux.logger.Printf("TRACE Write not-owner: len=%d hasOwner=%v curOwner=%d", len(p), hasOwner, curOwner)
 		return 0, errNotBusOwner
 	}
+	t.mux.logger.Printf("TRACE Write: len=%d bytes=[% X]", len(p), p)
 
 	// Record echo expectations for all bytes.
 	t.mux.stateMu.Lock()

@@ -65,7 +65,10 @@ func (c *Config) defaults() {
 		c.ReconnectMaxDelay = 30 * time.Second
 	}
 	if c.MaxOwnershipDuration == 0 {
-		c.MaxOwnershipDuration = 2 * time.Second
+		// 5s gives adapter-direct mode enough headroom for contended buses
+		// (3 masters: gateway + VRC700 + ebusd) where arbitration collisions
+		// and B524 extended-register responses can consume 2s+.
+		c.MaxOwnershipDuration = 5 * time.Second
 	}
 	if c.IdleReleaseGrace == 0 {
 		c.IdleReleaseGrace = 50 * time.Millisecond

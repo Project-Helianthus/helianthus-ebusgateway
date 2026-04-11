@@ -808,7 +808,7 @@ func (m *Mux) handleReset() {
 
 	// Cancel in-flight pending START if any.
 	if pendingToCancel != nil {
-		pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: adapter reset")}
+		pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset)}
 	}
 
 	// Reset external session echo trackers.
@@ -819,7 +819,7 @@ func (m *Mux) handleReset() {
 	m.sessionsMu.Unlock()
 
 	m.arb.forceRelease()
-	m.arb.failAllPending(errors.New("adaptermux: adapter reset"))
+	m.arb.failAllPending(fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset))
 
 	// Drain stale bytes from active channel before enqueuing the reset
 	// error. Because activeCh is a single FIFO channel, the consumer is

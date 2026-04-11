@@ -71,15 +71,14 @@ func (c *Config) defaults() {
 		c.MaxOwnershipDuration = 5 * time.Second
 	}
 	if c.IdleReleaseGrace == 0 {
-		// Match MaxOwnershipDuration so idle SYN never releases before
-		// the hard limit. The wire phase tracker's byte counting can be
-		// off-by-one during ArbitrationSendsSource transactions (the SRC
-		// byte is pre-loaded but the tracker also counts it from echoes);
-		// this off-by-one can cause premature WaitCmdAck → CmdNACK → idle.
-		// With IdleReleaseGrace == MaxOwnershipDuration, the idle SYN
-		// release path is effectively disabled — ownership only releases
-		// via SYN timeout (real wait phases) or MaxOwnershipDuration.
-		c.IdleReleaseGrace = c.MaxOwnershipDuration
+		// 200ms gives adapter-direct transactions enough time to complete
+		// before idle SYN releases ownership. The wire phase off-by-one
+		// (from the ArbitrationSendsSource mismatch) causes premature idle
+		// at byte 9 of B524 requests. With 200ms grace, the remaining
+		// bytes + target response (~100ms total) complete before release.
+		// Previously 50ms was too tight (released mid-request) and 5s was
+		// too long (blocked scan throughput — 5s hold per probe).
+		c.IdleReleaseGrace = 200 * time.Millisecond
 	}
 	if c.Logger == nil {
 		c.Logger = log.Default()

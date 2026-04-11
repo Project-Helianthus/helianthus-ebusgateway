@@ -678,11 +678,6 @@ func (m *Mux) onReceived(symbol byte) {
 		hasOwner = false
 	}
 
-	// Debug: log bytes received while gateway owns the bus (non-SYN only).
-	if hasOwner && ownerID == gatewaySessionID && symbol != protocol.SymbolSyn {
-		m.logger.Printf("adaptermux: rx byte=0x%02X (gateway owns bus)", symbol)
-	}
-
 	// Collect passive events under lock, emit after unlock (Issue#3 fix).
 	var passiveEvents []PassiveEvent
 	var shouldTryGrant bool

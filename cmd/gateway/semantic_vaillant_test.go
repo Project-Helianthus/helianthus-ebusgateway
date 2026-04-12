@@ -2311,8 +2311,8 @@ func TestBoilerStatusRegisterDefinitionsForTier_NoReturnTemperatureMapping(t *te
 		boilerStatusTierSlow,
 	} {
 		for _, register := range boilerStatusRegisterDefinitionsForTier(tier) {
-			if register.group == localCircuits.group && register.addr == uint16(0x0008) {
-				t.Fatalf("tier %v maps GG=0x02 RR=0x0008; closed decision forbids using this as boiler return temperature", tier)
+			if register.group == localCircuits.group && register.addr == circuit_flow_temp {
+				t.Fatalf("tier %v maps GG=0x%02x RR=0x%04x; closed decision forbids using this as boiler return temperature", tier, localCircuits.group, circuit_flow_temp)
 			}
 		}
 	}

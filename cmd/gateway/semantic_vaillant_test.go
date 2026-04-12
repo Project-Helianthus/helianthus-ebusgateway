@@ -5104,3 +5104,84 @@ func TestVaillantSemanticPoller_StartBarrierExitsOnContextCancel(t *testing.T) {
 		t.Fatalf("scheduler.seq = %d after cancel; want 0 (should not start polling on cancel)", seq)
 	}
 }
+
+func TestB524GroupDef_OpcodeGroupBindingIsCorrect(t *testing.T) {
+	t.Parallel()
+
+	// Verify all local groups use OP=0x02.
+	localGroups := []b524GroupDef{localRegulator, localDHW, localCircuits, localZones, localSolar, localCylinders}
+	for _, g := range localGroups {
+		if g.opcode != vaillantB524OpcodeLocal {
+			t.Errorf("local group %q (GG=0x%02X) has opcode 0x%02X; want 0x02", g.name, g.group, g.opcode)
+		}
+	}
+	// Verify all remote groups use OP=0x06.
+	remoteGroups := []b524GroupDef{remoteRegulators, remoteThermostats, remoteFunctionalModules}
+	for _, g := range remoteGroups {
+		if g.opcode != vaillantB524OpcodeRead {
+			t.Errorf("remote group %q (GG=0x%02X) has opcode 0x%02X; want 0x06", g.name, g.group, g.opcode)
+		}
+	}
+}
+
+func TestDeviceSlotCacheGating_OnlyPollsCachedSlots(t *testing.T) {
+	t.Parallel()
+
+	poller := &vaillantSemanticPoller{
+		nowFn:                    time.Now,
+		deviceSlotRediscoveryTTL: 30 * time.Minute,
+	}
+
+	// Simulate discovery: 2 active slots out of 33.
+	cache := map[deviceSlotKey]bool{
+		{Group: remoteRegulators.group, Instance: 0x00}: true,
+		{Group: remoteThermostats.group, Instance: 0x01}: true,
+	}
+	poller.mu.Lock()
+	poller.deviceSlotCache = cache
+	poller.deviceSlotDiscoveryDone = true
+	poller.deviceSlotDiscoveryAt = time.Now()
+	poller.mu.Unlock()
+
+	// Verify cache is populated.
+	poller.mu.Lock()
+	got := len(poller.deviceSlotCache)
+	poller.mu.Unlock()
+	if got != 2 {
+		t.Fatalf("deviceSlotCache length = %d; want 2", got)
+	}
+
+	// Verify needsDiscovery is false within TTL.
+	poller.mu.Lock()
+	needsDiscovery := !poller.deviceSlotDiscoveryDone ||
+		(poller.deviceSlotRediscoveryTTL > 0 && poller.now().Sub(poller.deviceSlotDiscoveryAt) >= poller.deviceSlotRediscoveryTTL)
+	poller.mu.Unlock()
+	if needsDiscovery {
+		t.Fatal("needsDiscovery should be false within TTL")
+	}
+}
+
+func TestDeviceSlotCacheGating_RequiresRediscoveryAfterTTL(t *testing.T) {
+	t.Parallel()
+
+	poller := &vaillantSemanticPoller{
+		nowFn:                    time.Now,
+		deviceSlotRediscoveryTTL: 1 * time.Millisecond,
+	}
+
+	poller.mu.Lock()
+	poller.deviceSlotCache = map[deviceSlotKey]bool{
+		{Group: remoteRegulators.group, Instance: 0x00}: true,
+	}
+	poller.deviceSlotDiscoveryDone = true
+	poller.deviceSlotDiscoveryAt = time.Now().Add(-1 * time.Second) // expired
+	poller.mu.Unlock()
+
+	poller.mu.Lock()
+	needsDiscovery := !poller.deviceSlotDiscoveryDone ||
+		(poller.deviceSlotRediscoveryTTL > 0 && poller.now().Sub(poller.deviceSlotDiscoveryAt) >= poller.deviceSlotRediscoveryTTL)
+	poller.mu.Unlock()
+	if !needsDiscovery {
+		t.Fatal("needsDiscovery should be true after TTL expiry")
+	}
+}

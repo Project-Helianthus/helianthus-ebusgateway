@@ -36,8 +36,8 @@ const (
 	vaillantB524OpRead           = byte(0x00)
 	vaillantB524OpWrite          = byte(0x01)
 
-	// Deprecated bare group constants — use b524GroupDef below.
-	// Kept temporarily for capability probe and boiler register definitions.
+	// Deprecated bare group constants — use b524GroupDef (local*/remote*) instead.
+	// Retained for ebusd_grab.go parser and test backward compat; migrate in Phase B.
 	vaillantGroupDHW       = byte(0x01)
 	vaillantGroupCircuits  = byte(0x02)
 	vaillantGroupZones     = byte(0x03)
@@ -335,7 +335,7 @@ type b524ProbeSpec struct {
 // b524CapabilityProbes lists registers from different GG groups used for
 // multi-register coherency verification during capability-first discovery.
 var b524CapabilityProbes = []b524ProbeSpec{
-	{opcode: vaillantB524OpcodeLocal, group: 0x00, instance: 0x00, addr: 0x0001},
+	{opcode: localRegulator.opcode, group: localRegulator.group, instance: regulatorInstance, addr: 0x0001},
 	{opcode: localDHW.opcode, group: localDHW.group, instance: dhwInstance, addr: dhwRegOperationMode},
 }
 

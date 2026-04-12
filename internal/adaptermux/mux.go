@@ -1313,13 +1313,23 @@ func (m *Mux) deliverSYNToSessions(now time.Time) {
 // broadcastResetToSessions sends a RESETTED event to all external sessions.
 // Carries upstreamFeatures so external clients see consistent feature
 // signaling on reset boundaries (not 0x00).
+//
+// Sessions are collected under sessionsMu, but deliverReset is called
+// after releasing the lock. This is required because deliverReset blocks
+// until space is available in sendCh (non-droppable delivery), and
+// holding sessionsMu during a blocking send would prevent RemoveSession
+// from acquiring the lock to close the session's done channel — deadlock.
 func (m *Mux) broadcastResetToSessions() {
 	features := byte(m.upstreamFeatures.Load())
 
 	m.sessionsMu.Lock()
-	defer m.sessionsMu.Unlock()
-
+	sessions := make([]*session, 0, len(m.sessions))
 	for _, sess := range m.sessions {
+		sessions = append(sessions, sess)
+	}
+	m.sessionsMu.Unlock()
+
+	for _, sess := range sessions {
 		sess.deliverReset(features)
 	}
 }

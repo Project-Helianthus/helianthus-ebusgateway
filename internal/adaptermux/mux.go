@@ -866,6 +866,15 @@ func (m *Mux) handleReset() {
 	// The INIT handshake is performed once in connect() at TCP connection
 	// time and again in reconnect() after a TCP disconnect. In-band
 	// RESETTED only requires state cleanup (above), not re-negotiation.
+	//
+	// PROXY DIVERGENCE: The standalone proxy performed guarded re-INIT
+	// after in-band RESETTED with a stabilization delay. This mux
+	// intentionally skips re-INIT because ENS adapters enter an infinite
+	// reset loop (INIT -> RESETTED -> INIT -> ...). The INFO cache is
+	// preserved across in-band RESETTED because stable adapter identity
+	// (version, hardware ID) does not change on soft reset. Volatile
+	// telemetry (temperature, voltage) is a startup snapshot by design.
+	// This divergence is documented and tested.
 }
 
 // drainActiveCh discards all buffered events from the active channel.

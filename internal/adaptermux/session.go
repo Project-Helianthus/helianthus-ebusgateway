@@ -158,10 +158,13 @@ func (s *session) deliverReset(payload byte) {
 	if s.closed.Load() {
 		return
 	}
+	// Reset boundaries are non-droppable — losing a reset merges
+	// pre/post-reset streams and corrupts client frame reconstruction.
+	// Block until delivered (matching passive_transport reset delivery).
+	// s.done unblocks on session close/shutdown.
 	select {
 	case s.sendCh <- sessionFrame{kind: sessionFrameResetted, payload: payload}:
-	default:
-		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
+	case <-s.done:
 	}
 }
 

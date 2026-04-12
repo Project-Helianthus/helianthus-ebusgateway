@@ -882,3 +882,131 @@ func (f *failWriteTransport) Write(p []byte) (int, error) {
 func (f *failWriteTransport) Close() error {
 	return nil
 }
+
+// --- Regression fix 5: handleReset preserves INFO cache ---
+
+// TestHandleReset_PreservesInfoCache verifies that in-band RESETTED does
+// NOT clear the INFO cache. Stable INFO entries (version, hardware ID)
+// do not change on soft reset. The cache is only cleared on TCP
+// disconnect (in reconnect), not on in-band RESETTED.
+func TestHandleReset_PreservesInfoCache(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mock := newMockInitTransport()
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Populate INFO cache with test data (simulating connect-time population).
+	mux.infoCacheMu.Lock()
+	mux.infoCache[transport.AdapterInfoVersion] = []byte{0x23, 0x01}
+	mux.infoCache[transport.AdapterInfoHardwareID] = []byte{0x10, 0x20, 0x30}
+	mux.infoCache[transport.AdapterInfoHardwareConf] = []byte{0x05}
+	mux.infoCache[transport.AdapterInfoTemperature] = []byte{0x1C}
+	mux.infoCache[transport.AdapterInfoWiFiRSSI] = []byte{0xE0}
+	mux.infoCacheMu.Unlock()
+
+	// Trigger handleReset (simulating in-band RESETTED).
+	mux.handleReset()
+
+	// Verify CachedInfo still returns data for all IDs.
+	ids := []transport.AdapterInfoID{
+		transport.AdapterInfoVersion,
+		transport.AdapterInfoHardwareID,
+		transport.AdapterInfoHardwareConf,
+		transport.AdapterInfoTemperature,
+		transport.AdapterInfoWiFiRSSI,
+	}
+	for _, id := range ids {
+		data, err := mux.CachedInfo(id)
+		if err != nil {
+			t.Fatalf("CachedInfo(0x%02X) after handleReset: %v — cache should be preserved", byte(id), err)
+		}
+		if len(data) == 0 {
+			t.Fatalf("CachedInfo(0x%02X) returned empty data after handleReset", byte(id))
+		}
+	}
+
+	// Verify specific values are intact.
+	ver, _ := mux.CachedInfo(transport.AdapterInfoVersion)
+	if len(ver) != 2 || ver[0] != 0x23 || ver[1] != 0x01 {
+		t.Fatalf("version cache corrupted after handleReset: %v, want [0x23 0x01]", ver)
+	}
+
+	hwid, _ := mux.CachedInfo(transport.AdapterInfoHardwareID)
+	if len(hwid) != 3 || hwid[0] != 0x10 {
+		t.Fatalf("hardware ID cache corrupted after handleReset: %v", hwid)
+	}
+
+	cancel()
+	mux.wg.Wait()
+}
+
+// TestHandleReset_DoesNotReINIT verifies that handleReset does NOT send
+// an INIT to the adapter. Re-INIT after in-band RESETTED causes an
+// infinite reset loop on ENS adapters (INIT -> RESETTED -> INIT -> ...).
+// This is the proxy divergence: the standalone proxy did re-INIT, but
+// the mux intentionally skips it.
+func TestHandleReset_DoesNotReINIT(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mock := newMockInitTransport()
+
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+	})
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Trigger handleReset.
+	mux.handleReset()
+
+	// Wait well past the old 200ms re-INIT delay.
+	time.Sleep(300 * time.Millisecond)
+
+	// Verify NO Init was called.
+	if calls := mock.getInitCalls(); len(calls) != 0 {
+		t.Fatalf("handleReset sent %d Init calls — should send none (proxy divergence: no re-INIT)", len(calls))
+	}
+
+	// Verify the mux continues operating normally: upstreamFeatures preserved,
+	// and we can still broadcast resets to sessions.
+	if f := mux.upstreamFeatures.Load(); f != 0x01 {
+		t.Fatalf("upstreamFeatures = 0x%02X after handleReset, want 0x01", f)
+	}
+
+	// Add a session and verify broadcast still works after handleReset.
+	client, server := net.Pipe()
+	defer client.Close()
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	mux.broadcastResetToSessions()
+	frame := readENHFrame(t, client, 2*time.Second)
+	expected := transport.EncodeENH(transport.ENHResResetted, 0x01)
+	if frame != expected {
+		t.Fatalf("broadcast after handleReset = %x, want %x — mux not operating normally", frame, expected)
+	}
+
+	cancel()
+	mux.wg.Wait()
+}

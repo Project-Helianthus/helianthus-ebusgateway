@@ -504,6 +504,168 @@ func TestSession_StartFailedByCollisionDeliversFailed(t *testing.T) {
 	}
 }
 
+// --- Fix 6: STARTED arrives before RECEIVED bytes ---
+
+// TestSession_StartedArrivesBeforeReceivedBytes verifies the FIFO ordering
+// guarantee of the session's sendCh: when STARTED is enqueued before bus
+// data bytes, the client reads STARTED first. This tests the channel
+// semantics directly — deliverStarted + deliverReceived into the same
+// sendCh produce deterministic FIFO output.
+func TestSession_StartedArrivesBeforeReceivedBytes(t *testing.T) {
+	// Test the channel FIFO ordering directly at the session level.
+	// This avoids goroutine scheduling non-determinism from the full
+	// mux path (readLoop -> handleArbitrationResponse -> handleStart
+	// goroutine) and focuses on the invariant: once STARTED is enqueued
+	// before RECEIVED, the client sees them in that order.
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	sess := &session{
+		id:          100,
+		conn:        server,
+		mux:         mux,
+		echoTracker: newEchoTracker(),
+		sendCh:      make(chan sessionFrame, defaultSessionSendBuffer),
+		done:        make(chan struct{}),
+	}
+
+	// Start the writeLoop goroutine to drain sendCh -> conn.
+	sess.wg.Add(1)
+	go sess.writeLoop()
+
+	// Enqueue STARTED, then three RECEIVED bytes — same order as the
+	// mux would produce when STARTED is processed before bus data.
+	sess.deliverStarted(0x55)
+	sess.deliverReceived(0x10)
+	sess.deliverReceived(0x08)
+	sess.deliverReceived(0x42)
+
+	// Read from client: STARTED (2-byte ENH frame) must come first.
+	frame0 := readENHFrame(t, client, 2*time.Second)
+	expectedStarted := transport.EncodeENH(transport.ENHResStarted, 0x55)
+	if frame0 != expectedStarted {
+		t.Fatalf("first frame = %x, want %x (STARTED) — FIFO ordering violated", frame0, expectedStarted)
+	}
+
+	// Next 3 frames: RECEIVED bytes 0x10, 0x08, 0x42 (short-form, 1 byte each).
+	for i, wantByte := range []byte{0x10, 0x08, 0x42} {
+		var buf [1]byte
+		_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, err := io.ReadFull(client, buf[:])
+		if err != nil {
+			t.Fatalf("reading RECEIVED byte %d: %v", i, err)
+		}
+		if buf[0] != wantByte {
+			t.Fatalf("RECEIVED byte %d = 0x%02X, want 0x%02X — FIFO ordering violated", i, buf[0], wantByte)
+		}
+	}
+
+	close(sess.done)
+	sess.wg.Wait()
+}
+
+// --- Fix 7: Reset delivery is lossless (blocking, not dropped) ---
+
+func TestSession_ResetDeliveryIsLossless(t *testing.T) {
+	// Create a session with a tiny sendCh to force buffer pressure.
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	sess := &session{
+		id:          999,
+		conn:        server,
+		mux:         mux,
+		echoTracker: newEchoTracker(),
+		sendCh:      make(chan sessionFrame, 2), // tiny buffer
+		done:        make(chan struct{}),
+	}
+
+	// Fill the buffer completely with received bytes.
+	sess.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: 0x01}
+	sess.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: 0x02}
+
+	// deliverReset should block (buffer full). Run in a goroutine.
+	delivered := make(chan struct{})
+	go func() {
+		sess.deliverReset(0x07)
+		close(delivered)
+	}()
+
+	// Verify it is blocked (not dropped, not delivered immediately).
+	select {
+	case <-delivered:
+		t.Fatal("reset was delivered immediately to a full buffer — should block (not drop)")
+	case <-time.After(50 * time.Millisecond):
+		// Good — blocking as expected.
+	}
+
+	// Drain one slot from the buffer.
+	frame := <-sess.sendCh
+	if frame.kind != sessionFrameReceived || frame.payload != 0x01 {
+		t.Fatalf("expected received(0x01), got %+v", frame)
+	}
+
+	// Now the reset should unblock and be delivered.
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reset deliver did not unblock after draining one buffer slot")
+	}
+
+	// Drain remaining frames: received(0x02), then resetted(0x07).
+	frame = <-sess.sendCh
+	if frame.kind != sessionFrameReceived || frame.payload != 0x02 {
+		t.Fatalf("expected received(0x02), got %+v", frame)
+	}
+	frame = <-sess.sendCh
+	if frame.kind != sessionFrameResetted || frame.payload != 0x07 {
+		t.Fatalf("expected resetted(0x07), got %+v", frame)
+	}
+
+	// Part 2: Verify that closing the session unblocks a blocked deliverReset.
+	sess2 := &session{
+		id:          998,
+		conn:        server,
+		mux:         mux,
+		echoTracker: newEchoTracker(),
+		sendCh:      make(chan sessionFrame, 1),
+		done:        make(chan struct{}),
+	}
+	// Fill buffer.
+	sess2.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: 0xAA}
+
+	delivered2 := make(chan struct{})
+	go func() {
+		sess2.deliverReset(0x01)
+		close(delivered2)
+	}()
+
+	// Verify blocked.
+	select {
+	case <-delivered2:
+		t.Fatal("reset was delivered to full buffer — should block")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Close the session — should unblock deliverReset via done channel.
+	close(sess2.done)
+
+	select {
+	case <-delivered2:
+		// Good — unblocked by session close.
+	case <-time.After(2 * time.Second):
+		t.Fatal("deliverReset did not unblock after session close")
+	}
+}
+
 // Verify Close is safe from concurrent goroutines.
 func TestMux_CloseConcurrent(t *testing.T) {
 	mux, _, _ := newTestMux(t)

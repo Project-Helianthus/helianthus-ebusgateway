@@ -216,22 +216,22 @@ var b555HCNames = map[byte]string{
 	b555HCSilent:  "silent",
 }
 
-// B5.24 energy registers (VRC 720f TSP 15.720, group=0, instance=0).
+// --- Energy registers: GG=0x00/OP=0x02 (shared with system/regulator) ---
 // energy4 type = ULG (unsigned 32-bit LE) in kWh.
 const (
-	energy_fuel_sum_hc    = uint16(0x0056) // PrFuelSumHc: total gas consumption heating
-	energy_electricity_sum_hc  = uint16(0x0057) // PrEnergySumHc: total electricity consumption heating
-	energy_electricity_sum_hwc = uint16(0x0058) // PrEnergySumHwc: total electricity consumption hot water
-	energy_fuel_sum_hwc   = uint16(0x0059) // PrFuelSumHwc: total gas consumption hot water
-
-	energy_fuel_sum_hc_this_month    = uint16(0x004E) // PrFuelSumHcThisMonth: gas heating this month
-	energy_electricity_sum_hc_this_month  = uint16(0x004F) // PrEnergySumHcThisMonth: electricity heating this month
+	// STATE registers (read-only counters)
+	energy_fuel_sum_hc                   = uint16(0x0056) // PrFuelSumHc: total gas consumption heating
+	energy_electricity_sum_hc            = uint16(0x0057) // PrEnergySumHc: total electricity consumption heating
+	energy_electricity_sum_hwc           = uint16(0x0058) // PrEnergySumHwc: total electricity consumption hot water
+	energy_fuel_sum_hwc                  = uint16(0x0059) // PrFuelSumHwc: total gas consumption hot water
+	energy_fuel_sum_hc_this_month        = uint16(0x004E) // PrFuelSumHcThisMonth: gas heating this month
+	energy_electricity_sum_hc_this_month = uint16(0x004F) // PrEnergySumHcThisMonth: electricity heating this month
 	energy_electricity_sum_hwc_this_month = uint16(0x0050) // PrEnergySumHwcThisMonth: electricity hot water this month
-	energy_fuel_sum_hwc_this_month   = uint16(0x0051) // PrFuelSumHwcThisMonth: gas hot water this month
-	energy_fuel_sum_hc_last_month    = uint16(0x0052) // PrFuelSumHcLastMonth: gas heating last month
-	energy_electricity_sum_hc_last_month  = uint16(0x0053) // PrEnergySumHcLastMonth: electricity heating last month
+	energy_fuel_sum_hwc_this_month       = uint16(0x0051) // PrFuelSumHwcThisMonth: gas hot water this month
+	energy_fuel_sum_hc_last_month        = uint16(0x0052) // PrFuelSumHcLastMonth: gas heating last month
+	energy_electricity_sum_hc_last_month = uint16(0x0053) // PrEnergySumHcLastMonth: electricity heating last month
 	energy_electricity_sum_hwc_last_month = uint16(0x0054) // PrEnergySumHwcLastMonth: electricity hot water last month
-	energy_fuel_sum_hwc_last_month   = uint16(0x0055) // PrFuelSumHwcLastMonth: gas hot water last month
+	energy_fuel_sum_hwc_last_month       = uint16(0x0055) // PrFuelSumHwcLastMonth: gas hot water last month
 )
 
 type regulatorAbsenceState string

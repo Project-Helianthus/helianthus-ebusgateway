@@ -1606,7 +1606,7 @@ func TestFlowsetHcMaxSpecIncludesFallbackAddress(t *testing.T) {
 	t.Parallel()
 
 	spec := boilerConfigFieldSpecs["flowsetHcMaxC"]
-	want := []uint16{boilerB509RegFlowsetHcMaxC, boilerB509RegFlowsetHcMaxCFallback}
+	want := []uint16{boiler_b509_flowset_hc_max_c, boiler_b509_flowset_hc_max_c_fallback}
 	if !slices.Equal(spec.addrs, want) {
 		t.Fatalf("flowsetHcMaxC addrs = %#v; want %#v", spec.addrs, want)
 	}
@@ -1967,7 +1967,7 @@ func TestNewVaillantSemanticPoller_AttachesRuntimeShadowCache(t *testing.T) {
 func TestPrepareSemanticReadWatch_UsesObserverDescriptorFreshness(t *testing.T) {
 	t.Parallel()
 
-	key := ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, vaillantGroupZones, 0x00, zoneRegCurrentTemp)
+	key := ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, localZones.group, 0x00, zone_current_temp)
 	observer := staticSemanticReadWatchObserver{
 		observation: ebusgateway.WatchObservation{
 			State:         ebusgateway.WatchObservationStateActive,
@@ -2020,7 +2020,7 @@ func TestPrepareSemanticReadWatchRuntime_FallbackDescriptorB524DiscoveryBucketsC
 		},
 	}
 
-	key := ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, vaillantGroupZones, 0x01, zoneRegIndex)
+	key := ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, localZones.group, 0x01, zone_index)
 	runtime := poller.prepareSemanticReadWatchRuntime(key)
 	if runtime.hasDescriptor {
 		t.Fatal("runtime.hasDescriptor = true; want false when runtime observation descriptor is missing")
@@ -2311,7 +2311,7 @@ func TestBoilerStatusRegisterDefinitionsForTier_NoReturnTemperatureMapping(t *te
 		boilerStatusTierSlow,
 	} {
 		for _, register := range boilerStatusRegisterDefinitionsForTier(tier) {
-			if register.group == vaillantGroupCircuits && register.addr == uint16(0x0008) {
+			if register.group == localCircuits.group && register.addr == uint16(0x0008) {
 				t.Fatalf("tier %v maps GG=0x02 RR=0x0008; closed decision forbids using this as boiler return temperature", tier)
 			}
 		}
@@ -3892,13 +3892,13 @@ func TestReconcileDiscoveryPresence_DoesNotDoubleCountFallbackHit(t *testing.T) 
 func TestSemanticReadBreakerKeyIncludesOpcode(t *testing.T) {
 	t.Parallel()
 
-	localKey := semanticReadBreakerKey(0x15, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegCurrentTemp)
-	readKey := semanticReadBreakerKey(0x15, vaillantB524OpcodeRead, vaillantGroupDHW, dhwInstance, dhwRegCurrentTemp)
+	localKey := semanticReadBreakerKey(0x15, vaillantB524OpcodeLocal, localDHW.group, dhwInstance, dhw_current_temp)
+	readKey := semanticReadBreakerKey(0x15, vaillantB524OpcodeRead, localDHW.group, dhwInstance, dhw_current_temp)
 	if localKey == readKey {
 		t.Fatalf("semanticReadBreakerKey must include opcode; got equal keys %q", localKey)
 	}
 
-	otherTarget := semanticReadBreakerKey(0x16, vaillantB524OpcodeRead, vaillantGroupDHW, dhwInstance, dhwRegCurrentTemp)
+	otherTarget := semanticReadBreakerKey(0x16, vaillantB524OpcodeRead, localDHW.group, dhwInstance, dhw_current_temp)
 	if readKey == otherTarget {
 		t.Fatalf("semanticReadBreakerKey must include target; got equal keys %q", readKey)
 	}

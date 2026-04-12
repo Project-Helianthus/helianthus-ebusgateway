@@ -36,92 +36,117 @@ const (
 	vaillantB524OpRead           = byte(0x00)
 	vaillantB524OpWrite          = byte(0x01)
 
-	// Deprecated bare group constants — use b524GroupDef (local*/remote*) instead.
-	// Retained for ebusd_grab.go parser and test backward compat; migrate in Phase B.
-	vaillantGroupDHW       = byte(0x01)
-	vaillantGroupCircuits  = byte(0x02)
-	vaillantGroupZones     = byte(0x03)
-	vaillantGroupSolar     = byte(0x04)
-	vaillantGroupCylinders = byte(0x05)
+	// --- Zone registers: GG=0x03 / OP=0x02 ---
 
-	zoneRegName                          = uint16(0x0016)
-	zoneRegNamePrefix                    = uint16(0x0017)
-	zoneRegNameSuffix                    = uint16(0x0018)
-	zoneRegIndex                         = uint16(0x001C)
-	zoneRegHeatingOpMode                 = uint16(0x0006) // configuration.heating.operation_mode
-	zoneRegCurrentTemp                   = uint16(0x000F) // state.current_room_temperature
-	zoneRegTargetTemp                    = uint16(0x0022) // configuration.heating.desired_setpoint
-	zoneRegFallbackManualTemp            = uint16(0x0014) // configuration.heating.manual_mode_setpoint
-	zoneRegSpecialFunction               = uint16(0x000E) // state.current_special_function
-	zoneRegValveStatus                   = uint16(0x0012) // state.valve_status
-	zoneRegRoomTemperatureZoneMappingRaw = uint16(0x0013) // configuration.room_temperature_zone_mapping
-	zoneRegCurrentHumidity               = uint16(0x0028) // state.current_room_humidity
-	zoneRegQuickVetoTemp                 = uint16(0x0008) // configuration.quick_veto.temperature (f32 LE)
-	zoneRegQuickVetoEndTime              = uint16(0x001E) // state.quick_veto.end_time (HH:MM:SS)
-	zoneRegQuickVetoEndDate              = uint16(0x0024) // state.quick_veto.end_date (DD.MM.YY)
-	zoneRegQuickVetoDuration             = uint16(0x0026) // configuration.quick_veto.duration_hours (f32 LE)
-	zoneRegHolidayStartDate              = uint16(0x0003) // configuration.holiday.start_date (DD.MM.YY)
-	zoneRegHolidayEndDate                = uint16(0x0004) // configuration.holiday.end_date (DD.MM.YY)
-	zoneRegHolidaySetpoint               = uint16(0x0005) // configuration.holiday.setpoint (f32 LE)
-	zoneRegHolidayEndTime                = uint16(0x0020) // configuration.holiday.end_time (HH:MM)
-	zoneRegHolidayStartTime              = uint16(0x0021) // configuration.holiday.start_time (HH:MM)
+	// STATE registers (read-only live values)
+	zone_current_temp                      = uint16(0x000F) // state.current_room_temperature
+	zone_special_function                  = uint16(0x000E) // state.current_special_function
+	zone_valve_status                      = uint16(0x0012) // state.valve_status
+	zone_current_humidity                  = uint16(0x0028) // state.current_room_humidity
+	zone_quick_veto_end_time               = uint16(0x001E) // state.quick_veto.end_time (HH:MM:SS)
+	zone_quick_veto_end_date               = uint16(0x0024) // state.quick_veto.end_date (DD.MM.YY)
 
-	circuitRegType            = uint16(0x0002) // configuration.heating_circuit_type / mixer_circuit_type_external
-	circuitRegCoolingEnabled  = uint16(0x0006) // cooling_enabled
-	circuitRegFlowSetpoint    = uint16(0x0007) // flow_setpoint
-	circuitRegFlowTemp        = uint16(0x0008) // flow_temperature (VF[x])
-	circuitRegHeatingCurve    = uint16(0x000F) // heating_curve
-	circuitRegFlowTempMax     = uint16(0x0010) // flow_temperature_max
-	circuitRegFlowTempMin     = uint16(0x0012) // flow_temperature_min
-	circuitRegSummerLimit     = uint16(0x0014) // summer_limit
-	circuitRegRoomTempControl = uint16(0x0015) // room_temperature_control_mode
-	circuitRegCircuitState    = uint16(0x001B) // circuit_state
-	circuitRegFrostProtection = uint16(0x001D) // frost_protection_threshold
-	circuitRegPumpStatus      = uint16(0x001E) // pump_status
-	circuitRegCalcFlowTemp    = uint16(0x0020) // calculated_flow_temperature
-	circuitRegMixerPosition   = uint16(0x0021) // mixer_position_pct
-	circuitRegHumidity        = uint16(0x0022) // room_humidity_pct
-	circuitRegDewPoint        = uint16(0x0023) // dew_point_temperature
-	circuitRegPumpHours       = uint16(0x0024) // pump_operating_hours
-	circuitRegPumpStarts      = uint16(0x0025) // pump_starts
+	// CONFIG registers (user-writable settings)
+	zone_heating_op_mode                   = uint16(0x0006) // configuration.heating.operation_mode
+	zone_target_temp                       = uint16(0x0022) // configuration.heating.desired_setpoint
+	zone_fallback_manual_temp              = uint16(0x0014) // configuration.heating.manual_mode_setpoint
+	zone_room_temperature_zone_mapping_raw = uint16(0x0013) // configuration.room_temperature_zone_mapping
+	zone_quick_veto_temp                   = uint16(0x0008) // configuration.quick_veto.temperature (f32 LE)
+	zone_quick_veto_duration               = uint16(0x0026) // configuration.quick_veto.duration_hours (f32 LE)
+	zone_holiday_start_date                = uint16(0x0003) // configuration.holiday.start_date (DD.MM.YY)
+	zone_holiday_end_date                  = uint16(0x0004) // configuration.holiday.end_date (DD.MM.YY)
+	zone_holiday_setpoint                  = uint16(0x0005) // configuration.holiday.setpoint (f32 LE)
+	zone_holiday_end_time                  = uint16(0x0020) // configuration.holiday.end_time (HH:MM)
+	zone_holiday_start_time                = uint16(0x0021) // configuration.holiday.start_time (HH:MM)
+
+	// PARAMS registers (identification / metadata)
+	zone_name                              = uint16(0x0016)
+	zone_name_prefix                       = uint16(0x0017)
+	zone_name_suffix                       = uint16(0x0018)
+	zone_index                             = uint16(0x001C)
+
+	// --- Circuit registers: GG=0x02 / OP=0x02 ---
+
+	// STATE registers (read-only live values)
+	circuit_flow_setpoint    = uint16(0x0007) // flow_setpoint
+	circuit_flow_temp        = uint16(0x0008) // flow_temperature (VF[x])
+	circuit_circuit_state    = uint16(0x001B) // circuit_state
+	circuit_pump_status      = uint16(0x001E) // pump_status
+	circuit_calc_flow_temp   = uint16(0x0020) // calculated_flow_temperature
+	circuit_mixer_position   = uint16(0x0021) // mixer_position_pct
+	circuit_humidity         = uint16(0x0022) // room_humidity_pct
+	circuit_dew_point        = uint16(0x0023) // dew_point_temperature
+	circuit_pump_hours       = uint16(0x0024) // pump_operating_hours
+	circuit_pump_starts      = uint16(0x0025) // pump_starts
+
+	// CONFIG registers (user-writable settings)
+	circuit_type             = uint16(0x0002) // configuration.heating_circuit_type / mixer_circuit_type_external
+	circuit_cooling_enabled  = uint16(0x0006) // cooling_enabled
+	circuit_heating_curve    = uint16(0x000F) // heating_curve
+	circuit_flow_temp_max    = uint16(0x0010) // flow_temperature_max
+	circuit_flow_temp_min    = uint16(0x0012) // flow_temperature_min
+	circuit_summer_limit     = uint16(0x0014) // summer_limit
+	circuit_room_temp_control = uint16(0x0015) // room_temperature_control_mode
+	circuit_frost_protection = uint16(0x001D) // frost_protection_threshold
 
 	CircuitStateStandby = "standby"
 	CircuitStateHeating = "heating"
 	CircuitStateCooling = "cooling"
 
-	dhwRegOperationMode    = uint16(0x0003) // configuration.domestic_hot_water.operation_mode
-	dhwRegTargetTemp       = uint16(0x0004) // configuration.domestic_hot_water.tapping_setpoint
-	dhwRegCurrentTemp      = uint16(0x0005) // state.current_dhw_temperature
-	dhwRegSpecialFunction  = uint16(0x000D) // state.current_special_function
-	dhwRegHolidayStartDate = uint16(0x0009) // configuration.holiday.start_date (DD.MM.YY)
-	dhwRegHolidayEndDate   = uint16(0x000A) // configuration.holiday.end_date (DD.MM.YY)
-	dhwInstance            = byte(0x00)
+	// --- DHW registers: GG=0x01 / OP=0x02 ---
 
-	radioRegDeviceConnected      = uint16(0x0001)
-	radioRegDeviceClassAddress   = uint16(0x0002)
-	radioRegDeviceFirmware       = uint16(0x0004)
-	radioRegRoomHumidity         = uint16(0x0007)
-	radioRegRoomTemperature      = uint16(0x000F)
-	radioRegRemoteControlAddress = uint16(0x0019)
-	radioRegDevicePaired         = uint16(0x001E)
-	radioRegReceptionStrength    = uint16(0x001F)
-	radioRegHardwareIdentifier   = uint16(0x0023)
-	radioRegZoneAssignment       = uint16(0x0025)
+	// STATE registers (read-only live values)
+	dhw_current_temp       = uint16(0x0005) // state.current_dhw_temperature
+	dhw_special_function   = uint16(0x000D) // state.current_special_function
+
+	// CONFIG registers (user-writable settings)
+	dhw_operation_mode     = uint16(0x0003) // configuration.domestic_hot_water.operation_mode
+	dhw_target_temp        = uint16(0x0004) // configuration.domestic_hot_water.tapping_setpoint
+	dhw_holiday_start_date = uint16(0x0009) // configuration.holiday.start_date (DD.MM.YY)
+	dhw_holiday_end_date   = uint16(0x000A) // configuration.holiday.end_date (DD.MM.YY)
+
+	dhwInstance = byte(0x00)
+
+	// --- Device slot registers: OP=0x06 (remote) ---
+
+	// STATE registers (read-only live values)
+	device_slot_connected              = uint16(0x0001)
+	device_slot_room_humidity          = uint16(0x0007)
+	device_slot_room_temperature       = uint16(0x000F)
+	device_slot_paired                 = uint16(0x001E)
+	device_slot_reception_strength     = uint16(0x001F)
+
+	// PARAMS registers (identification / metadata)
+	device_slot_class_address          = uint16(0x0002)
+	device_slot_firmware               = uint16(0x0004)
+	device_slot_remote_control_address = uint16(0x0019)
+	device_slot_hardware_identifier    = uint16(0x0023)
+	device_slot_zone_assignment        = uint16(0x0025)
 
 	solarInstance = byte(0x00)
 
-	solarRegEnabled       = uint16(0x0001)
-	solarRegFunctionMode  = uint16(0x0002)
-	solarRegCollectorTemp = uint16(0x0003)
-	solarRegReturnTemp    = uint16(0x0007)
-	solarRegPumpActive    = uint16(0x0008)
-	solarRegCurrentYield  = uint16(0x0009)
-	solarRegPumpHours     = uint16(0x000B)
+	// --- Solar registers: GG=0x04 / OP=0x02 ---
 
-	cylinderRegMaxSetpoint      = uint16(0x0001)
-	cylinderRegChargeHysteresis = uint16(0x0002)
-	cylinderRegChargeOffset     = uint16(0x0003)
-	cylinderRegTemperature      = uint16(0x0004)
+	// STATE registers (read-only live values)
+	solar_collector_temp = uint16(0x0003)
+	solar_return_temp    = uint16(0x0007)
+	solar_pump_active    = uint16(0x0008)
+	solar_current_yield  = uint16(0x0009)
+	solar_pump_hours     = uint16(0x000B)
+
+	// CONFIG registers (user-writable settings)
+	solar_enabled        = uint16(0x0001)
+	solar_function_mode  = uint16(0x0002)
+
+	// --- Cylinder registers: GG=0x05 / OP=0x02 ---
+
+	// STATE registers (read-only live values)
+	cylinder_temperature       = uint16(0x0004)
+
+	// CONFIG registers (user-writable settings)
+	cylinder_max_setpoint      = uint16(0x0001)
+	cylinder_charge_hysteresis = uint16(0x0002)
+	cylinder_charge_offset     = uint16(0x0003)
 )
 
 // b524GroupDef binds a B524 group number to its owning opcode.
@@ -207,9 +232,6 @@ const (
 	energyRegEnergySumHcLastMonth  = uint16(0x0053) // PrEnergySumHcLastMonth: electricity heating last month
 	energyRegEnergySumHwcLastMonth = uint16(0x0054) // PrEnergySumHwcLastMonth: electricity hot water last month
 	energyRegFuelSumHwcLastMonth   = uint16(0x0055) // PrFuelSumHwcLastMonth: gas hot water last month
-
-	energyGroup    = byte(0x00)
-	energyInstance = byte(0x00)
 )
 
 type regulatorAbsenceState string
@@ -336,7 +358,7 @@ type b524ProbeSpec struct {
 // multi-register coherency verification during capability-first discovery.
 var b524CapabilityProbes = []b524ProbeSpec{
 	{opcode: localRegulator.opcode, group: localRegulator.group, instance: regulatorInstance, addr: 0x0001},
-	{opcode: localDHW.opcode, group: localDHW.group, instance: dhwInstance, addr: dhwRegOperationMode},
+	{opcode: localDHW.opcode, group: localDHW.group, instance: dhwInstance, addr: dhw_operation_mode},
 }
 
 type zonePresenceState string
@@ -1666,7 +1688,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	present := make(map[byte]bool, 4)
 	checked := make(map[byte]bool, 9)
 	for instance := byte(0x00); instance <= 0x08; instance++ { // II_MAX=0x08 per Vaillant regulator spec
-		indexBytes, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegIndex)
+		indexBytes, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_index)
 		if !ok {
 			continue
 		}
@@ -1895,9 +1917,9 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 
 	liveReadSuccess := false
 	for _, instance := range zones {
-		primaryName, primaryOK := p.readB524ZoneNamePart(ctx, instance, zoneRegName)
-		prefix, prefixOK := p.readB524ZoneNamePart(ctx, instance, zoneRegNamePrefix)
-		suffix, suffixOK := p.readB524ZoneNamePart(ctx, instance, zoneRegNameSuffix)
+		primaryName, primaryOK := p.readB524ZoneNamePart(ctx, instance, zone_name)
+		prefix, prefixOK := p.readB524ZoneNamePart(ctx, instance, zone_name_prefix)
+		suffix, suffixOK := p.readB524ZoneNamePart(ctx, instance, zone_name_suffix)
 		if primaryOK || prefixOK || suffixOK {
 			liveReadSuccess = true
 		}
@@ -1948,47 +1970,47 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 			targetPtr  *float64
 			humidity   *float64
 		)
-		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegCurrentTemp); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_current_temp); ok {
 			current := value
 			currentPtr = &current
 			liveReadSuccess = true
 		}
 
-		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegTargetTemp); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_target_temp); ok {
 			target := value
 			targetPtr = &target
 			liveReadSuccess = true
 		}
 		if targetPtr == nil {
-			if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegFallbackManualTemp); ok {
+			if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_fallback_manual_temp); ok {
 				target := value
 				targetPtr = &target
 				liveReadSuccess = true
 			}
 		}
-		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegCurrentHumidity); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_current_humidity); ok {
 			currentHumidity := value
 			humidity = &currentHumidity
 			liveReadSuccess = true
 		}
 
 		var qvTempPtr, qvDurPtr *float64
-		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegQuickVetoTemp); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_temp); ok {
 			v := value
 			qvTempPtr = &v
 			liveReadSuccess = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegQuickVetoDuration); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_duration); ok {
 			v := value
 			qvDurPtr = &v
 			liveReadSuccess = true
 		}
 		var qvEndTime, qvEndDate string
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegQuickVetoEndTime); ok && len(raw) >= 2 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_end_time); ok && len(raw) >= 2 {
 			qvEndTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
 			liveReadSuccess = true
 		}
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegQuickVetoEndDate); ok && len(raw) >= 3 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_end_date); ok && len(raw) >= 3 {
 			year := 2000 + int(raw[2])
 			qvEndDate = fmt.Sprintf("%04d-%02d-%02d", year, raw[1], raw[0])
 			liveReadSuccess = true
@@ -1996,41 +2018,41 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 
 		var holidayStartDate, holidayEndDate, holidayStartTime, holidayEndTime string
 		var holidaySetpointPtr *float64
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegHolidayStartDate); ok && len(raw) >= 3 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_start_date); ok && len(raw) >= 3 {
 			if date := decodeB524DateSuppressSentinel(raw); date != "" {
 				holidayStartDate = date
 			}
 			liveReadSuccess = true
 		}
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegHolidayEndDate); ok && len(raw) >= 3 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_end_date); ok && len(raw) >= 3 {
 			if date := decodeB524DateSuppressSentinel(raw); date != "" {
 				holidayEndDate = date
 			}
 			liveReadSuccess = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegHolidaySetpoint); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_holiday_setpoint); ok {
 			v := value
 			holidaySetpointPtr = &v
 			liveReadSuccess = true
 		}
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegHolidayEndTime); ok && len(raw) >= 2 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_end_time); ok && len(raw) >= 2 {
 			holidayEndTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
 			liveReadSuccess = true
 		}
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegHolidayStartTime); ok && len(raw) >= 2 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_start_time); ok && len(raw) >= 2 {
 			holidayStartTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
 			liveReadSuccess = true
 		}
 
-		zoneOpMode, zoneOpModeOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zoneRegHeatingOpMode)
-		zoneSF, zoneSFOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zoneRegSpecialFunction)
-		zoneValve, zoneValveOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zoneRegValveStatus)
-		zoneRoomTemperatureZoneMappingRaw, zoneRoomTemperatureZoneMappingRawOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zoneRegRoomTemperatureZoneMappingRaw)
+		zoneOpMode, zoneOpModeOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_heating_op_mode)
+		zoneSF, zoneSFOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_special_function)
+		zoneValve, zoneValveOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_valve_status)
+		zoneRoomTemperatureZoneMappingRaw, zoneRoomTemperatureZoneMappingRawOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_room_temperature_zone_mapping_raw)
 		if zoneOpModeOK || zoneSFOK || zoneValveOK || zoneRoomTemperatureZoneMappingRawOK {
 			liveReadSuccess = true
 		}
 		circuitInstance := resolveAssociatedCircuitInstance(zoneRoomTemperatureZoneMappingRaw, instance)
-		circuitType, hasCircuitType := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, circuitInstance, circuitRegType)
+		circuitType, hasCircuitType := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, circuitInstance, circuit_type)
 		if hasCircuitType {
 			liveReadSuccess = true
 		}
@@ -2293,7 +2315,7 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 
 	accepted, failed := 0, 0
 	for _, q := range b524EnergyQueries {
-		val, ok := p.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, energyGroup, energyInstance, q.addr)
+		val, ok := p.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr)
 		if !ok {
 			failed++
 			continue
@@ -2343,18 +2365,18 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 
 	attempted := make(semanticFieldSet)
 	liveReadSuccess := false
-	currentPtr := p.readDhwFloat(ctx, dhwRegCurrentTemp)
+	currentPtr := p.readDhwFloat(ctx, dhw_current_temp)
 	if currentPtr != nil {
 		liveReadSuccess = true
 		attempted[dhwFieldCurrentTempC] = struct{}{}
 	}
-	targetPtr := p.readDhwFloat(ctx, dhwRegTargetTemp)
+	targetPtr := p.readDhwFloat(ctx, dhw_target_temp)
 	if targetPtr != nil {
 		liveReadSuccess = true
 		attempted[dhwFieldTargetTempC] = struct{}{}
 	}
-	opModeRaw, opModeOK := p.readDhwUint16(ctx, dhwRegOperationMode)
-	sfModeRaw, sfModeOK := p.readDhwUint16(ctx, dhwRegSpecialFunction)
+	opModeRaw, opModeOK := p.readDhwUint16(ctx, dhw_operation_mode)
+	sfModeRaw, sfModeOK := p.readDhwUint16(ctx, dhw_special_function)
 	if opModeOK || sfModeOK {
 		liveReadSuccess = true
 		attempted[dhwFieldOperatingMode] = struct{}{}
@@ -2368,14 +2390,14 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 	}
 
 	var dhwHolidayStartDate, dhwHolidayEndDate string
-	if raw, ok := p.readB524Value(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhwRegHolidayStartDate); ok && len(raw) >= 3 {
+	if raw, ok := p.readB524Value(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhw_holiday_start_date); ok && len(raw) >= 3 {
 		if date := decodeB524DateSuppressSentinel(raw); date != "" {
 			dhwHolidayStartDate = date
 		}
 		liveReadSuccess = true
 		attempted[dhwFieldHolidayStartDate] = struct{}{}
 	}
-	if raw, ok := p.readB524Value(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhwRegHolidayEndDate); ok && len(raw) >= 3 {
+	if raw, ok := p.readB524Value(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhw_holiday_end_date); ok && len(raw) >= 3 {
 		if date := decodeB524DateSuppressSentinel(raw); date != "" {
 			dhwHolidayEndDate = date
 		}
@@ -2558,7 +2580,7 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 	probeSuccess := false
 
 	for instance := byte(0x00); instance <= 0x0A; instance++ {
-		circuitTypeRaw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegType)
+		circuitTypeRaw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_type)
 		if !ok || circuitTypeRaw == nil {
 			continue
 		}
@@ -2584,83 +2606,83 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 		}
 		anyRead = true
 
-		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegCoolingEnabled); ok && raw != nil {
+		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_cooling_enabled); ok && raw != nil {
 			snapshot.CoolingEnabledRaw = cloneUint16Ptr(raw)
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegFlowSetpoint); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_flow_setpoint); ok {
 			v := value
 			snapshot.FlowSetpointC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegFlowTemp); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_flow_temp); ok {
 			v := value
 			snapshot.FlowTemperatureC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegHeatingCurve); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_heating_curve); ok {
 			v := value
 			snapshot.HeatingCurve = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegFlowTempMax); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_flow_temp_max); ok {
 			v := value
 			snapshot.FlowTempMaxC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegFlowTempMin); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_flow_temp_min); ok {
 			v := value
 			snapshot.FlowTempMinC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegSummerLimit); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_summer_limit); ok {
 			v := value
 			snapshot.SummerLimitC = &v
 			anyRead = true
 		}
-		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegRoomTempControl); ok && raw != nil {
+		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_room_temp_control); ok && raw != nil {
 			snapshot.RoomTempControlRaw = cloneUint16Ptr(raw)
 			anyRead = true
 		}
-		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegCircuitState); ok && raw != nil {
+		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_circuit_state); ok && raw != nil {
 			snapshot.CircuitStateRaw = cloneUint16Ptr(raw)
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegFrostProtection); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_frost_protection); ok {
 			v := value
 			snapshot.FrostProtectionC = &v
 			anyRead = true
 		}
-		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegPumpStatus); ok && raw != nil {
+		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_pump_status); ok && raw != nil {
 			snapshot.PumpStatusRaw = cloneUint16Ptr(raw)
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegCalcFlowTemp); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_calc_flow_temp); ok {
 			v := value
 			snapshot.CalcFlowTempC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegMixerPosition); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_mixer_position); ok {
 			v := value
 			snapshot.MixerPositionPct = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegHumidity); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_humidity); ok {
 			v := value
 			snapshot.HumidityPct = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegDewPoint); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_dew_point); ok {
 			v := value
 			snapshot.DewPointC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Uint32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegPumpHours); ok {
+		if value, ok := p.readB524Uint32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_pump_hours); ok {
 			v := value
 			snapshot.PumpHoursRaw = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Uint32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegPumpStarts); ok {
+		if value, ok := p.readB524Uint32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_pump_starts); ok {
 			v := value
 			snapshot.PumpStartsRaw = &v
 			anyRead = true
@@ -3023,72 +3045,74 @@ func decodeUint32Int(raw *uint32) *int {
 const (
 	regulatorInstance = byte(0x00)
 
-	// System state registers (GG=0x00, II=0x00).
-	systemRegSystemOff                    = uint16(0x0007)
-	systemRegSystemWaterPressure          = uint16(0x0039)
-	systemRegSystemFlowTemperature        = uint16(0x004B)
-	systemRegOutdoorTemperature           = uint16(0x0073)
-	systemRegOutdoorTemperatureAvg24h     = uint16(0x0095)
-	systemRegMaintenanceDue               = uint16(0x0096)
-	systemRegHwcCylinderTemperatureTop    = uint16(0x009D)
-	systemRegHwcCylinderTemperatureBottom = uint16(0x009E)
+	// --- System registers: GG=0x00 / OP=0x02 ---
 
-	// System config registers (GG=0x00, II=0x00).
-	systemRegAdaptiveHeatingCurve         = uint16(0x0014)
-	systemRegAlternativePoint             = uint16(0x0022)
-	systemRegHeatingCircuitBivalencePoint = uint16(0x0023)
-	systemRegDhwBivalencePoint            = uint16(0x0001)
-	systemRegHcEmergencyTemperature       = uint16(0x0026)
-	systemRegHwcMaxFlowTempDesired        = uint16(0x0046)
-	systemRegMaxRoomHumidity              = uint16(0x000E)
-	systemRegMaintenanceDate              = uint16(0x002C)
-	systemRegInstallerName1               = uint16(0x006C)
-	systemRegInstallerName2               = uint16(0x006D)
-	systemRegInstallerPhone1              = uint16(0x006F)
-	systemRegInstallerPhone2              = uint16(0x0070)
-	systemRegInstallerMenuCode            = uint16(0x0076)
+	// STATE registers (read-only live values)
+	system_off                             = uint16(0x0007)
+	system_water_pressure                  = uint16(0x0039)
+	system_flow_temperature                = uint16(0x004B)
+	system_outdoor_temperature             = uint16(0x0073)
+	system_outdoor_temperature_avg_24h     = uint16(0x0095)
+	system_maintenance_due                 = uint16(0x0096)
+	system_hwc_cylinder_temperature_top    = uint16(0x009D)
+	system_hwc_cylinder_temperature_bottom = uint16(0x009E)
 
-	// System properties registers (GG=0x00, II=0x00).
-	systemRegSystemScheme            = uint16(0x0036)
-	systemRegModuleConfigurationVR71 = uint16(0x002F)
+	// CONFIG registers (user-writable settings)
+	system_adaptive_heating_curve          = uint16(0x0014)
+	system_alternative_point               = uint16(0x0022)
+	system_heating_circuit_bivalence_point  = uint16(0x0023)
+	system_dhw_bivalence_point             = uint16(0x0001)
+	system_hc_emergency_temperature        = uint16(0x0026)
+	system_hwc_max_flow_temp_desired       = uint16(0x0046)
+	system_max_room_humidity               = uint16(0x000E)
+	system_maintenance_date                = uint16(0x002C)
+	system_installer_name_1                = uint16(0x006C)
+	system_installer_name_2                = uint16(0x006D)
+	system_installer_phone_1               = uint16(0x006F)
+	system_installer_phone_2               = uint16(0x0070)
+	system_installer_menu_code             = uint16(0x0076)
 
-	// Boiler B509 direct registers on BAI00.
-	boilerB509RegWaterPressure         = uint16(0x0200)
-	boilerB509RegFlameActive           = uint16(0x0500)
-	boilerB509RegPartloadHcKW          = uint16(0x0704)
-	boilerB509RegPartloadHwcKW         = uint16(0x0804)
-	boilerB509RegFlowsetHcMaxC         = uint16(0x0E04)
-	boilerB509RegFlowsetHcMaxCFallback = uint16(0xA500)
-	boilerB509RegFlowsetHwcMaxC        = uint16(0x0F04)
-	boilerB509RegPumpHours             = uint16(0x1400)
-	boilerB509RegFlowTemperature       = uint16(0x1800)
-	boilerB509RegFanHours              = uint16(0x1B00)
-	boilerB509RegDeactivationsIFC      = uint16(0x1F00)
-	boilerB509RegHoursTillService      = uint16(0x2004)
-	boilerB509RegDeactivationsLimit    = uint16(0x2000)
-	boilerB509RegDhwHours              = uint16(0x2200)
-	boilerB509RegDhwStarts             = uint16(0x2300)
-	boilerB509RegTargetFanSpeedRpm     = uint16(0x2400)
-	boilerB509RegCentralHeatingHours   = uint16(0x2800)
-	boilerB509RegCentralHeatingStarts  = uint16(0x2900)
-	boilerB509RegModulationPct         = uint16(0x2E00)
-	boilerB509RegFlowTempDesiredC      = uint16(0x3900)
-	boilerB509RegExternalPumpActive    = uint16(0x3F00)
-	boilerB509RegInstallerMenuCode     = uint16(0x4904)
-	boilerB509RegCentralHeatingPump    = uint16(0x4400)
-	boilerB509RegDiverterValvePosition = uint16(0x5400)
-	boilerB509RegDhwWaterFlowLpm       = uint16(0x5500)
-	boilerB509RegDhwDemandActive       = uint16(0x5800)
-	boilerB509RegCirculationPumpActive = uint16(0x7B00)
-	boilerB509RegPhoneNumber           = uint16(0x8104)
-	boilerB509RegFanSpeedRpm           = uint16(0x8300)
-	boilerB509RegStorageLoadPumpPct    = uint16(0x9E00)
-	boilerB509RegIonisationVoltageUa   = uint16(0xA400)
-	boilerB509RegStateNumber           = uint16(0xAB00)
-	boilerB509RegGasValveActive        = uint16(0xBB00)
-	boilerB509RegHeatingSwitchActive   = uint16(0xF203)
-	boilerB509RegDhwTempDesiredC       = uint16(0xEA03)
-	boilerB509RegPrimaryCircuitFlowLpm = uint16(0xFB00)
+	// PARAMS registers (system topology / identification)
+	system_scheme                          = uint16(0x0036)
+	system_module_configuration_vr71       = uint16(0x002F)
+
+	// --- Boiler B509 direct registers on BAI00 ---
+	boiler_b509_water_pressure         = uint16(0x0200)
+	boiler_b509_flame_active           = uint16(0x0500)
+	boiler_b509_partload_hc_kw          = uint16(0x0704)
+	boiler_b509_partload_hwc_kw         = uint16(0x0804)
+	boiler_b509_flowset_hc_max_c         = uint16(0x0E04)
+	boiler_b509_flowset_hc_max_c_fallback = uint16(0xA500)
+	boiler_b509_flowset_hwc_max_c        = uint16(0x0F04)
+	boiler_b509_pump_hours             = uint16(0x1400)
+	boiler_b509_flow_temperature       = uint16(0x1800)
+	boiler_b509_fan_hours              = uint16(0x1B00)
+	boiler_b509_deactivations_ifc      = uint16(0x1F00)
+	boiler_b509_hours_till_service      = uint16(0x2004)
+	boiler_b509_deactivations_limit    = uint16(0x2000)
+	boiler_b509_dhw_hours              = uint16(0x2200)
+	boiler_b509_dhw_starts             = uint16(0x2300)
+	boiler_b509_target_fan_speed_rpm     = uint16(0x2400)
+	boiler_b509_central_heating_hours   = uint16(0x2800)
+	boiler_b509_central_heating_starts  = uint16(0x2900)
+	boiler_b509_modulation_pct         = uint16(0x2E00)
+	boiler_b509_flow_temp_desired_c      = uint16(0x3900)
+	boiler_b509_external_pump_active    = uint16(0x3F00)
+	boiler_b509_installer_menu_code     = uint16(0x4904)
+	boiler_b509_central_heating_pump    = uint16(0x4400)
+	boiler_b509_diverter_valve_position = uint16(0x5400)
+	boiler_b509_dhw_water_flow_lpm       = uint16(0x5500)
+	boiler_b509_dhw_demand_active       = uint16(0x5800)
+	boiler_b509_circulation_pump_active = uint16(0x7B00)
+	boiler_b509_phone_number           = uint16(0x8104)
+	boiler_b509_fan_speed_rpm           = uint16(0x8300)
+	boiler_b509_storage_load_pump_pct    = uint16(0x9E00)
+	boiler_b509_ionisation_voltage_ua   = uint16(0xA400)
+	boiler_b509_state_number           = uint16(0xAB00)
+	boiler_b509_gas_valve_active        = uint16(0xBB00)
+	boiler_b509_heating_switch_active   = uint16(0xF203)
+	boiler_b509_dhw_temp_desired_c       = uint16(0xEA03)
+	boiler_b509_primary_circuit_flow_lpm = uint16(0xFB00)
 )
 
 type vaillantBoilerSnapshot struct {
@@ -3202,7 +3226,7 @@ func boilerStatusRegisterDefinitionsForTier(tier boilerStatusTier) []boilerStatu
 				opcode:   localRegulator.opcode,
 				group:    localRegulator.group,
 				instance: regulatorInstance,
-				addr:     systemRegSystemFlowTemperature,
+				addr:     system_flow_temperature,
 			},
 			{
 				field:    boilerStatusFieldPumpActive,
@@ -3210,7 +3234,7 @@ func boilerStatusRegisterDefinitionsForTier(tier boilerStatusTier) []boilerStatu
 				opcode:   localCircuits.opcode,
 				group:    localCircuits.group,
 				instance: 0x00,
-				addr:     circuitRegPumpStatus,
+				addr:     circuit_pump_status,
 			},
 			{
 				field:    boilerStatusFieldHeatingStatusRaw,
@@ -3218,7 +3242,7 @@ func boilerStatusRegisterDefinitionsForTier(tier boilerStatusTier) []boilerStatu
 				opcode:   localCircuits.opcode,
 				group:    localCircuits.group,
 				instance: 0x00,
-				addr:     circuitRegCircuitState,
+				addr:     circuit_circuit_state,
 			},
 		}
 	case boilerStatusTierMedium, boilerStatusTierSlow:
@@ -3320,15 +3344,15 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB524(ctx context.Context, ti
 		return updated
 	}
 
-	if value := p.readDhwFloat(ctx, dhwRegCurrentTemp); value != nil {
+	if value := p.readDhwFloat(ctx, dhw_current_temp); value != nil {
 		snapshot.DhwTemperatureC = value
 		updated = true
 	}
-	if value := p.readDhwFloat(ctx, dhwRegTargetTemp); value != nil {
+	if value := p.readDhwFloat(ctx, dhw_target_temp); value != nil {
 		snapshot.DhwTargetTemperatureC = value
 		updated = true
 	}
-	if raw, ok := p.readDhwUint16(ctx, dhwRegOperationMode); ok && raw != nil {
+	if raw, ok := p.readDhwUint16(ctx, dhw_operation_mode); ok && raw != nil {
 		value := int(*raw)
 		snapshot.DhwOperatingMode = &value
 		updated = true
@@ -3344,47 +3368,47 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB509(ctx context.Context, bo
 	updated := false
 	switch tier {
 	case boilerStatusTierFast:
-		if value := p.readB509DATA2c(ctx, boilerAddress, boilerB509RegFlowTemperature); value != nil {
+		if value := p.readB509DATA2c(ctx, boilerAddress, boiler_b509_flow_temperature); value != nil {
 			snapshot.FlowTemperatureC = value
 			updated = true
 		}
-		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegCentralHeatingPump); value != nil {
+		if value := p.readB509OnOff(ctx, boilerAddress, boiler_b509_central_heating_pump); value != nil {
 			snapshot.CentralHeatingPumpActive = value
 			updated = true
 		}
-		if value := p.readB509DATA2b(ctx, boilerAddress, boilerB509RegWaterPressure); value != nil {
+		if value := p.readB509DATA2b(ctx, boilerAddress, boiler_b509_water_pressure); value != nil {
 			snapshot.WaterPressureBar = value
 			updated = true
 		}
-		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegFlameActive); value != nil {
+		if value := p.readB509OnOff(ctx, boilerAddress, boiler_b509_flame_active); value != nil {
 			snapshot.FlameActive = value
 			updated = true
 		}
-		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegGasValveActive); value != nil {
+		if value := p.readB509OnOff(ctx, boilerAddress, boiler_b509_gas_valve_active); value != nil {
 			snapshot.GasValveActive = value
 			updated = true
 		}
-		if value := p.readB509UINInt(ctx, boilerAddress, boilerB509RegFanSpeedRpm); value != nil {
+		if value := p.readB509UINInt(ctx, boilerAddress, boiler_b509_fan_speed_rpm); value != nil {
 			snapshot.FanSpeedRpm = value
 			updated = true
 		}
-		if value := p.readB509SINScaled(ctx, boilerAddress, boilerB509RegModulationPct, 10); value != nil {
+		if value := p.readB509SINScaled(ctx, boilerAddress, boiler_b509_modulation_pct, 10); value != nil {
 			snapshot.ModulationPct = value
 			updated = true
 		}
-		if value := p.readB509UCHInt(ctx, boilerAddress, boilerB509RegStateNumber); value != nil {
+		if value := p.readB509UCHInt(ctx, boilerAddress, boiler_b509_state_number); value != nil {
 			snapshot.StateNumber = value
 			updated = true
 		}
-		if value := p.readB509UCHFloat(ctx, boilerAddress, boilerB509RegDiverterValvePosition); value != nil {
+		if value := p.readB509UCHFloat(ctx, boilerAddress, boiler_b509_diverter_valve_position); value != nil {
 			snapshot.DiverterValvePositionPct = value
 			updated = true
 		}
-		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegDhwDemandActive); value != nil {
+		if value := p.readB509OnOff(ctx, boilerAddress, boiler_b509_dhw_demand_active); value != nil {
 			snapshot.DhwDemandActive = value
 			updated = true
 		}
-		if value := p.readB509UIN100(ctx, boilerAddress, boilerB509RegDhwWaterFlowLpm); value != nil {
+		if value := p.readB509UIN100(ctx, boilerAddress, boiler_b509_dhw_water_flow_lpm); value != nil {
 			snapshot.DhwWaterFlowLpm = value
 			updated = true
 		}
@@ -3405,85 +3429,85 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB509(ctx context.Context, bo
 			snapshot.PartloadHwcKW = value
 			updated = true
 		}
-		if value := p.readB509Percent0(ctx, boilerAddress, boilerB509RegStorageLoadPumpPct); value != nil {
+		if value := p.readB509Percent0(ctx, boilerAddress, boiler_b509_storage_load_pump_pct); value != nil {
 			snapshot.StorageLoadPumpPct = value
 			updated = true
 		}
-		if value := p.readB509DATA2c(ctx, boilerAddress, boilerB509RegFlowTempDesiredC); value != nil {
+		if value := p.readB509DATA2c(ctx, boilerAddress, boiler_b509_flow_temp_desired_c); value != nil {
 			snapshot.FlowTempDesiredC = value
 			updated = true
 		}
-		if value := p.readB509DATA2c(ctx, boilerAddress, boilerB509RegDhwTempDesiredC); value != nil {
+		if value := p.readB509DATA2c(ctx, boilerAddress, boiler_b509_dhw_temp_desired_c); value != nil {
 			snapshot.DhwTempDesiredC = value
 			updated = true
 		}
-		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegCirculationPumpActive); value != nil {
+		if value := p.readB509OnOff(ctx, boilerAddress, boiler_b509_circulation_pump_active); value != nil {
 			snapshot.CirculationPumpActive = value
 			updated = true
 		}
-		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegExternalPumpActive); value != nil {
+		if value := p.readB509OnOff(ctx, boilerAddress, boiler_b509_external_pump_active); value != nil {
 			snapshot.ExternalPumpActive = value
 			updated = true
 		}
-		if value := p.readB509OnOff(ctx, boilerAddress, boilerB509RegHeatingSwitchActive); value != nil {
+		if value := p.readB509OnOff(ctx, boilerAddress, boiler_b509_heating_switch_active); value != nil {
 			snapshot.HeatingSwitchActive = value
 			updated = true
 		}
-		if value := p.readB509UINInt(ctx, boilerAddress, boilerB509RegTargetFanSpeedRpm); value != nil {
+		if value := p.readB509UINInt(ctx, boilerAddress, boiler_b509_target_fan_speed_rpm); value != nil {
 			snapshot.TargetFanSpeedRpm = value
 			updated = true
 		}
-		if value := p.readB509SINScaled(ctx, boilerAddress, boilerB509RegIonisationVoltageUa, 10); value != nil {
+		if value := p.readB509SINScaled(ctx, boilerAddress, boiler_b509_ionisation_voltage_ua, 10); value != nil {
 			snapshot.IonisationVoltageUa = value
 			updated = true
 		}
-		if value := p.readB509UIN100(ctx, boilerAddress, boilerB509RegPrimaryCircuitFlowLpm); value != nil {
+		if value := p.readB509UIN100(ctx, boilerAddress, boiler_b509_primary_circuit_flow_lpm); value != nil {
 			snapshot.PrimaryCircuitFlowLpm = value
 			updated = true
 		}
 	case boilerStatusTierSlow:
-		if value := p.readB509Hoursum2(ctx, boilerAddress, boilerB509RegCentralHeatingHours); value != nil {
+		if value := p.readB509Hoursum2(ctx, boilerAddress, boiler_b509_central_heating_hours); value != nil {
 			snapshot.CentralHeatingHours = value
 			updated = true
 		}
-		if value := p.readB509Hoursum2(ctx, boilerAddress, boilerB509RegDhwHours); value != nil {
+		if value := p.readB509Hoursum2(ctx, boilerAddress, boiler_b509_dhw_hours); value != nil {
 			snapshot.DhwHours = value
 			updated = true
 		}
-		if value := p.readB509UINInt(ctx, boilerAddress, boilerB509RegCentralHeatingStarts); value != nil {
+		if value := p.readB509UINInt(ctx, boilerAddress, boiler_b509_central_heating_starts); value != nil {
 			snapshot.CentralHeatingStarts = value
 			updated = true
 		}
-		if value := p.readB509UINInt(ctx, boilerAddress, boilerB509RegDhwStarts); value != nil {
+		if value := p.readB509UINInt(ctx, boilerAddress, boiler_b509_dhw_starts); value != nil {
 			snapshot.DhwStarts = value
 			updated = true
 		}
-		if value := p.readB509Hoursum2(ctx, boilerAddress, boilerB509RegPumpHours); value != nil {
+		if value := p.readB509Hoursum2(ctx, boilerAddress, boiler_b509_pump_hours); value != nil {
 			snapshot.PumpHours = value
 			updated = true
 		}
-		if value := p.readB509Hoursum2(ctx, boilerAddress, boilerB509RegFanHours); value != nil {
+		if value := p.readB509Hoursum2(ctx, boilerAddress, boiler_b509_fan_hours); value != nil {
 			snapshot.FanHours = value
 			updated = true
 		}
-		if value := p.readB509UCHInt(ctx, boilerAddress, boilerB509RegDeactivationsIFC); value != nil {
+		if value := p.readB509UCHInt(ctx, boilerAddress, boiler_b509_deactivations_ifc); value != nil {
 			snapshot.DeactivationsIFC = value
 			updated = true
 		}
-		if value := p.readB509UCHInt(ctx, boilerAddress, boilerB509RegDeactivationsLimit); value != nil {
+		if value := p.readB509UCHInt(ctx, boilerAddress, boiler_b509_deactivations_limit); value != nil {
 			snapshot.DeactivationsTemplimiter = value
 			updated = true
 		}
 		// Installer/maintenance config.
-		if value := p.readB509UCHInt(ctx, boilerAddress, boilerB509RegInstallerMenuCode); value != nil {
+		if value := p.readB509UCHInt(ctx, boilerAddress, boiler_b509_installer_menu_code); value != nil {
 			snapshot.InstallerMenuCode = value
 			updated = true
 		}
-		if value := p.readB509PhoneBCD(ctx, boilerAddress, boilerB509RegPhoneNumber); value != nil {
+		if value := p.readB509PhoneBCD(ctx, boilerAddress, boiler_b509_phone_number); value != nil {
 			snapshot.PhoneNumber = value
 			updated = true
 		}
-		if value := p.readB509Hoursum2Int(ctx, boilerAddress, boilerB509RegHoursTillService); value != nil {
+		if value := p.readB509Hoursum2Int(ctx, boilerAddress, boiler_b509_hours_till_service); value != nil {
 			snapshot.HoursTillService = value
 			updated = true
 		}
@@ -3594,80 +3618,80 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 	snapshot := &vaillantSystemSnapshot{}
 	updated := false
 
-	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegSystemOff); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_off); ok && raw != nil {
 		value := *raw != 0
 		snapshot.SystemOff = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegSystemWaterPressure); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_water_pressure); ok {
 		snapshot.SystemWaterPressure = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegSystemFlowTemperature); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_flow_temperature); ok {
 		snapshot.SystemFlowTemperature = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegOutdoorTemperature); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_outdoor_temperature); ok {
 		snapshot.OutdoorTemperature = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegOutdoorTemperatureAvg24h); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_outdoor_temperature_avg_24h); ok {
 		snapshot.OutdoorTemperatureAvg24h = &value
 		updated = true
 	}
-	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegMaintenanceDue); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_maintenance_due); ok && raw != nil {
 		value := *raw != 0
 		snapshot.MaintenanceDue = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegHwcCylinderTemperatureTop); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_hwc_cylinder_temperature_top); ok {
 		snapshot.HwcCylinderTemperatureTop = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegHwcCylinderTemperatureBottom); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_hwc_cylinder_temperature_bottom); ok {
 		snapshot.HwcCylinderTemperatureBottom = &value
 		updated = true
 	}
 
-	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegAdaptiveHeatingCurve); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_adaptive_heating_curve); ok && raw != nil {
 		value := *raw != 0
 		snapshot.AdaptiveHeatingCurve = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegAlternativePoint); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_alternative_point); ok {
 		snapshot.AlternativePoint = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegHeatingCircuitBivalencePoint); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_heating_circuit_bivalence_point); ok {
 		snapshot.HeatingCircuitBivalencePoint = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegDhwBivalencePoint); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_dhw_bivalence_point); ok {
 		snapshot.DhwBivalencePoint = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegHcEmergencyTemperature); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_hc_emergency_temperature); ok {
 		snapshot.HcEmergencyTemperature = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegHwcMaxFlowTempDesired); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_hwc_max_flow_temp_desired); ok {
 		snapshot.HwcMaxFlowTempDesired = &value
 		updated = true
 	}
-	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegMaxRoomHumidity); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_max_room_humidity); ok && raw != nil {
 		snapshot.MaxRoomHumidity = cloneUint16Ptr(raw)
 		updated = true
 	}
 
 	// Installer/maintenance config (slow-config reads).
-	if value, ok := p.readB524DateHDA3(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegMaintenanceDate); ok {
+	if value, ok := p.readB524DateHDA3(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_maintenance_date); ok {
 		snapshot.MaintenanceDate = &value
 		updated = true
 	}
 	{
 		// Combined installer name from 2 registers × 6 chars.
-		name1, ok1 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegInstallerName1)
-		name2, ok2 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegInstallerName2)
+		name1, ok1 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_installer_name_1)
+		name2, ok2 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_installer_name_2)
 		if ok1 || ok2 {
 			var p1, p2 string
 			if ok1 {
@@ -3683,8 +3707,8 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 	}
 	{
 		// Combined installer phone from 2 registers × 6 chars.
-		phone1, ok1 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegInstallerPhone1)
-		phone2, ok2 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegInstallerPhone2)
+		phone1, ok1 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_installer_phone_1)
+		phone2, ok2 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_installer_phone_2)
 		if ok1 || ok2 {
 			var p1, p2 string
 			if ok1 {
@@ -3698,16 +3722,16 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 			updated = true
 		}
 	}
-	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegInstallerMenuCode); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_installer_menu_code); ok && raw != nil {
 		snapshot.InstallerMenuCode = cloneUint16Ptr(raw)
 		updated = true
 	}
 
-	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegSystemScheme); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_scheme); ok && raw != nil {
 		snapshot.SystemScheme = cloneUint16Ptr(raw)
 		updated = true
 	}
-	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegModuleConfigurationVR71); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_module_configuration_vr71); ok && raw != nil {
 		snapshot.ModuleConfigurationVR71 = cloneUint16Ptr(raw)
 		updated = true
 	}
@@ -3733,7 +3757,7 @@ func (p *vaillantSemanticPoller) discoverDeviceSlots(ctx context.Context) map[de
 	active := make(map[deviceSlotKey]bool)
 	for _, grp := range remoteDeviceGroups {
 		for instance := byte(0x00); instance <= 0x0A; instance++ {
-			connectedRaw := p.readB524U8(ctx, grp.opcode, grp.group, instance, radioRegDeviceConnected)
+			connectedRaw := p.readB524U8(ctx, grp.opcode, grp.group, instance, device_slot_connected)
 			if connectedRaw == nil {
 				continue // timeout — slot empty
 			}
@@ -3784,16 +3808,16 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 		instance := key.Instance
 		opcode := vaillantB524OpcodeRead
 
-		connectedRaw := p.readB524U8(ctx, opcode, group, instance, radioRegDeviceConnected)
+		connectedRaw := p.readB524U8(ctx, opcode, group, instance, device_slot_connected)
 		if connectedRaw == nil {
 			continue
 		}
 		readAny = true
 
 		connected := *connectedRaw == 1
-		classAddress := p.readB524U8(ctx, opcode, group, instance, radioRegDeviceClassAddress)
-		firmware := p.readB524Firmware(ctx, opcode, group, instance, radioRegDeviceFirmware)
-		hardware := p.readB524U16(ctx, opcode, group, instance, radioRegHardwareIdentifier)
+		classAddress := p.readB524U8(ctx, opcode, group, instance, device_slot_class_address)
+		firmware := p.readB524Firmware(ctx, opcode, group, instance, device_slot_firmware)
+		hardware := p.readB524U16(ctx, opcode, group, instance, device_slot_hardware_identifier)
 
 		slotMode := "active"
 		include := false
@@ -3821,12 +3845,12 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 			DeviceModel:          decodeRadioDeviceModel(classAddress),
 			FirmwareVersion:      cloneStringPtr(firmware),
 			HardwareIdentifier:   cloneUint16Ptr(hardware),
-			RemoteControlAddress: p.readB524U8(ctx, opcode, group, instance, radioRegRemoteControlAddress),
-			DevicePaired:         p.readB524Bool(ctx, opcode, group, instance, radioRegDevicePaired),
-			ReceptionStrength:    p.readB524U8(ctx, opcode, group, instance, radioRegReceptionStrength),
-			ZoneAssignment:       p.readB524U8(ctx, opcode, group, instance, radioRegZoneAssignment),
-			RoomTemperatureC:     p.readB524F32(ctx, opcode, group, instance, radioRegRoomTemperature),
-			RoomHumidityPct:      p.readB524F32(ctx, opcode, group, instance, radioRegRoomHumidity),
+			RemoteControlAddress: p.readB524U8(ctx, opcode, group, instance, device_slot_remote_control_address),
+			DevicePaired:         p.readB524Bool(ctx, opcode, group, instance, device_slot_paired),
+			ReceptionStrength:    p.readB524U8(ctx, opcode, group, instance, device_slot_reception_strength),
+			ZoneAssignment:       p.readB524U8(ctx, opcode, group, instance, device_slot_zone_assignment),
+			RoomTemperatureC:     p.readB524F32(ctx, opcode, group, instance, device_slot_room_temperature),
+			RoomHumidityPct:      p.readB524F32(ctx, opcode, group, instance, device_slot_room_humidity),
 		}
 		discovered[radioDeviceKey{Group: group, Instance: instance}] = device
 	}
@@ -4175,31 +4199,31 @@ func (p *vaillantSemanticPoller) readSolarSnapshot(ctx context.Context) (*vailla
 	incoming := &vaillantSolarSnapshot{}
 	readAny := false
 
-	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegEnabled); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solar_enabled); ok {
 		readAny = true
 		incoming.SolarEnabled = decodeB524BoolFromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegFunctionMode); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solar_function_mode); ok {
 		readAny = true
 		incoming.FunctionMode = decodeB524BoolFromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegCollectorTemp); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solar_collector_temp); ok {
 		readAny = true
 		incoming.CollectorTemperatureC = decodeB524Float32FromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegReturnTemp); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solar_return_temp); ok {
 		readAny = true
 		incoming.ReturnTemperatureC = decodeB524Float32FromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegPumpActive); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solar_pump_active); ok {
 		readAny = true
 		incoming.PumpActive = decodeB524BoolFromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegCurrentYield); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solar_current_yield); ok {
 		readAny = true
 		incoming.CurrentYield = decodeB524Float32FromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegPumpHours); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solar_pump_hours); ok {
 		readAny = true
 		incoming.PumpHours = decodeB524Uint32FromRaw(raw)
 	}
@@ -4220,22 +4244,22 @@ func (p *vaillantSemanticPoller) readCylinderSnapshots(ctx context.Context) (map
 		incoming := &vaillantCylinderSnapshot{Instance: instance}
 		instanceRead := false
 
-		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinderRegMaxSetpoint); ok {
+		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinder_max_setpoint); ok {
 			instanceRead = true
 			readAny = true
 			incoming.MaxSetpointC = decodeB524Float32FromRaw(raw)
 		}
-		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinderRegChargeHysteresis); ok {
+		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinder_charge_hysteresis); ok {
 			instanceRead = true
 			readAny = true
 			incoming.ChargeHysteresis = decodeB524Float32FromRaw(raw)
 		}
-		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinderRegChargeOffset); ok {
+		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinder_charge_offset); ok {
 			instanceRead = true
 			readAny = true
 			incoming.ChargeOffset = decodeB524Float32FromRaw(raw)
 		}
-		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinderRegTemperature); ok {
+		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinder_temperature); ok {
 			instanceRead = true
 			readAny = true
 			incoming.TemperatureC = decodeB524Float32FromRaw(raw)
@@ -5632,10 +5656,10 @@ const (
 )
 
 var boilerConfigFieldSpecs = map[string]boilerConfigFieldSpec{
-	"flowsetHcMaxC":  {addrs: []uint16{boilerB509RegFlowsetHcMaxC, boilerB509RegFlowsetHcMaxCFallback}, min: 20, max: 80, codec: boilerConfigCodecTempDATA2c},
-	"flowsetHwcMaxC": {addrs: []uint16{boilerB509RegFlowsetHwcMaxC}, min: 30, max: 65, codec: boilerConfigCodecTempDATA2c},
-	"partloadHcKW":   {addrs: []uint16{boilerB509RegPartloadHcKW}, min: 0, max: 40, codec: boilerConfigCodecUCH},
-	"partloadHwcKW":  {addrs: []uint16{boilerB509RegPartloadHwcKW}, min: 0, max: 40, codec: boilerConfigCodecUCH},
+	"flowsetHcMaxC":  {addrs: []uint16{boiler_b509_flowset_hc_max_c, boiler_b509_flowset_hc_max_c_fallback}, min: 20, max: 80, codec: boilerConfigCodecTempDATA2c},
+	"flowsetHwcMaxC": {addrs: []uint16{boiler_b509_flowset_hwc_max_c}, min: 30, max: 65, codec: boilerConfigCodecTempDATA2c},
+	"partloadHcKW":   {addrs: []uint16{boiler_b509_partload_hc_kw}, min: 0, max: 40, codec: boilerConfigCodecUCH},
+	"partloadHwcKW":  {addrs: []uint16{boiler_b509_partload_hwc_kw}, min: 0, max: 40, codec: boilerConfigCodecUCH},
 }
 
 // cstringPairSpec defines a paired CString field that spans 2 registers.
@@ -5645,8 +5669,8 @@ type cstringPairSpec struct {
 }
 
 var systemCStringPairSpecs = map[string]cstringPairSpec{
-	"installerName":  {addr1: systemRegInstallerName1, addr2: systemRegInstallerName2},
-	"installerPhone": {addr1: systemRegInstallerPhone1, addr2: systemRegInstallerPhone2},
+	"installerName":  {addr1: system_installer_name_1, addr2: system_installer_name_2},
+	"installerPhone": {addr1: system_installer_phone_1, addr2: system_installer_phone_2},
 }
 
 func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName string, rawValue string) graphql.ConfigMutationResult {
@@ -5896,7 +5920,7 @@ func (p *vaillantSemanticPoller) writeBoilerPhoneBCD(ctx context.Context, rawVal
 		ctx = context.Background()
 	}
 
-	if err := p.writeB509Value(ctx, boilerAddress, boilerB509RegPhoneNumber, payload); err != nil {
+	if err := p.writeB509Value(ctx, boilerAddress, boiler_b509_phone_number, payload); err != nil {
 		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
 	}
 
@@ -5930,7 +5954,7 @@ func (p *vaillantSemanticPoller) writeBoilerInstallerMenuCode(ctx context.Contex
 	}
 
 	payload := []byte{byte(value)}
-	if err := p.writeB509Value(ctx, boilerAddress, boilerB509RegInstallerMenuCode, payload); err != nil {
+	if err := p.writeB509Value(ctx, boilerAddress, boiler_b509_installer_menu_code, payload); err != nil {
 		return graphql.BoilerConfigMutationResult{Success: false, Error: fmt.Sprintf("b509 write failed: %v", err)}
 	}
 

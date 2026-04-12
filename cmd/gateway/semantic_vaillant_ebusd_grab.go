@@ -200,14 +200,14 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 		if !ok {
 			continue
 		}
-		if group == vaillantGroupCircuits && addr == circuitRegType {
+		if group == localCircuits.group && addr == circuit_type {
 			if value, ok := decodeB524Uint16(payload); ok {
 				typed := value
 				circuitTypeByInstance[instance] = &typed
 			}
 			continue
 		}
-		if group != vaillantGroupZones {
+		if group != localZones.group {
 			continue
 		}
 		state := states[instance]
@@ -222,65 +222,65 @@ func parseB524ZonesFromGrab(lines []string, controller byte) map[byte]*vaillantZ
 		snapshot := state.snapshot
 
 		switch addr {
-		case zoneRegIndex:
+		case zone_index:
 			state.hasIndex = true
 			if len(payload) > 0 && payload[0] != 0xFF {
 				state.indexPresent = true
 			}
-		case zoneRegName:
+		case zone_name:
 			parts := state.nameParts
 			parts.primary = decodeCString(payload)
 			state.nameParts = parts
-		case zoneRegNamePrefix:
+		case zone_name_prefix:
 			parts := state.nameParts
 			parts.prefix = decodeCString(payload)
 			state.nameParts = parts
-		case zoneRegNameSuffix:
+		case zone_name_suffix:
 			parts := state.nameParts
 			parts.suffix = decodeCString(payload)
 			state.nameParts = parts
-		case zoneRegHeatingOpMode:
+		case zone_heating_op_mode:
 			if value, ok := decodeB524Uint16(payload); ok {
 				typed := value
 				state.configurationOperationMode = &typed
 				snapshot.ConfigurationHeatingOperationMode = formatUintToken(value)
 			}
-		case zoneRegSpecialFunction:
+		case zone_special_function:
 			if value, ok := decodeB524Uint16(payload); ok {
 				typed := value
 				state.stateSpecialFunction = &typed
 				snapshot.StateSpecialFunction = formatUintToken(value)
 			}
-		case zoneRegValveStatus:
+		case zone_valve_status:
 			if value, ok := decodeB524Uint16(payload); ok {
 				typed := value
 				state.stateValveStatus = &typed
 				snapshot.StateValveStatusRaw = &typed
 			}
-		case zoneRegRoomTemperatureZoneMappingRaw:
+		case zone_room_temperature_zone_mapping_raw:
 			if value, ok := decodeB524Uint16(payload); ok {
 				typed := value
 				state.roomTemperatureZoneMappingRaw = &typed
 				snapshot.ConfigurationRoomTemperatureZoneMappingRaw = &typed
 			}
-		case zoneRegCurrentTemp:
+		case zone_current_temp:
 			if value, ok := decodeFloat32LE(payload); ok {
 				v := value
 				snapshot.CurrentTempC = &v
 			}
-		case zoneRegTargetTemp:
+		case zone_target_temp:
 			if value, ok := decodeFloat32LE(payload); ok {
 				v := value
 				snapshot.TargetTempC = &v
 			}
-		case zoneRegFallbackManualTemp:
+		case zone_fallback_manual_temp:
 			if snapshot.TargetTempC == nil {
 				if value, ok := decodeFloat32LE(payload); ok {
 					v := value
 					snapshot.TargetTempC = &v
 				}
 			}
-		case zoneRegCurrentHumidity:
+		case zone_current_humidity:
 			if value, ok := decodeFloat32LE(payload); ok {
 				v := value
 				snapshot.HumidityPct = &v
@@ -351,26 +351,26 @@ func parseB524DhwFromGrab(lines []string, controller byte) (*vaillantDhwSnapshot
 
 	for _, line := range lines {
 		group, instance, addr, payload, ok := parseB524GrabLine(line, controller)
-		if !ok || group != vaillantGroupDHW || instance != dhwInstance {
+		if !ok || group != localDHW.group || instance != dhwInstance {
 			continue
 		}
 		switch addr {
-		case dhwRegOperationMode:
+		case dhw_operation_mode:
 			if value, ok := decodeB524Uint16(payload); ok {
 				typed := value
 				opModeRaw = &typed
 			}
-		case dhwRegSpecialFunction:
+		case dhw_special_function:
 			if value, ok := decodeB524Uint16(payload); ok {
 				typed := value
 				sfModeRaw = &typed
 			}
-		case dhwRegCurrentTemp:
+		case dhw_current_temp:
 			if value, ok := decodeFloat32LE(payload); ok {
 				typed := value
 				current = &typed
 			}
-		case dhwRegTargetTemp:
+		case dhw_target_temp:
 			if value, ok := decodeFloat32LE(payload); ok {
 				typed := value
 				target = &typed

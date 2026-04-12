@@ -158,6 +158,132 @@ func TestReadEvent_ReturnsResetForConnectDisconnect(t *testing.T) {
 	}
 }
 
+// --- Passive reset blocking safety ---
+
+// TestPassiveTransport_ResetDoesNotBlockReadLoopRecovery verifies that
+// closing the passive transport unblocks a blocked deliver(Reset) call,
+// allowing the mux to proceed with reconnect (create new passive transport).
+func TestPassiveTransport_ResetDoesNotBlockReadLoopRecovery(t *testing.T) {
+	// Create a passive transport with a FULL buffer.
+	pt := &passiveTransport{
+		events: make(chan transport.StreamEvent, passiveTransportBuffer),
+		done:   make(chan struct{}),
+	}
+
+	// Fill all 512 slots with symbols.
+	for i := 0; i < passiveTransportBuffer; i++ {
+		pt.events <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: byte(i % 256)}
+	}
+
+	// Buffer is now full. Deliver a reset in a goroutine — it will block.
+	delivered := make(chan struct{})
+	go func() {
+		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
+		close(delivered)
+	}()
+
+	// Verify it is blocked.
+	select {
+	case <-delivered:
+		t.Fatal("reset deliver should block on full buffer")
+	case <-time.After(50 * time.Millisecond):
+		// Good — blocked as expected.
+	}
+
+	// Close the transport — this should unblock the blocked deliver.
+	pt.Close()
+
+	select {
+	case <-delivered:
+		// Good — unblocked by Close.
+	case <-time.After(2 * time.Second):
+		t.Fatal("deliver(Reset) did not unblock after Close — readLoop recovery blocked")
+	}
+
+	// Verify that after unblocking, a new passive transport can be created
+	// and used (simulating mux reconnect creating a fresh passive transport).
+	pt2 := newPassiveTransport()
+	defer pt2.Close()
+
+	pt2.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xBB})
+	select {
+	case ev := <-pt2.events:
+		if ev.Kind != transport.StreamEventByte || ev.Byte != 0xBB {
+			t.Fatalf("new transport: expected symbol 0xBB, got %+v", ev)
+		}
+	default:
+		t.Fatal("new passive transport should work after old one was closed")
+	}
+}
+
+// TestPassiveTransport_ResetBlocksUntilConsumed_TwoResets verifies the
+// blocking semantics with two consecutive resets: the first succeeds
+// (using the last slot), the second blocks until the consumer drains.
+// Neither reset is dropped.
+func TestPassiveTransport_ResetBlocksUntilConsumed_TwoResets(t *testing.T) {
+	pt := &passiveTransport{
+		events: make(chan transport.StreamEvent, 2),
+		done:   make(chan struct{}),
+	}
+	defer pt.Close()
+
+	// Fill buffer to capacity-1 (1 slot left).
+	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x01})
+
+	// First reset should succeed immediately (1 slot available).
+	delivered1 := make(chan struct{})
+	go func() {
+		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
+		close(delivered1)
+	}()
+	select {
+	case <-delivered1:
+		// Good — delivered using the last slot.
+	case <-time.After(2 * time.Second):
+		t.Fatal("first reset should succeed with 1 slot remaining")
+	}
+
+	// Buffer now has: [symbol(0x01), reset]. Second reset should block.
+	delivered2 := make(chan struct{})
+	go func() {
+		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
+		close(delivered2)
+	}()
+
+	// Verify blocked.
+	select {
+	case <-delivered2:
+		t.Fatal("second reset should block on full buffer")
+	case <-time.After(50 * time.Millisecond):
+		// Good — blocking as expected.
+	}
+
+	// Read one event from the consumer side — should unblock the blocked deliver.
+	ev := <-pt.events
+	if ev.Kind != transport.StreamEventByte || ev.Byte != 0x01 {
+		t.Fatalf("expected symbol(0x01), got %+v", ev)
+	}
+
+	select {
+	case <-delivered2:
+		// Good — unblocked after consumer drained a slot.
+	case <-time.After(2 * time.Second):
+		t.Fatal("second reset did not unblock after consumer drained buffer")
+	}
+
+	// Verify the reset was NOT dropped — drain remaining events.
+	var resetCount int
+	for i := 0; i < 2; i++ {
+		ev := <-pt.events
+		if ev.Kind == transport.StreamEventReset {
+			resetCount++
+		}
+	}
+	if resetCount != 2 {
+		t.Fatalf("expected 2 resets in output, got %d — reset was dropped", resetCount)
+	}
+}
+
 // TestDeliver_BufferOverflowDropsOldest verifies the backpressure
 // strategy: when the buffer is full, the oldest event is dropped to
 // make room for the new one.

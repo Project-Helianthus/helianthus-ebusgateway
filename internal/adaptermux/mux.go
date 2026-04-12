@@ -866,6 +866,15 @@ func (m *Mux) handleReset() {
 	// The INIT handshake is performed once in connect() at TCP connection
 	// time and again in reconnect() after a TCP disconnect. In-band
 	// RESETTED only requires state cleanup (above), not re-negotiation.
+	//
+	// PROXY DIVERGENCE: The standalone proxy performed guarded re-INIT
+	// after in-band RESETTED with a stabilization delay. This mux
+	// intentionally skips re-INIT because ENS adapters enter an infinite
+	// reset loop (INIT -> RESETTED -> INIT -> ...). The INFO cache is
+	// preserved across in-band RESETTED because stable adapter identity
+	// (version, hardware ID) does not change on soft reset. Volatile
+	// telemetry (temperature, voltage) is a startup snapshot by design.
+	// This divergence is documented and tested.
 }
 
 // drainActiveCh discards all buffered events from the active channel.
@@ -1304,15 +1313,35 @@ func (m *Mux) deliverSYNToSessions(now time.Time) {
 // broadcastResetToSessions sends a RESETTED event to all external sessions.
 // Carries upstreamFeatures so external clients see consistent feature
 // signaling on reset boundaries (not 0x00).
+//
+// Sessions are collected under sessionsMu, but deliverReset is called
+// after releasing the lock. This is required because deliverReset blocks
+// until space is available in sendCh (non-droppable delivery), and
+// holding sessionsMu during a blocking send would prevent RemoveSession
+// from acquiring the lock to close the session's done channel — deadlock.
 func (m *Mux) broadcastResetToSessions() {
 	features := byte(m.upstreamFeatures.Load())
 
 	m.sessionsMu.Lock()
-	defer m.sessionsMu.Unlock()
-
+	sessions := make([]*session, 0, len(m.sessions))
 	for _, sess := range m.sessions {
-		sess.deliverReset(features)
+		sessions = append(sessions, sess)
 	}
+	m.sessionsMu.Unlock()
+
+	// Deliver resets concurrently — each deliverReset blocks until
+	// the session drains its buffer or closes. Delivering in parallel
+	// prevents a single slow session from delaying reset delivery to
+	// all other sessions (head-of-line blocking).
+	var wg sync.WaitGroup
+	for _, sess := range sessions {
+		wg.Add(1)
+		go func(s *session) {
+			defer wg.Done()
+			s.deliverReset(features)
+		}(sess)
+	}
+	wg.Wait()
 }
 
 // isNetTimeout reports whether err is a net.Error timeout (read deadline

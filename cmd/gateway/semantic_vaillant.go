@@ -36,14 +36,13 @@ const (
 	vaillantB524OpRead           = byte(0x00)
 	vaillantB524OpWrite          = byte(0x01)
 
+	// Deprecated bare group constants — use b524GroupDef below.
+	// Kept temporarily for capability probe and boiler register definitions.
 	vaillantGroupDHW       = byte(0x01)
 	vaillantGroupCircuits  = byte(0x02)
 	vaillantGroupZones     = byte(0x03)
 	vaillantGroupSolar     = byte(0x04)
 	vaillantGroupCylinders = byte(0x05)
-	vaillantGroupRadio09   = byte(0x09)
-	vaillantGroupRadio10   = byte(0x0A)
-	vaillantGroupRadio0C   = byte(0x0C)
 
 	zoneRegName                          = uint16(0x0016)
 	zoneRegNamePrefix                    = uint16(0x0017)
@@ -124,6 +123,45 @@ const (
 	cylinderRegChargeOffset     = uint16(0x0003)
 	cylinderRegTemperature      = uint16(0x0004)
 )
+
+// b524GroupDef binds a B524 group number to its owning opcode.
+// This eliminates the possibility of accidentally mixing OP/GG pairs.
+// See AGENTS.md §1.3.1 B524 Register Namespace Contract.
+type b524GroupDef struct {
+	group  byte
+	opcode byte
+	name   string
+}
+
+// OP=0x02 (local/controller) groups.
+var (
+	localRegulator = b524GroupDef{group: 0x00, opcode: vaillantB524OpcodeLocal, name: "regulator_parameters"}
+	localDHW       = b524GroupDef{group: 0x01, opcode: vaillantB524OpcodeLocal, name: "hot_water_circuit"}
+	localCircuits  = b524GroupDef{group: 0x02, opcode: vaillantB524OpcodeLocal, name: "heating_circuits"}
+	localZones     = b524GroupDef{group: 0x03, opcode: vaillantB524OpcodeLocal, name: "zones"}
+	localSolar     = b524GroupDef{group: 0x04, opcode: vaillantB524OpcodeLocal, name: "solar_circuit"}
+	localCylinders = b524GroupDef{group: 0x05, opcode: vaillantB524OpcodeLocal, name: "hot_water_cylinder"}
+)
+
+// OP=0x06 (remote/device) groups — all gated on device_connected (RR=0x0001).
+var (
+	remoteRegulators        = b524GroupDef{group: 0x09, opcode: vaillantB524OpcodeRead, name: "regulators"}
+	remoteThermostats       = b524GroupDef{group: 0x0A, opcode: vaillantB524OpcodeRead, name: "thermostats"}
+	remoteFunctionalModules = b524GroupDef{group: 0x0C, opcode: vaillantB524OpcodeRead, name: "functional_modules"}
+)
+
+// remoteDeviceGroups lists the OP=0x06 groups that the gateway actively polls.
+var remoteDeviceGroups = []b524GroupDef{
+	remoteRegulators,
+	remoteThermostats,
+	remoteFunctionalModules,
+}
+
+// deviceSlotKey identifies a single device slot by its OP=0x06 group+instance.
+type deviceSlotKey struct {
+	Group    byte
+	Instance byte
+}
 
 // B5.55 timer/schedule protocol constants.
 const (
@@ -240,7 +278,8 @@ type vaillantSemanticPoller struct {
 	boilerSlowInterval   time.Duration
 	zoneMissThreshold    int
 	zoneHitThreshold     int
-	dhwStaleTTL          time.Duration
+	dhwStaleTTL              time.Duration
+	deviceSlotRediscoveryTTL time.Duration
 
 	pollMu sync.Mutex
 	readMu sync.Mutex
@@ -265,6 +304,9 @@ type vaillantSemanticPoller struct {
 	system                   *vaillantSystemSnapshot
 	circuits                 map[byte]*vaillantCircuitSnapshot
 	radioDevices             map[radioDeviceKey]*vaillantRadioDeviceSnapshot
+	deviceSlotCache          map[deviceSlotKey]bool // OP=0x06 slots where device_connected responded
+	deviceSlotDiscoveryDone  bool
+	deviceSlotDiscoveryAt    time.Time
 	fm5Mode                  graphql.Fm5SemanticMode
 	solar                    *vaillantSolarSnapshot
 	solarCylinders           map[byte]*vaillantCylinderSnapshot
@@ -294,7 +336,7 @@ type b524ProbeSpec struct {
 // multi-register coherency verification during capability-first discovery.
 var b524CapabilityProbes = []b524ProbeSpec{
 	{opcode: vaillantB524OpcodeLocal, group: 0x00, instance: 0x00, addr: 0x0001},
-	{opcode: vaillantB524OpcodeLocal, group: vaillantGroupDHW, instance: dhwInstance, addr: dhwRegOperationMode},
+	{opcode: localDHW.opcode, group: localDHW.group, instance: dhwInstance, addr: dhwRegOperationMode},
 }
 
 type zonePresenceState string
@@ -595,7 +637,8 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		boilerSlowInterval:   10 * time.Minute,
 		zoneMissThreshold:    cfg.SemanticZonePresenceMissThreshold,
 		zoneHitThreshold:     cfg.SemanticZonePresenceHitThreshold,
-		dhwStaleTTL:          cfg.SemanticDHWStaleTTL,
+		dhwStaleTTL:              cfg.SemanticDHWStaleTTL,
+		deviceSlotRediscoveryTTL: 30 * time.Minute,
 
 		catalog:    catalog,
 		catalogErr: catalogErr,
@@ -1621,9 +1664,9 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	}
 
 	present := make(map[byte]bool, 4)
-	checked := make(map[byte]bool, 11)
-	for instance := byte(0x00); instance <= 0x0A; instance++ {
-		indexBytes, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegIndex)
+	checked := make(map[byte]bool, 9)
+	for instance := byte(0x00); instance <= 0x08; instance++ { // II_MAX=0x08 per Vaillant regulator spec
+		indexBytes, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegIndex)
 		if !ok {
 			continue
 		}
@@ -1905,47 +1948,47 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 			targetPtr  *float64
 			humidity   *float64
 		)
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegCurrentTemp); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegCurrentTemp); ok {
 			current := value
 			currentPtr = &current
 			liveReadSuccess = true
 		}
 
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegTargetTemp); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegTargetTemp); ok {
 			target := value
 			targetPtr = &target
 			liveReadSuccess = true
 		}
 		if targetPtr == nil {
-			if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegFallbackManualTemp); ok {
+			if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegFallbackManualTemp); ok {
 				target := value
 				targetPtr = &target
 				liveReadSuccess = true
 			}
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegCurrentHumidity); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegCurrentHumidity); ok {
 			currentHumidity := value
 			humidity = &currentHumidity
 			liveReadSuccess = true
 		}
 
 		var qvTempPtr, qvDurPtr *float64
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegQuickVetoTemp); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegQuickVetoTemp); ok {
 			v := value
 			qvTempPtr = &v
 			liveReadSuccess = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegQuickVetoDuration); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegQuickVetoDuration); ok {
 			v := value
 			qvDurPtr = &v
 			liveReadSuccess = true
 		}
 		var qvEndTime, qvEndDate string
-		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegQuickVetoEndTime); ok && len(raw) >= 2 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegQuickVetoEndTime); ok && len(raw) >= 2 {
 			qvEndTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
 			liveReadSuccess = true
 		}
-		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegQuickVetoEndDate); ok && len(raw) >= 3 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegQuickVetoEndDate); ok && len(raw) >= 3 {
 			year := 2000 + int(raw[2])
 			qvEndDate = fmt.Sprintf("%04d-%02d-%02d", year, raw[1], raw[0])
 			liveReadSuccess = true
@@ -1953,41 +1996,41 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 
 		var holidayStartDate, holidayEndDate, holidayStartTime, holidayEndTime string
 		var holidaySetpointPtr *float64
-		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidayStartDate); ok && len(raw) >= 3 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegHolidayStartDate); ok && len(raw) >= 3 {
 			if date := decodeB524DateSuppressSentinel(raw); date != "" {
 				holidayStartDate = date
 			}
 			liveReadSuccess = true
 		}
-		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidayEndDate); ok && len(raw) >= 3 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegHolidayEndDate); ok && len(raw) >= 3 {
 			if date := decodeB524DateSuppressSentinel(raw); date != "" {
 				holidayEndDate = date
 			}
 			liveReadSuccess = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidaySetpoint); ok {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zoneRegHolidaySetpoint); ok {
 			v := value
 			holidaySetpointPtr = &v
 			liveReadSuccess = true
 		}
-		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidayEndTime); ok && len(raw) >= 2 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegHolidayEndTime); ok && len(raw) >= 2 {
 			holidayEndTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
 			liveReadSuccess = true
 		}
-		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHolidayStartTime); ok && len(raw) >= 2 {
+		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zoneRegHolidayStartTime); ok && len(raw) >= 2 {
 			holidayStartTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
 			liveReadSuccess = true
 		}
 
-		zoneOpMode, zoneOpModeOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegHeatingOpMode)
-		zoneSF, zoneSFOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegSpecialFunction)
-		zoneValve, zoneValveOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegValveStatus)
-		zoneRoomTemperatureZoneMappingRaw, zoneRoomTemperatureZoneMappingRawOK := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, zoneRegRoomTemperatureZoneMappingRaw)
+		zoneOpMode, zoneOpModeOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zoneRegHeatingOpMode)
+		zoneSF, zoneSFOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zoneRegSpecialFunction)
+		zoneValve, zoneValveOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zoneRegValveStatus)
+		zoneRoomTemperatureZoneMappingRaw, zoneRoomTemperatureZoneMappingRawOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zoneRegRoomTemperatureZoneMappingRaw)
 		if zoneOpModeOK || zoneSFOK || zoneValveOK || zoneRoomTemperatureZoneMappingRawOK {
 			liveReadSuccess = true
 		}
 		circuitInstance := resolveAssociatedCircuitInstance(zoneRoomTemperatureZoneMappingRaw, instance)
-		circuitType, hasCircuitType := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, circuitInstance, circuitRegType)
+		circuitType, hasCircuitType := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, circuitInstance, circuitRegType)
 		if hasCircuitType {
 			liveReadSuccess = true
 		}
@@ -2325,14 +2368,14 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 	}
 
 	var dhwHolidayStartDate, dhwHolidayEndDate string
-	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegHolidayStartDate); ok && len(raw) >= 3 {
+	if raw, ok := p.readB524Value(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhwRegHolidayStartDate); ok && len(raw) >= 3 {
 		if date := decodeB524DateSuppressSentinel(raw); date != "" {
 			dhwHolidayStartDate = date
 		}
 		liveReadSuccess = true
 		attempted[dhwFieldHolidayStartDate] = struct{}{}
 	}
-	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupDHW, dhwInstance, dhwRegHolidayEndDate); ok && len(raw) >= 3 {
+	if raw, ok := p.readB524Value(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhwRegHolidayEndDate); ok && len(raw) >= 3 {
 		if date := decodeB524DateSuppressSentinel(raw); date != "" {
 			dhwHolidayEndDate = date
 		}
@@ -2380,24 +2423,23 @@ func (p *vaillantSemanticPoller) sourceFromEbusdGrab(ok bool) semanticSnapshotSo
 	return semanticSnapshotSourceCache
 }
 
+// readDhwFloat reads a DHW register as float32 from OP=0x02/GG=0x01 only.
+// OP=0x06/GG=0x01 is "Primary Heating Sources", NOT DHW — no fallback.
 func (p *vaillantSemanticPoller) readDhwFloat(ctx context.Context, addr uint16) *float64 {
-	for _, opcode := range []byte{vaillantB524OpcodeLocal, vaillantB524OpcodeRead} {
-		value, ok := p.readB524Float32LE(ctx, opcode, vaillantGroupDHW, dhwInstance, addr)
-		if !ok {
-			continue
-		}
-		floatValue := value
-		return &floatValue
+	value, ok := p.readB524Float32LE(ctx, localDHW.opcode, localDHW.group, dhwInstance, addr)
+	if !ok {
+		return nil
 	}
-	return nil
+	floatValue := value
+	return &floatValue
 }
 
+// readDhwUint16 reads a DHW register as uint16 from OP=0x02/GG=0x01 only.
+// OP=0x06/GG=0x01 is "Primary Heating Sources", NOT DHW — no fallback.
 func (p *vaillantSemanticPoller) readDhwUint16(ctx context.Context, addr uint16) (*uint16, bool) {
-	for _, opcode := range []byte{vaillantB524OpcodeLocal, vaillantB524OpcodeRead} {
-		value, ok := p.readB524Uint16(ctx, opcode, vaillantGroupDHW, dhwInstance, addr)
-		if ok {
-			return value, true
-		}
+	value, ok := p.readB524Uint16(ctx, localDHW.opcode, localDHW.group, dhwInstance, addr)
+	if ok {
+		return value, true
 	}
 	return nil, false
 }
@@ -2516,7 +2558,7 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 	probeSuccess := false
 
 	for instance := byte(0x00); instance <= 0x0A; instance++ {
-		circuitTypeRaw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegType)
+		circuitTypeRaw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegType)
 		if !ok || circuitTypeRaw == nil {
 			continue
 		}
@@ -2542,83 +2584,83 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 		}
 		anyRead = true
 
-		if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegCoolingEnabled); ok && raw != nil {
+		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegCoolingEnabled); ok && raw != nil {
 			snapshot.CoolingEnabledRaw = cloneUint16Ptr(raw)
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegFlowSetpoint); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegFlowSetpoint); ok {
 			v := value
 			snapshot.FlowSetpointC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegFlowTemp); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegFlowTemp); ok {
 			v := value
 			snapshot.FlowTemperatureC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegHeatingCurve); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegHeatingCurve); ok {
 			v := value
 			snapshot.HeatingCurve = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegFlowTempMax); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegFlowTempMax); ok {
 			v := value
 			snapshot.FlowTempMaxC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegFlowTempMin); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegFlowTempMin); ok {
 			v := value
 			snapshot.FlowTempMinC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegSummerLimit); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegSummerLimit); ok {
 			v := value
 			snapshot.SummerLimitC = &v
 			anyRead = true
 		}
-		if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegRoomTempControl); ok && raw != nil {
+		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegRoomTempControl); ok && raw != nil {
 			snapshot.RoomTempControlRaw = cloneUint16Ptr(raw)
 			anyRead = true
 		}
-		if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegCircuitState); ok && raw != nil {
+		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegCircuitState); ok && raw != nil {
 			snapshot.CircuitStateRaw = cloneUint16Ptr(raw)
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegFrostProtection); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegFrostProtection); ok {
 			v := value
 			snapshot.FrostProtectionC = &v
 			anyRead = true
 		}
-		if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegPumpStatus); ok && raw != nil {
+		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegPumpStatus); ok && raw != nil {
 			snapshot.PumpStatusRaw = cloneUint16Ptr(raw)
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegCalcFlowTemp); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegCalcFlowTemp); ok {
 			v := value
 			snapshot.CalcFlowTempC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegMixerPosition); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegMixerPosition); ok {
 			v := value
 			snapshot.MixerPositionPct = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegHumidity); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegHumidity); ok {
 			v := value
 			snapshot.HumidityPct = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegDewPoint); ok {
+		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegDewPoint); ok {
 			v := value
 			snapshot.DewPointC = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegPumpHours); ok {
+		if value, ok := p.readB524Uint32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegPumpHours); ok {
 			v := value
 			snapshot.PumpHoursRaw = &v
 			anyRead = true
 		}
-		if value, ok := p.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupCircuits, instance, circuitRegPumpStarts); ok {
+		if value, ok := p.readB524Uint32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuitRegPumpStarts); ok {
 			v := value
 			snapshot.PumpStartsRaw = &v
 			anyRead = true
@@ -2979,8 +3021,7 @@ func decodeUint32Int(raw *uint32) *int {
 // B524 registers on the controller that mirror boiler operational data.
 // Group 0x00 (regulator parameters), instance 0x00.
 const (
-	vaillantGroupRegulator = byte(0x00)
-	regulatorInstance      = byte(0x00)
+	regulatorInstance = byte(0x00)
 
 	// System state registers (GG=0x00, II=0x00).
 	systemRegSystemOff                    = uint16(0x0007)
@@ -3158,24 +3199,24 @@ func boilerStatusRegisterDefinitionsForTier(tier boilerStatusTier) []boilerStatu
 			{
 				field:    boilerStatusFieldFlowTemperature,
 				decoder:  boilerStatusRegisterDecoderFloat32,
-				opcode:   vaillantB524OpcodeLocal,
-				group:    vaillantGroupRegulator,
+				opcode:   localRegulator.opcode,
+				group:    localRegulator.group,
 				instance: regulatorInstance,
 				addr:     systemRegSystemFlowTemperature,
 			},
 			{
 				field:    boilerStatusFieldPumpActive,
 				decoder:  boilerStatusRegisterDecoderUint16Bool,
-				opcode:   vaillantB524OpcodeLocal,
-				group:    vaillantGroupCircuits,
+				opcode:   localCircuits.opcode,
+				group:    localCircuits.group,
 				instance: 0x00,
 				addr:     circuitRegPumpStatus,
 			},
 			{
 				field:    boilerStatusFieldHeatingStatusRaw,
 				decoder:  boilerStatusRegisterDecoderUint16Int,
-				opcode:   vaillantB524OpcodeLocal,
-				group:    vaillantGroupCircuits,
+				opcode:   localCircuits.opcode,
+				group:    localCircuits.group,
 				instance: 0x00,
 				addr:     circuitRegCircuitState,
 			},
@@ -3553,80 +3594,80 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 	snapshot := &vaillantSystemSnapshot{}
 	updated := false
 
-	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegSystemOff); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegSystemOff); ok && raw != nil {
 		value := *raw != 0
 		snapshot.SystemOff = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegSystemWaterPressure); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegSystemWaterPressure); ok {
 		snapshot.SystemWaterPressure = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegSystemFlowTemperature); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegSystemFlowTemperature); ok {
 		snapshot.SystemFlowTemperature = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegOutdoorTemperature); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegOutdoorTemperature); ok {
 		snapshot.OutdoorTemperature = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegOutdoorTemperatureAvg24h); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegOutdoorTemperatureAvg24h); ok {
 		snapshot.OutdoorTemperatureAvg24h = &value
 		updated = true
 	}
-	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegMaintenanceDue); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegMaintenanceDue); ok && raw != nil {
 		value := *raw != 0
 		snapshot.MaintenanceDue = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegHwcCylinderTemperatureTop); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegHwcCylinderTemperatureTop); ok {
 		snapshot.HwcCylinderTemperatureTop = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegHwcCylinderTemperatureBottom); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegHwcCylinderTemperatureBottom); ok {
 		snapshot.HwcCylinderTemperatureBottom = &value
 		updated = true
 	}
 
-	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegAdaptiveHeatingCurve); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegAdaptiveHeatingCurve); ok && raw != nil {
 		value := *raw != 0
 		snapshot.AdaptiveHeatingCurve = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegAlternativePoint); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegAlternativePoint); ok {
 		snapshot.AlternativePoint = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegHeatingCircuitBivalencePoint); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegHeatingCircuitBivalencePoint); ok {
 		snapshot.HeatingCircuitBivalencePoint = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegDhwBivalencePoint); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegDhwBivalencePoint); ok {
 		snapshot.DhwBivalencePoint = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegHcEmergencyTemperature); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegHcEmergencyTemperature); ok {
 		snapshot.HcEmergencyTemperature = &value
 		updated = true
 	}
-	if value, ok := p.readB524Float32LE(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegHwcMaxFlowTempDesired); ok {
+	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegHwcMaxFlowTempDesired); ok {
 		snapshot.HwcMaxFlowTempDesired = &value
 		updated = true
 	}
-	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegMaxRoomHumidity); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegMaxRoomHumidity); ok && raw != nil {
 		snapshot.MaxRoomHumidity = cloneUint16Ptr(raw)
 		updated = true
 	}
 
 	// Installer/maintenance config (slow-config reads).
-	if value, ok := p.readB524DateHDA3(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegMaintenanceDate); ok {
+	if value, ok := p.readB524DateHDA3(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegMaintenanceDate); ok {
 		snapshot.MaintenanceDate = &value
 		updated = true
 	}
 	{
 		// Combined installer name from 2 registers × 6 chars.
-		name1, ok1 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerName1)
-		name2, ok2 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerName2)
+		name1, ok1 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegInstallerName1)
+		name2, ok2 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegInstallerName2)
 		if ok1 || ok2 {
 			var p1, p2 string
 			if ok1 {
@@ -3642,8 +3683,8 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 	}
 	{
 		// Combined installer phone from 2 registers × 6 chars.
-		phone1, ok1 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerPhone1)
-		phone2, ok2 := p.readB524CStringSanitized(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerPhone2)
+		phone1, ok1 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegInstallerPhone1)
+		phone2, ok2 := p.readB524CStringSanitized(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegInstallerPhone2)
 		if ok1 || ok2 {
 			var p1, p2 string
 			if ok1 {
@@ -3657,16 +3698,16 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 			updated = true
 		}
 	}
-	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegInstallerMenuCode); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegInstallerMenuCode); ok && raw != nil {
 		snapshot.InstallerMenuCode = cloneUint16Ptr(raw)
 		updated = true
 	}
 
-	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegSystemScheme); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegSystemScheme); ok && raw != nil {
 		snapshot.SystemScheme = cloneUint16Ptr(raw)
 		updated = true
 	}
-	if raw, ok := p.readB524Uint16(ctx, vaillantB524OpcodeLocal, vaillantGroupRegulator, regulatorInstance, systemRegModuleConfigurationVR71); ok && raw != nil {
+	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, systemRegModuleConfigurationVR71); ok && raw != nil {
 		snapshot.ModuleConfigurationVR71 = cloneUint16Ptr(raw)
 		updated = true
 	}
@@ -3683,6 +3724,25 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 	p.refreshFM5Semantic(ctx)
 }
 
+// discoverDeviceSlots probes all OP=0x06 device slot groups to find which
+// slots have a connected device. Returns the set of (group, instance) pairs
+// where device_connected (RR=0x0001) responded with a non-nil value.
+// This runs at startup and every deviceSlotRediscoveryTTL to avoid
+// probing empty slots on every poll cycle (~30 timeouts eliminated).
+func (p *vaillantSemanticPoller) discoverDeviceSlots(ctx context.Context) map[deviceSlotKey]bool {
+	active := make(map[deviceSlotKey]bool)
+	for _, grp := range remoteDeviceGroups {
+		for instance := byte(0x00); instance <= 0x0A; instance++ {
+			connectedRaw := p.readB524U8(ctx, grp.opcode, grp.group, instance, radioRegDeviceConnected)
+			if connectedRaw == nil {
+				continue // timeout — slot empty
+			}
+			active[deviceSlotKey{Group: grp.group, Instance: instance}] = true
+		}
+	}
+	return active
+}
+
 func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 	if p == nil {
 		return
@@ -3690,62 +3750,86 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 
 	p.mu.Lock()
 	controller := p.controller
+	needsDiscovery := !p.deviceSlotDiscoveryDone ||
+		(p.deviceSlotRediscoveryTTL > 0 && p.now().Sub(p.deviceSlotDiscoveryAt) >= p.deviceSlotRediscoveryTTL)
 	p.mu.Unlock()
 	if controller == 0 {
 		return
 	}
 
-	discovered := make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
-	readAny := false
-	for _, group := range []byte{vaillantGroupRadio09, vaillantGroupRadio10, vaillantGroupRadio0C} {
-		for instance := byte(0x00); instance <= 0x0A; instance++ {
-			connectedRaw := p.readB524U8(ctx, vaillantB524OpcodeRead, group, instance, radioRegDeviceConnected)
-			if connectedRaw == nil {
-				continue
-			}
-			readAny = true
-
-			connected := *connectedRaw == 1
-			classAddress := p.readB524U8(ctx, vaillantB524OpcodeRead, group, instance, radioRegDeviceClassAddress)
-			firmware := p.readB524Firmware(ctx, vaillantB524OpcodeRead, group, instance, radioRegDeviceFirmware)
-			hardware := p.readB524U16(ctx, vaillantB524OpcodeRead, group, instance, radioRegHardwareIdentifier)
-
-			slotMode := "active"
-			include := false
-			switch group {
-			case vaillantGroupRadio09, vaillantGroupRadio10:
-				include = connected
-			case vaillantGroupRadio0C:
-				include = connected || hasRemoteIdentityEvidence(classAddress, firmware, hardware)
-				if !connected {
-					slotMode = "inventory"
-				}
-			}
-			if !include {
-				continue
-			}
-
-			device := &vaillantRadioDeviceSnapshot{
-				Group:                group,
-				Instance:             instance,
-				SlotMode:             slotMode,
-				DeviceConnected:      cloneBoilerBoolPtr(&connected),
-				DeviceClassAddress:   cloneUint8Ptr(classAddress),
-				DeviceModel:          decodeRadioDeviceModel(classAddress),
-				FirmwareVersion:      cloneStringPtr(firmware),
-				HardwareIdentifier:   cloneUint16Ptr(hardware),
-				RemoteControlAddress: p.readB524U8(ctx, vaillantB524OpcodeRead, group, instance, radioRegRemoteControlAddress),
-				DevicePaired:         p.readB524Bool(ctx, vaillantB524OpcodeRead, group, instance, radioRegDevicePaired),
-				ReceptionStrength:    p.readB524U8(ctx, vaillantB524OpcodeRead, group, instance, radioRegReceptionStrength),
-				ZoneAssignment:       p.readB524U8(ctx, vaillantB524OpcodeRead, group, instance, radioRegZoneAssignment),
-				RoomTemperatureC:     p.readB524F32(ctx, vaillantB524OpcodeRead, group, instance, radioRegRoomTemperature),
-				RoomHumidityPct:      p.readB524F32(ctx, vaillantB524OpcodeRead, group, instance, radioRegRoomHumidity),
-			}
-			discovered[radioDeviceKey{Group: group, Instance: instance}] = device
-		}
+	// Phase 1: Device slot discovery — full scan of all OP=0x06 groups.
+	// Runs at startup and every deviceSlotRediscoveryTTL (30min default).
+	if needsDiscovery {
+		activeSlots := p.discoverDeviceSlots(ctx)
+		p.mu.Lock()
+		p.deviceSlotCache = activeSlots
+		p.deviceSlotDiscoveryDone = true
+		p.deviceSlotDiscoveryAt = p.now()
+		p.mu.Unlock()
 	}
 
-	if !readAny {
+	p.mu.Lock()
+	slots := p.deviceSlotCache
+	p.mu.Unlock()
+
+	if len(slots) == 0 {
+		return
+	}
+
+	// Phase 2: Read detail registers for cached active slots only.
+	discovered := make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+	for key := range slots {
+		group := key.Group
+		instance := key.Instance
+		opcode := vaillantB524OpcodeRead
+
+		connectedRaw := p.readB524U8(ctx, opcode, group, instance, radioRegDeviceConnected)
+		if connectedRaw == nil {
+			continue
+		}
+
+		connected := *connectedRaw == 1
+		classAddress := p.readB524U8(ctx, opcode, group, instance, radioRegDeviceClassAddress)
+		firmware := p.readB524Firmware(ctx, opcode, group, instance, radioRegDeviceFirmware)
+		hardware := p.readB524U16(ctx, opcode, group, instance, radioRegHardwareIdentifier)
+
+		slotMode := "active"
+		include := false
+		switch group {
+		case remoteRegulators.group, remoteThermostats.group:
+			include = connected
+		case remoteFunctionalModules.group:
+			include = connected || hasRemoteIdentityEvidence(classAddress, firmware, hardware)
+			if !connected {
+				slotMode = "inventory"
+			}
+		default:
+			include = connected
+		}
+		if !include {
+			continue
+		}
+
+		device := &vaillantRadioDeviceSnapshot{
+			Group:                group,
+			Instance:             instance,
+			SlotMode:             slotMode,
+			DeviceConnected:      cloneBoilerBoolPtr(&connected),
+			DeviceClassAddress:   cloneUint8Ptr(classAddress),
+			DeviceModel:          decodeRadioDeviceModel(classAddress),
+			FirmwareVersion:      cloneStringPtr(firmware),
+			HardwareIdentifier:   cloneUint16Ptr(hardware),
+			RemoteControlAddress: p.readB524U8(ctx, opcode, group, instance, radioRegRemoteControlAddress),
+			DevicePaired:         p.readB524Bool(ctx, opcode, group, instance, radioRegDevicePaired),
+			ReceptionStrength:    p.readB524U8(ctx, opcode, group, instance, radioRegReceptionStrength),
+			ZoneAssignment:       p.readB524U8(ctx, opcode, group, instance, radioRegZoneAssignment),
+			RoomTemperatureC:     p.readB524F32(ctx, opcode, group, instance, radioRegRoomTemperature),
+			RoomHumidityPct:      p.readB524F32(ctx, opcode, group, instance, radioRegRoomHumidity),
+		}
+		discovered[radioDeviceKey{Group: group, Instance: instance}] = device
+	}
+
+	if len(discovered) == 0 {
 		return
 	}
 
@@ -4089,31 +4173,31 @@ func (p *vaillantSemanticPoller) readSolarSnapshot(ctx context.Context) (*vailla
 	incoming := &vaillantSolarSnapshot{}
 	readAny := false
 
-	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegEnabled); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegEnabled); ok {
 		readAny = true
 		incoming.SolarEnabled = decodeB524BoolFromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegFunctionMode); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegFunctionMode); ok {
 		readAny = true
 		incoming.FunctionMode = decodeB524BoolFromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegCollectorTemp); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegCollectorTemp); ok {
 		readAny = true
 		incoming.CollectorTemperatureC = decodeB524Float32FromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegReturnTemp); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegReturnTemp); ok {
 		readAny = true
 		incoming.ReturnTemperatureC = decodeB524Float32FromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegPumpActive); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegPumpActive); ok {
 		readAny = true
 		incoming.PumpActive = decodeB524BoolFromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegCurrentYield); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegCurrentYield); ok {
 		readAny = true
 		incoming.CurrentYield = decodeB524Float32FromRaw(raw)
 	}
-	if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupSolar, solarInstance, solarRegPumpHours); ok {
+	if raw, ok := p.readB524Value(ctx, localSolar.opcode, localSolar.group, solarInstance, solarRegPumpHours); ok {
 		readAny = true
 		incoming.PumpHours = decodeB524Uint32FromRaw(raw)
 	}
@@ -4134,22 +4218,22 @@ func (p *vaillantSemanticPoller) readCylinderSnapshots(ctx context.Context) (map
 		incoming := &vaillantCylinderSnapshot{Instance: instance}
 		instanceRead := false
 
-		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupCylinders, instance, cylinderRegMaxSetpoint); ok {
+		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinderRegMaxSetpoint); ok {
 			instanceRead = true
 			readAny = true
 			incoming.MaxSetpointC = decodeB524Float32FromRaw(raw)
 		}
-		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupCylinders, instance, cylinderRegChargeHysteresis); ok {
+		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinderRegChargeHysteresis); ok {
 			instanceRead = true
 			readAny = true
 			incoming.ChargeHysteresis = decodeB524Float32FromRaw(raw)
 		}
-		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupCylinders, instance, cylinderRegChargeOffset); ok {
+		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinderRegChargeOffset); ok {
 			instanceRead = true
 			readAny = true
 			incoming.ChargeOffset = decodeB524Float32FromRaw(raw)
 		}
-		if raw, ok := p.readB524Value(ctx, vaillantB524OpcodeLocal, vaillantGroupCylinders, instance, cylinderRegTemperature); ok {
+		if raw, ok := p.readB524Value(ctx, localCylinders.opcode, localCylinders.group, instance, cylinderRegTemperature); ok {
 			instanceRead = true
 			readAny = true
 			incoming.TemperatureC = decodeB524Float32FromRaw(raw)
@@ -6819,7 +6903,7 @@ func (p *vaillantSemanticPoller) readB524DateHDA3(ctx context.Context, opcode, g
 }
 
 func (p *vaillantSemanticPoller) readB524ZoneNamePart(ctx context.Context, instance byte, addr uint16) (string, bool) {
-	raw, ok := p.readB524CString(ctx, vaillantB524OpcodeLocal, vaillantGroupZones, instance, addr)
+	raw, ok := p.readB524CString(ctx, localZones.opcode, localZones.group, instance, addr)
 	if !ok {
 		return "", false
 	}

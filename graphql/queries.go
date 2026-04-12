@@ -3555,6 +3555,16 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return status.FirmwareVersion, nil
 				},
 			},
+			"firmware_version": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(ServiceStatus)
+					if !ok {
+						return nil, nil
+					}
+					return status.FirmwareVersion, nil
+				},
+			},
 			"updatesAvailable": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

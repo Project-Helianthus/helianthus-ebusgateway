@@ -3,6 +3,7 @@ package adaptermux
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
@@ -40,6 +41,15 @@ var (
 // readLoop resumes, so the consumer sees events in exact enqueue
 // order — no priority select needed.
 func (t *activeTransport) ReadByte() (byte, error) {
+	// Use the upstream ReadTimeout as a deadline for activeCh reads.
+	// Without this, ReadByte blocks indefinitely when the bus is quiet
+	// or when ownership is lost mid-transaction (activeCh stops receiving
+	// new bytes). The timeout allows bus.readByte's caller to check its
+	// context and retry or abort, matching ENH/ENS transport behavior
+	// where TCP read timeout provides the same boundary.
+	timer := time.NewTimer(t.mux.cfg.ReadTimeout)
+	defer timer.Stop()
+
 	select {
 	case ev := <-t.mux.activeCh:
 		if ev.kind == activeEventError {
@@ -49,6 +59,8 @@ func (t *activeTransport) ReadByte() (byte, error) {
 			return 0, errors.New("adaptermux: unexpected nil error")
 		}
 		return ev.b, nil
+	case <-timer.C:
+		return 0, fmt.Errorf("adaptermux: %w", ebuserrors.ErrTimeout)
 	case <-t.mux.ctx.Done():
 		return 0, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}
@@ -59,6 +71,9 @@ func (t *activeTransport) ReadByte() (byte, error) {
 //
 // Same FIFO guarantee as ReadByte — see comment there.
 func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
+	timer := time.NewTimer(t.mux.cfg.ReadTimeout)
+	defer timer.Stop()
+
 	select {
 	case ev := <-t.mux.activeCh:
 		if ev.kind == activeEventError {
@@ -76,6 +91,8 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 			Kind: transport.StreamEventByte,
 			Byte: ev.b,
 		}, nil
+	case <-timer.C:
+		return transport.StreamEvent{}, fmt.Errorf("adaptermux: %w", ebuserrors.ErrTimeout)
 	case <-t.mux.ctx.Done():
 		return transport.StreamEvent{}, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}

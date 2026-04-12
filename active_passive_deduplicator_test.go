@@ -17,17 +17,23 @@ func TestActivePassiveDeduplicator_DefaultBudgetsStayFrozenToM1Envelope(t *testi
 	}
 
 	budgets := deduplicator.Budgets()
-	if budgets.LogicalRequestEnvelope != 1250*time.Millisecond {
-		t.Fatalf("LogicalRequestEnvelope = %s; want 1250ms", budgets.LogicalRequestEnvelope)
+	// Expected values with DefaultBusConfig (TimeoutRetries=0, NACKRetries=1,
+	// CollisionResyncSYNCount=2):
+	// LogicalRequestEnvelope = (1+0+1)*250ms + 2*125ms = 750ms
+	// ActivePublishBudget    = 750ms + 250ms = 1000ms
+	// PendingGraceTimeout    = max(1000ms, 500ms) + 250ms = 1250ms
+	// FingerprintRetention   = 1250ms + 500ms = 1750ms
+	if budgets.LogicalRequestEnvelope != 750*time.Millisecond {
+		t.Fatalf("LogicalRequestEnvelope = %s; want 750ms", budgets.LogicalRequestEnvelope)
 	}
-	if budgets.ActivePublishBudget != 1500*time.Millisecond {
-		t.Fatalf("ActivePublishBudget = %s; want 1500ms", budgets.ActivePublishBudget)
+	if budgets.ActivePublishBudget != 1000*time.Millisecond {
+		t.Fatalf("ActivePublishBudget = %s; want 1000ms", budgets.ActivePublishBudget)
 	}
-	if budgets.PendingGraceTimeout != 1750*time.Millisecond {
-		t.Fatalf("PendingGraceTimeout = %s; want 1750ms", budgets.PendingGraceTimeout)
+	if budgets.PendingGraceTimeout != 1250*time.Millisecond {
+		t.Fatalf("PendingGraceTimeout = %s; want 1250ms", budgets.PendingGraceTimeout)
 	}
-	if budgets.ActiveFingerprintRetention != 2250*time.Millisecond {
-		t.Fatalf("ActiveFingerprintRetention = %s; want 2250ms", budgets.ActiveFingerprintRetention)
+	if budgets.ActiveFingerprintRetention != 1750*time.Millisecond {
+		t.Fatalf("ActiveFingerprintRetention = %s; want 1750ms", budgets.ActiveFingerprintRetention)
 	}
 	if budgets.PendingCapacity != 256 {
 		t.Fatalf("PendingCapacity = %d; want 256", budgets.PendingCapacity)
@@ -89,8 +95,9 @@ func TestActivePassiveDeduplicator_MatchesDelayedPassiveWithinRetention(t *testi
 		t.Fatalf("OnBusEvent error = %v", err)
 	}
 
-	deduplicator.nowFunc = func() time.Time { return base.Add(2 * time.Second) }
-	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base.Add(2*time.Second), request, response))
+	// Deliver passive copy within ActiveFingerprintRetention (1750ms).
+	deduplicator.nowFunc = func() time.Time { return base.Add(1500 * time.Millisecond) }
+	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base.Add(1500*time.Millisecond), request, response))
 
 	event := requireAdjudicatedEvent(t, subscription, DedupDispositionMatchedActiveCopy)
 	if !event.MatchedActiveDuplicate {

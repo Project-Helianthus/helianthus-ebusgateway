@@ -3565,7 +3565,27 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return status.UpdatesAvailable, nil
 				},
 			},
+			"updates_available": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(ServiceStatus)
+					if !ok {
+						return nil, nil
+					}
+					return status.UpdatesAvailable, nil
+				},
+			},
 			"initiatorAddress": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(ServiceStatus)
+					if !ok {
+						return nil, nil
+					}
+					return status.InitiatorAddress, nil
+				},
+			},
+			"initiator_address": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					status, ok := params.Source.(ServiceStatus)
@@ -3887,7 +3907,27 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return device.DeviceID, nil
 				},
 			},
+			"device_id": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return device.DeviceID, nil
+				},
+			},
 			"serialNumber": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return device.SerialNumber, nil
+				},
+			},
+			"serial_number": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					device, ok := deviceFromSource(params)
@@ -3907,7 +3947,27 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return device.MacAddress, nil
 				},
 			},
+			"mac_address": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return device.MacAddress, nil
+				},
+			},
 			"softwareVersion": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return device.SoftwareVersion, nil
+				},
+			},
+			"software_version": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					device, ok := deviceFromSource(params)
@@ -3927,7 +3987,30 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return device.HardwareVersion, nil
 				},
 			},
+			"hardware_version": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					return device.HardwareVersion, nil
+				},
+			},
 			"displayName": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					if device.DisplayName == "" {
+						return nil, nil
+					}
+					return device.DisplayName, nil
+				},
+			},
+			"display_name": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					device, ok := deviceFromSource(params)
@@ -3953,6 +4036,19 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return device.ProductFamily, nil
 				},
 			},
+			"product_family": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					if device.ProductFamily == "" {
+						return nil, nil
+					}
+					return device.ProductFamily, nil
+				},
+			},
 			"productModel": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -3966,7 +4062,33 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return device.ProductModel, nil
 				},
 			},
+			"product_model": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					if device.ProductModel == "" {
+						return nil, nil
+					}
+					return device.ProductModel, nil
+				},
+			},
 			"partNumber": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					if device.PartNumber == "" {
+						return nil, nil
+					}
+					return device.PartNumber, nil
+				},
+			},
+			"part_number": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					device, ok := deviceFromSource(params)
@@ -4799,6 +4921,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return builder.statusProvider().DaemonStatus(), nil
 				},
 			},
+			"daemon_status": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.statusType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.statusProvider().DaemonStatus(), nil
+				},
+			},
 			"gatewayIdentity": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.gatewayIdentityType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -4806,6 +4934,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				},
 			},
 			"adapterStatus": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.statusType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.statusProvider().AdapterStatus(), nil
+				},
+			},
+			"adapter_status": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.statusType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.statusProvider().AdapterStatus(), nil
@@ -4829,6 +4963,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return builder.semanticProvider().EnergyTotals(), nil
 				},
 			},
+			"energy_totals": &graphqlgo.Field{
+				Type: types.energyTotals,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().EnergyTotals(), nil
+				},
+			},
 			"circuits": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.circuitStatusType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -4841,7 +4981,23 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return builder.semanticProvider().RadioDevices(), nil
 				},
 			},
+			"radio_devices": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.radioDeviceType))),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().RadioDevices(), nil
+				},
+			},
 			"fm5SemanticMode": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.fm5SemanticMode),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					mode := builder.semanticProvider().FM5SemanticMode()
+					if mode == "" {
+						mode = Fm5SemanticModeAbsent
+					}
+					return string(mode), nil
+				},
+			},
+			"fm5_semantic_mode": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.fm5SemanticMode),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					mode := builder.semanticProvider().FM5SemanticMode()
@@ -4873,6 +5029,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return builder.semanticProvider().BoilerStatus(), nil
 				},
 			},
+			"boiler_status": &graphqlgo.Field{
+				Type: types.boilerStatusType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().BoilerStatus(), nil
+				},
+			},
 			"system": &graphqlgo.Field{
 				Type: types.systemStatusType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -4886,6 +5048,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				},
 			},
 			"adapterHardwareInfo": &graphqlgo.Field{
+				Type: types.adapterHardwareInfoType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.semanticProvider().AdapterHardwareInfo(), nil
+				},
+			},
+			"adapter_hardware_info": &graphqlgo.Field{
 				Type: types.adapterHardwareInfoType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.semanticProvider().AdapterHardwareInfo(), nil

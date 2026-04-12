@@ -3778,6 +3778,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 
 	// Phase 2: Read detail registers for cached active slots only.
 	discovered := make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+	readAny := false
 	for key := range slots {
 		group := key.Group
 		instance := key.Instance
@@ -3787,6 +3788,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 		if connectedRaw == nil {
 			continue
 		}
+		readAny = true
 
 		connected := *connectedRaw == 1
 		classAddress := p.readB524U8(ctx, opcode, group, instance, radioRegDeviceClassAddress)
@@ -3829,7 +3831,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 		discovered[radioDeviceKey{Group: group, Instance: instance}] = device
 	}
 
-	if len(discovered) == 0 {
+	if !readAny {
 		return
 	}
 

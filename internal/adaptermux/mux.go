@@ -1329,9 +1329,19 @@ func (m *Mux) broadcastResetToSessions() {
 	}
 	m.sessionsMu.Unlock()
 
+	// Deliver resets concurrently — each deliverReset blocks until
+	// the session drains its buffer or closes. Delivering in parallel
+	// prevents a single slow session from delaying reset delivery to
+	// all other sessions (head-of-line blocking).
+	var wg sync.WaitGroup
 	for _, sess := range sessions {
-		sess.deliverReset(features)
+		wg.Add(1)
+		go func(s *session) {
+			defer wg.Done()
+			s.deliverReset(features)
+		}(sess)
 	}
+	wg.Wait()
 }
 
 // isNetTimeout reports whether err is a net.Error timeout (read deadline

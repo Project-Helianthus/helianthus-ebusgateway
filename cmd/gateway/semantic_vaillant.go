@@ -219,19 +219,19 @@ var b555HCNames = map[byte]string{
 // B5.24 energy registers (VRC 720f TSP 15.720, group=0, instance=0).
 // energy4 type = ULG (unsigned 32-bit LE) in kWh.
 const (
-	energyRegFuelSumHc    = uint16(0x0056) // PrFuelSumHc: total gas consumption heating
-	energyRegEnergySumHc  = uint16(0x0057) // PrEnergySumHc: total electricity consumption heating
-	energyRegEnergySumHwc = uint16(0x0058) // PrEnergySumHwc: total electricity consumption hot water
-	energyRegFuelSumHwc   = uint16(0x0059) // PrFuelSumHwc: total gas consumption hot water
+	energy_fuel_sum_hc    = uint16(0x0056) // PrFuelSumHc: total gas consumption heating
+	energy_electricity_sum_hc  = uint16(0x0057) // PrEnergySumHc: total electricity consumption heating
+	energy_electricity_sum_hwc = uint16(0x0058) // PrEnergySumHwc: total electricity consumption hot water
+	energy_fuel_sum_hwc   = uint16(0x0059) // PrFuelSumHwc: total gas consumption hot water
 
-	energyRegFuelSumHcThisMonth    = uint16(0x004E) // PrFuelSumHcThisMonth: gas heating this month
-	energyRegEnergySumHcThisMonth  = uint16(0x004F) // PrEnergySumHcThisMonth: electricity heating this month
-	energyRegEnergySumHwcThisMonth = uint16(0x0050) // PrEnergySumHwcThisMonth: electricity hot water this month
-	energyRegFuelSumHwcThisMonth   = uint16(0x0051) // PrFuelSumHwcThisMonth: gas hot water this month
-	energyRegFuelSumHcLastMonth    = uint16(0x0052) // PrFuelSumHcLastMonth: gas heating last month
-	energyRegEnergySumHcLastMonth  = uint16(0x0053) // PrEnergySumHcLastMonth: electricity heating last month
-	energyRegEnergySumHwcLastMonth = uint16(0x0054) // PrEnergySumHwcLastMonth: electricity hot water last month
-	energyRegFuelSumHwcLastMonth   = uint16(0x0055) // PrFuelSumHwcLastMonth: gas hot water last month
+	energy_fuel_sum_hc_this_month    = uint16(0x004E) // PrFuelSumHcThisMonth: gas heating this month
+	energy_electricity_sum_hc_this_month  = uint16(0x004F) // PrEnergySumHcThisMonth: electricity heating this month
+	energy_electricity_sum_hwc_this_month = uint16(0x0050) // PrEnergySumHwcThisMonth: electricity hot water this month
+	energy_fuel_sum_hwc_this_month   = uint16(0x0051) // PrFuelSumHwcThisMonth: gas hot water this month
+	energy_fuel_sum_hc_last_month    = uint16(0x0052) // PrFuelSumHcLastMonth: gas heating last month
+	energy_electricity_sum_hc_last_month  = uint16(0x0053) // PrEnergySumHcLastMonth: electricity heating last month
+	energy_electricity_sum_hwc_last_month = uint16(0x0054) // PrEnergySumHwcLastMonth: electricity hot water last month
+	energy_fuel_sum_hwc_last_month   = uint16(0x0055) // PrFuelSumHwcLastMonth: gas hot water last month
 )
 
 type regulatorAbsenceState string
@@ -2284,20 +2284,20 @@ type b524EnergyQuery struct {
 
 var b524EnergyQueries = []b524EnergyQuery{
 	// All-time totals (mapped as year/current).
-	{energyRegFuelSumHc, "gas", "climate", "year", "current"},
-	{energyRegFuelSumHwc, "gas", "hot_water", "year", "current"},
-	{energyRegEnergySumHc, "electricity", "climate", "year", "current"},
-	{energyRegEnergySumHwc, "electricity", "hot_water", "year", "current"},
+	{energy_fuel_sum_hc, "gas", "climate", "year", "current"},
+	{energy_fuel_sum_hwc, "gas", "hot_water", "year", "current"},
+	{energy_electricity_sum_hc, "electricity", "climate", "year", "current"},
+	{energy_electricity_sum_hwc, "electricity", "hot_water", "year", "current"},
 	// Monthly: this month (month/current).
-	{energyRegFuelSumHcThisMonth, "gas", "climate", "month", "current"},
-	{energyRegFuelSumHwcThisMonth, "gas", "hot_water", "month", "current"},
-	{energyRegEnergySumHcThisMonth, "electricity", "climate", "month", "current"},
-	{energyRegEnergySumHwcThisMonth, "electricity", "hot_water", "month", "current"},
+	{energy_fuel_sum_hc_this_month, "gas", "climate", "month", "current"},
+	{energy_fuel_sum_hwc_this_month, "gas", "hot_water", "month", "current"},
+	{energy_electricity_sum_hc_this_month, "electricity", "climate", "month", "current"},
+	{energy_electricity_sum_hwc_this_month, "electricity", "hot_water", "month", "current"},
 	// Monthly: last month (month/previous).
-	{energyRegFuelSumHcLastMonth, "gas", "climate", "month", "previous"},
-	{energyRegFuelSumHwcLastMonth, "gas", "hot_water", "month", "previous"},
-	{energyRegEnergySumHcLastMonth, "electricity", "climate", "month", "previous"},
-	{energyRegEnergySumHwcLastMonth, "electricity", "hot_water", "month", "previous"},
+	{energy_fuel_sum_hc_last_month, "gas", "climate", "month", "previous"},
+	{energy_fuel_sum_hwc_last_month, "gas", "hot_water", "month", "previous"},
+	{energy_electricity_sum_hc_last_month, "electricity", "climate", "month", "previous"},
+	{energy_electricity_sum_hwc_last_month, "electricity", "hot_water", "month", "previous"},
 }
 
 func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {

@@ -3624,6 +3624,19 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return identity.InstanceGUID, nil
 				},
 			},
+			"instance_guid": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					identity, ok := params.Source.(GatewayIdentity)
+					if !ok {
+						return nil, nil
+					}
+					if identity.InstanceGUID == "" {
+						return nil, nil
+					}
+					return identity.InstanceGUID, nil
+				},
+			},
 		},
 	})
 
@@ -4938,6 +4951,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				},
 			},
 			"gatewayIdentity": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.gatewayIdentityType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return builder.gatewayIdentityProvider().GatewayIdentity(), nil
+				},
+			},
+			"gateway_identity": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.gatewayIdentityType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					return builder.gatewayIdentityProvider().GatewayIdentity(), nil

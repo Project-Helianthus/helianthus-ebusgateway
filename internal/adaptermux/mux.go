@@ -364,7 +364,8 @@ func (m *Mux) connect() error {
 	m.upstream = setupTr
 
 	// Perform INIT handshake — fatal if transport implements Init.
-	// Retry up to 3 times with 200ms stabilization delay between attempts.
+	// Retry up to 5 times with increasing stabilization delays between
+	// retries (200ms, 400ms, 600ms, 800ms).
 	// The adapter's eBUS transceiver needs time after TCP accept to
 	// initialize; features=0x00 on first attempt indicates the adapter
 	// wasn't ready. The standalone proxy had a similar 200ms delay.
@@ -376,14 +377,20 @@ func (m *Mux) connect() error {
 		for attempt := 0; attempt < 5; attempt++ {
 			if attempt > 0 {
 				// Exponential-ish backoff: 200ms, 400ms, 600ms, 800ms
-				time.Sleep(time.Duration(200*(attempt)) * time.Millisecond)
+				backoff := time.Duration(200*(attempt)) * time.Millisecond
+				select {
+				case <-time.After(backoff):
+				case <-m.ctx.Done():
+					_ = conn.Close()
+					return m.ctx.Err()
+				}
 			}
 			features, initErr = initer.Init(requestedFeatures)
 			if initErr != nil {
 				m.logger.Printf("adaptermux: INIT attempt %d failed: %v (retrying)", attempt+1, initErr)
 				continue
 			}
-			if features == requestedFeatures {
+			if features&requestedFeatures == requestedFeatures {
 				initOK = true
 				break // adapter confirmed requested features
 			}
@@ -399,14 +406,23 @@ func (m *Mux) connect() error {
 			return fmt.Errorf("adaptermux: INIT handshake failed after 5 attempts: %w", initErr)
 		}
 		m.upstreamFeatures.Store(uint32(features))
-		m.logger.Printf("adaptermux: INIT handshake succeeded, upstream features=0x%02X", features)
+		if initOK {
+			m.logger.Printf("adaptermux: INIT handshake succeeded, upstream features=0x%02X", features)
+		} else {
+			m.logger.Printf("adaptermux: INIT handshake degraded, upstream features=0x%02X", features)
+		}
 
 		// Post-INIT stabilization: give the adapter time to settle
 		// before sending INFO queries. The adapter sends a spontaneous
 		// RESETTED after processing INIT; without this delay, the
 		// RESETTED arrives during the INFO exchange and corrupts it.
 		// 500ms is empirically sufficient (200ms was not enough).
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-m.ctx.Done():
+			_ = conn.Close()
+			return m.ctx.Err()
+		}
 	}
 
 	// Populate INFO cache with the 2s-timeout transport.

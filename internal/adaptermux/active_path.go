@@ -41,13 +41,18 @@ var (
 // readLoop resumes, so the consumer sees events in exact enqueue
 // order — no priority select needed.
 func (t *activeTransport) ReadByte() (byte, error) {
-	// Use the upstream ReadTimeout as a deadline for activeCh reads.
-	// Without this, ReadByte blocks indefinitely when the bus is quiet
-	// or when ownership is lost mid-transaction (activeCh stops receiving
-	// new bytes). The timeout allows bus.readByte's caller to check its
-	// context and retry or abort, matching ENH/ENS transport behavior
-	// where TCP read timeout provides the same boundary.
-	timer := time.NewTimer(t.mux.cfg.ReadTimeout)
+	// Timeout prevents indefinite blocking when ownership is lost or
+	// the bus goes completely silent. Must be MUCH longer than the mux
+	// readLoop tick (cfg.ReadTimeout=50ms) to avoid false timeouts:
+	// echo delivery through readLoop → onReceived → activeCh has
+	// multi-goroutine jitter that can exceed 50ms. With TimeoutRetries=0
+	// in ebusgo, ANY ErrTimeout kills a scan probe immediately.
+	//
+	// 2s is a safe balance: short enough to prevent deadlock (original
+	// bug #3 where activeCh filled up), long enough that normal echo
+	// delivery (~5-20ms) never triggers a false timeout.
+	const activeChanTimeout = 2 * time.Second
+	timer := time.NewTimer(activeChanTimeout)
 	defer timer.Stop()
 
 	select {
@@ -71,7 +76,8 @@ func (t *activeTransport) ReadByte() (byte, error) {
 //
 // Same FIFO guarantee as ReadByte — see comment there.
 func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
-	timer := time.NewTimer(t.mux.cfg.ReadTimeout)
+	const activeChanTimeout = 2 * time.Second
+	timer := time.NewTimer(activeChanTimeout)
 	defer timer.Stop()
 
 	select {

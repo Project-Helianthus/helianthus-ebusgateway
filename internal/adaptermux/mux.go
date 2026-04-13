@@ -364,15 +364,49 @@ func (m *Mux) connect() error {
 	m.upstream = setupTr
 
 	// Perform INIT handshake — fatal if transport implements Init.
+	// Retry up to 3 times with 200ms stabilization delay between attempts.
+	// The adapter's eBUS transceiver needs time after TCP accept to
+	// initialize; features=0x00 on first attempt indicates the adapter
+	// wasn't ready. The standalone proxy had a similar 200ms delay.
 	const requestedFeatures byte = 0x01
 	if initer, ok := setupTr.(interface{ Init(byte) (byte, error) }); ok {
-		features, err := initer.Init(requestedFeatures)
-		if err != nil {
+		var features byte
+		var initErr error
+		initOK := false
+		for attempt := 0; attempt < 5; attempt++ {
+			if attempt > 0 {
+				// Exponential-ish backoff: 200ms, 400ms, 600ms, 800ms
+				time.Sleep(time.Duration(200*(attempt)) * time.Millisecond)
+			}
+			features, initErr = initer.Init(requestedFeatures)
+			if initErr != nil {
+				m.logger.Printf("adaptermux: INIT attempt %d failed: %v (retrying)", attempt+1, initErr)
+				continue
+			}
+			if features == requestedFeatures {
+				initOK = true
+				break // adapter confirmed requested features
+			}
+			// features=0x00 means adapter wasn't ready yet — retry
+			m.logger.Printf("adaptermux: INIT attempt %d: features=0x%02X (want 0x%02X), retrying", attempt+1, features, requestedFeatures)
+		}
+		if !initOK && initErr == nil {
+			// All attempts returned features=0x00 but no error.
+			// Accept degraded mode — the adapter may not support features.
+			m.logger.Printf("adaptermux: INIT: adapter does not confirm features=0x%02X, proceeding with features=0x%02X", requestedFeatures, features)
+		} else if initErr != nil && !initOK {
 			_ = conn.Close()
-			return fmt.Errorf("adaptermux: INIT handshake failed: %w", err)
+			return fmt.Errorf("adaptermux: INIT handshake failed after 5 attempts: %w", initErr)
 		}
 		m.upstreamFeatures.Store(uint32(features))
 		m.logger.Printf("adaptermux: INIT handshake succeeded, upstream features=0x%02X", features)
+
+		// Post-INIT stabilization: give the adapter time to settle
+		// before sending INFO queries. The adapter sends a spontaneous
+		// RESETTED after processing INIT; without this delay, the
+		// RESETTED arrives during the INFO exchange and corrupts it.
+		// 500ms is empirically sufficient (200ms was not enough).
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	// Populate INFO cache with the 2s-timeout transport.

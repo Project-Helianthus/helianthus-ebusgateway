@@ -429,7 +429,33 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return boilerConfigUnsupportedResult(), nil
 				},
 			},
+			"set_boiler_config": &graphqlgo.Field{
+				Type: boilerConfigResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if boilerWriter != nil {
+						fieldName, _ := params.Args["field"].(string)
+						fieldValue, _ := params.Args["value"].(string)
+						return boilerWriter.SetBoilerConfig(params.Context, fieldName, fieldValue), nil
+					}
+					return boilerConfigUnsupportedResult(), nil
+				},
+			},
 			"setCircuitConfig": &graphqlgo.Field{
+				Type: configResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"index": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return setCircuitConfigResolve(params, registry, invoker), nil
+				},
+			},
+			"set_circuit_config": &graphqlgo.Field{
 				Type: configResultType,
 				Args: graphqlgo.FieldConfigArgument{
 					"index": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
@@ -450,7 +476,28 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return setSystemConfigResolve(params, registry, invoker, systemWriter), nil
 				},
 			},
+			"set_system_config": &graphqlgo.Field{
+				Type: configResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return setSystemConfigResolve(params, registry, invoker, systemWriter), nil
+				},
+			},
 			"setZoneConfig": &graphqlgo.Field{
+				Type: configResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"index": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+					"field": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return setZoneConfigResolve(params, registry, invoker), nil
+				},
+			},
+			"set_zone_config": &graphqlgo.Field{
 				Type: configResultType,
 				Args: graphqlgo.FieldConfigArgument{
 					"index": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
@@ -472,7 +519,28 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					return setZoneTimeProgramResolve(params, scheduleWriter), nil
 				},
 			},
+			"set_zone_time_program": &graphqlgo.Field{
+				Type: scheduleWriteResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"zone":    &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+					"weekday": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+					"slots":   &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return setZoneTimeProgramResolve(params, scheduleWriter), nil
+				},
+			},
 			"setDhwTimeProgram": &graphqlgo.Field{
+				Type: scheduleWriteResultType,
+				Args: graphqlgo.FieldConfigArgument{
+					"weekday": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},
+					"slots":   &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return setDhwTimeProgramResolve(params, scheduleWriter), nil
+				},
+			},
+			"set_dhw_time_program": &graphqlgo.Field{
 				Type: scheduleWriteResultType,
 				Args: graphqlgo.FieldConfigArgument{
 					"weekday": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.Int)},

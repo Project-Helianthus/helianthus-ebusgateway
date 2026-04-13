@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -243,5 +244,101 @@ func TestProxyListenerMultipleConnections(t *testing.T) {
 
 	if count < 3 {
 		t.Fatalf("expected at least 3 sessions, got %d", count)
+	}
+}
+
+// fakeAdapterServerINITRetry starts a TCP server that returns
+// features=0x00 on the first INIT attempt, then features=0x01 on the
+// second. This verifies the connect() INIT retry logic.
+func fakeAdapterServerINITRetry(t *testing.T) (addr string, closer func()) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("fakeAdapterServerINITRetry: listen: %v", err)
+	}
+
+	done := make(chan struct{})
+	var adapterConn net.Conn
+	var attemptCount atomic.Int32
+
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		adapterConn = conn
+
+		for {
+			buf := make([]byte, 2)
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				return
+			}
+
+			attempt := attemptCount.Add(1)
+			var features byte
+			if attempt == 1 {
+				features = 0x00 // not ready
+			} else {
+				features = 0x01 // ready
+			}
+			resp := transport.EncodeENH(transport.ENHResResetted, features)
+			if _, err := conn.Write(resp[:]); err != nil {
+				return
+			}
+
+			if features != 0x00 {
+				break
+			}
+		}
+
+		// Keep connection open.
+		hold := make([]byte, 1)
+		for {
+			_, err := conn.Read(hold)
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	return ln.Addr().String(), func() {
+		ln.Close()
+		if adapterConn != nil {
+			adapterConn.Close()
+		}
+	}
+}
+
+func TestConnect_INITRetrySucceeds(t *testing.T) {
+	adapterAddr, adapterClose := fakeAdapterServerINITRetry(t)
+	defer adapterClose()
+
+	cfg := Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     adapterAddr,
+		DialTimeout: 2 * time.Second,
+		ReadTimeout: 200 * time.Millisecond,
+	}
+
+	mux := New(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := mux.Start(ctx); err != nil {
+		t.Fatalf("mux.Start: %v (expected INIT retry to succeed on second attempt)", err)
+	}
+	defer func() {
+		cancel()
+		mux.Close()
+	}()
+
+	// Verify the upstream features were stored correctly.
+	features := byte(mux.upstreamFeatures.Load())
+	if features != 0x01 {
+		t.Fatalf("upstreamFeatures = 0x%02X, want 0x01", features)
 	}
 }

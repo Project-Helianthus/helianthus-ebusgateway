@@ -85,16 +85,6 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 		return 0
 	}
 
-	// AM25/AM50: reject connections beyond the session limit.
-	m.sessionsMu.Lock()
-	if len(m.sessions) >= maxSessions {
-		m.sessionsMu.Unlock()
-		m.logger.Printf("adaptermux: rejecting session — max sessions (%d) reached (AM50)", maxSessions)
-		_ = conn.Close()
-		return 0
-	}
-	m.sessionsMu.Unlock()
-
 	id := m.nextSessionID()
 	sess := &session{
 		id:          id,
@@ -105,7 +95,14 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 		done:        make(chan struct{}),
 	}
 
+	// AM25/AM50: check + insert under a single lock to prevent TOCTOU.
 	m.sessionsMu.Lock()
+	if len(m.sessions) >= maxSessions {
+		m.sessionsMu.Unlock()
+		m.logger.Printf("adaptermux: rejecting session — max sessions (%d) reached (AM50)", maxSessions)
+		_ = conn.Close()
+		return 0
+	}
 	m.sessions[id] = sess
 	m.sessionsMu.Unlock()
 

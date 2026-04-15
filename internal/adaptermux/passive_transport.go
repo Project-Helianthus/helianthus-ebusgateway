@@ -109,22 +109,16 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 				}
 				return // drop the new symbol
 			}
-			// AM28: data was lost -- inject a reset marker to signal
+			// AM28: data was lost — inject a reset marker to signal
 			// the loss boundary to the consumer instead of silently
 			// continuing with a gap. The new symbol is also dropped;
 			// the consumer must re-sync after seeing the reset.
+			// The channel is guaranteed to have one free slot from the
+			// eviction above (single-producer), so the send always succeeds.
 			select {
 			case t.events <- transport.StreamEvent{Kind: transport.StreamEventReset}:
 			case <-t.done:
 				return
-			default:
-				// If even the reset can't be queued, at least we
-				// evicted the oldest -- push the new symbol as fallback.
-				select {
-				case t.events <- se:
-				case <-t.done:
-					return
-				}
 			}
 		default:
 		}

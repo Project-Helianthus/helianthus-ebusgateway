@@ -110,12 +110,19 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 			// the loss boundary to the consumer instead of silently
 			// continuing with a gap. The new symbol is also dropped;
 			// the consumer must re-sync after seeing the reset.
-			// The channel is guaranteed to have one free slot from the
-			// eviction above (single-producer), so the send always succeeds.
+			// Non-blocking: a concurrent deliver() from another goroutine
+			// (e.g., Start emitting PassiveEventConnected while readLoop
+			// emits symbols) may have refilled the slot between eviction
+			// and this send. In that case, drop both the marker and the
+			// symbol — the consumer will see a data discontinuity on the
+			// next reset or SYN boundary.
 			select {
 			case t.events <- transport.StreamEvent{Kind: transport.StreamEventReset}:
 			case <-t.done:
 				return
+			default:
+				// Slot refilled by concurrent producer — cannot inject
+				// reset marker. Data loss occurred but is unmarkable.
 			}
 		default:
 		}

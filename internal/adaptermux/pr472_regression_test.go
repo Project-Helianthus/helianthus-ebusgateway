@@ -693,7 +693,7 @@ func TestPassiveTransport_ResetNotDroppedUnderPressure(t *testing.T) {
 // TestPassiveTransport_ResetBlocksOnFullBuffer_PR472 verifies AM-fix5:
 // delivering a reset to a full buffer BLOCKS until space is available.
 // Resets are non-droppable stream boundaries. This supersedes AM52.
-func TestPassiveTransport_ResetNonBlockingOnFullBuffer_PR472(t *testing.T) {
+func TestPassiveTransport_ResetBlocksOnFullBuffer_PR472(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),
@@ -742,7 +742,7 @@ func TestPassiveTransport_ResetNonBlockingOnFullBuffer_PR472(t *testing.T) {
 // PassiveEventConnected and PassiveEventDisconnected (which map to
 // StreamEventReset) use blocking delivery when the buffer is full.
 // Resets are non-droppable stream boundaries.
-func TestPassiveTransport_ConnectedDisconnectedNonBlocking(t *testing.T) {
+func TestPassiveTransport_ConnectedDisconnectedBlocking(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),

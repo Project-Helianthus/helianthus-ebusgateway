@@ -208,7 +208,7 @@ func TestPassiveTransport_ResetNonBlockingOnFullBuffer(t *testing.T) {
 // TestPassiveTransport_ResetBlocksOnFull_TwoResets verifies AM-fix5:
 // when the buffer is full, a second reset blocks until space is
 // available. Both resets must be delivered (non-droppable).
-func TestPassiveTransport_ResetNonBlockingOnFull_TwoResets(t *testing.T) {
+func TestPassiveTransport_ResetBlocksOnFull_TwoResets(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 2),
 		done:   make(chan struct{}),
@@ -304,7 +304,7 @@ func TestDeliver_BufferOverflowInjectsReset(t *testing.T) {
 
 // TestDeliver_ResetBlocksOnFull verifies AM-fix5: reset delivery
 // blocks when the channel is full, and unblocks via done channel.
-func TestDeliver_ResetNonBlockingOnFull(t *testing.T) {
+func TestDeliver_ResetBlocksOnFull(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 1), // tiny buffer
 		done:   make(chan struct{}),

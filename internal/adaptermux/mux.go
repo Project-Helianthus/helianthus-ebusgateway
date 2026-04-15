@@ -1253,16 +1253,30 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	// connMu) would deadlock.
 	sendsSource := m.arbitrationSendsSource()
 
-	// AM57 fix: set busOwned and phase BEFORE confirmOwnership.
-	// This prevents onReceived from seeing hasOwner=true with a stale
-	// busOwned timestamp, which would release ownership on the first SYN.
+	// For external sessions: check liveness before acquiring stateMu.
+	// If the session disconnected during arbitration, discard the grant.
+	if sessionID != gatewaySessionID {
+		m.sessionsMu.Lock()
+		_, alive := m.sessions[sessionID]
+		m.sessionsMu.Unlock()
+		if !alive {
+			m.logger.Printf("adaptermux: session %d disconnected during START, discarding grant", sessionID)
+			notify <- startResult{granted: false, initiator: initiator, err: errors.New("session disconnected")}
+			return
+		}
+	}
+
+	// AM57+Codex-P1: set busOwned, phase, AND confirmOwnership atomically
+	// under stateMu. Releasing stateMu before confirmOwnership would allow
+	// tryGrantAndStart (from RemoveSession or AM8 deadline goroutine) to
+	// race: it sees pendingStart==nil, dequeues another request, and sends
+	// a second RequestStart before ownership is confirmed — breaking
+	// arbitration ordering.
+	// Lock order: stateMu → arb.mu (confirmOwnership acquires arb.mu
+	// internally). This matches tryGrantAndStart's lock order. No path
+	// holds arb.mu then acquires stateMu, so ABBA-safe.
 	m.stateMu.Lock()
 	if sendsSource {
-		// The adapter firmware already placed the SRC byte on the wire
-		// during arbitration (StreamEventStarted). Pre-load it into the
-		// phase tracker so byte counting is correct — without this, DST
-		// is captured as SRC, LEN is read from a data byte, and the
-		// tracker prematurely enters WaitCmdAck.
 		m.phase.startRequestWithSource(initiator)
 	} else {
 		m.phase.startRequest()
@@ -1271,30 +1285,8 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	if sessionID == gatewaySessionID {
 		m.gatewayEcho.markRequestStart()
 	}
+	m.arb.confirmOwnership(sessionID, initiator)
 	m.stateMu.Unlock()
-
-	// NOW confirm ownership — onReceived will see busOwned is fresh.
-	// (P2 TOCTOU fix: liveness check + confirmOwnership under same lock.)
-	if sessionID != gatewaySessionID {
-		m.sessionsMu.Lock()
-		_, alive := m.sessions[sessionID]
-		if alive {
-			m.arb.confirmOwnership(sessionID, initiator)
-		}
-		m.sessionsMu.Unlock()
-		if !alive {
-			m.logger.Printf("adaptermux: session %d disconnected during START, discarding grant", sessionID)
-			// Undo phase/busOwned since we're not granting.
-			m.stateMu.Lock()
-			m.phase.reset(wirePhaseIdle)
-			m.busOwned = time.Time{}
-			m.stateMu.Unlock()
-			notify <- startResult{granted: false, initiator: initiator, err: errors.New("session disconnected")}
-			return
-		}
-	} else {
-		m.arb.confirmOwnership(sessionID, initiator)
-	}
 
 	// Mark external session echo tracker for request start.
 	if sessionID != gatewaySessionID {

@@ -451,8 +451,12 @@ func (s *session) writeLoop() {
 				if !s.closed.Load() && !errors.Is(err, net.ErrClosed) {
 					s.mux.logger.Printf("adaptermux: session %d write error: %v", s.id, err)
 				}
-				// AM46: drain remaining frames to prevent goroutine leaks
-				// from blocked senders (deliverReceived, deliverReset, etc.).
+				// AM46+Codex: mark closed BEFORE draining so concurrent
+				// deliverReceived calls become no-ops (they check s.closed).
+				// Without this, the drain loop can spin indefinitely under
+				// sustained bus traffic as new frames are enqueued faster
+				// than they are drained.
+				s.closed.Store(true)
 			drainLoop:
 				for {
 					select {
@@ -461,7 +465,7 @@ func (s *session) writeLoop() {
 						break drainLoop
 					}
 				}
-				go s.mux.RemoveSession(s.id) // goroutine: cleanup on write failure
+				go s.mux.RemoveSession(s.id)
 				return
 			}
 		case <-s.done:

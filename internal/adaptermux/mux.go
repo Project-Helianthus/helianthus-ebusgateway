@@ -706,6 +706,7 @@ func (m *Mux) readLoop() {
 				if consecutiveTimeouts > 150 {
 					m.logger.Printf("adaptermux: %d consecutive timeouts, triggering reconnect (AM27)", consecutiveTimeouts)
 					consecutiveTimeouts = 0
+					lastDataTime = time.Time{} // Codex: reset after reconnect so quiet bus doesn't re-trigger
 					if reconnErr := m.reconnect(); reconnErr != nil {
 						m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
 						return
@@ -740,6 +741,8 @@ func (m *Mux) readLoop() {
 				continue
 			}
 			m.logger.Printf("adaptermux: read error: %v", err)
+			consecutiveTimeouts = 0
+			lastDataTime = time.Time{} // reset after reconnect so quiet bus doesn't trigger blackhole
 			if reconnErr := m.reconnect(); reconnErr != nil {
 				m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
 				return

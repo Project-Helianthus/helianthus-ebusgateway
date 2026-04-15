@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"testing"
 	"time"
 
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
@@ -412,8 +414,13 @@ func TestIsResetOrDisconnectError(t *testing.T) {
 		{errors.New("adapter refused"), false},
 		{errors.New("adaptermux: adapter reset"), true},
 		{errors.New("adaptermux: adapter disconnected"), true},
-		{errors.New("RESET during arbitration"), true},
-		{errors.New("connection disconnect"), true},
+		{errors.New("adaptermux: closed"), true},
+		{fmt.Errorf("during arbitration: %w", ebuserrors.ErrAdapterReset), true},
+		// AM18/AM47: broad substrings no longer match — prevents false
+		// positives like "budget reset" or "connection disconnect".
+		{errors.New("RESET during arbitration"), false},
+		{errors.New("connection disconnect"), false},
+		{errors.New("budget reset complete"), false},
 	}
 	for _, tt := range tests {
 		got := isResetOrDisconnectError(tt.err)
@@ -663,6 +670,65 @@ func TestSession_ResetDeliveryIsLossless(t *testing.T) {
 		// Good — unblocked by session close.
 	case <-time.After(2 * time.Second):
 		t.Fatal("deliverReset did not unblock after session close")
+	}
+}
+
+// --- AM42: writeFrame 0x7F/0x80 boundary ---
+
+// TestWriteFrame_BoundaryBytes verifies that writeFrame correctly
+// encodes payloads at the short-form/ENH-encoded boundary (0x80).
+// Payloads < 0x80 use short form (1 byte), >= 0x80 use ENH (2 bytes).
+func TestWriteFrame_BoundaryBytes(t *testing.T) {
+	tests := []struct {
+		payload byte
+		wantLen int
+	}{
+		{0x00, 1}, // short form: minimum
+		{0x7E, 1}, // short form: max - 1
+		{0x7F, 1}, // short form: last short byte
+		{0x80, 2}, // ENH encoded: first long byte
+		{0x81, 2}, // ENH encoded
+		{0xFF, 2}, // ENH encoded: maximum byte
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("payload_0x%02X", tt.payload), func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+
+			s := &session{conn: server, sendCh: make(chan sessionFrame, 1), done: make(chan struct{})}
+
+			// AM-fix4: use io.ReadFull with deadline to avoid partial reads
+			// on net.Pipe and prevent hangs on test failure.
+			readCh := make(chan int, 1)
+			go func() {
+				_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+				buf := make([]byte, tt.wantLen)
+				n, err := io.ReadFull(client, buf)
+				if err != nil {
+					// Signal error via negative length.
+					readCh <- -1
+					return
+				}
+				readCh <- n
+			}()
+
+			if err := s.writeFrame(sessionFrame{kind: sessionFrameReceived, payload: tt.payload}); err != nil {
+				t.Fatalf("writeFrame: %v", err)
+			}
+
+			select {
+			case n := <-readCh:
+				if n < 0 {
+					t.Fatalf("payload 0x%02X: ReadFull error", tt.payload)
+				}
+				if n != tt.wantLen {
+					t.Errorf("payload 0x%02X: wrote %d bytes, want %d", tt.payload, n, tt.wantLen)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("timeout reading frame")
+			}
+		})
 	}
 }
 

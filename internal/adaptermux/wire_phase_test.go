@@ -109,7 +109,8 @@ func TestWirePhase_BroadcastTransaction(t *testing.T) {
 	}
 }
 
-func TestWirePhase_NACK(t *testing.T) {
+func TestWirePhase_NACK_FirstRetries(t *testing.T) {
+	// AM2: first CMD NACK retries without re-arbitration.
 	var tracker wirePhaseTracker
 	tracker.startRequest()
 
@@ -122,13 +123,95 @@ func TestWirePhase_NACK(t *testing.T) {
 		t.Fatalf("CRC: got event %d, want RequestComplete", got)
 	}
 
-	// NACK
+	// First NACK -> retry (not idle).
+	got = tracker.advance(protocol.SymbolNack)
+	if got != wirePhaseEventCmdNACKRetry {
+		t.Fatalf("first NACK: got event %d, want CmdNACKRetry", got)
+	}
+	if tracker.phase != wirePhaseCollectRequest {
+		t.Fatalf("phase after first NACK = %d, want CollectRequest", tracker.phase)
+	}
+	if tracker.isIdle() {
+		t.Fatal("should not be idle after first NACK (retry expected)")
+	}
+}
+
+func TestWirePhase_NACK_SecondGoesToIdle(t *testing.T) {
+	// AM2: second CMD NACK resets to idle.
+	var tracker wirePhaseTracker
+	tracker.startRequest()
+
+	// First request + first NACK -> retry.
+	for _, b := range []byte{0x71, 0x08, 0xB5, 0x24, 0x00} {
+		tracker.advance(b)
+	}
+	tracker.advance(0xDD) // CRC
+	tracker.advance(protocol.SymbolNack) // first NACK -> retry
+
+	// Retransmitted request: SRC, DST, PB, SB, LEN=0, CRC
+	for _, b := range []byte{0x71, 0x08, 0xB5, 0x24, 0x00} {
+		tracker.advance(b)
+	}
+	got := tracker.advance(0xDD) // CRC -> request complete again
+	if got != wirePhaseEventRequestComplete {
+		t.Fatalf("retry CRC: got event %d, want RequestComplete", got)
+	}
+
+	// Second NACK -> idle.
 	got = tracker.advance(protocol.SymbolNack)
 	if got != wirePhaseEventCmdNACK {
-		t.Fatalf("NACK: got event %d, want CmdNACK", got)
+		t.Fatalf("second NACK: got event %d, want CmdNACK", got)
 	}
 	if !tracker.isIdle() {
-		t.Fatal("expected idle after NACK")
+		t.Fatal("expected idle after second NACK")
+	}
+}
+
+func TestWirePhase_NACK_RetryThenACK(t *testing.T) {
+	// AM2: first NACK retries, retransmit succeeds with ACK.
+	var tracker wirePhaseTracker
+	tracker.startRequest()
+
+	for _, b := range []byte{0x71, 0x08, 0xB5, 0x24, 0x00} {
+		tracker.advance(b)
+	}
+	tracker.advance(0xDD) // CRC
+	tracker.advance(protocol.SymbolNack) // first NACK -> retry
+
+	// Retransmitted request.
+	for _, b := range []byte{0x71, 0x08, 0xB5, 0x24, 0x00} {
+		tracker.advance(b)
+	}
+	tracker.advance(0xDD) // CRC
+
+	// ACK on retry -> proceed to response.
+	got := tracker.advance(protocol.SymbolAck)
+	if got != wirePhaseEventCmdACK {
+		t.Fatalf("ACK after retry: got event %d, want CmdACK", got)
+	}
+}
+
+func TestWirePhase_GarbledByteInWaitCmdAck(t *testing.T) {
+	// AM21: non-ACK, non-NACK byte is protocol error -> idle, no retry.
+	var tracker wirePhaseTracker
+	tracker.startRequest()
+
+	for _, b := range []byte{0x71, 0x08, 0xB5, 0x24, 0x00} {
+		tracker.advance(b)
+	}
+	tracker.advance(0xDD) // CRC
+
+	// Garbled byte (not ACK=0x00, not NACK=0xFF, not SYN=0xAA).
+	got := tracker.advance(0x42)
+	if got != wirePhaseEventCmdNACK {
+		t.Fatalf("garbled byte: got event %d, want CmdNACK", got)
+	}
+	if !tracker.isIdle() {
+		t.Fatal("expected idle after garbled byte (no retry)")
+	}
+	// Verify cmdRetried was NOT set (garbled bytes skip retry).
+	if tracker.cmdRetried {
+		t.Fatal("cmdRetried should not be set on garbled byte")
 	}
 }
 
@@ -355,20 +438,20 @@ func TestWirePhase_NACKResponseRetry(t *testing.T) {
 	for _, b := range []byte{0x71, 0x08, 0xB5, 0x24, 0x01, 0x42} {
 		tracker.advance(b)
 	}
-	tracker.advance(0xCC) // CRC → RequestComplete → WaitCmdAck
+	tracker.advance(0xCC) // CRC -> RequestComplete -> WaitCmdAck
 
 	// Target ACK.
-	tracker.advance(protocol.SymbolAck) // → WaitResponseLen
+	tracker.advance(protocol.SymbolAck) // -> WaitResponseLen
 
 	// First response: LEN=1 DATA CRC.
 	tracker.advance(0x01) // LEN=1
 	tracker.advance(0xAB) // DATA[0]
-	got := tracker.advance(0xDD) // CRC → ResponseDone → WaitResponseAck
+	got := tracker.advance(0xDD) // CRC -> ResponseDone -> WaitResponseAck
 	if got != wirePhaseEventResponseDone {
 		t.Fatalf("first response CRC: event=%d, want ResponseDone", got)
 	}
 
-	// Initiator NACKs — CRC was bad. Must transition to WaitResponseLen.
+	// Initiator NACKs -- CRC was bad. Must transition to WaitResponseLen.
 	got = tracker.advance(protocol.SymbolNack)
 	if got != wirePhaseEventNone {
 		t.Fatalf("NACK: event=%d, want None (retry expected)", got)
@@ -380,17 +463,101 @@ func TestWirePhase_NACKResponseRetry(t *testing.T) {
 	// Retry response: LEN=1 DATA CRC.
 	tracker.advance(0x01) // LEN=1
 	tracker.advance(0xAB) // DATA[0]
-	got = tracker.advance(0xEE) // CRC → ResponseDone → WaitResponseAck
+	got = tracker.advance(0xEE) // CRC -> ResponseDone -> WaitResponseAck
 	if got != wirePhaseEventResponseDone {
 		t.Fatalf("retry response CRC: event=%d, want ResponseDone", got)
 	}
 
-	// Initiator ACK — transaction done.
+	// Initiator ACK -- transaction done.
 	got = tracker.advance(protocol.SymbolAck)
 	if got != wirePhaseEventTransactionDone {
 		t.Fatalf("retry ACK: event=%d, want TransactionDone", got)
 	}
 	if !tracker.isIdle() {
 		t.Fatal("expected idle after retry ACK")
+	}
+}
+
+func TestWirePhase_ResponseDoubleNACK(t *testing.T) {
+	// AM3: second response NACK ends the transaction.
+	var tracker wirePhaseTracker
+	tracker.startRequest()
+
+	for _, b := range []byte{0x71, 0x08, 0xB5, 0x24, 0x01, 0x42} {
+		tracker.advance(b)
+	}
+	tracker.advance(0xCC) // CRC
+	tracker.advance(protocol.SymbolAck) // -> WaitResponseLen
+
+	// First response + NACK (retry).
+	tracker.advance(0x01) // LEN
+	tracker.advance(0xAB) // DATA
+	tracker.advance(0xDD) // CRC -> ResponseDone
+	tracker.advance(protocol.SymbolNack) // first NACK -> retry
+
+	// Retry response + second NACK.
+	tracker.advance(0x01) // LEN
+	tracker.advance(0xAB) // DATA
+	tracker.advance(0xEE) // CRC -> ResponseDone
+	got := tracker.advance(protocol.SymbolNack) // second NACK -> done
+	if got != wirePhaseEventTransactionDone {
+		t.Fatalf("second response NACK: event=%d, want TransactionDone", got)
+	}
+	if !tracker.isIdle() {
+		t.Fatal("expected idle after second response NACK")
+	}
+}
+
+// TestWirePhase_InitiatorToInitiator verifies that ACK for an i2i frame
+// (DST is an initiator-capable address) transitions directly to
+// TransactionDone without waiting for a response phase (AM1 fix).
+func TestWirePhase_InitiatorToInitiator(t *testing.T) {
+	var tracker wirePhaseTracker
+	tracker.startRequest()
+
+	// Simulate i2i request: SRC=0x71, DST=0x10 (both initiator-capable).
+	tracker.advance(0x71) // SRC
+	tracker.advance(0x10) // DST (initiator-capable)
+	tracker.advance(0x05) // PB
+	tracker.advance(0x07) // SB
+	tracker.advance(0x01) // LEN=1
+	tracker.advance(0x42) // DATA[0]
+	ev := tracker.advance(0xCC) // CRC -> RequestComplete
+	if ev != wirePhaseEventRequestComplete {
+		t.Fatalf("expected RequestComplete, got %d", ev)
+	}
+
+	// ACK for i2i: should go directly to TransactionDone (no response).
+	ev = tracker.advance(protocol.SymbolAck)
+	if ev != wirePhaseEventTransactionDone {
+		t.Fatalf("i2i ACK: expected TransactionDone, got %d", ev)
+	}
+	if !tracker.isIdle() {
+		t.Fatal("expected idle after i2i ACK")
+	}
+}
+
+// TestWirePhase_InitiatorToTarget verifies that ACK for a normal frame
+// (DST is NOT initiator-capable) transitions to WaitResponseLen.
+func TestWirePhase_InitiatorToTarget(t *testing.T) {
+	var tracker wirePhaseTracker
+	tracker.startRequest()
+
+	// SRC=0x71, DST=0x08 (target, not initiator-capable).
+	tracker.advance(0x71) // SRC
+	tracker.advance(0x08) // DST (NOT initiator-capable)
+	tracker.advance(0x05) // PB
+	tracker.advance(0x07) // SB
+	tracker.advance(0x01) // LEN=1
+	tracker.advance(0x42) // DATA[0]
+	tracker.advance(0xCC) // CRC -> RequestComplete
+
+	// ACK for normal target: should transition to WaitResponseLen.
+	ev := tracker.advance(protocol.SymbolAck)
+	if ev != wirePhaseEventCmdACK {
+		t.Fatalf("normal ACK: expected CmdACK, got %d", ev)
+	}
+	if tracker.isIdle() {
+		t.Fatal("should NOT be idle — expecting response")
 	}
 }

@@ -690,10 +690,10 @@ func TestPassiveTransport_ResetNotDroppedUnderPressure(t *testing.T) {
 	}
 }
 
-// TestPassiveTransport_ResetBlocksUntilConsumed verifies that delivering
-// a reset to a full buffer blocks (does not silently drop) and unblocks
-// once the consumer drains a slot.
-func TestPassiveTransport_ResetBlocksUntilConsumed(t *testing.T) {
+// TestPassiveTransport_ResetBoundedBlock_PR472 verifies Codex-R6:
+// delivering a reset to a full buffer bounded-blocks (100ms timeout).
+// If drained within the timeout, the reset is delivered.
+func TestPassiveTransport_ResetBoundedBlock_PR472(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),
@@ -703,45 +703,42 @@ func TestPassiveTransport_ResetBlocksUntilConsumed(t *testing.T) {
 	// Fill the single-slot buffer.
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xFF})
 
-	// Deliver reset in background — it should block.
+	// Deliver reset — bounded-blocking.
 	delivered := make(chan struct{})
 	go func() {
 		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
 		close(delivered)
 	}()
 
-	// Verify it is blocked (not yet delivered).
+	// Verify it doesn't return immediately.
 	select {
 	case <-delivered:
-		t.Fatal("reset was delivered immediately to a full buffer — should block")
-	case <-time.After(50 * time.Millisecond):
-		// Good — still blocking.
+		t.Fatal("deliver(Reset) returned immediately on full buffer")
+	case <-time.After(20 * time.Millisecond):
 	}
 
-	// Consume the symbol to free a slot.
+	// Drain before timeout to receive the reset.
 	ev := <-pt.events
 	if ev.Kind != transport.StreamEventByte || ev.Byte != 0xFF {
 		t.Fatalf("expected symbol 0xFF, got %+v", ev)
 	}
 
-	// Now the reset should unblock and be delivered.
 	select {
 	case <-delivered:
 	case <-time.After(2 * time.Second):
-		t.Fatal("reset deliver did not unblock after consumer drained buffer")
+		t.Fatal("deliver(Reset) did not unblock after draining buffer")
 	}
 
-	// Read the reset.
-	ev = <-pt.events
-	if ev.Kind != transport.StreamEventReset {
-		t.Fatalf("expected reset, got %+v", ev)
+	ev2 := <-pt.events
+	if ev2.Kind != transport.StreamEventReset {
+		t.Fatalf("expected reset, got %+v", ev2)
 	}
 }
 
-// TestPassiveTransport_ConnectedDisconnectedNonDroppable verifies that
-// PassiveEventConnected and PassiveEventDisconnected (which map to
-// StreamEventReset) are also non-droppable under buffer pressure.
-func TestPassiveTransport_ConnectedDisconnectedNonDroppable(t *testing.T) {
+// TestPassiveTransport_ConnectedBoundedBlock verifies Codex-R6:
+// PassiveEventConnected (maps to StreamEventReset) uses bounded-blocking
+// delivery when the buffer is full.
+func TestPassiveTransport_ConnectedBoundedBlock(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),
@@ -751,31 +748,34 @@ func TestPassiveTransport_ConnectedDisconnectedNonDroppable(t *testing.T) {
 	// Fill buffer.
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xAA})
 
-	// Deliver Connected (maps to reset) in background.
+	// Deliver Connected — bounded-blocking.
 	delivered := make(chan struct{})
 	go func() {
 		pt.deliver(PassiveEvent{Kind: PassiveEventConnected})
 		close(delivered)
 	}()
 
-	// Should block.
 	select {
 	case <-delivered:
-		t.Fatal("connected event delivered immediately to full buffer")
-	case <-time.After(50 * time.Millisecond):
+		t.Fatal("connected event returned immediately on full buffer")
+	case <-time.After(20 * time.Millisecond):
 	}
 
-	// Drain and verify.
-	<-pt.events // consume symbol
+	// Drain to unblock.
+	ev := <-pt.events
+	if ev.Kind != transport.StreamEventByte || ev.Byte != 0xAA {
+		t.Fatalf("expected symbol 0xAA, got %+v", ev)
+	}
+
 	select {
 	case <-delivered:
 	case <-time.After(2 * time.Second):
-		t.Fatal("connected event did not unblock")
+		t.Fatal("connected event did not unblock after draining buffer")
 	}
 
-	ev := <-pt.events
-	if ev.Kind != transport.StreamEventReset {
-		t.Fatalf("expected reset from Connected event, got %+v", ev)
+	ev2 := <-pt.events
+	if ev2.Kind != transport.StreamEventReset {
+		t.Fatalf("expected reset, got %+v", ev2)
 	}
 }
 

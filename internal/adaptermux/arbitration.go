@@ -44,6 +44,7 @@ type startRequest struct {
 // startResult is the outcome of a START arbitration request.
 type startResult struct {
 	granted   bool
+	cancelled bool // AM55: true when client-initiated SYN cancel — no FAILED delivery
 	initiator byte // initiator byte for STARTED/FAILED payload fidelity
 	err       error
 }

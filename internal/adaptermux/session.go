@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
@@ -19,6 +20,10 @@ const (
 	// for external sessions. If the buffer fills, the session is
 	// forcibly closed (backpressure protection, from proxy convention).
 	defaultSessionSendBuffer = 8192
+
+	// maxSessions is the hard ceiling on concurrent external sessions.
+	// Prevents unbounded memory growth from runaway connections (AM25/AM50).
+	maxSessions = 1000
 )
 
 // session represents an external ENH client connected via the proxy
@@ -41,6 +46,11 @@ type session struct {
 
 	// closed tracks whether the session has been shut down.
 	closed atomic.Bool
+
+	// parserResetNeeded signals readLoop to reset its ENH parser.
+	// Set by handleStart goroutine after arbitration resolves (AM23:
+	// enh.md:128 — reset parser after arbitration complete).
+	parserResetNeeded atomic.Bool
 
 	// wg waits for reader, writer, and handleStart goroutines to finish.
 	wg sync.WaitGroup
@@ -69,9 +79,9 @@ const (
 // goroutines. Returns 0 if the mux is shutting down (context cancelled);
 // the connection is closed and no goroutines are leaked.
 func (m *Mux) AddSession(conn net.Conn) uint64 {
-	if m.ctx.Err() != nil {
+	if m.ctx == nil || m.ctx.Err() != nil {
 		_ = conn.Close()
-		m.logger.Printf("adaptermux: rejecting session — mux shutting down")
+		m.logger.Printf("adaptermux: rejecting session — mux not started or shutting down (AM13)")
 		return 0
 	}
 
@@ -85,7 +95,14 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 		done:        make(chan struct{}),
 	}
 
+	// AM25/AM50: check + insert under a single lock to prevent TOCTOU.
 	m.sessionsMu.Lock()
+	if len(m.sessions) >= maxSessions {
+		m.sessionsMu.Unlock()
+		m.logger.Printf("adaptermux: rejecting session — max sessions (%d) reached (AM50)", maxSessions)
+		_ = conn.Close()
+		return 0
+	}
 	m.sessions[id] = sess
 	m.sessionsMu.Unlock()
 
@@ -133,7 +150,7 @@ func (s *session) close() {
 	select {
 	case <-waitDone:
 	case <-time.After(5 * time.Second):
-		s.mux.logger.Printf("adaptermux: session %d close timed out — goroutine leak", s.id)
+		s.mux.logger.Printf("adaptermux: session %d close timed out — wg.Wait pending, will self-resolve on I/O unblock (AM14)", s.id)
 	}
 }
 
@@ -217,10 +234,16 @@ func (s *session) readLoop() {
 			return
 		}
 
+		// AM23: reset parser if arbitration completed (enh.md:128).
+		if s.parserResetNeeded.CompareAndSwap(true, false) {
+			parser.Reset()
+		}
+
 		messages, parseErr := parser.Parse(buf[:n])
 		if parseErr != nil {
 			s.mux.logger.Printf("adaptermux: session %d parse error: %v", s.id, parseErr)
-			parser.Reset() // recover parser state (MEDIUM-4 fix)
+			s.deliverErrorHost() // AM10: notify client of parse error
+			parser.Reset()       // recover parser state (MEDIUM-4 fix)
 			continue
 		}
 
@@ -231,23 +254,19 @@ func (s *session) readLoop() {
 }
 
 // handleMessage processes a parsed ENH message from the client.
+// ENHReqSend and ENHResReceived share the same opcode (0x01) — the parser
+// returns ENHResReceived for short-form bytes (< 0x80) and ENHReqSend for
+// long-form SEND frames. Both map to handleSend.
 func (s *session) handleMessage(msg transport.ENHMessage) {
-	switch msg.Kind {
-	case transport.ENHMessageData:
-		// Short-form SEND: raw byte < 0x80.
-		s.handleSend(msg.Byte)
-
-	case transport.ENHMessageFrame:
-		switch msg.Command {
-		case transport.ENHReqSend:
-			s.handleSend(msg.Data)
-		case transport.ENHReqStart:
-			s.handleStart(msg.Data)
-		case transport.ENHReqInit:
-			s.handleInit(msg.Data)
-		case transport.ENHReqInfo:
-			s.handleInfo(msg.Data)
-		}
+	switch msg.Command {
+	case transport.ENHReqSend: // also matches ENHResReceived (same opcode 0x01)
+		s.handleSend(msg.Data)
+	case transport.ENHReqStart:
+		s.handleStart(msg.Data)
+	case transport.ENHReqInit:
+		s.handleInit(msg.Data)
+	case transport.ENHReqInfo:
+		s.handleInfo(msg.Data)
 	}
 }
 
@@ -266,6 +285,8 @@ func (s *session) handleSend(data byte) {
 		data:      data,
 		result:    result,
 	}:
+	case <-s.done:
+		return // AM14: session closing, don't block on activeSendCh
 	case <-s.mux.ctx.Done():
 		return
 	}
@@ -280,6 +301,8 @@ func (s *session) handleSend(data byte) {
 				s.deliverError()
 			}
 		}
+	case <-s.done:
+		return // AM14: session closing, don't block waiting for send result
 	case <-s.mux.ctx.Done():
 	}
 }
@@ -307,11 +330,19 @@ func (s *session) handleStart(initiator byte) {
 		defer s.wg.Done()
 		select {
 		case result := <-ch:
+			// AM23: signal readLoop to reset ENH parser after arbitration
+			// completes (enh.md:128). Set unconditionally — parser state
+			// may be stale regardless of grant/fail outcome.
+			s.parserResetNeeded.Store(true)
 			if s.closed.Load() {
 				return
 			}
 			if result.granted {
 				s.deliverStarted(result.initiator)
+			} else if result.cancelled {
+				// AM55 fix: client-initiated SYN cancel — the client
+				// already knows it cancelled, don't deliver spurious FAILED.
+				return
 			} else if result.err != nil && isResetOrDisconnectError(result.err) {
 				// Reset/disconnect caused the START failure — deliver
 				// RESETTED so the client sees the correct boundary event
@@ -326,7 +357,8 @@ func (s *session) handleStart(initiator byte) {
 			if s.closed.Load() {
 				return
 			}
-			s.deliverFailed(initiator)
+			// AM43: mux shutdown — deliver RESETTED (boundary event), not FAILED.
+			s.deliverReset(byte(s.mux.upstreamFeatures.Load()))
 		}
 	}()
 }
@@ -354,13 +386,15 @@ func (s *session) handleInfo(id byte) {
 		s.deliverErrorHost()
 		return
 	}
-	if len(data) == 0 {
+	// AM39: guard against payload >255 which would silently truncate
+	// via byte(len(data)) wrap-around.
+	if len(data) > 255 {
+		s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X payload too large (%d bytes, max 255) (AM39)", s.id, id, len(data))
 		s.deliverErrorHost()
 		return
 	}
-
-	// Deliver INFO response: length prefix + data bytes, each as
-	// sessionFrameInfo so writeLoop encodes them as ENHResInfo frames.
+	// AM35: zero-length INFO payload is valid per ENH spec (N=0).
+	// Deliver just the length prefix (0x00) with no data bytes.
 	s.deliverInfo(byte(len(data)))
 	for _, b := range data {
 		s.deliverInfo(b)
@@ -417,7 +451,25 @@ func (s *session) writeLoop() {
 				if !s.closed.Load() && !errors.Is(err, net.ErrClosed) {
 					s.mux.logger.Printf("adaptermux: session %d write error: %v", s.id, err)
 				}
-				go s.mux.RemoveSession(s.id) // goroutine: cleanup on write failure
+				// AM46+Codex: mark closed and close resources directly.
+				// We must close done+conn HERE because RemoveSession's
+				// sess.close() checks closed.Swap(true) and would no-op
+				// if we already set closed=true. Without closing conn,
+				// readLoop stays blocked on Read() indefinitely.
+				if !s.closed.Swap(true) {
+					close(s.done)
+					_ = s.conn.Close()
+				}
+				// Drain remaining frames so blocked senders are unblocked.
+			drainLoop:
+				for {
+					select {
+					case <-s.sendCh:
+					default:
+						break drainLoop
+					}
+				}
+				go s.mux.RemoveSession(s.id)
 				return
 			}
 		case <-s.done:
@@ -484,6 +536,15 @@ func isResetOrDisconnectError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "reset") || strings.Contains(msg, "disconnect")
+	// AM18/AM47: prefer typed error matching over broad string matching.
+	// The old code matched any error containing "reset" (false-positive
+	// on unrelated messages like "budget reset").
+	if errors.Is(err, ebuserrors.ErrAdapterReset) {
+		return true
+	}
+	// Fall back to specific substrings for wrapped/untyped errors.
+	msg := err.Error()
+	return strings.Contains(msg, "adapter disconnected") ||
+		strings.Contains(msg, "adapter reset") ||
+		strings.Contains(msg, "adaptermux: closed")
 }

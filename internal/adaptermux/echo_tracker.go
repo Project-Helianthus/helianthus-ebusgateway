@@ -13,6 +13,16 @@ package adaptermux
 // tracker operates on logical bytes (post-ENH-decode). No escape
 // sequences (0xA9) are stored — the ENH protocol delivers logical bytes.
 // This eliminates the proxy's escape encoding bug by design.
+const (
+	// maxPendingEchoes caps the expectedEchoes queue to prevent unbounded
+	// growth if echo matching falls behind (AM16).
+	maxPendingEchoes = 256
+
+	// maxSeenEchoes caps the seenEchoes accumulator to prevent unbounded
+	// growth between SYN boundaries (AM41).
+	maxSeenEchoes = 256
+)
+
 type echoTracker struct {
 	// expectedEchoes is a FIFO queue of bytes that we expect the adapter
 	// to echo back. Populated by recordSent(), consumed by matchEcho().
@@ -42,6 +52,10 @@ func newEchoTracker() *echoTracker {
 // recordSent records a byte that the session is sending to the adapter.
 // We expect the adapter to echo this byte back as ENHResReceived.
 func (t *echoTracker) recordSent(data byte) {
+	// AM16: drop oldest if queue is at capacity.
+	if len(t.expectedEchoes) >= maxPendingEchoes {
+		t.expectedEchoes = t.expectedEchoes[1:]
+	}
 	t.expectedEchoes = append(t.expectedEchoes, data)
 }
 
@@ -87,6 +101,10 @@ func (t *echoTracker) matchEcho(received byte) (result echoMatchResult, flushedB
 	if received == t.expectedEchoes[0] {
 		// Match: consume from expected, accumulate in seen.
 		t.expectedEchoes = t.expectedEchoes[1:]
+		// AM41: drop oldest if seenEchoes is at capacity.
+		if len(t.seenEchoes) >= maxSeenEchoes {
+			t.seenEchoes = t.seenEchoes[1:]
+		}
 		t.seenEchoes = append(t.seenEchoes, received)
 		t.totalSuppressed++
 		return echoMatchSuppressed, nil

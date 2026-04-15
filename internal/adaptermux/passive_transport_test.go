@@ -160,67 +160,91 @@ func TestReadEvent_ReturnsResetForConnectDisconnect(t *testing.T) {
 
 // --- Passive reset blocking safety ---
 
-// TestPassiveTransport_ResetDoesNotBlockReadLoopRecovery verifies that
-// closing the passive transport unblocks a blocked deliver(Reset) call,
-// allowing the mux to proceed with reconnect (create new passive transport).
-func TestPassiveTransport_ResetDoesNotBlockReadLoopRecovery(t *testing.T) {
-	// Create a passive transport with a FULL buffer.
+// TestPassiveTransport_ResetBoundedBlockOnFullBuffer verifies Codex-R6:
+// delivering a reset to a full buffer blocks briefly (100ms bounded)
+// then drops to avoid stalling readLoop/reconnect. If drained in time,
+// the reset is delivered.
+func TestPassiveTransport_ResetBoundedBlockOnFullBuffer(t *testing.T) {
 	pt := &passiveTransport{
-		events: make(chan transport.StreamEvent, passiveTransportBuffer),
+		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),
 	}
+	defer pt.Close()
 
-	// Fill all 512 slots with symbols.
-	for i := 0; i < passiveTransportBuffer; i++ {
-		pt.events <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: byte(i % 256)}
-	}
+	// Fill the single slot.
+	pt.events <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x01}
 
-	// Buffer is now full. Deliver a reset in a goroutine — it will block.
+	// Deliver a reset — bounded-blocking (100ms timeout).
 	delivered := make(chan struct{})
 	go func() {
 		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
 		close(delivered)
 	}()
 
-	// Verify it is blocked.
+	// Verify it blocks briefly (doesn't return immediately).
 	select {
 	case <-delivered:
-		t.Fatal("reset deliver should block on full buffer")
-	case <-time.After(50 * time.Millisecond):
-		// Good — blocked as expected.
+		t.Fatal("deliver(Reset) returned immediately on full buffer -- should block briefly")
+	case <-time.After(20 * time.Millisecond):
+		// Good -- still blocking after 20ms.
 	}
 
-	// Close the transport — this should unblock the blocked deliver.
-	pt.Close()
+	// Drain before the 100ms timeout to receive the reset.
+	<-pt.events
 
 	select {
 	case <-delivered:
-		// Good — unblocked by Close.
+		// Good -- unblocked after drain.
 	case <-time.After(2 * time.Second):
-		t.Fatal("deliver(Reset) did not unblock after Close — readLoop recovery blocked")
+		t.Fatal("deliver(Reset) did not unblock after draining buffer")
 	}
 
-	// Verify that after unblocking, a new passive transport can be created
-	// and used (simulating mux reconnect creating a fresh passive transport).
-	pt2 := newPassiveTransport()
-	defer pt2.Close()
-
-	pt2.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xBB})
-	select {
-	case ev := <-pt2.events:
-		if ev.Kind != transport.StreamEventByte || ev.Byte != 0xBB {
-			t.Fatalf("new transport: expected symbol 0xBB, got %+v", ev)
-		}
-	default:
-		t.Fatal("new passive transport should work after old one was closed")
+	// The reset should now be in the buffer.
+	ev := <-pt.events
+	if ev.Kind != transport.StreamEventReset {
+		t.Fatalf("expected reset, got %+v", ev)
 	}
 }
 
-// TestPassiveTransport_ResetBlocksUntilConsumed_TwoResets verifies the
-// blocking semantics with two consecutive resets: the first succeeds
-// (using the last slot), the second blocks until the consumer drains.
-// Neither reset is dropped.
-func TestPassiveTransport_ResetBlocksUntilConsumed_TwoResets(t *testing.T) {
+// TestPassiveTransport_ResetDroppedAfterTimeout verifies Codex-R6:
+// if the consumer is too slow, the reset is dropped after 100ms
+// to unblock the mux recovery path.
+func TestPassiveTransport_ResetDroppedAfterTimeout(t *testing.T) {
+	pt := &passiveTransport{
+		events: make(chan transport.StreamEvent, 1),
+		done:   make(chan struct{}),
+	}
+	defer pt.Close()
+
+	// Fill the single slot.
+	pt.events <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x01}
+
+	// Deliver a reset — will timeout after 100ms and return.
+	delivered := make(chan struct{})
+	go func() {
+		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
+		close(delivered)
+	}()
+
+	// Don't drain — let the 100ms timeout fire.
+	select {
+	case <-delivered:
+		// Good — returned after timeout, reset was dropped.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("deliver(Reset) did not return after timeout -- still blocking")
+	}
+
+	// Buffer should still contain only the original symbol.
+	ev := <-pt.events
+	if ev.Kind != transport.StreamEventByte || ev.Byte != 0x01 {
+		t.Fatalf("expected original symbol 0x01, got %+v", ev)
+	}
+}
+
+// TestPassiveTransport_ResetBoundedBlock_TwoResets verifies Codex-R6:
+// first reset succeeds (slot available), second reset bounded-blocks.
+// If drained within 100ms, second reset is delivered.
+func TestPassiveTransport_ResetBoundedBlock_TwoResets(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 2),
 		done:   make(chan struct{}),
@@ -230,64 +254,53 @@ func TestPassiveTransport_ResetBlocksUntilConsumed_TwoResets(t *testing.T) {
 	// Fill buffer to capacity-1 (1 slot left).
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x01})
 
-	// First reset should succeed immediately (1 slot available).
-	delivered1 := make(chan struct{})
+	// First reset succeeds immediately (1 slot available).
+	pt.deliver(PassiveEvent{Kind: PassiveEventReset})
+
+	// Buffer full: [symbol(0x01), reset]. Second reset bounded-blocks.
+	delivered := make(chan struct{})
 	go func() {
 		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
-		close(delivered1)
-	}()
-	select {
-	case <-delivered1:
-		// Good — delivered using the last slot.
-	case <-time.After(2 * time.Second):
-		t.Fatal("first reset should succeed with 1 slot remaining")
-	}
-
-	// Buffer now has: [symbol(0x01), reset]. Second reset should block.
-	delivered2 := make(chan struct{})
-	go func() {
-		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
-		close(delivered2)
+		close(delivered)
 	}()
 
-	// Verify blocked.
+	// Verify it doesn't return immediately.
 	select {
-	case <-delivered2:
-		t.Fatal("second reset should block on full buffer")
-	case <-time.After(50 * time.Millisecond):
-		// Good — blocking as expected.
+	case <-delivered:
+		t.Fatal("second reset returned immediately on full buffer")
+	case <-time.After(20 * time.Millisecond):
+		// Good — still blocking after 20ms.
 	}
 
-	// Read one event from the consumer side — should unblock the blocked deliver.
-	ev := <-pt.events
-	if ev.Kind != transport.StreamEventByte || ev.Byte != 0x01 {
-		t.Fatalf("expected symbol(0x01), got %+v", ev)
+	// Drain one slot before the 100ms timeout.
+	ev1 := <-pt.events
+	if ev1.Kind != transport.StreamEventByte || ev1.Byte != 0x01 {
+		t.Fatalf("event[0]: expected symbol(0x01), got %+v", ev1)
 	}
 
 	select {
-	case <-delivered2:
-		// Good — unblocked after consumer drained a slot.
+	case <-delivered:
+		// Good — unblocked after drain.
 	case <-time.After(2 * time.Second):
-		t.Fatal("second reset did not unblock after consumer drained buffer")
+		t.Fatal("second reset did not unblock after draining one slot")
 	}
 
-	// Verify the reset was NOT dropped — drain remaining events.
-	var resetCount int
-	for i := 0; i < 2; i++ {
-		ev := <-pt.events
-		if ev.Kind == transport.StreamEventReset {
-			resetCount++
-		}
+	// Both resets should be in buffer.
+	ev2 := <-pt.events
+	if ev2.Kind != transport.StreamEventReset {
+		t.Fatalf("event[1]: expected reset, got %+v", ev2)
 	}
-	if resetCount != 2 {
-		t.Fatalf("expected 2 resets in output, got %d — reset was dropped", resetCount)
+	ev3 := <-pt.events
+	if ev3.Kind != transport.StreamEventReset {
+		t.Fatalf("event[2]: expected reset, got %+v", ev3)
 	}
 }
 
-// TestDeliver_BufferOverflowDropsOldest verifies the backpressure
-// strategy: when the buffer is full, the oldest event is dropped to
-// make room for the new one.
-func TestDeliver_BufferOverflowDropsOldest(t *testing.T) {
+// TestDeliver_BufferOverflowInjectsReset verifies the backpressure
+// strategy: when the buffer is full and a symbol overflows, the oldest
+// event is evicted and a reset marker (AM28) is injected to signal the
+// data loss boundary to the consumer.
+func TestDeliver_BufferOverflowInjectsReset(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 2), // tiny buffer
 		done:   make(chan struct{}),
@@ -298,22 +311,66 @@ func TestDeliver_BufferOverflowDropsOldest(t *testing.T) {
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x01})
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x02})
 
-	// Overflow — oldest (0x01) should be dropped.
+	// Overflow -- oldest (0x01) is evicted, reset marker injected (AM28).
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x03})
 
-	// Drain: expect 0x02 then 0x03.
+	// Drain: expect 0x02 (survived) then reset (loss boundary).
+	// The new symbol 0x03 is dropped -- the reset replaces it.
 	timeout := time.After(100 * time.Millisecond)
-	var got []byte
+	var events []transport.StreamEvent
 	for i := 0; i < 2; i++ {
 		select {
 		case ev := <-pt.events:
-			got = append(got, ev.Byte)
+			events = append(events, ev)
 		case <-timeout:
 			t.Fatalf("timed out waiting for event %d", i)
 		}
 	}
 
-	if len(got) != 2 || got[0] != 0x02 || got[1] != 0x03 {
-		t.Errorf("got %v, want [0x02, 0x03]", got)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[0].Kind != transport.StreamEventByte || events[0].Byte != 0x02 {
+		t.Errorf("event[0]: got %+v, want symbol 0x02", events[0])
+	}
+	if events[1].Kind != transport.StreamEventReset {
+		t.Errorf("event[1]: got %+v, want reset (AM28 loss boundary)", events[1])
+	}
+}
+
+// TestDeliver_ResetUnblocksViaDone verifies that reset delivery on a
+// full buffer unblocks when done is closed (transport shutdown).
+func TestDeliver_ResetUnblocksViaDone(t *testing.T) {
+	pt := &passiveTransport{
+		events: make(chan transport.StreamEvent, 1),
+		done:   make(chan struct{}),
+	}
+
+	// Fill the single slot.
+	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x01})
+
+	// Deliver a reset — bounded-blocking.
+	delivered := make(chan struct{})
+	go func() {
+		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
+		close(delivered)
+	}()
+
+	// Verify it doesn't return immediately.
+	select {
+	case <-delivered:
+		t.Fatal("deliver(Reset) returned immediately on full buffer")
+	case <-time.After(20 * time.Millisecond):
+		// Good — still blocking after 20ms.
+	}
+
+	// Close the transport to unblock via done channel.
+	pt.Close()
+
+	select {
+	case <-delivered:
+		// Good — unblocked via done.
+	case <-time.After(2 * time.Second):
+		t.Fatal("deliver(Reset) did not unblock after Close()")
 	}
 }

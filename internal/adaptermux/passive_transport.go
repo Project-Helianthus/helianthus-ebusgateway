@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
@@ -73,13 +74,17 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 		return
 	}
 
-	// Reset boundaries are non-droppable — losing a reset merges
-	// pre/post-reset streams and corrupts frame reconstruction
-	// (Codex P1 #3060199712). Block until delivered.
+	// AM52/AM-fix5/Codex-R6: reset boundaries use a bounded-blocking
+	// send. Losing a reset corrupts frame reconstruction, but blocking
+	// indefinitely stalls readLoop/reconnect/handleReset — the critical
+	// recovery path. Compromise: try for 100ms, then drop. The consumer
+	// will see a data discontinuity on the next SYN boundary.
 	if se.Kind == transport.StreamEventReset {
 		select {
 		case t.events <- se:
 		case <-t.done:
+		case <-time.After(100 * time.Millisecond):
+			// Consumer too slow — drop reset to unblock mux recovery.
 		}
 		return
 	}
@@ -90,22 +95,40 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 	case <-t.done:
 		return
 	default:
-		// Buffer full — drop oldest symbol to prevent backpressure.
-		// Never evict a reset event — resets are non-droppable boundaries
-		// (Codex P1 #3060335791). If the oldest is a reset, put it back
-		// and drop the new symbol instead.
+		// Buffer full -- drop oldest symbol to prevent backpressure.
+		// AM48: never evict a reset event -- resets are non-droppable
+		// boundaries (Codex P1 #3060335791). If the oldest is a reset,
+		// put it back and drop the new symbol instead.
 		select {
 		case oldest := <-t.events:
 			if oldest.Kind == transport.StreamEventReset {
-				t.events <- oldest
+				// AM48: reset boundary is sacred, put it back.
+				select {
+				case t.events <- oldest:
+				case <-t.done:
+					return
+				}
+				return // drop the new symbol
+			}
+			// AM28: data was lost — inject a reset marker to signal
+			// the loss boundary to the consumer instead of silently
+			// continuing with a gap. The new symbol is also dropped;
+			// the consumer must re-sync after seeing the reset.
+			// Non-blocking: a concurrent deliver() from another goroutine
+			// (e.g., Start emitting PassiveEventConnected while readLoop
+			// emits symbols) may have refilled the slot between eviction
+			// and this send. In that case, drop both the marker and the
+			// symbol — the consumer will see a data discontinuity on the
+			// next reset or SYN boundary.
+			select {
+			case t.events <- transport.StreamEvent{Kind: transport.StreamEventReset}:
+			case <-t.done:
 				return
+			default:
+				// Slot refilled by concurrent producer — cannot inject
+				// reset marker. Data loss occurred but is unmarkable.
 			}
 		default:
-		}
-		select {
-		case t.events <- se:
-		case <-t.done:
-			return
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +20,7 @@ type ProxyListener struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
+	closed   atomic.Bool // AM54: prevent double-close panics
 }
 
 // NewProxyListener creates and starts a proxy listener on listenAddr.
@@ -62,6 +64,9 @@ func NewProxyListener(ctx context.Context, mux *Mux, listenAddr string, logger *
 // Close stops accepting connections and shuts down the listener.
 // It is safe to call multiple times.
 func (pl *ProxyListener) Close() error {
+	if pl.closed.Swap(true) {
+		return nil // AM54: already closed, no-op
+	}
 	pl.cancel()
 	err := pl.listener.Close()
 	pl.wg.Wait()

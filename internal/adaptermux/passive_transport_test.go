@@ -163,7 +163,7 @@ func TestReadEvent_ReturnsResetForConnectDisconnect(t *testing.T) {
 // TestPassiveTransport_ResetBlocksOnFullBuffer verifies AM-fix5:
 // delivering a reset to a full buffer BLOCKS until space is available
 // (or done is closed). Resets are non-droppable stream boundaries.
-func TestPassiveTransport_ResetNonBlockingOnFullBuffer(t *testing.T) {
+func TestPassiveTransport_ResetBlocksOnFullBuffer(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),

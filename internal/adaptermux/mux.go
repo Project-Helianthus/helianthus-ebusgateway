@@ -1256,29 +1256,25 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	// connMu) would deadlock.
 	sendsSource := m.arbitrationSendsSource()
 
-	// For external sessions: check liveness before acquiring stateMu.
-	// If the session disconnected during arbitration, discard the grant.
+	// AM57+Codex-P1: set busOwned, phase, AND confirmOwnership atomically
+	// under stateMu. For external sessions, the liveness check is also
+	// done under stateMu (via sessionsMu nested inside) to prevent a
+	// race where RemoveSession deletes the session between the liveness
+	// check and confirmOwnership, leaving a dead owner in the arbitrator.
+	// Lock order: stateMu → sessionsMu → arb.mu. No path holds
+	// sessionsMu or arb.mu then acquires stateMu, so ABBA-safe.
+	m.stateMu.Lock()
 	if sessionID != gatewaySessionID {
 		m.sessionsMu.Lock()
 		_, alive := m.sessions[sessionID]
 		m.sessionsMu.Unlock()
 		if !alive {
+			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: session %d disconnected during START, discarding grant", sessionID)
 			notify <- startResult{granted: false, initiator: initiator, err: errors.New("session disconnected")}
 			return
 		}
 	}
-
-	// AM57+Codex-P1: set busOwned, phase, AND confirmOwnership atomically
-	// under stateMu. Releasing stateMu before confirmOwnership would allow
-	// tryGrantAndStart (from RemoveSession or AM8 deadline goroutine) to
-	// race: it sees pendingStart==nil, dequeues another request, and sends
-	// a second RequestStart before ownership is confirmed — breaking
-	// arbitration ordering.
-	// Lock order: stateMu → arb.mu (confirmOwnership acquires arb.mu
-	// internally). This matches tryGrantAndStart's lock order. No path
-	// holds arb.mu then acquires stateMu, so ABBA-safe.
-	m.stateMu.Lock()
 	if sendsSource {
 		m.phase.startRequestWithSource(initiator)
 	} else {

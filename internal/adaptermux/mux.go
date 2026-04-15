@@ -114,6 +114,7 @@ type pendingStartState struct {
 	sessionID uint64
 	initiator byte
 	notify    chan startResult
+	deadline  *time.Timer // AM8: fires if adapter doesn't respond within 5s
 }
 
 // Mux is the adapter multiplexer. It owns a single ENH/ENS connection
@@ -218,7 +219,7 @@ func New(cfg Config) *Mux {
 		gatewayEcho:  newEchoTracker(),
 		sessions:     make(map[uint64]*session),
 		infoCache:    make(map[transport.AdapterInfoID][]byte),
-		activeSendCh: make(chan sendRequest, 16),
+		activeSendCh: make(chan sendRequest, 256), // AM49: increased from 16 for burst tolerance
 		activeCh:     make(chan activeEvent, 4096), // unified byte+error channel (4096: survives ~16s of bus traffic during arbitration waits)
 	}
 }
@@ -259,9 +260,17 @@ func (m *Mux) Close() error {
 		pendingToCancel := m.pendingStart
 		m.pendingStart = nil
 		m.pendingStartAbsorb = 0
+		if pendingToCancel != nil && pendingToCancel.deadline != nil {
+			pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
+		}
 		m.stateMu.Unlock()
 		if pendingToCancel != nil {
-			pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: closed")}
+			// AM53: guarded send to avoid blocking Close if nobody reads notify.
+			select {
+			case pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: closed")}:
+			case <-time.After(1 * time.Second):
+				m.logger.Printf("adaptermux: Close: timed out sending to pendingStart.notify (AM53)")
+			}
 		}
 
 		// Fail all pending arbitration requests.
@@ -277,10 +286,17 @@ func (m *Mux) Close() error {
 		}
 		m.sessionsMu.Unlock()
 
+		// AM51: close sessions concurrently to avoid O(N * 5s) shutdown.
+		var sessWg sync.WaitGroup
 		for _, sess := range toClose {
 			m.arb.removeSession(sess.id)
-			sess.close()
+			sessWg.Add(1)
+			go func(s *session) {
+				defer sessWg.Done()
+				s.close()
+			}(sess)
 		}
+		sessWg.Wait()
 
 		// Close adapter connection.
 		m.connMu.Lock()
@@ -403,6 +419,8 @@ func (m *Mux) connect() error {
 			m.logger.Printf("adaptermux: INIT: adapter does not confirm features=0x%02X, proceeding with features=0x%02X", requestedFeatures, features)
 		} else if initErr != nil && !initOK {
 			_ = conn.Close()
+			m.conn = nil      // AM34: clear stale reference after INIT failure
+			m.upstream = nil   // AM34: clear stale transport after INIT failure
 			return fmt.Errorf("adaptermux: INIT handshake failed after 5 attempts: %w", initErr)
 		}
 		m.upstreamFeatures.Store(uint32(features))
@@ -446,7 +464,12 @@ func (m *Mux) connect() error {
 // by caller). The upstream transport must support InfoRequester; if it
 // does not, the cache is cleared and CachedInfo returns an error.
 //
-// All INFO IDs (0x00–0x07) are cached, including volatile telemetry
+// AM29: INFO cache is intentionally a startup snapshot. Volatile
+// telemetry (temp, voltage, RSSI) goes stale after connect --
+// on-demand refresh would require readMu (conflicts with readLoop).
+// The cache is repopulated on each reconnect.
+//
+// All INFO IDs (0x00-0x07) are cached, including volatile telemetry
 // (temperature, voltage, RSSI). These are startup snapshots that go
 // stale until reconnect, but refreshTelemetry needs them from the
 // cache to avoid readMu contention with readLoop.
@@ -556,11 +579,19 @@ func (m *Mux) reconnect() error {
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
+	if pendingToCancel != nil && pendingToCancel.deadline != nil {
+		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
+	}
 	m.stateMu.Unlock()
 
 	// Cancel in-flight pending START if any.
 	if pendingToCancel != nil {
-		pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: adapter disconnected")}
+		// AM53: guarded send to avoid blocking reconnect if nobody reads notify.
+		select {
+		case pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: errors.New("adaptermux: adapter disconnected")}:
+		case <-time.After(1 * time.Second):
+			m.logger.Printf("adaptermux: reconnect: timed out sending to pendingStart.notify (AM53)")
+		}
 	}
 
 	// Reset external session echo trackers (HIGH-6 fix).
@@ -629,6 +660,10 @@ func (m *Mux) reconnect() error {
 func (m *Mux) readLoop() {
 	defer m.wg.Done()
 
+	// AM27: consecutive timeout counter for TCP blackhole detection.
+	// Only accessed from this goroutine -- no synchronization needed.
+	consecutiveTimeouts := 0
+
 	for {
 		select {
 		case <-m.ctx.Done():
@@ -649,16 +684,37 @@ func (m *Mux) readLoop() {
 			// ReadTimeout window) — treat as idle, not disconnect.
 			// Matches passive_bus_tap.go behavior (Codex P2 #3059211395).
 			if errors.Is(err, ebuserrors.ErrTimeout) || isNetTimeout(err) {
+				consecutiveTimeouts++
+
+				// AM27: detect TCP blackhole after ~30s of consecutive
+				// timeouts (150 * 200ms default ReadTimeout).
+				if consecutiveTimeouts > 150 {
+					m.logger.Printf("adaptermux: %d consecutive timeouts, triggering reconnect (AM27)", consecutiveTimeouts)
+					consecutiveTimeouts = 0
+					if reconnErr := m.reconnect(); reconnErr != nil {
+						m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
+						return
+					}
+					continue
+				}
+
 				// Enforce ownership timeout on quiet bus — onReceived
 				// won't run to check MaxOwnershipDuration.
+				quietBusTimedOut := false
 				m.stateMu.Lock()
 				ownerID, _, hasOwner := m.arb.owner()
 				if hasOwner && !m.busOwned.IsZero() &&
 					time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 					m.arb.releaseOwnership(ownerID)
 					m.gatewayEcho.reset()
+					quietBusTimedOut = true
 				}
 				m.stateMu.Unlock()
+
+				// AM11: clear external session echo trackers on ownership timeout.
+				if quietBusTimedOut {
+					m.resetAllSessionEchoes()
+				}
 
 				// On a quiet bus no SYN or transaction-complete events
 				// reach onReceived, so tryGrantAndStart is never called.
@@ -675,6 +731,8 @@ func (m *Mux) readLoop() {
 			}
 			continue
 		}
+
+		consecutiveTimeouts = 0 // AM27: reset on successful read
 
 		switch event.Kind {
 		case transport.StreamEventStarted:
@@ -751,11 +809,15 @@ func (m *Mux) onReceived(symbol byte) {
 	} else if !hasOwner || ownerID != gatewaySessionID {
 		phaseEvent = m.phase.advance(symbol)
 	}
+	// AM11: track ownership timeout so we can reset external session
+	// echo trackers after releasing stateMu (ABBA avoidance).
+	ownershipTimedOut := false
 	if hasOwner && !m.busOwned.IsZero() &&
 		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 		m.arb.releaseOwnership(ownerID)
 		m.gatewayEcho.reset()
 		hasOwner = false
+		ownershipTimedOut = true
 	}
 
 	// Collect passive events under lock, emit after unlock (Issue#3 fix).
@@ -765,6 +827,11 @@ func (m *Mux) onReceived(symbol byte) {
 	if symbol == protocol.SymbolSyn {
 		passiveEvents, shouldTryGrant = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
 		m.stateMu.Unlock()
+
+		// AM11: clear external session echo trackers on ownership timeout.
+		if ownershipTimedOut {
+			m.resetAllSessionEchoes()
+		}
 
 		// --- Phase 2: deliver outside all locks ---
 		// Flush external session echo trackers. Called outside stateMu to
@@ -802,6 +869,11 @@ func (m *Mux) onReceived(symbol byte) {
 	}
 
 	m.stateMu.Unlock()
+
+	// AM11: clear external session echo trackers on ownership timeout.
+	if ownershipTimedOut {
+		m.resetAllSessionEchoes()
+	}
 
 	// --- Phase 2: deliver outside all locks ---
 	m.deliverToActive(symbol)
@@ -841,12 +913,14 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 
 	// Release ownership if SYN timeout.
 	if phaseEvent == wirePhaseEventSYNTimeout && hasOwner {
+		m.logger.Printf("adaptermux: ownership released for session %d (SYN timeout) (AM6)", ownerID)
 		m.arb.releaseOwnership(ownerID)
 	}
 
 	// Release ownership on idle SYN after grace period.
 	if phaseEvent == wirePhaseEventSYNIdle && hasOwner {
 		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
+			m.logger.Printf("adaptermux: ownership released for session %d (idle grace expired) (AM6)", ownerID)
 			m.arb.releaseOwnership(ownerID)
 		}
 	}
@@ -876,11 +950,19 @@ func (m *Mux) handleReset() {
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
+	if pendingToCancel != nil && pendingToCancel.deadline != nil {
+		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
+	}
 	m.stateMu.Unlock()
 
 	// Cancel in-flight pending START if any.
 	if pendingToCancel != nil {
-		pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset)}
+		// AM53: guarded send to avoid blocking handleReset if nobody reads notify.
+		select {
+		case pendingToCancel.notify <- startResult{granted: false, initiator: pendingToCancel.initiator, err: fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset)}:
+		case <-time.After(1 * time.Second):
+			m.logger.Printf("adaptermux: handleReset: timed out sending to pendingStart.notify (AM53)")
+		}
 	}
 
 	// Reset external session echo trackers.
@@ -956,6 +1038,18 @@ func (m *Mux) flushSessionEchoTrackers() {
 	}
 }
 
+// resetAllSessionEchoes resets echo trackers for all external sessions.
+// Called on ownership timeout to prevent stale echo state from leaking
+// into the next ownership cycle (AM11). Must be called WITHOUT stateMu
+// held to avoid ABBA deadlock with doSend.
+func (m *Mux) resetAllSessionEchoes() {
+	m.sessionsMu.Lock()
+	defer m.sessionsMu.Unlock()
+	for _, sess := range m.sessions {
+		sess.echoTracker.reset()
+	}
+}
+
 // deliverToActive sends a byte to the active path channel.
 // Logs on overflow instead of silently dropping (CRITICAL-1 fix).
 func (m *Mux) deliverToActive(symbol byte) {
@@ -1009,6 +1103,24 @@ func (m *Mux) tryGrantAndStart() {
 		initiator: initiator,
 		notify:    notify,
 	}
+	// AM8: start a 5s deadline timer so pendingStart cannot block indefinitely
+	// if the adapter never responds with STARTED/FAILED.
+	m.pendingStart.deadline = time.AfterFunc(5*time.Second, func() {
+		m.stateMu.Lock()
+		if m.pendingStart != nil && m.pendingStart.notify == notify {
+			pending := m.pendingStart
+			m.pendingStart = nil
+			m.pendingStartAbsorb++
+			m.stateMu.Unlock()
+			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8)", pending.sessionID)
+			pending.notify <- startResult{granted: false, initiator: pending.initiator, err: errors.New("adaptermux: START deadline expired")}
+			if m.arb.hasPending() {
+				m.tryGrantAndStart()
+			}
+		} else {
+			m.stateMu.Unlock()
+		}
+	})
 	m.stateMu.Unlock()
 
 	// Forward START to adapter via non-blocking RequestStart.
@@ -1027,6 +1139,9 @@ func (m *Mux) tryGrantAndStart() {
 			// on the cap-1 channel would block forever, pinning readLoop.
 			m.stateMu.Lock()
 			if m.pendingStart != nil && m.pendingStart.notify == notify {
+				if m.pendingStart.deadline != nil {
+					m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
+				}
 				m.pendingStart = nil
 				m.stateMu.Unlock()
 				notify <- startResult{granted: false, initiator: initiator, err: err}
@@ -1056,6 +1171,9 @@ func (m *Mux) tryGrantAndStart() {
 			// cap-1 channel would block the caller indefinitely.
 			m.stateMu.Lock()
 			if m.pendingStart != nil && m.pendingStart.notify == notify {
+				if m.pendingStart.deadline != nil {
+					m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
+				}
 				m.pendingStart = nil
 				m.stateMu.Unlock()
 				notify <- startResult{granted: false, initiator: initiator, err: err}
@@ -1082,6 +1200,9 @@ func (m *Mux) tryGrantAndStart() {
 			m.stateMu.Unlock()
 			return
 		}
+		if m.pendingStart.deadline != nil {
+			m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
+		}
 		m.pendingStart = nil
 		m.stateMu.Unlock()
 		m.completeArbitrationGrant(sessionID, initiator, notify)
@@ -1090,6 +1211,9 @@ func (m *Mux) tryGrantAndStart() {
 		m.logger.Printf("adaptermux: transport does not support arbitration")
 		m.stateMu.Lock()
 		if m.pendingStart != nil && m.pendingStart.notify == notify {
+			if m.pendingStart.deadline != nil {
+				m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
+			}
 			m.pendingStart = nil
 		}
 		m.stateMu.Unlock()
@@ -1101,30 +1225,15 @@ func (m *Mux) tryGrantAndStart() {
 // Used by the blocking StartArbitration fallback path and by
 // handleArbitrationResponse on STARTED.
 func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify chan startResult) {
-	// Verify session is still alive before confirming ownership
-	// (P2 TOCTOU fix: liveness check + confirmOwnership under same lock).
-	if sessionID != gatewaySessionID {
-		m.sessionsMu.Lock()
-		_, alive := m.sessions[sessionID]
-		if alive {
-			m.arb.confirmOwnership(sessionID, initiator)
-		}
-		m.sessionsMu.Unlock()
-		if !alive {
-			m.logger.Printf("adaptermux: session %d disconnected during START, discarding grant", sessionID)
-			notify <- startResult{granted: false, initiator: initiator, err: errors.New("session disconnected")}
-			return
-		}
-	} else {
-		m.arb.confirmOwnership(sessionID, initiator)
-	}
-
 	// Check ArbitrationSendsSource BEFORE acquiring stateMu to avoid
 	// ABBA deadlock: arbitrationSendsSource acquires connMu, and doSend
-	// acquires connMu → stateMu. Reversing that order here (stateMu →
+	// acquires connMu -> stateMu. Reversing that order here (stateMu ->
 	// connMu) would deadlock.
 	sendsSource := m.arbitrationSendsSource()
 
+	// AM57 fix: set busOwned and phase BEFORE confirmOwnership.
+	// This prevents onReceived from seeing hasOwner=true with a stale
+	// busOwned timestamp, which would release ownership on the first SYN.
 	m.stateMu.Lock()
 	if sendsSource {
 		// The adapter firmware already placed the SRC byte on the wire
@@ -1137,16 +1246,33 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.phase.startRequest()
 	}
 	m.busOwned = time.Now()
-	// Suppress stale SYN bytes from activeCh during the grant-to-first-byte
-	// handoff window. After arbitration grant, the TCP buffer may still contain
-	// SYN bytes from bus idle traffic that arrived before the adapter processed
-	// START. drainActiveCh clears the Go channel but not the TCP socket buffer.
-	// These stale SYNs would be read by the gateway as echo mismatches,
-	// causing ErrBusCollision on the very first byte.
 	if sessionID == gatewaySessionID {
 		m.gatewayEcho.markRequestStart()
 	}
 	m.stateMu.Unlock()
+
+	// NOW confirm ownership — onReceived will see busOwned is fresh.
+	// (P2 TOCTOU fix: liveness check + confirmOwnership under same lock.)
+	if sessionID != gatewaySessionID {
+		m.sessionsMu.Lock()
+		_, alive := m.sessions[sessionID]
+		if alive {
+			m.arb.confirmOwnership(sessionID, initiator)
+		}
+		m.sessionsMu.Unlock()
+		if !alive {
+			m.logger.Printf("adaptermux: session %d disconnected during START, discarding grant", sessionID)
+			// Undo phase/busOwned since we're not granting.
+			m.stateMu.Lock()
+			m.phase.reset(wirePhaseIdle)
+			m.busOwned = time.Time{}
+			m.stateMu.Unlock()
+			notify <- startResult{granted: false, initiator: initiator, err: errors.New("session disconnected")}
+			return
+		}
+	} else {
+		m.arb.confirmOwnership(sessionID, initiator)
+	}
 
 	// Mark external session echo tracker for request start.
 	if sessionID != gatewaySessionID {
@@ -1205,16 +1331,38 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 		// A stale STARTED from a cancelled request can arrive after a new
 		// request is pending — do not grant ownership in that case.
 		if data != pending.initiator {
-			// Do NOT clear pendingStart — our real response hasn't arrived yet.
+			// AM56 fix: mismatch means a stale STARTED from a previous
+			// session/request. Leaving pendingStart set permanently would
+			// deadlock all future START requests. Fail the pending session
+			// cleanly so it can retry.
+			m.pendingStart = nil
+			if pending.deadline != nil {
+				pending.deadline.Stop() // AM8: cancel deadline timer
+			}
 			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: stale STARTED for initiator 0x%02X (pending 0x%02X), ignoring", data, pending.initiator)
+			m.logger.Printf("adaptermux: STARTED mismatch: got initiator 0x%02X, pending 0x%02X — failing pending session %d (AM56)", data, pending.initiator, pending.sessionID)
+			pending.notify <- startResult{
+				granted:   false,
+				initiator: pending.initiator,
+				err:       fmt.Errorf("adaptermux: STARTED mismatch (got 0x%02X, want 0x%02X)", data, pending.initiator),
+			}
+			// After resolving, check if more requests are pending.
+			if m.arb.hasPending() {
+				m.tryGrantAndStart()
+			}
 			return
 		}
 		m.pendingStart = nil
+		if pending.deadline != nil {
+			pending.deadline.Stop() // AM8: cancel deadline timer
+		}
 		m.stateMu.Unlock()
 		m.completeArbitrationGrant(pending.sessionID, pending.initiator, pending.notify)
 	} else {
 		m.pendingStart = nil
+		if pending.deadline != nil {
+			pending.deadline.Stop() // AM8: cancel deadline timer
+		}
 		m.stateMu.Unlock()
 		pending.notify <- startResult{
 			granted:   false,
@@ -1237,12 +1385,15 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID {
 		pending := m.pendingStart
 		m.pendingStart = nil
+		if pending.deadline != nil {
+			pending.deadline.Stop() // AM8: cancel deadline timer
+		}
 		// The adapter will still send STARTED or FAILED for the cancelled
 		// RequestStart. Increment absorb counter so handleArbitrationResponse
 		// discards that stale response instead of failing a newer request.
 		m.pendingStartAbsorb++
 		m.stateMu.Unlock()
-		pending.notify <- startResult{granted: false, initiator: pending.initiator}
+		pending.notify <- startResult{granted: false, initiator: pending.initiator, cancelled: true}
 		return
 	}
 	m.stateMu.Unlock()
@@ -1329,6 +1480,10 @@ func (m *Mux) nextSessionID() uint64 {
 // deliverToSessions delivers a non-SYN byte to external sessions with
 // per-session echo suppression. Uses sessionsMu write lock because
 // matchEcho mutates the echo tracker (HIGH-7 data race fix).
+//
+// AM40: sessionsMu.Lock is used because matchEcho mutates per-session
+// echo trackers. Moving to per-session locks would reduce contention
+// but adds complexity. Current lock convoy is acceptable for <=100 sessions.
 func (m *Mux) deliverToSessions(symbol byte, currentOwner uint64, hasOwner bool, now time.Time) {
 	m.sessionsMu.Lock()
 	defer m.sessionsMu.Unlock()
@@ -1391,7 +1546,16 @@ func (m *Mux) broadcastResetToSessions() {
 			s.deliverReset(features)
 		}(sess)
 	}
-	wg.Wait()
+
+	// AM4/AM17: timeout to prevent readLoop deadlock if a session
+	// is stalled with a full sendCh.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		m.logger.Printf("adaptermux: broadcastResetToSessions timed out after 1s (AM4)")
+	}
 }
 
 // isNetTimeout reports whether err is a net.Error timeout (read deadline

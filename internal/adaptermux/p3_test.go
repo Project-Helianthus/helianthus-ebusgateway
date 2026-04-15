@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
@@ -33,6 +34,10 @@ type p3MockTransport struct {
 
 	// writtenBytes records Write calls.
 	writtenBytes []byte
+
+	// readTimeout, if > 0, causes ReadEvent to return ErrTimeout
+	// after this duration instead of blocking indefinitely (AM33).
+	readTimeout time.Duration
 }
 
 func newP3MockTransport() *p3MockTransport {
@@ -49,6 +54,18 @@ func (t *p3MockTransport) RequestStart(initiator byte) error {
 }
 
 func (t *p3MockTransport) ReadEvent() (transport.StreamEvent, error) {
+	// AM33: optional read timeout for more realistic mock behavior.
+	if t.readTimeout > 0 {
+		select {
+		case ev, ok := <-t.eventCh:
+			if !ok {
+				return transport.StreamEvent{}, io.EOF
+			}
+			return ev, nil
+		case <-time.After(t.readTimeout):
+			return transport.StreamEvent{}, ebuserrors.ErrTimeout
+		}
+	}
 	ev, ok := <-t.eventCh
 	if !ok {
 		return transport.StreamEvent{}, io.EOF
@@ -1245,11 +1262,12 @@ func TestAbsorbDecrementOnRequestStartFailAfterCancel(t *testing.T) {
 	}
 }
 
-// TestHandleArbitrationResponse_StaleStartedIgnored verifies that a STARTED
-// event whose confirmed initiator does not match the pending request is
-// treated as stale: ownership must NOT be granted, and pendingStart must
-// remain set so the real response can still be processed.
-func TestHandleArbitrationResponse_StaleStartedIgnored(t *testing.T) {
+// TestHandleArbitrationResponse_StaleStartedFailsPending verifies that a
+// STARTED event whose confirmed initiator does not match the pending request
+// clears pendingStart and delivers FAILED to the pending session (AM56 fix).
+// This prevents permanent bus deadlock from a stale STARTED leaving
+// pendingStart set indefinitely.
+func TestHandleArbitrationResponse_StaleStartedFailsPending(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
@@ -1287,48 +1305,28 @@ func TestHandleArbitrationResponse_StaleStartedIgnored(t *testing.T) {
 		t.Fatal("stale STARTED should not grant ownership")
 	}
 
-	// pendingStart must still be set (restored after stale rejection).
-	mux.stateMu.Lock()
-	hasPending = mux.pendingStart != nil
-	mux.stateMu.Unlock()
-	if !hasPending {
-		t.Fatal("pendingStart should be restored after stale STARTED")
-	}
-
-	// No result should have been sent on the notify channel.
-	select {
-	case result := <-ch:
-		t.Fatalf("unexpected result on notify channel: %+v", result)
-	default:
-		// Good — stale STARTED was ignored.
-	}
-
-	// Now inject the correct STARTED for 0x71. This must succeed.
-	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
-
-	select {
-	case result := <-ch:
-		if !result.granted {
-			t.Fatal("expected granted=true after correct STARTED")
-		}
-		if result.initiator != 0x71 {
-			t.Fatalf("result.initiator = 0x%02X, want 0x71", result.initiator)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for START result after correct STARTED")
-	}
-
-	// Verify ownership now confirmed.
-	if !mux.arb.isOwner(gatewaySessionID) {
-		t.Fatal("gateway should own bus after correct STARTED")
-	}
-
-	// pendingStart must be cleared.
+	// AM56: pendingStart must be CLEARED (not restored).
 	mux.stateMu.Lock()
 	hasPending = mux.pendingStart != nil
 	mux.stateMu.Unlock()
 	if hasPending {
-		t.Fatal("pendingStart should be nil after correct STARTED")
+		t.Fatal("pendingStart should be cleared after STARTED mismatch (AM56)")
+	}
+
+	// AM56: FAILED must have been delivered on the notify channel.
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false on STARTED mismatch")
+		}
+		if result.err == nil {
+			t.Fatal("expected error on STARTED mismatch")
+		}
+		if result.initiator != 0x71 {
+			t.Fatalf("result.initiator = 0x%02X, want 0x71 (pending initiator)", result.initiator)
+		}
+	default:
+		t.Fatal("expected result on notify channel after STARTED mismatch")
 	}
 }
 

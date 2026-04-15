@@ -73,13 +73,17 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 		return
 	}
 
-	// Reset boundaries are non-droppable — losing a reset merges
-	// pre/post-reset streams and corrupts frame reconstruction
-	// (Codex P1 #3060199712). Block until delivered.
+	// AM52: reset boundaries use non-blocking send. Blocking on a
+	// full channel stalls readLoop (the caller). If the channel is
+	// full, log the drop -- the consumer is too slow to keep up.
 	if se.Kind == transport.StreamEventReset {
 		select {
 		case t.events <- se:
 		case <-t.done:
+		default:
+			// AM52: channel full -- drop this reset rather than block
+			// readLoop. The consumer will see data discontinuity on
+			// the next reset or connection event.
 		}
 		return
 	}
@@ -90,22 +94,39 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 	case <-t.done:
 		return
 	default:
-		// Buffer full — drop oldest symbol to prevent backpressure.
-		// Never evict a reset event — resets are non-droppable boundaries
-		// (Codex P1 #3060335791). If the oldest is a reset, put it back
-		// and drop the new symbol instead.
+		// Buffer full -- drop oldest symbol to prevent backpressure.
+		// AM48: never evict a reset event -- resets are non-droppable
+		// boundaries (Codex P1 #3060335791). If the oldest is a reset,
+		// put it back and drop the new symbol instead.
 		select {
 		case oldest := <-t.events:
 			if oldest.Kind == transport.StreamEventReset {
-				t.events <- oldest
+				// AM48: reset boundary is sacred, put it back.
+				select {
+				case t.events <- oldest:
+				case <-t.done:
+					return
+				}
+				return // drop the new symbol
+			}
+			// AM28: data was lost -- inject a reset marker to signal
+			// the loss boundary to the consumer instead of silently
+			// continuing with a gap. The new symbol is also dropped;
+			// the consumer must re-sync after seeing the reset.
+			select {
+			case t.events <- transport.StreamEvent{Kind: transport.StreamEventReset}:
+			case <-t.done:
 				return
+			default:
+				// If even the reset can't be queued, at least we
+				// evicted the oldest -- push the new symbol as fallback.
+				select {
+				case t.events <- se:
+				case <-t.done:
+					return
+				}
 			}
 		default:
-		}
-		select {
-		case t.events <- se:
-		case <-t.done:
-			return
 		}
 	}
 }

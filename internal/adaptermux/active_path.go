@@ -108,6 +108,10 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 // The gateway must hold bus ownership (via StartArbitration) before
 // calling Write.
 //
+// AM5: ownership release is handled by the wire phase tracker (SYN
+// boundary) or MaxOwnershipDuration timeout, not by the active path.
+// The caller (bus.Send pipeline) handles retry/abort on error.
+//
 // Each byte goes through doSend/sendLoop which records echo expectations
 // and tracks ownership per byte. bus.sendRawWithEcho calls Write with
 // 1 byte at a time, so there is no batching benefit from bypassing

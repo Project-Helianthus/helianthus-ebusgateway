@@ -690,10 +690,9 @@ func TestPassiveTransport_ResetNotDroppedUnderPressure(t *testing.T) {
 	}
 }
 
-// TestPassiveTransport_ResetNonBlockingOnFullBuffer_PR472 verifies AM52:
-// delivering a reset to a full buffer does NOT block -- the reset is
-// dropped to prevent readLoop stalls. This supersedes the original
-// blocking invariant from Codex P1 #3060199712.
+// TestPassiveTransport_ResetBlocksOnFullBuffer_PR472 verifies AM-fix5:
+// delivering a reset to a full buffer BLOCKS until space is available.
+// Resets are non-droppable stream boundaries. This supersedes AM52.
 func TestPassiveTransport_ResetNonBlockingOnFullBuffer_PR472(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 1),
@@ -704,30 +703,45 @@ func TestPassiveTransport_ResetNonBlockingOnFullBuffer_PR472(t *testing.T) {
 	// Fill the single-slot buffer.
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xFF})
 
-	// Deliver reset in background -- must not block (AM52).
+	// Deliver reset in background -- must block (AM-fix5).
 	delivered := make(chan struct{})
 	go func() {
 		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
 		close(delivered)
 	}()
 
+	// Verify it blocks.
 	select {
 	case <-delivered:
-		// Good -- non-blocking (AM52).
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("deliver(Reset) blocked on full buffer -- AM52 violation")
+		t.Fatal("deliver(Reset) returned immediately on full buffer -- should block")
+	case <-time.After(100 * time.Millisecond):
+		// Good -- blocking as expected.
 	}
 
-	// The original symbol is still in the buffer.
+	// Drain the symbol to unblock.
 	ev := <-pt.events
 	if ev.Kind != transport.StreamEventByte || ev.Byte != 0xFF {
 		t.Fatalf("expected symbol 0xFF, got %+v", ev)
 	}
+
+	select {
+	case <-delivered:
+		// Good -- unblocked.
+	case <-time.After(2 * time.Second):
+		t.Fatal("deliver(Reset) did not unblock after draining buffer")
+	}
+
+	// The reset should now be in the buffer.
+	ev2 := <-pt.events
+	if ev2.Kind != transport.StreamEventReset {
+		t.Fatalf("expected reset, got %+v", ev2)
+	}
 }
 
-// TestPassiveTransport_ConnectedDisconnectedNonBlocking verifies AM52:
+// TestPassiveTransport_ConnectedDisconnectedBlocking verifies AM-fix5:
 // PassiveEventConnected and PassiveEventDisconnected (which map to
-// StreamEventReset) use non-blocking delivery when the buffer is full.
+// StreamEventReset) use blocking delivery when the buffer is full.
+// Resets are non-droppable stream boundaries.
 func TestPassiveTransport_ConnectedDisconnectedNonBlocking(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 1),
@@ -738,24 +752,38 @@ func TestPassiveTransport_ConnectedDisconnectedNonBlocking(t *testing.T) {
 	// Fill buffer.
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xAA})
 
-	// Deliver Connected (maps to reset) in background -- must not block.
+	// Deliver Connected (maps to reset) in background -- must block (AM-fix5).
 	delivered := make(chan struct{})
 	go func() {
 		pt.deliver(PassiveEvent{Kind: PassiveEventConnected})
 		close(delivered)
 	}()
 
+	// Verify it blocks.
 	select {
 	case <-delivered:
-		// Good -- non-blocking (AM52).
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("connected event blocked on full buffer -- AM52 violation")
+		t.Fatal("connected event returned immediately on full buffer -- should block")
+	case <-time.After(100 * time.Millisecond):
+		// Good -- blocking as expected.
 	}
 
-	// Original symbol is still in buffer.
+	// Drain symbol to unblock.
 	ev := <-pt.events
 	if ev.Kind != transport.StreamEventByte || ev.Byte != 0xAA {
 		t.Fatalf("expected symbol 0xAA, got %+v", ev)
+	}
+
+	select {
+	case <-delivered:
+		// Good -- unblocked.
+	case <-time.After(2 * time.Second):
+		t.Fatal("connected event did not unblock after draining buffer")
+	}
+
+	// The reset should now be in the buffer.
+	ev2 := <-pt.events
+	if ev2.Kind != transport.StreamEventReset {
+		t.Fatalf("expected reset, got %+v", ev2)
 	}
 }
 

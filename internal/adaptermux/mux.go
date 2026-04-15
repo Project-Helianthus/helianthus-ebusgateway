@@ -664,6 +664,11 @@ func (m *Mux) readLoop() {
 	// Only accessed from this goroutine -- no synchronization needed.
 	consecutiveTimeouts := 0
 
+	// AM27: track when we last received actual data from the adapter.
+	// A bus that has NEVER sent data is legitimately quiet — don't
+	// treat consecutive timeouts as a TCP blackhole in that case.
+	var lastDataTime time.Time
+
 	for {
 		select {
 		case <-m.ctx.Done():
@@ -684,7 +689,13 @@ func (m *Mux) readLoop() {
 			// ReadTimeout window) — treat as idle, not disconnect.
 			// Matches passive_bus_tap.go behavior (Codex P2 #3059211395).
 			if errors.Is(err, ebuserrors.ErrTimeout) || isNetTimeout(err) {
-				consecutiveTimeouts++
+				// AM27: only treat as TCP blackhole if we were actively
+				// receiving data before the timeout streak. A bus that
+				// has NEVER sent data within this session is legitimately
+				// quiet — not a blackhole.
+				if !lastDataTime.IsZero() {
+					consecutiveTimeouts++
+				}
 
 				// AM27: detect TCP blackhole after ~30s of consecutive
 				// timeouts (150 * 200ms default ReadTimeout).
@@ -733,6 +744,7 @@ func (m *Mux) readLoop() {
 		}
 
 		consecutiveTimeouts = 0 // AM27: reset on successful read
+		lastDataTime = time.Now() // AM27: track last data for blackhole detection
 
 		switch event.Kind {
 		case transport.StreamEventStarted:
@@ -1113,7 +1125,13 @@ func (m *Mux) tryGrantAndStart() {
 			m.pendingStartAbsorb++
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8)", pending.sessionID)
-			pending.notify <- startResult{granted: false, initiator: pending.initiator, err: errors.New("adaptermux: START deadline expired")}
+			// AM8: guard the send — if another path already delivered a
+			// result, the channel is full and this send would block forever.
+			select {
+			case pending.notify <- startResult{granted: false, initiator: pending.initiator, err: errors.New("adaptermux: START deadline expired")}:
+			default:
+				m.logger.Printf("adaptermux: pendingStart deadline: notify channel full for session %d, result already delivered", pending.sessionID)
+			}
 			if m.arb.hasPending() {
 				m.tryGrantAndStart()
 			}

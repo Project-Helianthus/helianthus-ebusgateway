@@ -73,17 +73,14 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 		return
 	}
 
-	// AM52: reset boundaries use non-blocking send. Blocking on a
-	// full channel stalls readLoop (the caller). If the channel is
-	// full, log the drop -- the consumer is too slow to keep up.
+	// AM52/AM-fix5: reset boundaries use blocking send with done guard.
+	// Losing a reset merges pre/post-reset streams and corrupts frame
+	// reconstruction. Reset events are rare (adapter disconnect/reconnect),
+	// so blocking briefly is acceptable and correct.
 	if se.Kind == transport.StreamEventReset {
 		select {
 		case t.events <- se:
 		case <-t.done:
-		default:
-			// AM52: channel full -- drop this reset rather than block
-			// readLoop. The consumer will see data discontinuity on
-			// the next reset or connection event.
 		}
 		return
 	}

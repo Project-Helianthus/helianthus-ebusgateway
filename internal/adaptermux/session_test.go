@@ -698,10 +698,18 @@ func TestWriteFrame_BoundaryBytes(t *testing.T) {
 
 			s := &session{conn: server, sendCh: make(chan sessionFrame, 1), done: make(chan struct{})}
 
+			// AM-fix4: use io.ReadFull with deadline to avoid partial reads
+			// on net.Pipe and prevent hangs on test failure.
 			readCh := make(chan int, 1)
 			go func() {
-				buf := make([]byte, 4)
-				n, _ := client.Read(buf)
+				_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+				buf := make([]byte, tt.wantLen)
+				n, err := io.ReadFull(client, buf)
+				if err != nil {
+					// Signal error via negative length.
+					readCh <- -1
+					return
+				}
 				readCh <- n
 			}()
 
@@ -711,10 +719,13 @@ func TestWriteFrame_BoundaryBytes(t *testing.T) {
 
 			select {
 			case n := <-readCh:
+				if n < 0 {
+					t.Fatalf("payload 0x%02X: ReadFull error", tt.payload)
+				}
 				if n != tt.wantLen {
 					t.Errorf("payload 0x%02X: wrote %d bytes, want %d", tt.payload, n, tt.wantLen)
 				}
-			case <-time.After(2 * time.Second):
+			case <-time.After(5 * time.Second):
 				t.Fatal("timeout reading frame")
 			}
 		})

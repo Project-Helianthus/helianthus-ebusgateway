@@ -398,6 +398,8 @@ func (m *Mux) connect() error {
 				case <-time.After(backoff):
 				case <-m.ctx.Done():
 					_ = conn.Close()
+					m.conn = nil     // AM32: clear stale reference on ctx cancel
+					m.upstream = nil  // AM32: clear stale transport on ctx cancel
 					return m.ctx.Err()
 				}
 			}
@@ -439,6 +441,8 @@ func (m *Mux) connect() error {
 		case <-time.After(500 * time.Millisecond):
 		case <-m.ctx.Done():
 			_ = conn.Close()
+			m.conn = nil     // AM32: clear stale reference on ctx cancel
+			m.upstream = nil  // AM32: clear stale transport on ctx cancel
 			return m.ctx.Err()
 		}
 	}

@@ -285,6 +285,8 @@ func (s *session) handleSend(data byte) {
 		data:      data,
 		result:    result,
 	}:
+	case <-s.done:
+		return // AM14: session closing, don't block on activeSendCh
 	case <-s.mux.ctx.Done():
 		return
 	}
@@ -299,6 +301,8 @@ func (s *session) handleSend(data byte) {
 				s.deliverError()
 			}
 		}
+	case <-s.done:
+		return // AM14: session closing, don't block waiting for send result
 	case <-s.mux.ctx.Done():
 	}
 }

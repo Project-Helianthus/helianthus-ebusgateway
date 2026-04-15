@@ -507,3 +507,57 @@ func TestWirePhase_ResponseDoubleNACK(t *testing.T) {
 		t.Fatal("expected idle after second response NACK")
 	}
 }
+
+// TestWirePhase_InitiatorToInitiator verifies that ACK for an i2i frame
+// (DST is an initiator-capable address) transitions directly to
+// TransactionDone without waiting for a response phase (AM1 fix).
+func TestWirePhase_InitiatorToInitiator(t *testing.T) {
+	var tracker wirePhaseTracker
+	tracker.startRequest()
+
+	// Simulate i2i request: SRC=0x71, DST=0x10 (both initiator-capable).
+	tracker.advance(0x71) // SRC
+	tracker.advance(0x10) // DST (initiator-capable)
+	tracker.advance(0x05) // PB
+	tracker.advance(0x07) // SB
+	tracker.advance(0x01) // LEN=1
+	tracker.advance(0x42) // DATA[0]
+	ev := tracker.advance(0xCC) // CRC -> RequestComplete
+	if ev != wirePhaseEventRequestComplete {
+		t.Fatalf("expected RequestComplete, got %d", ev)
+	}
+
+	// ACK for i2i: should go directly to TransactionDone (no response).
+	ev = tracker.advance(protocol.SymbolAck)
+	if ev != wirePhaseEventTransactionDone {
+		t.Fatalf("i2i ACK: expected TransactionDone, got %d", ev)
+	}
+	if !tracker.isIdle() {
+		t.Fatal("expected idle after i2i ACK")
+	}
+}
+
+// TestWirePhase_InitiatorToTarget verifies that ACK for a normal frame
+// (DST is NOT initiator-capable) transitions to WaitResponseLen.
+func TestWirePhase_InitiatorToTarget(t *testing.T) {
+	var tracker wirePhaseTracker
+	tracker.startRequest()
+
+	// SRC=0x71, DST=0x08 (target, not initiator-capable).
+	tracker.advance(0x71) // SRC
+	tracker.advance(0x08) // DST (NOT initiator-capable)
+	tracker.advance(0x05) // PB
+	tracker.advance(0x07) // SB
+	tracker.advance(0x01) // LEN=1
+	tracker.advance(0x42) // DATA[0]
+	tracker.advance(0xCC) // CRC -> RequestComplete
+
+	// ACK for normal target: should transition to WaitResponseLen.
+	ev := tracker.advance(protocol.SymbolAck)
+	if ev != wirePhaseEventCmdACK {
+		t.Fatalf("normal ACK: expected CmdACK, got %d", ev)
+	}
+	if tracker.isIdle() {
+		t.Fatal("should NOT be idle — expecting response")
+	}
+}

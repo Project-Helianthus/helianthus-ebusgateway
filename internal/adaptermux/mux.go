@@ -1335,7 +1335,11 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			// session/request. Leaving pendingStart set permanently would
 			// deadlock all future START requests. Fail the pending session
 			// cleanly so it can retry.
+			// The adapter sent this STARTED for a previous RequestStart that
+			// is no longer tracked. The real response for our pending request
+			// may still arrive — absorb it when it does.
 			m.pendingStart = nil
+			m.pendingStartAbsorb++
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
@@ -1534,10 +1538,13 @@ func (m *Mux) broadcastResetToSessions() {
 	}
 	m.sessionsMu.Unlock()
 
-	// Deliver resets concurrently — each deliverReset blocks until
-	// the session drains its buffer or closes. Delivering in parallel
-	// prevents a single slow session from delaying reset delivery to
-	// all other sessions (head-of-line blocking).
+	// AM4/AM17: deliver resets concurrently with a 1-second deadline.
+	// deliverReset blocks until sendCh has space or s.done closes.
+	// The deadline prevents broadcastResetToSessions from stalling
+	// readLoop indefinitely if a session has a full sendCh.
+	// Goroutines that exceed the deadline are NOT leaked — they will
+	// self-terminate when the session eventually closes (s.done) via
+	// writeLoop backpressure or RemoveSession.
 	var wg sync.WaitGroup
 	for _, sess := range sessions {
 		wg.Add(1)
@@ -1547,14 +1554,12 @@ func (m *Mux) broadcastResetToSessions() {
 		}(sess)
 	}
 
-	// AM4/AM17: timeout to prevent readLoop deadlock if a session
-	// is stalled with a full sendCh.
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(1 * time.Second):
-		m.logger.Printf("adaptermux: broadcastResetToSessions timed out after 1s (AM4)")
+		m.logger.Printf("adaptermux: broadcastResetToSessions timed out after 1s — %d session(s) still pending (AM4)", len(sessions))
 	}
 }
 

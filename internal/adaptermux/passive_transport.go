@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
@@ -73,14 +74,17 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 		return
 	}
 
-	// AM52/AM-fix5: reset boundaries use blocking send with done guard.
-	// Losing a reset merges pre/post-reset streams and corrupts frame
-	// reconstruction. Reset events are rare (adapter disconnect/reconnect),
-	// so blocking briefly is acceptable and correct.
+	// AM52/AM-fix5/Codex-R6: reset boundaries use a bounded-blocking
+	// send. Losing a reset corrupts frame reconstruction, but blocking
+	// indefinitely stalls readLoop/reconnect/handleReset — the critical
+	// recovery path. Compromise: try for 100ms, then drop. The consumer
+	// will see a data discontinuity on the next SYN boundary.
 	if se.Kind == transport.StreamEventReset {
 		select {
 		case t.events <- se:
 		case <-t.done:
+		case <-time.After(100 * time.Millisecond):
+			// Consumer too slow — drop reset to unblock mux recovery.
 		}
 		return
 	}

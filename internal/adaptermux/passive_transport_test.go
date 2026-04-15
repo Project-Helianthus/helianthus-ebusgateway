@@ -160,10 +160,11 @@ func TestReadEvent_ReturnsResetForConnectDisconnect(t *testing.T) {
 
 // --- Passive reset blocking safety ---
 
-// TestPassiveTransport_ResetBlocksOnFullBuffer verifies AM-fix5:
-// delivering a reset to a full buffer BLOCKS until space is available
-// (or done is closed). Resets are non-droppable stream boundaries.
-func TestPassiveTransport_ResetBlocksOnFullBuffer(t *testing.T) {
+// TestPassiveTransport_ResetBoundedBlockOnFullBuffer verifies Codex-R6:
+// delivering a reset to a full buffer blocks briefly (100ms bounded)
+// then drops to avoid stalling readLoop/reconnect. If drained in time,
+// the reset is delivered.
+func TestPassiveTransport_ResetBoundedBlockOnFullBuffer(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),
@@ -173,22 +174,22 @@ func TestPassiveTransport_ResetBlocksOnFullBuffer(t *testing.T) {
 	// Fill the single slot.
 	pt.events <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x01}
 
-	// Deliver a reset -- must block (AM-fix5: resets are non-droppable).
+	// Deliver a reset — bounded-blocking (100ms timeout).
 	delivered := make(chan struct{})
 	go func() {
 		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
 		close(delivered)
 	}()
 
-	// Verify it blocks.
+	// Verify it blocks briefly (doesn't return immediately).
 	select {
 	case <-delivered:
-		t.Fatal("deliver(Reset) returned immediately on full buffer -- should block")
-	case <-time.After(100 * time.Millisecond):
-		// Good -- blocking as expected.
+		t.Fatal("deliver(Reset) returned immediately on full buffer -- should block briefly")
+	case <-time.After(20 * time.Millisecond):
+		// Good -- still blocking after 20ms.
 	}
 
-	// Drain one slot to unblock.
+	// Drain before the 100ms timeout to receive the reset.
 	<-pt.events
 
 	select {
@@ -205,10 +206,45 @@ func TestPassiveTransport_ResetBlocksOnFullBuffer(t *testing.T) {
 	}
 }
 
-// TestPassiveTransport_ResetBlocksOnFull_TwoResets verifies AM-fix5:
-// when the buffer is full, a second reset blocks until space is
-// available. Both resets must be delivered (non-droppable).
-func TestPassiveTransport_ResetBlocksOnFull_TwoResets(t *testing.T) {
+// TestPassiveTransport_ResetDroppedAfterTimeout verifies Codex-R6:
+// if the consumer is too slow, the reset is dropped after 100ms
+// to unblock the mux recovery path.
+func TestPassiveTransport_ResetDroppedAfterTimeout(t *testing.T) {
+	pt := &passiveTransport{
+		events: make(chan transport.StreamEvent, 1),
+		done:   make(chan struct{}),
+	}
+	defer pt.Close()
+
+	// Fill the single slot.
+	pt.events <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x01}
+
+	// Deliver a reset — will timeout after 100ms and return.
+	delivered := make(chan struct{})
+	go func() {
+		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
+		close(delivered)
+	}()
+
+	// Don't drain — let the 100ms timeout fire.
+	select {
+	case <-delivered:
+		// Good — returned after timeout, reset was dropped.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("deliver(Reset) did not return after timeout -- still blocking")
+	}
+
+	// Buffer should still contain only the original symbol.
+	ev := <-pt.events
+	if ev.Kind != transport.StreamEventByte || ev.Byte != 0x01 {
+		t.Fatalf("expected original symbol 0x01, got %+v", ev)
+	}
+}
+
+// TestPassiveTransport_ResetBoundedBlock_TwoResets verifies Codex-R6:
+// first reset succeeds (slot available), second reset bounded-blocks.
+// If drained within 100ms, second reset is delivered.
+func TestPassiveTransport_ResetBoundedBlock_TwoResets(t *testing.T) {
 	pt := &passiveTransport{
 		events: make(chan transport.StreamEvent, 2),
 		done:   make(chan struct{}),
@@ -218,25 +254,25 @@ func TestPassiveTransport_ResetBlocksOnFull_TwoResets(t *testing.T) {
 	// Fill buffer to capacity-1 (1 slot left).
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x01})
 
-	// First reset should succeed immediately (1 slot available).
+	// First reset succeeds immediately (1 slot available).
 	pt.deliver(PassiveEvent{Kind: PassiveEventReset})
 
-	// Buffer now has: [symbol(0x01), reset]. Second reset blocks (AM-fix5).
+	// Buffer full: [symbol(0x01), reset]. Second reset bounded-blocks.
 	delivered := make(chan struct{})
 	go func() {
 		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
 		close(delivered)
 	}()
 
-	// Verify it blocks.
+	// Verify it doesn't return immediately.
 	select {
 	case <-delivered:
-		t.Fatal("second reset returned immediately on full buffer -- should block")
-	case <-time.After(100 * time.Millisecond):
-		// Good -- blocking as expected.
+		t.Fatal("second reset returned immediately on full buffer")
+	case <-time.After(20 * time.Millisecond):
+		// Good — still blocking after 20ms.
 	}
 
-	// Drain one slot to unblock.
+	// Drain one slot before the 100ms timeout.
 	ev1 := <-pt.events
 	if ev1.Kind != transport.StreamEventByte || ev1.Byte != 0x01 {
 		t.Fatalf("event[0]: expected symbol(0x01), got %+v", ev1)
@@ -244,12 +280,12 @@ func TestPassiveTransport_ResetBlocksOnFull_TwoResets(t *testing.T) {
 
 	select {
 	case <-delivered:
-		// Good -- unblocked.
+		// Good — unblocked after drain.
 	case <-time.After(2 * time.Second):
 		t.Fatal("second reset did not unblock after draining one slot")
 	}
 
-	// Drain remaining: both resets should be present.
+	// Both resets should be in buffer.
 	ev2 := <-pt.events
 	if ev2.Kind != transport.StreamEventReset {
 		t.Fatalf("event[1]: expected reset, got %+v", ev2)
@@ -302,31 +338,30 @@ func TestDeliver_BufferOverflowInjectsReset(t *testing.T) {
 	}
 }
 
-// TestDeliver_ResetBlocksOnFull verifies AM-fix5: reset delivery
-// blocks when the channel is full, and unblocks via done channel.
-func TestDeliver_ResetBlocksOnFull(t *testing.T) {
+// TestDeliver_ResetUnblocksViaDone verifies that reset delivery on a
+// full buffer unblocks when done is closed (transport shutdown).
+func TestDeliver_ResetUnblocksViaDone(t *testing.T) {
 	pt := &passiveTransport{
-		events: make(chan transport.StreamEvent, 1), // tiny buffer
+		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),
 	}
-	defer pt.Close()
 
 	// Fill the single slot.
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x01})
 
-	// Deliver a reset -- must block (AM-fix5: resets are non-droppable).
+	// Deliver a reset — bounded-blocking.
 	delivered := make(chan struct{})
 	go func() {
 		pt.deliver(PassiveEvent{Kind: PassiveEventReset})
 		close(delivered)
 	}()
 
-	// Verify it blocks.
+	// Verify it doesn't return immediately.
 	select {
 	case <-delivered:
-		t.Fatal("deliver(Reset) returned immediately on full buffer -- should block")
-	case <-time.After(100 * time.Millisecond):
-		// Good -- blocking.
+		t.Fatal("deliver(Reset) returned immediately on full buffer")
+	case <-time.After(20 * time.Millisecond):
+		// Good — still blocking after 20ms.
 	}
 
 	// Close the transport to unblock via done channel.
@@ -334,7 +369,7 @@ func TestDeliver_ResetBlocksOnFull(t *testing.T) {
 
 	select {
 	case <-delivered:
-		// Good -- unblocked via done.
+		// Good — unblocked via done.
 	case <-time.After(2 * time.Second):
 		t.Fatal("deliver(Reset) did not unblock after Close()")
 	}

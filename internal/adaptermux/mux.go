@@ -137,7 +137,7 @@ type pendingStartState struct {
 	sessionID   uint64
 	initiator   byte
 	notify      chan startResult
-	deadline    *time.Timer // AM8: fires if adapter doesn't respond within 5s
+	deadline    *time.Timer // AM8: fires if adapter doesn't respond before cfg.StartDeadline
 	blockingArb bool        // true when using blocking StartArbitration fallback
 }
 
@@ -1135,6 +1135,17 @@ func (m *Mux) deliverToActive(symbol byte) {
 // this method is a no-op — the next tryGrantAndStart will fire after
 // the current one resolves.
 func (m *Mux) tryGrantAndStart() {
+	// Snapshot transport BEFORE acquiring stateMu to avoid stateMu → connMu
+	// lock nesting. doSend uses connMu → (release) → stateMu, so while not
+	// strictly ABBA, keeping consistent ordering is defensive best practice.
+	m.connMu.Lock()
+	tr := m.upstream
+	m.connMu.Unlock()
+
+	_, hasRequestStart := tr.(arbitrationRequester)
+	_, hasBlockingStart := tr.(interface{ StartArbitration(byte) error })
+	isBlockingPath := !hasRequestStart && hasBlockingStart
+
 	// P1 fix (#3062924968): serialize the pendingStart guard, the
 	// arb.tryGrant() dequeue, and the pendingStart assignment in a
 	// single stateMu critical section.  Without this, two concurrent
@@ -1158,19 +1169,6 @@ func (m *Mux) tryGrantAndStart() {
 		m.stateMu.Unlock()
 		return
 	}
-
-	// Determine transport arbitration path BEFORE creating pendingStart.
-	// This ensures blockingArb is set in the struct literal, visible to
-	// the deadline timer from the moment it is created. Previously,
-	// blockingArb was set AFTER the deadline timer — a race on loaded
-	// systems where the deadline could fire before the assignment.
-	m.connMu.Lock()
-	tr := m.upstream
-	m.connMu.Unlock()
-
-	_, hasRequestStart := tr.(arbitrationRequester)
-	_, hasBlockingStart := tr.(interface{ StartArbitration(byte) error })
-	isBlockingPath := !hasRequestStart && hasBlockingStart
 
 	m.pendingStart = &pendingStartState{
 		sessionID:   sessionID,

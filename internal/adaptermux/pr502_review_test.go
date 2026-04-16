@@ -3,6 +3,7 @@ package adaptermux
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,28 +15,37 @@ import (
 // PR502 Review Item 1: 0xAA data byte invariant
 // =======================================================================
 
-// TestOnReceived_0xAA_IsSYNBoundary proves that 0xAA (protocol.SymbolSyn)
-// in onReceived is ALWAYS treated as a SYN boundary — ownership is
-// released, the wire phase resets to idle.
+// TestOnReceived_0xAA_WireLayerSYNInvariant proves that 0xAA
+// (protocol.SymbolSyn) in onReceived is ALWAYS treated as a SYN
+// boundary -- ownership is released, the wire phase resets to idle.
+//
+// Layer boundary note:
+//
+//	XR_ENH_0xAA_DataNotSYN: Not applicable at mux layer. The mux receives
+//	raw wire bytes where 0xAA is always SYN. Logical 0xAA data is escaped
+//	at the ENH transport layer (0xA9 0x01 -> 0xAA) and never reaches
+//	onReceived as 0xAA. Enforced by ebusgo ENHTransport -- see
+//	TestOnReceived_0xAA_WireLayerSYNInvariant for the mux-layer wire
+//	invariant.
 //
 // Why this is correct for eBUS:
 //
-//   On the eBUS wire, 0xAA is the SYN (bus idle) symbol. It can NEVER
-//   appear as a logical data byte on the wire. If a data payload needs
-//   to carry the value 0xAA, the ENH transport escapes it on the wire
-//   as {0xA9, 0x01}. The ENH parser decodes {0xA9, 0x01} into a
-//   ENHResReceived(0xAA) frame, which ReadEvent surfaces as
-//   StreamEventByte{Byte: 0xAA}. However, the adapter firmware NEVER
-//   sends ENHResReceived(0xAA) because raw wire byte 0xAA is always
-//   consumed as SYN by the adapter's own parser — it never reaches
-//   the "received data" path.
+//	On the eBUS wire, 0xAA is the SYN (bus idle) symbol. It can NEVER
+//	appear as a logical data byte on the wire. If a data payload needs
+//	to carry the value 0xAA, the ENH transport escapes it on the wire
+//	as {0xA9, 0x01}. The ENH parser decodes {0xA9, 0x01} into a
+//	ENHResReceived(0xAA) frame, which ReadEvent surfaces as
+//	StreamEventByte{Byte: 0xAA}. However, the adapter firmware NEVER
+//	sends ENHResReceived(0xAA) because raw wire byte 0xAA is always
+//	consumed as SYN by the adapter's own parser -- it never reaches
+//	the "received data" path.
 //
-//   Therefore, any 0xAA arriving in readLoop → onReceived is
-//   necessarily a SYN event from the adapter. Treating it as SYN
-//   is the correct and only valid interpretation.
+//	Therefore, any 0xAA arriving in readLoop -> onReceived is
+//	necessarily a SYN event from the adapter. Treating it as SYN
+//	is the correct and only valid interpretation.
 //
 // XR_SYN_DATA_INVARIANT
-func TestOnReceived_0xAA_IsSYNBoundary(t *testing.T) {
+func TestOnReceived_0xAA_WireLayerSYNInvariant(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
@@ -62,7 +72,7 @@ func TestOnReceived_0xAA_IsSYNBoundary(t *testing.T) {
 		t.Fatal("gateway should own the bus")
 	}
 
-	// Now feed 0xAA — this MUST be treated as SYN.
+	// Now feed 0xAA -- this MUST be treated as SYN.
 	// After IdleReleaseGrace (200ms default), a second SYN releases ownership.
 	// First SYN: starts the grace period.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xAA}
@@ -73,7 +83,7 @@ func TestOnReceived_0xAA_IsSYNBoundary(t *testing.T) {
 	isIdle := mux.phase.isIdle()
 	mux.stateMu.Unlock()
 	if !isIdle {
-		t.Fatal("wire phase must be idle after 0xAA — it must be treated as SYN")
+		t.Fatal("wire phase must be idle after 0xAA -- it must be treated as SYN")
 	}
 
 	// Wait for IdleReleaseGrace to expire, then send another SYN.
@@ -83,14 +93,67 @@ func TestOnReceived_0xAA_IsSYNBoundary(t *testing.T) {
 
 	// Ownership should be released.
 	if mux.arb.isOwner(gatewaySessionID) {
-		t.Fatal("0xAA must trigger SYN handling — ownership should be released after grace period")
+		t.Fatal("0xAA must trigger SYN handling -- ownership should be released after grace period")
+	}
+}
+
+// TestMux_0xAA_MockTransportAlwaysSYN verifies the mux-layer invariant:
+// if a mock transport produces StreamEventByte{Byte: 0xAA}, the mux
+// treats it as SYN. This proves that at the mux layer, 0xAA is
+// unconditionally SYN regardless of transport type.
+//
+// The ENH transport layer guarantees this never happens with real data:
+// logical 0xAA is escaped on the wire as {0xA9, 0x01} and the adapter
+// firmware consumes raw 0xAA as SYN before framing. This test documents
+// that even if a hypothetical transport produced 0xAA, the mux would
+// handle it correctly as SYN.
+//
+// Strategy: grant bus ownership via SYN+STARTED, then feed 0xAA.
+// The mux must enter the SYN path (start IdleReleaseGrace). After the
+// grace period + a second 0xAA, ownership must be released.
+func TestMux_0xAA_MockTransportAlwaysSYN(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Grant bus ownership to gateway.
+	ch := mux.arb.requestStart(gatewaySessionID, 0x71)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xAA}
+	time.Sleep(50 * time.Millisecond)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+	select {
+	case r := <-ch:
+		if !r.granted {
+			t.Fatal("expected grant")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for grant")
+	}
+
+	// Feed 0xAA -- the mux must treat this as SYN (wire phase idle).
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xAA}
+	time.Sleep(10 * time.Millisecond)
+
+	mux.stateMu.Lock()
+	isIdle := mux.phase.isIdle()
+	mux.stateMu.Unlock()
+	if !isIdle {
+		t.Fatal("0xAA from mock transport must be treated as SYN -- phase must be idle")
+	}
+
+	// After IdleReleaseGrace (200ms), a second 0xAA releases ownership.
+	time.Sleep(250 * time.Millisecond)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xAA}
+	time.Sleep(50 * time.Millisecond)
+
+	if mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("0xAA must trigger SYN handling -- ownership should be released")
 	}
 }
 
 // TestWirePhaseTracker_0xAA_AlwaysSYN verifies at the tracker level that
 // 0xAA is treated as SYN regardless of the current phase.
 func TestWirePhaseTracker_0xAA_AlwaysSYN(t *testing.T) {
-	// Case 1: idle — 0xAA returns SYNIdle.
+	// Case 1: idle -- 0xAA returns SYNIdle.
 	var tracker wirePhaseTracker
 	tracker.reset(wirePhaseIdle)
 	ev := tracker.advance(0xAA)
@@ -98,10 +161,10 @@ func TestWirePhaseTracker_0xAA_AlwaysSYN(t *testing.T) {
 		t.Fatalf("idle: advance(0xAA) = %d, want SYNIdle (%d)", ev, wirePhaseEventSYNIdle)
 	}
 
-	// Case 2: CollectRequest with bytesSeen > 1 — 0xAA returns SYNTimeout.
+	// Case 2: CollectRequest with bytesSeen > 1 -- 0xAA returns SYNTimeout.
 	tracker.startRequest()
-	tracker.advance(0x71) // SRC — bytesSeen=1
-	tracker.advance(0x08) // DST — bytesSeen=2
+	tracker.advance(0x71) // SRC -- bytesSeen=1
+	tracker.advance(0x08) // DST -- bytesSeen=2
 	ev = tracker.advance(0xAA)
 	if ev != wirePhaseEventSYNTimeout {
 		t.Fatalf("CollectRequest(bytesSeen>1): advance(0xAA) = %d, want SYNTimeout (%d)", ev, wirePhaseEventSYNTimeout)
@@ -110,7 +173,7 @@ func TestWirePhaseTracker_0xAA_AlwaysSYN(t *testing.T) {
 		t.Fatal("tracker must be idle after SYN in CollectRequest")
 	}
 
-	// Case 3: WaitCmdAck — 0xAA returns SYNTimeout.
+	// Case 3: WaitCmdAck -- 0xAA returns SYNTimeout.
 	tracker.startRequest()
 	for _, b := range []byte{0x71, 0x08, 0xB5, 0x24, 0x00} {
 		tracker.advance(b)
@@ -126,26 +189,30 @@ func TestWirePhaseTracker_0xAA_AlwaysSYN(t *testing.T) {
 // PR502 Review Item 3: blocking arb deadline + queue advance
 // =======================================================================
 
-// TestBlockingStartArbitrationDeadlineAdvancesQueueOnce verifies that when
+// TestBlockingStartArbitrationDeadlineReal verifies end-to-end that when
 // a blocking StartArbitration transport is used and the AM8 deadline fires:
-//   1. pendingStart is cleared and the session is notified of failure.
-//   2. The deadline callback does NOT call tryGrantAndStart (blockingArb flag
-//      prevents overlapping arbitration on the same transport).
-//   3. After the blocking call returns, the absorb counter is decremented
-//      (the cancelled request is accounted for).
+//  1. pendingStart is cleared and the session is notified of failure.
+//  2. The deadline callback does NOT call tryGrantAndStart (blockingArb flag
+//     prevents overlapping arbitration on the same transport).
+//  3. After the blocking call returns, the absorb counter is decremented
+//     (the cancelled request is accounted for).
+//
+// This test uses a real timer with a short StartDeadline (200ms) instead
+// of manually simulating the deadline callback.
 //
 // XR_BLOCKING_ARB_DEADLINE
-func TestBlockingStartArbitrationDeadlineAdvancesQueueOnce(t *testing.T) {
+func TestBlockingStartArbitrationDeadlineReal(t *testing.T) {
 	mock := &slowBlockingStartTransport{
 		readCh: make(chan byte, 256),
 		gate:   make(chan struct{}),
 	}
 
 	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 200 * time.Millisecond, // short deadline for test speed
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -160,7 +227,7 @@ func TestBlockingStartArbitrationDeadlineAdvancesQueueOnce(t *testing.T) {
 	// Queue a gateway START request.
 	gwCh := mux.arb.requestStart(gatewaySessionID, 0x71)
 
-	// Call tryGrantAndStart in a goroutine — it blocks on StartArbitration.
+	// Call tryGrantAndStart in a goroutine -- it blocks on StartArbitration.
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -171,16 +238,10 @@ func TestBlockingStartArbitrationDeadlineAdvancesQueueOnce(t *testing.T) {
 	// Wait for StartArbitration to be entered.
 	time.Sleep(50 * time.Millisecond)
 
-	// Verify pendingStart is set with blockingArb=true.
+	// Verify pendingStart is set with blockingArb=true BEFORE the deadline fires.
 	mux.stateMu.Lock()
 	hasPending := mux.pendingStart != nil
 	isBlocking := hasPending && mux.pendingStart.blockingArb
-	var deadlineTimer *time.Timer
-	var notify chan startResult
-	if hasPending {
-		deadlineTimer = mux.pendingStart.deadline
-		notify = mux.pendingStart.notify
-	}
 	mux.stateMu.Unlock()
 
 	if !hasPending {
@@ -190,42 +251,8 @@ func TestBlockingStartArbitrationDeadlineAdvancesQueueOnce(t *testing.T) {
 		t.Fatal("expected blockingArb=true for blocking StartArbitration path")
 	}
 
-	// Stop the real deadline timer and manually fire the deadline logic.
-	if deadlineTimer != nil {
-		deadlineTimer.Stop()
-	}
-
-	// Simulate the deadline firing: clear pendingStart, notify failure,
-	// increment absorb counter.
-	mux.stateMu.Lock()
-	if mux.pendingStart != nil && mux.pendingStart.notify == notify {
-		pending := mux.pendingStart
-		mux.pendingStart = nil
-		mux.pendingStartAbsorb++
-		mux.stateMu.Unlock()
-
-		select {
-		case pending.notify <- startResult{granted: false, initiator: pending.initiator, err: nil}:
-		default:
-		}
-
-		// Key assertion: blockingArb is true, so the deadline callback
-		// must NOT call tryGrantAndStart. Verify by checking that no
-		// new pendingStart is set (the queue should NOT advance yet).
-		if pending.blockingArb {
-			time.Sleep(20 * time.Millisecond)
-			mux.stateMu.Lock()
-			queueAdvanced := mux.pendingStart != nil
-			mux.stateMu.Unlock()
-			if queueAdvanced {
-				t.Fatal("deadline callback must NOT call tryGrantAndStart when blockingArb=true")
-			}
-		}
-	} else {
-		mux.stateMu.Unlock()
-	}
-
-	// Verify the gateway session received failure.
+	// Wait for the real 200ms deadline to fire.
+	// The gateway session should receive a failure notification.
 	select {
 	case result := <-gwCh:
 		if result.granted {
@@ -233,6 +260,25 @@ func TestBlockingStartArbitrationDeadlineAdvancesQueueOnce(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for deadline failure result")
+	}
+
+	// After deadline fires: pendingStart must be cleared.
+	mux.stateMu.Lock()
+	pendingAfterDeadline := mux.pendingStart
+	mux.stateMu.Unlock()
+	if pendingAfterDeadline != nil {
+		t.Fatal("pendingStart must be nil after deadline fires")
+	}
+
+	// Verify no overlapping tryGrantAndStart was called by the deadline
+	// callback (blockingArb prevents it). Since we have no second request
+	// queued, we just verify pendingStart stays nil.
+	time.Sleep(50 * time.Millisecond)
+	mux.stateMu.Lock()
+	queueAdvanced := mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if queueAdvanced {
+		t.Fatal("deadline callback must NOT call tryGrantAndStart when blockingArb=true")
 	}
 
 	// Release the blocking StartArbitration call.
@@ -249,6 +295,81 @@ func TestBlockingStartArbitrationDeadlineAdvancesQueueOnce(t *testing.T) {
 	mux.stateMu.Unlock()
 	if absorb != 0 {
 		t.Fatalf("pendingStartAbsorb = %d after blocking call returned, want 0", absorb)
+	}
+}
+
+// TestBlockingArbDeadline_NoOverlap verifies that when two requests are
+// queued and the first uses blocking StartArbitration, the deadline does
+// NOT start a second overlapping StartArbitration call.
+func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
+	var arbCount int32
+	mock := &countingBlockingStartTransport{
+		readCh:   make(chan byte, 256),
+		gate:     make(chan struct{}),
+		arbCount: &arbCount,
+	}
+
+	mux := New(Config{
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 150 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Queue two requests: gateway + external.
+	gwCh := mux.arb.requestStart(gatewaySessionID, 0x71)
+	extCh := mux.arb.requestStart(2, 0x50)
+
+	// First request takes the blocking path.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mux.tryGrantAndStart()
+	}()
+
+	// Wait for first StartArbitration to enter.
+	time.Sleep(50 * time.Millisecond)
+
+	// Deadline fires at ~150ms. Wait for gateway failure.
+	select {
+	case result := <-gwCh:
+		if result.granted {
+			t.Fatal("expected granted=false after deadline")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for deadline failure")
+	}
+
+	// At this point, deadline has fired. blockingArb=true should
+	// prevent tryGrantAndStart from being called for the second request.
+	// The second request should still be pending in the queue.
+	time.Sleep(50 * time.Millisecond)
+	if c := atomic.LoadInt32(&arbCount); c != 1 {
+		t.Fatalf("expected exactly 1 StartArbitration call (no overlap), got %d", c)
+	}
+
+	// Release the blocked call.
+	close(mock.gate)
+	wg.Wait()
+
+	// The second request is still in the queue, not started yet.
+	// It should NOT have received any result.
+	select {
+	case result := <-extCh:
+		t.Fatalf("external session should not have received result yet, got %+v", result)
+	default:
+		// Good -- still pending.
 	}
 }
 
@@ -275,6 +396,31 @@ func (s *slowBlockingStartTransport) StartArbitration(initiator byte) error {
 	return nil
 }
 
+// countingBlockingStartTransport is like slowBlockingStartTransport but
+// counts how many times StartArbitration is called.
+type countingBlockingStartTransport struct {
+	readCh   chan byte
+	gate     chan struct{}
+	arbCount *int32
+}
+
+func (s *countingBlockingStartTransport) ReadByte() (byte, error) {
+	v, ok := <-s.readCh
+	if !ok {
+		return 0, nil
+	}
+	return v, nil
+}
+
+func (s *countingBlockingStartTransport) Write(p []byte) (int, error) { return len(p), nil }
+func (s *countingBlockingStartTransport) Close() error                { return nil }
+
+func (s *countingBlockingStartTransport) StartArbitration(initiator byte) error {
+	atomic.AddInt32(s.arbCount, 1)
+	<-s.gate
+	return nil
+}
+
 // =======================================================================
 // PR502 Review Item 6: XR_ conformance cross-reference
 // =======================================================================
@@ -283,34 +429,48 @@ func (s *slowBlockingStartTransport) StartArbitration(initiator byte) error {
 // coverage across the adaptermux test suite:
 //
 // XR_SYN_DATA_INVARIANT
-//   TestOnReceived_0xAA_IsSYNBoundary           (this file)
-//   TestWirePhaseTracker_0xAA_AlwaysSYN          (this file)
+//   TestOnReceived_0xAA_WireLayerSYNInvariant       (this file)
+//   TestMux_0xAA_MockTransportAlwaysSYN              (this file)
+//   TestWirePhaseTracker_0xAA_AlwaysSYN              (this file)
 //   Rationale: 0xAA on the wire is always SYN. The ENH transport
 //   never produces StreamEventByte{0xAA} as a data byte because the
 //   adapter parser consumes raw 0xAA as SYN before framing.
+//
+// XR_ENH_0xAA_DataNotSYN
+//   Not applicable at mux layer. The mux receives raw wire bytes where
+//   0xAA is always SYN. Logical 0xAA data is escaped at the ENH
+//   transport layer (0xA9 0x01 -> 0xAA) and never reaches onReceived
+//   as 0xAA. Enforced by ebusgo ENHTransport -- see
+//   TestOnReceived_0xAA_WireLayerSYNInvariant for the mux-layer wire
+//   invariant.
 //
 // XR_BLACKHOLE_DURATION
 //   Blackhole detection uses duration-based threshold (30s default).
 //   See readLoop in mux.go: blackholeThreshold field + time.Since check.
 //
 // XR_BLOCKING_ARB_DEADLINE
-//   TestBlockingStartArbitrationDeadlineAdvancesQueueOnce (this file)
-//   TestP3_FallbackStartArbitration               (p3_test.go)
+//   TestBlockingStartArbitrationDeadlineReal          (this file)
+//   TestBlockingArbDeadline_NoOverlap                 (this file)
+//   TestP3_FallbackStartArbitration                   (p3_test.go)
 //   Rationale: AM8 deadline + blockingArb flag prevents overlapping
 //   arbitration. Queue advances only after blocking call returns.
+//   blockingArb is set in the pendingStart struct literal BEFORE the
+//   deadline timer is created, eliminating the assignment race.
 //
 // XR_PASSIVE_RESET_BACKPRESSURE
-//   See passive_transport.go deliver() — AM52/AM-fix5/Codex-R6 comment
-//   documents the 100ms bounded-blocking trade-off. No test needed:
-//   the trade-off is a deliberate design decision documented inline.
+//   TestPassiveTransport_ResetDroppedAfterTimeout     (passive_transport_test.go)
+//   TestPassiveTransport_ResetBoundedBlockOnFullBuffer (passive_transport_test.go)
+//   See passive_transport.go deliver() -- AM52/AM-fix5/Codex-R6 comment
+//   documents the 100ms bounded-blocking trade-off. The consumer can
+//   resync on the next reset after draining stale data.
 //
 // XR_GATEWAY_PRIORITY
-//   TestArbitrator_GatewayPriority                (arbitration_test.go)
+//   TestArbitrator_GatewayPriority                    (arbitration_test.go)
 //   Rationale: arbitrator.tryGrant checks pendingGateway before
 //   pendingExternal. See doc comment on arbitrator type.
 //
 // XR_INFO_CACHE_SNAPSHOT
-//   TestPopulateInfoCache                         (info_cache_test.go)
-//   TestCachedInfo_ReturnsCopy                    (info_cache_test.go)
+//   TestPopulateInfoCache                             (info_cache_test.go)
+//   TestCachedInfo_ReturnsCopy                        (info_cache_test.go)
 //   Rationale: INFO cache is populated once at connect, serves
 //   startup snapshots. See doc comment on populateInfoCache.

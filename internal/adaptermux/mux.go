@@ -44,6 +44,12 @@ type Config struct {
 	// idle SYN can release ownership. Default: 200ms.
 	IdleReleaseGrace time.Duration
 
+	// StartDeadline is the maximum time to wait for the adapter to
+	// respond with STARTED/FAILED after a START request. Default: 5s.
+	// If the adapter does not respond within this duration, the pending
+	// start is cleared and the session is notified of failure (AM8).
+	StartDeadline time.Duration
+
 	// BlackholeThreshold is the duration of consecutive read timeouts
 	// (after the bus was previously active) before triggering a TCP
 	// blackhole reconnect. Default: 30s.
@@ -87,6 +93,9 @@ func (c *Config) defaults() {
 		// probe. The wire phase is not advanced during gateway ownership,
 		// so there's no premature idle/WaitCmdAck issue.
 		c.IdleReleaseGrace = 200 * time.Millisecond
+	}
+	if c.StartDeadline == 0 {
+		c.StartDeadline = 5 * time.Second
 	}
 	if c.BlackholeThreshold == 0 {
 		c.BlackholeThreshold = 30 * time.Second
@@ -1145,14 +1154,28 @@ func (m *Mux) tryGrantAndStart() {
 		return
 	}
 
+	// Determine transport arbitration path BEFORE creating pendingStart.
+	// This ensures blockingArb is set in the struct literal, visible to
+	// the deadline timer from the moment it is created. Previously,
+	// blockingArb was set AFTER the deadline timer — a race on loaded
+	// systems where the deadline could fire before the assignment.
+	m.connMu.Lock()
+	tr := m.upstream
+	m.connMu.Unlock()
+
+	_, hasRequestStart := tr.(arbitrationRequester)
+	_, hasBlockingStart := tr.(interface{ StartArbitration(byte) error })
+	isBlockingPath := !hasRequestStart && hasBlockingStart
+
 	m.pendingStart = &pendingStartState{
-		sessionID: sessionID,
-		initiator: initiator,
-		notify:    notify,
+		sessionID:   sessionID,
+		initiator:   initiator,
+		notify:      notify,
+		blockingArb: isBlockingPath,
 	}
-	// AM8: start a 5s deadline timer so pendingStart cannot block indefinitely
+	// AM8: start a deadline timer so pendingStart cannot block indefinitely
 	// if the adapter never responds with STARTED/FAILED.
-	m.pendingStart.deadline = time.AfterFunc(5*time.Second, func() {
+	m.pendingStart.deadline = time.AfterFunc(m.cfg.StartDeadline, func() {
 		m.stateMu.Lock()
 		if m.pendingStart != nil && m.pendingStart.notify == notify {
 			pending := m.pendingStart
@@ -1181,10 +1204,7 @@ func (m *Mux) tryGrantAndStart() {
 	m.stateMu.Unlock()
 
 	// Forward START to adapter via non-blocking RequestStart.
-	m.connMu.Lock()
-	tr := m.upstream
-	m.connMu.Unlock()
-
+	// tr was already captured above (before pendingStart creation).
 	if requester, ok := tr.(arbitrationRequester); ok {
 		m.logger.Printf("adaptermux: RequestStart(0x%02X) sent for session %d", initiator, sessionID)
 		if err := requester.RequestStart(initiator); err != nil {
@@ -1219,16 +1239,13 @@ func (m *Mux) tryGrantAndStart() {
 	}); ok {
 		// Fallback for transports that only implement the blocking
 		// StartArbitration (e.g. ENS or test mocks without RequestStart).
+		// blockingArb was already set in the pendingStart struct literal
+		// above, so the deadline callback sees it from the start.
 		// The AM8 deadline timer stays active to preserve liveness —
 		// if StartArbitration hangs, the deadline clears pendingStart
 		// and notifies the session. The deadline callback skips
 		// tryGrantAndStart when blockingArb is set to prevent
 		// overlapping arbitration on the same transport.
-		m.stateMu.Lock()
-		if m.pendingStart != nil {
-			m.pendingStart.blockingArb = true
-		}
-		m.stateMu.Unlock()
 		if err := starter.StartArbitration(initiator); err != nil {
 			m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
 			// P1 fix (#3063005909): only send failure if we still own

@@ -2,11 +2,11 @@ package adaptermux
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
@@ -227,15 +227,11 @@ func TestBlockingStartArbitrationDeadlineReal(t *testing.T) {
 	// Queue a gateway START request.
 	gwCh := mux.arb.requestStart(gatewaySessionID, 0x71)
 
-	// Call tryGrantAndStart in a goroutine -- it blocks on StartArbitration.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		mux.tryGrantAndStart()
-	}()
+	// PR502-Fix1: tryGrantAndStart returns immediately; the blocking
+	// StartArbitration runs in an internal goroutine.
+	mux.tryGrantAndStart()
 
-	// Wait for StartArbitration to be entered.
+	// Wait for the internal goroutine to enter StartArbitration.
 	time.Sleep(50 * time.Millisecond)
 
 	// Verify pendingStart is set with blockingArb=true BEFORE the deadline fires.
@@ -281,11 +277,12 @@ func TestBlockingStartArbitrationDeadlineReal(t *testing.T) {
 		t.Fatal("deadline callback must NOT call tryGrantAndStart when blockingArb=true")
 	}
 
-	// Release the blocking StartArbitration call.
+	// Release the blocking StartArbitration goroutine.
 	close(mock.gate)
 
-	// Wait for tryGrantAndStart to return.
-	wg.Wait()
+	// Wait for the internal goroutine to process the cancelled-pending
+	// path and update pendingStartAbsorb.
+	time.Sleep(50 * time.Millisecond)
 
 	// After the blocking call returns, the code path detects that
 	// pendingStart was already cancelled (notify mismatch). The absorb
@@ -330,13 +327,9 @@ func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
 	gwCh := mux.arb.requestStart(gatewaySessionID, 0x71)
 	extCh := mux.arb.requestStart(2, 0x50)
 
-	// First request takes the blocking path.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		mux.tryGrantAndStart()
-	}()
+	// PR502-Fix1: tryGrantAndStart returns immediately; the blocking
+	// StartArbitration runs in an internal goroutine.
+	mux.tryGrantAndStart()
 
 	// Wait for first StartArbitration to enter.
 	time.Sleep(50 * time.Millisecond)
@@ -359,16 +352,15 @@ func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
 		t.Fatalf("expected exactly 1 StartArbitration call (no overlap), got %d", c)
 	}
 
-	// Release the blocked call.
+	// Release the blocked goroutine.
 	close(mock.gate)
-	wg.Wait()
 
 	// After the blocking call returns, the cancelled-pending path now
 	// calls tryGrantAndStart to advance the queue. The second request
 	// (session 2) is dequeued and attempted. Since session 2 is not
 	// registered in the sessions map, completeArbitrationGrant discards
 	// it as "disconnected during START". Verify queue advanced (arbCount=2).
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 	if c := atomic.LoadInt32(&arbCount); c != 2 {
 		t.Fatalf("expected 2 StartArbitration calls after queue advance, got %d", c)
 	}
@@ -429,6 +421,126 @@ func (s *countingBlockingStartTransport) StartArbitration(initiator byte) error 
 	<-s.gate
 	return nil
 }
+
+// =======================================================================
+// PR502 Review Item: negative config validation
+// =======================================================================
+
+// TestConfig_NegativeValues verifies that negative durations for
+// StartDeadline and BlackholeThreshold are clamped to their defaults.
+func TestConfig_NegativeValues(t *testing.T) {
+	cfg := Config{
+		StartDeadline:      -1 * time.Second,
+		BlackholeThreshold: -5 * time.Second,
+	}
+	cfg.defaults()
+
+	if cfg.StartDeadline != 5*time.Second {
+		t.Fatalf("StartDeadline = %v, want 5s (negative must be clamped)", cfg.StartDeadline)
+	}
+	if cfg.BlackholeThreshold != 30*time.Second {
+		t.Fatalf("BlackholeThreshold = %v, want 30s (negative must be clamped)", cfg.BlackholeThreshold)
+	}
+}
+
+// =======================================================================
+// PR502 Review Item: BlackholeThreshold duration-based test
+// =======================================================================
+
+// TestBlackholeThreshold_DurationBased verifies that the blackhole
+// reconnect fires based on elapsed duration (BlackholeThreshold) rather
+// than a count of timeout iterations. With ReadTimeout=50ms and
+// BlackholeThreshold=500ms, the reconnect should fire at ~500ms, NOT
+// at 150*50ms=7.5s (the old count-based behavior).
+//
+// Strategy: use a mock transport that returns one data byte (to seed
+// lastDataTime) then returns only timeouts. The mux readLoop should
+// trigger reconnect after ~500ms. Since reconnect calls m.connect()
+// which will fail (no real server), we detect the reconnect attempt
+// by observing a PassiveEventDisconnected event.
+//
+// XR_BLACKHOLE_DURATION
+func TestBlackholeThreshold_DurationBased(t *testing.T) {
+	mock := &blackholeMockTransport{
+		dataCh: make(chan byte, 1),
+	}
+	// Seed one data byte so lastDataTime is set.
+	mock.dataCh <- 0x42
+
+	disconnected := make(chan struct{}, 1)
+
+	mux := New(Config{
+		Protocol:              "enh",
+		Network:               "tcp",
+		Address:               "127.0.0.1:0",
+		ReadTimeout:           50 * time.Millisecond,
+		BlackholeThreshold:    500 * time.Millisecond,
+		ReconnectInitialDelay: 10 * time.Second, // large so reconnect loop doesn't complete
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	mux.SetPassiveCallback(func(pe PassiveEvent) {
+		if pe.Kind == PassiveEventDisconnected {
+			select {
+			case disconnected <- struct{}{}:
+			default:
+			}
+		}
+	})
+
+	// Start readLoop.
+	mux.wg.Add(1)
+	go mux.readLoop()
+
+	// The reconnect should fire at ~500ms (BlackholeThreshold).
+	// Allow up to 2s for race-detector overhead, but the key assertion
+	// is that it fires MUCH sooner than 7.5s (the old count-based threshold).
+	start := time.Now()
+	select {
+	case <-disconnected:
+		elapsed := time.Since(start)
+		// Must fire within 1.5s (generous for race detector).
+		// Old count-based would take ~7.5s with 50ms ReadTimeout.
+		if elapsed > 1500*time.Millisecond {
+			t.Fatalf("blackhole reconnect took %v, expected ~500ms (duration-based)", elapsed)
+		}
+		t.Logf("blackhole reconnect fired after %v (threshold=500ms)", elapsed)
+	case <-time.After(3 * time.Second):
+		t.Fatal("blackhole reconnect did not fire within 3s (expected ~500ms)")
+	}
+
+	cancel()
+	mux.wg.Wait()
+}
+
+// blackholeMockTransport returns one data byte from dataCh, then
+// returns ErrTimeout on every subsequent read. Does not implement
+// StreamEventReader, so readLoop uses ReadByte.
+type blackholeMockTransport struct {
+	dataCh chan byte
+}
+
+func (b *blackholeMockTransport) ReadByte() (byte, error) {
+	select {
+	case v := <-b.dataCh:
+		return v, nil
+	default:
+		// Simulate read timeout.
+		time.Sleep(50 * time.Millisecond)
+		return 0, ebuserrors.ErrTimeout
+	}
+}
+
+func (b *blackholeMockTransport) Write(p []byte) (int, error) { return len(p), nil }
+func (b *blackholeMockTransport) Close() error                { return nil }
 
 // =======================================================================
 // PR502 Review Item 6: XR_ conformance cross-reference

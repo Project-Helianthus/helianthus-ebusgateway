@@ -939,7 +939,19 @@ func TestP3_FallbackStartArbitration(t *testing.T) {
 	ch := mux.arb.requestStart(gatewaySessionID, 0x31)
 
 	// Call tryGrantAndStart directly (simulating SYN handler).
+	// PR502-Fix1: the blocking StartArbitration now runs in a goroutine,
+	// so tryGrantAndStart returns immediately. Wait for the result on ch.
 	mux.tryGrantAndStart()
+
+	// Result arrives asynchronously from the blocking goroutine.
+	select {
+	case result := <-ch:
+		if !result.granted {
+			t.Fatal("expected granted=true from blocking fallback")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for blocking fallback result")
+	}
 
 	// Should have used the blocking fallback.
 	calls := mock.getStartCalls()
@@ -948,16 +960,6 @@ func TestP3_FallbackStartArbitration(t *testing.T) {
 	}
 	if calls[0] != 0x31 {
 		t.Fatalf("StartArbitration initiator = 0x%02X, want 0x31", calls[0])
-	}
-
-	// Result should be immediately available (blocking path).
-	select {
-	case result := <-ch:
-		if !result.granted {
-			t.Fatal("expected granted=true from blocking fallback")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for blocking fallback result")
 	}
 
 	// Ownership should be set.
@@ -1633,15 +1635,11 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 	// Request START.
 	ch := mux.arb.requestStart(id, 0x55)
 
-	// tryGrantAndStart blocks inside StartArbitration.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		mux.tryGrantAndStart()
-	}()
+	// PR502-Fix1: tryGrantAndStart returns immediately; the blocking
+	// StartArbitration runs in an internal goroutine.
+	mux.tryGrantAndStart()
 
-	// Wait for StartArbitration to be entered.
+	// Wait for the internal goroutine to enter StartArbitration.
 	time.Sleep(30 * time.Millisecond)
 
 	// Cancel the pending request while StartArbitration blocks.
@@ -1652,20 +1650,6 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 	// completeArbitrationGrant and double-send on notify.
 	close(mock.startGate)
 
-	// tryGrantAndStart must return promptly.
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Good.
-	case <-time.After(3 * time.Second):
-		t.Fatal("tryGrantAndStart blocked — likely double-send on notify channel")
-	}
-
 	// Drain the cancel result.
 	select {
 	case result := <-ch:
@@ -1675,6 +1659,9 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for cancel result")
 	}
+
+	// Wait for the internal goroutine to complete after gate release.
+	time.Sleep(50 * time.Millisecond)
 
 	// No second result must appear.
 	select {
@@ -1735,34 +1722,17 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 	// Request START.
 	ch := mux.arb.requestStart(id, 0x55)
 
-	// tryGrantAndStart blocks inside StartArbitration.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		mux.tryGrantAndStart()
-	}()
+	// PR502-Fix1: tryGrantAndStart now returns immediately; the blocking
+	// StartArbitration runs in an internal goroutine.
+	mux.tryGrantAndStart()
 
 	time.Sleep(30 * time.Millisecond)
 
-	// Cancel while blocking.
+	// Cancel while the internal goroutine is blocking on StartArbitration.
 	mux.cancelPendingStart(id)
 
-	// Release — returns error.
+	// Release — StartArbitration returns error.
 	close(mock.startGate)
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Good.
-	case <-time.After(3 * time.Second):
-		t.Fatal("tryGrantAndStart blocked — likely double-send on notify channel")
-	}
 
 	// Drain the cancel result.
 	select {
@@ -1774,7 +1744,11 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 		t.Fatal("timeout waiting for cancel result")
 	}
 
-	// No second result.
+	// Wait for the internal goroutine to process the error path and
+	// update pendingStartAbsorb.
+	time.Sleep(50 * time.Millisecond)
+
+	// No second result (the error path must not double-send).
 	select {
 	case extra := <-ch:
 		t.Fatalf("unexpected second result on notify channel: %+v", extra)

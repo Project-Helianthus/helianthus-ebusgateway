@@ -94,10 +94,10 @@ func (c *Config) defaults() {
 		// so there's no premature idle/WaitCmdAck issue.
 		c.IdleReleaseGrace = 200 * time.Millisecond
 	}
-	if c.StartDeadline == 0 {
+	if c.StartDeadline <= 0 {
 		c.StartDeadline = 5 * time.Second
 	}
-	if c.BlackholeThreshold == 0 {
+	if c.BlackholeThreshold <= 0 {
 		c.BlackholeThreshold = 30 * time.Second
 	}
 	if c.Logger == nil {
@@ -1249,60 +1249,66 @@ func (m *Mux) tryGrantAndStart() {
 		// and notifies the session. The deadline callback skips
 		// tryGrantAndStart when blockingArb is set to prevent
 		// overlapping arbitration on the same transport.
-		if err := starter.StartArbitration(initiator); err != nil {
-			m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
-			// P1 fix (#3063005909): only send failure if we still own
-			// the pending slot.  cancelPendingStart may have cleared
-			// m.pendingStart and already sent a failure on notify while
-			// StartArbitration was blocking.  A second send on the
-			// cap-1 channel would block the caller indefinitely.
-			m.stateMu.Lock()
-			if m.pendingStart != nil && m.pendingStart.notify == notify {
-				if m.pendingStart.deadline != nil {
-					m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
+		//
+		// PR502-Fix1: Run blocking StartArbitration in a goroutine so
+		// readLoop is not stalled. The AM8 deadline timer handles
+		// liveness if the call hangs indefinitely.
+		go func() {
+			if err := starter.StartArbitration(initiator); err != nil {
+				m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
+				// P1 fix (#3063005909): only send failure if we still own
+				// the pending slot.  cancelPendingStart may have cleared
+				// m.pendingStart and already sent a failure on notify while
+				// StartArbitration was blocking.  A second send on the
+				// cap-1 channel would block the caller indefinitely.
+				m.stateMu.Lock()
+				if m.pendingStart != nil && m.pendingStart.notify == notify {
+					if m.pendingStart.deadline != nil {
+						m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
+					}
+					m.pendingStart = nil
+					m.stateMu.Unlock()
+					notify <- startResult{granted: false, initiator: initiator, err: err}
+				} else {
+					// StartArbitration failed AND pending was already cancelled.
+					if m.pendingStartAbsorb > 0 {
+						m.pendingStartAbsorb--
+					}
+					m.stateMu.Unlock()
+					// Advance queue — blockingArb prevented deadline from doing so.
+					if m.arb.hasPending() {
+						m.tryGrantAndStart()
+					}
 				}
-				m.pendingStart = nil
-				m.stateMu.Unlock()
-				notify <- startResult{granted: false, initiator: initiator, err: err}
-			} else {
-				// StartArbitration failed AND pending was already cancelled.
+				return
+			}
+			// Blocking path: adapter already confirmed — handle inline.
+			// P1 fix (#3063005909): verify ownership before completing.
+			// cancelPendingStart may have run while StartArbitration was
+			// blocking, clearing pendingStart and sending a failure on
+			// notify.  Completing here would double-send on the cap-1
+			// channel and re-grant the bus to a cancelled session.
+			m.stateMu.Lock()
+			if m.pendingStart == nil || m.pendingStart.notify != notify {
+				// Already cancelled (deadline or session disconnect) — don't
+				// double-send. Advance the queue since blockingArb prevented
+				// the deadline callback from doing so.
 				if m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
 				}
 				m.stateMu.Unlock()
-				// Advance queue — blockingArb prevented deadline from doing so.
 				if m.arb.hasPending() {
 					m.tryGrantAndStart()
 				}
+				return
 			}
-			return
-		}
-		// Blocking path: adapter already confirmed — handle inline.
-		// P1 fix (#3063005909): verify ownership before completing.
-		// cancelPendingStart may have run while StartArbitration was
-		// blocking, clearing pendingStart and sending a failure on
-		// notify.  Completing here would double-send on the cap-1
-		// channel and re-grant the bus to a cancelled session.
-		m.stateMu.Lock()
-		if m.pendingStart == nil || m.pendingStart.notify != notify {
-			// Already cancelled (deadline or session disconnect) — don't
-			// double-send. Advance the queue since blockingArb prevented
-			// the deadline callback from doing so.
-			if m.pendingStartAbsorb > 0 {
-				m.pendingStartAbsorb--
+			if m.pendingStart.deadline != nil {
+				m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 			}
+			m.pendingStart = nil
 			m.stateMu.Unlock()
-			if m.arb.hasPending() {
-				m.tryGrantAndStart()
-			}
-			return
-		}
-		if m.pendingStart.deadline != nil {
-			m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
-		}
-		m.pendingStart = nil
-		m.stateMu.Unlock()
-		m.completeArbitrationGrant(sessionID, initiator, notify)
+			m.completeArbitrationGrant(sessionID, initiator, notify)
+		}()
 		return
 	} else {
 		m.logger.Printf("adaptermux: transport does not support arbitration")

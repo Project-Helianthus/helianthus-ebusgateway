@@ -363,13 +363,22 @@ func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
 	close(mock.gate)
 	wg.Wait()
 
-	// The second request is still in the queue, not started yet.
-	// It should NOT have received any result.
+	// After the blocking call returns, the cancelled-pending path now
+	// calls tryGrantAndStart to advance the queue. The second request
+	// (session 2) is dequeued and attempted. Since session 2 is not
+	// registered in the sessions map, completeArbitrationGrant discards
+	// it as "disconnected during START". Verify queue advanced (arbCount=2).
+	time.Sleep(100 * time.Millisecond)
+	if c := atomic.LoadInt32(&arbCount); c != 2 {
+		t.Fatalf("expected 2 StartArbitration calls after queue advance, got %d", c)
+	}
 	select {
 	case result := <-extCh:
-		t.Fatalf("external session should not have received result yet, got %+v", result)
-	default:
-		// Good -- still pending.
+		if result.granted {
+			t.Fatal("external session should have failed (not registered)")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for external session result after queue advance")
 	}
 }
 

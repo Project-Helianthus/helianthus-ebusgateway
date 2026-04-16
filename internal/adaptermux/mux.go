@@ -475,8 +475,13 @@ func (m *Mux) connect() error {
 	m.populateInfoCache(setupTr)
 
 	// Phase 2: replace with fast-timeout transport for readLoop.
-	// RequestInfo held readMu exclusively and the readLoop hasn't started,
-	// so the setup transport's parser is clean — no pending bus bytes.
+	// Safety argument for replacing the transport on the same conn:
+	// - readLoop hasn't started (Start calls connect first, then spawns readLoop).
+	// - populateInfoCache is the only reader; INFO responses are complete ENH
+	//   frames, so the parser is fully consumed after each RequestInfo call.
+	// - Bytes arriving during the 500ms stabilization delay buffer in the TCP
+	//   socket (kernel), NOT in the parser. The new transport reads them normally.
+	// - No parser state is lost because setupTr's parser is clean after INFO.
 	m.upstream = newTransport(m.cfg.ReadTimeout)
 
 	return nil
@@ -1262,10 +1267,15 @@ func (m *Mux) tryGrantAndStart() {
 				m.stateMu.Unlock()
 				notify <- startResult{granted: false, initiator: initiator, err: err}
 			} else {
+				// StartArbitration failed AND pending was already cancelled.
 				if m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
 				}
 				m.stateMu.Unlock()
+				// Advance queue — blockingArb prevented deadline from doing so.
+				if m.arb.hasPending() {
+					m.tryGrantAndStart()
+				}
 			}
 			return
 		}
@@ -1277,11 +1287,16 @@ func (m *Mux) tryGrantAndStart() {
 		// channel and re-grant the bus to a cancelled session.
 		m.stateMu.Lock()
 		if m.pendingStart == nil || m.pendingStart.notify != notify {
-			// Already cancelled — don't double-send.
+			// Already cancelled (deadline or session disconnect) — don't
+			// double-send. Advance the queue since blockingArb prevented
+			// the deadline callback from doing so.
 			if m.pendingStartAbsorb > 0 {
 				m.pendingStartAbsorb--
 			}
 			m.stateMu.Unlock()
+			if m.arb.hasPending() {
+				m.tryGrantAndStart()
+			}
 			return
 		}
 		if m.pendingStart.deadline != nil {

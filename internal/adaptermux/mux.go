@@ -163,7 +163,7 @@ type Mux struct {
 	busOwned     time.Time          // when current owner acquired the bus
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int               // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
-	blockingArbActive  bool              // true while a blocking StartArbitration goroutine is in-flight
+	blockingArbGen     uint64            // generation counter for blocking StartArbitration; >0 means in-flight
 
 	// Gateway echo tracker (for the internal active path).
 	// Protected by stateMu.
@@ -618,7 +618,7 @@ func (m *Mux) reconnect() error {
 	m.phase.reset(wirePhaseIdle)
 	m.arb.forceRelease()
 	m.gatewayEcho.reset()
-	m.blockingArbActive = false // transport replaced — old goroutine irrelevant
+	m.blockingArbGen = 0 // transport replaced — old goroutine's gen won't match
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
@@ -1010,7 +1010,7 @@ func (m *Mux) handleReset() {
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
-	m.blockingArbActive = false // adapter reset — old goroutine irrelevant
+	m.blockingArbGen = 0 // adapter reset — old goroutine's gen won't match
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
@@ -1170,8 +1170,8 @@ func (m *Mux) tryGrantAndStart() {
 	// is still in-flight. The deadline may have cleared pendingStart, but
 	// the goroutine is still running on the transport. Starting another
 	// arbitration would overlap STARTs on the same transport.
-	if m.blockingArbActive {
-		m.logger.Printf("adaptermux: tryGrantAndStart skipped — blocking StartArbitration still in-flight")
+	if m.blockingArbGen > 0 {
+		m.logger.Printf("adaptermux: tryGrantAndStart skipped — blocking StartArbitration gen %d still in-flight", m.blockingArbGen)
 		m.stateMu.Unlock()
 		return
 	}
@@ -1265,10 +1265,13 @@ func (m *Mux) tryGrantAndStart() {
 		// PR502-Fix1: Run blocking StartArbitration in a goroutine so
 		// readLoop is not stalled. The AM8 deadline timer handles
 		// liveness if the call hangs indefinitely.
-		// Codex-R5: set blockingArbActive to prevent tryGrantAndStart
+		// Codex-R5/R6: set blockingArbGen to prevent tryGrantAndStart
 		// from starting another arbitration while this goroutine runs.
+		// Generation-scoped: goroutine only clears if gen matches,
+		// so a reconnect+relaunch won't be cleared by an old goroutine.
 		m.stateMu.Lock()
-		m.blockingArbActive = true
+		m.blockingArbGen++
+		arbGen := m.blockingArbGen
 		m.stateMu.Unlock()
 		go func() {
 			if err := starter.StartArbitration(initiator); err != nil {
@@ -1279,7 +1282,9 @@ func (m *Mux) tryGrantAndStart() {
 				// StartArbitration was blocking.  A second send on the
 				// cap-1 channel would block the caller indefinitely.
 				m.stateMu.Lock()
-				m.blockingArbActive = false // goroutine done
+				if m.blockingArbGen == arbGen {
+					m.blockingArbGen = 0 // this generation's goroutine done
+				}
 				if m.pendingStart != nil && m.pendingStart.notify == notify {
 					if m.pendingStart.deadline != nil {
 						m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
@@ -1293,7 +1298,7 @@ func (m *Mux) tryGrantAndStart() {
 						m.pendingStartAbsorb--
 					}
 					m.stateMu.Unlock()
-					// Advance queue — blockingArbActive cleared above.
+					// Advance queue — blockingArbGen cleared above.
 					if m.arb.hasPending() {
 						m.tryGrantAndStart()
 					}
@@ -1307,10 +1312,12 @@ func (m *Mux) tryGrantAndStart() {
 			// notify.  Completing here would double-send on the cap-1
 			// channel and re-grant the bus to a cancelled session.
 			m.stateMu.Lock()
-			m.blockingArbActive = false // goroutine done
+			if m.blockingArbGen == arbGen {
+				m.blockingArbGen = 0 // this generation's goroutine done
+			}
 			if m.pendingStart == nil || m.pendingStart.notify != notify {
 				// Already cancelled (deadline or session disconnect) — don't
-				// double-send. Advance the queue — blockingArbActive cleared above.
+				// double-send. Advance the queue — blockingArbGen cleared above.
 				if m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
 				}

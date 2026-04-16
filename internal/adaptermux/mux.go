@@ -1187,6 +1187,16 @@ func (m *Mux) tryGrantAndStart() {
 	}); ok {
 		// Fallback for transports that only implement the blocking
 		// StartArbitration (e.g. ENS or test mocks without RequestStart).
+		// Codex-R5: stop the deadline timer before blocking — if the
+		// deadline fires while StartArbitration is blocked, it clears
+		// pendingStart and tryGrantAndStart can overlap a second
+		// arbitration on the same transport.
+		m.stateMu.Lock()
+		if m.pendingStart != nil && m.pendingStart.deadline != nil {
+			m.pendingStart.deadline.Stop()
+			m.pendingStart.deadline = nil
+		}
+		m.stateMu.Unlock()
 		if err := starter.StartArbitration(initiator); err != nil {
 			m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
 			// P1 fix (#3063005909): only send failure if we still own

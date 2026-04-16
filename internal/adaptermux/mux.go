@@ -163,6 +163,7 @@ type Mux struct {
 	busOwned     time.Time          // when current owner acquired the bus
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int               // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
+	blockingArbActive  bool              // true while a blocking StartArbitration goroutine is in-flight
 
 	// Gateway echo tracker (for the internal active path).
 	// Protected by stateMu.
@@ -617,6 +618,7 @@ func (m *Mux) reconnect() error {
 	m.phase.reset(wirePhaseIdle)
 	m.arb.forceRelease()
 	m.gatewayEcho.reset()
+	m.blockingArbActive = false // transport replaced — old goroutine irrelevant
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
@@ -1008,6 +1010,7 @@ func (m *Mux) handleReset() {
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
+	m.blockingArbActive = false // adapter reset — old goroutine irrelevant
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
@@ -1163,6 +1166,15 @@ func (m *Mux) tryGrantAndStart() {
 		m.stateMu.Unlock()
 		return
 	}
+	// Codex-R5: block regrant while a blocking StartArbitration goroutine
+	// is still in-flight. The deadline may have cleared pendingStart, but
+	// the goroutine is still running on the transport. Starting another
+	// arbitration would overlap STARTs on the same transport.
+	if m.blockingArbActive {
+		m.logger.Printf("adaptermux: tryGrantAndStart skipped — blocking StartArbitration still in-flight")
+		m.stateMu.Unlock()
+		return
+	}
 
 	sessionID, initiator, notify, granted := m.arb.tryGrant()
 	if !granted {
@@ -1253,6 +1265,11 @@ func (m *Mux) tryGrantAndStart() {
 		// PR502-Fix1: Run blocking StartArbitration in a goroutine so
 		// readLoop is not stalled. The AM8 deadline timer handles
 		// liveness if the call hangs indefinitely.
+		// Codex-R5: set blockingArbActive to prevent tryGrantAndStart
+		// from starting another arbitration while this goroutine runs.
+		m.stateMu.Lock()
+		m.blockingArbActive = true
+		m.stateMu.Unlock()
 		go func() {
 			if err := starter.StartArbitration(initiator); err != nil {
 				m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
@@ -1262,6 +1279,7 @@ func (m *Mux) tryGrantAndStart() {
 				// StartArbitration was blocking.  A second send on the
 				// cap-1 channel would block the caller indefinitely.
 				m.stateMu.Lock()
+				m.blockingArbActive = false // goroutine done
 				if m.pendingStart != nil && m.pendingStart.notify == notify {
 					if m.pendingStart.deadline != nil {
 						m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
@@ -1275,7 +1293,7 @@ func (m *Mux) tryGrantAndStart() {
 						m.pendingStartAbsorb--
 					}
 					m.stateMu.Unlock()
-					// Advance queue — blockingArb prevented deadline from doing so.
+					// Advance queue — blockingArbActive cleared above.
 					if m.arb.hasPending() {
 						m.tryGrantAndStart()
 					}
@@ -1289,10 +1307,10 @@ func (m *Mux) tryGrantAndStart() {
 			// notify.  Completing here would double-send on the cap-1
 			// channel and re-grant the bus to a cancelled session.
 			m.stateMu.Lock()
+			m.blockingArbActive = false // goroutine done
 			if m.pendingStart == nil || m.pendingStart.notify != notify {
 				// Already cancelled (deadline or session disconnect) — don't
-				// double-send. Advance the queue since blockingArb prevented
-				// the deadline callback from doing so.
+				// double-send. Advance the queue — blockingArbActive cleared above.
 				if m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
 				}

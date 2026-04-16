@@ -44,6 +44,17 @@ type Config struct {
 	// idle SYN can release ownership. Default: 200ms.
 	IdleReleaseGrace time.Duration
 
+	// BlackholeThreshold is the duration of consecutive read timeouts
+	// (after the bus was previously active) before triggering a TCP
+	// blackhole reconnect. Default: 30s.
+	//
+	// The previous implementation counted timeout iterations
+	// (consecutiveTimeouts > 150) which coupled the threshold to the
+	// ReadTimeout value. A duration-based check decouples the two:
+	// changing ReadTimeout no longer silently changes when blackhole
+	// detection fires.
+	BlackholeThreshold time.Duration
+
 	// Logger for multiplexer events. If nil, log.Default() is used.
 	Logger *log.Logger
 }
@@ -76,6 +87,9 @@ func (c *Config) defaults() {
 		// probe. The wire phase is not advanced during gateway ownership,
 		// so there's no premature idle/WaitCmdAck issue.
 		c.IdleReleaseGrace = 200 * time.Millisecond
+	}
+	if c.BlackholeThreshold == 0 {
+		c.BlackholeThreshold = 30 * time.Second
 	}
 	if c.Logger == nil {
 		c.Logger = log.Default()
@@ -469,10 +483,18 @@ func (m *Mux) connect() error {
 // by caller). The upstream transport must support InfoRequester; if it
 // does not, the cache is cleared and CachedInfo returns an error.
 //
-// AM29: INFO cache is intentionally a startup snapshot. Volatile
-// telemetry (temp, voltage, RSSI) goes stale after connect --
-// on-demand refresh would require readMu (conflicts with readLoop).
-// The cache is repopulated on each reconnect.
+// XR_INFO_CACHE_SNAPSHOT / AM29: INFO cache is intentionally a startup
+// snapshot. Volatile telemetry (temp, voltage, RSSI) goes stale after
+// connect — on-demand refresh would require readMu (conflicts with
+// readLoop). The cache is repopulated on each reconnect via connect().
+//
+// Design rationale: the ENH transport's RequestInfo holds readMu
+// exclusively. During normal operation, readLoop also holds readMu to
+// receive bus bytes. Refreshing INFO on-demand would either require
+// pausing readLoop (breaking observer continuity) or a second TCP
+// connection (doubling adapter load). Neither is acceptable. The
+// startup-snapshot model accepts stale telemetry in exchange for
+// zero readMu contention during steady state.
 //
 // All INFO IDs (0x00-0x07) are cached, including volatile telemetry
 // (temperature, voltage, RSSI). These are startup snapshots that go
@@ -665,13 +687,17 @@ func (m *Mux) reconnect() error {
 func (m *Mux) readLoop() {
 	defer m.wg.Done()
 
-	// AM27: consecutive timeout counter for TCP blackhole detection.
-	// Only accessed from this goroutine -- no synchronization needed.
-	consecutiveTimeouts := 0
-
-	// AM27: track when we last received actual data from the adapter.
-	// A bus that has NEVER sent data is legitimately quiet — don't
-	// treat consecutive timeouts as a TCP blackhole in that case.
+	// AM27: duration-based TCP blackhole detection.
+	// Track when the first timeout in the current streak started and
+	// when we last received actual data. A bus that has NEVER sent
+	// data is legitimately quiet — don't treat consecutive timeouts
+	// as a TCP blackhole in that case.
+	//
+	// XR_BLACKHOLE_DURATION: uses cfg.BlackholeThreshold (default 30s)
+	// instead of counting timeout iterations. This decouples the
+	// detection threshold from ReadTimeout — changing ReadTimeout no
+	// longer silently changes when blackhole reconnect fires.
+	var firstTimeoutTime time.Time // zero until a streak starts
 	var lastDataTime time.Time
 
 	for {
@@ -698,16 +724,17 @@ func (m *Mux) readLoop() {
 				// receiving data before the timeout streak. A bus that
 				// has NEVER sent data within this session is legitimately
 				// quiet — not a blackhole.
-				if !lastDataTime.IsZero() {
-					consecutiveTimeouts++
+				if !lastDataTime.IsZero() && firstTimeoutTime.IsZero() {
+					firstTimeoutTime = time.Now()
 				}
 
-				// AM27: detect TCP blackhole after ~30s of consecutive
-				// timeouts (150 * 200ms default ReadTimeout).
-				if consecutiveTimeouts > 150 {
-					m.logger.Printf("adaptermux: %d consecutive timeouts, triggering reconnect (AM27)", consecutiveTimeouts)
-					consecutiveTimeouts = 0
-					lastDataTime = time.Time{} // Codex: reset after reconnect so quiet bus doesn't re-trigger
+				// AM27/XR_BLACKHOLE_DURATION: detect TCP blackhole after
+				// cfg.BlackholeThreshold (default 30s) of consecutive
+				// timeouts since the bus was last active.
+				if !firstTimeoutTime.IsZero() && time.Since(firstTimeoutTime) > m.cfg.BlackholeThreshold {
+					m.logger.Printf("adaptermux: consecutive timeouts for %v (threshold %v), triggering reconnect (AM27)", time.Since(firstTimeoutTime).Round(time.Millisecond), m.cfg.BlackholeThreshold)
+					firstTimeoutTime = time.Time{}
+					lastDataTime = time.Time{} // reset after reconnect so quiet bus doesn't re-trigger
 					if reconnErr := m.reconnect(); reconnErr != nil {
 						m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
 						return
@@ -742,7 +769,7 @@ func (m *Mux) readLoop() {
 				continue
 			}
 			m.logger.Printf("adaptermux: read error: %v", err)
-			consecutiveTimeouts = 0
+			firstTimeoutTime = time.Time{}
 			lastDataTime = time.Time{} // reset after reconnect so quiet bus doesn't trigger blackhole
 			if reconnErr := m.reconnect(); reconnErr != nil {
 				m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
@@ -751,8 +778,8 @@ func (m *Mux) readLoop() {
 			continue
 		}
 
-		consecutiveTimeouts = 0 // AM27: reset on successful read
-		lastDataTime = time.Now() // AM27: track last data for blackhole detection
+		firstTimeoutTime = time.Time{} // AM27: reset timeout streak on successful read
+		lastDataTime = time.Now()      // AM27: track last data for blackhole detection
 
 		switch event.Kind {
 		case transport.StreamEventStarted:

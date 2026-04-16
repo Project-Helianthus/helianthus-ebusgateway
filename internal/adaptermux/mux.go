@@ -111,10 +111,11 @@ type arbitrationRequester interface {
 // adapter but not yet confirmed via STARTED/FAILED response.
 // Protected by stateMu.
 type pendingStartState struct {
-	sessionID uint64
-	initiator byte
-	notify    chan startResult
-	deadline  *time.Timer // AM8: fires if adapter doesn't respond within 5s
+	sessionID   uint64
+	initiator   byte
+	notify      chan startResult
+	deadline    *time.Timer // AM8: fires if adapter doesn't respond within 5s
+	blockingArb bool        // true when using blocking StartArbitration fallback
 }
 
 // Mux is the adapter multiplexer. It owns a single ENH/ENS connection
@@ -1139,7 +1140,11 @@ func (m *Mux) tryGrantAndStart() {
 			default:
 				m.logger.Printf("adaptermux: pendingStart deadline: notify channel full for session %d, result already delivered", pending.sessionID)
 			}
-			if m.arb.hasPending() {
+			// Only try next grant if NOT on blocking arbitration path.
+			// On the blocking path, StartArbitration is still in-flight
+			// on the transport — calling tryGrantAndStart would overlap
+			// a second arbitration on the same transport.
+			if !pending.blockingArb && m.arb.hasPending() {
 				m.tryGrantAndStart()
 			}
 		} else {
@@ -1187,14 +1192,14 @@ func (m *Mux) tryGrantAndStart() {
 	}); ok {
 		// Fallback for transports that only implement the blocking
 		// StartArbitration (e.g. ENS or test mocks without RequestStart).
-		// Codex-R5: stop the deadline timer before blocking — if the
-		// deadline fires while StartArbitration is blocked, it clears
-		// pendingStart and tryGrantAndStart can overlap a second
-		// arbitration on the same transport.
+		// The AM8 deadline timer stays active to preserve liveness —
+		// if StartArbitration hangs, the deadline clears pendingStart
+		// and notifies the session. The deadline callback skips
+		// tryGrantAndStart when blockingArb is set to prevent
+		// overlapping arbitration on the same transport.
 		m.stateMu.Lock()
-		if m.pendingStart != nil && m.pendingStart.deadline != nil {
-			m.pendingStart.deadline.Stop()
-			m.pendingStart.deadline = nil
+		if m.pendingStart != nil {
+			m.pendingStart.blockingArb = true
 		}
 		m.stateMu.Unlock()
 		if err := starter.StartArbitration(initiator); err != nil {

@@ -163,7 +163,15 @@ type Mux struct {
 	busOwned     time.Time          // when current owner acquired the bus
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int               // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
-	blockingArbGen     uint64            // generation counter for blocking StartArbitration; >0 means in-flight
+	// Blocking StartArbitration tracking. blockingArbGen is monotonically
+	// increasing (never reset to 0 or reused) — reconnect/handleReset
+	// bump it forward so any stale goroutine's captured gen no longer
+	// matches. blockingArbActive indicates whether any blocking goroutine
+	// is currently considered in-flight (owns the transport). Only a
+	// goroutine whose gen matches the current blockingArbGen may clear
+	// blockingArbActive; stale goroutines from prior generations cannot.
+	blockingArbGen    uint64 // monotonic generation counter, never reused
+	blockingArbActive bool   // true while a blocking goroutine owns the transport
 
 	// Gateway echo tracker (for the internal active path).
 	// Protected by stateMu.
@@ -618,7 +626,11 @@ func (m *Mux) reconnect() error {
 	m.phase.reset(wirePhaseIdle)
 	m.arb.forceRelease()
 	m.gatewayEcho.reset()
-	m.blockingArbGen = 0 // transport replaced — old goroutine's gen won't match
+	// Bump gen forward (monotonic) — any in-flight goroutine's captured
+	// arbGen will no longer match, so it cannot clear blockingArbActive.
+	// Clear blockingArbActive here because the transport is being replaced.
+	m.blockingArbGen++
+	m.blockingArbActive = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
@@ -889,6 +901,11 @@ func (m *Mux) onReceived(symbol byte) {
 
 	if symbol == protocol.SymbolSyn {
 		passiveEvents, shouldTryGrant = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
+		// Soak fix: SYN is delivered to active path when the active path
+		// is expecting bytes OR when a gateway START is queued (SYN will
+		// trigger tryGrantAndStart below, and the active path needs to
+		// observe the SYN boundary to begin its transaction).
+		activeExpects := m.activePathExpectsBytes() || shouldTryGrant
 		m.stateMu.Unlock()
 
 		// AM11: clear external session echo trackers on ownership timeout.
@@ -904,7 +921,9 @@ func (m *Mux) onReceived(symbol byte) {
 		// perspective). Re-emitting would produce duplicates (Codex P1).
 		m.flushSessionEchoTrackers()
 
-		m.deliverToActive(symbol)
+		if activeExpects {
+			m.deliverToActive(symbol)
+		}
 		for _, pe := range passiveEvents {
 			m.emitPassive(pe)
 		}
@@ -930,6 +949,10 @@ func (m *Mux) onReceived(symbol byte) {
 	if isGatewayOwned {
 		m.gatewayEcho.matchEcho(symbol) // track echo state internally
 	}
+	// Soak fix: gate activeCh delivery to periods when the active path
+	// is expecting bytes. Non-SYN bytes during third-party traffic
+	// should not accumulate on activeCh.
+	activeExpects := m.activePathExpectsBytes()
 
 	m.stateMu.Unlock()
 
@@ -939,7 +962,9 @@ func (m *Mux) onReceived(symbol byte) {
 	}
 
 	// --- Phase 2: deliver outside all locks ---
-	m.deliverToActive(symbol)
+	if activeExpects {
+		m.deliverToActive(symbol)
+	}
 
 	if !isGatewayOwned {
 		passiveEvents = append(passiveEvents, PassiveEvent{
@@ -1010,7 +1035,9 @@ func (m *Mux) handleReset() {
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
-	m.blockingArbGen = 0 // adapter reset — old goroutine's gen won't match
+	// Bump gen forward (monotonic) — see reconnect() for rationale.
+	m.blockingArbGen++
+	m.blockingArbActive = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
@@ -1114,6 +1141,30 @@ func (m *Mux) resetAllSessionEchoes() {
 	}
 }
 
+// activePathExpectsBytes reports whether the gateway active path (bus.Send)
+// is currently expecting bytes from the adapter. Bytes are expected when:
+//   - The gateway owns the bus (in an active transaction)
+//   - A pendingStart is in-flight (waiting for STARTED/FAILED)
+//   - A blocking StartArbitration goroutine is running (activePath is
+//     waiting for arbitration result)
+//
+// Soak fix: when NONE of these hold, the gateway is idle and activeCh
+// should not accumulate third-party / idle-SYN traffic. Caller must
+// hold stateMu.
+func (m *Mux) activePathExpectsBytes() bool {
+	ownerID, _, hasOwner := m.arb.owner()
+	if hasOwner && ownerID == gatewaySessionID {
+		return true
+	}
+	if m.pendingStart != nil && m.pendingStart.sessionID == gatewaySessionID {
+		return true
+	}
+	if m.blockingArbActive {
+		return true
+	}
+	return false
+}
+
 // deliverToActive sends a byte to the active path channel.
 // Logs on overflow instead of silently dropping (CRITICAL-1 fix).
 func (m *Mux) deliverToActive(symbol byte) {
@@ -1170,7 +1221,7 @@ func (m *Mux) tryGrantAndStart() {
 	// is still in-flight. The deadline may have cleared pendingStart, but
 	// the goroutine is still running on the transport. Starting another
 	// arbitration would overlap STARTs on the same transport.
-	if m.blockingArbGen > 0 {
+	if m.blockingArbActive {
 		m.logger.Printf("adaptermux: tryGrantAndStart skipped — blocking StartArbitration gen %d still in-flight", m.blockingArbGen)
 		m.stateMu.Unlock()
 		return
@@ -1272,6 +1323,7 @@ func (m *Mux) tryGrantAndStart() {
 		m.stateMu.Lock()
 		m.blockingArbGen++
 		arbGen := m.blockingArbGen
+		m.blockingArbActive = true
 		m.stateMu.Unlock()
 		go func() {
 			if err := starter.StartArbitration(initiator); err != nil {
@@ -1283,7 +1335,9 @@ func (m *Mux) tryGrantAndStart() {
 				// cap-1 channel would block the caller indefinitely.
 				m.stateMu.Lock()
 				if m.blockingArbGen == arbGen {
-					m.blockingArbGen = 0 // this generation's goroutine done
+					// Only our generation may clear the active flag.
+					// A stale gen (prior reconnect/handleReset) won't match.
+					m.blockingArbActive = false
 				}
 				if m.pendingStart != nil && m.pendingStart.notify == notify {
 					if m.pendingStart.deadline != nil {
@@ -1313,7 +1367,8 @@ func (m *Mux) tryGrantAndStart() {
 			// channel and re-grant the bus to a cancelled session.
 			m.stateMu.Lock()
 			if m.blockingArbGen == arbGen {
-				m.blockingArbGen = 0 // this generation's goroutine done
+				// Only our generation may clear the active flag.
+				m.blockingArbActive = false
 			}
 			if m.pendingStart == nil || m.pendingStart.notify != notify {
 				// Already cancelled (deadline or session disconnect) — don't

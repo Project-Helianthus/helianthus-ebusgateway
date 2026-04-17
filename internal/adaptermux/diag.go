@@ -3,7 +3,28 @@ package adaptermux
 import (
 	"sync/atomic"
 	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
+
+// TxnClass is the terminal classification of a gateway-owned transaction.
+// Computed at inactive-time from write/read prefix capture and lifecycle
+// counters. Bounded set — used for runtime diagnostics and test assertions.
+type TxnClass string
+
+const (
+	TxnClassUnknown              TxnClass = ""
+	TxnClassEchoOnlyTimeout      TxnClass = "echo_only_timeout"
+	TxnClassNonEchoInvalidFrame  TxnClass = "non_echo_invalid_frame"
+	TxnClassCandidateNoParse     TxnClass = "candidate_no_parse"
+	TxnClassSchemaError          TxnClass = "schema_error"
+	TxnClassSuccessLike          TxnClass = "success_like"
+)
+
+// txnPrefixCap bounds how many leading bytes of write and read traffic are
+// captured per gateway transaction. 8 is enough to characterize classification
+// (source + QQ + PB + SB + NN + two data + ACK-like) without unbounded memory.
+const txnPrefixCap = 8
 
 // ActiveTxnInactiveReason identifies why a gateway active transaction
 // transitioned to inactive. Bounded set of reasons — used for runtime
@@ -46,6 +67,24 @@ type activeTxnDiag struct {
 	// the current transaction was marked inactive (should be zero under
 	// the lifecycle-correct policy; non-zero indicates a regression).
 	afterInactive atomic.Uint64
+
+	// --- Transaction-shape diagnostics (bounded) ---
+	// Captured under stateMu via recordWritePrefix/recordReadPrefix.
+	writePrefix    [txnPrefixCap]byte
+	writePrefixLen int
+	readPrefix     [txnPrefixCap]byte
+	readPrefixLen  int
+	// Byte-class counters (atomic; hot-path increments in onReceived
+	// and Write paths).
+	echoLike    atomic.Uint64
+	nonEcho     atomic.Uint64
+	synMarkers  atomic.Uint64
+	// Terminal classification computed at recordGatewayInactive time.
+	txnClass TxnClass
+	// lastClass persists the most recently classified txn's class so it
+	// can be surfaced through ActiveTxnSnapshot/LastTxnClass even after
+	// recordGatewayGrant resets txnClass for the next grant.
+	lastClass TxnClass
 }
 
 // ActiveTxnSnapshot is an immutable snapshot of the current (or last)
@@ -64,6 +103,18 @@ type ActiveTxnSnapshot struct {
 	WriteErrTotal  uint64
 	ReadTimeoutTot uint64
 	AfterInactive  uint64
+
+	// Transaction-shape diagnostics (bounded).
+	WritePrefix []byte
+	ReadPrefix  []byte
+	EchoLike    uint64
+	NonEcho     uint64
+	SynMarkers  uint64
+	// TxnClass is the terminal classification of the current transaction
+	// if inactive; otherwise TxnClassUnknown. LastTxnClass carries the
+	// most recent classified class across grants.
+	TxnClass     TxnClass
+	LastTxnClass TxnClass
 }
 
 // ActiveTxnSnapshot returns a copy of the current active-transaction
@@ -78,6 +129,10 @@ type ActiveTxnSnapshot struct {
 func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
+	wp := make([]byte, m.activeTxn.writePrefixLen)
+	copy(wp, m.activeTxn.writePrefix[:m.activeTxn.writePrefixLen])
+	rp := make([]byte, m.activeTxn.readPrefixLen)
+	copy(rp, m.activeTxn.readPrefix[:m.activeTxn.readPrefixLen])
 	return ActiveTxnSnapshot{
 		ID:             m.activeTxn.id,
 		Initiator:      m.activeTxn.initiator,
@@ -92,7 +147,32 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		WriteErrTotal:  m.activeTxn.writeErrTotal.Load(),
 		ReadTimeoutTot: m.activeTxn.readTimeoutTot.Load(),
 		AfterInactive:  m.activeTxn.afterInactive.Load(),
+		WritePrefix:    wp,
+		ReadPrefix:     rp,
+		EchoLike:       m.activeTxn.echoLike.Load(),
+		NonEcho:        m.activeTxn.nonEcho.Load(),
+		SynMarkers:     m.activeTxn.synMarkers.Load(),
+		TxnClass:       m.activeTxn.txnClass,
+		LastTxnClass:   m.activeTxn.lastClass,
 	}
+}
+
+// LastTxnClass returns the terminal classification of the most recently
+// completed gateway transaction. If no transaction has completed yet, the
+// returned value is TxnClassUnknown. Safe to call from any goroutine.
+//
+// This is the lightweight accessor used by optional
+// ActiveTxnClassifier consumers (e.g. statsBus) that only need the final
+// class string without the full snapshot.
+func (m *Mux) LastTxnClass() string {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	// While a transaction is still active the live txnClass is empty;
+	// fall back to the last completed class so diagnostics remain useful.
+	if m.activeTxn.txnClass != TxnClassUnknown {
+		return string(m.activeTxn.txnClass)
+	}
+	return string(m.activeTxn.lastClass)
 }
 
 // recordGatewayGrant marks the start of a new gateway active transaction.
@@ -108,6 +188,15 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 	m.activeTxn.bytesRead.Store(0)
 	m.activeTxn.drainedOnGrant = drained
 	m.activeTxn.grantsTotal.Add(1)
+	// Reset per-txn shape diagnostics.
+	m.activeTxn.writePrefixLen = 0
+	m.activeTxn.readPrefixLen = 0
+	m.activeTxn.writePrefix = [txnPrefixCap]byte{}
+	m.activeTxn.readPrefix = [txnPrefixCap]byte{}
+	m.activeTxn.echoLike.Store(0)
+	m.activeTxn.nonEcho.Store(0)
+	m.activeTxn.synMarkers.Store(0)
+	m.activeTxn.txnClass = TxnClassUnknown
 	m.logger.Printf(
 		"adaptermux: activeTxn grant id=%d initiator=0x%02X drained=%d",
 		m.activeTxn.id, initiator, drained,
@@ -160,10 +249,150 @@ func (m *Mux) recordGatewayInactive(reason ActiveTxnInactiveReason) {
 	}
 	m.activeTxn.inactiveAt = time.Now()
 	m.activeTxn.inactiveReas = reason
+	class := m.classifyTxnLocked(reason)
+	m.activeTxn.txnClass = class
+	m.activeTxn.lastClass = class
+	wp := m.activeTxn.writePrefix[:m.activeTxn.writePrefixLen]
+	rp := m.activeTxn.readPrefix[:m.activeTxn.readPrefixLen]
 	m.logger.Printf(
-		"adaptermux: activeTxn inactive id=%d reason=%s writes=%d reads=%d dur=%s",
-		m.activeTxn.id, reason,
+		"adaptermux: activeTxn inactive id=%d reason=%s class=%s writes=%d reads=%d echoLike=%d nonEcho=%d synMarkers=%d writePrefix=% X readPrefix=% X dur=%s",
+		m.activeTxn.id, reason, class,
 		m.activeTxn.bytesWritten.Load(), m.activeTxn.bytesRead.Load(),
+		m.activeTxn.echoLike.Load(), m.activeTxn.nonEcho.Load(), m.activeTxn.synMarkers.Load(),
+		wp, rp,
 		time.Since(m.activeTxn.grantedAt),
 	)
+}
+
+// recordWritePrefix captures the first txnPrefixCap bytes the gateway
+// writes during the current transaction. Caller must hold stateMu.
+func (m *Mux) recordWritePrefix(b byte) {
+	if m.activeTxn.writePrefixLen < txnPrefixCap {
+		m.activeTxn.writePrefix[m.activeTxn.writePrefixLen] = b
+		m.activeTxn.writePrefixLen++
+	}
+}
+
+// recordReadPrefixAndClassify captures the first txnPrefixCap bytes the
+// gateway reads during the current transaction and updates byte-class
+// counters. Caller must hold stateMu.
+func (m *Mux) recordReadPrefixAndClassify(b byte) {
+	if b == protocol.SymbolSyn {
+		m.activeTxn.synMarkers.Add(1)
+	}
+	// Echo detection: position-wise match against writePrefix up to
+	// the smaller of both prefix lengths at insertion time. We compare
+	// the incoming byte against writePrefix[readPrefixLen] when that
+	// slot has been filled by a prior write.
+	pos := m.activeTxn.readPrefixLen
+	echo := false
+	if pos < m.activeTxn.writePrefixLen && m.activeTxn.writePrefix[pos] == b {
+		echo = true
+	}
+	if echo {
+		m.activeTxn.echoLike.Add(1)
+	} else if b != protocol.SymbolSyn {
+		m.activeTxn.nonEcho.Add(1)
+	}
+	if m.activeTxn.readPrefixLen < txnPrefixCap {
+		m.activeTxn.readPrefix[m.activeTxn.readPrefixLen] = b
+		m.activeTxn.readPrefixLen++
+	}
+}
+
+// classifyTxnLocked computes the terminal TxnClass from captured prefixes
+// and counters. Caller must hold stateMu. Pure function modulo struct
+// fields — no side effects.
+//
+// Decision order (first matching wins):
+//   - SuccessLike: TransactionDone or CmdNACK reason (lifecycle-complete)
+//   - SuccessLike: reads include a SYN marker AND non-echo byte count is
+//     positive AND reads >= writes (plausible response + terminator)
+//   - EchoOnlyTimeout: timeout/abort reason AND reads all matched writes
+//     position-wise (no nonEcho bytes seen)
+//   - NonEchoInvalidFrame: got nonEcho bytes but no SYN and no success
+//     (incoherent bytes on the wire; not a framed response)
+//   - CandidateNoParse: got nonEcho bytes AND a SYN but still timed out
+//     (looks like a response but upper layer didn't produce a frame)
+//   - SchemaError: reserved for payload-schema failure path; decided by
+//     caller via classifyTxnWithSchemaError (not computed here)
+//   - Unknown: insufficient signal
+func (m *Mux) classifyTxnLocked(reason ActiveTxnInactiveReason) TxnClass {
+	writes := m.activeTxn.bytesWritten.Load()
+	reads := m.activeTxn.bytesRead.Load()
+	echo := m.activeTxn.echoLike.Load()
+	nonEcho := m.activeTxn.nonEcho.Load()
+	syns := m.activeTxn.synMarkers.Load()
+
+	// Lifecycle-complete reasons imply the phase tracker observed a
+	// full frame or an explicit NACK. Treat as success-like for the
+	// purpose of distinguishing from silent timeouts. (CmdNACK is not
+	// a "successful" read, but the target DID respond — different from
+	// echo-only timeout.)
+	if reason == ReasonTransactionDone || reason == ReasonCmdNACK {
+		return TxnClassSuccessLike
+	}
+
+	isTimeoutLike := reason == ReasonActiveReadTimeout ||
+		reason == ReasonSYNIdle ||
+		reason == ReasonSYNTimeout ||
+		reason == ReasonMaxOwnership ||
+		reason == ReasonActiveWriteError ||
+		reason == ReasonContextCancel ||
+		reason == ReasonReset ||
+		reason == ReasonReconnect
+
+	// SuccessLike heuristic: saw non-echo response bytes AND a SYN
+	// terminator AND the read count is at least as large as the write
+	// count (response arrived after the echo).
+	if nonEcho > 0 && syns > 0 && reads >= writes && writes > 0 {
+		return TxnClassSuccessLike
+	}
+
+	if !isTimeoutLike {
+		return TxnClassUnknown
+	}
+
+	// Timeout-like paths past this point.
+	if writes > 0 && nonEcho == 0 && echo >= 1 {
+		// Every read matched the write prefix position-wise: echo-only.
+		return TxnClassEchoOnlyTimeout
+	}
+	if writes > 0 && reads == 0 {
+		// Didn't even see our own echo back — treat as echo-only
+		// (lowest-confidence class, but still more informative than
+		// "unknown" for an operator triaging the soak log).
+		return TxnClassEchoOnlyTimeout
+	}
+	if nonEcho > 0 && syns == 0 {
+		return TxnClassNonEchoInvalidFrame
+	}
+	if nonEcho > 0 && syns > 0 {
+		return TxnClassCandidateNoParse
+	}
+	return TxnClassUnknown
+}
+
+// MarkSchemaError flags the most recent (or current) gateway transaction
+// as having failed because the payload did not match the expected
+// schema. Called by the gateway-side parse path when a candidate frame
+// was received but schema validation failed. Safe to call after the txn
+// has already been marked inactive — it overrides the recorded class
+// only in that case (schema error is a post-terminal classification
+// refinement).
+func (m *Mux) MarkSchemaError() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	// Only promote to SchemaError if the prior class was a plausible
+	// response (CandidateNoParse or SuccessLike). Don't overwrite
+	// EchoOnlyTimeout — that is physically incompatible with a
+	// schema error.
+	switch m.activeTxn.txnClass {
+	case TxnClassCandidateNoParse, TxnClassSuccessLike, TxnClassUnknown:
+		m.activeTxn.txnClass = TxnClassSchemaError
+	}
+	switch m.activeTxn.lastClass {
+	case TxnClassCandidateNoParse, TxnClassSuccessLike, TxnClassUnknown:
+		m.activeTxn.lastClass = TxnClassSchemaError
+	}
 }

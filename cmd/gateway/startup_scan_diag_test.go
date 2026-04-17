@@ -210,6 +210,186 @@ func TestTruncateErr(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------
+// Transaction-classification wiring into scan attempt log
+// ---------------------------------------------------------------------
+
+// fakeClassifier implements activeTxnClassifier for tests.
+type fakeClassifier struct {
+	val string
+}
+
+func (f *fakeClassifier) LastTxnClass() string { return f.val }
+
+// TestScanAttemptLog_IncludesTxnClass proves that when a classifier is
+// wired into statsBus, each recorded attempt carries the classifier's
+// LastTxnClass value. This is the runtime diagnostic seam that lets
+// operators distinguish echo-only / invalid-frame / schema / success
+// failure modes at the scan-attempt granularity.
+func TestScanAttemptLog_IncludesTxnClass(t *testing.T) {
+	fc := &fakeClassifier{val: "echo_only_timeout"}
+	sb := &statsBus{
+		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout, nil}},
+		source:     0x71,
+		classifier: fc,
+	}
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	fc.val = "success_like"
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x10, Primary: 0x07, Secondary: 0x04})
+
+	if len(sb.attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(sb.attempts))
+	}
+	if sb.attempts[0].txnClass != "echo_only_timeout" {
+		t.Errorf("attempts[0].txnClass = %q, want %q", sb.attempts[0].txnClass, "echo_only_timeout")
+	}
+	if sb.attempts[1].txnClass != "success_like" {
+		t.Errorf("attempts[1].txnClass = %q, want %q", sb.attempts[1].txnClass, "success_like")
+	}
+	// probeKind also recorded for shape triage.
+	if sb.attempts[0].probeKind != "scan_07_04" {
+		t.Errorf("attempts[0].probeKind = %q, want %q", sb.attempts[0].probeKind, "scan_07_04")
+	}
+}
+
+// TestScanAttemptLog_BoundedWithTxnClass proves the cap is still
+// enforced when classifier is wired — classification doesn't bypass
+// the bounded-log invariant.
+func TestScanAttemptLog_BoundedWithTxnClass(t *testing.T) {
+	fc := &fakeClassifier{val: "echo_only_timeout"}
+	errs := make([]error, scanAttemptLogCap+10)
+	for i := range errs {
+		errs[i] = ebuserrors.ErrTimeout
+	}
+	sb := &statsBus{
+		bus:        &stubBus{errors: errs},
+		source:     0x71,
+		classifier: fc,
+	}
+	for i := 0; i < scanAttemptLogCap+10; i++ {
+		_, _ = sb.Send(context.Background(),
+			protocol.Frame{Source: 0x71, Target: byte(0x10 + i), Primary: 0x07, Secondary: 0x04})
+	}
+	if len(sb.attempts) != scanAttemptLogCap {
+		t.Fatalf("attempts = %d, want %d", len(sb.attempts), scanAttemptLogCap)
+	}
+	// All retained entries must carry the classifier's value — not empty.
+	for i, a := range sb.attempts {
+		if a.txnClass != "echo_only_timeout" {
+			t.Errorf("attempts[%d].txnClass = %q, want %q", i, a.txnClass, "echo_only_timeout")
+		}
+	}
+}
+
+// TestScanAttemptLog_NoClassifier_EmptyTxnClass proves that when no
+// classifier is wired the txnClass field remains empty (optional-
+// interface pattern: adapters without Mux degrade gracefully, never panic).
+func TestScanAttemptLog_NoClassifier_EmptyTxnClass(t *testing.T) {
+	sb := &statsBus{
+		bus:    &stubBus{errors: []error{ebuserrors.ErrTimeout}},
+		source: 0x71,
+		// classifier: nil (explicit).
+	}
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	if len(sb.attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1", len(sb.attempts))
+	}
+	if sb.attempts[0].txnClass != "" {
+		t.Errorf("attempts[0].txnClass = %q, want empty (nil classifier)", sb.attempts[0].txnClass)
+	}
+}
+
+// TestScanProbeKind_Classification verifies bounded probe-kind labels.
+func TestScanProbeKind_Classification(t *testing.T) {
+	tests := []struct {
+		name  string
+		frame protocol.Frame
+		want  string
+	}{
+		{"07 04 identification", protocol.Frame{Primary: 0x07, Secondary: 0x04}, "scan_07_04"},
+		{"B5 09 identity", protocol.Frame{Primary: 0xB5, Secondary: 0x09}, "b509_identity"},
+		{"B5 24 register", protocol.Frame{Primary: 0xB5, Secondary: 0x24}, "b524_register"},
+		{"unknown", protocol.Frame{Primary: 0x03, Secondary: 0x00}, "other"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := scanProbeKind(tc.frame); got != tc.want {
+				t.Errorf("scanProbeKind = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------
+// Scan-request shape: frame source/target/primary/secondary match contract
+// ---------------------------------------------------------------------
+
+// shapeCaptureBus captures every frame the scan path sends so the test
+// can assert the wire-shape contract. Stops the scan at the first send
+// by returning a nil response + ErrTimeout (scan tolerates and retries).
+type shapeCaptureBus struct {
+	frames []protocol.Frame
+}
+
+func (b *shapeCaptureBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+	b.frames = append(b.frames, frame)
+	return nil, ebuserrors.ErrTimeout
+}
+
+// TestScanRequestShape_AdapterDirect proves the adapter-direct startup
+// scan builds frames with the exact contract expected by a Vaillant bus:
+//
+//	Frame.Source    == configured ScanSource (e.g. 0xF7 proxy or 0x71)
+//	Frame.Target    ∈ valid scan-target iteration range (0x01..0xFD)
+//	Frame.Primary   == 0x07 (identification)
+//	Frame.Secondary == 0x04
+//	Frame.Data      == nil / empty (scan probe carries no payload)
+//
+// This is the minimum shape contract; a wrong primary/secondary would
+// cause every probe to time out regardless of peer presence.
+func TestScanRequestShape_AdapterDirect(t *testing.T) {
+	bus := &shapeCaptureBus{}
+	reg := registry.NewDeviceRegistry(nil)
+
+	// Use a small explicit target list so the test finishes quickly.
+	targets := []byte{0x08, 0x15, 0x26}
+	const source byte = 0x71
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, _ = registry.Scan(ctx, bus, reg, source, targets)
+
+	if len(bus.frames) == 0 {
+		t.Fatal("scan did not emit any frames")
+	}
+	// All emitted frames must satisfy the shape contract.
+	for i, f := range bus.frames {
+		if f.Source != source {
+			t.Errorf("frame[%d].Source = 0x%02X, want 0x%02X", i, f.Source, source)
+		}
+		if f.Primary != 0x07 {
+			t.Errorf("frame[%d].Primary = 0x%02X, want 0x07", i, f.Primary)
+		}
+		if f.Secondary != 0x04 {
+			t.Errorf("frame[%d].Secondary = 0x%02X, want 0x04", i, f.Secondary)
+		}
+		if len(f.Data) != 0 {
+			t.Errorf("frame[%d].Data len = %d, want 0", i, len(f.Data))
+		}
+		// Target must be from our iteration range.
+		found := false
+		for _, t2 := range targets {
+			if f.Target == t2 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("frame[%d].Target = 0x%02X not in configured targets % X", i, f.Target, targets)
+		}
+	}
+}
+
 // TestClassifyScanErr verifies error classification matches the
 // documented set.
 func TestClassifyScanErr(t *testing.T) {

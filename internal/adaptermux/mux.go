@@ -960,6 +960,13 @@ func (m *Mux) onReceived(symbol byte) {
 	var shouldTryGrant bool
 
 	if symbol == protocol.SymbolSyn {
+		// Shape diag: count SYN markers seen during gateway ownership
+		// regardless of whether we deliver (for classification). Must
+		// run BEFORE onSYNLocked so the counter reflects the SYN that
+		// triggers a possible inactive transition.
+		if hasOwner && ownerID == gatewaySessionID {
+			m.recordReadPrefixAndClassify(symbol)
+		}
 		// Runtime-soak: bus.Send returns BEFORE the trailing SYN (reads
 		// are count-based, not SYN-terminated). So onSYNLocked's
 		// gatewayTxnActive=false is the correct state for delivery —
@@ -1020,6 +1027,16 @@ func (m *Mux) onReceived(symbol byte) {
 	// post-inactive delivery pressure.
 	if isGatewayOwned && !activeExpects {
 		m.activeTxn.afterInactive.Add(1)
+	}
+
+	// Shape diag: capture non-SYN read prefix + echo/non-echo class
+	// while stateMu is held (prefix is a struct field, not atomic).
+	// Restrict to gateway-owned traffic so third-party bytes don't
+	// pollute the per-txn prefix. Includes bytes delivered to activeCh
+	// as well as bytes suppressed — both are "seen" on the wire during
+	// the transaction window.
+	if isGatewayOwned {
+		m.recordReadPrefixAndClassify(symbol)
 	}
 
 	m.stateMu.Unlock()

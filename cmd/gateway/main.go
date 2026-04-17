@@ -595,6 +595,9 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	}
 
 	mux := adaptermux.New(muxCfg)
+	// Wire the adaptermux classifier into the startup-scan diagnostics
+	// seam. Optional (nil-safe). See startup_scan.go for the contract.
+	startupScanClassifier = mux
 
 	// Create passive transport BEFORE Start() so the callback is wired.
 	// Only create it when BroadcastListen is enabled — otherwise no

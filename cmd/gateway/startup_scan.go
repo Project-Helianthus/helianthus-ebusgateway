@@ -62,11 +62,22 @@ const scanAttemptLogCap = 8
 
 // scanAttemptLog records a single scan attempt for bounded diagnostics.
 type scanAttemptLog struct {
-	source   byte
-	target   byte
-	resClass string
-	duration time.Duration
-	errStr   string // truncated, only for non-ok attempts
+	source    byte
+	target    byte
+	resClass  string
+	duration  time.Duration
+	errStr    string // truncated, only for non-ok attempts
+	probeKind string // e.g. "scan_07_04" — bounded set of probe names
+	txnClass  string // adaptermux txn classification (if classifier wired)
+}
+
+// activeTxnClassifier is the optional interface statsBus queries after
+// each probe to attach the adaptermux transaction classification to the
+// scan attempt log. The adaptermux.Mux satisfies this via its
+// LastTxnClass method. If the underlying bus does not implement it,
+// txnClass is left empty — diagnostics degrade gracefully.
+type activeTxnClassifier interface {
+	LastTxnClass() string
 }
 
 type startupScanSignals struct {
@@ -86,9 +97,13 @@ type ebusdScanResultRow struct {
 type statsBus struct {
 	bus      registry.ScanBus
 	stats    scanStats
-	source   byte              // effective source address in use for this pass
-	attempts []scanAttemptLog  // bounded by scanAttemptLogCap
-	total    int               // total send attempts this pass (including non-logged)
+	source   byte             // effective source address in use for this pass
+	attempts []scanAttemptLog // bounded by scanAttemptLogCap
+	total    int              // total send attempts this pass (including non-logged)
+	// classifier is an optional adaptermux.Mux (or test fake) that
+	// exposes the last-transaction classification via LastTxnClass.
+	// When nil the txnClass field on each attempt is left empty.
+	classifier activeTxnClassifier
 }
 
 // maxErrStrLen bounds logged error strings per attempt for diagnostics.
@@ -103,6 +118,22 @@ func truncateErr(err error) string {
 		return s[:maxErrStrLen] + "..."
 	}
 	return s
+}
+
+// scanProbeKind returns a bounded, human-readable label for the probe
+// frame. Used in attempt diagnostics to distinguish 07 04 identification
+// probes from future secondary probe types without logging payloads.
+func scanProbeKind(frame protocol.Frame) string {
+	switch {
+	case frame.Primary == 0x07 && frame.Secondary == 0x04:
+		return "scan_07_04"
+	case frame.Primary == 0xB5 && frame.Secondary == 0x09:
+		return "b509_identity"
+	case frame.Primary == 0xB5 && frame.Secondary == 0x24:
+		return "b524_register"
+	default:
+		return "other"
+	}
 }
 
 func classifyScanErr(err error) string {
@@ -188,11 +219,15 @@ func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Fr
 	//     keep the current set (first N non-ok attempts stay).
 	//   - "ok" entries never displace anything after the cap is full.
 	entry := scanAttemptLog{
-		source:   b.source,
-		target:   frame.Target,
-		resClass: class,
-		duration: dur,
-		errStr:   truncateErr(err),
+		source:    b.source,
+		target:    frame.Target,
+		resClass:  class,
+		duration:  dur,
+		errStr:    truncateErr(err),
+		probeKind: scanProbeKind(frame),
+	}
+	if b.classifier != nil {
+		entry.txnClass = b.classifier.LastTxnClass()
 	}
 	if len(b.attempts) < scanAttemptLogCap {
 		b.attempts = append(b.attempts, entry)
@@ -222,17 +257,23 @@ func (b *statsBus) logPassDiagnostics(sourceMode string, targetCount int, passTi
 	for i, a := range b.attempts {
 		if a.resClass == "ok" {
 			log.Printf(
-				"startup scan attempt %d/%d: src=0x%02X tgt=0x%02X result=ok dur=%s",
-				i+1, len(b.attempts), a.source, a.target, a.duration,
+				"startup scan attempt %d/%d: src=0x%02X tgt=0x%02X probe=%s result=ok dur=%s txnClass=%s",
+				i+1, len(b.attempts), a.source, a.target, a.probeKind, a.duration, a.txnClass,
 			)
 		} else {
 			log.Printf(
-				"startup scan attempt %d/%d: src=0x%02X tgt=0x%02X result=%s dur=%s err=%q",
-				i+1, len(b.attempts), a.source, a.target, a.resClass, a.duration, a.errStr,
+				"startup scan attempt %d/%d: src=0x%02X tgt=0x%02X probe=%s result=%s dur=%s txnClass=%s err=%q",
+				i+1, len(b.attempts), a.source, a.target, a.probeKind, a.resClass, a.duration, a.txnClass, a.errStr,
 			)
 		}
 	}
 }
+
+// startupScanClassifier is an unexported package-level override used by
+// cmd/gateway wiring and tests to attach an adaptermux transaction
+// classifier to each startup-scan pass. nil is safe — diagnostics simply
+// omit the txnClass column.
+var startupScanClassifier activeTxnClassifier
 
 func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder) startupScanSignals {
 	firstPassDone := make(chan struct{})
@@ -299,8 +340,9 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				scanCtx, cancel = context.WithTimeout(ctx, cfg.ScanTimeout)
 			}
 			scanBus := &statsBus{
-				bus:    &timeoutBus{bus: gateway.Bus, timeout: cfg.ScanRequestTimeout},
-				source: startupCfg.ScanSource,
+				bus:        &timeoutBus{bus: gateway.Bus, timeout: cfg.ScanRequestTimeout},
+				source:     startupCfg.ScanSource,
+				classifier: startupScanClassifier,
 			}
 			targets := ([]byte)(nil)
 			targetLabel := ""

@@ -150,6 +150,10 @@ func (t *activeTransport) Write(p []byte) (int, error) {
 				return i, err
 			}
 			t.mux.activeTxn.bytesWritten.Add(1)
+			// Shape diag: capture first-N write bytes under stateMu.
+			t.mux.stateMu.Lock()
+			t.mux.recordWritePrefix(b)
+			t.mux.stateMu.Unlock()
 		case <-t.mux.ctx.Done():
 			t.mux.markActiveContextCancel()
 			return i, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())

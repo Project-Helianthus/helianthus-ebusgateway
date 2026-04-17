@@ -36,6 +36,13 @@ const (
 	ReasonTransactionDone   ActiveTxnInactiveReason = "transaction_done"
 	ReasonCmdNACK           ActiveTxnInactiveReason = "cmd_nack"
 	ReasonSYNIdle           ActiveTxnInactiveReason = "syn_idle"
+	// ReasonSYNTerminator is recorded when a SYN arrives mid-transaction
+	// (bytesRead>0) and is treated as the legitimate frame terminator.
+	// Distinguished from ReasonSYNIdle (which historically covered both
+	// terminator and abandoned-grant cases) because, for a legitimate
+	// terminator, the SYN byte IS delivered to activeCh so the bus.Send
+	// consumer observes the terminator. See onSYNLocked.
+	ReasonSYNTerminator     ActiveTxnInactiveReason = "syn_terminator"
 	ReasonSYNTimeout        ActiveTxnInactiveReason = "syn_timeout"
 	ReasonMaxOwnership      ActiveTxnInactiveReason = "max_ownership"
 	ReasonReset             ActiveTxnInactiveReason = "reset"
@@ -67,6 +74,12 @@ type activeTxnDiag struct {
 	// the current transaction was marked inactive (should be zero under
 	// the lifecycle-correct policy; non-zero indicates a regression).
 	afterInactive atomic.Uint64
+	// terminatorDropOnFullCh counts the number of SYN terminators that
+	// the onSYNLocked path tried to deliver to activeCh but could not
+	// because the channel was full. Expected to be zero in normal
+	// operation (activeCh has capacity 4096 and the reader drains it
+	// promptly during bus.Send). Non-zero indicates runtime backpressure.
+	terminatorDropOnFullCh atomic.Uint64
 
 	// --- Transaction-shape diagnostics (bounded) ---
 	// Captured under stateMu via recordWritePrefix/recordReadPrefix.
@@ -103,6 +116,8 @@ type ActiveTxnSnapshot struct {
 	WriteErrTotal  uint64
 	ReadTimeoutTot uint64
 	AfterInactive  uint64
+	// TerminatorDropOnFullCh mirrors activeTxnDiag.terminatorDropOnFullCh.
+	TerminatorDropOnFullCh uint64
 
 	// Transaction-shape diagnostics (bounded).
 	WritePrefix []byte
@@ -146,7 +161,8 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		GrantsTotal:    m.activeTxn.grantsTotal.Load(),
 		WriteErrTotal:  m.activeTxn.writeErrTotal.Load(),
 		ReadTimeoutTot: m.activeTxn.readTimeoutTot.Load(),
-		AfterInactive:  m.activeTxn.afterInactive.Load(),
+		AfterInactive:         m.activeTxn.afterInactive.Load(),
+		TerminatorDropOnFullCh: m.activeTxn.terminatorDropOnFullCh.Load(),
 		WritePrefix:    wp,
 		ReadPrefix:     rp,
 		EchoLike:       m.activeTxn.echoLike.Load(),
@@ -329,7 +345,8 @@ func (m *Mux) classifyTxnLocked(reason ActiveTxnInactiveReason) TxnClass {
 	// purpose of distinguishing from silent timeouts. (CmdNACK is not
 	// a "successful" read, but the target DID respond — different from
 	// echo-only timeout.)
-	if reason == ReasonTransactionDone || reason == ReasonCmdNACK {
+	if reason == ReasonTransactionDone || reason == ReasonCmdNACK ||
+		reason == ReasonSYNTerminator {
 		return TxnClassSuccessLike
 	}
 

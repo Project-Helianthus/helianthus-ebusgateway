@@ -101,7 +101,9 @@ func TestActiveTxnDiag_ReadCounterIncrements(t *testing.T) {
 
 // TestActiveTxnDiag_InactiveReason_SYNIdle proves that after the
 // gateway has read at least one response byte, the trailing SYN marks
-// the txn inactive with ReasonSYNIdle.
+// the txn inactive with ReasonSYNTerminator (PR #502 E2E fix —
+// previously ReasonSYNIdle, now distinguished from abandoned-grant
+// idle-release).
 //
 // Lifecycle correctness: SYN before any read must NOT clear (grant
 // handoff can leave pre-grant stale SYN bytes in the TCP buffer).
@@ -127,8 +129,8 @@ func TestActiveTxnDiag_InactiveReason_SYNIdle(t *testing.T) {
 	if snap.Active {
 		t.Fatal("Active must be false after SYN (with bytesRead > 0)")
 	}
-	if snap.InactiveReason != ReasonSYNIdle {
-		t.Fatalf("InactiveReason = %q, want %q", snap.InactiveReason, ReasonSYNIdle)
+	if snap.InactiveReason != ReasonSYNTerminator {
+		t.Fatalf("InactiveReason = %q, want %q", snap.InactiveReason, ReasonSYNTerminator)
 	}
 	if snap.InactiveAt.IsZero() {
 		t.Fatal("InactiveAt must be set")
@@ -208,8 +210,8 @@ func TestActiveTxnDiag_InactiveReason_Idempotent(t *testing.T) {
 	mux.handleReset()
 
 	snap := mux.ActiveTxnSnapshot()
-	if snap.InactiveReason != ReasonSYNIdle {
-		t.Fatalf("first reason should stick: got %q, want %q", snap.InactiveReason, ReasonSYNIdle)
+	if snap.InactiveReason != ReasonSYNTerminator {
+		t.Fatalf("first reason should stick: got %q, want %q", snap.InactiveReason, ReasonSYNTerminator)
 	}
 }
 
@@ -371,9 +373,16 @@ func TestActiveTxnDiag_DrainedOnGrant_ZeroInSteadyState(t *testing.T) {
 	if _, err := at.ReadByte(); err != nil {
 		t.Fatalf("ReadByte err=%v", err)
 	}
-	// End-of-txn SYN clears because bytesRead > 0.
+	// End-of-txn SYN clears because bytesRead > 0. PR #502 E2E fix:
+	// the terminator SYN is delivered to activeCh before clearing, so
+	// bus.Send (or the test's consumer) MUST drain it; otherwise the
+	// next grant would drain it as a stale byte and break the steady-
+	// state DrainedOnGrant==0 invariant.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
+	if b, err := at.ReadByte(); err != nil || b != protocol.SymbolSyn {
+		t.Fatalf("ReadByte terminator=(0x%02X,%v), want (0xAA,nil)", b, err)
+	}
 
 	// Third-party bytes during idle grace — must NOT land in activeCh
 	// under the lifecycle-correct policy.

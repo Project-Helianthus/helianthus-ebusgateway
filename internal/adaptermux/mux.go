@@ -1177,10 +1177,29 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// correctly clears. Genuine aborts (no writes, no reads) are
 	// caught by MaxOwnershipDuration, ActiveWriteError, ActiveReadTimeout,
 	// context cancel, reset, or reconnect — per the lifecycle contract.
+	//
+	// PR #502 E2E fix: this SYN is the legitimate frame terminator.
+	// The bus.Send consumer on activeCh needs to see it to complete the
+	// response frame — without delivery, Send hangs until read-timeout.
+	// Deliver the SYN byte to activeCh BEFORE clearing gatewayTxnActive
+	// so activePathExpectsBytes() is still true at enqueue time. The
+	// send is non-blocking: if activeCh is full we bump a diagnostic
+	// counter and still clear (blocking would deadlock under stateMu).
+	// Use ReasonSYNTerminator (not ReasonSYNIdle) to distinguish a
+	// successful terminator delivery from the abandoned-grant SYN-idle
+	// path in onSYNLocked's idle-release branch below.
+	terminatorDelivered := false
 	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive &&
 		m.activeTxn.bytesRead.Load() > 0 {
+		select {
+		case m.activeCh <- activeEvent{kind: activeEventByte, b: protocol.SymbolSyn}:
+			terminatorDelivered = true
+		default:
+			m.activeTxn.terminatorDropOnFullCh.Add(1)
+			m.logger.Printf("adaptermux: active channel full, dropping SYN terminator")
+		}
 		m.gatewayTxnActive = false
-		m.recordGatewayInactive(ReasonSYNIdle)
+		m.recordGatewayInactive(ReasonSYNTerminator)
 	}
 
 	// Note: external session echo tracker flush is done AFTER stateMu.Unlock()
@@ -1230,11 +1249,23 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// does NOT see it.
 	if wasGatewayOwned || gwActiveBefore {
 		gwActiveAfter := m.gatewayTxnActive
-		synDelivered := gwActiveAfter // deliverToActive gate is activePathExpectsBytes()
+		// synDelivered is true if either (a) the txn is still active after
+		// onSYNLocked (caller's deliverToActive will run for the SYN) OR
+		// (b) onSYNLocked delivered the SYN inline above as the frame
+		// terminator (bytesRead>0 branch, PR #502 E2E fix).
+		synDelivered := gwActiveAfter || terminatorDelivered
 		m.recordSynDiagLocked(ownerID, gwActiveBefore, gwActiveAfter, synDelivered)
 	}
 
 	shouldTryGrant := m.arb.hasPending()
+	// When onSYNLocked itself delivered the terminator, signal the caller
+	// via the returned shouldTryGrant alone is insufficient — the caller
+	// also needs to skip its own deliverToActive(symbol) call because
+	// activePathExpectsBytes() is now false. That already happens
+	// naturally: activeExpects is re-read AFTER onSYNLocked returns (see
+	// onReceived), so with gatewayTxnActive cleared it becomes false and
+	// the caller's deliverToActive is skipped. No double-delivery.
+	_ = terminatorDelivered
 	return passiveEvents, shouldTryGrant
 }
 

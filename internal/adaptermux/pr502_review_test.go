@@ -682,9 +682,15 @@ func TestActivePath_RealFlow_NoAccumulationAfterTxnSyn(t *testing.T) {
 	}
 
 	// End-of-transaction: bus.Send has returned. Next SYN clears
-	// gatewayTxnActive BEFORE IdleReleaseGrace expires.
+	// gatewayTxnActive BEFORE IdleReleaseGrace expires. PR #502 E2E
+	// fix: the terminator SYN is delivered to activeCh before the
+	// clear — drain it here so the "no accumulation" assertion below
+	// reflects third-party noise only, not the legitimate terminator.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
+	if b, err := at.ReadByte(); err != nil || b != protocol.SymbolSyn {
+		t.Fatalf("ReadByte terminator=(0x%02X,%v), want (0xAA,nil)", b, err)
+	}
 
 	// Ownership STILL held (IdleReleaseGrace=200ms, we waited 30ms).
 	if !mux.arb.isOwner(gatewaySessionID) {
@@ -776,8 +782,14 @@ func TestActivePath_SoakCycle_NoSustainedGrowth(t *testing.T) {
 		}
 
 		// End-of-txn SYN: clears gatewayTxnActive (bytesRead > 0).
+		// PR #502 E2E fix: the SYN is delivered to activeCh as the
+		// frame terminator. Drain it so the no-accumulation assertion
+		// below reflects noise only, not the legitimate terminator.
 		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 		time.Sleep(10 * time.Millisecond)
+		if b, err := at.ReadByte(); err != nil || b != protocol.SymbolSyn {
+			t.Fatalf("cycle %d: ReadByte terminator=(0x%02X,%v), want (0xAA,nil)", i, b, err)
+		}
 
 		// Third-party noise during IdleReleaseGrace window.
 		noise := []byte{0xFE, 0x10, 0xBA, 0x55, 0x99}

@@ -1356,6 +1356,19 @@ func (m *Mux) tryGrantAndStart() {
 			pending := m.pendingStart
 			m.pendingStart = nil
 			m.pendingStartAbsorb++
+			// Codex-R12: if the hung request is on the blocking path,
+			// abandon its goroutine by bumping blockingArbGen — any
+			// subsequent clear by the hung goroutine will no longer
+			// match — AND clear blockingArbActive so future grants can
+			// proceed. Without this, a single hung StartArbitration
+			// permanently starves all subsequent grants on a quiet link
+			// that never triggers blackhole reconnect.
+			nowBlocking := false
+			if pending.blockingArb {
+				m.blockingArbGen++
+				m.blockingArbActive = false
+				nowBlocking = true
+			}
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8)", pending.sessionID)
 			// AM8: guard the send — if another path already delivered a
@@ -1365,11 +1378,11 @@ func (m *Mux) tryGrantAndStart() {
 			default:
 				m.logger.Printf("adaptermux: pendingStart deadline: notify channel full for session %d, result already delivered", pending.sessionID)
 			}
-			// Only try next grant if NOT on blocking arbitration path.
-			// On the blocking path, StartArbitration is still in-flight
-			// on the transport — calling tryGrantAndStart would overlap
-			// a second arbitration on the same transport.
-			if !pending.blockingArb && m.arb.hasPending() {
+			// After deadline, allow next grant. Even if nowBlocking,
+			// we abandoned the hung goroutine's gen so subsequent
+			// StartArbitration is not considered overlapping.
+			_ = nowBlocking
+			if m.arb.hasPending() {
 				m.tryGrantAndStart()
 			}
 		} else {

@@ -266,32 +266,36 @@ func TestBlockingStartArbitrationDeadlineReal(t *testing.T) {
 		t.Fatal("pendingStart must be nil after deadline fires")
 	}
 
-	// Verify no overlapping tryGrantAndStart was called by the deadline
-	// callback (blockingArb prevents it). Since we have no second request
-	// queued, we just verify pendingStart stays nil.
+	// Codex-R12: AM8 deadline on blocking path now bumps blockingArbGen
+	// and clears blockingArbActive to unblock future grants (previously
+	// a hung StartArbitration permanently starved the queue). With no
+	// second request queued, pendingStart stays nil.
 	time.Sleep(50 * time.Millisecond)
 	mux.stateMu.Lock()
-	queueAdvanced := mux.pendingStart != nil
+	pendingStillNil := mux.pendingStart == nil
+	activeFlag := mux.blockingArbActive
 	mux.stateMu.Unlock()
-	if queueAdvanced {
-		t.Fatal("deadline callback must NOT call tryGrantAndStart when blockingArb=true")
+	if !pendingStillNil {
+		t.Fatal("pendingStart should stay nil (no pending after deadline)")
+	}
+	if activeFlag {
+		t.Fatal("blockingArbActive must be cleared by deadline on blocking path (Codex-R12)")
 	}
 
-	// Release the blocking StartArbitration goroutine.
+	// Release the hung blocking goroutine. Its generation was bumped,
+	// so its late return does not interfere with any subsequent grant.
 	close(mock.gate)
-
-	// Wait for the internal goroutine to process the cancelled-pending
-	// path and update pendingStartAbsorb.
 	time.Sleep(50 * time.Millisecond)
 
-	// After the blocking call returns, the code path detects that
-	// pendingStart was already cancelled (notify mismatch). The absorb
-	// counter should be decremented back to 0.
+	// The hung goroutine's cancelled-path cleanup runs. Because its
+	// gen no longer matches (deadline bumped it), isCurrentGen is
+	// false, so pendingStartAbsorb is NOT decremented and tryGrantAndStart
+	// is NOT called. absorb was incremented once by the deadline.
 	mux.stateMu.Lock()
 	absorb := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
-	if absorb != 0 {
-		t.Fatalf("pendingStartAbsorb = %d after blocking call returned, want 0", absorb)
+	if absorb != 1 {
+		t.Fatalf("pendingStartAbsorb = %d, want 1 (deadline incremented, stale gen did not decrement)", absorb)
 	}
 }
 
@@ -344,22 +348,21 @@ func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
 		t.Fatal("timeout waiting for deadline failure")
 	}
 
-	// At this point, deadline has fired. blockingArb=true should
-	// prevent tryGrantAndStart from being called for the second request.
-	// The second request should still be pending in the queue.
+	// Codex-R12: after the deadline fires on the blocking path, the
+	// callback bumps blockingArbGen and clears blockingArbActive, then
+	// calls tryGrantAndStart which dequeues request #2 and invokes
+	// StartArbitration again. The first goroutine is still blocked on
+	// `gate` (hung StartArbitration) but its generation is stale.
+	// Wait long enough for the deadline to process the queue advance.
 	time.Sleep(50 * time.Millisecond)
-	if c := atomic.LoadInt32(&arbCount); c != 1 {
-		t.Fatalf("expected exactly 1 StartArbitration call (no overlap), got %d", c)
+	if c := atomic.LoadInt32(&arbCount); c != 2 {
+		t.Fatalf("expected 2 StartArbitration calls (deadline advanced queue, Codex-R12), got %d", c)
 	}
 
-	// Release the blocked goroutine.
+	// Release the first hung goroutine — its gen no longer matches,
+	// so its cleanup does not interfere with the newer arbitration.
 	close(mock.gate)
 
-	// After the blocking call returns, the cancelled-pending path now
-	// calls tryGrantAndStart to advance the queue. The second request
-	// (session 2) is dequeued and attempted. Since session 2 is not
-	// registered in the sessions map, completeArbitrationGrant discards
-	// it as "disconnected during START". Verify queue advanced (arbCount=2).
 	time.Sleep(150 * time.Millisecond)
 	if c := atomic.LoadInt32(&arbCount); c != 2 {
 		t.Fatalf("expected 2 StartArbitration calls after queue advance, got %d", c)

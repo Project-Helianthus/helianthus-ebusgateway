@@ -1484,17 +1484,23 @@ func (m *Mux) tryGrantAndStart() {
 			// blocking, clearing pendingStart and sending a failure on
 			// notify.  Completing here would double-send on the cap-1
 			// channel and re-grant the bus to a cancelled session.
+			//
+			// Codex-R10: do NOT clear blockingArbActive in the success
+			// branch until AFTER completeArbitrationGrant confirms
+			// ownership. Clearing earlier opens a race window where
+			// tryGrantAndStart (from readLoop SYN/idle or RemoveSession)
+			// observes pendingStart==nil + blockingArbActive==false +
+			// no owner and launches a second overlapping arbitration.
 			m.stateMu.Lock()
 			isCurrentGen := m.blockingArbGen == arbGen
-			if isCurrentGen {
-				// Only our generation may clear the active flag.
-				m.blockingArbActive = false
-			}
 			if m.pendingStart == nil || m.pendingStart.notify != notify {
 				// Already cancelled (deadline or session disconnect) — don't
-				// double-send. Codex-R8: scope absorb + queue advance to
-				// our generation. A stale goroutine must not consume absorb
-				// budget or advance the queue on behalf of a newer request.
+				// double-send. Safe to clear blockingArbActive here: no
+				// completeArbitrationGrant will follow.
+				if isCurrentGen {
+					m.blockingArbActive = false
+				}
+				// Codex-R8: scope absorb + queue advance to our generation.
 				if isCurrentGen && m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
 				}
@@ -1510,6 +1516,14 @@ func (m *Mux) tryGrantAndStart() {
 			m.pendingStart = nil
 			m.stateMu.Unlock()
 			m.completeArbitrationGrant(sessionID, initiator, notify)
+			// Clear blockingArbActive AFTER ownership is confirmed, so
+			// concurrent tryGrantAndStart sees the flag until ownership
+			// is visible in the arbitrator.
+			m.stateMu.Lock()
+			if isCurrentGen {
+				m.blockingArbActive = false
+			}
+			m.stateMu.Unlock()
 		}()
 		return
 	} else {

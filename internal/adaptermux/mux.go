@@ -1748,8 +1748,24 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 		// RequestStart. Increment absorb counter so handleArbitrationResponse
 		// discards that stale response instead of failing a newer request.
 		m.pendingStartAbsorb++
+		// Codex PR #502 P1: if the cancelled pending was on the blocking
+		// StartArbitration path, the goroutine may still be hung in the
+		// transport call. The AM8 deadline timer was just stopped, so it
+		// will never fire to clear blockingArbActive. Abandon the hung
+		// goroutine by bumping blockingArbGen (its late return will no
+		// longer match) AND clear blockingArbActive here so subsequent
+		// queued requests can proceed. Mirror the AM8 deadline callback
+		// pattern at mux.go:1391-1395.
+		wasBlocking := pending.blockingArb
+		if wasBlocking {
+			m.blockingArbGen++
+			m.blockingArbActive = false
+		}
 		m.stateMu.Unlock()
 		pending.notify <- startResult{granted: false, initiator: pending.initiator, cancelled: true}
+		if wasBlocking && m.arb.hasPending() {
+			m.tryGrantAndStart()
+		}
 		return
 	}
 	m.stateMu.Unlock()

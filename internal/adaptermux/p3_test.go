@@ -1699,13 +1699,20 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 		t.Fatal("cancelled session should not own the bus")
 	}
 
-	// pendingStartAbsorb should have been decremented (cancel increments,
-	// success-path-guard decrements).
+	// Codex PR #502 P1: cancelPendingStart on the blocking path bumps
+	// blockingArbGen to invalidate the hung goroutine (otherwise a
+	// never-returning StartArbitration would starve subsequent grants).
+	// With the gen bumped, the goroutine's late return sees isCurrentGen
+	// == false and does NOT decrement pendingStartAbsorb. The absorb
+	// counter stays at 1 (incremented by cancel), which is correct: any
+	// stale STARTED/FAILED from the adapter for the cancelled request
+	// must still be absorbed so the next real arbitration response is
+	// not mis-attributed.
 	mux.stateMu.Lock()
 	absorb := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
-	if absorb != 0 {
-		t.Fatalf("pendingStartAbsorb = %d, want 0", absorb)
+	if absorb != 1 {
+		t.Fatalf("pendingStartAbsorb = %d, want 1 (cancel incremented, stale gen did not decrement — P1)", absorb)
 	}
 }
 
@@ -1779,12 +1786,16 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 		// Good.
 	}
 
-	// pendingStartAbsorb must be decremented.
+	// Codex PR #502 P1: cancelPendingStart on the blocking path bumps
+	// blockingArbGen, so the error-path cleanup sees isCurrentGen ==
+	// false and does NOT decrement pendingStartAbsorb. The absorb
+	// counter stays at 1 (cancel incremented it) so any stale adapter
+	// response for the cancelled request is absorbed.
 	mux.stateMu.Lock()
 	absorb := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
-	if absorb != 0 {
-		t.Fatalf("pendingStartAbsorb = %d, want 0", absorb)
+	if absorb != 1 {
+		t.Fatalf("pendingStartAbsorb = %d, want 1 (cancel incremented, stale gen did not decrement — P1)", absorb)
 	}
 }
 

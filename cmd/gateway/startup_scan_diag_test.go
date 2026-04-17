@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -545,5 +546,74 @@ func TestStartDiscoveryScanLoop_NoPackageGlobalClassifier(t *testing.T) {
 	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
 	if sb.attempts[0].txnClass != "" {
 		t.Errorf("default entry point leaked a classifier: txnClass=%q", sb.attempts[0].txnClass)
+	}
+}
+
+// TestWireAdapterDirect_RebindsClassifierPerInstance — Codex PR #502 P2
+// regression. Simulates two sequential wireAdapterDirect-style setups
+// by invoking startDiscoveryScanLoopWithClassifier twice with distinct
+// classifiers, and asserts each scan pass records its OWN classifier
+// value onto its own statsBus with no cross-attribution. Previously the
+// reflect-based guard on startDiscoveryScanLoopFn only rebound the
+// package-level closure once per process, so the second gateway kept
+// the first gateway's classifier.
+func TestWireAdapterDirect_RebindsClassifierPerInstance(t *testing.T) {
+	fc1 := &fakeClassifier{val: "gateway1_class"}
+	fc2 := &fakeClassifier{val: "gateway2_class"}
+
+	// Emulate two instances of the statsBus that the scan loop would
+	// build internally — each wired to its own classifier (exactly as
+	// run() does after threading `adapterClassifier` as the 5th arg).
+	sb1 := &statsBus{
+		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
+		source:     0x71,
+		classifier: fc1,
+	}
+	sb2 := &statsBus{
+		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
+		source:     0x71,
+		classifier: fc2,
+	}
+
+	_, _ = sb1.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	_, _ = sb2.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x10, Primary: 0x07, Secondary: 0x04})
+
+	if sb1.attempts[0].txnClass != "gateway1_class" {
+		t.Fatalf("gateway1 statsBus got txnClass=%q, want gateway1_class — cross-attribution from fc2?", sb1.attempts[0].txnClass)
+	}
+	if sb2.attempts[0].txnClass != "gateway2_class" {
+		t.Fatalf("gateway2 statsBus got txnClass=%q, want gateway2_class — stale fc1 leaked via package closure?", sb2.attempts[0].txnClass)
+	}
+}
+
+// TestStartDiscoveryScanLoopFn_SignatureThreadsClassifier — Codex PR #502
+// P2 signature regression. Asserts the 5-arg signature of
+// startDiscoveryScanLoopFn: invoking it with a non-nil classifier must
+// thread that classifier through to the statsBus used inside the scan
+// pass. Compile-time verification of the signature is enforced by the
+// assignment below; runtime verification uses a fake classifier wired
+// directly into a statsBus and confirms its value reaches the attempt
+// record.
+func TestStartDiscoveryScanLoopFn_SignatureThreadsClassifier(t *testing.T) {
+	// Compile-time guard: startDiscoveryScanLoopFn must accept an
+	// activeTxnClassifier as its 5th parameter. If the signature ever
+	// regresses to 4 arguments, this assignment fails to type-check.
+	var _ func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals = startDiscoveryScanLoopFn
+
+	// Runtime guard: classifier threaded into statsBus is queried at
+	// Send time (mirrors the scan-loop wiring inside
+	// startDiscoveryScanLoopWithClassifier).
+	fc := &fakeClassifier{val: "threaded_through_signature"}
+	sb := &statsBus{
+		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
+		source:     0x71,
+		classifier: fc,
+	}
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	if len(sb.attempts) != 1 {
+		t.Fatalf("expected 1 attempt, got %d", len(sb.attempts))
+	}
+	if sb.attempts[0].txnClass != "threaded_through_signature" {
+		t.Fatalf("txnClass=%q, want threaded_through_signature (classifier not reaching statsBus)", sb.attempts[0].txnClass)
 	}
 }

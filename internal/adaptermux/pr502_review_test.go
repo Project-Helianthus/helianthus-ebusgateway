@@ -778,6 +778,155 @@ func TestActivePath_SoakCycle_NoSustainedGrowth(t *testing.T) {
 	}
 }
 
+// TestCancelPendingStart_ClearsBlockingGuard is the Codex PR #502 P1
+// regression test. When cancelPendingStart stops the AM8 deadline timer
+// for a pending whose blockingArb flag is set, it MUST also:
+//   - increment blockingArbGen (invalidates the hung goroutine's late
+//     completion path)
+//   - clear blockingArbActive (so future grants can proceed)
+//   - call tryGrantAndStart to advance the queue
+//
+// Without this, a session cancel/disconnect while a blocking
+// StartArbitration is hung permanently starves subsequent requests
+// until reset/reconnect.
+func TestCancelPendingStart_ClearsBlockingGuard(t *testing.T) {
+	mock := &slowBlockingStartTransport{
+		readCh: make(chan byte, 256),
+		gate:   make(chan struct{}),
+	}
+
+	mux := New(Config{
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 10 * time.Second, // long — we exercise cancel, not deadline
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Queue an external session START so we can cancel it by sessionID.
+	const extSessionID uint64 = 42
+	extCh := mux.arb.requestStart(extSessionID, 0x50)
+
+	// Kick off: tryGrantAndStart will take the external request and
+	// run StartArbitration in a goroutine that hangs on `gate`.
+	mux.tryGrantAndStart()
+
+	// Wait for the internal blocking goroutine to be in-flight.
+	time.Sleep(50 * time.Millisecond)
+
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil
+	isBlocking := hasPending && mux.pendingStart.blockingArb
+	genBefore := mux.blockingArbGen
+	activeBefore := mux.blockingArbActive
+	mux.stateMu.Unlock()
+
+	if !hasPending {
+		t.Fatal("expected pendingStart to be set")
+	}
+	if !isBlocking {
+		t.Fatal("expected blockingArb=true")
+	}
+	if !activeBefore {
+		t.Fatal("expected blockingArbActive=true while StartArbitration is hung")
+	}
+
+	// Cancel the pending START (simulates session disconnect).
+	mux.cancelPendingStart(extSessionID)
+
+	// Session must have been notified of cancellation.
+	select {
+	case r := <-extCh:
+		if r.granted {
+			t.Fatal("expected granted=false after cancel")
+		}
+		if !r.cancelled {
+			t.Fatal("expected cancelled=true")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for cancelled result")
+	}
+
+	// Core assertions: guard cleared, gen bumped.
+	mux.stateMu.Lock()
+	activeAfter := mux.blockingArbActive
+	genAfter := mux.blockingArbGen
+	pendingAfter := mux.pendingStart
+	mux.stateMu.Unlock()
+
+	if activeAfter {
+		t.Fatal("blockingArbActive must be cleared by cancelPendingStart on blocking path (P1)")
+	}
+	if genAfter != genBefore+1 {
+		t.Fatalf("blockingArbGen = %d, want %d (gen must be bumped to invalidate hung goroutine)", genAfter, genBefore+1)
+	}
+	if pendingAfter != nil {
+		t.Fatal("pendingStart must be nil after cancel")
+	}
+
+	// A new queued request must now be able to advance. Queue one and
+	// call tryGrantAndStart — it must create a new pendingStart (second
+	// StartArbitration on mock is also blocked on gate but setup proceeds).
+	const extSessionID2 uint64 = 43
+	_ = mux.arb.requestStart(extSessionID2, 0x51)
+	mux.tryGrantAndStart()
+	time.Sleep(50 * time.Millisecond)
+
+	mux.stateMu.Lock()
+	pendingNow := mux.pendingStart
+	mux.stateMu.Unlock()
+	if pendingNow == nil {
+		t.Fatal("after cancel + new request, tryGrantAndStart must create a new pendingStart (guard no longer blocks)")
+	}
+	if pendingNow.sessionID != extSessionID2 {
+		t.Fatalf("new pendingStart.sessionID = %d, want %d", pendingNow.sessionID, extSessionID2)
+	}
+
+	// Record state BEFORE releasing the gate. The new goroutine's gen
+	// is G+2 and blockingArbActive should be true.
+	mux.stateMu.Lock()
+	genBeforeRelease := mux.blockingArbGen
+	activeBeforeRelease := mux.blockingArbActive
+	absorbBeforeRelease := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+
+	if genBeforeRelease != genBefore+2 {
+		t.Fatalf("after request 2 launched, gen=%d, want %d (bumped once by cancel, once by new goroutine)", genBeforeRelease, genBefore+2)
+	}
+	if !activeBeforeRelease {
+		t.Fatal("blockingArbActive must be true for the new in-flight StartArbitration")
+	}
+
+	// Release the gate. BOTH hung goroutines (request 1 stale, request 2
+	// current) wake up and return nil. The request-1 goroutine sees gen
+	// G (stale) and must not decrement absorb or clear blockingArbActive.
+	// The request-2 goroutine sees gen G+2 (current) and completes its
+	// grant normally.
+	close(mock.gate)
+	time.Sleep(80 * time.Millisecond)
+
+	mux.stateMu.Lock()
+	absorbAfter := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+
+	// absorb was 1 before release (cancel incremented it). Stale-gen
+	// goroutine for request 1 must NOT decrement. request-2 goroutine
+	// takes the success path which does not touch absorb. So absorb
+	// remains 1.
+	if absorbAfter != absorbBeforeRelease {
+		t.Fatalf("pendingStartAbsorb = %d, want %d (stale-gen late return must not mutate absorb)", absorbAfter, absorbBeforeRelease)
+	}
+}
+
 // TestActiveTransport_ImplementsEscapeAware verifies that the adaptermux
 // active transport implements transport.EscapeAware and returns
 // BytesAreUnescaped()==true for ENH. Without this, protocol.Bus would

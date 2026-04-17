@@ -182,6 +182,11 @@ type Mux struct {
 	// NACK, SYN timeout, or idle grace expired).
 	gatewayTxnActive bool
 
+	// activeTxn is the diagnostics snapshot for the current/last gateway
+	// transaction. Updated under stateMu. Exposed via ActiveTxnSnapshot()
+	// for tests and production observability. Bounded — never grows.
+	activeTxn activeTxnDiag
+
 	// Gateway echo tracker (for the internal active path).
 	// Protected by stateMu.
 	gatewayEcho *echoTracker
@@ -656,7 +661,10 @@ func (m *Mux) reconnect() error {
 	m.phase.reset(wirePhaseIdle)
 	m.arb.forceRelease()
 	m.gatewayEcho.reset()
-	m.gatewayTxnActive = false // transport replaced — any active txn is dead
+	if m.gatewayTxnActive {
+		m.gatewayTxnActive = false
+		m.recordGatewayInactive(ReasonReconnect)
+	}
 	// Bump gen forward (monotonic) — any in-flight goroutine's captured
 	// arbGen will no longer match, so it cannot clear blockingArbActive.
 	// Clear blockingArbActive here because the transport is being replaced.
@@ -810,8 +818,9 @@ func (m *Mux) readLoop() {
 					time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 					m.arb.releaseOwnership(ownerID)
 					m.gatewayEcho.reset()
-					if ownerID == gatewaySessionID {
+					if ownerID == gatewaySessionID && m.gatewayTxnActive {
 						m.gatewayTxnActive = false
+						m.recordGatewayInactive(ReasonMaxOwnership)
 					}
 					quietBusTimedOut = true
 				}
@@ -938,8 +947,9 @@ func (m *Mux) onReceived(symbol byte) {
 		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 		m.arb.releaseOwnership(ownerID)
 		m.gatewayEcho.reset()
-		if ownerID == gatewaySessionID {
+		if ownerID == gatewaySessionID && m.gatewayTxnActive {
 			m.gatewayTxnActive = false
+			m.recordGatewayInactive(ReasonMaxOwnership)
 		}
 		hasOwner = false
 		ownershipTimedOut = true
@@ -1031,8 +1041,15 @@ func (m *Mux) onReceived(symbol byte) {
 		phaseEvent == wirePhaseEventCmdNACK {
 		m.arb.releaseOwnership(ownerID)
 		if ownerID == gatewaySessionID {
+			reason := ReasonTransactionDone
+			if phaseEvent == wirePhaseEventCmdNACK {
+				reason = ReasonCmdNACK
+			}
 			m.stateMu.Lock()
-			m.gatewayTxnActive = false
+			if m.gatewayTxnActive {
+				m.gatewayTxnActive = false
+				m.recordGatewayInactive(reason)
+			}
 			m.stateMu.Unlock()
 		}
 		m.tryGrantAndStart()
@@ -1066,6 +1083,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// the next grant's drainActiveCh.
 	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive {
 		m.gatewayTxnActive = false
+		m.recordGatewayInactive(ReasonSYNIdle)
 	}
 
 	// Note: external session echo tracker flush is done AFTER stateMu.Unlock()
@@ -1076,8 +1094,9 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	if phaseEvent == wirePhaseEventSYNTimeout && hasOwner {
 		m.logger.Printf("adaptermux: ownership released for session %d (SYN timeout) (AM6)", ownerID)
 		m.arb.releaseOwnership(ownerID)
-		if ownerID == gatewaySessionID {
+		if ownerID == gatewaySessionID && m.gatewayTxnActive {
 			m.gatewayTxnActive = false
+			m.recordGatewayInactive(ReasonSYNTimeout)
 		}
 	}
 
@@ -1086,9 +1105,9 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
 			m.logger.Printf("adaptermux: ownership released for session %d (idle grace expired) (AM6)", ownerID)
 			m.arb.releaseOwnership(ownerID)
-			if ownerID == gatewaySessionID {
-				m.gatewayTxnActive = false
-			}
+			// gatewayTxnActive already cleared above (SYN boundary).
+			// This site only runs if ownership was held past the grace
+			// period, covered by ReasonSYNIdle already recorded.
 		}
 	}
 
@@ -1114,7 +1133,10 @@ func (m *Mux) handleReset() {
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
-	m.gatewayTxnActive = false // adapter reset — any active txn is dead
+	if m.gatewayTxnActive {
+		m.gatewayTxnActive = false
+		m.recordGatewayInactive(ReasonReset)
+	}
 	// Bump gen forward (monotonic) — see reconnect() for rationale.
 	m.blockingArbGen++
 	m.blockingArbActive = false
@@ -1521,10 +1543,19 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.phase.startRequest()
 	}
 	m.busOwned = time.Now()
+	// Drain activeCh BEFORE marking the transaction active so the
+	// drain count belongs to this grant (not the previous transaction).
+	// Safety net: normal flow should produce zero drains after the
+	// gatewayTxnActive-on-SYN lifecycle fix.
+	drained := 0
 	if sessionID == gatewaySessionID {
+		drained = m.drainActiveCh()
+		if drained > 0 {
+			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
+		}
 		m.gatewayEcho.markRequestStart()
-		// Mark gateway transaction active — bus.Send is now consuming activeCh.
 		m.gatewayTxnActive = true
+		m.recordGatewayGrant(initiator, drained)
 	}
 	m.arb.confirmOwnership(sessionID, initiator)
 	m.stateMu.Unlock()
@@ -1536,14 +1567,6 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 			sess.echoTracker.markRequestStart()
 		}
 		m.sessionsMu.Unlock()
-	}
-
-	// Drain stale bytes from activeCh before notifying gateway.Bus.
-	if sessionID == gatewaySessionID {
-		drained := m.drainActiveCh()
-		if drained > 0 {
-			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
-		}
 	}
 
 	// Notify requester of success.

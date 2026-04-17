@@ -65,8 +65,10 @@ func (t *activeTransport) ReadByte() (byte, error) {
 			}
 			return 0, errors.New("adaptermux: unexpected nil error")
 		}
+		t.mux.activeTxn.bytesRead.Add(1)
 		return ev.b, nil
 	case <-timer.C:
+		t.mux.activeTxn.readTimeoutTot.Add(1)
 		return 0, fmt.Errorf("adaptermux: %w", ebuserrors.ErrTimeout)
 	case <-t.mux.ctx.Done():
 		return 0, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
@@ -94,11 +96,13 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 			}
 			return transport.StreamEvent{}, errors.New("adaptermux: unexpected nil error")
 		}
+		t.mux.activeTxn.bytesRead.Add(1)
 		return transport.StreamEvent{
 			Kind: transport.StreamEventByte,
 			Byte: ev.b,
 		}, nil
 	case <-timer.C:
+		t.mux.activeTxn.readTimeoutTot.Add(1)
 		return transport.StreamEvent{}, fmt.Errorf("adaptermux: %w", ebuserrors.ErrTimeout)
 	case <-t.mux.ctx.Done():
 		return transport.StreamEvent{}, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
@@ -137,8 +141,10 @@ func (t *activeTransport) Write(p []byte) (int, error) {
 		select {
 		case err := <-result:
 			if err != nil {
+				t.mux.activeTxn.writeErrTotal.Add(1)
 				return i, err
 			}
+			t.mux.activeTxn.bytesWritten.Add(1)
 		case <-t.mux.ctx.Done():
 			return i, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 		}

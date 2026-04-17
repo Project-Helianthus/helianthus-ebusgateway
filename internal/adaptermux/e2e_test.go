@@ -17,7 +17,7 @@ import (
 //     targeted at 0x08 (QQ=0x71 ZZ=0x08 PB=0x07 SB=0x04 NN=0x00 CRC).
 //  3. The fake upstream echoes every byte written (simulating the bus
 //     loopback of the gateway's own transmission).
-//  4. The fake upstream delivers a valid slave ACK + identification
+//  4. The fake upstream delivers a valid responder ACK + identification
 //     response frame + final SYN 0xAA.
 //  5. The test reads bytes back through mux.ActiveTransport().ReadByte()
 //     (the same path protocol.Bus uses) until it has consumed the whole
@@ -50,7 +50,7 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 	// this test — we only care about byte plumbing, not CRC validity).
 	request := []byte{0x71, 0x08, 0x07, 0x04, 0x00, 0x00 /*CRC placeholder*/}
 
-	// Async upstream fake: echo every write, then send a canned slave
+	// Async upstream fake: echo every write, then send a canned responder
 	// response + SYN terminator.
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -62,14 +62,14 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 			mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
 		}
 
-		// Slave ACK=0x00, then response: NN=0x05, 5 data bytes, CRC=0x00,
-		// then master ACK=0x00, then trailing SYN=0xAA.
+		// Responder ACK=0x00, then response: NN=0x05, 5 data bytes, CRC=0x00,
+		// then initiator ACK=0x00, then trailing SYN=0xAA.
 		response := []byte{
-			0x00,                                     // slave ACK
+			0x00,                                     // responder ACK
 			0x05,                                     // NN (response data length)
 			0x56, 0x41, 0x49, 0x4C, 0x4C,             // "VAILL" identification data
 			0x00,                                     // response CRC placeholder
-			0x00,                                     // master ACK
+			0x00,                                     // initiator ACK
 			protocol.SymbolSyn,                       // trailing SYN terminator
 		}
 		for _, b := range response {

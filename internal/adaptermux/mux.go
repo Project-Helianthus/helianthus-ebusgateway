@@ -1081,8 +1081,32 @@ func (m *Mux) onReceived(symbol byte) {
 	}
 
 	// --- Phase 2: deliver outside all locks ---
+	// Codex PR #502 P2: revalidate active-path gating atomically with
+	// the enqueue. `activeExpects` was decided under stateMu above, but
+	// between that unlock and the send below, gatewayTxnActive may have
+	// flipped to false (e.g. active read-timeout / write-error /
+	// context-cancel paths). Without a re-check, stale bytes can leak
+	// onto activeCh and afterInactive misses them (it was computed from
+	// the earlier snapshot). Re-acquire stateMu for a short critical
+	// section: check + non-blocking send. activeCh is capacity-4096 and
+	// deliverToActive already uses a non-blocking select, so holding
+	// stateMu across the send cannot deadlock.
 	if activeExpects {
-		m.deliverToActive(symbol)
+		m.stateMu.Lock()
+		if m.activePathExpectsBytes() {
+			select {
+			case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
+			default:
+				m.logger.Printf("adaptermux: active channel full, dropping byte 0x%02X", symbol)
+			}
+		} else if isGatewayOwned {
+			// Gating flipped between snapshot and delivery — the byte
+			// arrived while gateway owned the bus but the active path
+			// no longer expects bytes. Record the post-inactive event
+			// for diagnostics instead of enqueuing a stale byte.
+			m.activeTxn.afterInactive.Add(1)
+		}
+		m.stateMu.Unlock()
 	}
 
 	if !isGatewayOwned {
@@ -1853,22 +1877,50 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 		// RequestStart. Increment absorb counter so handleArbitrationResponse
 		// discards that stale response instead of failing a newer request.
 		m.pendingStartAbsorb++
-		// Codex PR #502 P1: if the cancelled pending was on the blocking
-		// StartArbitration path, the goroutine may still be hung in the
-		// transport call. The AM8 deadline timer was just stopped, so it
-		// will never fire to clear blockingArbActive. Abandon the hung
-		// goroutine by bumping blockingArbGen (its late return will no
-		// longer match) AND clear blockingArbActive here so subsequent
-		// queued requests can proceed. Mirror the AM8 deadline callback
-		// pattern at mux.go:1391-1395.
+		// Codex PR #502 P1 (v2 — mirror C2 reconnect pattern): if the
+		// cancelled pending was on the blocking StartArbitration path,
+		// the goroutine may still be hung in the transport call.
+		// Previously we cleared blockingArbActive + called
+		// tryGrantAndStart in-line — but that lets a second blocking
+		// goroutine overlap the first on the same transport AND the
+		// hung goroutine may still have been granted START by the
+		// adapter, so mux/arbitrator state can diverge. Instead,
+		// trigger a transport reconnect: closing m.conn forces the
+		// hung read/write call to return with an I/O error; readLoop
+		// observes the error and invokes reconnect() which bumps
+		// blockingArbGen, clears blockingArbActive, and fails/re-queues
+		// arbitration safely under stateMu. The hung goroutine's late
+		// return finds a stale gen and skips state mutation. Do NOT
+		// advance the queue in-line — the reconnect path does that.
 		wasBlocking := pending.blockingArb
-		if wasBlocking {
-			m.blockingArbGen++
-			m.blockingArbActive = false
-		}
 		m.stateMu.Unlock()
-		pending.notify <- startResult{granted: false, initiator: pending.initiator, cancelled: true}
-		if wasBlocking && m.arb.hasPending() {
+		// AM8: guard the send — if another path already delivered a
+		// result for this notify channel, skip to avoid blocking.
+		select {
+		case pending.notify <- startResult{granted: false, initiator: pending.initiator, cancelled: true}:
+		default:
+			m.logger.Printf("adaptermux: cancelPendingStart: notify channel full for session %d, result already delivered", sessionID)
+		}
+		if wasBlocking {
+			// Close the current conn to force the hung blocking
+			// StartArbitration call to return with an I/O error.
+			// readLoop's error handler invokes reconnect() which
+			// advances blockingArbGen and clears blockingArbActive
+			// atomically under stateMu. No in-line queue advance —
+			// reconnect drives that safely.
+			m.connMu.Lock()
+			c := m.conn
+			m.connMu.Unlock()
+			if c != nil {
+				if err := c.Close(); err != nil {
+					m.logger.Printf("adaptermux: cancelPendingStart-triggered conn close: %v", err)
+				} else {
+					m.logger.Printf("adaptermux: cancelPendingStart triggered transport reconnect to unstick hung StartArbitration (session %d)", sessionID)
+				}
+			}
+		} else if m.arb.hasPending() {
+			// Non-blocking path: no hung goroutine to worry about,
+			// just advance the queue as before.
 			m.tryGrantAndStart()
 		}
 		return

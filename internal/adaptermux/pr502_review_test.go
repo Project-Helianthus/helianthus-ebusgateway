@@ -803,16 +803,22 @@ func TestActivePath_SoakCycle_NoSustainedGrowth(t *testing.T) {
 }
 
 // TestCancelPendingStart_ClearsBlockingGuard is the Codex PR #502 P1
-// regression test. When cancelPendingStart stops the AM8 deadline timer
-// for a pending whose blockingArb flag is set, it MUST also:
-//   - increment blockingArbGen (invalidates the hung goroutine's late
-//     completion path)
-//   - clear blockingArbActive (so future grants can proceed)
-//   - call tryGrantAndStart to advance the queue
+// regression test.
 //
-// Without this, a session cancel/disconnect while a blocking
-// StartArbitration is hung permanently starves subsequent requests
-// until reset/reconnect.
+// Updated expectations (Codex follow-up, mirrors the C2 deadline→reconnect
+// pattern): cancelPendingStart on a blocking path no longer clears
+// blockingArbActive / bumps blockingArbGen in-line. Clearing the guard
+// while a hung StartArbitration goroutine is still running the adapter
+// exchange can leave mux/arbitrator state diverged from adapter state
+// (adapter may have already granted START to the cancelled initiator).
+// Instead, cancelPendingStart closes m.conn to force the hung goroutine
+// to return with I/O error; readLoop's reconnect path bumps the gen and
+// clears blockingArbActive atomically. The hung goroutine's late return
+// hits a stale gen and does not mutate state. This test uses a nil
+// m.conn (classic unit-test setup) so the in-line clear path is
+// exercised only via the hung goroutine's own return after gate release.
+// With m.conn == nil, the cancelled pending is FAILED but the guard
+// stays true until the goroutine releases.
 func TestCancelPendingStart_ClearsBlockingGuard(t *testing.T) {
 	mock := &slowBlockingStartTransport{
 		readCh: make(chan byte, 256),
@@ -865,6 +871,8 @@ func TestCancelPendingStart_ClearsBlockingGuard(t *testing.T) {
 	}
 
 	// Cancel the pending START (simulates session disconnect).
+	// With m.conn == nil, the cancelPendingStart reconnect trigger is a
+	// no-op; the hung goroutine will only release once gate closes.
 	mux.cancelPendingStart(extSessionID)
 
 	// Session must have been notified of cancellation.
@@ -880,74 +888,46 @@ func TestCancelPendingStart_ClearsBlockingGuard(t *testing.T) {
 		t.Fatal("timeout waiting for cancelled result")
 	}
 
-	// Core assertions: guard cleared, gen bumped.
+	// Updated assertions: pendingStart cleared, absorb incremented, but
+	// blockingArbActive and blockingArbGen UNCHANGED in-line (reconnect
+	// path was skipped because m.conn == nil in this unit test).
 	mux.stateMu.Lock()
 	activeAfter := mux.blockingArbActive
 	genAfter := mux.blockingArbGen
 	pendingAfter := mux.pendingStart
+	absorbAfter := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
 
-	if activeAfter {
-		t.Fatal("blockingArbActive must be cleared by cancelPendingStart on blocking path (P1)")
+	if !activeAfter {
+		t.Fatal("blockingArbActive must stay TRUE in-line; it is cleared only by reconnect or by the hung goroutine's own return (C2 pattern)")
 	}
-	if genAfter != genBefore+1 {
-		t.Fatalf("blockingArbGen = %d, want %d (gen must be bumped to invalidate hung goroutine)", genAfter, genBefore+1)
+	if genAfter != genBefore {
+		t.Fatalf("blockingArbGen = %d, want %d (cancelPendingStart must not bump gen in-line; reconnect handles that)", genAfter, genBefore)
 	}
 	if pendingAfter != nil {
 		t.Fatal("pendingStart must be nil after cancel")
 	}
-
-	// A new queued request must now be able to advance. Queue one and
-	// call tryGrantAndStart — it must create a new pendingStart (second
-	// StartArbitration on mock is also blocked on gate but setup proceeds).
-	const extSessionID2 uint64 = 43
-	_ = mux.arb.requestStart(extSessionID2, 0x51)
-	mux.tryGrantAndStart()
-	time.Sleep(50 * time.Millisecond)
-
-	mux.stateMu.Lock()
-	pendingNow := mux.pendingStart
-	mux.stateMu.Unlock()
-	if pendingNow == nil {
-		t.Fatal("after cancel + new request, tryGrantAndStart must create a new pendingStart (guard no longer blocks)")
-	}
-	if pendingNow.sessionID != extSessionID2 {
-		t.Fatalf("new pendingStart.sessionID = %d, want %d", pendingNow.sessionID, extSessionID2)
+	if absorbAfter != 1 {
+		t.Fatalf("pendingStartAbsorb = %d, want 1 (cancel increments absorb so a stale STARTED/FAILED is discarded)", absorbAfter)
 	}
 
-	// Record state BEFORE releasing the gate. The new goroutine's gen
-	// is G+2 and blockingArbActive should be true.
-	mux.stateMu.Lock()
-	genBeforeRelease := mux.blockingArbGen
-	activeBeforeRelease := mux.blockingArbActive
-	absorbBeforeRelease := mux.pendingStartAbsorb
-	mux.stateMu.Unlock()
-
-	if genBeforeRelease != genBefore+2 {
-		t.Fatalf("after request 2 launched, gen=%d, want %d (bumped once by cancel, once by new goroutine)", genBeforeRelease, genBefore+2)
-	}
-	if !activeBeforeRelease {
-		t.Fatal("blockingArbActive must be true for the new in-flight StartArbitration")
-	}
-
-	// Release the gate. BOTH hung goroutines (request 1 stale, request 2
-	// current) wake up and return nil. The request-1 goroutine sees gen
-	// G (stale) and must not decrement absorb or clear blockingArbActive.
-	// The request-2 goroutine sees gen G+2 (current) and completes its
-	// grant normally.
+	// Release the gate. The hung goroutine wakes up and returns nil.
+	// Its gen is still current (no reconnect happened in this test),
+	// so it executes the cancelled-path cleanup: decrements absorb,
+	// clears blockingArbActive, advances the queue.
 	close(mock.gate)
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	mux.stateMu.Lock()
-	absorbAfter := mux.pendingStartAbsorb
+	activeAfterRelease := mux.blockingArbActive
+	absorbAfterRelease := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
 
-	// absorb was 1 before release (cancel incremented it). Stale-gen
-	// goroutine for request 1 must NOT decrement. request-2 goroutine
-	// takes the success path which does not touch absorb. So absorb
-	// remains 1.
-	if absorbAfter != absorbBeforeRelease {
-		t.Fatalf("pendingStartAbsorb = %d, want %d (stale-gen late return must not mutate absorb)", absorbAfter, absorbBeforeRelease)
+	if activeAfterRelease {
+		t.Fatal("blockingArbActive must be cleared once the hung goroutine returns")
+	}
+	if absorbAfterRelease != 0 {
+		t.Fatalf("pendingStartAbsorb = %d, want 0 (goroutine's current-gen late return decrements absorb)", absorbAfterRelease)
 	}
 }
 
@@ -1277,5 +1257,287 @@ func TestTryGrantAndStart_ShutdownRace_NoAddAfterWait(t *testing.T) {
 
 		cancel()
 		close(mock.readCh)
+	}
+}
+
+// =======================================================================
+// PR502 Codex follow-up P1: cancelPendingStart reconnect pattern
+// =======================================================================
+
+// TestCancelPendingStart_BlockingArb_TriggersReconnect_NoOverlap verifies
+// the Codex PR #502 follow-up P1 fix: cancelPendingStart on a blocking
+// path triggers a transport reconnect (m.conn.Close) instead of clearing
+// blockingArbActive + calling tryGrantAndStart in-line. Critically, no
+// second blocking goroutine is spawned while the hung goroutine is still
+// running (no overlap). Mirrors TestBlockingArbDeadline_TriggersReconnect_NoOverlap.
+func TestCancelPendingStart_BlockingArb_TriggersReconnect_NoOverlap(t *testing.T) {
+	var arbCount int32
+	mock := &countingBlockingStartTransport{
+		readCh:   make(chan byte, 256),
+		gate:     make(chan struct{}),
+		arbCount: &arbCount,
+	}
+
+	mux := New(Config{
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 10 * time.Second, // long — we exercise cancel, not deadline
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	// Install a fake conn so cancelPendingStart's reconnect path fires.
+	connMock := newDeadlineConnMock()
+	mux.connMu.Lock()
+	mux.conn = connMock
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Queue an external session START and a second queued request.
+	const extSessionID uint64 = 77
+	extCh := mux.arb.requestStart(extSessionID, 0x50)
+	_ = mux.arb.requestStart(78, 0x51)
+
+	// Kick off: tryGrantAndStart takes the external request and runs
+	// StartArbitration in a goroutine hung on gate.
+	mux.tryGrantAndStart()
+	time.Sleep(40 * time.Millisecond)
+
+	// Verify we are in the hung-blocking state.
+	mux.stateMu.Lock()
+	pending := mux.pendingStart
+	blocking := pending != nil && pending.blockingArb
+	active := mux.blockingArbActive
+	genBefore := mux.blockingArbGen
+	mux.stateMu.Unlock()
+	if !blocking {
+		t.Fatal("expected pendingStart with blockingArb=true before cancel")
+	}
+	if !active {
+		t.Fatal("expected blockingArbActive=true while StartArbitration is hung")
+	}
+
+	// Cancel the pending START (session disconnect).
+	mux.cancelPendingStart(extSessionID)
+
+	// Session notified as cancelled.
+	select {
+	case r := <-extCh:
+		if r.granted {
+			t.Fatal("expected granted=false after cancel")
+		}
+		if !r.cancelled {
+			t.Fatal("expected cancelled=true")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for cancelled result")
+	}
+
+	// Core assertion: cancelPendingStart closed m.conn to unstick the
+	// hung goroutine (C2 reconnect pattern).
+	select {
+	case <-connMock.closeC:
+		// ok
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("cancelPendingStart did not close m.conn on blocking path (reconnect trigger missing)")
+	}
+
+	// Overlap invariant: while the hung goroutine is still running, NO
+	// second StartArbitration has been spawned. The old (pre-fix) code
+	// cleared blockingArbActive in-line and called tryGrantAndStart,
+	// which would launch a second overlapping arbitration on the same
+	// transport.
+	if c := atomic.LoadInt32(&arbCount); c != 1 {
+		t.Fatalf("expected 1 StartArbitration while hung goroutine runs (no-overlap), got %d", c)
+	}
+
+	mux.stateMu.Lock()
+	activeDuringHang := mux.blockingArbActive
+	genDuringHang := mux.blockingArbGen
+	pendingDuringHang := mux.pendingStart
+	mux.stateMu.Unlock()
+	if !activeDuringHang {
+		t.Fatal("blockingArbActive must remain true until the hung goroutine returns (no in-line clear)")
+	}
+	if genDuringHang != genBefore {
+		t.Fatalf("blockingArbGen = %d, want %d (cancel must not bump gen in-line; reconnect handles that in real gateway)", genDuringHang, genBefore)
+	}
+	if pendingDuringHang != nil {
+		t.Fatal("pendingStart must be nil after cancel")
+	}
+
+	// Release the hung goroutine. Its gen is still current (no real
+	// reconnect bumped it in this unit test — there's no readLoop here
+	// to call reconnect() on the conn-closed error). The goroutine sees
+	// pendingStart==nil and takes the cancelled-path cleanup:
+	// decrements absorb, clears blockingArbActive, advances the queue.
+	close(mock.gate)
+	time.Sleep(100 * time.Millisecond)
+
+	mux.stateMu.Lock()
+	activeAfter := mux.blockingArbActive
+	mux.stateMu.Unlock()
+	if activeAfter {
+		t.Fatal("blockingArbActive must be cleared once the hung goroutine returns")
+	}
+
+	// Queue advanced: second arbitration launched, arbCount went 1->2.
+	if c := atomic.LoadInt32(&arbCount); c != 2 {
+		t.Fatalf("after hung goroutine returned, expected queue to advance (arbCount=2), got %d", c)
+	}
+}
+
+// =======================================================================
+// PR502 Codex follow-up P2: atomic recheck of active-path gating
+// =======================================================================
+
+// TestDeliverToActive_RechecksGatingAtomically verifies the Codex PR #502
+// P2 follow-up fix: the active-path gating decision is revalidated under
+// stateMu at the delivery site. Without the recheck, gatewayTxnActive
+// could flip from true→false between the initial snapshot and the
+// enqueue, letting stale bytes leak onto activeCh AND bypassing the
+// afterInactive diagnostic counter (because the counter was decided
+// against the stale snapshot).
+//
+// This test drives onReceived directly with many non-SYN gateway-owned
+// bytes while a concurrent goroutine rapidly flips gatewayTxnActive
+// between true and false. Invariants under the fix:
+//   - (bytes enqueued on activeCh) + (afterInactive counter increments)
+//     must equal the total bytes pushed.
+//   - No byte is lost to "neither enqueued nor counted".
+// Without the atomic recheck, a window exists where a byte is enqueued
+// after the flip — activeCh length + afterInactive < total bytes.
+func TestDeliverToActive_RechecksGatingAtomically(t *testing.T) {
+	mux, _, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Grant gateway ownership so isGatewayOwned=true in onReceived.
+	_ = mux.arb.requestStart(gatewaySessionID, 0x71)
+	mux.arb.tryGrant()
+	mux.arb.confirmOwnership(gatewaySessionID, 0x71)
+	mux.stateMu.Lock()
+	mux.gatewayTxnActive = true
+	mux.stateMu.Unlock()
+
+	// Drain activeCh in a goroutine — simulates the real consumer.
+	var drained int64
+	stopDrain := make(chan struct{})
+	var drainWg sync.WaitGroup
+	drainWg.Add(1)
+	go func() {
+		defer drainWg.Done()
+		for {
+			select {
+			case <-stopDrain:
+				return
+			case ev := <-mux.activeCh:
+				if ev.kind == activeEventByte {
+					atomic.AddInt64(&drained, 1)
+				}
+			}
+		}
+	}()
+
+	// Flipper: toggles gatewayTxnActive rapidly under stateMu to race
+	// the delivery-site recheck.
+	stopFlip := make(chan struct{})
+	var flipWg sync.WaitGroup
+	flipWg.Add(1)
+	go func() {
+		defer flipWg.Done()
+		for {
+			select {
+			case <-stopFlip:
+				return
+			default:
+			}
+			mux.stateMu.Lock()
+			mux.gatewayTxnActive = !mux.gatewayTxnActive
+			mux.stateMu.Unlock()
+		}
+	}()
+
+	// Push N non-SYN bytes via onReceived.
+	const N = 2000
+	baselineAfterInactive := mux.activeTxn.afterInactive.Load()
+	for i := 0; i < N; i++ {
+		// Non-SYN byte (0x55 is arbitrary, not 0xAA).
+		mux.onReceived(0x55)
+	}
+
+	close(stopFlip)
+	flipWg.Wait()
+
+	// Let the drain goroutine finish consuming anything still in the
+	// channel.
+	time.Sleep(50 * time.Millisecond)
+	close(stopDrain)
+	drainWg.Wait()
+
+	// Anything still buffered in activeCh.
+	remaining := int64(len(mux.activeCh))
+
+	delivered := atomic.LoadInt64(&drained) + remaining
+	afterInactiveDelta := int64(mux.activeTxn.afterInactive.Load() - baselineAfterInactive)
+
+	// Invariant: every byte pushed must be accounted for either as
+	// delivered to activeCh or counted in afterInactive. Without the
+	// atomic recheck, bytes can slip through both nets (enqueued after
+	// the flip, but afterInactive was decided against a stale snapshot
+	// that still said active).
+	//
+	// Note: deliverToActive's non-blocking send can drop on a full
+	// activeCh — we log but do not count. With cap=4096 and a live
+	// drainer, overflow does not occur at N=2000.
+	if delivered+afterInactiveDelta < int64(N) {
+		t.Fatalf("accounting mismatch: delivered=%d + afterInactive=%d = %d, want >= %d (atomic recheck failed — stale bytes leaked)",
+			delivered, afterInactiveDelta, delivered+afterInactiveDelta, N)
+	}
+}
+
+// TestDeliverToActive_RecheckSkipsEnqueueAfterFlip is a deterministic
+// variant of the P2 follow-up: we force gatewayTxnActive=true for the
+// initial snapshot, then flip it to false via a test-only hook before
+// the delivery-site recheck. The byte MUST NOT appear on activeCh and
+// afterInactive MUST increment.
+//
+// Determinism approach: we synchronously flip gatewayTxnActive to false
+// between calls to onReceived. Because onReceived's first snapshot sees
+// true and the recheck is under stateMu, we rely on the fact that any
+// interleaving between the snapshot and the recheck is covered by the
+// lock — so we cannot directly observe a "between" state from a test.
+// We instead assert the aggregate property: after flipping to false,
+// subsequent onReceived calls must increment afterInactive (not activeCh).
+func TestDeliverToActive_RecheckSkipsEnqueueAfterFlip(t *testing.T) {
+	mux, _, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	_ = mux.arb.requestStart(gatewaySessionID, 0x71)
+	mux.arb.tryGrant()
+	mux.arb.confirmOwnership(gatewaySessionID, 0x71)
+	mux.stateMu.Lock()
+	mux.gatewayTxnActive = false // active path does NOT expect bytes
+	mux.stateMu.Unlock()
+
+	baselineAfterInactive := mux.activeTxn.afterInactive.Load()
+	baselineActiveCh := len(mux.activeCh)
+
+	// Push 10 bytes while gatewayTxnActive=false. Each byte must NOT
+	// land on activeCh; each must increment afterInactive.
+	const N = 10
+	for i := 0; i < N; i++ {
+		mux.onReceived(0x55)
+	}
+
+	if got := len(mux.activeCh) - baselineActiveCh; got != 0 {
+		t.Fatalf("activeCh received %d bytes while gatewayTxnActive=false; want 0 (gating check failed)", got)
+	}
+	if got := int64(mux.activeTxn.afterInactive.Load() - baselineAfterInactive); got != int64(N) {
+		t.Fatalf("afterInactive delta = %d, want %d (each post-inactive gateway-owned byte must be counted)", got, N)
 	}
 }

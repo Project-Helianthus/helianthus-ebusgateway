@@ -1699,20 +1699,21 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 		t.Fatal("cancelled session should not own the bus")
 	}
 
-	// Codex PR #502 P1: cancelPendingStart on the blocking path bumps
-	// blockingArbGen to invalidate the hung goroutine (otherwise a
-	// never-returning StartArbitration would starve subsequent grants).
-	// With the gen bumped, the goroutine's late return sees isCurrentGen
-	// == false and does NOT decrement pendingStartAbsorb. The absorb
-	// counter stays at 1 (incremented by cancel), which is correct: any
-	// stale STARTED/FAILED from the adapter for the cancelled request
-	// must still be absorbed so the next real arbitration response is
-	// not mis-attributed.
+	// Codex PR #502 follow-up (C2 pattern): cancelPendingStart on the
+	// blocking path NO LONGER bumps blockingArbGen / clears
+	// blockingArbActive in-line. Instead it closes m.conn to force the
+	// hung goroutine to return; the real gateway reconnect path bumps
+	// the gen. In this unit test m.conn == nil, so no gen bump happens
+	// and the hung goroutine's late return runs with current gen —
+	// which decrements pendingStartAbsorb back to 0. That is the
+	// correct end-state once the goroutine has actually released: no
+	// stale adapter response can still be in-flight after the hung
+	// StartArbitration has returned.
 	mux.stateMu.Lock()
 	absorb := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
-	if absorb != 1 {
-		t.Fatalf("pendingStartAbsorb = %d, want 1 (cancel incremented, stale gen did not decrement — P1)", absorb)
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d, want 0 (current-gen late return decrements absorb — C2 pattern)", absorb)
 	}
 }
 
@@ -1786,16 +1787,17 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 		// Good.
 	}
 
-	// Codex PR #502 P1: cancelPendingStart on the blocking path bumps
-	// blockingArbGen, so the error-path cleanup sees isCurrentGen ==
-	// false and does NOT decrement pendingStartAbsorb. The absorb
-	// counter stays at 1 (cancel incremented it) so any stale adapter
-	// response for the cancelled request is absorbed.
+	// Codex PR #502 follow-up (C2 pattern): cancelPendingStart no
+	// longer bumps blockingArbGen in-line. With m.conn == nil, no real
+	// reconnect happens either, so the error-path cleanup runs at
+	// current gen and DOES decrement pendingStartAbsorb. End state 0
+	// is correct: the hung goroutine has returned, so no stale adapter
+	// response can still be in-flight for the cancelled request.
 	mux.stateMu.Lock()
 	absorb := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
-	if absorb != 1 {
-		t.Fatalf("pendingStartAbsorb = %d, want 1 (cancel incremented, stale gen did not decrement — P1)", absorb)
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d, want 0 (current-gen late return decrements absorb — C2 pattern)", absorb)
 	}
 }
 

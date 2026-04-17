@@ -1346,12 +1346,16 @@ func (m *Mux) tryGrantAndStart() {
 					notify <- startResult{granted: false, initiator: initiator, err: err}
 				} else {
 					// StartArbitration failed AND pending was already cancelled.
-					if m.pendingStartAbsorb > 0 {
+					// Codex-R8: scope absorb decrement + queue advance to our
+					// generation. A stale goroutine (from before reconnect/
+					// handleReset) must not consume absorb budget or advance
+					// the queue on behalf of a newer request.
+					isCurrentGen := m.blockingArbGen == arbGen
+					if isCurrentGen && m.pendingStartAbsorb > 0 {
 						m.pendingStartAbsorb--
 					}
 					m.stateMu.Unlock()
-					// Advance queue — blockingArbGen cleared above.
-					if m.arb.hasPending() {
+					if isCurrentGen && m.arb.hasPending() {
 						m.tryGrantAndStart()
 					}
 				}
@@ -1364,18 +1368,21 @@ func (m *Mux) tryGrantAndStart() {
 			// notify.  Completing here would double-send on the cap-1
 			// channel and re-grant the bus to a cancelled session.
 			m.stateMu.Lock()
-			if m.blockingArbGen == arbGen {
+			isCurrentGen := m.blockingArbGen == arbGen
+			if isCurrentGen {
 				// Only our generation may clear the active flag.
 				m.blockingArbActive = false
 			}
 			if m.pendingStart == nil || m.pendingStart.notify != notify {
 				// Already cancelled (deadline or session disconnect) — don't
-				// double-send. Advance the queue — blockingArbGen cleared above.
-				if m.pendingStartAbsorb > 0 {
+				// double-send. Codex-R8: scope absorb + queue advance to
+				// our generation. A stale goroutine must not consume absorb
+				// budget or advance the queue on behalf of a newer request.
+				if isCurrentGen && m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
 				}
 				m.stateMu.Unlock()
-				if m.arb.hasPending() {
+				if isCurrentGen && m.arb.hasPending() {
 					m.tryGrantAndStart()
 				}
 				return

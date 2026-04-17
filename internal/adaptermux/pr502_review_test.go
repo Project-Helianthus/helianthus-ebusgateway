@@ -650,7 +650,6 @@ func TestActivePath_RealFlow_NoAccumulationAfterTxnSyn(t *testing.T) {
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
-	drainActiveChTest(mux)
 
 	// Feed transaction echoes + response (real txn bytes).
 	txnBytes := []byte{0x71, 0x08, 0xB5, 0x04, 0x01, 0x42, 0xCD, 0x00, 0x01, 0x33, 0xAB, 0x00}
@@ -659,10 +658,13 @@ func TestActivePath_RealFlow_NoAccumulationAfterTxnSyn(t *testing.T) {
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	// Transaction bytes should be in activeCh (gateway is consuming).
-	drained := drainActiveChTest(mux)
-	if drained < len(txnBytes) {
-		t.Fatalf("activeCh delivered %d bytes during txn, want at least %d", drained, len(txnBytes))
+	// Consume via activeTransport.ReadByte so bytesRead increments —
+	// this is what real bus.Send does for echo matching + response.
+	at := mux.ActiveTransport()
+	for range txnBytes {
+		if _, err := at.ReadByte(); err != nil {
+			t.Fatalf("ReadByte err=%v", err)
+		}
 	}
 
 	// End-of-transaction: bus.Send has returned. Next SYN clears
@@ -701,43 +703,31 @@ func TestActivePath_RealFlow_NoAccumulationAfterTxnSyn(t *testing.T) {
 	}
 }
 
-// TestActivePath_EarlyAbort_NoAccumulation verifies that if bus.Send
-// exits early (timeout / error / reset) before the trailing SYN, the
-// next SYN still clears gatewayTxnActive, and third-party bytes do
-// not enter activeCh while ownership briefly lingers.
-func TestActivePath_EarlyAbort_NoAccumulation(t *testing.T) {
+// TestActivePath_EarlyAbort_SYNBeforeRead_StaysActive verifies the
+// lifecycle-correctness rule: a SYN arriving during gateway ownership
+// BEFORE any response byte has been read does NOT terminate the
+// transaction as syn_idle. This is a pre-grant stale SYN from the TCP
+// buffer (normal grant-handoff residual).
+//
+// Genuine aborts (no writes, no reads) are resolved by MaxOwnershipDuration,
+// ActiveReadTimeout, ActiveWriteError, ctx cancel, reset, or reconnect —
+// NOT by SYN alone.
+func TestActivePath_EarlyAbort_SYNBeforeRead_StaysActive(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
-	drainActiveChTest(mux)
 
-	// Simulate early-abort: no txn bytes, just the next SYN (adapter
-	// idled the bus after whatever partial activity). This is the
-	// real lifecycle clear signal for early-aborted transactions.
+	// Pre-grant stale SYN arrives with no reads yet. Must NOT clear.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
-	mux.stateMu.Lock()
-	active := mux.gatewayTxnActive
-	mux.stateMu.Unlock()
-	ownerHeld := mux.arb.isOwner(gatewaySessionID)
-	if active {
-		t.Fatal("gatewayTxnActive must be cleared on first SYN (early-abort)")
+	snap := mux.ActiveTxnSnapshot()
+	if !snap.Active {
+		t.Fatalf("activeTxn must stay active on SYN-before-read; got inactive reason=%q", snap.InactiveReason)
 	}
-	if !ownerHeld {
-		t.Fatal("ownership should still be held (pre-IdleReleaseGrace)")
-	}
-
-	// Third-party bytes must not enter activeCh.
-	thirdParty := []byte{0xFE, 0xBA, 0x01, 0x02}
-	for _, b := range thirdParty {
-		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
-	}
-	time.Sleep(50 * time.Millisecond)
-
-	if remaining := len(mux.activeCh); remaining != 0 {
-		t.Fatalf("activeCh got %d bytes after early-abort SYN, want 0", remaining)
+	if snap.InactiveReason != ReasonNone {
+		t.Fatalf("InactiveReason must be empty, got %q", snap.InactiveReason)
 	}
 }
 
@@ -753,10 +743,10 @@ func TestActivePath_SoakCycle_NoSustainedGrowth(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
+	at := mux.ActiveTransport()
 	cycles := 5
 	for i := 0; i < cycles; i++ {
 		grantGateway(t, mux, mock, 0x71)
-		drainActiveChTest(mux)
 
 		// Short txn bytes.
 		txn := []byte{0x71, 0x08, 0xB5, 0x04, 0x00, 0xC9, 0x00}
@@ -764,9 +754,14 @@ func TestActivePath_SoakCycle_NoSustainedGrowth(t *testing.T) {
 			mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
 		}
 		time.Sleep(15 * time.Millisecond)
-		drainActiveChTest(mux) // simulate bus.Send consuming
+		// Consume via ReadByte so bytesRead > 0 (lifecycle requirement).
+		for range txn {
+			if _, err := at.ReadByte(); err != nil {
+				t.Fatalf("cycle %d: ReadByte err=%v", i, err)
+			}
+		}
 
-		// End-of-txn SYN: clears gatewayTxnActive.
+		// End-of-txn SYN: clears gatewayTxnActive (bytesRead > 0).
 		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 		time.Sleep(10 * time.Millisecond)
 

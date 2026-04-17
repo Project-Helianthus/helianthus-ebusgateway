@@ -114,6 +114,42 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 	)
 }
 
+// markActiveReadTimeout clears gatewayTxnActive with ReasonActiveReadTimeout.
+// Called from activeTransport.ReadByte/ReadEvent when the read times out.
+// Acquires stateMu internally. Caller must NOT hold stateMu.
+func (m *Mux) markActiveReadTimeout() {
+	m.stateMu.Lock()
+	if m.gatewayTxnActive {
+		m.gatewayTxnActive = false
+		m.recordGatewayInactive(ReasonActiveReadTimeout)
+	}
+	m.stateMu.Unlock()
+}
+
+// markActiveWriteError clears gatewayTxnActive with ReasonActiveWriteError.
+// Called from activeTransport.Write when sendLoop returns an error.
+// Acquires stateMu internally. Caller must NOT hold stateMu.
+func (m *Mux) markActiveWriteError() {
+	m.stateMu.Lock()
+	if m.gatewayTxnActive {
+		m.gatewayTxnActive = false
+		m.recordGatewayInactive(ReasonActiveWriteError)
+	}
+	m.stateMu.Unlock()
+}
+
+// markActiveContextCancel clears gatewayTxnActive with ReasonContextCancel.
+// Called from activeTransport Read/Write when ctx.Done() fires.
+// Acquires stateMu internally. Caller must NOT hold stateMu.
+func (m *Mux) markActiveContextCancel() {
+	m.stateMu.Lock()
+	if m.gatewayTxnActive {
+		m.gatewayTxnActive = false
+		m.recordGatewayInactive(ReasonContextCancel)
+	}
+	m.stateMu.Unlock()
+}
+
 // recordGatewayInactive marks the gateway transaction as inactive with
 // the given reason. Caller must hold stateMu. Idempotent: a second call
 // with a different reason does not override the first (the first reason

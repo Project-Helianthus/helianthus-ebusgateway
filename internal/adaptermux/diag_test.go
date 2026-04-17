@@ -99,27 +99,69 @@ func TestActiveTxnDiag_ReadCounterIncrements(t *testing.T) {
 	}
 }
 
-// TestActiveTxnDiag_InactiveReason_SYNIdle proves that the first SYN
-// during gateway ownership marks the txn inactive with ReasonSYNIdle.
+// TestActiveTxnDiag_InactiveReason_SYNIdle proves that after the
+// gateway has read at least one response byte, the trailing SYN marks
+// the txn inactive with ReasonSYNIdle.
+//
+// Lifecycle correctness: SYN before any read must NOT clear (grant
+// handoff can leave pre-grant stale SYN bytes in the TCP buffer).
 func TestActiveTxnDiag_InactiveReason_SYNIdle(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
 
-	// Feed the end-of-transaction SYN.
+	// Simulate a response read first (bytesRead > 0).
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
+	time.Sleep(20 * time.Millisecond)
+	at := mux.ActiveTransport()
+	if _, err := at.ReadByte(); err != nil {
+		t.Fatalf("ReadByte err=%v", err)
+	}
+
+	// NOW the trailing SYN legitimately ends the transaction.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
 	snap := mux.ActiveTxnSnapshot()
 	if snap.Active {
-		t.Fatal("Active must be false after SYN")
+		t.Fatal("Active must be false after SYN (with bytesRead > 0)")
 	}
 	if snap.InactiveReason != ReasonSYNIdle {
 		t.Fatalf("InactiveReason = %q, want %q", snap.InactiveReason, ReasonSYNIdle)
 	}
 	if snap.InactiveAt.IsZero() {
 		t.Fatal("InactiveAt must be set")
+	}
+}
+
+// TestActiveTxnDiag_SYNBeforeRead_DoesNotClear proves the lifecycle
+// correctness fix: a SYN arriving during gateway ownership BEFORE any
+// response byte has been read must NOT terminate the transaction as
+// syn_idle. This is the pre-grant stale SYN from TCP buffer.
+func TestActiveTxnDiag_SYNBeforeRead_DoesNotClear(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+
+	// Write a request byte (simulate bus.Send mid-transaction).
+	at := mux.ActiveTransport()
+	if _, err := at.Write([]byte{0x08}); err != nil {
+		t.Fatalf("Write err=%v", err)
+	}
+
+	// SYN arrives BEFORE any response read. Must NOT clear.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+
+	snap := mux.ActiveTxnSnapshot()
+	if !snap.Active {
+		t.Fatalf("Active must remain true after SYN-before-any-read (grant handoff); got inactive reason=%q writes=%d reads=%d",
+			snap.InactiveReason, snap.BytesWritten, snap.BytesRead)
+	}
+	if snap.InactiveReason != ReasonNone {
+		t.Fatalf("InactiveReason must be empty, got %q", snap.InactiveReason)
 	}
 }
 
@@ -150,7 +192,15 @@ func TestActiveTxnDiag_InactiveReason_Idempotent(t *testing.T) {
 
 	grantGateway(t, mux, mock, 0x71)
 
-	// First SYN — idle.
+	// Simulate reading a response byte (bytesRead > 0).
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
+	time.Sleep(20 * time.Millisecond)
+	at := mux.ActiveTransport()
+	if _, err := at.ReadByte(); err != nil {
+		t.Fatalf("ReadByte err=%v", err)
+	}
+
+	// First SYN — idle (clears because bytesRead > 0).
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
@@ -274,12 +324,19 @@ func TestRegression_StartedButNoResponse(t *testing.T) {
 	if snap.BytesRead != 0 {
 		t.Fatalf("last txn BytesRead = %d, want 0 (no response arrived)", snap.BytesRead)
 	}
-	// After the final SYN, txn is inactive with a SYN-based reason.
-	if snap.Active {
-		t.Fatal("last txn must be inactive after final SYN")
+	// With write+no-read, SYN does NOT clear (lifecycle fix).
+	// Transaction remains active until MaxOwnershipDuration / read
+	// timeout / ctx cancel. Under the test config, the mux uses
+	// default MaxOwnershipDuration=10s; we don't wait that long.
+	// The observable diagnostic is that last-cycle writes=7 reads=0
+	// and the transaction is STILL active (not erroneously cleared
+	// as syn_idle). That is the REAL regression signal:
+	//   "writes>0 reads=0 ← production is failing between write and response"
+	if !snap.Active {
+		t.Fatalf("last txn must remain active (write+no-read); got inactive reason=%q", snap.InactiveReason)
 	}
-	if snap.InactiveReason != ReasonSYNIdle && snap.InactiveReason != ReasonSYNTimeout {
-		t.Fatalf("InactiveReason = %q, want syn_idle or syn_timeout", snap.InactiveReason)
+	if snap.InactiveReason != ReasonNone {
+		t.Fatalf("InactiveReason must be empty (write+no-read stays active), got %q", snap.InactiveReason)
 	}
 }
 
@@ -299,10 +356,15 @@ func TestActiveTxnDiag_DrainedOnGrant_ZeroInSteadyState(t *testing.T) {
 		t.Fatalf("first grant DrainedOnGrant = %d, want 0", snap1.DrainedOnGrant)
 	}
 
-	// Feed txn bytes + end-of-txn SYN + third-party noise + release.
+	// Feed response byte + consume via activeTransport so bytesRead > 0
+	// (required for SYN-idle clear under the lifecycle policy).
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
-	time.Sleep(15 * time.Millisecond)
-	drainActiveChTest(mux) // simulate bus.Send consuming
+	time.Sleep(20 * time.Millisecond)
+	at := mux.ActiveTransport()
+	if _, err := at.ReadByte(); err != nil {
+		t.Fatalf("ReadByte err=%v", err)
+	}
+	// End-of-txn SYN clears because bytesRead > 0.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 

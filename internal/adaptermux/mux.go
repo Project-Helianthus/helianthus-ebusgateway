@@ -1072,21 +1072,21 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// sessions via deliverSYNToSessions + deliverToSessions elsewhere.
 	m.gatewayEcho.flushOnSYN()
 
-	// Runtime-soak P0 fix: clear gatewayTxnActive on SYN during gateway
-	// ownership. eBUS SYN marks end-of-transaction (bus idle). bus.Send
-	// completes strictly before the trailing SYN arrives — it reads
-	// the expected byte count (echoes + response) and returns. By the
-	// time a SYN is on the wire under gateway ownership, bus.Send is
-	// no longer reading activeCh. Ownership may linger up to
-	// IdleReleaseGrace for arbitration policy, but active delivery
-	// must stop NOW, independent of the ownership release path.
+	// Runtime-soak P0 + lifecycle correctness:
+	// clear gatewayTxnActive on SYN during gateway ownership ONLY if
+	// the transaction has already received at least one response byte
+	// (bytesRead > 0). Otherwise this SYN is almost certainly a
+	// pre-grant stale byte buffered in the TCP socket before STARTED
+	// arrived — treating it as end-of-transaction would terminate a
+	// nascent transaction before bus.Send can send the first byte.
 	//
-	// This breaks the accumulation observed in production where the
-	// phase tracker is skipped during gateway ownership (so the
-	// TransactionDone/CmdNACK clear paths never fire for real gateway
-	// traffic), causing third-party bytes to pile up on activeCh until
-	// the next grant's drainActiveCh.
-	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive {
+	// Normal transactions (including broadcast) produce bytesRead>0
+	// via echoes of the gateway's own writes, so the trailing SYN
+	// correctly clears. Genuine aborts (no writes, no reads) are
+	// caught by MaxOwnershipDuration, ActiveWriteError, ActiveReadTimeout,
+	// context cancel, reset, or reconnect — per the lifecycle contract.
+	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive &&
+		m.activeTxn.bytesRead.Load() > 0 {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonSYNIdle)
 	}

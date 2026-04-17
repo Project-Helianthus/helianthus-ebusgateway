@@ -69,8 +69,10 @@ func (t *activeTransport) ReadByte() (byte, error) {
 		return ev.b, nil
 	case <-timer.C:
 		t.mux.activeTxn.readTimeoutTot.Add(1)
+		t.mux.markActiveReadTimeout()
 		return 0, fmt.Errorf("adaptermux: %w", ebuserrors.ErrTimeout)
 	case <-t.mux.ctx.Done():
+		t.mux.markActiveContextCancel()
 		return 0, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}
 }
@@ -103,8 +105,10 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 		}, nil
 	case <-timer.C:
 		t.mux.activeTxn.readTimeoutTot.Add(1)
+		t.mux.markActiveReadTimeout()
 		return transport.StreamEvent{}, fmt.Errorf("adaptermux: %w", ebuserrors.ErrTimeout)
 	case <-t.mux.ctx.Done():
+		t.mux.markActiveContextCancel()
 		return transport.StreamEvent{}, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}
 }
@@ -142,10 +146,12 @@ func (t *activeTransport) Write(p []byte) (int, error) {
 		case err := <-result:
 			if err != nil {
 				t.mux.activeTxn.writeErrTotal.Add(1)
+				t.mux.markActiveWriteError()
 				return i, err
 			}
 			t.mux.activeTxn.bytesWritten.Add(1)
 		case <-t.mux.ctx.Done():
+			t.mux.markActiveContextCancel()
 			return i, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 		}
 	}

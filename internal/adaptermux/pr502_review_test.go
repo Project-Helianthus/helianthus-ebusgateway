@@ -618,19 +618,6 @@ func grantGateway(t *testing.T, mux *Mux, mock *p3MockTransport, initiator byte)
 	}
 }
 
-// drainActiveChTest drains activeCh and returns the count.
-func drainActiveChTest(mux *Mux) int {
-	n := 0
-	for {
-		select {
-		case <-mux.activeCh:
-			n++
-		default:
-			return n
-		}
-	}
-}
-
 // TestActivePath_RealFlow_NoAccumulationAfterTxnSyn verifies the real
 // production lifecycle: after a gateway transaction, the first SYN
 // clears gatewayTxnActive and subsequent third-party bytes do NOT

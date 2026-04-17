@@ -1039,19 +1039,24 @@ func (m *Mux) onReceived(symbol byte) {
 
 	if phaseEvent == wirePhaseEventTransactionDone ||
 		phaseEvent == wirePhaseEventCmdNACK {
-		m.arb.releaseOwnership(ownerID)
-		if ownerID == gatewaySessionID {
-			reason := ReasonTransactionDone
-			if phaseEvent == wirePhaseEventCmdNACK {
-				reason = ReasonCmdNACK
-			}
-			m.stateMu.Lock()
-			if m.gatewayTxnActive {
+		// Codex-R9: atomic release + gatewayTxnActive clear.
+		// Must re-verify ownership under stateMu — between the phase
+		// event and this point another goroutine may have granted a
+		// new session. Only release + clear if ownerID still matches.
+		reason := ReasonTransactionDone
+		if phaseEvent == wirePhaseEventCmdNACK {
+			reason = ReasonCmdNACK
+		}
+		m.stateMu.Lock()
+		curOwner, _, hasCurOwner := m.arb.owner()
+		if hasCurOwner && curOwner == ownerID {
+			m.arb.releaseOwnership(ownerID)
+			if ownerID == gatewaySessionID && m.gatewayTxnActive {
 				m.gatewayTxnActive = false
 				m.recordGatewayInactive(reason)
 			}
-			m.stateMu.Unlock()
 		}
+		m.stateMu.Unlock()
 		m.tryGrantAndStart()
 	}
 }
@@ -1422,7 +1427,13 @@ func (m *Mux) tryGrantAndStart() {
 		arbGen := m.blockingArbGen
 		m.blockingArbActive = true
 		m.stateMu.Unlock()
+		// Codex-R9: track the blocking goroutine in mux.wg so Close()
+		// waits for it. Without this, Close() can return while a hung
+		// StartArbitration is still running, causing post-close state
+		// mutations and goroutine leaks across reconnect/restart cycles.
+		m.wg.Add(1)
 		go func() {
+			defer m.wg.Done()
 			if err := starter.StartArbitration(initiator); err != nil {
 				m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
 				// P1 fix (#3063005909): only send failure if we still own

@@ -68,9 +68,17 @@ type ActiveTxnSnapshot struct {
 
 // ActiveTxnSnapshot returns a copy of the current active-transaction
 // diagnostics. Safe to call from any goroutine.
+//
+// Codex-R9: atomic counters are loaded UNDER stateMu to keep the
+// snapshot in the same transaction epoch as the struct fields.
+// Without this, recordGatewayGrant (which resets bytesWritten/bytesRead
+// under stateMu before the next caller returns) could interleave
+// between the struct copy and the atomic loads, producing mixed-epoch
+// results (e.g. ID from txn N with bytesRead from txn N+1).
 func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 	m.stateMu.Lock()
-	snap := ActiveTxnSnapshot{
+	defer m.stateMu.Unlock()
+	return ActiveTxnSnapshot{
 		ID:             m.activeTxn.id,
 		Initiator:      m.activeTxn.initiator,
 		GrantedAt:      m.activeTxn.grantedAt,
@@ -78,16 +86,13 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		InactiveReason: m.activeTxn.inactiveReas,
 		DrainedOnGrant: m.activeTxn.drainedOnGrant,
 		Active:         m.gatewayTxnActive,
+		BytesWritten:   m.activeTxn.bytesWritten.Load(),
+		BytesRead:      m.activeTxn.bytesRead.Load(),
+		GrantsTotal:    m.activeTxn.grantsTotal.Load(),
+		WriteErrTotal:  m.activeTxn.writeErrTotal.Load(),
+		ReadTimeoutTot: m.activeTxn.readTimeoutTot.Load(),
+		AfterInactive:  m.activeTxn.afterInactive.Load(),
 	}
-	m.stateMu.Unlock()
-	// atomic counters read lock-free
-	snap.BytesWritten = m.activeTxn.bytesWritten.Load()
-	snap.BytesRead = m.activeTxn.bytesRead.Load()
-	snap.GrantsTotal = m.activeTxn.grantsTotal.Load()
-	snap.WriteErrTotal = m.activeTxn.writeErrTotal.Load()
-	snap.ReadTimeoutTot = m.activeTxn.readTimeoutTot.Load()
-	snap.AfterInactive = m.activeTxn.afterInactive.Load()
-	return snap
 }
 
 // recordGatewayGrant marks the start of a new gateway active transaction.

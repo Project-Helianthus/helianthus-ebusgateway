@@ -222,6 +222,11 @@ type Mux struct {
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 	closeErr  error
+	// closing is set to true at the start of Close() before m.wg.Wait().
+	// Gates tryGrantAndStart's wg.Add(1) for the blocking-path goroutine
+	// to prevent a WaitGroup misuse panic when a timer callback /
+	// readLoop / RemoveSession races with shutdown.
+	closing atomic.Bool
 }
 
 // activeEventKind tags active-path channel events.
@@ -304,6 +309,11 @@ func (m *Mux) Start(ctx context.Context) error {
 // Safe to call multiple times — subsequent calls return the first error.
 func (m *Mux) Close() error {
 	m.closeOnce.Do(func() {
+		// C1: signal shutdown BEFORE any Wait(). tryGrantAndStart checks
+		// this flag to avoid m.wg.Add(1) on the blocking-path goroutine
+		// while m.wg.Wait() is running — that would panic with "sync:
+		// WaitGroup misuse: Add called concurrently with Wait".
+		m.closing.Store(true)
 		if m.cancel != nil {
 			m.cancel()
 		}
@@ -1410,19 +1420,19 @@ func (m *Mux) tryGrantAndStart() {
 			pending := m.pendingStart
 			m.pendingStart = nil
 			m.pendingStartAbsorb++
-			// Codex-R12: if the hung request is on the blocking path,
-			// abandon its goroutine by bumping blockingArbGen — any
-			// subsequent clear by the hung goroutine will no longer
-			// match — AND clear blockingArbActive so future grants can
-			// proceed. Without this, a single hung StartArbitration
-			// permanently starves all subsequent grants on a quiet link
-			// that never triggers blackhole reconnect.
-			nowBlocking := false
-			if pending.blockingArb {
-				m.blockingArbGen++
-				m.blockingArbActive = false
-				nowBlocking = true
-			}
+			// C2 (PR #502 Copilot): on the blocking path, the
+			// StartArbitration goroutine may still be stuck inside the
+			// transport call. We MUST NOT simply clear blockingArbActive
+			// and re-grant here — that would let a second blocking
+			// goroutine overlap the first on the same transport.
+			// Instead, trigger a transport reconnect: closing m.conn
+			// forces the hung read/write call to return with an I/O
+			// error; readLoop observes the error and invokes reconnect()
+			// which bumps blockingArbGen, clears blockingArbActive, and
+			// fails/re-queues arbitration safely. The hung goroutine's
+			// late return finds a stale gen and skips state mutation.
+			// This yields no overlap AND no queue starvation.
+			needReconnect := pending.blockingArb
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8)", pending.sessionID)
 			// AM8: guard the send — if another path already delivered a
@@ -1432,11 +1442,25 @@ func (m *Mux) tryGrantAndStart() {
 			default:
 				m.logger.Printf("adaptermux: pendingStart deadline: notify channel full for session %d, result already delivered", pending.sessionID)
 			}
-			// After deadline, allow next grant. Even if nowBlocking,
-			// we abandoned the hung goroutine's gen so subsequent
-			// StartArbitration is not considered overlapping.
-			_ = nowBlocking
-			if m.arb.hasPending() {
+			if needReconnect {
+				// Close the current conn to force the hung blocking
+				// StartArbitration call to return with an I/O error.
+				// readLoop's error handler invokes reconnect() which
+				// advances blockingArbGen and clears blockingArbActive
+				// atomically under stateMu.
+				m.connMu.Lock()
+				c := m.conn
+				m.connMu.Unlock()
+				if c != nil {
+					if err := c.Close(); err != nil {
+						m.logger.Printf("adaptermux: deadline-triggered conn close: %v", err)
+					} else {
+						m.logger.Printf("adaptermux: deadline triggered transport reconnect to unstick hung StartArbitration (C2)")
+					}
+				}
+			} else if m.arb.hasPending() {
+				// Non-blocking path: no hung goroutine to worry about,
+				// just advance the queue as before.
 				m.tryGrantAndStart()
 			}
 		} else {
@@ -1485,9 +1509,12 @@ func (m *Mux) tryGrantAndStart() {
 		// above, so the deadline callback sees it from the start.
 		// The AM8 deadline timer stays active to preserve liveness —
 		// if StartArbitration hangs, the deadline clears pendingStart
-		// and notifies the session. The deadline callback skips
-		// tryGrantAndStart when blockingArb is set to prevent
-		// overlapping arbitration on the same transport.
+		// and notifies the session. The deadline path triggers a
+		// transport reconnect (via m.conn.Close) to force the hung
+		// StartArbitration call to return with an I/O error;
+		// reconnect() will then bump blockingArbGen and clear
+		// blockingArbActive so the hung goroutine's late return is
+		// observed with a stale gen and skips state mutation.
 		//
 		// PR502-Fix1: Run blocking StartArbitration in a goroutine so
 		// readLoop is not stalled. The AM8 deadline timer handles
@@ -1496,6 +1523,25 @@ func (m *Mux) tryGrantAndStart() {
 		// from starting another arbitration while this goroutine runs.
 		// Generation-scoped: goroutine only clears if gen matches,
 		// so a reconnect+relaunch won't be cleared by an old goroutine.
+		// C1: refuse to spawn if shutdown is in progress. Without this
+		// gate, m.wg.Add(1) below can race with m.wg.Wait() in Close()
+		// and panic with "sync: WaitGroup misuse". Emit FAILED to the
+		// pending session so it is not left orphaned.
+		if m.closing.Load() {
+			m.stateMu.Lock()
+			if m.pendingStart != nil && m.pendingStart.notify == notify {
+				if m.pendingStart.deadline != nil {
+					m.pendingStart.deadline.Stop()
+				}
+				m.pendingStart = nil
+			}
+			m.stateMu.Unlock()
+			select {
+			case notify <- startResult{granted: false, initiator: initiator, err: errors.New("adaptermux: closed")}:
+			default:
+			}
+			return
+		}
 		m.stateMu.Lock()
 		m.blockingArbGen++
 		arbGen := m.blockingArbGen

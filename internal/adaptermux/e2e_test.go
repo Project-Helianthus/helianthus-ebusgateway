@@ -112,27 +112,24 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 			t.Logf("bytes consumed so far: % X", got)
 			dumpSynDiag(t, mux)
 			wg.Wait()
-			t.Skip("tracked: mux.go onSYNLocked — see SYN ring dump above. " +
-				"Final SYN echo consumed by SYN-before-read branch (bytesRead>0 " +
-				"path) before activePathExpectsBytes() is re-evaluated; " +
-				"deliverToActive() skips the SYN and the Send consumer on " +
-				"activeCh never sees the frame terminator. This matches the " +
-				"runtime soak signature (ok=0 timeouts=46): many txns now " +
-				"produce reads but none return a parsed frame because the " +
-				"terminator is swallowed by the mux.")
+			t.Fatalf("E2E read error after %d bytes: %v — final SYN echo may have been "+
+				"consumed by SYN-before-read branch (bytesRead>0 path) before "+
+				"activePathExpectsBytes() was re-evaluated. See SYN ring dump above. "+
+				"C4 (PR #502): this path used to t.Skip; any deviation from the green "+
+				"path is a regression and must fail CI.", len(got), err)
 		}
 	case <-time.After(time.Until(deadline)):
 		t.Logf("E2E timeout after %d/%d bytes consumed", len(got), totalExpected)
 		t.Logf("bytes consumed: % X", got)
 		dumpSynDiag(t, mux)
-		// Leave the reader goroutine blocked; cleanup cancels ctx.
-		wg.Wait()
-		t.Skip("tracked: see mux.go onSYNLocked — final SYN echo consumed. " +
-			"E2E timed out waiting for the response bytes or the trailing " +
-			"SYN. SYN ring dump (above) shows gwActiveBefore/After transitions " +
-			"and synDeliveredToActive flags for this attempt. This is evidence " +
-			"that the runtime ok=0 soak failure is an in-mux lifecycle bug, " +
-			"not an upstream/parse issue.")
+		// Do NOT wg.Wait() here — the reader goroutine is still blocked
+		// on ReadByte; cleanup cancels ctx which releases it after the
+		// test returns. C4 (PR #502): this path used to t.Skip; a
+		// regression in active-path terminator delivery must fail CI.
+		t.Fatalf("E2E timeout after %d/%d bytes — final SYN echo may be consumed "+
+			"by onSYNLocked before active-path delivery. See SYN ring dump above "+
+			"for gwActiveBefore/After transitions and synDeliveredToActive flags.",
+			len(got), totalExpected)
 	}
 
 	wg.Wait()

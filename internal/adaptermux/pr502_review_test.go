@@ -2,6 +2,9 @@ package adaptermux
 
 import (
 	"context"
+	"errors"
+	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -192,10 +195,18 @@ func TestWirePhaseTracker_0xAA_AlwaysSYN(t *testing.T) {
 // TestBlockingStartArbitrationDeadlineReal verifies end-to-end that when
 // a blocking StartArbitration transport is used and the AM8 deadline fires:
 //  1. pendingStart is cleared and the session is notified of failure.
-//  2. The deadline callback does NOT call tryGrantAndStart (blockingArb flag
-//     prevents overlapping arbitration on the same transport).
-//  3. After the blocking call returns, the absorb counter is decremented
-//     (the cancelled request is accounted for).
+//  2. The deadline callback does NOT spawn a second overlapping blocking
+//     arbitration — blockingArbActive stays true until a transport
+//     reconnect (via handleReset/reconnect) bumps blockingArbGen and
+//     clears the flag. C2 (PR #502 Copilot): the deadline now triggers
+//     a transport reconnect (m.conn.Close) to force the hung
+//     StartArbitration to return; with a nil m.conn in this unit test
+//     no reconnect occurs, so the flag persists until the goroutine
+//     returns and the stale-gen path is exercised.
+//  3. The late return of the hung goroutine does NOT decrement absorb
+//     in this test because its gen is still current (no reconnect
+//     happened). absorb was incremented once by the deadline, then
+//     decremented once by the cancelled-pending cleanup branch.
 //
 // This test uses a real timer with a short StartDeadline (200ms) instead
 // of manually simulating the deadline callback.
@@ -266,10 +277,13 @@ func TestBlockingStartArbitrationDeadlineReal(t *testing.T) {
 		t.Fatal("pendingStart must be nil after deadline fires")
 	}
 
-	// Codex-R12: AM8 deadline on blocking path now bumps blockingArbGen
-	// and clears blockingArbActive to unblock future grants (previously
-	// a hung StartArbitration permanently starved the queue). With no
-	// second request queued, pendingStart stays nil.
+	// C2 (PR #502 Copilot): AM8 deadline on blocking path now triggers a
+	// transport reconnect (m.conn.Close) instead of clearing blockingArbActive
+	// in-line. In this unit test m.conn is nil so no reconnect occurs —
+	// blockingArbActive stays true and the hung goroutine keeps running.
+	// This is the critical "no overlap" property: a second blocking
+	// StartArbitration CANNOT start while the first is still in the
+	// transport call.
 	time.Sleep(50 * time.Millisecond)
 	mux.stateMu.Lock()
 	pendingStillNil := mux.pendingStart == nil
@@ -278,24 +292,26 @@ func TestBlockingStartArbitrationDeadlineReal(t *testing.T) {
 	if !pendingStillNil {
 		t.Fatal("pendingStart should stay nil (no pending after deadline)")
 	}
-	if activeFlag {
-		t.Fatal("blockingArbActive must be cleared by deadline on blocking path (Codex-R12)")
+	if !activeFlag {
+		t.Fatal("blockingArbActive must stay true while hung goroutine runs (C2 no-overlap invariant)")
 	}
 
-	// Release the hung blocking goroutine. Its generation was bumped,
-	// so its late return does not interfere with any subsequent grant.
+	// Release the hung blocking goroutine. With no reconnect having
+	// occurred, its gen still matches blockingArbGen (current). Its
+	// cancelled-path cleanup runs under isCurrentGen=true, which
+	// decrements pendingStartAbsorb and clears blockingArbActive.
 	close(mock.gate)
 	time.Sleep(50 * time.Millisecond)
 
-	// The hung goroutine's cancelled-path cleanup runs. Because its
-	// gen no longer matches (deadline bumped it), isCurrentGen is
-	// false, so pendingStartAbsorb is NOT decremented and tryGrantAndStart
-	// is NOT called. absorb was incremented once by the deadline.
 	mux.stateMu.Lock()
 	absorb := mux.pendingStartAbsorb
+	activeAfter := mux.blockingArbActive
 	mux.stateMu.Unlock()
-	if absorb != 1 {
-		t.Fatalf("pendingStartAbsorb = %d, want 1 (deadline incremented, stale gen did not decrement)", absorb)
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d, want 0 (deadline +1, current-gen goroutine late-return -1)", absorb)
+	}
+	if activeAfter {
+		t.Fatal("blockingArbActive must be cleared by current-gen goroutine's late return")
 	}
 }
 
@@ -348,24 +364,32 @@ func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
 		t.Fatal("timeout waiting for deadline failure")
 	}
 
-	// Codex-R12: after the deadline fires on the blocking path, the
-	// callback bumps blockingArbGen and clears blockingArbActive, then
-	// calls tryGrantAndStart which dequeues request #2 and invokes
-	// StartArbitration again. The first goroutine is still blocked on
-	// `gate` (hung StartArbitration) but its generation is stale.
-	// Wait long enough for the deadline to process the queue advance.
+	// C2 (PR #502 Copilot): after the deadline fires on the blocking
+	// path, the callback triggers a transport reconnect instead of
+	// clearing blockingArbActive in-line. In this unit test m.conn is
+	// nil so no reconnect happens — blockingArbActive stays true and
+	// NO second StartArbitration is spawned while the first is still
+	// hung. This is the critical no-overlap invariant enforced by C2.
 	time.Sleep(50 * time.Millisecond)
-	if c := atomic.LoadInt32(&arbCount); c != 2 {
-		t.Fatalf("expected 2 StartArbitration calls (deadline advanced queue, Codex-R12), got %d", c)
+	if c := atomic.LoadInt32(&arbCount); c != 1 {
+		t.Fatalf("expected exactly 1 StartArbitration while first is hung (C2 no-overlap), got %d", c)
+	}
+	mux.stateMu.Lock()
+	stillActive := mux.blockingArbActive
+	mux.stateMu.Unlock()
+	if !stillActive {
+		t.Fatal("blockingArbActive must stay true while hung goroutine runs (C2)")
 	}
 
-	// Release the first hung goroutine — its gen no longer matches,
-	// so its cleanup does not interfere with the newer arbitration.
+	// Release the first hung goroutine. With no reconnect, its gen is
+	// still current, so its cancelled-path cleanup decrements absorb,
+	// clears blockingArbActive, and calls tryGrantAndStart which
+	// dequeues request #2 and launches a second StartArbitration.
 	close(mock.gate)
 
 	time.Sleep(150 * time.Millisecond)
 	if c := atomic.LoadInt32(&arbCount); c != 2 {
-		t.Fatalf("expected 2 StartArbitration calls after queue advance, got %d", c)
+		t.Fatalf("expected 2 StartArbitration calls after hung goroutine returns and advances queue, got %d", c)
 	}
 	select {
 	case result := <-extCh:
@@ -924,6 +948,216 @@ func TestCancelPendingStart_ClearsBlockingGuard(t *testing.T) {
 	// remains 1.
 	if absorbAfter != absorbBeforeRelease {
 		t.Fatalf("pendingStartAbsorb = %d, want %d (stale-gen late return must not mutate absorb)", absorbAfter, absorbBeforeRelease)
+	}
+}
+
+// =======================================================================
+// PR502 Copilot Findings (C1, C2)
+// =======================================================================
+
+// TestTryGrantAndStart_NoSpawnAfterClose verifies C1: after Close() has
+// set the shutdown flag, tryGrantAndStart on the blocking-StartArbitration
+// path must NOT call m.wg.Add(1) (which would race with m.wg.Wait() in
+// Close() and panic). The pending request must be notified of failure.
+func TestTryGrantAndStart_NoSpawnAfterClose(t *testing.T) {
+	mock := &slowBlockingStartTransport{
+		readCh: make(chan byte, 256),
+		gate:   make(chan struct{}),
+	}
+
+	mux := New(Config{
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 5 * time.Second,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	mux.ctx, mux.cancel = ctx, cancel
+
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Queue an external request BEFORE setting the closing flag.
+	const extSessionID uint64 = 77
+	extCh := mux.arb.requestStart(extSessionID, 0x50)
+
+	// Simulate shutdown-in-progress: set the closing flag directly
+	// (equivalent to being inside Close() after m.closing.Store(true)
+	// but before m.wg.Wait() — no goroutine may call m.wg.Add(1)).
+	mux.closing.Store(true)
+
+	// Call tryGrantAndStart — the blocking path must observe closing
+	// and notify the pending of failure WITHOUT spawning the blocking
+	// goroutine (which would wg.Add(1) and be unsafe during shutdown).
+	//
+	// If the closing gate is broken, this path calls m.wg.Add(1) after
+	// Close() has called m.wg.Wait() — in a real Close() that panics
+	// with "sync: WaitGroup misuse: Add called concurrently with Wait".
+	// Here we avoid actually invoking Close() so the test is
+	// deterministic; we assert the observable behavior (no goroutine
+	// spawn, pending FAILED).
+	mux.tryGrantAndStart()
+
+	select {
+	case r := <-extCh:
+		if r.granted {
+			t.Fatal("expected granted=false when closing during tryGrantAndStart")
+		}
+		if r.err == nil {
+			t.Fatal("expected non-nil err when refusing to spawn during shutdown")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for shutdown-failure notification")
+	}
+
+	// No goroutine should have entered StartArbitration (mock would have
+	// blocked on gate). Confirm by checking pendingStart is nil.
+	mux.stateMu.Lock()
+	pending := mux.pendingStart
+	active := mux.blockingArbActive
+	mux.stateMu.Unlock()
+	if pending != nil {
+		t.Fatal("pendingStart must be cleared after closing-gate rejection")
+	}
+	if active {
+		t.Fatal("blockingArbActive must NOT be set when spawn was refused")
+	}
+
+	cancel()
+	close(mock.gate)
+}
+
+// deadlineConnMock is a minimal net.Conn used to observe Close() calls
+// from the AM8 deadline path (C2).
+type deadlineConnMock struct {
+	mu     sync.Mutex
+	closed bool
+	closeC chan struct{}
+}
+
+func newDeadlineConnMock() *deadlineConnMock {
+	return &deadlineConnMock{closeC: make(chan struct{})}
+}
+
+func (d *deadlineConnMock) Read(b []byte) (int, error)  { return 0, errors.New("not used") }
+func (d *deadlineConnMock) Write(b []byte) (int, error) { return len(b), nil }
+func (d *deadlineConnMock) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil
+	}
+	d.closed = true
+	close(d.closeC)
+	return nil
+}
+func (d *deadlineConnMock) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (d *deadlineConnMock) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (d *deadlineConnMock) SetDeadline(time.Time) error        { return nil }
+func (d *deadlineConnMock) SetReadDeadline(time.Time) error    { return nil }
+func (d *deadlineConnMock) SetWriteDeadline(time.Time) error   { return nil }
+
+// TestBlockingArbDeadline_TriggersReconnect_NoOverlap verifies C2: when a
+// blocking StartArbitration is hung and the AM8 deadline fires, the
+// deadline callback triggers a transport reconnect (m.conn.Close) rather
+// than clearing blockingArbActive in-line. Critically, during the window
+// between the deadline firing and the hung goroutine returning, NO second
+// blocking goroutine is spawned.
+func TestBlockingArbDeadline_TriggersReconnect_NoOverlap(t *testing.T) {
+	var arbCount int32
+	mock := &countingBlockingStartTransport{
+		readCh:   make(chan byte, 256),
+		gate:     make(chan struct{}),
+		arbCount: &arbCount,
+	}
+
+	mux := New(Config{
+		Protocol:      "enh",
+		Network:       "tcp",
+		Address:       "127.0.0.1:0",
+		ReadTimeout:   200 * time.Millisecond,
+		StartDeadline: 120 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+
+	// Install a fake conn so the deadline path's m.conn.Close() fires.
+	connMock := newDeadlineConnMock()
+	mux.connMu.Lock()
+	mux.conn = connMock
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Queue two requests: the first will hit the blocking path, the
+	// second should remain queued while the first is hung.
+	gwCh := mux.arb.requestStart(gatewaySessionID, 0x71)
+	_ = mux.arb.requestStart(2, 0x50)
+
+	mux.tryGrantAndStart()
+	time.Sleep(30 * time.Millisecond)
+
+	// Wait for deadline to fire and gateway to be notified.
+	select {
+	case r := <-gwCh:
+		if r.granted {
+			t.Fatal("expected granted=false after deadline")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for deadline failure")
+	}
+
+	// C2 core assertion: deadline triggered m.conn.Close().
+	select {
+	case <-connMock.closeC:
+		// ok — deadline closed the conn to unstick the hung goroutine.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("deadline did not close m.conn (C2 reconnect trigger missing)")
+	}
+
+	// Overlap invariant: while the hung goroutine is still running, NO
+	// second StartArbitration has been spawned. The old (pre-C2) code
+	// cleared blockingArbActive in the deadline and called tryGrantAndStart
+	// directly, which would race a second blocking goroutine onto the same
+	// transport. C2 prevents that — the second arbitration can only start
+	// after a real reconnect bumps the gen.
+	if c := atomic.LoadInt32(&arbCount); c != 1 {
+		t.Fatalf("expected 1 StartArbitration while hung goroutine runs (C2 no-overlap), got %d", c)
+	}
+
+	mux.stateMu.Lock()
+	activeDuringHang := mux.blockingArbActive
+	mux.stateMu.Unlock()
+	if !activeDuringHang {
+		t.Fatal("blockingArbActive must remain true until reconnect completes (no in-line clear)")
+	}
+
+	// Release the hung goroutine. In a real gateway the readLoop would
+	// call reconnect() on the conn-closed I/O error; here the mock
+	// StartArbitration simply returns nil when gate is closed. Its
+	// generation is still current (no real reconnect bumped it in this
+	// unit test), so it executes the cancelled-path cleanup, decrements
+	// absorb, clears blockingArbActive, and advances the queue.
+	close(mock.gate)
+	time.Sleep(100 * time.Millisecond)
+
+	mux.stateMu.Lock()
+	activeAfter := mux.blockingArbActive
+	mux.stateMu.Unlock()
+	if activeAfter {
+		t.Fatal("blockingArbActive must be cleared once the hung goroutine returns")
+	}
+
+	// The queue advance launched a second StartArbitration (now that
+	// the flag is clear). arbCount went from 1 to 2.
+	if c := atomic.LoadInt32(&arbCount); c != 2 {
+		t.Fatalf("after hung goroutine returned, expected queue to advance (arbCount=2), got %d", c)
 	}
 }
 

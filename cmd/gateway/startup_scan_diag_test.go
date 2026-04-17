@@ -234,3 +234,75 @@ func TestClassifyScanErr(t *testing.T) {
 	// the import live if refactored later.
 	_ = time.Duration(0)
 }
+
+// TestStatsBus_NonOkPrioritizedOverOk proves that when the bounded
+// attempts cap is full of "ok" entries, a later non-ok attempt evicts
+// the oldest "ok" slot. This keeps the cap focused on failure evidence
+// even in mixed passes where early targets succeed and later fail.
+func TestStatsBus_NonOkPrioritizedOverOk(t *testing.T) {
+	// Fill cap with oks, then add non-oks.
+	errs := make([]error, scanAttemptLogCap+5)
+	// First cap attempts: ok (nil). Then 5 timeouts.
+	for i := scanAttemptLogCap; i < len(errs); i++ {
+		errs[i] = ebuserrors.ErrTimeout
+	}
+	sb := &statsBus{
+		bus:    &stubBus{errors: errs},
+		source: 0x71,
+	}
+	for i := 0; i < len(errs); i++ {
+		_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: byte(0x10 + i)})
+	}
+
+	if len(sb.attempts) != scanAttemptLogCap {
+		t.Fatalf("attempts = %d, want %d", len(sb.attempts), scanAttemptLogCap)
+	}
+
+	// Count classes in retained attempts. All 5 non-ok attempts should
+	// have displaced ok entries.
+	okCount := 0
+	timeoutCount := 0
+	for _, a := range sb.attempts {
+		switch a.resClass {
+		case "ok":
+			okCount++
+		case "timeout":
+			timeoutCount++
+		}
+	}
+	if timeoutCount != 5 {
+		t.Fatalf("timeout attempts retained = %d, want 5 (non-ok must displace ok entries)", timeoutCount)
+	}
+	if okCount != scanAttemptLogCap-5 {
+		t.Fatalf("ok attempts retained = %d, want %d (older oks evicted for non-oks)", okCount, scanAttemptLogCap-5)
+	}
+}
+
+// TestStatsBus_AllNonOk_NoFurtherEvictions proves that once the cap
+// is full of non-ok entries, subsequent non-ok attempts do NOT evict
+// any of them (first-N non-ok wins).
+func TestStatsBus_AllNonOk_NoFurtherEvictions(t *testing.T) {
+	errs := make([]error, scanAttemptLogCap+10)
+	for i := range errs {
+		errs[i] = ebuserrors.ErrTimeout
+	}
+	sb := &statsBus{
+		bus:    &stubBus{errors: errs},
+		source: 0x71,
+	}
+	// Send cap+10 timeouts with distinct target bytes.
+	for i := 0; i < len(errs); i++ {
+		_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: byte(0x10 + i)})
+	}
+
+	if len(sb.attempts) != scanAttemptLogCap {
+		t.Fatalf("attempts = %d, want %d", len(sb.attempts), scanAttemptLogCap)
+	}
+	// The retained attempts should be the FIRST cap targets (0x10..).
+	for i, a := range sb.attempts {
+		wantTarget := byte(0x10 + i)
+		if a.target != wantTarget {
+			t.Fatalf("attempt[%d].target = 0x%02X, want 0x%02X (first-N non-ok must be retained)", i, a.target, wantTarget)
+		}
+	}
+}

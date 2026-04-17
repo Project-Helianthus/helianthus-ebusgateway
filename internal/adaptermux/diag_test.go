@@ -415,3 +415,48 @@ func TestActiveTxnDiag_MockReadTimeout(t *testing.T) {
 
 // Ensure mockWriteOnlyTransport is usable (io.EOF handling).
 var _ io.Closer = (*mockWriteOnlyTransport)(nil)
+
+// TestActiveTxnDiag_AfterInactive_Counter proves that afterInactive
+// increments when a non-SYN byte arrives while gateway owns the bus
+// but gatewayTxnActive is false (post-SYN window before ownership is
+// released). This is the regression signal for post-inactive delivery
+// pressure.
+func TestActiveTxnDiag_AfterInactive_Counter(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+
+	// Simulate a completed transaction so bytesRead > 0 and SYN clears.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
+	time.Sleep(20 * time.Millisecond)
+	at := mux.ActiveTransport()
+	if _, err := at.ReadByte(); err != nil {
+		t.Fatalf("ReadByte err=%v", err)
+	}
+
+	// End-of-txn SYN clears gatewayTxnActive. Ownership stays (idle grace).
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+
+	// Confirm ownership still held and txn inactive.
+	snap := mux.ActiveTxnSnapshot()
+	if snap.Active {
+		t.Fatal("gatewayTxnActive must be false after SYN")
+	}
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("ownership should still be held")
+	}
+	preAfter := snap.AfterInactive
+
+	// Feed 3 non-SYN bytes during the inactive window.
+	for _, b := range []byte{0xFE, 0x10, 0xBA} {
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	snap = mux.ActiveTxnSnapshot()
+	if snap.AfterInactive != preAfter+3 {
+		t.Fatalf("AfterInactive = %d, want %d (3 bytes while owned+inactive)", snap.AfterInactive, preAfter+3)
+	}
+}

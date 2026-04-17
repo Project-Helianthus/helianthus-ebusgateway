@@ -1013,6 +1013,14 @@ func (m *Mux) onReceived(symbol byte) {
 	// is expecting bytes. Non-SYN bytes during third-party traffic
 	// should not accumulate on activeCh.
 	activeExpects := m.activePathExpectsBytes()
+	// Codex P2: regression signal — if a non-SYN byte arrives while
+	// gateway still owns the bus but gatewayTxnActive is already false
+	// (post-SYN window before ownership is released), we skipped
+	// delivery. Count those events so the snapshot can surface any
+	// post-inactive delivery pressure.
+	if isGatewayOwned && !activeExpects {
+		m.activeTxn.afterInactive.Add(1)
+	}
 
 	m.stateMu.Unlock()
 

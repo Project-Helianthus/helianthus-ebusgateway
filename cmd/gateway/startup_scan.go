@@ -176,17 +176,33 @@ func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Fr
 		b.stats.otherErrs++
 	}
 
-	// Bounded per-attempt diagnostics: record only the first N attempts
-	// so the log is characterized but not flooded. Skip "ok" results
-	// after the first few — timeouts/errors are the interesting signal.
+	// Bounded per-attempt diagnostics: prioritize non-ok attempts so
+	// the cap isn't filled with "ok" entries in mixed passes where
+	// early targets succeed and later ones fail (which would hide the
+	// timeout/collision/nack evidence operators actually need).
+	//
+	// Policy:
+	//   - While slots remain, record anything (ok or non-ok).
+	//   - Once full, if current is non-ok, evict the oldest "ok"
+	//     entry (if any) to make room. If all entries are non-ok,
+	//     keep the current set (first N non-ok attempts stay).
+	//   - "ok" entries never displace anything after the cap is full.
+	entry := scanAttemptLog{
+		source:   b.source,
+		target:   frame.Target,
+		resClass: class,
+		duration: dur,
+		errStr:   truncateErr(err),
+	}
 	if len(b.attempts) < scanAttemptLogCap {
-		b.attempts = append(b.attempts, scanAttemptLog{
-			source:   b.source,
-			target:   frame.Target,
-			resClass: class,
-			duration: dur,
-			errStr:   truncateErr(err),
-		})
+		b.attempts = append(b.attempts, entry)
+	} else if class != "ok" {
+		for i, existing := range b.attempts {
+			if existing.resClass == "ok" {
+				b.attempts[i] = entry
+				break
+			}
+		}
 	}
 	return response, err
 }

@@ -373,6 +373,133 @@ func (m *Mux) classifyTxnLocked(reason ActiveTxnInactiveReason) TxnClass {
 	return TxnClassUnknown
 }
 
+// synDiagRingCap bounds the SYN-path diagnostics ring. 16 entries is
+// enough to characterize the last ~16 SYN events that arrived while the
+// gateway owned the bus (the window where a missed final-SYN echo would
+// strand a Send consumer). Bounded — never grows.
+const synDiagRingCap = 16
+
+// SynDiagEntry records a single SYN-on-gateway-ownership event. The
+// fields answer: at SYN arrival, did the mux consider the txn active?
+// What was the last byte we wrote (to correlate with a real response)?
+// How many bytes had the active path read already? Did we deliver the
+// SYN to activeCh for the Send consumer, or did onSYNLocked consume it
+// as an end-of-txn terminator? Which inactive reason (if any) was set?
+type SynDiagEntry struct {
+	ObservedAt          time.Time
+	TxnID               uint64
+	OwnerID             uint64
+	GatewayOwned        bool
+	GwActiveBefore      bool
+	GwActiveAfter       bool
+	LastWrittenByte     byte
+	HasLastWrittenByte  bool
+	BytesRead           uint64
+	SynDeliveredToActive bool
+	InactiveReason      ActiveTxnInactiveReason
+}
+
+// synDiagRing is a bounded ring of SynDiagEntry. Wraps once it reaches
+// synDiagRingCap — oldest entries are overwritten. Access is guarded by
+// Mux.stateMu.
+type synDiagRing struct {
+	entries [synDiagRingCap]SynDiagEntry
+	head    int // next write slot
+	count   int // number of valid entries (<=synDiagRingCap)
+}
+
+// push appends entry, overwriting the oldest slot once full.
+func (r *synDiagRing) push(e SynDiagEntry) {
+	r.entries[r.head] = e
+	r.head = (r.head + 1) % synDiagRingCap
+	if r.count < synDiagRingCap {
+		r.count++
+	}
+}
+
+// snapshot returns a slice of entries in chronological order (oldest
+// first). Safe to call with Mux.stateMu held.
+func (r *synDiagRing) snapshot() []SynDiagEntry {
+	if r.count == 0 {
+		return nil
+	}
+	out := make([]SynDiagEntry, 0, r.count)
+	start := (r.head - r.count + synDiagRingCap) % synDiagRingCap
+	for i := 0; i < r.count; i++ {
+		out = append(out, r.entries[(start+i)%synDiagRingCap])
+	}
+	return out
+}
+
+// SynDiagSnapshot returns a chronological snapshot of recent SYN-on-
+// gateway-ownership events. Bounded to synDiagRingCap entries. Safe to
+// call from any goroutine.
+//
+// Used by tests and by runtime soak triage to confirm or exclude the
+// hypothesis that the trailing SYN of a gateway transaction is consumed
+// by onSYNLocked before the Send consumer sees it as a frame terminator.
+func (m *Mux) SynDiagSnapshot() []SynDiagEntry {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	return m.synDiag.snapshot()
+}
+
+// ActiveTxnSnapshotForScan returns a txnID-carrying snapshot of the
+// current (or most recent) gateway transaction, bounded to the first
+// txnPrefixCap write/read bytes and the lightweight class string. This
+// is the richer seam used by statsBus when the injected classifier
+// implements activeTxnSnapshotter — it lets each scan attempt log carry
+// the specific txn ID the bus.Send call actually produced, eliminating
+// the attribution race where LastTxnClass() could return a later txn's
+// class if a second grant completed between Send return and the log
+// write.
+//
+// Returned prefix slices are freshly allocated copies — safe to hold
+// across calls. Safe to call from any goroutine.
+func (m *Mux) ActiveTxnSnapshotForScan() (id uint64, writePrefix []byte, readPrefix []byte, class string) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	wp := make([]byte, m.activeTxn.writePrefixLen)
+	copy(wp, m.activeTxn.writePrefix[:m.activeTxn.writePrefixLen])
+	rp := make([]byte, m.activeTxn.readPrefixLen)
+	copy(rp, m.activeTxn.readPrefix[:m.activeTxn.readPrefixLen])
+	cls := m.activeTxn.txnClass
+	if cls == TxnClassUnknown {
+		cls = m.activeTxn.lastClass
+	}
+	return m.activeTxn.id, wp, rp, string(cls)
+}
+
+// recordSynDiagLocked pushes a SYN-on-gateway-ownership entry into the
+// ring. Caller must hold stateMu. Only call when gateway owns the bus at
+// SYN arrival (the hypothesis-relevant window).
+func (m *Mux) recordSynDiagLocked(
+	ownerID uint64,
+	gwActiveBefore bool,
+	gwActiveAfter bool,
+	synDelivered bool,
+) {
+	var last byte
+	hasLast := false
+	if n := m.activeTxn.writePrefixLen; n > 0 {
+		last = m.activeTxn.writePrefix[n-1]
+		hasLast = true
+	}
+	m.synDiag.push(SynDiagEntry{
+		ObservedAt:           time.Now(),
+		TxnID:                m.activeTxn.id,
+		OwnerID:              ownerID,
+		GatewayOwned:         true,
+		GwActiveBefore:       gwActiveBefore,
+		GwActiveAfter:        gwActiveAfter,
+		LastWrittenByte:      last,
+		HasLastWrittenByte:   hasLast,
+		BytesRead:            m.activeTxn.bytesRead.Load(),
+		SynDeliveredToActive: synDelivered,
+		InactiveReason:       m.activeTxn.inactiveReas,
+	})
+}
+
 // MarkSchemaError flags the most recent (or current) gateway transaction
 // as having failed because the payload did not match the expected
 // schema. Called by the gateway-side parse path when a candidate frame

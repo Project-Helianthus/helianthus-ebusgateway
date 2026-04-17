@@ -187,6 +187,12 @@ type Mux struct {
 	// for tests and production observability. Bounded — never grows.
 	activeTxn activeTxnDiag
 
+	// synDiag is a bounded ring of SYN events observed while gateway owns
+	// the bus. Used to confirm/exclude the "final SYN echo consumed by
+	// onSYNLocked before Send sees the terminator" hypothesis. Protected
+	// by stateMu. Bounded by synDiagRingCap — never grows.
+	synDiag synDiagRing
+
 	// Gateway echo tracker (for the internal active path).
 	// Protected by stateMu.
 	gatewayEcho *echoTracker
@@ -1091,6 +1097,15 @@ func (m *Mux) onReceived(symbol byte) {
 func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bool, now time.Time) ([]PassiveEvent, bool) {
 	var passiveEvents []PassiveEvent
 
+	// SYN-path diagnostics (bounded). Capture gwActiveBefore snapshot
+	// under stateMu so the ring entry matches the decision the SYN
+	// branches below make. Only record when gateway owns the bus at
+	// SYN arrival — that's the hypothesis-relevant window (final-SYN
+	// echo potentially consumed by onSYNLocked before Send sees the
+	// frame terminator).
+	wasGatewayOwned := hasOwner && ownerID == gatewaySessionID
+	gwActiveBefore := m.gatewayTxnActive
+
 	// Flush gateway echo tracker at SYN boundary. Flushed bytes are
 	// confirmed gateway self-traffic — do NOT emit to passive path
 	// (passive is third-party only). They are delivered to external
@@ -1152,6 +1167,20 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	passiveEvents = append(passiveEvents, PassiveEvent{
 		Kind: PassiveEventSymbol, Symbol: protocol.SymbolSyn, ObservedAt: now,
 	})
+
+	// SYN-path diagnostics: record only when gateway owned the bus at
+	// SYN arrival OR at the instant one of the branches above just
+	// cleared gatewayTxnActive (so we see the transition). The caller's
+	// activePathExpectsBytes() check (== gatewayTxnActive AFTER this
+	// function returns) determines whether the SYN will be delivered to
+	// activeCh — if gwActiveAfter is false, onSYNLocked consumed this
+	// SYN as an end-of-txn terminator and the Send consumer on activeCh
+	// does NOT see it.
+	if wasGatewayOwned || gwActiveBefore {
+		gwActiveAfter := m.gatewayTxnActive
+		synDelivered := gwActiveAfter // deliverToActive gate is activePathExpectsBytes()
+		m.recordSynDiagLocked(ownerID, gwActiveBefore, gwActiveAfter, synDelivered)
+	}
 
 	shouldTryGrant := m.arb.hasPending()
 	return passiveEvents, shouldTryGrant

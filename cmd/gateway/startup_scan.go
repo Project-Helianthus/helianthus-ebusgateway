@@ -69,7 +69,26 @@ type scanAttemptLog struct {
 	errStr    string // truncated, only for non-ok attempts
 	probeKind string // e.g. "scan_07_04" — bounded set of probe names
 	txnClass  string // adaptermux txn classification (if classifier wired)
+
+	// Txn-ID correlated fields (populated when the classifier also
+	// implements activeTxnSnapshotter). txnIDBefore is the mux's current
+	// txn id just before the bus.Send call; txnIDAfter is the id after
+	// Send returns. If these differ by exactly 1, this attempt owns
+	// exactly one grant. If they're equal, no new grant happened (bus
+	// rejected arbitration or queued). writePrefix/readPrefix are hex-
+	// encoded, capped at scanPrefixHexCap characters. resultErrMsg is
+	// the specific bus.Send return err.Error() ("" when nil).
+	txnIDBefore  uint64
+	txnIDAfter   uint64
+	writePrefix  string // hex-encoded, capped at scanPrefixHexCap
+	readPrefix   string // hex-encoded, capped at scanPrefixHexCap
+	resultErrMsg string // err.Error() from bus.Send, "" when nil
 }
+
+// scanPrefixHexCap bounds how many hex characters of write/read prefix
+// are captured per scan attempt. 16 = 8 bytes, enough to see source +
+// QQ + PB + SB + NN + two data + ACK without flooding logs.
+const scanPrefixHexCap = 16
 
 // activeTxnClassifier is the optional interface statsBus queries after
 // each probe to attach the adaptermux transaction classification to the
@@ -78,6 +97,34 @@ type scanAttemptLog struct {
 // txnClass is left empty — diagnostics degrade gracefully.
 type activeTxnClassifier interface {
 	LastTxnClass() string
+}
+
+// activeTxnSnapshotter is the richer (optional) seam for classifiers
+// that can correlate the scan attempt with a specific mux transaction
+// id. When the injected classifier also implements this interface,
+// statsBus.Send captures a (id, writePrefix, readPrefix, class) snapshot
+// BEFORE and AFTER each bus.Send call, eliminating the race where
+// LastTxnClass() could return a later txn's class if a second grant
+// completed between Send return and the log write.
+type activeTxnSnapshotter interface {
+	ActiveTxnSnapshotForScan() (id uint64, writePrefix []byte, readPrefix []byte, class string)
+}
+
+// hexN encodes at most n bytes of b as uppercase hex (2 chars per byte).
+// Bounded: result never exceeds 2*n characters.
+func hexN(b []byte, n int) string {
+	if n <= 0 || len(b) == 0 {
+		return ""
+	}
+	if len(b) > n {
+		b = b[:n]
+	}
+	const digits = "0123456789ABCDEF"
+	out := make([]byte, 0, len(b)*2)
+	for _, v := range b {
+		out = append(out, digits[v>>4], digits[v&0x0F])
+	}
+	return string(out)
 }
 
 type startupScanSignals struct {
@@ -185,6 +232,22 @@ func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Fr
 		return nil, fmt.Errorf("scan stats bus missing")
 	}
 	b.total++
+
+	// Txn correlation: if the classifier is also a snapshotter, capture
+	// the txn id just BEFORE Send so we can label the attempt with the
+	// txn range it spans. Prefix / class are captured AFTER. If the
+	// classifier only implements LastTxnClass, we degrade to class-only.
+	var (
+		snap              activeTxnSnapshotter
+		preID             uint64
+		haveSnapshotter   bool
+	)
+	if b.classifier != nil {
+		if snap, haveSnapshotter = b.classifier.(activeTxnSnapshotter); haveSnapshotter {
+			preID, _, _, _ = snap.ActiveTxnSnapshotForScan()
+		}
+	}
+
 	start := time.Now()
 	response, err := b.bus.Send(ctx, frame)
 	dur := time.Since(start)
@@ -226,7 +289,21 @@ func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Fr
 		errStr:    truncateErr(err),
 		probeKind: scanProbeKind(frame),
 	}
-	if b.classifier != nil {
+	if err != nil {
+		entry.resultErrMsg = err.Error()
+	}
+	if haveSnapshotter {
+		// Rich snapshot: captures txnID + prefixes + class in one
+		// stateMu-guarded read, so all four fields belong to the same
+		// epoch (no attribution race).
+		postID, wp, rp, cls := snap.ActiveTxnSnapshotForScan()
+		entry.txnIDBefore = preID
+		entry.txnIDAfter = postID
+		entry.writePrefix = hexN(wp, scanPrefixHexCap/2)
+		entry.readPrefix = hexN(rp, scanPrefixHexCap/2)
+		entry.txnClass = cls
+	} else if b.classifier != nil {
+		// Legacy path: class only, no txn-id correlation.
 		entry.txnClass = b.classifier.LastTxnClass()
 	}
 	if len(b.attempts) < scanAttemptLogCap {
@@ -257,13 +334,15 @@ func (b *statsBus) logPassDiagnostics(sourceMode string, targetCount int, passTi
 	for i, a := range b.attempts {
 		if a.resClass == "ok" {
 			log.Printf(
-				"startup scan attempt %d/%d: src=0x%02X tgt=0x%02X probe=%s result=ok dur=%s txnClass=%s",
-				i+1, len(b.attempts), a.source, a.target, a.probeKind, a.duration, a.txnClass,
+				"startup scan attempt %d/%d: src=0x%02X tgt=0x%02X probe=%s result=ok dur=%s txnClass=%s txnIDs=%d->%d wp=%s rp=%s",
+				i+1, len(b.attempts), a.source, a.target, a.probeKind, a.duration,
+				a.txnClass, a.txnIDBefore, a.txnIDAfter, a.writePrefix, a.readPrefix,
 			)
 		} else {
 			log.Printf(
-				"startup scan attempt %d/%d: src=0x%02X tgt=0x%02X probe=%s result=%s dur=%s txnClass=%s err=%q",
-				i+1, len(b.attempts), a.source, a.target, a.probeKind, a.resClass, a.duration, a.txnClass, a.errStr,
+				"startup scan attempt %d/%d: src=0x%02X tgt=0x%02X probe=%s result=%s dur=%s txnClass=%s txnIDs=%d->%d wp=%s rp=%s err=%q",
+				i+1, len(b.attempts), a.source, a.target, a.probeKind, a.resClass, a.duration,
+				a.txnClass, a.txnIDBefore, a.txnIDAfter, a.writePrefix, a.readPrefix, a.errStr,
 			)
 		}
 	}

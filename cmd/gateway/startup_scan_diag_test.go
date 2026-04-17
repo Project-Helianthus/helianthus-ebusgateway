@@ -586,6 +586,189 @@ func TestWireAdapterDirect_RebindsClassifierPerInstance(t *testing.T) {
 	}
 }
 
+// fakeSnapshotter implements both activeTxnClassifier and
+// activeTxnSnapshotter for txnID-correlation tests.
+type fakeSnapshotter struct {
+	// values returned by the next ActiveTxnSnapshotForScan call.
+	id          uint64
+	writePrefix []byte
+	readPrefix  []byte
+	class       string
+
+	// stepID: if non-zero, auto-increment id by stepID on each call.
+	stepID uint64
+
+	calls int
+}
+
+func (f *fakeSnapshotter) LastTxnClass() string { return f.class }
+
+func (f *fakeSnapshotter) ActiveTxnSnapshotForScan() (uint64, []byte, []byte, string) {
+	f.calls++
+	wp := make([]byte, len(f.writePrefix))
+	copy(wp, f.writePrefix)
+	rp := make([]byte, len(f.readPrefix))
+	copy(rp, f.readPrefix)
+	id := f.id
+	if f.stepID > 0 {
+		f.id += f.stepID
+	}
+	return id, wp, rp, f.class
+}
+
+// TestScanAttemptLog_TxnIDCorrelation proves that when the injected
+// classifier also implements activeTxnSnapshotter, each scan attempt
+// log carries the exact (txnID, writePrefix, readPrefix, class) tuple
+// the snapshotter returned — bound to THIS specific attempt's txn
+// epoch. No reliance on LastTxnClass() racing with later grants.
+func TestScanAttemptLog_TxnIDCorrelation(t *testing.T) {
+	fs := &fakeSnapshotter{
+		id:          42,
+		writePrefix: []byte{0x07, 0x04},
+		readPrefix:  []byte{0xFE, 0xAA},
+		class:       "success_like",
+	}
+	sb := &statsBus{
+		bus:        &stubBus{errors: []error{nil}},
+		source:     0x71,
+		classifier: fs,
+	}
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+
+	if len(sb.attempts) != 1 {
+		t.Fatalf("attempts len=%d, want 1", len(sb.attempts))
+	}
+	a := sb.attempts[0]
+	// preID captured BEFORE Send; postID captured AFTER Send. With
+	// stepID=0, fs returns the same id on both calls.
+	if a.txnIDBefore != 42 {
+		t.Errorf("txnIDBefore=%d, want 42", a.txnIDBefore)
+	}
+	if a.txnIDAfter != 42 {
+		t.Errorf("txnIDAfter=%d, want 42", a.txnIDAfter)
+	}
+	if a.writePrefix != "0704" {
+		t.Errorf("writePrefix=%q, want %q", a.writePrefix, "0704")
+	}
+	if a.readPrefix != "FEAA" {
+		t.Errorf("readPrefix=%q, want %q", a.readPrefix, "FEAA")
+	}
+	if a.txnClass != "success_like" {
+		t.Errorf("txnClass=%q, want success_like", a.txnClass)
+	}
+	// ok attempt: resultErrMsg must be empty ("" for nil err).
+	if a.resultErrMsg != "" {
+		t.Errorf("resultErrMsg=%q, want empty (ok attempt)", a.resultErrMsg)
+	}
+}
+
+// TestScanAttemptLog_TxnIDAdvancesAcrossAttempts proves that successive
+// scan attempts capture the mux's advancing txn id — each attempt's
+// (before,after) pair corresponds to its own grant. This is the
+// correlation invariant that lets operators tie a specific attempt log
+// line to a specific mux txn instead of guessing.
+func TestScanAttemptLog_TxnIDAdvancesAcrossAttempts(t *testing.T) {
+	fs := &fakeSnapshotter{
+		id:          100,
+		stepID:      1,
+		writePrefix: []byte{0x07, 0x04},
+		readPrefix:  []byte{0xAA},
+		class:       "echo_only_timeout",
+	}
+	sb := &statsBus{
+		bus: &stubBus{errors: []error{
+			ebuserrors.ErrTimeout,
+			ebuserrors.ErrTimeout,
+			ebuserrors.ErrTimeout,
+		}},
+		source:     0x71,
+		classifier: fs,
+	}
+	targets := []byte{0x08, 0x10, 0x15}
+	for _, tgt := range targets {
+		_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: tgt, Primary: 0x07, Secondary: 0x04})
+	}
+
+	if len(sb.attempts) != 3 {
+		t.Fatalf("attempts len=%d, want 3", len(sb.attempts))
+	}
+	// Expected id sequence with stepID=1 and 2 calls/send (pre+post):
+	//   send0: pre=100, post=101
+	//   send1: pre=102, post=103
+	//   send2: pre=104, post=105
+	want := [][2]uint64{{100, 101}, {102, 103}, {104, 105}}
+	for i, a := range sb.attempts {
+		if a.txnIDBefore != want[i][0] || a.txnIDAfter != want[i][1] {
+			t.Errorf("attempts[%d]: txnIDs=(%d,%d), want (%d,%d)",
+				i, a.txnIDBefore, a.txnIDAfter, want[i][0], want[i][1])
+		}
+	}
+	// Every attempt must carry a non-empty resultErrMsg (all three were
+	// ErrTimeout).
+	for i, a := range sb.attempts {
+		if a.resultErrMsg == "" {
+			t.Errorf("attempts[%d].resultErrMsg empty; want non-empty (ErrTimeout)", i)
+		}
+	}
+}
+
+// TestScanAttemptLog_LegacyClassifierOnly proves graceful degradation:
+// when the classifier implements only LastTxnClass (no snapshotter),
+// the attempt carries txnClass but leaves the txn-id fields zero and
+// writePrefix/readPrefix empty. No panic, no crash.
+func TestScanAttemptLog_LegacyClassifierOnly(t *testing.T) {
+	fc := &fakeClassifier{val: "schema_error"}
+	sb := &statsBus{
+		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
+		source:     0x71,
+		classifier: fc,
+	}
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+
+	if len(sb.attempts) != 1 {
+		t.Fatalf("attempts len=%d, want 1", len(sb.attempts))
+	}
+	a := sb.attempts[0]
+	if a.txnClass != "schema_error" {
+		t.Errorf("txnClass=%q, want schema_error", a.txnClass)
+	}
+	if a.txnIDBefore != 0 || a.txnIDAfter != 0 {
+		t.Errorf("txnIDs=(%d,%d), want (0,0) for legacy classifier", a.txnIDBefore, a.txnIDAfter)
+	}
+	if a.writePrefix != "" || a.readPrefix != "" {
+		t.Errorf("prefixes=(%q,%q), want empty for legacy classifier", a.writePrefix, a.readPrefix)
+	}
+	if a.resultErrMsg == "" {
+		t.Errorf("resultErrMsg empty, want ErrTimeout message")
+	}
+}
+
+// TestHexN verifies the bounded hex encoder used for scan attempt
+// prefix fields.
+func TestHexN(t *testing.T) {
+	tests := []struct {
+		in   []byte
+		n    int
+		want string
+	}{
+		{nil, 8, ""},
+		{[]byte{}, 8, ""},
+		{[]byte{0x07, 0x04}, 8, "0704"},
+		{[]byte{0x07, 0x04, 0xB5, 0x24, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06}, 8, "0704B524" + "01020304"},
+		{[]byte{0xAA}, 0, ""},
+		{[]byte{0xFF}, 1, "FF"},
+	}
+	for i, tc := range tests {
+		got := hexN(tc.in, tc.n)
+		if got != tc.want {
+			t.Errorf("hexN(%v,%d) = %q, want %q (case %d)", tc.in, tc.n, got, tc.want, i)
+		}
+		if len(got) > tc.n*2 {
+			t.Errorf("hexN overran cap: len=%d, cap=%d (case %d)", len(got), tc.n*2, i)
+		}
+	}
+}
+
 // TestStartDiscoveryScanLoopFn_SignatureThreadsClassifier — Codex PR #502
 // P2 signature regression. Asserts the 5-arg signature of
 // startDiscoveryScanLoopFn: invoking it with a non-nil classifier must

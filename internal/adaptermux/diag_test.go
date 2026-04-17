@@ -324,19 +324,26 @@ func TestRegression_StartedButNoResponse(t *testing.T) {
 	if snap.BytesRead != 0 {
 		t.Fatalf("last txn BytesRead = %d, want 0 (no response arrived)", snap.BytesRead)
 	}
-	// With write+no-read, SYN does NOT clear (lifecycle fix).
-	// Transaction remains active until MaxOwnershipDuration / read
-	// timeout / ctx cancel. Under the test config, the mux uses
-	// default MaxOwnershipDuration=10s; we don't wait that long.
-	// The observable diagnostic is that last-cycle writes=7 reads=0
-	// and the transaction is STILL active (not erroneously cleared
-	// as syn_idle). That is the REAL regression signal:
-	//   "writes>0 reads=0 ← production is failing between write and response"
-	if !snap.Active {
-		t.Fatalf("last txn must remain active (write+no-read); got inactive reason=%q", snap.InactiveReason)
+	// Write+no-read transactions are terminated by ONE of:
+	//   - idle-grace release (syn_idle) after IdleReleaseGrace with an
+	//     abandoned grant (no reads ever)
+	//   - active_read_timeout when bus.Send hits its read timeout
+	//   - max_ownership after MaxOwnershipDuration
+	//   - context_cancel / reset / reconnect
+	// All of these preserve the diagnostic signal: writes>0 reads=0.
+	// Pre-grant stale SYN (SYN with bytesRead==0 BEFORE idle-grace
+	// expired) must NOT be the cause — that was the production bug.
+	if snap.Active {
+		t.Fatal("last txn should be inactive by now (idle-grace already fired)")
 	}
-	if snap.InactiveReason != ReasonNone {
-		t.Fatalf("InactiveReason must be empty (write+no-read stays active), got %q", snap.InactiveReason)
+	allowed := map[ActiveTxnInactiveReason]bool{
+		ReasonSYNIdle:           true,
+		ReasonActiveReadTimeout: true,
+		ReasonMaxOwnership:      true,
+		ReasonContextCancel:     true,
+	}
+	if !allowed[snap.InactiveReason] {
+		t.Fatalf("InactiveReason = %q, want one of syn_idle/active_read_timeout/max_ownership/context_cancel (lifecycle-valid reasons)", snap.InactiveReason)
 	}
 }
 

@@ -1110,9 +1110,16 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
 			m.logger.Printf("adaptermux: ownership released for session %d (idle grace expired) (AM6)", ownerID)
 			m.arb.releaseOwnership(ownerID)
-			// gatewayTxnActive already cleared above (SYN boundary).
-			// This site only runs if ownership was held past the grace
-			// period, covered by ReasonSYNIdle already recorded.
+			// Codex: clear gatewayTxnActive here too — the "SYN-before-read"
+			// guard above only clears when bytesRead > 0, so an abandoned
+			// grant (no write, no read) keeps the flag true until idle
+			// grace releases ownership. Without this clear, ownership is
+			// gone but activePathExpectsBytes() still returns true,
+			// routing third-party traffic into activeCh indefinitely.
+			if ownerID == gatewaySessionID && m.gatewayTxnActive {
+				m.gatewayTxnActive = false
+				m.recordGatewayInactive(ReasonSYNIdle)
+			}
 		}
 	}
 

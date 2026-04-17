@@ -107,6 +107,10 @@ func (t *p3MockTransport) Init(features byte) (byte, error) {
 	return features, nil
 }
 
+// BytesAreUnescaped reports that this mock delivers ENH-style
+// pre-unescaped logical bytes (matching real ENHTransport semantics).
+func (t *p3MockTransport) BytesAreUnescaped() bool { return true }
+
 func (t *p3MockTransport) getStartRequests() []byte {
 	t.mu.Lock()
 	defer t.mu.Unlock()

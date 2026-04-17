@@ -595,3 +595,85 @@ func (b *blackholeMockTransport) Close() error                { return nil }
 //   TestCachedInfo_ReturnsCopy                        (info_cache_test.go)
 //   Rationale: INFO cache is populated once at connect, serves
 //   startup snapshots. See doc comment on populateInfoCache.
+
+// =======================================================================
+// PR502 Runtime Soak Followup: gatewayTxnActive + EscapeAware
+// =======================================================================
+
+// TestActivePath_NoAccumulationAfterTxnCompleteBeforeIdleGrace verifies
+// that after a gateway transaction completes, third-party traffic does
+// NOT accumulate on activeCh during the IdleReleaseGrace window.
+//
+// Policy (runtime-soak P0 gateway): owner == gateway is NOT sufficient
+// for delivering to activeCh. Must also have gatewayTxnActive == true
+// (bus.Send is currently consuming). After transaction-done / NACK /
+// SYN-timeout / idle-grace-expired, gatewayTxnActive is cleared and
+// subsequent third-party bytes must not land in activeCh even though
+// ownership may linger up to IdleReleaseGrace.
+func TestActivePath_NoAccumulationAfterTxnCompleteBeforeIdleGrace(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Grant gateway ownership.
+	ch := mux.arb.requestStart(gatewaySessionID, 0x71)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+	select {
+	case r := <-ch:
+		if !r.granted {
+			t.Fatal("expected grant")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for grant")
+	}
+
+	// Verify gatewayTxnActive is true.
+	mux.stateMu.Lock()
+	active := mux.gatewayTxnActive
+	mux.stateMu.Unlock()
+	if !active {
+		t.Fatal("gatewayTxnActive must be true after grant")
+	}
+
+	// Drain any existing bytes from activeCh.
+	for len(mux.activeCh) > 0 {
+		<-mux.activeCh
+	}
+
+	// Simulate transaction complete by clearing gatewayTxnActive directly.
+	// (In production, this happens via phase tracker events.)
+	mux.stateMu.Lock()
+	mux.gatewayTxnActive = false
+	mux.stateMu.Unlock()
+
+	// Now feed third-party bytes. Ownership is still held (IdleReleaseGrace
+	// not yet expired), but gatewayTxnActive is false → activeCh must stay empty.
+	thirdParty := []byte{0x10, 0x08, 0xB5, 0x05}
+	for _, b := range thirdParty {
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if remaining := len(mux.activeCh); remaining != 0 {
+		t.Fatalf("activeCh accumulated %d bytes after txn complete, want 0 (ownership without txn must not deliver)", remaining)
+	}
+}
+
+// TestActiveTransport_ImplementsEscapeAware verifies that the adaptermux
+// active transport implements transport.EscapeAware and returns
+// BytesAreUnescaped()==true for ENH. Without this, protocol.Bus would
+// treat logical 0xAA as SYN on the ENH unescaped path.
+func TestActiveTransport_ImplementsEscapeAware(t *testing.T) {
+	mux, _, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	activeTr := mux.ActiveTransport()
+	ea, ok := activeTr.(transport.EscapeAware)
+	if !ok {
+		t.Fatal("active transport must implement transport.EscapeAware")
+	}
+	if !ea.BytesAreUnescaped() {
+		t.Fatal("active transport BytesAreUnescaped must return true for ENH mock transport")
+	}
+}

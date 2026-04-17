@@ -173,6 +173,15 @@ type Mux struct {
 	blockingArbGen    uint64 // monotonic generation counter, never reused
 	blockingArbActive bool   // true while a blocking goroutine owns the transport
 
+	// gatewayTxnActive reports whether bus.Send is actively consuming
+	// activeCh for a gateway transaction. Separate from ownership:
+	// ownership can outlive the transaction up to IdleReleaseGrace.
+	// Only when gatewayTxnActive is true are bytes delivered to
+	// activeCh. Set in completeArbitrationGrant for the gateway,
+	// cleared when ownership is released (transaction complete,
+	// NACK, SYN timeout, or idle grace expired).
+	gatewayTxnActive bool
+
 	// Gateway echo tracker (for the internal active path).
 	// Protected by stateMu.
 	gatewayEcho *echoTracker
@@ -590,6 +599,27 @@ func (m *Mux) arbitrationSendsSource() bool {
 	return false
 }
 
+// bytesAreUnescaped reports whether the upstream transport delivers
+// pre-unescaped (logical) bytes. ENH/ENS transports return true: they
+// decode wire-level {0xA9,0x01}→0xAA / {0xA9,0x00}→0xA9 before surfacing
+// bytes. Protocol.Bus uses this via EscapeAware to skip escape expansion
+// on read and to avoid double-escaping on write.
+//
+// Without this, protocol.Bus treats 0xAA as SYN (bus idle) on the wire
+// even when it is a legitimate data byte on the logical layer.
+func (m *Mux) bytesAreUnescaped() bool {
+	m.connMu.Lock()
+	tr := m.upstream
+	m.connMu.Unlock()
+	if tr == nil {
+		return false
+	}
+	if ea, ok := tr.(transport.EscapeAware); ok {
+		return ea.BytesAreUnescaped()
+	}
+	return false
+}
+
 // CachedInfo returns a copy of the cached INFO response for the given
 // ID. Returns an error if the cache is empty (adapter doesn't support
 // INFO) or the requested ID was not cached.
@@ -626,6 +656,7 @@ func (m *Mux) reconnect() error {
 	m.phase.reset(wirePhaseIdle)
 	m.arb.forceRelease()
 	m.gatewayEcho.reset()
+	m.gatewayTxnActive = false // transport replaced — any active txn is dead
 	// Bump gen forward (monotonic) — any in-flight goroutine's captured
 	// arbGen will no longer match, so it cannot clear blockingArbActive.
 	// Clear blockingArbActive here because the transport is being replaced.
@@ -779,6 +810,9 @@ func (m *Mux) readLoop() {
 					time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 					m.arb.releaseOwnership(ownerID)
 					m.gatewayEcho.reset()
+					if ownerID == gatewaySessionID {
+						m.gatewayTxnActive = false
+					}
 					quietBusTimedOut = true
 				}
 				m.stateMu.Unlock()
@@ -891,6 +925,9 @@ func (m *Mux) onReceived(symbol byte) {
 		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 		m.arb.releaseOwnership(ownerID)
 		m.gatewayEcho.reset()
+		if ownerID == gatewaySessionID {
+			m.gatewayTxnActive = false
+		}
 		hasOwner = false
 		ownershipTimedOut = true
 	}
@@ -978,6 +1015,11 @@ func (m *Mux) onReceived(symbol byte) {
 	if phaseEvent == wirePhaseEventTransactionDone ||
 		phaseEvent == wirePhaseEventCmdNACK {
 		m.arb.releaseOwnership(ownerID)
+		if ownerID == gatewaySessionID {
+			m.stateMu.Lock()
+			m.gatewayTxnActive = false
+			m.stateMu.Unlock()
+		}
 		m.tryGrantAndStart()
 	}
 }
@@ -1001,6 +1043,9 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	if phaseEvent == wirePhaseEventSYNTimeout && hasOwner {
 		m.logger.Printf("adaptermux: ownership released for session %d (SYN timeout) (AM6)", ownerID)
 		m.arb.releaseOwnership(ownerID)
+		if ownerID == gatewaySessionID {
+			m.gatewayTxnActive = false
+		}
 	}
 
 	// Release ownership on idle SYN after grace period.
@@ -1008,6 +1053,9 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
 			m.logger.Printf("adaptermux: ownership released for session %d (idle grace expired) (AM6)", ownerID)
 			m.arb.releaseOwnership(ownerID)
+			if ownerID == gatewaySessionID {
+				m.gatewayTxnActive = false
+			}
 		}
 	}
 
@@ -1033,6 +1081,7 @@ func (m *Mux) handleReset() {
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
+	m.gatewayTxnActive = false // adapter reset — any active txn is dead
 	// Bump gen forward (monotonic) — see reconnect() for rationale.
 	m.blockingArbGen++
 	m.blockingArbActive = false
@@ -1139,28 +1188,23 @@ func (m *Mux) resetAllSessionEchoes() {
 	}
 }
 
-// activePathExpectsBytes reports whether the gateway active path (bus.Send)
-// is currently in a transaction and consuming activeCh. Bytes are delivered
-// to activeCh ONLY when the gateway owns the bus — this is the only time
-// bus.Send is reading from activeCh.
+// activePathExpectsBytes reports whether bus.Send is CURRENTLY consuming
+// activeCh for a gateway transaction. Ownership alone is insufficient:
+// after a transaction completes or aborts, ownership can linger up to
+// IdleReleaseGrace while bus.Send has already returned. Third-party
+// bytes in that idle window must NOT accumulate on activeCh.
 //
 // Policy (runtime soak fix):
-//   - Deliver to activeCh only if gateway owns the bus.
-//   - Do NOT deliver idle SYN bursts (no owner → no consumer).
+//   - gatewayTxnActive: true iff bus.Send was granted and has not yet
+//     released (set in completeArbitrationGrant, cleared on ownership
+//     release via SYN timeout/idle grace, NACK, or TransactionDone).
+//   - Do NOT deliver idle SYN bursts (no active txn → no consumer).
 //   - Do NOT use activeCh as a passive backlog — passive traffic goes
 //     through the passive path and external sessions, not activeCh.
 //
-// During pendingStart / blockingArb, bus.Send is BLOCKED inside
-// StartArbitration/arbitration notify — it is NOT reading activeCh.
-// Any bytes that arrive before STARTED are either arbitration frames
-// (consumed by the transport) or third-party traffic (belongs to
-// passive path, not active). After STARTED, ownership is confirmed
-// and this predicate returns true.
-//
 // Caller must hold stateMu.
 func (m *Mux) activePathExpectsBytes() bool {
-	ownerID, _, hasOwner := m.arb.owner()
-	return hasOwner && ownerID == gatewaySessionID
+	return m.gatewayTxnActive
 }
 
 // deliverToActive sends a byte to the active path channel.
@@ -1446,6 +1490,8 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	m.busOwned = time.Now()
 	if sessionID == gatewaySessionID {
 		m.gatewayEcho.markRequestStart()
+		// Mark gateway transaction active — bus.Send is now consuming activeCh.
+		m.gatewayTxnActive = true
 	}
 	m.arb.confirmOwnership(sessionID, initiator)
 	m.stateMu.Unlock()

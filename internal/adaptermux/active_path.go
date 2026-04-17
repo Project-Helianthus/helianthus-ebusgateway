@@ -23,6 +23,7 @@ var (
 	_ transport.RawTransport      = (*activeTransport)(nil)
 	_ transport.StreamEventReader = (*activeTransport)(nil)
 	_ transport.InfoRequester     = (*activeTransport)(nil)
+	_ transport.EscapeAware       = (*activeTransport)(nil)
 )
 
 // NOTE: activeTransport intentionally does NOT implement
@@ -192,4 +193,16 @@ func (t *activeTransport) RequestInfo(id transport.AdapterInfoID) ([]byte, error
 // Delegates to the unified mux method (true for ENH/ENS) for bus.sendTransaction.
 func (t *activeTransport) ArbitrationSendsSource() bool {
 	return t.mux.arbitrationSendsSource()
+}
+
+// BytesAreUnescaped reports that the active path delivers already-unescaped
+// (logical) bytes to protocol.Bus. The upstream ENH/ENS transport decodes
+// wire-level escape sequences ({0xA9, 0x01} → 0xAA, {0xA9, 0x00} → 0xA9)
+// before enqueuing into activeCh, so bus.Send must NOT apply escape
+// expansion again on this path.
+//
+// Without this, protocol.Bus would double-escape 0xA9/0xAA outgoing and
+// would misinterpret logical 0xAA bytes from the adapter as SYN markers.
+func (t *activeTransport) BytesAreUnescaped() bool {
+	return t.mux.bytesAreUnescaped()
 }

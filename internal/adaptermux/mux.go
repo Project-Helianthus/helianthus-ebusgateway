@@ -227,6 +227,14 @@ type Mux struct {
 	// to prevent a WaitGroup misuse panic when a timer callback /
 	// readLoop / RemoveSession races with shutdown.
 	closing atomic.Bool
+	// closeMu serializes the check-of-closing-and-wg.Add critical section
+	// in tryGrantAndStart's blocking path with Close()'s closing.Store(true)
+	// that precedes m.wg.Wait(). Codex PR #502 P2: without this mutex,
+	// tryGrantAndStart can observe closing=false, then Close sets closing
+	// and reaches Wait, and the stale path still calls wg.Add(1) — panic
+	// ("sync: WaitGroup misuse") or leak. The mutex is narrow and only
+	// held across the guard read and the wg.Add/goroutine launch.
+	closeMu sync.Mutex
 }
 
 // activeEventKind tags active-path channel events.
@@ -309,11 +317,21 @@ func (m *Mux) Start(ctx context.Context) error {
 // Safe to call multiple times — subsequent calls return the first error.
 func (m *Mux) Close() error {
 	m.closeOnce.Do(func() {
-		// C1: signal shutdown BEFORE any Wait(). tryGrantAndStart checks
-		// this flag to avoid m.wg.Add(1) on the blocking-path goroutine
+		// C1 / PR #502 P2: signal shutdown BEFORE any Wait(). tryGrantAndStart
+		// checks this flag to avoid m.wg.Add(1) on the blocking-path goroutine
 		// while m.wg.Wait() is running — that would panic with "sync:
 		// WaitGroup misuse: Add called concurrently with Wait".
+		//
+		// The store is performed under closeMu to serialize with
+		// tryGrantAndStart's gate-then-Add critical section. Any goroutine
+		// that saw closing=false before we took closeMu has already run
+		// wg.Add(1) by the time we release the mutex; any goroutine that
+		// takes closeMu after us sees closing=true and skips the Add.
+		// closeMu is released BEFORE m.wg.Wait() to avoid blocking
+		// tryGrantAndStart callers that would otherwise queue behind Wait.
+		m.closeMu.Lock()
 		m.closing.Store(true)
+		m.closeMu.Unlock()
 		if m.cancel != nil {
 			m.cancel()
 		}
@@ -1523,11 +1541,22 @@ func (m *Mux) tryGrantAndStart() {
 		// from starting another arbitration while this goroutine runs.
 		// Generation-scoped: goroutine only clears if gen matches,
 		// so a reconnect+relaunch won't be cleared by an old goroutine.
-		// C1: refuse to spawn if shutdown is in progress. Without this
-		// gate, m.wg.Add(1) below can race with m.wg.Wait() in Close()
-		// and panic with "sync: WaitGroup misuse". Emit FAILED to the
-		// pending session so it is not left orphaned.
+		// C1 / PR #502 P2: refuse to spawn if shutdown is in progress.
+		// Without this gate, m.wg.Add(1) below can race with m.wg.Wait()
+		// in Close() and panic with "sync: WaitGroup misuse". Emit FAILED
+		// to the pending session so it is not left orphaned.
+		//
+		// PR #502 P2 (Codex): the closing-check and wg.Add MUST be
+		// serialized under closeMu with Close()'s closing.Store(true).
+		// A bare `if m.closing.Load()` check followed by a later
+		// `m.wg.Add(1)` is a TOCTOU race: Close can flip closing to true
+		// and reach m.wg.Wait() between the two statements. Holding
+		// closeMu across the check and the Add (paired with Close
+		// holding closeMu across the Store) guarantees the Add cannot
+		// run after closing has been observed as true by Close.
+		m.closeMu.Lock()
 		if m.closing.Load() {
+			m.closeMu.Unlock()
 			m.stateMu.Lock()
 			if m.pendingStart != nil && m.pendingStart.notify == notify {
 				if m.pendingStart.deadline != nil {
@@ -1552,6 +1581,7 @@ func (m *Mux) tryGrantAndStart() {
 		// StartArbitration is still running, causing post-close state
 		// mutations and goroutine leaks across reconnect/restart cycles.
 		m.wg.Add(1)
+		m.closeMu.Unlock()
 		go func() {
 			defer m.wg.Done()
 			if err := starter.StartArbitration(initiator); err != nil {

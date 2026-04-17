@@ -1178,3 +1178,104 @@ func TestActiveTransport_ImplementsEscapeAware(t *testing.T) {
 		t.Fatal("active transport BytesAreUnescaped must return true for ENH mock transport")
 	}
 }
+
+// =======================================================================
+// PR502 Codex P2: Serialize shutdown gate with wg.Add
+// =======================================================================
+
+// raceBlockingStartTransport has StartArbitration return an error promptly
+// so the blocking-path goroutine exits quickly — we are stressing the
+// Add/Wait race, not the in-flight behavior.
+type raceBlockingStartTransport struct {
+	readCh chan byte
+}
+
+func (r *raceBlockingStartTransport) ReadByte() (byte, error) {
+	v, ok := <-r.readCh
+	if !ok {
+		return 0, errors.New("closed")
+	}
+	return v, nil
+}
+func (r *raceBlockingStartTransport) Write(p []byte) (int, error) { return len(p), nil }
+func (r *raceBlockingStartTransport) Close() error                { return nil }
+func (r *raceBlockingStartTransport) StartArbitration(initiator byte) error {
+	// Return an error promptly so the goroutine exits and wg.Done runs.
+	return errors.New("race test: no arbitration")
+}
+
+// TestTryGrantAndStart_ShutdownRace_NoAddAfterWait is the PR #502 P2
+// regression test for the check-then-add TOCTOU between tryGrantAndStart
+// and Close. Many concurrent goroutines hit the blocking-path gate while
+// Close races with them. Under -race, a broken serialization would
+// eventually panic with "sync: WaitGroup misuse: Add called concurrently
+// with Wait". This test iterates many times to force the interleaving.
+func TestTryGrantAndStart_ShutdownRace_NoAddAfterWait(t *testing.T) {
+	const iterations = 40
+	const concurrent = 64
+
+	for iter := 0; iter < iterations; iter++ {
+		mock := &raceBlockingStartTransport{
+			readCh: make(chan byte, 8),
+		}
+
+		mux := New(Config{
+			Protocol:      "enh",
+			Network:       "tcp",
+			Address:       "127.0.0.1:0",
+			ReadTimeout:   200 * time.Millisecond,
+			StartDeadline: 2 * time.Second,
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		mux.ctx, mux.cancel = ctx, cancel
+
+		mux.connMu.Lock()
+		mux.upstream = mock
+		mux.connMu.Unlock()
+		mux.upstreamFeatures.Store(0x01)
+
+		// Pre-queue many external requests so tryGrantAndStart has work to do.
+		for i := 0; i < concurrent; i++ {
+			_ = mux.arb.requestStart(uint64(1000+i), 0x50)
+		}
+
+		// Launch N goroutines each calling tryGrantAndStart, racing with Close.
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(concurrent)
+		for i := 0; i < concurrent; i++ {
+			go func() {
+				defer wg.Done()
+				<-start
+				// Each caller races the shutdown gate. If the gate is
+				// not serialized with Close, wg.Add(1) may run after
+				// Close reaches Wait — panic under -race.
+				mux.tryGrantAndStart()
+			}()
+		}
+
+		closeDone := make(chan error, 1)
+		go func() {
+			<-start
+			closeDone <- mux.Close()
+		}()
+
+		close(start)
+		wg.Wait()
+
+		select {
+		case err := <-closeDone:
+			if err != nil {
+				// Close may return a nil error since m.conn is nil here.
+				// Non-nil is OK too, what matters is no panic/hang.
+				_ = err
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iter %d: Close hung — possible wg.Add/Wait deadlock", iter)
+		}
+
+		cancel()
+		close(mock.readCh)
+	}
+}

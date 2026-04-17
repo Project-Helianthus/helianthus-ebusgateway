@@ -1516,11 +1516,15 @@ func (m *Mux) tryGrantAndStart() {
 			m.pendingStart = nil
 			m.stateMu.Unlock()
 			m.completeArbitrationGrant(sessionID, initiator, notify)
-			// Clear blockingArbActive AFTER ownership is confirmed, so
-			// concurrent tryGrantAndStart sees the flag until ownership
-			// is visible in the arbitrator.
+			// Clear blockingArbActive AFTER ownership is confirmed.
+			// Codex-R11: re-check generation under the lock at the clear
+			// site. The cached isCurrentGen could be stale if reconnect()
+			// or handleReset() bumped blockingArbGen while
+			// completeArbitrationGrant was running — a stale stale-gen
+			// goroutine must not clear the guard for a newer in-flight
+			// START.
 			m.stateMu.Lock()
-			if isCurrentGen {
+			if m.blockingArbGen == arbGen {
 				m.blockingArbActive = false
 			}
 			m.stateMu.Unlock()

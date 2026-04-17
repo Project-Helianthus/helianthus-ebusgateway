@@ -1895,13 +1895,16 @@ func TestDrainActiveChOnGrant_ExternalSession(t *testing.T) {
 		t.Fatal("no result on notify channel after STARTED")
 	}
 
-	// activeCh must still have the stale bytes plus the SYN that triggered
-	// tryGrantAndStart (readLoop dispatches the SYN to activeCh too).
-	// External sessions must NOT drain activeCh.
+	// activeCh must still contain the staleBytes injected above.
+	// Soak policy (runtime-soak directive): activeCh is fed ONLY when
+	// gateway owns the bus. The triggering SYN does NOT land in activeCh
+	// because at that moment ownership was not yet confirmed for the
+	// gateway (the grant is for an external session). Additionally,
+	// external-session grants must NOT drain activeCh — external sessions
+	// use their own net.Conn path.
 	remaining := len(mux.activeCh)
-	expectedMin := len(staleBytes) // at least the injected bytes must survive
-	if remaining < expectedMin {
-		t.Fatalf("activeCh has %d events after external grant, want at least %d (should not be drained)", remaining, expectedMin)
+	if remaining != len(staleBytes) {
+		t.Fatalf("activeCh has %d events after external grant, want exactly %d (no drain, no idle-SYN accumulation)", remaining, len(staleBytes))
 	}
 }
 
@@ -2021,5 +2024,88 @@ func TestPassive_NoGarbageDuringGatewayTransaction(t *testing.T) {
 
 	if lastByte != 0x10 {
 		t.Fatalf("passive last byte = 0x%02X, want 0x10 (third-party byte after release)", lastByte)
+	}
+}
+
+// TestResetErrorPriorityOverByteFlood verifies that reset/error events
+// are not lost on activeCh when the channel is saturated with byte
+// traffic. Policy (runtime-soak directive): reset/error events must
+// take priority over stale byte traffic. handleReset/reconnect drain
+// activeCh before enqueuing the error marker, so the consumer always
+// sees the reset boundary even under byte flood.
+//
+// Scenario:
+//   1. Grant gateway ownership so activeCh receives bytes.
+//   2. Flood activeCh to near-capacity with legitimate byte traffic.
+//   3. Trigger handleReset() (simulates in-band RESETTED).
+//   4. Assert that after handleReset, the consumer sees the reset
+//      error event — NOT lost behind stale bytes.
+func TestResetErrorPriorityOverByteFlood(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Grant gateway ownership so activeCh is fed by readLoop.
+	ch := mux.arb.requestStart(gatewaySessionID, 0x71)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+	select {
+	case r := <-ch:
+		if !r.granted {
+			t.Fatal("expected grant")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for grant")
+	}
+
+	// Flood activeCh directly to near-capacity (avoid goroutine races).
+	// This simulates a burst of transaction bytes queued up but not yet
+	// consumed by bus.Send.
+	flood := 2000
+	for i := 0; i < flood; i++ {
+		select {
+		case mux.activeCh <- activeEvent{kind: activeEventByte, b: byte(i % 256)}:
+		default:
+			// Channel full — good enough, we have backlog.
+			break
+		}
+	}
+
+	preLen := len(mux.activeCh)
+	if preLen < 100 {
+		t.Fatalf("activeCh should have backlog before reset, got %d", preLen)
+	}
+
+	// Trigger reset — this should drain activeCh and enqueue the error.
+	mux.handleReset()
+
+	// Consume events from activeCh and assert we see the reset error.
+	// The drain in handleReset ensures the error is at the front (FIFO).
+	foundReset := false
+	eventsAfterReset := 0
+	deadline := time.After(500 * time.Millisecond)
+scan:
+	for {
+		select {
+		case ev := <-mux.activeCh:
+			eventsAfterReset++
+			if ev.kind == activeEventError {
+				if ev.err == nil {
+					t.Fatal("reset event has nil error")
+				}
+				foundReset = true
+				break scan
+			}
+			// Should not see more than a handful of bytes before the reset.
+			if eventsAfterReset > 10 {
+				t.Fatalf("reset error not found within first 10 events — drained-before-error invariant broken (%d events so far, all bytes)", eventsAfterReset)
+			}
+		case <-deadline:
+			break scan
+		}
+	}
+
+	if !foundReset {
+		t.Fatalf("reset error event lost under byte flood (preLen=%d, scanned=%d)", preLen, eventsAfterReset)
 	}
 }

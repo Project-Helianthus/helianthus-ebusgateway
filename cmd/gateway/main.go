@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -596,8 +597,19 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 
 	mux := adaptermux.New(muxCfg)
 	// Wire the adaptermux classifier into the startup-scan diagnostics
-	// seam. Optional (nil-safe). See startup_scan.go for the contract.
-	startupScanClassifier = mux
+	// seam by rebinding startDiscoveryScanLoopFn to a closure that
+	// captures this instance's mux. This keeps the classifier as
+	// instance-local state (avoids cross-instance attribution and
+	// setup/scan goroutine races that a package global would expose).
+	// Optional — nil is safe. Any test that has already overridden
+	// startDiscoveryScanLoopFn wins: we only rebind if the current
+	// value is still the default 4-arg implementation.
+	if reflect.ValueOf(startDiscoveryScanLoopFn).Pointer() == reflect.ValueOf(startDiscoveryScanLoop).Pointer() {
+		classifier := activeTxnClassifier(mux)
+		startDiscoveryScanLoopFn = func(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder) startupScanSignals {
+			return startDiscoveryScanLoopWithClassifier(ctx, cfg, gateway, builder, classifier)
+		}
+	}
 
 	// Create passive transport BEFORE Start() so the callback is wired.
 	// Only create it when BroadcastListen is enabled — otherwise no

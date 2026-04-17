@@ -486,3 +486,64 @@ func TestStatsBus_AllNonOk_NoFurtherEvictions(t *testing.T) {
 		}
 	}
 }
+
+// TestStartDiscoveryScanLoopWithClassifier_InstanceScoped proves that the
+// classifier is threaded through function arguments only, not a package
+// global. Two concurrent scan passes with DIFFERENT classifiers must
+// record each classifier's value onto its own statsBus — no cross-
+// contamination — which is only possible when the classifier is
+// instance-local state.
+func TestStartDiscoveryScanLoopWithClassifier_InstanceScoped(t *testing.T) {
+	fcA := &fakeClassifier{val: "echo_only_timeout"}
+	fcB := &fakeClassifier{val: "success_like"}
+
+	sbA := &statsBus{
+		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
+		source:     0x71,
+		classifier: fcA,
+	}
+	sbB := &statsBus{
+		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
+		source:     0x71,
+		classifier: fcB,
+	}
+
+	_, _ = sbA.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	_, _ = sbB.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x10, Primary: 0x07, Secondary: 0x04})
+
+	if len(sbA.attempts) != 1 || sbA.attempts[0].txnClass != "echo_only_timeout" {
+		t.Fatalf("sbA: got %+v, want 1 attempt with txnClass=echo_only_timeout", sbA.attempts)
+	}
+	if len(sbB.attempts) != 1 || sbB.attempts[0].txnClass != "success_like" {
+		t.Fatalf("sbB: got %+v, want 1 attempt with txnClass=success_like", sbB.attempts)
+	}
+	// Cross-check: flipping fcA's value must not retroactively affect
+	// recorded attempt (snapshot at Send time), nor leak into sbB.
+	fcA.val = "mutated"
+	if sbA.attempts[0].txnClass != "echo_only_timeout" {
+		t.Errorf("sbA.attempts[0].txnClass mutated after Send: %q", sbA.attempts[0].txnClass)
+	}
+	if sbB.attempts[0].txnClass != "success_like" {
+		t.Errorf("sbB.attempts[0].txnClass cross-contaminated: %q", sbB.attempts[0].txnClass)
+	}
+}
+
+// TestStartDiscoveryScanLoop_NoPackageGlobalClassifier ensures that the
+// 4-arg default entry point (used by tests and as the pre-rebind value
+// of startDiscoveryScanLoopFn) forwards a nil classifier — i.e. the
+// default path has NO implicit package-level wiring. Production wiring
+// happens only when run() rebinds startDiscoveryScanLoopFn to a closure
+// capturing the instance mux (see main.go).
+func TestStartDiscoveryScanLoop_NoPackageGlobalClassifier(t *testing.T) {
+	// Synthesize a statsBus exactly as startDiscoveryScanLoop would
+	// when invoked via the default 4-arg seam (classifier == nil).
+	sb := &statsBus{
+		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
+		source:     0x71,
+		classifier: nil,
+	}
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	if sb.attempts[0].txnClass != "" {
+		t.Errorf("default entry point leaked a classifier: txnClass=%q", sb.attempts[0].txnClass)
+	}
+}

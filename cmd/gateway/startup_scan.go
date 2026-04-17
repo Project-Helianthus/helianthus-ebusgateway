@@ -269,13 +269,22 @@ func (b *statsBus) logPassDiagnostics(sourceMode string, targetCount int, passTi
 	}
 }
 
-// startupScanClassifier is an unexported package-level override used by
-// cmd/gateway wiring and tests to attach an adaptermux transaction
-// classifier to each startup-scan pass. nil is safe — diagnostics simply
-// omit the txnClass column.
-var startupScanClassifier activeTxnClassifier
-
+// startDiscoveryScanLoop is the 4-arg entry point used by tests and the
+// default package binding. For production wiring the caller rebinds
+// startDiscoveryScanLoopFn to a closure that forwards to
+// startDiscoveryScanLoopWithClassifier, threading an instance-scoped
+// activeTxnClassifier (typically the gateway's adaptermux) — see
+// cmd/gateway/main.go. Keeping the classifier out of package-global
+// state avoids cross-instance attribution races when more than one
+// gateway is initialized in the same process.
 func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder) startupScanSignals {
+	return startDiscoveryScanLoopWithClassifier(ctx, cfg, gateway, builder, nil)
+}
+
+// startDiscoveryScanLoopWithClassifier is the full implementation. The
+// classifier parameter is optional (nil is safe — the txnClass column
+// is simply omitted from per-attempt diagnostics).
+func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, classifier activeTxnClassifier) startupScanSignals {
 	firstPassDone := make(chan struct{})
 	var firstPassOnce sync.Once
 	signalFirstPassDone := func() {
@@ -342,7 +351,7 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 			scanBus := &statsBus{
 				bus:        &timeoutBus{bus: gateway.Bus, timeout: cfg.ScanRequestTimeout},
 				source:     startupCfg.ScanSource,
-				classifier: startupScanClassifier,
+				classifier: classifier,
 			}
 			targets := ([]byte)(nil)
 			targetLabel := ""

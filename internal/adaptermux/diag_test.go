@@ -187,7 +187,7 @@ func (m *mockWriteOnlyTransport) Write(p []byte) (int, error) {
 	m.writtenBytesCount += len(p)
 	m.mu.Unlock()
 	// Do NOT echo back — mimics adapter accepting writes but bus
-	// producing no response (broken slave / wiring / partition).
+	// producing no response (unresponsive target / wiring / partition).
 	return len(p), nil
 }
 
@@ -250,7 +250,7 @@ func TestRegression_StartedButNoResponse(t *testing.T) {
 			t.Fatalf("cycle %d: write n=%d err=%v", i, n, err)
 		}
 
-		// NO response bytes arrive — simulate dead slave.
+		// NO response bytes arrive — simulate unresponsive target.
 		// Wait for idle grace, then SYN to release ownership.
 		time.Sleep(220 * time.Millisecond)
 		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}

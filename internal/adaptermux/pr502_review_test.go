@@ -600,63 +600,196 @@ func (b *blackholeMockTransport) Close() error                { return nil }
 // PR502 Runtime Soak Followup: gatewayTxnActive + EscapeAware
 // =======================================================================
 
-// TestActivePath_NoAccumulationAfterTxnCompleteBeforeIdleGrace verifies
-// that after a gateway transaction completes, third-party traffic does
-// NOT accumulate on activeCh during the IdleReleaseGrace window.
-//
-// Policy (runtime-soak P0 gateway): owner == gateway is NOT sufficient
-// for delivering to activeCh. Must also have gatewayTxnActive == true
-// (bus.Send is currently consuming). After transaction-done / NACK /
-// SYN-timeout / idle-grace-expired, gatewayTxnActive is cleared and
-// subsequent third-party bytes must not land in activeCh even though
-// ownership may linger up to IdleReleaseGrace.
-func TestActivePath_NoAccumulationAfterTxnCompleteBeforeIdleGrace(t *testing.T) {
-	mux, mock, _, cleanup := newP3TestMux(t)
-	defer cleanup()
-
-	// Grant gateway ownership.
-	ch := mux.arb.requestStart(gatewaySessionID, 0x71)
+// grantGateway is a test helper that grants gateway ownership via the
+// real readLoop path (no manual state mutation).
+func grantGateway(t *testing.T, mux *Mux, mock *p3MockTransport, initiator byte) {
+	t.Helper()
+	ch := mux.arb.requestStart(gatewaySessionID, initiator)
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
-	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: initiator}
 	select {
 	case r := <-ch:
 		if !r.granted {
-			t.Fatal("expected grant")
+			t.Fatalf("grant failed: %v", r.err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for grant")
 	}
+}
 
-	// Verify gatewayTxnActive is true.
-	mux.stateMu.Lock()
-	active := mux.gatewayTxnActive
-	mux.stateMu.Unlock()
-	if !active {
-		t.Fatal("gatewayTxnActive must be true after grant")
+// drainActiveChTest drains activeCh and returns the count.
+func drainActiveChTest(mux *Mux) int {
+	n := 0
+	for {
+		select {
+		case <-mux.activeCh:
+			n++
+		default:
+			return n
+		}
+	}
+}
+
+// TestActivePath_RealFlow_NoAccumulationAfterTxnSyn verifies the real
+// production lifecycle: after a gateway transaction, the first SYN
+// clears gatewayTxnActive and subsequent third-party bytes do NOT
+// accumulate on activeCh — even though ownership lingers up to
+// IdleReleaseGrace.
+//
+// Does NOT manually mutate gatewayTxnActive. Exercises the actual
+// readLoop path: grant → txn bytes → trailing SYN (real lifecycle
+// clear) → third-party bytes must NOT enter activeCh.
+//
+// This matches the RPi runtime observation: the phase tracker is
+// skipped during gateway ownership, so TransactionDone/CmdNACK
+// never fire for real gateway traffic. The SYN-based clear is the
+// only reliable lifecycle signal.
+func TestActivePath_RealFlow_NoAccumulationAfterTxnSyn(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+	drainActiveChTest(mux)
+
+	// Feed transaction echoes + response (real txn bytes).
+	txnBytes := []byte{0x71, 0x08, 0xB5, 0x04, 0x01, 0x42, 0xCD, 0x00, 0x01, 0x33, 0xAB, 0x00}
+	for _, b := range txnBytes {
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// Transaction bytes should be in activeCh (gateway is consuming).
+	drained := drainActiveChTest(mux)
+	if drained < len(txnBytes) {
+		t.Fatalf("activeCh delivered %d bytes during txn, want at least %d", drained, len(txnBytes))
 	}
 
-	// Drain any existing bytes from activeCh.
-	for len(mux.activeCh) > 0 {
-		<-mux.activeCh
+	// End-of-transaction: bus.Send has returned. Next SYN clears
+	// gatewayTxnActive BEFORE IdleReleaseGrace expires.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+
+	// Ownership STILL held (IdleReleaseGrace=200ms, we waited 30ms).
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Fatal("ownership should still be held during IdleReleaseGrace window")
 	}
 
-	// Simulate transaction complete by clearing gatewayTxnActive directly.
-	// (In production, this happens via phase tracker events.)
+	// gatewayTxnActive cleared by the SYN (real lifecycle signal).
 	mux.stateMu.Lock()
-	mux.gatewayTxnActive = false
+	stillActive := mux.gatewayTxnActive
 	mux.stateMu.Unlock()
+	if stillActive {
+		t.Fatal("gatewayTxnActive must be cleared by SYN (real lifecycle), not only by ownership release")
+	}
 
-	// Now feed third-party bytes. Ownership is still held (IdleReleaseGrace
-	// not yet expired), but gatewayTxnActive is false → activeCh must stay empty.
-	thirdParty := []byte{0x10, 0x08, 0xB5, 0x05}
+	// Third-party bytes during IdleReleaseGrace window must NOT accumulate.
+	thirdParty := []byte{0x10, 0x08, 0x50, 0x0E, 0x03}
 	for _, b := range thirdParty {
 		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
 	}
 	time.Sleep(50 * time.Millisecond)
 
 	if remaining := len(mux.activeCh); remaining != 0 {
-		t.Fatalf("activeCh accumulated %d bytes after txn complete, want 0 (ownership without txn must not deliver)", remaining)
+		t.Fatalf("activeCh accumulated %d bytes after txn-SYN during IdleReleaseGrace — real lifecycle broken", remaining)
+	}
+
+	// Follow-up grant must not need to drain — activeCh is already empty.
+	pre := len(mux.activeCh)
+	if pre != 0 {
+		t.Fatalf("pre-grant activeCh has %d stale bytes — next grant would log spurious drain", pre)
+	}
+}
+
+// TestActivePath_EarlyAbort_NoAccumulation verifies that if bus.Send
+// exits early (timeout / error / reset) before the trailing SYN, the
+// next SYN still clears gatewayTxnActive, and third-party bytes do
+// not enter activeCh while ownership briefly lingers.
+func TestActivePath_EarlyAbort_NoAccumulation(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+	drainActiveChTest(mux)
+
+	// Simulate early-abort: no txn bytes, just the next SYN (adapter
+	// idled the bus after whatever partial activity). This is the
+	// real lifecycle clear signal for early-aborted transactions.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+
+	mux.stateMu.Lock()
+	active := mux.gatewayTxnActive
+	mux.stateMu.Unlock()
+	ownerHeld := mux.arb.isOwner(gatewaySessionID)
+	if active {
+		t.Fatal("gatewayTxnActive must be cleared on first SYN (early-abort)")
+	}
+	if !ownerHeld {
+		t.Fatal("ownership should still be held (pre-IdleReleaseGrace)")
+	}
+
+	// Third-party bytes must not enter activeCh.
+	thirdParty := []byte{0xFE, 0xBA, 0x01, 0x02}
+	for _, b := range thirdParty {
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if remaining := len(mux.activeCh); remaining != 0 {
+		t.Fatalf("activeCh got %d bytes after early-abort SYN, want 0", remaining)
+	}
+}
+
+// TestActivePath_SoakCycle_NoSustainedGrowth runs repeated grant/
+// complete cycles with background third-party traffic between them,
+// and asserts that activeCh does not accumulate stale bytes.
+//
+// Matches the runtime soak scenario: scan/poll issues many short
+// transactions while the bus also carries third-party traffic.
+// Pre-fix: each cycle left noise on activeCh requiring the next
+// grant's drainActiveCh to discard (log spam).
+func TestActivePath_SoakCycle_NoSustainedGrowth(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	cycles := 5
+	for i := 0; i < cycles; i++ {
+		grantGateway(t, mux, mock, 0x71)
+		drainActiveChTest(mux)
+
+		// Short txn bytes.
+		txn := []byte{0x71, 0x08, 0xB5, 0x04, 0x00, 0xC9, 0x00}
+		for _, b := range txn {
+			mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+		}
+		time.Sleep(15 * time.Millisecond)
+		drainActiveChTest(mux) // simulate bus.Send consuming
+
+		// End-of-txn SYN: clears gatewayTxnActive.
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+		time.Sleep(10 * time.Millisecond)
+
+		// Third-party noise during IdleReleaseGrace window.
+		noise := []byte{0xFE, 0x10, 0xBA, 0x55, 0x99}
+		for _, b := range noise {
+			mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+		}
+		time.Sleep(5 * time.Millisecond)
+
+		// Assert no accumulation.
+		if leftover := len(mux.activeCh); leftover != 0 {
+			t.Fatalf("cycle %d: activeCh has %d leftover bytes (no-drain invariant broken)", i, leftover)
+		}
+
+		// Wait for ownership release via IdleReleaseGrace + SYN.
+		time.Sleep(220 * time.Millisecond)
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+		time.Sleep(10 * time.Millisecond)
+
+		if mux.arb.isOwner(gatewaySessionID) {
+			t.Fatalf("cycle %d: ownership not released after IdleReleaseGrace", i)
+		}
 	}
 }
 

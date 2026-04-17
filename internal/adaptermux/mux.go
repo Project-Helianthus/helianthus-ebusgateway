@@ -888,6 +888,19 @@ func (m *Mux) readUpstream() (transport.StreamEvent, error) {
 //
 // Lock ordering: stateMu acquired first, released before any callback
 // invocation or session delivery to avoid re-entrancy deadlocks.
+//
+// Boundary invariant — 0xAA at the mux layer:
+//
+//	StreamEventByte{Byte: 0xAA} arriving here IS treated as SYN
+//	(bus idle marker). This is correct for ENH transports: the
+//	ENH parser never produces ENHResReceived(0xAA) because logical
+//	0xAA data is wire-escaped as {0xA9, 0x01} and raw wire 0xAA is
+//	the SYN symbol consumed by the adapter before framing.
+//
+//	See TestOnReceived_0xAA_WireLayerSYNInvariant and
+//	TestMux_0xAA_MockTransportAlwaysSYN for the test coverage.
+//	A cleaner long-term contract is an explicit StreamEventSyn
+//	instead of inferring SYN from byte value; not changed here.
 func (m *Mux) onReceived(symbol byte) {
 	now := time.Now()
 
@@ -937,9 +950,11 @@ func (m *Mux) onReceived(symbol byte) {
 	var shouldTryGrant bool
 
 	if symbol == protocol.SymbolSyn {
+		// Runtime-soak: bus.Send returns BEFORE the trailing SYN (reads
+		// are count-based, not SYN-terminated). So onSYNLocked's
+		// gatewayTxnActive=false is the correct state for delivery —
+		// capture AFTER to skip the trailing SYN that has no consumer.
 		passiveEvents, shouldTryGrant = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
-		// Soak fix: deliver SYN to active path ONLY if gateway owns the
-		// bus. Idle SYN bursts (no owner) must not accumulate on activeCh.
 		activeExpects := m.activePathExpectsBytes()
 		m.stateMu.Unlock()
 
@@ -1034,6 +1049,24 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// (passive is third-party only). They are delivered to external
 	// sessions via deliverSYNToSessions + deliverToSessions elsewhere.
 	m.gatewayEcho.flushOnSYN()
+
+	// Runtime-soak P0 fix: clear gatewayTxnActive on SYN during gateway
+	// ownership. eBUS SYN marks end-of-transaction (bus idle). bus.Send
+	// completes strictly before the trailing SYN arrives — it reads
+	// the expected byte count (echoes + response) and returns. By the
+	// time a SYN is on the wire under gateway ownership, bus.Send is
+	// no longer reading activeCh. Ownership may linger up to
+	// IdleReleaseGrace for arbitration policy, but active delivery
+	// must stop NOW, independent of the ownership release path.
+	//
+	// This breaks the accumulation observed in production where the
+	// phase tracker is skipped during gateway ownership (so the
+	// TransactionDone/CmdNACK clear paths never fire for real gateway
+	// traffic), causing third-party bytes to pile up on activeCh until
+	// the next grant's drainActiveCh.
+	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive {
+		m.gatewayTxnActive = false
+	}
 
 	// Note: external session echo tracker flush is done AFTER stateMu.Unlock()
 	// by the caller (flushSessionEchoTrackersOnSYN) to avoid ABBA deadlock

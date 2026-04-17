@@ -901,11 +901,9 @@ func (m *Mux) onReceived(symbol byte) {
 
 	if symbol == protocol.SymbolSyn {
 		passiveEvents, shouldTryGrant = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
-		// Soak fix: SYN is delivered to active path when the active path
-		// is expecting bytes OR when a gateway START is queued (SYN will
-		// trigger tryGrantAndStart below, and the active path needs to
-		// observe the SYN boundary to begin its transaction).
-		activeExpects := m.activePathExpectsBytes() || shouldTryGrant
+		// Soak fix: deliver SYN to active path ONLY if gateway owns the
+		// bus. Idle SYN bursts (no owner) must not accumulate on activeCh.
+		activeExpects := m.activePathExpectsBytes()
 		m.stateMu.Unlock()
 
 		// AM11: clear external session echo trackers on ownership timeout.
@@ -1142,27 +1140,27 @@ func (m *Mux) resetAllSessionEchoes() {
 }
 
 // activePathExpectsBytes reports whether the gateway active path (bus.Send)
-// is currently expecting bytes from the adapter. Bytes are expected when:
-//   - The gateway owns the bus (in an active transaction)
-//   - A pendingStart is in-flight (waiting for STARTED/FAILED)
-//   - A blocking StartArbitration goroutine is running (activePath is
-//     waiting for arbitration result)
+// is currently in a transaction and consuming activeCh. Bytes are delivered
+// to activeCh ONLY when the gateway owns the bus — this is the only time
+// bus.Send is reading from activeCh.
 //
-// Soak fix: when NONE of these hold, the gateway is idle and activeCh
-// should not accumulate third-party / idle-SYN traffic. Caller must
-// hold stateMu.
+// Policy (runtime soak fix):
+//   - Deliver to activeCh only if gateway owns the bus.
+//   - Do NOT deliver idle SYN bursts (no owner → no consumer).
+//   - Do NOT use activeCh as a passive backlog — passive traffic goes
+//     through the passive path and external sessions, not activeCh.
+//
+// During pendingStart / blockingArb, bus.Send is BLOCKED inside
+// StartArbitration/arbitration notify — it is NOT reading activeCh.
+// Any bytes that arrive before STARTED are either arbitration frames
+// (consumed by the transport) or third-party traffic (belongs to
+// passive path, not active). After STARTED, ownership is confirmed
+// and this predicate returns true.
+//
+// Caller must hold stateMu.
 func (m *Mux) activePathExpectsBytes() bool {
 	ownerID, _, hasOwner := m.arb.owner()
-	if hasOwner && ownerID == gatewaySessionID {
-		return true
-	}
-	if m.pendingStart != nil && m.pendingStart.sessionID == gatewaySessionID {
-		return true
-	}
-	if m.blockingArbActive {
-		return true
-	}
-	return false
+	return hasOwner && ownerID == gatewaySessionID
 }
 
 // deliverToActive sends a byte to the active path channel.

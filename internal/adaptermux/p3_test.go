@@ -778,27 +778,45 @@ func TestHandleReset_ClearsPendingStart(t *testing.T) {
 	}
 }
 
-// TestP3_ActivePathReceivesDuringPending verifies that the active
-// path (activeCh) also receives bytes while a START is pending.
-func TestP3_ActivePathReceivesDuringPending(t *testing.T) {
+// TestP3_ActivePathDoesNotAccumulateDuringPending verifies that bytes
+// arriving while gateway START is PENDING (not yet confirmed) do NOT
+// accumulate on activeCh. bus.Send is blocked inside StartArbitration
+// waiting for the grant — it is not reading activeCh. Any bytes that
+// arrived before STARTED are third-party traffic belonging to the
+// passive path, not to the gateway's transaction.
+//
+// Policy (runtime soak fix): deliver to activeCh ONLY when gateway
+// owns the bus. Idle SYN bursts and third-party traffic during
+// pending START must go through the passive path, not activeCh.
+// This prevents the 4096-slot activeCh from overflowing with
+// unconsumed traffic (runtime incident: 667k dropped bytes/4min).
+func TestP3_ActivePathDoesNotAccumulateDuringPending(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
 	// Request START.
 	mux.arb.requestStart(gatewaySessionID, 0x31)
 
-	// Feed SYN + data bytes.
+	// Feed SYN + data bytes before STARTED is delivered.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
-	// Feed data bytes while START is pending.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08}
 	time.Sleep(50 * time.Millisecond)
 
-	// Drain active channel and count received bytes.
+	// Verify pendingStart is set (we're in the pending window).
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart during this window")
+	}
+
+	// Drain active channel — should be empty or nearly empty.
+	// No bytes should accumulate because gateway does not yet own the bus.
 	var activeCount int
-	drainTimeout := time.After(200 * time.Millisecond)
+	drainTimeout := time.After(100 * time.Millisecond)
 drain:
 	for {
 		select {
@@ -809,9 +827,10 @@ drain:
 		}
 	}
 
-	// Should have received: SYN + 0x10 + 0x08 = 3 bytes minimum.
-	if activeCount < 3 {
-		t.Fatalf("active path received %d bytes during pending START, want >= 3", activeCount)
+	// Policy: bytes during pending START go to passive, not active.
+	// activeCh should remain empty (no owner → no consumer).
+	if activeCount != 0 {
+		t.Fatalf("activeCh accumulated %d bytes during pending START, want 0 (runtime soak policy)", activeCount)
 	}
 }
 

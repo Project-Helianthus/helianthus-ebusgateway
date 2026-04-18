@@ -1005,8 +1005,22 @@ func (m *Mux) onReceived(symbol byte) {
 		// are count-based, not SYN-terminated). So onSYNLocked's
 		// gatewayTxnActive=false is the correct state for delivery —
 		// capture AFTER to skip the trailing SYN that has no consumer.
-		passiveEvents, shouldTryGrant = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
+		var preEchoSuppressed bool
+		passiveEvents, shouldTryGrant, preEchoSuppressed = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
 		activeExpects := m.activePathExpectsBytes()
+		if preEchoSuppressed {
+			// Pre-echo SYN suppression (echo_mismatch root cause fix).
+			// After completeArbitrationGrant, readLoop can read a SYN from
+			// the TCP/ENH buffer BEFORE bus.Send's first Write reaches the
+			// adapter. Delivering this SYN to activeCh races the real echo
+			// byte — the consumer (sendRawWithEcho) then reads 0xAA in
+			// place of the expected echo and emits echo_mismatch (13,904
+			// events observed in production soak). When onSYNLocked sees
+			// gatewayTxnActive=true && bytesRead==0, it signals us to
+			// suppress the activeCh delivery; gatewayTxnActive stays true
+			// and the next real echo byte completes the handshake normally.
+			activeExpects = false
+		}
 		m.stateMu.Unlock()
 
 		// AM11: clear external session echo trackers on ownership timeout.
@@ -1145,8 +1159,11 @@ func (m *Mux) onReceived(symbol byte) {
 }
 
 // onSYNLocked handles a SYN symbol. Caller holds stateMu.
-// Returns buffered passive events and whether tryGrant should be called.
-func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bool, now time.Time) ([]PassiveEvent, bool) {
+// Returns buffered passive events, whether tryGrant should be called,
+// and whether this SYN is pre-echo noise that the caller must suppress
+// from activeCh delivery (see echo_mismatch root-cause comment at the
+// call site).
+func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bool, now time.Time) ([]PassiveEvent, bool, bool) {
 	var passiveEvents []PassiveEvent
 
 	// SYN-path diagnostics (bounded). Capture gwActiveBefore snapshot
@@ -1190,7 +1207,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// path in onSYNLocked's idle-release branch below.
 	terminatorDelivered := false
 	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive &&
-		m.activeTxn.bytesRead.Load() > 0 {
+		m.activeTxn.bytesWritten.Load() > 0 {
 		select {
 		case m.activeCh <- activeEvent{kind: activeEventByte, b: protocol.SymbolSyn}:
 			terminatorDelivered = true
@@ -1239,6 +1256,31 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		Kind: PassiveEventSymbol, Symbol: protocol.SymbolSyn, ObservedAt: now,
 	})
 
+	// Pre-echo SYN suppression decision (echo_mismatch fix).
+	// Computed AFTER the terminator/idle branches so that a gwActive flag
+	// that was just cleared by those branches does not incorrectly trigger
+	// suppression. The pre-echo case is: gateway still owns, gatewayTxnActive
+	// still true, and no reads have been consumed — i.e. bus.Send has NOT
+	// yet started consuming echoes. A SYN observed in this window is buffer
+	// noise that pre-dates the grant's first Write and must not race the
+	// real echo on activeCh. See onReceived for the counter increment and
+	// activeExpects gating.
+	// Pre-echo window = "bus.Send has not written anything yet". Use
+	// bytesWritten (not bytesRead) as the gate: bytesRead is incremented
+	// on CONSUME (activeTransport.ReadByte), so it lags activeCh delivery
+	// whenever the consumer is slower than readLoop — which is the normal
+	// case in production (readLoop is a tight loop; bus.Send.sendRawWithEcho
+	// has multiple channel hops before it ReadBytes). Gating on bytesRead
+	// would over-suppress legitimate terminator SYNs at end of reply.
+	// bytesWritten is incremented by activeTransport.Write BEFORE the byte
+	// reaches the adapter, so bytesWritten==0 cleanly identifies the grant-
+	// to-first-write race window.
+	preEchoSuppressed := hasOwner && ownerID == gatewaySessionID &&
+		m.gatewayTxnActive && m.activeTxn.bytesWritten.Load() == 0
+	if preEchoSuppressed {
+		m.activeTxn.synSuppressedPreEcho.Add(1)
+	}
+
 	// SYN-path diagnostics: record only when gateway owned the bus at
 	// SYN arrival OR at the instant one of the branches above just
 	// cleared gatewayTxnActive (so we see the transition). The caller's
@@ -1249,11 +1291,13 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// does NOT see it.
 	if wasGatewayOwned || gwActiveBefore {
 		gwActiveAfter := m.gatewayTxnActive
-		// synDelivered is true if either (a) the txn is still active after
-		// onSYNLocked (caller's deliverToActive will run for the SYN) OR
-		// (b) onSYNLocked delivered the SYN inline above as the frame
-		// terminator (bytesRead>0 branch, PR #502 E2E fix).
-		synDelivered := gwActiveAfter || terminatorDelivered
+		// synDelivered is true iff the SYN actually reaches activeCh.
+		// That happens in exactly two cases:
+		//   (a) onSYNLocked delivered the SYN inline as the frame terminator
+		//       (terminatorDelivered, bytesRead>0 branch, PR #502 E2E fix), OR
+		//   (b) the txn is still active after onSYNLocked AND this SYN is
+		//       NOT pre-echo noise (gwActiveAfter && !preEchoSuppressed).
+		synDelivered := terminatorDelivered || (gwActiveAfter && !preEchoSuppressed)
 		m.recordSynDiagLocked(ownerID, gwActiveBefore, gwActiveAfter, synDelivered)
 	}
 
@@ -1266,7 +1310,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// onReceived), so with gatewayTxnActive cleared it becomes false and
 	// the caller's deliverToActive is skipped. No double-delivery.
 	_ = terminatorDelivered
-	return passiveEvents, shouldTryGrant
+	return passiveEvents, shouldTryGrant, preEchoSuppressed
 }
 
 // handleReset handles an adapter RESETTED event.

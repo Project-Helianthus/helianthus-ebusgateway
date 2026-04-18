@@ -664,6 +664,16 @@ func TestActivePath_RealFlow_NoAccumulationAfterTxnSyn(t *testing.T) {
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+
+	// Write request bytes (simulates bus.Send; bytesWritten > 0 moves the
+	// txn out of the pre-echo suppression window — without this the
+	// trailing SYN would be suppressed rather than delivered as terminator
+	// under the echo_mismatch-fix gate).
+	request := []byte{0x71, 0x08, 0xB5, 0x04, 0x01}
+	if _, err := at.Write(request); err != nil {
+		t.Fatalf("Write err=%v", err)
+	}
 
 	// Feed transaction echoes + response (real txn bytes).
 	txnBytes := []byte{0x71, 0x08, 0xB5, 0x04, 0x01, 0x42, 0xCD, 0x00, 0x01, 0x33, 0xAB, 0x00}
@@ -674,7 +684,6 @@ func TestActivePath_RealFlow_NoAccumulationAfterTxnSyn(t *testing.T) {
 
 	// Consume via activeTransport.ReadByte so bytesRead increments —
 	// this is what real bus.Send does for echo matching + response.
-	at := mux.ActiveTransport()
 	for range txnBytes {
 		if _, err := at.ReadByte(); err != nil {
 			t.Fatalf("ReadByte err=%v", err)
@@ -767,6 +776,14 @@ func TestActivePath_SoakCycle_NoSustainedGrowth(t *testing.T) {
 	cycles := 5
 	for i := 0; i < cycles; i++ {
 		grantGateway(t, mux, mock, 0x71)
+
+		// Write request to move out of pre-echo suppression window
+		// (bytesWritten > 0). Required for the trailing SYN below to be
+		// treated as terminator under the echo_mismatch-fix gate.
+		request := []byte{0x71, 0x08}
+		if _, err := at.Write(request); err != nil {
+			t.Fatalf("cycle %d: Write err=%v", i, err)
+		}
 
 		// Short txn bytes.
 		txn := []byte{0x71, 0x08, 0xB5, 0x04, 0x00, 0xC9, 0x00}

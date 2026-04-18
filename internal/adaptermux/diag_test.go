@@ -112,11 +112,19 @@ func TestActiveTxnDiag_InactiveReason_SYNIdle(t *testing.T) {
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
 
-	// Simulate a response read first (bytesRead > 0).
+	// Simulate a bus.Send initiating transmission (bytesWritten > 0 is
+	// the post-fix signal that the pre-echo window has closed; gating
+	// SYN terminator on bytesWritten avoids over-suppressing legitimate
+	// terminators when the consumer is slower than readLoop).
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("at.Write err=%v", err)
+	}
+
+	// Simulate a response read (bytesRead > 0 too, for realism).
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
 	time.Sleep(20 * time.Millisecond)
-	at := mux.ActiveTransport()
 	if _, err := at.ReadByte(); err != nil {
 		t.Fatalf("ReadByte err=%v", err)
 	}
@@ -137,33 +145,42 @@ func TestActiveTxnDiag_InactiveReason_SYNIdle(t *testing.T) {
 	}
 }
 
-// TestActiveTxnDiag_SYNBeforeRead_DoesNotClear proves the lifecycle
-// correctness fix: a SYN arriving during gateway ownership BEFORE any
-// response byte has been read must NOT terminate the transaction as
-// syn_idle. This is the pre-grant stale SYN from TCP buffer.
+// TestActiveTxnDiag_SYNBeforeRead_DoesNotClear proves the echo_mismatch
+// root-cause fix: a SYN arriving during gateway ownership BEFORE any
+// Write (bytesWritten==0, i.e. the pre-echo window) must NOT terminate
+// the transaction AND must be suppressed from activeCh delivery so it
+// does not race the real echo byte that bus.Send will write.
+//
+// Post-fix gate is bytesWritten (not bytesRead): bytesRead is
+// incremented on CONSUME which lags activeCh delivery, so gating on it
+// would over-suppress legitimate terminators. bytesWritten==0 cleanly
+// identifies the grant-to-first-write window.
 func TestActiveTxnDiag_SYNBeforeRead_DoesNotClear(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
 
-	// Write a request byte (simulate bus.Send mid-transaction).
-	at := mux.ActiveTransport()
-	if _, err := at.Write([]byte{0x08}); err != nil {
-		t.Fatalf("Write err=%v", err)
-	}
+	// NOTE: no Write yet — bytesWritten stays 0, simulating the
+	// grant-to-first-write race window.
+	before := mux.ActiveTxnSnapshot().SynSuppressedPreEcho
 
-	// SYN arrives BEFORE any response read. Must NOT clear.
+	// SYN arrives BEFORE any Write. Must NOT clear AND must be
+	// counted as pre-echo suppressed.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
 	snap := mux.ActiveTxnSnapshot()
 	if !snap.Active {
-		t.Fatalf("Active must remain true after SYN-before-any-read (grant handoff); got inactive reason=%q writes=%d reads=%d",
+		t.Fatalf("Active must remain true in pre-echo window (bytesWritten=0); got inactive reason=%q writes=%d reads=%d",
 			snap.InactiveReason, snap.BytesWritten, snap.BytesRead)
 	}
 	if snap.InactiveReason != ReasonNone {
 		t.Fatalf("InactiveReason must be empty, got %q", snap.InactiveReason)
+	}
+	if snap.SynSuppressedPreEcho <= before {
+		t.Fatalf("SynSuppressedPreEcho counter must have incremented (echo_mismatch fix); got %d before=%d",
+			snap.SynSuppressedPreEcho, before)
 	}
 }
 
@@ -193,11 +210,16 @@ func TestActiveTxnDiag_InactiveReason_Idempotent(t *testing.T) {
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
 
-	// Simulate reading a response byte (bytesRead > 0).
+	// Move out of the pre-echo window (bytesWritten > 0) so the next SYN
+	// is treated as the frame terminator, not pre-echo suppressed.
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err=%v", err)
+	}
+	// Also feed + consume a response byte for realism.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
 	time.Sleep(20 * time.Millisecond)
-	at := mux.ActiveTransport()
 	if _, err := at.ReadByte(); err != nil {
 		t.Fatalf("ReadByte err=%v", err)
 	}
@@ -340,12 +362,13 @@ func TestRegression_StartedButNoResponse(t *testing.T) {
 	}
 	allowed := map[ActiveTxnInactiveReason]bool{
 		ReasonSYNIdle:           true,
+		ReasonSYNTerminator:     true, // echo_mismatch-fix gate is bytesWritten>0; writes=7 here ⇒ first SYN treated as terminator
 		ReasonActiveReadTimeout: true,
 		ReasonMaxOwnership:      true,
 		ReasonContextCancel:     true,
 	}
 	if !allowed[snap.InactiveReason] {
-		t.Fatalf("InactiveReason = %q, want one of syn_idle/active_read_timeout/max_ownership/context_cancel (lifecycle-valid reasons)", snap.InactiveReason)
+		t.Fatalf("InactiveReason = %q, want one of syn_idle/syn_terminator/active_read_timeout/max_ownership/context_cancel (lifecycle-valid reasons)", snap.InactiveReason)
 	}
 }
 
@@ -365,11 +388,16 @@ func TestActiveTxnDiag_DrainedOnGrant_ZeroInSteadyState(t *testing.T) {
 		t.Fatalf("first grant DrainedOnGrant = %d, want 0", snap1.DrainedOnGrant)
 	}
 
+	at := mux.ActiveTransport()
+	// Move past the pre-echo window (bytesWritten > 0) so the terminator
+	// SYN below clears cleanly under the new echo_mismatch-fix gate.
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err=%v", err)
+	}
 	// Feed response byte + consume via activeTransport so bytesRead > 0
-	// (required for SYN-idle clear under the lifecycle policy).
+	// (for realism; the clear is gated on bytesWritten, not bytesRead).
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
 	time.Sleep(20 * time.Millisecond)
-	at := mux.ActiveTransport()
 	if _, err := at.ReadByte(); err != nil {
 		t.Fatalf("ReadByte err=%v", err)
 	}
@@ -435,11 +463,16 @@ func TestActiveTxnDiag_AfterInactive_Counter(t *testing.T) {
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
 
-	// Simulate a completed transaction so bytesRead > 0 and SYN clears.
+	// Move out of the pre-echo window (bytesWritten > 0) so the trailing
+	// SYN is treated as terminator, not pre-echo suppressed.
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err=%v", err)
+	}
+	// Simulate a completed transaction read.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
 	time.Sleep(20 * time.Millisecond)
-	at := mux.ActiveTransport()
 	if _, err := at.ReadByte(); err != nil {
 		t.Fatalf("ReadByte err=%v", err)
 	}

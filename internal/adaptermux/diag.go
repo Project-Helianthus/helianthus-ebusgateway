@@ -81,6 +81,20 @@ type activeTxnDiag struct {
 	// promptly during bus.Send). Non-zero indicates runtime backpressure.
 	terminatorDropOnFullCh atomic.Uint64
 
+	// synSuppressedPreEcho counts SYN bytes that arrived during gateway
+	// ownership with gatewayTxnActive=true but bytesRead==0 (i.e. BEFORE
+	// the first real echo byte). These SYNs are pre-echo noise (buffered
+	// in the TCP/ENH pipeline from before bus.Send's first Write reached
+	// the adapter) and MUST NOT be delivered to activeCh — doing so would
+	// race the real echo byte and cause sendRawWithEcho to observe SYN
+	// (0xAA) in place of the expected echo, emitting echo_mismatch
+	// (13,904 events observed in production soak before this fix).
+	// Expected to be non-zero under normal adapter-direct operation (one
+	// or two suppressed SYNs per transaction is common); a persistent
+	// zero after deploy would indicate the readLoop is no longer racing
+	// bus.Send on the grant boundary.
+	synSuppressedPreEcho atomic.Uint64
+
 	// --- Transaction-shape diagnostics (bounded) ---
 	// Captured under stateMu via recordWritePrefix/recordReadPrefix.
 	writePrefix    [txnPrefixCap]byte
@@ -118,6 +132,8 @@ type ActiveTxnSnapshot struct {
 	AfterInactive  uint64
 	// TerminatorDropOnFullCh mirrors activeTxnDiag.terminatorDropOnFullCh.
 	TerminatorDropOnFullCh uint64
+	// SynSuppressedPreEcho mirrors activeTxnDiag.synSuppressedPreEcho.
+	SynSuppressedPreEcho uint64
 
 	// Transaction-shape diagnostics (bounded).
 	WritePrefix []byte
@@ -163,6 +179,7 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		ReadTimeoutTot: m.activeTxn.readTimeoutTot.Load(),
 		AfterInactive:         m.activeTxn.afterInactive.Load(),
 		TerminatorDropOnFullCh: m.activeTxn.terminatorDropOnFullCh.Load(),
+		SynSuppressedPreEcho:   m.activeTxn.synSuppressedPreEcho.Load(),
 		WritePrefix:    wp,
 		ReadPrefix:     rp,
 		EchoLike:       m.activeTxn.echoLike.Load(),

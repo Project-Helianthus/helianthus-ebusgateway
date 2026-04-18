@@ -349,3 +349,158 @@ func TestEchoMismatch_SYNAfterGrantBeforeFirstEcho(t *testing.T) {
 		t.Errorf("InactiveReason=%q, want empty — no inactive transition on pre-echo SYN", snap.InactiveReason)
 	}
 }
+
+// TestEchoMismatch_SYNAfterWriteBeforeFirstEcho is the exact scenario
+// Codex flagged on PR #502 (commit 30c3dcd / finding at mux.go:1210):
+// the terminator gate keying off bytesWritten>0 allows a queued idle SYN
+// to be treated as an end-of-transaction marker after the first Write but
+// BEFORE the first echoed/response byte has been enqueued on activeCh.
+//
+// Sequence modeled:
+//   1. grantGateway → gatewayTxnActive=true, bytesDeliveredToActive=0.
+//   2. at.Write(0x71) — bytesWritten flips to 1 immediately (the Write
+//      method increments the counter before the byte even reaches the
+//      adapter). bytesDeliveredToActive is still 0 because readLoop has
+//      not yet seen the echo come back.
+//   3. Inject idle-chatter SYN (the buffered TCP SYN that sits in the
+//      adapter pipeline on busy links). Under the pre-fix gate this SYN
+//      would pass "bytesWritten>0" and be delivered to activeCh as a
+//      terminator, which races the real echo.
+//   4. Inject the real echo byte (0x71).
+//
+// Post-fix invariant: because bytesDeliveredToActive is still 0 at step 3,
+// the SYN is classified as pre-echo noise (synSuppressedPreEcho++,
+// gatewayTxnActive stays true, NOT delivered to activeCh). Then step 4's
+// echo becomes the FIRST thing ReadByte sees.
+func TestEchoMismatch_SYNAfterWriteBeforeFirstEcho(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+
+	// Step 2: Write the first request byte. bytesWritten becomes >=1
+	// BEFORE any adapter echo has come back (this is the race window
+	// Codex flagged — bytesWritten leads, bytesDeliveredToActive does
+	// not yet because readLoop has not seen the echo).
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err=%v", err)
+	}
+
+	// Confirm the pre-echo invariant before injecting the adversarial SYN.
+	pre := mux.ActiveTxnSnapshot()
+	if pre.BytesDeliveredToActive != 0 {
+		t.Fatalf("BytesDeliveredToActive=%d, want 0 — test setup invariant broken; no adapter byte should have reached activeCh yet", pre.BytesDeliveredToActive)
+	}
+	if pre.BytesWritten == 0 {
+		t.Fatalf("BytesWritten=0, want >=1 — Write must have incremented bytesWritten for the scenario to model the Codex finding")
+	}
+	suppressedBefore := pre.SynSuppressedPreEcho
+
+	// Step 3: Inject idle-chatter SYN. Under the pre-fix gate (bytesWritten>0)
+	// this would falsely pass as a terminator and land on activeCh.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(20 * time.Millisecond)
+
+	// Step 4: Inject the real echo byte bus.Send is waiting for.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+
+	// The first byte ReadByte sees MUST be the real echo (0x71), not the
+	// adversarial SYN. Pre-fix this would return 0xAA and sendRawWithEcho
+	// would emit echo_mismatch.
+	b, err := at.ReadByte()
+	if err != nil {
+		t.Fatalf("ReadByte err=%v", err)
+	}
+	if b == protocol.SymbolSyn {
+		t.Fatalf("ReadByte returned SYN 0xAA — Codex finding reproduced: terminator gate keyed off bytesWritten wrongly terminates before first real byte reaches activeCh")
+	}
+	if b != 0x71 {
+		t.Fatalf("ReadByte=0x%02X, want 0x71 (real echo)", b)
+	}
+
+	// Invariants Codex specifically called out:
+	//   (a) synSuppressedPreEcho must have incremented.
+	//   (b) gatewayTxnActive must stay true throughout (no terminator fired).
+	snap := mux.ActiveTxnSnapshot()
+	if snap.SynSuppressedPreEcho <= suppressedBefore {
+		t.Errorf("SynSuppressedPreEcho=%d suppressedBefore=%d, want increment — adversarial SYN must be classified as pre-echo noise, NOT terminator (Codex PR #502 P1)",
+			snap.SynSuppressedPreEcho, suppressedBefore)
+	}
+	if !snap.Active {
+		t.Errorf("ActiveTxnSnapshot.Active=false, want true — adversarial SYN must not terminate the txn before a real adapter byte has reached activeCh")
+	}
+	if snap.InactiveReason == ReasonSYNTerminator {
+		t.Errorf("InactiveReason=ReasonSYNTerminator — pre-fix Codex bug: terminator path fired before first echo byte reached activeCh")
+	}
+}
+
+// TestTerminatorSYN_AfterFirstDelivery verifies the complementary half
+// of the gate: once a real adapter byte has been enqueued on activeCh
+// (bytesDeliveredToActive>=1), a subsequent SYN IS the legitimate frame
+// terminator and MUST fire the terminator path.
+func TestTerminatorSYN_AfterFirstDelivery(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+
+	// Write the request source, then inject its echo and consume it so
+	// readLoop enqueued a real adapter byte onto activeCh (this moves
+	// bytesDeliveredToActive from 0 to >=1).
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err=%v", err)
+	}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+	if b, err := at.ReadByte(); err != nil || b != 0x71 {
+		t.Fatalf("ReadByte (echo) = (0x%02X, %v), want (0x71, nil)", b, err)
+	}
+
+	// Verify the gate precondition: bytesDeliveredToActive is now >=1.
+	mid := mux.ActiveTxnSnapshot()
+	if mid.BytesDeliveredToActive == 0 {
+		t.Fatalf("BytesDeliveredToActive=0 after echo enqueued+consumed, want >=1 — test precondition for terminator gate")
+	}
+
+	// Inject trailing SYN. Because bytesDeliveredToActive>=1 the terminator
+	// path MUST fire: SYN is delivered to activeCh, gatewayTxnActive
+	// clears with ReasonSYNTerminator, and the next ReadByte returns the
+	// SYN to the bus.Send consumer.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+
+	readDone := make(chan struct {
+		b   byte
+		err error
+	}, 1)
+	go func() {
+		b, err := at.ReadByte()
+		readDone <- struct {
+			b   byte
+			err error
+		}{b, err}
+	}()
+
+	select {
+	case r := <-readDone:
+		if r.err != nil {
+			t.Fatalf("ReadByte err=%v — terminator SYN missing from activeCh", r.err)
+		}
+		if r.b != protocol.SymbolSyn {
+			t.Fatalf("ReadByte=0x%02X, want 0xAA (SYN terminator)", r.b)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("ReadByte timed out — terminator SYN was NOT delivered to activeCh after bytesDeliveredToActive>=1 gate opened")
+	}
+
+	// Small beat for state propagation.
+	time.Sleep(20 * time.Millisecond)
+
+	snap := mux.ActiveTxnSnapshot()
+	if snap.Active {
+		t.Errorf("Active=true, want false — terminator SYN must clear gatewayTxnActive")
+	}
+	if snap.InactiveReason != ReasonSYNTerminator {
+		t.Errorf("InactiveReason=%q, want %q — post-delivery SYN is the legitimate terminator", snap.InactiveReason, ReasonSYNTerminator)
+	}
+}

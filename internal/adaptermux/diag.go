@@ -64,6 +64,16 @@ type activeTxnDiag struct {
 	inactiveReas  ActiveTxnInactiveReason
 	bytesWritten  atomic.Uint64 // incremented by activeTransport.Write on success
 	bytesRead     atomic.Uint64 // incremented by activeTransport.ReadByte/ReadEvent success
+	// bytesDeliveredToActive is the precise "at least one real adapter byte
+	// has been enqueued on activeCh during this gateway-owned txn" signal.
+	// Incremented by the readLoop byte-delivery path AFTER a successful
+	// non-blocking send to activeCh while gatewayTxnActive is true. Unlike
+	// bytesRead (lags — consumer side) and bytesWritten (leads — initiator
+	// side before echo returns), this is the correct gate for "the pre-echo
+	// window has ended". Used by onSYNLocked to decide whether a SYN is a
+	// legitimate frame terminator or pre-echo idle-buffer noise. Codex PR
+	// #502 P1 — superseded bytesWritten as the terminator/suppression gate.
+	bytesDeliveredToActive atomic.Uint64
 	drainedOnGrant int          // count of stale bytes drained just before this grant
 
 	// totals across the mux lifetime (never reset)
@@ -134,6 +144,8 @@ type ActiveTxnSnapshot struct {
 	TerminatorDropOnFullCh uint64
 	// SynSuppressedPreEcho mirrors activeTxnDiag.synSuppressedPreEcho.
 	SynSuppressedPreEcho uint64
+	// BytesDeliveredToActive mirrors activeTxnDiag.bytesDeliveredToActive.
+	BytesDeliveredToActive uint64
 
 	// Transaction-shape diagnostics (bounded).
 	WritePrefix []byte
@@ -180,6 +192,7 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		AfterInactive:         m.activeTxn.afterInactive.Load(),
 		TerminatorDropOnFullCh: m.activeTxn.terminatorDropOnFullCh.Load(),
 		SynSuppressedPreEcho:   m.activeTxn.synSuppressedPreEcho.Load(),
+		BytesDeliveredToActive: m.activeTxn.bytesDeliveredToActive.Load(),
 		WritePrefix:    wp,
 		ReadPrefix:     rp,
 		EchoLike:       m.activeTxn.echoLike.Load(),
@@ -219,6 +232,7 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 	m.activeTxn.inactiveReas = ReasonNone
 	m.activeTxn.bytesWritten.Store(0)
 	m.activeTxn.bytesRead.Store(0)
+	m.activeTxn.bytesDeliveredToActive.Store(0)
 	m.activeTxn.drainedOnGrant = drained
 	m.activeTxn.grantsTotal.Add(1)
 	// Reset per-txn shape diagnostics.

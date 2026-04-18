@@ -1037,7 +1037,11 @@ func (m *Mux) onReceived(symbol byte) {
 		m.flushSessionEchoTrackers()
 
 		if activeExpects {
-			m.deliverToActive(symbol)
+			// activeExpects was decided under stateMu above and implies
+			// the gateway owns the bus with gatewayTxnActive=true — count
+			// this enqueue so bytesDeliveredToActive reflects real
+			// adapter-originated bytes delivered during this grant.
+			m.deliverToActive(symbol, true)
 		}
 		for _, pe := range passiveEvents {
 			m.emitPassive(pe)
@@ -1110,6 +1114,11 @@ func (m *Mux) onReceived(symbol byte) {
 		if m.activePathExpectsBytes() {
 			select {
 			case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
+				// Codex PR #502 P1: count real adapter-originated byte
+				// enqueued on activeCh during gateway-owned active txn.
+				// Decision was re-validated under stateMu on the line
+				// above, so gatewayTxnActive is confirmed true here.
+				m.activeTxn.bytesDeliveredToActive.Add(1)
 			default:
 				m.logger.Printf("adaptermux: active channel full, dropping byte 0x%02X", symbol)
 			}
@@ -1181,19 +1190,45 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// sessions via deliverSYNToSessions + deliverToSessions elsewhere.
 	m.gatewayEcho.flushOnSYN()
 
-	// Runtime-soak P0 + lifecycle correctness:
+	// Runtime-soak P0 + lifecycle correctness + Codex PR #502 P1:
 	// clear gatewayTxnActive on SYN during gateway ownership ONLY if
-	// the transaction has already received at least one response byte
-	// (bytesRead > 0). Otherwise this SYN is almost certainly a
-	// pre-grant stale byte buffered in the TCP socket before STARTED
-	// arrived — treating it as end-of-transaction would terminate a
-	// nascent transaction before bus.Send can send the first byte.
+	// at least one real adapter byte has already been enqueued on
+	// activeCh for this txn (bytesDeliveredToActive > 0). That counter
+	// is incremented on successful activeCh sends in the readLoop byte-
+	// delivery path (SYN-branch deliverToActive and non-SYN inline
+	// delivery) — so it rises precisely when the mux has observed the
+	// first post-grant adapter byte AND routed it to the active path.
 	//
-	// Normal transactions (including broadcast) produce bytesRead>0
-	// via echoes of the gateway's own writes, so the trailing SYN
-	// correctly clears. Genuine aborts (no writes, no reads) are
-	// caught by MaxOwnershipDuration, ActiveWriteError, ActiveReadTimeout,
-	// context cancel, reset, or reconnect — per the lifecycle contract.
+	// Why this counter and not bytesRead / bytesWritten:
+	//   - bytesRead lags (consumer side): incremented by
+	//     activeTransport.ReadByte/ReadEvent on CONSUMPTION, which is
+	//     strictly after activeCh enqueue. Under production timing
+	//     readLoop is a tight loop while bus.Send.sendRawWithEcho has
+	//     multiple channel hops between receiving a grant and reading.
+	//     Gating on bytesRead would over-suppress legitimate terminator
+	//     SYNs at end of reply whenever the consumer is slower than
+	//     readLoop — that is the normal case.
+	//   - bytesWritten leads (initiator side): incremented by
+	//     activeTransport.Write BEFORE the byte reaches the adapter and
+	//     BEFORE any echo has been processed. On a busy/idle-chatter
+	//     link, a buffered idle SYN can arrive between Write returning
+	//     and the echo being enqueued on activeCh; gating on bytesWritten
+	//     would treat that SYN as a terminator, clear gatewayTxnActive,
+	//     and deliver 0xAA to the active path — sendRawWithEcho then
+	//     sees SYN instead of the expected echo (echo_mismatch / timeout).
+	//   - bytesDeliveredToActive is the precise midpoint: it goes from 0
+	//     to ≥1 at the exact instant the first real adapter byte has
+	//     been enqueued on activeCh. Before that point any SYN is
+	//     pre-echo idle-buffer noise (suppress); after that point any
+	//     SYN is either a response byte (delivered via the non-SYN path)
+	//     or the legitimate frame terminator (delivered here).
+	//
+	// Normal transactions (including broadcast) produce
+	// bytesDeliveredToActive>0 via echoes of the gateway's own writes,
+	// so the trailing SYN correctly clears. Genuine aborts (no writes,
+	// no reads) are caught by MaxOwnershipDuration, ActiveWriteError,
+	// ActiveReadTimeout, context cancel, reset, or reconnect — per the
+	// lifecycle contract.
 	//
 	// PR #502 E2E fix: this SYN is the legitimate frame terminator.
 	// The bus.Send consumer on activeCh needs to see it to complete the
@@ -1207,10 +1242,13 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// path in onSYNLocked's idle-release branch below.
 	terminatorDelivered := false
 	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive &&
-		m.activeTxn.bytesWritten.Load() > 0 {
+		m.activeTxn.bytesDeliveredToActive.Load() > 0 {
 		select {
 		case m.activeCh <- activeEvent{kind: activeEventByte, b: protocol.SymbolSyn}:
 			terminatorDelivered = true
+			// Count the terminator SYN — it is a real adapter byte
+			// enqueued while the gateway owned the bus, AM-NEW-41 spec.
+			m.activeTxn.bytesDeliveredToActive.Add(1)
 		default:
 			m.activeTxn.terminatorDropOnFullCh.Add(1)
 			m.logger.Printf("adaptermux: active channel full, dropping SYN terminator")
@@ -1260,23 +1298,26 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// Computed AFTER the terminator/idle branches so that a gwActive flag
 	// that was just cleared by those branches does not incorrectly trigger
 	// suppression. The pre-echo case is: gateway still owns, gatewayTxnActive
-	// still true, and no reads have been consumed — i.e. bus.Send has NOT
-	// yet started consuming echoes. A SYN observed in this window is buffer
+	// still true, and no real adapter byte has been enqueued on activeCh
+	// yet for this txn — i.e. the mux has not yet observed post-grant
+	// traffic on the active path. A SYN observed in this window is buffer
 	// noise that pre-dates the grant's first Write and must not race the
 	// real echo on activeCh. See onReceived for the counter increment and
 	// activeExpects gating.
-	// Pre-echo window = "bus.Send has not written anything yet". Use
-	// bytesWritten (not bytesRead) as the gate: bytesRead is incremented
-	// on CONSUME (activeTransport.ReadByte), so it lags activeCh delivery
-	// whenever the consumer is slower than readLoop — which is the normal
-	// case in production (readLoop is a tight loop; bus.Send.sendRawWithEcho
-	// has multiple channel hops before it ReadBytes). Gating on bytesRead
-	// would over-suppress legitimate terminator SYNs at end of reply.
-	// bytesWritten is incremented by activeTransport.Write BEFORE the byte
-	// reaches the adapter, so bytesWritten==0 cleanly identifies the grant-
-	// to-first-write race window.
+	//
+	// Codex PR #502 P1: the gate here is complementary to the terminator
+	// gate above — one single signal (bytesDeliveredToActive) governs
+	// both branches. See the terminator comment block for the full
+	// rationale on why bytesDeliveredToActive beats bytesRead (lags,
+	// consumer side) and bytesWritten (leads, initiator side before echo
+	// returns). The critical win on busy/idle-chatter links: bytesWritten
+	// flips to ≥1 the moment Write returns, so a buffered idle SYN in the
+	// window between Write and echo-enqueue would falsely pass the
+	// terminator gate and deliver 0xAA to sendRawWithEcho; with
+	// bytesDeliveredToActive, that same SYN is correctly classified as
+	// pre-echo and suppressed.
 	preEchoSuppressed := hasOwner && ownerID == gatewaySessionID &&
-		m.gatewayTxnActive && m.activeTxn.bytesWritten.Load() == 0
+		m.gatewayTxnActive && m.activeTxn.bytesDeliveredToActive.Load() == 0
 	if preEchoSuppressed {
 		m.activeTxn.synSuppressedPreEcho.Add(1)
 	}
@@ -1457,9 +1498,21 @@ func (m *Mux) activePathExpectsBytes() bool {
 
 // deliverToActive sends a byte to the active path channel.
 // Logs on overflow instead of silently dropping (CRITICAL-1 fix).
-func (m *Mux) deliverToActive(symbol byte) {
+//
+// If countAsDelivered is true and the send succeeds, increment
+// bytesDeliveredToActive — the precise "at least one real adapter byte
+// has been enqueued on activeCh during this gateway-owned txn" signal
+// used by onSYNLocked's terminator/pre-echo suppression gates (Codex PR
+// #502 P1). Callers pass true when the enqueue corresponds to an
+// active-path delivery under gateway ownership (decided under stateMu
+// via activePathExpectsBytes); pass false for shutdown/reset events or
+// for non-gateway-owned passthrough.
+func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 	select {
 	case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
+		if countAsDelivered {
+			m.activeTxn.bytesDeliveredToActive.Add(1)
+		}
 	default:
 		m.logger.Printf("adaptermux: active channel full, dropping byte 0x%02X", symbol)
 	}

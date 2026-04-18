@@ -299,7 +299,7 @@ func TestRun_AttachesPassiveShadowProducerWhenObserveFirstLaneEnabled(t *testing
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		return nil, deduplicator, nil
 	}
-	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder) startupScanSignals {
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
 		return startupScanSignals{}
 	}
 
@@ -390,7 +390,7 @@ func TestRun_DoesNotAttachPassiveShadowProducerWhenObserveFirstMasterDisabled(t 
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		return nil, deduplicator, nil
 	}
-	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder) startupScanSignals {
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
 		return startupScanSignals{}
 	}
 	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
@@ -455,7 +455,7 @@ func TestRun_ProxySingleENSAutoUsesSameSemanticSourceAsStartupConfirmation(t *te
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		return nil, nil, nil
 	}
-	startDiscoveryScanLoopFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.Builder) startupScanSignals {
+	startDiscoveryScanLoopFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.Builder, _ activeTxnClassifier) startupScanSignals {
 		resolved := resolveStartupScanSourceConfig(cfg)
 		expectedStartupSource <- resolved.ScanSource
 		expectedStartupAuto <- resolved.ScanSourceAuto
@@ -559,7 +559,7 @@ func TestRun_DefersSemanticBootstrapUntilStartupConfirmationReadyOnPassiveObserv
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		return nil, nil, nil
 	}
-	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder) startupScanSignals {
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
 		return startupScanSignals{
 			firstPassDone:          firstPassDone,
 			semanticBootstrapReady: semanticReady,
@@ -665,7 +665,7 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		return nil, nil, nil
 	}
-	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder) startupScanSignals {
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
 		return startupScanSignals{}
 	}
 	startVaillantSemanticPollingFn = func(_ context.Context, _ ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.LiveSemanticProvider, _ *graphql.BroadcastHub, startupBarrier <-chan struct{}) *vaillantSemanticPoller {
@@ -728,7 +728,7 @@ func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T)
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		return nil, nil, nil
 	}
-	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder) startupScanSignals {
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
 		return startupScanSignals{
 			firstPassDone:          firstPassDone,
 			semanticBootstrapReady: make(chan struct{}),
@@ -1008,7 +1008,7 @@ func TestWireAdapterDirect_NonAdapterDirect_ReturnsNil(t *testing.T) {
 	cfg.TransportConfig.Protocol = ebusgateway.TransportENH
 	cfg.TransportConfig.Address = "127.0.0.1:9999"
 
-	closer, err := wireAdapterDirect(context.Background(), &cfg)
+	closer, _, err := wireAdapterDirect(context.Background(), &cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1024,7 +1024,7 @@ func TestWireAdapterDirect_URIScheme_ForcesTCP(t *testing.T) {
 	cfg.TransportConfig.Address = "adapter-direct://192.0.2.1:9999"
 	cfg.TransportConfig.DialTimeout = 100 * time.Millisecond
 
-	_, err := wireAdapterDirect(context.Background(), &cfg)
+	_, _, err := wireAdapterDirect(context.Background(), &cfg)
 	if err == nil {
 		t.Fatal("expected dial error, got nil")
 	}
@@ -1046,7 +1046,7 @@ func TestWireAdapterDirect_ExplicitProtocol_ForcesTCPForHostPort(t *testing.T) {
 	cfg.TransportConfig.Address = "192.0.2.1:9999"
 	cfg.TransportConfig.DialTimeout = 100 * time.Millisecond
 
-	_, err := wireAdapterDirect(context.Background(), &cfg)
+	_, _, err := wireAdapterDirect(context.Background(), &cfg)
 	if err == nil {
 		t.Fatal("expected dial error, got nil")
 	}
@@ -1065,7 +1065,7 @@ func TestWireAdapterDirect_ExplicitProtocol_KeepsUnixForSocketPath(t *testing.T)
 	cfg.TransportConfig.Address = "/var/run/adapter.sock"
 	cfg.TransportConfig.DialTimeout = 100 * time.Millisecond
 
-	_, err := wireAdapterDirect(context.Background(), &cfg)
+	_, _, err := wireAdapterDirect(context.Background(), &cfg)
 	if err == nil {
 		t.Fatal("expected dial error, got nil")
 	}
@@ -1080,7 +1080,7 @@ func TestWireAdapterDirect_ENSScheme_SelectsENS(t *testing.T) {
 	cfg.TransportConfig.Address = "adapter-direct-ens://192.0.2.1:9999"
 	cfg.TransportConfig.DialTimeout = 100 * time.Millisecond
 
-	_, err := wireAdapterDirect(context.Background(), &cfg)
+	_, _, err := wireAdapterDirect(context.Background(), &cfg)
 	if err == nil {
 		t.Fatal("expected dial error, got nil")
 	}
@@ -1108,7 +1108,7 @@ func TestWireAdapterDirect_ProxyListener_ReturnedAsCloser(t *testing.T) {
 	cfg.TransportConfig.DialTimeout = 100 * time.Millisecond
 	cfg.ProxyListenAddr = "" // no proxy listener
 
-	_, err := wireAdapterDirect(context.Background(), &cfg)
+	_, _, err := wireAdapterDirect(context.Background(), &cfg)
 	if err == nil {
 		t.Fatal("expected dial error, got nil (no adapter running)")
 	}

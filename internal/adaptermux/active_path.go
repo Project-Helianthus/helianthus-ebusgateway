@@ -23,6 +23,7 @@ var (
 	_ transport.RawTransport      = (*activeTransport)(nil)
 	_ transport.StreamEventReader = (*activeTransport)(nil)
 	_ transport.InfoRequester     = (*activeTransport)(nil)
+	_ transport.EscapeAware       = (*activeTransport)(nil)
 )
 
 // NOTE: activeTransport intentionally does NOT implement
@@ -64,10 +65,14 @@ func (t *activeTransport) ReadByte() (byte, error) {
 			}
 			return 0, errors.New("adaptermux: unexpected nil error")
 		}
+		t.mux.activeTxn.bytesRead.Add(1)
 		return ev.b, nil
 	case <-timer.C:
+		t.mux.activeTxn.readTimeoutTot.Add(1)
+		t.mux.markActiveReadTimeout()
 		return 0, fmt.Errorf("adaptermux: %w", ebuserrors.ErrTimeout)
 	case <-t.mux.ctx.Done():
+		t.mux.markActiveContextCancel()
 		return 0, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}
 }
@@ -93,13 +98,17 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 			}
 			return transport.StreamEvent{}, errors.New("adaptermux: unexpected nil error")
 		}
+		t.mux.activeTxn.bytesRead.Add(1)
 		return transport.StreamEvent{
 			Kind: transport.StreamEventByte,
 			Byte: ev.b,
 		}, nil
 	case <-timer.C:
+		t.mux.activeTxn.readTimeoutTot.Add(1)
+		t.mux.markActiveReadTimeout()
 		return transport.StreamEvent{}, fmt.Errorf("adaptermux: %w", ebuserrors.ErrTimeout)
 	case <-t.mux.ctx.Done():
+		t.mux.markActiveContextCancel()
 		return transport.StreamEvent{}, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}
 }
@@ -136,9 +145,17 @@ func (t *activeTransport) Write(p []byte) (int, error) {
 		select {
 		case err := <-result:
 			if err != nil {
+				t.mux.activeTxn.writeErrTotal.Add(1)
+				t.mux.markActiveWriteError()
 				return i, err
 			}
+			t.mux.activeTxn.bytesWritten.Add(1)
+			// Shape diag: capture first-N write bytes under stateMu.
+			t.mux.stateMu.Lock()
+			t.mux.recordWritePrefix(b)
+			t.mux.stateMu.Unlock()
 		case <-t.mux.ctx.Done():
+			t.mux.markActiveContextCancel()
 			return i, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 		}
 	}
@@ -192,4 +209,16 @@ func (t *activeTransport) RequestInfo(id transport.AdapterInfoID) ([]byte, error
 // Delegates to the unified mux method (true for ENH/ENS) for bus.sendTransaction.
 func (t *activeTransport) ArbitrationSendsSource() bool {
 	return t.mux.arbitrationSendsSource()
+}
+
+// BytesAreUnescaped reports that the active path delivers already-unescaped
+// (logical) bytes to protocol.Bus. The upstream ENH/ENS transport decodes
+// wire-level escape sequences ({0xA9, 0x01} → 0xAA, {0xA9, 0x00} → 0xA9)
+// before enqueuing into activeCh, so bus.Send must NOT apply escape
+// expansion again on this path.
+//
+// Without this, protocol.Bus would double-escape 0xA9/0xAA outgoing and
+// would misinterpret logical 0xAA bytes from the adapter as SYN markers.
+func (t *activeTransport) BytesAreUnescaped() bool {
+	return t.mux.bytesAreUnescaped()
 }

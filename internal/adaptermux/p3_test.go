@@ -107,6 +107,10 @@ func (t *p3MockTransport) Init(features byte) (byte, error) {
 	return features, nil
 }
 
+// BytesAreUnescaped reports that this mock delivers ENH-style
+// pre-unescaped logical bytes (matching real ENHTransport semantics).
+func (t *p3MockTransport) BytesAreUnescaped() bool { return true }
+
 func (t *p3MockTransport) getStartRequests() []byte {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -778,27 +782,45 @@ func TestHandleReset_ClearsPendingStart(t *testing.T) {
 	}
 }
 
-// TestP3_ActivePathReceivesDuringPending verifies that the active
-// path (activeCh) also receives bytes while a START is pending.
-func TestP3_ActivePathReceivesDuringPending(t *testing.T) {
+// TestP3_ActivePathDoesNotAccumulateDuringPending verifies that bytes
+// arriving while gateway START is PENDING (not yet confirmed) do NOT
+// accumulate on activeCh. bus.Send is blocked inside StartArbitration
+// waiting for the grant — it is not reading activeCh. Any bytes that
+// arrived before STARTED are third-party traffic belonging to the
+// passive path, not to the gateway's transaction.
+//
+// Policy (runtime soak fix): deliver to activeCh ONLY when gateway
+// owns the bus. Idle SYN bursts and third-party traffic during
+// pending START must go through the passive path, not activeCh.
+// This prevents the 4096-slot activeCh from overflowing with
+// unconsumed traffic (runtime incident: 667k dropped bytes/4min).
+func TestP3_ActivePathDoesNotAccumulateDuringPending(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
 	// Request START.
 	mux.arb.requestStart(gatewaySessionID, 0x31)
 
-	// Feed SYN + data bytes.
+	// Feed SYN + data bytes before STARTED is delivered.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
-	// Feed data bytes while START is pending.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08}
 	time.Sleep(50 * time.Millisecond)
 
-	// Drain active channel and count received bytes.
+	// Verify pendingStart is set (we're in the pending window).
+	mux.stateMu.Lock()
+	hasPending := mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pendingStart during this window")
+	}
+
+	// Drain active channel — should be empty or nearly empty.
+	// No bytes should accumulate because gateway does not yet own the bus.
 	var activeCount int
-	drainTimeout := time.After(200 * time.Millisecond)
+	drainTimeout := time.After(100 * time.Millisecond)
 drain:
 	for {
 		select {
@@ -809,9 +831,10 @@ drain:
 		}
 	}
 
-	// Should have received: SYN + 0x10 + 0x08 = 3 bytes minimum.
-	if activeCount < 3 {
-		t.Fatalf("active path received %d bytes during pending START, want >= 3", activeCount)
+	// Policy: bytes during pending START go to passive, not active.
+	// activeCh should remain empty (no owner → no consumer).
+	if activeCount != 0 {
+		t.Fatalf("activeCh accumulated %d bytes during pending START, want 0 (runtime soak policy)", activeCount)
 	}
 }
 
@@ -939,7 +962,19 @@ func TestP3_FallbackStartArbitration(t *testing.T) {
 	ch := mux.arb.requestStart(gatewaySessionID, 0x31)
 
 	// Call tryGrantAndStart directly (simulating SYN handler).
+	// PR502-Fix1: the blocking StartArbitration now runs in a goroutine,
+	// so tryGrantAndStart returns immediately. Wait for the result on ch.
 	mux.tryGrantAndStart()
+
+	// Result arrives asynchronously from the blocking goroutine.
+	select {
+	case result := <-ch:
+		if !result.granted {
+			t.Fatal("expected granted=true from blocking fallback")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for blocking fallback result")
+	}
 
 	// Should have used the blocking fallback.
 	calls := mock.getStartCalls()
@@ -948,16 +983,6 @@ func TestP3_FallbackStartArbitration(t *testing.T) {
 	}
 	if calls[0] != 0x31 {
 		t.Fatalf("StartArbitration initiator = 0x%02X, want 0x31", calls[0])
-	}
-
-	// Result should be immediately available (blocking path).
-	select {
-	case result := <-ch:
-		if !result.granted {
-			t.Fatal("expected granted=true from blocking fallback")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for blocking fallback result")
 	}
 
 	// Ownership should be set.
@@ -1633,15 +1658,11 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 	// Request START.
 	ch := mux.arb.requestStart(id, 0x55)
 
-	// tryGrantAndStart blocks inside StartArbitration.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		mux.tryGrantAndStart()
-	}()
+	// PR502-Fix1: tryGrantAndStart returns immediately; the blocking
+	// StartArbitration runs in an internal goroutine.
+	mux.tryGrantAndStart()
 
-	// Wait for StartArbitration to be entered.
+	// Wait for the internal goroutine to enter StartArbitration.
 	time.Sleep(30 * time.Millisecond)
 
 	// Cancel the pending request while StartArbitration blocks.
@@ -1652,20 +1673,6 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 	// completeArbitrationGrant and double-send on notify.
 	close(mock.startGate)
 
-	// tryGrantAndStart must return promptly.
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Good.
-	case <-time.After(3 * time.Second):
-		t.Fatal("tryGrantAndStart blocked — likely double-send on notify channel")
-	}
-
 	// Drain the cancel result.
 	select {
 	case result := <-ch:
@@ -1675,6 +1682,9 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for cancel result")
 	}
+
+	// Wait for the internal goroutine to complete after gate release.
+	time.Sleep(50 * time.Millisecond)
 
 	// No second result must appear.
 	select {
@@ -1689,13 +1699,21 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 		t.Fatal("cancelled session should not own the bus")
 	}
 
-	// pendingStartAbsorb should have been decremented (cancel increments,
-	// success-path-guard decrements).
+	// Codex PR #502 follow-up (C2 pattern): cancelPendingStart on the
+	// blocking path NO LONGER bumps blockingArbGen / clears
+	// blockingArbActive in-line. Instead it closes m.conn to force the
+	// hung goroutine to return; the real gateway reconnect path bumps
+	// the gen. In this unit test m.conn == nil, so no gen bump happens
+	// and the hung goroutine's late return runs with current gen —
+	// which decrements pendingStartAbsorb back to 0. That is the
+	// correct end-state once the goroutine has actually released: no
+	// stale adapter response can still be in-flight after the hung
+	// StartArbitration has returned.
 	mux.stateMu.Lock()
 	absorb := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
 	if absorb != 0 {
-		t.Fatalf("pendingStartAbsorb = %d, want 0", absorb)
+		t.Fatalf("pendingStartAbsorb = %d, want 0 (current-gen late return decrements absorb — C2 pattern)", absorb)
 	}
 }
 
@@ -1735,34 +1753,17 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 	// Request START.
 	ch := mux.arb.requestStart(id, 0x55)
 
-	// tryGrantAndStart blocks inside StartArbitration.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		mux.tryGrantAndStart()
-	}()
+	// PR502-Fix1: tryGrantAndStart now returns immediately; the blocking
+	// StartArbitration runs in an internal goroutine.
+	mux.tryGrantAndStart()
 
 	time.Sleep(30 * time.Millisecond)
 
-	// Cancel while blocking.
+	// Cancel while the internal goroutine is blocking on StartArbitration.
 	mux.cancelPendingStart(id)
 
-	// Release — returns error.
+	// Release — StartArbitration returns error.
 	close(mock.startGate)
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Good.
-	case <-time.After(3 * time.Second):
-		t.Fatal("tryGrantAndStart blocked — likely double-send on notify channel")
-	}
 
 	// Drain the cancel result.
 	select {
@@ -1774,7 +1775,11 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 		t.Fatal("timeout waiting for cancel result")
 	}
 
-	// No second result.
+	// Wait for the internal goroutine to process the error path and
+	// update pendingStartAbsorb.
+	time.Sleep(50 * time.Millisecond)
+
+	// No second result (the error path must not double-send).
 	select {
 	case extra := <-ch:
 		t.Fatalf("unexpected second result on notify channel: %+v", extra)
@@ -1782,12 +1787,17 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 		// Good.
 	}
 
-	// pendingStartAbsorb must be decremented.
+	// Codex PR #502 follow-up (C2 pattern): cancelPendingStart no
+	// longer bumps blockingArbGen in-line. With m.conn == nil, no real
+	// reconnect happens either, so the error-path cleanup runs at
+	// current gen and DOES decrement pendingStartAbsorb. End state 0
+	// is correct: the hung goroutine has returned, so no stale adapter
+	// response can still be in-flight for the cancelled request.
 	mux.stateMu.Lock()
 	absorb := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
 	if absorb != 0 {
-		t.Fatalf("pendingStartAbsorb = %d, want 0", absorb)
+		t.Fatalf("pendingStartAbsorb = %d, want 0 (current-gen late return decrements absorb — C2 pattern)", absorb)
 	}
 }
 
@@ -1902,13 +1912,16 @@ func TestDrainActiveChOnGrant_ExternalSession(t *testing.T) {
 		t.Fatal("no result on notify channel after STARTED")
 	}
 
-	// activeCh must still have the stale bytes plus the SYN that triggered
-	// tryGrantAndStart (readLoop dispatches the SYN to activeCh too).
-	// External sessions must NOT drain activeCh.
+	// activeCh must still contain the staleBytes injected above.
+	// Soak policy (runtime-soak directive): activeCh is fed ONLY when
+	// gateway owns the bus. The triggering SYN does NOT land in activeCh
+	// because at that moment ownership was not yet confirmed for the
+	// gateway (the grant is for an external session). Additionally,
+	// external-session grants must NOT drain activeCh — external sessions
+	// use their own net.Conn path.
 	remaining := len(mux.activeCh)
-	expectedMin := len(staleBytes) // at least the injected bytes must survive
-	if remaining < expectedMin {
-		t.Fatalf("activeCh has %d events after external grant, want at least %d (should not be drained)", remaining, expectedMin)
+	if remaining != len(staleBytes) {
+		t.Fatalf("activeCh has %d events after external grant, want exactly %d (no drain, no idle-SYN accumulation)", remaining, len(staleBytes))
 	}
 }
 
@@ -2028,5 +2041,88 @@ func TestPassive_NoGarbageDuringGatewayTransaction(t *testing.T) {
 
 	if lastByte != 0x10 {
 		t.Fatalf("passive last byte = 0x%02X, want 0x10 (third-party byte after release)", lastByte)
+	}
+}
+
+// TestResetErrorPriorityOverByteFlood verifies that reset/error events
+// are not lost on activeCh when the channel is saturated with byte
+// traffic. Policy (runtime-soak directive): reset/error events must
+// take priority over stale byte traffic. handleReset/reconnect drain
+// activeCh before enqueuing the error marker, so the consumer always
+// sees the reset boundary even under byte flood.
+//
+// Scenario:
+//   1. Grant gateway ownership so activeCh receives bytes.
+//   2. Flood activeCh to near-capacity with legitimate byte traffic.
+//   3. Trigger handleReset() (simulates in-band RESETTED).
+//   4. Assert that after handleReset, the consumer sees the reset
+//      error event — NOT lost behind stale bytes.
+func TestResetErrorPriorityOverByteFlood(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Grant gateway ownership so activeCh is fed by readLoop.
+	ch := mux.arb.requestStart(gatewaySessionID, 0x71)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+	select {
+	case r := <-ch:
+		if !r.granted {
+			t.Fatal("expected grant")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for grant")
+	}
+
+	// Flood activeCh directly to near-capacity (avoid goroutine races).
+	// This simulates a burst of transaction bytes queued up but not yet
+	// consumed by bus.Send.
+	flood := 2000
+	for i := 0; i < flood; i++ {
+		select {
+		case mux.activeCh <- activeEvent{kind: activeEventByte, b: byte(i % 256)}:
+		default:
+			// Channel full — good enough, we have backlog.
+			break
+		}
+	}
+
+	preLen := len(mux.activeCh)
+	if preLen < 100 {
+		t.Fatalf("activeCh should have backlog before reset, got %d", preLen)
+	}
+
+	// Trigger reset — this should drain activeCh and enqueue the error.
+	mux.handleReset()
+
+	// Consume events from activeCh and assert we see the reset error.
+	// The drain in handleReset ensures the error is at the front (FIFO).
+	foundReset := false
+	eventsAfterReset := 0
+	deadline := time.After(500 * time.Millisecond)
+scan:
+	for {
+		select {
+		case ev := <-mux.activeCh:
+			eventsAfterReset++
+			if ev.kind == activeEventError {
+				if ev.err == nil {
+					t.Fatal("reset event has nil error")
+				}
+				foundReset = true
+				break scan
+			}
+			// Should not see more than a handful of bytes before the reset.
+			if eventsAfterReset > 10 {
+				t.Fatalf("reset error not found within first 10 events — drained-before-error invariant broken (%d events so far, all bytes)", eventsAfterReset)
+			}
+		case <-deadline:
+			break scan
+		}
+	}
+
+	if !foundReset {
+		t.Fatalf("reset error event lost under byte flood (preLen=%d, scanned=%d)", preLen, eventsAfterReset)
 	}
 }

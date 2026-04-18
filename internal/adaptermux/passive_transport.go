@@ -74,11 +74,28 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 		return
 	}
 
-	// AM52/AM-fix5/Codex-R6: reset boundaries use a bounded-blocking
-	// send. Losing a reset corrupts frame reconstruction, but blocking
-	// indefinitely stalls readLoop/reconnect/handleReset — the critical
-	// recovery path. Compromise: try for 100ms, then drop. The consumer
-	// will see a data discontinuity on the next SYN boundary.
+	// AM52/AM-fix5/Codex-R6/XR_PASSIVE_RESET_BACKPRESSURE:
+	//
+	// Reset boundaries use a bounded-blocking send (100ms). The trade-off:
+	//
+	//   - Dropping a reset can leave the consumer's frame reconstructor
+	//     with stale partial-frame state until the next SYN boundary or
+	//     a subsequent reset arrives. This is acceptable because:
+	//     (a) passive transport is read-only — stale state does not affect
+	//         bus ownership or the mux's own parser state;
+	//     (b) the next SYN boundary (typically <50ms on a live bus)
+	//         provides an implicit resynchronisation point.
+	//
+	//   - Blocking indefinitely stalls readLoop, reconnect, or handleReset
+	//     — the mux's critical recovery path. A stalled recovery path
+	//     affects ALL consumers (active + passive + external sessions),
+	//     not just the slow passive consumer.
+	//
+	//   The 100ms bound is chosen to be long enough for a healthy consumer
+	//   to drain at least one event (typical: <1ms) while short enough to
+	//   avoid visible recovery delay. If the consumer is genuinely stuck,
+	//   the data discontinuity on the next SYN boundary is the correct
+	//   fallback — the reconstructor handles SYN as a frame boundary.
 	if se.Kind == transport.StreamEventReset {
 		select {
 		case t.events <- se:

@@ -80,6 +80,11 @@ func (m *mockInitTransport) getInitCalls() []byte {
 // adapter responds with RESETTED, which triggers another handleReset,
 // ad infinitum. INIT is only performed at TCP connection time in
 // connect(). upstreamFeatures must be preserved across in-band resets.
+//
+// PR502 note: this test uses a 400ms sleep to wait past the old re-INIT
+// delay. Under the race detector (-race), timer-based tests run slower
+// due to instrumentation overhead. The 400ms sleep is acceptable for CI
+// but may add perceived latency in race-enabled local runs.
 func TestHandleReset_NoReINIT(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

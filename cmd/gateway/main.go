@@ -30,7 +30,7 @@ var (
 	buildVersion                              = "0.4.0"
 	buildID                                   = "unknown"
 	wireObserveFirstObserversFn               = wireObserveFirstObservers
-	startDiscoveryScanLoopFn                  = startDiscoveryScanLoop
+	startDiscoveryScanLoopFn                  = startDiscoveryScanLoopWithClassifier
 	startVaillantSemanticPollingFn            = startVaillantSemanticPolling
 	attachPassiveShadowProducerFn             = (*vaillantSemanticPoller).AttachPassiveShadowProducer
 	startPassiveTransactionReconstructor      = ebusgateway.StartPassiveTransactionReconstructor
@@ -87,7 +87,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	// Wire adapter-direct mode: create multiplexer, configure active
 	// and passive transports before gateway construction.
-	adapterMuxCloser, err := wireAdapterDirect(ctx, &cfg)
+	adapterMuxCloser, adapterClassifier, err := wireAdapterDirect(ctx, &cfg)
 	if err != nil {
 		return fmt.Errorf("adapter-direct: %w", err)
 	}
@@ -187,7 +187,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		return err
 	}
 
-	startupScanSignals := startDiscoveryScanLoopFn(ctx, cfg, gateway, builder)
+	startupScanSignals := startDiscoveryScanLoopFn(ctx, cfg, gateway, builder, adapterClassifier)
 
 	if semanticBarrier != nil {
 		go func() {
@@ -520,9 +520,12 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 // transport protocol is adapter-direct. It configures both active and
 // passive transports in cfg before gateway construction.
 //
-// Returns a closer function for the multiplexer, or nil if not in
-// adapter-direct mode.
-func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() error, error) {
+// Returns a closer function for the multiplexer, the instance-scoped
+// activeTxnClassifier (the mux), or nils if not in adapter-direct mode.
+// The classifier is threaded explicitly into startDiscoveryScanLoopFn
+// at the call site in run() — never captured in a package-level closure —
+// so classifier state is strictly instance-local (Codex PR #502 P2).
+func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() error, activeTxnClassifier, error) {
 	network := cfg.TransportConfig.Network
 	address := cfg.TransportConfig.Address
 
@@ -540,7 +543,7 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	uriIsStd := strings.HasPrefix(addrLower, schemePrefix)
 	if !strings.EqualFold(string(cfg.TransportConfig.Protocol), string(ebusgateway.TransportAdapterDirect)) {
 		if !uriIsStd && !uriIsENS {
-			return nil, nil
+			return nil, nil, nil
 		}
 	}
 
@@ -563,7 +566,7 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		network = "tcp"
 	}
 	if address == "" {
-		return nil, fmt.Errorf("adapter-direct requires an address (e.g. adapter-direct://boiler.local:9999)")
+		return nil, nil, fmt.Errorf("adapter-direct requires an address (e.g. adapter-direct://boiler.local:9999)")
 	}
 
 	// Determine ENH vs ENS sub-protocol. ENH is the default.
@@ -595,6 +598,11 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	}
 
 	mux := adaptermux.New(muxCfg)
+	// Codex PR #502 P2: the instance-scoped classifier is returned to
+	// run() and threaded explicitly as the 5th argument to
+	// startDiscoveryScanLoopFn. No package-level closure captures this
+	// mux — so a second wireAdapterDirect call (e.g. in the same process
+	// across tests) sees its own classifier at the call site.
 
 	// Create passive transport BEFORE Start() so the callback is wired.
 	// Only create it when BroadcastListen is enabled — otherwise no
@@ -614,7 +622,7 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	}
 
 	if err := mux.Start(ctx); err != nil {
-		return nil, fmt.Errorf("start multiplexer: %w", err)
+		return nil, nil, fmt.Errorf("start multiplexer: %w", err)
 	}
 
 	log.Printf("adapter-direct: connected to %s/%s", network, address)
@@ -626,7 +634,7 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		pl, err := adaptermux.NewProxyListener(ctx, mux, cfg.ProxyListenAddr, log.Default())
 		if err != nil {
 			mux.Close()
-			return nil, fmt.Errorf("proxy listener: %w", err)
+			return nil, nil, fmt.Errorf("proxy listener: %w", err)
 		}
 		proxyListener = pl
 		log.Printf("adapter-direct: proxy listener on %s", pl.Addr())
@@ -647,7 +655,7 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		}
 		return mux.Close()
 	}
-	return closer, nil
+	return closer, activeTxnClassifier(mux), nil
 }
 
 func startHTTPServer(

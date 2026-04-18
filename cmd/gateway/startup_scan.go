@@ -54,6 +54,79 @@ type scanStats struct {
 	otherErrs  int
 }
 
+// scanAttemptLogCap bounds how many per-attempt diagnostic lines statsBus
+// records per pass. 8 is enough to characterize the failure mode (which
+// targets, which result class, which error string) without flooding the
+// log when all 164 targets time out.
+const scanAttemptLogCap = 8
+
+// scanAttemptLog records a single scan attempt for bounded diagnostics.
+type scanAttemptLog struct {
+	source    byte
+	target    byte
+	resClass  string
+	duration  time.Duration
+	errStr    string // truncated, only for non-ok attempts
+	probeKind string // e.g. "scan_07_04" — bounded set of probe names
+	txnClass  string // adaptermux txn classification (if classifier wired)
+
+	// Txn-ID correlated fields (populated when the classifier also
+	// implements activeTxnSnapshotter). txnIDBefore is the mux's current
+	// txn id just before the bus.Send call; txnIDAfter is the id after
+	// Send returns. If these differ by exactly 1, this attempt owns
+	// exactly one grant. If they're equal, no new grant happened (bus
+	// rejected arbitration or queued). writePrefix/readPrefix are hex-
+	// encoded, capped at scanPrefixHexCap characters. resultErrMsg is
+	// the specific bus.Send return err.Error() ("" when nil).
+	txnIDBefore  uint64
+	txnIDAfter   uint64
+	writePrefix  string // hex-encoded, capped at scanPrefixHexCap
+	readPrefix   string // hex-encoded, capped at scanPrefixHexCap
+	resultErrMsg string // err.Error() from bus.Send, "" when nil
+}
+
+// scanPrefixHexCap bounds how many hex characters of write/read prefix
+// are captured per scan attempt. 16 = 8 bytes, enough to see source +
+// QQ + PB + SB + NN + two data + ACK without flooding logs.
+const scanPrefixHexCap = 16
+
+// activeTxnClassifier is the optional interface statsBus queries after
+// each probe to attach the adaptermux transaction classification to the
+// scan attempt log. The adaptermux.Mux satisfies this via its
+// LastTxnClass method. If the underlying bus does not implement it,
+// txnClass is left empty — diagnostics degrade gracefully.
+type activeTxnClassifier interface {
+	LastTxnClass() string
+}
+
+// activeTxnSnapshotter is the richer (optional) seam for classifiers
+// that can correlate the scan attempt with a specific mux transaction
+// id. When the injected classifier also implements this interface,
+// statsBus.Send captures a (id, writePrefix, readPrefix, class) snapshot
+// BEFORE and AFTER each bus.Send call, eliminating the race where
+// LastTxnClass() could return a later txn's class if a second grant
+// completed between Send return and the log write.
+type activeTxnSnapshotter interface {
+	ActiveTxnSnapshotForScan() (id uint64, writePrefix []byte, readPrefix []byte, class string)
+}
+
+// hexN encodes at most n bytes of b as uppercase hex (2 chars per byte).
+// Bounded: result never exceeds 2*n characters.
+func hexN(b []byte, n int) string {
+	if n <= 0 || len(b) == 0 {
+		return ""
+	}
+	if len(b) > n {
+		b = b[:n]
+	}
+	const digits = "0123456789ABCDEF"
+	out := make([]byte, 0, len(b)*2)
+	for _, v := range b {
+		out = append(out, digits[v>>4], digits[v&0x0F])
+	}
+	return string(out)
+}
+
 type startupScanSignals struct {
 	firstPassDone          <-chan struct{}
 	semanticBootstrapReady <-chan struct{}
@@ -69,8 +142,62 @@ type ebusdScanResultRow struct {
 }
 
 type statsBus struct {
-	bus   registry.ScanBus
-	stats scanStats
+	bus      registry.ScanBus
+	stats    scanStats
+	source   byte             // effective source address in use for this pass
+	attempts []scanAttemptLog // bounded by scanAttemptLogCap
+	total    int              // total send attempts this pass (including non-logged)
+	// classifier is an optional adaptermux.Mux (or test fake) that
+	// exposes the last-transaction classification via LastTxnClass.
+	// When nil the txnClass field on each attempt is left empty.
+	classifier activeTxnClassifier
+}
+
+// maxErrStrLen bounds logged error strings per attempt for diagnostics.
+const maxErrStrLen = 96
+
+func truncateErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if len(s) > maxErrStrLen {
+		return s[:maxErrStrLen] + "..."
+	}
+	return s
+}
+
+// scanProbeKind returns a bounded, human-readable label for the probe
+// frame. Used in attempt diagnostics to distinguish 07 04 identification
+// probes from future secondary probe types without logging payloads.
+func scanProbeKind(frame protocol.Frame) string {
+	switch {
+	case frame.Primary == 0x07 && frame.Secondary == 0x04:
+		return "scan_07_04"
+	case frame.Primary == 0xB5 && frame.Secondary == 0x09:
+		return "b509_identity"
+	case frame.Primary == 0xB5 && frame.Secondary == 0x24:
+		return "b524_register"
+	default:
+		return "other"
+	}
+}
+
+func classifyScanErr(err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, ebuserrors.ErrTimeout) || errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, ebuserrors.ErrBusCollision):
+		return "collision"
+	case errors.Is(err, ebuserrors.ErrNACK):
+		return "nack"
+	case errors.Is(err, ebuserrors.ErrCRCMismatch):
+		return "crc"
+	default:
+		return "other"
+	}
 }
 
 var (
@@ -104,30 +231,139 @@ func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Fr
 	if b == nil || b.bus == nil {
 		return nil, fmt.Errorf("scan stats bus missing")
 	}
-	response, err := b.bus.Send(ctx, frame)
-	if err == nil {
-		b.stats.ok++
-		return response, nil
+	b.total++
+
+	// Txn correlation: if the classifier is also a snapshotter, capture
+	// the txn id just BEFORE Send so we can label the attempt with the
+	// txn range it spans. Prefix / class are captured AFTER. If the
+	// classifier only implements LastTxnClass, we degrade to class-only.
+	var (
+		snap              activeTxnSnapshotter
+		preID             uint64
+		haveSnapshotter   bool
+	)
+	if b.classifier != nil {
+		if snap, haveSnapshotter = b.classifier.(activeTxnSnapshotter); haveSnapshotter {
+			preID, _, _, _ = snap.ActiveTxnSnapshotForScan()
+		}
 	}
 
-	switch {
-	case errors.Is(err, ebuserrors.ErrTimeout) || errors.Is(err, context.DeadlineExceeded):
+	start := time.Now()
+	response, err := b.bus.Send(ctx, frame)
+	dur := time.Since(start)
+
+	class := classifyScanErr(err)
+	switch class {
+	case "ok":
+		b.stats.ok++
+	case "timeout":
 		b.stats.timeouts++
-	case errors.Is(err, ebuserrors.ErrBusCollision):
+	case "collision":
 		b.stats.collisions++
 		semanticBusCollisionsTotal.Add(1)
 		log.Printf("semantic_bus_collision total=%d", semanticBusCollisionsTotal.Value())
-	case errors.Is(err, ebuserrors.ErrNACK):
+	case "nack":
 		b.stats.nacks++
-	case errors.Is(err, ebuserrors.ErrCRCMismatch):
+	case "crc":
 		b.stats.crcErrors++
 	default:
 		b.stats.otherErrs++
 	}
+
+	// Bounded per-attempt diagnostics: prioritize non-ok attempts so
+	// the cap isn't filled with "ok" entries in mixed passes where
+	// early targets succeed and later ones fail (which would hide the
+	// timeout/collision/nack evidence operators actually need).
+	//
+	// Policy:
+	//   - While slots remain, record anything (ok or non-ok).
+	//   - Once full, if current is non-ok, evict the oldest "ok"
+	//     entry (if any) to make room. If all entries are non-ok,
+	//     keep the current set (first N non-ok attempts stay).
+	//   - "ok" entries never displace anything after the cap is full.
+	entry := scanAttemptLog{
+		source:    b.source,
+		target:    frame.Target,
+		resClass:  class,
+		duration:  dur,
+		errStr:    truncateErr(err),
+		probeKind: scanProbeKind(frame),
+	}
+	if err != nil {
+		entry.resultErrMsg = err.Error()
+	}
+	if haveSnapshotter {
+		// Rich snapshot: captures txnID + prefixes + class in one
+		// stateMu-guarded read, so all four fields belong to the same
+		// epoch (no attribution race).
+		postID, wp, rp, cls := snap.ActiveTxnSnapshotForScan()
+		entry.txnIDBefore = preID
+		entry.txnIDAfter = postID
+		entry.writePrefix = hexN(wp, scanPrefixHexCap/2)
+		entry.readPrefix = hexN(rp, scanPrefixHexCap/2)
+		entry.txnClass = cls
+	} else if b.classifier != nil {
+		// Legacy path: class only, no txn-id correlation.
+		entry.txnClass = b.classifier.LastTxnClass()
+	}
+	if len(b.attempts) < scanAttemptLogCap {
+		b.attempts = append(b.attempts, entry)
+	} else if class != "ok" {
+		for i, existing := range b.attempts {
+			if existing.resClass == "ok" {
+				b.attempts[i] = entry
+				break
+			}
+		}
+	}
 	return response, err
 }
 
+// logPassDiagnostics emits bounded per-pass diagnostics: effective source,
+// total attempts, aggregate stats, and the first-N attempt entries.
+// Callers hold no locks.
+func (b *statsBus) logPassDiagnostics(sourceMode string, targetCount int, passTimeout time.Duration) {
+	if b == nil {
+		return
+	}
+	log.Printf(
+		"startup scan pass: source=0x%02X sourceMode=%s targets=%d passTimeout=%s attempts=%d",
+		b.source, sourceMode, targetCount, passTimeout, b.total,
+	)
+	// First-N per-attempt lines — capped at scanAttemptLogCap.
+	for i, a := range b.attempts {
+		if a.resClass == "ok" {
+			log.Printf(
+				"startup scan attempt %d/%d: src=0x%02X tgt=0x%02X probe=%s result=ok dur=%s txnClass=%s txnIDs=%d->%d wp=%s rp=%s",
+				i+1, len(b.attempts), a.source, a.target, a.probeKind, a.duration,
+				a.txnClass, a.txnIDBefore, a.txnIDAfter, a.writePrefix, a.readPrefix,
+			)
+		} else {
+			log.Printf(
+				"startup scan attempt %d/%d: src=0x%02X tgt=0x%02X probe=%s result=%s dur=%s txnClass=%s txnIDs=%d->%d wp=%s rp=%s err=%q",
+				i+1, len(b.attempts), a.source, a.target, a.probeKind, a.resClass, a.duration,
+				a.txnClass, a.txnIDBefore, a.txnIDAfter, a.writePrefix, a.readPrefix, a.errStr,
+			)
+		}
+	}
+}
+
+// startDiscoveryScanLoop is the 4-arg entry point used by tests and the
+// default package binding. For production wiring the caller rebinds
+// startDiscoveryScanLoopFn to a closure that forwards to
+// startDiscoveryScanLoopWithClassifier, threading an instance-scoped
+// activeTxnClassifier (typically the gateway's adaptermux) — see
+// cmd/gateway/main.go. Keeping the classifier out of package-global
+// state avoids cross-instance attribution races when more than one
+// gateway is initialized in the same process.
 func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder) startupScanSignals {
+	return startDiscoveryScanLoopWithClassifier(ctx, cfg, gateway, builder, nil)
+}
+
+// startDiscoveryScanLoopWithClassifier is the full implementation. The
+// classifier parameter is optional (nil is safe — the txnClass column
+// is simply omitted from per-attempt diagnostics).
+func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, classifier activeTxnClassifier) startupScanSignals {
 	firstPassDone := make(chan struct{})
 	var firstPassOnce sync.Once
 	signalFirstPassDone := func() {
@@ -192,7 +428,9 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				scanCtx, cancel = context.WithTimeout(ctx, cfg.ScanTimeout)
 			}
 			scanBus := &statsBus{
-				bus: &timeoutBus{bus: gateway.Bus, timeout: cfg.ScanRequestTimeout},
+				bus:        &timeoutBus{bus: gateway.Bus, timeout: cfg.ScanRequestTimeout},
+				source:     startupCfg.ScanSource,
+				classifier: classifier,
 			}
 			targets := ([]byte)(nil)
 			targetLabel := ""
@@ -349,6 +587,13 @@ func startDiscoveryScanLoop(ctx context.Context, cfg ebusgateway.Config, gateway
 				scanBus.stats.nacks,
 				scanBus.stats.crcErrors,
 				scanBus.stats.otherErrs,
+			)
+			// Bounded per-pass diagnostics: effective source, target count,
+			// pass timeout, and first-N attempt entries.
+			scanBus.logPassDiagnostics(
+				startupScanSourceMode(cfg, startupCfg),
+				len(targets),
+				cfg.ScanTimeout,
 			)
 			cancel()
 			signalFirstPassDone()
@@ -687,6 +932,23 @@ func startupScanHasCoherentVaillantRoot(ctx context.Context, cfg ebusgateway.Con
 	}
 	_, err := poller.discoverB524Root(probeCtx)
 	return err == nil
+}
+
+// startupScanSourceMode reports which source-selection path was used
+// for diagnostics: "auto-proxy" (auto-resolved to 0xF7 for proxy), "auto"
+// (auto requested but kept), "configured" (explicit non-auto), or
+// "default" (no config, ScanSource==0x00, ScanSourceAuto==false).
+func startupScanSourceMode(original, resolved ebusgateway.Config) string {
+	if original.ScanSourceAuto && original.ScanSource == 0x00 && resolved.ScanSource == proxyObserveFirstStartupSource {
+		return "auto-proxy"
+	}
+	if original.ScanSourceAuto {
+		return "auto"
+	}
+	if original.ScanSource != 0x00 {
+		return "configured"
+	}
+	return "default"
 }
 
 func resolveStartupScanSourceConfig(cfg ebusgateway.Config) ebusgateway.Config {

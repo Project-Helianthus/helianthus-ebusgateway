@@ -44,6 +44,23 @@ type Config struct {
 	// idle SYN can release ownership. Default: 200ms.
 	IdleReleaseGrace time.Duration
 
+	// StartDeadline is the maximum time to wait for the adapter to
+	// respond with STARTED/FAILED after a START request. Default: 5s.
+	// If the adapter does not respond within this duration, the pending
+	// start is cleared and the session is notified of failure (AM8).
+	StartDeadline time.Duration
+
+	// BlackholeThreshold is the duration of consecutive read timeouts
+	// (after the bus was previously active) before triggering a TCP
+	// blackhole reconnect. Default: 30s.
+	//
+	// The previous implementation counted timeout iterations
+	// (consecutiveTimeouts > 150) which coupled the threshold to the
+	// ReadTimeout value. A duration-based check decouples the two:
+	// changing ReadTimeout no longer silently changes when blackhole
+	// detection fires.
+	BlackholeThreshold time.Duration
+
 	// Logger for multiplexer events. If nil, log.Default() is used.
 	Logger *log.Logger
 }
@@ -76,6 +93,12 @@ func (c *Config) defaults() {
 		// probe. The wire phase is not advanced during gateway ownership,
 		// so there's no premature idle/WaitCmdAck issue.
 		c.IdleReleaseGrace = 200 * time.Millisecond
+	}
+	if c.StartDeadline <= 0 {
+		c.StartDeadline = 5 * time.Second
+	}
+	if c.BlackholeThreshold <= 0 {
+		c.BlackholeThreshold = 30 * time.Second
 	}
 	if c.Logger == nil {
 		c.Logger = log.Default()
@@ -111,10 +134,11 @@ type arbitrationRequester interface {
 // adapter but not yet confirmed via STARTED/FAILED response.
 // Protected by stateMu.
 type pendingStartState struct {
-	sessionID uint64
-	initiator byte
-	notify    chan startResult
-	deadline  *time.Timer // AM8: fires if adapter doesn't respond within 5s
+	sessionID   uint64
+	initiator   byte
+	notify      chan startResult
+	deadline    *time.Timer // AM8: fires if adapter doesn't respond before cfg.StartDeadline
+	blockingArb bool        // true when using blocking StartArbitration fallback
 }
 
 // Mux is the adapter multiplexer. It owns a single ENH/ENS connection
@@ -139,6 +163,35 @@ type Mux struct {
 	busOwned     time.Time          // when current owner acquired the bus
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int               // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
+	// Blocking StartArbitration tracking. blockingArbGen is monotonically
+	// increasing (never reset to 0 or reused) — reconnect/handleReset
+	// bump it forward so any stale goroutine's captured gen no longer
+	// matches. blockingArbActive indicates whether any blocking goroutine
+	// is currently considered in-flight (owns the transport). Only a
+	// goroutine whose gen matches the current blockingArbGen may clear
+	// blockingArbActive; stale goroutines from prior generations cannot.
+	blockingArbGen    uint64 // monotonic generation counter, never reused
+	blockingArbActive bool   // true while a blocking goroutine owns the transport
+
+	// gatewayTxnActive reports whether bus.Send is actively consuming
+	// activeCh for a gateway transaction. Separate from ownership:
+	// ownership can outlive the transaction up to IdleReleaseGrace.
+	// Only when gatewayTxnActive is true are bytes delivered to
+	// activeCh. Set in completeArbitrationGrant for the gateway,
+	// cleared when ownership is released (transaction complete,
+	// NACK, SYN timeout, or idle grace expired).
+	gatewayTxnActive bool
+
+	// activeTxn is the diagnostics snapshot for the current/last gateway
+	// transaction. Updated under stateMu. Exposed via ActiveTxnSnapshot()
+	// for tests and production observability. Bounded — never grows.
+	activeTxn activeTxnDiag
+
+	// synDiag is a bounded ring of SYN events observed while gateway owns
+	// the bus. Used to confirm/exclude the "final SYN echo consumed by
+	// onSYNLocked before Send sees the terminator" hypothesis. Protected
+	// by stateMu. Bounded by synDiagRingCap — never grows.
+	synDiag synDiagRing
 
 	// Gateway echo tracker (for the internal active path).
 	// Protected by stateMu.
@@ -169,6 +222,19 @@ type Mux struct {
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 	closeErr  error
+	// closing is set to true at the start of Close() before m.wg.Wait().
+	// Gates tryGrantAndStart's wg.Add(1) for the blocking-path goroutine
+	// to prevent a WaitGroup misuse panic when a timer callback /
+	// readLoop / RemoveSession races with shutdown.
+	closing atomic.Bool
+	// closeMu serializes the check-of-closing-and-wg.Add critical section
+	// in tryGrantAndStart's blocking path with Close()'s closing.Store(true)
+	// that precedes m.wg.Wait(). Codex PR #502 P2: without this mutex,
+	// tryGrantAndStart can observe closing=false, then Close sets closing
+	// and reaches Wait, and the stale path still calls wg.Add(1) — panic
+	// ("sync: WaitGroup misuse") or leak. The mutex is narrow and only
+	// held across the guard read and the wg.Add/goroutine launch.
+	closeMu sync.Mutex
 }
 
 // activeEventKind tags active-path channel events.
@@ -251,6 +317,21 @@ func (m *Mux) Start(ctx context.Context) error {
 // Safe to call multiple times — subsequent calls return the first error.
 func (m *Mux) Close() error {
 	m.closeOnce.Do(func() {
+		// C1 / PR #502 P2: signal shutdown BEFORE any Wait(). tryGrantAndStart
+		// checks this flag to avoid m.wg.Add(1) on the blocking-path goroutine
+		// while m.wg.Wait() is running — that would panic with "sync:
+		// WaitGroup misuse: Add called concurrently with Wait".
+		//
+		// The store is performed under closeMu to serialize with
+		// tryGrantAndStart's gate-then-Add critical section. Any goroutine
+		// that saw closing=false before we took closeMu has already run
+		// wg.Add(1) by the time we release the mutex; any goroutine that
+		// takes closeMu after us sees closing=true and skips the Add.
+		// closeMu is released BEFORE m.wg.Wait() to avoid blocking
+		// tryGrantAndStart callers that would otherwise queue behind Wait.
+		m.closeMu.Lock()
+		m.closing.Store(true)
+		m.closeMu.Unlock()
 		if m.cancel != nil {
 			m.cancel()
 		}
@@ -451,8 +532,13 @@ func (m *Mux) connect() error {
 	m.populateInfoCache(setupTr)
 
 	// Phase 2: replace with fast-timeout transport for readLoop.
-	// RequestInfo held readMu exclusively and the readLoop hasn't started,
-	// so the setup transport's parser is clean — no pending bus bytes.
+	// Safety argument for replacing the transport on the same conn:
+	// - readLoop hasn't started (Start calls connect first, then spawns readLoop).
+	// - populateInfoCache is the only reader; INFO responses are complete ENH
+	//   frames, so the parser is fully consumed after each RequestInfo call.
+	// - Bytes arriving during the 500ms stabilization delay buffer in the TCP
+	//   socket (kernel), NOT in the parser. The new transport reads them normally.
+	// - No parser state is lost because setupTr's parser is clean after INFO.
 	m.upstream = newTransport(m.cfg.ReadTimeout)
 
 	return nil
@@ -468,10 +554,18 @@ func (m *Mux) connect() error {
 // by caller). The upstream transport must support InfoRequester; if it
 // does not, the cache is cleared and CachedInfo returns an error.
 //
-// AM29: INFO cache is intentionally a startup snapshot. Volatile
-// telemetry (temp, voltage, RSSI) goes stale after connect --
-// on-demand refresh would require readMu (conflicts with readLoop).
-// The cache is repopulated on each reconnect.
+// XR_INFO_CACHE_SNAPSHOT / AM29: INFO cache is intentionally a startup
+// snapshot. Volatile telemetry (temp, voltage, RSSI) goes stale after
+// connect — on-demand refresh would require readMu (conflicts with
+// readLoop). The cache is repopulated on each reconnect via connect().
+//
+// Design rationale: the ENH transport's RequestInfo holds readMu
+// exclusively. During normal operation, readLoop also holds readMu to
+// receive bus bytes. Refreshing INFO on-demand would either require
+// pausing readLoop (breaking observer continuity) or a second TCP
+// connection (doubling adapter load). Neither is acceptable. The
+// startup-snapshot model accepts stale telemetry in exchange for
+// zero readMu contention during steady state.
 //
 // All INFO IDs (0x00-0x07) are cached, including volatile telemetry
 // (temperature, voltage, RSSI). These are startup snapshots that go
@@ -544,6 +638,27 @@ func (m *Mux) arbitrationSendsSource() bool {
 	return false
 }
 
+// bytesAreUnescaped reports whether the upstream transport delivers
+// pre-unescaped (logical) bytes. ENH/ENS transports return true: they
+// decode wire-level {0xA9,0x01}→0xAA / {0xA9,0x00}→0xA9 before surfacing
+// bytes. Protocol.Bus uses this via EscapeAware to skip escape expansion
+// on read and to avoid double-escaping on write.
+//
+// Without this, protocol.Bus treats 0xAA as SYN (bus idle) on the wire
+// even when it is a legitimate data byte on the logical layer.
+func (m *Mux) bytesAreUnescaped() bool {
+	m.connMu.Lock()
+	tr := m.upstream
+	m.connMu.Unlock()
+	if tr == nil {
+		return false
+	}
+	if ea, ok := tr.(transport.EscapeAware); ok {
+		return ea.BytesAreUnescaped()
+	}
+	return false
+}
+
 // CachedInfo returns a copy of the cached INFO response for the given
 // ID. Returns an error if the cache is empty (adapter doesn't support
 // INFO) or the requested ID was not cached.
@@ -580,6 +695,15 @@ func (m *Mux) reconnect() error {
 	m.phase.reset(wirePhaseIdle)
 	m.arb.forceRelease()
 	m.gatewayEcho.reset()
+	if m.gatewayTxnActive {
+		m.gatewayTxnActive = false
+		m.recordGatewayInactive(ReasonReconnect)
+	}
+	// Bump gen forward (monotonic) — any in-flight goroutine's captured
+	// arbGen will no longer match, so it cannot clear blockingArbActive.
+	// Clear blockingArbActive here because the transport is being replaced.
+	m.blockingArbGen++
+	m.blockingArbActive = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
@@ -664,13 +788,17 @@ func (m *Mux) reconnect() error {
 func (m *Mux) readLoop() {
 	defer m.wg.Done()
 
-	// AM27: consecutive timeout counter for TCP blackhole detection.
-	// Only accessed from this goroutine -- no synchronization needed.
-	consecutiveTimeouts := 0
-
-	// AM27: track when we last received actual data from the adapter.
-	// A bus that has NEVER sent data is legitimately quiet — don't
-	// treat consecutive timeouts as a TCP blackhole in that case.
+	// AM27: duration-based TCP blackhole detection.
+	// Track when the first timeout in the current streak started and
+	// when we last received actual data. A bus that has NEVER sent
+	// data is legitimately quiet — don't treat consecutive timeouts
+	// as a TCP blackhole in that case.
+	//
+	// XR_BLACKHOLE_DURATION: uses cfg.BlackholeThreshold (default 30s)
+	// instead of counting timeout iterations. This decouples the
+	// detection threshold from ReadTimeout — changing ReadTimeout no
+	// longer silently changes when blackhole reconnect fires.
+	var firstTimeoutTime time.Time // zero until a streak starts
 	var lastDataTime time.Time
 
 	for {
@@ -697,16 +825,17 @@ func (m *Mux) readLoop() {
 				// receiving data before the timeout streak. A bus that
 				// has NEVER sent data within this session is legitimately
 				// quiet — not a blackhole.
-				if !lastDataTime.IsZero() {
-					consecutiveTimeouts++
+				if !lastDataTime.IsZero() && firstTimeoutTime.IsZero() {
+					firstTimeoutTime = time.Now()
 				}
 
-				// AM27: detect TCP blackhole after ~30s of consecutive
-				// timeouts (150 * 200ms default ReadTimeout).
-				if consecutiveTimeouts > 150 {
-					m.logger.Printf("adaptermux: %d consecutive timeouts, triggering reconnect (AM27)", consecutiveTimeouts)
-					consecutiveTimeouts = 0
-					lastDataTime = time.Time{} // Codex: reset after reconnect so quiet bus doesn't re-trigger
+				// AM27/XR_BLACKHOLE_DURATION: detect TCP blackhole after
+				// cfg.BlackholeThreshold (default 30s) of consecutive
+				// timeouts since the bus was last active.
+				if !firstTimeoutTime.IsZero() && time.Since(firstTimeoutTime) > m.cfg.BlackholeThreshold {
+					m.logger.Printf("adaptermux: consecutive timeouts for %v (threshold %v), triggering reconnect (AM27)", time.Since(firstTimeoutTime).Round(time.Millisecond), m.cfg.BlackholeThreshold)
+					firstTimeoutTime = time.Time{}
+					lastDataTime = time.Time{} // reset after reconnect so quiet bus doesn't re-trigger
 					if reconnErr := m.reconnect(); reconnErr != nil {
 						m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
 						return
@@ -723,6 +852,10 @@ func (m *Mux) readLoop() {
 					time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 					m.arb.releaseOwnership(ownerID)
 					m.gatewayEcho.reset()
+					if ownerID == gatewaySessionID && m.gatewayTxnActive {
+						m.gatewayTxnActive = false
+						m.recordGatewayInactive(ReasonMaxOwnership)
+					}
 					quietBusTimedOut = true
 				}
 				m.stateMu.Unlock()
@@ -741,7 +874,7 @@ func (m *Mux) readLoop() {
 				continue
 			}
 			m.logger.Printf("adaptermux: read error: %v", err)
-			consecutiveTimeouts = 0
+			firstTimeoutTime = time.Time{}
 			lastDataTime = time.Time{} // reset after reconnect so quiet bus doesn't trigger blackhole
 			if reconnErr := m.reconnect(); reconnErr != nil {
 				m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
@@ -750,8 +883,8 @@ func (m *Mux) readLoop() {
 			continue
 		}
 
-		consecutiveTimeouts = 0 // AM27: reset on successful read
-		lastDataTime = time.Now() // AM27: track last data for blackhole detection
+		firstTimeoutTime = time.Time{} // AM27: reset timeout streak on successful read
+		lastDataTime = time.Now()      // AM27: track last data for blackhole detection
 
 		switch event.Kind {
 		case transport.StreamEventStarted:
@@ -798,6 +931,19 @@ func (m *Mux) readUpstream() (transport.StreamEvent, error) {
 //
 // Lock ordering: stateMu acquired first, released before any callback
 // invocation or session delivery to avoid re-entrancy deadlocks.
+//
+// Boundary invariant — 0xAA at the mux layer:
+//
+//	StreamEventByte{Byte: 0xAA} arriving here IS treated as SYN
+//	(bus idle marker). This is correct for ENH transports: the
+//	ENH parser never produces ENHResReceived(0xAA) because logical
+//	0xAA data is wire-escaped as {0xA9, 0x01} and raw wire 0xAA is
+//	the SYN symbol consumed by the adapter before framing.
+//
+//	See TestOnReceived_0xAA_WireLayerSYNInvariant and
+//	TestMux_0xAA_MockTransportAlwaysSYN for the test coverage.
+//	A cleaner long-term contract is an explicit StreamEventSyn
+//	instead of inferring SYN from byte value; not changed here.
 func (m *Mux) onReceived(symbol byte) {
 	now := time.Now()
 
@@ -835,6 +981,10 @@ func (m *Mux) onReceived(symbol byte) {
 		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 		m.arb.releaseOwnership(ownerID)
 		m.gatewayEcho.reset()
+		if ownerID == gatewaySessionID && m.gatewayTxnActive {
+			m.gatewayTxnActive = false
+			m.recordGatewayInactive(ReasonMaxOwnership)
+		}
 		hasOwner = false
 		ownershipTimedOut = true
 	}
@@ -844,7 +994,33 @@ func (m *Mux) onReceived(symbol byte) {
 	var shouldTryGrant bool
 
 	if symbol == protocol.SymbolSyn {
-		passiveEvents, shouldTryGrant = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
+		// Shape diag: count SYN markers seen during gateway ownership
+		// regardless of whether we deliver (for classification). Must
+		// run BEFORE onSYNLocked so the counter reflects the SYN that
+		// triggers a possible inactive transition.
+		if hasOwner && ownerID == gatewaySessionID {
+			m.recordReadPrefixAndClassify(symbol)
+		}
+		// Runtime-soak: bus.Send returns BEFORE the trailing SYN (reads
+		// are count-based, not SYN-terminated). So onSYNLocked's
+		// gatewayTxnActive=false is the correct state for delivery —
+		// capture AFTER to skip the trailing SYN that has no consumer.
+		var preEchoSuppressed bool
+		passiveEvents, shouldTryGrant, preEchoSuppressed = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
+		activeExpects := m.activePathExpectsBytes()
+		if preEchoSuppressed {
+			// Pre-echo SYN suppression (echo_mismatch root cause fix).
+			// After completeArbitrationGrant, readLoop can read a SYN from
+			// the TCP/ENH buffer BEFORE bus.Send's first Write reaches the
+			// adapter. Delivering this SYN to activeCh races the real echo
+			// byte — the consumer (sendRawWithEcho) then reads 0xAA in
+			// place of the expected echo and emits echo_mismatch (13,904
+			// events observed in production soak). When onSYNLocked sees
+			// gatewayTxnActive=true && bytesRead==0, it signals us to
+			// suppress the activeCh delivery; gatewayTxnActive stays true
+			// and the next real echo byte completes the handshake normally.
+			activeExpects = false
+		}
 		m.stateMu.Unlock()
 
 		// AM11: clear external session echo trackers on ownership timeout.
@@ -860,7 +1036,13 @@ func (m *Mux) onReceived(symbol byte) {
 		// perspective). Re-emitting would produce duplicates (Codex P1).
 		m.flushSessionEchoTrackers()
 
-		m.deliverToActive(symbol)
+		if activeExpects {
+			// activeExpects was decided under stateMu above and implies
+			// the gateway owns the bus with gatewayTxnActive=true — count
+			// this enqueue so bytesDeliveredToActive reflects real
+			// adapter-originated bytes delivered during this grant.
+			m.deliverToActive(symbol, true)
+		}
 		for _, pe := range passiveEvents {
 			m.emitPassive(pe)
 		}
@@ -886,6 +1068,28 @@ func (m *Mux) onReceived(symbol byte) {
 	if isGatewayOwned {
 		m.gatewayEcho.matchEcho(symbol) // track echo state internally
 	}
+	// Soak fix: gate activeCh delivery to periods when the active path
+	// is expecting bytes. Non-SYN bytes during third-party traffic
+	// should not accumulate on activeCh.
+	activeExpects := m.activePathExpectsBytes()
+	// Codex P2: regression signal — if a non-SYN byte arrives while
+	// gateway still owns the bus but gatewayTxnActive is already false
+	// (post-SYN window before ownership is released), we skipped
+	// delivery. Count those events so the snapshot can surface any
+	// post-inactive delivery pressure.
+	if isGatewayOwned && !activeExpects {
+		m.activeTxn.afterInactive.Add(1)
+	}
+
+	// Shape diag: capture non-SYN read prefix + echo/non-echo class
+	// while stateMu is held (prefix is a struct field, not atomic).
+	// Restrict to gateway-owned traffic so third-party bytes don't
+	// pollute the per-txn prefix. Includes bytes delivered to activeCh
+	// as well as bytes suppressed — both are "seen" on the wire during
+	// the transaction window.
+	if isGatewayOwned {
+		m.recordReadPrefixAndClassify(symbol)
+	}
 
 	m.stateMu.Unlock()
 
@@ -895,7 +1099,38 @@ func (m *Mux) onReceived(symbol byte) {
 	}
 
 	// --- Phase 2: deliver outside all locks ---
-	m.deliverToActive(symbol)
+	// Codex PR #502 P2: revalidate active-path gating atomically with
+	// the enqueue. `activeExpects` was decided under stateMu above, but
+	// between that unlock and the send below, gatewayTxnActive may have
+	// flipped to false (e.g. active read-timeout / write-error /
+	// context-cancel paths). Without a re-check, stale bytes can leak
+	// onto activeCh and afterInactive misses them (it was computed from
+	// the earlier snapshot). Re-acquire stateMu for a short critical
+	// section: check + non-blocking send. activeCh is capacity-4096 and
+	// deliverToActive already uses a non-blocking select, so holding
+	// stateMu across the send cannot deadlock.
+	if activeExpects {
+		m.stateMu.Lock()
+		if m.activePathExpectsBytes() {
+			select {
+			case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
+				// Codex PR #502 P1: count real adapter-originated byte
+				// enqueued on activeCh during gateway-owned active txn.
+				// Decision was re-validated under stateMu on the line
+				// above, so gatewayTxnActive is confirmed true here.
+				m.activeTxn.bytesDeliveredToActive.Add(1)
+			default:
+				m.logger.Printf("adaptermux: active channel full, dropping byte 0x%02X", symbol)
+			}
+		} else if isGatewayOwned {
+			// Gating flipped between snapshot and delivery — the byte
+			// arrived while gateway owned the bus but the active path
+			// no longer expects bytes. Record the post-inactive event
+			// for diagnostics instead of enqueuing a stale byte.
+			m.activeTxn.afterInactive.Add(1)
+		}
+		m.stateMu.Unlock()
+	}
 
 	if !isGatewayOwned {
 		passiveEvents = append(passiveEvents, PassiveEvent{
@@ -910,21 +1145,117 @@ func (m *Mux) onReceived(symbol byte) {
 
 	if phaseEvent == wirePhaseEventTransactionDone ||
 		phaseEvent == wirePhaseEventCmdNACK {
-		m.arb.releaseOwnership(ownerID)
+		// Codex-R9: atomic release + gatewayTxnActive clear.
+		// Must re-verify ownership under stateMu — between the phase
+		// event and this point another goroutine may have granted a
+		// new session. Only release + clear if ownerID still matches.
+		reason := ReasonTransactionDone
+		if phaseEvent == wirePhaseEventCmdNACK {
+			reason = ReasonCmdNACK
+		}
+		m.stateMu.Lock()
+		curOwner, _, hasCurOwner := m.arb.owner()
+		if hasCurOwner && curOwner == ownerID {
+			m.arb.releaseOwnership(ownerID)
+			if ownerID == gatewaySessionID && m.gatewayTxnActive {
+				m.gatewayTxnActive = false
+				m.recordGatewayInactive(reason)
+			}
+		}
+		m.stateMu.Unlock()
 		m.tryGrantAndStart()
 	}
 }
 
 // onSYNLocked handles a SYN symbol. Caller holds stateMu.
-// Returns buffered passive events and whether tryGrant should be called.
-func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bool, now time.Time) ([]PassiveEvent, bool) {
+// Returns buffered passive events, whether tryGrant should be called,
+// and whether this SYN is pre-echo noise that the caller must suppress
+// from activeCh delivery (see echo_mismatch root-cause comment at the
+// call site).
+func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bool, now time.Time) ([]PassiveEvent, bool, bool) {
 	var passiveEvents []PassiveEvent
+
+	// SYN-path diagnostics (bounded). Capture gwActiveBefore snapshot
+	// under stateMu so the ring entry matches the decision the SYN
+	// branches below make. Only record when gateway owns the bus at
+	// SYN arrival — that's the hypothesis-relevant window (final-SYN
+	// echo potentially consumed by onSYNLocked before Send sees the
+	// frame terminator).
+	wasGatewayOwned := hasOwner && ownerID == gatewaySessionID
+	gwActiveBefore := m.gatewayTxnActive
 
 	// Flush gateway echo tracker at SYN boundary. Flushed bytes are
 	// confirmed gateway self-traffic — do NOT emit to passive path
 	// (passive is third-party only). They are delivered to external
 	// sessions via deliverSYNToSessions + deliverToSessions elsewhere.
 	m.gatewayEcho.flushOnSYN()
+
+	// Runtime-soak P0 + lifecycle correctness + Codex PR #502 P1:
+	// clear gatewayTxnActive on SYN during gateway ownership ONLY if
+	// at least one real adapter byte has already been enqueued on
+	// activeCh for this txn (bytesDeliveredToActive > 0). That counter
+	// is incremented on successful activeCh sends in the readLoop byte-
+	// delivery path (SYN-branch deliverToActive and non-SYN inline
+	// delivery) — so it rises precisely when the mux has observed the
+	// first post-grant adapter byte AND routed it to the active path.
+	//
+	// Why this counter and not bytesRead / bytesWritten:
+	//   - bytesRead lags (consumer side): incremented by
+	//     activeTransport.ReadByte/ReadEvent on CONSUMPTION, which is
+	//     strictly after activeCh enqueue. Under production timing
+	//     readLoop is a tight loop while bus.Send.sendRawWithEcho has
+	//     multiple channel hops between receiving a grant and reading.
+	//     Gating on bytesRead would over-suppress legitimate terminator
+	//     SYNs at end of reply whenever the consumer is slower than
+	//     readLoop — that is the normal case.
+	//   - bytesWritten leads (initiator side): incremented by
+	//     activeTransport.Write BEFORE the byte reaches the adapter and
+	//     BEFORE any echo has been processed. On a busy/idle-chatter
+	//     link, a buffered idle SYN can arrive between Write returning
+	//     and the echo being enqueued on activeCh; gating on bytesWritten
+	//     would treat that SYN as a terminator, clear gatewayTxnActive,
+	//     and deliver 0xAA to the active path — sendRawWithEcho then
+	//     sees SYN instead of the expected echo (echo_mismatch / timeout).
+	//   - bytesDeliveredToActive is the precise midpoint: it goes from 0
+	//     to ≥1 at the exact instant the first real adapter byte has
+	//     been enqueued on activeCh. Before that point any SYN is
+	//     pre-echo idle-buffer noise (suppress); after that point any
+	//     SYN is either a response byte (delivered via the non-SYN path)
+	//     or the legitimate frame terminator (delivered here).
+	//
+	// Normal transactions (including broadcast) produce
+	// bytesDeliveredToActive>0 via echoes of the gateway's own writes,
+	// so the trailing SYN correctly clears. Genuine aborts (no writes,
+	// no reads) are caught by MaxOwnershipDuration, ActiveWriteError,
+	// ActiveReadTimeout, context cancel, reset, or reconnect — per the
+	// lifecycle contract.
+	//
+	// PR #502 E2E fix: this SYN is the legitimate frame terminator.
+	// The bus.Send consumer on activeCh needs to see it to complete the
+	// response frame — without delivery, Send hangs until read-timeout.
+	// Deliver the SYN byte to activeCh BEFORE clearing gatewayTxnActive
+	// so activePathExpectsBytes() is still true at enqueue time. The
+	// send is non-blocking: if activeCh is full we bump a diagnostic
+	// counter and still clear (blocking would deadlock under stateMu).
+	// Use ReasonSYNTerminator (not ReasonSYNIdle) to distinguish a
+	// successful terminator delivery from the abandoned-grant SYN-idle
+	// path in onSYNLocked's idle-release branch below.
+	terminatorDelivered := false
+	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive &&
+		m.activeTxn.bytesDeliveredToActive.Load() > 0 {
+		select {
+		case m.activeCh <- activeEvent{kind: activeEventByte, b: protocol.SymbolSyn}:
+			terminatorDelivered = true
+			// Count the terminator SYN — it is a real adapter byte
+			// enqueued while the gateway owned the bus, AM-NEW-41 spec.
+			m.activeTxn.bytesDeliveredToActive.Add(1)
+		default:
+			m.activeTxn.terminatorDropOnFullCh.Add(1)
+			m.logger.Printf("adaptermux: active channel full, dropping SYN terminator")
+		}
+		m.gatewayTxnActive = false
+		m.recordGatewayInactive(ReasonSYNTerminator)
+	}
 
 	// Note: external session echo tracker flush is done AFTER stateMu.Unlock()
 	// by the caller (flushSessionEchoTrackersOnSYN) to avoid ABBA deadlock
@@ -934,6 +1265,10 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	if phaseEvent == wirePhaseEventSYNTimeout && hasOwner {
 		m.logger.Printf("adaptermux: ownership released for session %d (SYN timeout) (AM6)", ownerID)
 		m.arb.releaseOwnership(ownerID)
+		if ownerID == gatewaySessionID && m.gatewayTxnActive {
+			m.gatewayTxnActive = false
+			m.recordGatewayInactive(ReasonSYNTimeout)
+		}
 	}
 
 	// Release ownership on idle SYN after grace period.
@@ -941,6 +1276,16 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
 			m.logger.Printf("adaptermux: ownership released for session %d (idle grace expired) (AM6)", ownerID)
 			m.arb.releaseOwnership(ownerID)
+			// Codex: clear gatewayTxnActive here too — the "SYN-before-read"
+			// guard above only clears when bytesRead > 0, so an abandoned
+			// grant (no write, no read) keeps the flag true until idle
+			// grace releases ownership. Without this clear, ownership is
+			// gone but activePathExpectsBytes() still returns true,
+			// routing third-party traffic into activeCh indefinitely.
+			if ownerID == gatewaySessionID && m.gatewayTxnActive {
+				m.gatewayTxnActive = false
+				m.recordGatewayInactive(ReasonSYNIdle)
+			}
 		}
 	}
 
@@ -949,8 +1294,64 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		Kind: PassiveEventSymbol, Symbol: protocol.SymbolSyn, ObservedAt: now,
 	})
 
+	// Pre-echo SYN suppression decision (echo_mismatch fix).
+	// Computed AFTER the terminator/idle branches so that a gwActive flag
+	// that was just cleared by those branches does not incorrectly trigger
+	// suppression. The pre-echo case is: gateway still owns, gatewayTxnActive
+	// still true, and no real adapter byte has been enqueued on activeCh
+	// yet for this txn — i.e. the mux has not yet observed post-grant
+	// traffic on the active path. A SYN observed in this window is buffer
+	// noise that pre-dates the grant's first Write and must not race the
+	// real echo on activeCh. See onReceived for the counter increment and
+	// activeExpects gating.
+	//
+	// Codex PR #502 P1: the gate here is complementary to the terminator
+	// gate above — one single signal (bytesDeliveredToActive) governs
+	// both branches. See the terminator comment block for the full
+	// rationale on why bytesDeliveredToActive beats bytesRead (lags,
+	// consumer side) and bytesWritten (leads, initiator side before echo
+	// returns). The critical win on busy/idle-chatter links: bytesWritten
+	// flips to ≥1 the moment Write returns, so a buffered idle SYN in the
+	// window between Write and echo-enqueue would falsely pass the
+	// terminator gate and deliver 0xAA to sendRawWithEcho; with
+	// bytesDeliveredToActive, that same SYN is correctly classified as
+	// pre-echo and suppressed.
+	preEchoSuppressed := hasOwner && ownerID == gatewaySessionID &&
+		m.gatewayTxnActive && m.activeTxn.bytesDeliveredToActive.Load() == 0
+	if preEchoSuppressed {
+		m.activeTxn.synSuppressedPreEcho.Add(1)
+	}
+
+	// SYN-path diagnostics: record only when gateway owned the bus at
+	// SYN arrival OR at the instant one of the branches above just
+	// cleared gatewayTxnActive (so we see the transition). The caller's
+	// activePathExpectsBytes() check (== gatewayTxnActive AFTER this
+	// function returns) determines whether the SYN will be delivered to
+	// activeCh — if gwActiveAfter is false, onSYNLocked consumed this
+	// SYN as an end-of-txn terminator and the Send consumer on activeCh
+	// does NOT see it.
+	if wasGatewayOwned || gwActiveBefore {
+		gwActiveAfter := m.gatewayTxnActive
+		// synDelivered is true iff the SYN actually reaches activeCh.
+		// That happens in exactly two cases:
+		//   (a) onSYNLocked delivered the SYN inline as the frame terminator
+		//       (terminatorDelivered, bytesRead>0 branch, PR #502 E2E fix), OR
+		//   (b) the txn is still active after onSYNLocked AND this SYN is
+		//       NOT pre-echo noise (gwActiveAfter && !preEchoSuppressed).
+		synDelivered := terminatorDelivered || (gwActiveAfter && !preEchoSuppressed)
+		m.recordSynDiagLocked(ownerID, gwActiveBefore, gwActiveAfter, synDelivered)
+	}
+
 	shouldTryGrant := m.arb.hasPending()
-	return passiveEvents, shouldTryGrant
+	// When onSYNLocked itself delivered the terminator, signal the caller
+	// via the returned shouldTryGrant alone is insufficient — the caller
+	// also needs to skip its own deliverToActive(symbol) call because
+	// activePathExpectsBytes() is now false. That already happens
+	// naturally: activeExpects is re-read AFTER onSYNLocked returns (see
+	// onReceived), so with gatewayTxnActive cleared it becomes false and
+	// the caller's deliverToActive is skipped. No double-delivery.
+	_ = terminatorDelivered
+	return passiveEvents, shouldTryGrant, preEchoSuppressed
 }
 
 // handleReset handles an adapter RESETTED event.
@@ -966,6 +1367,13 @@ func (m *Mux) handleReset() {
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
+	if m.gatewayTxnActive {
+		m.gatewayTxnActive = false
+		m.recordGatewayInactive(ReasonReset)
+	}
+	// Bump gen forward (monotonic) — see reconnect() for rationale.
+	m.blockingArbGen++
+	m.blockingArbActive = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
@@ -1069,11 +1477,42 @@ func (m *Mux) resetAllSessionEchoes() {
 	}
 }
 
+// activePathExpectsBytes reports whether bus.Send is CURRENTLY consuming
+// activeCh for a gateway transaction. Ownership alone is insufficient:
+// after a transaction completes or aborts, ownership can linger up to
+// IdleReleaseGrace while bus.Send has already returned. Third-party
+// bytes in that idle window must NOT accumulate on activeCh.
+//
+// Policy (runtime soak fix):
+//   - gatewayTxnActive: true iff bus.Send was granted and has not yet
+//     released (set in completeArbitrationGrant, cleared on ownership
+//     release via SYN timeout/idle grace, NACK, or TransactionDone).
+//   - Do NOT deliver idle SYN bursts (no active txn → no consumer).
+//   - Do NOT use activeCh as a passive backlog — passive traffic goes
+//     through the passive path and external sessions, not activeCh.
+//
+// Caller must hold stateMu.
+func (m *Mux) activePathExpectsBytes() bool {
+	return m.gatewayTxnActive
+}
+
 // deliverToActive sends a byte to the active path channel.
 // Logs on overflow instead of silently dropping (CRITICAL-1 fix).
-func (m *Mux) deliverToActive(symbol byte) {
+//
+// If countAsDelivered is true and the send succeeds, increment
+// bytesDeliveredToActive — the precise "at least one real adapter byte
+// has been enqueued on activeCh during this gateway-owned txn" signal
+// used by onSYNLocked's terminator/pre-echo suppression gates (Codex PR
+// #502 P1). Callers pass true when the enqueue corresponds to an
+// active-path delivery under gateway ownership (decided under stateMu
+// via activePathExpectsBytes); pass false for shutdown/reset events or
+// for non-gateway-owned passthrough.
+func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 	select {
 	case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
+		if countAsDelivered {
+			m.activeTxn.bytesDeliveredToActive.Add(1)
+		}
 	default:
 		m.logger.Printf("adaptermux: active channel full, dropping byte 0x%02X", symbol)
 	}
@@ -1093,6 +1532,17 @@ func (m *Mux) deliverToActive(symbol byte) {
 // this method is a no-op — the next tryGrantAndStart will fire after
 // the current one resolves.
 func (m *Mux) tryGrantAndStart() {
+	// Snapshot transport BEFORE acquiring stateMu to avoid stateMu → connMu
+	// lock nesting. doSend uses connMu → (release) → stateMu, so while not
+	// strictly ABBA, keeping consistent ordering is defensive best practice.
+	m.connMu.Lock()
+	tr := m.upstream
+	m.connMu.Unlock()
+
+	_, hasRequestStart := tr.(arbitrationRequester)
+	_, hasBlockingStart := tr.(interface{ StartArbitration(byte) error })
+	isBlockingPath := !hasRequestStart && hasBlockingStart
+
 	// P1 fix (#3062924968): serialize the pendingStart guard, the
 	// arb.tryGrant() dequeue, and the pendingStart assignment in a
 	// single stateMu critical section.  Without this, two concurrent
@@ -1110,6 +1560,15 @@ func (m *Mux) tryGrantAndStart() {
 		m.stateMu.Unlock()
 		return
 	}
+	// Codex-R5: block regrant while a blocking StartArbitration goroutine
+	// is still in-flight. The deadline may have cleared pendingStart, but
+	// the goroutine is still running on the transport. Starting another
+	// arbitration would overlap STARTs on the same transport.
+	if m.blockingArbActive {
+		m.logger.Printf("adaptermux: tryGrantAndStart skipped — blocking StartArbitration gen %d still in-flight", m.blockingArbGen)
+		m.stateMu.Unlock()
+		return
+	}
 
 	sessionID, initiator, notify, granted := m.arb.tryGrant()
 	if !granted {
@@ -1118,18 +1577,32 @@ func (m *Mux) tryGrantAndStart() {
 	}
 
 	m.pendingStart = &pendingStartState{
-		sessionID: sessionID,
-		initiator: initiator,
-		notify:    notify,
+		sessionID:   sessionID,
+		initiator:   initiator,
+		notify:      notify,
+		blockingArb: isBlockingPath,
 	}
-	// AM8: start a 5s deadline timer so pendingStart cannot block indefinitely
+	// AM8: start a deadline timer so pendingStart cannot block indefinitely
 	// if the adapter never responds with STARTED/FAILED.
-	m.pendingStart.deadline = time.AfterFunc(5*time.Second, func() {
+	m.pendingStart.deadline = time.AfterFunc(m.cfg.StartDeadline, func() {
 		m.stateMu.Lock()
 		if m.pendingStart != nil && m.pendingStart.notify == notify {
 			pending := m.pendingStart
 			m.pendingStart = nil
 			m.pendingStartAbsorb++
+			// C2 (PR #502 Copilot): on the blocking path, the
+			// StartArbitration goroutine may still be stuck inside the
+			// transport call. We MUST NOT simply clear blockingArbActive
+			// and re-grant here — that would let a second blocking
+			// goroutine overlap the first on the same transport.
+			// Instead, trigger a transport reconnect: closing m.conn
+			// forces the hung read/write call to return with an I/O
+			// error; readLoop observes the error and invokes reconnect()
+			// which bumps blockingArbGen, clears blockingArbActive, and
+			// fails/re-queues arbitration safely. The hung goroutine's
+			// late return finds a stale gen and skips state mutation.
+			// This yields no overlap AND no queue starvation.
+			needReconnect := pending.blockingArb
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8)", pending.sessionID)
 			// AM8: guard the send — if another path already delivered a
@@ -1139,7 +1612,25 @@ func (m *Mux) tryGrantAndStart() {
 			default:
 				m.logger.Printf("adaptermux: pendingStart deadline: notify channel full for session %d, result already delivered", pending.sessionID)
 			}
-			if m.arb.hasPending() {
+			if needReconnect {
+				// Close the current conn to force the hung blocking
+				// StartArbitration call to return with an I/O error.
+				// readLoop's error handler invokes reconnect() which
+				// advances blockingArbGen and clears blockingArbActive
+				// atomically under stateMu.
+				m.connMu.Lock()
+				c := m.conn
+				m.connMu.Unlock()
+				if c != nil {
+					if err := c.Close(); err != nil {
+						m.logger.Printf("adaptermux: deadline-triggered conn close: %v", err)
+					} else {
+						m.logger.Printf("adaptermux: deadline triggered transport reconnect to unstick hung StartArbitration (C2)")
+					}
+				}
+			} else if m.arb.hasPending() {
+				// Non-blocking path: no hung goroutine to worry about,
+				// just advance the queue as before.
 				m.tryGrantAndStart()
 			}
 		} else {
@@ -1149,10 +1640,7 @@ func (m *Mux) tryGrantAndStart() {
 	m.stateMu.Unlock()
 
 	// Forward START to adapter via non-blocking RequestStart.
-	m.connMu.Lock()
-	tr := m.upstream
-	m.connMu.Unlock()
-
+	// tr was already captured above (before pendingStart creation).
 	if requester, ok := tr.(arbitrationRequester); ok {
 		m.logger.Printf("adaptermux: RequestStart(0x%02X) sent for session %d", initiator, sessionID)
 		if err := requester.RequestStart(initiator); err != nil {
@@ -1187,50 +1675,155 @@ func (m *Mux) tryGrantAndStart() {
 	}); ok {
 		// Fallback for transports that only implement the blocking
 		// StartArbitration (e.g. ENS or test mocks without RequestStart).
-		if err := starter.StartArbitration(initiator); err != nil {
-			m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
-			// P1 fix (#3063005909): only send failure if we still own
-			// the pending slot.  cancelPendingStart may have cleared
-			// m.pendingStart and already sent a failure on notify while
-			// StartArbitration was blocking.  A second send on the
-			// cap-1 channel would block the caller indefinitely.
+		// blockingArb was already set in the pendingStart struct literal
+		// above, so the deadline callback sees it from the start.
+		// The AM8 deadline timer stays active to preserve liveness —
+		// if StartArbitration hangs, the deadline clears pendingStart
+		// and notifies the session. The deadline path triggers a
+		// transport reconnect (via m.conn.Close) to force the hung
+		// StartArbitration call to return with an I/O error;
+		// reconnect() will then bump blockingArbGen and clear
+		// blockingArbActive so the hung goroutine's late return is
+		// observed with a stale gen and skips state mutation.
+		//
+		// PR502-Fix1: Run blocking StartArbitration in a goroutine so
+		// readLoop is not stalled. The AM8 deadline timer handles
+		// liveness if the call hangs indefinitely.
+		// Codex-R5/R6: set blockingArbGen to prevent tryGrantAndStart
+		// from starting another arbitration while this goroutine runs.
+		// Generation-scoped: goroutine only clears if gen matches,
+		// so a reconnect+relaunch won't be cleared by an old goroutine.
+		// C1 / PR #502 P2: refuse to spawn if shutdown is in progress.
+		// Without this gate, m.wg.Add(1) below can race with m.wg.Wait()
+		// in Close() and panic with "sync: WaitGroup misuse". Emit FAILED
+		// to the pending session so it is not left orphaned.
+		//
+		// PR #502 P2 (Codex): the closing-check and wg.Add MUST be
+		// serialized under closeMu with Close()'s closing.Store(true).
+		// A bare `if m.closing.Load()` check followed by a later
+		// `m.wg.Add(1)` is a TOCTOU race: Close can flip closing to true
+		// and reach m.wg.Wait() between the two statements. Holding
+		// closeMu across the check and the Add (paired with Close
+		// holding closeMu across the Store) guarantees the Add cannot
+		// run after closing has been observed as true by Close.
+		m.closeMu.Lock()
+		if m.closing.Load() {
+			m.closeMu.Unlock()
 			m.stateMu.Lock()
 			if m.pendingStart != nil && m.pendingStart.notify == notify {
 				if m.pendingStart.deadline != nil {
-					m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
+					m.pendingStart.deadline.Stop()
 				}
 				m.pendingStart = nil
-				m.stateMu.Unlock()
-				notify <- startResult{granted: false, initiator: initiator, err: err}
-			} else {
-				if m.pendingStartAbsorb > 0 {
+			}
+			m.stateMu.Unlock()
+			select {
+			case notify <- startResult{granted: false, initiator: initiator, err: errors.New("adaptermux: closed")}:
+			default:
+			}
+			return
+		}
+		m.stateMu.Lock()
+		m.blockingArbGen++
+		arbGen := m.blockingArbGen
+		m.blockingArbActive = true
+		m.stateMu.Unlock()
+		// Codex-R9: track the blocking goroutine in mux.wg so Close()
+		// waits for it. Without this, Close() can return while a hung
+		// StartArbitration is still running, causing post-close state
+		// mutations and goroutine leaks across reconnect/restart cycles.
+		m.wg.Add(1)
+		m.closeMu.Unlock()
+		go func() {
+			defer m.wg.Done()
+			if err := starter.StartArbitration(initiator); err != nil {
+				m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
+				// P1 fix (#3063005909): only send failure if we still own
+				// the pending slot.  cancelPendingStart may have cleared
+				// m.pendingStart and already sent a failure on notify while
+				// StartArbitration was blocking.  A second send on the
+				// cap-1 channel would block the caller indefinitely.
+				m.stateMu.Lock()
+				if m.blockingArbGen == arbGen {
+					// Only our generation may clear the active flag.
+					// A stale gen (prior reconnect/handleReset) won't match.
+					m.blockingArbActive = false
+				}
+				if m.pendingStart != nil && m.pendingStart.notify == notify {
+					if m.pendingStart.deadline != nil {
+						m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
+					}
+					m.pendingStart = nil
+					m.stateMu.Unlock()
+					notify <- startResult{granted: false, initiator: initiator, err: err}
+				} else {
+					// StartArbitration failed AND pending was already cancelled.
+					// Codex-R8: scope absorb decrement + queue advance to our
+					// generation. A stale goroutine (from before reconnect/
+					// handleReset) must not consume absorb budget or advance
+					// the queue on behalf of a newer request.
+					isCurrentGen := m.blockingArbGen == arbGen
+					if isCurrentGen && m.pendingStartAbsorb > 0 {
+						m.pendingStartAbsorb--
+					}
+					m.stateMu.Unlock()
+					if isCurrentGen && m.arb.hasPending() {
+						m.tryGrantAndStart()
+					}
+				}
+				return
+			}
+			// Blocking path: adapter already confirmed — handle inline.
+			// P1 fix (#3063005909): verify ownership before completing.
+			// cancelPendingStart may have run while StartArbitration was
+			// blocking, clearing pendingStart and sending a failure on
+			// notify.  Completing here would double-send on the cap-1
+			// channel and re-grant the bus to a cancelled session.
+			//
+			// Codex-R10: do NOT clear blockingArbActive in the success
+			// branch until AFTER completeArbitrationGrant confirms
+			// ownership. Clearing earlier opens a race window where
+			// tryGrantAndStart (from readLoop SYN/idle or RemoveSession)
+			// observes pendingStart==nil + blockingArbActive==false +
+			// no owner and launches a second overlapping arbitration.
+			m.stateMu.Lock()
+			isCurrentGen := m.blockingArbGen == arbGen
+			if m.pendingStart == nil || m.pendingStart.notify != notify {
+				// Already cancelled (deadline or session disconnect) — don't
+				// double-send. Safe to clear blockingArbActive here: no
+				// completeArbitrationGrant will follow.
+				if isCurrentGen {
+					m.blockingArbActive = false
+				}
+				// Codex-R8: scope absorb + queue advance to our generation.
+				if isCurrentGen && m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
 				}
 				m.stateMu.Unlock()
+				if isCurrentGen && m.arb.hasPending() {
+					m.tryGrantAndStart()
+				}
+				return
 			}
-			return
-		}
-		// Blocking path: adapter already confirmed — handle inline.
-		// P1 fix (#3063005909): verify ownership before completing.
-		// cancelPendingStart may have run while StartArbitration was
-		// blocking, clearing pendingStart and sending a failure on
-		// notify.  Completing here would double-send on the cap-1
-		// channel and re-grant the bus to a cancelled session.
-		m.stateMu.Lock()
-		if m.pendingStart == nil || m.pendingStart.notify != notify {
-			// Already cancelled — don't double-send.
-			if m.pendingStartAbsorb > 0 {
-				m.pendingStartAbsorb--
+			if m.pendingStart.deadline != nil {
+				m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
+			}
+			m.pendingStart = nil
+			m.stateMu.Unlock()
+			m.completeArbitrationGrant(sessionID, initiator, notify)
+			// Clear blockingArbActive AFTER ownership is confirmed.
+			// Codex-R11: re-check generation under the lock at the clear
+			// site. The cached isCurrentGen could be stale if reconnect()
+			// or handleReset() bumped blockingArbGen while
+			// completeArbitrationGrant was running — a stale stale-gen
+			// goroutine must not clear the guard for a newer in-flight
+			// START.
+			m.stateMu.Lock()
+			if m.blockingArbGen == arbGen {
+				m.blockingArbActive = false
 			}
 			m.stateMu.Unlock()
-			return
-		}
-		if m.pendingStart.deadline != nil {
-			m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
-		}
-		m.pendingStart = nil
-		m.stateMu.Unlock()
-		m.completeArbitrationGrant(sessionID, initiator, notify)
+		}()
 		return
 	} else {
 		m.logger.Printf("adaptermux: transport does not support arbitration")
@@ -1281,8 +1874,19 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.phase.startRequest()
 	}
 	m.busOwned = time.Now()
+	// Drain activeCh BEFORE marking the transaction active so the
+	// drain count belongs to this grant (not the previous transaction).
+	// Safety net: normal flow should produce zero drains after the
+	// gatewayTxnActive-on-SYN lifecycle fix.
+	drained := 0
 	if sessionID == gatewaySessionID {
+		drained = m.drainActiveCh()
+		if drained > 0 {
+			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
+		}
 		m.gatewayEcho.markRequestStart()
+		m.gatewayTxnActive = true
+		m.recordGatewayGrant(initiator, drained)
 	}
 	m.arb.confirmOwnership(sessionID, initiator)
 	m.stateMu.Unlock()
@@ -1294,14 +1898,6 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 			sess.echoTracker.markRequestStart()
 		}
 		m.sessionsMu.Unlock()
-	}
-
-	// Drain stale bytes from activeCh before notifying gateway.Bus.
-	if sessionID == gatewaySessionID {
-		drained := m.drainActiveCh()
-		if drained > 0 {
-			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
-		}
 	}
 
 	// Notify requester of success.
@@ -1409,8 +2005,52 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 		// RequestStart. Increment absorb counter so handleArbitrationResponse
 		// discards that stale response instead of failing a newer request.
 		m.pendingStartAbsorb++
+		// Codex PR #502 P1 (v2 — mirror C2 reconnect pattern): if the
+		// cancelled pending was on the blocking StartArbitration path,
+		// the goroutine may still be hung in the transport call.
+		// Previously we cleared blockingArbActive + called
+		// tryGrantAndStart in-line — but that lets a second blocking
+		// goroutine overlap the first on the same transport AND the
+		// hung goroutine may still have been granted START by the
+		// adapter, so mux/arbitrator state can diverge. Instead,
+		// trigger a transport reconnect: closing m.conn forces the
+		// hung read/write call to return with an I/O error; readLoop
+		// observes the error and invokes reconnect() which bumps
+		// blockingArbGen, clears blockingArbActive, and fails/re-queues
+		// arbitration safely under stateMu. The hung goroutine's late
+		// return finds a stale gen and skips state mutation. Do NOT
+		// advance the queue in-line — the reconnect path does that.
+		wasBlocking := pending.blockingArb
 		m.stateMu.Unlock()
-		pending.notify <- startResult{granted: false, initiator: pending.initiator, cancelled: true}
+		// AM8: guard the send — if another path already delivered a
+		// result for this notify channel, skip to avoid blocking.
+		select {
+		case pending.notify <- startResult{granted: false, initiator: pending.initiator, cancelled: true}:
+		default:
+			m.logger.Printf("adaptermux: cancelPendingStart: notify channel full for session %d, result already delivered", sessionID)
+		}
+		if wasBlocking {
+			// Close the current conn to force the hung blocking
+			// StartArbitration call to return with an I/O error.
+			// readLoop's error handler invokes reconnect() which
+			// advances blockingArbGen and clears blockingArbActive
+			// atomically under stateMu. No in-line queue advance —
+			// reconnect drives that safely.
+			m.connMu.Lock()
+			c := m.conn
+			m.connMu.Unlock()
+			if c != nil {
+				if err := c.Close(); err != nil {
+					m.logger.Printf("adaptermux: cancelPendingStart-triggered conn close: %v", err)
+				} else {
+					m.logger.Printf("adaptermux: cancelPendingStart triggered transport reconnect to unstick hung StartArbitration (session %d)", sessionID)
+				}
+			}
+		} else if m.arb.hasPending() {
+			// Non-blocking path: no hung goroutine to worry about,
+			// just advance the queue as before.
+			m.tryGrantAndStart()
+		}
 		return
 	}
 	m.stateMu.Unlock()

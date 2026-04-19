@@ -32,6 +32,13 @@ func NewEnvelope(data any, err error, ts time.Time) map[string]any {
 			"major": EnvelopeContractMajor,
 			"minor": EnvelopeContractMinor,
 		},
+		// consistency.mode pins the data-freshness contract shared with the
+		// rest of ebus.v1.* surfaces. ebus_standard is a catalog read
+		// (static L7 service/command tables) so the mode is always "LIVE";
+		// there is no shadow-snapshot mode for catalog reads.
+		"consistency": map[string]any{
+			"mode": "LIVE",
+		},
 		"data_timestamp": ts.UTC().Format(time.RFC3339Nano),
 		"data_hash":      DataHash(data),
 	}

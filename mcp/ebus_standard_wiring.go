@@ -83,7 +83,7 @@ func RegisterEbusStandardTools(s *Server, cat ebusstd.Catalog) {
 					"frame_type":  map[string]any{"type": "string"},
 					"payload_hex": map[string]any{"type": "string"},
 				},
-				"required":             []string{"pb", "sb", "payload_hex"},
+				"required":             []string{"pb", "sb", "direction", "frame_type", "payload_hex"},
 				"additionalProperties": false,
 			},
 		},
@@ -126,12 +126,30 @@ func (s *Server) handleEbusStandardCall(name string, args map[string]any) (map[s
 		return callToolResultText(mustJSON(estd.NewEnvelope(data, err, ts)), err != nil), true
 	case estd.ToolDecode:
 		in := estd.DecodeInput{}
-		if v, ok := toUint8(args["pb"]); ok {
-			in.PB = v
+		rawPB, pbPresent := args["pb"]
+		if !pbPresent || rawPB == nil {
+			err := fmt.Errorf("pb: %w: required", estd.ErrInvalidPayload)
+			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
 		}
-		if v, ok := toUint8(args["sb"]); ok {
-			in.SB = v
+		v, ok := toUint8(rawPB)
+		if !ok {
+			err := fmt.Errorf("pb: %w: expected integer in [0,255], got %T=%v",
+				estd.ErrInvalidPayload, rawPB, rawPB)
+			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
 		}
+		in.PB = v
+		rawSB, sbPresent := args["sb"]
+		if !sbPresent || rawSB == nil {
+			err := fmt.Errorf("sb: %w: required", estd.ErrInvalidPayload)
+			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
+		}
+		v, ok = toUint8(rawSB)
+		if !ok {
+			err := fmt.Errorf("sb: %w: expected integer in [0,255], got %T=%v",
+				estd.ErrInvalidPayload, rawSB, rawSB)
+			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
+		}
+		in.SB = v
 		if v, ok := args["direction"].(string); ok {
 			in.Direction = v
 		}

@@ -178,6 +178,62 @@ func TestNewServer_WiresEbusStandardSurfaces(t *testing.T) {
 	}
 }
 
+// TestHandleEbusStandardCall_DecodeRejectsMissingSelectors pins the
+// contract that the decode surface REQUIRES direction + frame_type
+// alongside pb/sb/payload_hex. Without them, a catalog with multiple
+// commands on the same (pb, sb) would silently return the wrong
+// command. Regression for PR #505 r3106756020.
+func TestHandleEbusStandardCall_DecodeRejectsMissingSelectors(t *testing.T) {
+	s := &Server{}
+	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	// direction + frame_type absent
+	result, handled := s.handleEbusStandardCall(estd.ToolDecode, map[string]any{
+		"pb":          3,
+		"sb":          4,
+		"payload_hex": "0102",
+	})
+	if !handled {
+		t.Fatal("decode must be handled")
+	}
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Fatalf("expected isError=true when direction/frame_type missing, got result=%+v", result)
+	}
+	text := result["content"].([]map[string]any)[0]["text"].(string)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("envelope JSON: %v", err)
+	}
+	errObj, ok := env["error"].(map[string]any)
+	if !ok || errObj == nil {
+		t.Fatalf("envelope.error missing: %s", text)
+	}
+	if code, _ := errObj["code"].(string); code != "INVALID_PAYLOAD" {
+		t.Fatalf("error.code = %q, want INVALID_PAYLOAD", code)
+	}
+}
+
+// TestHandleEbusStandardCall_DecodeAcceptsFullSelectors pins the happy
+// path: a fully-qualified decode (pb, sb, direction, frame_type,
+// payload_hex) still succeeds after the tightening above.
+func TestHandleEbusStandardCall_DecodeAcceptsFullSelectors(t *testing.T) {
+	s := &Server{}
+	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(estd.ToolDecode, map[string]any{
+		"pb":          3,
+		"sb":          4,
+		"direction":   "request",
+		"frame_type":  "addressed",
+		"payload_hex": "0102",
+	})
+	if !handled {
+		t.Fatal("decode must be handled")
+	}
+	if isErr, _ := result["isError"].(bool); isErr {
+		text := result["content"].([]map[string]any)[0]["text"].(string)
+		t.Fatalf("decode with full selectors must not error, got: %s", text)
+	}
+}
+
 // TestNewServer_DispatchesEbusStandardServicesList pins end-to-end that
 // a tools/call for ebus.v1.ebus_standard.services.list is dispatched
 // (not rejected as unknown) by a default NewServer instance.

@@ -118,12 +118,41 @@ func TestServer_Decode_HandlesKnownIdentity(t *testing.T) {
 
 func TestServer_Decode_UnknownIdentityReturnsSentinel(t *testing.T) {
 	s := estd.NewServer(loadCatalog(t))
-	_, err := s.Decode(estd.DecodeInput{PB: 0xAB, SB: 0xCD, PayloadHex: ""})
+	_, err := s.Decode(estd.DecodeInput{
+		PB:         0xAB,
+		SB:         0xCD,
+		Direction:  "request",
+		FrameType:  "addressed",
+		PayloadHex: "",
+	})
 	if err == nil {
 		t.Fatal("want error for unknown identity")
 	}
 	if !errors.Is(err, estd.ErrUnknownCommand) {
 		t.Fatalf("want errors.Is ErrUnknownCommand, got %v", err)
+	}
+}
+
+// TestServer_Decode_RequiresDirectionAndFrameType pins that a decode
+// call without direction or frame_type is rejected as INVALID_PAYLOAD
+// rather than silently matching the first (pb, sb) row — which would
+// return the wrong command when the catalog carries multiple variants
+// on the same (pb, sb). Regression for PR #505 r3106756020.
+func TestServer_Decode_RequiresDirectionAndFrameType(t *testing.T) {
+	s := estd.NewServer(loadCatalog(t))
+	cases := []estd.DecodeInput{
+		{PB: 0x03, SB: 0x04, FrameType: "addressed", PayloadHex: "0102"}, // missing direction
+		{PB: 0x03, SB: 0x04, Direction: "request", PayloadHex: "0102"},   // missing frame_type
+		{PB: 0x03, SB: 0x04, PayloadHex: "0102"},                         // missing both
+	}
+	for i, in := range cases {
+		_, err := s.Decode(in)
+		if err == nil {
+			t.Fatalf("case %d: want error for missing selectors, got nil", i)
+		}
+		if !errors.Is(err, estd.ErrInvalidPayload) {
+			t.Fatalf("case %d: want errors.Is ErrInvalidPayload, got %v", i, err)
+		}
 	}
 }
 

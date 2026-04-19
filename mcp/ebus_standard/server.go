@@ -131,7 +131,19 @@ type DecodeInput struct {
 // Decode decodes an observed payload against the catalog command that
 // matches (PB, SB, Direction, FrameType). Unknown combinations return
 // ErrUnknownCommand.
+//
+// Direction and FrameType are REQUIRED selectors: a decode request that
+// supplies only (PB, SB) is ambiguous whenever the catalog contains
+// multiple commands on the same PB/SB (e.g. request vs response), so
+// missing selectors are rejected as INVALID_PAYLOAD rather than silently
+// matching the first row. Regression for PR #505 r3106756020.
 func (s *Server) Decode(in DecodeInput) (map[string]any, error) {
+	if in.Direction == "" {
+		return nil, fmt.Errorf("direction: %w: required (empty is not a wildcard)", ErrInvalidPayload)
+	}
+	if in.FrameType == "" {
+		return nil, fmt.Errorf("frame_type: %w: required (empty is not a wildcard)", ErrInvalidPayload)
+	}
 	payload, err := hex.DecodeString(strings.TrimPrefix(strings.ToLower(in.PayloadHex), "0x"))
 	if err != nil {
 		return nil, fmt.Errorf("payload_hex: %w: %s", ErrInvalidPayload, err)
@@ -179,7 +191,15 @@ func (s *Server) findCommand(id string) (ebusstd.Command, bool) {
 	return ebusstd.Command{}, false
 }
 
+// findIdentity locates a catalog command by exact (pb, sb, direction,
+// frameType) match. direction and frameType are REQUIRED — the caller
+// (Decode) rejects empty selectors with ErrInvalidPayload before we get
+// here. We still guard here so any future caller that forgets the
+// validation gets a miss rather than a silent first-row match.
 func (s *Server) findIdentity(pb, sb uint8, direction, frameType string) (ebusstd.Command, bool) {
+	if direction == "" || frameType == "" {
+		return ebusstd.Command{}, false
+	}
 	for _, svc := range s.catalog.Services {
 		if svc.PBValue() != pb {
 			continue
@@ -188,10 +208,10 @@ func (s *Server) findIdentity(pb, sb uint8, direction, frameType string) (ebusst
 			if cmd.Identity.SBValue() != sb {
 				continue
 			}
-			if direction != "" && string(cmd.Identity.Direction) != direction {
+			if string(cmd.Identity.Direction) != direction {
 				continue
 			}
-			if frameType != "" && string(cmd.Identity.TelegramClass) != frameType {
+			if string(cmd.Identity.TelegramClass) != frameType {
 				continue
 			}
 			return cmd, true

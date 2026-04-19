@@ -40,12 +40,6 @@ const (
 // against the provider-level sentinel also succeed via errors.Is.
 var ErrSafetyClassDenied = fmt.Errorf("execution_policy: %w", ebusstd.ErrSafetyClassDenied)
 
-// Decision is the result of a policy evaluation.
-type Decision struct {
-	Allowed bool
-	Reason  string
-}
-
 // Check evaluates the policy for (cmd, caller). It returns nil when the
 // call is permitted, otherwise a non-nil error that satisfies
 // errors.Is(err, ErrSafetyClassDenied) == true and carries the dynamic

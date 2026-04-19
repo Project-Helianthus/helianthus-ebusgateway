@@ -171,9 +171,22 @@ func (s *Server) handleEbusStandardCall(name string, args map[string]any) (map[s
 		if v, ok := args["frame_type"].(string); ok {
 			in.FrameType = v
 		}
-		if v, ok := args["payload_hex"].(string); ok {
-			in.PayloadHex = v
+		rawPayload, payloadPresent := args["payload_hex"]
+		if !payloadPresent || rawPayload == nil {
+			err := fmt.Errorf("payload_hex: %w: required", estd.ErrInvalidPayload)
+			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
 		}
+		payloadHex, ok := rawPayload.(string)
+		if !ok {
+			err := fmt.Errorf("payload_hex: %w: expected string, got %T=%v",
+				estd.ErrInvalidPayload, rawPayload, rawPayload)
+			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
+		}
+		if payloadHex == "" {
+			err := fmt.Errorf("payload_hex: %w: must be non-empty", estd.ErrInvalidPayload)
+			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
+		}
+		in.PayloadHex = payloadHex
 		data, err := s.ebusStandardServer.Decode(in)
 		return callToolResultText(mustJSON(estd.NewEnvelope(data, err, ts)), err != nil), true
 	}

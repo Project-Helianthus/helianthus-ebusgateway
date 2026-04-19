@@ -289,6 +289,68 @@ func TestHandleEbusStandardCall_DecodeRejectsFractionalPB(t *testing.T) {
 	}
 }
 
+// TestHandleEbusStandardCall_DecodeRejectsMissingPayloadHex pins that
+// an absent `payload_hex` key becomes INVALID_PAYLOAD rather than being
+// silently defaulted to "" (hex.DecodeString("") succeeds, so without
+// this gate a malformed request returned a successful decode with an
+// empty raw_bytes). Regression for PR #505 r3106794322.
+func TestHandleEbusStandardCall_DecodeRejectsMissingPayloadHex(t *testing.T) {
+	s := &Server{}
+	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	cases := []struct {
+		name string
+		args map[string]any
+	}{
+		{"absent", map[string]any{
+			"pb":         3,
+			"sb":         4,
+			"direction":  "request",
+			"frame_type": "addressed",
+		}},
+		{"empty_string", map[string]any{
+			"pb":          3,
+			"sb":          4,
+			"direction":   "request",
+			"frame_type":  "addressed",
+			"payload_hex": "",
+		}},
+		{"non_string", map[string]any{
+			"pb":          3,
+			"sb":          4,
+			"direction":   "request",
+			"frame_type":  "addressed",
+			"payload_hex": 42,
+		}},
+		{"null", map[string]any{
+			"pb":          3,
+			"sb":          4,
+			"direction":   "request",
+			"frame_type":  "addressed",
+			"payload_hex": nil,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, handled := s.handleEbusStandardCall(estd.ToolDecode, tc.args)
+			if !handled {
+				t.Fatal("decode must be handled")
+			}
+			if isErr, _ := result["isError"].(bool); !isErr {
+				t.Fatalf("expected isError=true on malformed payload_hex, got %+v", result)
+			}
+			text := result["content"].([]map[string]any)[0]["text"].(string)
+			var env map[string]any
+			if err := json.Unmarshal([]byte(text), &env); err != nil {
+				t.Fatalf("envelope JSON: %v", err)
+			}
+			errObj, _ := env["error"].(map[string]any)
+			if code, _ := errObj["code"].(string); code != "INVALID_PAYLOAD" {
+				t.Fatalf("error.code = %q, want INVALID_PAYLOAD", code)
+			}
+		})
+	}
+}
+
 // TestHandleEbusStandardCall_CommandGetRejectsMissingID pins that a
 // missing/empty/non-string `id` becomes INVALID_PAYLOAD rather than
 // flowing through as UNKNOWN_COMMAND. Regression for PR #505

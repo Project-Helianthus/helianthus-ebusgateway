@@ -1,0 +1,42 @@
+{
+  "data": {
+    "catalog_version": "v1.0-locked",
+    "command": {
+      "description": "alpha command for golden tests",
+      "id": "ebus_standard.golden.alpha",
+      "identity": {
+        "answer_policy": "answer_required",
+        "broadcast_or_addressed": "addressed",
+        "direction": "request",
+        "length_prefix_mode": "none",
+        "namespace": "ebus_standard",
+        "pb": 3,
+        "request_or_response_role": "initiator",
+        "sb": 4,
+        "selector_decoder": "none",
+        "selector_path": "",
+        "service_variant": "start_counts",
+        "telegram_class": "addressed",
+        "transport_capability_requirements": [
+          "master_slave"
+        ],
+        "version": "v1.0-locked"
+      },
+      "name": "Alpha",
+      "request": [],
+      "response": [],
+      "safety_class": "read_only_bus_load"
+    },
+    "namespace": "ebus_standard"
+  },
+  "error": null,
+  "meta": {
+    "contract": {
+      "major": 1,
+      "minor": 0,
+      "name": "helianthus-ebus-mcp"
+    },
+    "data_hash": "f44498e06fb077274958d5e8e391975a38bb6ae89290aa8acf60b9989b4b91ff",
+    "data_timestamp": "2026-01-01T00:00:00Z"
+  }
+}

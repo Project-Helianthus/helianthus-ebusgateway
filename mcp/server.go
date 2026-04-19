@@ -425,6 +425,11 @@ type Server struct {
 	snapshots      map[string]snapshotState
 
 	tools []Tool
+
+	// ebusStandardServer dispatches the four ebus_standard MCP surfaces
+	// (services.list, commands.list, command.get, decode). Installed via
+	// RegisterEbusStandardTools during bootstrap; nil when disabled.
+	ebusStandardServer ebusStandardSubServer
 }
 
 const (
@@ -1268,6 +1273,10 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 	if !s.hasToolNamed(call.Name) {
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", call.Name))
+	}
+
+	if result, handled := s.handleEbusStandardCall(call.Name, call.Arguments); handled {
+		return result, nil
 	}
 
 	switch call.Name {
@@ -3639,6 +3648,14 @@ func (s *Server) invoke(ctx context.Context, args map[string]any) (any, error) {
 		return nil, fmt.Errorf("missing method: %w", ebuserrors.ErrInvalidPayload)
 	}
 	params, _ := args["params"].(map[string]any)
+
+	// RPC source byte MUST be the gateway initiator (0x71 == 113). If the
+	// caller supplies an explicit params.source, enforce it; if it is
+	// absent, inject the canonical value so downstream code cannot use a
+	// different initiator by accident. See internal/rpc_source.
+	if err := enforceRPCSourceParam(params); err != nil {
+		return nil, err
+	}
 
 	entry, ok := s.registry.Lookup(address)
 	if !ok {

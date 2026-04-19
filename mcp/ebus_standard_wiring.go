@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"time"
 
 	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
@@ -104,10 +105,18 @@ func (s *Server) handleEbusStandardCall(name string, args map[string]any) (map[s
 		return callToolResultText(mustJSON(estd.NewEnvelope(data, nil, ts)), false), true
 	case estd.ToolCommandsList:
 		var pbp *uint8
-		if raw, ok := args["pb"]; ok {
-			if v, ok := toUint8(raw); ok {
-				pbp = &v
+		if raw, ok := args["pb"]; ok && raw != nil {
+			v, ok := toUint8(raw)
+			if !ok {
+				// Malformed pb is an invalid payload, not an implicit
+				// "unfiltered" request — otherwise clients that send
+				// garbage get the full catalog back as a success, which
+				// silently hides the contract violation.
+				err := fmt.Errorf("pb: %w: expected integer in [0,255], got %T=%v",
+					estd.ErrInvalidPayload, raw, raw)
+				return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
 			}
+			pbp = &v
 		}
 		data, err := s.ebusStandardServer.CommandsList(pbp)
 		return callToolResultText(mustJSON(estd.NewEnvelope(data, err, ts)), err != nil), true

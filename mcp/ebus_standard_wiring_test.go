@@ -82,6 +82,76 @@ func TestHandleEbusStandardCall_CommandsListFiltersByPB(t *testing.T) {
 	}
 }
 
+// TestHandleEbusStandardCall_CommandsListRejectsInvalidPB pins the
+// contract that a malformed `pb` argument becomes an INVALID_PAYLOAD
+// error rather than being silently dropped (which would return the
+// unfiltered catalog as a success). Regression for PR #505 r3106745676.
+func TestHandleEbusStandardCall_CommandsListRejectsInvalidPB(t *testing.T) {
+	s := &Server{}
+	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(estd.ToolCommandsList, map[string]any{"pb": "not-a-number"})
+	if !handled {
+		t.Fatal("commands.list must be handled")
+	}
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Fatalf("expected isError=true on malformed pb, got result=%+v", result)
+	}
+	text := result["content"].([]map[string]any)[0]["text"].(string)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("envelope is not valid JSON: %v", err)
+	}
+	errObj, ok := env["error"].(map[string]any)
+	if !ok || errObj == nil {
+		t.Fatalf("envelope.error missing on malformed pb: %s", text)
+	}
+	if code, _ := errObj["code"].(string); code != "INVALID_PAYLOAD" {
+		t.Fatalf("error.code = %q, want INVALID_PAYLOAD", code)
+	}
+}
+
+// TestHandleEbusStandardCall_CommandsListAbsentPBUnfiltered pins that
+// omitting `pb` still yields an unfiltered success (preserving prior
+// behavior for well-formed input). Regression for PR #505 r3106745676.
+func TestHandleEbusStandardCall_CommandsListAbsentPBUnfiltered(t *testing.T) {
+	s := &Server{}
+	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(estd.ToolCommandsList, map[string]any{})
+	if !handled {
+		t.Fatal("commands.list must be handled")
+	}
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unfiltered commands.list must not be an error, got result=%+v", result)
+	}
+}
+
+// TestHandleEbusStandardCall_EnvelopeContainsConsistencyMeta pins that
+// ebus_standard envelopes carry meta.consistency.mode alongside the
+// rest of ebus.v1.* surfaces so clients reading meta.consistency.mode
+// don't break on the four ebus_standard tools. Regression for PR #505
+// r3106745674.
+func TestHandleEbusStandardCall_EnvelopeContainsConsistencyMeta(t *testing.T) {
+	s := &Server{}
+	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(estd.ToolServicesList, map[string]any{})
+	if !handled {
+		t.Fatal("services.list must be handled")
+	}
+	text := result["content"].([]map[string]any)[0]["text"].(string)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("envelope JSON: %v", err)
+	}
+	meta, _ := env["meta"].(map[string]any)
+	consistency, ok := meta["consistency"].(map[string]any)
+	if !ok || consistency == nil {
+		t.Fatalf("meta.consistency missing: %s", text)
+	}
+	if mode, _ := consistency["mode"].(string); mode != "LIVE" {
+		t.Fatalf("meta.consistency.mode = %q, want LIVE", mode)
+	}
+}
+
 // TestNewServer_WiresEbusStandardSurfaces pins the bootstrap contract:
 // NewServer must register the four ebus.v1.ebus_standard.* tools so
 // handleToolsCall dispatches them instead of returning "unknown tool".

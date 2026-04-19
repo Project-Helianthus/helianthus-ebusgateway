@@ -74,3 +74,30 @@ func TestDataHash_HexOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestDataHash_NilDataIsCanonicalNull asserts DataHash(nil) is the SHA-256
+// of the canonical-JSON rendering of nil, i.e. the 4-byte literal "null".
+// This replaces the prior short-circuit that returned "" for nil data and
+// violated the envelope contract's 64-hex data_hash guarantee.
+func TestDataHash_NilDataIsCanonicalNull(t *testing.T) {
+	got := estd.DataHash(nil)
+	// Precomputed: sha256("null").
+	const want = "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+	if got != want {
+		t.Fatalf("DataHash(nil) = %s, want %s", got, want)
+	}
+	if len(got) != 64 {
+		t.Fatalf("DataHash(nil) len = %d, want 64", len(got))
+	}
+}
+
+// TestEnvelope_NilData_EmitsHex64Hash ensures the composed envelope for
+// data=nil exposes a 64-hex data_hash (not the empty string).
+func TestEnvelope_NilData_EmitsHex64Hash(t *testing.T) {
+	env := estd.NewEnvelope(nil, nil, time.Unix(0, 0).UTC())
+	meta, _ := env["meta"].(map[string]any)
+	h, _ := meta["data_hash"].(string)
+	if len(h) != 64 {
+		t.Fatalf("meta.data_hash len = %d, want 64 (was %q)", len(h), h)
+	}
+}

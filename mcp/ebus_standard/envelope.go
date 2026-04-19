@@ -59,10 +59,13 @@ func NewEnvelope(data any, err error, ts time.Time) map[string]any {
 
 // DataHash computes SHA-256 over the canonical JSON rendering of v.
 // Canonical rendering: sorted keys, compact numbers, no whitespace.
+//
+// Contract: data_hash is ALWAYS a 64-hex SHA-256 string, regardless of
+// whether data is nil. A nil data value is canonically serialized as the
+// JSON literal "null" (4 bytes) and hashed. Clients that consume
+// meta.data_hash may therefore rely on a stable 64-hex length across every
+// ebus.v1.* envelope.
 func DataHash(v any) string {
-	if v == nil {
-		return ""
-	}
 	var buf strings.Builder
 	writeCanonical(&buf, v)
 	sum := sha256.Sum256([]byte(buf.String()))

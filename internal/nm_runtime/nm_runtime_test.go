@@ -74,7 +74,10 @@ func syntheticCatalog() ebusstd.Catalog {
 
 func TestRuntime_Emit_ResetStatus_PassesPolicyAndEmits(t *testing.T) {
 	em := &recordingEmitter{}
-	rt := nm_runtime.NewRuntime(syntheticCatalog(), em)
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em)
+	if err != nil {
+		t.Fatalf("NewRuntime err: %v", err)
+	}
 	if err := rt.Emit(context.Background(), nm_runtime.EventResetStatus, []byte{0xAB}); err != nil {
 		t.Fatalf("Emit reset status err: %v", err)
 	}
@@ -92,7 +95,10 @@ func TestRuntime_Emit_ResetStatus_PassesPolicyAndEmits(t *testing.T) {
 
 func TestRuntime_Emit_FailureBroadcast(t *testing.T) {
 	em := &recordingEmitter{}
-	rt := nm_runtime.NewRuntime(syntheticCatalog(), em)
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em)
+	if err != nil {
+		t.Fatalf("NewRuntime err: %v", err)
+	}
 	if err := rt.Emit(context.Background(), nm_runtime.EventFailure, []byte{0x01}); err != nil {
 		t.Fatalf("Emit failure err: %v", err)
 	}
@@ -103,10 +109,30 @@ func TestRuntime_Emit_FailureBroadcast(t *testing.T) {
 
 func TestRuntime_Emit_RefusesIfCatalogMissing(t *testing.T) {
 	em := &recordingEmitter{}
-	rt := nm_runtime.NewRuntime(ebusstd.Catalog{Namespace: "ebus_standard"}, em)
-	err := rt.Emit(context.Background(), nm_runtime.EventResetStatus, nil)
+	rt, err := nm_runtime.NewRuntime(ebusstd.Catalog{Namespace: "ebus_standard"}, em)
+	if err != nil {
+		t.Fatalf("NewRuntime err: %v", err)
+	}
+	err = rt.Emit(context.Background(), nm_runtime.EventResetStatus, nil)
 	if !errors.Is(err, nm_runtime.ErrNoCatalogEntry) {
 		t.Fatalf("want ErrNoCatalogEntry, got %v", err)
+	}
+}
+
+// TestNewRuntime_RejectsNilEmitter is the fail-fast guard for issue #505
+// r3106859312. NewRuntime previously accepted a nil Emitter and would
+// nil-panic on the first Emit call; now construction must reject it with
+// ErrEmitterRequired.
+func TestNewRuntime_RejectsNilEmitter(t *testing.T) {
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), nil)
+	if err == nil {
+		t.Fatal("NewRuntime(nil emitter) must return error")
+	}
+	if !errors.Is(err, nm_runtime.ErrEmitterRequired) {
+		t.Fatalf("want ErrEmitterRequired, got %v", err)
+	}
+	if rt != nil {
+		t.Fatalf("runtime must be nil on construction error, got %+v", rt)
 	}
 }
 
@@ -137,8 +163,11 @@ func TestRuntime_Emit_PolicyDeniesWhenWhitelistMismatch(t *testing.T) {
 		}},
 	}
 	em := &recordingEmitter{}
-	rt := nm_runtime.NewRuntime(cat, em)
-	err := rt.Emit(context.Background(), "not_whitelisted_variant", nil)
+	rt, err := nm_runtime.NewRuntime(cat, em)
+	if err != nil {
+		t.Fatalf("NewRuntime err: %v", err)
+	}
+	err = rt.Emit(context.Background(), "not_whitelisted_variant", nil)
 	if err == nil {
 		t.Fatal("non-whitelisted variant must be denied")
 	}

@@ -42,6 +42,13 @@ const (
 // the requested emit event's 14-tuple identity.
 var ErrNoCatalogEntry = errors.New("nm_runtime: no catalog entry for emit event")
 
+// ErrEmitterRequired is returned by NewRuntime when the caller passes a nil
+// Emitter. The NM runtime has no fallback transport — a nil emitter at
+// construction is always a wiring bug, and fail-fast at construction is
+// preferred over a lazy panic on the first Emit call (issue #505
+// r3106859312).
+var ErrEmitterRequired = errors.New("nm_runtime: emitter is required")
+
 // Emitter is the transport-facing interface used by the NM runtime to push
 // catalog-driven frames onto the bus. Implementations MUST use the gateway
 // initiator source (rpc_source.Gateway).
@@ -60,9 +67,16 @@ type Runtime struct {
 	emitter Emitter
 }
 
-// NewRuntime constructs a runtime bound to the catalog and emitter.
-func NewRuntime(cat ebusstd.Catalog, emitter Emitter) *Runtime {
-	return &Runtime{catalog: cat, emitter: emitter}
+// NewRuntime constructs a runtime bound to the catalog and emitter. It
+// returns ErrEmitterRequired when emitter is nil — the NM runtime has no
+// valid mode of operation without a transport, and lazy-failing at the
+// first Emit call would only surface the wiring bug much later (and as a
+// nil-pointer panic). Fail-fast at construction per operator preference.
+func NewRuntime(cat ebusstd.Catalog, emitter Emitter) (*Runtime, error) {
+	if emitter == nil {
+		return nil, ErrEmitterRequired
+	}
+	return &Runtime{catalog: cat, emitter: emitter}, nil
 }
 
 // Emit dispatches the named NM emit event through the catalog + policy

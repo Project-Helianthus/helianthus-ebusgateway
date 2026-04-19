@@ -34,7 +34,10 @@ func TestEmit_AgainstEmbeddedCatalog(t *testing.T) {
 		tc := tc
 		t.Run(string(tc.event), func(t *testing.T) {
 			em := &recordingEmitter{}
-			rt := nm_runtime.NewRuntime(cat, em)
+			rt, err := nm_runtime.NewRuntime(cat, em)
+			if err != nil {
+				t.Fatalf("NewRuntime err: %v", err)
+			}
 			if err := rt.Emit(context.Background(), tc.event, []byte{0x00}); err != nil {
 				t.Fatalf("emit %q against embedded catalog: %v", tc.event, err)
 			}

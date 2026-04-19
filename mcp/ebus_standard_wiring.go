@@ -94,7 +94,8 @@ func RegisterEbusStandardTools(s *Server, cat ebusstd.Catalog) {
 }
 
 // handleEbusStandardCall is invoked from handleToolsCall before the main
-// switch. Returns (result, true, nil) when it handled the call.
+// switch. Returns (result, true) when it handled the call, or (nil, false)
+// otherwise.
 func (s *Server) handleEbusStandardCall(name string, args map[string]any) (map[string]any, bool) {
 	if s.ebusStandardServer == nil {
 		return nil, false

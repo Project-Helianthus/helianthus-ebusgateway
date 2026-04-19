@@ -234,6 +234,61 @@ func TestHandleEbusStandardCall_DecodeAcceptsFullSelectors(t *testing.T) {
 	}
 }
 
+// TestToUint8_RejectsFractionalFloat64 pins the contract that a JSON
+// float value like 3.9 is rejected as INVALID_PAYLOAD rather than
+// silently truncated to 3. Parallel to the toByteSource.float64 fix
+// in round-2. Regression for PR #505 r3106756021.
+func TestToUint8_RejectsFractionalFloat64(t *testing.T) {
+	if _, ok := toUint8(float64(3.9)); ok {
+		t.Fatal("toUint8(3.9) must be rejected (fractional)")
+	}
+	if _, ok := toUint8(float64(3.0001)); ok {
+		t.Fatal("toUint8(3.0001) must be rejected (fractional)")
+	}
+	if v, ok := toUint8(float64(3.0)); !ok || v != 3 {
+		t.Fatalf("toUint8(3.0) = (%d, %v), want (3, true)", v, ok)
+	}
+	if _, ok := toUint8(float64(-0.5)); ok {
+		t.Fatal("toUint8(-0.5) must be rejected")
+	}
+	if _, ok := toUint8(float64(255.5)); ok {
+		t.Fatal("toUint8(255.5) must be rejected")
+	}
+	if v, ok := toUint8(float64(255.0)); !ok || v != 255 {
+		t.Fatalf("toUint8(255.0) = (%d, %v), want (255, true)", v, ok)
+	}
+}
+
+// TestHandleEbusStandardCall_DecodeRejectsFractionalPB pins end-to-end
+// that a fractional pb value flows through the dispatcher as
+// INVALID_PAYLOAD. Regression for PR #505 r3106756021.
+func TestHandleEbusStandardCall_DecodeRejectsFractionalPB(t *testing.T) {
+	s := &Server{}
+	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(estd.ToolDecode, map[string]any{
+		"pb":          3.9,
+		"sb":          4,
+		"direction":   "request",
+		"frame_type":  "addressed",
+		"payload_hex": "0102",
+	})
+	if !handled {
+		t.Fatal("decode must be handled")
+	}
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Fatalf("expected isError=true on fractional pb, got %+v", result)
+	}
+	text := result["content"].([]map[string]any)[0]["text"].(string)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("envelope JSON: %v", err)
+	}
+	errObj, _ := env["error"].(map[string]any)
+	if code, _ := errObj["code"].(string); code != "INVALID_PAYLOAD" {
+		t.Fatalf("error.code = %q, want INVALID_PAYLOAD", code)
+	}
+}
+
 // TestNewServer_DispatchesEbusStandardServicesList pins end-to-end that
 // a tools/call for ebus.v1.ebus_standard.services.list is dispatched
 // (not rejected as unknown) by a default NewServer instance.

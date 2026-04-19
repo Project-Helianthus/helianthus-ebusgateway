@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
@@ -178,7 +179,18 @@ func toUint8(v any) (uint8, bool) {
 		}
 		return uint8(x), true
 	case float64:
+		// Reject NaN, Inf, fractional values, and out-of-range. JSON
+		// numbers decode to float64 by default, so a caller that sends
+		// `3.9` must NOT be silently truncated to 3 — that masks a
+		// contract violation. Parallel to toByteSource.float64.
+		// Regression for PR #505 r3106756021.
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return 0, false
+		}
 		if x < 0 || x > 255 {
+			return 0, false
+		}
+		if math.Trunc(x) != x {
 			return 0, false
 		}
 		return uint8(x), true

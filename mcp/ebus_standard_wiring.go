@@ -183,10 +183,11 @@ func (s *Server) handleEbusStandardCall(name string, args map[string]any) (map[s
 				estd.ErrInvalidPayload, rawPayload, rawPayload)
 			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
 		}
-		if payloadHex == "" {
-			err := fmt.Errorf("payload_hex: %w: must be non-empty", estd.ErrInvalidPayload)
-			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
-		}
+		// payload_hex == "" is VALID: it is the standard representation of
+		// a zero-byte payload (hex.DecodeString("") succeeds and returns
+		// []byte{}). Rejecting empty here would block decoding valid
+		// empty-data frames (issue #505 r3106904917). Presence + type are
+		// already enforced above; content length 0 is legal.
 		in.PayloadHex = payloadHex
 		data, err := s.ebusStandardServer.Decode(in)
 		return callToolResultText(mustJSON(estd.NewEnvelope(data, err, ts)), err != nil), true

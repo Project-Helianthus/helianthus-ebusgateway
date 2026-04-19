@@ -290,10 +290,12 @@ func TestHandleEbusStandardCall_DecodeRejectsFractionalPB(t *testing.T) {
 }
 
 // TestHandleEbusStandardCall_DecodeRejectsMissingPayloadHex pins that
-// an absent `payload_hex` key becomes INVALID_PAYLOAD rather than being
-// silently defaulted to "" (hex.DecodeString("") succeeds, so without
-// this gate a malformed request returned a successful decode with an
-// empty raw_bytes). Regression for PR #505 r3106794322.
+// an absent or non-string `payload_hex` key becomes INVALID_PAYLOAD
+// rather than being silently defaulted. An EMPTY STRING is accepted
+// (it is the standard representation of a zero-byte payload and
+// hex.DecodeString("") succeeds) — see
+// TestHandleEbusStandardCall_DecodeAcceptsEmptyPayloadHex below.
+// Regression for PR #505 r3106794322 + r3106904917.
 func TestHandleEbusStandardCall_DecodeRejectsMissingPayloadHex(t *testing.T) {
 	s := &Server{}
 	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
@@ -306,13 +308,6 @@ func TestHandleEbusStandardCall_DecodeRejectsMissingPayloadHex(t *testing.T) {
 			"sb":         4,
 			"direction":  "request",
 			"frame_type": "addressed",
-		}},
-		{"empty_string", map[string]any{
-			"pb":          3,
-			"sb":          4,
-			"direction":   "request",
-			"frame_type":  "addressed",
-			"payload_hex": "",
 		}},
 		{"non_string", map[string]any{
 			"pb":          3,
@@ -444,5 +439,87 @@ func TestNewServer_DispatchesEbusStandardServicesList(t *testing.T) {
 	}
 	if isErr, _ := m["isError"].(bool); isErr {
 		t.Fatalf("services.list returned error envelope: %+v", m)
+	}
+}
+
+// TestHandleEbusStandardCall_DecodeAcceptsEmptyPayloadHex is the
+// regression for PR #505 r3106904917. An empty `payload_hex` string is
+// the standard representation of a zero-byte payload — hex.DecodeString
+// ("") succeeds and returns []byte{}. The wiring layer must NOT reject
+// it as INVALID_PAYLOAD; it must pass it through to the underlying
+// Decode implementation, which then reports UNKNOWN_COMMAND /
+// identity-specific behavior as usual.
+//
+// Distinction pinned by this test:
+//   - payload_hex absent         → INVALID_PAYLOAD (missing required)
+//   - payload_hex: ""            → VALID, zero-byte decode proceeds
+//   - payload_hex: "00AA"        → VALID, 2-byte decode
+func TestHandleEbusStandardCall_DecodeAcceptsEmptyPayloadHex(t *testing.T) {
+	s := &Server{}
+	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+
+	// Case 1: empty string — must NOT be INVALID_PAYLOAD. It may still
+	// produce UNKNOWN_COMMAND if the (pb,sb,direction,frame_type) tuple
+	// is not in the catalog, but the wiring gate must be cleared.
+	args := map[string]any{
+		"pb":          0xAB, // arbitrary pb/sb unlikely to match any catalog row
+		"sb":          0xCD,
+		"direction":   "request",
+		"frame_type":  "addressed",
+		"payload_hex": "",
+	}
+	result, handled := s.handleEbusStandardCall(estd.ToolDecode, args)
+	if !handled {
+		t.Fatal("decode must be handled")
+	}
+	text := result["content"].([]map[string]any)[0]["text"].(string)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("envelope JSON: %v", err)
+	}
+	if errObj, ok := env["error"].(map[string]any); ok && errObj != nil {
+		if code, _ := errObj["code"].(string); code == "INVALID_PAYLOAD" {
+			t.Fatalf("empty payload_hex must NOT be rejected as INVALID_PAYLOAD, got envelope=%+v", env)
+		}
+	}
+
+	// Case 2: absent — still INVALID_PAYLOAD (covered in sibling test,
+	// re-asserted here as a nearby contrast).
+	absentArgs := map[string]any{
+		"pb":         0xAB,
+		"sb":         0xCD,
+		"direction":  "request",
+		"frame_type": "addressed",
+	}
+	result2, _ := s.handleEbusStandardCall(estd.ToolDecode, absentArgs)
+	text2 := result2["content"].([]map[string]any)[0]["text"].(string)
+	var env2 map[string]any
+	if err := json.Unmarshal([]byte(text2), &env2); err != nil {
+		t.Fatalf("envelope JSON: %v", err)
+	}
+	errObj2, _ := env2["error"].(map[string]any)
+	if code, _ := errObj2["code"].(string); code != "INVALID_PAYLOAD" {
+		t.Fatalf("absent payload_hex: error.code = %q, want INVALID_PAYLOAD", code)
+	}
+
+	// Case 3: "00AA" — present, non-empty, valid hex must also clear
+	// the wiring gate (may still fail catalog match, but not wiring).
+	hexArgs := map[string]any{
+		"pb":          0xAB,
+		"sb":          0xCD,
+		"direction":   "request",
+		"frame_type":  "addressed",
+		"payload_hex": "00AA",
+	}
+	result3, _ := s.handleEbusStandardCall(estd.ToolDecode, hexArgs)
+	text3 := result3["content"].([]map[string]any)[0]["text"].(string)
+	var env3 map[string]any
+	if err := json.Unmarshal([]byte(text3), &env3); err != nil {
+		t.Fatalf("envelope JSON: %v", err)
+	}
+	if errObj, ok := env3["error"].(map[string]any); ok && errObj != nil {
+		if code, _ := errObj["code"].(string); code == "INVALID_PAYLOAD" {
+			t.Fatalf("valid hex payload must NOT be rejected as INVALID_PAYLOAD, got envelope=%+v", env3)
+		}
 	}
 }

@@ -1526,6 +1526,16 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		if err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
+		// Normalize rpc source (inject canonical 113 if omitted) BEFORE
+		// computing the idempotency signature, so caller-variance on
+		// params.source (omitted vs. explicit 113) produces identical
+		// signatures and thus identical cache keys. Without this, two
+		// semantically identical MUTATE requests would hash differently
+		// and the second would be rejected as "idempotency key reused
+		// with different payload". See PR #505 r3106812547.
+		if _, err := enforceRPCSourceOnArgs(call.Arguments); err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
 		signature := ""
 		if policy.intent == "MUTATE" {
 			signature, err = buildInvokeIdempotencySignature(call.Arguments)

@@ -2376,6 +2376,91 @@ func TestServer_ToolsCallInvokeV1Idempotency(t *testing.T) {
 	assertToolErrorCode(t, conflict, "CONFLICT")
 }
 
+// Regression test for PR #505 r3106812547: source normalization must run
+// BEFORE idempotency signature is computed, so caller-variance on
+// params.source (omitted vs explicit 113) produces identical cache keys.
+// Before the fix, the second call hashed differently and was rejected
+// with "idempotency key reused with different payload" / CONFLICT.
+func TestServer_ToolsCallInvokeV1IdempotencySourceNormalization(t *testing.T) {
+	plane := &testPlane{
+		name: "heating",
+		methods: []registry.Method{
+			testMethod{
+				name:     "set_target",
+				readOnly: false,
+				template: testTemplate{primary: 0xB5, secondary: 0x05},
+			},
+		},
+	}
+	entry := testEntry{
+		info: registry.DeviceInfo{
+			Address:         0x08,
+			Manufacturer:    "vaillant",
+			DeviceID:        "device-a",
+			SoftwareVersion: "1.0",
+			HardwareVersion: "7603",
+		},
+		planes: []registry.Plane{plane},
+	}
+	reg := &testRegistry{
+		entries: map[byte]registry.DeviceEntry{0x08: entry},
+		order:   []byte{0x08},
+	}
+	invoker := &testInvoker{}
+	server, err := NewServer(reg, invoker)
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	// First call: params.source omitted — guard injects 113.
+	first := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"srckey"}}`),
+	})
+	if first.Error != nil {
+		t.Fatalf("first invoke rpc error = %+v", first.Error)
+	}
+
+	// Second call: same idempotency_key, same payload semantics, but
+	// caller explicitly sets params.source=113. Must be treated as
+	// identical to the first and return the cached result (no CONFLICT).
+	second := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5,"source":113},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"srckey"}}`),
+	})
+	if second.Error != nil {
+		t.Fatalf("second invoke rpc error = %+v", second.Error)
+	}
+	// Without the fix, the second call hashes differently (explicit
+	// source=113 is present in the signature, the first call had source
+	// absent) and lookupIdempotency returns a CONFLICT error envelope
+	// (isError=true). With the fix, source is normalized before the
+	// signature is computed, so signatures match and the cached result
+	// is returned with isError=false.
+	secondResult, ok := second.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("second.Result type = %T; want map", second.Result)
+	}
+	if isError, _ := secondResult["isError"].(bool); isError {
+		content, _ := secondResult["content"].([]any)
+		var text string
+		if len(content) > 0 {
+			if item, ok := content[0].(map[string]any); ok {
+				text, _ = item["text"].(string)
+			}
+		}
+		t.Fatalf("second call returned isError=true (signature mismatch across omitted vs explicit source=113): %s", text)
+	}
+	// And the invoker MUST NOT be dispatched a second time (cache hit).
+	if len(invoker.calls) != 1 {
+		t.Fatalf("invoker calls = %d; want 1 (dedup across omitted vs explicit source=113)", len(invoker.calls))
+	}
+}
+
 func TestServer_ToolsCallInvokeV1Timeout(t *testing.T) {
 	plane := &testPlane{
 		name: "heating",

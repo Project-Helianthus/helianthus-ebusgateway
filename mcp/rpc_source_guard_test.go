@@ -60,6 +60,30 @@ func TestEnforceRPCSourceParam_NilMapNoop(t *testing.T) {
 	}
 }
 
+// TestEnforceRPCSourceParam_RejectsFractionalFloat64 pins the invariant
+// that non-integer float64 "source" values are rejected before the
+// byte() truncation would mask a near-match fractional value
+// (e.g. 113.9 → 113). Regression for PR #505 comment id=3106729474.
+func TestEnforceRPCSourceParam_RejectsFractionalFloat64(t *testing.T) {
+	for _, v := range []float64{113.9, 113.0001, 112.5, -0.5} {
+		params := map[string]any{"source": v}
+		err := enforceRPCSourceParam(params)
+		if err == nil {
+			t.Fatalf("fractional source=%v must be rejected", v)
+		}
+		if !errors.Is(err, rpcsource.ErrNon113Source) {
+			t.Fatalf("source=%v: want ErrNon113Source, got %v", v, err)
+		}
+	}
+}
+
+func TestEnforceRPCSourceParam_AcceptsWholeFloat64_113(t *testing.T) {
+	params := map[string]any{"source": float64(113.0)}
+	if err := enforceRPCSourceParam(params); err != nil {
+		t.Fatalf("113.0 must be accepted, got %v", err)
+	}
+}
+
 // TestEnforceRPCSourceOnArgs_InjectsParamsWhenAbsent pins the invariant
 // that rpc.invoke calls with no "params" field still get source=113
 // materialised. Regression for PR #505 comment id=3106729473.

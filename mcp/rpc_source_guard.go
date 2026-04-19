@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"fmt"
+	"math"
 
 	rpcsource "github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
 )
@@ -77,6 +78,16 @@ func toByteSource(v any) (byte, bool) {
 		}
 		return byte(x), true
 	case float64:
+		// Reject non-integer float64 values. The underlying transport
+		// emits an 8-bit source byte; byte(113.9) silently truncates to
+		// 113 and would bypass the Enforce check for any near-match
+		// fractional value. Only accept whole-number float64s.
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return 0, false
+		}
+		if math.Trunc(x) != x {
+			return 0, false
+		}
 		if x < 0 || x > 255 {
 			return 0, false
 		}

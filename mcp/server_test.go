@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	rpcsource "github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -2522,6 +2524,14 @@ func TestClassifyToolError_KnownMappings(t *testing.T) {
 		{name: "deadline exceeded", err: context.DeadlineExceeded, code: "TIMEOUT", retriable: true, sourceLayer: "gateway"},
 		{name: "idempotency conflict", err: errInvokeIdempotencyConflict, code: "CONFLICT", retriable: false, sourceLayer: "gateway"},
 		{name: "snapshot not found", err: errSnapshotNotFound, code: "NOT_FOUND", retriable: false, sourceLayer: "gateway"},
+		// Issue #505 r3106859308: non-113 source / unsupported-type /
+		// fractional-float at rpc.invoke is a client input error, not a
+		// server fault. classifyToolError must surface it as
+		// INVALID_ARGUMENT (via errors.Is unwrap through wrapped
+		// fmt.Errorf chains).
+		{name: "rpc source non-113 direct", err: rpcsource.ErrNon113Source, code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "gateway"},
+		{name: "rpc source non-113 wrapped", err: fmt.Errorf("got 0x72, want 0x71: %w", rpcsource.ErrNon113Source), code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "gateway"},
+		{name: "rpc source fractional float", err: fmt.Errorf("params.source has unsupported type float64: %w", rpcsource.ErrNon113Source), code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "gateway"},
 	}
 
 	for _, tc := range cases {

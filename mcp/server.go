@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	rpcsource "github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	ebusstdcat "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -2029,6 +2030,11 @@ func classifyToolError(err error) (code string, retriable bool, sourceLayer stri
 		return "CONFLICT", false, "gateway"
 	case errors.Is(err, errSnapshotNotFound):
 		return "NOT_FOUND", false, "gateway"
+	case errors.Is(err, rpcsource.ErrNon113Source):
+		// Client supplied params.source != 113 (or an unsupported type /
+		// fractional float that cannot be safely narrowed to the gateway
+		// source byte). This is a client input error, not a server fault.
+		return "INVALID_ARGUMENT", false, "gateway"
 	case errors.Is(err, ebuserrors.ErrInvalidPayload):
 		return "INVALID_ARGUMENT", false, "ebusreg"
 	case errors.Is(err, ebuserrors.ErrNoSuchDevice):

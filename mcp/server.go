@@ -17,6 +17,7 @@ import (
 	"time"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
+	ebusstdcat "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
@@ -1049,6 +1050,13 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 			},
 		},
 	}
+
+	// Wire the ebus_standard L7 MCP surfaces (M4_GATEWAY_MCP). The
+	// embedded catalog is SHA256-pinned and consumed read-only; see
+	// mcp/ebus_standard_wiring.go. Without this call the four
+	// ebus.v1.ebus_standard.* surfaces are unreachable at runtime because
+	// handleToolsCall rejects unknown tool names before dispatch.
+	RegisterEbusStandardTools(server, ebusstdcat.MustEmbeddedCatalog())
 
 	return server, nil
 }
@@ -3647,13 +3655,13 @@ func (s *Server) invoke(ctx context.Context, args map[string]any) (any, error) {
 	if methodName == "" {
 		return nil, fmt.Errorf("missing method: %w", ebuserrors.ErrInvalidPayload)
 	}
-	params, _ := args["params"].(map[string]any)
-
 	// RPC source byte MUST be the gateway initiator (0x71 == 113). If the
 	// caller supplies an explicit params.source, enforce it; if it is
-	// absent, inject the canonical value so downstream code cannot use a
-	// different initiator by accident. See internal/rpc_source.
-	if err := enforceRPCSourceParam(params); err != nil {
+	// absent — or if params itself is absent — inject the canonical value
+	// and materialise params so downstream code cannot use a different
+	// initiator by accident. See internal/rpc_source.
+	params, err := enforceRPCSourceOnArgs(args)
+	if err != nil {
 		return nil, err
 	}
 

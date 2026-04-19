@@ -1,12 +1,14 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
 func TestRegisterEbusStandardTools_AddsFourSurfaces(t *testing.T) {
@@ -77,5 +79,64 @@ func TestHandleEbusStandardCall_CommandsListFiltersByPB(t *testing.T) {
 	text := result["content"].([]map[string]any)[0]["text"].(string)
 	if !strings.Contains(text, `"pb":3`) {
 		t.Fatalf("expected pb:3 in commands envelope, got %s", text)
+	}
+}
+
+// TestNewServer_WiresEbusStandardSurfaces pins the bootstrap contract:
+// NewServer must register the four ebus.v1.ebus_standard.* tools so
+// handleToolsCall dispatches them instead of returning "unknown tool".
+// Regression for PR #505 comment id=3106729472.
+func TestNewServer_WiresEbusStandardSurfaces(t *testing.T) {
+	reg := &testRegistry{entries: map[byte]registry.DeviceEntry{}}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	required := []string{
+		estd.ToolServicesList,
+		estd.ToolCommandsList,
+		estd.ToolCommandGet,
+		estd.ToolDecode,
+	}
+	for _, name := range required {
+		if !server.hasToolNamed(name) {
+			t.Fatalf("tool %q not registered on NewServer — handleToolsCall will reject as unknown", name)
+		}
+	}
+	if server.ebusStandardServer == nil {
+		t.Fatal("ebusStandardServer sub-dispatcher not installed by NewServer")
+	}
+}
+
+// TestNewServer_DispatchesEbusStandardServicesList pins end-to-end that
+// a tools/call for ebus.v1.ebus_standard.services.list is dispatched
+// (not rejected as unknown) by a default NewServer instance.
+func TestNewServer_DispatchesEbusStandardServicesList(t *testing.T) {
+	reg := &testRegistry{entries: map[byte]registry.DeviceEntry{}}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	params, err := json.Marshal(map[string]any{
+		"name":      estd.ToolServicesList,
+		"arguments": map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result, rpcErr := server.handleToolsCall(context.Background(), params)
+	if rpcErr != nil {
+		t.Fatalf("handleToolsCall rejected ebus_standard.services.list: %+v", rpcErr)
+	}
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result not a map: %T", result)
+	}
+	content, ok := m["content"].([]map[string]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("missing content in tools/call result: %+v", m)
+	}
+	if isErr, _ := m["isError"].(bool); isErr {
+		t.Fatalf("services.list returned error envelope: %+v", m)
 	}
 }

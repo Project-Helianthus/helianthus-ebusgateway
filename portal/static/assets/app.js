@@ -2207,6 +2207,220 @@ class PortalShell extends HTMLElement {
       </div>
     `;
   }
+
+  // ---------------------------------------------------------------------
+  // M5_PORTAL — ebus_standard L7 consumer UI
+  //
+  // Read-only surface over the in-process mcp/ebus_standard sub-server.
+  // Four views:
+  //   - services list         → refreshL7Services()
+  //   - commands list         → refreshL7Commands(optional pb)
+  //   - command detail        → refreshL7Command(id)
+  //   - decode sandbox        → submitL7Decode({pb, sb, direction, frame_type, payload_hex})
+  //
+  // XSS hardening: the decode sandbox writes user-controlled bytes into
+  // the output element via textContent, NEVER innerHTML. Catalog-derived
+  // strings (service/command names) use escapeHtml() before being placed
+  // in innerHTML templates.
+  //
+  // Open-enum fail-closed (M4b2 §4.3): unknown safety_class, direction,
+  // and frame_type values render with an 'unknown' fallback label while
+  // still showing the raw value as evidence.
+  // ---------------------------------------------------------------------
+
+  async refreshL7Services() {
+    const body = this.querySelector('[data-role="l7-services-body"]');
+    if (!body) return;
+    try {
+      const resp = await fetch("api/v1/ebus-standard/services");
+      const env = await resp.json();
+      if (env && env.error) {
+        body.innerHTML = `<div class="error">${escapeHtml(env.error.code || "ERROR")}: ${escapeHtml(env.error.message || "")}</div>`;
+        return;
+      }
+      const services = (env && env.data && env.data.services) || [];
+      if (services.length === 0) {
+        body.innerHTML = '<div class="muted-inline">No services in catalog.</div>';
+        return;
+      }
+      const rows = services.map((svc) => {
+        const pb = escapeHtml(svc.pb);
+        const name = escapeHtml(svc.name || "unknown");
+        const desc = escapeHtml(svc.description || "");
+        const count = escapeHtml(svc.command_count);
+        return `<tr><td>0x${Number(svc.pb).toString(16).padStart(2, "0")}</td><td>${name}</td><td>${desc}</td><td>${count}</td></tr>`;
+      }).join("");
+      body.innerHTML = `<table class="table"><thead><tr><th>PB</th><th>Name</th><th>Description</th><th>Commands</th></tr></thead><tbody>${rows}</tbody></table>`;
+    } catch (err) {
+      body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
+    }
+  }
+
+  async refreshL7Commands(pb) {
+    const body = this.querySelector('[data-role="l7-commands-body"]');
+    if (!body) return;
+    const qs = (pb === undefined || pb === null || pb === "") ? "" : `?pb=${encodeURIComponent(String(pb))}`;
+    try {
+      const resp = await fetch(`api/v1/ebus-standard/commands${qs}`);
+      const env = await resp.json();
+      if (env && env.error) {
+        body.innerHTML = `<div class="error">${escapeHtml(env.error.code || "ERROR")}: ${escapeHtml(env.error.message || "")}</div>`;
+        return;
+      }
+      const commands = (env && env.data && env.data.commands) || [];
+      if (commands.length === 0) {
+        body.innerHTML = '<div class="muted-inline">No commands match.</div>';
+        return;
+      }
+      const rows = commands.map((cmd) => {
+        const id = escapeHtml(cmd.id || "");
+        const name = escapeHtml(cmd.name || "");
+        const safety = this._l7SafetyClassLabel(cmd.safety_class);
+        const pbHex = `0x${Number(cmd.pb).toString(16).padStart(2, "0")}`;
+        const sbHex = `0x${Number(cmd.sb).toString(16).padStart(2, "0")}`;
+        return `<tr><td>${id}</td><td>${name}</td><td>${escapeHtml(pbHex)}</td><td>${escapeHtml(sbHex)}</td><td>${safety}</td></tr>`;
+      }).join("");
+      body.innerHTML = `<table class="table"><thead><tr><th>ID</th><th>Name</th><th>PB</th><th>SB</th><th>Safety</th></tr></thead><tbody>${rows}</tbody></table>`;
+    } catch (err) {
+      body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
+    }
+  }
+
+  async refreshL7Command(id) {
+    const body = this.querySelector('[data-role="l7-command-body"]');
+    if (!body) return;
+    if (!id) {
+      body.innerHTML = '<div class="muted-inline">Enter a command id.</div>';
+      return;
+    }
+    try {
+      const resp = await fetch(`api/v1/ebus-standard/command?id=${encodeURIComponent(id)}`);
+      const env = await resp.json();
+      if (env && env.error) {
+        body.innerHTML = `<div class="error">${escapeHtml(env.error.code || "ERROR")}: ${escapeHtml(env.error.message || "")}</div>`;
+        return;
+      }
+      const cmd = (env && env.data && env.data.command) || null;
+      if (!cmd) {
+        body.innerHTML = '<div class="muted-inline">Command not found.</div>';
+        return;
+      }
+      const identity = cmd.identity || {};
+      const safety = this._l7SafetyClassLabel(cmd.safety_class);
+      const direction = this._l7DirectionLabel(identity.direction);
+      const frameType = this._l7FrameTypeLabel(identity.telegram_class);
+      const req = Array.isArray(cmd.request) ? cmd.request : [];
+      const resp2 = Array.isArray(cmd.response) ? cmd.response : [];
+      const paramRow = (p, role) =>
+        `<tr><td>${escapeHtml(role)}</td><td>${escapeHtml(p.name || "")}</td><td>${escapeHtml(p.type || "")}</td><td>${escapeHtml(p.description || "")}</td></tr>`;
+      const paramRows = req.map((p) => paramRow(p, "request")).concat(resp2.map((p) => paramRow(p, "response"))).join("");
+      const paramTable = paramRows
+        ? `<table class="table"><thead><tr><th>Role</th><th>Name</th><th>Type</th><th>Description</th></tr></thead><tbody>${paramRows}</tbody></table>`
+        : '<div class="muted-inline">No parameters documented.</div>';
+      body.innerHTML = `
+        <dl class="meta-list">
+          <dt>ID</dt><dd>${escapeHtml(cmd.id || "")}</dd>
+          <dt>Name</dt><dd>${escapeHtml(cmd.name || "")}</dd>
+          <dt>Description</dt><dd>${escapeHtml(cmd.description || "")}</dd>
+          <dt>Safety class</dt><dd>${safety}</dd>
+          <dt>Direction</dt><dd>${direction}</dd>
+          <dt>Frame type</dt><dd>${frameType}</dd>
+          <dt>PB / SB</dt><dd>0x${escapeHtml(Number(identity.pb || 0).toString(16).padStart(2, "0"))} / 0x${escapeHtml(Number(identity.sb || 0).toString(16).padStart(2, "0"))}</dd>
+        </dl>
+        ${paramTable}
+      `;
+    } catch (err) {
+      body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
+    }
+  }
+
+  async submitL7Decode(input) {
+    const output = this.querySelector('[data-role="l7-decode-output"]');
+    const status = this.querySelector('[data-role="l7-decode-status"]');
+    if (status) status.textContent = "Decoding...";
+    const params = new URLSearchParams();
+    if (input) {
+      if (input.pb !== undefined && input.pb !== null && input.pb !== "") params.set("pb", String(input.pb));
+      if (input.sb !== undefined && input.sb !== null && input.sb !== "") params.set("sb", String(input.sb));
+      if (input.direction !== undefined && input.direction !== null) params.set("direction", String(input.direction));
+      if (input.frame_type !== undefined && input.frame_type !== null) params.set("frame_type", String(input.frame_type));
+      if (input.payload_hex !== undefined && input.payload_hex !== null) params.set("payload_hex", String(input.payload_hex));
+    }
+    try {
+      const resp = await fetch(`api/v1/ebus-standard/decode?${params.toString()}`);
+      const env = await resp.json();
+      if (env && env.error) {
+        if (status) status.textContent = `${env.error.code || "ERROR"}: ${env.error.message || ""}`;
+        if (output) {
+          // CRITICAL: user-controlled error.message is rendered via
+          // textContent — never innerHTML. This is load-bearing XSS
+          // hardening for the decode sandbox and is enforced by the
+          // l7-catalog.test.mjs audit-log assertions.
+          output.textContent = env.error.message || String(env.error.code || "ERROR");
+        }
+        return;
+      }
+      const data = (env && env.data) || {};
+      if (status) status.textContent = `OK — ${data.command_id || "unknown command"} (${data.validity || "?"})`;
+      if (output) {
+        // The decode response contains raw_bytes + optional decoded_repr,
+        // both of which can reflect wire payloads chosen by an attacker.
+        // textContent is the entire sink for this data — no HTML parsing,
+        // no innerHTML, no template interpolation.
+        const rawBytes = Array.isArray(data.raw_bytes)
+          ? data.raw_bytes.map((b) => Number(b).toString(16).padStart(2, "0")).join(" ")
+          : "";
+        const decodedRepr = typeof data.decoded_repr === "string" ? data.decoded_repr : "";
+        const parts = [
+          `command_id: ${data.command_id || "unknown"}`,
+          `validity: ${data.validity || "unknown"}`,
+          `raw_bytes: ${rawBytes}`,
+        ];
+        if (decodedRepr) parts.push(`decoded: ${decodedRepr}`);
+        output.textContent = parts.join("\n");
+      }
+    } catch (err) {
+      if (status) status.textContent = `Error: ${err}`;
+      if (output) output.textContent = String(err);
+    }
+  }
+
+  // _l7SafetyClassLabel maps a safety_class open-enum value to a labeled
+  // HTML pill. Unknown values render with an "unknown" fallback per
+  // M4b2 §4.3 fail-closed consumer rule, while still showing the raw
+  // value as evidence (escapeHtml-wrapped).
+  _l7SafetyClassLabel(value) {
+    const known = {
+      read_only_safe: "safe",
+      write_controlled: "controlled",
+      frontier_experimental: "experimental",
+      prohibited: "prohibited",
+    };
+    const raw = typeof value === "string" ? value : "";
+    const label = known[raw];
+    if (label) {
+      return `<span class="pill safety-${escapeHtml(raw)}">${escapeHtml(label)}</span> <span class="muted-inline">${escapeHtml(raw)}</span>`;
+    }
+    return `<span class="pill safety-unknown">unknown</span> <span class="muted-inline">${escapeHtml(raw || "(empty)")}</span>`;
+  }
+
+  _l7DirectionLabel(value) {
+    const known = new Set(["master_to_slave", "slave_to_master", "broadcast"]);
+    const raw = typeof value === "string" ? value : "";
+    if (known.has(raw)) {
+      return `<span class="pill">${escapeHtml(raw)}</span>`;
+    }
+    return `<span class="pill pill-unknown">unknown</span> <span class="muted-inline">${escapeHtml(raw || "(empty)")}</span>`;
+  }
+
+  _l7FrameTypeLabel(value) {
+    const known = new Set(["MS", "MM", "BC"]);
+    const raw = typeof value === "string" ? value : "";
+    if (known.has(raw)) {
+      return `<span class="pill">${escapeHtml(raw)}</span>`;
+    }
+    return `<span class="pill pill-unknown">unknown</span> <span class="muted-inline">${escapeHtml(raw || "(empty)")}</span>`;
+  }
 }
 
 customElements.define("portal-shell", PortalShell);

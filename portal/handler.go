@@ -61,6 +61,11 @@ type Options struct {
 	GetProjection       func(address byte, plane string) (ProjectionGraph, bool)
 	ExplorerBus         ExplorerBus // nil disables explorer
 	ExplorerSource      byte        // default eBUS source address (0xF0 if zero)
+	// EbusStandardServer is the in-process L7 catalog sub-server consumed
+	// by the M5_PORTAL read-only consumer UI. Nil disables the
+	// /api/v1/ebus-standard/* routes (they return 404) and hides the
+	// capability in /api/v1/bootstrap.
+	EbusStandardServer PortalEbusStandardServer
 }
 
 type handler struct {
@@ -858,6 +863,14 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 	// Explorer routes support POST/DELETE, must be checked before the GET-only guard.
 	trimmed := strings.Trim(path, "/")
 	if h.explorer != nil && h.routeExplorer(w, r, trimmed) {
+		return
+	}
+	// ebus_standard L7 consumer UI (M5_PORTAL). routeEbusStandard returns
+	// true if the path matched the ebus-standard/ prefix, even when the
+	// sub-server is nil (in which case it responds with 404). Placed
+	// before the GET-only guard for symmetry with explorer, though all
+	// ebus-standard routes are GET-only and enforce that internally.
+	if h.routeEbusStandard(w, r, trimmed) {
 		return
 	}
 

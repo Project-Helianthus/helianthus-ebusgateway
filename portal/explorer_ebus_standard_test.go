@@ -85,6 +85,14 @@ func (f *fakeEbusStandardServer) Decode(in estd.DecodeInput) (map[string]any, er
 	if f.decodeFn != nil {
 		return f.decodeFn(in)
 	}
+	// Mirror the real sub-server's required-selector validation so the
+	// route test for "missing direction" exercises the full stack.
+	if in.Direction == "" {
+		return nil, fmt.Errorf("direction: %w: required (empty is not a wildcard)", estd.ErrInvalidPayload)
+	}
+	if in.FrameType == "" {
+		return nil, fmt.Errorf("frame_type: %w: required (empty is not a wildcard)", estd.ErrInvalidPayload)
+	}
 	return map[string]any{
 		"namespace":       "ebus_standard",
 		"catalog_version": "v-test",

@@ -140,6 +140,46 @@ func TestEnforceRPCSourceOnArgs_PreservesExplicit113(t *testing.T) {
 	}
 }
 
+// TestEnforceRPCSourceParam_AcceptsByteTypedGateway pins the invariant
+// that in-process callers passing the canonical rpc_source.Gateway
+// constant directly (type byte/uint8) are accepted without being
+// rejected as "unsupported type". Regression for PR #505 comment
+// id=3106887656.
+func TestEnforceRPCSourceParam_AcceptsByteTypedGateway(t *testing.T) {
+	params := map[string]any{"source": rpcsource.Gateway}
+	if err := enforceRPCSourceParam(params); err != nil {
+		t.Fatalf("byte-typed Gateway must be accepted, got %v", err)
+	}
+}
+
+func TestEnforceRPCSourceParam_AcceptsByteLiteral113(t *testing.T) {
+	params := map[string]any{"source": byte(0x71)}
+	if err := enforceRPCSourceParam(params); err != nil {
+		t.Fatalf("byte(0x71) must be accepted, got %v", err)
+	}
+}
+
+func TestEnforceRPCSourceParam_RejectsNon113Byte(t *testing.T) {
+	params := map[string]any{"source": byte(114)}
+	err := enforceRPCSourceParam(params)
+	if err == nil {
+		t.Fatal("byte(114) must be rejected")
+	}
+	if !errors.Is(err, rpcsource.ErrNon113Source) {
+		t.Fatalf("want ErrNon113Source, got %v", err)
+	}
+}
+
+func TestToByteSource_ByteInRange(t *testing.T) {
+	got, err := toByteSource(byte(0x71))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != 113 {
+		t.Fatalf("got %d, want 113", got)
+	}
+}
+
 func TestEnforceRPCSourceOnArgs_RejectsNon113(t *testing.T) {
 	args := map[string]any{
 		"params": map[string]any{"source": int(0x08)},

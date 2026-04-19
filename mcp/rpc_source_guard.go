@@ -81,6 +81,12 @@ func enforceRPCSourceOnArgs(args map[string]any) (map[string]any, error) {
 // "unsupported type".
 func toByteSource(v any) (byte, error) {
 	switch x := v.(type) {
+	case byte:
+		// byte is an alias for uint8, always in [0,255] by type;
+		// no range check needed. Accepts rpc_source.Gateway directly
+		// for in-process callers that build params maps
+		// programmatically with the typed constant.
+		return x, nil
 	case int:
 		if x < 0 || x > 255 {
 			return 0, fmt.Errorf("invalid value %d (int out of byte range [0,255]): %w", x, rpcsource.ErrNon113Source)

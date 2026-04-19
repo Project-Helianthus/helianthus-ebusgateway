@@ -1,6 +1,48 @@
 // Generated from portal/web/src/app.js. DO NOT EDIT.
 const THEME_KEY = "helianthus-portal-theme";
 
+// L7 decode catalog-canonical enums. Source of truth:
+// helianthus-ebusreg/catalog/ebus_standard/identity.go — Direction and
+// TelegramClass constants. Any form value outside these sets is
+// rejected client-side by the decode submit handler (fail-closed)
+// because the backend matcher would return UNKNOWN_COMMAND.
+//
+// NOTE: These values intentionally use the catalog identity enums
+// (request / response / addressed / broadcast / initiator_initiator /
+// controller_broadcast) and NEVER the legacy initiator/responder-coded
+// terminology banned project-wide by ci_local.sh.
+const L7_DECODE_DIRECTIONS = new Set(["request", "response"]);
+const L7_DECODE_FRAME_TYPES = new Set([
+  "addressed",
+  "broadcast",
+  "initiator_initiator",
+  "controller_broadcast",
+]);
+
+// parsePBFilterValue parses an operator-entered PB filter string and
+// returns an integer in [0,255] on success, or null on malformed input.
+// Accepts decimal ("5", "255") or hex ("0x05", "0xff", "FF"). The null
+// return signals the caller to fail closed — surface an inline error and
+// SUPPRESS the fetch, rather than fall back to an unfiltered list.
+function parsePBFilterValue(raw) {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim();
+  if (s === "") return null;
+  let n;
+  if (/^0x[0-9a-f]+$/i.test(s)) {
+    n = parseInt(s.slice(2), 16);
+  } else if (/^[0-9a-f]+$/i.test(s) && /[a-f]/i.test(s)) {
+    // Hex without prefix (e.g. "ff").
+    n = parseInt(s, 16);
+  } else if (/^\d+$/.test(s)) {
+    n = parseInt(s, 10);
+  } else {
+    return null;
+  }
+  if (!Number.isFinite(n) || n < 0 || n > 0xff) return null;
+  return n;
+}
+
 function loadTheme() {
   const stored = localStorage.getItem(THEME_KEY);
   if (stored === "light" || stored === "dark") {
@@ -354,13 +396,27 @@ class PortalShell extends HTMLElement {
     if (refreshCommands) {
       refreshCommands.addEventListener("click", () => {
         const pbInput = this.querySelector('[data-role="l7-pb-filter"]');
+        const pbErrEl = this.querySelector('[data-role="l7-commands-pb-error"]');
         const pbRaw = pbInput && typeof pbInput.value === "string" ? pbInput.value.trim() : "";
-        let pb;
-        if (pbRaw !== "") {
-          const parsed = pbRaw.startsWith("0x") || pbRaw.startsWith("0X")
-            ? parseInt(pbRaw, 16)
-            : parseInt(pbRaw, 10);
-          if (!Number.isNaN(parsed)) pb = parsed;
+        // Clear any previous inline error.
+        if (pbErrEl) {
+          pbErrEl.textContent = "";
+          if (pbErrEl.style) pbErrEl.style.display = "none";
+        }
+        if (pbRaw === "") {
+          // Unfiltered list.
+          this.refreshL7Commands();
+          return;
+        }
+        const pb = parsePBFilterValue(pbRaw);
+        if (pb === null) {
+          // Fail closed: surface inline error via textContent, do NOT
+          // call refreshL7Commands so the list isn't silently unfiltered.
+          if (pbErrEl) {
+            pbErrEl.textContent = `Invalid PB: ${pbRaw} (expected 0x00..0xFF or 0..255)`;
+            if (pbErrEl.style) pbErrEl.style.display = "";
+          }
+          return;
         }
         this.refreshL7Commands(pb);
       });
@@ -379,12 +435,38 @@ class PortalShell extends HTMLElement {
         const dirInput = this.querySelector('[data-role="l7-decode-direction"]');
         const frameInput = this.querySelector('[data-role="l7-decode-frame-type"]');
         const payloadInput = this.querySelector('[data-role="l7-decode-payload"]');
+        const errEl = this.querySelector('[data-role="l7-decode-error"]');
         const read = (el) => (el && typeof el.value === "string" ? el.value : "");
+        const direction = read(dirInput);
+        const frameType = read(frameInput);
+        // Clear previous inline error.
+        if (errEl) {
+          errEl.textContent = "";
+          if (errEl.style) errEl.style.display = "none";
+        }
+        // Known-value fallback: if the form were ever fed unknown values
+        // (e.g., via URL hash, injected option, test fixture), fail closed
+        // and surface an inline error. Do NOT send unknown values to the
+        // backend, which would always return UNKNOWN_COMMAND.
+        if (!L7_DECODE_DIRECTIONS.has(direction)) {
+          if (errEl) {
+            errEl.textContent = `Invalid direction: ${direction || "(empty)"} (expected one of: ${Array.from(L7_DECODE_DIRECTIONS).join(", ")})`;
+            if (errEl.style) errEl.style.display = "";
+          }
+          return;
+        }
+        if (!L7_DECODE_FRAME_TYPES.has(frameType)) {
+          if (errEl) {
+            errEl.textContent = `Invalid frame_type: ${frameType || "(empty)"} (expected one of: ${Array.from(L7_DECODE_FRAME_TYPES).join(", ")})`;
+            if (errEl.style) errEl.style.display = "";
+          }
+          return;
+        }
         this.submitL7Decode({
           pb: read(pbInput),
           sb: read(sbInput),
-          direction: read(dirInput),
-          frame_type: read(frameInput),
+          direction,
+          frame_type: frameType,
           payload_hex: read(payloadInput),
         });
       });
@@ -2281,6 +2363,7 @@ class PortalShell extends HTMLElement {
                 <button class="button" data-role="l7-refresh-services" type="button">Refresh Services</button>
                 <input class="search timeline-filter" data-role="l7-pb-filter" type="search" placeholder="Filter commands by PB (e.g. 5 or 0x05)" aria-label="Filter commands by PB" />
                 <button class="button" data-role="l7-refresh-commands" type="button">Refresh Commands</button>
+                <span class="error" data-role="l7-commands-pb-error" style="display:none"></span>
                 <input class="search timeline-filter" data-role="l7-command-id" type="search" placeholder="Command id (e.g. ebus_standard.service_data.start_counts)" aria-label="Command id" />
                 <button class="button" data-role="l7-refresh-command" type="button">Load Command</button>
               </div>
@@ -2301,19 +2384,20 @@ class PortalShell extends HTMLElement {
                 <input class="search timeline-filter" data-role="l7-decode-pb" type="text" placeholder="pb (0-255)" aria-label="Decode PB" size="5" />
                 <input class="search timeline-filter" data-role="l7-decode-sb" type="text" placeholder="sb (0-255)" aria-label="Decode SB" size="5" />
                 <select class="select" data-role="l7-decode-direction" aria-label="Decode direction">
-                  <option value="master_to_slave">master_to_slave</option>
-                  <option value="slave_to_master">slave_to_master</option>
-                  <option value="broadcast">broadcast</option>
+                  <option value="request">request</option>
+                  <option value="response">response</option>
                 </select>
                 <select class="select" data-role="l7-decode-frame-type" aria-label="Decode frame type">
-                  <option value="MM">MM (initiator-initiator)</option>
-                  <option value="MS">MS (initiator-responder)</option>
-                  <option value="BC">BC (broadcast)</option>
+                  <option value="addressed">addressed</option>
+                  <option value="broadcast">broadcast</option>
+                  <option value="initiator_initiator">initiator_initiator</option>
+                  <option value="controller_broadcast">controller_broadcast</option>
                 </select>
                 <input class="search timeline-filter" data-role="l7-decode-payload" type="text" placeholder="payload_hex" aria-label="Decode payload hex" />
                 <button class="button" data-role="l7-decode-submit" type="button">Decode</button>
               </div>
               <div class="muted-inline" data-role="l7-decode-status">Idle.</div>
+              <div class="error" data-role="l7-decode-error" style="display:none"></div>
               <pre class="issue-preview" data-role="l7-decode-output"></pre>
             </section>
             <div class="meta" data-role="stream-status">Stream idle</div>
@@ -2521,18 +2605,16 @@ class PortalShell extends HTMLElement {
   }
 
   _l7DirectionLabel(value) {
-    const known = new Set(["master_to_slave", "slave_to_master", "broadcast"]);
     const raw = typeof value === "string" ? value : "";
-    if (known.has(raw)) {
+    if (L7_DECODE_DIRECTIONS.has(raw)) {
       return `<span class="pill">${escapeHtml(raw)}</span>`;
     }
     return `<span class="pill pill-unknown">unknown</span> <span class="muted-inline">${escapeHtml(raw || "(empty)")}</span>`;
   }
 
   _l7FrameTypeLabel(value) {
-    const known = new Set(["MS", "MM", "BC"]);
     const raw = typeof value === "string" ? value : "";
-    if (known.has(raw)) {
+    if (L7_DECODE_FRAME_TYPES.has(raw)) {
       return `<span class="pill">${escapeHtml(raw)}</span>`;
     }
     return `<span class="pill pill-unknown">unknown</span> <span class="muted-inline">${escapeHtml(raw || "(empty)")}</span>`;

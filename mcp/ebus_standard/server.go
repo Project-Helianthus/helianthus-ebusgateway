@@ -150,8 +150,8 @@ func (s *Server) Decode(in DecodeInput) (map[string]any, error) {
 	}
 	cmd, ok := s.findIdentity(in.PB, in.SB, in.Direction, in.FrameType)
 	if !ok {
-		return nil, fmt.Errorf("pb=0x%02X sb=0x%02X direction=%q: %w",
-			in.PB, in.SB, in.Direction, ErrUnknownCommand)
+		return nil, fmt.Errorf("pb=0x%02X sb=0x%02X direction=%q frame_type=%q: %w",
+			in.PB, in.SB, in.Direction, in.FrameType, ErrUnknownCommand)
 	}
 
 	// Field decode uses the catalog Request/Response parameter list

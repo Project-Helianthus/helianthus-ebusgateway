@@ -122,7 +122,21 @@ func (s *Server) handleEbusStandardCall(name string, args map[string]any) (map[s
 		data, err := s.ebusStandardServer.CommandsList(pbp)
 		return callToolResultText(mustJSON(estd.NewEnvelope(data, err, ts)), err != nil), true
 	case estd.ToolCommandGet:
-		id, _ := args["id"].(string)
+		rawID, idPresent := args["id"]
+		if !idPresent || rawID == nil {
+			err := fmt.Errorf("id: %w: required", estd.ErrInvalidPayload)
+			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
+		}
+		id, ok := rawID.(string)
+		if !ok {
+			err := fmt.Errorf("id: %w: expected string, got %T=%v",
+				estd.ErrInvalidPayload, rawID, rawID)
+			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
+		}
+		if id == "" {
+			err := fmt.Errorf("id: %w: must be non-empty", estd.ErrInvalidPayload)
+			return callToolResultText(mustJSON(estd.NewEnvelope(nil, err, ts)), true), true
+		}
 		data, err := s.ebusStandardServer.CommandGet(id)
 		return callToolResultText(mustJSON(estd.NewEnvelope(data, err, ts)), err != nil), true
 	case estd.ToolDecode:

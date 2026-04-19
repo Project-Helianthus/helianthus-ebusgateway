@@ -289,6 +289,69 @@ func TestHandleEbusStandardCall_DecodeRejectsFractionalPB(t *testing.T) {
 	}
 }
 
+// TestHandleEbusStandardCall_CommandGetRejectsMissingID pins that a
+// missing/empty/non-string `id` becomes INVALID_PAYLOAD rather than
+// flowing through as UNKNOWN_COMMAND. Regression for PR #505
+// r3106794325.
+func TestHandleEbusStandardCall_CommandGetRejectsMissingID(t *testing.T) {
+	s := &Server{}
+	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	cases := []struct {
+		name string
+		args map[string]any
+	}{
+		{"absent", map[string]any{}},
+		{"empty_string", map[string]any{"id": ""}},
+		{"non_string_int", map[string]any{"id": 42}},
+		{"null", map[string]any{"id": nil}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, handled := s.handleEbusStandardCall(estd.ToolCommandGet, tc.args)
+			if !handled {
+				t.Fatal("command.get must be handled")
+			}
+			if isErr, _ := result["isError"].(bool); !isErr {
+				t.Fatalf("expected isError=true, got %+v", result)
+			}
+			text := result["content"].([]map[string]any)[0]["text"].(string)
+			var env map[string]any
+			if err := json.Unmarshal([]byte(text), &env); err != nil {
+				t.Fatalf("envelope JSON: %v", err)
+			}
+			errObj, _ := env["error"].(map[string]any)
+			if code, _ := errObj["code"].(string); code != "INVALID_PAYLOAD" {
+				t.Fatalf("error.code = %q, want INVALID_PAYLOAD", code)
+			}
+		})
+	}
+}
+
+// TestHandleEbusStandardCall_CommandGetDispatchesNonexistent pins that
+// a well-formed but nonexistent id still reaches the catalog lookup
+// and returns its native error (UNKNOWN_COMMAND) rather than being
+// short-circuited by the new INVALID_PAYLOAD guard.
+func TestHandleEbusStandardCall_CommandGetDispatchesNonexistent(t *testing.T) {
+	s := &Server{}
+	RegisterEbusStandardTools(s, ebusstd.MustEmbeddedCatalog())
+	result, handled := s.handleEbusStandardCall(estd.ToolCommandGet, map[string]any{"id": "definitely-not-a-real-command-id"})
+	if !handled {
+		t.Fatal("command.get must be handled")
+	}
+	// It will be an error envelope, but the error code must NOT be
+	// INVALID_PAYLOAD — it must be whatever the catalog raises for an
+	// unknown id (preserving existing semantics).
+	text := result["content"].([]map[string]any)[0]["text"].(string)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("envelope JSON: %v", err)
+	}
+	errObj, _ := env["error"].(map[string]any)
+	if code, _ := errObj["code"].(string); code == "INVALID_PAYLOAD" {
+		t.Fatalf("nonexistent id must not map to INVALID_PAYLOAD; got %s", text)
+	}
+}
+
 // TestNewServer_DispatchesEbusStandardServicesList pins end-to-end that
 // a tools/call for ebus.v1.ebus_standard.services.list is dispatched
 // (not rejected as unknown) by a default NewServer instance.

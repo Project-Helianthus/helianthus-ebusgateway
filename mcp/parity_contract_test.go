@@ -68,6 +68,10 @@ func TestToolInventoryGoldenSignatures(t *testing.T) {
 	expected := []toolSchemaSignature{
 		{Name: "ebus.devices", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.invoke", SchemaHash: "2e6b78e869aed69fa5d7fb3722c476a3d2b04767a1f2d9e0e64e8bd456d072f7"},
+		{Name: "ebus.v1.ebus_standard.command.get", SchemaHash: "7717dd85c2e5ff939b47bf9369acc9c59e449e42f2f3bff74058dcd2eea9242d"},
+		{Name: "ebus.v1.ebus_standard.commands.list", SchemaHash: "4342fe50b88400d1c88845f8791f8de0b35b8ec739a3e3cda1b0ded353d94211"},
+		{Name: "ebus.v1.ebus_standard.decode", SchemaHash: "f88f9d5456a45ea13ff724f109458a5672f231c07bda461130a9f29c04a8bf35"},
+		{Name: "ebus.v1.ebus_standard.services.list", SchemaHash: "99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa"},
 		{Name: "ebus.v1.registry.devices.get", SchemaHash: "da78278884d60ad8b0f1d272acde9ea9aa0d407993039a2b39dbf584d95f0757"},
 		{Name: "ebus.v1.registry.devices.list", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.registry.methods.list", SchemaHash: "97aa07b78405c1f77e2c3845a083b088db13019ca0a3ea83dba4206088d3bcf8"},

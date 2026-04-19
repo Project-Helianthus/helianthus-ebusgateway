@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
@@ -49,6 +50,10 @@ func toolClassificationPolicy() map[string]toolClass {
 		toolInvokeV1Name:                 toolClassCoreStable,
 		toolDevicesLegacyName:            toolClassLegacy,
 		toolInvokeLegacyName:             toolClassLegacy,
+		estd.ToolServicesList:            toolClassCoreStable,
+		estd.ToolCommandsList:            toolClassCoreStable,
+		estd.ToolCommandGet:              toolClassCoreStable,
+		estd.ToolDecode:                  toolClassCoreStable,
 	}
 }
 

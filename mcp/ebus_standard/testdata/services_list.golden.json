@@ -1,0 +1,28 @@
+{
+  "data": {
+    "catalog_version": "v1.0-locked",
+    "namespace": "ebus_standard",
+    "plan_sha256": "9e0a29bb76d99f551904b05749e322aafd3972621858aa6d1acbe49b9ef37305",
+    "services": [
+      {
+        "command_count": 1,
+        "description": "golden fixture",
+        "name": "Service Data",
+        "pb": 3
+      }
+    ]
+  },
+  "error": null,
+  "meta": {
+    "consistency": {
+      "mode": "LIVE"
+    },
+    "contract": {
+      "major": 1,
+      "minor": 0,
+      "name": "helianthus-ebus-mcp"
+    },
+    "data_hash": "281e969d3a59ad7d290030e65888b0dab5795e3e5d6e91e2669baedf11fb6f5d",
+    "data_timestamp": "2026-01-01T00:00:00Z"
+  }
+}

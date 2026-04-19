@@ -1,0 +1,28 @@
+{
+  "data": {
+    "catalog_version": "v1.0-locked",
+    "commands": [
+      {
+        "id": "ebus_standard.golden.alpha",
+        "name": "Alpha",
+        "pb": 3,
+        "safety_class": "read_only_bus_load",
+        "sb": 4
+      }
+    ],
+    "namespace": "ebus_standard"
+  },
+  "error": null,
+  "meta": {
+    "consistency": {
+      "mode": "LIVE"
+    },
+    "contract": {
+      "major": 1,
+      "minor": 0,
+      "name": "helianthus-ebus-mcp"
+    },
+    "data_hash": "9dd761693437a64da0f362bd4ba6fc5366cde2be255ca93877bf5c08d423190e",
+    "data_timestamp": "2026-01-01T00:00:00Z"
+  }
+}

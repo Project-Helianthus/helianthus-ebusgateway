@@ -16,7 +16,9 @@ import (
 	"sync"
 	"time"
 
+	rpcsource "github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
+	ebusstdcat "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
@@ -425,6 +427,11 @@ type Server struct {
 	snapshots      map[string]snapshotState
 
 	tools []Tool
+
+	// ebusStandardServer dispatches the four ebus_standard MCP surfaces
+	// (services.list, commands.list, command.get, decode). Installed via
+	// RegisterEbusStandardTools during bootstrap; nil when disabled.
+	ebusStandardServer ebusStandardSubServer
 }
 
 const (
@@ -1045,6 +1052,13 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 		},
 	}
 
+	// Wire the ebus_standard L7 MCP surfaces (M4_GATEWAY_MCP). The
+	// embedded catalog is SHA256-pinned and consumed read-only; see
+	// mcp/ebus_standard_wiring.go. Without this call the four
+	// ebus.v1.ebus_standard.* surfaces are unreachable at runtime because
+	// handleToolsCall rejects unknown tool names before dispatch.
+	RegisterEbusStandardTools(server, ebusstdcat.MustEmbeddedCatalog())
+
 	return server, nil
 }
 
@@ -1268,6 +1282,10 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 	if !s.hasToolNamed(call.Name) {
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", call.Name))
+	}
+
+	if result, handled := s.handleEbusStandardCall(call.Name, call.Arguments); handled {
+		return result, nil
 	}
 
 	switch call.Name {
@@ -1507,6 +1525,16 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		}
 		policy, err := s.enforceInvokeV1Safety(call.Arguments)
 		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		// Normalize rpc source (inject canonical 113 if omitted) BEFORE
+		// computing the idempotency signature, so caller-variance on
+		// params.source (omitted vs. explicit 113) produces identical
+		// signatures and thus identical cache keys. Without this, two
+		// semantically identical MUTATE requests would hash differently
+		// and the second would be rejected as "idempotency key reused
+		// with different payload". See PR #505 r3106812547.
+		if _, err := enforceRPCSourceOnArgs(call.Arguments); err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		signature := ""
@@ -2002,6 +2030,11 @@ func classifyToolError(err error) (code string, retriable bool, sourceLayer stri
 		return "CONFLICT", false, "gateway"
 	case errors.Is(err, errSnapshotNotFound):
 		return "NOT_FOUND", false, "gateway"
+	case errors.Is(err, rpcsource.ErrNon113Source):
+		// Client supplied params.source != 113 (or an unsupported type /
+		// fractional float that cannot be safely narrowed to the gateway
+		// source byte). This is a client input error, not a server fault.
+		return "INVALID_ARGUMENT", false, "gateway"
 	case errors.Is(err, ebuserrors.ErrInvalidPayload):
 		return "INVALID_ARGUMENT", false, "ebusreg"
 	case errors.Is(err, ebuserrors.ErrNoSuchDevice):
@@ -3638,7 +3671,15 @@ func (s *Server) invoke(ctx context.Context, args map[string]any) (any, error) {
 	if methodName == "" {
 		return nil, fmt.Errorf("missing method: %w", ebuserrors.ErrInvalidPayload)
 	}
-	params, _ := args["params"].(map[string]any)
+	// RPC source byte MUST be the gateway initiator (0x71 == 113). If the
+	// caller supplies an explicit params.source, enforce it; if it is
+	// absent — or if params itself is absent — inject the canonical value
+	// and materialise params so downstream code cannot use a different
+	// initiator by accident. See internal/rpc_source.
+	params, err := enforceRPCSourceOnArgs(args)
+	if err != nil {
+		return nil, err
+	}
 
 	entry, ok := s.registry.Lookup(address)
 	if !ok {

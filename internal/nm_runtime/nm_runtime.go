@@ -42,6 +42,22 @@ const (
 // the requested emit event's 14-tuple identity.
 var ErrNoCatalogEntry = errors.New("nm_runtime: no catalog entry for emit event")
 
+// ErrUnknownEmitEvent is returned when Emit is called with an EmitEvent
+// value that is not one of the declared constants (EventResetStatus,
+// EventFailure). M4 first-delivery scope is strictly FF 00 + FF 02; any
+// additional emit events require a locked-plan change. Rejecting unknown
+// events BEFORE the catalog lookup prevents callers from reaching
+// catalog rows (e.g. a future `sign_of_life` row added by ebusreg) via
+// a string-typed EmitEvent cast (issue #505 r3106904915).
+var ErrUnknownEmitEvent = errors.New("nm_runtime: unknown emit event (not in declared M4 set)")
+
+// declaredEmitEvents is the closed set of EmitEvent values Emit accepts.
+// Extending this set requires locked-plan approval (see package doc).
+var declaredEmitEvents = map[EmitEvent]struct{}{
+	EventResetStatus: {},
+	EventFailure:     {},
+}
+
 // ErrEmitterRequired is returned by NewRuntime when the caller passes a nil
 // Emitter. The NM runtime has no fallback transport — a nil emitter at
 // construction is always a wiring bug, and fail-fast at construction is
@@ -85,6 +101,9 @@ func NewRuntime(cat ebusstd.Catalog, emitter Emitter) (*Runtime, error) {
 func (r *Runtime) Emit(ctx context.Context, event EmitEvent, payload []byte) error {
 	if err := rpc_source.Enforce(rpc_source.Gateway); err != nil {
 		return err // defensive: Gateway is const, never non-113
+	}
+	if _, declared := declaredEmitEvents[event]; !declared {
+		return fmt.Errorf("event=%q: %w", event, ErrUnknownEmitEvent)
 	}
 	cmd, ok := r.findEmit(event)
 	if !ok {

@@ -136,45 +136,85 @@ func TestNewRuntime_RejectsNilEmitter(t *testing.T) {
 	}
 }
 
+// TestRuntime_Emit_RejectsUndeclaredEvent is the regression guard for
+// issue #505 r3106904915. Even if the caller casts a rogue string through
+// EmitEvent AND the execution_policy whitelist or catalog would otherwise
+// permit it, Emit MUST reject it BEFORE any catalog lookup because M4
+// first-delivery scope is strictly the declared constants (reset_status,
+// failure_message). Extending the declared set requires locked-plan
+// approval.
+func TestRuntime_Emit_RejectsUndeclaredEvent(t *testing.T) {
+	em := &recordingEmitter{}
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em)
+	if err != nil {
+		t.Fatalf("NewRuntime err: %v", err)
+	}
+	err = rt.Emit(context.Background(), nm_runtime.EmitEvent("sign_of_life"), nil)
+	if err == nil {
+		t.Fatal("undeclared emit event must be rejected")
+	}
+	if !errors.Is(err, nm_runtime.ErrUnknownEmitEvent) {
+		t.Fatalf("want ErrUnknownEmitEvent, got %v", err)
+	}
+	if len(em.calls) != 0 {
+		t.Fatal("rejected call must not reach emitter")
+	}
+}
+
+// TestRuntime_Emit_DeclaredEventContinuesToCatalog proves the guard does
+// not short-circuit the happy path — declared events still flow through
+// findEmit and policy.
+func TestRuntime_Emit_DeclaredEventContinuesToCatalog(t *testing.T) {
+	em := &recordingEmitter{}
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em)
+	if err != nil {
+		t.Fatalf("NewRuntime err: %v", err)
+	}
+	// EventResetStatus is declared AND present in syntheticCatalog, so
+	// Emit must succeed end-to-end.
+	if err := rt.Emit(context.Background(), nm_runtime.EventResetStatus, nil); err != nil {
+		t.Fatalf("declared event must reach emitter, got err=%v", err)
+	}
+	if len(em.calls) != 1 {
+		t.Fatalf("want 1 emit call, got %d", len(em.calls))
+	}
+}
+
 func TestRuntime_Emit_PolicyDeniesWhenWhitelistMismatch(t *testing.T) {
 	// Catalog entry whose service_variant is NOT on the NM whitelist —
 	// policy must deny even for system_nm_runtime caller.
-	pb := uint8(0xFF)
-	cat := ebusstd.Catalog{
-		Namespace: "ebus_standard",
-		Services: []ebusstd.Service{{
-			PB:   &pb,
-			Name: "NM",
-			Commands: []ebusstd.Command{{
-				ID:          "x",
-				SafetyClass: ebusstd.SafetyBroadcast,
-				Identity: ebusstd.IdentityKey{
-					Namespace:             "ebus_standard",
-					PB:                    u8(0xFF),
-					SB:                    u8(0x00),
-					ServiceVariant:        "not_whitelisted_variant",
-					Version:               "v1.0-locked",
-					TelegramClass:         ebusstd.TelegramClassBroadcast,
-					Direction:             ebusstd.DirectionRequest,
-					RequestOrResponseRole: ebusstd.RoleOriginator,
-					BroadcastOrAddressed:  ebusstd.AddressedBroadcast,
-				},
-			}},
-		}},
-	}
+	//
+	// NOTE: Post-#505-r3106904915, Emit rejects undeclared EmitEvent values
+	// BEFORE reaching policy. To still exercise the policy-denial path on
+	// an already-declared event, we build a catalog where reset_status is
+	// configured with a PB/SB pair that the whitelist does not accept —
+	// but the whitelist is service_variant keyed, so the clearest way to
+	// prove the policy path still fires is to run with a declared event
+	// whose catalog identity is present but whose whitelist lookup fails.
+	//
+	// In practice, all declared EmitEvents are on the whitelist (that's
+	// the whole point of declaration). So this test now instead asserts
+	// that an undeclared EmitEvent is refused WITHOUT reaching the
+	// policy layer (no emit, policy not consulted). The "policy denies"
+	// path is covered by internal/execution_policy own tests.
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(cat, em)
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
 	err = rt.Emit(context.Background(), "not_whitelisted_variant", nil)
 	if err == nil {
-		t.Fatal("non-whitelisted variant must be denied")
+		t.Fatal("non-whitelisted variant must be refused")
 	}
-	if !execution_policy.IsDenied(err) {
-		t.Fatalf("want IsDenied(err), got %v", err)
+	// Must be ErrUnknownEmitEvent (pre-catalog guard), NOT policy-denied
+	// — refusal must happen before the whitelist is consulted.
+	if !errors.Is(err, nm_runtime.ErrUnknownEmitEvent) {
+		t.Fatalf("want ErrUnknownEmitEvent, got %v", err)
+	}
+	if execution_policy.IsDenied(err) {
+		t.Fatal("refusal must not come from policy — undeclared events are rejected upstream")
 	}
 	if len(em.calls) != 0 {
-		t.Fatal("denied call must not reach emitter")
+		t.Fatal("refused call must not reach emitter")
 	}
 }

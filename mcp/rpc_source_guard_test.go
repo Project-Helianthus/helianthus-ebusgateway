@@ -59,3 +59,72 @@ func TestEnforceRPCSourceParam_NilMapNoop(t *testing.T) {
 		t.Fatalf("nil map: %v", err)
 	}
 }
+
+// TestEnforceRPCSourceOnArgs_InjectsParamsWhenAbsent pins the invariant
+// that rpc.invoke calls with no "params" field still get source=113
+// materialised. Regression for PR #505 comment id=3106729473.
+func TestEnforceRPCSourceOnArgs_InjectsParamsWhenAbsent(t *testing.T) {
+	args := map[string]any{
+		"address": 0x08,
+		"plane":   "regulator",
+		"method":  "some.method",
+		// no "params" at all
+	}
+	params, err := enforceRPCSourceOnArgs(args)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if params == nil {
+		t.Fatal("params must be materialised, got nil")
+	}
+	if src := params["source"]; src != int(rpcsource.Gateway) {
+		t.Fatalf("source = %v, want %d", src, int(rpcsource.Gateway))
+	}
+	// args must also have the params written back so downstream call
+	// sites observe the same map.
+	attached, ok := args["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("args[params] not materialised: %T", args["params"])
+	}
+	if attached["source"] != int(rpcsource.Gateway) {
+		t.Fatalf("attached.source = %v", attached["source"])
+	}
+}
+
+func TestEnforceRPCSourceOnArgs_InjectsWhenParamsNilMap(t *testing.T) {
+	var nilParams map[string]any
+	args := map[string]any{"params": nilParams}
+	params, err := enforceRPCSourceOnArgs(args)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if params["source"] != int(rpcsource.Gateway) {
+		t.Fatalf("source = %v", params["source"])
+	}
+}
+
+func TestEnforceRPCSourceOnArgs_PreservesExplicit113(t *testing.T) {
+	args := map[string]any{
+		"params": map[string]any{"source": int(0x71), "foo": "bar"},
+	}
+	params, err := enforceRPCSourceOnArgs(args)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if params["foo"] != "bar" {
+		t.Fatalf("pre-existing params entries dropped: %v", params)
+	}
+}
+
+func TestEnforceRPCSourceOnArgs_RejectsNon113(t *testing.T) {
+	args := map[string]any{
+		"params": map[string]any{"source": int(0x08)},
+	}
+	_, err := enforceRPCSourceOnArgs(args)
+	if err == nil {
+		t.Fatal("non-113 source must be rejected")
+	}
+	if !errors.Is(err, rpcsource.ErrNon113Source) {
+		t.Fatalf("want ErrNon113Source, got %v", err)
+	}
+}

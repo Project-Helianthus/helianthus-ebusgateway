@@ -57,21 +57,31 @@ func TestCheck_DeniesDestructiveBroadcastMemoryWrite(t *testing.T) {
 	}
 }
 
+// ff00Reset is the exact full-14-tuple identity of the first whitelist
+// entry. It is the fixture reused across positive-allow and
+// adjacent-variant-denied regression tests. Any axis flipped from this
+// reference MUST be denied (AD09 invariant).
+func ff00Reset() ebusstd.IdentityKey {
+	return ebusstd.IdentityKey{
+		Namespace:                       "ebus_standard",
+		PB:                              u8(0xFF),
+		SB:                              u8(0x00),
+		SelectorPath:                    "",
+		TelegramClass:                   ebusstd.TelegramClassBroadcast,
+		Direction:                       ebusstd.DirectionRequest,
+		RequestOrResponseRole:           "initiator_broadcast_emit",
+		BroadcastOrAddressed:            ebusstd.AddressedBroadcast,
+		AnswerPolicy:                    "no-answer",
+		LengthPrefixMode:                ebusstd.LengthPrefixNone,
+		SelectorDecoder:                 "none",
+		ServiceVariant:                  "nm_reset_status_broadcast",
+		TransportCapabilityRequirements: []string{"initiator+broadcast"},
+		Version:                         "v1.0-locked",
+	}
+}
+
 func TestCheck_SystemNMRuntime_WhitelistsFF00Broadcast(t *testing.T) {
-	c := cmd("nm.reset", ebusstd.SafetyBroadcast, ebusstd.IdentityKey{
-		Namespace:             "ebus_standard",
-		PB:                    u8(0xFF),
-		SB:                    u8(0x00),
-		TelegramClass:         ebusstd.TelegramClassBroadcast,
-		Direction:             ebusstd.DirectionRequest,
-		RequestOrResponseRole: "initiator_broadcast_emit",
-		BroadcastOrAddressed:  ebusstd.AddressedBroadcast,
-		AnswerPolicy:          "no-answer",
-		LengthPrefixMode:      ebusstd.LengthPrefixNone,
-		SelectorDecoder:       "none",
-		ServiceVariant:        "nm_reset_status_broadcast",
-		Version:               "v1.0-locked",
-	})
+	c := cmd("nm.reset", ebusstd.SafetyBroadcast, ff00Reset())
 	if err := execution_policy.Check(c, execution_policy.CallerSystemNMRuntime); err != nil {
 		t.Fatalf("FF 00 nm_reset_status_broadcast must be allowed for system_nm_runtime, got %v", err)
 	}
@@ -83,19 +93,162 @@ func TestCheck_SystemNMRuntime_WhitelistsFF00Broadcast(t *testing.T) {
 
 func TestCheck_SystemNMRuntime_AdjacentVariantsDenied(t *testing.T) {
 	// Wrong service_variant — must be denied even with matching PB/SB.
-	c := cmd("nm.reset.typo", ebusstd.SafetyBroadcast, ebusstd.IdentityKey{
-		PB:                    u8(0xFF),
-		SB:                    u8(0x00),
-		TelegramClass:         ebusstd.TelegramClassBroadcast,
-		Direction:             ebusstd.DirectionRequest,
-		RequestOrResponseRole: "initiator_broadcast_emit",
-		BroadcastOrAddressed:  ebusstd.AddressedBroadcast,
-		AnswerPolicy:          "no-answer",
-		ServiceVariant:        "some_other_variant",
-		Version:               "v1.0-locked",
-	})
+	base := ff00Reset()
+	base.ServiceVariant = "some_other_variant"
+	c := cmd("nm.reset.typo", ebusstd.SafetyBroadcast, base)
 	if err := execution_policy.Check(c, execution_policy.CallerSystemNMRuntime); err == nil {
 		t.Fatal("PB/SB-matching variant with different service_variant must be denied")
+	}
+}
+
+// TestCheck_SystemNMRuntime_AllAxesEnforced is the AD09-invariant regression
+// test. For the FF 00 whitelist entry it constructs one adjacent variant
+// per axis (each axis flipped away from the canonical full-match identity)
+// and asserts Check() denies every variant. Complements the positive-match
+// TestCheck_SystemNMRuntime_WhitelistsFF00Broadcast case.
+func TestCheck_SystemNMRuntime_AllAxesEnforced(t *testing.T) {
+	// Baseline positive allow must hold before we mutate axes.
+	if err := execution_policy.Check(
+		cmd("nm.reset", ebusstd.SafetyBroadcast, ff00Reset()),
+		execution_policy.CallerSystemNMRuntime,
+	); err != nil {
+		t.Fatalf("baseline full-match must be allowed, got %v", err)
+	}
+
+	cases := []struct {
+		axis   string
+		mutate func(*ebusstd.IdentityKey)
+	}{
+		{"namespace", func(k *ebusstd.IdentityKey) { k.Namespace = "ebus_vendor" }},
+		{"pb", func(k *ebusstd.IdentityKey) { k.PB = u8(0xFE) }},
+		{"sb", func(k *ebusstd.IdentityKey) { k.SB = u8(0x01) }},
+		{"selector_path", func(k *ebusstd.IdentityKey) { k.SelectorPath = "x" }},
+		{"telegram_class", func(k *ebusstd.IdentityKey) { k.TelegramClass = "initiator-target" }},
+		{"direction", func(k *ebusstd.IdentityKey) { k.Direction = ebusstd.DirectionResponse }},
+		{"request_or_response_role", func(k *ebusstd.IdentityKey) {
+			k.RequestOrResponseRole = "responder_reply"
+		}},
+		{"broadcast_or_addressed", func(k *ebusstd.IdentityKey) {
+			k.BroadcastOrAddressed = ebusstd.AddressedDirect
+		}},
+		{"answer_policy", func(k *ebusstd.IdentityKey) { k.AnswerPolicy = "answer-required" }},
+		{"length_prefix_mode", func(k *ebusstd.IdentityKey) {
+			k.LengthPrefixMode = ebusstd.LengthPrefixByte
+		}},
+		{"selector_decoder", func(k *ebusstd.IdentityKey) { k.SelectorDecoder = "b5_group" }},
+		{"service_variant", func(k *ebusstd.IdentityKey) { k.ServiceVariant = "nm_failure_broadcast" }},
+		{"transport_capability_requirements", func(k *ebusstd.IdentityKey) {
+			k.TransportCapabilityRequirements = []string{"responder+addressed"}
+		}},
+		{"version", func(k *ebusstd.IdentityKey) { k.Version = "v2.0-locked" }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.axis, func(t *testing.T) {
+			id := ff00Reset()
+			tc.mutate(&id)
+			err := execution_policy.Check(
+				cmd("nm.reset.adj", ebusstd.SafetyBroadcast, id),
+				execution_policy.CallerSystemNMRuntime,
+			)
+			if err == nil {
+				t.Fatalf("AD09 violation: variant flipped on axis %q was allowed; must be denied",
+					tc.axis)
+			}
+			if !errors.Is(err, execution_policy.ErrSafetyClassDenied) {
+				t.Fatalf("axis %q: want ErrSafetyClassDenied, got %v", tc.axis, err)
+			}
+		})
+	}
+}
+
+// TestCheck_SystemNMRuntime_EveryWhitelistEntryAllowed asserts every one of
+// the 7 whitelist entries has a constructible full-identity command that
+// passes Check(). This is the positive-coverage half of the AD09
+// invariant — without it, a typo in a whitelist axis could silently make
+// one of the 7 entries unreachable.
+func TestCheck_SystemNMRuntime_EveryWhitelistEntryAllowed(t *testing.T) {
+	ids := allWhitelistIdentities()
+	if got, want := len(ids), execution_policy.NMWhitelistSize(); got != want {
+		t.Fatalf("fixture entries = %d, want %d (match whitelist)", got, want)
+	}
+	for _, id := range ids {
+		id := id
+		t.Run(id.ServiceVariant, func(t *testing.T) {
+			if err := execution_policy.Check(
+				cmd("nm."+id.ServiceVariant, ebusstd.SafetyBroadcast, id),
+				execution_policy.CallerSystemNMRuntime,
+			); err != nil {
+				t.Fatalf("whitelist entry %q must be allowed, got %v", id.ServiceVariant, err)
+			}
+		})
+	}
+}
+
+// allWhitelistIdentities returns the canonical full-14-tuple identities for
+// each of the 7 whitelist entries, in whitelist order. Keep synchronized
+// with internal/execution_policy/whitelist.go nmWhitelist.
+func allWhitelistIdentities() []ebusstd.IdentityKey {
+	broadcastEmit := func(sb uint8, variant string) ebusstd.IdentityKey {
+		return ebusstd.IdentityKey{
+			Namespace:                       "ebus_standard",
+			PB:                              u8(0xFF),
+			SB:                              u8(sb),
+			SelectorPath:                    "",
+			TelegramClass:                   ebusstd.TelegramClassBroadcast,
+			Direction:                       ebusstd.DirectionRequest,
+			RequestOrResponseRole:           "initiator_broadcast_emit",
+			BroadcastOrAddressed:            ebusstd.AddressedBroadcast,
+			AnswerPolicy:                    "no-answer",
+			LengthPrefixMode:                ebusstd.LengthPrefixNone,
+			SelectorDecoder:                 "none",
+			ServiceVariant:                  variant,
+			TransportCapabilityRequirements: []string{"initiator+broadcast"},
+			Version:                         "v1.0-locked",
+		}
+	}
+	responderReply := func(sb uint8, variant string) ebusstd.IdentityKey {
+		return ebusstd.IdentityKey{
+			Namespace:                       "ebus_standard",
+			PB:                              u8(0xFF),
+			SB:                              u8(sb),
+			SelectorPath:                    "",
+			TelegramClass:                   "initiator-target",
+			Direction:                       ebusstd.DirectionResponse,
+			RequestOrResponseRole:           "responder_reply",
+			BroadcastOrAddressed:            ebusstd.AddressedDirect,
+			AnswerPolicy:                    "answer-required",
+			LengthPrefixMode:                ebusstd.LengthPrefixNone,
+			SelectorDecoder:                 "none",
+			ServiceVariant:                  variant,
+			TransportCapabilityRequirements: []string{"responder+addressed"},
+			Version:                         "v1.0-locked",
+		}
+	}
+	signOfLife := ebusstd.IdentityKey{
+		Namespace:                       "ebus_standard",
+		PB:                              u8(0x07),
+		SB:                              u8(0xFF),
+		SelectorPath:                    "",
+		TelegramClass:                   ebusstd.TelegramClassBroadcast,
+		Direction:                       ebusstd.DirectionRequest,
+		RequestOrResponseRole:           "initiator_broadcast_emit",
+		BroadcastOrAddressed:            ebusstd.AddressedBroadcast,
+		AnswerPolicy:                    "no-answer",
+		LengthPrefixMode:                ebusstd.LengthPrefixNone,
+		SelectorDecoder:                 "none",
+		ServiceVariant:                  "sign_of_life_broadcast",
+		TransportCapabilityRequirements: []string{"initiator+broadcast"},
+		Version:                         "v1.0-locked",
+	}
+	return []ebusstd.IdentityKey{
+		broadcastEmit(0x00, "nm_reset_status_broadcast"),
+		broadcastEmit(0x02, "nm_failure_broadcast"),
+		responderReply(0x03, "nm_net_status_response"),
+		responderReply(0x04, "nm_monitored_participants_response"),
+		responderReply(0x05, "nm_failed_nodes_response"),
+		responderReply(0x06, "nm_required_services_response"),
+		signOfLife,
 	}
 }
 

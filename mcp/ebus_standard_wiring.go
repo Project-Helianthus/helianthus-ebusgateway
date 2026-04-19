@@ -9,11 +9,17 @@ import (
 	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
 )
 
-// ebusStandardSubServer is the in-package interface backed by
+// EbusStandardSubServer is the in-package interface backed by
 // mcp/ebus_standard.Server. Typed as an interface so the main Server
 // struct can hold a nil-equatable value when the sub-server is not
 // installed, while tests can substitute a fake.
-type ebusStandardSubServer interface {
+//
+// Exported so the gateway bootstrap can pass the same sub-server instance
+// into the portal handler via Options.EbusStandardServer without forcing
+// the portal package to import unexported names. The method set is
+// identical to portal.PortalEbusStandardServer by design — Go structural
+// typing allows cross-package assignment between the two interfaces.
+type EbusStandardSubServer interface {
 	ServicesList() map[string]any
 	CommandsList(pb *uint8) (map[string]any, error)
 	CommandGet(id string) (map[string]any, error)
@@ -91,6 +97,20 @@ func RegisterEbusStandardTools(s *Server, cat ebusstd.Catalog) {
 	)
 
 	s.ebusStandardServer = sub
+}
+
+// EbusStandardServer returns the in-process L7 catalog sub-server after
+// RegisterEbusStandardTools has installed it (otherwise nil). The gateway
+// bootstrap injects the returned value into portal.Options.EbusStandardServer
+// so the M5_PORTAL read-only consumer UI reaches the same catalog as the
+// MCP surfaces — without this accessor the portal handler would see nil
+// and the /api/v1/ebus-standard/* routes would 404 in production even
+// though the MCP tools are live.
+func (s *Server) EbusStandardServer() EbusStandardSubServer {
+	if s == nil {
+		return nil
+	}
+	return s.ebusStandardServer
 }
 
 // handleEbusStandardCall is invoked from handleToolsCall before the main

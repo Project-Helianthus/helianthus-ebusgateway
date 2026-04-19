@@ -295,3 +295,182 @@ test("L7 command view renders unknown safety_class as 'unknown' fallback", async
   assert.ok(rendered.toLowerCase().includes("unknown"),
     "unknown safety_class must render with 'unknown' label; got: " + rendered);
 });
+
+// ---- 4. render() emits the L7 Standard Catalog section markup ----
+//
+// Regression for the Codex P1 finding on PR #507: the four L7 methods
+// existed but render() never emitted the data-role="l7-*" DOM, so the
+// methods were dead code. This test runs render() for real and asserts
+// the required selectors + controls are present.
+
+test("L7 Standard Catalog section is emitted by render() with required data-role elements", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell } = buildSandbox({
+    source,
+    sourcePath,
+    elements: new Map(),
+    fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
+  });
+  // Re-attach the real render() — buildSandbox stubs it with a no-op so
+  // the other tests could pre-install elements. Here we want the real
+  // markup string assigned to innerHTML.
+  const proto = Object.getPrototypeOf(shell);
+  shell.render = proto.render;
+  let capturedHTML = "";
+  Object.defineProperty(shell, "innerHTML", {
+    set(v) { capturedHTML = String(v); },
+    get() { return capturedHTML; },
+    configurable: true,
+  });
+  shell.render();
+
+  // Section container + nav entry.
+  assert.ok(capturedHTML.includes('id="section-l7-catalog"'),
+    "render() must emit id=section-l7-catalog");
+  assert.ok(capturedHTML.includes('data-role="nav-l7-catalog"'),
+    "render() must emit nav-l7-catalog sidebar button");
+  assert.ok(capturedHTML.includes('data-nav-target="section-l7-catalog"'),
+    "nav button must target section-l7-catalog");
+
+  // All four data-role selectors required by the existing methods.
+  for (const role of [
+    "l7-services-body",
+    "l7-commands-body",
+    "l7-command-body",
+    "l7-decode-output",
+    "l7-decode-status",
+  ]) {
+    assert.ok(capturedHTML.includes(`data-role="${role}"`),
+      `render() must emit data-role="${role}"`);
+  }
+
+  // Interactive controls wired in bindL7CatalogEvents.
+  for (const role of [
+    "l7-refresh-services",
+    "l7-refresh-commands",
+    "l7-refresh-command",
+    "l7-pb-filter",
+    "l7-command-id",
+    "l7-decode-pb",
+    "l7-decode-sb",
+    "l7-decode-direction",
+    "l7-decode-frame-type",
+    "l7-decode-payload",
+    "l7-decode-submit",
+  ]) {
+    assert.ok(capturedHTML.includes(`data-role="${role}"`),
+      `render() must emit data-role="${role}"`);
+  }
+});
+
+// ---- 5. End-to-end: click-through decode flow preserves textContent XSS path ----
+//
+// Simulates the full operator flow: click the decode submit button, the
+// event handler gathers inputs, calls submitL7Decode, fetch returns a
+// payload with a literal <script> tag in decoded_repr, and the output
+// element is populated via textContent only (no innerHTML sink).
+
+test("L7 decode click-through flow renders output via textContent (XSS hardening preserved)", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const decodeOutput = makeAuditedElement();
+  const decodeStatus = makeAuditedElement();
+
+  // Input elements — auditable but backed by .value reads.
+  function makeInput(value) {
+    return { value, isConnected: true, setAttribute() {}, _audit: [] };
+  }
+  const pbInput = makeInput("5");
+  const sbInput = makeInput("4");
+  const dirInput = makeInput("master_to_slave");
+  const frameInput = makeInput("MM");
+  const payloadInput = makeInput("3c7363726970743e");
+
+  // Capture the click listener registered by bindL7CatalogEvents.
+  let submitClickHandler = null;
+  const submitBtn = {
+    isConnected: true,
+    addEventListener(name, fn) {
+      if (name === "click") submitClickHandler = fn;
+    },
+  };
+  // Pass-through no-op for other buttons bindEvents queries.
+  const noopListener = { addEventListener() {} };
+
+  const elements = new Map([
+    ['[data-role="l7-decode-output"]', decodeOutput],
+    ['[data-role="l7-decode-status"]', decodeStatus],
+    ['[data-role="l7-decode-pb"]', pbInput],
+    ['[data-role="l7-decode-sb"]', sbInput],
+    ['[data-role="l7-decode-direction"]', dirInput],
+    ['[data-role="l7-decode-frame-type"]', frameInput],
+    ['[data-role="l7-decode-payload"]', payloadInput],
+    ['[data-role="l7-decode-submit"]', submitBtn],
+    ['[data-role="l7-refresh-services"]', noopListener],
+    ['[data-role="l7-refresh-commands"]', noopListener],
+    ['[data-role="l7-refresh-command"]', noopListener],
+    ['[data-role="l7-pb-filter"]', makeInput("")],
+    ['[data-role="l7-command-id"]', makeInput("")],
+  ]);
+
+  const decodeResponse = createDeferredResponse({
+    meta: { contract: { name: "helianthus-ebus-mcp", major: 1, minor: 0 }, consistency: { mode: "LIVE" }, data_hash: "d".repeat(64) },
+    data: {
+      namespace: "ebus_standard",
+      catalog_version: "v-test",
+      command_id: "cmd.decoded",
+      raw_bytes: [0x3c, 0x73, 0x63, 0x72, 0x69, 0x70, 0x74, 0x3e],
+      decoded_repr: "<script>alert('xss')</script>",
+      validity: "catalog_identified",
+    },
+    error: null,
+  });
+
+  const { shell, fetchRequests } = buildSandbox({
+    source,
+    sourcePath,
+    elements,
+    fetchImpl: () => decodeResponse.promise,
+  });
+
+  // Invoke the real bindL7CatalogEvents so the click listener registers.
+  const proto = Object.getPrototypeOf(shell);
+  shell.bindL7CatalogEvents = proto.bindL7CatalogEvents;
+  shell.bindL7CatalogEvents();
+
+  assert.equal(typeof submitClickHandler, "function",
+    "decode submit button must have a click listener registered");
+
+  // Trigger the click. The handler kicks off submitL7Decode asynchronously.
+  submitClickHandler();
+  decodeResponse.resolve();
+  await flush();
+  // flush twice — the handler awaits fetch, then awaits json().
+  await flush();
+  await flush();
+
+  // (a) fetch was issued with all five query params.
+  assert.ok(fetchRequests.length >= 1, "fetch must be issued");
+  const url = String(fetchRequests[0].url);
+  assert.ok(url.includes("pb=5"), `fetch URL must include pb: ${url}`);
+  assert.ok(url.includes("sb=4"), `fetch URL must include sb: ${url}`);
+  assert.ok(url.includes("direction=master_to_slave"),
+    `fetch URL must include direction: ${url}`);
+  assert.ok(url.includes("frame_type=MM"), `fetch URL must include frame_type: ${url}`);
+  assert.ok(url.includes("payload_hex=3c7363726970743e"),
+    `fetch URL must include payload_hex: ${url}`);
+
+  // (b) output element was populated via textContent ONLY. This is the
+  //     load-bearing XSS hardening assertion that the new click-through
+  //     wiring does not regress.
+  const textWrites = decodeOutput._audit.filter((e) => e.prop === "textContent");
+  const htmlWrites = decodeOutput._audit.filter((e) => e.prop === "innerHTML");
+  assert.ok(textWrites.length >= 1,
+    "decode output must be populated via textContent");
+  assert.equal(htmlWrites.length, 0,
+    `click-through decode must never use innerHTML; saw: ${JSON.stringify(htmlWrites)}`);
+
+  // (c) literal <script> survives as text.
+  const finalText = textWrites.map((e) => e.value).join("\n");
+  assert.ok(finalText.includes("<script>"),
+    "literal <script> must survive as plain text through click-through flow");
+});

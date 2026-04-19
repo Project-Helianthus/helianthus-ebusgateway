@@ -327,6 +327,68 @@ class PortalShell extends HTMLElement {
       });
     });
     this.bindExplorerEvents();
+    this.bindL7CatalogEvents();
+  }
+
+  // bindL7CatalogEvents wires the L7 Standard Catalog section (M5_PORTAL)
+  // to the four consumer methods (refreshL7Services / refreshL7Commands /
+  // refreshL7Command / submitL7Decode). Without this wiring the methods
+  // are dead code — render() emits the section markup but no handler
+  // invokes the fetches (Codex P1 finding on PR #507).
+  //
+  // XSS hardening contract: the decode submit path reads user input from
+  // the pb/sb/direction/frame_type/payload_hex inputs and delegates to
+  // submitL7Decode, which renders the response via textContent only on
+  // the [data-role="l7-decode-output"] element. Do NOT add any innerHTML
+  // sink on that element in this handler.
+  bindL7CatalogEvents() {
+    const refreshServices = this.querySelector('[data-role="l7-refresh-services"]');
+    const refreshCommands = this.querySelector('[data-role="l7-refresh-commands"]');
+    const refreshCommand = this.querySelector('[data-role="l7-refresh-command"]');
+    const decodeSubmit = this.querySelector('[data-role="l7-decode-submit"]');
+    if (refreshServices) {
+      refreshServices.addEventListener("click", () => {
+        this.refreshL7Services();
+      });
+    }
+    if (refreshCommands) {
+      refreshCommands.addEventListener("click", () => {
+        const pbInput = this.querySelector('[data-role="l7-pb-filter"]');
+        const pbRaw = pbInput && typeof pbInput.value === "string" ? pbInput.value.trim() : "";
+        let pb;
+        if (pbRaw !== "") {
+          const parsed = pbRaw.startsWith("0x") || pbRaw.startsWith("0X")
+            ? parseInt(pbRaw, 16)
+            : parseInt(pbRaw, 10);
+          if (!Number.isNaN(parsed)) pb = parsed;
+        }
+        this.refreshL7Commands(pb);
+      });
+    }
+    if (refreshCommand) {
+      refreshCommand.addEventListener("click", () => {
+        const idInput = this.querySelector('[data-role="l7-command-id"]');
+        const id = idInput && typeof idInput.value === "string" ? idInput.value.trim() : "";
+        this.refreshL7Command(id);
+      });
+    }
+    if (decodeSubmit) {
+      decodeSubmit.addEventListener("click", () => {
+        const pbInput = this.querySelector('[data-role="l7-decode-pb"]');
+        const sbInput = this.querySelector('[data-role="l7-decode-sb"]');
+        const dirInput = this.querySelector('[data-role="l7-decode-direction"]');
+        const frameInput = this.querySelector('[data-role="l7-decode-frame-type"]');
+        const payloadInput = this.querySelector('[data-role="l7-decode-payload"]');
+        const read = (el) => (el && typeof el.value === "string" ? el.value : "");
+        this.submitL7Decode({
+          pb: read(pbInput),
+          sb: read(sbInput),
+          direction: read(dirInput),
+          frame_type: read(frameInput),
+          payload_hex: read(payloadInput),
+        });
+      });
+    }
   }
 
   activateSection(targetID) {
@@ -340,6 +402,7 @@ class PortalShell extends HTMLElement {
       "section-timeline": ["section-timeline", "section-provenance"],
       "section-snapshots": ["section-snapshots", "section-snapshot-diff", "section-sessions"],
       "section-issue-builder": ["section-issue-builder"],
+      "section-l7-catalog": ["section-l7-catalog"],
     };
     const visible = new Set(sectionMap[targetID] || [targetID]);
     visible.add("section-search");
@@ -350,6 +413,16 @@ class PortalShell extends HTMLElement {
     this.querySelectorAll("[data-nav-target]").forEach((btn) => {
       btn.classList.toggle("active", btn.getAttribute("data-nav-target") === targetID);
     });
+    // First time the L7 Catalog section is activated, kick off the
+    // services list fetch so the panel isn't empty. Subsequent clicks
+    // require an explicit "Refresh Services" press — this mirrors how
+    // the explorer section loads its device list lazily.
+    if (targetID === "section-l7-catalog" && !this._l7CatalogLoaded) {
+      this._l7CatalogLoaded = true;
+      if (typeof this.refreshL7Services === "function") {
+        this.refreshL7Services();
+      }
+    }
   }
 
   async loadStatus(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
@@ -1998,6 +2071,7 @@ class PortalShell extends HTMLElement {
             <button data-role="nav-timeline" data-nav-target="section-timeline" disabled><span class="nav-bullet"></span> Timeline</button>
             <button data-role="nav-snapshots" data-nav-target="section-snapshots" disabled><span class="nav-bullet"></span> Snapshots</button>
             <button data-role="nav-issue-builder" data-nav-target="section-issue-builder" disabled><span class="nav-bullet"></span> Issue Builder</button>
+            <button data-role="nav-l7-catalog" data-nav-target="section-l7-catalog"><span class="nav-bullet"></span> L7 Catalog</button>
           </aside>
           <main class="main">
             <h1>Portal Overview</h1>
@@ -2199,6 +2273,48 @@ class PortalShell extends HTMLElement {
                 <button class="button" data-role="issue-export-run" type="button">Export Bundle</button>
               </div>
               <pre class="issue-preview" data-role="issue-preview">Loading issue builder capability...</pre>
+            </section>
+            <section id="section-l7-catalog" class="registry-preview">
+              <h2>L7 Standard Catalog</h2>
+              <p class="muted-inline">Read-only view over the ebus_standard L7 catalog (M5_PORTAL). Services, commands with 14-tuple identity, and a decode sandbox.</p>
+              <div class="snapshot-controls">
+                <button class="button" data-role="l7-refresh-services" type="button">Refresh Services</button>
+                <input class="search timeline-filter" data-role="l7-pb-filter" type="search" placeholder="Filter commands by PB (e.g. 5 or 0x05)" aria-label="Filter commands by PB" />
+                <button class="button" data-role="l7-refresh-commands" type="button">Refresh Commands</button>
+                <input class="search timeline-filter" data-role="l7-command-id" type="search" placeholder="Command id (e.g. ebus_standard.service_data.start_counts)" aria-label="Command id" />
+                <button class="button" data-role="l7-refresh-command" type="button">Load Command</button>
+              </div>
+              <h3>Services</h3>
+              <div data-role="l7-services-body">
+                <div class="muted-inline">Click Refresh Services to load the catalog.</div>
+              </div>
+              <h3>Commands</h3>
+              <div data-role="l7-commands-body">
+                <div class="muted-inline">Click Refresh Commands to list commands.</div>
+              </div>
+              <h3>Command Detail</h3>
+              <div data-role="l7-command-body">
+                <div class="muted-inline">Enter a command id and click Load Command.</div>
+              </div>
+              <h3>Decode Sandbox</h3>
+              <div class="snapshot-controls">
+                <input class="search timeline-filter" data-role="l7-decode-pb" type="text" placeholder="pb (0-255)" aria-label="Decode PB" size="5" />
+                <input class="search timeline-filter" data-role="l7-decode-sb" type="text" placeholder="sb (0-255)" aria-label="Decode SB" size="5" />
+                <select class="select" data-role="l7-decode-direction" aria-label="Decode direction">
+                  <option value="master_to_slave">master_to_slave</option>
+                  <option value="slave_to_master">slave_to_master</option>
+                  <option value="broadcast">broadcast</option>
+                </select>
+                <select class="select" data-role="l7-decode-frame-type" aria-label="Decode frame type">
+                  <option value="MM">MM (initiator-initiator)</option>
+                  <option value="MS">MS (initiator-responder)</option>
+                  <option value="BC">BC (broadcast)</option>
+                </select>
+                <input class="search timeline-filter" data-role="l7-decode-payload" type="text" placeholder="payload_hex" aria-label="Decode payload hex" />
+                <button class="button" data-role="l7-decode-submit" type="button">Decode</button>
+              </div>
+              <div class="muted-inline" data-role="l7-decode-status">Idle.</div>
+              <pre class="issue-preview" data-role="l7-decode-output"></pre>
             </section>
             <div class="meta" data-role="stream-status">Stream idle</div>
             <div class="meta" data-role="meta">Waiting for bootstrap...</div>

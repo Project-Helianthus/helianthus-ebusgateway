@@ -29,9 +29,9 @@ func enforceRPCSourceParam(params map[string]any) error {
 		params["source"] = int(rpcsource.Gateway)
 		return nil
 	}
-	src, ok := toByteSource(raw)
-	if !ok {
-		return fmt.Errorf("params.source has unsupported type %T: %w", raw, rpcsource.ErrNon113Source)
+	src, err := toByteSource(raw)
+	if err != nil {
+		return fmt.Errorf("params.source: %w", err)
 	}
 	if err := rpcsource.Enforce(src); err != nil {
 		return err
@@ -65,33 +65,47 @@ func enforceRPCSourceOnArgs(args map[string]any) (map[string]any, error) {
 	return params, nil
 }
 
-func toByteSource(v any) (byte, bool) {
+// toByteSource coerces a JSON-decoded value into an 8-bit source byte.
+//
+// It returns a non-nil error in two distinguishable cases — both wrap
+// rpc_source.ErrNon113Source so the outer classifier (classifyToolError)
+// still maps them to INVALID_ARGUMENT:
+//
+//   - unsupported type (e.g. bool, string, map, slice, nil): the caller
+//     passed a JSON type the invariant cannot be applied to.
+//   - invalid value (NaN, Inf, fractional, out-of-range): the type is
+//     numeric but the value is not a whole byte in [0,255].
+//
+// The offending value is included in the message so the "source=300"
+// case reports "invalid value" rather than being misreported as
+// "unsupported type".
+func toByteSource(v any) (byte, error) {
 	switch x := v.(type) {
 	case int:
 		if x < 0 || x > 255 {
-			return 0, false
+			return 0, fmt.Errorf("invalid value %d (int out of byte range [0,255]): %w", x, rpcsource.ErrNon113Source)
 		}
-		return byte(x), true
+		return byte(x), nil
 	case int64:
 		if x < 0 || x > 255 {
-			return 0, false
+			return 0, fmt.Errorf("invalid value %d (int64 out of byte range [0,255]): %w", x, rpcsource.ErrNon113Source)
 		}
-		return byte(x), true
+		return byte(x), nil
 	case float64:
-		// Reject non-integer float64 values. The underlying transport
-		// emits an 8-bit source byte; byte(113.9) silently truncates to
-		// 113 and would bypass the Enforce check for any near-match
-		// fractional value. Only accept whole-number float64s.
+		// The underlying transport emits an 8-bit source byte;
+		// byte(113.9) silently truncates to 113 and would bypass the
+		// Enforce check for any near-match fractional value. Only
+		// accept whole-number float64s in range.
 		if math.IsNaN(x) || math.IsInf(x, 0) {
-			return 0, false
+			return 0, fmt.Errorf("invalid value %v (NaN or Inf): %w", x, rpcsource.ErrNon113Source)
 		}
 		if math.Trunc(x) != x {
-			return 0, false
+			return 0, fmt.Errorf("invalid value %v (fractional float64, expected whole number): %w", x, rpcsource.ErrNon113Source)
 		}
 		if x < 0 || x > 255 {
-			return 0, false
+			return 0, fmt.Errorf("invalid value %v (float64 out of byte range [0,255]): %w", x, rpcsource.ErrNon113Source)
 		}
-		return byte(x), true
+		return byte(x), nil
 	}
-	return 0, false
+	return 0, fmt.Errorf("unsupported type %T: %w", v, rpcsource.ErrNon113Source)
 }

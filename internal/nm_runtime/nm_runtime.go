@@ -1,9 +1,16 @@
 // Package nm_runtime is the catalog-driven Network-Management emit path.
 //
 // Per canonical plan §8, the gateway's NM runtime consumes catalog metadata
-// for 0xFF command emit (FF 00 = reset-status broadcast, FF 02 = failure
-// broadcast). After M4, zero hand-coded FF 00 / FF 02 handlers survive;
-// this package is the single emit boundary.
+// for 0xFF command emit (FF 00 = reset_status broadcast, FF 02 =
+// failure_message broadcast). After M4, zero hand-coded FF 00 / FF 02
+// handlers survive; this package is the single emit boundary.
+//
+// CATALOG-DRIVEN INVARIANT (issue #505 r3106832675): the EmitEvent constants
+// MUST be the EXACT service_variant strings emitted by the embedded ebusreg
+// catalog YAML. The integration regression test
+// nm_runtime_catalog_integration_test.go loads the embedded catalog and
+// asserts every EmitEvent resolves to a real catalog command — drift is
+// caught at test time, not at runtime against ErrNoCatalogEntry.
 //
 // Responder emit (FF 03 / FF 04 / FF 05 / FF 06) is NOT implemented — that
 // scope is gated on M4b2 go/no-go (see canonical plan §8) and landed under
@@ -20,13 +27,15 @@ import (
 	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
 )
 
-// EmitEvent names the NM emit events supported in M4b first-delivery.
+// EmitEvent names the NM emit events supported in M4b first-delivery. The
+// underlying string MUST match the catalog `service_variant` literal exactly
+// (see ebusreg@30aa69a catalog/ebus_standard/catalog.yaml).
 type EmitEvent string
 
-// Supported emit events.
+// Supported emit events. Values are catalog `service_variant` strings.
 const (
-	EventResetStatus EmitEvent = "nm_reset_status_broadcast"
-	EventFailure     EmitEvent = "nm_failure_broadcast"
+	EventResetStatus EmitEvent = "reset_status"    // FF 00
+	EventFailure     EmitEvent = "failure_message" // FF 02
 )
 
 // ErrNoCatalogEntry is returned when the catalog has no command matching
@@ -75,12 +84,29 @@ func (r *Runtime) Emit(ctx context.Context, event EmitEvent, payload []byte) err
 	return r.emitter.EmitBroadcast(ctx, rpc_source.Gateway, pb, sb, payload)
 }
 
+// findEmit selects the catalog command matching the broadcast emit event.
+// Some catalog service_variants appear on multiple commands (e.g. request +
+// response rows of the same query); for emit-broadcast the originator/
+// broadcast/request row is the only valid match, so we filter on those axes
+// in addition to the service_variant string.
 func (r *Runtime) findEmit(event EmitEvent) (ebusstd.Command, bool) {
+	target := string(event)
 	for _, svc := range r.catalog.Services {
 		for _, cmd := range svc.Commands {
-			if cmd.Identity.ServiceVariant == string(event) {
-				return cmd, true
+			id := cmd.Identity
+			if id.ServiceVariant != target {
+				continue
 			}
+			if id.Direction != ebusstd.DirectionRequest {
+				continue
+			}
+			if id.RequestOrResponseRole != ebusstd.RoleOriginator {
+				continue
+			}
+			if id.BroadcastOrAddressed != ebusstd.AddressedBroadcast {
+				continue
+			}
+			return cmd, true
 		}
 	}
 	return ebusstd.Command{}, false

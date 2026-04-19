@@ -18,6 +18,12 @@ import (
 // exactly, including the nullable SelectorPath and the ordered slice
 // TransportCapabilityRequirements.
 //
+// CATALOG-DRIVEN INVARIANT (issue #505 r3106832678): every axis literal MUST
+// be the EXACT enum value emitted by the embedded ebusreg catalog YAML. No
+// approximations, no placeholders. Drift between catalog and whitelist is
+// caught by the catalog-grounded integration regression test in
+// whitelist_catalog_integration_test.go.
+//
 // Widening the whitelist requires a new locked-plan decision, not a code
 // change.
 type nmWhitelistEntry struct {
@@ -40,117 +46,130 @@ type nmWhitelistEntry struct {
 // nmWhitelist is the compile-time whitelist. All 14 axes MUST be populated
 // on every entry — the init() block at the bottom of this file enforces
 // completeness at process start.
+//
+// The literal values are sourced from ebusreg@30aa69a
+// catalog/ebus_standard/catalog.yaml — service 0xFF (Network Management) and
+// the 0x07 0xFF Sign of Life broadcast under service 0x07 (System Data).
 var nmWhitelist = []nmWhitelistEntry{
 	{
+		// FF 00 — Reset Status NM (catalog: ebus_standard.nm.reset_status)
 		namespace:                       "ebus_standard",
 		pb:                              0xFF,
 		sb:                              0x00,
 		selectorPath:                    "",
 		telegramClass:                   ebusstd.TelegramClassBroadcast,
 		direction:                       ebusstd.DirectionRequest,
-		requestOrResponseRole:           "initiator_broadcast_emit",
+		requestOrResponseRole:           ebusstd.RoleOriginator,
 		broadcastOrAddressed:            ebusstd.AddressedBroadcast,
-		answerPolicy:                    "no-answer",
-		lengthPrefixMode:                ebusstd.LengthPrefixNone,
+		answerPolicy:                    ebusstd.AnswerNone,
+		lengthPrefixMode:                ebusstd.LengthPrefixFixed,
 		selectorDecoder:                 "none",
-		serviceVariant:                  "nm_reset_status_broadcast",
-		transportCapabilityRequirements: []string{"initiator+broadcast"},
+		serviceVariant:                  "reset_status",
+		transportCapabilityRequirements: []string{"broadcast_send"},
 		version:                         "v1.0-locked",
 	},
 	{
+		// FF 02 — Failure Message (catalog: ebus_standard.nm.failure_message)
 		namespace:                       "ebus_standard",
 		pb:                              0xFF,
 		sb:                              0x02,
 		selectorPath:                    "",
 		telegramClass:                   ebusstd.TelegramClassBroadcast,
 		direction:                       ebusstd.DirectionRequest,
-		requestOrResponseRole:           "initiator_broadcast_emit",
+		requestOrResponseRole:           ebusstd.RoleOriginator,
 		broadcastOrAddressed:            ebusstd.AddressedBroadcast,
-		answerPolicy:                    "no-answer",
-		lengthPrefixMode:                ebusstd.LengthPrefixNone,
+		answerPolicy:                    ebusstd.AnswerNone,
+		lengthPrefixMode:                ebusstd.LengthPrefixFixed,
 		selectorDecoder:                 "none",
-		serviceVariant:                  "nm_failure_broadcast",
-		transportCapabilityRequirements: []string{"initiator+broadcast"},
+		serviceVariant:                  "failure_message",
+		transportCapabilityRequirements: []string{"broadcast_send"},
 		version:                         "v1.0-locked",
 	},
 	{
+		// FF 03 — Net Status Query Response (catalog: ebus_standard.nm.net_status_query_response)
 		namespace:                       "ebus_standard",
 		pb:                              0xFF,
 		sb:                              0x03,
 		selectorPath:                    "",
-		telegramClass:                   "initiator-target",
+		telegramClass:                   ebusstd.TelegramClassAddressed,
 		direction:                       ebusstd.DirectionResponse,
-		requestOrResponseRole:           "responder_reply",
+		requestOrResponseRole:           ebusstd.RoleResponder,
 		broadcastOrAddressed:            ebusstd.AddressedDirect,
-		answerPolicy:                    "answer-required",
-		lengthPrefixMode:                ebusstd.LengthPrefixNone,
+		answerPolicy:                    ebusstd.AnswerRequired,
+		lengthPrefixMode:                ebusstd.LengthPrefixFixed,
 		selectorDecoder:                 "none",
-		serviceVariant:                  "nm_net_status_response",
-		transportCapabilityRequirements: []string{"responder+addressed"},
+		serviceVariant:                  "net_status_query",
+		transportCapabilityRequirements: []string{"responder"},
 		version:                         "v1.0-locked",
 	},
 	{
+		// FF 04 — Monitored Participants Query Response
+		// (catalog: ebus_standard.nm.monitored_participants_query_response)
 		namespace:                       "ebus_standard",
 		pb:                              0xFF,
 		sb:                              0x04,
 		selectorPath:                    "",
-		telegramClass:                   "initiator-target",
+		telegramClass:                   ebusstd.TelegramClassAddressed,
 		direction:                       ebusstd.DirectionResponse,
-		requestOrResponseRole:           "responder_reply",
+		requestOrResponseRole:           ebusstd.RoleResponder,
 		broadcastOrAddressed:            ebusstd.AddressedDirect,
-		answerPolicy:                    "answer-required",
-		lengthPrefixMode:                ebusstd.LengthPrefixNone,
+		answerPolicy:                    ebusstd.AnswerRequired,
+		lengthPrefixMode:                ebusstd.LengthPrefixByte,
 		selectorDecoder:                 "none",
-		serviceVariant:                  "nm_monitored_participants_response",
-		transportCapabilityRequirements: []string{"responder+addressed"},
+		serviceVariant:                  "monitored_participants_query",
+		transportCapabilityRequirements: []string{"responder"},
 		version:                         "v1.0-locked",
 	},
 	{
+		// FF 05 — Failed Nodes Query Response (catalog: ebus_standard.nm.failed_nodes_query_response)
 		namespace:                       "ebus_standard",
 		pb:                              0xFF,
 		sb:                              0x05,
 		selectorPath:                    "",
-		telegramClass:                   "initiator-target",
+		telegramClass:                   ebusstd.TelegramClassAddressed,
 		direction:                       ebusstd.DirectionResponse,
-		requestOrResponseRole:           "responder_reply",
+		requestOrResponseRole:           ebusstd.RoleResponder,
 		broadcastOrAddressed:            ebusstd.AddressedDirect,
-		answerPolicy:                    "answer-required",
-		lengthPrefixMode:                ebusstd.LengthPrefixNone,
+		answerPolicy:                    ebusstd.AnswerRequired,
+		lengthPrefixMode:                ebusstd.LengthPrefixByte,
 		selectorDecoder:                 "none",
-		serviceVariant:                  "nm_failed_nodes_response",
-		transportCapabilityRequirements: []string{"responder+addressed"},
+		serviceVariant:                  "failed_nodes_query",
+		transportCapabilityRequirements: []string{"responder"},
 		version:                         "v1.0-locked",
 	},
 	{
+		// FF 06 — Required Services Query Response
+		// (catalog: ebus_standard.nm.required_services_query_response)
 		namespace:                       "ebus_standard",
 		pb:                              0xFF,
 		sb:                              0x06,
 		selectorPath:                    "",
-		telegramClass:                   "initiator-target",
+		telegramClass:                   ebusstd.TelegramClassAddressed,
 		direction:                       ebusstd.DirectionResponse,
-		requestOrResponseRole:           "responder_reply",
+		requestOrResponseRole:           ebusstd.RoleResponder,
 		broadcastOrAddressed:            ebusstd.AddressedDirect,
-		answerPolicy:                    "answer-required",
-		lengthPrefixMode:                ebusstd.LengthPrefixNone,
+		answerPolicy:                    ebusstd.AnswerRequired,
+		lengthPrefixMode:                ebusstd.LengthPrefixByte,
 		selectorDecoder:                 "none",
-		serviceVariant:                  "nm_required_services_response",
-		transportCapabilityRequirements: []string{"responder+addressed"},
+		serviceVariant:                  "required_services_query",
+		transportCapabilityRequirements: []string{"responder"},
 		version:                         "v1.0-locked",
 	},
 	{
+		// 07 FF — Sign of Life broadcast (catalog: ebus_standard.system_data.sign_of_life)
 		namespace:                       "ebus_standard",
 		pb:                              0x07,
 		sb:                              0xFF,
 		selectorPath:                    "",
 		telegramClass:                   ebusstd.TelegramClassBroadcast,
 		direction:                       ebusstd.DirectionRequest,
-		requestOrResponseRole:           "initiator_broadcast_emit",
+		requestOrResponseRole:           ebusstd.RoleOriginator,
 		broadcastOrAddressed:            ebusstd.AddressedBroadcast,
-		answerPolicy:                    "no-answer",
+		answerPolicy:                    ebusstd.AnswerNone,
 		lengthPrefixMode:                ebusstd.LengthPrefixNone,
 		selectorDecoder:                 "none",
-		serviceVariant:                  "sign_of_life_broadcast",
-		transportCapabilityRequirements: []string{"initiator+broadcast"},
+		serviceVariant:                  "sign_of_life",
+		transportCapabilityRequirements: []string{"broadcast_send"},
 		version:                         "v1.0-locked",
 	},
 }

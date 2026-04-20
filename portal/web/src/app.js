@@ -21,23 +21,34 @@ const L7_DECODE_FRAME_TYPES = new Set([
 // parsePBFilterValue validates an operator-entered PB filter string and
 // returns the trimmed raw token on success, or null on malformed input.
 //
-// Backend contract (portal/explorer_ebus_standard.go: parsePBSBHex) parses
-// the query value as HEX only, with optional "0x"/"0X" prefix, bitSize=8.
-// Frontend MUST forward the operator's original token verbatim — no
-// parse→reformat round-trip — otherwise decimal serialization would make
-// the backend reinterpret the value as hex, producing either overflow
-// (ui=ff → Number(255) → "255" → hex 0x255 = overflow) or a wrong match
-// (ui=10 → Number(10) → "10" → hex 0x10 = 16 ≠ decimal 10).
+// Backend contract (portal/explorer_ebus_standard.go: parsePBSBByte) uses
+// smart detection:
+//   - "0x" / "0X" prefix  → parse remainder as hex byte (0x00..0xFF)
+//   - otherwise           → parse as decimal byte (0..255)
+// This matches the MCP tool schema `{"type":"integer","minimum":0,"maximum":255}`
+// contract. Frontend MUST forward the operator's original token verbatim
+// (no Number() round-trip, which would lose the "0x" prefix and rewrite
+// "08" as "8", etc.).
 //
-// Shape check: accept 1–2 hex digits with an optional 0x/0X prefix. The
-// null return signals the caller to fail closed — surface an inline error
-// and SUPPRESS the fetch, rather than fall back to an unfiltered list.
+// Shape check:
+//   - With 0x/0X prefix: 1–2 hex digits.
+//   - Without prefix: 1–3 decimal digits, range-checked [0,255].
+// Bare hex (e.g. "ff") is REJECTED — operators must type "0xff".
+// The null return signals the caller to fail closed — surface an inline
+// error and SUPPRESS the fetch, rather than fall back to an unfiltered
+// list.
 function parsePBFilterValue(raw) {
   if (typeof raw !== "string") return null;
   const s = raw.trim();
   if (s === "") return null;
-  if (!/^(0x|0X)?[0-9a-fA-F]{1,2}$/.test(s)) return null;
-  return s;
+  // Hex form: 0x-prefixed, 1-2 hex digits.
+  if (/^(0x|0X)[0-9a-fA-F]{1,2}$/.test(s)) return s;
+  // Decimal form: 1-3 digits in [0,255].
+  if (/^[0-9]{1,3}$/.test(s)) {
+    const n = Number(s);
+    if (Number.isInteger(n) && n >= 0 && n <= 255) return s;
+  }
+  return null;
 }
 
 function loadTheme() {
@@ -410,7 +421,7 @@ class PortalShell extends HTMLElement {
           // Fail closed: surface inline error via textContent, do NOT
           // call refreshL7Commands so the list isn't silently unfiltered.
           if (pbErrEl) {
-            pbErrEl.textContent = `Invalid PB: ${pbRaw} (expected 0x00..0xFF or 0..255)`;
+            pbErrEl.textContent = `Invalid PB: ${pbRaw} (expected 0..255 decimal or 0xNN hex, e.g. 5 or 0x05)`;
             if (pbErrEl.style) pbErrEl.style.display = "";
           }
           return;
@@ -459,22 +470,22 @@ class PortalShell extends HTMLElement {
           }
           return;
         }
-        // pb/sb are forwarded verbatim (raw hex tokens). Validate shape
-        // locally so obviously-malformed input fails closed instead of
-        // round-tripping to the backend for an UNKNOWN_COMMAND. Empty
-        // pb/sb is permitted — the backend returns the catalog default.
+        // pb/sb are forwarded verbatim (raw tokens: decimal or 0xNN hex).
+        // Validate shape locally so obviously-malformed input fails closed
+        // instead of round-tripping to the backend for an UNKNOWN_COMMAND.
+        // Empty pb/sb is permitted — the backend returns the catalog default.
         const pbRaw = read(pbInput).trim();
         const sbRaw = read(sbInput).trim();
         if (pbRaw !== "" && parsePBFilterValue(pbRaw) === null) {
           if (errEl) {
-            errEl.textContent = `Invalid PB: ${pbRaw} (expected hex byte, e.g. 0x05, ff)`;
+            errEl.textContent = `Invalid PB: ${pbRaw} (expected 0..255 decimal or 0xNN hex, e.g. 5 or 0x05)`;
             if (errEl.style) errEl.style.display = "";
           }
           return;
         }
         if (sbRaw !== "" && parsePBFilterValue(sbRaw) === null) {
           if (errEl) {
-            errEl.textContent = `Invalid SB: ${sbRaw} (expected hex byte, e.g. 0x05, ff)`;
+            errEl.textContent = `Invalid SB: ${sbRaw} (expected 0..255 decimal or 0xNN hex, e.g. 5 or 0x05)`;
             if (errEl.style) errEl.style.display = "";
           }
           return;
@@ -2414,8 +2425,8 @@ class PortalShell extends HTMLElement {
               </div>
               <h3>Decode Sandbox</h3>
               <div class="snapshot-controls">
-                <input class="search timeline-filter" data-role="l7-decode-pb" type="text" placeholder="pb (0-255)" aria-label="Decode PB" size="5" />
-                <input class="search timeline-filter" data-role="l7-decode-sb" type="text" placeholder="sb (0-255)" aria-label="Decode SB" size="5" />
+                <input class="search timeline-filter" data-role="l7-decode-pb" type="text" placeholder="pb (0..255 or 0xNN)" aria-label="Decode PB" size="5" />
+                <input class="search timeline-filter" data-role="l7-decode-sb" type="text" placeholder="sb (0..255 or 0xNN)" aria-label="Decode SB" size="5" />
                 <select class="select" data-role="l7-decode-direction" aria-label="Decode direction">
                   <option value="request">request</option>
                   <option value="response">response</option>

@@ -425,13 +425,12 @@ func TestEbusStandardMethodNotAllowed(t *testing.T) {
 	}
 }
 
-// TestEbusStandardCommandsList_PBLeadingZero_DeterministicHex guards against
-// Go's base-0 octal auto-detection for the pb filter. Earlier revisions used
-// strconv.ParseUint(raw, 0, 16), which would parse "010" as octal 8 rather
-// than hex 0x10=16. PB/SB are documented as hex byte selectors in the
-// catalog, so the parser must be deterministic hex regardless of leading
-// zeros. Codex P2 on PR #507 (comment #3109631170).
-func TestEbusStandardCommandsList_PBLeadingZero_DeterministicHex(t *testing.T) {
+// TestEbusStandardCommandsList_PBLeadingZero_DecimalNoOctal guards against
+// Go's base-0 octal auto-detection for the pb filter. With explicit base=10,
+// "010" parses as decimal 10 (not octal 8, not hex 0x10). The MCP tool
+// schema documents pb as integer [0,255] decimal; round 9 restored the
+// decimal contract. Codex P2 on PR #507 (comment #3109782014).
+func TestEbusStandardCommandsList_PBLeadingZero_DecimalNoOctal(t *testing.T) {
 	fake := &fakeEbusStandardServer{}
 	h := newEbusStandardHandler(fake)
 
@@ -441,22 +440,78 @@ func TestEbusStandardCommandsList_PBLeadingZero_DeterministicHex(t *testing.T) {
 
 	_, _, envErr := decodeEnvelope(t, rec)
 	if envErr != nil {
-		t.Fatalf("leading-zero pb=010 must parse as hex, got envelope error: %v", envErr)
+		t.Fatalf("pb=010 must parse as decimal 10, got envelope error: %v", envErr)
 	}
 	if fake.lastCommandsPB == nil {
 		t.Fatalf("pb filter not forwarded (nil)")
 	}
-	if *fake.lastCommandsPB != 0x10 {
-		t.Fatalf("pb=010 must parse as 0x10=16 (hex), got %d (base-0 octal regression)",
+	if *fake.lastCommandsPB != 10 {
+		t.Fatalf("pb=010 must parse as decimal 10, got %d", *fake.lastCommandsPB)
+	}
+}
+
+// TestEbusStandardCommandsList_PB_DecimalDefault asserts the MCP-schema-
+// aligned decimal contract: pb=10 → 10, NOT 0x10=16 (round 8 regression).
+func TestEbusStandardCommandsList_PB_DecimalDefault(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ebus-standard/commands?pb=10", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr != nil {
+		t.Fatalf("pb=10 must parse as decimal 10, got envelope error: %v", envErr)
+	}
+	if fake.lastCommandsPB == nil || *fake.lastCommandsPB != 10 {
+		t.Fatalf("pb=10 must parse to decimal 10, got %v", fake.lastCommandsPB)
+	}
+}
+
+// TestEbusStandardCommandsList_PB_HexWith0xPrefix asserts the hex escape
+// hatch: pb=0x10 → 16.
+func TestEbusStandardCommandsList_PB_HexWith0xPrefix(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ebus-standard/commands?pb=0x10", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr != nil {
+		t.Fatalf("pb=0x10 must parse as hex 16, got envelope error: %v", envErr)
+	}
+	if fake.lastCommandsPB == nil || *fake.lastCommandsPB != 0x10 {
+		t.Fatalf("pb=0x10 must parse to 16, got %v", fake.lastCommandsPB)
+	}
+}
+
+// TestEbusStandardCommandsList_PB_BareHexRejected asserts that bare hex
+// inputs (no 0x prefix) are rejected — operators must type 0xff for hex.
+// This matches the MCP schema's decimal-integer contract.
+func TestEbusStandardCommandsList_PB_BareHexRejected(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ebus-standard/commands?pb=ff", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr == nil || envErr["code"] != "INVALID_PAYLOAD" {
+		t.Fatalf("expected INVALID_PAYLOAD for bare-hex pb=ff, got %v", envErr)
+	}
+	if fake.lastCommandsPB != nil {
+		t.Fatalf("CommandsList must not be invoked on bare-hex input, got pb=%v",
 			*fake.lastCommandsPB)
 	}
 }
 
-// TestEbusStandardCommandsList_PB08_AcceptedAsHex guards against
-// Go's base-0 octal-rejection for "08"/"09": with base=0, an input like
-// pb=08 was rejected as invalid octal despite being a legitimate hex
-// byte. Hex-only parsing must accept pb=08 and pb=09.
-func TestEbusStandardCommandsList_PB08_AcceptedAsHex(t *testing.T) {
+// TestEbusStandardCommandsList_PB08_AcceptedAsDecimal asserts pb=08 parses
+// as decimal 8 (no Go octal rejection under explicit base=10).
+func TestEbusStandardCommandsList_PB08_AcceptedAsDecimal(t *testing.T) {
 	fake := &fakeEbusStandardServer{}
 	h := newEbusStandardHandler(fake)
 
@@ -466,10 +521,10 @@ func TestEbusStandardCommandsList_PB08_AcceptedAsHex(t *testing.T) {
 
 	_, _, envErr := decodeEnvelope(t, rec)
 	if envErr != nil {
-		t.Fatalf("pb=08 must parse as hex 0x08, got envelope error: %v", envErr)
+		t.Fatalf("pb=08 must parse as decimal 8, got envelope error: %v", envErr)
 	}
-	if fake.lastCommandsPB == nil || *fake.lastCommandsPB != 0x08 {
-		t.Fatalf("pb=08 must parse to 0x08, got %v", fake.lastCommandsPB)
+	if fake.lastCommandsPB == nil || *fake.lastCommandsPB != 8 {
+		t.Fatalf("pb=08 must parse to decimal 8, got %v", fake.lastCommandsPB)
 	}
 }
 
@@ -498,19 +553,20 @@ func TestEbusStandardCommandsList_PB0xPrefix(t *testing.T) {
 }
 
 // TestEbusStandardCommandsList_PBOverflow_Rejected ensures values exceeding
-// 1 byte are rejected (bitSize=8 semantics). "100" parses as 0x100=256
-// which overflows uint8 and MUST yield INVALID_PAYLOAD.
+// 1 byte are rejected (bitSize=8 semantics). Under the decimal contract,
+// pb=256 overflows uint8 and MUST yield INVALID_PAYLOAD. (pb=100 is now
+// valid decimal 100, so the overflow boundary moves to 256.)
 func TestEbusStandardCommandsList_PBOverflow_Rejected(t *testing.T) {
 	fake := &fakeEbusStandardServer{}
 	h := newEbusStandardHandler(fake)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/ebus-standard/commands?pb=100", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ebus-standard/commands?pb=256", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	_, _, envErr := decodeEnvelope(t, rec)
 	if envErr == nil || envErr["code"] != "INVALID_PAYLOAD" {
-		t.Fatalf("expected INVALID_PAYLOAD for pb=100 (0x100 overflows 1 byte), got %v", envErr)
+		t.Fatalf("expected INVALID_PAYLOAD for pb=256 (decimal overflows 1 byte), got %v", envErr)
 	}
 	if fake.lastCommandsPB != nil {
 		t.Fatalf("CommandsList must not be invoked on overflow, got pb=%v",
@@ -518,9 +574,25 @@ func TestEbusStandardCommandsList_PBOverflow_Rejected(t *testing.T) {
 	}
 }
 
-// TestEbusStandardDecode_PBSBLeadingZero_DeterministicHex guards the decode
-// route's pb/sb parsing against the same base-0 octal regression.
-func TestEbusStandardDecode_PBSBLeadingZero_DeterministicHex(t *testing.T) {
+// TestEbusStandardCommandsList_PBHexOverflow_Rejected: explicit 0x-prefix
+// hex that exceeds 1 byte (0x100=256) must also yield INVALID_PAYLOAD.
+func TestEbusStandardCommandsList_PBHexOverflow_Rejected(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ebus-standard/commands?pb=0x100", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr == nil || envErr["code"] != "INVALID_PAYLOAD" {
+		t.Fatalf("expected INVALID_PAYLOAD for pb=0x100 overflow, got %v", envErr)
+	}
+}
+
+// TestEbusStandardDecode_PBSBLeadingZero_DecimalNoOctal guards the decode
+// route's pb/sb parsing against Go base-0 octal auto-detection.
+func TestEbusStandardDecode_PBSBLeadingZero_DecimalNoOctal(t *testing.T) {
 	fake := &fakeEbusStandardServer{}
 	h := newEbusStandardHandler(fake)
 
@@ -531,18 +603,42 @@ func TestEbusStandardDecode_PBSBLeadingZero_DeterministicHex(t *testing.T) {
 
 	_, _, envErr := decodeEnvelope(t, rec)
 	if envErr != nil {
-		t.Fatalf("pb=010&sb=08 must parse as hex, got envelope error: %v", envErr)
+		t.Fatalf("pb=010&sb=08 must parse as decimal, got envelope error: %v", envErr)
 	}
 	in := fake.lastDecodeInput
-	if in.PB != 0x10 {
-		t.Fatalf("pb=010 must parse as 0x10=16, got %d", in.PB)
+	if in.PB != 10 {
+		t.Fatalf("pb=010 must parse as decimal 10, got %d", in.PB)
 	}
-	if in.SB != 0x08 {
-		t.Fatalf("sb=08 must parse as 0x08=8, got %d", in.SB)
+	if in.SB != 8 {
+		t.Fatalf("sb=08 must parse as decimal 8, got %d", in.SB)
 	}
 }
 
-// TestEbusStandardDecode_SBBanana_Rejected ensures non-hex SB values are
+// TestEbusStandardDecode_PBSBMixedHexDecimal exercises the smart parser:
+// pb=0x10 (hex) + sb=4 (decimal) both accepted and forwarded correctly.
+func TestEbusStandardDecode_PBSBMixedHexDecimal(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	url := "/api/v1/ebus-standard/decode?pb=0x10&sb=4&direction=master_to_slave&frame_type=MM&payload_hex=aa"
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr != nil {
+		t.Fatalf("pb=0x10&sb=4 must parse, got envelope error: %v", envErr)
+	}
+	in := fake.lastDecodeInput
+	if in.PB != 0x10 {
+		t.Fatalf("pb=0x10 must parse as hex 16, got %d", in.PB)
+	}
+	if in.SB != 4 {
+		t.Fatalf("sb=4 must parse as decimal 4, got %d", in.SB)
+	}
+}
+
+// TestEbusStandardDecode_SBBanana_Rejected ensures invalid SB values are
 // rejected with INVALID_PAYLOAD — regression guard that the helper's parse
 // error bubbles up through the decode route's selector validation.
 func TestEbusStandardDecode_SBBanana_Rejected(t *testing.T) {

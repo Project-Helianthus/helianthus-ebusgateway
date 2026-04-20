@@ -12,27 +12,44 @@ import (
 	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 )
 
-// parsePBSBHex parses a PB/SB selector as a 1-byte hex value. The optional
-// "0x"/"0X" prefix is stripped (case-insensitive); the remainder is parsed
-// with explicit base=16 and bitSize=8.
+// parsePBSBByte parses a PB/SB selector as a 1-byte value, using smart
+// detection between decimal (default) and hex (explicit "0x"/"0X" prefix).
 //
-// Rationale: earlier revisions used strconv.ParseUint(raw, 0, 16), which
-// enables Go's base-0 auto-detection — leading-zero inputs are then read as
-// octal (pb=010 → 8 instead of 0x10), and decimal-looking but invalid-octal
-// inputs (pb=08, pb=09) are rejected. PB/SB are documented in the catalog
-// as hex byte selectors (0x00-0xFF), so hex-only parsing is both
-// deterministic and aligned with the catalog's own representation.
+// Rationale: the MCP tool schema (mcp/ebus_standard_wiring.go) documents
+// pb/sb as `{"type": "integer", "minimum": 0, "maximum": 255}` — a decimal
+// integer contract. The portal UI placeholder historically advertised
+// "0..255". A prior revision (round 8, hex-only parsing via explicit
+// base=16) diverged from both surfaces: `pb=10` silently meant 0x10=16
+// instead of decimal 10, quietly targeting the wrong catalog identity.
+//
+// This parser restores MCP-schema alignment while preserving the
+// operator-friendly hex escape hatch:
+//   - "0x" or "0X" prefix → strip prefix, parse as base=16 bitSize=8
+//   - otherwise           → parse as explicit base=10 bitSize=8
+//
+// Explicit base=10 (not base=0) avoids Go's octal auto-detection: `010`
+// parses as decimal 10, not octal 8. Bare hex like "ff" is rejected as
+// non-decimal — operators must type "0xff" for hex, matching the
+// placeholder text "0..255 (decimal) or 0xNN (hex)".
 //
 // Behavior:
-//   - "010"   → 0x10 = 16 (no octal auto-detection)
-//   - "08"    → 0x08 = 8  (valid hex; no octal rejection)
-//   - "0x10"  → 16        (prefix stripped, parsed as hex)
-//   - "ff"    → 255
-//   - "banana"→ error     (invalid hex digits)
-//   - "100"   → error     (overflows 1-byte bitSize=8)
-func parsePBSBHex(raw string) (uint8, error) {
-	trimmed := strings.TrimPrefix(strings.TrimPrefix(raw, "0x"), "0X")
-	v, err := strconv.ParseUint(trimmed, 16, 8)
+//   - "10"    → 10         (decimal)
+//   - "010"   → 10         (decimal; explicit base=10, no octal)
+//   - "08"    → 8          (decimal)
+//   - "0x10"  → 16         (hex after prefix strip)
+//   - "0Xff"  → 255        (hex, case-insensitive prefix)
+//   - "ff"    → error      (bare hex: not decimal, no 0x prefix)
+//   - "256"   → error      (overflows bitSize=8)
+//   - "banana"→ error      (invalid decimal)
+func parsePBSBByte(raw string) (uint8, error) {
+	if strings.HasPrefix(raw, "0x") || strings.HasPrefix(raw, "0X") {
+		v, err := strconv.ParseUint(raw[2:], 16, 8)
+		if err != nil {
+			return 0, err
+		}
+		return uint8(v), nil
+	}
+	v, err := strconv.ParseUint(raw, 10, 8)
 	if err != nil {
 		return 0, err
 	}
@@ -134,12 +151,12 @@ func parseOptionalPBParam(q url.Values) (*uint8, error) {
 	}
 	raw := q.Get("pb")
 	if raw == "" {
-		return nil, fmt.Errorf("pb: %w: filter must be a 1-byte hex value or omitted entirely",
+		return nil, fmt.Errorf("pb: %w: filter must be a 1-byte value (decimal 0..255 or 0xNN) or omitted entirely",
 			estd.ErrInvalidPayload)
 	}
-	pb, err := parsePBSBHex(raw)
+	pb, err := parsePBSBByte(raw)
 	if err != nil {
-		return nil, fmt.Errorf("pb: %w: expected 1-byte hex in [0x00,0xFF], got %q: %v",
+		return nil, fmt.Errorf("pb: %w: expected decimal 0..255 or 0xNN hex, got %q: %v",
 			estd.ErrInvalidPayload, raw, err)
 	}
 	return &pb, nil
@@ -147,8 +164,10 @@ func parseOptionalPBParam(q url.Values) (*uint8, error) {
 
 // parseDecodeQuery extracts the DecodeInput from query parameters. Unlike
 // the MCP surface (which receives typed JSON), HTTP query strings are all
-// textual — we parse pb/sb as uint16 with [0,255] validation. direction and
-// frame_type are passed through verbatim to the sub-server, which enforces
+// textual — we parse pb/sb via parsePBSBByte (decimal default, 0x prefix
+// for hex) matching the MCP tool schema's integer [0,255] contract.
+// direction and frame_type are passed through verbatim to the sub-server,
+// which enforces
 // "non-empty" itself (ErrInvalidPayload) so we get consistent error wording
 // for missing selectors.
 func parseDecodeQuery(r *http.Request) (estd.DecodeInput, error) {
@@ -156,16 +175,16 @@ func parseDecodeQuery(r *http.Request) (estd.DecodeInput, error) {
 	var in estd.DecodeInput
 	if pbStr := q.Get("pb"); pbStr == "" {
 		return in, fmt.Errorf("pb: %w: required", estd.ErrInvalidPayload)
-	} else if v, err := parsePBSBHex(pbStr); err != nil {
-		return in, fmt.Errorf("pb: %w: expected 1-byte hex in [0x00,0xFF], got %q",
+	} else if v, err := parsePBSBByte(pbStr); err != nil {
+		return in, fmt.Errorf("pb: %w: expected decimal 0..255 or 0xNN hex, got %q",
 			estd.ErrInvalidPayload, pbStr)
 	} else {
 		in.PB = v
 	}
 	if sbStr := q.Get("sb"); sbStr == "" {
 		return in, fmt.Errorf("sb: %w: required", estd.ErrInvalidPayload)
-	} else if v, err := parsePBSBHex(sbStr); err != nil {
-		return in, fmt.Errorf("sb: %w: expected 1-byte hex in [0x00,0xFF], got %q",
+	} else if v, err := parsePBSBByte(sbStr); err != nil {
+		return in, fmt.Errorf("sb: %w: expected decimal 0..255 or 0xNN hex, got %q",
 			estd.ErrInvalidPayload, sbStr)
 	} else {
 		in.SB = v

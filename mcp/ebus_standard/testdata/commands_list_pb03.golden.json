@@ -19,7 +19,7 @@
     },
     "contract": {
       "major": 1,
-      "minor": 0,
+      "minor": 1,
       "name": "helianthus-ebus-mcp"
     },
     "data_hash": "9dd761693437a64da0f362bd4ba6fc5366cde2be255ca93877bf5c08d423190e",

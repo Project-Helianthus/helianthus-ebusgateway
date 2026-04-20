@@ -19,6 +19,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/ui"
@@ -710,6 +711,14 @@ func startHTTPServer(
 		mcpServer.SetWatchSummaryProvider(newMCPWatchSummaryProvider(shadowCache))
 	}
 	mcpServer.SetSemanticProvider(newMCPSemanticProvider(semanticProvider))
+
+	// M4c2: populate the package-level responder capability provider
+	// based on the active transport protocol. Consumers apply fail-closed
+	// semantics on absence, so this MUST be called before any MCP
+	// surface serves its first envelope. The provider closure is
+	// evaluated per-envelope; hot-path cost is a single pointer load +
+	// struct copy. See decision doc @ 567a6798 §4.2 + §5.
+	ebus_standard.SetResponderCapabilityProvider(buildResponderCapabilityProvider(cfg))
 	if scheduleWriter != nil {
 		mcpServer.SetScheduleWriter(scheduleWriter)
 	}
@@ -1277,4 +1286,61 @@ func mapPortalAdapterInfo(info *graphql.AdapterHardwareInfo) *portal.SemanticAda
 		result.LastTelemetryQuery = info.LastTelemetryQuery.Format(time.RFC3339)
 	}
 	return result
+}
+
+// buildResponderCapabilityProvider composes the `meta.capabilities.responder`
+// signal for the active transport per decision doc @ 567a6798 §4.2 + §5.
+//
+// Mapping (v1.1, locked):
+//   - ENH / ENS → active.scope = "partial", surfaces = FF_03..FF_06,
+//     refusal = nil. transports[] reports the same row as "supported"
+//     and the ebusd-tcp row as perpetually "blocked".
+//   - ebusd-tcp → active.scope = "none", surfaces = [],
+//     refusal.code = "command_bridge_no_companion_listen". Consumers
+//     apply fail-closed per §4.3 rule 4.
+//   - Any other transport (udp-plain, tcp-plain, adapter-direct) →
+//     active.scope = "none", refusal = nil; the ebusd-tcp row remains
+//     blocked in transports[] because that determination is static.
+//
+// Invariants I1/I7 are enforced by always emitting exactly three
+// transport rows (ENH, ENS, ebusd-tcp) in a fixed order. I2/I3 are
+// enforced by deriving active from the same struct literal.
+func buildResponderCapabilityProvider(cfg ebusgateway.Config) ebus_standard.ResponderCapabilityProvider {
+	protocol := strings.TrimSpace(strings.ToLower(string(cfg.TransportConfig.Protocol)))
+
+	surfacesFF := []string{"FF_03", "FF_04", "FF_05", "FF_06"}
+	// transports[] is static at v1.1 — same three rows on every gateway
+	// regardless of deployment (I1 locks the count at exactly three).
+	transports := []ebus_standard.TransportRow{
+		{Transport: "ENH", State: "supported", Scope: "partial", Surfaces: surfacesFF, Reason: ""},
+		{Transport: "ENS", State: "supported", Scope: "partial", Surfaces: surfacesFF, Reason: ""},
+		{Transport: "ebusd-tcp", State: "blocked", Scope: "none", Surfaces: []string{}, Reason: "command_bridge_no_companion_listen"},
+	}
+
+	var active ebus_standard.ActiveResponder
+	switch protocol {
+	case string(ebusgateway.TransportENH):
+		active = ebus_standard.ActiveResponder{Transport: "ENH", Scope: "partial", Surfaces: surfacesFF}
+	case string(ebusgateway.TransportENS):
+		active = ebus_standard.ActiveResponder{Transport: "ENS", Scope: "partial", Surfaces: surfacesFF}
+	case string(ebusgateway.TransportEbusdTCP):
+		active = ebus_standard.ActiveResponder{
+			Transport: "ebusd-tcp",
+			Scope:     "none",
+			Surfaces:  []string{},
+			Refusal:   &ebus_standard.ActiveRefusal{Code: "command_bridge_no_companion_listen", Reason: "ebusd command bridge does not expose a responder-role emission primitive"},
+		}
+	default:
+		// Non-enumerated transports (udp-plain, tcp-plain, adapter-direct,
+		// empty) — scope=none, no refusal code (refusal is reserved for
+		// capability-layer blockers, not "unknown" states).
+		active = ebus_standard.ActiveResponder{Transport: protocol, Scope: "none", Surfaces: []string{}}
+	}
+
+	cap := ebus_standard.ResponderCapability{
+		Version:    "v1",
+		Active:     active,
+		Transports: transports,
+	}
+	return func() ebus_standard.ResponderCapability { return cap }
 }

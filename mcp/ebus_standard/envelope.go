@@ -15,7 +15,12 @@ import (
 const (
 	EnvelopeContractName  = "helianthus-ebus-mcp"
 	EnvelopeContractMajor = 1
-	EnvelopeContractMinor = 0
+	// EnvelopeContractMinor bumped 0→1 for M4c2: additive
+	// `meta.capabilities.responder` key per decision doc @ 567a6798 §4.5
+	// and M4B §6.2 "additive meta.* keys permitted under minor bump".
+	// Consumers that do not understand the key apply fail-closed (§4.3
+	// rule 1).
+	EnvelopeContractMinor = 1
 )
 
 // NewEnvelope wraps data / err in the meta/data/error envelope used by the
@@ -41,6 +46,14 @@ func NewEnvelope(data any, err error, ts time.Time) map[string]any {
 		},
 		"data_timestamp": ts.UTC().Format(time.RFC3339Nano),
 		"data_hash":      DataHash(data),
+	}
+	// M4c2 additive: meta.capabilities.responder when a provider is
+	// registered. Absent when no provider — §4.3 rule 1 fail-closed
+	// contract relies on key-absence semantics.
+	if cap, ok := currentResponderCapability(); ok {
+		meta["capabilities"] = map[string]any{
+			"responder": capabilityToMap(cap),
+		}
 	}
 	var envelopeError any
 	if err != nil {

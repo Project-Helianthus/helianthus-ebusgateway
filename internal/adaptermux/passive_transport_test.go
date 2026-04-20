@@ -50,7 +50,7 @@ func TestDeliver_AllEventKinds(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pt := newPassiveTransport()
-			defer pt.Close()
+			defer closeOrLog(t, pt, "pt")
 
 			pt.deliver(tt.input)
 
@@ -85,7 +85,7 @@ func TestDeliver_AllEventKinds(t *testing.T) {
 // so the passive reconstructor sees both boundaries.
 func TestDeliver_ConnectDisconnectCycle(t *testing.T) {
 	pt := newPassiveTransport()
-	defer pt.Close()
+	defer closeOrLog(t, pt, "pt")
 
 	// Simulate: symbols -> disconnect -> connect -> symbols
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xAA})
@@ -122,7 +122,7 @@ func TestDeliver_ConnectDisconnectCycle(t *testing.T) {
 // no-op after Close().
 func TestDeliver_ClosedTransportDropsEvents(t *testing.T) {
 	pt := newPassiveTransport()
-	pt.Close()
+	closeOrLog(t, pt, "pt")
 
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xFF})
 	pt.deliver(PassiveEvent{Kind: PassiveEventConnected})
@@ -141,7 +141,7 @@ func TestDeliver_ClosedTransportDropsEvents(t *testing.T) {
 // the ReadEvent interface, not just the channel).
 func TestReadEvent_ReturnsResetForConnectDisconnect(t *testing.T) {
 	pt := newPassiveTransport()
-	defer pt.Close()
+	defer closeOrLog(t, pt, "pt")
 
 	pt.deliver(PassiveEvent{Kind: PassiveEventDisconnected})
 	pt.deliver(PassiveEvent{Kind: PassiveEventConnected})
@@ -169,7 +169,7 @@ func TestPassiveTransport_ResetBoundedBlockOnFullBuffer(t *testing.T) {
 		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),
 	}
-	defer pt.Close()
+	defer closeOrLog(t, pt, "pt")
 
 	// Fill the single slot.
 	pt.events <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x01}
@@ -214,7 +214,7 @@ func TestPassiveTransport_ResetDroppedAfterTimeout(t *testing.T) {
 		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),
 	}
-	defer pt.Close()
+	defer closeOrLog(t, pt, "pt")
 
 	// Fill the single slot.
 	pt.events <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x01}
@@ -249,7 +249,7 @@ func TestPassiveTransport_ResetBoundedBlock_TwoResets(t *testing.T) {
 		events: make(chan transport.StreamEvent, 2),
 		done:   make(chan struct{}),
 	}
-	defer pt.Close()
+	defer closeOrLog(t, pt, "pt")
 
 	// Fill buffer to capacity-1 (1 slot left).
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x01})
@@ -305,7 +305,7 @@ func TestDeliver_BufferOverflowInjectsReset(t *testing.T) {
 		events: make(chan transport.StreamEvent, 2), // tiny buffer
 		done:   make(chan struct{}),
 	}
-	defer pt.Close()
+	defer closeOrLog(t, pt, "pt")
 
 	// Fill buffer.
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x01})
@@ -365,7 +365,7 @@ func TestDeliver_ResetUnblocksViaDone(t *testing.T) {
 	}
 
 	// Close the transport to unblock via done channel.
-	pt.Close()
+	closeOrLog(t, pt, "pt")
 
 	select {
 	case <-delivered:

@@ -149,7 +149,7 @@ func newP3TestMux(t *testing.T) (*Mux, *p3MockTransport, context.CancelFunc, fun
 
 	cleanup := func() {
 		cancel()
-		mock.Close()
+		closeOrLog(t, mock, "p3 mock transport")
 		mux.wg.Wait()
 	}
 
@@ -335,7 +335,7 @@ func TestArbitrationResponse_SessionDisconnected(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 
 	// Request START for the external session.
@@ -409,12 +409,12 @@ func TestRemoveSession_UnblocksNextRequest(t *testing.T) {
 
 	// Session A — will be disconnected.
 	clientA, serverA := net.Pipe()
-	defer clientA.Close()
+	defer closeOrLog(t, clientA, "clientA")
 	idA := mux.AddSession(serverA)
 
 	// Session B — should be serviced after A disconnects.
 	clientB, serverB := net.Pipe()
-	defer clientB.Close()
+	defer closeOrLog(t, clientB, "clientB")
 	idB := mux.AddSession(serverB)
 	defer mux.RemoveSession(idB)
 
@@ -456,7 +456,7 @@ func TestCancelPendingStart(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -564,7 +564,7 @@ func TestCancelPendingStart_DuringRequestStart(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -641,7 +641,7 @@ func TestOnlyOnePendingStart(t *testing.T) {
 
 	// Add an external session and request a second START.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 	ch2 := mux.arb.requestStart(id, 0x42)
@@ -846,7 +846,7 @@ func TestP3_ExternalSessionReceivesDuringPending(t *testing.T) {
 
 	// Add external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -915,8 +915,8 @@ func TestP3_Close_ClearsPendingStart(t *testing.T) {
 
 	// Close the mux.
 	cancel()
-	mock.Close()
-	mux.Close()
+	closeOrLog(t, mock, "mock")
+	closeOrLog(t, mux, "mux")
 
 	// The pending START should have been cancelled.
 	select {
@@ -1075,7 +1075,7 @@ func TestRequestStartFailAfterCancel_NoDoubleSend(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -1174,7 +1174,7 @@ func TestAbsorbDecrementOnRequestStartFailAfterCancel(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -1250,7 +1250,7 @@ func TestAbsorbDecrementOnRequestStartFailAfterCancel(t *testing.T) {
 	// --- Phase 2: Request B — must NOT be consumed as stale ---
 	// Re-add session since arb state may have been cleared.
 	client2, server2 := net.Pipe()
-	defer client2.Close()
+	defer closeOrLog(t, client2, "client2")
 	id2 := mux.AddSession(server2)
 	defer mux.RemoveSession(id2)
 
@@ -1515,13 +1515,13 @@ func TestConcurrentTryGrantAndStart(t *testing.T) {
 
 	// Create two external sessions with pending START requests.
 	clientA, serverA := net.Pipe()
-	defer clientA.Close()
+	defer closeOrLog(t, clientA, "clientA")
 	idA := mux.AddSession(serverA)
 	defer mux.RemoveSession(idA)
 	chA := mux.arb.requestStart(idA, 0xA1)
 
 	clientB, serverB := net.Pipe()
-	defer clientB.Close()
+	defer closeOrLog(t, clientB, "clientB")
 	idB := mux.AddSession(serverB)
 	defer mux.RemoveSession(idB)
 	chB := mux.arb.requestStart(idB, 0xB2)
@@ -1651,7 +1651,7 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -1746,7 +1746,7 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -1878,7 +1878,7 @@ func TestDrainActiveChOnGrant_ExternalSession(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 
 	// Inject bytes into activeCh.
@@ -2077,14 +2077,20 @@ func TestResetErrorPriorityOverByteFlood(t *testing.T) {
 
 	// Flood activeCh directly to near-capacity (avoid goroutine races).
 	// This simulates a burst of transaction bytes queued up but not yet
-	// consumed by bus.Send.
+	// consumed by bus.Send. Once the channel fills we exit the outer
+	// for-loop; the prior bare `break` only exited the inner select and
+	// let the loop spin through the remaining iterations hitting the
+	// default branch each time (staticcheck SA4011). Labeled break
+	// preserves the author's stated intent ("Channel full — good
+	// enough, we have backlog.") without changing test semantics.
 	flood := 2000
+floodLoop:
 	for i := 0; i < flood; i++ {
 		select {
 		case mux.activeCh <- activeEvent{kind: activeEventByte, b: byte(i % 256)}:
 		default:
 			// Channel full — good enough, we have backlog.
-			break
+			break floodLoop
 		}
 	}
 

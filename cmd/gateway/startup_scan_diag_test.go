@@ -781,6 +781,7 @@ func TestStartDiscoveryScanLoopFn_SignatureThreadsClassifier(t *testing.T) {
 	// Compile-time guard: startDiscoveryScanLoopFn must accept an
 	// activeTxnClassifier as its 5th parameter. If the signature ever
 	// regresses to 4 arguments, this assignment fails to type-check.
+	//nolint:staticcheck // QF1011: explicit type is a load-bearing signature assertion — removing it weakens the compile-time regression guard.
 	var _ func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals = startDiscoveryScanLoopFn
 
 	// Runtime guard: classifier threaded into statsBus is queried at

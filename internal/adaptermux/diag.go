@@ -332,10 +332,7 @@ func (m *Mux) recordReadPrefixAndClassify(b byte) {
 	// the incoming byte against writePrefix[readPrefixLen] when that
 	// slot has been filled by a prior write.
 	pos := m.activeTxn.readPrefixLen
-	echo := false
-	if pos < m.activeTxn.writePrefixLen && m.activeTxn.writePrefix[pos] == b {
-		echo = true
-	}
+	echo := pos < m.activeTxn.writePrefixLen && m.activeTxn.writePrefix[pos] == b
 	if echo {
 		m.activeTxn.echoLike.Add(1)
 	} else if b != protocol.SymbolSyn {

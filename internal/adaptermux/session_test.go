@@ -35,7 +35,7 @@ func TestSession_StartedCarriesInitiator(t *testing.T) {
 
 	// Create a pipe to act as the session connection.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -79,7 +79,7 @@ func TestSession_FailedCarriesInitiator(t *testing.T) {
 	defer cleanup()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -117,7 +117,7 @@ func TestSession_StartCancelSYN(t *testing.T) {
 	defer cleanup()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -158,7 +158,7 @@ func TestSession_InitReturnsUpstreamFeatures(t *testing.T) {
 	// The fake adapter responds to INIT with features. The mux stored
 	// requestedFeatures=0x01 after connect(). Verify session INIT reply.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -188,7 +188,7 @@ func TestSession_InitEchoesWhenUpstreamUnknown(t *testing.T) {
 	mux.upstreamFeatures.Store(0)
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -215,7 +215,7 @@ func TestSession_SendWithoutOwnershipReturnsErrorHost(t *testing.T) {
 	defer cleanup()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -245,8 +245,8 @@ func TestSession_WriteFrameErrorHost(t *testing.T) {
 	// Unit test: writeFrame encodes ErrorHost correctly.
 	// net.Pipe is synchronous — read concurrently to avoid blocking.
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer closeOrLog(t, client, "client")
+	defer closeOrLog(t, server, "server")
 
 	s := &session{
 		conn:   server,
@@ -321,8 +321,8 @@ func TestMux_CloseAfterContextCancel(t *testing.T) {
 func writeFrameWithReader(t *testing.T, frame sessionFrame) [2]byte {
 	t.Helper()
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer closeOrLog(t, client, "client")
+	defer closeOrLog(t, server, "server")
 
 	s := &session{conn: server, sendCh: make(chan sessionFrame, 1), done: make(chan struct{})}
 
@@ -439,7 +439,7 @@ func TestSession_StartFailedByResetDeliversResetted(t *testing.T) {
 	defer cleanup()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -481,7 +481,7 @@ func TestSession_StartFailedByCollisionDeliversFailed(t *testing.T) {
 	defer cleanup()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -525,8 +525,8 @@ func TestSession_StartedArrivesBeforeReceivedBytes(t *testing.T) {
 	// goroutine) and focuses on the invariant: once STARTED is enqueued
 	// before RECEIVED, the client sees them in that order.
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer closeOrLog(t, client, "client")
+	defer closeOrLog(t, server, "server")
 
 	mux, _, cleanup := newTestMux(t)
 	defer cleanup()
@@ -580,8 +580,8 @@ func TestSession_StartedArrivesBeforeReceivedBytes(t *testing.T) {
 func TestSession_ResetDeliveryIsLossless(t *testing.T) {
 	// Create a session with a tiny sendCh to force buffer pressure.
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer closeOrLog(t, client, "client")
+	defer closeOrLog(t, server, "server")
 
 	mux, _, cleanup := newTestMux(t)
 	defer cleanup()
@@ -693,8 +693,8 @@ func TestWriteFrame_BoundaryBytes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("payload_0x%02X", tt.payload), func(t *testing.T) {
 			client, server := net.Pipe()
-			defer client.Close()
-			defer server.Close()
+			defer closeOrLog(t, client, "client")
+			defer closeOrLog(t, server, "server")
 
 			s := &session{conn: server, sendCh: make(chan sessionFrame, 1), done: make(chan struct{})}
 
@@ -743,7 +743,7 @@ func TestMux_CloseConcurrent(t *testing.T) {
 	done := make(chan struct{})
 	for i := 0; i < 5; i++ {
 		go func() {
-			mux.Close()
+			closeOrLog(t, mux, "mux")
 			done <- struct{}{}
 		}()
 	}

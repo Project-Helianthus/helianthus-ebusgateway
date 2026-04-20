@@ -2,6 +2,7 @@ package adaptermux
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -59,9 +60,9 @@ func fakeAdapterServer(t *testing.T) (addr string, closer func()) {
 	}()
 
 	return ln.Addr().String(), func() {
-		ln.Close()
+		closeOrLog(t, ln, "fakeAdapterServer listener")
 		if adapterConn != nil {
-			adapterConn.Close()
+			closeOrLog(t, adapterConn, "fakeAdapterServer conn")
 		}
 	}
 }
@@ -92,7 +93,7 @@ func newTestMux(t *testing.T) (*Mux, context.CancelFunc, func()) {
 
 	cleanup := func() {
 		cancel()
-		mux.Close()
+		closeOrLog(t, mux, "newTestMux mux")
 		adapterClose()
 	}
 
@@ -108,14 +109,14 @@ func TestProxyListenerAcceptsConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewProxyListener: %v", err)
 	}
-	defer pl.Close()
+	defer closeOrLog(t, pl, "pl")
 
 	// Dial the proxy listener.
 	conn, err := net.DialTimeout("tcp", pl.Addr().String(), 2*time.Second)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
-	defer conn.Close()
+	defer closeOrLog(t, conn, "conn")
 
 	// Give the accept loop time to register the session.
 	time.Sleep(50 * time.Millisecond)
@@ -150,7 +151,7 @@ func TestProxyListenerCloseStopsAccepting(t *testing.T) {
 	// New connections should be refused.
 	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
 	if err == nil {
-		conn.Close()
+		closeOrLog(t, conn, "unexpected-open conn")
 		t.Fatal("expected dial to fail after listener close, but it succeeded")
 	}
 }
@@ -176,7 +177,7 @@ func TestProxyListenerContextCancel(t *testing.T) {
 	// New connections should be refused.
 	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
 	if err == nil {
-		conn.Close()
+		closeOrLog(t, conn, "unexpected-open conn")
 		t.Fatal("expected dial to fail after context cancel, but it succeeded")
 	}
 }
@@ -192,7 +193,7 @@ func TestProxyListenerBindError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first NewProxyListener: %v", err)
 	}
-	defer pl1.Close()
+	defer closeOrLog(t, pl1, "pl1")
 
 	// Try to bind a second listener on the same port — should fail.
 	_, err = NewProxyListener(ctx, mux, pl1.Addr().String(), log.Default())
@@ -218,7 +219,7 @@ func TestProxyListenerMultipleConnections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewProxyListener: %v", err)
 	}
-	defer pl.Close()
+	defer closeOrLog(t, pl, "pl")
 
 	// Open 3 connections.
 	var conns []net.Conn
@@ -230,8 +231,8 @@ func TestProxyListenerMultipleConnections(t *testing.T) {
 		conns = append(conns, conn)
 	}
 	defer func() {
-		for _, c := range conns {
-			c.Close()
+		for i, c := range conns {
+			closeOrLog(t, c, fmt.Sprintf("conns[%d]", i))
 		}
 	}()
 
@@ -304,9 +305,9 @@ func fakeAdapterServerINITRetry(t *testing.T) (addr string, closer func()) {
 	}()
 
 	return ln.Addr().String(), func() {
-		ln.Close()
+		closeOrLog(t, ln, "fakeAdapterServerINITRetry listener")
 		if adapterConn != nil {
-			adapterConn.Close()
+			closeOrLog(t, adapterConn, "fakeAdapterServerINITRetry conn")
 		}
 	}
 }
@@ -333,7 +334,7 @@ func TestConnect_INITRetrySucceeds(t *testing.T) {
 	}
 	defer func() {
 		cancel()
-		mux.Close()
+		closeOrLog(t, mux, "INITRetry mux")
 	}()
 
 	// Verify the upstream features were stored correctly.

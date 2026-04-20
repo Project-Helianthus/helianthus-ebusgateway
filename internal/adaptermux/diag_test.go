@@ -305,7 +305,7 @@ func TestRegression_StartedButNoResponse(t *testing.T) {
 
 	defer func() {
 		cancel()
-		mock.Close()
+		closeOrLog(t, mock, "mock")
 		mux.wg.Wait()
 	}()
 

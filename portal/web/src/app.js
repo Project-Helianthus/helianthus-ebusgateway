@@ -18,28 +18,26 @@ const L7_DECODE_FRAME_TYPES = new Set([
   "controller_broadcast",
 ]);
 
-// parsePBFilterValue parses an operator-entered PB filter string and
-// returns an integer in [0,255] on success, or null on malformed input.
-// Accepts decimal ("5", "255") or hex ("0x05", "0xff", "FF"). The null
-// return signals the caller to fail closed — surface an inline error and
-// SUPPRESS the fetch, rather than fall back to an unfiltered list.
+// parsePBFilterValue validates an operator-entered PB filter string and
+// returns the trimmed raw token on success, or null on malformed input.
+//
+// Backend contract (portal/explorer_ebus_standard.go: parsePBSBHex) parses
+// the query value as HEX only, with optional "0x"/"0X" prefix, bitSize=8.
+// Frontend MUST forward the operator's original token verbatim — no
+// parse→reformat round-trip — otherwise decimal serialization would make
+// the backend reinterpret the value as hex, producing either overflow
+// (ui=ff → Number(255) → "255" → hex 0x255 = overflow) or a wrong match
+// (ui=10 → Number(10) → "10" → hex 0x10 = 16 ≠ decimal 10).
+//
+// Shape check: accept 1–2 hex digits with an optional 0x/0X prefix. The
+// null return signals the caller to fail closed — surface an inline error
+// and SUPPRESS the fetch, rather than fall back to an unfiltered list.
 function parsePBFilterValue(raw) {
   if (typeof raw !== "string") return null;
   const s = raw.trim();
   if (s === "") return null;
-  let n;
-  if (/^0x[0-9a-f]+$/i.test(s)) {
-    n = parseInt(s.slice(2), 16);
-  } else if (/^[0-9a-f]+$/i.test(s) && /[a-f]/i.test(s)) {
-    // Hex without prefix (e.g. "ff").
-    n = parseInt(s, 16);
-  } else if (/^\d+$/.test(s)) {
-    n = parseInt(s, 10);
-  } else {
-    return null;
-  }
-  if (!Number.isFinite(n) || n < 0 || n > 0xff) return null;
-  return n;
+  if (!/^(0x|0X)?[0-9a-fA-F]{1,2}$/.test(s)) return null;
+  return s;
 }
 
 function loadTheme() {
@@ -461,9 +459,29 @@ class PortalShell extends HTMLElement {
           }
           return;
         }
+        // pb/sb are forwarded verbatim (raw hex tokens). Validate shape
+        // locally so obviously-malformed input fails closed instead of
+        // round-tripping to the backend for an UNKNOWN_COMMAND. Empty
+        // pb/sb is permitted — the backend returns the catalog default.
+        const pbRaw = read(pbInput).trim();
+        const sbRaw = read(sbInput).trim();
+        if (pbRaw !== "" && parsePBFilterValue(pbRaw) === null) {
+          if (errEl) {
+            errEl.textContent = `Invalid PB: ${pbRaw} (expected hex byte, e.g. 0x05, ff)`;
+            if (errEl.style) errEl.style.display = "";
+          }
+          return;
+        }
+        if (sbRaw !== "" && parsePBFilterValue(sbRaw) === null) {
+          if (errEl) {
+            errEl.textContent = `Invalid SB: ${sbRaw} (expected hex byte, e.g. 0x05, ff)`;
+            if (errEl.style) errEl.style.display = "";
+          }
+          return;
+        }
         this.submitL7Decode({
-          pb: read(pbInput),
-          sb: read(sbInput),
+          pb: pbRaw,
+          sb: sbRaw,
           direction,
           frame_type: frameType,
           payload_hex: read(payloadInput),
@@ -2474,6 +2492,11 @@ class PortalShell extends HTMLElement {
   async refreshL7Commands(pb) {
     const body = this.querySelector('[data-role="l7-commands-body"]');
     if (!body) return;
+    // pb is forwarded verbatim (raw hex token like "ff", "0x10", "08").
+    // Backend parsePBSBHex parses the query value as hex-only. Any
+    // parse→reformat round-trip (Number(pb) then String()) would produce
+    // a decimal string and break the hex contract for every value where
+    // decimal ≠ hex (ui=ff → "255" → overflow; ui=10 → "10" → 0x10=16).
     const qs = (pb === undefined || pb === null || pb === "") ? "" : `?pb=${encodeURIComponent(String(pb))}`;
     try {
       const resp = await fetch(`api/v1/ebus-standard/commands${qs}`);

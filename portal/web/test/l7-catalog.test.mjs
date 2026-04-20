@@ -684,7 +684,10 @@ test("L7 PB filter blocks refreshL7Commands on malformed PB and surfaces inline 
     return { value, isConnected: true, setAttribute() {}, _audit: [] };
   }
 
-  for (const bad of ["banana", "0xZZ", "5abc", "-1", "256", "0xff 0x00"]) {
+  // Post-fix contract: hex-shape validation (1–2 hex digits, optional
+  // 0x prefix). "255" is now decimal-rejected because interpreted as hex
+  // it would overflow (0x255 > 0xFF).
+  for (const bad of ["banana", "0xZZ", "5abc", "-1", "256", "255", "0xff 0x00"]) {
     const pbInput = makeInput(bad);
     const pbErr = makeAuditedElement({ style: { display: "none" } });
 
@@ -745,13 +748,18 @@ test("L7 PB filter parses well-formed hex/decimal and forwards to refreshL7Comma
     return { value, isConnected: true, setAttribute() {}, _audit: [] };
   }
 
+  // Post-fix contract: parsePBFilterValue returns the raw trimmed token
+  // (hex-shape validated), and the click handler forwards it verbatim.
+  // No decimal→hex conversion, no Number() round-trip. Backend
+  // parsePBSBHex parses hex-only, so "255" (decimal) is no longer a
+  // well-formed PB filter input — it would overflow as hex. The operator
+  // must type "ff" for 255.
   const cases = [
-    { input: "0x05", expected: 0x05 },
-    { input: "5", expected: 5 },
-    { input: "ff", expected: 0xff },
-    { input: "0xFF", expected: 0xff },
-    { input: "255", expected: 255 },
-    { input: "0", expected: 0 },
+    { input: "0x05", expected: "0x05" },
+    { input: "5", expected: "5" },
+    { input: "ff", expected: "ff" },
+    { input: "0xFF", expected: "0xFF" },
+    { input: "0", expected: "0" },
     { input: "", expected: undefined }, // unfiltered
   ];
 
@@ -902,4 +910,236 @@ test("activateSection(section-l7-catalog) triggers refreshL7Services when ebus_s
 
   assert.equal(refreshCalls, 1,
     "refreshL7Services must fire once on first activation when capability=true");
+});
+
+// ---- 12. Hex-verbatim forwarding (reciprocal to backend parsePBSBHex) ----
+//
+// Regression for Codex P1 finding on PR #507 (review id #3109717227):
+// the frontend was reformatting PB/SB through Number()+String(), which
+// produces a decimal string. Backend parsePBSBHex now reads the query
+// value as hex-only, so `ff` UI → `pb=255` → 8-bit overflow → 400;
+// `10` UI → `pb=16` → wrong command filter. Fix: forward the operator's
+// trimmed raw token verbatim in both PB-filter and decode-submit paths.
+
+test("L7 commands PB filter forwards raw hex verbatim (ui=ff → pb=ff, NOT pb=255)", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  function makeInput(value) {
+    return { value, isConnected: true, setAttribute() {}, _audit: [] };
+  }
+  const pbInput = makeInput("ff");
+  const pbErr = makeAuditedElement({ style: { display: "none" } });
+  const body = makeAuditedElement();
+  let commandsClickHandler = null;
+  const refreshCommandsBtn = {
+    isConnected: true,
+    addEventListener(name, fn) { if (name === "click") commandsClickHandler = fn; },
+  };
+  const noopListener = { addEventListener() {} };
+  const elements = new Map([
+    ['[data-role="l7-pb-filter"]', pbInput],
+    ['[data-role="l7-commands-pb-error"]', pbErr],
+    ['[data-role="l7-commands-body"]', body],
+    ['[data-role="l7-refresh-commands"]', refreshCommandsBtn],
+    ['[data-role="l7-refresh-services"]', noopListener],
+    ['[data-role="l7-refresh-command"]', noopListener],
+    ['[data-role="l7-decode-submit"]', noopListener],
+    ['[data-role="l7-command-id"]', makeInput("")],
+    ['[data-role="l7-decode-pb"]', makeInput("")],
+    ['[data-role="l7-decode-sb"]', makeInput("")],
+    ['[data-role="l7-decode-direction"]', makeInput("request")],
+    ['[data-role="l7-decode-frame-type"]', makeInput("addressed")],
+    ['[data-role="l7-decode-payload"]', makeInput("")],
+    ['[data-role="l7-decode-error"]', makeAuditedElement({ style: { display: "none" } })],
+  ]);
+  const commandsResponse = createDeferredResponse({
+    meta: { contract: { name: "helianthus-ebus-mcp", major: 1, minor: 0 }, consistency: { mode: "LIVE" }, data_hash: "f".repeat(64) },
+    data: { namespace: "ebus_standard", catalog_version: "v-test", commands: [] },
+    error: null,
+  });
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath, elements,
+    fetchImpl: () => commandsResponse.promise,
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.bindL7CatalogEvents = proto.bindL7CatalogEvents;
+  shell.bindL7CatalogEvents();
+  commandsClickHandler();
+  commandsResponse.resolve();
+  await flush(); await flush(); await flush();
+
+  assert.ok(fetchRequests.length >= 1, "fetch must be issued for well-formed PB");
+  const url = String(fetchRequests[0].url);
+  assert.ok(url.includes("pb=ff"),
+    `fetch URL must contain pb=ff (verbatim hex), got: ${url}`);
+  assert.ok(!url.includes("pb=255"),
+    `fetch URL must NOT contain decimal pb=255, got: ${url}`);
+});
+
+test("L7 commands PB filter preserves 0x prefix verbatim (ui=0x10 → pb=0x10)", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  function makeInput(value) {
+    return { value, isConnected: true, setAttribute() {}, _audit: [] };
+  }
+  const pbInput = makeInput("0x10");
+  const pbErr = makeAuditedElement({ style: { display: "none" } });
+  const body = makeAuditedElement();
+  let commandsClickHandler = null;
+  const refreshCommandsBtn = {
+    isConnected: true,
+    addEventListener(name, fn) { if (name === "click") commandsClickHandler = fn; },
+  };
+  const noopListener = { addEventListener() {} };
+  const elements = new Map([
+    ['[data-role="l7-pb-filter"]', pbInput],
+    ['[data-role="l7-commands-pb-error"]', pbErr],
+    ['[data-role="l7-commands-body"]', body],
+    ['[data-role="l7-refresh-commands"]', refreshCommandsBtn],
+    ['[data-role="l7-refresh-services"]', noopListener],
+    ['[data-role="l7-refresh-command"]', noopListener],
+    ['[data-role="l7-decode-submit"]', noopListener],
+    ['[data-role="l7-command-id"]', makeInput("")],
+    ['[data-role="l7-decode-pb"]', makeInput("")],
+    ['[data-role="l7-decode-sb"]', makeInput("")],
+    ['[data-role="l7-decode-direction"]', makeInput("request")],
+    ['[data-role="l7-decode-frame-type"]', makeInput("addressed")],
+    ['[data-role="l7-decode-payload"]', makeInput("")],
+    ['[data-role="l7-decode-error"]', makeAuditedElement({ style: { display: "none" } })],
+  ]);
+  const commandsResponse = createDeferredResponse({
+    meta: { contract: { name: "helianthus-ebus-mcp", major: 1, minor: 0 }, consistency: { mode: "LIVE" }, data_hash: "0".repeat(64) },
+    data: { namespace: "ebus_standard", catalog_version: "v-test", commands: [] },
+    error: null,
+  });
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath, elements,
+    fetchImpl: () => commandsResponse.promise,
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.bindL7CatalogEvents = proto.bindL7CatalogEvents;
+  shell.bindL7CatalogEvents();
+  commandsClickHandler();
+  commandsResponse.resolve();
+  await flush(); await flush(); await flush();
+
+  assert.ok(fetchRequests.length >= 1, "fetch must be issued for well-formed PB");
+  const url = String(fetchRequests[0].url);
+  // URLSearchParams-style OR direct concatenation both preserve the literal
+  // 0x prefix — either pb=0x10 (unescaped) or pb=0x10 via encodeURIComponent
+  // (unchanged, since neither 'x' nor digits are percent-encoded).
+  assert.ok(url.includes("pb=0x10"),
+    `fetch URL must contain pb=0x10 verbatim (0x prefix preserved), got: ${url}`);
+  assert.ok(!url.includes("pb=16"),
+    `fetch URL must NOT contain decimal pb=16, got: ${url}`);
+});
+
+test("L7 commands PB filter rejects non-hex locally and does not fetch (ui=banana)", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  function makeInput(value) {
+    return { value, isConnected: true, setAttribute() {}, _audit: [] };
+  }
+  const pbInput = makeInput("banana");
+  const pbErr = makeAuditedElement({ style: { display: "none" } });
+  let commandsClickHandler = null;
+  const refreshCommandsBtn = {
+    isConnected: true,
+    addEventListener(name, fn) { if (name === "click") commandsClickHandler = fn; },
+  };
+  const noopListener = { addEventListener() {} };
+  const elements = new Map([
+    ['[data-role="l7-pb-filter"]', pbInput],
+    ['[data-role="l7-commands-pb-error"]', pbErr],
+    ['[data-role="l7-refresh-commands"]', refreshCommandsBtn],
+    ['[data-role="l7-refresh-services"]', noopListener],
+    ['[data-role="l7-refresh-command"]', noopListener],
+    ['[data-role="l7-decode-submit"]', noopListener],
+    ['[data-role="l7-command-id"]', makeInput("")],
+    ['[data-role="l7-decode-pb"]', makeInput("")],
+    ['[data-role="l7-decode-sb"]', makeInput("")],
+    ['[data-role="l7-decode-direction"]', makeInput("request")],
+    ['[data-role="l7-decode-frame-type"]', makeInput("addressed")],
+    ['[data-role="l7-decode-payload"]', makeInput("")],
+    ['[data-role="l7-decode-error"]', makeAuditedElement({ style: { display: "none" } })],
+  ]);
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath, elements,
+    fetchImpl: async () => { throw new Error("fetch must not be called for non-hex PB"); },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.bindL7CatalogEvents = proto.bindL7CatalogEvents;
+  shell.bindL7CatalogEvents();
+  commandsClickHandler();
+  await flush();
+
+  assert.equal(fetchRequests.length, 0,
+    "fetch must NOT be issued for non-hex PB input");
+  const textWrites = pbErr._audit.filter((e) => e.prop === "textContent");
+  const lastNonEmpty = textWrites.filter((w) => w.value !== "").pop();
+  assert.ok(lastNonEmpty,
+    "inline error element must receive non-empty textContent on non-hex input");
+  assert.ok(/invalid pb/i.test(lastNonEmpty.value),
+    `error text should mention PB; got: ${lastNonEmpty.value}`);
+});
+
+test("L7 decode submit forwards pb/sb as hex verbatim (ui=ff,08 → pb=ff,sb=08, NOT decimal)", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  function makeInput(value) {
+    return { value, isConnected: true, setAttribute() {}, _audit: [] };
+  }
+  const pbInput = makeInput("ff");
+  const sbInput = makeInput("08");
+  const dirInput = makeInput("request");
+  const frameInput = makeInput("addressed");
+  const payloadInput = makeInput("0102");
+  const decodeOutput = makeAuditedElement();
+  const decodeStatus = makeAuditedElement();
+  const decodeError = makeAuditedElement({ style: { display: "none" } });
+  let submitClickHandler = null;
+  const submitBtn = {
+    isConnected: true,
+    addEventListener(name, fn) { if (name === "click") submitClickHandler = fn; },
+  };
+  const noopListener = { addEventListener() {} };
+  const elements = new Map([
+    ['[data-role="l7-decode-output"]', decodeOutput],
+    ['[data-role="l7-decode-status"]', decodeStatus],
+    ['[data-role="l7-decode-error"]', decodeError],
+    ['[data-role="l7-decode-pb"]', pbInput],
+    ['[data-role="l7-decode-sb"]', sbInput],
+    ['[data-role="l7-decode-direction"]', dirInput],
+    ['[data-role="l7-decode-frame-type"]', frameInput],
+    ['[data-role="l7-decode-payload"]', payloadInput],
+    ['[data-role="l7-decode-submit"]', submitBtn],
+    ['[data-role="l7-refresh-services"]', noopListener],
+    ['[data-role="l7-refresh-commands"]', noopListener],
+    ['[data-role="l7-refresh-command"]', noopListener],
+    ['[data-role="l7-pb-filter"]', makeInput("")],
+    ['[data-role="l7-commands-pb-error"]', makeAuditedElement({ style: { display: "none" } })],
+    ['[data-role="l7-command-id"]', makeInput("")],
+  ]);
+  const decodeResponse = createDeferredResponse({
+    meta: { contract: { name: "helianthus-ebus-mcp", major: 1, minor: 0 }, consistency: { mode: "LIVE" }, data_hash: "1".repeat(64) },
+    data: { namespace: "ebus_standard", catalog_version: "v-test", command_id: "cmd.ok", raw_bytes: [1, 2], validity: "catalog_identified" },
+    error: null,
+  });
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath, elements,
+    fetchImpl: () => decodeResponse.promise,
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.bindL7CatalogEvents = proto.bindL7CatalogEvents;
+  shell.bindL7CatalogEvents();
+  submitClickHandler();
+  decodeResponse.resolve();
+  await flush(); await flush(); await flush();
+
+  assert.ok(fetchRequests.length >= 1, "fetch must be issued for well-formed pb/sb");
+  const url = String(fetchRequests[0].url);
+  assert.ok(url.includes("pb=ff"),
+    `decode URL must contain pb=ff verbatim, got: ${url}`);
+  assert.ok(url.includes("sb=08"),
+    `decode URL must contain sb=08 verbatim, got: ${url}`);
+  assert.ok(!url.includes("pb=255"),
+    `decode URL must NOT contain decimal pb=255, got: ${url}`);
+  assert.ok(!url.includes("sb=8&") && !url.endsWith("sb=8"),
+    `decode URL must NOT reformat sb=08 to sb=8, got: ${url}`);
 });

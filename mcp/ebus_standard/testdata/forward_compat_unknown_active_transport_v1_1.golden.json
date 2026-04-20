@@ -1,0 +1,57 @@
+{
+  "data": null,
+  "error": null,
+  "meta": {
+    "capabilities": {
+      "responder": {
+        "active": {
+          "refusal": null,
+          "scope": "partial",
+          "surfaces": ["FF_03", "FF_04"],
+          "transport": "future_transport"
+        },
+        "transports": [
+          {
+            "reason": null,
+            "scope": "partial",
+            "state": "supported",
+            "surfaces": ["FF_03", "FF_04", "FF_05", "FF_06"],
+            "transport": "ENH"
+          },
+          {
+            "reason": null,
+            "scope": "partial",
+            "state": "supported",
+            "surfaces": ["FF_03", "FF_04", "FF_05", "FF_06"],
+            "transport": "ENS"
+          },
+          {
+            "reason": "command_bridge_no_companion_listen",
+            "scope": "none",
+            "state": "blocked",
+            "surfaces": [],
+            "transport": "ebusd-tcp"
+          },
+          {
+            "reason": null,
+            "scope": "partial",
+            "state": "supported",
+            "surfaces": ["FF_03", "FF_04"],
+            "transport": "future_transport"
+          }
+        ],
+        "version": "v1"
+      }
+    },
+    "consistency": {
+      "mode": "LIVE"
+    },
+    "contract": {
+      "major": 1,
+      "minor": 1,
+      "name": "helianthus-ebus-mcp"
+    },
+    "data_hash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "data_timestamp": "2026-01-01T00:00:00Z"
+  }
+}

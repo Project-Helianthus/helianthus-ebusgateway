@@ -201,6 +201,19 @@ func canonicalTransportProtocol(protocol TransportProtocol) TransportProtocol {
 	}
 }
 
+// CanonicalTransportProtocol is the exported form of
+// canonicalTransportProtocol. External callers (e.g. cmd/gateway's
+// responder-capability provider) use it to normalise raw protocol
+// strings to the enum literals used across the package.
+//
+// Aliases handled: "ebusd" → "ebusd-tcp"; all forms are trimmed +
+// lower-cased. Unknown strings pass through as the normalised
+// TransportProtocol with no alias resolution (caller decides what to
+// do with unknown values).
+func CanonicalTransportProtocol(protocol TransportProtocol) TransportProtocol {
+	return canonicalTransportProtocol(protocol)
+}
+
 func passiveTransportUnavailableReason(cfg Config) string {
 	config, err := normalizeTransportConfig(cfg.TransportConfig)
 	if err == nil {

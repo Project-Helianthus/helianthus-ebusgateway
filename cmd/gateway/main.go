@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
@@ -718,7 +718,19 @@ func startHTTPServer(
 	// surface serves its first envelope. The provider closure is
 	// evaluated per-envelope; hot-path cost is a single pointer load +
 	// struct copy. See decision doc @ 567a6798 §4.2 + §5.
-	ebus_standard.SetResponderCapabilityProvider(buildResponderCapabilityProvider(cfg))
+	//
+	// A nil return from buildResponderCapabilityProvider means the raw
+	// transport protocol does not canonicalize to any of the three
+	// locked rows at v1.1 (ENH / ENS / ebusd-tcp). In that case we omit
+	// the capability entirely so consumers fall back to §4.3 rule 1
+	// (absence → scope=none, fail-closed). This preserves invariant I1
+	// (exactly three rows at v1.1) and I2 (active.transport MUST appear
+	// in transports[]) without widening the schema.
+	if provider := buildResponderCapabilityProvider(cfg); provider != nil {
+		ebus_standard.SetResponderCapabilityProvider(provider)
+	} else {
+		log.Printf("warning: meta.capabilities.responder omitted: transport protocol %q does not canonicalize to ENH/ENS/ebusd-tcp", cfg.TransportConfig.Protocol)
+	}
 	if scheduleWriter != nil {
 		mcpServer.SetScheduleWriter(scheduleWriter)
 	}
@@ -1298,16 +1310,28 @@ func mapPortalAdapterInfo(info *graphql.AdapterHardwareInfo) *portal.SemanticAda
 //   - ebusd-tcp → active.scope = "none", surfaces = [],
 //     refusal.code = "command_bridge_no_companion_listen". Consumers
 //     apply fail-closed per §4.3 rule 4.
-//   - Any other transport (udp-plain, tcp-plain, adapter-direct) →
-//     active.scope = "none", refusal = nil; the ebusd-tcp row remains
-//     blocked in transports[] because that determination is static.
+//   - Any other transport (udp-plain, tcp-plain, adapter-direct, empty,
+//     or unrecognised string) → returns nil. The caller omits the
+//     capability entirely and consumers fall back to §4.3 rule 1
+//     (absence → scope=none, fail-closed). This is the only way to
+//     preserve invariant I1 (exactly three rows at v1.1) AND I2
+//     (active.transport MUST appear in transports[]) simultaneously,
+//     because emitting a non-canonical active.transport literal would
+//     violate I2 and widening transports[] with a fourth "unknown" row
+//     would violate I1.
+//
+// The raw cfg.TransportConfig.Protocol is first canonicalised via
+// ebusgateway.canonicalTransportProtocol (which handles the "ebusd"
+// alias → "ebusd-tcp" and lowercases/trims whitespace). This ensures
+// downstream envelope assertions see the canonical enum literal in
+// every surface, matching the three fixed transports[] rows byte-for-
+// byte.
 //
 // Invariants I1/I7 are enforced by always emitting exactly three
 // transport rows (ENH, ENS, ebusd-tcp) in a fixed order. I2/I3 are
-// enforced by deriving active from the same struct literal.
+// enforced by deriving active.transport from the same canonical enum
+// literals the rows use.
 func buildResponderCapabilityProvider(cfg ebusgateway.Config) ebus_standard.ResponderCapabilityProvider {
-	protocol := strings.TrimSpace(strings.ToLower(string(cfg.TransportConfig.Protocol)))
-
 	surfacesFF := []string{"FF_03", "FF_04", "FF_05", "FF_06"}
 	// transports[] is static at v1.1 — same three rows on every gateway
 	// regardless of deployment (I1 locks the count at exactly three).
@@ -1318,12 +1342,15 @@ func buildResponderCapabilityProvider(cfg ebusgateway.Config) ebus_standard.Resp
 	}
 
 	var active ebus_standard.ActiveResponder
-	switch protocol {
-	case string(ebusgateway.TransportENH):
+	// Canonicalise raw TransportProtocol (handles "ebusd" alias, case,
+	// whitespace) into one of the enum constants so active.transport
+	// literally equals the transports[] row label (invariant I2).
+	switch ebusgateway.CanonicalTransportProtocol(cfg.TransportConfig.Protocol) {
+	case ebusgateway.TransportENH:
 		active = ebus_standard.ActiveResponder{Transport: "ENH", Scope: "partial", Surfaces: surfacesFF}
-	case string(ebusgateway.TransportENS):
+	case ebusgateway.TransportENS:
 		active = ebus_standard.ActiveResponder{Transport: "ENS", Scope: "partial", Surfaces: surfacesFF}
-	case string(ebusgateway.TransportEbusdTCP):
+	case ebusgateway.TransportEbusdTCP:
 		active = ebus_standard.ActiveResponder{
 			Transport: "ebusd-tcp",
 			Scope:     "none",
@@ -1331,10 +1358,13 @@ func buildResponderCapabilityProvider(cfg ebusgateway.Config) ebus_standard.Resp
 			Refusal:   &ebus_standard.ActiveRefusal{Code: "command_bridge_no_companion_listen", Reason: "ebusd command bridge does not expose a responder-role emission primitive"},
 		}
 	default:
-		// Non-enumerated transports (udp-plain, tcp-plain, adapter-direct,
-		// empty) — scope=none, no refusal code (refusal is reserved for
-		// capability-layer blockers, not "unknown" states).
-		active = ebus_standard.ActiveResponder{Transport: protocol, Scope: "none", Surfaces: []string{}}
+		// Non-enumerated transports (udp-plain, tcp-plain,
+		// adapter-direct, empty, or entirely unknown). Fail-closed:
+		// return nil so the envelope omits meta.capabilities.responder
+		// entirely (§4.3 rule 1). Emitting the raw string would
+		// violate I2; adding a fourth transports[] row would violate
+		// I1. Absence is the only invariant-preserving outcome.
+		return nil
 	}
 
 	cap := ebus_standard.ResponderCapability{

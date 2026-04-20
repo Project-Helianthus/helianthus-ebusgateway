@@ -2077,14 +2077,20 @@ func TestResetErrorPriorityOverByteFlood(t *testing.T) {
 
 	// Flood activeCh directly to near-capacity (avoid goroutine races).
 	// This simulates a burst of transaction bytes queued up but not yet
-	// consumed by bus.Send.
+	// consumed by bus.Send. Once the channel fills we exit the outer
+	// for-loop; the prior bare `break` only exited the inner select and
+	// let the loop spin through the remaining iterations hitting the
+	// default branch each time (staticcheck SA4011). Labeled break
+	// preserves the author's stated intent ("Channel full — good
+	// enough, we have backlog.") without changing test semantics.
 	flood := 2000
+floodLoop:
 	for i := 0; i < flood; i++ {
 		select {
 		case mux.activeCh <- activeEvent{kind: activeEventByte, b: byte(i % 256)}:
 		default:
 			// Channel full — good enough, we have backlog.
-			break
+			break floodLoop
 		}
 	}
 

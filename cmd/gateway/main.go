@@ -653,7 +653,9 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	// mux.Close is idempotent (sync.Once guarded).
 	closer := func() error {
 		if proxyListener != nil {
-			proxyListener.Close()
+			if err := proxyListener.Close(); err != nil {
+				log.Printf("adapter-direct: proxyListener.Close: %v", err)
+			}
 		}
 		return mux.Close()
 	}

@@ -1038,7 +1038,7 @@ func (b *blockingStartTransport) getStartCalls() []byte {
 type failingStartTransport struct {
 	*p3MockTransport
 	startGate chan struct{} // blocks RequestStart until closed
-	startErr  error        // error to return after gate opens
+	startErr  error         // error to return after gate opens
 }
 
 func (f *failingStartTransport) RequestStart(initiator byte) error {
@@ -1598,7 +1598,7 @@ func TestConcurrentTryGrantAndStart(t *testing.T) {
 type gatedBlockingStartTransport struct {
 	readCh    chan byte
 	startGate chan struct{} // blocks StartArbitration until closed
-	startErr  error        // error to return after gate opens
+	startErr  error         // error to return after gate opens
 	mu        sync.Mutex
 	calls     []byte
 }
@@ -2052,11 +2052,11 @@ func TestPassive_NoGarbageDuringGatewayTransaction(t *testing.T) {
 // sees the reset boundary even under byte flood.
 //
 // Scenario:
-//   1. Grant gateway ownership so activeCh receives bytes.
-//   2. Flood activeCh to near-capacity with legitimate byte traffic.
-//   3. Trigger handleReset() (simulates in-band RESETTED).
-//   4. Assert that after handleReset, the consumer sees the reset
-//      error event — NOT lost behind stale bytes.
+//  1. Grant gateway ownership so activeCh receives bytes.
+//  2. Flood activeCh to near-capacity with legitimate byte traffic.
+//  3. Trigger handleReset() (simulates in-band RESETTED).
+//  4. Assert that after handleReset, the consumer sees the reset
+//     error event — NOT lost behind stale bytes.
 func TestResetErrorPriorityOverByteFlood(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()

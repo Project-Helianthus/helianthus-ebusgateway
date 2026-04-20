@@ -357,16 +357,16 @@ func TestEchoMismatch_SYNAfterGrantBeforeFirstEcho(t *testing.T) {
 // BEFORE the first echoed/response byte has been enqueued on activeCh.
 //
 // Sequence modeled:
-//   1. grantGateway → gatewayTxnActive=true, bytesDeliveredToActive=0.
-//   2. at.Write(0x71) — bytesWritten flips to 1 immediately (the Write
-//      method increments the counter before the byte even reaches the
-//      adapter). bytesDeliveredToActive is still 0 because readLoop has
-//      not yet seen the echo come back.
-//   3. Inject idle-chatter SYN (the buffered TCP SYN that sits in the
-//      adapter pipeline on busy links). Under the pre-fix gate this SYN
-//      would pass "bytesWritten>0" and be delivered to activeCh as a
-//      terminator, which races the real echo.
-//   4. Inject the real echo byte (0x71).
+//  1. grantGateway → gatewayTxnActive=true, bytesDeliveredToActive=0.
+//  2. at.Write(0x71) — bytesWritten flips to 1 immediately (the Write
+//     method increments the counter before the byte even reaches the
+//     adapter). bytesDeliveredToActive is still 0 because readLoop has
+//     not yet seen the echo come back.
+//  3. Inject idle-chatter SYN (the buffered TCP SYN that sits in the
+//     adapter pipeline on busy links). Under the pre-fix gate this SYN
+//     would pass "bytesWritten>0" and be delivered to activeCh as a
+//     terminator, which races the real echo.
+//  4. Inject the real echo byte (0x71).
 //
 // Post-fix invariant: because bytesDeliveredToActive is still 0 at step 3,
 // the SYN is classified as pre-echo noise (synSuppressedPreEcho++,

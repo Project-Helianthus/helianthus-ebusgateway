@@ -88,11 +88,11 @@ func TestPopulateInfoCache(t *testing.T) {
 
 	tr := &mockInfoTransport{
 		responses: map[transport.AdapterInfoID][]byte{
-			transport.AdapterInfoVersion:     {0x23, 0x01},
-			transport.AdapterInfoHardwareID:  {0x10, 0x20, 0x30},
+			transport.AdapterInfoVersion:      {0x23, 0x01},
+			transport.AdapterInfoHardwareID:   {0x10, 0x20, 0x30},
 			transport.AdapterInfoHardwareConf: {0x05},
-			transport.AdapterInfoTemperature: {0x1C}, // volatile — cached as startup snapshot
-			transport.AdapterInfoWiFiRSSI:    {0xE0}, // volatile — cached as startup snapshot
+			transport.AdapterInfoTemperature:  {0x1C}, // volatile — cached as startup snapshot
+			transport.AdapterInfoWiFiRSSI:     {0xE0}, // volatile — cached as startup snapshot
 		},
 	}
 

@@ -1064,11 +1064,11 @@ func (d *deadlineConnMock) Close() error {
 	close(d.closeC)
 	return nil
 }
-func (d *deadlineConnMock) LocalAddr() net.Addr                { return &net.TCPAddr{} }
-func (d *deadlineConnMock) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
-func (d *deadlineConnMock) SetDeadline(time.Time) error        { return nil }
-func (d *deadlineConnMock) SetReadDeadline(time.Time) error    { return nil }
-func (d *deadlineConnMock) SetWriteDeadline(time.Time) error   { return nil }
+func (d *deadlineConnMock) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (d *deadlineConnMock) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (d *deadlineConnMock) SetDeadline(time.Time) error      { return nil }
+func (d *deadlineConnMock) SetReadDeadline(time.Time) error  { return nil }
+func (d *deadlineConnMock) SetWriteDeadline(time.Time) error { return nil }
 
 // TestBlockingArbDeadline_TriggersReconnect_NoOverlap verifies C2: when a
 // blocking StartArbitration is hung and the AM8 deadline fires, the
@@ -1439,6 +1439,7 @@ func TestCancelPendingStart_BlockingArb_TriggersReconnect_NoOverlap(t *testing.T
 //   - (bytes enqueued on activeCh) + (afterInactive counter increments)
 //     must equal the total bytes pushed.
 //   - No byte is lost to "neither enqueued nor counted".
+//
 // Without the atomic recheck, a window exists where a byte is enqueued
 // after the flip — activeCh length + afterInactive < total bytes.
 func TestDeliverToActive_RechecksGatingAtomically(t *testing.T) {

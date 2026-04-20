@@ -157,12 +157,12 @@ type Mux struct {
 	upstreamFeatures atomic.Uint32 // features byte from upstream INIT handshake
 
 	// Multiplexer state (guarded by stateMu).
-	stateMu      sync.Mutex
-	phase        wirePhaseTracker
-	arb          *arbitrator
-	busOwned     time.Time          // when current owner acquired the bus
+	stateMu            sync.Mutex
+	phase              wirePhaseTracker
+	arb                *arbitrator
+	busOwned           time.Time          // when current owner acquired the bus
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
-	pendingStartAbsorb int               // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
+	pendingStartAbsorb int                // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
 	// Blocking StartArbitration tracking. blockingArbGen is monotonically
 	// increasing (never reset to 0 or reused) — reconnect/handleReset
 	// bump it forward so any stale goroutine's captured gen no longer
@@ -285,7 +285,7 @@ func New(cfg Config) *Mux {
 		gatewayEcho:  newEchoTracker(),
 		sessions:     make(map[uint64]*session),
 		infoCache:    make(map[transport.AdapterInfoID][]byte),
-		activeSendCh: make(chan sendRequest, 256), // AM49: increased from 16 for burst tolerance
+		activeSendCh: make(chan sendRequest, 256),  // AM49: increased from 16 for burst tolerance
 		activeCh:     make(chan activeEvent, 4096), // unified byte+error channel (4096: survives ~16s of bus traffic during arbitration waits)
 	}
 }
@@ -480,7 +480,7 @@ func (m *Mux) connect() error {
 				case <-m.ctx.Done():
 					_ = conn.Close()
 					m.conn = nil     // AM32: clear stale reference on ctx cancel
-					m.upstream = nil  // AM32: clear stale transport on ctx cancel
+					m.upstream = nil // AM32: clear stale transport on ctx cancel
 					return m.ctx.Err()
 				}
 			}
@@ -502,8 +502,8 @@ func (m *Mux) connect() error {
 			m.logger.Printf("adaptermux: INIT: adapter does not confirm features=0x%02X, proceeding with features=0x%02X", requestedFeatures, features)
 		} else if initErr != nil && !initOK {
 			_ = conn.Close()
-			m.conn = nil      // AM34: clear stale reference after INIT failure
-			m.upstream = nil   // AM34: clear stale transport after INIT failure
+			m.conn = nil     // AM34: clear stale reference after INIT failure
+			m.upstream = nil // AM34: clear stale transport after INIT failure
 			return fmt.Errorf("adaptermux: INIT handshake failed after 5 attempts: %w", initErr)
 		}
 		m.upstreamFeatures.Store(uint32(features))
@@ -523,7 +523,7 @@ func (m *Mux) connect() error {
 		case <-m.ctx.Done():
 			_ = conn.Close()
 			m.conn = nil     // AM32: clear stale reference on ctx cancel
-			m.upstream = nil  // AM32: clear stale transport on ctx cancel
+			m.upstream = nil // AM32: clear stale transport on ctx cancel
 			return m.ctx.Err()
 		}
 	}
@@ -543,7 +543,6 @@ func (m *Mux) connect() error {
 
 	return nil
 }
-
 
 // populateInfoCache queries the upstream transport for INFO metadata
 // and stores responses in the mux-level cache. Sessions and the active

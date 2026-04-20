@@ -13,12 +13,12 @@ import (
 type TxnClass string
 
 const (
-	TxnClassUnknown              TxnClass = ""
-	TxnClassEchoOnlyTimeout      TxnClass = "echo_only_timeout"
-	TxnClassNonEchoInvalidFrame  TxnClass = "non_echo_invalid_frame"
-	TxnClassCandidateNoParse     TxnClass = "candidate_no_parse"
-	TxnClassSchemaError          TxnClass = "schema_error"
-	TxnClassSuccessLike          TxnClass = "success_like"
+	TxnClassUnknown             TxnClass = ""
+	TxnClassEchoOnlyTimeout     TxnClass = "echo_only_timeout"
+	TxnClassNonEchoInvalidFrame TxnClass = "non_echo_invalid_frame"
+	TxnClassCandidateNoParse    TxnClass = "candidate_no_parse"
+	TxnClassSchemaError         TxnClass = "schema_error"
+	TxnClassSuccessLike         TxnClass = "success_like"
 )
 
 // txnPrefixCap bounds how many leading bytes of write and read traffic are
@@ -32,10 +32,10 @@ const txnPrefixCap = 8
 type ActiveTxnInactiveReason string
 
 const (
-	ReasonNone              ActiveTxnInactiveReason = ""
-	ReasonTransactionDone   ActiveTxnInactiveReason = "transaction_done"
-	ReasonCmdNACK           ActiveTxnInactiveReason = "cmd_nack"
-	ReasonSYNIdle           ActiveTxnInactiveReason = "syn_idle"
+	ReasonNone            ActiveTxnInactiveReason = ""
+	ReasonTransactionDone ActiveTxnInactiveReason = "transaction_done"
+	ReasonCmdNACK         ActiveTxnInactiveReason = "cmd_nack"
+	ReasonSYNIdle         ActiveTxnInactiveReason = "syn_idle"
 	// ReasonSYNTerminator is recorded when a SYN arrives mid-transaction
 	// (bytesRead>0) and is treated as the legitimate frame terminator.
 	// Distinguished from ReasonSYNIdle (which historically covered both
@@ -57,13 +57,13 @@ const (
 // Counters in ActiveTxnSnapshot are atomic to permit lock-free reads
 // from the hot path (active_path.go Write/Read).
 type activeTxnDiag struct {
-	id            uint64    // monotonic transaction id (set at grant)
-	initiator     byte      // source/initiator byte for this grant
-	grantedAt     time.Time // timestamp of the grant
-	inactiveAt    time.Time // timestamp of the inactive transition
-	inactiveReas  ActiveTxnInactiveReason
-	bytesWritten  atomic.Uint64 // incremented by activeTransport.Write on success
-	bytesRead     atomic.Uint64 // incremented by activeTransport.ReadByte/ReadEvent success
+	id           uint64    // monotonic transaction id (set at grant)
+	initiator    byte      // source/initiator byte for this grant
+	grantedAt    time.Time // timestamp of the grant
+	inactiveAt   time.Time // timestamp of the inactive transition
+	inactiveReas ActiveTxnInactiveReason
+	bytesWritten atomic.Uint64 // incremented by activeTransport.Write on success
+	bytesRead    atomic.Uint64 // incremented by activeTransport.ReadByte/ReadEvent success
 	// bytesDeliveredToActive is the precise "at least one real adapter byte
 	// has been enqueued on activeCh during this gateway-owned txn" signal.
 	// Incremented by the readLoop byte-delivery path AFTER a successful
@@ -74,7 +74,7 @@ type activeTxnDiag struct {
 	// legitimate frame terminator or pre-echo idle-buffer noise. Codex PR
 	// #502 P1 — superseded bytesWritten as the terminator/suppression gate.
 	bytesDeliveredToActive atomic.Uint64
-	drainedOnGrant int          // count of stale bytes drained just before this grant
+	drainedOnGrant         int // count of stale bytes drained just before this grant
 
 	// totals across the mux lifetime (never reset)
 	grantsTotal    atomic.Uint64
@@ -113,9 +113,9 @@ type activeTxnDiag struct {
 	readPrefixLen  int
 	// Byte-class counters (atomic; hot-path increments in onReceived
 	// and Write paths).
-	echoLike    atomic.Uint64
-	nonEcho     atomic.Uint64
-	synMarkers  atomic.Uint64
+	echoLike   atomic.Uint64
+	nonEcho    atomic.Uint64
+	synMarkers atomic.Uint64
 	// Terminal classification computed at recordGatewayInactive time.
 	txnClass TxnClass
 	// lastClass persists the most recently classified txn's class so it
@@ -177,29 +177,29 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 	rp := make([]byte, m.activeTxn.readPrefixLen)
 	copy(rp, m.activeTxn.readPrefix[:m.activeTxn.readPrefixLen])
 	return ActiveTxnSnapshot{
-		ID:             m.activeTxn.id,
-		Initiator:      m.activeTxn.initiator,
-		GrantedAt:      m.activeTxn.grantedAt,
-		InactiveAt:     m.activeTxn.inactiveAt,
-		InactiveReason: m.activeTxn.inactiveReas,
-		DrainedOnGrant: m.activeTxn.drainedOnGrant,
-		Active:         m.gatewayTxnActive,
-		BytesWritten:   m.activeTxn.bytesWritten.Load(),
-		BytesRead:      m.activeTxn.bytesRead.Load(),
-		GrantsTotal:    m.activeTxn.grantsTotal.Load(),
-		WriteErrTotal:  m.activeTxn.writeErrTotal.Load(),
-		ReadTimeoutTot: m.activeTxn.readTimeoutTot.Load(),
-		AfterInactive:         m.activeTxn.afterInactive.Load(),
+		ID:                     m.activeTxn.id,
+		Initiator:              m.activeTxn.initiator,
+		GrantedAt:              m.activeTxn.grantedAt,
+		InactiveAt:             m.activeTxn.inactiveAt,
+		InactiveReason:         m.activeTxn.inactiveReas,
+		DrainedOnGrant:         m.activeTxn.drainedOnGrant,
+		Active:                 m.gatewayTxnActive,
+		BytesWritten:           m.activeTxn.bytesWritten.Load(),
+		BytesRead:              m.activeTxn.bytesRead.Load(),
+		GrantsTotal:            m.activeTxn.grantsTotal.Load(),
+		WriteErrTotal:          m.activeTxn.writeErrTotal.Load(),
+		ReadTimeoutTot:         m.activeTxn.readTimeoutTot.Load(),
+		AfterInactive:          m.activeTxn.afterInactive.Load(),
 		TerminatorDropOnFullCh: m.activeTxn.terminatorDropOnFullCh.Load(),
 		SynSuppressedPreEcho:   m.activeTxn.synSuppressedPreEcho.Load(),
 		BytesDeliveredToActive: m.activeTxn.bytesDeliveredToActive.Load(),
-		WritePrefix:    wp,
-		ReadPrefix:     rp,
-		EchoLike:       m.activeTxn.echoLike.Load(),
-		NonEcho:        m.activeTxn.nonEcho.Load(),
-		SynMarkers:     m.activeTxn.synMarkers.Load(),
-		TxnClass:       m.activeTxn.txnClass,
-		LastTxnClass:   m.activeTxn.lastClass,
+		WritePrefix:            wp,
+		ReadPrefix:             rp,
+		EchoLike:               m.activeTxn.echoLike.Load(),
+		NonEcho:                m.activeTxn.nonEcho.Load(),
+		SynMarkers:             m.activeTxn.synMarkers.Load(),
+		TxnClass:               m.activeTxn.txnClass,
+		LastTxnClass:           m.activeTxn.lastClass,
 	}
 }
 
@@ -434,17 +434,17 @@ const synDiagRingCap = 16
 // SYN to activeCh for the Send consumer, or did onSYNLocked consume it
 // as an end-of-txn terminator? Which inactive reason (if any) was set?
 type SynDiagEntry struct {
-	ObservedAt          time.Time
-	TxnID               uint64
-	OwnerID             uint64
-	GatewayOwned        bool
-	GwActiveBefore      bool
-	GwActiveAfter       bool
-	LastWrittenByte     byte
-	HasLastWrittenByte  bool
-	BytesRead           uint64
+	ObservedAt           time.Time
+	TxnID                uint64
+	OwnerID              uint64
+	GatewayOwned         bool
+	GwActiveBefore       bool
+	GwActiveAfter        bool
+	LastWrittenByte      byte
+	HasLastWrittenByte   bool
+	BytesRead            uint64
 	SynDeliveredToActive bool
-	InactiveReason      ActiveTxnInactiveReason
+	InactiveReason       ActiveTxnInactiveReason
 }
 
 // synDiagRing is a bounded ring of SynDiagEntry. Wraps once it reaches

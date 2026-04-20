@@ -245,8 +245,8 @@ func TestSession_WriteFrameErrorHost(t *testing.T) {
 	// Unit test: writeFrame encodes ErrorHost correctly.
 	// net.Pipe is synchronous — read concurrently to avoid blocking.
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer closeOrLog(t, client, "client")
+	defer closeOrLog(t, server, "server")
 
 	s := &session{
 		conn:   server,
@@ -321,8 +321,8 @@ func TestMux_CloseAfterContextCancel(t *testing.T) {
 func writeFrameWithReader(t *testing.T, frame sessionFrame) [2]byte {
 	t.Helper()
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer closeOrLog(t, client, "client")
+	defer closeOrLog(t, server, "server")
 
 	s := &session{conn: server, sendCh: make(chan sessionFrame, 1), done: make(chan struct{})}
 
@@ -525,8 +525,8 @@ func TestSession_StartedArrivesBeforeReceivedBytes(t *testing.T) {
 	// goroutine) and focuses on the invariant: once STARTED is enqueued
 	// before RECEIVED, the client sees them in that order.
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer closeOrLog(t, client, "client")
+	defer closeOrLog(t, server, "server")
 
 	mux, _, cleanup := newTestMux(t)
 	defer cleanup()

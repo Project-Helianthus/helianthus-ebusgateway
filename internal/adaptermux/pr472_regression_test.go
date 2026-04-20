@@ -272,9 +272,9 @@ func TestBroadcastReset_MultipleSessionsAllGetFeatures(t *testing.T) {
 		sessions[i] = sessConn{client: client, id: id}
 	}
 	defer func() {
-		for _, sc := range sessions {
+		for i, sc := range sessions {
 			mux.RemoveSession(sc.id)
-			sc.client.Close()
+			closeOrLog(t, sc.client, fmt.Sprintf("sessions[%d].client", i))
 		}
 	}()
 

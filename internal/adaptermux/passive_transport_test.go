@@ -50,7 +50,7 @@ func TestDeliver_AllEventKinds(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pt := newPassiveTransport()
-			defer pt.Close()
+			defer closeOrLog(t, pt, "pt")
 
 			pt.deliver(tt.input)
 
@@ -85,7 +85,7 @@ func TestDeliver_AllEventKinds(t *testing.T) {
 // so the passive reconstructor sees both boundaries.
 func TestDeliver_ConnectDisconnectCycle(t *testing.T) {
 	pt := newPassiveTransport()
-	defer pt.Close()
+	defer closeOrLog(t, pt, "pt")
 
 	// Simulate: symbols -> disconnect -> connect -> symbols
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xAA})
@@ -122,7 +122,7 @@ func TestDeliver_ConnectDisconnectCycle(t *testing.T) {
 // no-op after Close().
 func TestDeliver_ClosedTransportDropsEvents(t *testing.T) {
 	pt := newPassiveTransport()
-	pt.Close()
+	closeOrLog(t, pt, "pt")
 
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xFF})
 	pt.deliver(PassiveEvent{Kind: PassiveEventConnected})

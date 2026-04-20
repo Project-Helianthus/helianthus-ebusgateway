@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -53,7 +54,7 @@ func (h *handler) routeEbusStandard(w http.ResponseWriter, r *http.Request, path
 	case "services":
 		h.writeEbusStandardEnvelope(w, h.opts.EbusStandardServer.ServicesList(), nil, ts)
 	case "commands":
-		pbp, perr := parseOptionalPBParam(r.URL.Query().Get("pb"))
+		pbp, perr := parseOptionalPBParam(r.URL.Query())
 		if perr != nil {
 			h.writeEbusStandardEnvelope(w, nil, perr, ts)
 			return true
@@ -94,9 +95,19 @@ func (h *handler) writeEbusStandardEnvelope(w http.ResponseWriter, data any, err
 // parseOptionalPBParam parses the optional "pb" query parameter. Mirrors
 // the MCP surface behavior: absent = nil (unfiltered), malformed = error
 // (INVALID_PAYLOAD) to avoid silently hiding contract violations.
-func parseOptionalPBParam(raw string) (*uint8, error) {
-	if raw == "" {
+//
+// Takes url.Values (not a raw string) so we can distinguish "pb key missing"
+// from "pb key present but empty" — same pattern as the payload_hex fix
+// (e363e1b7). A bare q.Get("pb") would yield "" in both cases, silently
+// mapping malformed ?pb= to the unfiltered path.
+func parseOptionalPBParam(q url.Values) (*uint8, error) {
+	if !q.Has("pb") {
 		return nil, nil
+	}
+	raw := q.Get("pb")
+	if raw == "" {
+		return nil, fmt.Errorf("pb: %w: filter must be a 1-byte hex value or omitted entirely",
+			estd.ErrInvalidPayload)
 	}
 	v, err := strconv.ParseUint(raw, 0, 16)
 	if err != nil {

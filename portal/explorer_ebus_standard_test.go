@@ -217,6 +217,34 @@ func TestEbusStandardCommandsList_InvalidPB(t *testing.T) {
 	}
 }
 
+// TestEbusStandardCommandsList_EmptyPB asserts that an explicit empty pb
+// (?pb=) is rejected with INVALID_PAYLOAD rather than silently mapped to
+// the unfiltered path. Mirrors the payload_hex fix (e363e1b7) — presence
+// check distinguishes missing from explicitly-empty. Without this guard a
+// malformed client request (e.g. JS building `?pb=${val}` with val="") would
+// silently return the full unfiltered catalog, hiding the bug.
+func TestEbusStandardCommandsList_EmptyPB(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ebus-standard/commands?pb=", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr == nil {
+		t.Fatalf("expected envelope.error for empty pb=, got nil")
+	}
+	if envErr["code"] != "INVALID_PAYLOAD" {
+		t.Fatalf("error.code = %v; want INVALID_PAYLOAD", envErr["code"])
+	}
+	// Sub-server CommandsList MUST NOT be invoked on malformed input.
+	if fake.lastCommandsPB != nil {
+		t.Fatalf("CommandsList should not be invoked on empty pb=, got pb=%v",
+			*fake.lastCommandsPB)
+	}
+}
+
 func TestEbusStandardCommandGet_OpenEnumPassThrough(t *testing.T) {
 	fake := &fakeEbusStandardServer{
 		commandGetFn: func(id string) (map[string]any, error) {

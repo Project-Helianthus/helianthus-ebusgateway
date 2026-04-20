@@ -1067,6 +1067,16 @@ func classifyRoute(path string) string {
 		return "api.issues.export"
 	case strings.HasPrefix(path, "/api/v1/explorer/"):
 		return "api.explorer"
+	case strings.HasPrefix(path, "/api/v1/ebus-standard/services"):
+		return "api.ebus_standard.services"
+	case strings.HasPrefix(path, "/api/v1/ebus-standard/commands"):
+		return "api.ebus_standard.commands"
+	case strings.HasPrefix(path, "/api/v1/ebus-standard/command"):
+		return "api.ebus_standard.command"
+	case strings.HasPrefix(path, "/api/v1/ebus-standard/decode"):
+		return "api.ebus_standard.decode"
+	case strings.HasPrefix(path, "/api/v1/ebus-standard/"):
+		return "api.ebus_standard"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):

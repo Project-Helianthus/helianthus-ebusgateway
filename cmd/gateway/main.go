@@ -1351,7 +1351,12 @@ func mapPortalAdapterInfo(info *graphql.AdapterHardwareInfo) *portal.SemanticAda
 // transport instance against ebusgoTransport.ResponderTransport; when
 // the canonical protocol is ENH/ENS but the instance does NOT satisfy
 // the interface, we downgrade to scope="none" with
-// refusal.code="transport_mux_bypass". ebusd-tcp path is unchanged —
+// refusal.code="transport_mux_bypass" AND rewrite both ENH and ENS
+// rows in transports[] to state="blocked", scope="none",
+// reason="transport_mux_bypass" so invariant I3 (active.scope ==
+// matching row.scope) holds — the mux is a shared runtime wrapper
+// above either upstream, so switching the canonical protocol would
+// not restore responder emission. ebusd-tcp path is unchanged —
 // it is forbidden from responder emission per M4b2 §3 regardless of
 // what underlying transport type ebusd is wrapped by.
 //
@@ -1379,9 +1384,42 @@ func buildResponderCapabilityProvider(cfg ebusgateway.Config, actualTransport eb
 	// keep their behaviour.
 	transportKnown := actualTransport != nil
 	_, responderCapable := actualTransport.(ebusgoTransport.ResponderTransport)
+	muxBypass := transportKnown && !responderCapable
 	muxBypassRefusal := &ebus_standard.ActiveRefusal{
 		Code:   "transport_mux_bypass",
 		Reason: "runtime transport does not satisfy ResponderTransport (e.g. adapter-direct mux)",
+	}
+
+	// Invariant I3 (decision doc §4.4): active.scope MUST equal
+	// transports[x].scope where x.transport == active.transport. When the
+	// runtime mux bypass is in effect we therefore also rewrite the
+	// matching transports[] row(s) — otherwise a consumer joining
+	// active.transport → transports[] would see contradictory metadata
+	// (active.scope=none but row.scope=partial).
+	//
+	// Interpretation A (shared-runtime downgrade): the adapter-direct mux
+	// is a single wrapper that sits above whichever ENH/ENS upstream the
+	// operator configured. The mux instance itself does not satisfy
+	// ResponderTransport, so switching the canonical protocol from ENH to
+	// ENS (or vice versa) under the same mux would not restore responder
+	// emission — the bypass is shared. Accordingly, BOTH the ENH and ENS
+	// rows downgrade to state=blocked, scope=none, reason="transport_mux_bypass".
+	// The ebusd-tcp row is left untouched (it is always blocked with its
+	// own reason "command_bridge_no_companion_listen" per §4.2/§3).
+	// Invariants preserved: I1 (still exactly 3 rows), I2 (active.transport
+	// still appears verbatim), I3 (active.scope == matching row.scope),
+	// I5 (state=blocked ⇒ reason != ""), I7 (row order ENH,ENS,ebusd-tcp
+	// unchanged).
+	if muxBypass {
+		for i := range transports {
+			row := &transports[i]
+			if row.Transport == "ENH" || row.Transport == "ENS" {
+				row.State = "blocked"
+				row.Scope = "none"
+				row.Surfaces = []string{}
+				row.Reason = "transport_mux_bypass"
+			}
+		}
 	}
 
 	var active ebus_standard.ActiveResponder
@@ -1390,13 +1428,13 @@ func buildResponderCapabilityProvider(cfg ebusgateway.Config, actualTransport eb
 	// literally equals the transports[] row label (invariant I2).
 	switch ebusgateway.CanonicalTransportProtocol(cfg.TransportConfig.Protocol) {
 	case ebusgateway.TransportENH:
-		if transportKnown && !responderCapable {
+		if muxBypass {
 			active = ebus_standard.ActiveResponder{Transport: "ENH", Scope: "none", Surfaces: []string{}, Refusal: muxBypassRefusal}
 		} else {
 			active = ebus_standard.ActiveResponder{Transport: "ENH", Scope: "partial", Surfaces: surfacesFF}
 		}
 	case ebusgateway.TransportENS:
-		if transportKnown && !responderCapable {
+		if muxBypass {
 			active = ebus_standard.ActiveResponder{Transport: "ENS", Scope: "none", Surfaces: []string{}, Refusal: muxBypassRefusal}
 		} else {
 			active = ebus_standard.ActiveResponder{Transport: "ENS", Scope: "partial", Surfaces: surfacesFF}

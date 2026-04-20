@@ -224,6 +224,130 @@ func TestResponderCapabilityProvider_ENH_WithActualResponderSupport_ReportsParti
 	assertActiveInTransports(t, cap)
 }
 
+// TestResponderCapabilityProvider_MuxBypass_DowngradesMatchingTransportRow
+// locks the Codex round-3 P1 finding on PR #509: when active is
+// downgraded to scope=none because the runtime mux does not satisfy
+// ResponderTransport, the matching transports[] row MUST also be
+// downgraded to state="blocked", scope="none", surfaces=[],
+// reason="transport_mux_bypass". Otherwise a consumer joining
+// active.transport to the row set sees contradictory metadata
+// (active.scope=none but row.scope=partial), violating invariant I3.
+//
+// Per Interpretation A (the adapter-direct mux is a shared runtime
+// wrapper across ENH/ENS upstreams), both ENH and ENS rows downgrade
+// whenever the bypass is detected regardless of which canonical enum
+// is active. The ebusd-tcp row is left untouched with its own reason.
+func TestResponderCapabilityProvider_MuxBypass_DowngradesMatchingTransportRow(t *testing.T) {
+	for _, canonical := range []ebusgateway.TransportProtocol{
+		ebusgateway.TransportENH,
+		ebusgateway.TransportENS,
+	} {
+		provider := buildResponderCapabilityProvider(ebusgateway.Config{
+			TransportConfig: ebusgateway.TransportConfig{Protocol: canonical},
+		}, muxBypassTransport{})
+		if provider == nil {
+			t.Fatalf("canonical=%q: provider is nil", canonical)
+		}
+		cap := provider()
+		if len(cap.Transports) != 3 {
+			t.Fatalf("canonical=%q: transports[] has %d rows; want 3 (I1)", canonical, len(cap.Transports))
+		}
+
+		var enhRow, ensRow, ebusdRow *ebus_standard.TransportRow
+		for i := range cap.Transports {
+			row := &cap.Transports[i]
+			switch row.Transport {
+			case "ENH":
+				enhRow = row
+			case "ENS":
+				ensRow = row
+			case "ebusd-tcp":
+				ebusdRow = row
+			}
+		}
+		if enhRow == nil || ensRow == nil || ebusdRow == nil {
+			t.Fatalf("canonical=%q: missing expected row (ENH=%v ENS=%v ebusd-tcp=%v)", canonical, enhRow, ensRow, ebusdRow)
+		}
+
+		// Both ENH and ENS rows must be downgraded — the mux is shared.
+		for _, row := range []*ebus_standard.TransportRow{enhRow, ensRow} {
+			if row.State != "blocked" {
+				t.Fatalf("canonical=%q: %s row.state = %q; want %q", canonical, row.Transport, row.State, "blocked")
+			}
+			if row.Scope != "none" {
+				t.Fatalf("canonical=%q: %s row.scope = %q; want %q", canonical, row.Transport, row.Scope, "none")
+			}
+			if len(row.Surfaces) != 0 {
+				t.Fatalf("canonical=%q: %s row.surfaces = %v; want []", canonical, row.Transport, row.Surfaces)
+			}
+			if row.Reason != "transport_mux_bypass" {
+				t.Fatalf("canonical=%q: %s row.reason = %q; want %q", canonical, row.Transport, row.Reason, "transport_mux_bypass")
+			}
+		}
+
+		// ebusd-tcp row must be untouched (its own state/reason).
+		if ebusdRow.State != "blocked" || ebusdRow.Scope != "none" {
+			t.Fatalf("canonical=%q: ebusd-tcp row state/scope disturbed: %+v", canonical, ebusdRow)
+		}
+		if ebusdRow.Reason != "command_bridge_no_companion_listen" {
+			t.Fatalf("canonical=%q: ebusd-tcp row.reason = %q; want %q (must NOT be overwritten by mux bypass)", canonical, ebusdRow.Reason, "command_bridge_no_companion_listen")
+		}
+
+		assertActiveInTransports(t, cap)
+		assertI3ActiveScopeMatchesRow(t, cap)
+	}
+}
+
+// assertI3ActiveScopeMatchesRow is the invariant I3 guard:
+// active.scope MUST equal transports[x].scope where x.transport ==
+// active.transport.
+func assertI3ActiveScopeMatchesRow(t *testing.T, cap ebus_standard.ResponderCapability) {
+	t.Helper()
+	for _, row := range cap.Transports {
+		if row.Transport == cap.Active.Transport {
+			if row.Scope != cap.Active.Scope {
+				t.Fatalf("I3 violated: active.transport=%q active.scope=%q but row.scope=%q",
+					cap.Active.Transport, cap.Active.Scope, row.Scope)
+			}
+			return
+		}
+	}
+	// I2 would have flagged absence already; safe to return.
+}
+
+// TestResponderCapabilityProvider_I3_ActiveScopeEqualsTransportRowScope
+// sweeps every canonical-protocol × transport-instance branch and
+// asserts invariant I3 holds unconditionally.
+func TestResponderCapabilityProvider_I3_ActiveScopeEqualsTransportRowScope(t *testing.T) {
+	cases := []struct {
+		name     string
+		protocol ebusgateway.TransportProtocol
+		instance ebusgoTransport.RawTransport
+	}{
+		{"ENH/nil", ebusgateway.TransportENH, nil},
+		{"ENH/responder-capable", ebusgateway.TransportENH, responderCapableTransport{}},
+		{"ENH/mux-bypass", ebusgateway.TransportENH, muxBypassTransport{}},
+		{"ENS/nil", ebusgateway.TransportENS, nil},
+		{"ENS/responder-capable", ebusgateway.TransportENS, responderCapableTransport{}},
+		{"ENS/mux-bypass", ebusgateway.TransportENS, muxBypassTransport{}},
+		{"ebusd-tcp/nil", ebusgateway.TransportEbusdTCP, nil},
+		{"ebusd-tcp/mux-bypass", ebusgateway.TransportEbusdTCP, muxBypassTransport{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := buildResponderCapabilityProvider(ebusgateway.Config{
+				TransportConfig: ebusgateway.TransportConfig{Protocol: tc.protocol},
+			}, tc.instance)
+			if provider == nil {
+				t.Fatalf("provider is nil for %s", tc.name)
+			}
+			cap := provider()
+			assertActiveInTransports(t, cap)
+			assertI3ActiveScopeMatchesRow(t, cap)
+		})
+	}
+}
+
 // TestResponderCapabilityProvider_ENS_WithMuxBypass_ReportsNone mirrors
 // the ENH mux-bypass test for ENS: --address=adapter-direct-ens:// can
 // keep Protocol=="ens" but the mux active transport still does not

@@ -138,6 +138,16 @@ func parseDecodeQuery(r *http.Request) (estd.DecodeInput, error) {
 	}
 	in.Direction = q.Get("direction")
 	in.FrameType = q.Get("frame_type")
+	// payload_hex: distinguish missing from explicitly-empty. The sub-server
+	// Decode accepts empty payloads (hex.DecodeString("") -> nil), so a bare
+	// q.Get would silently map "omitted" to "", hiding client request bugs
+	// (caller gets success / UNKNOWN_COMMAND instead of INVALID_PAYLOAD).
+	// Explicit empty (payload_hex=) is passed through and defers to backend
+	// Decode semantics; missing key surfaces INVALID_PAYLOAD here.
+	if !q.Has("payload_hex") {
+		return in, fmt.Errorf("payload_hex: %w: required (explicit empty is allowed, but the key must be present)",
+			estd.ErrInvalidPayload)
+	}
 	in.PayloadHex = q.Get("payload_hex")
 	return in, nil
 }

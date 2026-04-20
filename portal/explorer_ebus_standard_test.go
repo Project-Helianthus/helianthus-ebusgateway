@@ -319,6 +319,60 @@ func TestEbusStandardDecode_MissingDirection(t *testing.T) {
 	}
 }
 
+func TestEbusStandardDecode_MissingPayloadHex_ReturnsInvalidPayload(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	// payload_hex key entirely omitted from query string.
+	url := "/api/v1/ebus-standard/decode?pb=5&sb=4&direction=master_to_slave&frame_type=MM"
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr == nil || envErr["code"] != "INVALID_PAYLOAD" {
+		t.Fatalf("expected INVALID_PAYLOAD for missing payload_hex, got %v", envErr)
+	}
+	msg, _ := envErr["message"].(string)
+	if !strings.Contains(msg, "payload_hex") {
+		t.Fatalf("error.message should mention payload_hex, got %q", msg)
+	}
+	// Sub-server must NOT be invoked when the handler rejected up-front:
+	// the fake's Decode would otherwise record lastDecodeInput.
+	var zero estd.DecodeInput
+	if fake.lastDecodeInput != zero {
+		t.Fatalf("sub-server Decode must not be invoked for missing payload_hex, got %+v", fake.lastDecodeInput)
+	}
+}
+
+func TestEbusStandardDecode_ExplicitEmptyPayloadHex_PassesThroughToBackend(t *testing.T) {
+	// Backend Decode contract accepts empty payloads (hex.DecodeString("")
+	// returns nil). Explicit empty payload_hex= must reach the backend so
+	// the catalog-lookup semantics apply unchanged.
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	url := "/api/v1/ebus-standard/decode?pb=5&sb=4&direction=master_to_slave&frame_type=MM&payload_hex="
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr != nil {
+		t.Fatalf("explicit empty payload_hex should pass through, got envelope error: %v", envErr)
+	}
+	in := fake.lastDecodeInput
+	if in.PayloadHex != "" {
+		t.Fatalf("explicit-empty payload_hex must be forwarded as \"\", got %q", in.PayloadHex)
+	}
+	if in.PB != 5 || in.SB != 4 || in.Direction != "master_to_slave" || in.FrameType != "MM" {
+		t.Fatalf("selectors not forwarded: %+v", in)
+	}
+}
+
 func TestEbusStandardNilSubServer_404(t *testing.T) {
 	h := NewHandler(Options{GatewayVersion: "test", BuildID: "test"})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/ebus-standard/services", nil)

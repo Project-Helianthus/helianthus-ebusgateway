@@ -1,6 +1,57 @@
 // Generated from portal/web/src/app.js. DO NOT EDIT.
 const THEME_KEY = "helianthus-portal-theme";
 
+// L7 decode catalog-canonical enums. Source of truth:
+// helianthus-ebusreg/catalog/ebus_standard/identity.go — Direction and
+// TelegramClass constants. Any form value outside these sets is
+// rejected client-side by the decode submit handler (fail-closed)
+// because the backend matcher would return UNKNOWN_COMMAND.
+//
+// NOTE: These values intentionally use the catalog identity enums
+// (request / response / addressed / broadcast / initiator_initiator /
+// controller_broadcast) and NEVER the legacy initiator/responder-coded
+// terminology banned project-wide by ci_local.sh.
+const L7_DECODE_DIRECTIONS = new Set(["request", "response"]);
+const L7_DECODE_FRAME_TYPES = new Set([
+  "addressed",
+  "broadcast",
+  "initiator_initiator",
+  "controller_broadcast",
+]);
+
+// parsePBFilterValue validates an operator-entered PB filter string and
+// returns the trimmed raw token on success, or null on malformed input.
+//
+// Backend contract (portal/explorer_ebus_standard.go: parsePBSBByte) uses
+// smart detection:
+//   - "0x" / "0X" prefix  → parse remainder as hex byte (0x00..0xFF)
+//   - otherwise           → parse as decimal byte (0..255)
+// This matches the MCP tool schema `{"type":"integer","minimum":0,"maximum":255}`
+// contract. Frontend MUST forward the operator's original token verbatim
+// (no Number() round-trip, which would lose the "0x" prefix and rewrite
+// "08" as "8", etc.).
+//
+// Shape check:
+//   - With 0x/0X prefix: 1–2 hex digits.
+//   - Without prefix: 1–3 decimal digits, range-checked [0,255].
+// Bare hex (e.g. "ff") is REJECTED — operators must type "0xff".
+// The null return signals the caller to fail closed — surface an inline
+// error and SUPPRESS the fetch, rather than fall back to an unfiltered
+// list.
+function parsePBFilterValue(raw) {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim();
+  if (s === "") return null;
+  // Hex form: 0x-prefixed, 1-2 hex digits.
+  if (/^(0x|0X)[0-9a-fA-F]{1,2}$/.test(s)) return s;
+  // Decimal form: 1-3 digits in [0,255].
+  if (/^[0-9]{1,3}$/.test(s)) {
+    const n = Number(s);
+    if (Number.isInteger(n) && n >= 0 && n <= 255) return s;
+  }
+  return null;
+}
+
 function loadTheme() {
   const stored = localStorage.getItem(THEME_KEY);
   if (stored === "light" || stored === "dark") {
@@ -327,6 +378,128 @@ class PortalShell extends HTMLElement {
       });
     });
     this.bindExplorerEvents();
+    this.bindL7CatalogEvents();
+  }
+
+  // bindL7CatalogEvents wires the L7 Standard Catalog section (M5_PORTAL)
+  // to the four consumer methods (refreshL7Services / refreshL7Commands /
+  // refreshL7Command / submitL7Decode). Without this wiring the methods
+  // are dead code — render() emits the section markup but no handler
+  // invokes the fetches (Codex P1 finding on PR #507).
+  //
+  // XSS hardening contract: the decode submit path reads user input from
+  // the pb/sb/direction/frame_type/payload_hex inputs and delegates to
+  // submitL7Decode, which renders the response via textContent only on
+  // the [data-role="l7-decode-output"] element. Do NOT add any innerHTML
+  // sink on that element in this handler.
+  bindL7CatalogEvents() {
+    const refreshServices = this.querySelector('[data-role="l7-refresh-services"]');
+    const refreshCommands = this.querySelector('[data-role="l7-refresh-commands"]');
+    const refreshCommand = this.querySelector('[data-role="l7-refresh-command"]');
+    const decodeSubmit = this.querySelector('[data-role="l7-decode-submit"]');
+    if (refreshServices) {
+      refreshServices.addEventListener("click", () => {
+        this.refreshL7Services();
+      });
+    }
+    if (refreshCommands) {
+      refreshCommands.addEventListener("click", () => {
+        const pbInput = this.querySelector('[data-role="l7-pb-filter"]');
+        const pbErrEl = this.querySelector('[data-role="l7-commands-pb-error"]');
+        const pbRaw = pbInput && typeof pbInput.value === "string" ? pbInput.value.trim() : "";
+        // Clear any previous inline error.
+        if (pbErrEl) {
+          pbErrEl.textContent = "";
+          if (pbErrEl.style) pbErrEl.style.display = "none";
+        }
+        if (pbRaw === "") {
+          // Unfiltered list.
+          this.refreshL7Commands();
+          return;
+        }
+        const pb = parsePBFilterValue(pbRaw);
+        if (pb === null) {
+          // Fail closed: surface inline error via textContent, do NOT
+          // call refreshL7Commands so the list isn't silently unfiltered.
+          if (pbErrEl) {
+            pbErrEl.textContent = `Invalid PB: ${pbRaw} (expected 0..255 decimal or 0xNN hex, e.g. 5 or 0x05)`;
+            if (pbErrEl.style) pbErrEl.style.display = "";
+          }
+          return;
+        }
+        this.refreshL7Commands(pb);
+      });
+    }
+    if (refreshCommand) {
+      refreshCommand.addEventListener("click", () => {
+        const idInput = this.querySelector('[data-role="l7-command-id"]');
+        const id = idInput && typeof idInput.value === "string" ? idInput.value.trim() : "";
+        this.refreshL7Command(id);
+      });
+    }
+    if (decodeSubmit) {
+      decodeSubmit.addEventListener("click", () => {
+        const pbInput = this.querySelector('[data-role="l7-decode-pb"]');
+        const sbInput = this.querySelector('[data-role="l7-decode-sb"]');
+        const dirInput = this.querySelector('[data-role="l7-decode-direction"]');
+        const frameInput = this.querySelector('[data-role="l7-decode-frame-type"]');
+        const payloadInput = this.querySelector('[data-role="l7-decode-payload"]');
+        const errEl = this.querySelector('[data-role="l7-decode-error"]');
+        const read = (el) => (el && typeof el.value === "string" ? el.value : "");
+        const direction = read(dirInput);
+        const frameType = read(frameInput);
+        // Clear previous inline error.
+        if (errEl) {
+          errEl.textContent = "";
+          if (errEl.style) errEl.style.display = "none";
+        }
+        // Known-value fallback: if the form were ever fed unknown values
+        // (e.g., via URL hash, injected option, test fixture), fail closed
+        // and surface an inline error. Do NOT send unknown values to the
+        // backend, which would always return UNKNOWN_COMMAND.
+        if (!L7_DECODE_DIRECTIONS.has(direction)) {
+          if (errEl) {
+            errEl.textContent = `Invalid direction: ${direction || "(empty)"} (expected one of: ${Array.from(L7_DECODE_DIRECTIONS).join(", ")})`;
+            if (errEl.style) errEl.style.display = "";
+          }
+          return;
+        }
+        if (!L7_DECODE_FRAME_TYPES.has(frameType)) {
+          if (errEl) {
+            errEl.textContent = `Invalid frame_type: ${frameType || "(empty)"} (expected one of: ${Array.from(L7_DECODE_FRAME_TYPES).join(", ")})`;
+            if (errEl.style) errEl.style.display = "";
+          }
+          return;
+        }
+        // pb/sb are forwarded verbatim (raw tokens: decimal or 0xNN hex).
+        // Validate shape locally so obviously-malformed input fails closed
+        // instead of round-tripping to the backend for an UNKNOWN_COMMAND.
+        // Empty pb/sb is permitted — the backend returns the catalog default.
+        const pbRaw = read(pbInput).trim();
+        const sbRaw = read(sbInput).trim();
+        if (pbRaw !== "" && parsePBFilterValue(pbRaw) === null) {
+          if (errEl) {
+            errEl.textContent = `Invalid PB: ${pbRaw} (expected 0..255 decimal or 0xNN hex, e.g. 5 or 0x05)`;
+            if (errEl.style) errEl.style.display = "";
+          }
+          return;
+        }
+        if (sbRaw !== "" && parsePBFilterValue(sbRaw) === null) {
+          if (errEl) {
+            errEl.textContent = `Invalid SB: ${sbRaw} (expected 0..255 decimal or 0xNN hex, e.g. 5 or 0x05)`;
+            if (errEl.style) errEl.style.display = "";
+          }
+          return;
+        }
+        this.submitL7Decode({
+          pb: pbRaw,
+          sb: sbRaw,
+          direction,
+          frame_type: frameType,
+          payload_hex: read(payloadInput),
+        });
+      });
+    }
   }
 
   activateSection(targetID) {
@@ -340,6 +513,7 @@ class PortalShell extends HTMLElement {
       "section-timeline": ["section-timeline", "section-provenance"],
       "section-snapshots": ["section-snapshots", "section-snapshot-diff", "section-sessions"],
       "section-issue-builder": ["section-issue-builder"],
+      "section-l7-catalog": ["section-l7-catalog"],
     };
     const visible = new Set(sectionMap[targetID] || [targetID]);
     visible.add("section-search");
@@ -350,6 +524,25 @@ class PortalShell extends HTMLElement {
     this.querySelectorAll("[data-nav-target]").forEach((btn) => {
       btn.classList.toggle("active", btn.getAttribute("data-nav-target") === targetID);
     });
+    // First time the L7 Catalog section is activated, kick off the
+    // services list fetch so the panel isn't empty. Subsequent clicks
+    // require an explicit "Refresh Services" press — this mirrors how
+    // the explorer section loads its device list lazily.
+    if (targetID === "section-l7-catalog" && !this._l7CatalogLoaded) {
+      // Skip auto-fetch when the ebus_standard capability is false —
+      // the sub-server is nil, so /api/v1/ebus-standard/services would
+      // 404. Codex P2 on PR #507. The nav button is also disabled via
+      // applyCapabilityState, so this guard is defence-in-depth against
+      // bootstrap picking section-l7-catalog as firstEnabled and
+      // against programmatic activation.
+      if (this._capabilityEbusStandard === false) {
+        return;
+      }
+      this._l7CatalogLoaded = true;
+      if (typeof this.refreshL7Services === "function") {
+        this.refreshL7Services();
+      }
+    }
   }
 
   async loadStatus(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
@@ -560,6 +753,13 @@ class PortalShell extends HTMLElement {
     this.setNavState("timeline", cap.timeline || cap.provenance);
     this.setNavState("snapshots", cap.snapshots || cap.snapshot_diff);
     this.setNavState("issue-builder", cap.issue_builder);
+    // L7 Standard Catalog nav button (M5_PORTAL). Gated by the
+    // backend `ebus_standard` capability flag so that when the
+    // sub-server is nil, the button is disabled and the section
+    // is not auto-activated (which would surface a 404 fetch).
+    // Codex P2 on PR #507.
+    this.setNavState("l7-catalog", cap.ebus_standard);
+    this._capabilityEbusStandard = Boolean(cap.ebus_standard);
   }
 
   setNavState(name, enabled) {
@@ -1998,6 +2198,7 @@ class PortalShell extends HTMLElement {
             <button data-role="nav-timeline" data-nav-target="section-timeline" disabled><span class="nav-bullet"></span> Timeline</button>
             <button data-role="nav-snapshots" data-nav-target="section-snapshots" disabled><span class="nav-bullet"></span> Snapshots</button>
             <button data-role="nav-issue-builder" data-nav-target="section-issue-builder" disabled><span class="nav-bullet"></span> Issue Builder</button>
+            <button data-role="nav-l7-catalog" data-nav-target="section-l7-catalog" disabled><span class="nav-bullet"></span> L7 Catalog</button>
           </aside>
           <main class="main">
             <h1>Portal Overview</h1>
@@ -2200,12 +2401,273 @@ class PortalShell extends HTMLElement {
               </div>
               <pre class="issue-preview" data-role="issue-preview">Loading issue builder capability...</pre>
             </section>
+            <section id="section-l7-catalog" class="registry-preview">
+              <h2>L7 Standard Catalog</h2>
+              <p class="muted-inline">Read-only view over the ebus_standard L7 catalog (M5_PORTAL). Services, commands with 14-tuple identity, and a decode sandbox.</p>
+              <div class="snapshot-controls">
+                <button class="button" data-role="l7-refresh-services" type="button">Refresh Services</button>
+                <input class="search timeline-filter" data-role="l7-pb-filter" type="search" placeholder="Filter commands by PB (e.g. 5 or 0x05)" aria-label="Filter commands by PB" />
+                <button class="button" data-role="l7-refresh-commands" type="button">Refresh Commands</button>
+                <span class="error" data-role="l7-commands-pb-error" style="display:none"></span>
+                <input class="search timeline-filter" data-role="l7-command-id" type="search" placeholder="Command id (e.g. ebus_standard.service_data.start_counts)" aria-label="Command id" />
+                <button class="button" data-role="l7-refresh-command" type="button">Load Command</button>
+              </div>
+              <h3>Services</h3>
+              <div data-role="l7-services-body">
+                <div class="muted-inline">Click Refresh Services to load the catalog.</div>
+              </div>
+              <h3>Commands</h3>
+              <div data-role="l7-commands-body">
+                <div class="muted-inline">Click Refresh Commands to list commands.</div>
+              </div>
+              <h3>Command Detail</h3>
+              <div data-role="l7-command-body">
+                <div class="muted-inline">Enter a command id and click Load Command.</div>
+              </div>
+              <h3>Decode Sandbox</h3>
+              <div class="snapshot-controls">
+                <input class="search timeline-filter" data-role="l7-decode-pb" type="text" placeholder="pb (0..255 or 0xNN)" aria-label="Decode PB" size="5" />
+                <input class="search timeline-filter" data-role="l7-decode-sb" type="text" placeholder="sb (0..255 or 0xNN)" aria-label="Decode SB" size="5" />
+                <select class="select" data-role="l7-decode-direction" aria-label="Decode direction">
+                  <option value="request">request</option>
+                  <option value="response">response</option>
+                </select>
+                <select class="select" data-role="l7-decode-frame-type" aria-label="Decode frame type">
+                  <option value="addressed">addressed</option>
+                  <option value="broadcast">broadcast</option>
+                  <option value="initiator_initiator">initiator_initiator</option>
+                  <option value="controller_broadcast">controller_broadcast</option>
+                </select>
+                <input class="search timeline-filter" data-role="l7-decode-payload" type="text" placeholder="payload_hex" aria-label="Decode payload hex" />
+                <button class="button" data-role="l7-decode-submit" type="button">Decode</button>
+              </div>
+              <div class="muted-inline" data-role="l7-decode-status">Idle.</div>
+              <div class="error" data-role="l7-decode-error" style="display:none"></div>
+              <pre class="issue-preview" data-role="l7-decode-output"></pre>
+            </section>
             <div class="meta" data-role="stream-status">Stream idle</div>
             <div class="meta" data-role="meta">Waiting for bootstrap...</div>
           </main>
         </div>
       </div>
     `;
+  }
+
+  // ---------------------------------------------------------------------
+  // M5_PORTAL — ebus_standard L7 consumer UI
+  //
+  // Read-only surface over the in-process mcp/ebus_standard sub-server.
+  // Four views:
+  //   - services list         → refreshL7Services()
+  //   - commands list         → refreshL7Commands(optional pb)
+  //   - command detail        → refreshL7Command(id)
+  //   - decode sandbox        → submitL7Decode({pb, sb, direction, frame_type, payload_hex})
+  //
+  // XSS hardening: the decode sandbox writes user-controlled bytes into
+  // the output element via textContent, NEVER innerHTML. Catalog-derived
+  // strings (service/command names) use escapeHtml() before being placed
+  // in innerHTML templates.
+  //
+  // Open-enum fail-closed (M4b2 §4.3): unknown safety_class, direction,
+  // and frame_type values render with an 'unknown' fallback label while
+  // still showing the raw value as evidence.
+  // ---------------------------------------------------------------------
+
+  async refreshL7Services() {
+    const body = this.querySelector('[data-role="l7-services-body"]');
+    if (!body) return;
+    try {
+      const resp = await fetch("api/v1/ebus-standard/services");
+      const env = await resp.json();
+      if (env && env.error) {
+        body.innerHTML = `<div class="error">${escapeHtml(env.error.code || "ERROR")}: ${escapeHtml(env.error.message || "")}</div>`;
+        return;
+      }
+      const services = (env && env.data && env.data.services) || [];
+      if (services.length === 0) {
+        body.innerHTML = '<div class="muted-inline">No services in catalog.</div>';
+        return;
+      }
+      const rows = services.map((svc) => {
+        const pb = escapeHtml(svc.pb);
+        const name = escapeHtml(svc.name || "unknown");
+        const desc = escapeHtml(svc.description || "");
+        const count = escapeHtml(svc.command_count);
+        return `<tr><td>0x${Number(svc.pb).toString(16).padStart(2, "0")}</td><td>${name}</td><td>${desc}</td><td>${count}</td></tr>`;
+      }).join("");
+      body.innerHTML = `<table class="table"><thead><tr><th>PB</th><th>Name</th><th>Description</th><th>Commands</th></tr></thead><tbody>${rows}</tbody></table>`;
+    } catch (err) {
+      body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
+    }
+  }
+
+  async refreshL7Commands(pb) {
+    const body = this.querySelector('[data-role="l7-commands-body"]');
+    if (!body) return;
+    // pb is forwarded verbatim (raw hex token like "ff", "0x10", "08").
+    // Backend parsePBSBHex parses the query value as hex-only. Any
+    // parse→reformat round-trip (Number(pb) then String()) would produce
+    // a decimal string and break the hex contract for every value where
+    // decimal ≠ hex (ui=ff → "255" → overflow; ui=10 → "10" → 0x10=16).
+    const qs = (pb === undefined || pb === null || pb === "") ? "" : `?pb=${encodeURIComponent(String(pb))}`;
+    try {
+      const resp = await fetch(`api/v1/ebus-standard/commands${qs}`);
+      const env = await resp.json();
+      if (env && env.error) {
+        body.innerHTML = `<div class="error">${escapeHtml(env.error.code || "ERROR")}: ${escapeHtml(env.error.message || "")}</div>`;
+        return;
+      }
+      const commands = (env && env.data && env.data.commands) || [];
+      if (commands.length === 0) {
+        body.innerHTML = '<div class="muted-inline">No commands match.</div>';
+        return;
+      }
+      const rows = commands.map((cmd) => {
+        const id = escapeHtml(cmd.id || "");
+        const name = escapeHtml(cmd.name || "");
+        const safety = this._l7SafetyClassLabel(cmd.safety_class);
+        const pbHex = `0x${Number(cmd.pb).toString(16).padStart(2, "0")}`;
+        const sbHex = `0x${Number(cmd.sb).toString(16).padStart(2, "0")}`;
+        return `<tr><td>${id}</td><td>${name}</td><td>${escapeHtml(pbHex)}</td><td>${escapeHtml(sbHex)}</td><td>${safety}</td></tr>`;
+      }).join("");
+      body.innerHTML = `<table class="table"><thead><tr><th>ID</th><th>Name</th><th>PB</th><th>SB</th><th>Safety</th></tr></thead><tbody>${rows}</tbody></table>`;
+    } catch (err) {
+      body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
+    }
+  }
+
+  async refreshL7Command(id) {
+    const body = this.querySelector('[data-role="l7-command-body"]');
+    if (!body) return;
+    if (!id) {
+      body.innerHTML = '<div class="muted-inline">Enter a command id.</div>';
+      return;
+    }
+    try {
+      const resp = await fetch(`api/v1/ebus-standard/command?id=${encodeURIComponent(id)}`);
+      const env = await resp.json();
+      if (env && env.error) {
+        body.innerHTML = `<div class="error">${escapeHtml(env.error.code || "ERROR")}: ${escapeHtml(env.error.message || "")}</div>`;
+        return;
+      }
+      const cmd = (env && env.data && env.data.command) || null;
+      if (!cmd) {
+        body.innerHTML = '<div class="muted-inline">Command not found.</div>';
+        return;
+      }
+      const identity = cmd.identity || {};
+      const safety = this._l7SafetyClassLabel(cmd.safety_class);
+      const direction = this._l7DirectionLabel(identity.direction);
+      const frameType = this._l7FrameTypeLabel(identity.telegram_class);
+      const req = Array.isArray(cmd.request) ? cmd.request : [];
+      const resp2 = Array.isArray(cmd.response) ? cmd.response : [];
+      const paramRow = (p, role) =>
+        `<tr><td>${escapeHtml(role)}</td><td>${escapeHtml(p.name || "")}</td><td>${escapeHtml(p.type || "")}</td><td>${escapeHtml(p.description || "")}</td></tr>`;
+      const paramRows = req.map((p) => paramRow(p, "request")).concat(resp2.map((p) => paramRow(p, "response"))).join("");
+      const paramTable = paramRows
+        ? `<table class="table"><thead><tr><th>Role</th><th>Name</th><th>Type</th><th>Description</th></tr></thead><tbody>${paramRows}</tbody></table>`
+        : '<div class="muted-inline">No parameters documented.</div>';
+      body.innerHTML = `
+        <dl class="meta-list">
+          <dt>ID</dt><dd>${escapeHtml(cmd.id || "")}</dd>
+          <dt>Name</dt><dd>${escapeHtml(cmd.name || "")}</dd>
+          <dt>Description</dt><dd>${escapeHtml(cmd.description || "")}</dd>
+          <dt>Safety class</dt><dd>${safety}</dd>
+          <dt>Direction</dt><dd>${direction}</dd>
+          <dt>Frame type</dt><dd>${frameType}</dd>
+          <dt>PB / SB</dt><dd>0x${escapeHtml(Number(identity.pb || 0).toString(16).padStart(2, "0"))} / 0x${escapeHtml(Number(identity.sb || 0).toString(16).padStart(2, "0"))}</dd>
+        </dl>
+        ${paramTable}
+      `;
+    } catch (err) {
+      body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
+    }
+  }
+
+  async submitL7Decode(input) {
+    const output = this.querySelector('[data-role="l7-decode-output"]');
+    const status = this.querySelector('[data-role="l7-decode-status"]');
+    if (status) status.textContent = "Decoding...";
+    const params = new URLSearchParams();
+    if (input) {
+      if (input.pb !== undefined && input.pb !== null && input.pb !== "") params.set("pb", String(input.pb));
+      if (input.sb !== undefined && input.sb !== null && input.sb !== "") params.set("sb", String(input.sb));
+      if (input.direction !== undefined && input.direction !== null) params.set("direction", String(input.direction));
+      if (input.frame_type !== undefined && input.frame_type !== null) params.set("frame_type", String(input.frame_type));
+      if (input.payload_hex !== undefined && input.payload_hex !== null) params.set("payload_hex", String(input.payload_hex));
+    }
+    try {
+      const resp = await fetch(`api/v1/ebus-standard/decode?${params.toString()}`);
+      const env = await resp.json();
+      if (env && env.error) {
+        if (status) status.textContent = `${env.error.code || "ERROR"}: ${env.error.message || ""}`;
+        if (output) {
+          // CRITICAL: user-controlled error.message is rendered via
+          // textContent — never innerHTML. This is load-bearing XSS
+          // hardening for the decode sandbox and is enforced by the
+          // l7-catalog.test.mjs audit-log assertions.
+          output.textContent = env.error.message || String(env.error.code || "ERROR");
+        }
+        return;
+      }
+      const data = (env && env.data) || {};
+      if (status) status.textContent = `OK — ${data.command_id || "unknown command"} (${data.validity || "?"})`;
+      if (output) {
+        // The decode response contains raw_bytes + optional decoded_repr,
+        // both of which can reflect wire payloads chosen by an attacker.
+        // textContent is the entire sink for this data — no HTML parsing,
+        // no innerHTML, no template interpolation.
+        const rawBytes = Array.isArray(data.raw_bytes)
+          ? data.raw_bytes.map((b) => Number(b).toString(16).padStart(2, "0")).join(" ")
+          : "";
+        const decodedRepr = typeof data.decoded_repr === "string" ? data.decoded_repr : "";
+        const parts = [
+          `command_id: ${data.command_id || "unknown"}`,
+          `validity: ${data.validity || "unknown"}`,
+          `raw_bytes: ${rawBytes}`,
+        ];
+        if (decodedRepr) parts.push(`decoded: ${decodedRepr}`);
+        output.textContent = parts.join("\n");
+      }
+    } catch (err) {
+      if (status) status.textContent = `Error: ${err}`;
+      if (output) output.textContent = String(err);
+    }
+  }
+
+  // _l7SafetyClassLabel maps a safety_class open-enum value to a labeled
+  // HTML pill. Unknown values render with an "unknown" fallback per
+  // M4b2 §4.3 fail-closed consumer rule, while still showing the raw
+  // value as evidence (escapeHtml-wrapped).
+  _l7SafetyClassLabel(value) {
+    const known = {
+      read_only_safe: "safe",
+      write_controlled: "controlled",
+      frontier_experimental: "experimental",
+      prohibited: "prohibited",
+    };
+    const raw = typeof value === "string" ? value : "";
+    const label = known[raw];
+    if (label) {
+      return `<span class="pill safety-${escapeHtml(raw)}">${escapeHtml(label)}</span> <span class="muted-inline">${escapeHtml(raw)}</span>`;
+    }
+    return `<span class="pill safety-unknown">unknown</span> <span class="muted-inline">${escapeHtml(raw || "(empty)")}</span>`;
+  }
+
+  _l7DirectionLabel(value) {
+    const raw = typeof value === "string" ? value : "";
+    if (L7_DECODE_DIRECTIONS.has(raw)) {
+      return `<span class="pill">${escapeHtml(raw)}</span>`;
+    }
+    return `<span class="pill pill-unknown">unknown</span> <span class="muted-inline">${escapeHtml(raw || "(empty)")}</span>`;
+  }
+
+  _l7FrameTypeLabel(value) {
+    const raw = typeof value === "string" ? value : "";
+    if (L7_DECODE_FRAME_TYPES.has(raw)) {
+      return `<span class="pill">${escapeHtml(raw)}</span>`;
+    }
+    return `<span class="pill pill-unknown">unknown</span> <span class="muted-inline">${escapeHtml(raw || "(empty)")}</span>`;
   }
 }
 

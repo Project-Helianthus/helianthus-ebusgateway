@@ -431,7 +431,7 @@ type Server struct {
 	// ebusStandardServer dispatches the four ebus_standard MCP surfaces
 	// (services.list, commands.list, command.get, decode). Installed via
 	// RegisterEbusStandardTools during bootstrap; nil when disabled.
-	ebusStandardServer ebusStandardSubServer
+	ebusStandardServer EbusStandardSubServer
 }
 
 const (

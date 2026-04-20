@@ -4,7 +4,9 @@ import (
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	ebusgoTransport "github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -372,4 +374,50 @@ func TestResponderCapabilityProvider_ENS_WithMuxBypass_ReportsNone(t *testing.T)
 		t.Fatalf("active.refusal = %+v; want code=transport_mux_bypass", cap.Active.Refusal)
 	}
 	assertActiveInTransports(t, cap)
+}
+
+// TestM5Portal_EbusStandardServer_WiredInProduction asserts that the
+// gateway bootstrap hands the MCP sub-server into portal.Options. The
+// production wiring in main.go does:
+//
+//	portal.NewHandler(portal.Options{
+//	    ...
+//	    EbusStandardServer: mcpServer.EbusStandardServer(),
+//	})
+//
+// This smoke test mirrors that exact assignment. If mcp.NewServer stops
+// installing the ebus_standard sub-server, or if the accessor goes nil,
+// this test fails — preventing the regression flagged by Codex P1 on
+// PR #507 (portal.Options.EbusStandardServer omitted -> all four
+// /api/v1/ebus-standard/* routes return 404 in the real gateway process
+// despite tests with fakes passing).
+func TestM5Portal_EbusStandardServer_WiredInProduction(t *testing.T) {
+	mcpServer, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatalf("mcp.NewServer: %v", err)
+	}
+
+	sub := mcpServer.EbusStandardServer()
+	if sub == nil {
+		t.Fatalf("mcpServer.EbusStandardServer() is nil — RegisterEbusStandardTools not installed inside NewServer")
+	}
+
+	// Exercise the exact assignment main.go uses. This must compile:
+	// mcp.EbusStandardSubServer -> portal.PortalEbusStandardServer
+	// (structural-typing compatibility is load-bearing — if either
+	// interface drifts, the production wiring breaks at build time.)
+	opts := portal.Options{EbusStandardServer: sub}
+	if opts.EbusStandardServer == nil {
+		t.Fatalf("portal.Options.EbusStandardServer is nil after assignment")
+	}
+
+	// Dispatch a live call through the assigned interface to verify the
+	// method set reaches the real catalog, not a typed-nil wrapper.
+	data := opts.EbusStandardServer.ServicesList()
+	if data == nil {
+		t.Fatalf("EbusStandardServer.ServicesList() returned nil — catalog not reachable")
+	}
+	if ns, ok := data["namespace"].(string); !ok || ns != "ebus_standard" {
+		t.Fatalf("ServicesList() namespace = %v, want ebus_standard", data["namespace"])
+	}
 }

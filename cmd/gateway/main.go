@@ -914,6 +914,14 @@ func startHTTPServer(
 			},
 			ExplorerBus:    gateway.Bus,
 			ExplorerSource: cfg.ScanSource,
+			// Wire the in-process L7 catalog sub-server (M5_PORTAL).
+			// mcpServer.EbusStandardServer() returns the same instance
+			// RegisterEbusStandardTools installed inside mcp.NewServer;
+			// sharing it between MCP + portal surfaces guarantees both
+			// reach the identical SHA256-pinned embedded catalog. Nil
+			// here would make /api/v1/ebus-standard/* routes 404 in
+			// production (handler.go nil-guard) — see PR #507.
+			EbusStandardServer: mcpServer.EbusStandardServer(),
 		})
 		mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))
 		mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {

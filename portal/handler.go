@@ -61,6 +61,11 @@ type Options struct {
 	GetProjection       func(address byte, plane string) (ProjectionGraph, bool)
 	ExplorerBus         ExplorerBus // nil disables explorer
 	ExplorerSource      byte        // default eBUS source address (0xF0 if zero)
+	// EbusStandardServer is the in-process L7 catalog sub-server consumed
+	// by the M5_PORTAL read-only consumer UI. Nil disables the
+	// /api/v1/ebus-standard/* routes (they return 404) and hides the
+	// capability in /api/v1/bootstrap.
+	EbusStandardServer PortalEbusStandardServer
 }
 
 type handler struct {
@@ -860,6 +865,14 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 	if h.explorer != nil && h.routeExplorer(w, r, trimmed) {
 		return
 	}
+	// ebus_standard L7 consumer UI (M5_PORTAL). routeEbusStandard returns
+	// true if the path matched the ebus-standard/ prefix, even when the
+	// sub-server is nil (in which case it responds with 404). Placed
+	// before the GET-only guard for symmetry with explorer, though all
+	// ebus-standard routes are GET-only and enforce that internally.
+	if h.routeEbusStandard(w, r, trimmed) {
+		return
+	}
 
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -894,6 +907,13 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"issue_builder":     true,
 				"migration":         false,
 				"explorer":          h.explorer != nil,
+				// ebus_standard gates the L7 Standard Catalog consumer UI
+				// (M5_PORTAL). When the sub-server is nil, routeEbusStandard
+				// responds 404 for /api/v1/ebus-standard/* — the frontend
+				// must then disable the nav button and skip auto-activation
+				// of section-l7-catalog, otherwise the bootstrap fetch
+				// surfaces a broken section. Codex P2 on PR #507.
+				"ebus_standard": h.opts.EbusStandardServer != nil,
 			},
 			"endpoints": map[string]string{
 				"graphql":               h.opts.GraphQLPath,
@@ -1047,6 +1067,16 @@ func classifyRoute(path string) string {
 		return "api.issues.export"
 	case strings.HasPrefix(path, "/api/v1/explorer/"):
 		return "api.explorer"
+	case strings.HasPrefix(path, "/api/v1/ebus-standard/services"):
+		return "api.ebus_standard.services"
+	case strings.HasPrefix(path, "/api/v1/ebus-standard/commands"):
+		return "api.ebus_standard.commands"
+	case strings.HasPrefix(path, "/api/v1/ebus-standard/command"):
+		return "api.ebus_standard.command"
+	case strings.HasPrefix(path, "/api/v1/ebus-standard/decode"):
+		return "api.ebus_standard.decode"
+	case strings.HasPrefix(path, "/api/v1/ebus-standard/"):
+		return "api.ebus_standard"
 	case strings.HasPrefix(path, "/assets/"):
 		return "assets"
 	case path == "/" || strings.EqualFold(path, "/index.html"):

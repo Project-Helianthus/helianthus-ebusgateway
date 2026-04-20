@@ -1490,6 +1490,51 @@ func TestVRCExplorerDeprecationEndpointRemoved(t *testing.T) {
 	}
 }
 
+func TestClassifyRoute_EbusStandardServices(t *testing.T) {
+	if got := classifyRoute("/api/v1/ebus-standard/services"); got != "api.ebus_standard.services" {
+		t.Fatalf("classifyRoute(services) = %q; want api.ebus_standard.services", got)
+	}
+}
+
+func TestClassifyRoute_EbusStandardCommands(t *testing.T) {
+	if got := classifyRoute("/api/v1/ebus-standard/commands"); got != "api.ebus_standard.commands" {
+		t.Fatalf("classifyRoute(commands) = %q; want api.ebus_standard.commands", got)
+	}
+	if got := classifyRoute("/api/v1/ebus-standard/commands?pb=5"); got != "api.ebus_standard.commands" {
+		t.Fatalf("classifyRoute(commands?pb=5) = %q; want api.ebus_standard.commands", got)
+	}
+}
+
+func TestClassifyRoute_EbusStandardCommandGet(t *testing.T) {
+	if got := classifyRoute("/api/v1/ebus-standard/command"); got != "api.ebus_standard.command" {
+		t.Fatalf("classifyRoute(command) = %q; want api.ebus_standard.command", got)
+	}
+	if got := classifyRoute("/api/v1/ebus-standard/command?id=cmd.future"); got != "api.ebus_standard.command" {
+		t.Fatalf("classifyRoute(command?id=...) = %q; want api.ebus_standard.command", got)
+	}
+}
+
+func TestClassifyRoute_EbusStandardDecode(t *testing.T) {
+	if got := classifyRoute("/api/v1/ebus-standard/decode"); got != "api.ebus_standard.decode" {
+		t.Fatalf("classifyRoute(decode) = %q; want api.ebus_standard.decode", got)
+	}
+}
+
+func TestClassifyRoute_EbusStandardNotStatic(t *testing.T) {
+	paths := []string{
+		"/api/v1/ebus-standard/services",
+		"/api/v1/ebus-standard/commands",
+		"/api/v1/ebus-standard/command",
+		"/api/v1/ebus-standard/decode",
+		"/api/v1/ebus-standard/future-endpoint",
+	}
+	for _, p := range paths {
+		if got := classifyRoute(p); got == "static" {
+			t.Fatalf("classifyRoute(%q) = static; want api.ebus_standard.*", p)
+		}
+	}
+}
+
 func stringPtr(value string) *string {
 	v := value
 	return &v

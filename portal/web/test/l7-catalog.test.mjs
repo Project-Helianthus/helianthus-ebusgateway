@@ -802,3 +802,104 @@ test("L7 PB filter parses well-formed hex/decimal and forwards to refreshL7Comma
     }
   }
 });
+
+// ---- 11. Capability gating: nav button disabled when ebus_standard=false ----
+//
+// Regression for Codex P2 finding on PR #507 (round 5): the L7 nav
+// button used to render enabled by default; applyCapabilityState()
+// never toggled it, so when Options.EbusStandardServer was nil the
+// button remained clickable and bootstrap auto-activation fetched
+// /api/v1/ebus-standard/services → 404. Fix gates the button by the
+// new `ebus_standard` capability flag, matching nav-explorer idiom.
+
+test("L7 nav button is disabled when capabilities.ebus_standard=false", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const navBtn = {
+    disabled: false,
+    className: "",
+    classList: { toggle() {} },
+    querySelector: () => ({ classList: { toggle() {} } }),
+  };
+  const elements = new Map([
+    ['[data-role="nav-l7-catalog"]', navBtn],
+  ]);
+  const { shell } = buildSandbox({
+    source, sourcePath, elements,
+    fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.applyCapabilityState = proto.applyCapabilityState;
+  shell.setNavState = proto.setNavState;
+  shell.applyCapabilityState({ ebus_standard: false });
+  assert.equal(navBtn.disabled, true,
+    "nav-l7-catalog must be disabled when capability=false");
+  assert.equal(shell._capabilityEbusStandard, false,
+    "_capabilityEbusStandard must record false for activateSection guard");
+});
+
+test("L7 nav button is enabled when capabilities.ebus_standard=true", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const navBtn = {
+    disabled: true,
+    className: "",
+    classList: { toggle() {} },
+    querySelector: () => ({ classList: { toggle() {} } }),
+  };
+  const elements = new Map([
+    ['[data-role="nav-l7-catalog"]', navBtn],
+  ]);
+  const { shell } = buildSandbox({
+    source, sourcePath, elements,
+    fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.applyCapabilityState = proto.applyCapabilityState;
+  shell.setNavState = proto.setNavState;
+  shell.applyCapabilityState({ ebus_standard: true });
+  assert.equal(navBtn.disabled, false,
+    "nav-l7-catalog must be enabled when capability=true");
+  assert.equal(shell._capabilityEbusStandard, true,
+    "_capabilityEbusStandard must record true for activateSection guard");
+});
+
+test("activateSection(section-l7-catalog) no-ops when ebus_standard=false (no refreshL7Services call)", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  // Build a shell with no matching DOM (querySelectorAll returns [])
+  // and capture whether refreshL7Services is invoked.
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map(),
+    fetchImpl: async () => { throw new Error("fetch must NOT be called when capability=false"); },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.activateSection = proto.activateSection;
+  let refreshCalls = 0;
+  shell.refreshL7Services = () => { refreshCalls++; };
+  shell._capabilityEbusStandard = false;
+
+  shell.activateSection("section-l7-catalog");
+
+  assert.equal(refreshCalls, 0,
+    "refreshL7Services must NOT be called when ebus_standard capability is false");
+  assert.ok(!shell._l7CatalogLoaded,
+    "_l7CatalogLoaded must remain unset so a later capability=true activation still loads");
+});
+
+test("activateSection(section-l7-catalog) triggers refreshL7Services when ebus_standard=true", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map(),
+    fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.activateSection = proto.activateSection;
+  let refreshCalls = 0;
+  shell.refreshL7Services = () => { refreshCalls++; };
+  shell._capabilityEbusStandard = true;
+
+  shell.activateSection("section-l7-catalog");
+
+  assert.equal(refreshCalls, 1,
+    "refreshL7Services must fire once on first activation when capability=true");
+});

@@ -907,6 +907,13 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"issue_builder":     true,
 				"migration":         false,
 				"explorer":          h.explorer != nil,
+				// ebus_standard gates the L7 Standard Catalog consumer UI
+				// (M5_PORTAL). When the sub-server is nil, routeEbusStandard
+				// responds 404 for /api/v1/ebus-standard/* — the frontend
+				// must then disable the nav button and skip auto-activation
+				// of section-l7-catalog, otherwise the bootstrap fetch
+				// surfaces a broken section. Codex P2 on PR #507.
+				"ebus_standard": h.opts.EbusStandardServer != nil,
 			},
 			"endpoints": map[string]string{
 				"graphql":               h.opts.GraphQLPath,

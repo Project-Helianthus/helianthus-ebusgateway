@@ -500,6 +500,15 @@ class PortalShell extends HTMLElement {
     // require an explicit "Refresh Services" press — this mirrors how
     // the explorer section loads its device list lazily.
     if (targetID === "section-l7-catalog" && !this._l7CatalogLoaded) {
+      // Skip auto-fetch when the ebus_standard capability is false —
+      // the sub-server is nil, so /api/v1/ebus-standard/services would
+      // 404. Codex P2 on PR #507. The nav button is also disabled via
+      // applyCapabilityState, so this guard is defence-in-depth against
+      // bootstrap picking section-l7-catalog as firstEnabled and
+      // against programmatic activation.
+      if (this._capabilityEbusStandard === false) {
+        return;
+      }
       this._l7CatalogLoaded = true;
       if (typeof this.refreshL7Services === "function") {
         this.refreshL7Services();
@@ -715,6 +724,13 @@ class PortalShell extends HTMLElement {
     this.setNavState("timeline", cap.timeline || cap.provenance);
     this.setNavState("snapshots", cap.snapshots || cap.snapshot_diff);
     this.setNavState("issue-builder", cap.issue_builder);
+    // L7 Standard Catalog nav button (M5_PORTAL). Gated by the
+    // backend `ebus_standard` capability flag so that when the
+    // sub-server is nil, the button is disabled and the section
+    // is not auto-activated (which would surface a 404 fetch).
+    // Codex P2 on PR #507.
+    this.setNavState("l7-catalog", cap.ebus_standard);
+    this._capabilityEbusStandard = Boolean(cap.ebus_standard);
   }
 
   setNavState(name, enabled) {
@@ -2153,7 +2169,7 @@ class PortalShell extends HTMLElement {
             <button data-role="nav-timeline" data-nav-target="section-timeline" disabled><span class="nav-bullet"></span> Timeline</button>
             <button data-role="nav-snapshots" data-nav-target="section-snapshots" disabled><span class="nav-bullet"></span> Snapshots</button>
             <button data-role="nav-issue-builder" data-nav-target="section-issue-builder" disabled><span class="nav-bullet"></span> Issue Builder</button>
-            <button data-role="nav-l7-catalog" data-nav-target="section-l7-catalog"><span class="nav-bullet"></span> L7 Catalog</button>
+            <button data-role="nav-l7-catalog" data-nav-target="section-l7-catalog" disabled><span class="nav-bullet"></span> L7 Catalog</button>
           </aside>
           <main class="main">
             <h1>Portal Overview</h1>

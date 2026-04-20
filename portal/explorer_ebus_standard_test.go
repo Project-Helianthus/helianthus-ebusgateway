@@ -396,3 +396,46 @@ func TestEbusStandardMethodNotAllowed(t *testing.T) {
 		t.Fatalf("status = %d; want 405", rec.Code)
 	}
 }
+
+// TestCapabilities_EbusStandardFlagReflectsOptions verifies that the
+// /api/v1/bootstrap `capabilities.ebus_standard` flag is true iff
+// Options.EbusStandardServer is non-nil. The frontend gates the L7
+// nav button and section auto-activation on this flag — see the
+// matching applyCapabilityState / activateSection wiring in app.js
+// and the l7-catalog.test.mjs regression tests. Codex P2 on PR #507.
+func TestCapabilities_EbusStandardFlagReflectsOptions(t *testing.T) {
+	cases := []struct {
+		name   string
+		server PortalEbusStandardServer
+		want   bool
+	}{
+		{name: "nil sub-server → flag false", server: nil, want: false},
+		{name: "non-nil sub-server → flag true", server: &fakeEbusStandardServer{}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHandler(Options{EbusStandardServer: tc.server})
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d; want 200", rec.Code)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			caps, ok := payload["capabilities"].(map[string]any)
+			if !ok {
+				t.Fatalf("bootstrap missing capabilities map; got: %v", payload)
+			}
+			got, present := caps["ebus_standard"]
+			if !present {
+				t.Fatalf("capabilities.ebus_standard missing; got keys: %v", caps)
+			}
+			if got != tc.want {
+				t.Fatalf("capabilities.ebus_standard=%v; want %v", got, tc.want)
+			}
+		})
+	}
+}

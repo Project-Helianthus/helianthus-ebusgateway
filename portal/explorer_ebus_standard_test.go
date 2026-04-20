@@ -425,6 +425,141 @@ func TestEbusStandardMethodNotAllowed(t *testing.T) {
 	}
 }
 
+// TestEbusStandardCommandsList_PBLeadingZero_DeterministicHex guards against
+// Go's base-0 octal auto-detection for the pb filter. Earlier revisions used
+// strconv.ParseUint(raw, 0, 16), which would parse "010" as octal 8 rather
+// than hex 0x10=16. PB/SB are documented as hex byte selectors in the
+// catalog, so the parser must be deterministic hex regardless of leading
+// zeros. Codex P2 on PR #507 (comment #3109631170).
+func TestEbusStandardCommandsList_PBLeadingZero_DeterministicHex(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ebus-standard/commands?pb=010", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr != nil {
+		t.Fatalf("leading-zero pb=010 must parse as hex, got envelope error: %v", envErr)
+	}
+	if fake.lastCommandsPB == nil {
+		t.Fatalf("pb filter not forwarded (nil)")
+	}
+	if *fake.lastCommandsPB != 0x10 {
+		t.Fatalf("pb=010 must parse as 0x10=16 (hex), got %d (base-0 octal regression)",
+			*fake.lastCommandsPB)
+	}
+}
+
+// TestEbusStandardCommandsList_PB08_AcceptedAsHex guards against
+// Go's base-0 octal-rejection for "08"/"09": with base=0, an input like
+// pb=08 was rejected as invalid octal despite being a legitimate hex
+// byte. Hex-only parsing must accept pb=08 and pb=09.
+func TestEbusStandardCommandsList_PB08_AcceptedAsHex(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ebus-standard/commands?pb=08", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr != nil {
+		t.Fatalf("pb=08 must parse as hex 0x08, got envelope error: %v", envErr)
+	}
+	if fake.lastCommandsPB == nil || *fake.lastCommandsPB != 0x08 {
+		t.Fatalf("pb=08 must parse to 0x08, got %v", fake.lastCommandsPB)
+	}
+}
+
+// TestEbusStandardCommandsList_PB0xPrefix verifies the "0x" prefix is
+// stripped (case-insensitive) before hex parsing.
+func TestEbusStandardCommandsList_PB0xPrefix(t *testing.T) {
+	for _, raw := range []string{"0x10", "0X10", "0xff", "0XFF"} {
+		t.Run(raw, func(t *testing.T) {
+			fake := &fakeEbusStandardServer{}
+			h := newEbusStandardHandler(fake)
+
+			req := httptest.NewRequest(http.MethodGet,
+				"/api/v1/ebus-standard/commands?pb="+raw, nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			_, _, envErr := decodeEnvelope(t, rec)
+			if envErr != nil {
+				t.Fatalf("pb=%s must parse, got envelope error: %v", raw, envErr)
+			}
+			if fake.lastCommandsPB == nil {
+				t.Fatalf("pb=%s not forwarded", raw)
+			}
+		})
+	}
+}
+
+// TestEbusStandardCommandsList_PBOverflow_Rejected ensures values exceeding
+// 1 byte are rejected (bitSize=8 semantics). "100" parses as 0x100=256
+// which overflows uint8 and MUST yield INVALID_PAYLOAD.
+func TestEbusStandardCommandsList_PBOverflow_Rejected(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ebus-standard/commands?pb=100", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr == nil || envErr["code"] != "INVALID_PAYLOAD" {
+		t.Fatalf("expected INVALID_PAYLOAD for pb=100 (0x100 overflows 1 byte), got %v", envErr)
+	}
+	if fake.lastCommandsPB != nil {
+		t.Fatalf("CommandsList must not be invoked on overflow, got pb=%v",
+			*fake.lastCommandsPB)
+	}
+}
+
+// TestEbusStandardDecode_PBSBLeadingZero_DeterministicHex guards the decode
+// route's pb/sb parsing against the same base-0 octal regression.
+func TestEbusStandardDecode_PBSBLeadingZero_DeterministicHex(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	url := "/api/v1/ebus-standard/decode?pb=010&sb=08&direction=master_to_slave&frame_type=MM&payload_hex=aa"
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr != nil {
+		t.Fatalf("pb=010&sb=08 must parse as hex, got envelope error: %v", envErr)
+	}
+	in := fake.lastDecodeInput
+	if in.PB != 0x10 {
+		t.Fatalf("pb=010 must parse as 0x10=16, got %d", in.PB)
+	}
+	if in.SB != 0x08 {
+		t.Fatalf("sb=08 must parse as 0x08=8, got %d", in.SB)
+	}
+}
+
+// TestEbusStandardDecode_SBBanana_Rejected ensures non-hex SB values are
+// rejected with INVALID_PAYLOAD — regression guard that the helper's parse
+// error bubbles up through the decode route's selector validation.
+func TestEbusStandardDecode_SBBanana_Rejected(t *testing.T) {
+	fake := &fakeEbusStandardServer{}
+	h := newEbusStandardHandler(fake)
+
+	url := "/api/v1/ebus-standard/decode?pb=5&sb=banana&direction=master_to_slave&frame_type=MM&payload_hex=aa"
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	_, _, envErr := decodeEnvelope(t, rec)
+	if envErr == nil || envErr["code"] != "INVALID_PAYLOAD" {
+		t.Fatalf("expected INVALID_PAYLOAD for sb=banana, got %v", envErr)
+	}
+}
+
 // TestCapabilities_EbusStandardFlagReflectsOptions verifies that the
 // /api/v1/bootstrap `capabilities.ebus_standard` flag is true iff
 // Options.EbusStandardServer is non-nil. The frontend gates the L7

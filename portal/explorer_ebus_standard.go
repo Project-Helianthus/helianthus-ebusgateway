@@ -6,10 +6,38 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 )
+
+// parsePBSBHex parses a PB/SB selector as a 1-byte hex value. The optional
+// "0x"/"0X" prefix is stripped (case-insensitive); the remainder is parsed
+// with explicit base=16 and bitSize=8.
+//
+// Rationale: earlier revisions used strconv.ParseUint(raw, 0, 16), which
+// enables Go's base-0 auto-detection — leading-zero inputs are then read as
+// octal (pb=010 → 8 instead of 0x10), and decimal-looking but invalid-octal
+// inputs (pb=08, pb=09) are rejected. PB/SB are documented in the catalog
+// as hex byte selectors (0x00-0xFF), so hex-only parsing is both
+// deterministic and aligned with the catalog's own representation.
+//
+// Behavior:
+//   - "010"   → 0x10 = 16 (no octal auto-detection)
+//   - "08"    → 0x08 = 8  (valid hex; no octal rejection)
+//   - "0x10"  → 16        (prefix stripped, parsed as hex)
+//   - "ff"    → 255
+//   - "banana"→ error     (invalid hex digits)
+//   - "100"   → error     (overflows 1-byte bitSize=8)
+func parsePBSBHex(raw string) (uint8, error) {
+	trimmed := strings.TrimPrefix(strings.TrimPrefix(raw, "0x"), "0X")
+	v, err := strconv.ParseUint(trimmed, 16, 8)
+	if err != nil {
+		return 0, err
+	}
+	return uint8(v), nil
+}
 
 // PortalEbusStandardServer is the sibling interface consumed by portal.Options
 // for the ebus_standard L7 sub-server. It mirrors the unexported
@@ -109,16 +137,11 @@ func parseOptionalPBParam(q url.Values) (*uint8, error) {
 		return nil, fmt.Errorf("pb: %w: filter must be a 1-byte hex value or omitted entirely",
 			estd.ErrInvalidPayload)
 	}
-	v, err := strconv.ParseUint(raw, 0, 16)
+	pb, err := parsePBSBHex(raw)
 	if err != nil {
-		return nil, fmt.Errorf("pb: %w: expected integer in [0,255], got %q: %v",
+		return nil, fmt.Errorf("pb: %w: expected 1-byte hex in [0x00,0xFF], got %q: %v",
 			estd.ErrInvalidPayload, raw, err)
 	}
-	if v > 255 {
-		return nil, fmt.Errorf("pb: %w: out of range [0,255]: %d",
-			estd.ErrInvalidPayload, v)
-	}
-	pb := uint8(v)
 	return &pb, nil
 }
 
@@ -133,19 +156,19 @@ func parseDecodeQuery(r *http.Request) (estd.DecodeInput, error) {
 	var in estd.DecodeInput
 	if pbStr := q.Get("pb"); pbStr == "" {
 		return in, fmt.Errorf("pb: %w: required", estd.ErrInvalidPayload)
-	} else if v, err := strconv.ParseUint(pbStr, 0, 16); err != nil || v > 255 {
-		return in, fmt.Errorf("pb: %w: expected [0,255], got %q",
+	} else if v, err := parsePBSBHex(pbStr); err != nil {
+		return in, fmt.Errorf("pb: %w: expected 1-byte hex in [0x00,0xFF], got %q",
 			estd.ErrInvalidPayload, pbStr)
 	} else {
-		in.PB = uint8(v)
+		in.PB = v
 	}
 	if sbStr := q.Get("sb"); sbStr == "" {
 		return in, fmt.Errorf("sb: %w: required", estd.ErrInvalidPayload)
-	} else if v, err := strconv.ParseUint(sbStr, 0, 16); err != nil || v > 255 {
-		return in, fmt.Errorf("sb: %w: expected [0,255], got %q",
+	} else if v, err := parsePBSBHex(sbStr); err != nil {
+		return in, fmt.Errorf("sb: %w: expected 1-byte hex in [0x00,0xFF], got %q",
 			estd.ErrInvalidPayload, sbStr)
 	} else {
-		in.SB = uint8(v)
+		in.SB = v
 	}
 	in.Direction = q.Get("direction")
 	in.FrameType = q.Get("frame_type")

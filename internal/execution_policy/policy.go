@@ -40,6 +40,16 @@ const (
 // against the provider-level sentinel also succeed via errors.Is.
 var ErrSafetyClassDenied = fmt.Errorf("execution_policy: %w", ebusstd.ErrSafetyClassDenied)
 
+// ErrResponderTransportUnavailable is the capability-layer sentinel
+// returned when the responder runtime is constructed against a transport
+// that does not satisfy transport.ResponderTransport, or when the active
+// transport has `capabilities.responder.scope == none` (ebusd-tcp).
+// Distinct from ErrSafetyClassDenied per decision doc @ 567a6798 §5:
+// capability refusals MUST NOT surface as audit outcome=policy_denied;
+// conflating the two channels breaks denial-parity tests and misleads
+// consumers that treat blocked reasons as static transport constraints.
+var ErrResponderTransportUnavailable = errors.New("execution_policy: responder transport unavailable")
+
 // Check evaluates the policy for (cmd, caller). It returns nil when the
 // call is permitted, otherwise a non-nil error that satisfies
 // errors.Is(err, ErrSafetyClassDenied) == true and carries the dynamic

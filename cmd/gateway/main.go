@@ -16,12 +16,14 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/ui"
+	ebusgoTransport "github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	vaillantproviders "github.com/Project-Helianthus/helianthus-ebusreg/providers/vaillant"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
@@ -710,6 +712,31 @@ func startHTTPServer(
 		mcpServer.SetWatchSummaryProvider(newMCPWatchSummaryProvider(shadowCache))
 	}
 	mcpServer.SetSemanticProvider(newMCPSemanticProvider(semanticProvider))
+
+	// M4c2: populate the package-level responder capability provider
+	// based on the active transport protocol. Consumers apply fail-closed
+	// semantics on absence, so this MUST be called before any MCP
+	// surface serves its first envelope. The provider closure is
+	// evaluated per-envelope; hot-path cost is a single pointer load +
+	// struct copy. See decision doc @ 567a6798 §4.2 + §5.
+	//
+	// A nil return from buildResponderCapabilityProvider means the raw
+	// transport protocol does not canonicalize to any of the three
+	// locked rows at v1.1 (ENH / ENS / ebusd-tcp). In that case we omit
+	// the capability entirely so consumers fall back to §4.3 rule 1
+	// (absence → scope=none, fail-closed). This preserves invariant I1
+	// (exactly three rows at v1.1) and I2 (active.transport MUST appear
+	// in transports[]) without widening the schema.
+	// Pass the live transport instance (gateway.Transport) so the provider
+	// can type-assert against ebusgoTransport.ResponderTransport. The
+	// adapter-direct mux returns a RawTransport that does NOT satisfy
+	// ResponderTransport, so config-string "enh" + mux active path
+	// correctly downgrades to scope=none (see Codex P1 on PR #509).
+	if provider := buildResponderCapabilityProvider(cfg, gateway.Transport); provider != nil {
+		ebus_standard.SetResponderCapabilityProvider(provider)
+	} else {
+		log.Printf("warning: meta.capabilities.responder omitted: transport protocol %q does not canonicalize to ENH/ENS/ebusd-tcp", cfg.TransportConfig.Protocol)
+	}
 	if scheduleWriter != nil {
 		mcpServer.SetScheduleWriter(scheduleWriter)
 	}
@@ -1277,4 +1304,162 @@ func mapPortalAdapterInfo(info *graphql.AdapterHardwareInfo) *portal.SemanticAda
 		result.LastTelemetryQuery = info.LastTelemetryQuery.Format(time.RFC3339)
 	}
 	return result
+}
+
+// buildResponderCapabilityProvider composes the `meta.capabilities.responder`
+// signal for the active transport per decision doc @ 567a6798 §4.2 + §5.
+//
+// Mapping (v1.1, locked):
+//   - ENH / ENS → active.scope = "partial", surfaces = FF_03..FF_06,
+//     refusal = nil. transports[] reports the same row as "supported"
+//     and the ebusd-tcp row as perpetually "blocked".
+//   - ebusd-tcp → active.scope = "none", surfaces = [],
+//     refusal.code = "command_bridge_no_companion_listen". Consumers
+//     apply fail-closed per §4.3 rule 4.
+//   - Any other transport (udp-plain, tcp-plain, adapter-direct, empty,
+//     or unrecognised string) → returns nil. The caller omits the
+//     capability entirely and consumers fall back to §4.3 rule 1
+//     (absence → scope=none, fail-closed). This is the only way to
+//     preserve invariant I1 (exactly three rows at v1.1) AND I2
+//     (active.transport MUST appear in transports[]) simultaneously,
+//     because emitting a non-canonical active.transport literal would
+//     violate I2 and widening transports[] with a fourth "unknown" row
+//     would violate I1.
+//
+// The raw cfg.TransportConfig.Protocol is first canonicalised via
+// ebusgateway.canonicalTransportProtocol (which handles the "ebusd"
+// alias → "ebusd-tcp" and lowercases/trims whitespace). This ensures
+// downstream envelope assertions see the canonical enum literal in
+// every surface, matching the three fixed transports[] rows byte-for-
+// byte.
+//
+// Invariants I1/I7 are enforced by always emitting exactly three
+// transport rows (ENH, ENS, ebusd-tcp) in a fixed order. I2/I3 are
+// enforced by deriving active.transport from the same canonical enum
+// literals the rows use.
+//
+// Runtime-transport authority (Codex P1 on PR #509): the canonical
+// protocol enum alone is NOT sufficient to decide active.scope. The
+// adapter-direct URI mode (--address=adapter-direct://...) keeps
+// TransportConfig.Protocol as the default "enh" string while the live
+// transport instance is actually the adapter-direct mux's active path.
+// That path implements transport.RawTransport but does NOT implement
+// transport.ResponderTransport — it has no SendResponderBytes primitive.
+// Reporting active.scope="partial" purely from the config string would
+// over-advertise responder support for FF_03..FF_06 surfaces the gateway
+// cannot actually emit. Accordingly the provider type-asserts the live
+// transport instance against ebusgoTransport.ResponderTransport; when
+// the canonical protocol is ENH/ENS but the instance does NOT satisfy
+// the interface, we downgrade to scope="none" with
+// refusal.code="transport_mux_bypass" AND rewrite both ENH and ENS
+// rows in transports[] to state="blocked", scope="none",
+// reason="transport_mux_bypass" so invariant I3 (active.scope ==
+// matching row.scope) holds — the mux is a shared runtime wrapper
+// above either upstream, so switching the canonical protocol would
+// not restore responder emission. ebusd-tcp path is unchanged —
+// it is forbidden from responder emission per M4b2 §3 regardless of
+// what underlying transport type ebusd is wrapped by.
+//
+// actualTransport is the live instance returned by the bootstrap
+// transport factory. A nil value means the caller has not yet wired a
+// transport (legacy callers, some unit-test paths); in that case the
+// provider falls back to protocol-only inference to preserve previous
+// behaviour on paths that never exercise the adapter-direct mux.
+func buildResponderCapabilityProvider(cfg ebusgateway.Config, actualTransport ebusgoTransport.RawTransport) ebus_standard.ResponderCapabilityProvider {
+	surfacesFF := []string{"FF_03", "FF_04", "FF_05", "FF_06"}
+	// transports[] is static at v1.1 — same three rows on every gateway
+	// regardless of deployment (I1 locks the count at exactly three).
+	transports := []ebus_standard.TransportRow{
+		{Transport: "ENH", State: "supported", Scope: "partial", Surfaces: surfacesFF, Reason: ""},
+		{Transport: "ENS", State: "supported", Scope: "partial", Surfaces: surfacesFF, Reason: ""},
+		{Transport: "ebusd-tcp", State: "blocked", Scope: "none", Surfaces: []string{}, Reason: "command_bridge_no_companion_listen"},
+	}
+
+	// Runtime transport authority: a non-nil actualTransport that does
+	// NOT satisfy ResponderTransport means the live bus path cannot
+	// actually emit responder bytes (the adapter-direct mux is the
+	// concrete case today). A nil actualTransport means bootstrap is
+	// still pre-wiring (e.g. unit tests that only construct Config); in
+	// that case fall back to protocol-only inference so legacy callers
+	// keep their behaviour.
+	transportKnown := actualTransport != nil
+	_, responderCapable := actualTransport.(ebusgoTransport.ResponderTransport)
+	muxBypass := transportKnown && !responderCapable
+	muxBypassRefusal := &ebus_standard.ActiveRefusal{
+		Code:   "transport_mux_bypass",
+		Reason: "runtime transport does not satisfy ResponderTransport (e.g. adapter-direct mux)",
+	}
+
+	// Invariant I3 (decision doc §4.4): active.scope MUST equal
+	// transports[x].scope where x.transport == active.transport. When the
+	// runtime mux bypass is in effect we therefore also rewrite the
+	// matching transports[] row(s) — otherwise a consumer joining
+	// active.transport → transports[] would see contradictory metadata
+	// (active.scope=none but row.scope=partial).
+	//
+	// Interpretation A (shared-runtime downgrade): the adapter-direct mux
+	// is a single wrapper that sits above whichever ENH/ENS upstream the
+	// operator configured. The mux instance itself does not satisfy
+	// ResponderTransport, so switching the canonical protocol from ENH to
+	// ENS (or vice versa) under the same mux would not restore responder
+	// emission — the bypass is shared. Accordingly, BOTH the ENH and ENS
+	// rows downgrade to state=blocked, scope=none, reason="transport_mux_bypass".
+	// The ebusd-tcp row is left untouched (it is always blocked with its
+	// own reason "command_bridge_no_companion_listen" per §4.2/§3).
+	// Invariants preserved: I1 (still exactly 3 rows), I2 (active.transport
+	// still appears verbatim), I3 (active.scope == matching row.scope),
+	// I5 (state=blocked ⇒ reason != ""), I7 (row order ENH,ENS,ebusd-tcp
+	// unchanged).
+	if muxBypass {
+		for i := range transports {
+			row := &transports[i]
+			if row.Transport == "ENH" || row.Transport == "ENS" {
+				row.State = "blocked"
+				row.Scope = "none"
+				row.Surfaces = []string{}
+				row.Reason = "transport_mux_bypass"
+			}
+		}
+	}
+
+	var active ebus_standard.ActiveResponder
+	// Canonicalise raw TransportProtocol (handles "ebusd" alias, case,
+	// whitespace) into one of the enum constants so active.transport
+	// literally equals the transports[] row label (invariant I2).
+	switch ebusgateway.CanonicalTransportProtocol(cfg.TransportConfig.Protocol) {
+	case ebusgateway.TransportENH:
+		if muxBypass {
+			active = ebus_standard.ActiveResponder{Transport: "ENH", Scope: "none", Surfaces: []string{}, Refusal: muxBypassRefusal}
+		} else {
+			active = ebus_standard.ActiveResponder{Transport: "ENH", Scope: "partial", Surfaces: surfacesFF}
+		}
+	case ebusgateway.TransportENS:
+		if muxBypass {
+			active = ebus_standard.ActiveResponder{Transport: "ENS", Scope: "none", Surfaces: []string{}, Refusal: muxBypassRefusal}
+		} else {
+			active = ebus_standard.ActiveResponder{Transport: "ENS", Scope: "partial", Surfaces: surfacesFF}
+		}
+	case ebusgateway.TransportEbusdTCP:
+		active = ebus_standard.ActiveResponder{
+			Transport: "ebusd-tcp",
+			Scope:     "none",
+			Surfaces:  []string{},
+			Refusal:   &ebus_standard.ActiveRefusal{Code: "command_bridge_no_companion_listen", Reason: "ebusd command bridge does not expose a responder-role emission primitive"},
+		}
+	default:
+		// Non-enumerated transports (udp-plain, tcp-plain,
+		// adapter-direct, empty, or entirely unknown). Fail-closed:
+		// return nil so the envelope omits meta.capabilities.responder
+		// entirely (§4.3 rule 1). Emitting the raw string would
+		// violate I2; adding a fourth transports[] row would violate
+		// I1. Absence is the only invariant-preserving outcome.
+		return nil
+	}
+
+	cap := ebus_standard.ResponderCapability{
+		Version:    "v1",
+		Active:     active,
+		Transports: transports,
+	}
+	return func() ebus_standard.ResponderCapability { return cap }
 }

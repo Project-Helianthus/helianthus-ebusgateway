@@ -285,7 +285,7 @@ func TestRegression_StartedButNoResponse(t *testing.T) {
 		Protocol:             "enh",
 		Network:              "tcp",
 		Address:              "127.0.0.1:0",
-		ReadTimeout:           200 * time.Millisecond,
+		ReadTimeout:          200 * time.Millisecond,
 		MaxOwnershipDuration: 10 * time.Second,
 		IdleReleaseGrace:     200 * time.Millisecond,
 	})

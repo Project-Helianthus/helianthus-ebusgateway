@@ -7,15 +7,15 @@ import "sync"
 //
 // XR_GATEWAY_PRIORITY — scheduling policy:
 //
-//   At each SYN boundary (or idle tick), tryGrant checks pendingGateway
-//   BEFORE pendingExternal. The gateway always gets first pick for bus
-//   ownership. External requests are serviced at the next boundary when
-//   the gateway has no pending work.
+//	At each SYN boundary (or idle tick), tryGrant checks pendingGateway
+//	BEFORE pendingExternal. The gateway always gets first pick for bus
+//	ownership. External requests are serviced at the next boundary when
+//	the gateway has no pending work.
 //
-//   This is a deliberate design choice: the gateway's semantic poller
-//   drives periodic register scans that must complete within their
-//   polling window. External clients (ebusd) are best-effort consumers
-//   that can tolerate arbitration delays without functional impact.
+//	This is a deliberate design choice: the gateway's semantic poller
+//	drives periodic register scans that must complete within their
+//	polling window. External clients (ebusd) are best-effort consumers
+//	that can tolerate arbitration delays without functional impact.
 //
 // The arbitrator is informed by the proxy's boundary-based arbitration
 // (proxy M2) but simplified for a two-class model:

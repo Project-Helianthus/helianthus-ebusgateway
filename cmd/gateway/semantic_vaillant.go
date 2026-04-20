@@ -39,12 +39,12 @@ const (
 	// --- Zone registers: GG=0x03 / OP=0x02 ---
 
 	// STATE registers (read-only live values)
-	zone_current_temp                      = uint16(0x000F) // state.current_room_temperature
-	zone_special_function                  = uint16(0x000E) // state.current_special_function
-	zone_valve_status                      = uint16(0x0012) // state.valve_status
-	zone_current_humidity                  = uint16(0x0028) // state.current_room_humidity
-	zone_quick_veto_end_time               = uint16(0x001E) // state.quick_veto.end_time (HH:MM:SS)
-	zone_quick_veto_end_date               = uint16(0x0024) // state.quick_veto.end_date (DD.MM.YY)
+	zone_current_temp        = uint16(0x000F) // state.current_room_temperature
+	zone_special_function    = uint16(0x000E) // state.current_special_function
+	zone_valve_status        = uint16(0x0012) // state.valve_status
+	zone_current_humidity    = uint16(0x0028) // state.current_room_humidity
+	zone_quick_veto_end_time = uint16(0x001E) // state.quick_veto.end_time (HH:MM:SS)
+	zone_quick_veto_end_date = uint16(0x0024) // state.quick_veto.end_date (DD.MM.YY)
 
 	// CONFIG registers (user-writable settings)
 	zone_heating_op_mode                   = uint16(0x0006) // configuration.heating.operation_mode
@@ -60,34 +60,34 @@ const (
 	zone_holiday_start_time                = uint16(0x0021) // configuration.holiday.start_time (HH:MM)
 
 	// PARAMS registers (identification / metadata)
-	zone_name                              = uint16(0x0016)
-	zone_name_prefix                       = uint16(0x0017)
-	zone_name_suffix                       = uint16(0x0018)
-	zone_index                             = uint16(0x001C)
+	zone_name        = uint16(0x0016)
+	zone_name_prefix = uint16(0x0017)
+	zone_name_suffix = uint16(0x0018)
+	zone_index       = uint16(0x001C)
 
 	// --- Circuit registers: GG=0x02 / OP=0x02 ---
 
 	// STATE registers (read-only live values)
-	circuit_flow_setpoint    = uint16(0x0007) // flow_setpoint
-	circuit_flow_temp        = uint16(0x0008) // flow_temperature (VF[x])
-	circuit_circuit_state    = uint16(0x001B) // circuit_state
-	circuit_pump_status      = uint16(0x001E) // pump_status
-	circuit_calc_flow_temp   = uint16(0x0020) // calculated_flow_temperature
-	circuit_mixer_position   = uint16(0x0021) // mixer_position_pct
-	circuit_humidity         = uint16(0x0022) // room_humidity_pct
-	circuit_dew_point        = uint16(0x0023) // dew_point_temperature
-	circuit_pump_hours       = uint16(0x0024) // pump_operating_hours
-	circuit_pump_starts      = uint16(0x0025) // pump_starts
+	circuit_flow_setpoint  = uint16(0x0007) // flow_setpoint
+	circuit_flow_temp      = uint16(0x0008) // flow_temperature (VF[x])
+	circuit_circuit_state  = uint16(0x001B) // circuit_state
+	circuit_pump_status    = uint16(0x001E) // pump_status
+	circuit_calc_flow_temp = uint16(0x0020) // calculated_flow_temperature
+	circuit_mixer_position = uint16(0x0021) // mixer_position_pct
+	circuit_humidity       = uint16(0x0022) // room_humidity_pct
+	circuit_dew_point      = uint16(0x0023) // dew_point_temperature
+	circuit_pump_hours     = uint16(0x0024) // pump_operating_hours
+	circuit_pump_starts    = uint16(0x0025) // pump_starts
 
 	// CONFIG registers (user-writable settings)
-	circuit_type             = uint16(0x0002) // configuration.heating_circuit_type / mixer_circuit_type_external
-	circuit_cooling_enabled  = uint16(0x0006) // cooling_enabled
-	circuit_heating_curve    = uint16(0x000F) // heating_curve
-	circuit_flow_temp_max    = uint16(0x0010) // flow_temperature_max
-	circuit_flow_temp_min    = uint16(0x0012) // flow_temperature_min
-	circuit_summer_limit     = uint16(0x0014) // summer_limit
+	circuit_type              = uint16(0x0002) // configuration.heating_circuit_type / mixer_circuit_type_external
+	circuit_cooling_enabled   = uint16(0x0006) // cooling_enabled
+	circuit_heating_curve     = uint16(0x000F) // heating_curve
+	circuit_flow_temp_max     = uint16(0x0010) // flow_temperature_max
+	circuit_flow_temp_min     = uint16(0x0012) // flow_temperature_min
+	circuit_summer_limit      = uint16(0x0014) // summer_limit
 	circuit_room_temp_control = uint16(0x0015) // room_temperature_control_mode
-	circuit_frost_protection = uint16(0x001D) // frost_protection_threshold
+	circuit_frost_protection  = uint16(0x001D) // frost_protection_threshold
 
 	CircuitStateStandby = "standby"
 	CircuitStateHeating = "heating"
@@ -96,8 +96,8 @@ const (
 	// --- DHW registers: GG=0x01 / OP=0x02 ---
 
 	// STATE registers (read-only live values)
-	dhw_current_temp       = uint16(0x0005) // state.current_dhw_temperature
-	dhw_special_function   = uint16(0x000D) // state.current_special_function
+	dhw_current_temp     = uint16(0x0005) // state.current_dhw_temperature
+	dhw_special_function = uint16(0x000D) // state.current_special_function
 
 	// CONFIG registers (user-writable settings)
 	dhw_operation_mode     = uint16(0x0003) // configuration.domestic_hot_water.operation_mode
@@ -110,11 +110,11 @@ const (
 	// --- Device slot registers: OP=0x06 (remote) ---
 
 	// STATE registers (read-only live values)
-	device_slot_connected              = uint16(0x0001)
-	device_slot_room_humidity          = uint16(0x0007)
-	device_slot_room_temperature       = uint16(0x000F)
-	device_slot_paired                 = uint16(0x001E)
-	device_slot_reception_strength     = uint16(0x001F)
+	device_slot_connected          = uint16(0x0001)
+	device_slot_room_humidity      = uint16(0x0007)
+	device_slot_room_temperature   = uint16(0x000F)
+	device_slot_paired             = uint16(0x001E)
+	device_slot_reception_strength = uint16(0x001F)
 
 	// PARAMS registers (identification / metadata)
 	device_slot_class_address          = uint16(0x0002)
@@ -135,13 +135,13 @@ const (
 	solar_pump_hours     = uint16(0x000B)
 
 	// CONFIG registers (user-writable settings)
-	solar_enabled        = uint16(0x0001)
-	solar_function_mode  = uint16(0x0002)
+	solar_enabled       = uint16(0x0001)
+	solar_function_mode = uint16(0x0002)
 
 	// --- Cylinder registers: GG=0x05 / OP=0x02 ---
 
 	// STATE registers (read-only live values)
-	cylinder_temperature       = uint16(0x0004)
+	cylinder_temperature = uint16(0x0004)
 
 	// CONFIG registers (user-writable settings)
 	cylinder_max_setpoint      = uint16(0x0001)
@@ -220,18 +220,18 @@ var b555HCNames = map[byte]string{
 // energy4 type = ULG (unsigned 32-bit LE) in kWh.
 const (
 	// STATE registers (read-only counters)
-	energy_fuel_sum_hc                   = uint16(0x0056) // PrFuelSumHc: total gas consumption heating
-	energy_electricity_sum_hc            = uint16(0x0057) // PrEnergySumHc: total electricity consumption heating
-	energy_electricity_sum_hwc           = uint16(0x0058) // PrEnergySumHwc: total electricity consumption hot water
-	energy_fuel_sum_hwc                  = uint16(0x0059) // PrFuelSumHwc: total gas consumption hot water
-	energy_fuel_sum_hc_this_month        = uint16(0x004E) // PrFuelSumHcThisMonth: gas heating this month
-	energy_electricity_sum_hc_this_month = uint16(0x004F) // PrEnergySumHcThisMonth: electricity heating this month
+	energy_fuel_sum_hc                    = uint16(0x0056) // PrFuelSumHc: total gas consumption heating
+	energy_electricity_sum_hc             = uint16(0x0057) // PrEnergySumHc: total electricity consumption heating
+	energy_electricity_sum_hwc            = uint16(0x0058) // PrEnergySumHwc: total electricity consumption hot water
+	energy_fuel_sum_hwc                   = uint16(0x0059) // PrFuelSumHwc: total gas consumption hot water
+	energy_fuel_sum_hc_this_month         = uint16(0x004E) // PrFuelSumHcThisMonth: gas heating this month
+	energy_electricity_sum_hc_this_month  = uint16(0x004F) // PrEnergySumHcThisMonth: electricity heating this month
 	energy_electricity_sum_hwc_this_month = uint16(0x0050) // PrEnergySumHwcThisMonth: electricity hot water this month
-	energy_fuel_sum_hwc_this_month       = uint16(0x0051) // PrFuelSumHwcThisMonth: gas hot water this month
-	energy_fuel_sum_hc_last_month        = uint16(0x0052) // PrFuelSumHcLastMonth: gas heating last month
-	energy_electricity_sum_hc_last_month = uint16(0x0053) // PrEnergySumHcLastMonth: electricity heating last month
+	energy_fuel_sum_hwc_this_month        = uint16(0x0051) // PrFuelSumHwcThisMonth: gas hot water this month
+	energy_fuel_sum_hc_last_month         = uint16(0x0052) // PrFuelSumHcLastMonth: gas heating last month
+	energy_electricity_sum_hc_last_month  = uint16(0x0053) // PrEnergySumHcLastMonth: electricity heating last month
 	energy_electricity_sum_hwc_last_month = uint16(0x0054) // PrEnergySumHwcLastMonth: electricity hot water last month
-	energy_fuel_sum_hwc_last_month       = uint16(0x0055) // PrFuelSumHwcLastMonth: gas hot water last month
+	energy_fuel_sum_hwc_last_month        = uint16(0x0055) // PrFuelSumHwcLastMonth: gas hot water last month
 )
 
 type regulatorAbsenceState string
@@ -288,18 +288,18 @@ type vaillantSemanticPoller struct {
 	watchObserver   ebusgateway.WatchObserver
 	watchEfficiency ebusgateway.WatchEfficiencyObserver
 
-	source               byte
-	requestTimeout       time.Duration
-	discoveryInterval    time.Duration
-	configInterval       time.Duration
-	stateInterval        time.Duration
-	energyInterval       time.Duration
-	scheduleInterval     time.Duration
-	boilerFastInterval   time.Duration
-	boilerMediumInterval time.Duration
-	boilerSlowInterval   time.Duration
-	zoneMissThreshold    int
-	zoneHitThreshold     int
+	source                   byte
+	requestTimeout           time.Duration
+	discoveryInterval        time.Duration
+	configInterval           time.Duration
+	stateInterval            time.Duration
+	energyInterval           time.Duration
+	scheduleInterval         time.Duration
+	boilerFastInterval       time.Duration
+	boilerMediumInterval     time.Duration
+	boilerSlowInterval       time.Duration
+	zoneMissThreshold        int
+	zoneHitThreshold         int
 	dhwStaleTTL              time.Duration
 	deviceSlotRediscoveryTTL time.Duration
 
@@ -648,17 +648,17 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		watchEfficiency: cfg.WatchEfficiencyObserver,
 		source:          cfg.ScanSource,
 
-		requestTimeout:       cfg.SemanticRequestTimeout,
-		discoveryInterval:    cfg.SemanticDiscoveryInterval,
-		configInterval:       cfg.SemanticConfigInterval,
-		stateInterval:        cfg.SemanticStateInterval,
-		energyInterval:       cfg.SemanticEnergyInterval,
-		scheduleInterval:     10 * time.Minute,
-		boilerFastInterval:   30 * time.Second,
-		boilerMediumInterval: 5 * time.Minute,
-		boilerSlowInterval:   10 * time.Minute,
-		zoneMissThreshold:    cfg.SemanticZonePresenceMissThreshold,
-		zoneHitThreshold:     cfg.SemanticZonePresenceHitThreshold,
+		requestTimeout:           cfg.SemanticRequestTimeout,
+		discoveryInterval:        cfg.SemanticDiscoveryInterval,
+		configInterval:           cfg.SemanticConfigInterval,
+		stateInterval:            cfg.SemanticStateInterval,
+		energyInterval:           cfg.SemanticEnergyInterval,
+		scheduleInterval:         10 * time.Minute,
+		boilerFastInterval:       30 * time.Second,
+		boilerMediumInterval:     5 * time.Minute,
+		boilerSlowInterval:       10 * time.Minute,
+		zoneMissThreshold:        cfg.SemanticZonePresenceMissThreshold,
+		zoneHitThreshold:         cfg.SemanticZonePresenceHitThreshold,
 		dhwStaleTTL:              cfg.SemanticDHWStaleTTL,
 		deviceSlotRediscoveryTTL: 30 * time.Minute,
 
@@ -3060,7 +3060,7 @@ const (
 	// CONFIG registers (user-writable settings)
 	system_adaptive_heating_curve          = uint16(0x0014)
 	system_alternative_point               = uint16(0x0022)
-	system_heating_circuit_bivalence_point  = uint16(0x0023)
+	system_heating_circuit_bivalence_point = uint16(0x0023)
 	system_dhw_bivalence_point             = uint16(0x0001)
 	system_hc_emergency_temperature        = uint16(0x0026)
 	system_hwc_max_flow_temp_desired       = uint16(0x0046)
@@ -3073,46 +3073,46 @@ const (
 	system_installer_menu_code             = uint16(0x0076)
 
 	// PARAMS registers (system topology / identification)
-	system_scheme                          = uint16(0x0036)
-	system_module_configuration_vr71       = uint16(0x002F)
+	system_scheme                    = uint16(0x0036)
+	system_module_configuration_vr71 = uint16(0x002F)
 
 	// --- Boiler B509 direct registers on BAI00 ---
-	boiler_b509_water_pressure         = uint16(0x0200)
-	boiler_b509_flame_active           = uint16(0x0500)
-	boiler_b509_partload_hc_kw          = uint16(0x0704)
-	boiler_b509_partload_hwc_kw         = uint16(0x0804)
-	boiler_b509_flowset_hc_max_c         = uint16(0x0E04)
+	boiler_b509_water_pressure            = uint16(0x0200)
+	boiler_b509_flame_active              = uint16(0x0500)
+	boiler_b509_partload_hc_kw            = uint16(0x0704)
+	boiler_b509_partload_hwc_kw           = uint16(0x0804)
+	boiler_b509_flowset_hc_max_c          = uint16(0x0E04)
 	boiler_b509_flowset_hc_max_c_fallback = uint16(0xA500)
-	boiler_b509_flowset_hwc_max_c        = uint16(0x0F04)
-	boiler_b509_pump_hours             = uint16(0x1400)
-	boiler_b509_flow_temperature       = uint16(0x1800)
-	boiler_b509_fan_hours              = uint16(0x1B00)
-	boiler_b509_deactivations_ifc      = uint16(0x1F00)
-	boiler_b509_hours_till_service      = uint16(0x2004)
-	boiler_b509_deactivations_limit    = uint16(0x2000)
-	boiler_b509_dhw_hours              = uint16(0x2200)
-	boiler_b509_dhw_starts             = uint16(0x2300)
-	boiler_b509_target_fan_speed_rpm     = uint16(0x2400)
-	boiler_b509_central_heating_hours   = uint16(0x2800)
-	boiler_b509_central_heating_starts  = uint16(0x2900)
-	boiler_b509_modulation_pct         = uint16(0x2E00)
-	boiler_b509_flow_temp_desired_c      = uint16(0x3900)
-	boiler_b509_external_pump_active    = uint16(0x3F00)
-	boiler_b509_installer_menu_code     = uint16(0x4904)
-	boiler_b509_central_heating_pump    = uint16(0x4400)
-	boiler_b509_diverter_valve_position = uint16(0x5400)
-	boiler_b509_dhw_water_flow_lpm       = uint16(0x5500)
-	boiler_b509_dhw_demand_active       = uint16(0x5800)
-	boiler_b509_circulation_pump_active = uint16(0x7B00)
-	boiler_b509_phone_number           = uint16(0x8104)
-	boiler_b509_fan_speed_rpm           = uint16(0x8300)
-	boiler_b509_storage_load_pump_pct    = uint16(0x9E00)
-	boiler_b509_ionisation_voltage_ua   = uint16(0xA400)
-	boiler_b509_state_number           = uint16(0xAB00)
-	boiler_b509_gas_valve_active        = uint16(0xBB00)
-	boiler_b509_heating_switch_active   = uint16(0xF203)
-	boiler_b509_dhw_temp_desired_c       = uint16(0xEA03)
-	boiler_b509_primary_circuit_flow_lpm = uint16(0xFB00)
+	boiler_b509_flowset_hwc_max_c         = uint16(0x0F04)
+	boiler_b509_pump_hours                = uint16(0x1400)
+	boiler_b509_flow_temperature          = uint16(0x1800)
+	boiler_b509_fan_hours                 = uint16(0x1B00)
+	boiler_b509_deactivations_ifc         = uint16(0x1F00)
+	boiler_b509_hours_till_service        = uint16(0x2004)
+	boiler_b509_deactivations_limit       = uint16(0x2000)
+	boiler_b509_dhw_hours                 = uint16(0x2200)
+	boiler_b509_dhw_starts                = uint16(0x2300)
+	boiler_b509_target_fan_speed_rpm      = uint16(0x2400)
+	boiler_b509_central_heating_hours     = uint16(0x2800)
+	boiler_b509_central_heating_starts    = uint16(0x2900)
+	boiler_b509_modulation_pct            = uint16(0x2E00)
+	boiler_b509_flow_temp_desired_c       = uint16(0x3900)
+	boiler_b509_external_pump_active      = uint16(0x3F00)
+	boiler_b509_installer_menu_code       = uint16(0x4904)
+	boiler_b509_central_heating_pump      = uint16(0x4400)
+	boiler_b509_diverter_valve_position   = uint16(0x5400)
+	boiler_b509_dhw_water_flow_lpm        = uint16(0x5500)
+	boiler_b509_dhw_demand_active         = uint16(0x5800)
+	boiler_b509_circulation_pump_active   = uint16(0x7B00)
+	boiler_b509_phone_number              = uint16(0x8104)
+	boiler_b509_fan_speed_rpm             = uint16(0x8300)
+	boiler_b509_storage_load_pump_pct     = uint16(0x9E00)
+	boiler_b509_ionisation_voltage_ua     = uint16(0xA400)
+	boiler_b509_state_number              = uint16(0xAB00)
+	boiler_b509_gas_valve_active          = uint16(0xBB00)
+	boiler_b509_heating_switch_active     = uint16(0xF203)
+	boiler_b509_dhw_temp_desired_c        = uint16(0xEA03)
+	boiler_b509_primary_circuit_flow_lpm  = uint16(0xFB00)
 )
 
 type vaillantBoilerSnapshot struct {

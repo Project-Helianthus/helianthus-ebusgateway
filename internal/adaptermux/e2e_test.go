@@ -65,12 +65,12 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 		// Responder ACK=0x00, then response: NN=0x05, 5 data bytes, CRC=0x00,
 		// then initiator ACK=0x00, then trailing SYN=0xAA.
 		response := []byte{
-			0x00,                                     // responder ACK
-			0x05,                                     // NN (response data length)
-			0x56, 0x41, 0x49, 0x4C, 0x4C,             // "VAILL" identification data
-			0x00,                                     // response CRC placeholder
-			0x00,                                     // initiator ACK
-			protocol.SymbolSyn,                       // trailing SYN terminator
+			0x00,                         // responder ACK
+			0x05,                         // NN (response data length)
+			0x56, 0x41, 0x49, 0x4C, 0x4C, // "VAILL" identification data
+			0x00,               // response CRC placeholder
+			0x00,               // initiator ACK
+			protocol.SymbolSyn, // trailing SYN terminator
 		}
 		for _, b := range response {
 			mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}

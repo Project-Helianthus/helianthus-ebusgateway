@@ -5134,7 +5134,7 @@ func TestDeviceSlotCacheGating_OnlyPollsCachedSlots(t *testing.T) {
 
 	// Simulate discovery: 2 active slots out of 33.
 	cache := map[deviceSlotKey]bool{
-		{Group: remoteRegulators.group, Instance: 0x00}: true,
+		{Group: remoteRegulators.group, Instance: 0x00}:  true,
 		{Group: remoteThermostats.group, Instance: 0x01}: true,
 	}
 	poller.mu.Lock()

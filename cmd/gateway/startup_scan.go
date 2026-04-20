@@ -238,9 +238,9 @@ func (b *statsBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Fr
 	// txn range it spans. Prefix / class are captured AFTER. If the
 	// classifier only implements LastTxnClass, we degrade to class-only.
 	var (
-		snap              activeTxnSnapshotter
-		preID             uint64
-		haveSnapshotter   bool
+		snap            activeTxnSnapshotter
+		preID           uint64
+		haveSnapshotter bool
 	)
 	if b.classifier != nil {
 		if snap, haveSnapshotter = b.classifier.(activeTxnSnapshotter); haveSnapshotter {

@@ -641,7 +641,7 @@ func TestOnlyOnePendingStart(t *testing.T) {
 
 	// Add an external session and request a second START.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 	ch2 := mux.arb.requestStart(id, 0x42)
@@ -846,7 +846,7 @@ func TestP3_ExternalSessionReceivesDuringPending(t *testing.T) {
 
 	// Add external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -1075,7 +1075,7 @@ func TestRequestStartFailAfterCancel_NoDoubleSend(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -1174,7 +1174,7 @@ func TestAbsorbDecrementOnRequestStartFailAfterCancel(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -1651,7 +1651,7 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -1746,7 +1746,7 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -1878,7 +1878,7 @@ func TestDrainActiveChOnGrant_ExternalSession(t *testing.T) {
 
 	// Add an external session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 
 	// Inject bytes into activeCh.

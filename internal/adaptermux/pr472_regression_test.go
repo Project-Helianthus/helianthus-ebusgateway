@@ -138,7 +138,7 @@ func TestSession_StartCancelReleasesOwnership(t *testing.T) {
 	defer cleanup()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -202,7 +202,7 @@ func TestBroadcastReset_CarriesUpstreamFeatures(t *testing.T) {
 	mux.upstreamFeatures.Store(0x03)
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -237,7 +237,7 @@ func TestBroadcastReset_ZeroFeaturesPassesThrough(t *testing.T) {
 	mux.upstreamFeatures.Store(0)
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -316,7 +316,7 @@ func TestHandleReset_BroadcastCarriesFeatures(t *testing.T) {
 
 	// Add a session.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 
@@ -345,7 +345,7 @@ func TestSession_StartCancelWithoutOwnershipIsNoOp(t *testing.T) {
 	defer cleanup()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -387,7 +387,7 @@ func TestBroadcastReset_ConcurrentFeatureUpdate(t *testing.T) {
 	mux.upstreamFeatures.Store(0x01)
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
@@ -454,7 +454,7 @@ func TestSession_SendErrorFromDoSend_NotConnected(t *testing.T) {
 	go mux.sendLoop()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	if id == 0 {
@@ -507,7 +507,7 @@ func TestAddSession_RejectsAfterShutdown(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	if id != 0 {
@@ -537,7 +537,7 @@ func TestAddSession_AcceptsBeforeShutdown(t *testing.T) {
 	defer cleanup()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	if id == 0 {
@@ -655,7 +655,7 @@ func TestPassiveTransport_ResetNotDroppedUnderPressure(t *testing.T) {
 		events: make(chan transport.StreamEvent, 2),
 		done:   make(chan struct{}),
 	}
-	defer pt.Close()
+	defer closeOrLog(t, pt, "pt")
 
 	// Fill buffer completely with symbols.
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0x01})
@@ -703,7 +703,7 @@ func TestPassiveTransport_ResetBoundedBlock_PR472(t *testing.T) {
 		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),
 	}
-	defer pt.Close()
+	defer closeOrLog(t, pt, "pt")
 
 	// Fill the single-slot buffer.
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xFF})
@@ -748,7 +748,7 @@ func TestPassiveTransport_ConnectedBoundedBlock(t *testing.T) {
 		events: make(chan transport.StreamEvent, 1),
 		done:   make(chan struct{}),
 	}
-	defer pt.Close()
+	defer closeOrLog(t, pt, "pt")
 
 	// Fill buffer.
 	pt.deliver(PassiveEvent{Kind: PassiveEventSymbol, Symbol: 0xAA})
@@ -829,7 +829,7 @@ func TestSession_AdapterWriteFailure_ReturnsErrorHost(t *testing.T) {
 	go mux.sendLoop()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 
 	id := mux.AddSession(server)
 	if id == 0 {
@@ -1001,7 +1001,7 @@ func TestHandleReset_DoesNotReINIT(t *testing.T) {
 
 	// Add a session and verify broadcast still works after handleReset.
 	client, server := net.Pipe()
-	defer client.Close()
+	defer closeOrLog(t, client, "client")
 	id := mux.AddSession(server)
 	defer mux.RemoveSession(id)
 

@@ -635,7 +635,9 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	if cfg.ProxyListenAddr != "" {
 		pl, err := adaptermux.NewProxyListener(ctx, mux, cfg.ProxyListenAddr, log.Default())
 		if err != nil {
-			mux.Close()
+			if cerr := mux.Close(); cerr != nil {
+				log.Printf("adapter-direct: mux.Close after proxy-listener error: %v", cerr)
+			}
 			return nil, nil, fmt.Errorf("proxy listener: %w", err)
 		}
 		proxyListener = pl

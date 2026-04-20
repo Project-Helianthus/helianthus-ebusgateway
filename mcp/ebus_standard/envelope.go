@@ -168,7 +168,7 @@ func writeCanonical(w *strings.Builder, v any) {
 	default:
 		// Fallback: stringify. Callers should pass canonical-friendly
 		// types; this path exists so unknown primitives do not panic.
-		w.WriteString(fmt.Sprintf("%q", fmt.Sprintf("%v", v)))
+		fmt.Fprintf(w, "%q", fmt.Sprintf("%v", v))
 	}
 }
 

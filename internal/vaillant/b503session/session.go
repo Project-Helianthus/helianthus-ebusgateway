@@ -254,6 +254,17 @@ func (m *Manager) OnEpochAdvance(ctx context.Context, newEpoch uint64) {
 
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
+
+	// Guard against concurrent teardown: while stateMu was released for the
+	// duration of refresh(), OnTransportDisconnect or ResetForRestart may
+	// have fired and cleared mutexHeld / activeToken. Restoring state =
+	// Active in that window would resurrect an "active" session with no
+	// owner lock, blocking future Enable calls. If ownership is no longer
+	// held, the refresh result is stale — discard it.
+	if !m.mutexHeld {
+		return
+	}
+
 	if err == nil {
 		// Re-home on the new incarnation; keep the same issuer_token.
 		m.transport = newTK

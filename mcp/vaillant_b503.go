@@ -284,9 +284,23 @@ func (st *b503State) handleServiceHistoryGet(ctx context.Context, args map[strin
 }
 
 func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any) map[string]any {
-	action, _ := args["action"].(string)
-	if action == "" {
-		action = "read"
+	// action is required and MUST be a string. Silently defaulting to
+	// "read" on absent or malformed input would turn malformed payloads
+	// (e.g. `{}` or `{"action": 1}`) into real read operations that
+	// refresh the idle timer and prolong SESSION_BUSY for other clients.
+	raw, present := args["action"]
+	if !present {
+		return errorEnvelope(fmt.Errorf("%w: action is required (enable|read|disable)", errInvalidArgument))
+	}
+	action, ok := raw.(string)
+	if !ok {
+		return errorEnvelope(fmt.Errorf("%w: action must be a string (enable|read|disable)", errInvalidArgument))
+	}
+	switch action {
+	case "enable", "read", "disable":
+		// valid
+	default:
+		return errorEnvelope(fmt.Errorf("%w: action must be one of enable|read|disable, got %q", errInvalidArgument, action))
 	}
 	mgr := st.opts.SessionManager
 	if mgr == nil {

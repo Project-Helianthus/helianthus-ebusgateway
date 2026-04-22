@@ -499,10 +499,6 @@ func classifyB503Error(err error) (string, bool) {
 	return "", false
 }
 
-func errorEnvelope(err error) map[string]any {
-	return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true)
-}
-
 // b503Envelope wraps newToolEnvelope and injects
 // `meta.capabilities.vaillant_b503.reason` so clients can consume the
 // capability signal directly from every B503 tool response, instead of

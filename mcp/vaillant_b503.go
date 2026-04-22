@@ -13,7 +13,7 @@ import (
 
 // RPCDispatcher is the minimal substrate the B503 tools need to reach the
 // wire. Production wires this to the gateway's raw RPC substrate; tests
-// supply an in-memory stub. The target byte is the primary (master) address
+// supply an in-memory stub. The target byte is the primary address
 // of the Vaillant device; payload is the 2-byte (family, selector) request
 // built by package b503.
 type RPCDispatcher interface {

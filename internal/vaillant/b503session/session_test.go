@@ -257,7 +257,8 @@ func TestSession_ConcurrentReadsAndPollerSim_NoDeadlock(t *testing.T) {
 		t.Fatalf("Enable err=%v", err)
 	}
 	var wg sync.WaitGroup
-	stop := time.After(100 * time.Millisecond)
+	stop := make(chan struct{})
+	time.AfterFunc(100*time.Millisecond, func() { close(stop) })
 	wg.Add(2)
 	go func() {
 		defer wg.Done()

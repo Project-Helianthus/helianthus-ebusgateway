@@ -30,8 +30,8 @@ type SessionKey struct {
 //   - (newTransportKey, nil)           refresh succeeded; session re-homes.
 //   - (TransportKey{}, ErrTransportDown) transport went down during refresh.
 //   - (TransportKey{}, other-error)    refresh failed for another reason;
-//                                      session becomes permanently busy
-//                                      until the next Enable.
+//     session becomes permanently busy
+//     until the next Enable.
 type RefreshFunc func(ctx context.Context) (TransportKey, error)
 
 // Manager is the single-owner live-monitor session FSM.

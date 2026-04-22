@@ -56,14 +56,15 @@ type RefreshFunc func(ctx context.Context) (TransportKey, error)
 type Manager struct {
 	mu sync.Mutex // liveMonitorMu — ownership gate, distinct from B524 readMu.
 
-	stateMu     sync.Mutex
-	state       State
-	transport   TransportKey
-	activeToken string
-	idleTimeout time.Duration
-	idleTimer   *time.Timer
-	refresh     RefreshFunc
-	mutexHeld   bool
+	stateMu      sync.Mutex
+	state        State
+	transport    TransportKey
+	activeToken  string
+	idleTimeout  time.Duration
+	idleTimer    *time.Timer
+	idleTimerGen uint64 // generation counter — stale callback guard
+	refresh      RefreshFunc
+	mutexHeld    bool
 	// refreshFailed sticks to true when a refresh returned a non-nil,
 	// non-ErrTransportDown error. Subsequent Reads then surface
 	// ErrSessionBusy until ResetForRestart or a new Enable. It is
@@ -225,8 +226,13 @@ func (m *Manager) OnTransportDisconnect() {
 func (m *Manager) OnEpochAdvance(ctx context.Context, newEpoch uint64) {
 	m.stateMu.Lock()
 	if !m.mutexHeld {
-		// No owner: just update transport.
+		// No owner: just update transport. Clear any stale
+		// lastRefreshTransportDown latch — the latch was set by a prior
+		// refresh failure; a successful idle-path epoch advance means
+		// transport has recovered and the capability signal should no
+		// longer report TRANSPORT_DOWN.
 		m.transport.TransportEpoch = newEpoch
+		m.lastRefreshTransportDown = false
 		m.stateMu.Unlock()
 		return
 	}
@@ -276,6 +282,7 @@ func (m *Manager) ResetForRestart() {
 		m.idleTimer.Stop()
 		m.idleTimer = nil
 	}
+	m.idleTimerGen++
 	if m.mutexHeld {
 		m.mu.Unlock()
 		m.mutexHeld = false
@@ -289,12 +296,14 @@ func (m *Manager) ResetForRestart() {
 // --- internal helpers (all require stateMu held) ---
 
 // toDisabledLocked transitions to Disabled from any held-owner state and
-// releases the ownership gate exactly once.
+// releases the ownership gate exactly once. Bumps idleTimerGen so any
+// in-flight stale callback is invalidated.
 func (m *Manager) toDisabledLocked() {
 	if m.idleTimer != nil {
 		m.idleTimer.Stop()
 		m.idleTimer = nil
 	}
+	m.idleTimerGen++
 	m.state = Disabled
 	if m.mutexHeld {
 		m.mu.Unlock()
@@ -309,7 +318,10 @@ func (m *Manager) toIdleLocked() {
 }
 
 // armIdleTimerLocked (re)starts the idle-timeout timer. Safe to call
-// repeatedly; any previously-running timer is stopped first.
+// repeatedly; any previously-running timer is stopped first. Each call
+// increments idleTimerGen so an in-flight stale callback (stopped timer
+// whose goroutine was already running at Stop() time) can detect its
+// generation is no longer current and exit without touching the FSM.
 func (m *Manager) armIdleTimerLocked() {
 	if m.idleTimer != nil {
 		m.idleTimer.Stop()
@@ -317,14 +329,23 @@ func (m *Manager) armIdleTimerLocked() {
 	if m.idleTimeout <= 0 {
 		return
 	}
-	m.idleTimer = time.AfterFunc(m.idleTimeout, m.idleTimerFired)
+	m.idleTimerGen++
+	gen := m.idleTimerGen
+	m.idleTimer = time.AfterFunc(m.idleTimeout, func() { m.idleTimerFired(gen) })
 }
 
 // idleTimerFired is the timer callback. It acquires stateMu itself; it
-// MUST NOT be called with stateMu held.
-func (m *Manager) idleTimerFired() {
+// MUST NOT be called with stateMu held. If `gen` does not match the
+// current idleTimerGen, this callback belongs to a previously-stopped
+// timer whose goroutine was already running when Stop() was called — it
+// MUST return without side effects to avoid prematurely disabling a
+// rearmed active session.
+func (m *Manager) idleTimerFired(gen uint64) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
+	if gen != m.idleTimerGen {
+		return // stale callback from a stopped-then-rearmed timer
+	}
 	if m.state != Active {
 		return
 	}

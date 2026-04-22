@@ -31,8 +31,7 @@ func (s *stubB503Dispatcher) Invoke(ctx context.Context, target byte, payload []
 		return nil, s.err
 	}
 	if len(payload) >= 2 {
-		key := string([]byte{payload[0], payload[1]})
-		if resp, ok := s.respByPrefix[key]; ok {
+		if resp, ok := s.respByPrefix[string([]byte{payload[0], payload[1]})]; ok {
 			return resp, nil
 		}
 	}

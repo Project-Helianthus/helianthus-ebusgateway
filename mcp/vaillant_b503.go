@@ -171,17 +171,47 @@ func (s *Server) handleVaillantB503Call(ctx context.Context, name string, args m
 	return nil, false
 }
 
-func (st *b503State) target(args map[string]any) byte {
-	if raw, ok := args["target_address"]; ok && raw != nil {
-		if v, ok := toUint8(raw); ok {
-			return v
-		}
+// target resolves the target device address from args. Returns
+// (address, nil) when target_address is absent or a valid uint8; returns
+// (0, errInvalidArgument-wrapped) when target_address is present but
+// malformed. Silent fallback to DefaultTarget on malformed input would
+// misroute reads/writes to a different device than the caller named.
+func (st *b503State) target(args map[string]any) (byte, error) {
+	raw, ok := args["target_address"]
+	if !ok || raw == nil {
+		return st.opts.DefaultTarget, nil
 	}
-	return st.opts.DefaultTarget
+	v, ok := toUint8(raw)
+	if !ok {
+		return 0, fmt.Errorf("%w: target_address must be an unsigned 8-bit integer (0-255)", errInvalidArgument)
+	}
+	return v, nil
+}
+
+// historyIndex extracts an optional `index` argument for history reads.
+// Returns (idx, true, nil) when present and valid; (0, false, nil) when
+// absent; (0, false, errInvalidArgument-wrapped) when present but
+// malformed. Silently dropping a malformed index changes semantics from
+// "requested record" to "whatever the decoder/device defaults to" and
+// makes malformed input look successful while returning the wrong
+// history entry.
+func historyIndex(args map[string]any) (byte, bool, error) {
+	raw, ok := args["index"]
+	if !ok || raw == nil {
+		return 0, false, nil
+	}
+	v, ok := toUint8(raw)
+	if !ok {
+		return 0, false, fmt.Errorf("%w: index must be an unsigned 8-bit integer (0-255)", errInvalidArgument)
+	}
+	return v, true, nil
 }
 
 func (st *b503State) handleErrorsGet(ctx context.Context, args map[string]any) map[string]any {
-	target := st.target(args)
+	target, err := st.target(args)
+	if err != nil {
+		return errorEnvelope(err)
+	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentError())
 	if err != nil {
 		return errorEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
@@ -194,7 +224,10 @@ func (st *b503State) handleErrorsGet(ctx context.Context, args map[string]any) m
 }
 
 func (st *b503State) handleServiceCurrentGet(ctx context.Context, args map[string]any) map[string]any {
-	target := st.target(args)
+	target, err := st.target(args)
+	if err != nil {
+		return errorEnvelope(err)
+	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentService())
 	if err != nil {
 		return errorEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
@@ -207,12 +240,15 @@ func (st *b503State) handleServiceCurrentGet(ctx context.Context, args map[strin
 }
 
 func (st *b503State) handleErrorsHistoryGet(ctx context.Context, args map[string]any) map[string]any {
-	target := st.target(args)
+	target, err := st.target(args)
+	if err != nil {
+		return errorEnvelope(err)
+	}
 	payload := b503.EncodeErrorHistory()
-	if raw, ok := args["index"]; ok && raw != nil {
-		if idx, ok := toUint8(raw); ok {
-			payload = append(payload, idx)
-		}
+	if idx, present, err := historyIndex(args); err != nil {
+		return errorEnvelope(err)
+	} else if present {
+		payload = append(payload, idx)
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 	if err != nil {
@@ -226,12 +262,15 @@ func (st *b503State) handleErrorsHistoryGet(ctx context.Context, args map[string
 }
 
 func (st *b503State) handleServiceHistoryGet(ctx context.Context, args map[string]any) map[string]any {
-	target := st.target(args)
+	target, err := st.target(args)
+	if err != nil {
+		return errorEnvelope(err)
+	}
 	payload := b503.EncodeServiceHistory()
-	if raw, ok := args["index"]; ok && raw != nil {
-		if idx, ok := toUint8(raw); ok {
-			payload = append(payload, idx)
-		}
+	if idx, present, err := historyIndex(args); err != nil {
+		return errorEnvelope(err)
+	} else if present {
+		payload = append(payload, idx)
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 	if err != nil {
@@ -256,15 +295,29 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 
 	switch action {
 	case "enable":
+		target, err := st.target(args)
+		if err != nil {
+			return errorEnvelope(err)
+		}
 		key, err := mgr.Enable(ctx)
 		if err != nil {
 			return errorEnvelope(normalizeSessionErr(err))
 		}
 		// Emit the request so the device acknowledges live-monitor
 		// activation. Bound by SERVICE_WRITE safety class.
-		if _, err := st.opts.Dispatcher.Invoke(ctx, st.target(args), b503.EncodeLiveMonitorMain()); err != nil {
-			// Dispatcher failure → release session and surface upstream error.
-			_ = mgr.Disable(key)
+		if _, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeLiveMonitorMain()); err != nil {
+			// Dispatcher failure → release session and surface upstream
+			// error. Rebuild the SessionKey from the Manager's current
+			// TransportKey in case OnEpochAdvance re-homed the session
+			// between Enable and the failed Invoke. If even the rebuilt
+			// key no longer matches (session already disabled by refresh
+			// policy surfacing TRANSPORT_DOWN / SESSION_BUSY), Disable is
+			// a no-op — the session is already released.
+			rebuilt := b503session.SessionKey{
+				Transport:   mgr.TransportKey(),
+				IssuerToken: key.IssuerToken,
+			}
+			_ = mgr.Disable(rebuilt)
 			return errorEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 		}
 		data := map[string]any{"issuer_token": key.IssuerToken}
@@ -282,7 +335,11 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 		if err := mgr.Read(transport); err != nil {
 			return errorEnvelope(normalizeSessionErr(err))
 		}
-		resp, err := st.opts.Dispatcher.Invoke(ctx, st.target(args), b503.EncodeLiveMonitorMain())
+		target, err := st.target(args)
+		if err != nil {
+			return errorEnvelope(err)
+		}
+		resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeLiveMonitorMain())
 		if err != nil {
 			return errorEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 		}
@@ -359,6 +416,7 @@ var (
 	errTransportDown     = errors.New("b503mcp: TRANSPORT_DOWN")
 	errNotSupported      = errors.New("b503mcp: NOT_SUPPORTED")
 	errInvalidToken      = errors.New("b503mcp: INVALID_TOKEN")
+	errInvalidArgument   = errors.New("b503mcp: INVALID_ARGUMENT")
 	errDecodeFailed      = errors.New("b503mcp: DECODE_FAILED")
 	errUpstreamRPCFailed = errors.New("b503mcp: UPSTREAM_RPC_FAILED")
 )
@@ -396,6 +454,8 @@ func classifyB503Error(err error) (string, bool) {
 		return "NOT_SUPPORTED", true
 	case errors.Is(err, errInvalidToken):
 		return "INVALID_TOKEN", true
+	case errors.Is(err, errInvalidArgument):
+		return "INVALID_ARGUMENT", true
 	case errors.Is(err, errDecodeFailed):
 		return "DECODE_FAILED", true
 	case errors.Is(err, errUpstreamRPCFailed):

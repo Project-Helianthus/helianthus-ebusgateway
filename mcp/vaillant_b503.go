@@ -393,13 +393,28 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 		return st.okEnvelope(ctx,data)
 
 	case "disable":
-		tok, _ := args["issuer_token"].(string)
+		// issuer_token is mandatory for disable. Silently treating a missing
+		// or non-string token as empty masks malformed client payloads as
+		// SESSION_BUSY (via ErrWrongToken → normalized), keeps the session
+		// held longer while clients retry the wrong way, and defeats the
+		// purpose of issuer_token as a control-authority credential.
+		rawTok, present := args["issuer_token"]
+		if !present {
+			return st.errEnvelope(ctx, fmt.Errorf("%w: issuer_token is required for disable", errInvalidArgument))
+		}
+		tok, ok := rawTok.(string)
+		if !ok {
+			return st.errEnvelope(ctx, fmt.Errorf("%w: issuer_token must be a string", errInvalidArgument))
+		}
+		if tok == "" {
+			return st.errEnvelope(ctx, fmt.Errorf("%w: issuer_token must be non-empty", errInvalidArgument))
+		}
 		transport := mgr.TransportKey()
 		err := mgr.Disable(b503session.SessionKey{Transport: transport, IssuerToken: tok})
 		if err != nil {
-			return st.errEnvelope(ctx,normalizeSessionErr(err))
+			return st.errEnvelope(ctx, normalizeSessionErr(err))
 		}
-		return st.okEnvelope(ctx,map[string]any{"disabled": true})
+		return st.okEnvelope(ctx, map[string]any{"disabled": true})
 	}
 	return st.errEnvelope(ctx,fmt.Errorf("%w: unknown action %q", errInvalidToken, action))
 }

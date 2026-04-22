@@ -69,6 +69,10 @@ type Manager struct {
 	// ErrSessionBusy until ResetForRestart or a new Enable. It is
 	// cleared by Enable and ResetForRestart.
 	refreshFailed bool
+	// lastRefreshTransportDown is set when OnEpochAdvance's refresh returned
+	// ErrTransportDown; cleared on Enable / ResetForRestart. See spec §7.1
+	// and plan AD14 for the resolver-layer contract this enables.
+	lastRefreshTransportDown bool
 }
 
 // New constructs a Manager bound to the initial transport incarnation.
@@ -112,6 +116,7 @@ func (m *Manager) Enable(ctx context.Context) (SessionKey, error) {
 	m.activeToken = token
 	m.state = Active
 	m.refreshFailed = false
+	m.lastRefreshTransportDown = false
 	m.armIdleTimerLocked()
 
 	return SessionKey{Transport: m.transport, IssuerToken: token}, nil
@@ -174,6 +179,25 @@ func (m *Manager) State() State {
 	return s
 }
 
+// TransportKey returns the manager's current transport key. Exposed so
+// resolver-layer callers (mcp/vaillant_b503.go) can pass the correct key to
+// Read/Disable after OnEpochAdvance has re-homed the session.
+func (m *Manager) TransportKey() TransportKey {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	return m.transport
+}
+
+// LastRefreshTransportDown reports whether the most recent OnEpochAdvance
+// resolved with ErrTransportDown. Callers use this to distinguish
+// transport-down teardown from ordinary Idle state when surfacing a public
+// error code (spec §7.1 / plan AD14). Cleared by Enable and ResetForRestart.
+func (m *Manager) LastRefreshTransportDown() bool {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	return m.lastRefreshTransportDown
+}
+
 // OnTransportDisconnect performs owner-conditional cleanup (spec §7.4).
 // If the FSM holds the ownership gate (Enabling/Active/expired), releases
 // it and transitions to Disabled -> Idle. Otherwise no-op.
@@ -232,7 +256,9 @@ func (m *Manager) OnEpochAdvance(ctx context.Context, newEpoch uint64) {
 		return
 	}
 	// Refresh failed: release gate and disable.
-	if !errors.Is(err, ErrTransportDown) {
+	if errors.Is(err, ErrTransportDown) {
+		m.lastRefreshTransportDown = true
+	} else {
 		m.refreshFailed = true
 	}
 	m.toDisabledLocked()
@@ -256,6 +282,7 @@ func (m *Manager) ResetForRestart() {
 	}
 	m.activeToken = ""
 	m.refreshFailed = false
+	m.lastRefreshTransportDown = false
 	m.state = Idle
 }
 

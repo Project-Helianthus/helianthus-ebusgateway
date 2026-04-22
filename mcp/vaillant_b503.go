@@ -342,16 +342,20 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 		// literally and never leak EXPIRED. If OnEpochAdvance recently
 		// resolved with ErrTransportDown, publicize that literally rather
 		// than collapsing it to SESSION_BUSY.
+		// Validate arguments BEFORE touching session state. A malformed
+		// target_address must not refresh the idle timer (which would keep
+		// the session lock alive and prolong SESSION_BUSY for other
+		// clients) only to then fail with INVALID_ARGUMENT.
+		target, err := st.target(args)
+		if err != nil {
+			return errorEnvelope(err)
+		}
 		if mgr.LastRefreshTransportDown() {
 			return errorEnvelope(errTransportDown)
 		}
 		transport := mgr.TransportKey()
 		if err := mgr.Read(transport); err != nil {
 			return errorEnvelope(normalizeSessionErr(err))
-		}
-		target, err := st.target(args)
-		if err != nil {
-			return errorEnvelope(err)
 		}
 		resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeLiveMonitorMain())
 		if err != nil {

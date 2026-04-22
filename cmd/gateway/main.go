@@ -717,6 +717,29 @@ func startHTTPServer(
 	}
 	mcpServer.SetSemanticProvider(newMCPSemanticProvider(semanticProvider))
 
+	// M2a_GATEWAY_MCP (execution-plans#19): install Vaillant B503 MCP tool
+	// surface. Uses a deferred dispatcher stub — production B524-style raw
+	// RPC wiring for the 2-byte (family, selector) frame is scheduled as a
+	// follow-up under the M2b / M3 rollout (the MCP substrate currently
+	// models dispatch as (plane, method, params) through the catalog, and
+	// B503 has not yet been added to the catalog — intentional, per plan
+	// AD01: Vaillant protocol knowledge stays out of ebusreg).
+	//
+	// Registering here ensures:
+	//   - `ebus.v1.vaillant.*` tools are listed by tools/list (P1 lint from
+	//     Codex review of M2a — tools MUST be reachable by clients, even
+	//     if production dispatch is not yet wired);
+	//   - capability signal is emitted;
+	//   - forbidden-surface guards (TestNoVaillantInstallWriteTools) apply
+	//     to the production build, not just the test harness.
+	//
+	// With the stub dispatcher, read tools surface `UPSTREAM_RPC_FAILED`
+	// with the "production wiring pending" message; live-monitor action
+	// paths use the real session FSM so EXPIRED normalization, session
+	// epochs, and owner-conditional release are all exercised — only the
+	// raw bus dispatch is stubbed.
+	installVaillantB503(mcpServer, gateway, &cfg)
+
 	// M4c2: populate the package-level responder capability provider
 	// based on the active transport protocol. Consumers apply fail-closed
 	// semantics on absence, so this MUST be called before any MCP

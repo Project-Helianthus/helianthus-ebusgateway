@@ -79,8 +79,19 @@ func b503StateFor(s *Server) (*b503State, bool) {
 }
 
 // RegisterVaillantB503Tools installs the 5 Vaillant B503 tools on s.
+//
+// Options validation: Dispatcher and SessionManager MUST be non-nil. A
+// misconfigured bootstrap that passes a zero-value VaillantB503Options
+// would otherwise panic on the first tool call (nil interface dereference
+// in Dispatcher.Invoke), taking down the MCP process instead of returning
+// a structured error. Invalid options → registration is a no-op (no tools
+// appear in tools/list, no b503States entry); the calling code should
+// check its own configuration rather than silently-half-install.
 func RegisterVaillantB503Tools(s *Server, opts VaillantB503Options) {
 	if s == nil {
+		return
+	}
+	if opts.Dispatcher == nil || opts.SessionManager == nil {
 		return
 	}
 	st := &b503State{opts: opts, server: s}

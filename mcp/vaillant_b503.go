@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/vaillant/b503"
@@ -59,9 +60,22 @@ type b503State struct {
 	opts VaillantB503Options
 }
 
+// b503States is guarded by a sync.RWMutex so RegisterVaillantB503Tools
+// (write) and handleVaillantB503Call / VaillantB503Availability (read)
+// can be called concurrently from different goroutines. An unguarded
+// shared map across register/dispatch would panic with "concurrent map
+// read and map write" under multi-server or late-registration scenarios.
 var b503States = struct {
+	mu       sync.RWMutex
 	byServer map[*Server]*b503State
 }{byServer: make(map[*Server]*b503State)}
+
+func b503StateFor(s *Server) (*b503State, bool) {
+	b503States.mu.RLock()
+	defer b503States.mu.RUnlock()
+	st, ok := b503States.byServer[s]
+	return st, ok
+}
 
 // RegisterVaillantB503Tools installs the 5 Vaillant B503 tools on s.
 func RegisterVaillantB503Tools(s *Server, opts VaillantB503Options) {
@@ -69,7 +83,9 @@ func RegisterVaillantB503Tools(s *Server, opts VaillantB503Options) {
 		return
 	}
 	st := &b503State{opts: opts}
+	b503States.mu.Lock()
 	b503States.byServer[s] = st
+	b503States.mu.Unlock()
 
 	targetProp := map[string]any{
 		"target_address": map[string]any{
@@ -152,7 +168,7 @@ func mergeProps(a, b map[string]any) map[string]any {
 // handleVaillantB503Call is invoked from handleToolsCall before the main
 // switch. Returns (result, true) when handled.
 func (s *Server) handleVaillantB503Call(ctx context.Context, name string, args map[string]any) (map[string]any, bool) {
-	st, ok := b503States.byServer[s]
+	st, ok := b503StateFor(s)
 	if !ok {
 		return nil, false
 	}
@@ -493,7 +509,7 @@ func errorEnvelope(err error) map[string]any {
 // against a live probe; the conservative default is UNKNOWN when no session
 // and dispatcher have been installed.
 func (s *Server) VaillantB503Availability() B503Availability {
-	st, ok := b503States.byServer[s]
+	st, ok := b503StateFor(s)
 	if !ok || st == nil {
 		return AvailabilityUnknown
 	}
@@ -505,15 +521,21 @@ func (s *Server) VaillantB503Availability() B503Availability {
 	if st.opts.SessionManager.LastRefreshTransportDown() {
 		return AvailabilityTransportDown
 	}
-	// Probe: attempt a lightweight CurrentError read. If the dispatcher
-	// returns ErrTransportDown explicitly we surface TRANSPORT_DOWN; any
-	// other probe error is conservatively treated as AVAILABLE because the
-	// resolver can only definitively classify non-availability when the
-	// transport layer reports down. A "no canned response" or generic
-	// upstream error does NOT mean the surface is unavailable.
+	// Probe: attempt a lightweight CurrentError read.
+	// - ErrTransportDown explicitly → TRANSPORT_DOWN.
+	// - Any other probe error → UNKNOWN (conservative): the surface is not
+	//   demonstrably usable, but we cannot distinguish "not supported" from
+	//   "transient failure" from a generic probe error. Previously any
+	//   non-transport-down error was treated as AVAILABLE, which misreported
+	//   capability when the dispatcher was a stub (e.g. the M2a
+	//   b503StubDispatcher) or when the device was unreachable — clients
+	//   that gate behaviour on capability.reason got the wrong signal.
 	_, err := st.opts.Dispatcher.Invoke(context.Background(), st.opts.DefaultTarget, b503.EncodeCurrentError())
-	if err != nil && errors.Is(err, b503session.ErrTransportDown) {
+	if err == nil {
+		return AvailabilityAvailable
+	}
+	if errors.Is(err, b503session.ErrTransportDown) {
 		return AvailabilityTransportDown
 	}
-	return AvailabilityAvailable
+	return AvailabilityUnknown
 }

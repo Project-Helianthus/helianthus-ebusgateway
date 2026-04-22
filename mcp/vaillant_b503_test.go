@@ -380,11 +380,32 @@ func TestVaillantB503_NoExpiredInPublicResponse(t *testing.T) {
 // --- Test 11/12: capability signal --------------------------------------
 
 func TestVaillantB503_Capability_Available(t *testing.T) {
-	disp := &stubB503Dispatcher{}
+	// AVAILABLE requires a successful probe. Stub the canned CurrentError
+	// response so the lightweight read succeeds; non-ErrTransportDown
+	// errors (including "no canned response") now surface as UNKNOWN to
+	// avoid misreporting capability when the dispatcher is a stub or the
+	// device is unreachable.
+	disp := &stubB503Dispatcher{
+		respByPrefix: map[string][]byte{
+			string([]byte{0x00, 0x01}): {0x19, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+		},
+	}
 	srv := newB503Server(t, disp, newDefaultMgr())
 	got := srv.VaillantB503Availability()
 	if got != AvailabilityAvailable {
 		t.Fatalf("availability = %q; want AVAILABLE", got)
+	}
+}
+
+func TestVaillantB503_Capability_Unknown_OnGenericProbeError(t *testing.T) {
+	// Generic probe error (not ErrTransportDown) → UNKNOWN. This is the
+	// production-wiring state with b503StubDispatcher, and the case that
+	// previously misreported AVAILABLE.
+	disp := &stubB503Dispatcher{} // no canned response → "no canned response" error
+	srv := newB503Server(t, disp, newDefaultMgr())
+	got := srv.VaillantB503Availability()
+	if got != AvailabilityUnknown {
+		t.Fatalf("availability = %q; want UNKNOWN on generic probe error", got)
 	}
 }
 

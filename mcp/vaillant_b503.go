@@ -57,7 +57,8 @@ const (
 // *Server pointer identity. We avoid growing the Server struct to keep the
 // diff minimal and the review surface tight.
 type b503State struct {
-	opts VaillantB503Options
+	opts   VaillantB503Options
+	server *Server // back-reference for capability-signal injection
 }
 
 // b503States is guarded by a sync.RWMutex so RegisterVaillantB503Tools
@@ -82,7 +83,7 @@ func RegisterVaillantB503Tools(s *Server, opts VaillantB503Options) {
 	if s == nil {
 		return
 	}
-	st := &b503State{opts: opts}
+	st := &b503State{opts: opts, server: s}
 	b503States.mu.Lock()
 	b503States.byServer[s] = st
 	b503States.mu.Unlock()
@@ -226,77 +227,77 @@ func historyIndex(args map[string]any) (byte, bool, error) {
 func (st *b503State) handleErrorsGet(ctx context.Context, args map[string]any) map[string]any {
 	target, err := st.target(args)
 	if err != nil {
-		return errorEnvelope(err)
+		return st.errEnvelope(err)
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentError())
 	if err != nil {
-		return errorEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 	}
 	slots, err := b503.DecodeCurrentError(resp)
 	if err != nil {
-		return errorEnvelope(fmt.Errorf("%w: %v", errDecodeFailed, err))
+		return st.errEnvelope(fmt.Errorf("%w: %v", errDecodeFailed, err))
 	}
-	return callToolResultText(mustJSON(newToolEnvelope(slotsToMap(slots), nil)), false)
+	return st.okEnvelope(slotsToMap(slots))
 }
 
 func (st *b503State) handleServiceCurrentGet(ctx context.Context, args map[string]any) map[string]any {
 	target, err := st.target(args)
 	if err != nil {
-		return errorEnvelope(err)
+		return st.errEnvelope(err)
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentService())
 	if err != nil {
-		return errorEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 	}
 	slots, err := b503.DecodeCurrentService(resp)
 	if err != nil {
-		return errorEnvelope(fmt.Errorf("%w: %v", errDecodeFailed, err))
+		return st.errEnvelope(fmt.Errorf("%w: %v", errDecodeFailed, err))
 	}
-	return callToolResultText(mustJSON(newToolEnvelope(slotsToMap(slots), nil)), false)
+	return st.okEnvelope(slotsToMap(slots))
 }
 
 func (st *b503State) handleErrorsHistoryGet(ctx context.Context, args map[string]any) map[string]any {
 	target, err := st.target(args)
 	if err != nil {
-		return errorEnvelope(err)
+		return st.errEnvelope(err)
 	}
 	payload := b503.EncodeErrorHistory()
 	if idx, present, err := historyIndex(args); err != nil {
-		return errorEnvelope(err)
+		return st.errEnvelope(err)
 	} else if present {
 		payload = append(payload, idx)
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 	if err != nil {
-		return errorEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 	}
 	rec, err := b503.DecodeErrorHistory(resp)
 	if err != nil {
-		return errorEnvelope(fmt.Errorf("%w: %v", errDecodeFailed, err))
+		return st.errEnvelope(fmt.Errorf("%w: %v", errDecodeFailed, err))
 	}
-	return callToolResultText(mustJSON(newToolEnvelope(historyToMap(rec), nil)), false)
+	return st.okEnvelope(historyToMap(rec))
 }
 
 func (st *b503State) handleServiceHistoryGet(ctx context.Context, args map[string]any) map[string]any {
 	target, err := st.target(args)
 	if err != nil {
-		return errorEnvelope(err)
+		return st.errEnvelope(err)
 	}
 	payload := b503.EncodeServiceHistory()
 	if idx, present, err := historyIndex(args); err != nil {
-		return errorEnvelope(err)
+		return st.errEnvelope(err)
 	} else if present {
 		payload = append(payload, idx)
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 	if err != nil {
-		return errorEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 	}
 	rec, err := b503.DecodeServiceHistory(resp)
 	if err != nil {
-		return errorEnvelope(fmt.Errorf("%w: %v", errDecodeFailed, err))
+		return st.errEnvelope(fmt.Errorf("%w: %v", errDecodeFailed, err))
 	}
-	return callToolResultText(mustJSON(newToolEnvelope(historyToMap(rec), nil)), false)
+	return st.okEnvelope(historyToMap(rec))
 }
 
 func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any) map[string]any {
@@ -306,32 +307,32 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 	// refresh the idle timer and prolong SESSION_BUSY for other clients.
 	raw, present := args["action"]
 	if !present {
-		return errorEnvelope(fmt.Errorf("%w: action is required (enable|read|disable)", errInvalidArgument))
+		return st.errEnvelope(fmt.Errorf("%w: action is required (enable|read|disable)", errInvalidArgument))
 	}
 	action, ok := raw.(string)
 	if !ok {
-		return errorEnvelope(fmt.Errorf("%w: action must be a string (enable|read|disable)", errInvalidArgument))
+		return st.errEnvelope(fmt.Errorf("%w: action must be a string (enable|read|disable)", errInvalidArgument))
 	}
 	switch action {
 	case "enable", "read", "disable":
 		// valid
 	default:
-		return errorEnvelope(fmt.Errorf("%w: action must be one of enable|read|disable, got %q", errInvalidArgument, action))
+		return st.errEnvelope(fmt.Errorf("%w: action must be one of enable|read|disable, got %q", errInvalidArgument, action))
 	}
 	mgr := st.opts.SessionManager
 	if mgr == nil {
-		return errorEnvelope(errNotSupported)
+		return st.errEnvelope(errNotSupported)
 	}
 
 	switch action {
 	case "enable":
 		target, err := st.target(args)
 		if err != nil {
-			return errorEnvelope(err)
+			return st.errEnvelope(err)
 		}
 		key, err := mgr.Enable(ctx)
 		if err != nil {
-			return errorEnvelope(normalizeSessionErr(err))
+			return st.errEnvelope(normalizeSessionErr(err))
 		}
 		// Emit the request so the device acknowledges live-monitor
 		// activation. Bound by SERVICE_WRITE safety class.
@@ -348,10 +349,10 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 				IssuerToken: key.IssuerToken,
 			}
 			_ = mgr.Disable(rebuilt)
-			return errorEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+			return st.errEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 		}
 		data := map[string]any{"issuer_token": key.IssuerToken}
-		return callToolResultText(mustJSON(newToolEnvelope(data, nil)), false)
+		return st.okEnvelope(data)
 
 	case "read":
 		// Resolver per spec §8 / plan AD14: surface the current FSM outcome
@@ -364,32 +365,32 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 		// clients) only to then fail with INVALID_ARGUMENT.
 		target, err := st.target(args)
 		if err != nil {
-			return errorEnvelope(err)
+			return st.errEnvelope(err)
 		}
 		if mgr.LastRefreshTransportDown() {
-			return errorEnvelope(errTransportDown)
+			return st.errEnvelope(errTransportDown)
 		}
 		transport := mgr.TransportKey()
 		if err := mgr.Read(transport); err != nil {
-			return errorEnvelope(normalizeSessionErr(err))
+			return st.errEnvelope(normalizeSessionErr(err))
 		}
 		resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeLiveMonitorMain())
 		if err != nil {
-			return errorEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+			return st.errEnvelope(fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 		}
 		data := map[string]any{"raw_hex": hexString(resp)}
-		return callToolResultText(mustJSON(newToolEnvelope(data, nil)), false)
+		return st.okEnvelope(data)
 
 	case "disable":
 		tok, _ := args["issuer_token"].(string)
 		transport := mgr.TransportKey()
 		err := mgr.Disable(b503session.SessionKey{Transport: transport, IssuerToken: tok})
 		if err != nil {
-			return errorEnvelope(normalizeSessionErr(err))
+			return st.errEnvelope(normalizeSessionErr(err))
 		}
-		return callToolResultText(mustJSON(newToolEnvelope(map[string]any{"disabled": true}, nil)), false)
+		return st.okEnvelope(map[string]any{"disabled": true})
 	}
-	return errorEnvelope(fmt.Errorf("%w: unknown action %q", errInvalidToken, action))
+	return st.errEnvelope(fmt.Errorf("%w: unknown action %q", errInvalidToken, action))
 }
 
 func slotsToMap(s b503.ErrorSlots) map[string]any {
@@ -500,6 +501,40 @@ func classifyB503Error(err error) (string, bool) {
 
 func errorEnvelope(err error) map[string]any {
 	return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true)
+}
+
+// b503Envelope wraps newToolEnvelope and injects
+// `meta.capabilities.vaillant_b503.reason` so clients can consume the
+// capability signal directly from every B503 tool response, instead of
+// only inferring state by watching which calls fail. Without this,
+// VaillantB503Availability is unreachable from the wire — defeating the
+// preflight contract for this surface.
+func (st *b503State) b503Envelope(data any, err error, isError bool) map[string]any {
+	env := newToolEnvelope(data, err)
+	reason := AvailabilityUnknown
+	if st != nil && st.server != nil {
+		reason = st.server.VaillantB503Availability()
+	}
+	if meta, ok := env["meta"].(map[string]any); ok {
+		caps, _ := meta["capabilities"].(map[string]any)
+		if caps == nil {
+			caps = make(map[string]any)
+		}
+		caps["vaillant_b503"] = map[string]any{
+			"reason":    string(reason),
+			"available": reason == AvailabilityAvailable,
+		}
+		meta["capabilities"] = caps
+	}
+	return callToolResultText(mustJSON(env), isError)
+}
+
+func (st *b503State) okEnvelope(data any) map[string]any {
+	return st.b503Envelope(data, nil, false)
+}
+
+func (st *b503State) errEnvelope(err error) map[string]any {
+	return st.b503Envelope(nil, err, true)
 }
 
 // --- capability -----------------------------------------------------------

@@ -180,6 +180,20 @@ func (m *Manager) State() State {
 	return s
 }
 
+// IsOwned reports whether the session gate is currently held by any
+// owner — true when FSM is Enabling, Active, OR the transient internal
+// `expired` state (during epoch-refresh). Resolver-layer code (e.g.
+// capability probe in mcp/vaillant_b503.go) uses this to classify the
+// surface as SESSION_BUSY during the full held-owner window, not just
+// when State() reports Active/Enabling. Without this, a slow refresh
+// could publish AVAILABLE while a concurrent Enable would still return
+// ErrSessionBusy.
+func (m *Manager) IsOwned() bool {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	return m.mutexHeld
+}
+
 // TransportKey returns the manager's current transport key. Exposed so
 // resolver-layer callers (mcp/vaillant_b503.go) can pass the correct key to
 // Read/Disable after OnEpochAdvance has re-homed the session.

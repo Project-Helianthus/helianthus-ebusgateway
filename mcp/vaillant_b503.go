@@ -569,12 +569,14 @@ func (s *Server) VaillantB503AvailabilityCtx(ctx context.Context) B503Availabili
 	if st.opts.SessionManager.LastRefreshTransportDown() {
 		return AvailabilityTransportDown
 	}
-	switch st.opts.SessionManager.State() {
-	case b503session.Enabling, b503session.Active:
-		// Live-monitor session held → enable/disable by another client
-		// would return SESSION_BUSY. Surface that literally so
-		// preflight/backoff logic doesn't see AVAILABLE contradicted by
-		// a concurrent error.code=SESSION_BUSY.
+	if st.opts.SessionManager.IsOwned() {
+		// Live-monitor session gate is held (Enabling / Active / transient
+		// internal expired during epoch refresh) → enable/disable by
+		// another client would return SESSION_BUSY. Surface that
+		// literally so preflight/backoff logic doesn't see AVAILABLE
+		// contradicted by a concurrent error.code=SESSION_BUSY. Using
+		// IsOwned() (rather than State()==Active) covers the transient
+		// expired window too.
 		return AvailabilitySessionBusy
 	}
 	_, err := st.opts.Dispatcher.Invoke(ctx, st.opts.DefaultTarget, b503.EncodeCurrentError())

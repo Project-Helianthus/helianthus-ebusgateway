@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
@@ -54,7 +55,32 @@ func toolClassificationPolicy() map[string]toolClass {
 		estd.ToolCommandsList:            toolClassCoreStable,
 		estd.ToolCommandGet:              toolClassCoreStable,
 		estd.ToolDecode:                  toolClassCoreStable,
+		// Vaillant B503 surface (M2a_GATEWAY_MCP / execution-plans#19).
+		// Provider-scoped namespace parallel to ebus_standard; tools surface
+		// a dedicated capability signal (meta.capabilities.vaillant_b503).
+		toolVaillantB503ErrorsGetName:         toolClassCoreStable,
+		toolVaillantB503ErrorsHistoryGetName:  toolClassCoreStable,
+		toolVaillantB503ServiceCurrentGetName: toolClassCoreStable,
+		toolVaillantB503ServiceHistoryGetName: toolClassCoreStable,
+		toolVaillantB503LiveMonitorName:       toolClassCoreStable,
 	}
+}
+
+// testInstallB503ForClassification wires the 5 Vaillant B503 tools onto
+// server using no-op stubs. Used by TestToolClassificationPolicy so the
+// production-wiring ebus.v1.vaillant.* tool names are checked against
+// toolClassificationPolicy() in CI.
+func testInstallB503ForClassification(server *Server) {
+	mgr := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "classification-test", TransportEpoch: 1},
+		0,
+		nil,
+	)
+	RegisterVaillantB503Tools(server, VaillantB503Options{
+		Dispatcher:     &stubB503Dispatcher{},
+		SessionManager: mgr,
+		DefaultTarget:  0x08,
+	})
 }
 
 func isReservedDraftTool(name string) bool {
@@ -72,6 +98,11 @@ func TestToolClassificationPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
+	// Install B503 tools so the classification policy check covers them too
+	// (production wiring does this in cmd/gateway/main.go). Without this
+	// explicit registration here, the test would only check the default
+	// NewServer inventory and leave ebus.v1.vaillant.* without CI coverage.
+	testInstallB503ForClassification(server)
 
 	res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list", Params: nil})
 	if res.Error != nil {

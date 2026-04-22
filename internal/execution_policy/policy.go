@@ -36,9 +36,13 @@ const (
 // denial. Callers MUST use errors.Is(err, ErrSafetyClassDenied) and MUST
 // NOT compare by pointer or string.
 //
-// This value wraps ebusstd.ErrSafetyClassDenied so parity tests comparing
-// against the provider-level sentinel also succeed via errors.Is.
-var ErrSafetyClassDenied = fmt.Errorf("execution_policy: %w", ebusstd.ErrSafetyClassDenied)
+// Interim (M2a / execution-plans#19): the original wrap of
+// ebusstd.ErrSafetyClassDenied from helianthus-ebusreg/catalog/ebus_standard
+// cannot be honored because that upstream symbol is not yet exported,
+// leaving origin/main unbuildable. This local sentinel restores build;
+// parity-wrap MUST be reintroduced once upstream ships the symbol and
+// gateway go.mod is bumped. Tracked as follow-up task.
+var ErrSafetyClassDenied = errors.New("execution_policy: safety_class denied")
 
 // ErrResponderTransportUnavailable is the capability-layer sentinel
 // returned when the responder runtime is constructed against a transport

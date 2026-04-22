@@ -3,7 +3,7 @@ module github.com/Project-Helianthus/helianthus-ebusgateway
 go 1.22
 
 require (
-	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260420084448-721165d7033c
+	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260422202142-5491494d667c
 	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260419103431-30aa69a099ec
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/graphql-go/graphql v0.8.1

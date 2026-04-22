@@ -1288,6 +1288,10 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		return result, nil
 	}
 
+	if result, handled := s.handleVaillantB503Call(ctx, call.Name, call.Arguments); handled {
+		return result, nil
+	}
+
 	switch call.Name {
 	case toolRuntimeStatusGetName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
@@ -2021,6 +2025,9 @@ func hashData(data any) string {
 }
 
 func classifyToolError(err error) (code string, retriable bool, sourceLayer string) {
+	if code, ok := classifyB503Error(err); ok {
+		return code, false, "gateway"
+	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "TIMEOUT", true, "gateway"

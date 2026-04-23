@@ -116,7 +116,10 @@ func (s *vaillantAdapterInfoState) needsIdentityRefresh() bool {
 	if !s.identity.SupportsInfo {
 		return false
 	}
-	return s.hwID == "" || s.hwConfig == ""
+	if s.hwID == "" || s.hwConfig == "" {
+		return true
+	}
+	return s.identity.SupportsInfoID(transport.AdapterInfoResetInfo) && s.restartCount == nil
 }
 
 func (s *vaillantAdapterInfoState) refreshIdentity(ctx context.Context) {
@@ -183,6 +186,25 @@ func (s *vaillantAdapterInfoState) refreshIdentity(ctx context.Context) {
 		s.hwConfig = ""
 	}
 
+	if version.SupportsInfoID(transport.AdapterInfoResetInfo) {
+		if data, err := s.queryInfo(ctx, transport.AdapterInfoResetInfo); err == nil {
+			if info, err := transport.ParseAdapterResetInfo(data); err == nil {
+				s.resetCause = &info.Cause
+				s.resetCode = &info.CauseCode
+				s.restartCount = &info.RestartCount
+				adapterRestartCount.Set(float64(info.RestartCount))
+			} else {
+				log.Printf("adapter_info: reset_info parse failed: %v", err)
+				s.clearResetInfo()
+			}
+		} else {
+			log.Printf("adapter_info: reset_info query failed: %v", err)
+			s.clearResetInfo()
+		}
+	} else {
+		s.clearResetInfo()
+	}
+
 	adapterInfoHealth.Set(boolToInt64(s.hwID != "" && s.hwConfig != ""))
 }
 
@@ -193,7 +215,6 @@ func (s *vaillantAdapterInfoState) refreshTelemetry(ctx context.Context) {
 	if s.identity == nil || !s.identity.SupportsInfo {
 		return
 	}
-	version := s.identity
 	anySuccess := false
 
 	// Temperature (ID 0x03).
@@ -252,52 +273,12 @@ func (s *vaillantAdapterInfoState) refreshTelemetry(ctx context.Context) {
 		adapterBusVoltageMinDV.Set(0)
 	}
 
-	// Reset info (ID 0x06) — gated.
-	if version.SupportsInfoID(transport.AdapterInfoResetInfo) {
-		if data, err := s.queryInfo(ctx, transport.AdapterInfoResetInfo); err == nil {
-			if info, err := transport.ParseAdapterResetInfo(data); err == nil {
-				s.resetCause = &info.Cause
-				s.resetCode = &info.CauseCode
-				s.restartCount = &info.RestartCount
-				adapterRestartCount.Set(float64(info.RestartCount))
-				anySuccess = true
-			}
-		} else if s.shouldRebootstrap(err) {
-			s.invalidateIdentity()
-			adapterInfoHealth.Set(0)
-			return
-		} else {
-			s.resetCause = nil
-			s.resetCode = nil
-			s.restartCount = nil
-			adapterRestartCount.Set(0)
-		}
-	} else {
-		s.resetCause = nil
-		s.resetCode = nil
-		s.restartCount = nil
-	}
+	// Reset info is populated once on the identity/bootstrap path and left
+	// unchanged during periodic telemetry refresh.
 
-	// WiFi RSSI (ID 0x07) — gated.
-	if version.SupportsInfoID(transport.AdapterInfoWiFiRSSI) {
-		if data, err := s.queryInfo(ctx, transport.AdapterInfoWiFiRSSI); err == nil && len(data) >= 1 {
-			v := int(int8(data[0]))
-			if v != 0 {
-				s.wifiRSSI = &v
-				adapterWiFiRSSIDBm.Set(float64(v))
-				anySuccess = true
-			}
-		} else if s.shouldRebootstrap(err) {
-			s.invalidateIdentity()
-			adapterInfoHealth.Set(0)
-			return
-		} else {
-			s.wifiRSSI = nil
-			adapterWiFiRSSIDBm.Set(0)
-		}
-	} else {
-		s.wifiRSSI = nil
-	}
+	// WiFi RSSI is intentionally excluded for this adapter family.
+	s.wifiRSSI = nil
+	adapterWiFiRSSIDBm.Set(0)
 
 	if anySuccess {
 		s.lastTelemetry = time.Now()
@@ -431,6 +412,13 @@ func (s *vaillantAdapterInfoState) clearTelemetry() {
 	adapterBusVoltageMinDV.Set(0)
 	adapterRestartCount.Set(0)
 	adapterWiFiRSSIDBm.Set(0)
+}
+
+func (s *vaillantAdapterInfoState) clearResetInfo() {
+	s.resetCause = nil
+	s.resetCode = nil
+	s.restartCount = nil
+	adapterRestartCount.Set(0)
 }
 
 func boolToInt64(b bool) int64 {

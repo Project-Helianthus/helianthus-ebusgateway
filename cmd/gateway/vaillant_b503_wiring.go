@@ -58,9 +58,20 @@ func b503StubRefresh(ctx context.Context) (b503session.TransportKey, error) {
 	return b503session.TransportKey{}, b503session.ErrTransportDown
 }
 
-func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgateway.Config) {
+// b503Runtime bundles the session Manager + dispatcher + MCP server back-ref
+// so both the MCP tool surface and the GraphQL B503 provider can share a
+// single Manager/Dispatcher pair. The session gate must NOT be duplicated
+// across surfaces — GraphQL Enable/Read/Disable operating on a different
+// Manager than MCP would trivially break the single-owner invariant.
+type b503Runtime struct {
+	mcpServer  *mcp.Server
+	manager    *b503session.Manager
+	dispatcher mcp.RPCDispatcher
+}
+
+func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgateway.Config) *b503Runtime {
 	if s == nil {
-		return
+		return nil
 	}
 	_ = gw  // reserved for future real-dispatcher bridge
 	_ = cfg // reserved for future config-driven default-target override
@@ -70,10 +81,17 @@ func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgatewa
 		TransportEpoch:    0,
 	}
 	mgr := b503session.New(initialTK, 30*time.Second, b503StubRefresh)
+	disp := b503StubDispatcher{}
 
 	mcp.RegisterVaillantB503Tools(s, mcp.VaillantB503Options{
-		Dispatcher:     b503StubDispatcher{},
+		Dispatcher:     disp,
 		SessionManager: mgr,
 		DefaultTarget:  defaultVaillantTarget,
 	})
+
+	return &b503Runtime{
+		mcpServer:  s,
+		manager:    mgr,
+		dispatcher: disp,
+	}
 }

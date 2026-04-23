@@ -4,3 +4,6 @@ portal/web/node_modules/
 
 /gateway
 /helianthus-gateway-arm64
+
+# Claude Code orchestrator-session artifacts (per-session tool/skills config, not repo-tracked)
+.claude/

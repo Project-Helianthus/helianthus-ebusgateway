@@ -84,7 +84,7 @@ The authoritative evidence for RB-01..RB-04 therefore lives across three places:
 
 | # | B524 scenario | Expectation | Evidence |
 |---|---------------|-------------|----------|
-| RB-01 | B524 read path baseline (no B503 session) | No behaviour change vs main | Existing `internal/observe_first_family_policy` tests green on branch head; no diff against `readMu` call sites in this PR. |
+| RB-01 | B524 read path baseline (no B503 session) | No behaviour change vs main | Existing repo-root `observe_first_family_policy_test.go` (path: `observe_first_family_policy_test.go` at module root) + `cmd/gateway/semantic_vaillant_test.go` B524 test coverage green on branch head; no diff against any `readMu` call site in this PR (verifiable via `git diff origin/main...HEAD -- '*readMu*' '*.go'` — zero lines). |
 | RB-02 | B524 read + concurrent B503 live-monitor Active | B524 throughput unchanged; no deadlock between `readMu` + `liveMonitorMu` | `session_test.go:TestSession_ConcurrentReadsAndPollerSim_NoDeadlock` (-race clean) + live-bus BENCH-REPLACE ratification (§6). |
 | RB-03 | Lock-order invariant `liveMonitorMu → readMu`; reverse forbidden | Enforced by design — neither mutex is shared; acquisition sites documented in spec §7.4 | Code review trip-wire (struct-field comment) + BENCH-REPLACE. Generic `-race` does NOT prove lock order; that is a distinct class of bug Go's race detector does not catch. |
 | RB-04 | B524 polled-value observation during B503 live-monitor Active | Poller continues uninterrupted | Implicit in RB-02 evidence — the existing observation pipeline has zero diff in this PR and the B503 session path is on a distinct mutex. Ratified live-bus via §6. |
@@ -145,11 +145,23 @@ Escalation threshold: any of the above reproducing on main → **immediate** rev
 
 ## §8 Transport-gate sign-off
 
-- [x] §2 Conformance matrix: 21 rows PASS / PASS (stub), 1 row ESCALATE (ebusd_serial, operator-documented)
-- [x] §3 B524 regression: RB-01..RB-04 verified
-- [x] §4 Reconnect + expiry: RC-01..RC-05 verified
-- [x] §5 Availability + escalation: ebusd_serial operator-escalated
-- [x] §6 BENCH-REPLACE obligations documented, inherited by M2b/M3 follow-up
-- [x] §7 Rollback criteria explicit
+The sign-off below uses two checkbox states:
 
-**Sign-off:** M5_TRANSPORT_MATRIX artifact complete. M2b_GATEWAY_GRAPHQL is unblocked per DAG invariant.
+- `[x]` = **stub-verified / documented / static-guaranteed** — the row's claim holds against the M2a stub-dispatcher test matrix, the artifact structure is present, or the invariant is static (no diff to relevant call sites).
+- `[~]` = **pending live-bus BENCH-REPLACE** — the row's full production-path coverage is deferred to live-hardware verification when the M2b/M3 raw-frame dispatcher lands (§6).
+
+| # | Section | State | Note |
+|---|---|---|---|
+| 1 | §2 Conformance matrix — 21 rows PASS / PASS (stub), 1 ESCALATE (ebusd_serial) | `[x]` stub-verified; PASS (stub) rows carry forward to BENCH-REPLACE per §6 |
+| 2 | §3 RB-01 (B524 baseline, no B503 session) | `[x]` static: zero diff to `readMu` call sites in this PR |
+| 3 | §3 RB-02 (B524 + concurrent B503 Active, real paths) | `[~]` pending BENCH-REPLACE — stub-mutex proxy deleted after honest review; production-path evidence requires live bus |
+| 4 | §3 RB-03 (lock-order invariant) | `[~]` pending BENCH-REPLACE — generic `-race` does NOT catch this bug class; static coverage is the M2a struct-field trip-wire + code review |
+| 5 | §3 RB-04 (B524 poll during B503 Active) | `[~]` pending BENCH-REPLACE — subsumed by RB-02 on live bus |
+| 6 | §4 Reconnect + expiry RC-01..RC-05 | `[x]` verified by M2a `session_test.go` under `-race` |
+| 7 | §5 Availability + ebusd_serial escalation | `[x]` documented |
+| 8 | §6 BENCH-REPLACE obligations | `[x]` inherited by M2b/M3 follow-up |
+| 9 | §7 Rollback criteria | `[x]` explicit |
+
+**Sign-off state:** **conditional**. M5_TRANSPORT_MATRIX artifact is complete AS AN ARTIFACT. Full transport-gate ratification requires the live-bus BENCH-REPLACE on `[~]` rows, which is paired with the M2b/M3 production dispatcher landing. M2b_GATEWAY_GRAPHQL may proceed to implementation (decoder path + resolver wiring), but M2b **publication** (schema-stable v1) SHOULD wait for the BENCH-REPLACE rows to flip to `[x]`. This matches the plan-AD09 DAG invariant (`M5 blocks M2b`): M5's artifact unblocks M2b structural work; M5's BENCH-REPLACE completion is the gate for M2b schema stability.
+
+This explicit two-state sign-off prevents the matrix from falsely advertising live-bus coverage that has not yet been performed.

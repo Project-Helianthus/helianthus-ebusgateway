@@ -2847,7 +2847,21 @@ class PortalShell extends HTMLElement {
     const errorsTab = this.querySelector('[data-role="vaillant-b503-tab-errors"]');
     const serviceTab = this.querySelector('[data-role="vaillant-b503-tab-service"]');
     const liveTab = this.querySelector('[data-role="vaillant-b503-tab-live-monitor"]');
-    const swap = (name) => {
+    const swap = async (name) => {
+      const leavingLive =
+        this._vaillantB503ActiveTab === "live-monitor" &&
+        name !== "live-monitor" &&
+        this._vaillantB503LiveToken;
+      if (leavingLive) {
+        // Fire a best-effort disable before swapping. Matches the
+        // nav-away semantics so clicking Errors/Service while a live
+        // session is held does not leave the token active.
+        try {
+          await this.invokeVaillantLiveMonitor("disable");
+        } catch {
+          this._vaillantB503LiveToken = null;
+        }
+      }
       this._vaillantB503ActiveTab = name;
       // Re-render the pane body to swap tab contents. The capability
       // reason is cached on the shell instance, so we don't re-fetch.
@@ -2965,6 +2979,13 @@ class PortalShell extends HTMLElement {
       );
       if (env && env.errors && env.errors.length) {
         if (status) status.textContent = env.errors[0].message || "error";
+        // For the nav-away / tab-swap cleanup path: a disable that the
+        // backend rejects MUST still surface as an error so the caller
+        // can clear its stale token. Swallowing here caused the
+        // nav-away catch() never to run.
+        if (action === "disable") {
+          throw new Error(env.errors[0].message || "disable failed");
+        }
         return;
       }
       const payload = env && env.data && env.data.vaillantLiveMonitor;

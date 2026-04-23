@@ -101,7 +101,7 @@ The authoritative evidence for RB-01..RB-04 therefore lives across three places:
 | RC-02 | Reconnect during session, refresh reveals transport-down | `lastRefreshTransportDown = true`; subsequent reads surface TRANSPORT_DOWN (never SESSION_BUSY) | `session_test.go:TestSession_EpochAdvance_RefreshTransportDown_DisabledOutcome` + `mcp/vaillant_b503_test.go:TestVaillantB503_Capability_TransportDown` |
 | RC-03 | Reconnect during session, refresh fails generically | `refreshFailed` latches; reads return SESSION_BUSY until next Enable | `session_test.go:TestSession_EpochAdvance_RefreshFails_SubsequentReadBusy` |
 | RC-04 | Session-expiry during quiesce (idle timer fires mid-quiesce) | Owner-conditional release; no double-unlock; no stale callback disables a rearmed session | `session_test.go:TestSession_ReadResetsIdleTimer` + the generation-counter guard verified by `armIdleTimerLocked` stale-callback tests |
-| RC-05 | Stale-owner cleanup after disconnect | `OnTransportDisconnect` releases only when owner is held; no-op otherwise | `session_test.go:TestSession_TransportDisconnect_NoOwner_NoOp` + owner-conditional guard in `OnEpochAdvance` (M2a round-4 fix commit `3c964e4`) |
+| RC-05 | Stale-owner cleanup after disconnect | `OnTransportDisconnect` releases only when owner is held; no-op otherwise | `session_test.go:TestSession_TransportDisconnect_NoOwner_NoOp` + owner-conditional guard in `internal/vaillant/b503session/session.go` `OnEpochAdvance` (grep for `if !m.mutexHeld` inside `OnEpochAdvance` — the mutex-held check after the refresh re-acquires `stateMu`) + `OnTransportDisconnect` (same file, initial `if !m.mutexHeld { return }` guard). Both live on the merged M2a squash `d74dc89b` as reachable files/lines. |
 
 **Verdict:** All reconnect + expiry paths are covered by passing -race tests on head.
 
@@ -125,11 +125,15 @@ The following rows are marked `PASS (stub)` and REQUIRE re-verification on live 
 
 BENCH-REPLACE protocol (inherited from ebus_standard M6a precedent). The existing unit-test suites (`mcp/vaillant_b503_test.go` with `stubB503Dispatcher`, `internal/vaillant/b503session/session_test.go` with in-memory FSM) are NOT live-bus evidence — they cannot flip `[~]` rows to `[x]` because they do not exercise any real bus path. Real ratification REQUIRES all of the following:
 
-1. **Operator-attested live bus capture** against a BAI00 (or equivalent) physically connected via the adapter-direct transport. Evidence artifact: `matrix/bench-replace/<date>-vaillant-b503-bai00.log` or equivalent, containing:
-   - wire-level request/response bytes for each stub-flipped row (VB-01..VB-04, VB-19, VB-20), matching the normative selector catalog;
-   - concurrent B524 poll traffic visible in the same capture for RB-02/RB-04 ratification;
-   - session-enable/disable frames + ACKs for VB-05.
-2. **Operator-attested live bus capture** against the same device via the ebusd_tcp transport (same evidence list as step 1).
+1. **Operator-attested live bus capture (adapter-direct)** against a BAI00 (or equivalent) physically connected via the adapter-direct transport. Evidence artifact: `matrix/bench-replace/<date>-vaillant-b503-bai00-adapter-direct.log` or equivalent, containing:
+   - wire-level request/response bytes for the adapter-direct rows (VB-01..VB-04 plus VB-05 enable/read/disable frames + ACKs) matching the normative selector catalog;
+   - concurrent B524 poll traffic visible in the same capture for RB-02/RB-04 ratification on adapter-direct.
+2. **Operator-attested live bus capture (ebusd_tcp)** against the same device via the ebusd_tcp transport. Evidence artifact: `matrix/bench-replace/<date>-vaillant-b503-bai00-ebusd-tcp.log`, containing:
+   - wire-level bytes for the ebusd_tcp rows (VB-19, VB-20);
+   - session-enable/disable evidence for VB-20;
+   - concurrent B524 poll traffic for the same RB-02/RB-04 rows (ebusd_tcp side).
+
+Each transport capture only demands rows that are actually executable on that transport; operators cannot produce ebusd_tcp evidence from an adapter-direct run and vice versa.
 3. **Gateway-level observation** showing `meta.capabilities.vaillant_b503.reason` transitioned correctly across the session lifecycle during the captures (attach stdout log from the gateway's MCP surface during the run).
 4. Only AFTER steps 1–3 have landed as commits in this repo, and the operator has signed off in the follow-up commit body with "BENCH-REPLACE-SIGNOFF: <YYYY-MM-DD> on <device> <transport>", may the affected `[~]` rows be flipped to `[x]`.
 5. The gateway unit-test suite MAY be re-run against live hardware in parallel as a smoke check, but its pass/fail alone does NOT satisfy BENCH-REPLACE — the operator capture + attested signoff are the authoritative artifacts.

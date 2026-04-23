@@ -123,10 +123,19 @@ The following rows are marked `PASS (stub)` and REQUIRE re-verification on live 
 
 - VB-01 through VB-04, VB-19, VB-20 — all stub-verified MCP pipeline rows.
 
-BENCH-REPLACE protocol (inherited from ebus_standard M6a precedent):
-1. When the production dispatcher lands, re-run `go test -race -count=1 ./mcp/... ./internal/vaillant/...` against a live BAI00.
-2. Flip affected rows in this matrix from `PASS (stub)` → `PASS (live)` with a git-commit reference.
-3. If any row fails on live bus, it is a regression against M2a and MUST be triaged before M2b publication.
+BENCH-REPLACE protocol (inherited from ebus_standard M6a precedent). The existing unit-test suites (`mcp/vaillant_b503_test.go` with `stubB503Dispatcher`, `internal/vaillant/b503session/session_test.go` with in-memory FSM) are NOT live-bus evidence — they cannot flip `[~]` rows to `[x]` because they do not exercise any real bus path. Real ratification REQUIRES all of the following:
+
+1. **Operator-attested live bus capture** against a BAI00 (or equivalent) physically connected via the adapter-direct transport. Evidence artifact: `matrix/bench-replace/<date>-vaillant-b503-bai00.log` or equivalent, containing:
+   - wire-level request/response bytes for each stub-flipped row (VB-01..VB-04, VB-19, VB-20), matching the normative selector catalog;
+   - concurrent B524 poll traffic visible in the same capture for RB-02/RB-04 ratification;
+   - session-enable/disable frames + ACKs for VB-05.
+2. **Operator-attested live bus capture** against the same device via the ebusd_tcp transport (same evidence list as step 1).
+3. **Gateway-level observation** showing `meta.capabilities.vaillant_b503.reason` transitioned correctly across the session lifecycle during the captures (attach stdout log from the gateway's MCP surface during the run).
+4. Only AFTER steps 1–3 have landed as commits in this repo, and the operator has signed off in the follow-up commit body with "BENCH-REPLACE-SIGNOFF: <YYYY-MM-DD> on <device> <transport>", may the affected `[~]` rows be flipped to `[x]`.
+5. The gateway unit-test suite MAY be re-run against live hardware in parallel as a smoke check, but its pass/fail alone does NOT satisfy BENCH-REPLACE — the operator capture + attested signoff are the authoritative artifacts.
+6. If any row fails live-bus verification, it is a regression against M2a and MUST be triaged before M2b publication; `[~]` stays `[~]`.
+
+Failure to attach the required operator-attested capture on a BENCH-REPLACE commit is a grounds to block that commit's merge.
 
 ---
 

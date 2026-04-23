@@ -738,7 +738,15 @@ func startHTTPServer(
 	// paths use the real session FSM so EXPIRED normalization, session
 	// epochs, and owner-conditional release are all exercised — only the
 	// raw bus dispatch is stubbed.
-	installVaillantB503(mcpServer, gateway, &cfg)
+	b503rt := installVaillantB503(mcpServer, gateway, &cfg)
+	// M2b_GATEWAY_GRAPHQL (execution-plans#19): wire the GraphQL B503
+	// provider to the same Manager + Dispatcher the MCP surface uses. A
+	// single Manager across both surfaces is mandatory — GraphQL
+	// Enable/Read/Disable operating on a separate Manager would break
+	// the single-owner session invariant.
+	if b503rt != nil {
+		builder.SetVaillantB503Provider(newB503GraphQLProvider(b503rt))
+	}
 
 	// M4c2: populate the package-level responder capability provider
 	// based on the active transport protocol. Consumers apply fail-closed

@@ -16,6 +16,7 @@ type Builder struct {
 	boiler   BoilerConfigWriter
 	system   SystemConfigWriter
 	schedule ScheduleWriter
+	vaillantB503 VaillantB503Provider
 
 	mu       sync.RWMutex
 	schema   Schema

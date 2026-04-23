@@ -8,6 +8,28 @@ package mcp
 // and mcp/vaillant_b503_test.go); they specifically assert the plan-AD12
 // invariants that M2a's new liveMonitorMu mutex has not perturbed the
 // gateway's pre-existing concurrency contracts.
+//
+// RB-03 (lock identity / ordering) is NOT testable from this package.
+// b503session.Manager.mu is intentionally unexported, and adaptermux's
+// readMu is package-private behind-a-stable-surface — importing
+// adaptermux here would risk a dependency cycle. The RB-03 invariant
+// (liveMonitorMu distinct from adaptermux readMu; acquisition order
+// liveMonitorMu → readMu; reverse forbidden per spec §7.4) is enforced
+// EXTERNALLY by:
+//
+//  1. -race CI on the whole repo: any shared-mutex deadlock or
+//     lock-order cycle would surface as a -race runtime abort.
+//  2. internal/vaillant/b503session/session_test.go concurrency suite:
+//     directly exercises the Manager FSM under -race.
+//  3. Code review: a refactor that reuses a pre-existing mutex would
+//     have to rewrite b503session.Manager's struct — the
+//     "liveMonitorMu — ownership gate, distinct from B524 readMu"
+//     comment on that field is the reviewer trip-wire.
+//
+// No in-file test pretends to enforce RB-03; doing so with the surface
+// available here would be either a false-positive smoke check (prior
+// revision) or a mock-mutex stand-in (even earlier revision) — both
+// struck by Codex review. Honesty over theatre.
 
 import (
 	"context"
@@ -18,51 +40,6 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 )
-
-// TestB524Regression_LockIdentityContract (RB-03, contract assertion):
-//
-// This test does NOT exercise the real adaptermux/B524 readMu — from the
-// mcp package we cannot import adaptermux without inviting a dependency
-// cycle, and adaptermux does not expose its readMu across package
-// boundaries by design. Instead, this test documents the RB-03 invariant
-// explicitly so regressions to it surface as a compilation break here.
-//
-// The invariant (design-level):
-//   b503session.Manager.mu (liveMonitorMu) is a distinct *sync.Mutex
-//   from any adaptermux mutex. Acquisition order when both are needed
-//   is liveMonitorMu → readMu; the reverse is forbidden (spec §7.4).
-//
-// Live enforcement: the existing M2a concurrency test suite
-// (internal/vaillant/b503session/session_test.go) runs under -race and
-// would surface any shared-mutex deadlock; the CI -race matrix (test
-// job in this PR) would surface any lock-ordering cycle. This test
-// exists as a structural marker — if someone refactors
-// b503session.Manager to reuse a pre-existing readMu, the next
-// reviewer sees the RB-03 comment and reconsiders.
-func TestB524Regression_LockIdentityContract(t *testing.T) {
-	mgr := b503session.New(
-		b503session.TransportKey{AdapterInstanceID: "rb03", TransportEpoch: 1},
-		100*time.Millisecond,
-		nil,
-	)
-	// Smoke-check: Manager initialises with a private mutex. We cannot
-	// introspect mu identity from here, but we can verify the public
-	// surface (Enable → Disable round-trip) does not deadlock and
-	// completes within a tight budget (no hidden shared-lock wait).
-	budget := 100 * time.Millisecond
-	deadline := time.Now().Add(budget)
-
-	key, err := mgr.Enable(context.Background())
-	if err != nil {
-		t.Fatalf("Enable: %v", err)
-	}
-	if err := mgr.Disable(key); err != nil {
-		t.Fatalf("Disable: %v", err)
-	}
-	if time.Now().After(deadline) {
-		t.Errorf("Enable→Disable exceeded %v budget — suggests hidden mutex wait", budget)
-	}
-}
 
 // TestB524Regression_ConcurrentReadsNoDeadlock (RB-02): concurrent
 // simulated B524 readers + B503 session reads run for 100ms with no
@@ -168,7 +145,10 @@ func TestB524Regression_IsOwnedNoReadContention(t *testing.T) {
 		t.Fatalf("Enable: %v", err)
 	}
 
-	var wg sync.WaitGroup
+	var (
+		wg            sync.WaitGroup
+		pollerIter    int64
+	)
 	stop := make(chan struct{})
 
 	// Simulated B524 poller exercising stateMu via State() + Read().
@@ -182,12 +162,26 @@ func TestB524Regression_IsOwnedNoReadContention(t *testing.T) {
 			default:
 				_ = mgr.State()
 				_ = mgr.Read(mgr.TransportKey())
+				atomic.AddInt64(&pollerIter, 1)
 				time.Sleep(50 * time.Microsecond)
 			}
 		}
 	}()
 
-	// IsOwned loop under the concurrent poller.
+	// Barrier: wait until the poller has actually begun touching stateMu
+	// at least a few times. Without this, on single-core or busy CI
+	// runners the IsOwned loop could complete before the poller ever
+	// runs, giving a fast uncontended path that misses the regression
+	// this test is meant to catch.
+	barrierDeadline := time.Now().Add(500 * time.Millisecond)
+	for atomic.LoadInt64(&pollerIter) < 3 {
+		if time.Now().After(barrierDeadline) {
+			t.Fatal("poller did not reach 3 iterations within 500ms — scheduler starvation or regression")
+		}
+		time.Sleep(100 * time.Microsecond)
+	}
+
+	// IsOwned loop under the concurrent poller (now guaranteed running).
 	const iterations = 10_000
 	started := time.Now()
 	for i := 0; i < iterations; i++ {

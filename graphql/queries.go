@@ -4935,9 +4935,11 @@ func addEnergyTotalsToDevice(deviceType *graphqlgo.Object, energyTotalsType *gra
 }
 
 func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Object {
-	return graphqlgo.NewObject(graphqlgo.ObjectConfig{
+	fields := graphqlgo.Fields{}
+	addVaillantB503Queries(fields, builder)
+	obj := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Query",
-		Fields: graphqlgo.Fields{
+		Fields: mergeQueryFields(fields, graphqlgo.Fields{
 			"daemonStatus": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.statusType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -5193,8 +5195,19 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return plane.Methods, nil
 				},
 			},
-		},
+		}),
 	})
+	return obj
+}
+
+// mergeQueryFields merges b into a and returns a. On name collisions, b wins
+// (so caller-supplied core fields always take precedence over the extension
+// map).
+func mergeQueryFields(a, b graphqlgo.Fields) graphqlgo.Fields {
+	for k, v := range b {
+		a[k] = v
+	}
+	return a
 }
 
 func NewQuerySchema(builder *Builder) (graphqlgo.Schema, error) {

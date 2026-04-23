@@ -162,6 +162,14 @@ The sign-off below uses two checkbox states:
 | 8 | §6 BENCH-REPLACE obligations | `[x]` inherited by M2b/M3 follow-up |
 | 9 | §7 Rollback criteria | `[x]` explicit |
 
-**Sign-off state:** **conditional**. M5_TRANSPORT_MATRIX artifact is complete AS AN ARTIFACT. Full transport-gate ratification requires the live-bus BENCH-REPLACE on `[~]` rows, which is paired with the M2b/M3 production dispatcher landing. M2b_GATEWAY_GRAPHQL may proceed to implementation (decoder path + resolver wiring), but M2b **publication** (schema-stable v1) SHOULD wait for the BENCH-REPLACE rows to flip to `[x]`. This matches the plan-AD09 DAG invariant (`M5 blocks M2b`): M5's artifact unblocks M2b structural work; M5's BENCH-REPLACE completion is the gate for M2b schema stability.
+**Sign-off state:** **conditional — artifact-complete, live-bus-pending**. M5_TRANSPORT_MATRIX is complete AS AN ARTIFACT; the plan-AD09 DAG invariant ("`M5 blocks M2b`") is satisfied at the **artifact level** — M2b_GATEWAY_GRAPHQL may proceed to **implementation** (decoder wiring, resolver plumbing, test-time dispatcher stub).
 
-This explicit two-state sign-off prevents the matrix from falsely advertising live-bus coverage that has not yet been performed.
+**M2b publication (schema-stable v1) MUST NOT land before every `[~]` row in this sign-off flips to `[x]`.** This is not a recommendation. The header of this artifact states that the public consumer contract "MUST not publish until this transport gate demonstrates non-regression across adapter-direct / ebusd_tcp" — RB-02, RB-03, RB-04 are part of that non-regression demonstration, and their live-bus evidence is the missing prerequisite.
+
+Concrete release-gate rule, unambiguous:
+1. M2b implementation PR may open any time after M5 merges.
+2. M2b implementation PR may merge (land the code) any time after M5 merges.
+3. M2b **schema-stable publication** — announcing the v1 GraphQL surface as stable to consumers, adding it to the schema changelog, or cutting a release — **MUST NOT** occur until RB-02/RB-03/RB-04 flip to `[x]` via the BENCH-REPLACE procedure in §6 and this artifact receives a follow-up commit that records the flip.
+4. If M2b implementation ships code that would de-facto stabilize the schema (e.g., public docs referencing v1 fields, HA integration consuming v1), that is equivalent to publication and is equally gated.
+
+This explicit separation prevents the matrix from falsely advertising live-bus coverage that has not yet been performed, and removes the SHOULD/MUST ambiguity that would let schema-stable publication slip ahead of live-hardware validation.

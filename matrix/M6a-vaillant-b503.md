@@ -74,14 +74,22 @@ The production raw-frame dispatcher is a deliberate stub until the M2b/M3 dispat
 
 M2a introduced `liveMonitorMu` as a dedicated session gate, distinct from the existing B524 `readMu`. Plan AD12 requires explicit evidence that B524 poll behavior is unchanged under this new mutex.
 
+**Honest framing of test coverage.** The adaptermux / B524 `readMu` is package-private; writing in-code regression tests from outside adaptermux would require either (a) an import-cycle-risky dependency or (b) a mock-mutex stand-in that proves nothing about the real production paths. An earlier revision of this PR included proxy tests in `mcp/` that three successive Codex review rounds correctly flagged as weak: they exercised `b503session.Manager` in isolation without touching the actual B524 read path, and a generic CI `-race` run only detects data races, not deadlocks or lock-order cycles. That file was deleted rather than continue to ship theatre.
+
+The authoritative evidence for RB-01..RB-04 therefore lives across three places:
+
+1. **M2a concurrency suite** (`internal/vaillant/b503session/session_test.go`): 14 tests under `-race`, covering FSM transitions, concurrent Enable/Read/Disable, epoch-refresh race guards, idle-timer stale-callback guard. These are the authoritative in-code tests for the `liveMonitorMu`-side of the invariant.
+2. **Code review trip-wire**: the comment "`mu sync.Mutex // liveMonitorMu — ownership gate, distinct from B524 readMu.`" on the `b503session.Manager` struct field forces any future refactor that would share or alias the mutex to be explicit about doing so.
+3. **Live-bus BENCH-REPLACE** (see §6): once the production raw-frame dispatcher lands (M2b/M3), full-stack B524 + B503 concurrent traffic is observed on live hardware and the regression rows below are ratified.
+
 | # | B524 scenario | Expectation | Evidence |
 |---|---------------|-------------|----------|
-| RB-01 | B524 read path baseline (no B503 session) | No behaviour change vs main | `internal/observe_first_family_policy.go` tests all green; `go test -race -count=1 ./...` on branch head post-M2a green (modulo pre-existing operator-local adaptermux unresolved work, unrelated) |
-| RB-02 | B524 read + concurrent B503 live-monitor session Active | B524 throughput unchanged; no deadlock; no mutex contention between `readMu` + `liveMonitorMu` | `internal/vaillant/b503session/session_test.go:TestSession_ConcurrentReadsAndPollerSim_NoDeadlock` (-race clean); M2a classification assertion in `mcp/tool_classification_test.go:TestToolClassificationPolicy` includes B503 tools |
-| RB-03 | Lock-ordering invariant | `liveMonitorMu` may be acquired WITHOUT `readMu`; if both needed, order is `liveMonitorMu → readMu` (reverse forbidden per spec §7.4) | Design invariant; exercised implicitly by M2a tests that hold `liveMonitorMu` across Read operations |
-| RB-04 | B524 polled-value observation during B503 live-monitor ACTIVE | Poller continues uninterrupted | M2a `-race` test matrix passes; observed-bus-message production unchanged |
+| RB-01 | B524 read path baseline (no B503 session) | No behaviour change vs main | Existing `internal/observe_first_family_policy` tests green on branch head; no diff against `readMu` call sites in this PR. |
+| RB-02 | B524 read + concurrent B503 live-monitor Active | B524 throughput unchanged; no deadlock between `readMu` + `liveMonitorMu` | `session_test.go:TestSession_ConcurrentReadsAndPollerSim_NoDeadlock` (-race clean) + live-bus BENCH-REPLACE ratification (§6). |
+| RB-03 | Lock-order invariant `liveMonitorMu → readMu`; reverse forbidden | Enforced by design — neither mutex is shared; acquisition sites documented in spec §7.4 | Code review trip-wire (struct-field comment) + BENCH-REPLACE. Generic `-race` does NOT prove lock order; that is a distinct class of bug Go's race detector does not catch. |
+| RB-04 | B524 polled-value observation during B503 live-monitor Active | Poller continues uninterrupted | Implicit in RB-02 evidence — the existing observation pipeline has zero diff in this PR and the B503 session path is on a distinct mutex. Ratified live-bus via §6. |
 
-**Verdict:** B524 baseline is preserved. The session gate is an additive, additive-only, lock-ordered addition; no removed or narrowed paths.
+**Verdict:** B524 baseline is preserved by construction (zero diff to readMu call sites; distinct mutex; documented lock order). Full in-code regression coverage at production path depth is deferred to live-bus BENCH-REPLACE, consistent with the M2b/M3 dispatcher-switchover milestone.
 
 ---
 

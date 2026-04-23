@@ -173,6 +173,7 @@ type Mux struct {
 	busOwned           time.Time          // when current owner acquired the bus
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int                // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
+	pendingAbsorbGen   uint64             // generation for stale-response absorb fail-safe timers
 	// Blocking StartArbitration tracking. blockingArbGen is monotonically
 	// increasing (never reset to 0 or reused) — reconnect/handleReset
 	// bump it forward so any stale goroutine's captured gen no longer
@@ -1103,10 +1104,11 @@ func (m *Mux) onReceived(symbol byte) {
 
 	if symbol == protocol.SymbolSyn {
 		// Shape diag: count SYN markers seen during gateway ownership
-		// regardless of whether we deliver (for classification). Must
-		// run BEFORE onSYNLocked so the counter reflects the SYN that
+		// while a gateway transaction is actually active. Pre-write or
+		// post-inactive idle chatter must not contaminate the current txn.
+		// Must run BEFORE onSYNLocked so the counter reflects the SYN that
 		// triggers a possible inactive transition.
-		if hasOwner && ownerID == gatewaySessionID {
+		if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive {
 			m.recordReadPrefixAndClassify(symbol)
 		}
 		// Runtime-soak: bus.Send returns BEFORE the trailing SYN (reads
@@ -1115,7 +1117,7 @@ func (m *Mux) onReceived(symbol byte) {
 		// capture AFTER to skip the trailing SYN that has no consumer.
 		var preEchoSuppressed bool
 		passiveEvents, shouldTryGrant, preEchoSuppressed = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
-		activeExpects := m.activePathExpectsBytes()
+		activeExpects := m.activePathExpectsByte(symbol)
 		if preEchoSuppressed {
 			// Pre-echo SYN suppression (echo_mismatch root cause fix).
 			// After completeArbitrationGrant, readLoop can read a SYN from
@@ -1191,11 +1193,9 @@ func (m *Mux) onReceived(symbol byte) {
 
 	// Shape diag: capture non-SYN read prefix + echo/non-echo class
 	// while stateMu is held (prefix is a struct field, not atomic).
-	// Restrict to gateway-owned traffic so third-party bytes don't
-	// pollute the per-txn prefix. Includes bytes delivered to activeCh
-	// as well as bytes suppressed — both are "seen" on the wire during
-	// the transaction window.
-	if isGatewayOwned {
+	// Restrict to the live gateway transaction window so pre-write or
+	// post-inactive ownership periods do not pollute the per-txn prefix.
+	if isGatewayOwned && m.gatewayTxnActive {
 		m.recordReadPrefixAndClassify(symbol)
 	}
 
@@ -1219,7 +1219,7 @@ func (m *Mux) onReceived(symbol byte) {
 	// stateMu across the send cannot deadlock.
 	if activeExpects {
 		m.stateMu.Lock()
-		if m.activePathExpectsBytes() {
+		if m.gatewayTxnActive {
 			select {
 			case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
 				// Codex PR #502 P1: count real adapter-originated byte
@@ -1604,6 +1604,24 @@ func (m *Mux) activePathExpectsBytes() bool {
 	return m.gatewayTxnActive
 }
 
+// activePathExpectsByte reports whether a non-SYN byte should be delivered
+// to the active transport. Before the first active byte is delivered, only
+// the next expected echo may pass; stale non-SYN noise must not race the real
+// echo into sendRawWithEcho. After the first delivered byte, the active path
+// owns the transaction stream and response bytes must flow through.
+//
+// Caller must hold stateMu.
+func (m *Mux) activePathExpectsByte(symbol byte) bool {
+	if !m.gatewayTxnActive {
+		return false
+	}
+	if m.activeTxn.bytesDeliveredToActive.Load() > 0 {
+		return true
+	}
+	return m.activeTxn.echoCursor < m.activeTxn.writePrefixLen &&
+		m.activeTxn.writePrefix[m.activeTxn.echoCursor] == symbol
+}
+
 // deliverToActive sends a byte to the active path channel.
 // Logs on overflow instead of silently dropping (CRITICAL-1 fix).
 //
@@ -1668,6 +1686,17 @@ func (m *Mux) tryGrantAndStart() {
 		m.stateMu.Unlock()
 		return
 	}
+	// Do not launch a new START while we still expect at least one stale
+	// STARTED/FAILED from a cancelled or deadline-expired RequestStart.
+	// Gateway requests typically reuse the same initiator (0x71), so once
+	// we have a new pending request there is no reliable way to distinguish
+	// the old STARTED from the new one. Treat pendingStartAbsorb as a real
+	// regrant barrier, not just a best-effort diagnostic counter.
+	if m.pendingStartAbsorb > 0 {
+		m.logger.Printf("adaptermux: tryGrantAndStart skipped — waiting to absorb %d stale arbitration response(s)", m.pendingStartAbsorb)
+		m.stateMu.Unlock()
+		return
+	}
 	// Codex-R5: block regrant while a blocking StartArbitration goroutine
 	// is still in-flight. The deadline may have cleared pendingStart, but
 	// the goroutine is still running on the transport. Starting another
@@ -1697,20 +1726,15 @@ func (m *Mux) tryGrantAndStart() {
 		if m.pendingStart != nil && m.pendingStart.notify == notify {
 			pending := m.pendingStart
 			m.pendingStart = nil
-			m.pendingStartAbsorb++
-			// C2 (PR #502 Copilot): on the blocking path, the
-			// StartArbitration goroutine may still be stuck inside the
-			// transport call. We MUST NOT simply clear blockingArbActive
-			// and re-grant here — that would let a second blocking
-			// goroutine overlap the first on the same transport.
-			// Instead, trigger a transport reconnect: closing m.conn
-			// forces the hung read/write call to return with an I/O
-			// error; readLoop observes the error and invokes reconnect()
-			// which bumps blockingArbGen, clears blockingArbActive, and
-			// fails/re-queues arbitration safely. The hung goroutine's
-			// late return finds a stale gen and skips state mutation.
-			// This yields no overlap AND no queue starvation.
-			needReconnect := pending.blockingArb
+			m.armPendingStartAbsorbLocked("deadline")
+			// Once START times out we no longer trust adapter arbitration
+			// state, even on the non-blocking RequestStart path. A later
+			// STARTED means the adapter granted the old request after we
+			// had already abandoned it; if we simply absorb that event and
+			// launch a new RequestStart, the mux and adapter can stay one
+			// arbitration behind forever. Reconnect is the only reliable
+			// resync boundary for both blocking and non-blocking paths.
+			needReconnect := true
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8)", pending.sessionID)
 			// AM8: guard the send — if another path already delivered a
@@ -1736,10 +1760,6 @@ func (m *Mux) tryGrantAndStart() {
 						m.logger.Printf("adaptermux: deadline triggered transport reconnect to unstick hung StartArbitration (C2)")
 					}
 				}
-			} else if m.arb.hasPending() {
-				// Non-blocking path: no hung goroutine to worry about,
-				// just advance the queue as before.
-				m.tryGrantAndStart()
 			}
 		} else {
 			m.stateMu.Unlock()
@@ -1771,10 +1791,15 @@ func (m *Mux) tryGrantAndStart() {
 				// Since the adapter never received the START, no stale
 				// response will arrive — decrement absorb counter so the
 				// next real arbitration response is not incorrectly consumed.
+				shouldAdvance := false
 				if m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
+					shouldAdvance = m.pendingStartAbsorb == 0 && m.arb.hasPending()
 				}
 				m.stateMu.Unlock()
+				if shouldAdvance {
+					m.tryGrantAndStart()
+				}
 			}
 			return
 		}
@@ -1993,7 +2018,7 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 			m.logger.Printf("adaptermux: drained %d bytes from activeCh on grant", drained)
 		}
 		m.gatewayEcho.markRequestStart()
-		m.gatewayTxnActive = true
+		m.gatewayTxnActive = false
 		m.recordGatewayGrant(initiator, drained)
 	}
 	m.arb.confirmOwnership(sessionID, initiator)
@@ -2027,12 +2052,29 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	// pending request.
 	if m.pendingStartAbsorb > 0 {
 		m.pendingStartAbsorb--
+		shouldAdvance := !started && m.pendingStartAbsorb == 0 && m.pendingStart == nil && m.arb.hasPending()
+		needReconnect := started
 		m.stateMu.Unlock()
 		kind := "FAILED"
 		if started {
 			kind = "STARTED"
 		}
 		m.logger.Printf("adaptermux: absorbed stale %s from cancelled request (data=0x%02X)", kind, data)
+		if needReconnect {
+			m.connMu.Lock()
+			c := m.conn
+			m.connMu.Unlock()
+			if c != nil {
+				if err := c.Close(); err != nil {
+					m.logger.Printf("adaptermux: stale STARTED reconnect close: %v", err)
+				} else {
+					m.logger.Printf("adaptermux: stale STARTED triggered transport reconnect for arbitration resync")
+				}
+			}
+		}
+		if shouldAdvance {
+			m.tryGrantAndStart()
+		}
 		return
 	}
 
@@ -2056,7 +2098,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			// is no longer tracked. The real response for our pending request
 			// may still arrive — absorb it when it does.
 			m.pendingStart = nil
-			m.pendingStartAbsorb++
+			m.armPendingStartAbsorbLocked("started-mismatch")
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
@@ -2112,7 +2154,7 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 		// The adapter will still send STARTED or FAILED for the cancelled
 		// RequestStart. Increment absorb counter so handleArbitrationResponse
 		// discards that stale response instead of failing a newer request.
-		m.pendingStartAbsorb++
+		m.armPendingStartAbsorbLocked("cancel")
 		// Codex PR #502 P1 (v2 — mirror C2 reconnect pattern): if the
 		// cancelled pending was on the blocking StartArbitration path,
 		// the goroutine may still be hung in the transport call.
@@ -2164,6 +2206,50 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 	m.stateMu.Unlock()
 }
 
+// armPendingStartAbsorbLocked records that the mux expects one stale
+// STARTED/FAILED from a cancelled adapter-level START. The hard absorb barrier
+// prevents stale responses from being misapplied to newer requests, but it
+// needs a fail-safe because some adapters may never emit the stale response.
+// On timeout, force a reconnect boundary and clear the barrier so queued STARTs
+// cannot starve forever.
+//
+// Caller must hold stateMu.
+func (m *Mux) armPendingStartAbsorbLocked(reason string) {
+	m.pendingStartAbsorb++
+	m.pendingAbsorbGen++
+	gen := m.pendingAbsorbGen
+	deadline := m.cfg.StartDeadline
+	if deadline <= 0 {
+		deadline = 2 * time.Second
+	}
+	time.AfterFunc(deadline, func() {
+		m.stateMu.Lock()
+		if gen != m.pendingAbsorbGen || m.pendingStartAbsorb == 0 {
+			m.stateMu.Unlock()
+			return
+		}
+		m.logger.Printf("adaptermux: stale arbitration absorb timeout reason=%s count=%d", reason, m.pendingStartAbsorb)
+		m.pendingStartAbsorb = 0
+		m.pendingAbsorbGen++
+		shouldAdvance := m.pendingStart == nil && m.arb.hasPending()
+		m.stateMu.Unlock()
+
+		m.connMu.Lock()
+		c := m.conn
+		m.connMu.Unlock()
+		if c != nil {
+			if err := c.Close(); err != nil {
+				m.logger.Printf("adaptermux: absorb timeout reconnect close: %v", err)
+			} else {
+				m.logger.Printf("adaptermux: absorb timeout triggered transport reconnect for arbitration resync")
+			}
+		}
+		if shouldAdvance {
+			m.tryGrantAndStart()
+		}
+	})
+}
+
 // sendLoop processes send requests from the active path and external sessions.
 func (m *Mux) sendLoop() {
 	defer m.wg.Done()
@@ -2173,6 +2259,18 @@ func (m *Mux) sendLoop() {
 		case <-m.ctx.Done():
 			return
 		case req := <-m.activeSendCh:
+			if req.sessionID == gatewaySessionID {
+				// Arm after sendLoop accepts the request but before doSend
+				// writes to the adapter. That closes the immediate-echo
+				// race without arming transactions that never entered the
+				// mux write path.
+				m.stateMu.Lock()
+				if !m.gatewayTxnActive {
+					m.gatewayTxnActive = true
+				}
+				m.recordWritePrefix(req.data)
+				m.stateMu.Unlock()
+			}
 			err := m.doSend(req.sessionID, req.data)
 			req.result <- err
 		}

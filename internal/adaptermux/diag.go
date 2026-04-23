@@ -111,6 +111,7 @@ type activeTxnDiag struct {
 	writePrefixLen int
 	readPrefix     [txnPrefixCap]byte
 	readPrefixLen  int
+	echoCursor     int
 	// Byte-class counters (atomic; hot-path increments in onReceived
 	// and Write paths).
 	echoLike   atomic.Uint64
@@ -238,6 +239,7 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 	// Reset per-txn shape diagnostics.
 	m.activeTxn.writePrefixLen = 0
 	m.activeTxn.readPrefixLen = 0
+	m.activeTxn.echoCursor = 0
 	m.activeTxn.writePrefix = [txnPrefixCap]byte{}
 	m.activeTxn.readPrefix = [txnPrefixCap]byte{}
 	m.activeTxn.echoLike.Store(0)
@@ -326,17 +328,18 @@ func (m *Mux) recordWritePrefix(b byte) {
 func (m *Mux) recordReadPrefixAndClassify(b byte) {
 	if b == protocol.SymbolSyn {
 		m.activeTxn.synMarkers.Add(1)
-	}
-	// Echo detection: position-wise match against writePrefix up to
-	// the smaller of both prefix lengths at insertion time. We compare
-	// the incoming byte against writePrefix[readPrefixLen] when that
-	// slot has been filled by a prior write.
-	pos := m.activeTxn.readPrefixLen
-	echo := pos < m.activeTxn.writePrefixLen && m.activeTxn.writePrefix[pos] == b
-	if echo {
+	} else if m.activeTxn.echoCursor < m.activeTxn.writePrefixLen &&
+		m.activeTxn.writePrefix[m.activeTxn.echoCursor] == b {
+		// Echo matching follows the next expected echoed write byte,
+		// not the absolute read position. Leading SYN chatter must not
+		// permanently misalign a later real echo.
 		m.activeTxn.echoLike.Add(1)
-	} else if b != protocol.SymbolSyn {
+		m.activeTxn.echoCursor++
+	} else {
 		m.activeTxn.nonEcho.Add(1)
+		if m.activeTxn.echoCursor < m.activeTxn.writePrefixLen {
+			m.activeTxn.echoCursor++
+		}
 	}
 	if m.activeTxn.readPrefixLen < txnPrefixCap {
 		m.activeTxn.readPrefix[m.activeTxn.readPrefixLen] = b
@@ -352,8 +355,8 @@ func (m *Mux) recordReadPrefixAndClassify(b byte) {
 //   - SuccessLike: TransactionDone or CmdNACK reason (lifecycle-complete)
 //   - SuccessLike: reads include a SYN marker AND non-echo byte count is
 //     positive AND reads >= writes (plausible response + terminator)
-//   - EchoOnlyTimeout: timeout/abort reason AND reads all matched writes
-//     position-wise (no nonEcho bytes seen)
+//   - EchoOnlyTimeout: no-response shape (including SYN-terminated echo-only
+//     traffic) AND reads all matched writes position-wise (no nonEcho bytes seen)
 //   - NonEchoInvalidFrame: got nonEcho bytes but no SYN and no success
 //     (incoherent bytes on the wire; not a framed response)
 //   - CandidateNoParse: got nonEcho bytes AND a SYN but still timed out
@@ -362,8 +365,7 @@ func (m *Mux) recordReadPrefixAndClassify(b byte) {
 //     caller via classifyTxnWithSchemaError (not computed here)
 //   - Unknown: insufficient signal
 func (m *Mux) classifyTxnLocked(reason ActiveTxnInactiveReason) TxnClass {
-	writes := m.activeTxn.bytesWritten.Load()
-	reads := m.activeTxn.bytesRead.Load()
+	hasWritePrefix := m.activeTxn.writePrefixLen > 0
 	echo := m.activeTxn.echoLike.Load()
 	nonEcho := m.activeTxn.nonEcho.Load()
 	syns := m.activeTxn.synMarkers.Load()
@@ -373,12 +375,12 @@ func (m *Mux) classifyTxnLocked(reason ActiveTxnInactiveReason) TxnClass {
 	// purpose of distinguishing from silent timeouts. (CmdNACK is not
 	// a "successful" read, but the target DID respond — different from
 	// echo-only timeout.)
-	if reason == ReasonTransactionDone || reason == ReasonCmdNACK ||
-		reason == ReasonSYNTerminator {
+	if reason == ReasonTransactionDone || reason == ReasonCmdNACK {
 		return TxnClassSuccessLike
 	}
 
 	isTimeoutLike := reason == ReasonActiveReadTimeout ||
+		reason == ReasonSYNTerminator ||
 		reason == ReasonSYNIdle ||
 		reason == ReasonSYNTimeout ||
 		reason == ReasonMaxOwnership ||
@@ -387,10 +389,11 @@ func (m *Mux) classifyTxnLocked(reason ActiveTxnInactiveReason) TxnClass {
 		reason == ReasonReset ||
 		reason == ReasonReconnect
 
-	// SuccessLike heuristic: saw non-echo response bytes AND a SYN
-	// terminator AND the read count is at least as large as the write
-	// count (response arrived after the echo).
-	if nonEcho > 0 && syns > 0 && reads >= writes && writes > 0 {
+	// SuccessLike heuristic: saw non-echo response bytes and a SYN
+	// terminator after at least part of the gateway write stream was
+	// echoed back. Without an echo signal, stale/foreign traffic can
+	// be incorrectly blessed as the gateway's successful transaction.
+	if nonEcho > 0 && syns > 0 && echo > 0 && hasWritePrefix {
 		return TxnClassSuccessLike
 	}
 
@@ -399,11 +402,11 @@ func (m *Mux) classifyTxnLocked(reason ActiveTxnInactiveReason) TxnClass {
 	}
 
 	// Timeout-like paths past this point.
-	if writes > 0 && nonEcho == 0 && echo >= 1 {
+	if hasWritePrefix && nonEcho == 0 && echo >= 1 {
 		// Every read matched the write prefix position-wise: echo-only.
 		return TxnClassEchoOnlyTimeout
 	}
-	if writes > 0 && reads == 0 {
+	if hasWritePrefix && m.activeTxn.readPrefixLen == 0 {
 		// Didn't even see our own echo back — treat as echo-only
 		// (lowest-confidence class, but still more informative than
 		// "unknown" for an operator triaging the soak log).

@@ -732,28 +732,29 @@ func TestActivePath_RealFlow_NoAccumulationAfterTxnSyn(t *testing.T) {
 	}
 }
 
-// TestActivePath_EarlyAbort_SYNBeforeRead_StaysActive verifies the
-// lifecycle-correctness rule: a SYN arriving during gateway ownership
-// BEFORE any response byte has been read does NOT terminate the
-// transaction as syn_idle. This is a pre-grant stale SYN from the TCP
-// buffer (normal grant-handoff residual).
+// TestActivePath_EarlyAbort_SYNBeforeRead_StaysInactive verifies the
+// lifecycle-correctness rule: a SYN arriving during gateway ownership before
+// the active caller starts Write does not arm or terminate the active
+// transaction. This is a pre-write stale SYN from the TCP buffer (normal
+// grant-handoff residual).
 //
 // Genuine aborts (no writes, no reads) are resolved by MaxOwnershipDuration,
 // ActiveReadTimeout, ActiveWriteError, ctx cancel, reset, or reconnect —
 // NOT by SYN alone.
-func TestActivePath_EarlyAbort_SYNBeforeRead_StaysActive(t *testing.T) {
+func TestActivePath_EarlyAbort_SYNBeforeRead_StaysInactive(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
 
-	// Pre-grant stale SYN arrives with no reads yet. Must NOT clear.
+	// Pre-write stale SYN arrives with no reads yet. It must not arm the
+	// active path and must not produce an inactive reason.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
 	snap := mux.ActiveTxnSnapshot()
-	if !snap.Active {
-		t.Fatalf("activeTxn must stay active on SYN-before-read; got inactive reason=%q", snap.InactiveReason)
+	if snap.Active {
+		t.Fatalf("activeTxn must stay inactive before first Write; got inactive reason=%q", snap.InactiveReason)
 	}
 	if snap.InactiveReason != ReasonNone {
 		t.Fatalf("InactiveReason must be empty, got %q", snap.InactiveReason)

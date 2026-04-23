@@ -1,6 +1,7 @@
 package adaptermux
 
 import (
+	"context"
 	"errors"
 	"log"
 	"sync"
@@ -35,6 +36,7 @@ var errUnsupportedInfoID = errors.New("mock: unsupported INFO ID")
 type mockInfoTransport struct {
 	responses map[transport.AdapterInfoID][]byte
 	errors    map[transport.AdapterInfoID]error
+	onRequest func(transport.AdapterInfoID)
 	mu        sync.Mutex
 	calls     []transport.AdapterInfoID // records RequestInfo calls
 }
@@ -48,6 +50,9 @@ func (m *mockInfoTransport) RequestInfo(id transport.AdapterInfoID) ([]byte, err
 	m.mu.Lock()
 	m.calls = append(m.calls, id)
 	m.mu.Unlock()
+	if m.onRequest != nil {
+		m.onRequest(id)
+	}
 
 	if err, ok := m.errors[id]; ok {
 		return nil, err
@@ -88,29 +93,35 @@ func TestPopulateInfoCache(t *testing.T) {
 
 	tr := &mockInfoTransport{
 		responses: map[transport.AdapterInfoID][]byte{
-			transport.AdapterInfoVersion:      {0x23, 0x01},
+			transport.AdapterInfoVersion:      {0x23, 0x01, 0x84, 0x19, 0x3b},
 			transport.AdapterInfoHardwareID:   {0x10, 0x20, 0x30},
 			transport.AdapterInfoHardwareConf: {0x05},
-			transport.AdapterInfoTemperature:  {0x1C}, // volatile — cached as startup snapshot
-			transport.AdapterInfoWiFiRSSI:     {0xE0}, // volatile — cached as startup snapshot
+			transport.AdapterInfoResetInfo:    {0x04, 0x02},
+			transport.AdapterInfoTemperature:  {0x1C},
+			transport.AdapterInfoSupplyVolt:   {0x13, 0x88},
+			transport.AdapterInfoBusVoltage:   {0x18, 0x10},
+			transport.AdapterInfoWiFiRSSI:     {0xE0},
 		},
 	}
 
-	mux.populateInfoCache(tr)
+	if err := mux.populateInfoCache(tr); err != nil {
+		t.Fatalf("populateInfoCache() error = %v", err)
+	}
 
 	mux.infoCacheMu.RLock()
 	defer mux.infoCacheMu.RUnlock()
 
-	// All IDs should be cached including volatile telemetry (startup
-	// snapshots that go stale until reconnect — refreshTelemetry needs
-	// them from the cache to avoid readMu contention).
-	if len(mux.infoCache) != 5 {
-		t.Fatalf("infoCache has %d entries, want 5 (all IDs cached)", len(mux.infoCache))
+	// Startup cache now warms identity/config plus the first telemetry
+	// sample before exposing the transport. This version response is
+	// 5-byte Ethernet (checksum, no bootloader, no WiFi), so reset_info
+	// and wifi_rssi are both gated out.
+	if len(mux.infoCache) != 6 {
+		t.Fatalf("infoCache has %d entries, want 6 (version + 0x02/0x01/0x03/0x04/0x05)", len(mux.infoCache))
 	}
 
 	// Verify version was cached correctly.
-	if got := mux.infoCache[transport.AdapterInfoVersion]; len(got) != 2 || got[0] != 0x23 || got[1] != 0x01 {
-		t.Fatalf("version cache = %v, want [0x23 0x01]", got)
+	if got := mux.infoCache[transport.AdapterInfoVersion]; len(got) != 5 || got[0] != 0x23 || got[1] != 0x01 {
+		t.Fatalf("version cache = %v, want 5-byte version payload", got)
 	}
 
 	// Verify hardware ID was cached.
@@ -118,12 +129,130 @@ func TestPopulateInfoCache(t *testing.T) {
 		t.Fatalf("hardware ID cache = %v, want 3 bytes", got)
 	}
 
-	// Verify volatile IDs ARE cached (startup snapshots).
+	// Telemetry IDs 0x03/0x04/0x05 are now primed during startup.
 	if _, ok := mux.infoCache[transport.AdapterInfoTemperature]; !ok {
-		t.Fatal("AdapterInfoTemperature should be in cache (startup snapshot)")
+		t.Fatal("AdapterInfoTemperature should be in startup cache")
 	}
-	if _, ok := mux.infoCache[transport.AdapterInfoWiFiRSSI]; !ok {
-		t.Fatal("AdapterInfoWiFiRSSI should be in cache (startup snapshot)")
+	if _, ok := mux.infoCache[transport.AdapterInfoSupplyVolt]; !ok {
+		t.Fatal("AdapterInfoSupplyVolt should be in startup cache")
+	}
+	if _, ok := mux.infoCache[transport.AdapterInfoBusVoltage]; !ok {
+		t.Fatal("AdapterInfoBusVoltage should be in startup cache")
+	}
+	if _, ok := mux.infoCache[transport.AdapterInfoResetInfo]; ok {
+		t.Fatal("AdapterInfoResetInfo should not be in startup cache without bootloader support")
+	}
+	if _, ok := mux.infoCache[transport.AdapterInfoWiFiRSSI]; ok {
+		t.Fatal("AdapterInfoWiFiRSSI should not be in startup cache without checksum+WiFi support")
+	}
+}
+
+func TestPopulateInfoCache_GatesQueriesByVersionCapabilities(t *testing.T) {
+	mux := &Mux{
+		logger:    testLogger(t),
+		infoCache: make(map[transport.AdapterInfoID][]byte),
+	}
+
+	tr := &mockInfoTransport{
+		responses: map[transport.AdapterInfoID][]byte{
+			transport.AdapterInfoVersion:      {0x23, 0x01},
+			transport.AdapterInfoHardwareID:   {0x10},
+			transport.AdapterInfoHardwareConf: {0x20},
+			transport.AdapterInfoTemperature:  {0x00, 0x1C},
+			transport.AdapterInfoSupplyVolt:   {0x13, 0x88},
+			transport.AdapterInfoBusVoltage:   {0x18, 0x10},
+			transport.AdapterInfoResetInfo:    {0x04, 0x02},
+			transport.AdapterInfoWiFiRSSI:     {0xE0},
+		},
+	}
+
+	if err := mux.populateInfoCache(tr); err != nil {
+		t.Fatalf("populateInfoCache() error = %v", err)
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+
+	wantCalls := []transport.AdapterInfoID{
+		transport.AdapterInfoVersion,
+		transport.AdapterInfoHardwareConf,
+		transport.AdapterInfoHardwareID,
+		transport.AdapterInfoTemperature,
+		transport.AdapterInfoSupplyVolt,
+		transport.AdapterInfoBusVoltage,
+	}
+	if len(tr.calls) != len(wantCalls) {
+		t.Fatalf("RequestInfo calls = %v, want %v", tr.calls, wantCalls)
+	}
+	for i := range wantCalls {
+		if tr.calls[i] != wantCalls[i] {
+			t.Fatalf("RequestInfo calls = %v, want %v", tr.calls, wantCalls)
+		}
+	}
+}
+
+func TestPopulateInfoCache_NoInfoSupport_CachesVersionOnly(t *testing.T) {
+	mux := &Mux{
+		logger:    testLogger(t),
+		infoCache: make(map[transport.AdapterInfoID][]byte),
+	}
+
+	tr := &mockInfoTransport{
+		responses: map[transport.AdapterInfoID][]byte{
+			transport.AdapterInfoVersion:    {0x23, 0x00},
+			transport.AdapterInfoHardwareID: {0x10},
+		},
+	}
+
+	if err := mux.populateInfoCache(tr); err != nil {
+		t.Fatalf("populateInfoCache() error = %v", err)
+	}
+
+	mux.infoCacheMu.RLock()
+	defer mux.infoCacheMu.RUnlock()
+
+	if len(mux.infoCache) != 1 {
+		t.Fatalf("infoCache has %d entries, want 1 (version only)", len(mux.infoCache))
+	}
+	if _, ok := mux.infoCache[transport.AdapterInfoVersion]; !ok {
+		t.Fatal("AdapterInfoVersion should be cached")
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if len(tr.calls) != 1 || tr.calls[0] != transport.AdapterInfoVersion {
+		t.Fatalf("RequestInfo calls = %v, want [version]", tr.calls)
+	}
+}
+
+func TestPopulateInfoCache_CachesResetInfoWhenBootloaderSupported(t *testing.T) {
+	mux := &Mux{
+		logger:    testLogger(t),
+		infoCache: make(map[transport.AdapterInfoID][]byte),
+	}
+
+	tr := &mockInfoTransport{
+		responses: map[transport.AdapterInfoID][]byte{
+			transport.AdapterInfoVersion:      {0x23, 0x01, 0x84, 0x19, 0x3b, 0x11, 0x84, 0x7f},
+			transport.AdapterInfoHardwareID:   {0x10},
+			transport.AdapterInfoHardwareConf: {0x20},
+			transport.AdapterInfoResetInfo:    {0x04, 0x02},
+			transport.AdapterInfoWiFiRSSI:     {0xE0},
+		},
+	}
+
+	if err := mux.populateInfoCache(tr); err != nil {
+		t.Fatalf("populateInfoCache() error = %v", err)
+	}
+
+	mux.infoCacheMu.RLock()
+	defer mux.infoCacheMu.RUnlock()
+
+	if _, ok := mux.infoCache[transport.AdapterInfoResetInfo]; !ok {
+		t.Fatal("AdapterInfoResetInfo should be cached when bootloader support is advertised")
+	}
+	if _, ok := mux.infoCache[transport.AdapterInfoWiFiRSSI]; ok {
+		t.Fatal("AdapterInfoWiFiRSSI should remain out of startup cache")
 	}
 }
 
@@ -134,7 +263,9 @@ func TestPopulateInfoCache_NoInfoRequester(t *testing.T) {
 	}
 
 	tr := &mockNoInfoTransport{}
-	mux.populateInfoCache(tr)
+	if err := mux.populateInfoCache(tr); err != nil {
+		t.Fatalf("populateInfoCache() error = %v", err)
+	}
 
 	mux.infoCacheMu.RLock()
 	defer mux.infoCacheMu.RUnlock()
@@ -160,7 +291,9 @@ func TestPopulateInfoCache_VersionFails_SkipsAll(t *testing.T) {
 		},
 	}
 
-	mux.populateInfoCache(tr)
+	if err := mux.populateInfoCache(tr); err != nil {
+		t.Fatalf("populateInfoCache() error = %v", err)
+	}
 
 	mux.infoCacheMu.RLock()
 	defer mux.infoCacheMu.RUnlock()
@@ -169,6 +302,45 @@ func TestPopulateInfoCache_VersionFails_SkipsAll(t *testing.T) {
 	// population is skipped — adapter does not support INFO.
 	if len(mux.infoCache) != 0 {
 		t.Fatalf("infoCache has %d entries, want 0 (version failed = skip all)", len(mux.infoCache))
+	}
+}
+
+func TestPopulateInfoCache_ContextCanceledDuringPacingReturnsError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := &Mux{
+		logger:    testLogger(t),
+		ctx:       ctx,
+		infoCache: make(map[transport.AdapterInfoID][]byte),
+	}
+
+	tr := &mockInfoTransport{
+		responses: map[transport.AdapterInfoID][]byte{
+			transport.AdapterInfoVersion:    {0x23, 0x01, 0x84, 0x19, 0x3b},
+			transport.AdapterInfoHardwareID: {0x10, 0x20, 0x30},
+		},
+		errors: map[transport.AdapterInfoID]error{
+			transport.AdapterInfoHardwareConf: errors.New("transient INFO reject"),
+		},
+		onRequest: func(id transport.AdapterInfoID) {
+			if id == transport.AdapterInfoHardwareConf {
+				cancel()
+			}
+		},
+	}
+
+	err := mux.populateInfoCache(tr)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("populateInfoCache() error = %v, want context.Canceled", err)
+	}
+
+	mux.infoCacheMu.RLock()
+	defer mux.infoCacheMu.RUnlock()
+	if _, ok := mux.infoCache[transport.AdapterInfoVersion]; !ok {
+		t.Fatal("partial cache should retain AdapterInfoVersion")
+	}
+	if _, ok := mux.infoCache[transport.AdapterInfoHardwareConf]; ok {
+		t.Fatal("partial cache should not retain failed AdapterInfoHardwareConf")
 	}
 }
 

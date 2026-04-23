@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +16,13 @@ import (
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+)
+
+const infoCacheInterRequestDelay = 200 * time.Millisecond
+
+const (
+	infoBootstrapIDsEnv = "HELIANTHUS_INFO_BOOTSTRAP_IDS"
+	infoDelayMSEnv      = "HELIANTHUS_INFO_DELAY_MS"
 )
 
 // Config configures the adapter multiplexer.
@@ -529,16 +539,17 @@ func (m *Mux) connect() error {
 	}
 
 	// Populate INFO cache with the 2s-timeout transport.
-	m.populateInfoCache(setupTr)
+	if err := m.populateInfoCache(setupTr); err != nil {
+		_ = conn.Close()
+		m.conn = nil     // clear stale reference on ctx cancel
+		m.upstream = nil // clear stale transport on ctx cancel
+		return err
+	}
 
-	// Phase 2: replace with fast-timeout transport for readLoop.
-	// Safety argument for replacing the transport on the same conn:
-	// - readLoop hasn't started (Start calls connect first, then spawns readLoop).
-	// - populateInfoCache is the only reader; INFO responses are complete ENH
-	//   frames, so the parser is fully consumed after each RequestInfo call.
-	// - Bytes arriving during the 500ms stabilization delay buffer in the TCP
-	//   socket (kernel), NOT in the parser. The new transport reads them normally.
-	// - No parser state is lost because setupTr's parser is clean after INFO.
+	// Phase 2: replace with cfg.ReadTimeout transport for readLoop.
+	// RequestInfo needs the longer setup timeout, but steady-state
+	// readLoop timing drives quiet-bus arbitration progress and must
+	// continue honoring cfg.ReadTimeout.
 	m.upstream = newTransport(m.cfg.ReadTimeout)
 
 	return nil
@@ -554,9 +565,8 @@ func (m *Mux) connect() error {
 // does not, the cache is cleared and CachedInfo returns an error.
 //
 // XR_INFO_CACHE_SNAPSHOT / AM29: INFO cache is intentionally a startup
-// snapshot. Volatile telemetry (temp, voltage, RSSI) goes stale after
-// connect — on-demand refresh would require readMu (conflicts with
-// readLoop). The cache is repopulated on each reconnect via connect().
+// snapshot. The cache is repopulated on each reconnect via connect() and is
+// warmed before the adapter is exposed to downstream consumers.
 //
 // Design rationale: the ENH transport's RequestInfo holds readMu
 // exclusively. During normal operation, readLoop also holds readMu to
@@ -566,15 +576,18 @@ func (m *Mux) connect() error {
 // startup-snapshot model accepts stale telemetry in exchange for
 // zero readMu contention during steady state.
 //
-// All INFO IDs (0x00-0x07) are cached, including volatile telemetry
-// (temperature, voltage, RSSI). These are startup snapshots that go
-// stale until reconnect, but refreshTelemetry needs them from the
-// cache to avoid readMu contention with readLoop.
-func (m *Mux) populateInfoCache(tr transport.RawTransport) {
+// INFO version (0x00) is always queried first. The startup cache stores the
+// initial identity/configuration snapshot plus the first telemetry sample
+// (temperature/supply_voltage/bus_voltage) before the transport is handed to
+// consumers. reset_info is fetched once per TCP session when supported.
+// wifi_rssi is intentionally excluded on this adapter family. Startup
+// requests are capability-gated and paced slightly to avoid a tight
+// control-frame burst against fragile adapters.
+func (m *Mux) populateInfoCache(tr transport.RawTransport) error {
 	infoReq, ok := tr.(transport.InfoRequester)
 	if !ok {
 		m.clearInfoCache()
-		return
+		return nil
 	}
 
 	cache := make(map[transport.AdapterInfoID][]byte)
@@ -586,17 +599,51 @@ func (m *Mux) populateInfoCache(tr transport.RawTransport) {
 	if err != nil {
 		m.logger.Printf("adaptermux: INFO not supported by adapter: %v", err)
 		m.clearInfoCache()
-		return
+		return nil
 	}
 	cache[transport.AdapterInfoVersion] = append([]byte(nil), data...)
+	version, err := transport.ParseAdapterVersion(data)
+	if err != nil {
+		m.logger.Printf("adaptermux: INFO version parse failed: %v", err)
+		m.infoCacheMu.Lock()
+		m.infoCache = cache
+		m.infoCacheMu.Unlock()
+		m.logger.Printf("adaptermux: INFO cache populated (%d entries)", len(cache))
+		return nil
+	}
 
-	// Query all remaining IDs (0x01–0x07) including volatile telemetry.
-	for id := transport.AdapterInfoHardwareID; id <= transport.AdapterInfoWiFiRSSI; id++ {
-		data, err := infoReq.RequestInfo(id)
-		if err != nil {
+	bootstrapIDs := []transport.AdapterInfoID{
+		transport.AdapterInfoHardwareConf,
+		transport.AdapterInfoHardwareID,
+		transport.AdapterInfoResetInfo,
+		transport.AdapterInfoTemperature,
+		transport.AdapterInfoSupplyVolt,
+		transport.AdapterInfoBusVoltage,
+	}
+	if overridden, ok := infoBootstrapIDsOverride(); ok {
+		bootstrapIDs = overridden
+	}
+	interRequestDelay := infoCacheInterRequestDelay
+	if overridden, ok := infoBootstrapDelayOverride(); ok {
+		interRequestDelay = overridden
+	}
+	supportedIDs := bootstrapIDs[:0]
+	for _, id := range bootstrapIDs {
+		if !version.SupportsInfoID(id) {
 			continue
 		}
-		cache[id] = append([]byte(nil), data...)
+		supportedIDs = append(supportedIDs, id)
+	}
+	for idx, id := range supportedIDs {
+		data, err := infoReq.RequestInfo(id)
+		if err == nil {
+			cache[id] = append([]byte(nil), data...)
+		}
+		if idx < len(supportedIDs)-1 {
+			if err := m.waitInfoBootstrapDelay(interRequestDelay, cache); err != nil {
+				return err
+			}
+		}
 	}
 
 	m.infoCacheMu.Lock()
@@ -604,6 +651,62 @@ func (m *Mux) populateInfoCache(tr transport.RawTransport) {
 	m.infoCacheMu.Unlock()
 
 	m.logger.Printf("adaptermux: INFO cache populated (%d entries)", len(cache))
+	return nil
+}
+
+func (m *Mux) waitInfoBootstrapDelay(delay time.Duration, cache map[transport.AdapterInfoID][]byte) error {
+	if m.ctx == nil {
+		time.Sleep(delay)
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-m.ctx.Done():
+		m.infoCacheMu.Lock()
+		m.infoCache = cache
+		m.infoCacheMu.Unlock()
+		m.logger.Printf("adaptermux: INFO cache populated (%d entries)", len(cache))
+		return m.ctx.Err()
+	}
+}
+
+func infoBootstrapIDsOverride() ([]transport.AdapterInfoID, bool) {
+	raw := strings.TrimSpace(os.Getenv(infoBootstrapIDsEnv))
+	if raw == "" {
+		return nil, false
+	}
+	parts := strings.Split(raw, ",")
+	ids := make([]transport.AdapterInfoID, 0, len(parts))
+	for _, part := range parts {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+		value, err := strconv.ParseUint(token, 0, 8)
+		if err != nil {
+			continue
+		}
+		ids = append(ids, transport.AdapterInfoID(value))
+	}
+	if len(ids) == 0 {
+		return nil, false
+	}
+	return ids, true
+}
+
+func infoBootstrapDelayOverride() (time.Duration, bool) {
+	raw := strings.TrimSpace(os.Getenv(infoDelayMSEnv))
+	if raw == "" {
+		return 0, false
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		return 0, false
+	}
+	return time.Duration(ms) * time.Millisecond, true
 }
 
 // clearInfoCache removes all cached INFO entries so that CachedInfo
@@ -870,6 +973,12 @@ func (m *Mux) readLoop() {
 				if m.arb.hasPending() {
 					m.tryGrantAndStart()
 				}
+				continue
+			}
+			if errors.Is(err, ebuserrors.ErrInvalidPayload) {
+				m.logger.Printf("adaptermux: soft parser error (no reconnect): %v", err)
+				firstTimeoutTime = time.Time{}
+				lastDataTime = time.Now()
 				continue
 			}
 			m.logger.Printf("adaptermux: read error: %v", err)

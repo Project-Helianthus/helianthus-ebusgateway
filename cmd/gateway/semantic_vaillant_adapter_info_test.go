@@ -455,8 +455,8 @@ func TestVaillantAdapterInfoStateUnsupportedTransitionClearsTelemetry(t *testing
 	if info.RestartCount == nil || *info.RestartCount != 0x07 {
 		t.Fatalf("RestartCount after supported refresh = %v; want 0x07", info.RestartCount)
 	}
-	if info.WiFiRSSIDBm == nil || *info.WiFiRSSIDBm != -90 {
-		t.Fatalf("WiFiRSSIDBm after supported refresh = %v; want -90", info.WiFiRSSIDBm)
+	if info.WiFiRSSIDBm != nil {
+		t.Fatalf("WiFiRSSIDBm after supported refresh = %v; want nil", info.WiFiRSSIDBm)
 	}
 	if info.LastTelemetryQuery == nil {
 		t.Fatal("LastTelemetryQuery after supported refresh = nil; want timestamp")
@@ -532,8 +532,159 @@ func TestVaillantAdapterInfoStateUnsupportedTransitionClearsTelemetry(t *testing
 	if got := raw.callCount(transport.AdapterInfoResetInfo); got != 1 {
 		t.Fatalf("AdapterInfoResetInfo call count = %d; want 1", got)
 	}
-	if got := raw.callCount(transport.AdapterInfoWiFiRSSI); got != 1 {
-		t.Fatalf("AdapterInfoWiFiRSSI call count = %d; want 1", got)
+	if got := raw.callCount(transport.AdapterInfoWiFiRSSI); got != 0 {
+		t.Fatalf("AdapterInfoWiFiRSSI call count = %d; want 0", got)
+	}
+}
+
+func TestVaillantAdapterInfoStateResetInfoFailureClearsPreviousState(t *testing.T) {
+	raw := &stubAdapterInfoTransport{
+		responses: map[transport.AdapterInfoID][]adapterInfoResponse{
+			transport.AdapterInfoVersion: {
+				{data: []byte{0x31, 0x01, 0x12, 0x34, 0x18, 0x10, 0xAB, 0xCD}},
+				{data: []byte{0x31, 0x01, 0x12, 0x34, 0x18, 0x10, 0xAB, 0xCD}},
+			},
+			transport.AdapterInfoHardwareID: {
+				{data: []byte{0xDE, 0xAD}},
+				{data: []byte{0xDE, 0xAD}},
+			},
+			transport.AdapterInfoHardwareConf: {
+				{data: []byte{0xBE, 0xEF}},
+				{data: []byte{0xBE, 0xEF}},
+			},
+			transport.AdapterInfoTemperature: {
+				{data: []byte{0x00, 0x19}},
+			},
+			transport.AdapterInfoSupplyVolt: {
+				{data: []byte{0x09, 0xC4}},
+			},
+			transport.AdapterInfoBusVoltage: {
+				{data: []byte{0x96, 0x82}},
+			},
+			transport.AdapterInfoResetInfo: {
+				{data: []byte{0x04, 0x07}},
+				{err: errors.New("transient reset info failure")},
+			},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bus := protocol.NewBus(raw, protocol.DefaultBusConfig(), 0)
+	bus.Run(ctx)
+
+	provider := graphql.NewLiveSemanticProvider()
+	state := newVaillantAdapterInfoState(bus, raw, provider)
+	if state == nil {
+		t.Fatal("newVaillantAdapterInfoState() returned nil")
+	}
+
+	state.refreshCycle(ctx)
+	info := provider.AdapterHardwareInfo()
+	if info == nil {
+		t.Fatal("AdapterHardwareInfo() after supported refresh = nil")
+	}
+	if info.ResetCause == nil || *info.ResetCause != "clear" {
+		t.Fatalf("ResetCause after supported refresh = %v; want clear", info.ResetCause)
+	}
+	if info.RestartCount == nil || *info.RestartCount != 0x07 {
+		t.Fatalf("RestartCount after supported refresh = %v; want 0x07", info.RestartCount)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_restart_count"); got != 7 {
+		t.Fatalf("restart count expvar after supported refresh = %v; want 7", got)
+	}
+
+	state.refreshIdentity(ctx)
+	state.publish()
+
+	info = provider.AdapterHardwareInfo()
+	if info == nil {
+		t.Fatal("AdapterHardwareInfo() after reset_info failure = nil")
+	}
+	if info.ResetCause != nil {
+		t.Fatalf("ResetCause after reset_info failure = %v; want nil", info.ResetCause)
+	}
+	if info.ResetCauseCode != nil {
+		t.Fatalf("ResetCauseCode after reset_info failure = %v; want nil", info.ResetCauseCode)
+	}
+	if info.RestartCount != nil {
+		t.Fatalf("RestartCount after reset_info failure = %v; want nil", info.RestartCount)
+	}
+	if got := expvarFloatValue(t, "ebus_adapter_restart_count"); got != 0 {
+		t.Fatalf("restart count expvar after reset_info failure = %v; want 0", got)
+	}
+}
+
+func TestVaillantAdapterInfoStateRetriesResetInfoAfterTransientFailure(t *testing.T) {
+	raw := &stubAdapterInfoTransport{
+		responses: map[transport.AdapterInfoID][]adapterInfoResponse{
+			transport.AdapterInfoVersion: {
+				{data: []byte{0x31, 0x01, 0x12, 0x34, 0x18, 0x10, 0xAB, 0xCD}},
+				{data: []byte{0x31, 0x01, 0x12, 0x34, 0x18, 0x10, 0xAB, 0xCD}},
+			},
+			transport.AdapterInfoHardwareID: {
+				{data: []byte{0xDE, 0xAD}},
+				{data: []byte{0xDE, 0xAD}},
+			},
+			transport.AdapterInfoHardwareConf: {
+				{data: []byte{0xBE, 0xEF}},
+				{data: []byte{0xBE, 0xEF}},
+			},
+			transport.AdapterInfoTemperature: {
+				{data: []byte{0x00, 0x19}},
+				{data: []byte{0x00, 0x19}},
+			},
+			transport.AdapterInfoSupplyVolt: {
+				{data: []byte{0x09, 0xC4}},
+				{data: []byte{0x09, 0xC4}},
+			},
+			transport.AdapterInfoBusVoltage: {
+				{data: []byte{0x96, 0x82}},
+				{data: []byte{0x96, 0x82}},
+			},
+			transport.AdapterInfoResetInfo: {
+				{err: errors.New("transient reset info failure")},
+				{data: []byte{0x04, 0x08}},
+			},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bus := protocol.NewBus(raw, protocol.DefaultBusConfig(), 0)
+	bus.Run(ctx)
+
+	provider := graphql.NewLiveSemanticProvider()
+	state := newVaillantAdapterInfoState(bus, raw, provider)
+	if state == nil {
+		t.Fatal("newVaillantAdapterInfoState() returned nil")
+	}
+
+	state.refreshCycle(ctx)
+	info := provider.AdapterHardwareInfo()
+	if info == nil {
+		t.Fatal("AdapterHardwareInfo() after reset_info failure = nil")
+	}
+	if info.ResetCause != nil {
+		t.Fatalf("ResetCause after reset_info failure = %v; want nil", info.ResetCause)
+	}
+	if got := raw.callCount(transport.AdapterInfoResetInfo); got != 1 {
+		t.Fatalf("AdapterInfoResetInfo call count after failure = %d; want 1", got)
+	}
+
+	state.refreshCycle(ctx)
+	info = provider.AdapterHardwareInfo()
+	if info == nil {
+		t.Fatal("AdapterHardwareInfo() after reset_info retry = nil")
+	}
+	if info.ResetCause == nil || *info.ResetCause != "clear" {
+		t.Fatalf("ResetCause after reset_info retry = %v; want clear", info.ResetCause)
+	}
+	if info.RestartCount == nil || *info.RestartCount != 0x08 {
+		t.Fatalf("RestartCount after reset_info retry = %v; want 0x08", info.RestartCount)
+	}
+	if got := raw.callCount(transport.AdapterInfoResetInfo); got != 2 {
+		t.Fatalf("AdapterInfoResetInfo call count after retry = %d; want 2", got)
 	}
 }
 
@@ -592,8 +743,8 @@ func TestVaillantAdapterInfoStateExpvarTelemetryResetsOnUnsupportedAndInvalidati
 	if got := expvarFloatValue(t, "ebus_adapter_restart_count"); got != 7 {
 		t.Fatalf("restart count expvar before unsupported transition = %v; want 7", got)
 	}
-	if got := expvarFloatValue(t, "ebus_adapter_wifi_rssi_dbm"); got != -90 {
-		t.Fatalf("wifi rssi expvar before unsupported transition = %v; want -90", got)
+	if got := expvarFloatValue(t, "ebus_adapter_wifi_rssi_dbm"); got != 0 {
+		t.Fatalf("wifi rssi expvar before unsupported transition = %v; want 0", got)
 	}
 
 	stateUnsupported.refreshIdentity(ctxUnsupported)
@@ -673,8 +824,8 @@ func TestVaillantAdapterInfoStateExpvarTelemetryResetsOnUnsupportedAndInvalidati
 	if got := expvarFloatValue(t, "ebus_adapter_restart_count"); got != 7 {
 		t.Fatalf("restart count expvar before invalidation = %v; want 7", got)
 	}
-	if got := expvarFloatValue(t, "ebus_adapter_wifi_rssi_dbm"); got != -90 {
-		t.Fatalf("wifi rssi expvar before invalidation = %v; want -90", got)
+	if got := expvarFloatValue(t, "ebus_adapter_wifi_rssi_dbm"); got != 0 {
+		t.Fatalf("wifi rssi expvar before invalidation = %v; want 0", got)
 	}
 
 	stateInvalidated.refreshCycle(ctxInvalidated)

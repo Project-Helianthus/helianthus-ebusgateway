@@ -70,6 +70,9 @@ func (pl *ProxyListener) Close() error {
 	pl.cancel()
 	err := pl.listener.Close()
 	pl.wg.Wait()
+	if errors.Is(err, net.ErrClosed) {
+		return nil
+	}
 	return err
 }
 

@@ -225,19 +225,11 @@ func TestOnSYNLocked_DeliversTerminatorToActive_WhenBytesReadPositive(t *testing
 }
 
 // TestOnSYNLocked_NoTerminatorDeliveryWhenBytesReadZero documents the
-// pre-grant-stale-SYN semantics we intentionally preserve AND the
-// pre-echo suppression fix (echo_mismatch root cause): a SYN arriving
-// BEFORE any read byte has been consumed must NOT be treated as a
-// terminator (it is almost certainly a TCP-buffered byte from before
-// the grant) AND must NOT be delivered to activeCh (delivering it
-// would race the real echo byte and cause sendRawWithEcho to read 0xAA
-// instead of the expected echo, emitting echo_mismatch — 13,904 events
-// observed in production soak before the fix).
-//
-// gatewayTxnActive stays true (txn is NOT terminated by this SYN); the
-// SYN is swallowed and the synSuppressedPreEcho counter increments.
-// The SYN diag entry records this as gwAfter=true AND synDelivered=false
-// (pre-echo suppression beats the normal deliver path).
+// pre-write stale-SYN semantics: a SYN arriving after grant but before the
+// active caller has started Write must not be treated as a terminator and
+// must not be delivered to activeCh. The active transaction is armed by
+// Write, so this SYN is ignored rather than counted as active pre-echo
+// suppression.
 func TestOnSYNLocked_NoTerminatorDeliveryWhenBytesReadZero(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
@@ -252,30 +244,29 @@ func TestOnSYNLocked_NoTerminatorDeliveryWhenBytesReadZero(t *testing.T) {
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(50 * time.Millisecond)
 
-	// gatewayTxnActive should still be true (we did NOT clear on this SYN).
+	// gatewayTxnActive has not been armed yet because no Write started.
 	snap := mux.ActiveTxnSnapshot()
-	if !snap.Active {
-		t.Errorf("ActiveTxnSnapshot.Active=false, want true — pre-grant-stale SYN (bytesRead==0) must NOT clear gatewayTxnActive")
+	if snap.Active {
+		t.Errorf("ActiveTxnSnapshot.Active=true, want false before first Write")
 	}
 	if snap.InactiveReason == ReasonSYNTerminator {
 		t.Errorf("InactiveReason=%q — terminator path must NOT fire when bytesRead==0", snap.InactiveReason)
 	}
 
-	// Pre-echo suppression counter must have incremented for this SYN.
-	if snap.SynSuppressedPreEcho <= before {
-		t.Errorf("SynSuppressedPreEcho=%d before=%d, want increment — pre-echo SYN must be counted as suppressed", snap.SynSuppressedPreEcho, before)
+	// The SYN is ignored before Write arms the active transaction.
+	if snap.SynSuppressedPreEcho != before {
+		t.Errorf("SynSuppressedPreEcho=%d before=%d, want unchanged before first Write", snap.SynSuppressedPreEcho, before)
 	}
 
-	// SYN diag entry: gwAfter=true (txn stays active), synDelivered=FALSE
-	// (pre-echo suppression prevents activeCh delivery). Inverted from
-	// the pre-fix assertion which asserted synDelivered=true.
+	// SYN diag entry: no active transaction was armed, and nothing reached
+	// activeCh.
 	entries := mux.SynDiagSnapshot()
 	if len(entries) == 0 {
 		t.Fatalf("SynDiagSnapshot empty, want >=1 entry")
 	}
 	last := entries[len(entries)-1]
-	if !last.GwActiveAfter {
-		t.Errorf("SynDiagEntry.GwActiveAfter=false, want true (pre-grant-stale SYN preserves active state)")
+	if last.GwActiveAfter {
+		t.Errorf("SynDiagEntry.GwActiveAfter=true, want false before first Write")
 	}
 	if last.SynDeliveredToActive {
 		t.Errorf("SynDiagEntry.SynDeliveredToActive=true, want false — pre-echo SYN must be suppressed from activeCh (echo_mismatch fix)")
@@ -316,6 +307,10 @@ func TestEchoMismatch_SYNAfterGrantBeforeFirstEcho(t *testing.T) {
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(20 * time.Millisecond)
 
+	if _, err := at.Write([]byte{0x15}); err != nil {
+		t.Fatalf("Write err=%v", err)
+	}
+
 	// Then inject the real echo byte that bus.Send would expect to read
 	// back (0x15 — source of a scan from 0x15 targeting 0x08).
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x15}
@@ -333,10 +328,11 @@ func TestEchoMismatch_SYNAfterGrantBeforeFirstEcho(t *testing.T) {
 		t.Fatalf("ReadByte=0x%02X, want 0x15 (the real echo)", b)
 	}
 
-	// Confirm the suppression counter fired for the stale SYN.
+	// The stale SYN arrived before Write armed the active transaction, so it
+	// is ignored rather than counted as an active pre-echo suppression.
 	after := mux.ActiveTxnSnapshot().SynSuppressedPreEcho
-	if after <= before {
-		t.Errorf("SynSuppressedPreEcho=%d before=%d, want increment — stale SYN should have been counted as suppressed", after, before)
+	if after != before {
+		t.Errorf("SynSuppressedPreEcho=%d before=%d, want unchanged for pre-write SYN", after, before)
 	}
 
 	// Gateway still owns the bus and the txn is still active — the stale

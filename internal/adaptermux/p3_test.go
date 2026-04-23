@@ -400,9 +400,8 @@ func TestArbitrationResponse_SessionDisconnected(t *testing.T) {
 }
 
 // TestRemoveSession_UnblocksNextRequest verifies that RemoveSession
-// calls tryGrantAndStart after clearing the pending START, so the
-// next queued session is serviced immediately without waiting for the
-// adapter's stale response (P3 fix: #3062875632).
+// clears the pending START and advances the next queued session after
+// absorbing the cancelled request's stale adapter response.
 func TestRemoveSession_UnblocksNextRequest(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
@@ -438,13 +437,74 @@ func TestRemoveSession_UnblocksNextRequest(t *testing.T) {
 	mux.RemoveSession(idA)
 	time.Sleep(50 * time.Millisecond)
 
-	// pendingStart should now be for session B — tryGrantAndStart
-	// was called by RemoveSession and picked up B's queued request.
+	// The cancelled START is still in flight at the adapter. The mux must
+	// wait for and absorb its stale response before issuing B's START,
+	// otherwise the stale STARTED/FAILED cannot be distinguished from B.
+	mux.stateMu.Lock()
+	hasPendingAfterCancel := mux.pendingStart != nil
+	absorbAfterCancel := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if hasPendingAfterCancel {
+		t.Fatal("pendingStart should be cleared after RemoveSession(A)")
+	}
+	if absorbAfterCancel != 1 {
+		t.Fatalf("pendingStartAbsorb = %d after RemoveSession(A), want 1", absorbAfterCancel)
+	}
+
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x10}
+	time.Sleep(50 * time.Millisecond)
+
+	// pendingStart should now be for session B — the stale response was
+	// absorbed and tryGrantAndStart picked up B's queued request.
 	mux.stateMu.Lock()
 	hasPendingB := mux.pendingStart != nil && mux.pendingStart.sessionID == idB
+	absorbAfterStale := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
+	if absorbAfterStale != 0 {
+		t.Fatalf("pendingStartAbsorb = %d after stale FAILED, want 0", absorbAfterStale)
+	}
 	if !hasPendingB {
-		t.Fatal("expected pendingStart to advance to session B after RemoveSession(A)")
+		t.Fatal("expected pendingStart to advance to session B after absorbing stale FAILED")
+	}
+}
+
+func TestPendingStartAbsorbTimeoutUnblocksQueue(t *testing.T) {
+	mux, _, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+	mux.cfg.StartDeadline = 50 * time.Millisecond
+
+	client, server := net.Pipe()
+	defer closeOrLog(t, client, "client")
+	id := mux.AddSession(server)
+	defer mux.RemoveSession(id)
+
+	mux.arb.requestStart(id, 0x66)
+
+	mux.stateMu.Lock()
+	mux.armPendingStartAbsorbLocked("test")
+	mux.stateMu.Unlock()
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		mux.stateMu.Lock()
+		absorb := mux.pendingStartAbsorb
+		hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == id
+		mux.stateMu.Unlock()
+		if absorb == 0 && hasPending {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mux.stateMu.Lock()
+	absorb := mux.pendingStartAbsorb
+	hasPending := mux.pendingStart != nil && mux.pendingStart.sessionID == id
+	mux.stateMu.Unlock()
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d after absorb timeout, want 0", absorb)
+	}
+	if !hasPending {
+		t.Fatal("expected queued START to advance after absorb timeout")
 	}
 }
 
@@ -1416,17 +1476,23 @@ func TestHandleArbitrationResponse_StaleFailedIgnored(t *testing.T) {
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(50 * time.Millisecond)
 
-	// Verify pendingStart exists for B.
+	// New invariant: B must NOT start until A's stale response has been
+	// absorbed. The absorb counter is now a real regrant barrier.
 	mux.stateMu.Lock()
 	hasPending = mux.pendingStart != nil
+	starts := mock.getStartRequests()
 	mux.stateMu.Unlock()
-	if !hasPending {
-		t.Fatal("expected pendingStart after SYN for request B")
+	if hasPending {
+		t.Fatal("pendingStart for B must stay nil until stale FAILED is absorbed")
+	}
+	if len(starts) != 1 {
+		t.Fatalf("RequestStart calls before stale FAILED = %d, want 1", len(starts))
 	}
 
 	// --- Phase 4: Inject stale FAILED for A ---
 	// FAILED data=0x10 (the winner of that old arbitration round — irrelevant).
-	// This must be absorbed by the counter, NOT fail request B.
+	// This must be absorbed by the counter, NOT fail request B. After absorb,
+	// tryGrantAndStart should automatically launch B.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventFailed, Data: 0x10}
 	time.Sleep(50 * time.Millisecond)
 
@@ -1438,16 +1504,20 @@ func TestHandleArbitrationResponse_StaleFailedIgnored(t *testing.T) {
 		// Good — stale FAILED was absorbed.
 	}
 
-	// pendingStart must still be set (B's request preserved).
+	// B should now have been started.
 	mux.stateMu.Lock()
 	hasPending = mux.pendingStart != nil
 	absorb = mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
 	if !hasPending {
-		t.Fatal("pendingStart should still be set after stale FAILED")
+		t.Fatal("pendingStart for B should be set after stale FAILED is absorbed")
 	}
 	if absorb != 0 {
 		t.Fatalf("pendingStartAbsorb = %d after absorbing stale FAILED, want 0", absorb)
+	}
+	starts = mock.getStartRequests()
+	if len(starts) != 2 {
+		t.Fatalf("RequestStart calls after stale FAILED = %d, want 2", len(starts))
 	}
 
 	// --- Phase 5: Correct STARTED for B ---
@@ -1477,6 +1547,107 @@ func TestHandleArbitrationResponse_StaleFailedIgnored(t *testing.T) {
 	mux.stateMu.Unlock()
 	if hasPending {
 		t.Fatal("pendingStart should be nil after correct STARTED for B")
+	}
+}
+
+// TestTryGrantAndStart_WaitsForStaleStartedAbsorb verifies the key safety
+// invariant for gateway regrant: after a pending START is cancelled, the mux
+// must NOT issue the next RequestStart until the stale STARTED/FAILED from the
+// cancelled request has been handled. Gateway requests frequently reuse the
+// same initiator (0x71), so launching B before A's stale STARTED arrives makes
+// the response ambiguous and can consume B's valid STARTED as stale.
+//
+// A stale FAILED is safe to absorb and advance past. A stale STARTED is not:
+// on the adapter it means the old request really won arbitration, so the mux
+// must force a reconnect/resync rather than launch the next request inline.
+func TestTryGrantAndStart_WaitsForStaleStartedAbsorb(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Request A for the gateway and let it reach the adapter.
+	chA := mux.arb.requestStart(gatewaySessionID, 0x71)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	starts := mock.getStartRequests()
+	if len(starts) != 1 || starts[0] != 0x71 {
+		t.Fatalf("RequestStart calls after A = %v, want [0x71]", starts)
+	}
+
+	// Cancel A. This sets the absorb barrier because the adapter can still
+	// emit STARTED/FAILED for that old RequestStart.
+	mux.cancelPendingStart(gatewaySessionID)
+
+	select {
+	case result := <-chA:
+		if result.granted {
+			t.Fatal("cancelled request A should not be granted")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for cancel result on A")
+	}
+
+	mux.stateMu.Lock()
+	absorb := mux.pendingStartAbsorb
+	hasPending := mux.pendingStart != nil
+	mux.stateMu.Unlock()
+	if absorb != 1 {
+		t.Fatalf("pendingStartAbsorb after cancel = %d, want 1", absorb)
+	}
+	if hasPending {
+		t.Fatal("pendingStart should be nil after cancel")
+	}
+
+	// Queue request B with the same initiator and feed another SYN.
+	// The mux must NOT issue RequestStart(B) yet because A's stale response
+	// has not been absorbed.
+	chB := mux.arb.requestStart(gatewaySessionID, 0x71)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	starts = mock.getStartRequests()
+	if len(starts) != 1 {
+		t.Fatalf("RequestStart should be blocked by absorb barrier; got %d calls, want 1", len(starts))
+	}
+
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	absorb = mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart for B must not be created before stale response is absorbed")
+	}
+	if absorb != 1 {
+		t.Fatalf("pendingStartAbsorb before stale STARTED = %d, want 1", absorb)
+	}
+
+	// Deliver stale STARTED for A. The mux must absorb it and keep B blocked:
+	// stale STARTED means the adapter really granted the cancelled request, so
+	// the mux cannot safely launch B inline. Production code forces a reconnect
+	// boundary here; in this unit test there is no real conn, so we just assert
+	// that B is NOT launched spuriously.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}
+	time.Sleep(50 * time.Millisecond)
+
+	starts = mock.getStartRequests()
+	if len(starts) != 1 {
+		t.Fatalf("RequestStart for B must stay blocked after stale STARTED; got %d calls, want 1", len(starts))
+	}
+
+	mux.stateMu.Lock()
+	hasPending = mux.pendingStart != nil
+	absorb = mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if hasPending {
+		t.Fatal("pendingStart for B must remain nil after stale STARTED; reconnect/resync is required")
+	}
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb after stale STARTED = %d, want 0", absorb)
+	}
+	select {
+	case result := <-chB:
+		t.Fatalf("request B must not resolve inline after stale STARTED: %+v", result)
+	default:
 	}
 }
 

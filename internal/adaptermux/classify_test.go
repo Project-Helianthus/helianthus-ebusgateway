@@ -120,7 +120,18 @@ func TestTxnClass_SuccessLike(t *testing.T) {
 		t.Fatalf("write err=%v", err)
 	}
 
-	// Feed a non-echo response prefix then a SYN terminator.
+	// Feed back the gateway echo first, then a non-echo response
+	// prefix and a SYN terminator.
+	for _, b := range req {
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+	}
+	time.Sleep(20 * time.Millisecond)
+	for range req {
+		if _, err := at.ReadByte(); err != nil {
+			t.Fatalf("ReadByte err=%v", err)
+		}
+	}
+
 	resp := []byte{0x10, 0x05, 0x42, 0xCD}
 	for _, b := range resp {
 		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
@@ -144,6 +155,109 @@ func TestTxnClass_SuccessLike(t *testing.T) {
 	}
 	if snap.NonEcho == 0 || snap.SynMarkers == 0 {
 		t.Errorf("NonEcho=%d SynMarkers=%d, want both >0", snap.NonEcho, snap.SynMarkers)
+	}
+}
+
+// TestTxnClass_SYNTerminatorEchoOnly proves that a trailing SYN after
+// echo-only traffic does not classify as SuccessLike. The transaction
+// lifecycle closed cleanly, but the mux never observed a non-echo
+// response byte from the target.
+func TestTxnClass_SYNTerminatorEchoOnly(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+
+	at := mux.ActiveTransport()
+	req := []byte{0x08, 0xB5, 0x09, 0x03, 0x0D, 0x54, 0x00, 0xAA}
+	if _, err := at.Write(req); err != nil {
+		t.Fatalf("write err=%v", err)
+	}
+
+	for _, b := range req {
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+	}
+	time.Sleep(30 * time.Millisecond)
+	for range req {
+		if _, err := at.ReadByte(); err != nil {
+			t.Fatalf("ReadByte err=%v", err)
+		}
+	}
+
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+
+	snap := mux.ActiveTxnSnapshot()
+	if snap.InactiveReason != ReasonSYNTerminator {
+		t.Fatalf("InactiveReason = %q, want %q", snap.InactiveReason, ReasonSYNTerminator)
+	}
+	if snap.TxnClass != TxnClassEchoOnlyTimeout {
+		t.Fatalf("TxnClass = %q, want %q (echo=%d nonEcho=%d syn=%d reads=%d writes=%d)",
+			snap.TxnClass, TxnClassEchoOnlyTimeout,
+			snap.EchoLike, snap.NonEcho, snap.SynMarkers, snap.BytesRead, snap.BytesWritten)
+	}
+	if snap.NonEcho != 0 {
+		t.Errorf("NonEcho = %d, want 0", snap.NonEcho)
+	}
+	if !bytes.Equal(snap.WritePrefix, snap.ReadPrefix) {
+		t.Errorf("WritePrefix = % X ReadPrefix = % X; want identical echo-only prefixes", snap.WritePrefix, snap.ReadPrefix)
+	}
+}
+
+func TestTxnClass_SYNTerminatorUsesWritePrefixBeforeBytesWritten(t *testing.T) {
+	mux, _, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	mux.recordGatewayGrant(0x71, 0)
+	mux.stateMu.Lock()
+	mux.gatewayTxnActive = true
+	mux.recordWritePrefix(0x71)
+	mux.recordReadPrefixAndClassify(0x71)
+	mux.recordReadPrefixAndClassify(0x10)
+	mux.recordReadPrefixAndClassify(protocol.SymbolSyn)
+	mux.gatewayTxnActive = false
+	mux.recordGatewayInactive(ReasonSYNTerminator)
+	mux.stateMu.Unlock()
+
+	snap := mux.ActiveTxnSnapshot()
+	if snap.BytesWritten != 0 {
+		t.Fatalf("BytesWritten = %d, want 0 for pre-writer-counter race", snap.BytesWritten)
+	}
+	if snap.TxnClass != TxnClassSuccessLike {
+		t.Fatalf("TxnClass = %q, want %q when writePrefix exists before BytesWritten increments", snap.TxnClass, TxnClassSuccessLike)
+	}
+}
+
+// TestTxnClass_DelayedEchoAfterLeadingSYNs proves that leading SYN
+// chatter does not permanently misalign echo classification for the
+// next real echoed request byte.
+func TestTxnClass_DelayedEchoAfterLeadingSYNs(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+
+	at := mux.ActiveTransport()
+	req := []byte{0x15, 0xB5}
+	if _, err := at.Write(req); err != nil {
+		t.Fatalf("write err=%v", err)
+	}
+
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x15}
+	time.Sleep(30 * time.Millisecond)
+
+	if b, err := at.ReadByte(); err != nil || b != 0x15 {
+		t.Fatalf("ReadByte = (0x%02X,%v), want (0x15,nil)", b, err)
+	}
+
+	snap := mux.ActiveTxnSnapshot()
+	if snap.EchoLike != 1 {
+		t.Fatalf("EchoLike = %d, want 1", snap.EchoLike)
+	}
+	if snap.NonEcho != 0 {
+		t.Fatalf("NonEcho = %d, want 0 for delayed echoed byte", snap.NonEcho)
 	}
 }
 
@@ -212,9 +326,14 @@ func TestTxnClass_SchemaError_OverridesCandidateNoParse(t *testing.T) {
 		t.Fatalf("write err=%v", err)
 	}
 
-	// Feed non-echo bytes AND a SYN — classification at inactive time
-	// becomes SuccessLike (non-echo + syn). Then mark schema error via
-	// the API and ensure snapshot reflects SchemaError.
+	// Feed the echoed write byte, then non-echo bytes and a SYN —
+	// classification at inactive time becomes SuccessLike. Then mark
+	// schema error via the API and ensure snapshot reflects SchemaError.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := at.ReadByte(); err != nil {
+		t.Fatalf("ReadByte err=%v", err)
+	}
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
 	time.Sleep(20 * time.Millisecond)
 	if _, err := at.ReadByte(); err != nil {

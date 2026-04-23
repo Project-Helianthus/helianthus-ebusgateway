@@ -39,8 +39,8 @@ func TestActiveTxnDiag_GrantRecorded(t *testing.T) {
 	if snap.GrantsTotal != preSnap.GrantsTotal+1 {
 		t.Fatalf("GrantsTotal = %d, want %d", snap.GrantsTotal, preSnap.GrantsTotal+1)
 	}
-	if !snap.Active {
-		t.Fatal("Active must be true after grant (before end-of-txn SYN)")
+	if snap.Active {
+		t.Fatal("Active must remain false after grant until the gateway performs its first write")
 	}
 	if snap.InactiveReason != ReasonNone {
 		t.Fatalf("InactiveReason must be empty while active, got %q", snap.InactiveReason)
@@ -77,6 +77,10 @@ func TestActiveTxnDiag_ReadCounterIncrements(t *testing.T) {
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err=%v", err)
+	}
 
 	// Feed response bytes via mock. While gateway txn is active these
 	// are delivered to activeCh and consumed by ReadByte.
@@ -86,7 +90,6 @@ func TestActiveTxnDiag_ReadCounterIncrements(t *testing.T) {
 	}
 	time.Sleep(30 * time.Millisecond)
 
-	at := mux.ActiveTransport()
 	for range bytes {
 		if _, err := at.ReadByte(); err != nil {
 			t.Fatalf("ReadByte err=%v", err)
@@ -145,42 +148,59 @@ func TestActiveTxnDiag_InactiveReason_SYNIdle(t *testing.T) {
 	}
 }
 
-// TestActiveTxnDiag_SYNBeforeRead_DoesNotClear proves the echo_mismatch
-// root-cause fix: a SYN arriving during gateway ownership BEFORE any
-// Write (bytesWritten==0, i.e. the pre-echo window) must NOT terminate
-// the transaction AND must be suppressed from activeCh delivery so it
-// does not race the real echo byte that bus.Send will write.
-//
-// Post-fix gate is bytesWritten (not bytesRead): bytesRead is
-// incremented on CONSUME which lags activeCh delivery, so gating on it
-// would over-suppress legitimate terminators. bytesWritten==0 cleanly
-// identifies the grant-to-first-write window.
+// TestActiveTxnDiag_SYNBeforeRead_DoesNotClear proves that a SYN arriving
+// during gateway ownership BEFORE any Write is ignored for the active
+// path. The transaction has not started yet, so the SYN must neither
+// terminate it nor be counted as active-path traffic.
 func TestActiveTxnDiag_SYNBeforeRead_DoesNotClear(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
 
-	// NOTE: no Write yet — bytesWritten stays 0, simulating the
-	// grant-to-first-write race window.
+	// NOTE: no Write yet — simulating the grant-to-first-write window.
 	before := mux.ActiveTxnSnapshot().SynSuppressedPreEcho
 
 	// SYN arrives BEFORE any Write. Must NOT clear AND must be
-	// counted as pre-echo suppressed.
+	// ignored by the active path.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
 	snap := mux.ActiveTxnSnapshot()
-	if !snap.Active {
-		t.Fatalf("Active must remain true in pre-echo window (bytesWritten=0); got inactive reason=%q writes=%d reads=%d",
+	if snap.Active {
+		t.Fatalf("Active must remain false before first write; got inactive reason=%q writes=%d reads=%d",
 			snap.InactiveReason, snap.BytesWritten, snap.BytesRead)
 	}
 	if snap.InactiveReason != ReasonNone {
 		t.Fatalf("InactiveReason must be empty, got %q", snap.InactiveReason)
 	}
-	if snap.SynSuppressedPreEcho <= before {
-		t.Fatalf("SynSuppressedPreEcho counter must have incremented (echo_mismatch fix); got %d before=%d",
+	if snap.SynSuppressedPreEcho != before {
+		t.Fatalf("SynSuppressedPreEcho must stay unchanged before first write; got %d before=%d",
 			snap.SynSuppressedPreEcho, before)
+	}
+}
+
+// TestActiveTxnDiag_PreWriteBytesDoNotPolluteTxn proves that bus noise
+// observed while the gateway owns arbitration but has not written the
+// first request byte yet does not contaminate the current txn prefix or
+// non-echo counters.
+func TestActiveTxnDiag_PreWriteBytesDoNotPolluteTxn(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xF1}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+
+	snap := mux.ActiveTxnSnapshot()
+	if snap.NonEcho != 0 || snap.EchoLike != 0 || snap.SynMarkers != 0 {
+		t.Fatalf("pre-write noise polluted txn: echo=%d nonEcho=%d syn=%d",
+			snap.EchoLike, snap.NonEcho, snap.SynMarkers)
+	}
+	if len(snap.ReadPrefix) != 0 {
+		t.Fatalf("ReadPrefix = % X, want empty before first write", snap.ReadPrefix)
 	}
 }
 
@@ -191,6 +211,10 @@ func TestActiveTxnDiag_InactiveReason_Reset(t *testing.T) {
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err=%v", err)
+	}
 
 	mux.handleReset()
 

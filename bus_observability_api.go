@@ -45,6 +45,18 @@ type BusObservabilityStartup struct {
 	LiveEpoch     uint64     `json:"live_epoch"`
 }
 
+// BusAdmission is the additive data-body field surfaced in the
+// ebus.v1.bus_observability envelope per AD08. It reflects the current
+// admission state and associated metadata. State transitions are gated
+// by the state-stability window (30s default); transient flaps do NOT
+// flip this field nor the envelope's data_hash.
+type BusAdmission struct {
+	State           string `json:"state"`
+	Source          uint8  `json:"source"`
+	CompanionTarget uint8  `json:"companion_target"`
+	Reason          string `json:"reason,omitempty"`
+}
+
 const busObservabilityPublisherCadenceSource = "config.semantic_state_interval"
 
 type BusObservabilityStatus struct {
@@ -56,6 +68,7 @@ type BusObservabilityStatus struct {
 	Warmup                 BusObservabilityWarmup        `json:"warmup"`
 	TimingQuality          BusObservabilityTimingQuality `json:"timing_quality"`
 	Degraded               BusObservabilityDegraded      `json:"degraded"`
+	BusAdmission           *BusAdmission                 `json:"bus_admission,omitempty"`
 	Startup                *BusObservabilityStartup      `json:"startup,omitempty"`
 	FeatureFlags           ObserveFirstFeatureFlagState  `json:"feature_flags"`
 }
@@ -252,6 +265,7 @@ func (store *BusObservabilityStore) summaryLocked(now time.Time, tapStatus Passi
 				Active:  len(reasons) > 0,
 				Reasons: reasons,
 			},
+			BusAdmission: cloneBusAdmission(store.busAdmission),
 			Startup:      cloneBusObservabilityStartup(startup),
 			FeatureFlags: store.cfg.ObserveFirstFlags.StateAt(store.featureFlagsUpdatedAt),
 		},
@@ -372,6 +386,14 @@ func cloneBusObservabilityStartup(source *BusObservabilityStartup) *BusObservabi
 	}
 	out := *source
 	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
+	return &out
+}
+
+func cloneBusAdmission(source *BusAdmission) *BusAdmission {
+	if source == nil {
+		return nil
+	}
+	out := *source
 	return &out
 }
 

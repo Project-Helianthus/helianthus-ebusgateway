@@ -98,6 +98,7 @@ type BusObservabilityStore struct {
 	startupSurfaceProvider func() *BusObservabilityStartup
 
 	energyFreshnessMetricsRefresher func(now time.Time, passiveState string)
+	busAdmission                    *BusAdmission
 }
 
 type BusMessageRecord struct {

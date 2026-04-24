@@ -85,7 +85,26 @@ func TestM2aHarness_OverrideValidateTruePath(t *testing.T) {
 }
 
 func TestM2aHarness_EvidenceBufferFloodBaselineProtection(t *testing.T) {
-	t.Skip("pending M4: evidence pipeline + max_entries=128 LRU + baseline protection")
+	b, err := NewEvidenceBuffer(128, VaillantBaselineTopologySeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, addr := range VaillantBaselineTopologySeed {
+		b.Record(EvidenceRecord{Address: addr, Strength: EvidenceWeak, Observed: now})
+	}
+	for i := 0; i < 1000; i++ {
+		addr := byte(0x20 + (i % 0xD0))
+		b.Record(EvidenceRecord{Address: addr, Strength: EvidenceWeak, Observed: now.Add(time.Duration(i) * time.Millisecond)})
+	}
+	for _, addr := range VaillantBaselineTopologySeed {
+		b.mu.Lock()
+		_, ok := b.entries[addr]
+		b.mu.Unlock()
+		if !ok {
+			t.Fatalf("baseline address 0x%02X was evicted", addr)
+		}
+	}
 }
 
 func TestM2aHarness_AdmissionArtifactEmissionValidatesAgainstSchema(t *testing.T) {

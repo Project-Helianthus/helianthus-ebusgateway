@@ -77,11 +77,42 @@ func TestM2aHarness_TransportBlindPath(t *testing.T) {
 }
 
 func TestM2aHarness_OverrideValidateFalsePath(t *testing.T) {
-	t.Skip("pending M6: StartupSource.Override wiring; override_semantics_source_of_truth: M6")
+	m := NewStartupAdmissionMetrics()
+	m.SetOverrideActive(true)
+	m.RecordOverrideBypass()
+	if got := FormatStartupAdmissionOverrideLog(0xF0); got != "startup admission override source=0xF0 confidence=low" {
+		t.Fatalf("unexpected override log line %q", got)
+	}
+	if m.OverrideActive.Value() != 1 {
+		t.Fatalf("expected override_active=1, got %d", m.OverrideActive.Value())
+	}
+	if m.OverrideBypassTotal.Value() != 1 {
+		t.Fatalf("expected override_bypass_total=1, got %d", m.OverrideBypassTotal.Value())
+	}
+	if m.OverrideConflictDetected.Value() != 0 {
+		t.Fatalf("expected no advisory Joiner conflict when validate=false, got %d", m.OverrideConflictDetected.Value())
+	}
 }
 
 func TestM2aHarness_OverrideValidateTruePath(t *testing.T) {
-	t.Skip("pending M6: StartupSource.Override.Validate wiring + retrospective conflict detection")
+	t.Run("advisory joiner agrees", func(t *testing.T) {
+		m := NewStartupAdmissionMetrics()
+		if CheckOverrideCompanionConflict(0xF0, protocol.JoinResult{Initiator: 0xF0}, m) {
+			t.Fatal("expected no conflict when advisory Joiner agrees")
+		}
+		if m.OverrideConflictDetected.Value() != 0 {
+			t.Fatalf("expected override_conflict_detected=0, got %d", m.OverrideConflictDetected.Value())
+		}
+	})
+	t.Run("advisory joiner disagrees", func(t *testing.T) {
+		m := NewStartupAdmissionMetrics()
+		if !CheckOverrideCompanionConflict(0xF0, protocol.JoinResult{Initiator: 0xF1}, m) {
+			t.Fatal("expected conflict when advisory Joiner disagrees")
+		}
+		if m.OverrideConflictDetected.Value() != 1 {
+			t.Fatalf("expected override_conflict_detected=1, got %d", m.OverrideConflictDetected.Value())
+		}
+	})
 }
 
 func TestM2aHarness_EvidenceBufferFloodBaselineProtection(t *testing.T) {

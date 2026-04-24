@@ -65,7 +65,33 @@ func validateAdmissionArtifactAgainstSchema(t *testing.T, artifactJSON []byte) {
 }
 
 func TestM2aHarness_JoinerSuccessPath(t *testing.T) {
-	t.Skip("pending M3: admission FSM + JoinResult capture")
+	var forwarded []protocol.Frame
+	forwardJoinBusEvent(synthesizedTransactionEvent(0x71, 0x08, true), func(frame protocol.Frame) {
+		forwarded = append(forwarded, frame)
+	})
+	if len(forwarded) == 0 {
+		t.Fatal("expected synthesized passive traffic to forward at least one frame")
+	}
+
+	builder := NewAdmissionArtifactBuilder("ens")
+	builder.startedAt = time.Now().Add(-60 * time.Second)
+	if err := builder.SetAdmissionPathSelected("join"); err != nil {
+		t.Fatal(err)
+	}
+	builder.SetJoinerSelection(0x71, 0x08, 5*time.Second)
+	builder.RecordProbe(120)
+
+	artifact, data, err := builder.Emit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	validateAdmissionArtifactAgainstSchema(t, data)
+	if artifact.Admission.AdmissionPathSelected != "join" {
+		t.Fatalf("admission_path_selected=%q", artifact.Admission.AdmissionPathSelected)
+	}
+	if artifact.Admission.State != "active" {
+		t.Fatalf("state=%q", artifact.Admission.State)
+	}
 }
 
 func TestM2aHarness_JoinerFailNoFreeInitiatorPath(t *testing.T) {

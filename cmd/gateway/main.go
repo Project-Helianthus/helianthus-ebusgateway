@@ -113,7 +113,17 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		log.Printf("startup admission: classifier rejected transport protocol=%q err=%v; falling back to legacy static-source path", cfg.TransportConfig.Protocol, admissionPathErr)
 		admissionPath = ebusgateway.TransportAdmissionStaticFallback
 	}
-	overrideSet := false
+	metrics := ebusgateway.GetOrInitStartupAdmissionMetrics()
+	overrideSet := admissionPath == ebusgateway.TransportAdmissionJoinCapable && cfg.StartupSource.Source != nil
+	overrideSource := byte(0x00)
+	if overrideSet {
+		overrideSource = *cfg.StartupSource.Source
+		log.Print(ebusgateway.FormatStartupAdmissionOverrideLog(overrideSource))
+		metrics.SetOverrideActive(true)
+		metrics.RecordOverrideBypass()
+	} else {
+		metrics.SetOverrideActive(false)
+	}
 
 	busObservability, deduplicator, err := wireObserveFirstObserversFn(&cfg)
 	if err != nil {
@@ -226,7 +236,8 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		return nil
 	}
 
-	if admissionPath == ebusgateway.TransportAdmissionJoinCapable && !overrideSet && shouldStartPassiveObserveFirst(cfg) {
+	runAdvisoryJoiner := admissionPath == ebusgateway.TransportAdmissionJoinCapable && shouldStartPassiveObserveFirst(cfg) && (!overrideSet || cfg.StartupSource.Validate)
+	if runAdvisoryJoiner {
 		reconstructor, err = startPassiveTransactionReconstructor(ctx, cfg)
 		if err != nil {
 			return err
@@ -246,14 +257,22 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		if err != nil {
 			log.Printf("startup admission degraded reason=joiner_fail err=%v", err)
 		} else {
-			joinResult = &result
-			log.Printf("startup admission active source=0x%02X companion_target=0x%02X", result.Initiator, result.CompanionTarget)
+			if overrideSet {
+				_ = ebusgateway.CheckOverrideCompanionConflict(overrideSource, result, metrics)
+			} else {
+				joinResult = &result
+				log.Printf("startup admission active source=0x%02X companion_target=0x%02X", result.Initiator, result.CompanionTarget)
+			}
 		}
 	}
 
 	startupCfg := resolveStartupScanSourceConfig(cfg)
 	startupSourceProvenance := startupScanSourceMode(cfg, startupCfg)
-	if admissionPath == ebusgateway.TransportAdmissionJoinCapable && joinResult != nil {
+	if admissionPath == ebusgateway.TransportAdmissionJoinCapable && overrideSet {
+		startupCfg.ScanSource = overrideSource
+		startupCfg.ScanSourceAuto = false
+		startupSourceProvenance = "override"
+	} else if admissionPath == ebusgateway.TransportAdmissionJoinCapable && joinResult != nil {
 		startupCfg.ScanSource = joinResult.Initiator
 		startupCfg.ScanSourceAuto = false
 		startupSourceProvenance = "join_result"
@@ -481,6 +500,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.DurationVar(&cfg.ScanTimeout, "scan-timeout", cfg.ScanTimeout, "startup scan timeout")
 	fs.DurationVar(&cfg.ScanRequestTimeout, "scan-request-timeout", cfg.ScanRequestTimeout, "startup scan per-request timeout")
 	fs.DurationVar(&cfg.ScanInterval, "scan-interval", cfg.ScanInterval, "startup scan retry interval (when scan finds 0 devices)")
+	fs.BoolVar(&cfg.DiagnosticFullRangeRetry, "diagnostic-full-range-retry", cfg.DiagnosticFullRangeRetry, "allow full-range retry on non-ebusd-tcp transports after a Vaillant root candidate is observed")
 	fs.DurationVar(&cfg.BootLiveTimeout, "boot-live-timeout", cfg.BootLiveTimeout, "semantic startup timeout before entering degraded mode")
 	fs.DurationVar(&cfg.SemanticDiscoveryInterval, "semantic-discovery-interval", cfg.SemanticDiscoveryInterval, "semantic discovery polling interval")
 	fs.DurationVar(&cfg.SemanticConfigInterval, "semantic-config-interval", cfg.SemanticConfigInterval, "semantic config polling interval")
@@ -567,6 +587,21 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		cfg.ScanSourceAuto = cfg.ScanSource == 0x00
 		return nil
 	})
+	fs.Func("startup-source-override", "override source address for join-capable direct transports (e.g. 0xf0)", func(value string) error {
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" {
+			cfg.StartupSource.Source = nil
+			return nil
+		}
+		parsed, err := strconv.ParseUint(value, 0, 8)
+		if err != nil {
+			return fmt.Errorf("invalid startup-source-override %q", value)
+		}
+		source := uint8(parsed)
+		cfg.StartupSource.Source = &source
+		return nil
+	})
+	fs.BoolVar(&cfg.StartupSource.Validate, "startup-source-override-validate", cfg.StartupSource.Validate, "run Joiner in advisory-only mode alongside startup-source-override")
 }
 
 // wireAdapterDirect creates and starts the adapter multiplexer if the

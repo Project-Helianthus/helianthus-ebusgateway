@@ -49,6 +49,13 @@ type BusObservabilityStartup struct {
 	LiveEpoch     uint64
 }
 
+type BusAdmission struct {
+	State           string
+	Source          uint8
+	CompanionTarget uint8
+	Reason          string
+}
+
 type BusObservabilityStatus struct {
 	LastUpdatedAt          *time.Time
 	TransportClass         string
@@ -58,6 +65,7 @@ type BusObservabilityStatus struct {
 	Warmup                 BusObservabilityWarmup
 	TimingQuality          BusObservabilityTimingQuality
 	Degraded               BusObservabilityDegraded
+	BusAdmission           *BusAdmission
 	Startup                *BusObservabilityStartup
 	FeatureFlags           ObserveFirstFeatureFlagState
 }

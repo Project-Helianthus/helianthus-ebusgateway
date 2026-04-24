@@ -23,6 +23,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/ui"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	ebusgoTransport "github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	vaillantproviders "github.com/Project-Helianthus/helianthus-ebusreg/providers/vaillant"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -107,6 +108,13 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		log.Printf("warning: --proxy-listen requires adapter-direct transport; proxy endpoint not started")
 	}
 
+	admissionPath, admissionPathErr := ebusgateway.ClassifyTransportAdmission(cfg.TransportConfig.Protocol)
+	if admissionPathErr != nil {
+		log.Printf("startup admission: classifier rejected transport protocol=%q err=%v; falling back to legacy static-source path", cfg.TransportConfig.Protocol, admissionPathErr)
+		admissionPath = ebusgateway.TransportAdmissionStaticFallback
+	}
+	overrideSet := false
+
 	busObservability, deduplicator, err := wireObserveFirstObserversFn(&cfg)
 	if err != nil {
 		return err
@@ -189,15 +197,83 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		return err
 	}
 
-	startupScanSignals := startDiscoveryScanLoopFn(ctx, cfg, gateway, builder, adapterClassifier)
+	var (
+		listener      *ebusgateway.BroadcastListener
+		reconstructor *ebusgateway.PassiveTransactionReconstructor
+		joinResult    *protocol.JoinResult
+	)
+	attachPassiveObserveFirst := func() error {
+		if reconstructor == nil {
+			return nil
+		}
+		if busObservability != nil {
+			if err := busObservability.AttachReconstructor(ctx, reconstructor); err != nil {
+				return err
+			}
+		}
+		if deduplicator != nil {
+			if err := deduplicator.AttachReconstructor(ctx, reconstructor); err != nil {
+				return err
+			}
+		}
+		if listener == nil {
+			var err error
+			listener, err = startBroadcastListenerWithReconstructorFn(ctx, gateway.Router, reconstructor)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if admissionPath == ebusgateway.TransportAdmissionJoinCapable && !overrideSet && shouldStartPassiveObserveFirst(cfg) {
+		reconstructor, err = startPassiveTransactionReconstructor(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		log.Printf("passive reconstructor started")
+
+		joinBus, err := ebusgateway.NewJoinBusAdapter(reconstructor, "startup_admission_joinbus", false)
+		if err != nil {
+			return fmt.Errorf("m3: new joinbus: %w", err)
+		}
+		joiner := protocol.NewJoiner(joinBus, nil, ebusgateway.DefaultStartupAdmissionJoinConfig())
+
+		log.Printf("joiner warmup begin")
+		warmupCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		result, err := joiner.Join(warmupCtx)
+		cancel()
+		if err != nil {
+			log.Printf("startup admission degraded reason=joiner_fail err=%v", err)
+		} else {
+			joinResult = &result
+			log.Printf("startup admission active source=0x%02X companion_target=0x%02X", result.Initiator, result.CompanionTarget)
+		}
+	}
+
+	startupCfg := resolveStartupScanSourceConfig(cfg)
+	startupSourceProvenance := startupScanSourceMode(cfg, startupCfg)
+	if admissionPath == ebusgateway.TransportAdmissionJoinCapable && joinResult != nil {
+		startupCfg.ScanSource = joinResult.Initiator
+		startupCfg.ScanSourceAuto = false
+		startupSourceProvenance = "join_result"
+	}
+
+	log.Printf("startup scan pass")
+	log.Printf("startup_directed_probe_phase begin source=0x%02X provenance=%s", startupCfg.ScanSource, startupSourceProvenance)
+	startupScanSignals := startDiscoveryScanLoopFn(ctx, startupCfg, gateway, builder, adapterClassifier)
 
 	if semanticBarrier != nil {
 		go func() {
 			select {
 			case <-ctx.Done():
+				close(semanticBarrier)
+				return
 			case <-startupScanSignals.semanticBootstrapReady:
 			}
-			close(semanticBarrier)
+			if shouldCloseSemanticBarrier(admissionPath, overrideSet, joinResult != nil) {
+				close(semanticBarrier)
+			}
 		}()
 	}
 
@@ -231,24 +307,12 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if err != nil {
 		return err
 	}
-	var listener *ebusgateway.BroadcastListener
-	var reconstructor *ebusgateway.PassiveTransactionReconstructor
 	if shouldStartPassiveObserveFirst(cfg) {
-		waitForStartupScanFirstPass(ctx, cfg, startupScanSignals.firstPassDone)
+		if reconstructor == nil {
+			waitForStartupScanFirstPass(ctx, cfg, startupScanSignals.firstPassDone)
 
-		reconstructor, err = startPassiveTransactionReconstructor(ctx, cfg)
-		if err != nil {
-			if advertiser != nil {
-				_ = advertiser.Close()
-			}
-			if server != nil {
-				_ = server.Close()
-			}
-			return err
-		}
-		if busObservability != nil {
-			if err := busObservability.AttachReconstructor(ctx, reconstructor); err != nil {
-				_ = reconstructor.Close()
+			reconstructor, err = startPassiveTransactionReconstructor(ctx, cfg)
+			if err != nil {
 				if advertiser != nil {
 					_ = advertiser.Close()
 				}
@@ -258,20 +322,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				return err
 			}
 		}
-		if deduplicator != nil {
-			if err := deduplicator.AttachReconstructor(ctx, reconstructor); err != nil {
-				_ = reconstructor.Close()
-				if advertiser != nil {
-					_ = advertiser.Close()
-				}
-				if server != nil {
-					_ = server.Close()
-				}
-				return err
-			}
-		}
-		listener, err = startBroadcastListenerWithReconstructorFn(ctx, gateway.Router, reconstructor)
-		if err != nil {
+		if err := attachPassiveObserveFirst(); err != nil {
 			_ = reconstructor.Close()
 			if advertiser != nil {
 				_ = advertiser.Close()

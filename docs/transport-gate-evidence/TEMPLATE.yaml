@@ -1,0 +1,20 @@
+# Transport-gate evidence template for M7 acceptance.
+# Operator fills this in after capturing a 5-minute runtime window on
+# real adapter-direct hardware per plan §M7 acceptance criteria.
+#
+# Commit as docs/transport-gate-evidence/<ISO8601-date>-<transport>.yaml
+# and link in the M7 PR description.
+
+transport: ens
+adapter_hw_id: "<e.g., ENH28A1>"
+admission_path_selected: join
+warmup_events_observed: 0
+degraded_escalations: 0
+passive_event_count_5min: 0
+hash_of_gateway_binary_sha256: "<sha256 of the gateway binary>"
+operator_signoff_gh_handle: "<your github handle>"
+timestamp_utc: "2026-04-23T12:00:00Z"
+deployment_seed_exercised_in_ci: [0x08, 0x15, 0x26, 0x04, 0xF6, 0xEC]
+ci_tested_seeds:
+  - default: [0x08, 0x15, 0x26, 0x04, 0xF6, 0xEC]
+  - non_default: [0x03, 0x10, 0x50]

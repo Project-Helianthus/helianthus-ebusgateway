@@ -1,0 +1,136 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "docs/schemas/admission-artifact.schema.json",
+  "title": "Startup Admission And Discovery Artifact",
+  "description": "Normative startup-admission-discovery artifact contract per 00-canonical.md §8 and AD23. This schema is owned by M2a and consumed unchanged by later emission milestones.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "admission",
+    "discovery"
+  ],
+  "properties": {
+    "admission": {
+      "type": "object",
+      "description": "Admission decision output summarizing the selected source, companion target, warmup timing, and degraded reason when applicable.",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "source",
+        "companion_target",
+        "warmup_duration_s",
+        "reason_if_degraded",
+        "transport_kind",
+        "admission_path_selected"
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "description": "Admission state label emitted by the startup-admission FSM."
+        },
+        "source": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "description": "Selected initiator/source address as an unsigned byte."
+        },
+        "companion_target": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "description": "Selected companion target address as an unsigned byte."
+        },
+        "warmup_duration_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Warmup observation duration in seconds."
+        },
+        "reason_if_degraded": {
+          "type": "string",
+          "description": "Human-readable degraded reason. May be an empty string for non-degraded paths."
+        },
+        "transport_kind": {
+          "type": "string",
+          "enum": [
+            "enh",
+            "ens",
+            "ebusd-tcp",
+            "udp-plain",
+            "tcp-plain"
+          ],
+          "description": "Transport kind from the startup-admission capability matrix."
+        },
+        "admission_path_selected": {
+          "type": "string",
+          "enum": [
+            "join",
+            "override",
+            "degraded_transport_blind",
+            "degraded_no_events"
+          ],
+          "description": "Admission path chosen by the startup-admission flow."
+        }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "description": "Discovery-phase evidence summary emitted alongside admission state for later observability and artifact consumers.",
+      "additionalProperties": false,
+      "required": [
+        "wire_bytes",
+        "window_s",
+        "startup_burst_pct",
+        "post_startup_sustained_rate_probes_per_15s",
+        "probe_count",
+        "promoted_suspects_without_identity",
+        "per_baseline_address_evidence_counts"
+      ],
+      "properties": {
+        "wire_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total observed wire bytes in the discovery window."
+        },
+        "window_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Discovery observation window in seconds."
+        },
+        "startup_burst_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of total probes concentrated in the startup burst interval."
+        },
+        "post_startup_sustained_rate_probes_per_15s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Steady-state probe rate normalized to probes per 15 seconds."
+        },
+        "probe_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total probe count observed during the discovery window."
+        },
+        "promoted_suspects_without_identity": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of promoted suspects that still lack identity resolution."
+        },
+        "per_baseline_address_evidence_counts": {
+          "type": "object",
+          "description": "Per-baseline-address evidence counts keyed by two-digit hex address strings.",
+          "propertyNames": {
+            "pattern": "^[0-9A-Fa-f]{2}$",
+            "description": "Address key as a two-digit hexadecimal string without prefix."
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Evidence count recorded for the keyed baseline address."
+          }
+        }
+      }
+    }
+  }
+}

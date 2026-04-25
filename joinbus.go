@@ -126,6 +126,39 @@ func ClassifyTransportAdmission(kind TransportProtocol) (TransportAdmissionPath,
 	}
 }
 
+// ResolveAdmissionPath returns the admission-path dispatch with adapter-direct
+// special-cased to JoinCapable. Adapter-direct multiplexer mode always wraps a
+// join-capable underlying transport (ENH or ENS in practice; UDP/TCP-plain are
+// not configurations the multiplexer is built for). The JoinBus adapter
+// subscribes to the same PassiveTransactionReconstructor regardless of
+// multiplexer presence, so adapter-direct deployments MUST run Joiner.
+//
+// This helper exists because ClassifyTransportAdmission is intentionally pure
+// (one transport at a time, no multiplexer-context awareness) and rejects
+// adapter-direct as needing inner-transport unwrap. Callers that have access to
+// the full Config (and therefore know about the multiplexer wrapper) should use
+// this helper instead of ClassifyTransportAdmission directly.
+//
+// Returns the resolved admission path. The boolean indicates whether the
+// adapter-direct special case fired (so the caller can log the multiplexer
+// detection once, not twice). Empty/unknown protocols fall back to
+// StaticFallback with the second return false.
+//
+// Resolves cruise-run #20 validation finding: startup_scan.go had its own
+// ClassifyTransportAdmission calls that took the static-fallback path on
+// adapter-direct, contradicting main.go's special-case. Centralising the
+// logic here keeps all call sites in agreement.
+func ResolveAdmissionPath(kind TransportProtocol) (path TransportAdmissionPath, adapterDirectSpecialCase bool) {
+	if kind == TransportAdapterDirect {
+		return TransportAdmissionJoinCapable, true
+	}
+	resolved, err := ClassifyTransportAdmission(kind)
+	if err != nil {
+		return TransportAdmissionStaticFallback, false
+	}
+	return resolved, false
+}
+
 // DefaultStartupAdmissionJoinConfig returns the JoinConfig used by the
 // startup-admission-discovery plan for join-capable direct transports.
 // See plan AD01/AD02/AD09 and

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"expvar"
 	"net/http"
 	"os"
 	"os/signal"
@@ -108,10 +109,20 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		log.Printf("warning: --proxy-listen requires adapter-direct transport; proxy endpoint not started")
 	}
 
-	admissionPath, admissionPathErr := ebusgateway.ClassifyTransportAdmission(cfg.TransportConfig.Protocol)
-	if admissionPathErr != nil {
-		log.Printf("startup admission: classifier rejected transport protocol=%q err=%v; falling back to legacy static-source path", cfg.TransportConfig.Protocol, admissionPathErr)
-		admissionPath = ebusgateway.TransportAdmissionStaticFallback
+	// ResolveAdmissionPath centralises the adapter-direct → JoinCapable
+	// special case so all classifier call sites (main.go run(),
+	// startup_scan.go startDiscoveryScanLoop, runBackgroundFullScan) agree
+	// on the dispatch. Adapter-direct multiplexer mode always wraps a
+	// join-capable underlying transport (ENH/ENS), so Joiner runs through
+	// the shared PassiveTransactionReconstructor regardless of multiplexer
+	// presence. Resolves cruise-run #20 M7 follow-up #1 + validation
+	// finding (admission_path_selected was incorrectly degraded_no_events
+	// on adapter-direct deployments).
+	admissionPath, adapterDirectSpecialCased := ebusgateway.ResolveAdmissionPath(cfg.TransportConfig.Protocol)
+	if adapterDirectSpecialCased {
+		log.Printf("startup admission: adapter-direct multiplexer detected; treating as join-capable (underlying transport is always ENH/ENS)")
+	} else if admissionPath == ebusgateway.TransportAdmissionStaticFallback && cfg.TransportConfig.Protocol != ebusgateway.TransportEbusdTCP {
+		log.Printf("startup admission: classifier produced static-fallback for transport protocol=%q (unknown/empty); legacy static-source path active", cfg.TransportConfig.Protocol)
 	}
 	metrics := ebusgateway.GetOrInitStartupAdmissionMetrics()
 	artifactBuilder := ebusgateway.NewAdmissionArtifactBuilder(string(cfg.TransportConfig.Protocol))
@@ -177,6 +188,37 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	builder := graphql.NewBuilder(gateway.Registry, nil)
 	if busObservability != nil {
 		builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(busObservability))
+	}
+	// Wire baseline evidence provider so the artifact emitter populates
+	// per_baseline_address_evidence_counts at emit time. Reads the bus
+	// observability periodicity snapshot, filters to baseline addresses
+	// (Vaillant default), and counts cumulative observations per address.
+	// Resolves cruise-run #20 validation finding: artifact's per-baseline
+	// map was always empty even when the registry observed traffic to
+	// baseline addresses.
+	if busObservability != nil {
+		artifactBuilder.SetBaselineEvidenceProvider(func() map[string]int {
+			counts := make(map[string]int)
+			for _, addr := range ebusgateway.VaillantBaselineTopologySeed {
+				counts[fmt.Sprintf("0x%02X", addr)] = 0
+			}
+			// RecentMessages returns most recent observations; iterate
+			// and count per baseline address (as either source or
+			// target). 1024 is the default observe-first capacity, large
+			// enough to capture passive traffic to all baselines on a
+			// healthy bus.
+			for _, msg := range busObservability.RecentMessages(1024) {
+				srcKey := fmt.Sprintf("0x%02X", msg.Source)
+				if _, ok := counts[srcKey]; ok {
+					counts[srcKey]++
+				}
+				tgtKey := fmt.Sprintf("0x%02X", msg.Target)
+				if _, ok := counts[tgtKey]; ok {
+					counts[tgtKey]++
+				}
+			}
+			return counts
+		})
 	}
 	builder.SetGatewayIdentityProvider(newRuntimeGatewayIdentityProvider(cfg))
 	hub := graphql.NewBroadcastHub(nil)
@@ -291,6 +333,13 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			)
 			busObservability.RecordBusAdmissionTransition("pending", 0, 0, "joiner_warmup_in_progress")
 		}
+		// Wire M5 expvar surfaces: state pending → warmup cycle starts.
+		// Resolves cruise-run #20 validation finding that the 11
+		// startup_admission_* expvars were defined and Publish()'d via
+		// GetOrInitStartupAdmissionMetrics but never updated by the
+		// runtime — they all stayed at 0 even after Joiner success.
+		metrics.MarkPending()
+		metrics.StartWarmupCycle()
 
 		log.Printf("joiner warmup begin")
 		warmupCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
@@ -302,6 +351,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			if busObservability != nil {
 				busObservability.RecordBusAdmissionTransition("degraded", 0, 0, "joiner_fail")
 			}
+			metrics.MarkDegraded(time.Now())
 			artifactBuilder.SetDegraded("joiner_fail")
 			if perr := artifactBuilder.SetAdmissionPathSelected("degraded_no_events"); perr != nil {
 				log.Fatalf("FATAL: AD23 enum violation on joiner-fail path: %v", perr)
@@ -319,6 +369,13 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				if busObservability != nil {
 					busObservability.RecordBusAdmissionTransition("active", result.Initiator, result.CompanionTarget, "")
 				}
+				metrics.MarkActive()
+				// Reflect Joiner-observed event count if exposed by ebusgo.
+				// JoinResult does not currently surface a count; the
+				// warmup_events_seen stays at the per-cycle reset value
+				// of 0 unless the JoinBus adapter is extended to call
+				// metrics.RecordWarmupEvent on each forwarded frame.
+				// Tracked as cruise-run #20 follow-up.
 			}
 		}
 	}
@@ -929,6 +986,13 @@ func startHTTPServer(
 	if busObservability != nil {
 		mux.Handle(normalizeMountPath(cfg.MetricsPath, ebusgateway.DefaultMetricsPath), busObservability.MetricsHandler())
 	}
+	// Expose expvar surfaces (including the 11 startup_admission_* counters
+	// from M5) via /debug/vars. The expvar package's init registers the
+	// handler on http.DefaultServeMux, but the gateway uses its own mux so
+	// the handler must be wired explicitly. Resolves cruise-run #20
+	// validation finding: M5 expvars were defined + Publish()'d but not
+	// reachable over HTTP.
+	mux.Handle("/debug/vars", expvar.Handler())
 	mux.Handle(cfg.GraphQLPath, queryHandler)
 	mux.Handle(cfg.SnapshotPath, snapshotHandler)
 	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)

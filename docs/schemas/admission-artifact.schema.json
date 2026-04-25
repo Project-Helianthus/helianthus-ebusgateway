@@ -56,9 +56,10 @@
             "ens",
             "ebusd-tcp",
             "udp-plain",
-            "tcp-plain"
+            "tcp-plain",
+            "adapter-direct"
           ],
-          "description": "Transport kind from the startup-admission capability matrix."
+          "description": "Transport kind from the startup-admission capability matrix. 'adapter-direct' is the multiplexer mode that wraps an underlying ENH/ENS adapter; semantically equivalent to a join-capable transport (main.go special-cases it to admissionPath=JoinCapable)."
         },
         "admission_path_selected": {
           "type": "string",

@@ -44,6 +44,25 @@ type AdmissionArtifactBuilder struct {
 	artifact  AdmissionArtifact
 	startedAt time.Time
 	emitOnce  uint32 // CAS guard for EmitToFile
+	// baselineEvidenceProvider is called immediately before Emit/EmitToFile
+	// to populate per_baseline_address_evidence_counts from a runtime
+	// observability source (typically the bus_observability store). Set
+	// by main.go after busObservability is wired. nil during early
+	// startup; emit before the provider is set produces an empty map.
+	baselineEvidenceProvider func() map[string]int
+}
+
+// SetBaselineEvidenceProvider installs a callback that returns the
+// per-baseline-address evidence counts at emit time. Called by Emit and
+// EmitToFile under the builder's mutex; the provider must be safe for
+// concurrent invocation. Resolves cruise-run #20 validation finding that
+// per_baseline_address_evidence_counts was unconditionally empty in the
+// emitted artifact even when the registry observed traffic to baseline
+// addresses.
+func (b *AdmissionArtifactBuilder) SetBaselineEvidenceProvider(provider func() map[string]int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.baselineEvidenceProvider = provider
 }
 
 func NewAdmissionArtifactBuilder(transportKind string) *AdmissionArtifactBuilder {
@@ -141,6 +160,11 @@ func (b *AdmissionArtifactBuilder) Emit() (AdmissionArtifact, []byte, error) {
 	if windowS > 0 {
 		b.artifact.Discovery.WindowS = windowS
 		b.artifact.Discovery.StartupBurstPct = float64(b.artifact.Discovery.WireBytes) / (windowS * 240) * 100
+	}
+	if b.baselineEvidenceProvider != nil {
+		if counts := b.baselineEvidenceProvider(); counts != nil {
+			b.artifact.Discovery.PerBaselineAddressEvidenceCounts = counts
+		}
 	}
 	data, err := json.MarshalIndent(b.artifact, "", "  ")
 	if err != nil {

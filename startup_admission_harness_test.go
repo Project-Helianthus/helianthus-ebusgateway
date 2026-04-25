@@ -254,7 +254,7 @@ func admissionArtifactSchemaError(artifactJSON []byte) error {
 	if *artifact.Admission.Source < 0 || *artifact.Admission.Source > 255 || *artifact.Admission.CompanionTarget < 0 || *artifact.Admission.CompanionTarget > 255 || *artifact.Admission.WarmupDurationS < 0 {
 		return fmt.Errorf("admission numeric bounds violated")
 	}
-	if !containsAdmissionEnum([]string{"enh", "ens", "ebusd-tcp", "udp-plain", "tcp-plain"}, *artifact.Admission.TransportKind) {
+	if !containsAdmissionEnum([]string{"enh", "ens", "ebusd-tcp", "udp-plain", "tcp-plain", "adapter-direct"}, *artifact.Admission.TransportKind) {
 		return fmt.Errorf("invalid transport_kind %q", *artifact.Admission.TransportKind)
 	}
 	if !containsAdmissionEnum([]string{"join", "override", "degraded_transport_blind", "degraded_no_events"}, *artifact.Admission.AdmissionPathSelected) {

@@ -84,10 +84,6 @@ func TestM2aHarness_OverrideValidateTruePath(t *testing.T) {
 	t.Skip("pending M6: StartupSource.Override.Validate wiring + retrospective conflict detection")
 }
 
-func TestM2aHarness_SemanticBarrierClosesOnlyWithAdmissionState(t *testing.T) {
-	t.Skip("pending M3: semanticBarrier predicate extension in cmd/gateway/main.go")
-}
-
 func TestM2aHarness_EvidenceBufferFloodBaselineProtection(t *testing.T) {
 	t.Skip("pending M4: evidence pipeline + max_entries=128 LRU + baseline protection")
 }

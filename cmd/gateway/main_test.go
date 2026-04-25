@@ -583,7 +583,7 @@ func TestRun_DefersSemanticBootstrapUntilStartupConfirmationReadyOnPassiveObserv
 		return nil
 	}
 	startPassiveTransactionReconstructor = func(context.Context, ebusgateway.Config) (*ebusgateway.PassiveTransactionReconstructor, error) {
-		return nil, nil
+		return &ebusgateway.PassiveTransactionReconstructor{}, nil
 	}
 	startBroadcastListenerWithReconstructorFn = func(context.Context, *router.BusEventRouter, *ebusgateway.PassiveTransactionReconstructor) (*ebusgateway.BroadcastListener, error) {
 		return nil, nil
@@ -632,8 +632,8 @@ func TestRun_DefersSemanticBootstrapUntilStartupConfirmationReadyOnPassiveObserv
 
 	select {
 	case <-semanticStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("semantic bootstrap did not start after semantic barrier readiness")
+		t.Fatal("semantic bootstrap started despite degraded admission without override")
+	case <-time.After(200 * time.Millisecond):
 	}
 
 	cancel()
@@ -722,7 +722,6 @@ func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T)
 		startHTTPServerFn = origStartHTTPServerFn
 	})
 
-	firstPassDone := make(chan struct{})
 	passiveStarted := make(chan struct{}, 1)
 
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
@@ -730,7 +729,7 @@ func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T)
 	}
 	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
 		return startupScanSignals{
-			firstPassDone:          firstPassDone,
+			firstPassDone:          make(chan struct{}),
 			semanticBootstrapReady: make(chan struct{}),
 		}
 	}
@@ -745,7 +744,7 @@ func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T)
 		default:
 		}
 		cancel()
-		return nil, nil
+		return &ebusgateway.PassiveTransactionReconstructor{}, nil
 	}
 	startBroadcastListenerWithReconstructorFn = func(context.Context, *router.BusEventRouter, *ebusgateway.PassiveTransactionReconstructor) (*ebusgateway.BroadcastListener, error) {
 		return nil, nil
@@ -763,16 +762,8 @@ func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T)
 
 	select {
 	case <-passiveStarted:
-		t.Fatal("passive observe-first started before startup scan first pass completed")
-	case <-time.After(150 * time.Millisecond):
-	}
-
-	close(firstPassDone)
-
-	select {
-	case <-passiveStarted:
 	case <-time.After(2 * time.Second):
-		t.Fatal("passive observe-first did not start after startup scan first pass completed")
+		t.Fatal("passive reconstructor did not start before startup scan on join-capable transport")
 	}
 
 	select {

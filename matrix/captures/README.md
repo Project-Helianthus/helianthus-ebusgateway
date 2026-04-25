@@ -64,22 +64,37 @@ greppable. See `M7-EXAMPLE-template.txt` for the canonical layout.
 
 ### §A — 5 read-selector round-trips (REQUIRED)
 
-For each B503 read selector, capture the request bytes, the response bytes, and the
-gateway-side MCP envelope (so error-mapping discipline per `helianthus-docs-ebus`
-B503.md §12.4 is verifiable end-to-end):
+For each B503 read selector, capture the gateway-side MCP envelope (so
+error-mapping discipline per `helianthus-docs-ebus` B503.md §12.4 is
+verifiable end-to-end). The B503 selector pairs (authoritative source:
+`helianthus-ebusgo/protocol/vaillant/b503/encode.go`) are:
 
-1. `errors.get` (selector `02 00`)
-2. `errors.history.get` (selector `02 00` with index byte)
-3. `service.current.get` (selector `00 02`)
-4. `service.history.get` (selector `00 02` with index byte)
-5. `live_monitor.get` (selector `00 03` — covered also under §B)
+1. `errors.get` — selector pair `00 01` (Currenterror)
+2. `errors.history.get` — selector pair `01 01 <hex-index>` (Errorhistory)
+3. `service.current.get` — selector pair `00 02` (Currentservice)
+4. `service.history.get` — selector pair `01 02 <hex-index>` (Servicehistory)
+5. `live_monitor.get` — selector pair `00 03` (HMU LiveMonitor; covered also under §B)
 
-Each entry MUST include:
+Each entry MUST include (REQUIRED for falsification):
+- decoded MCP envelope `meta.capabilities.vaillant_b503.reason`
+- decoded MCP envelope `meta.data_hash` — sha256 over decoded payload;
+  the authoritative wire-fingerprint for §A
+- decoded payload from the typed `ebus.v1.vaillant.<selector>.get` tool
+  `data` section (slots / history record / live-monitor frame)
+- timestamp (ISO-8601 with seconds resolution)
+
+OPTIONAL auxiliary evidence (capture if convenient via tcpdump / socat
+on the gateway's transport socket; NOT required because the v1 MCP
+surface does not expose raw frames for §A1..§A4 — the typed handlers
+in `mcp/vaillant_b503.go` return decoded payload maps via `slotsToMap`
+/ `historyToMap`, and `ebus.v1.rpc.invoke` v1 takes a typed plane/method
+shape, not raw bytes):
 - raw request bytes (hex, comma-separated)
 - raw response bytes (hex, comma-separated, including ACK/NAK)
-- decoded MCP envelope `meta.capabilities.vaillant_b503.reason`
-- decoded MCP envelope `meta.data_hash`
-- timestamp (ISO-8601 with seconds resolution)
+
+For §A.5 only, `live_monitor.get` action=`read` exposes `data.raw_hex`
+— that field SHOULD be recorded as `A5.response_bytes` (it is wire
+bytes, available without auxiliary tooling).
 
 ### §B — Live-monitor round-trip (REQUIRED)
 

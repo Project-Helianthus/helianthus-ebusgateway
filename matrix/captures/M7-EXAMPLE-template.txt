@@ -20,40 +20,56 @@ capture_date: <YYYY-MM-DD>
 capture_operator: <github-handle>
 
 ## §A — 5 read-selector round-trips
+#
+# Selector pairs match helianthus-ebusgo/protocol/vaillant/b503/encode.go.
+# REQUIRED fields: envelope.capability_reason, envelope.data_hash,
+#                  decoded_payload, timestamp.
+# OPTIONAL fields: request_bytes, response_bytes (for §A1..§A4) — only
+#                  available via auxiliary tcpdump/socat capture.
+# §A5 response_bytes IS available from typed live_monitor.get's data.raw_hex.
 
-# A1 — errors.get  (selector 02 00)
-A1.request_bytes: <hex bytes, comma-separated, e.g. "f1,08,b5,03,02,00,01">
-A1.response_bytes: <hex bytes, e.g. "0a,19,01,ff,ff,ff,ff,ff,ff,ff,ff">
+# A1 — errors.get  (selector 00 01 Currenterror)
 A1.envelope.capability_reason: <UNKNOWN | AVAILABLE | TRANSPORT_DOWN | SESSION_BUSY | NOT_SUPPORTED>
 A1.envelope.data_hash: <sha256 from MCP meta.data_hash>
+A1.decoded_payload: <data section from typed errors.get response, e.g. "{slots: [281, 0xFFFF, ...]}">
 A1.timestamp: <YYYY-MM-DDTHH:MM:SS>
+# Optional auxiliary (tcpdump/socat post-processing):
+# A1.request_bytes: <hex bytes, comma-separated, e.g. "f1,08,b5,03,00,01">
+# A1.response_bytes: <hex bytes, e.g. "0a,19,01,ff,ff,ff,ff,ff,ff,ff,ff">
 
-# A2 — errors.history.get  (selector 02 00 + index)
-A2.request_bytes: <...>
-A2.response_bytes: <...>
+# A2 — errors.history.get  (selector 01 01 + hex-index Errorhistory)
 A2.envelope.capability_reason: <...>
 A2.envelope.data_hash: <...>
+A2.decoded_payload: <...>
 A2.timestamp: <...>
+# Optional:
+# A2.request_bytes: <...>
+# A2.response_bytes: <...>
 
-# A3 — service.current.get  (selector 00 02)
-A3.request_bytes: <...>
-A3.response_bytes: <...>
+# A3 — service.current.get  (selector 00 02 Currentservice)
 A3.envelope.capability_reason: <...>
 A3.envelope.data_hash: <...>
+A3.decoded_payload: <...>
 A3.timestamp: <...>
+# Optional:
+# A3.request_bytes: <...>
+# A3.response_bytes: <...>
 
-# A4 — service.history.get  (selector 00 02 + index)
-A4.request_bytes: <...>
-A4.response_bytes: <...>
+# A4 — service.history.get  (selector 01 02 + hex-index Servicehistory)
 A4.envelope.capability_reason: <...>
 A4.envelope.data_hash: <...>
+A4.decoded_payload: <...>
 A4.timestamp: <...>
+# Optional:
+# A4.request_bytes: <...>
+# A4.response_bytes: <...>
 
-# A5 — live_monitor.get  (selector 00 03; full lifecycle covered in §B)
-A5.request_bytes: <...>
-A5.response_bytes: <...>
+# A5 — live_monitor.get  (selector 00 03 HMU LiveMonitor; full lifecycle in §B)
+# A5.response_bytes IS available — record data.raw_hex from typed live_monitor.get action="read".
 A5.envelope.capability_reason: <...>
 A5.envelope.data_hash: <...>
+A5.decoded_payload: <...>
+A5.response_bytes: <hex from data.raw_hex>
 A5.timestamp: <...>
 
 ## §B — Live-monitor round-trip (enable → read → read → disable)

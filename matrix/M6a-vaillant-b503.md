@@ -199,66 +199,70 @@ ssh root@192.168.100.4 'awk -F": *" "/^transport_profile:/ {print \$2}" /etc/hel
 # expected: adapter-direct
 ```
 
-For each §A read selector, the capture file requires both wire-level
-**raw bytes** (`request_bytes` / `response_bytes` per
-`matrix/captures/M7-EXAMPLE-template.txt`) AND the typed-tool MCP
-**envelope** (`capability_reason` / `data_hash`). The typed
-`ebus.v1.vaillant.*.get` MCP handlers return decoded payload maps and
-do **not** expose raw frames; raw bytes therefore come from a paired
-call to `ebus.v1.rpc.invoke`, which routes through the same M6
-RawFrameDispatcher (i.e. the same wire path) and returns
-`response.data` as raw bytes. Two MCP calls per selector — one
-`rpc.invoke` for the wire-byte source of truth, one typed tool for
-the envelope — close the loop.
+§A captures use the typed `ebus.v1.vaillant.<selector>.get` MCP tools.
+The v1 MCP surface (`mcp/server.go`) does NOT expose raw frame bytes
+for §A1..§A4 — the typed handlers in `mcp/vaillant_b503.go` return
+decoded payload maps via `slotsToMap` / `historyToMap`, and
+`ebus.v1.rpc.invoke` v1 takes a typed plane/method shape (`address`,
+`plane`, `method`, `intent`, `allow_dangerous` per
+`enforceInvokeV1Safety`), NOT raw bytes. The capture file therefore
+treats `request_bytes` / `response_bytes` for §A1..§A4 as **OPTIONAL
+auxiliary evidence** (capture via tcpdump / socat on the gateway's
+transport socket if convenient); the **REQUIRED** wire-fingerprint is
+`meta.data_hash` (sha256 over decoded payload) plus the decoded
+`data` section. §A.5 is special: `live_monitor.get` action=`read`
+exposes `data.raw_hex` so `A5.response_bytes` IS available from the
+typed tool.
 
-`rpc.invoke` payload shape per [`docs-ebus protocols/vaillant/ebus-vaillant-B503.md`](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B503.md)
-§12.2: `payload` starts with the (family, selector) pair (e.g.
-`00 01` for `Currenterror`). The `PB=0xB5 / SB=0x03` namespace bytes
-are NOT part of `payload` — the dispatcher places them in the Frame
-envelope. `request_bytes` recorded in the capture file MUST be the
-full wire-level frame (`source target b5 03 <payload> <crc>`); the
-operator reconstructs this from the `target` parameter, the gateway
-source `0x71`, the namespace bytes `b5 03`, and the `rpc.invoke`
-`payload` (CRC is appended by the bus and observable in the
-gateway's transport-level log if required).
+The B503 selector pairs (authoritative source:
+`helianthus-ebusgo/protocol/vaillant/b503/encode.go`):
+
+| §A row | Tool | Selector pair |
+|---|---|---|
+| §A.1 | `ebus.v1.vaillant.errors.get` | `00 01` (Currenterror) |
+| §A.2 | `ebus.v1.vaillant.errors.history.get` | `01 01 <hex-index>` |
+| §A.3 | `ebus.v1.vaillant.service.current.get` | `00 02` |
+| §A.4 | `ebus.v1.vaillant.service.history.get` | `01 02 <hex-index>` |
+| §A.5 | `ebus.v1.vaillant.live_monitor.get` | `00 03` |
 
 ```
 CAP=matrix/captures/M7-adapter-direct-$(date -u +%F).txt
 ENDPOINT=http://192.168.100.4:8080/mcp
 TARGET=8
 
-# §A.1 — Currenterror (selector pair 00 01)
+# §A.1 — errors.get (selector 00 01)
 {
   echo "## §A.1 errors  target=$TARGET  selector=00 01"
-  echo "# Raw bytes via rpc.invoke (request payload = 00 01):"
   curl -sS -X POST "$ENDPOINT" -H 'Content-Type: application/json' -d \
-    "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"ebus.v1.rpc.invoke\",\"arguments\":{\"source\":113,\"target\":$TARGET,\"payload\":\"00 01\"}}}"
-  echo
-  echo "# Typed envelope via ebus.v1.vaillant.errors.get:"
-  curl -sS -X POST "$ENDPOINT" -H 'Content-Type: application/json' -d \
-    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"ebus.v1.vaillant.errors.get\",\"arguments\":{\"target_address\":$TARGET}}}"
+    "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"ebus.v1.vaillant.errors.get\",\"arguments\":{\"target_address\":$TARGET}}}"
   echo
 } >> "$CAP"
-# Repeat the same shape for:
-#   §A.2 errors.history.get    rpc.invoke payload="01 01 <hex-index>"  / typed errors.history.get arguments={target_address,index}
-#   §A.3 service.current.get   rpc.invoke payload="00 02"               / typed service.current.get arguments={target_address}
-#   §A.4 service.history.get   rpc.invoke payload="01 02 <hex-index>"  / typed service.history.get arguments={target_address,index}
-#   §A.5 live_monitor.get      rpc.invoke payload="00 03"               / typed live_monitor.get arguments={target_address,action:"enable"}
+# Repeat the same shape for §A.2..§A.5 with the corresponding tool
+# name and arguments (errors.history.get takes index, etc.). For §A.5
+# the typed live_monitor.get with action="read" returns data.raw_hex
+# — record it as A5.response_bytes.
 ```
 
+Optional auxiliary raw-byte capture for §A1..§A4 (when needed for
+deeper debugging beyond the data_hash fingerprint): start `tcpdump`
+or `socat` on the gateway's transport socket BEFORE invoking the
+typed tool, and post-process to extract the request/response frames
+matching the §A timestamp window. Out of scope for BENCH-REPLACE
+falsification — capability_reason + data_hash + decoded data section
+together are sufficient evidence per AD17.
+
 Fill the capture template by copying:
-- `An.request_bytes`: hex of `<source> <target> b5 03 <payload>` reconstructed from the inputs above (CRC optional, recorded if available from gateway logs).
-- `An.response_bytes`: hex of the `rpc.invoke` `response.data` field.
-- `An.envelope.capability_reason`: from the typed-tool response `meta.capabilities.vaillant_b503.reason`.
-- `An.envelope.data_hash`: from the typed-tool response `meta.data_hash`.
-- `An.timestamp`: ISO-8601 timestamp of capture.
+- `An.envelope.capability_reason` (REQUIRED): from typed-tool response `meta.capabilities.vaillant_b503.reason`.
+- `An.envelope.data_hash` (REQUIRED): from typed-tool response `meta.data_hash`.
+- `An.decoded_payload` (REQUIRED): from typed-tool response `data` section.
+- `An.timestamp` (REQUIRED): ISO-8601 timestamp of capture.
+- `An.request_bytes` (OPTIONAL): from tcpdump / socat post-processing.
+- `An.response_bytes` (OPTIONAL for §A1..§A4 via tcpdump; REQUIRED for §A.5 from `data.raw_hex`).
 
 Operators that already have the project's local Claude integration
 configured may equivalently drive these calls via the
-`mcp__helianthus__ebus_v1_rpc_invoke` and
 `mcp__helianthus__ebus_v1_vaillant_*` tool names — both routes
-terminate at the same MCP server and produce identical envelopes /
-raw bytes.
+terminate at the same MCP server and produce identical envelopes.
 
 For §B (live-monitor lifecycle) call the typed `live_monitor.get`
 tool with `action=enable`, then twice with `action=read`, then once
@@ -314,10 +318,15 @@ requires a particular post-capture profile.)
 
 For each capture file:
 - All header fields populated (no `<...>` placeholders remaining).
-- All §A entries have non-empty `request_bytes`, `response_bytes`,
-  `envelope.capability_reason`, `envelope.data_hash`.
+- All §A entries have non-empty `envelope.capability_reason`,
+  `envelope.data_hash`, `decoded_payload`, `timestamp` (REQUIRED).
+  `request_bytes` / `response_bytes` are OPTIONAL for §A1..§A4 (only
+  available via auxiliary tcpdump/socat); REQUIRED for §A.5 (recorded
+  from `data.raw_hex` of the typed `live_monitor.get` read response).
 - §B has 4 entries (`enable`, two `read`, `disable`) all with matching
-  `issuer_token` between `B1.enable` and `B4.disable`.
+  `issuer_token` between `B1.enable` and `B4.disable`. `Bn.response_bytes`
+  comes from `data.raw_hex` (for `read`) or the `data.disabled=true` /
+  `data.issuer_token=<token>` markers (for `enable` / `disable`).
 - §C `b524_within_2x_tolerance: true` (any `false` is a regression and blocks the
   PR).
 - §D overall verdict `bridge-LIVE-PASS` (any row marked `bridge-FAIL` blocks the

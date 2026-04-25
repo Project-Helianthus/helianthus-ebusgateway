@@ -168,37 +168,104 @@ contract.
 
 ### Step-by-step capture protocol
 
+The capture rounds drive the live gateway via its existing **HTTP MCP
+endpoint** (`http://192.168.100.4:8080/mcp`, JSON-RPC 2.0 — see
+`AGENTS-local.md` and `~/.helianthus/cruise.yaml` for endpoint config).
+**No purpose-built `run_transport_matrix.sh` script is required**; the
+MCP envelope already provides the structured `meta.capabilities`,
+`data_hash`, and `error.code` fields the capture file demands. Captures
+are produced by invoking the relevant MCP tools (`ebus.v1.vaillant.*`)
+and recording the full request/response envelope into the capture file.
+
+The §A / §B / §C / §D cycles described in
+[`matrix/captures/README.md`](./captures/README.md) define the
+mandatory capture content:
+
+- §A: 5 read selectors (`errors.get`, `errors.history.get`,
+  `service.current.get`, `service.history.get`, `live_monitor.get`).
+- §B: live-monitor `enable → read → read → disable` lifecycle with
+  explicit operator-initiated disable (NOT idle-timeout).
+- §C: ≥1 B524 poll observation captured **during** an active B503
+  live-monitor read; `b524_within_2x_tolerance` recorded.
+- §D: per-row verdict cross-referenced to §9 rows VB-BR-01..VB-BR-08
+  (adapter-direct) or VB-BR-09..VB-BR-16 (ebusd_tcp).
+
 **Step 1 — adapter-direct capture round.**
 
+Confirm the gateway transport profile is `adapter-direct`:
+
 ```
-# On 192.168.100.4 (or driving the gateway from operator workstation):
-./scripts/run_transport_matrix.sh \
-    --transport adapter-direct \
-    --target 0x08 \
-    --output matrix/captures/M7-adapter-direct-$(date -u +%F).txt
+ssh root@192.168.100.4 'jq -r .transport_profile /etc/helianthus/gateway.yaml'
+# expected: adapter-direct
 ```
 
-The capture script MUST drive the live gateway through the §A/§B/§C cycles
-described in [`matrix/captures/README.md`](./captures/README.md):
+For each §A read selector, invoke the MCP tool and append the full
+JSON-RPC request + response (envelope intact) to the capture file. The
+canonical primitive is `curl` against the HTTP MCP endpoint:
 
-- §A: 5 read selectors (`errors.get`, `errors.history.get`, `service.current.get`,
-  `service.history.get`, `live_monitor.get`).
-- §B: live-monitor `enable → read → read → disable` lifecycle with explicit
-  operator-initiated disable (NOT idle-timeout).
-- §C: ≥1 B524 poll observation captured **during** an active B503 live-monitor
-  read; `b524_within_2x_tolerance` recorded.
-- §D: per-row verdict cross-referenced to §9 rows VB-BR-01..VB-BR-08.
+```
+CAP=matrix/captures/M7-adapter-direct-$(date -u +%F).txt
+ENDPOINT=http://192.168.100.4:8080/mcp
+TARGET=8
+
+# §A.1 — ebus.v1.vaillant.errors.get
+{
+  echo "## §A.1 ebus.v1.vaillant.errors.get target=$TARGET"
+  curl -sS -X POST "$ENDPOINT" -H 'Content-Type: application/json' -d \
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"ebus.v1.vaillant.errors.get\",\"arguments\":{\"target_address\":$TARGET}}}"
+  echo
+} >> "$CAP"
+# Repeat the same shape for §A.2..§A.5 with the corresponding
+# tool name and arguments (errors.history.get takes index, etc.).
+```
+
+Operators that already have the project's local Claude integration
+configured may equivalently drive these calls via the
+`mcp__helianthus__ebus_v1_vaillant_*` tool names — the resulting
+envelope is identical because both routes terminate at the same MCP
+server.
+
+For §B (live-monitor lifecycle) call `live_monitor.get` with
+`action=enable`, then twice with `action=read`, then once with
+`action=disable` carrying the `issuer_token` from the enable response.
+Append all four envelopes to the capture file under headers
+`§B.1.enable`, `§B.2.read`, `§B.3.read`, `§B.4.disable`. The
+`issuer_token` MUST match across all four.
+
+For §C run a B524 baseline poll (e.g.
+`ebus.v1.semantic.boiler_status.get`) **while** §B's two read calls are
+in flight, and append the resulting envelope under `§C.1.b524_during_b503`.
+Compare its `meta.duration_ms` against the post-M6 baseline recorded in
+§5 (within 2× tolerance — record `b524_within_2x_tolerance: true|false`).
+
+For §D append a per-row verdict block (one row per §9 VB-BR-01..VB-BR-08
+entry) referencing the §A/§B/§C captures by header. Mark each row
+`bridge-LIVE-PASS` or `bridge-FAIL`.
 
 **Step 2 — ebusd_tcp capture round.**
 
+Switch the gateway transport profile to `ebusd_tcp`:
+
 ```
-./scripts/run_transport_matrix.sh \
-    --transport ebusd_tcp \
-    --target 0x08 \
-    --output matrix/captures/M7-ebusd-tcp-$(date -u +%F).txt
+ssh root@192.168.100.4 \
+    'sed -i "s/^transport_profile:.*/transport_profile: ebusd_tcp/" /etc/helianthus/gateway.yaml \
+     && systemctl restart helianthus-gateway'
 ```
 
-Same §A/§B/§C/§D cycles. §D verdict cross-references §9 rows VB-BR-09..VB-BR-16.
+Confirm:
+
+```
+ssh root@192.168.100.4 'jq -r .transport_profile /etc/helianthus/gateway.yaml'
+# expected: ebusd_tcp
+```
+
+Repeat the §A / §B / §C / §D cycles from Step 1 against
+`matrix/captures/M7-ebusd-tcp-$(date -u +%F).txt`. §D verdict
+cross-references §9 rows VB-BR-09..VB-BR-16.
+
+(Restoring the gateway to `adapter-direct` after the capture round is
+the operator's call — neither this protocol nor cruise-merge-gate
+requires a particular post-capture profile.)
 
 **Step 3 — Verify capture-file content.**
 

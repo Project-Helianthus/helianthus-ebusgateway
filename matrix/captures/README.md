@@ -73,7 +73,7 @@ verifiable end-to-end). The B503 selector pairs (authoritative source:
 2. `errors.history.get` — selector pair `01 01 <hex-index>` (Errorhistory)
 3. `service.current.get` — selector pair `00 02` (Currentservice)
 4. `service.history.get` — selector pair `01 02 <hex-index>` (Servicehistory)
-5. `live_monitor.get` — selector pair `00 03` (HMU LiveMonitor; covered also under §B)
+5. `live_monitor.get` — selector pair `00 03` (HMU LiveMonitor; **action="read" requires an active session per `mgr.Read(...)` discipline — §A.5 is satisfied by cross-referencing the §B.2 read envelope; do NOT run a standalone read for §A.5**)
 
 Each entry MUST include (REQUIRED for falsification):
 - decoded MCP envelope `meta.capabilities.vaillant_b503.reason`

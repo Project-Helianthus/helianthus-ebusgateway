@@ -237,10 +237,16 @@ TARGET=8
     "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"ebus.v1.vaillant.errors.get\",\"arguments\":{\"target_address\":$TARGET}}}"
   echo
 } >> "$CAP"
-# Repeat the same shape for §A.2..§A.5 with the corresponding tool
-# name and arguments (errors.history.get takes index, etc.). For §A.5
-# the typed live_monitor.get with action="read" returns data.raw_hex
-# — record it as A5.response_bytes.
+# Repeat the same shape for §A.2 (errors.history.get + index),
+# §A.3 (service.current.get), §A.4 (service.history.get + index).
+#
+# §A.5 NOTE: ebus.v1.vaillant.live_monitor.get with action="read" only
+# succeeds AFTER action="enable" has established a session
+# (handleLiveMonitor calls mgr.Read(...) and otherwise returns
+# SESSION_BUSY). The §A.5 capture is therefore satisfied by reusing
+# the §B.2 read envelope (same tool, same selector, an actual read
+# response with data.raw_hex). Cross-reference rather than running an
+# unconditional read here.
 ```
 
 Optional auxiliary raw-byte capture for §A1..§A4 (when needed for

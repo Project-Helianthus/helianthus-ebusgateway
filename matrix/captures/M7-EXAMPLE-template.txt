@@ -64,13 +64,18 @@ A4.timestamp: <...>
 # A4.request_bytes: <...>
 # A4.response_bytes: <...>
 
-# A5 — live_monitor.get  (selector 00 03 HMU LiveMonitor; full lifecycle in §B)
-# A5.response_bytes IS available — record data.raw_hex from typed live_monitor.get action="read".
-A5.envelope.capability_reason: <...>
-A5.envelope.data_hash: <...>
-A5.decoded_payload: <...>
-A5.response_bytes: <hex from data.raw_hex>
-A5.timestamp: <...>
+# A5 — live_monitor.get  (selector 00 03 HMU LiveMonitor)
+# NOTE: live_monitor.get action="read" requires an active session
+# (handleLiveMonitor returns SESSION_BUSY otherwise). §A.5 is therefore
+# satisfied by cross-referencing the §B.2 read envelope captured below
+# — same tool, same selector, an actual read response with data.raw_hex.
+# Do NOT run a standalone read here; fill these fields by COPYING from §B.2.
+A5.envelope.capability_reason: <copy from B2.envelope.capability_reason>
+A5.envelope.data_hash: <copy from B2.envelope.data_hash>
+A5.decoded_payload: <copy from B2 decoded data section>
+A5.response_bytes: <copy from B2.response_bytes (data.raw_hex)>
+A5.timestamp: <copy from B2.timestamp>
+A5.cross_reference: B2
 
 ## §B — Live-monitor round-trip (enable → read → read → disable)
 

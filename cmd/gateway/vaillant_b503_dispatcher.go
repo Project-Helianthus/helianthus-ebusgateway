@@ -86,10 +86,16 @@ var (
 
 // rawFrameDispatcher is the production B503 frame routing component.
 // It implements mcp.RPCDispatcher.
+//
+// `readMu` is held as a `sync.Locker` (interface) so the M6-CONC
+// concurrency tests can substitute a build-tagged tracing implementation
+// that records every Lock/Unlock event the dispatcher actually performs
+// (R1 P2 fix). Production callers pass a `*sync.Mutex`, which satisfies
+// `sync.Locker` natively — no production behaviour change.
 type rawFrameDispatcher struct {
 	bus            b503Bus
 	source         byte
-	readMu         *sync.Mutex
+	readMu         sync.Locker
 	mgr            *b503session.Manager
 	requestTimeout time.Duration
 }
@@ -111,7 +117,7 @@ type rawFrameDispatcher struct {
 //   - requestTimeout: the per-Invoke timeout. Zero or negative means
 //     "use ctx as-is"; a positive value bounds bus.Send via a derived
 //     context.
-func newRawFrameDispatcher(bus b503Bus, source byte, readMu *sync.Mutex, mgr *b503session.Manager, requestTimeout time.Duration) *rawFrameDispatcher {
+func newRawFrameDispatcher(bus b503Bus, source byte, readMu sync.Locker, mgr *b503session.Manager, requestTimeout time.Duration) *rawFrameDispatcher {
 	return &rawFrameDispatcher{
 		bus:            bus,
 		source:         source,
@@ -224,11 +230,17 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 // classifySendErr maps bus.Send errors to dispatcher sentinels per
 // §12.4. The mapping is conservative:
 //
-//   - ctx.Done before bus turnaround → UPSTREAM_TIMEOUT.
 //   - transport-closed / queue-full → TRANSPORT_DOWN AND fire
 //     OnTransportDisconnect so AD04 quiesce-release runs. The returned
 //     error chain matches errors.Is(_, b503session.ErrTransportDown)
-//     so the existing capability probe classifies it correctly.
+//     so the existing capability probe classifies it correctly. This
+//     check runs FIRST (R1 P1 fix) — a sendErr that signals transport
+//     loss MUST be classified as TRANSPORT_DOWN even when ctx.Done()
+//     also fired in the same window, otherwise the live-monitor session
+//     gate stays held until idle expiry and consumers see SESSION_BUSY
+//     instead of TRANSPORT_DOWN.
+//   - ctx.Done before bus turnaround (with no transport-down signal in
+//     sendErr) → UPSTREAM_TIMEOUT.
 //   - everything else → UPSTREAM_RPC_FAILED (NAK / CRC / generic).
 //
 // We err on the side of TRANSPORT_DOWN ONLY when bus.Send tells us
@@ -236,20 +248,12 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 // UPSTREAM_RPC_FAILED so legitimate B503 protocol failures are not
 // collapsed into transport errors (§12.4 discriminator rules).
 func (d *rawFrameDispatcher) classifySendErr(callerCtx, bsCtx context.Context, sendErr error) error {
-	// Caller-driven cancellation comes first: if the caller's context is
-	// done, the operation timed out / was canceled regardless of how the
-	// bus eventually responded.
-	if cerr := callerCtx.Err(); cerr != nil {
-		return fmt.Errorf("%w: %v (phase=ctx_canceled)", errRawFrameUpstreamTimeout, cerr)
-	}
-	if cerr := bsCtx.Err(); cerr != nil {
-		return fmt.Errorf("%w: %v (phase=ctx_canceled)", errRawFrameUpstreamTimeout, cerr)
-	}
-
+	// Transport-down signal in sendErr takes precedence over ctx-cancel
+	// classification. A timed-out call whose underlying transport was
+	// dropped MUST trigger AD04 quiesce-release; otherwise the
+	// live-monitor session gate would stay held and surface SESSION_BUSY
+	// instead of TRANSPORT_DOWN to the next caller (R1 P1 fix).
 	if isTransportDownErr(sendErr) {
-		// Fire AD04 quiesce-release so any held live-monitor session
-		// reverts to Idle. The Manager handles the no-owner case as a
-		// no-op (spec §7.4 "owner-conditional release").
 		if d.mgr != nil {
 			d.mgr.OnTransportDisconnect()
 		}
@@ -260,6 +264,16 @@ func (d *rawFrameDispatcher) classifySendErr(callerCtx, bsCtx context.Context, s
 			fmt.Errorf("%w: %v", errRawFrameTransportDown, sendErr),
 			b503session.ErrTransportDown,
 		)
+	}
+
+	// No transport-down signal in sendErr: ctx-cancel classification
+	// runs second. If the caller's context is done, the operation timed
+	// out / was canceled.
+	if cerr := callerCtx.Err(); cerr != nil {
+		return fmt.Errorf("%w: %v (phase=ctx_canceled)", errRawFrameUpstreamTimeout, cerr)
+	}
+	if cerr := bsCtx.Err(); cerr != nil {
+		return fmt.Errorf("%w: %v (phase=ctx_canceled)", errRawFrameUpstreamTimeout, cerr)
 	}
 
 	// Everything else: NAK, CRC, generic protocol failure. Preserves the

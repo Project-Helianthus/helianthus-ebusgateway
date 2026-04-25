@@ -185,8 +185,16 @@ func assertNoForbiddenOrder(t *testing.T, log *lockLog) {
 }
 
 // dispatcherWithTracer constructs a rawFrameDispatcher whose readMu is a
-// tracedMutex. The Manager's liveMonitorMu is internal and not directly
-// hooked, but we wrap Manager calls with a `liveMonitorTracer` mutex held
+// `*tracedMutex` (a sync.Locker that records every Lock/Unlock event).
+// Per R1 P2 fix, the dispatcher locks the SAME mutex the tracer
+// instruments, so the M6-CONC mechanical lock-order proof actually
+// validates the production lock path: if the dispatcher ever stops
+// locking readMu, or moves the lock window, or reverses the
+// acquisition order with respect to liveMonitorMu, the tracer
+// detects it directly.
+//
+// The Manager's liveMonitorMu is internal and not directly hooked, but
+// we wrap Manager-gate windows with a `liveMonitorTracer` mutex held
 // by the test driver — the production code holds liveMonitorMu inside
 // Manager.Enable/Disable, and we model the held-window via the wrapper
 // so the lock tracer sees the correct ordering events. This is faithful
@@ -197,8 +205,7 @@ type concDriver struct {
 	bus           *b503DispatcherMockBus
 	mgr           *b503session.Manager
 	liveMonitorMu *tracedMutex
-	readMu        *sync.Mutex // wrapped pointer fed into dispatcher
-	readMuTraced  *tracedMutex
+	readMu        *tracedMutex // SAME mutex the dispatcher locks (R1 P2 fix)
 	log           *lockLog
 }
 
@@ -215,38 +222,26 @@ func newConcDriver(t *testing.T) *concDriver {
 			return b503session.TransportKey{}, b503session.ErrTransportDown
 		},
 	)
-	// We use the inner *sync.Mutex for the dispatcher (the public
-	// signature is sync.Mutex) but record entries via tracedMutex's
-	// Lock/Unlock when the test driver itself acquires the wrapped read
-	// mutex. The dispatcher's own lock/unlock invocations are recorded
-	// by the wrapper because we override Lock/Unlock on the wrapper
-	// type that the dispatcher receives. To keep the contract clean,
-	// we feed the dispatcher a real sync.Mutex but ensure all driver-
-	// side acquisitions go through the tracer wrapper. Production
-	// dispatcher uses the real read mutex pointer directly.
-	innerRead := &sync.Mutex{}
+	// Pass the traced mutex DIRECTLY to the dispatcher. rawFrameDispatcher
+	// holds its readMu as a sync.Locker, so *tracedMutex satisfies the
+	// interface and every Lock/Unlock the dispatcher performs is recorded
+	// in the shared lock log. R1 P2 fix: the tracer now observes the
+	// production lock path, not a separate driver-side wrapper.
 	return &concDriver{
-		disp:          newRawFrameDispatcher(bus, gatewaySource, innerRead, mgr, 500*time.Millisecond),
+		disp:          newRawFrameDispatcher(bus, gatewaySource, read, mgr, 500*time.Millisecond),
 		bus:           bus,
 		mgr:           mgr,
 		liveMonitorMu: live,
-		readMuTraced:  read,
-		readMu:        innerRead,
+		readMu:        read,
 		log:           log,
 	}
 }
 
-// recordDispatcherLockEvents wraps an Invoke call so the tracer sees the
-// readMu acquisition that happens INSIDE the dispatcher. We do this by
-// taking the tracer mutex around the call (the tracer reflects the
-// boundary, even though the production code uses the inner mutex).
-//
-// This is functionally equivalent for lock-order detection: production
-// holds readMu around bus.Send; the tracer also holds readMu around the
-// same call window.
+// tracedInvoke is the per-test entry into the dispatcher. After R1 P2
+// fix, no driver-side wrapping is required: the dispatcher already
+// locks the traced mutex directly, so the tracer records the
+// acquisition events as a side-effect of dispatcher.Invoke.
 func (cd *concDriver) tracedInvoke(ctx context.Context, target byte, payload []byte) ([]byte, error) {
-	cd.readMuTraced.Lock()
-	defer cd.readMuTraced.Unlock()
 	return cd.disp.Invoke(ctx, target, payload)
 }
 

@@ -1862,7 +1862,13 @@ class PortalShell extends HTMLElement {
       // Cap probe is intentionally non-blocking on plane render: a
       // failed probe degrades to "no B503 card" without affecting the
       // existing projection UI.
-      this._probeAndRenderB503Card(device).catch(() => {
+      //
+      // R4 round-1 P2 fix: pass the captured addressRaw + the
+      // lifecycle isActive() callback into the probe so a slow probe
+      // for a previously-selected device cannot append a stale card
+      // after the user switches. The probe re-checks the active
+      // selection BEFORE writing into the host.
+      this._probeAndRenderB503Card(device, addressRaw, isActive).catch(() => {
         // Probe failure → no card. Already a soft-fail in the F3
         // contract (capability=AVAILABLE is the gate; anything else
         // hides the card).
@@ -1882,7 +1888,15 @@ class PortalShell extends HTMLElement {
   // the standard projection UML is rendered. The capability query is
   // target-scoped so a device not implementing B503 returns NOT_SUPPORTED
   // and the card is silently omitted.
-  async _probeAndRenderB503Card(device) {
+  //
+  // `issuedAddressRaw` + `isActive` are captured at probe-issue time
+  // (R4 round-1 P2 fix). Before mutating the host, the probe re-checks
+  // both: (a) the bootstrap lifecycle is still active, and (b) the
+  // currently selected device-select value still matches the issued
+  // address. A late probe for a previously-selected device is dropped
+  // silently — the host has already been cleared and the new device's
+  // own probe (or its absence) is the source of truth.
+  async _probeAndRenderB503Card(device, issuedAddressRaw, isActive) {
     if (!device || device.address === undefined || device.address === null) return;
     let reason = "UNKNOWN";
     try {
@@ -1897,6 +1911,18 @@ class PortalShell extends HTMLElement {
       }
     } catch (err) {
       reason = "UNKNOWN";
+    }
+    // Lifecycle + selection re-check before any DOM mutation.
+    if (typeof isActive === "function" && !isActive()) return;
+    if (issuedAddressRaw !== undefined && issuedAddressRaw !== null) {
+      const sel = this.querySelector('[data-role="projection-device-select"]');
+      const currentRaw = sel ? String(sel.value || "").trim() : "";
+      if (currentRaw !== String(issuedAddressRaw)) {
+        // Stale probe — the user switched targets after the probe was
+        // issued. Do NOT append; the new device's loadAllProjectionPlanes
+        // already cleared the host and runs its own probe.
+        return;
+      }
     }
     await this.renderProjectionB503Card(device, reason);
   }
@@ -3471,7 +3497,13 @@ class PortalShell extends HTMLElement {
   async _dispatchTargetedDisable(target, issuerToken) {
     const variables = { action: "disable", issuerToken };
     const tk = this._vaillantB503TargetKey(target);
-    if (tk !== null) variables.targetAddress = tk;
+    // Only include `targetAddress` when we have an explicit byte
+    // address. The default sentinel (string `<default>`) is a local-
+    // map key — it MUST NOT be sent to GraphQL where parseTargetAddress
+    // expects an Int and would reject the request, leaving the
+    // server-side session active despite local cleanup
+    // (R4 round-1 P2 fix).
+    if (typeof tk === "number") variables.targetAddress = tk;
     try {
       await this._gqlRequest(
         "query VaillantLiveDisable($action: String!, $issuerToken: String, $targetAddress: Int) { vaillantLiveMonitor(action: $action, issuerToken: $issuerToken, targetAddress: $targetAddress) { issuerToken rawHex disabled } }",
@@ -3481,10 +3513,10 @@ class PortalShell extends HTMLElement {
       // Best-effort cleanup; even if the backend rejects, we have
       // already invalidated the local token and will not retry.
     }
-    if (tk !== null) {
-      this._vaillantB503TokenMap().delete(tk);
-      this._setVaillantB503SessionState(tk, "Disabled");
-    }
+    // Local cleanup uses the resolved key (number OR sentinel) so the
+    // map slot the original enable wrote into is the one we delete.
+    this._vaillantB503TokenMap().delete(tk);
+    this._setVaillantB503SessionState(tk, "Disabled");
   }
 
   async handleVaillantB503NavAway() {

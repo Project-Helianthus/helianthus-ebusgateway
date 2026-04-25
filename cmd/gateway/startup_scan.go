@@ -203,6 +203,14 @@ func classifyScanErr(err error) string {
 var (
 	semanticBusCollisionsTotal  = expvar.NewInt("semantic_bus_collisions_total")
 	registryScanFn              = registry.Scan
+
+	// evidenceHasVaillantRootFn reports whether the registry contains at
+	// least one Vaillant root candidate (manufacturer 0xB5 device on a
+	// baseline address). Used by startupScanWithFullRangeGuard to authorise
+	// a full-range retry under the AD05 diagnostic flag. Tests override
+	// this to skip the AD05 guard for transport-agnostic scan-loop tests.
+	// Resolves cruise-run #20 M6 reviewer-flagged finding (#2).
+	evidenceHasVaillantRootFn = defaultEvidenceHasVaillantRoot
 	registryScanDirectedFn      = registry.ScanDirected
 	ebusdScanTargetCandidatesFn = ebusdScanTargetCandidates
 	ebusdScanResultTargetsFn    = ebusdScanResultTargets
@@ -213,6 +221,25 @@ var (
 	enrichSerialsFromEbusdFn    = enrichSerialsFromEbusd
 	postStartupIdentityRetryFn  = schedulePostStartupIdentityRetry
 )
+
+// defaultEvidenceHasVaillantRoot scans the device registry for any device
+// whose manufacturer is Vaillant (0xB5). Returns true if at least one is
+// present on a baseline-address address (0x03..0xFE excluding 0xAA/0xFE)
+// per AD05's "≥1 Vaillant root candidate" guard.
+func defaultEvidenceHasVaillantRoot(reg *registry.DeviceRegistry) bool {
+	if reg == nil {
+		return false
+	}
+	found := false
+	reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if strings.EqualFold(entry.Manufacturer(), "Vaillant") {
+			found = true
+			return false // stop iteration
+		}
+		return true
+	})
+	return found
+}
 
 func startupScanWithFullRangeGuard(ctx context.Context, bus registry.ScanBus, reg *registry.DeviceRegistry, source byte, targets []byte, admissionPath ebusgateway.TransportAdmissionPath, diagnosticFlag bool, evidenceHasVaillantRoot bool) ([]registry.DeviceEntry, error) {
 	if admissionPath == ebusgateway.TransportAdmissionJoinCapable {
@@ -409,10 +436,9 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 	}
 
 	startupCfg := resolveStartupScanSourceConfig(cfg)
-	admissionPath, admissionPathErr := ebusgateway.ClassifyTransportAdmission(cfg.TransportConfig.Protocol)
-	if admissionPathErr != nil {
-		log.Printf("startup scan: classifier rejected transport protocol=%q err=%v; falling back to legacy static-source path", cfg.TransportConfig.Protocol, admissionPathErr)
-		admissionPath = ebusgateway.TransportAdmissionStaticFallback
+	admissionPath, adapterDirectSpecialCased := ebusgateway.ResolveAdmissionPath(cfg.TransportConfig.Protocol)
+	if adapterDirectSpecialCased {
+		log.Printf("startup scan: adapter-direct multiplexer detected; treating as join-capable (underlying transport is always ENH/ENS)")
 	}
 	loopExitFn := startupScanLoopExitFn
 	targetCandidatesFn := ebusdScanTargetCandidatesFn
@@ -580,7 +606,7 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 				targets,
 				admissionPath,
 				cfg.DiagnosticFullRangeRetry,
-				false,
+				evidenceHasVaillantRootFn(gateway.Registry),
 			)
 
 			if err != nil && ctx.Err() == nil {
@@ -1379,10 +1405,9 @@ func runBackgroundFullScan(ctx context.Context, cfg ebusgateway.Config, gateway 
 		delay:   backgroundScanThrottle,
 		timeout: cfg.ScanRequestTimeout,
 	}
-	admissionPath, admissionPathErr := ebusgateway.ClassifyTransportAdmission(cfg.TransportConfig.Protocol)
-	if admissionPathErr != nil {
-		log.Printf("background scan: classifier rejected transport protocol=%q err=%v; falling back to legacy static-source path", cfg.TransportConfig.Protocol, admissionPathErr)
-		admissionPath = ebusgateway.TransportAdmissionStaticFallback
+	admissionPath, adapterDirectSpecialCased := ebusgateway.ResolveAdmissionPath(cfg.TransportConfig.Protocol)
+	if adapterDirectSpecialCased {
+		log.Printf("background scan: adapter-direct multiplexer detected; treating as join-capable")
 	}
 
 	beforeTotal := countRegistryDevices(gateway.Registry)
@@ -1394,7 +1419,7 @@ func runBackgroundFullScan(ctx context.Context, cfg ebusgateway.Config, gateway 
 		nil,
 		admissionPath,
 		cfg.DiagnosticFullRangeRetry,
-		false,
+		evidenceHasVaillantRootFn(gateway.Registry),
 	)
 	if err != nil && ctx.Err() == nil {
 		log.Printf("background scan error: %v", err)

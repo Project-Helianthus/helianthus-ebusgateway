@@ -1831,6 +1831,12 @@ func TestStartDiscoveryScanLoop_DirectScanSignalsBootstrapAfterConfirmationRetri
 	origLoopExitFn := startupScanLoopExitFn
 	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
 	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	origEvidenceFn := evidenceHasVaillantRootFn
+	// Bypass AD05 full-range guard: the test mocks the scan response with
+	// Vaillant devices, so the diagnostic-flag retry would be authorised
+	// in practice. Override the evidenceHasVaillantRootFn to always return
+	// true so adapter-direct → JoinCapable + nil targets does not block.
+	evidenceHasVaillantRootFn = func(*registry.DeviceRegistry) bool { return true }
 	t.Cleanup(func() {
 		registryScanFn = origRegistryScanFn
 		ebusdScanResultTargetsFn = origResultTargetsFn
@@ -1839,6 +1845,7 @@ func TestStartDiscoveryScanLoop_DirectScanSignalsBootstrapAfterConfirmationRetri
 		startupScanLoopExitFn = origLoopExitFn
 		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
 		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+		evidenceHasVaillantRootFn = origEvidenceFn
 	})
 
 	var (
@@ -1905,6 +1912,12 @@ func TestStartDiscoveryScanLoop_DirectScanSignalsBootstrapAfterConfirmationRetri
 		Network:  "tcp",
 		Address:  "127.0.0.1:9999",
 	}
+	// Enable AD05 diagnostic full-range retry: post-cruise-#20, adapter-
+	// direct classifies as JoinCapable so nil-target scans require both
+	// the diag flag AND evidenceHasVaillantRootFn=true (set above in
+	// test setup) to bypass the guard. Without these, the test loop never
+	// runs because the guard rejects.
+	cfg.DiagnosticFullRangeRetry = true
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
 
@@ -1962,6 +1975,12 @@ func TestStartDiscoveryScanLoop_DirectScanTimeoutStillSignalsBootstrap(t *testin
 	origLoopExitFn := startupScanLoopExitFn
 	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
 	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	origEvidenceFn := evidenceHasVaillantRootFn
+	// Bypass AD05 full-range guard: the test mocks the scan response with
+	// Vaillant devices, so the diagnostic-flag retry would be authorised
+	// in practice. Override the evidenceHasVaillantRootFn to always return
+	// true so adapter-direct → JoinCapable + nil targets does not block.
+	evidenceHasVaillantRootFn = func(*registry.DeviceRegistry) bool { return true }
 	t.Cleanup(func() {
 		registryScanFn = origRegistryScanFn
 		ebusdScanResultTargetsFn = origResultTargetsFn
@@ -1970,6 +1989,7 @@ func TestStartDiscoveryScanLoop_DirectScanTimeoutStillSignalsBootstrap(t *testin
 		startupScanLoopExitFn = origLoopExitFn
 		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
 		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+		evidenceHasVaillantRootFn = origEvidenceFn
 	})
 
 	var (
@@ -2035,6 +2055,12 @@ func TestStartDiscoveryScanLoop_DirectScanTimeoutStillSignalsBootstrap(t *testin
 		Network:  "tcp",
 		Address:  "127.0.0.1:9999",
 	}
+	// Enable AD05 diagnostic full-range retry: post-cruise-#20, adapter-
+	// direct classifies as JoinCapable so nil-target scans require both
+	// the diag flag AND evidenceHasVaillantRootFn=true (set above in
+	// test setup) to bypass the guard. Without these, the test loop never
+	// runs because the guard rejects.
+	cfg.DiagnosticFullRangeRetry = true
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
 
@@ -2088,6 +2114,12 @@ func TestStartDiscoveryScanLoop_SafetyNetForcesBootstrapAfterMaxUnconfirmedPasse
 	origLoopExitFn := startupScanLoopExitFn
 	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
 	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	origEvidenceFn := evidenceHasVaillantRootFn
+	// Bypass AD05 full-range guard: the test mocks the scan response with
+	// Vaillant devices, so the diagnostic-flag retry would be authorised
+	// in practice. Override the evidenceHasVaillantRootFn to always return
+	// true so adapter-direct → JoinCapable + nil targets does not block.
+	evidenceHasVaillantRootFn = func(*registry.DeviceRegistry) bool { return true }
 	t.Cleanup(func() {
 		registryScanFn = origRegistryScanFn
 		ebusdScanResultTargetsFn = origResultTargetsFn
@@ -2096,6 +2128,7 @@ func TestStartDiscoveryScanLoop_SafetyNetForcesBootstrapAfterMaxUnconfirmedPasse
 		startupScanLoopExitFn = origLoopExitFn
 		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
 		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+		evidenceHasVaillantRootFn = origEvidenceFn
 	})
 
 	var (
@@ -2159,6 +2192,12 @@ func TestStartDiscoveryScanLoop_SafetyNetForcesBootstrapAfterMaxUnconfirmedPasse
 		Network:  "tcp",
 		Address:  "127.0.0.1:9999",
 	}
+	// Enable AD05 diagnostic full-range retry: post-cruise-#20, adapter-
+	// direct classifies as JoinCapable so nil-target scans require both
+	// the diag flag AND evidenceHasVaillantRootFn=true (set above in
+	// test setup) to bypass the guard. Without these, the test loop never
+	// runs because the guard rejects.
+	cfg.DiagnosticFullRangeRetry = true
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
 

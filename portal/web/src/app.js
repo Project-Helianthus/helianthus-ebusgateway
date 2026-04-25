@@ -367,6 +367,28 @@ class PortalShell extends HTMLElement {
         this.loadAllProjectionPlanes();
       });
     }
+    // M8 F3 (R1 round-1 P1 fix): event delegation on the projection
+    // B503 card host so clicks on `data-role="projection-b503-jump"`
+    // navigate to section-vaillant-b503 with the target preselected.
+    const b503CardHost = this.querySelector('[data-role="projection-b503-card-host"]');
+    if (b503CardHost) {
+      b503CardHost.addEventListener("click", (event) => {
+        const button = event.target && event.target.closest
+          ? event.target.closest('[data-role="projection-b503-jump"]')
+          : null;
+        if (!button) return;
+        const raw = button.getAttribute("data-b503-target");
+        const parsed = Number.parseInt(String(raw || ""), 10);
+        if (Number.isFinite(parsed)) {
+          // Pre-set the B503 target before navigating so the pane
+          // renders the correct device on activation.
+          this._vaillantB503Target = parsed;
+          const select = this.querySelector('[data-role="vaillant-b503-target-select"]');
+          if (select) select.value = String(parsed);
+        }
+        this.activateSection("section-vaillant-b503");
+      });
+    }
     this.querySelectorAll("[data-nav-target]").forEach((button) => {
       button.addEventListener("click", () => {
         const targetID = button.getAttribute("data-nav-target");
@@ -1821,6 +1843,21 @@ class PortalShell extends HTMLElement {
         .map((p, i) => ({ plane: p.plane, graph: graphs[i] }))
         .filter((r) => r.graph);
       this.renderProjectionUML(gridEl, device, results);
+      // M8 F3 (R1 round-1 P1 fix): wire renderProjectionB503Card into
+      // the projection load path. Clear stale cards first, then probe
+      // B503 capability per-device and append a card iff AVAILABLE.
+      // Cap probe is intentionally non-blocking on plane render: a
+      // failed probe degrades to "no B503 card" without affecting the
+      // existing projection UI.
+      const cardHost = this.querySelector('[data-role="projection-b503-card-host"]');
+      if (cardHost) {
+        cardHost.innerHTML = "";
+      }
+      this._probeAndRenderB503Card(device).catch(() => {
+        // Probe failure → no card. Already a soft-fail in the F3
+        // contract (capability=AVAILABLE is the gate; anything else
+        // hides the card).
+      });
     } catch (err) {
       if (!isActive()) {
         return false;
@@ -1829,6 +1866,30 @@ class PortalShell extends HTMLElement {
       console.error("projection planes failed", err);
     }
     return true;
+  }
+
+  // M8 F3 — probe per-device B503 capability and render the projection
+  // plane card iff AVAILABLE. Called from loadAllProjectionPlanes after
+  // the standard projection UML is rendered. The capability query is
+  // target-scoped so a device not implementing B503 returns NOT_SUPPORTED
+  // and the card is silently omitted.
+  async _probeAndRenderB503Card(device) {
+    if (!device || device.address === undefined || device.address === null) return;
+    let reason = "UNKNOWN";
+    try {
+      const env = await this._gqlRequest(
+        "query VaillantB503CapForProjection($targetAddress: Int) { vaillantCapabilities(targetAddress: $targetAddress) { vaillantB503 { available reason } } }",
+        { targetAddress: device.address },
+      );
+      const cap = env && env.data && env.data.vaillantCapabilities
+        && env.data.vaillantCapabilities.vaillantB503;
+      if (cap && typeof cap.reason === "string") {
+        reason = cap.reason;
+      }
+    } catch (err) {
+      reason = "UNKNOWN";
+    }
+    await this.renderProjectionB503Card(device, reason);
   }
 
   renderProjectionUML(target, device, planeResults) {
@@ -2888,6 +2949,14 @@ class PortalShell extends HTMLElement {
   async refreshVaillantB503Capability() {
     const body = this.querySelector('[data-role="vaillant-b503-body"]');
     this.populateVaillantB503TargetOptions();
+    // Capture target at query-issue time. The completion path compares
+    // against the current target before mutating cache/UI so a late
+    // response from the previous target cannot bleed into the newly
+    // selected target's state (R1 round-1 P1: M8-TGT-01 invariant
+    // applies to capability queries the same way M8-TGT-04 applies to
+    // live-monitor enable).
+    const issuedTarget = this._vaillantB503Target;
+    const issuedKey = this._vaillantB503TargetKey(issuedTarget);
     let reason = "UNKNOWN";
     try {
       const env = await this._gqlRequest(
@@ -2904,17 +2973,29 @@ class PortalShell extends HTMLElement {
       // can click the nav entry again to retry.
       reason = "UNKNOWN";
     }
-    this._vaillantB503CapabilityReason = reason;
-    if (this._vaillantB503Target !== null && this._vaillantB503Target !== undefined) {
-      this._vaillantB503CapabilityMap().set(this._vaillantB503Target, reason);
+    // R1 round-1 P1 fix: write the capability cache under the
+    // ISSUED target's key, never under the (possibly-shifted) current
+    // target. Then, only render / mutate session state if the issued
+    // target still matches the current selection.
+    if (issuedTarget !== null && issuedTarget !== undefined) {
+      this._vaillantB503CapabilityMap().set(issuedTarget, reason);
     }
+    const currentKey = this._vaillantB503TargetKey(this._vaillantB503Target);
+    if (issuedKey !== currentKey) {
+      // Late response from a previous target. Cache update above is
+      // bound to the issued target so a future re-selection of that
+      // target sees the value; do NOT touch session state or UI for
+      // the currently selected target.
+      return;
+    }
+    this._vaillantB503CapabilityReason = reason;
     // F4 epoch-rollover: keep session state in its lifecycle vocabulary
     // (Idle / Enabling / Active / Disabled). When capability leaves
     // AVAILABLE for a target while a session was Active or Enabling,
     // the server-side session epoch implicitly rolled — drop the local
     // token and demote state to Idle. The strip's UI surfaces the
     // capability separately.
-    const t = this._vaillantB503Target;
+    const t = issuedTarget;
     if (t !== null && t !== undefined) {
       const stateMap = this._vaillantB503SessionStateMap();
       if (reason !== "AVAILABLE") {
@@ -3309,6 +3390,15 @@ class PortalShell extends HTMLElement {
           // Targeted disable: bypass the path that re-reads
           // _vaillantB503Target so we cannot accidentally touch T2.
           await this._dispatchTargetedDisable(issuedTarget, payload.issuerToken);
+        } else if (action === "disable") {
+          // R1 round-1 P2 fix: disable response on a target the user
+          // has switched away from. Backend has already cleared the
+          // session; we MUST clear the local token + demote state for
+          // the issued target so a switch-back later does not falsely
+          // show an active/owned session. Do NOT touch the current
+          // target's state.
+          this._vaillantB503TokenMap().delete(this._vaillantB503TargetKey(issuedTarget));
+          this._setVaillantB503SessionState(issuedTarget, "Idle");
         }
         return;
       }

@@ -2266,6 +2266,11 @@ class PortalShell extends HTMLElement {
               <div class="projection-uml-grid" data-role="projection-uml-grid">
                 <p class="projection-empty">Select a device to view projection planes.</p>
               </div>
+              <!-- M8 F3 — fold-in host for the Vaillant B503 plane card.
+                   renderProjectionB503Card() appends a card per device with
+                   capability=AVAILABLE. Click on the card jumps to the
+                   Vaillant B503 pane with target preselected. -->
+              <div class="uml-grid" data-role="projection-b503-card-host"></div>
             </section>
             <section id="section-explorer" class="registry-preview">
               <h2>Register Explorer</h2>
@@ -2478,7 +2483,22 @@ class PortalShell extends HTMLElement {
             </section>
             <section id="section-vaillant-b503" class="registry-preview">
               <h2>Vaillant B503</h2>
-              <p class="muted-inline">Read-only diagnostics over the Vaillant B503 namespace (errors, service, live-monitor). Install-writes are intentionally omitted per plan AD02.</p>
+              <div class="bus-banner" data-testid="b503-install-writes-banner" role="note">
+                Read-only diagnostics over the Vaillant B503 namespace (errors, service, history, live-monitor). Install-writes are intentionally omitted per plan AD02.
+                <a id="b503-ad02-tooltip-anchor"
+                   class="muted-inline"
+                   href="https://github.com/Project-Helianthus/helianthus-execution-plans/tree/main/vaillant-b503-namespace-w17-26.implementing"
+                   title="Open AD02 install-writes governance — vaillant-b503-namespace-w17-26 plan"
+                   target="_blank"
+                   rel="noopener noreferrer">?</a>
+              </div>
+              <div class="snapshot-controls" data-role="vaillant-b503-target-controls">
+                <label class="explorer-label" for="b503-target-select-input">Target
+                  <select class="select" data-role="b503-target-select" id="b503-target-select-input" aria-label="Vaillant B503 target device">
+                    <option value="">(loading targets...)</option>
+                  </select>
+                </label>
+              </div>
               <div data-role="vaillant-b503-body">
                 <div class="muted-inline">Loading Vaillant B503 capability...</div>
               </div>
@@ -2747,17 +2767,132 @@ class PortalShell extends HTMLElement {
     // The tab bar + inner buttons are rendered dynamically inside the
     // pane body, so delegation happens in renderVaillantB503Pane which
     // attaches listeners at render time (querySelector-by-data-role).
-    // Nothing to wire eagerly at boot — the nav click invokes
-    // activateSection → refreshVaillantB503Capability → renderVaillantB503Pane.
+    // The target selector lives in the static section markup; bind it
+    // here so target switches stay live across re-renders.
+    const targetSelect = this.querySelector('[data-role="b503-target-select"]');
+    if (targetSelect && typeof targetSelect.addEventListener === "function") {
+      targetSelect.addEventListener("change", () => {
+        const raw = targetSelect.value;
+        const num = raw === "" || raw == null ? null : Number(raw);
+        this.setVaillantB503Target(num);
+      });
+    }
+  }
+
+  // -----------------------------------------------------------------
+  // M8 — F1 per-target awareness
+  //
+  // The target selector is fed from `this.projectionDevices` (same
+  // source as section-projection). Each B503 GraphQL query carries
+  // `targetAddress` so capability + read state stays per-device.
+  //
+  // Caching: capability/state is keyed by target address; a switch
+  // does NOT clobber another target's last-known state. In-flight
+  // responses with mismatched target are discarded by the result
+  // handler before any state mutation (M8-TGT-04 / R5 A1).
+  // -----------------------------------------------------------------
+
+  _vaillantB503TargetKey(addr) {
+    if (addr === null || addr === undefined) return null;
+    const n = Number(addr);
+    if (!Number.isFinite(n)) return null;
+    return n & 0xff;
+  }
+
+  _vaillantB503CapabilityMap() {
+    if (!this._vaillantB503CapabilityByTarget) {
+      this._vaillantB503CapabilityByTarget = new Map();
+    }
+    return this._vaillantB503CapabilityByTarget;
+  }
+
+  _vaillantB503TokenMap() {
+    if (!this._vaillantB503LiveTokenByTarget) {
+      this._vaillantB503LiveTokenByTarget = new Map();
+    }
+    return this._vaillantB503LiveTokenByTarget;
+  }
+
+  _vaillantB503SessionStateMap() {
+    if (!this._vaillantB503SessionStateByTarget) {
+      this._vaillantB503SessionStateByTarget = new Map();
+    }
+    return this._vaillantB503SessionStateByTarget;
+  }
+
+  vaillantB503LiveTokenForTarget(addr) {
+    const key = this._vaillantB503TargetKey(addr);
+    if (key === null) return null;
+    const tok = this._vaillantB503TokenMap().get(key);
+    return tok || null;
+  }
+
+  vaillantB503SessionStateForTarget(addr) {
+    const key = this._vaillantB503TargetKey(addr);
+    if (key === null) return "Idle";
+    const map = this._vaillantB503SessionStateMap();
+    if (map.has(key)) return map.get(key);
+    return this._vaillantB503TokenMap().get(key) ? "Active" : "Idle";
+  }
+
+  _setVaillantB503SessionState(addr, state) {
+    const key = this._vaillantB503TargetKey(addr);
+    if (key === null) return;
+    this._vaillantB503SessionStateMap().set(key, state);
+  }
+
+  populateVaillantB503TargetOptions() {
+    const select = this.querySelector('[data-role="b503-target-select"]');
+    if (!select) return;
+    const items = Array.isArray(this.projectionDevices) ? this.projectionDevices : [];
+    if (items.length === 0) {
+      select.innerHTML = '<option value="">(no targets)</option>';
+      select.disabled = true;
+      return;
+    }
+    select.disabled = false;
+    select.innerHTML = items.map((item) => {
+      const addr = String(item.address);
+      const label = item.display_name || item.device_id || formatAddress(item.address);
+      return `<option value="${escapeHtml(addr)}">${escapeHtml(`${label} (${formatAddress(item.address)})`)}</option>`;
+    }).join("");
+    if (this._vaillantB503Target == null && items.length > 0) {
+      this._vaillantB503Target = this._vaillantB503TargetKey(items[0].address);
+    }
+    if (this._vaillantB503Target != null) {
+      select.value = String(this._vaillantB503Target);
+    }
+  }
+
+  async setVaillantB503Target(addr) {
+    const key = this._vaillantB503TargetKey(addr);
+    this._vaillantB503Target = key;
+    // Bump epoch — completions for prior target are rejected by the
+    // result handler when their captured epoch != _vaillantB503Epoch.
+    this._vaillantB503Epoch = (this._vaillantB503Epoch || 0) + 1;
+    const select = this.querySelector('[data-role="b503-target-select"]');
+    if (select && key !== null) {
+      select.value = String(key);
+    }
+    await this.refreshVaillantB503Capability();
+  }
+
+  _vaillantB503TargetVars(extra = {}) {
+    const vars = { ...extra };
+    if (this._vaillantB503Target !== null && this._vaillantB503Target !== undefined) {
+      vars.targetAddress = this._vaillantB503Target;
+    }
+    return vars;
   }
 
   async refreshVaillantB503Capability() {
     const body = this.querySelector('[data-role="vaillant-b503-body"]');
+    this.populateVaillantB503TargetOptions();
     let reason = "UNKNOWN";
     try {
       const env = await this._gqlRequest(
-        "query VaillantB503Cap { vaillantCapabilities { vaillantB503 { available reason } } }",
-        {},
+        "query VaillantB503Cap($targetAddress: Int) { vaillantCapabilities(targetAddress: $targetAddress) { vaillantB503 { available reason } } }",
+        this._vaillantB503TargetVars(),
       );
       const cap = env && env.data && env.data.vaillantCapabilities
         && env.data.vaillantCapabilities.vaillantB503;
@@ -2770,6 +2905,33 @@ class PortalShell extends HTMLElement {
       reason = "UNKNOWN";
     }
     this._vaillantB503CapabilityReason = reason;
+    if (this._vaillantB503Target !== null && this._vaillantB503Target !== undefined) {
+      this._vaillantB503CapabilityMap().set(this._vaillantB503Target, reason);
+    }
+    // F4 epoch-rollover: keep session state in its lifecycle vocabulary
+    // (Idle / Enabling / Active / Disabled). When capability leaves
+    // AVAILABLE for a target while a session was Active or Enabling,
+    // the server-side session epoch implicitly rolled — drop the local
+    // token and demote state to Idle. The strip's UI surfaces the
+    // capability separately.
+    const t = this._vaillantB503Target;
+    if (t !== null && t !== undefined) {
+      const stateMap = this._vaillantB503SessionStateMap();
+      if (reason !== "AVAILABLE") {
+        const cur = stateMap.get(t);
+        if (cur === "Active" || cur === "Enabling") {
+          stateMap.set(t, "Idle");
+          this._vaillantB503TokenMap().delete(t);
+        } else if (!stateMap.has(t)) {
+          stateMap.set(t, "Idle");
+        }
+      } else {
+        // AVAILABLE: idempotent default-Idle for newly-seen targets.
+        if (!stateMap.has(t)) {
+          stateMap.set(t, "Idle");
+        }
+      }
+    }
     this.renderVaillantB503Pane(reason, body);
   }
 
@@ -2777,36 +2939,76 @@ class PortalShell extends HTMLElement {
     const body = bodyEl || this.querySelector('[data-role="vaillant-b503-body"]');
     if (!body) return;
     const sanitized = typeof reason === "string" ? reason : "UNKNOWN";
+    const planRef = "https://github.com/Project-Helianthus/helianthus-execution-plans/tree/main/vaillant-b503-namespace-w17-26.implementing";
     if (sanitized === "AVAILABLE") {
       const activeTab = this._vaillantB503ActiveTab || "errors";
+      const stripHTML = this._vaillantB503SessionStripMarkup();
       body.innerHTML = `
-        <div class="snapshot-controls" data-role="vaillant-b503-tabs">
-          <button class="button" data-role="vaillant-b503-tab-errors" type="button">Errors</button>
-          <button class="button" data-role="vaillant-b503-tab-service" type="button">Service</button>
-          <button class="button" data-role="vaillant-b503-tab-live-monitor" type="button">Live-Monitor</button>
-        </div>
-        <div data-role="vaillant-b503-tab-body">
-          ${this._vaillantB503TabMarkup(activeTab)}
+        <div data-testid="b503-state-available" data-role="vaillant-b503-state-available">
+          ${stripHTML}
+          <div class="snapshot-controls" data-role="vaillant-b503-tabs">
+            <button class="button" data-role="vaillant-b503-tab-errors" type="button">Errors</button>
+            <button class="button" data-role="vaillant-b503-tab-service" type="button">Service</button>
+            <button class="button" data-role="vaillant-b503-tab-history" type="button">History</button>
+            <button class="button" data-role="vaillant-b503-tab-live-monitor" type="button">Live-Monitor</button>
+          </div>
+          <div data-role="vaillant-b503-tab-body">
+            ${this._vaillantB503TabMarkup(activeTab)}
+          </div>
         </div>
       `;
       this._bindVaillantB503TabEvents();
       this._bindVaillantB503ActiveTabEvents(activeTab);
-    } else if (sanitized === "TRANSPORT_DOWN" || sanitized === "SESSION_BUSY") {
+    } else if (sanitized === "NOT_SUPPORTED") {
       body.innerHTML = `
-        <div class="bus-banner bus-state-unavailable">
-          Vaillant B503 temporarily unavailable: ${escapeHtml(sanitized)}
+        <div data-testid="b503-state-not-supported" class="muted-inline">
+          B503 not implemented for this device family. Vendor namespace surface is unavailable on the selected target; this is expected for non-Vaillant or older firmware. (reason=<span data-role="vaillant-b503-reason">${escapeHtml(sanitized)}</span>)
         </div>
-        <p class="muted-inline">Navigate away and back to retry.</p>
+      `;
+    } else if (sanitized === "TRANSPORT_DOWN") {
+      body.innerHTML = `
+        <div data-testid="b503-state-transport-down" class="bus-banner bus-state-unavailable">
+          Transport warning: adapter health is degraded — the gateway cannot reach the bus right now.
+          <span class="muted-inline"> Retry hint: wait for the adapter to reconnect, then navigate away and back to retry.</span>
+        </div>
+      `;
+    } else if (sanitized === "SESSION_BUSY") {
+      body.innerHTML = `
+        <div data-testid="b503-state-session-busy" class="bus-banner bus-state-unavailable">
+          Owner: another client currently holds the live-monitor session — wait for it to be released, then retry.
+        </div>
       `;
     } else {
-      // NOT_SUPPORTED, UNKNOWN, and any unrecognized reason → safe placeholder.
+      // UNKNOWN and any unrecognized reason → probe-failure-hint copy.
       body.innerHTML = `
-        <div class="muted-inline">
-          Vaillant B503 not supported on this device / gateway
-          (<span data-role="vaillant-b503-reason">${escapeHtml(sanitized)}</span>).
+        <div data-testid="b503-state-unknown" class="muted-inline">
+          Probe failure: gateway has not yet completed a successful B503 dispatch on the selected target. Diagnostic suggestion — verify adapter is connected and retry; the capability flips to AVAILABLE on first successful read.
         </div>
       `;
     }
+    // Keep tooltip-anchor referencing the canonical plan even in error
+    // states (the banner is in the static section markup, not body).
+    void planRef;
+  }
+
+  _vaillantB503SessionStripMarkup() {
+    const t = this._vaillantB503Target;
+    const state = this.vaillantB503SessionStateForTarget(t);
+    const cap = (t !== null && t !== undefined)
+      ? this._vaillantB503CapabilityMap().get(t)
+      : this._vaillantB503CapabilityReason;
+    const ownedByOther = cap === "SESSION_BUSY" && !this.vaillantB503LiveTokenForTarget(t);
+    const ownedAffordance = ownedByOther
+      ? `<span class="muted-inline" data-testid="b503-session-owned-by-other">Owned by another client (release required before local enable).</span>`
+      : "";
+    return `
+      <div class="snapshot-controls" data-testid="b503-session-strip" data-role="vaillant-b503-session-strip">
+        <span class="muted-inline">Session:
+          <strong data-testid="b503-session-state-label" data-role="vaillant-b503-session-state">${escapeHtml(state)}</strong>
+        </span>
+        ${ownedAffordance}
+      </div>
+    `;
   }
 
   _vaillantB503TabMarkup(activeTab) {
@@ -2820,12 +3022,26 @@ class PortalShell extends HTMLElement {
         </div>
       `;
     }
-    if (activeTab === "live-monitor") {
+    if (activeTab === "history") {
       return `
         <div class="snapshot-controls">
-          <button class="button" data-role="vaillant-b503-live-enable" type="button">Enable</button>
+          <button class="button" data-role="vaillant-b503-history-refresh" type="button">Refresh</button>
+        </div>
+        <div data-role="vaillant-b503-history-body">
+          <div class="muted-inline">Click Refresh to load error history records.</div>
+        </div>
+      `;
+    }
+    if (activeTab === "live-monitor") {
+      const t = this._vaillantB503Target;
+      const state = this.vaillantB503SessionStateForTarget(t);
+      const enableDisabled = state === "Enabling" ? " disabled" : "";
+      const disableDisabled = state === "Enabling" ? " disabled" : "";
+      return `
+        <div class="snapshot-controls">
+          <button class="button" data-role="vaillant-b503-live-enable" type="button"${enableDisabled}>Enable</button>
           <button class="button" data-role="vaillant-b503-live-read" type="button">Read</button>
-          <button class="button" data-role="vaillant-b503-live-disable" type="button">Disable</button>
+          <button class="button" data-role="vaillant-b503-live-disable" type="button"${disableDisabled}>Disable</button>
         </div>
         <pre class="issue-preview" data-role="vaillant-b503-live-output"></pre>
         <div class="muted-inline" data-role="vaillant-b503-live-status">Idle.</div>
@@ -2845,12 +3061,13 @@ class PortalShell extends HTMLElement {
   _bindVaillantB503TabEvents() {
     const errorsTab = this.querySelector('[data-role="vaillant-b503-tab-errors"]');
     const serviceTab = this.querySelector('[data-role="vaillant-b503-tab-service"]');
+    const historyTab = this.querySelector('[data-role="vaillant-b503-tab-history"]');
     const liveTab = this.querySelector('[data-role="vaillant-b503-tab-live-monitor"]');
     const swap = async (name) => {
       const leavingLive =
         this._vaillantB503ActiveTab === "live-monitor" &&
         name !== "live-monitor" &&
-        this._vaillantB503LiveToken;
+        this.vaillantB503LiveTokenForTarget(this._vaillantB503Target);
       if (leavingLive) {
         // Fire a best-effort disable before swapping. Matches the
         // nav-away semantics so clicking Errors/Service while a live
@@ -2858,7 +3075,8 @@ class PortalShell extends HTMLElement {
         try {
           await this.invokeVaillantLiveMonitor("disable");
         } catch {
-          this._vaillantB503LiveToken = null;
+          // _invokeVaillantLiveMonitor clears the per-target token on
+          // disable failure already; nothing else to do.
         }
       }
       this._vaillantB503ActiveTab = name;
@@ -2872,6 +3090,9 @@ class PortalShell extends HTMLElement {
     if (serviceTab && typeof serviceTab.addEventListener === "function") {
       serviceTab.addEventListener("click", () => swap("service"));
     }
+    if (historyTab && typeof historyTab.addEventListener === "function") {
+      historyTab.addEventListener("click", () => swap("history"));
+    }
     if (liveTab && typeof liveTab.addEventListener === "function") {
       liveTab.addEventListener("click", () => swap("live-monitor"));
     }
@@ -2882,6 +3103,13 @@ class PortalShell extends HTMLElement {
       const refresh = this.querySelector('[data-role="vaillant-b503-service-refresh"]');
       if (refresh && typeof refresh.addEventListener === "function") {
         refresh.addEventListener("click", () => this.refreshVaillantServiceCurrent());
+      }
+      return;
+    }
+    if (activeTab === "history") {
+      const refresh = this.querySelector('[data-role="vaillant-b503-history-refresh"]');
+      if (refresh && typeof refresh.addEventListener === "function") {
+        refresh.addEventListener("click", () => this.refreshVaillantErrorHistory());
       }
       return;
     }
@@ -2932,8 +3160,8 @@ class PortalShell extends HTMLElement {
     const body = this.querySelector('[data-role="vaillant-b503-errors-body"]');
     try {
       const env = await this._gqlRequest(
-        "query VaillantErrors { vaillantErrors { firstActiveError slots } }",
-        {},
+        "query VaillantErrors($targetAddress: Int) { vaillantErrors(targetAddress: $targetAddress) { firstActiveError slots } }",
+        this._vaillantB503TargetVars(),
       );
       if (env && env.errors && env.errors.length) {
         if (body) body.innerHTML = `<div class="error">${escapeHtml(env.errors[0].message || "error")}</div>`;
@@ -2950,8 +3178,8 @@ class PortalShell extends HTMLElement {
     const body = this.querySelector('[data-role="vaillant-b503-service-body"]');
     try {
       const env = await this._gqlRequest(
-        "query VaillantServiceCurrent { vaillantServiceCurrent { firstActiveError slots } }",
-        {},
+        "query VaillantServiceCurrent($targetAddress: Int) { vaillantServiceCurrent(targetAddress: $targetAddress) { firstActiveError slots } }",
+        this._vaillantB503TargetVars(),
       );
       if (env && env.errors && env.errors.length) {
         if (body) body.innerHTML = `<div class="error">${escapeHtml(env.errors[0].message || "error")}</div>`;
@@ -2964,24 +3192,132 @@ class PortalShell extends HTMLElement {
     }
   }
 
+  // M8 F5 — Errors history sub-tab. The History tab renders the most
+  // recent N records via vaillantErrorHistory(targetAddress, index).
+  // Empty-state surfaces an em-dash when no records exist.
+  async refreshVaillantErrorHistory() {
+    const body = this.querySelector('[data-role="vaillant-b503-history-body"]');
+    try {
+      const env = await this._gqlRequest(
+        "query VaillantErrorHistory($targetAddress: Int, $index: Int) { vaillantErrorHistory(targetAddress: $targetAddress, index: $index) { index firstActiveError slots } }",
+        this._vaillantB503TargetVars({ index: 0 }),
+      );
+      if (env && env.errors && env.errors.length) {
+        if (body) body.innerHTML = `<div class="error">${escapeHtml(env.errors[0].message || "error")}</div>`;
+        return;
+      }
+      const payload = env && env.data && env.data.vaillantErrorHistory;
+      if (!body) return;
+      if (!payload || (payload.firstActiveError == null && (!Array.isArray(payload.slots) || payload.slots.length === 0))) {
+        body.innerHTML = `<div class="muted-inline" data-role="vaillant-b503-history-empty">— (no records)</div>`;
+        return;
+      }
+      const first = payload.firstActiveError != null ? String(payload.firstActiveError) : "—";
+      const slots = Array.isArray(payload.slots) ? payload.slots : [];
+      const slotCells = slots.map((slot) => {
+        const cell = slot === null || slot === undefined ? "—" : String(Number(slot));
+        return `<td>${escapeHtml(cell)}</td>`;
+      }).join("");
+      body.innerHTML = `
+        <dl class="meta-list">
+          <dt>Index</dt><dd>${escapeHtml(String(payload.index || 0))}</dd>
+          <dt>First active error</dt><dd>${escapeHtml(first)}</dd>
+        </dl>
+        <table class="table">
+          <thead><tr><th>Slot 0</th><th>Slot 1</th><th>Slot 2</th><th>Slot 3</th><th>Slot 4</th></tr></thead>
+          <tbody><tr>${slotCells || '<td colspan="5">—</td>'}</tr></tbody>
+        </table>
+      `;
+    } catch (err) {
+      if (body) body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
+    }
+  }
+
+  // M8 F3 — Projection plane card for B503. Rendered into the projection
+  // section (alongside Service / Observability / Debug planes) iff the
+  // device's B503 capability=AVAILABLE for the selected target. Clicking
+  // the card jumps to section-vaillant-b503 with target preselected.
+  async renderProjectionB503Card(device, capabilityState) {
+    if (!device || capabilityState !== "AVAILABLE") return;
+    const host = this.querySelector('[data-role="projection-b503-card-host"]');
+    if (!host) return;
+    const addr = device.address;
+    const hex = formatAddress(addr);
+    const label = device.display_name || device.device_id || hex;
+    const card = `
+      <div class="uml-box" data-role="projection-b503-card" data-b503-target="${escapeHtml(String(addr))}">
+        <div class="uml-header">«Vaillant B503»</div>
+        <div class="muted-inline">${escapeHtml(label)} (${escapeHtml(hex)})</div>
+        <ul class="uml-body">
+          <li class="uml-method">errors</li>
+          <li class="uml-method">service-current</li>
+          <li class="uml-method">service-history</li>
+          <li class="uml-method">live-monitor</li>
+        </ul>
+        <button class="button" data-role="projection-b503-jump" data-b503-target="${escapeHtml(String(addr))}" type="button">Open in Vaillant B503</button>
+      </div>
+    `;
+    // Append (do not replace) — multiple devices may render their own card.
+    const prior = host.innerHTML || "";
+    host.innerHTML = prior + card;
+  }
+
   async invokeVaillantLiveMonitor(action) {
     const status = this.querySelector('[data-role="vaillant-b503-live-status"]');
     const output = this.querySelector('[data-role="vaillant-b503-live-output"]');
+    // Capture the target + epoch at issue-time. The completion path
+    // compares against the captured values BEFORE mutating state so a
+    // late completion on a previous target/epoch never bleeds into the
+    // currently selected target's strip (R5 A1 / M8-TGT-04).
+    const issuedTarget = this._vaillantB503Target;
+    const issuedEpoch = this._vaillantB503Epoch || 0;
     const variables = { action: String(action) };
-    if (action === "disable" && this._vaillantB503LiveToken) {
-      variables.issuerToken = this._vaillantB503LiveToken;
+    if (issuedTarget !== null && issuedTarget !== undefined) {
+      variables.targetAddress = issuedTarget;
+    }
+    if (action === "disable") {
+      const existing = this.vaillantB503LiveTokenForTarget(issuedTarget);
+      if (existing) variables.issuerToken = existing;
+    }
+    if (action === "enable") {
+      this._setVaillantB503SessionState(issuedTarget, "Enabling");
     }
     try {
       const env = await this._gqlRequest(
-        "query VaillantLive($action: String!, $issuerToken: String) { vaillantLiveMonitor(action: $action, issuerToken: $issuerToken) { issuerToken rawHex disabled } }",
+        "query VaillantLive($action: String!, $issuerToken: String, $targetAddress: Int) { vaillantLiveMonitor(action: $action, issuerToken: $issuerToken, targetAddress: $targetAddress) { issuerToken rawHex disabled } }",
         variables,
       );
+      // M8-TGT-04: completion-side discard. If the active target/epoch
+      // has shifted since we issued the request, do NOT mutate any
+      // currently-selected-target state. If the response carries an
+      // issuerToken (i.e. local user actually owns the issued target),
+      // immediately fire a targeted disable so the abandoned session
+      // does not leak.
+      const currentTarget = this._vaillantB503Target;
+      const currentEpoch = this._vaillantB503Epoch || 0;
+      const epochMismatch = issuedEpoch !== currentEpoch
+        || this._vaillantB503TargetKey(issuedTarget) !== this._vaillantB503TargetKey(currentTarget);
+      if (epochMismatch) {
+        const payload = env && env.data && env.data.vaillantLiveMonitor;
+        if (action === "enable" && payload && typeof payload.issuerToken === "string" && payload.issuerToken !== "") {
+          // Stash token under issuedTarget so per-target accessors still
+          // see it (test contract: T1 ownership persists after switch
+          // to T2 if completion arrives post-switch). Fire targeted
+          // disable for issuedTarget without touching current target.
+          this._vaillantB503TokenMap().set(this._vaillantB503TargetKey(issuedTarget), payload.issuerToken);
+          this._setVaillantB503SessionState(issuedTarget, "Active");
+          // Targeted disable: bypass the path that re-reads
+          // _vaillantB503Target so we cannot accidentally touch T2.
+          await this._dispatchTargetedDisable(issuedTarget, payload.issuerToken);
+        }
+        return;
+      }
       if (env && env.errors && env.errors.length) {
         if (status) status.textContent = env.errors[0].message || "error";
-        // For the nav-away / tab-swap cleanup path: a disable that the
-        // backend rejects MUST still surface as an error so the caller
-        // can clear its stale token. Swallowing here caused the
-        // nav-away catch() never to run.
+        if (action === "enable") {
+          // Roll back to last-known state on enable failure.
+          this._setVaillantB503SessionState(issuedTarget, "Idle");
+        }
         if (action === "disable") {
           throw new Error(env.errors[0].message || "disable failed");
         }
@@ -2990,8 +3326,11 @@ class PortalShell extends HTMLElement {
       const payload = env && env.data && env.data.vaillantLiveMonitor;
       if (!payload) return;
       if (action === "enable" && typeof payload.issuerToken === "string" && payload.issuerToken !== "") {
-        this._vaillantB503LiveToken = payload.issuerToken;
+        this._vaillantB503TokenMap().set(this._vaillantB503TargetKey(issuedTarget), payload.issuerToken);
+        this._setVaillantB503SessionState(issuedTarget, "Active");
         if (status) status.textContent = "Live-monitor session active.";
+      } else if (action === "enable") {
+        this._setVaillantB503SessionState(issuedTarget, "Idle");
       }
       if (action === "read") {
         const hex = typeof payload.rawHex === "string" ? payload.rawHex : "";
@@ -2999,26 +3338,55 @@ class PortalShell extends HTMLElement {
         if (status) status.textContent = hex ? "OK" : "No frame available yet.";
       }
       if (action === "disable") {
-        this._vaillantB503LiveToken = null;
+        this._vaillantB503TokenMap().delete(this._vaillantB503TargetKey(issuedTarget));
+        this._setVaillantB503SessionState(issuedTarget, "Idle");
         if (status) status.textContent = "Session disabled.";
       }
     } catch (err) {
       if (status) status.textContent = `Error: ${err}`;
+      if (action === "enable") {
+        // Don't leave the strip stuck in Enabling on a network failure.
+        this._setVaillantB503SessionState(issuedTarget, "Idle");
+      }
+    }
+  }
+
+  // _dispatchTargetedDisable issues a disable for an explicit target +
+  // issuerToken pair, bypassing the active-target accessor so the call
+  // is safe to fire post-target-switch (M8-TGT-04 R5 A1 contract).
+  async _dispatchTargetedDisable(target, issuerToken) {
+    const variables = { action: "disable", issuerToken };
+    const tk = this._vaillantB503TargetKey(target);
+    if (tk !== null) variables.targetAddress = tk;
+    try {
+      await this._gqlRequest(
+        "query VaillantLiveDisable($action: String!, $issuerToken: String, $targetAddress: Int) { vaillantLiveMonitor(action: $action, issuerToken: $issuerToken, targetAddress: $targetAddress) { issuerToken rawHex disabled } }",
+        variables,
+      );
+    } catch {
+      // Best-effort cleanup; even if the backend rejects, we have
+      // already invalidated the local token and will not retry.
+    }
+    if (tk !== null) {
+      this._vaillantB503TokenMap().delete(tk);
+      this._setVaillantB503SessionState(tk, "Disabled");
     }
   }
 
   async handleVaillantB503NavAway() {
-    // Auto-disable on nav-away. Only fires if an issuer token is held,
-    // which implies the live-monitor tab entered the Active state. The
-    // disable call is best-effort — failures are swallowed so a stuck
-    // backend does not block nav.
-    if (!this._vaillantB503LiveToken) return;
-    try {
-      await this.invokeVaillantLiveMonitor("disable");
-    } catch {
-      // Fail-open on nav: clear the token anyway so a stale session
-      // cannot be mistaken for a live one.
-      this._vaillantB503LiveToken = null;
+    // Auto-disable on nav-away. Iterates per-target token map so a
+    // multi-target session set never leaks a live token. Best-effort
+    // (failures swallowed). Falls back to clearing the local map so a
+    // stuck backend cannot mark a stale session as live.
+    const map = this._vaillantB503TokenMap();
+    if (map.size === 0) return;
+    const entries = Array.from(map.entries());
+    for (const [target, token] of entries) {
+      try {
+        await this._dispatchTargetedDisable(target, token);
+      } catch {
+        map.delete(target);
+      }
     }
   }
 }

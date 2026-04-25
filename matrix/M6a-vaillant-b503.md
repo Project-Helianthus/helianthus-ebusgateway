@@ -224,3 +224,60 @@ The 5 read selectors + 3 live-monitor lifecycle phases + 1 mixed-traffic regress
 **Cross-reference to §3 RB rows.** §9 production-dispatcher rows do NOT supersede the §3 RB-02 / RB-03 / RB-04 `[~]` markers — those concern B524 baseline non-regression under live load and remain pending BENCH-REPLACE per the §3 honest framing. The two row sets answer different questions: §3 RB asks "does B524 throughput regress under B503 load on real hardware"; §9 VB-BR asks "does the production dispatcher's code path correctly serialise frame envelope, error mapping, lock order, and stale-epoch discipline against the agreed-upon test contract".
 
 **Forward gate.** When M7_BENCH_REPLACE merges with operator-attested capture artefacts, every `[bridge-PASS]` row flips to `[bridge-LIVE-PASS]` and §3 RB-02/03/04 simultaneously flip from `[~]` to `[x]`. That is the only authorised promotion path for the dispatcher rows — flipping any §9 row without the corresponding capture is a defect.
+
+---
+
+## §10 REST shim decision (M8 F7) — locked via cruise-consult
+
+**Decision: B — GraphQL-only, no `/api/v1/vaillant/*` REST shim.**
+
+**Provenance.** Pre-implementation `cruise-consult` dispatched two independent
+consultants (Claude consultant + Codex consultant) on 2026-04-25 prior to M8
+dev start. Consensus reached on consultant decision = B. Artefact:
+[Project-Helianthus/helianthus-execution-plans#19 comment 4320124082](https://github.com/Project-Helianthus/helianthus-execution-plans/issues/19#issuecomment-4320124082).
+
+**Rationale (locked).**
+
+1. **Vendor-namespace boundary.** The Vaillant B503 surface is a vendor namespace
+   (`B5 03`), not part of the `ebus_standard` L7 catalog. The portal's existing
+   `/api/v1/ebus-standard/*` shims expose the *standard* L7 catalog to operator
+   tooling that does not speak GraphQL. B503 has no equivalent standardisation
+   tier — it is firmware-coupled to a specific vendor and family of devices.
+2. **Session-stateful surface.** B503 live-monitor is a session-owned, per-target
+   stateful resource (issuerToken, AD14 epoch semantics, AD16 lock order). REST
+   semantics ("each request idempotent") are a poor fit; GraphQL's
+   session-token + targetAddress arg model is already in place and is the
+   portal's only consumer.
+3. **Zero external consumer.** No external client today requests REST access to
+   B503 reads or live-monitor. Adding shims would expand the public surface
+   area and create a second contract to govern under AD02 / AD14 / AD16
+   invariants without solving any concrete consumer problem.
+4. **Symmetry asymmetry is documented, not erased.** The portal's GraphQL
+   consumer surfaces all B503 reads + live-monitor through the existing
+   `vaillant*` queries. The asymmetry vs `ebus_standard` (which has REST
+   shims) is recorded here AND in
+   `helianthus-docs-ebus/architecture/ebus_standard/09-mcp-envelope.md` (the
+   F7 path-B companion docs PR).
+
+**Re-evaluation trigger.** This decision is re-opened if and only if an
+external consumer requests REST access to B503 reads or live-monitor with a
+documented operational reason. At that point, the cruise-consult cycle
+re-runs and either (a) shims are added with explicit AD14/AD16 mapping
+recorded here, or (b) the rationale in §10 is extended with the new
+evidence. **Adding `/api/v1/vaillant/*` shims without a fresh decision
+artefact is a defect.**
+
+**Mechanical assertion (handler.go behaviour).** Any HTTP request to
+`/api/v1/vaillant/*` MUST return `404 Not Found` (NOT `405 Method Not
+Allowed`, NOT `200 OK`). This is asserted by
+`portal/handler_test.go::TestM8_F7_VaillantRESTShim_Returns404` which probes
+representative paths under `/api/v1/vaillant/*` and asserts the 404
+contract. The contract is preserved by the default-NotFound clause in
+`portal/handler.go::handleAPI` switch — adding a `case "vaillant/..."` arm
+to that switch without a fresh §10 re-evaluation is a defect.
+
+**Companion docs PR (F7 path-B requirement).** `helianthus-docs-ebus`
+gets a new section "Vendor namespaces and portal exposure" added to
+`architecture/ebus_standard/09-mcp-envelope.md` recording the asymmetry.
+That PR is OUT-OF-SCOPE for the M8 gateway PR and is tracked separately
+under the M8 dispatch's docs-companion obligation.

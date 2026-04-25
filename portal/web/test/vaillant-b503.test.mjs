@@ -172,6 +172,11 @@ test("VaillantB503Pane_NavItemRegistered", async () => {
 // ---- 2. Unavailable capability → empty-state placeholder ----
 
 test("VaillantB503Pane_Unavailable_ShowsPlaceholder", async () => {
+  // M8 F2 tightened the reason-render contract: NOT_SUPPORTED renders
+  // its own distinct copy (not aliased to UNKNOWN). The M3 baseline
+  // assertion is preserved by mocking NOT_SUPPORTED here; the UNKNOWN
+  // reason now renders a probe-failure hint distinct from
+  // "not supported" (verified by M8_F2_ReasonRender_UNKNOWN).
   const { source, sourcePath } = await loadShellSource();
   const paneBody = makeAuditedElement();
   const elements = new Map([
@@ -182,7 +187,7 @@ test("VaillantB503Pane_Unavailable_ShowsPlaceholder", async () => {
     fetchImpl: makeGqlFetchImpl([
       {
         match: "vaillantCapabilities",
-        reply: { data: { vaillantCapabilities: { vaillantB503: { available: false, reason: "UNKNOWN" } } } },
+        reply: { data: { vaillantCapabilities: { vaillantB503: { available: false, reason: "NOT_SUPPORTED" } } } },
       },
     ]),
   });
@@ -199,8 +204,8 @@ test("VaillantB503Pane_Unavailable_ShowsPlaceholder", async () => {
   const htmlWrites = paneBody._audit.filter((e) => e.prop === "innerHTML");
   assert.ok(htmlWrites.length >= 1, "pane body should receive rendered HTML");
   const rendered = htmlWrites.map((e) => e.value).join("\n").toLowerCase();
-  assert.ok(rendered.includes("not supported"),
-    `unavailable state must render a 'not supported' placeholder; got: ${rendered}`);
+  assert.ok(rendered.includes("not implemented") || rendered.includes("not supported"),
+    `unavailable state must render a 'not supported / not implemented' placeholder; got: ${rendered}`);
 });
 
 // ---- 3. Available capability → three tabs ----
@@ -373,11 +378,23 @@ test("VaillantB503Pane_LiveMonitor_AutoDisableOnLeave", async () => {
   assert.equal(typeof shell.handleVaillantB503NavAway, "function",
     "handleVaillantB503NavAway must be defined");
 
-  // Simulate Enable: issuerToken captured into shell state.
+  // M8 F1: tokens are now per-target. The M3 single-token field
+  // (_vaillantB503LiveToken) is replaced by a per-target Map; the
+  // accessor vaillantB503LiveTokenForTarget(addr) is the supported
+  // surface. The M3 nav-away semantics still hold: an enabled session
+  // must produce a disable GraphQL call on nav-away. We bind the
+  // per-target accessor to keep this test asserting the same contract.
+  shell.vaillantB503LiveTokenForTarget = proto.vaillantB503LiveTokenForTarget;
+  shell.setVaillantB503Target = proto.setVaillantB503Target;
+  shell.refreshVaillantB503Capability = proto.refreshVaillantB503Capability;
+  // Default target = 0 (no projection list provided in this M3 baseline test).
+  shell._vaillantB503Target = 0;
+
+  // Simulate Enable: issuerToken captured into per-target token map.
   await shell.invokeVaillantLiveMonitor("enable");
   await flush();
-  assert.equal(shell._vaillantB503LiveToken, "tok-xyz-123",
-    "shell must store issuer token on enable");
+  assert.equal(shell.vaillantB503LiveTokenForTarget(0), "tok-xyz-123",
+    "shell must store issuer token on enable (per-target map)");
 
   // Simulate nav-away from vaillant-b503.
   const beforeCount = fetchRequests.length;
@@ -396,7 +413,7 @@ test("VaillantB503Pane_LiveMonitor_AutoDisableOnLeave", async () => {
   assert.equal(disableVars.issuerToken, "tok-xyz-123",
     "disable call must pass the stored issuerToken");
   // Token must be cleared after disable.
-  assert.ok(!shell._vaillantB503LiveToken,
+  assert.ok(!shell.vaillantB503LiveTokenForTarget(0),
     "issuerToken must be cleared after auto-disable");
 });
 
@@ -556,10 +573,16 @@ test("M8_F1_TargetSelector_PopulatedFromProjectionDevices", async () => {
   await shell.refreshVaillantB503Capability();
   await flush();
 
+  // Assert the implementation queried the b503-target-select element
+  // (proves wiring to the static section markup) AND populated it with
+  // option entries for every projection device.
+  assert.ok(lazy.map.has('[data-role="b503-target-select"]'),
+    "target selector [data-role=\"b503-target-select\"] must be queried by the implementation");
+  const selectEl = lazy.map.get('[data-role="b503-target-select"]');
   const html = combinedHTML(lazy.map);
   assert.ok(
-    /data-role="b503-target-select"/.test(html),
-    `target selector with data-role="b503-target-select" must be rendered; got: ${html}`,
+    /<option /.test(selectEl.innerHTML || ""),
+    `target selector innerHTML must contain <option> entries; got innerHTML: ${selectEl.innerHTML}`,
   );
   // Selector must list at least the three seeded devices.
   for (const addr of ["8", "21", "16"]) {

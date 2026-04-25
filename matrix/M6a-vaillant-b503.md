@@ -195,7 +195,7 @@ mandatory capture content:
 Confirm the gateway transport profile is `adapter-direct`:
 
 ```
-ssh root@192.168.100.4 'jq -r .transport_profile /etc/helianthus/gateway.yaml'
+ssh root@192.168.100.4 'awk -F": *" "/^transport_profile:/ {print \$2}" /etc/helianthus/gateway.yaml'
 # expected: adapter-direct
 ```
 
@@ -255,7 +255,7 @@ ssh root@192.168.100.4 \
 Confirm:
 
 ```
-ssh root@192.168.100.4 'jq -r .transport_profile /etc/helianthus/gateway.yaml'
+ssh root@192.168.100.4 'awk -F": *" "/^transport_profile:/ {print \$2}" /etc/helianthus/gateway.yaml'
 # expected: ebusd_tcp
 ```
 

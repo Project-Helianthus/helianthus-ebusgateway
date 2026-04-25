@@ -1544,3 +1544,26 @@ func intPtr(value int) *int {
 	v := value
 	return &v
 }
+
+// M8_F7_VaillantRESTShimReturns404 — F7 cruise-consult decision = B
+// (GraphQL-only). matrix/M6a-vaillant-b503.md §10 records the rationale.
+// Any /api/v1/vaillant/* request MUST return 404 (not 405, not 200) so
+// the GraphQL-only contract is mechanically asserted.
+func TestM8_F7_VaillantRESTShim_Returns404(t *testing.T) {
+	h := NewHandler(Options{})
+	paths := []string{
+		"/api/v1/vaillant/errors",
+		"/api/v1/vaillant/service/current",
+		"/api/v1/vaillant/live-monitor",
+		"/api/v1/vaillant/foo/bar",
+	}
+	for _, p := range paths {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s status=%d; want 404 (F7 GraphQL-only decision per matrix §10)",
+				p, rec.Code)
+		}
+	}
+}

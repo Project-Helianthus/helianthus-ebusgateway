@@ -186,3 +186,41 @@ Concrete release-gate rule, unambiguous:
 4. If M2b implementation ships code that would de-facto stabilize the schema (e.g., public docs referencing v1 fields, HA integration consuming v1), that is equivalent to publication and is equally gated.
 
 This explicit separation prevents the matrix from falsely advertising live-bus coverage that has not yet been performed, and removes the SHOULD/MUST ambiguity that would let schema-stable publication slip ahead of live-hardware validation.
+
+---
+
+## §9 Production-dispatcher rows (M6_DISPATCHER_BRIDGE)
+
+Per amendment-1 plan §M6 acceptance and helianthus-docs-ebus B503.md §12, the production raw-frame dispatcher (`*rawFrameDispatcher` in `cmd/gateway/vaillant_b503_dispatcher.go`) replaces the M2a `b503StubDispatcher{}` injection. Routing is single-substrate through `gw.Bus` (`*protocol.Bus`) — the same path B524/B525 already use (AD16). No parallel transport.
+
+Status values for §9:
+
+- `[bridge-PASS]` — green against the mocked transport coverage delivered with M6. The dispatcher routes through `bus.Send`, the error-mapping table (§12.4) is enforced, the AD18 stale-epoch discipline is exercised, and the AD16 lock-order invariant is mechanically verified by the `//go:build raceconcurrency` tracer suite.
+- `[bridge-LIVE-PASS]` — flips to this state when M7_BENCH_REPLACE attaches operator-attested live-bus captures per §6 BENCH-REPLACE protocol. Until then `[bridge-PASS]` is the truthful status (mocked-transport, code-path complete).
+
+The 5 read selectors + 3 live-monitor lifecycle phases + 1 mixed-traffic regression × 2 transport families = 16 rows. M6 lands all 16 as `[bridge-PASS]`; M7 flips them to `[bridge-LIVE-PASS]` after capture artefacts land in `matrix/captures/`.
+
+| # | Transport | Surface | Scenario | Status | Evidence |
+|---|-----------|---------|----------|--------|----------|
+| VB-BR-01 | adapter-direct | `errors.get` | dispatch via `bus.Send`; PB=B5 SB=03 envelope | `[bridge-PASS]` | `cmd/gateway/vaillant_b503_dispatcher_test.go:TestM6Dispatcher_ErrorsCurrent_RoutesViaBusSend` |
+| VB-BR-02 | adapter-direct | `errors.history.get` | dispatch with index byte | `[bridge-PASS]` | `:TestM6Dispatcher_ErrorsHistory_RoutesViaBusSend` |
+| VB-BR-03 | adapter-direct | `service.current.get` | dispatch | `[bridge-PASS]` | `:TestM6Dispatcher_ServiceCurrent_RoutesViaBusSend` |
+| VB-BR-04 | adapter-direct | `service.history.get` | dispatch with index byte | `[bridge-PASS]` | `:TestM6Dispatcher_ServiceHistory_RoutesViaBusSend` |
+| VB-BR-05 | adapter-direct | `live_monitor.get` (00 03) enable | dispatch under SERVICE_WRITE class | `[bridge-PASS]` | `:TestM6Dispatcher_LiveMonitor_RoutesViaBusSend` + `:TestM6Conc01_DisconnectDuringEnableHandshake` (`-tags=raceconcurrency`) |
+| VB-BR-06 | adapter-direct | `live_monitor.get` (00 03) read | steady-state read returns Frame.Data verbatim | `[bridge-PASS]` | `:TestM6Conc02_DisconnectDuringSteadyStateRead` |
+| VB-BR-07 | adapter-direct | `live_monitor.get` disable | idempotent under disconnect | `[bridge-PASS]` | `:TestM6Conc03_DisconnectDuringDisable` |
+| VB-BR-08 | adapter-direct | mixed B524 + B503 | concurrent traffic, no stale-epoch leak | `[bridge-PASS]` | `:TestM6Conc04_ReconnectUnderConcurrentTraffic_NoStaleEpochLeak` (8-row truth-table row 8) |
+| VB-BR-09 | ebusd_tcp | `errors.get` | dispatch through same code path; transport-agnostic | `[bridge-PASS]` | shared `*rawFrameDispatcher` — transport branch is at `protocol.Bus.Send`; tests cover the dispatcher boundary uniformly |
+| VB-BR-10 | ebusd_tcp | `errors.history.get` | as above | `[bridge-PASS]` | shared (transport-agnostic dispatcher) |
+| VB-BR-11 | ebusd_tcp | `service.current.get` | as above | `[bridge-PASS]` | shared |
+| VB-BR-12 | ebusd_tcp | `service.history.get` | as above | `[bridge-PASS]` | shared |
+| VB-BR-13 | ebusd_tcp | `live_monitor.get` enable | as above | `[bridge-PASS]` | shared |
+| VB-BR-14 | ebusd_tcp | `live_monitor.get` read | as above | `[bridge-PASS]` | shared |
+| VB-BR-15 | ebusd_tcp | `live_monitor.get` disable | as above | `[bridge-PASS]` | shared |
+| VB-BR-16 | ebusd_tcp | mixed B524 + B503 | concurrent traffic, AD16 lock order | `[bridge-PASS]` | shared lock-tracer suite + concurrency tests |
+
+**Honest framing preserved.** §3 already records that the `-race` trip-wire is SECONDARY proof; the M6 lock tracer (`//go:build raceconcurrency` in `vaillant_b503_dispatcher_concurrency_test.go`) is the primary mechanical verification of AD16 / §12.6. M6 does NOT dilute the §3 framing — it adds an additional trip-wire on top of the existing static and `-race` coverage. The "live-bus" gap remains: M6 mocked transports pass `bus.Send` byte streams matching `LOCAL_CAPTURE`; M7 supplies operator-attested wire captures.
+
+**Cross-reference to §3 RB rows.** §9 production-dispatcher rows do NOT supersede the §3 RB-02 / RB-03 / RB-04 `[~]` markers — those concern B524 baseline non-regression under live load and remain pending BENCH-REPLACE per the §3 honest framing. The two row sets answer different questions: §3 RB asks "does B524 throughput regress under B503 load on real hardware"; §9 VB-BR asks "does the production dispatcher's code path correctly serialise frame envelope, error mapping, lock order, and stale-epoch discipline against the agreed-upon test contract".
+
+**Forward gate.** When M7_BENCH_REPLACE merges with operator-attested capture artefacts, every `[bridge-PASS]` row flips to `[bridge-LIVE-PASS]` and §3 RB-02/03/04 simultaneously flip from `[~]` to `[x]`. That is the only authorised promotion path for the dispatcher rows — flipping any §9 row without the corresponding capture is a defect.

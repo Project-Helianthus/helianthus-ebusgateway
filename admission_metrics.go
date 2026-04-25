@@ -3,6 +3,7 @@ package ebusgateway
 import (
 	"expvar"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -30,6 +31,11 @@ type StartupAdmissionMetrics struct {
 	warmupCycleSeq uint64
 }
 
+var (
+	defaultStartupAdmissionMetrics     *StartupAdmissionMetrics
+	defaultStartupAdmissionMetricsOnce sync.Once
+)
+
 // NewStartupAdmissionMetrics allocates the metric bundle. Caller decides
 // whether to publish via expvar.Publish or keep per-instance (for tests).
 func NewStartupAdmissionMetrics() *StartupAdmissionMetrics {
@@ -46,6 +52,18 @@ func NewStartupAdmissionMetrics() *StartupAdmissionMetrics {
 		ConsecutiveRejoinFailures: new(expvar.Int),
 		DegradedCumulativeMs:      new(expvar.Int),
 	}
+}
+
+// GetOrInitStartupAdmissionMetrics returns the process-global
+// StartupAdmissionMetrics instance, creating it and publishing its
+// expvars on first call.
+func GetOrInitStartupAdmissionMetrics() *StartupAdmissionMetrics {
+	defaultStartupAdmissionMetricsOnce.Do(func() {
+		defaultStartupAdmissionMetrics = NewStartupAdmissionMetrics()
+		defaultStartupAdmissionMetrics.Publish()
+		EmitStartupResetWarn(log.Printf)
+	})
+	return defaultStartupAdmissionMetrics
 }
 
 // Publish registers all expvars under the "startup_admission_" prefix.

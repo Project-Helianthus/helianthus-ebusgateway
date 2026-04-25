@@ -203,6 +203,7 @@ func classifyScanErr(err error) string {
 var (
 	semanticBusCollisionsTotal  = expvar.NewInt("semantic_bus_collisions_total")
 	registryScanFn              = registry.Scan
+	registryScanDirectedFn      = registry.ScanDirected
 	ebusdScanTargetCandidatesFn = ebusdScanTargetCandidates
 	ebusdScanResultTargetsFn    = ebusdScanResultTargets
 	ebusdScanResultInfosFn      = ebusdScanResultInfos
@@ -212,6 +213,22 @@ var (
 	enrichSerialsFromEbusdFn    = enrichSerialsFromEbusd
 	postStartupIdentityRetryFn  = schedulePostStartupIdentityRetry
 )
+
+func startupScanWithFullRangeGuard(ctx context.Context, bus registry.ScanBus, reg *registry.DeviceRegistry, source byte, targets []byte, admissionPath ebusgateway.TransportAdmissionPath, diagnosticFlag bool, evidenceHasVaillantRoot bool) ([]registry.DeviceEntry, error) {
+	if admissionPath == ebusgateway.TransportAdmissionJoinCapable {
+		if len(targets) == 0 {
+			if !diagnosticFlag {
+				return nil, fmt.Errorf("full-range retry: disabled by default on non-ebusd-tcp; set --diagnostic-full-range-retry to enable after at least one Vaillant root candidate is observed (AD05)")
+			}
+			if !evidenceHasVaillantRoot {
+				return nil, fmt.Errorf("full-range retry: diagnostic flag set but evidence buffer has no Vaillant root candidate yet (AD05)")
+			}
+		} else {
+			return registryScanDirectedFn(ctx, bus, reg, source, targets)
+		}
+	}
+	return registryScanFn(ctx, bus, reg, source, targets)
+}
 
 const proxyObserveFirstStartupSource byte = 0xF7
 
@@ -392,8 +409,12 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 	}
 
 	startupCfg := resolveStartupScanSourceConfig(cfg)
+	admissionPath, admissionPathErr := ebusgateway.ClassifyTransportAdmission(cfg.TransportConfig.Protocol)
+	if admissionPathErr != nil {
+		log.Printf("startup scan: classifier rejected transport protocol=%q err=%v; falling back to legacy static-source path", cfg.TransportConfig.Protocol, admissionPathErr)
+		admissionPath = ebusgateway.TransportAdmissionStaticFallback
+	}
 	loopExitFn := startupScanLoopExitFn
-	scanFn := registryScanFn
 	targetCandidatesFn := ebusdScanTargetCandidatesFn
 	resultTargetsFn := ebusdScanResultTargetsFn
 	resultInfosFn := ebusdScanResultInfosFn
@@ -551,7 +572,16 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 				}
 			}
 
-			devices, err := scanFn(scanCtx, scanBus, gateway.Registry, startupCfg.ScanSource, targets)
+			devices, err := startupScanWithFullRangeGuard(
+				scanCtx,
+				scanBus,
+				gateway.Registry,
+				startupCfg.ScanSource,
+				targets,
+				admissionPath,
+				cfg.DiagnosticFullRangeRetry,
+				false,
+			)
 
 			if err != nil && ctx.Err() == nil {
 				log.Printf("startup scan error: %v", err)
@@ -1349,9 +1379,23 @@ func runBackgroundFullScan(ctx context.Context, cfg ebusgateway.Config, gateway 
 		delay:   backgroundScanThrottle,
 		timeout: cfg.ScanRequestTimeout,
 	}
+	admissionPath, admissionPathErr := ebusgateway.ClassifyTransportAdmission(cfg.TransportConfig.Protocol)
+	if admissionPathErr != nil {
+		log.Printf("background scan: classifier rejected transport protocol=%q err=%v; falling back to legacy static-source path", cfg.TransportConfig.Protocol, admissionPathErr)
+		admissionPath = ebusgateway.TransportAdmissionStaticFallback
+	}
 
 	beforeTotal := countRegistryDevices(gateway.Registry)
-	devices, err := registryScanFn(ctx, scanBus, gateway.Registry, cfg.ScanSource, nil)
+	devices, err := startupScanWithFullRangeGuard(
+		ctx,
+		scanBus,
+		gateway.Registry,
+		cfg.ScanSource,
+		nil,
+		admissionPath,
+		cfg.DiagnosticFullRangeRetry,
+		false,
+	)
 	if err != nil && ctx.Err() == nil {
 		log.Printf("background scan error: %v", err)
 	}

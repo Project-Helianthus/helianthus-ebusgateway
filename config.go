@@ -74,6 +74,23 @@ type WatchObserver interface {
 	Observe(key WatchKey) WatchObservation
 }
 
+// StartupSourceOverride configures opt-in static-source admission on
+// join-capable direct transports per AD09. Default (unset) preserves
+// the standard Joiner warmup path.
+type StartupSourceOverride struct {
+	// Source is the static source address to use for all Helianthus-
+	// originated active frames on join-capable direct transports when
+	// this override is set. When nil, override is unset.
+	Source *uint8
+
+	// Validate, when true, runs the Joiner in advisory-only mode in
+	// parallel with the override path so the companion-target conflict
+	// heuristic can still detect a mismatch and emit a WARN log. Does
+	// NOT gate active traffic (active frames fire immediately with the
+	// override source). Default: false.
+	Validate bool
+}
+
 type Config struct {
 	Transport                transport.RawTransport
 	PassiveTransport         transport.RawTransport // pre-configured passive transport (adapter-direct mode)
@@ -91,6 +108,8 @@ type Config struct {
 	BackgroundScanInterval   time.Duration
 	BootLiveTimeout          time.Duration
 	StateMinStabilitySeconds int
+	StartupSource            StartupSourceOverride
+	DiagnosticFullRangeRetry bool
 	// SemanticInterval is a legacy single-interval semantic polling configuration.
 	// Prefer SemanticDiscoveryInterval / SemanticConfigInterval / SemanticStateInterval.
 	SemanticInterval                        time.Duration

@@ -1,0 +1,135 @@
+# M7 BENCH-REPLACE capture template
+#
+# COPY this file to `M7-<transport>-<YYYY-MM-DD>.txt` and FILL with real
+# wire-level bytes + MCP envelope output captured from the live gateway at
+# 192.168.100.4. Do NOT commit this template under a real-capture filename.
+#
+# All `<...>` placeholders MUST be replaced. Comment lines starting with `#`
+# are advisory and MAY be removed in the filled artefact (or kept for context).
+#
+# See matrix/captures/README.md for the canonical layout description and
+# matrix/M6a-vaillant-b503.md §6.1 for the step-by-step capture protocol.
+
+## Header
+
+transport_family: <adapter-direct | ebusd_tcp>
+gateway_address: 0x71
+target_address: <0x08 BAI | 0x15 BASV2 | other>
+gateway_build_sha: <short SHA of gateway binary running on 192.168.100.4>
+capture_date: <YYYY-MM-DD>
+capture_operator: <github-handle>
+
+## §A — 5 read-selector round-trips
+
+# A1 — errors.get  (selector 02 00)
+A1.request_bytes: <hex bytes, comma-separated, e.g. "f1,08,b5,03,02,00,01">
+A1.response_bytes: <hex bytes, e.g. "0a,19,01,ff,ff,ff,ff,ff,ff,ff,ff">
+A1.envelope.capability_reason: <UNKNOWN | AVAILABLE | TRANSPORT_DOWN | SESSION_BUSY | NOT_SUPPORTED>
+A1.envelope.data_hash: <sha256 from MCP meta.data_hash>
+A1.timestamp: <YYYY-MM-DDTHH:MM:SS>
+
+# A2 — errors.history.get  (selector 02 00 + index)
+A2.request_bytes: <...>
+A2.response_bytes: <...>
+A2.envelope.capability_reason: <...>
+A2.envelope.data_hash: <...>
+A2.timestamp: <...>
+
+# A3 — service.current.get  (selector 00 02)
+A3.request_bytes: <...>
+A3.response_bytes: <...>
+A3.envelope.capability_reason: <...>
+A3.envelope.data_hash: <...>
+A3.timestamp: <...>
+
+# A4 — service.history.get  (selector 00 02 + index)
+A4.request_bytes: <...>
+A4.response_bytes: <...>
+A4.envelope.capability_reason: <...>
+A4.envelope.data_hash: <...>
+A4.timestamp: <...>
+
+# A5 — live_monitor.get  (selector 00 03; full lifecycle covered in §B)
+A5.request_bytes: <...>
+A5.response_bytes: <...>
+A5.envelope.capability_reason: <...>
+A5.envelope.data_hash: <...>
+A5.timestamp: <...>
+
+## §B — Live-monitor round-trip (enable → read → read → disable)
+
+# B1 — enable
+B1.action: enable
+B1.issuer_token: <opaque token issued by gateway>
+B1.request_bytes: <write-class frame bytes>
+B1.response_bytes: <ACK/NAK + payload>
+B1.envelope.capability_reason: <expected: AVAILABLE post-first-success>
+B1.timestamp: <...>
+
+# B2 — read #1
+B2.action: read
+B2.request_bytes: <...>
+B2.response_bytes: <...>
+B2.envelope.capability_reason: <expected: AVAILABLE>
+B2.timestamp: <...>
+
+# B3 — read #2
+B3.action: read
+B3.request_bytes: <...>
+B3.response_bytes: <...>
+B3.envelope.capability_reason: <expected: AVAILABLE>
+B3.timestamp: <...>
+
+# B4 — disable (operator-initiated; NOT idle-timeout)
+B4.action: disable
+B4.issuer_token: <same token as B1>
+B4.request_bytes: <write-class disable frame>
+B4.response_bytes: <ACK/NAK>
+B4.envelope.capability_reason: <expected: AVAILABLE or last-known post-disable>
+B4.timestamp: <...>
+
+## §C — Mixed-traffic regression sample
+
+# C1 — concurrent B524 poll observation during active B503 live-monitor read
+C1.b503_active_window_start: <timestamp>
+C1.b503_active_window_end: <timestamp>
+C1.b524_poll_request_bytes: <hex>
+C1.b524_poll_response_bytes: <hex>
+C1.b524_poll_timestamp: <timestamp inside active window>
+C1.b524_baseline_cadence_ms: <baseline poll period from §3 RB-01>
+C1.b524_observed_cadence_ms: <during-active period>
+C1.b524_within_2x_tolerance: <true | false>
+
+# C2 — stale-epoch leak check (synthetic disconnect/reconnect during capture)
+# OPTIONAL on adapter-direct if reconnect is not exercised this round; REQUIRED if
+# this capture is the round-trip that ratifies AD18 row 8 on live hardware.
+C2.exercised: <true | false>
+C2.disconnect_timestamp: <timestamp or n/a>
+C2.reconnect_timestamp: <timestamp or n/a>
+C2.epoch_pre_disconnect: <integer or n/a>
+C2.epoch_post_reconnect: <integer or n/a>
+C2.late_epoch_n_frame_observed: <true | false | n/a>
+C2.late_frame_discarded: <true | false | n/a — MUST be true if observed>
+C2.capability_remained_last_known: <true | false | n/a — MUST be true>
+
+## §D — Verdict
+
+# Cross-reference matrix/M6a-vaillant-b503.md §9 row IDs covered by this capture.
+# adapter-direct capture covers VB-BR-01..VB-BR-08.
+# ebusd_tcp capture covers VB-BR-09..VB-BR-16.
+
+D.row_VB_BR_01: <bridge-LIVE-PASS | bridge-FAIL>
+D.row_VB_BR_02: <bridge-LIVE-PASS | bridge-FAIL>
+D.row_VB_BR_03: <bridge-LIVE-PASS | bridge-FAIL>
+D.row_VB_BR_04: <bridge-LIVE-PASS | bridge-FAIL>
+D.row_VB_BR_05: <bridge-LIVE-PASS | bridge-FAIL>
+D.row_VB_BR_06: <bridge-LIVE-PASS | bridge-FAIL>
+D.row_VB_BR_07: <bridge-LIVE-PASS | bridge-FAIL>
+D.row_VB_BR_08: <bridge-LIVE-PASS | bridge-FAIL>
+# (or VB-BR-09..VB-BR-16 for the ebusd_tcp capture)
+
+D.overall_verdict: <bridge-LIVE-PASS | bridge-FAIL>
+
+# If overall_verdict is bridge-FAIL, this capture file blocks the PR per AD17.
+# The §9 row flip is not authorised and the BENCH-REPLACE round must be re-run
+# after the regression is fixed.

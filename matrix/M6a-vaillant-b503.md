@@ -143,6 +143,153 @@ Failure to attach the required operator-attested capture on a BENCH-REPLACE comm
 
 ---
 
+## §6.1 M7 BENCH-REPLACE execution protocol
+
+This section is the operator-facing checklist for running the M7_BENCH_REPLACE
+captures against the live gateway at `192.168.100.4`. It is the concrete
+realisation of the §6 BENCH-REPLACE obligations and the AD17 attestation
+contract.
+
+**Plan reference:** [`vaillant-b503-namespace-w17-26.implementing/13-amendment-1-dispatcher-portal-ux.md`](https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/vaillant-b503-namespace-w17-26.implementing/13-amendment-1-dispatcher-portal-ux.md) §M7
+**Plan canonical SHA:** `86495340799be9340dc191c371a49a958f65c357c76a1e0a2974502c8489b508`
+
+### Prerequisites
+
+1. M6_DISPATCHER_BRIDGE merged on `main` (squash `25ae909`). Verified before this
+   PR opens by the cruise-topology invariant `m7_pr_blocked_until_m6_merged: true`.
+2. Gateway binary on `192.168.100.4` running M6 dispatcher (`*rawFrameDispatcher` —
+   NOT `b503StubDispatcher{}`). Operator confirms via:
+   ```
+   ssh root@192.168.100.4 'sha256sum /usr/local/bin/helianthus-gateway'
+   ```
+   and matches against the M6 squash artefact.
+3. Branch `issue/551-m7-bench-replace` checked out locally; PR scaffold commit on
+   HEAD; `bench-replace-signoff` label applied via `gh pr edit`.
+
+### Step-by-step capture protocol
+
+**Step 1 — adapter-direct capture round.**
+
+```
+# On 192.168.100.4 (or driving the gateway from operator workstation):
+./scripts/run_transport_matrix.sh \
+    --transport adapter-direct \
+    --target 0x08 \
+    --output matrix/captures/M7-adapter-direct-$(date -u +%F).txt
+```
+
+The capture script MUST drive the live gateway through the §A/§B/§C cycles
+described in [`matrix/captures/README.md`](./captures/README.md):
+
+- §A: 5 read selectors (`errors.get`, `errors.history.get`, `service.current.get`,
+  `service.history.get`, `live_monitor.get`).
+- §B: live-monitor `enable → read → read → disable` lifecycle with explicit
+  operator-initiated disable (NOT idle-timeout).
+- §C: ≥1 B524 poll observation captured **during** an active B503 live-monitor
+  read; `b524_within_2x_tolerance` recorded.
+- §D: per-row verdict cross-referenced to §9 rows VB-BR-01..VB-BR-08.
+
+**Step 2 — ebusd_tcp capture round.**
+
+```
+./scripts/run_transport_matrix.sh \
+    --transport ebusd_tcp \
+    --target 0x08 \
+    --output matrix/captures/M7-ebusd-tcp-$(date -u +%F).txt
+```
+
+Same §A/§B/§C/§D cycles. §D verdict cross-references §9 rows VB-BR-09..VB-BR-16.
+
+**Step 3 — Verify capture-file content.**
+
+For each capture file:
+- All header fields populated (no `<...>` placeholders remaining).
+- All §A entries have non-empty `request_bytes`, `response_bytes`,
+  `envelope.capability_reason`, `envelope.data_hash`.
+- §B has 4 entries (`enable`, two `read`, `disable`) all with matching
+  `issuer_token` between `B1.enable` and `B4.disable`.
+- §C `b524_within_2x_tolerance: true` (any `false` is a regression and blocks the
+  PR).
+- §D overall verdict `bridge-LIVE-PASS` (any row marked `bridge-FAIL` blocks the
+  PR per AD17).
+
+**Step 4 — Flip §9 rows.**
+
+Edit `matrix/M6a-vaillant-b503.md` §9: replace `[bridge-PASS]` →
+`[bridge-LIVE-PASS]` for each row whose corresponding capture row in §D verdicted
+`bridge-LIVE-PASS`. Add a "Live-bus capture" column reference pointing at the
+capture filename for each flipped row.
+
+**Step 5 — Cross-flip §3 RB rows.**
+
+Per matrix §9 closing paragraph "Forward gate", `[~]` markers on §3 RB-02 /
+RB-03 / RB-04 simultaneously flip to `[x]` once the §9 rows are
+`[bridge-LIVE-PASS]` AND the operator capture has been signed off. Update §8
+sign-off table rows 3/4/5 accordingly.
+
+**Step 6 — Operator signoff commit.**
+
+Create a single commit on this branch carrying:
+
+```
+matrix(m7): operator BENCH-REPLACE signoff — §9 rows → bridge-LIVE-PASS
+
+Capture refs:
+- matrix/captures/M7-adapter-direct-<YYYY-MM-DD>.txt
+- matrix/captures/M7-ebusd-tcp-<YYYY-MM-DD>.txt
+
+§9 rows VB-BR-01..VB-BR-16 flipped from [bridge-PASS] to [bridge-LIVE-PASS].
+§3 RB-02/RB-03/RB-04 flipped from [~] to [x] per matrix §9 forward-gate clause.
+
+BENCH-REPLACE-SIGNOFF: <YYYY-MM-DD>
+
+Co-Authored-By: <operator-handle> <operator-email>
+```
+
+The `BENCH-REPLACE-SIGNOFF: <YYYY-MM-DD>` trailer is required on the PR HEAD
+commit per AD17. cruise-merge-gate composes the squash body to inherit this
+trailer verbatim.
+
+**Step 7 — Verify three-gate attestation before requesting merge.**
+
+Per AD17, all three gates MUST be satisfied:
+
+1. PR HEAD commit carries `BENCH-REPLACE-SIGNOFF: <YYYY-MM-DD>` trailer (semantic
+   proof, immutable git-history evidence).
+2. PR has label `bench-replace-signoff` (workflow-gate evidence; added by the PR
+   scaffold step at PR-open time, idempotent).
+3. Capture-artefact files present under `matrix/captures/M7-*.txt` matching
+   §6.1 Step 3 verification (factual evidence).
+
+If gate 2 (label) is missing only, cruise-merge-gate posts the targeted
+remediation comment `bench-replace-label-missing — re-run scaffold step or
+manually add label via gh pr edit. Trailer + captures are valid; label is the
+workflow gate.` and the operator may add the label without re-running captures.
+
+If gates 1 or 3 are missing, the merge-gate blocks and the BENCH-REPLACE round
+must be completed (semantic + factual evidence is non-substitutable).
+
+### Cross-references
+
+- §6 BENCH-REPLACE obligations (requirement-side spec).
+- §9 production-dispatcher rows (status table being flipped).
+- AD17 in plan [`10-scope-decisions.md`](https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/vaillant-b503-namespace-w17-26.implementing/10-scope-decisions.md) §AD17 (three-gate contract, LANE A classification).
+- [`matrix/captures/README.md`](./captures/README.md) (capture-file format spec).
+- [`matrix/captures/M7-EXAMPLE-template.txt`](./captures/M7-EXAMPLE-template.txt) (operator template).
+
+### What this section does NOT authorise
+
+- Pre-flipping any §9 row before the corresponding capture artefact lands — the
+  scaffold commit on this branch MUST NOT touch §9 rows.
+- Carrying `BENCH-REPLACE-SIGNOFF` on the scaffold commit — that trailer is
+  reserved for the operator's signoff commit (Step 6).
+- Substituting unit-test output for live-bus capture artefacts — `mcp/` and
+  `internal/vaillant/b503session/` test suites are NOT live-bus evidence per §6.
+- Skipping the ebusd_tcp round on grounds of "code is transport-agnostic" — §6
+  is explicit that each transport family demands its own capture.
+
+---
+
 ## §7 Rollback criteria
 
 If post-merge, a cruise-run surfaces a regression tied to M2a / this M5 artefact:

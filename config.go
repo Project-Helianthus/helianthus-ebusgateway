@@ -2,6 +2,9 @@ package ebusgateway
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"net"
 	"strings"
 	"time"
@@ -39,7 +42,23 @@ const (
 	DefaultObserveFirstWarmupPostResetWindow       = 5 * time.Second
 	DefaultObserveFirstWarmupPostResetTransactions = 10
 	DefaultObserveFirstWarmupOuterWindow           = 5 * time.Minute
+
+	// Default values for startup-admission escalation thresholds (frozen per
+	// AD17 in startup-admission-discovery-w17-26.locked):
+	//
+	// The continuous_threshold_s value is frozen at 5 minutes (not
+	// operator-tunable). The state_min_stability_s is operator-tunable but
+	// bounded by AD22 invariant: state_min_stability_s * 5 <= continuous_threshold_s.
+	StartupAdmissionContinuousThresholdSeconds      = 300
+	StartupAdmissionStateMinStabilitySecondsDefault = 30
+	StartupAdmissionStateMinStabilitySecondsMin     = 5
+	StartupAdmissionStateMinStabilitySecondsMax     = 60
 )
+
+// ErrStartupAdmissionStabilityInvariant is returned when
+// state_min_stability_s violates the AD22 5:1 invariant against
+// continuous_threshold_s.
+var ErrStartupAdmissionStabilityInvariant = errors.New("startup admission: state_min_stability_s * 5 must be <= continuous_threshold_s (AD22)")
 
 type TransportConfig struct {
 	Protocol     TransportProtocol
@@ -56,21 +75,22 @@ type WatchObserver interface {
 }
 
 type Config struct {
-	Transport              transport.RawTransport
-	PassiveTransport       transport.RawTransport // pre-configured passive transport (adapter-direct mode)
-	ProxyListenAddr        string                 // TCP listen address for ENH proxy clients (empty disables)
-	TransportConfig        TransportConfig
-	BusConfig              protocol.BusConfig
-	QueueCapacity          int
-	Providers              []registry.PlaneProvider
-	ScanOnStart            bool
-	ScanSource             byte
-	ScanSourceAuto         bool
-	ScanTimeout            time.Duration
-	ScanRequestTimeout     time.Duration
-	ScanInterval           time.Duration
-	BackgroundScanInterval time.Duration
-	BootLiveTimeout        time.Duration
+	Transport                transport.RawTransport
+	PassiveTransport         transport.RawTransport // pre-configured passive transport (adapter-direct mode)
+	ProxyListenAddr          string                 // TCP listen address for ENH proxy clients (empty disables)
+	TransportConfig          TransportConfig
+	BusConfig                protocol.BusConfig
+	QueueCapacity            int
+	Providers                []registry.PlaneProvider
+	ScanOnStart              bool
+	ScanSource               byte
+	ScanSourceAuto           bool
+	ScanTimeout              time.Duration
+	ScanRequestTimeout       time.Duration
+	ScanInterval             time.Duration
+	BackgroundScanInterval   time.Duration
+	BootLiveTimeout          time.Duration
+	StateMinStabilitySeconds int
 	// SemanticInterval is a legacy single-interval semantic polling configuration.
 	// Prefer SemanticDiscoveryInterval / SemanticConfigInterval / SemanticStateInterval.
 	SemanticInterval                        time.Duration
@@ -159,6 +179,7 @@ func DefaultConfig() Config {
 		ScanInterval:                            30 * time.Second,
 		BackgroundScanInterval:                  2 * time.Hour,
 		BootLiveTimeout:                         2 * time.Minute,
+		StateMinStabilitySeconds:                StartupAdmissionStateMinStabilitySecondsDefault,
 		SemanticInterval:                        1 * time.Minute,
 		SemanticDiscoveryInterval:               10 * time.Minute,
 		SemanticConfigInterval:                  5 * time.Minute,
@@ -238,6 +259,16 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.BootLiveTimeout == 0 {
 		cfg.BootLiveTimeout = 2 * time.Minute
+	}
+	if cfg.StateMinStabilitySeconds == 0 {
+		cfg.StateMinStabilitySeconds = StartupAdmissionStateMinStabilitySecondsDefault
+	}
+	// AD22 invariant enforcement at config-load (per Codex-bot review on M2):
+	// non-zero invalid values (e.g. -1, 120, or any value violating
+	// state_min_stability_s × 5 ≤ continuous_threshold_s) MUST be rejected
+	// FATALly here, not just exercised in tests.
+	if err := ValidateStartupAdmissionStability(cfg.StateMinStabilitySeconds); err != nil {
+		log.Fatalf("FATAL: %v", err)
 	}
 	if cfg.SemanticInterval == 0 {
 		cfg.SemanticInterval = 1 * time.Minute
@@ -416,4 +447,21 @@ func applyDefaults(cfg Config) Config {
 	cfg.PassiveConfigDirectApply = flags.PassiveConfigDirectApply()
 	cfg.ExternalWritePolicy = flags.ExternalWritePolicy()
 	return cfg
+}
+
+// ValidateStartupAdmissionStability enforces AD22.
+func ValidateStartupAdmissionStability(stateMinStabilitySeconds int) error {
+	if stateMinStabilitySeconds < StartupAdmissionStateMinStabilitySecondsMin || stateMinStabilitySeconds > StartupAdmissionStateMinStabilitySecondsMax {
+		return fmt.Errorf("startup admission: state_min_stability_s=%d out of range [%d, %d]",
+			stateMinStabilitySeconds,
+			StartupAdmissionStateMinStabilitySecondsMin,
+			StartupAdmissionStateMinStabilitySecondsMax)
+	}
+	if stateMinStabilitySeconds*5 > StartupAdmissionContinuousThresholdSeconds {
+		return fmt.Errorf("%w: got state_min_stability_s=%d, continuous_threshold_s=%d",
+			ErrStartupAdmissionStabilityInvariant,
+			stateMinStabilitySeconds,
+			StartupAdmissionContinuousThresholdSeconds)
+	}
+	return nil
 }

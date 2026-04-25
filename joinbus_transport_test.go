@@ -236,7 +236,24 @@ func TestJoinBusAdapter_WarmupObservationForwardsSynthesizedPassiveTraffic(t *te
 		})
 	}()
 
-	time.Sleep(25 * time.Millisecond)
+	// Replace the previous time.Sleep(25ms) with a deterministic poll for
+	// the listener goroutine's Subscribe to land in the reconstructor's
+	// subscriber map (per Codex-bot review on M2). On a busy CI worker
+	// the 25ms window could be exceeded by scheduler jitter, leading to
+	// feedPassiveSymbols firing before Subscribe and a flaky timeout.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		reconstructor.subscribersMu.Lock()
+		ready := len(reconstructor.subscribers) > 0
+		reconstructor.subscribersMu.Unlock()
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for joinBus.Listen to subscribe to reconstructor")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	feedPassiveSymbols(reconstructor, time.Unix(0, 0), frameBytes(request))
 
 	select {

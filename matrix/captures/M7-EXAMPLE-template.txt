@@ -97,10 +97,15 @@ B3.envelope.capability_reason: <expected: AVAILABLE>
 B3.timestamp: <...>
 
 # B4 — disable (operator-initiated; NOT idle-timeout)
+# NOTE: live_monitor.get with action=disable does NOT emit a bus RPC frame
+# — it only releases the gateway's session state. There is no wire-byte
+# evidence to record for B4. The disable is verified by:
+#   - typed response: data.disabled=true (REQUIRED)
+#   - issuer_token matches B1 (REQUIRED — proves single-owner discipline)
+#   - subsequent read attempt would now require a fresh enable
 B4.action: disable
 B4.issuer_token: <same token as B1>
-B4.request_bytes: <write-class disable frame>
-B4.response_bytes: <ACK/NAK>
+B4.envelope.disabled: <true | false>
 B4.envelope.capability_reason: <expected: AVAILABLE or last-known post-disable>
 B4.timestamp: <...>
 

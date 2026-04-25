@@ -268,22 +268,55 @@ For §B (live-monitor lifecycle) call the typed `live_monitor.get`
 tool with `action=enable`, then twice with `action=read`, then once
 with `action=disable` carrying the `issuer_token` from the enable
 response. The typed `live_monitor.get` tool **does** expose raw bytes
-in the `data.raw_hex` field for `read` responses, and the
-`enable`/`disable` request payloads are the canonical `00 03` family
-selector — so a single typed call per step is sufficient. Append all
-four envelopes to the capture file under headers `§B.1.enable`,
+in the `data.raw_hex` field for `read` responses. Append all four
+envelopes to the capture file under headers `§B.1.enable`,
 `§B.2.read`, `§B.3.read`, `§B.4.disable`. The `issuer_token` MUST
-match across all four. `Bn.request_bytes` is the canonical
-`<source> <target> b5 03 00 03 [<action_byte>]` reconstructed frame;
-`Bn.response_bytes` is the `data.raw_hex` value (for `read`) or
-`data.disabled=true`/`data.issuer_token=<token>` markers serialised
-as a hex envelope (for `enable`/`disable`).
+match across all four.
+
+Per-step recording rules:
+
+- `§B.1 enable`: typed response carries `data.issuer_token`. There is
+  no wire-byte payload to record (the gateway emits the enable frame
+  internally; the typed envelope is the falsifiable artefact).
+  Record `B1.envelope.issuer_token` (REQUIRED), `B1.envelope.capability_reason`,
+  `B1.timestamp`. `B1.request_bytes` / `B1.response_bytes` are OPTIONAL
+  via tcpdump / socat (out of scope for falsification).
+- `§B.2/§B.3 read`: typed response carries `data.raw_hex` for the bus
+  frame contents. Record `B{2,3}.response_bytes` from `data.raw_hex`
+  (REQUIRED), plus envelope.capability_reason and timestamp.
+- `§B.4 disable`: `live_monitor.get` action=`disable` does NOT emit a
+  bus RPC frame — it only releases the gateway's session state and
+  returns logical disable data. There is therefore NO wire-byte
+  evidence for B4. Record `B4.envelope.disabled=true` (REQUIRED — proves
+  the gateway accepted the disable), `B4.issuer_token` matches B1
+  (REQUIRED — proves single-owner discipline), `B4.envelope.capability_reason`
+  and `B4.timestamp`.
 
 For §C run a B524 baseline poll (e.g.
 `ebus.v1.semantic.boiler_status.get`) **while** §B's two read calls are
 in flight, and append the resulting envelope under `§C.1.b524_during_b503`.
-Compare its `meta.duration_ms` against the post-M6 baseline recorded in
-§5 (within 2× tolerance — record `b524_within_2x_tolerance: true|false`).
+
+The MCP v1 envelope does not include a `meta.duration_ms` field
+(per `mcp/server.go` it carries contract / consistency / timestamp /
+hash metadata only). Operators measure the call duration externally
+by recording wall-clock timestamps before and after the curl
+invocation:
+
+```
+START=$(date -u +%s.%N)
+curl -sS -X POST "$ENDPOINT" -H 'Content-Type: application/json' -d \
+    '{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"ebus.v1.semantic.boiler_status.get","arguments":{}}}' \
+    >> "$CAP"
+END=$(date -u +%s.%N)
+DURATION_MS=$(awk "BEGIN {printf \"%.0f\", ($END - $START) * 1000}")
+echo "C1.duration_ms_observed: $DURATION_MS" >> "$CAP"
+```
+
+Compare the observed `C1.duration_ms_observed` value against the
+post-M6 baseline recorded in §5 (within 2× tolerance — record
+`b524_within_2x_tolerance: true|false`). The wall-clock measurement
+includes HTTP transport overhead which is comparable to the baseline
+because the baseline was measured the same way.
 
 For §D append a per-row verdict block (one row per §9 VB-BR-01..VB-BR-08
 entry) referencing the §A/§B/§C captures by header. Mark each row

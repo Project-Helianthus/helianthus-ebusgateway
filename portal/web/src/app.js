@@ -1804,6 +1804,16 @@ class PortalShell extends HTMLElement {
     const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
     const gridEl = this.querySelector('[data-role="projection-uml-grid"]');
     const deviceSelect = this.querySelector('[data-role="projection-device-select"]');
+    // M8 F3 (R2 round-1 P2 fix): clear the B503 card host AT THE TOP
+    // before any early-return path so a stale card from the previous
+    // device cannot persist when the new selection: (a) lacks
+    // projection planes, (b) is empty, (c) is unknown, or (d) the fetch
+    // path fails. The success path further down will append the new
+    // device's card iff capability=AVAILABLE.
+    const cardHostEarly = this.querySelector('[data-role="projection-b503-card-host"]');
+    if (cardHostEarly) {
+      cardHostEarly.innerHTML = "";
+    }
     if (!gridEl || !deviceSelect) {
       return true;
     }
@@ -1843,16 +1853,14 @@ class PortalShell extends HTMLElement {
         .map((p, i) => ({ plane: p.plane, graph: graphs[i] }))
         .filter((r) => r.graph);
       this.renderProjectionUML(gridEl, device, results);
-      // M8 F3 (R1 round-1 P1 fix): wire renderProjectionB503Card into
-      // the projection load path. Clear stale cards first, then probe
-      // B503 capability per-device and append a card iff AVAILABLE.
+      // M8 F3 (R1 round-1 P1 fix; R2 round-1 P2 follow-up): wire
+      // renderProjectionB503Card into the projection load path. The
+      // host has already been cleared at function entry (so any
+      // early-return branch above also clears it); here we just probe
+      // capability and append the new device's card iff AVAILABLE.
       // Cap probe is intentionally non-blocking on plane render: a
       // failed probe degrades to "no B503 card" without affecting the
       // existing projection UI.
-      const cardHost = this.querySelector('[data-role="projection-b503-card-host"]');
-      if (cardHost) {
-        cardHost.innerHTML = "";
-      }
       this._probeAndRenderB503Card(device).catch(() => {
         // Probe failure → no card. Already a soft-fail in the F3
         // contract (capability=AVAILABLE is the gate; anything else

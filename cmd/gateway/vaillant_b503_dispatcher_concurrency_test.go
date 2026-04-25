@@ -193,13 +193,13 @@ func assertNoForbiddenOrder(t *testing.T, log *lockLog) {
 // to the production semantics described in spec §6.3 / §7.4 (Manager
 // holds the gate logically; the dispatcher acquires readMu underneath).
 type concDriver struct {
-	disp           *rawFrameDispatcher
-	bus            *b503DispatcherMockBus
-	mgr            *b503session.Manager
-	liveMonitorMu  *tracedMutex
-	readMu         *sync.Mutex // wrapped pointer fed into dispatcher
-	readMuTraced   *tracedMutex
-	log            *lockLog
+	disp          *rawFrameDispatcher
+	bus           *b503DispatcherMockBus
+	mgr           *b503session.Manager
+	liveMonitorMu *tracedMutex
+	readMu        *sync.Mutex // wrapped pointer fed into dispatcher
+	readMuTraced  *tracedMutex
+	log           *lockLog
 }
 
 func newConcDriver(t *testing.T) *concDriver {

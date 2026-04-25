@@ -22,6 +22,20 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
+// gatewayWithMockBus builds an *ebusgateway.Gateway whose Bus field
+// points at a real *protocol.Bus driven by a stubRawTransport (defined
+// in semantic_vaillant_adapter_info_test.go). The bus is started on a
+// fresh goroutine so installVaillantB503's production path (which
+// requires a non-nil Bus) takes effect.
+func gatewayWithMockBus(t *testing.T) *ebusgateway.Gateway {
+	t.Helper()
+	bus := protocol.NewBus(stubRawTransport{}, protocol.DefaultBusConfig(), 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	bus.Run(ctx)
+	return &ebusgateway.Gateway{Bus: bus}
+}
+
 // gatewaySource is the gateway's eBUS source address. 0x71 per project
 // convention (gateway = 113). Used by the dispatcher to populate
 // Frame.Source. Defined here as test-package-local; production code
@@ -369,11 +383,7 @@ func TestM6Dispatcher_InstallVaillantB503_InjectsProductionDispatcher(t *testing
 	if err != nil {
 		t.Fatalf("mcp.NewServer = %v", err)
 	}
-	// Build a minimal Gateway. Bus is nil — the production dispatcher's
-	// Invoke would return errMisconfigured if exercised, but the
-	// integration test only type-asserts the dispatcher field, not its
-	// runtime behaviour.
-	gw := &ebusgateway.Gateway{}
+	gw := gatewayWithMockBus(t)
 	cfg := &ebusgateway.Config{}
 	rt := installVaillantB503(srv, gw, cfg)
 	if rt == nil {

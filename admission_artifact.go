@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -41,6 +43,7 @@ type AdmissionArtifactBuilder struct {
 	mu        sync.Mutex
 	artifact  AdmissionArtifact
 	startedAt time.Time
+	emitOnce  uint32 // CAS guard for EmitToFile
 }
 
 func NewAdmissionArtifactBuilder(transportKind string) *AdmissionArtifactBuilder {
@@ -81,6 +84,20 @@ func (b *AdmissionArtifactBuilder) SetJoinerSelection(source, companionTarget ui
 func (b *AdmissionArtifactBuilder) SetOverrideSource(source uint8) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.artifact.Admission.Source = source
+}
+
+// SetActiveOverride flips Admission.State to "active" and records the
+// override Source. Used by the override path (AD09 (c2) soft short-
+// circuit) where the override source is in use from the first active
+// frame regardless of Joiner outcome — so the artifact must reflect
+// state="active", not the default "pending". Found by AD20 second-
+// reviewer M7 pass: the prior code path emitted state=pending on
+// override which was misleading to operators.
+func (b *AdmissionArtifactBuilder) SetActiveOverride(source uint8) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.artifact.Admission.State = "active"
 	b.artifact.Admission.Source = source
 }
 
@@ -132,22 +149,32 @@ func (b *AdmissionArtifactBuilder) Emit() (AdmissionArtifact, []byte, error) {
 	return b.artifact, data, nil
 }
 
+// EmitToFile writes the artifact JSON to the given path. Once a snapshot
+// is emitted (e.g. by the 60s startup-window goroutine), subsequent calls
+// are no-ops via the emitOnce guard — this prevents the AD20-reviewer-
+// flagged race where a defer-on-shutdown emit could overwrite the
+// canonical 60s window snapshot with later state.
+//
+// To re-arm the builder for a new window, call ResetEmitOnce.
 func (b *AdmissionArtifactBuilder) EmitToFile(path string) error {
+	if !atomic.CompareAndSwapUint32(&b.emitOnce, 0, 1) {
+		return nil
+	}
 	_, data, err := b.Emit()
 	if err != nil {
+		// Re-arm so a follow-up call can retry; the file was not written.
+		atomic.StoreUint32(&b.emitOnce, 0)
 		return err
 	}
-	if err := os.MkdirAll(dirOf(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		atomic.StoreUint32(&b.emitOnce, 0)
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
 }
 
-func dirOf(path string) string {
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			return path[:i]
-		}
-	}
-	return "."
+// ResetEmitOnce re-arms EmitToFile so the next call will write again.
+// Used by tests; production callers should not need this.
+func (b *AdmissionArtifactBuilder) ResetEmitOnce() {
+	atomic.StoreUint32(&b.emitOnce, 0)
 }

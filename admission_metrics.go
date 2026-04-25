@@ -94,14 +94,21 @@ func (m *StartupAdmissionMetrics) MarkDegraded(now time.Time) {
 	}
 }
 
-// MarkActive sets State=1 and clears DegradedSinceMs.
+// MarkActive sets State=1 and clears DegradedSinceMs. Holds m.mu so the
+// pair {State, DegradedSinceMs} updates atomically vs MarkDegraded /
+// MarkPending — prevents the AD20-reviewer-flagged race where concurrent
+// transitions could double-count DegradedTotal.
 func (m *StartupAdmissionMetrics) MarkActive() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.State.Set(1)
 	m.DegradedSinceMs.Set(0)
 }
 
-// MarkPending sets State=0.
+// MarkPending sets State=0. Holds m.mu (see MarkActive note).
 func (m *StartupAdmissionMetrics) MarkPending() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.State.Set(0)
 }
 

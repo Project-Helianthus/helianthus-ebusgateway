@@ -239,15 +239,32 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		}
 		joiner := protocol.NewJoiner(joinBus, nil, ebusgateway.DefaultStartupAdmissionJoinConfig())
 
+		// Install AD08/AD22 stability window on the bus_observability store
+		// before the first admission state observation. Window is sized
+		// from cfg.StateMinStabilitySeconds (default 30, AD22 invariant
+		// enforced at config-load).
+		if busObservability != nil {
+			busObservability.SetAdmissionStabilityWindow(
+				ebusgateway.NewAdmissionStabilityWindow(ebusgateway.StartupAdmissionStateMinStabilitySecondsDefault),
+			)
+			busObservability.RecordBusAdmissionTransition("pending", 0, 0, "joiner_warmup_in_progress")
+		}
+
 		log.Printf("joiner warmup begin")
 		warmupCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 		result, err := joiner.Join(warmupCtx)
 		cancel()
 		if err != nil {
 			log.Printf("startup admission degraded reason=joiner_fail err=%v", err)
+			if busObservability != nil {
+				busObservability.RecordBusAdmissionTransition("degraded", 0, 0, "joiner_fail")
+			}
 		} else {
 			joinResult = &result
 			log.Printf("startup admission active source=0x%02X companion_target=0x%02X", result.Initiator, result.CompanionTarget)
+			if busObservability != nil {
+				busObservability.RecordBusAdmissionTransition("active", result.Initiator, result.CompanionTarget, "")
+			}
 		}
 	}
 

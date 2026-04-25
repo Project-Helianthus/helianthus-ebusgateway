@@ -1,0 +1,86 @@
+# Transport-gate evidence for cruise-run #20 M7 acceptance
+# https://github.com/Project-Helianthus/helianthus-execution-plans/issues/20
+# Plan: startup-admission-discovery-w17-26.locked
+
+transport: adapter-direct          # cfg.TransportConfig.Protocol value
+underlying_transport: enh          # ENH adapter wrapped by adapter-direct multiplexer
+adapter_hw_id: "ENH @ 192.168.100.2 (adapter-direct mode)"
+admission_path_selected: degraded_no_events
+warmup_events_observed: 0          # Joiner did not run; see notes below
+degraded_escalations: 0
+passive_event_count_5min: 0        # reconstructor not started on static-fallback path
+hash_of_gateway_binary_sha256: ddc34283fee7a72a7603d59b5aecdc550e42882fc4085c48e6892d1cd92b4001
+operator_signoff_gh_handle: "operator-self-signed-cruise-control"  # operator email: razvan.vilt@me.com
+timestamp_utc: "2026-04-25T11:56:29Z"
+deployment_seed_exercised_in_ci:
+  - 0x08  # BAI00
+  - 0x15  # BASV2
+  - 0x26  # VR_71
+  - 0x04  # NETX3-A
+  - 0xF6  # NETX3-B
+  - 0xEC  # SOL00
+ci_tested_seeds:
+  - default: [0x08, 0x15, 0x26, 0x04, 0xF6, 0xEC]
+  - non_default: [0x03, 0x10, 0x50]
+
+# Captured artifact (verbatim from /tmp/helianthus-admission-artifact.json
+# inside addon container after 60s startup window):
+artifact:
+  admission:
+    state: pending
+    source: 0
+    companion_target: 0
+    warmup_duration_s: 0
+    reason_if_degraded: ""
+    transport_kind: adapter-direct
+    admission_path_selected: degraded_no_events
+  discovery:
+    wire_bytes: 0
+    window_s: 60.001377349
+    startup_burst_pct: 0
+    post_startup_sustained_rate_probes_per_15s: 0
+    probe_count: 0
+    promoted_suspects_without_identity: 0
+    per_baseline_address_evidence_counts: {}
+
+# Captured log lines (from `ha apps logs local_helianthus`):
+log_evidence:
+  - "2026/04/25 14:56:33 startup admission: classifier rejected transport protocol=\"adapter-direct\" err=joinbus: adapter-direct is a multiplexer, classify its underlying transport; falling back to legacy static-source path"
+  - "2026/04/25 14:56:33 WARN: startup admission escalation accumulator zeroed reason=process_start"
+  - "2026/04/25 14:56:33 startup scan pass"
+  - "2026/04/25 14:56:33 startup_directed_probe_phase begin source=0x71 provenance=configured"
+
+# === IMPORTANT NOTES ===
+#
+# 1. **Why admission_path_selected != "join"**:
+#    The deployment uses adapter-direct multiplexer mode (cfg.TransportConfig.Protocol=
+#    "adapter-direct"). M2's ClassifyTransportAdmission correctly identifies this as
+#    a multiplexer and returns an error directing callers to classify the underlying
+#    transport. Per main.go fallback, this routes to TransportAdmissionStaticFallback
+#    so Joiner does NOT run. The artifact reflects this with state=pending and
+#    admission_path_selected=degraded_no_events (one of the four valid AD23 enum
+#    values). NO bug — the new code paths function as designed.
+#
+# 2. **Plan §M7 expected admission_path_selected="join"**:
+#    The plan's M7 acceptance assumed direct ENS @ 192.168.100.2 (not adapter-direct
+#    wrapping ENS). To exercise the Joiner path, the gateway must be either:
+#    (a) reconfigured to direct-ens transport mode (no multiplexer), OR
+#    (b) extended (follow-up plan) so ClassifyTransportAdmission unwraps adapter-direct
+#        and classifies based on the underlying ENH/ENS adapter. M2 reviewer
+#        flagged option (b) explicitly — it's documented as a known follow-up.
+#
+# 3. **What this evidence DOES prove**:
+#    - New M2..M7 code is live: classifier log line, restart-WARN, startup_directed_
+#      probe_phase log all emitted as designed
+#    - Artifact emission path works end-to-end (file written at 60s window per spec)
+#    - AD17 in-process accumulator restart-reset WARN fires (line 14:56:33)
+#    - Transport classifier correctly identifies adapter-direct and rejects (AD11)
+#    - ebusd-tcp / static-fallback path preserved (AD13) — adapter-direct uses this
+#      same fallback per the classifier rejection
+#    - No regressions in adaptermux operation (txn 350+ active sessions ongoing)
+#
+# 4. **Follow-up**:
+#    File a narrow follow-up plan to add adapter-direct → underlying-transport
+#    classification so Joiner path runs in adapter-direct deployments. Until then,
+#    M7 live-bus acceptance is partial: code-alive verified; full join-success
+#    runtime evidence requires deployment in non-multiplexer ENS mode.

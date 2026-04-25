@@ -34,6 +34,9 @@ go build ./...
 echo "==> go test (race)"
 go test -race -count=1 ./...
 
+echo "==> validating admission-artifact schema coverage"
+go test ./... -run "TestAdmissionArtifact_EmitValidatesAgainstSchema" -count=1
+
 echo "==> python script tests"
 python3 scripts/passive_canary_verifier_test.py
 python3 scripts/transport_gate_test.py

@@ -114,6 +114,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		admissionPath = ebusgateway.TransportAdmissionStaticFallback
 	}
 	metrics := ebusgateway.GetOrInitStartupAdmissionMetrics()
+	artifactBuilder := ebusgateway.NewAdmissionArtifactBuilder(string(cfg.TransportConfig.Protocol))
+	if err := artifactBuilder.SetAdmissionPathSelected("degraded_no_events"); err != nil {
+		log.Fatalf("FATAL: AD23 enum violation at startup: %v", err)
+	}
 	overrideSet := admissionPath == ebusgateway.TransportAdmissionJoinCapable && cfg.StartupSource.Source != nil
 	overrideSource := byte(0x00)
 	if overrideSet {
@@ -121,9 +125,36 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		log.Print(ebusgateway.FormatStartupAdmissionOverrideLog(overrideSource))
 		metrics.SetOverrideActive(true)
 		metrics.RecordOverrideBypass()
+		artifactBuilder.SetOverrideSource(overrideSource)
+		if err := artifactBuilder.SetAdmissionPathSelected("override"); err != nil {
+			log.Fatalf("FATAL: AD23 enum violation on override path: %v", err)
+		}
+		// Override is configured: admission state immediately becomes
+		// "active" because the override Initiator is in use from the
+		// first active frame (AD09 (c2) soft short-circuit). Joiner may
+		// still run advisory-only under Validate=true but does not gate.
+		artifactBuilder.SetActiveOverride(overrideSource)
 	} else {
 		metrics.SetOverrideActive(false)
 	}
+	const artifactPath = "/tmp/helianthus-admission-artifact.json"
+	go func() {
+		timer := time.NewTimer(60 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if err := artifactBuilder.EmitToFile(artifactPath); err != nil {
+				log.Printf("startup admission artifact emit: %v", err)
+			}
+		}
+	}()
+	defer func() {
+		if err := artifactBuilder.EmitToFile(artifactPath); err != nil {
+			log.Printf("startup admission artifact emit: %v", err)
+		}
+	}()
 
 	busObservability, deduplicator, err := wireObserveFirstObserversFn(&cfg)
 	if err != nil {
@@ -263,6 +294,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 		log.Printf("joiner warmup begin")
 		warmupCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		warmupStartedAt := time.Now()
 		result, err := joiner.Join(warmupCtx)
 		cancel()
 		if err != nil {
@@ -270,11 +302,19 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			if busObservability != nil {
 				busObservability.RecordBusAdmissionTransition("degraded", 0, 0, "joiner_fail")
 			}
+			artifactBuilder.SetDegraded("joiner_fail")
+			if perr := artifactBuilder.SetAdmissionPathSelected("degraded_no_events"); perr != nil {
+				log.Fatalf("FATAL: AD23 enum violation on joiner-fail path: %v", perr)
+			}
 		} else {
 			if overrideSet {
 				_ = ebusgateway.CheckOverrideCompanionConflict(overrideSource, result, metrics)
 			} else {
 				joinResult = &result
+				artifactBuilder.SetJoinerSelection(result.Initiator, result.CompanionTarget, time.Since(warmupStartedAt))
+				if perr := artifactBuilder.SetAdmissionPathSelected("join"); perr != nil {
+					log.Fatalf("FATAL: AD23 enum violation on join path: %v", perr)
+				}
 				log.Printf("startup admission active source=0x%02X companion_target=0x%02X", result.Initiator, result.CompanionTarget)
 				if busObservability != nil {
 					busObservability.RecordBusAdmissionTransition("active", result.Initiator, result.CompanionTarget, "")
@@ -297,6 +337,9 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	log.Printf("startup scan pass")
 	log.Printf("startup_directed_probe_phase begin source=0x%02X provenance=%s", startupCfg.ScanSource, startupSourceProvenance)
+	if overrideSet {
+		artifactBuilder.SetOverrideSource(startupCfg.ScanSource)
+	}
 	startupScanSignals := startDiscoveryScanLoopFn(ctx, startupCfg, gateway, builder, adapterClassifier)
 
 	if semanticBarrier != nil {

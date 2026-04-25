@@ -41,6 +41,13 @@ type BusObservabilityStartup struct {
 	LiveEpoch     uint64     `json:"live_epoch"`
 }
 
+type BusAdmission struct {
+	State           string `json:"state"`
+	Source          uint8  `json:"source"`
+	CompanionTarget uint8  `json:"companion_target"`
+	Reason          string `json:"reason,omitempty"`
+}
+
 type BusObservabilityStatus struct {
 	LastUpdatedAt          *time.Time                    `json:"last_updated_at,omitempty"`
 	TransportClass         string                        `json:"transport_class"`
@@ -50,6 +57,7 @@ type BusObservabilityStatus struct {
 	Warmup                 BusObservabilityWarmup        `json:"warmup"`
 	TimingQuality          BusObservabilityTimingQuality `json:"timing_quality"`
 	Degraded               BusObservabilityDegraded      `json:"degraded"`
+	BusAdmission           *BusAdmission                 `json:"bus_admission,omitempty"`
 	Startup                *BusObservabilityStartup      `json:"startup,omitempty"`
 	FeatureFlags           ObserveFirstFeatureFlagState  `json:"feature_flags"`
 }
@@ -242,6 +250,7 @@ func cloneBusObservabilityStatus(source *BusObservabilityStatus) *BusObservabili
 	}
 	out := *source
 	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
+	out.BusAdmission = cloneBusAdmission(source.BusAdmission)
 	out.Startup = cloneBusObservabilityStartup(source.Startup)
 	if len(source.Degraded.Reasons) > 0 {
 		out.Degraded.Reasons = append([]string(nil), source.Degraded.Reasons...)
@@ -273,6 +282,14 @@ func cloneBusObservabilityStartup(source *BusObservabilityStartup) *BusObservabi
 	}
 	out := *source
 	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
+	return &out
+}
+
+func cloneBusAdmission(source *BusAdmission) *BusAdmission {
+	if source == nil {
+		return nil
+	}
+	out := *source
 	return &out
 }
 

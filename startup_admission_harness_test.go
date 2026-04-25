@@ -73,7 +73,7 @@ func TestM2aHarness_JoinerFailNoFreeInitiatorPath(t *testing.T) {
 }
 
 func TestM2aHarness_TransportBlindPath(t *testing.T) {
-	t.Skip("partial coverage in M2; full coverage pending M5 degraded-mode surfaces")
+	t.Skip("partial coverage in M2 warmup integration test; full end-to-end pending M7 when MarkDegraded is wired into the M3 startup flow")
 }
 
 func TestM2aHarness_OverrideValidateFalsePath(t *testing.T) {

@@ -309,7 +309,8 @@ func mapGraphQLBusStatus(status ebusgateway.BusObservabilityStatus) *graphql.Bus
 			Active:  status.Degraded.Active,
 			Reasons: append([]string(nil), status.Degraded.Reasons...),
 		},
-		Startup: mapGraphQLBusStartup(status.Startup),
+		BusAdmission: mapGraphQLBusAdmission(status.BusAdmission),
+		Startup:      mapGraphQLBusStartup(status.Startup),
 		FeatureFlags: graphql.ObserveFirstFeatureFlagState{
 			ObserveFirstEnabled:      status.FeatureFlags.ObserveFirstEnabled,
 			PassiveStateDirectApply:  status.FeatureFlags.PassiveStateDirectApply,
@@ -355,7 +356,8 @@ func mapMCPBusStatus(status ebusgateway.BusObservabilityStatus) *mcp.BusObservab
 			Active:  status.Degraded.Active,
 			Reasons: append([]string(nil), status.Degraded.Reasons...),
 		},
-		Startup: mapMCPBusStartup(status.Startup),
+		BusAdmission: mapMCPBusAdmission(status.BusAdmission),
+		Startup:      mapMCPBusStartup(status.Startup),
 		FeatureFlags: mcp.ObserveFirstFeatureFlagState{
 			ObserveFirstEnabled:      status.FeatureFlags.ObserveFirstEnabled,
 			PassiveStateDirectApply:  status.FeatureFlags.PassiveStateDirectApply,
@@ -388,6 +390,30 @@ func mapMCPBusStartup(startup *ebusgateway.BusObservabilityStartup) *mcp.BusObse
 		Phase:         startup.Phase,
 		CacheEpoch:    startup.CacheEpoch,
 		LiveEpoch:     startup.LiveEpoch,
+	}
+}
+
+func mapGraphQLBusAdmission(admission *ebusgateway.BusAdmission) *graphql.BusAdmission {
+	if admission == nil {
+		return nil
+	}
+	return &graphql.BusAdmission{
+		State:           admission.State,
+		Source:          admission.Source,
+		CompanionTarget: admission.CompanionTarget,
+		Reason:          admission.Reason,
+	}
+}
+
+func mapMCPBusAdmission(admission *ebusgateway.BusAdmission) *mcp.BusAdmission {
+	if admission == nil {
+		return nil
+	}
+	return &mcp.BusAdmission{
+		State:           admission.State,
+		Source:          admission.Source,
+		CompanionTarget: admission.CompanionTarget,
+		Reason:          admission.Reason,
 	}
 }
 

@@ -98,6 +98,54 @@ type BusObservabilityStore struct {
 	startupSurfaceProvider func() *BusObservabilityStartup
 
 	energyFreshnessMetricsRefresher func(now time.Time, passiveState string)
+	busAdmission                    *BusAdmission
+	admissionStabilityWindow        *AdmissionStabilityWindow
+}
+
+// SetAdmissionStabilityWindow installs the AD08 / AD22 flap-mitigation
+// window on the store. When set, RecordBusAdmissionTransition will only
+// flip the envelope's bus_admission field after the new state has been
+// stable for state_min_stability_s. Caller (cmd/gateway/main.go) constructs
+// the window from cfg.StateMinStabilitySeconds and passes it once at
+// startup. If unset, RecordBusAdmissionTransition writes through
+// immediately (legacy behavior; tests may use this mode).
+func (store *BusObservabilityStore) SetAdmissionStabilityWindow(window *AdmissionStabilityWindow) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.admissionStabilityWindow = window
+}
+
+// RecordBusAdmissionTransition is the production-side setter for the
+// additive bus_admission field per AD08. The state argument MUST be one
+// of {"pending", "active", "degraded"}; source/companionTarget are byte
+// values from JoinResult or override; reason is non-empty only when
+// state="degraded".
+//
+// When an AdmissionStabilityWindow is installed (production path), the
+// state observation is gated through it; transient flaps within the
+// window do NOT flip the envelope nor data_hash. When no window is
+// installed, the transition is applied immediately (test path).
+//
+// Returns true if the envelope's bus_admission field actually changed
+// as a result of this call (including stability-window-mediated flips).
+func (store *BusObservabilityStore) RecordBusAdmissionTransition(state string, source, companionTarget byte, reason string) bool {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	emittedState := state
+	flipped := true
+	if store.admissionStabilityWindow != nil {
+		emittedState, flipped = store.admissionStabilityWindow.Observe(state)
+		if !flipped {
+			return false
+		}
+	}
+	store.busAdmission = &BusAdmission{
+		State:           emittedState,
+		Source:          source,
+		CompanionTarget: companionTarget,
+		Reason:          reason,
+	}
+	return true
 }
 
 type BusMessageRecord struct {

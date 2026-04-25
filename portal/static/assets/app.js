@@ -2862,10 +2862,23 @@ class PortalShell extends HTMLElement {
   // handler before any state mutation (M8-TGT-04 / R5 A1).
   // -----------------------------------------------------------------
 
+  // Stable sentinel for the unset / default target. The token + state
+  // maps must be readable+writable under this key the same way they
+  // are for explicit byte addresses, otherwise enable/disable on the
+  // default target stores its token under one key and the disable
+  // accessor returns null — the GraphQL provider then rejects the
+  // disable with `issuer_token required` and the local session sticks
+  // (R3 round-1 P2 fix).
+  static _DEFAULT_B503_TARGET_KEY = "<default>";
+
   _vaillantB503TargetKey(addr) {
-    if (addr === null || addr === undefined) return null;
+    if (addr === null || addr === undefined) {
+      return PortalShell._DEFAULT_B503_TARGET_KEY;
+    }
     const n = Number(addr);
-    if (!Number.isFinite(n)) return null;
+    if (!Number.isFinite(n)) {
+      return PortalShell._DEFAULT_B503_TARGET_KEY;
+    }
     return n & 0xff;
   }
 
@@ -2891,15 +2904,17 @@ class PortalShell extends HTMLElement {
   }
 
   vaillantB503LiveTokenForTarget(addr) {
+    // _vaillantB503TargetKey always returns a stable key (number for
+    // explicit byte address, or the DEFAULT sentinel for unset/null
+    // target). Readers must never short-circuit on a null key —
+    // unset target is a valid map slot (R3 round-1 P2 fix).
     const key = this._vaillantB503TargetKey(addr);
-    if (key === null) return null;
     const tok = this._vaillantB503TokenMap().get(key);
     return tok || null;
   }
 
   vaillantB503SessionStateForTarget(addr) {
     const key = this._vaillantB503TargetKey(addr);
-    if (key === null) return "Idle";
     const map = this._vaillantB503SessionStateMap();
     if (map.has(key)) return map.get(key);
     return this._vaillantB503TokenMap().get(key) ? "Active" : "Idle";

@@ -54,6 +54,36 @@ type BusAdmission struct {
 	Source          uint8
 	CompanionTarget uint8
 	Reason          string
+	SourceSelection *BusAdmissionSourceSelection
+}
+
+type BusAdmissionSourceSelection struct {
+	State                   string
+	Mode                    string
+	Outcome                 string
+	Reason                  string
+	SelectedSource          *uint8
+	FailedSource            *uint8
+	CompanionTarget         *uint8
+	ActiveProbe             *BusAdmissionActiveProbe
+	Retryable               bool
+	NextAction              string
+	LastSuccessfulSource    *uint8
+	AutomaticRetryScheduled bool
+	RejectedCandidates      []BusAdmissionRejectedCandidate
+}
+
+type BusAdmissionActiveProbe struct {
+	Target *uint8
+	Opcode string
+	Status string
+}
+
+type BusAdmissionRejectedCandidate struct {
+	Source             uint8
+	Reason             string
+	OccupancyState     string
+	EvidenceProvenance string
 }
 
 type BusObservabilityStatus struct {
@@ -270,6 +300,7 @@ func cloneBusObservabilityStatus(source *BusObservabilityStatus) *BusObservabili
 	}
 	out := *source
 	out.LastUpdatedAt = cloneTimePtr(source.LastUpdatedAt)
+	out.BusAdmission = cloneBusAdmission(source.BusAdmission)
 	out.Startup = cloneBusObservabilityStartup(source.Startup)
 	if len(source.Degraded.Reasons) > 0 {
 		out.Degraded.Reasons = append([]string(nil), source.Degraded.Reasons...)
@@ -296,12 +327,49 @@ func cloneObserveFirstFeatureFlagState(source ObserveFirstFeatureFlagState) Obse
 	return out
 }
 
+func cloneBusAdmission(source *BusAdmission) *BusAdmission {
+	if source == nil {
+		return nil
+	}
+	out := *source
+	out.SourceSelection = cloneBusAdmissionSourceSelection(source.SourceSelection)
+	return &out
+}
+
+func cloneBusAdmissionSourceSelection(source *BusAdmissionSourceSelection) *BusAdmissionSourceSelection {
+	if source == nil {
+		return nil
+	}
+	out := *source
+	out.SelectedSource = cloneUint8Ptr(source.SelectedSource)
+	out.FailedSource = cloneUint8Ptr(source.FailedSource)
+	out.CompanionTarget = cloneUint8Ptr(source.CompanionTarget)
+	out.LastSuccessfulSource = cloneUint8Ptr(source.LastSuccessfulSource)
+	if source.ActiveProbe != nil {
+		activeProbe := *source.ActiveProbe
+		activeProbe.Target = cloneUint8Ptr(source.ActiveProbe.Target)
+		out.ActiveProbe = &activeProbe
+	}
+	if len(source.RejectedCandidates) > 0 {
+		out.RejectedCandidates = append([]BusAdmissionRejectedCandidate(nil), source.RejectedCandidates...)
+	}
+	return &out
+}
+
 func cloneTimePtr(source *time.Time) *time.Time {
 	if source == nil {
 		return nil
 	}
 	updatedAt := source.UTC()
 	return &updatedAt
+}
+
+func cloneUint8Ptr(source *uint8) *uint8 {
+	if source == nil {
+		return nil
+	}
+	value := *source
+	return &value
 }
 
 func graphqlTimeString(source *time.Time) any {
@@ -708,9 +776,237 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 		},
 	})
 
+	busAdmissionActiveProbeType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "BusAdmissionActiveProbe",
+		Fields: graphqlgo.Fields{
+			"target": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					probe, ok := busAdmissionActiveProbeFromSource(params.Source)
+					if !ok || probe.Target == nil {
+						return nil, nil
+					}
+					return int(*probe.Target), nil
+				},
+			},
+			"opcode": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					probe, ok := busAdmissionActiveProbeFromSource(params.Source)
+					if !ok || probe.Opcode == "" {
+						return nil, nil
+					}
+					return probe.Opcode, nil
+				},
+			},
+			"status": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					probe, ok := busAdmissionActiveProbeFromSource(params.Source)
+					if !ok || probe.Status == "" {
+						return nil, nil
+					}
+					return probe.Status, nil
+				},
+			},
+		},
+	})
+
+	busAdmissionRejectedCandidateType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "BusAdmissionRejectedCandidate",
+		Fields: graphqlgo.Fields{
+			"source": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					candidate, ok := busAdmissionRejectedCandidateFromSource(params.Source)
+					if !ok {
+						return 0, nil
+					}
+					return int(candidate.Source), nil
+				},
+			},
+			"reason": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					candidate, ok := busAdmissionRejectedCandidateFromSource(params.Source)
+					if !ok || candidate.Reason == "" {
+						return nil, nil
+					}
+					return candidate.Reason, nil
+				},
+			},
+			"occupancy_state": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					candidate, ok := busAdmissionRejectedCandidateFromSource(params.Source)
+					if !ok || candidate.OccupancyState == "" {
+						return nil, nil
+					}
+					return candidate.OccupancyState, nil
+				},
+			},
+			"evidence_provenance": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					candidate, ok := busAdmissionRejectedCandidateFromSource(params.Source)
+					if !ok || candidate.EvidenceProvenance == "" {
+						return nil, nil
+					}
+					return candidate.EvidenceProvenance, nil
+				},
+			},
+		},
+	})
+
+	busAdmissionSourceSelectionType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "BusAdmissionSourceSelection",
+		Fields: graphqlgo.Fields{
+			"state": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok {
+						return "", nil
+					}
+					return selection.State, nil
+				},
+			},
+			"mode": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok || selection.Mode == "" {
+						return nil, nil
+					}
+					return selection.Mode, nil
+				},
+			},
+			"outcome": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok || selection.Outcome == "" {
+						return nil, nil
+					}
+					return selection.Outcome, nil
+				},
+			},
+			"reason": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok || selection.Reason == "" {
+						return nil, nil
+					}
+					return selection.Reason, nil
+				},
+			},
+			"selected_source": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok || selection.SelectedSource == nil {
+						return nil, nil
+					}
+					return int(*selection.SelectedSource), nil
+				},
+			},
+			"failed_source": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok || selection.FailedSource == nil {
+						return nil, nil
+					}
+					return int(*selection.FailedSource), nil
+				},
+			},
+			"companion_target": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok || selection.CompanionTarget == nil {
+						return nil, nil
+					}
+					return int(*selection.CompanionTarget), nil
+				},
+			},
+			"active_probe": &graphqlgo.Field{
+				Type: busAdmissionActiveProbeType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok {
+						return nil, nil
+					}
+					return selection.ActiveProbe, nil
+				},
+			},
+			"retryable": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok {
+						return false, nil
+					}
+					return selection.Retryable, nil
+				},
+			},
+			"next_action": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok || selection.NextAction == "" {
+						return nil, nil
+					}
+					return selection.NextAction, nil
+				},
+			},
+			"last_successful_source": &graphqlgo.Field{
+				Type: graphqlgo.Int,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok || selection.LastSuccessfulSource == nil {
+						return nil, nil
+					}
+					return int(*selection.LastSuccessfulSource), nil
+				},
+			},
+			"automatic_retry_scheduled": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok {
+						return false, nil
+					}
+					return selection.AutomaticRetryScheduled, nil
+				},
+			},
+			"rejected_candidates": &graphqlgo.Field{
+				Type: graphqlgo.NewList(graphqlgo.NewNonNull(busAdmissionRejectedCandidateType)),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					selection, ok := busAdmissionSourceSelectionFromSource(params.Source)
+					if !ok {
+						return nil, nil
+					}
+					return selection.RejectedCandidates, nil
+				},
+			},
+		},
+	})
+
 	busAdmissionType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "BusAdmission",
 		Fields: graphqlgo.Fields{
+			"source_selection": &graphqlgo.Field{
+				Type: busAdmissionSourceSelectionType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					admission, ok := busAdmissionFromSource(params.Source)
+					if !ok {
+						return nil, nil
+					}
+					return admission.SourceSelection, nil
+				},
+			},
 			"state": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -856,6 +1152,20 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 				},
 			},
 			"busAdmission": &graphqlgo.Field{
+				Type: busAdmissionType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*BusObservabilityStatus)
+					if ok && status != nil {
+						return status.BusAdmission, nil
+					}
+					value, ok := params.Source.(BusObservabilityStatus)
+					if !ok {
+						return nil, nil
+					}
+					return value.BusAdmission, nil
+				},
+			},
+			"bus_admission": &graphqlgo.Field{
 				Type: busAdmissionType,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					status, ok := params.Source.(*BusObservabilityStatus)
@@ -1503,5 +1813,47 @@ func busAdmissionFromSource(source any) (BusAdmission, bool) {
 		return *admission, true
 	default:
 		return BusAdmission{}, false
+	}
+}
+
+func busAdmissionSourceSelectionFromSource(source any) (BusAdmissionSourceSelection, bool) {
+	switch selection := source.(type) {
+	case BusAdmissionSourceSelection:
+		return selection, true
+	case *BusAdmissionSourceSelection:
+		if selection == nil {
+			return BusAdmissionSourceSelection{}, false
+		}
+		return *selection, true
+	default:
+		return BusAdmissionSourceSelection{}, false
+	}
+}
+
+func busAdmissionActiveProbeFromSource(source any) (BusAdmissionActiveProbe, bool) {
+	switch probe := source.(type) {
+	case BusAdmissionActiveProbe:
+		return probe, true
+	case *BusAdmissionActiveProbe:
+		if probe == nil {
+			return BusAdmissionActiveProbe{}, false
+		}
+		return *probe, true
+	default:
+		return BusAdmissionActiveProbe{}, false
+	}
+}
+
+func busAdmissionRejectedCandidateFromSource(source any) (BusAdmissionRejectedCandidate, bool) {
+	switch candidate := source.(type) {
+	case BusAdmissionRejectedCandidate:
+		return candidate, true
+	case *BusAdmissionRejectedCandidate:
+		if candidate == nil {
+			return BusAdmissionRejectedCandidate{}, false
+		}
+		return *candidate, true
+	default:
+		return BusAdmissionRejectedCandidate{}, false
 	}
 }

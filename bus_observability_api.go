@@ -51,10 +51,40 @@ type BusObservabilityStartup struct {
 // by the state-stability window (30s default); transient flaps do NOT
 // flip this field nor the envelope's data_hash.
 type BusAdmission struct {
-	State           string `json:"state"`
-	Source          uint8  `json:"source"`
-	CompanionTarget uint8  `json:"companion_target"`
-	Reason          string `json:"reason,omitempty"`
+	State           string                       `json:"state"`
+	Source          uint8                        `json:"source"`
+	CompanionTarget uint8                        `json:"companion_target"`
+	Reason          string                       `json:"reason,omitempty"`
+	SourceSelection *BusAdmissionSourceSelection `json:"source_selection,omitempty"`
+}
+
+type BusAdmissionSourceSelection struct {
+	State                   string                          `json:"state"`
+	Mode                    string                          `json:"mode,omitempty"`
+	Outcome                 string                          `json:"outcome,omitempty"`
+	Reason                  string                          `json:"reason,omitempty"`
+	SelectedSource          *uint8                          `json:"selected_source,omitempty"`
+	FailedSource            *uint8                          `json:"failed_source,omitempty"`
+	CompanionTarget         *uint8                          `json:"companion_target,omitempty"`
+	ActiveProbe             *BusAdmissionActiveProbe        `json:"active_probe,omitempty"`
+	Retryable               bool                            `json:"retryable"`
+	NextAction              string                          `json:"next_action,omitempty"`
+	LastSuccessfulSource    *uint8                          `json:"last_successful_source,omitempty"`
+	AutomaticRetryScheduled bool                            `json:"automatic_retry_scheduled"`
+	RejectedCandidates      []BusAdmissionRejectedCandidate `json:"rejected_candidates,omitempty"`
+}
+
+type BusAdmissionActiveProbe struct {
+	Target *uint8 `json:"target,omitempty"`
+	Opcode string `json:"opcode,omitempty"`
+	Status string `json:"status,omitempty"`
+}
+
+type BusAdmissionRejectedCandidate struct {
+	Source             uint8  `json:"source"`
+	Reason             string `json:"reason,omitempty"`
+	OccupancyState     string `json:"occupancy_state,omitempty"`
+	EvidenceProvenance string `json:"evidence_provenance,omitempty"`
 }
 
 const busObservabilityPublisherCadenceSource = "config.semantic_state_interval"
@@ -394,7 +424,36 @@ func cloneBusAdmission(source *BusAdmission) *BusAdmission {
 		return nil
 	}
 	out := *source
+	out.SourceSelection = cloneBusAdmissionSourceSelection(source.SourceSelection)
 	return &out
+}
+
+func cloneBusAdmissionSourceSelection(source *BusAdmissionSourceSelection) *BusAdmissionSourceSelection {
+	if source == nil {
+		return nil
+	}
+	out := *source
+	out.SelectedSource = cloneUint8Ptr(source.SelectedSource)
+	out.FailedSource = cloneUint8Ptr(source.FailedSource)
+	out.CompanionTarget = cloneUint8Ptr(source.CompanionTarget)
+	out.LastSuccessfulSource = cloneUint8Ptr(source.LastSuccessfulSource)
+	if source.ActiveProbe != nil {
+		activeProbe := *source.ActiveProbe
+		activeProbe.Target = cloneUint8Ptr(source.ActiveProbe.Target)
+		out.ActiveProbe = &activeProbe
+	}
+	if len(source.RejectedCandidates) > 0 {
+		out.RejectedCandidates = append([]BusAdmissionRejectedCandidate(nil), source.RejectedCandidates...)
+	}
+	return &out
+}
+
+func cloneUint8Ptr(source *uint8) *uint8 {
+	if source == nil {
+		return nil
+	}
+	value := *source
+	return &value
 }
 
 func (store *BusObservabilityStore) specimenFamilyCountLocked() int {

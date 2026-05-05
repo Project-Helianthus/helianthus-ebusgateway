@@ -158,6 +158,8 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	semantic := NewLiveSemanticProvider()
 	builder.SetSemanticProvider(semantic)
 	updatedAt := time.Date(2026, time.March, 12, 18, 30, 0, 0, time.UTC)
+	selectedSource := uint8(0x7F)
+	companionTarget := uint8(0x08)
 	builder.SetBusObservabilityProvider(testBusObservabilityProvider{
 		snapshot: BusObservabilitySnapshot{
 			Summary: &BusSummary{
@@ -200,6 +202,22 @@ func TestQueryResolvers_Integration(t *testing.T) {
 					Degraded: BusObservabilityDegraded{
 						Active:  true,
 						Reasons: []string{"unsupported_or_misconfigured", "dedup_degraded"},
+					},
+					BusAdmission: &BusAdmission{
+						State:           "active",
+						Source:          selectedSource,
+						CompanionTarget: companionTarget,
+						Reason:          "active_probe_passed",
+						SourceSelection: &BusAdmissionSourceSelection{
+							State:                   "active",
+							Outcome:                 "active_probe_passed",
+							Reason:                  "active_probe_passed",
+							SelectedSource:          &selectedSource,
+							CompanionTarget:         &companionTarget,
+							ActiveProbe:             &BusAdmissionActiveProbe{Target: &companionTarget, Status: "active_probe_passed"},
+							LastSuccessfulSource:    &selectedSource,
+							AutomaticRetryScheduled: false,
+						},
 					},
 					FeatureFlags: ObserveFirstFeatureFlagState{
 						ObserveFirstEnabled:      true,
@@ -563,12 +581,34 @@ func TestQueryResolvers_Integration(t *testing.T) {
 							busy
 							periodicity
 						}
-						degraded {
-							active
-							reasons
-						}
-						featureFlags {
-							lastUpdatedAt
+							degraded {
+								active
+								reasons
+							}
+							busAdmission {
+								state
+								source
+								companionTarget
+								reason
+							}
+							bus_admission {
+								source_selection {
+									state
+									outcome
+									reason
+									selected_source
+									companion_target
+										active_probe {
+											target
+											status
+										}
+									retryable
+									last_successful_source
+									automatic_retry_scheduled
+								}
+							}
+							featureFlags {
+								lastUpdatedAt
 							observeFirstEnabled
 							passiveStateDirectApply
 							passiveConfigDirectApply
@@ -677,6 +717,28 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						Active  bool     `json:"active"`
 						Reasons []string `json:"reasons"`
 					} `json:"degraded"`
+					BusAdmission struct {
+						State           string `json:"state"`
+						Source          int    `json:"source"`
+						CompanionTarget int    `json:"companionTarget"`
+						Reason          string `json:"reason"`
+					} `json:"busAdmission"`
+					BusAdmissionSnake struct {
+						SourceSelection struct {
+							State           string `json:"state"`
+							Outcome         string `json:"outcome"`
+							Reason          string `json:"reason"`
+							SelectedSource  int    `json:"selected_source"`
+							CompanionTarget int    `json:"companion_target"`
+							ActiveProbe     struct {
+								Target int    `json:"target"`
+								Status string `json:"status"`
+							} `json:"active_probe"`
+							Retryable               bool `json:"retryable"`
+							LastSuccessfulSource    int  `json:"last_successful_source"`
+							AutomaticRetryScheduled bool `json:"automatic_retry_scheduled"`
+						} `json:"source_selection"`
+					} `json:"bus_admission"`
 					FeatureFlags struct {
 						LastUpdatedAt            string   `json:"lastUpdatedAt"`
 						ObserveFirstEnabled      bool     `json:"observeFirstEnabled"`
@@ -760,6 +822,25 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if !response.BusSummary.Status.Degraded.Active || len(response.BusSummary.Status.Degraded.Reasons) != 2 {
 			t.Fatalf("degraded = %+v; want active with 2 reasons", response.BusSummary.Status.Degraded)
+		}
+		if response.BusSummary.Status.BusAdmission.State != "active" ||
+			response.BusSummary.Status.BusAdmission.Source != 0x7F ||
+			response.BusSummary.Status.BusAdmission.CompanionTarget != 0x08 ||
+			response.BusSummary.Status.BusAdmission.Reason != "active_probe_passed" {
+			t.Fatalf("busAdmission = %+v; want legacy active admission mirror", response.BusSummary.Status.BusAdmission)
+		}
+		sourceSelection := response.BusSummary.Status.BusAdmissionSnake.SourceSelection
+		if sourceSelection.State != "active" ||
+			sourceSelection.Outcome != "active_probe_passed" ||
+			sourceSelection.Reason != "active_probe_passed" ||
+			sourceSelection.SelectedSource != 0x7F ||
+			sourceSelection.CompanionTarget != 0x08 ||
+			sourceSelection.ActiveProbe.Target != 0x08 ||
+			sourceSelection.ActiveProbe.Status != "active_probe_passed" ||
+			sourceSelection.Retryable ||
+			sourceSelection.LastSuccessfulSource != 0x7F ||
+			sourceSelection.AutomaticRetryScheduled {
+			t.Fatalf("bus_admission.source_selection = %+v; want GraphQL parity admission status", sourceSelection)
 		}
 		if response.BusSummary.Status.FeatureFlags.ExternalWritePolicy != "record_only" {
 			t.Fatalf("featureFlags.externalWritePolicy = %q; want record_only", response.BusSummary.Status.FeatureFlags.ExternalWritePolicy)

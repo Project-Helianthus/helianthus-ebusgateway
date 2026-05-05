@@ -238,77 +238,77 @@ func historyIndex(args map[string]any) (byte, bool, error) {
 func (st *b503State) handleErrorsGet(ctx context.Context, args map[string]any) map[string]any {
 	target, err := st.target(args)
 	if err != nil {
-		return st.errEnvelope(ctx,err)
+		return st.errEnvelope(ctx, err)
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentError())
 	if err != nil {
-		return st.errEnvelope(ctx,fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 	}
 	slots, err := b503.DecodeCurrentError(resp)
 	if err != nil {
-		return st.errEnvelope(ctx,fmt.Errorf("%w: %v", errDecodeFailed, err))
+		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errDecodeFailed, err))
 	}
-	return st.okEnvelope(ctx,slotsToMap(slots))
+	return st.okEnvelope(ctx, slotsToMap(slots))
 }
 
 func (st *b503State) handleServiceCurrentGet(ctx context.Context, args map[string]any) map[string]any {
 	target, err := st.target(args)
 	if err != nil {
-		return st.errEnvelope(ctx,err)
+		return st.errEnvelope(ctx, err)
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentService())
 	if err != nil {
-		return st.errEnvelope(ctx,fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 	}
 	slots, err := b503.DecodeCurrentService(resp)
 	if err != nil {
-		return st.errEnvelope(ctx,fmt.Errorf("%w: %v", errDecodeFailed, err))
+		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errDecodeFailed, err))
 	}
-	return st.okEnvelope(ctx,slotsToMap(slots))
+	return st.okEnvelope(ctx, slotsToMap(slots))
 }
 
 func (st *b503State) handleErrorsHistoryGet(ctx context.Context, args map[string]any) map[string]any {
 	target, err := st.target(args)
 	if err != nil {
-		return st.errEnvelope(ctx,err)
+		return st.errEnvelope(ctx, err)
 	}
 	payload := b503.EncodeErrorHistory()
 	if idx, present, err := historyIndex(args); err != nil {
-		return st.errEnvelope(ctx,err)
+		return st.errEnvelope(ctx, err)
 	} else if present {
 		payload = append(payload, idx)
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 	if err != nil {
-		return st.errEnvelope(ctx,fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 	}
 	rec, err := b503.DecodeErrorHistory(resp)
 	if err != nil {
-		return st.errEnvelope(ctx,fmt.Errorf("%w: %v", errDecodeFailed, err))
+		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errDecodeFailed, err))
 	}
-	return st.okEnvelope(ctx,historyToMap(rec))
+	return st.okEnvelope(ctx, historyToMap(rec))
 }
 
 func (st *b503State) handleServiceHistoryGet(ctx context.Context, args map[string]any) map[string]any {
 	target, err := st.target(args)
 	if err != nil {
-		return st.errEnvelope(ctx,err)
+		return st.errEnvelope(ctx, err)
 	}
 	payload := b503.EncodeServiceHistory()
 	if idx, present, err := historyIndex(args); err != nil {
-		return st.errEnvelope(ctx,err)
+		return st.errEnvelope(ctx, err)
 	} else if present {
 		payload = append(payload, idx)
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 	if err != nil {
-		return st.errEnvelope(ctx,fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 	}
 	rec, err := b503.DecodeServiceHistory(resp)
 	if err != nil {
-		return st.errEnvelope(ctx,fmt.Errorf("%w: %v", errDecodeFailed, err))
+		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errDecodeFailed, err))
 	}
-	return st.okEnvelope(ctx,historyToMap(rec))
+	return st.okEnvelope(ctx, historyToMap(rec))
 }
 
 func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any) map[string]any {
@@ -318,32 +318,32 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 	// refresh the idle timer and prolong SESSION_BUSY for other clients.
 	raw, present := args["action"]
 	if !present {
-		return st.errEnvelope(ctx,fmt.Errorf("%w: action is required (enable|read|disable)", errInvalidArgument))
+		return st.errEnvelope(ctx, fmt.Errorf("%w: action is required (enable|read|disable)", errInvalidArgument))
 	}
 	action, ok := raw.(string)
 	if !ok {
-		return st.errEnvelope(ctx,fmt.Errorf("%w: action must be a string (enable|read|disable)", errInvalidArgument))
+		return st.errEnvelope(ctx, fmt.Errorf("%w: action must be a string (enable|read|disable)", errInvalidArgument))
 	}
 	switch action {
 	case "enable", "read", "disable":
 		// valid
 	default:
-		return st.errEnvelope(ctx,fmt.Errorf("%w: action must be one of enable|read|disable, got %q", errInvalidArgument, action))
+		return st.errEnvelope(ctx, fmt.Errorf("%w: action must be one of enable|read|disable, got %q", errInvalidArgument, action))
 	}
 	mgr := st.opts.SessionManager
 	if mgr == nil {
-		return st.errEnvelope(ctx,errNotSupported)
+		return st.errEnvelope(ctx, errNotSupported)
 	}
 
 	switch action {
 	case "enable":
 		target, err := st.target(args)
 		if err != nil {
-			return st.errEnvelope(ctx,err)
+			return st.errEnvelope(ctx, err)
 		}
 		key, err := mgr.Enable(ctx)
 		if err != nil {
-			return st.errEnvelope(ctx,normalizeSessionErr(err))
+			return st.errEnvelope(ctx, normalizeSessionErr(err))
 		}
 		// Emit the request so the device acknowledges live-monitor
 		// activation. Bound by SERVICE_WRITE safety class.
@@ -360,10 +360,10 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 				IssuerToken: key.IssuerToken,
 			}
 			_ = mgr.Disable(rebuilt)
-			return st.errEnvelope(ctx,fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+			return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 		}
 		data := map[string]any{"issuer_token": key.IssuerToken}
-		return st.okEnvelope(ctx,data)
+		return st.okEnvelope(ctx, data)
 
 	case "read":
 		// Resolver per spec §8 / plan AD14: surface the current FSM outcome
@@ -376,21 +376,21 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 		// clients) only to then fail with INVALID_ARGUMENT.
 		target, err := st.target(args)
 		if err != nil {
-			return st.errEnvelope(ctx,err)
+			return st.errEnvelope(ctx, err)
 		}
 		if mgr.LastRefreshTransportDown() {
-			return st.errEnvelope(ctx,errTransportDown)
+			return st.errEnvelope(ctx, errTransportDown)
 		}
 		transport := mgr.TransportKey()
 		if err := mgr.Read(transport); err != nil {
-			return st.errEnvelope(ctx,normalizeSessionErr(err))
+			return st.errEnvelope(ctx, normalizeSessionErr(err))
 		}
 		resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeLiveMonitorMain())
 		if err != nil {
-			return st.errEnvelope(ctx,fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+			return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
 		}
 		data := map[string]any{"raw_hex": hexString(resp)}
-		return st.okEnvelope(ctx,data)
+		return st.okEnvelope(ctx, data)
 
 	case "disable":
 		// issuer_token is mandatory for disable. Silently treating a missing
@@ -416,7 +416,7 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 		}
 		return st.okEnvelope(ctx, map[string]any{"disabled": true})
 	}
-	return st.errEnvelope(ctx,fmt.Errorf("%w: unknown action %q", errInvalidToken, action))
+	return st.errEnvelope(ctx, fmt.Errorf("%w: unknown action %q", errInvalidToken, action))
 }
 
 func slotsToMap(s b503.ErrorSlots) map[string]any {
@@ -575,15 +575,15 @@ func (s *Server) VaillantB503Availability() B503Availability {
 // derived under the same deadline as the response itself.
 //
 // Probe ordering (first match wins):
-//   1. Manager reports LastRefreshTransportDown → TRANSPORT_DOWN.
-//   2. Manager.State() ∈ {Enabling, Active} → SESSION_BUSY (a second
-//      action=enable would fail with SESSION_BUSY; publishing
-//      AVAILABLE here would contradict the error code clients receive).
-//   3. Probe succeeds → AVAILABLE.
-//   4. Probe returns ErrTransportDown → TRANSPORT_DOWN.
-//   5. Any other probe error → UNKNOWN (conservative — cannot
-//      distinguish "not supported" from "transient failure" or
-//      dispatcher-stub).
+//  1. Manager reports LastRefreshTransportDown → TRANSPORT_DOWN.
+//  2. Manager.State() ∈ {Enabling, Active} → SESSION_BUSY (a second
+//     action=enable would fail with SESSION_BUSY; publishing
+//     AVAILABLE here would contradict the error code clients receive).
+//  3. Probe succeeds → AVAILABLE.
+//  4. Probe returns ErrTransportDown → TRANSPORT_DOWN.
+//  5. Any other probe error → UNKNOWN (conservative — cannot
+//     distinguish "not supported" from "transient failure" or
+//     dispatcher-stub).
 func (s *Server) VaillantB503AvailabilityCtx(ctx context.Context) B503Availability {
 	st, ok := b503StateFor(s)
 	if !ok || st == nil {

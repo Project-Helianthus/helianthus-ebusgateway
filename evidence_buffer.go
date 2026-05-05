@@ -27,15 +27,15 @@ type EvidenceRecord struct {
 // BaselineTopologySeed is the set of addresses protected from LRU eviction.
 // Vaillant default: {0x08 BAI00, 0x15 BASV2, 0x26 VR_71, 0x04 NETX3-A,
 // 0xF6 NETX3-B, 0xEC SOL00}. Operators MAY override via config; validation
-// enforces slave-range [0x03, 0xFE] excluding 0xAA (SYN) and 0xFE (broadcast).
+// enforces responder-range [0x03, 0xFE] excluding 0xAA (SYN) and 0xFE (broadcast).
 var VaillantBaselineTopologySeed = []byte{0x08, 0x15, 0x26, 0x04, 0xF6, 0xEC}
 
 // ValidateBaselineTopologySeed checks the config-provided seed against the
-// slave-address range.
+// responder-address range.
 func ValidateBaselineTopologySeed(seed []byte) error {
 	for _, addr := range seed {
 		if addr < 0x03 || addr >= 0xFE {
-			return fmt.Errorf("evidence: baseline seed 0x%02X out of slave range [0x03, 0xFE]", addr)
+			return fmt.Errorf("evidence: baseline seed 0x%02X out of responder range [0x03, 0xFE]", addr)
 		}
 		if addr == 0xAA {
 			return fmt.Errorf("evidence: baseline seed must not include SYN (0xAA)")

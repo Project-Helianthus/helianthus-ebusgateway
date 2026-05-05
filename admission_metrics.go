@@ -184,9 +184,9 @@ func EmitStartupResetWarn(logger func(format string, args ...interface{})) {
 // range value.
 func ValidateAdmissionPathSelected(v string) error {
 	switch v {
-	case "join", "override", "degraded_transport_blind", "degraded_no_events":
+	case "source_selection", "override", "degraded_transport_blind", "degraded_no_events":
 		return nil
 	default:
-		return fmt.Errorf("FATAL: admission_path_selected=%q is out of enum {join,override,degraded_transport_blind,degraded_no_events} (AD23)", v)
+		return fmt.Errorf("FATAL: admission_path_selected=%q is out of enum {source_selection,override,degraded_transport_blind,degraded_no_events} (AD23)", v)
 	}
 }

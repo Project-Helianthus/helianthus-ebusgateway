@@ -610,6 +610,7 @@ func TestServer_ToolsCallDevicesAndInvoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
+	server.SetAdmittedRPCSource(0x7F)
 
 	res := doRPC(t, server.Handler(), rpcRequest{
 		JSONRPC: "2.0",
@@ -2159,6 +2160,7 @@ func TestServer_ToolsCallLegacyAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
+	server.SetAdmittedRPCSource(0x7F)
 
 	res := doRPC(t, server.Handler(), rpcRequest{
 		JSONRPC: "2.0",
@@ -2211,6 +2213,7 @@ func TestServer_ToolsCallInvokeErrorEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
+	server.SetAdmittedRPCSource(0x7F)
 
 	res := doRPC(t, server.Handler(), rpcRequest{
 		JSONRPC: "2.0",
@@ -2283,6 +2286,7 @@ func TestServer_ToolsCallInvokeV1SafetyGuards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
+	server.SetAdmittedRPCSource(0x7F)
 
 	t.Run("missing intent", func(t *testing.T) {
 		res := doRPC(t, server.Handler(), rpcRequest{
@@ -2345,6 +2349,7 @@ func TestServer_ToolsCallInvokeV1Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
+	server.SetAdmittedRPCSource(0x7F)
 
 	first := doRPC(t, server.Handler(), rpcRequest{
 		JSONRPC: "2.0",
@@ -2380,7 +2385,7 @@ func TestServer_ToolsCallInvokeV1Idempotency(t *testing.T) {
 
 // Regression test for PR #505 r3106812547: source normalization must run
 // BEFORE idempotency signature is computed, so caller-variance on
-// params.source (omitted vs explicit 113) produces identical cache keys.
+// params.source (omitted vs explicit admitted source) produces identical cache keys.
 // Before the fix, the second call hashed differently and was rejected
 // with "idempotency key reused with different payload" / CONFLICT.
 func TestServer_ToolsCallInvokeV1IdempotencySourceNormalization(t *testing.T) {
@@ -2413,8 +2418,9 @@ func TestServer_ToolsCallInvokeV1IdempotencySourceNormalization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
+	server.SetAdmittedRPCSource(0x7F)
 
-	// First call: params.source omitted — guard injects 113.
+	// First call: params.source omitted, so the guard injects the admitted source.
 	first := doRPC(t, server.Handler(), rpcRequest{
 		JSONRPC: "2.0",
 		ID:      1,
@@ -2426,19 +2432,19 @@ func TestServer_ToolsCallInvokeV1IdempotencySourceNormalization(t *testing.T) {
 	}
 
 	// Second call: same idempotency_key, same payload semantics, but
-	// caller explicitly sets params.source=113. Must be treated as
-	// identical to the first and return the cached result (no CONFLICT).
+	// caller explicitly sets params.source to the admitted source. Must be
+	// treated as identical to the first and return the cached result (no CONFLICT).
 	second := doRPC(t, server.Handler(), rpcRequest{
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5,"source":113},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"srckey"}}`),
+		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"set_target","params":{"target_c":21.5,"source":127},"intent":"MUTATE","allow_dangerous":true,"idempotency_key":"srckey"}}`),
 	})
 	if second.Error != nil {
 		t.Fatalf("second invoke rpc error = %+v", second.Error)
 	}
 	// Without the fix, the second call hashes differently (explicit
-	// source=113 is present in the signature, the first call had source
+	// admitted source is present in the signature, the first call had source
 	// absent) and lookupIdempotency returns a CONFLICT error envelope
 	// (isError=true). With the fix, source is normalized before the
 	// signature is computed, so signatures match and the cached result
@@ -2455,11 +2461,11 @@ func TestServer_ToolsCallInvokeV1IdempotencySourceNormalization(t *testing.T) {
 				text, _ = item["text"].(string)
 			}
 		}
-		t.Fatalf("second call returned isError=true (signature mismatch across omitted vs explicit source=113): %s", text)
+		t.Fatalf("second call returned isError=true (signature mismatch across omitted vs explicit admitted source): %s", text)
 	}
 	// And the invoker MUST NOT be dispatched a second time (cache hit).
 	if len(invoker.calls) != 1 {
-		t.Fatalf("invoker calls = %d; want 1 (dedup across omitted vs explicit source=113)", len(invoker.calls))
+		t.Fatalf("invoker calls = %d; want 1 (dedup across omitted vs explicit admitted source)", len(invoker.calls))
 	}
 }
 
@@ -2493,6 +2499,7 @@ func TestServer_ToolsCallInvokeV1Timeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
+	server.SetAdmittedRPCSource(0x7F)
 
 	res := doRPC(t, server.Handler(), rpcRequest{
 		JSONRPC: "2.0",
@@ -2524,14 +2531,15 @@ func TestClassifyToolError_KnownMappings(t *testing.T) {
 		{name: "deadline exceeded", err: context.DeadlineExceeded, code: "TIMEOUT", retriable: true, sourceLayer: "gateway"},
 		{name: "idempotency conflict", err: errInvokeIdempotencyConflict, code: "CONFLICT", retriable: false, sourceLayer: "gateway"},
 		{name: "snapshot not found", err: errSnapshotNotFound, code: "NOT_FOUND", retriable: false, sourceLayer: "gateway"},
-		// Issue #505 r3106859308: non-113 source / unsupported-type /
+		{name: "source selection not active", err: errSourceSelectionNotActive, code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "gateway"},
+		// Issue #505 r3106859308: invalid source / unsupported-type /
 		// fractional-float at rpc.invoke is a client input error, not a
 		// server fault. classifyToolError must surface it as
 		// INVALID_ARGUMENT (via errors.Is unwrap through wrapped
 		// fmt.Errorf chains).
-		{name: "rpc source non-113 direct", err: rpcsource.ErrNon113Source, code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "gateway"},
-		{name: "rpc source non-113 wrapped", err: fmt.Errorf("got 0x72, want 0x71: %w", rpcsource.ErrNon113Source), code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "gateway"},
-		{name: "rpc source fractional float", err: fmt.Errorf("params.source has unsupported type float64: %w", rpcsource.ErrNon113Source), code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "gateway"},
+		{name: "rpc source invalid direct", err: rpcsource.ErrInvalidSource, code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "gateway"},
+		{name: "rpc source invalid wrapped", err: fmt.Errorf("got 0x00: %w", rpcsource.ErrInvalidSource), code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "gateway"},
+		{name: "rpc source fractional float", err: fmt.Errorf("params.source has unsupported type float64: %w", rpcsource.ErrInvalidSource), code: "INVALID_ARGUMENT", retriable: false, sourceLayer: "gateway"},
 	}
 
 	for _, tc := range cases {

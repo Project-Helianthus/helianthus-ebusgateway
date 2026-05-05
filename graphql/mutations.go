@@ -96,7 +96,6 @@ type configFieldSpec struct {
 
 const (
 	mutationControllerFallbackAddr = byte(0x15)
-	mutationSourceAddr             = byte(0x31)
 	mutationB524OpcodeLocal        = byte(0x02)
 	mutationSystemPlane            = "system"
 	mutationSetExtRegisterMethod   = "set_ext_register"
@@ -153,7 +152,7 @@ func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *
 
 	var mutationType *graphqlgo.Object
 	if registry != nil && invoker != nil {
-		mutationType = buildMutationType(registry, invoker, builder.boilerConfigWriter(), builder.systemConfigWriter(), builder.scheduleWriter())
+		mutationType = buildMutationType(registry, invoker, builder.boilerConfigWriter(), builder.systemConfigWriter(), builder.scheduleWriter(), builder.admittedMutationSource)
 	}
 
 	var subscriptionType *graphqlgo.Object
@@ -184,7 +183,10 @@ func NewInvokeHandler(builder *Builder, registry InvokeRegistry, invoker Invoker
 	}), nil
 }
 
-func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, systemWriter SystemConfigWriter, scheduleWriter ScheduleWriter) *graphqlgo.Object {
+func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, systemWriter SystemConfigWriter, scheduleWriter ScheduleWriter, mutationSourceProvider func() (byte, bool)) *graphqlgo.Object {
+	if mutationSourceProvider == nil {
+		mutationSourceProvider = func() (byte, bool) { return 0, false }
+	}
 	jsonScalar := jsonScalarType()
 	errorType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "InvokeError",
@@ -404,7 +406,8 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					"params":  &graphqlgo.ArgumentConfig{Type: jsonScalar},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					result, err := invokeResolve(params, registry, invoker)
+					source, admitted := mutationSourceProvider()
+					result, err := invokeResolve(params, registry, invoker, source, admitted)
 					if err != nil {
 						return InvokeResult{
 							Ok:    false,
@@ -452,7 +455,8 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return setCircuitConfigResolve(params, registry, invoker), nil
+					mutationSource, mutationSourceAdmitted := mutationSourceProvider()
+					return setCircuitConfigResolve(params, registry, invoker, mutationSource, mutationSourceAdmitted), nil
 				},
 			},
 			"set_circuit_config": &graphqlgo.Field{
@@ -463,7 +467,8 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return setCircuitConfigResolve(params, registry, invoker), nil
+					mutationSource, mutationSourceAdmitted := mutationSourceProvider()
+					return setCircuitConfigResolve(params, registry, invoker, mutationSource, mutationSourceAdmitted), nil
 				},
 			},
 			"setSystemConfig": &graphqlgo.Field{
@@ -473,7 +478,8 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return setSystemConfigResolve(params, registry, invoker, systemWriter), nil
+					mutationSource, mutationSourceAdmitted := mutationSourceProvider()
+					return setSystemConfigResolve(params, registry, invoker, systemWriter, mutationSource, mutationSourceAdmitted), nil
 				},
 			},
 			"set_system_config": &graphqlgo.Field{
@@ -483,7 +489,8 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return setSystemConfigResolve(params, registry, invoker, systemWriter), nil
+					mutationSource, mutationSourceAdmitted := mutationSourceProvider()
+					return setSystemConfigResolve(params, registry, invoker, systemWriter, mutationSource, mutationSourceAdmitted), nil
 				},
 			},
 			"setZoneConfig": &graphqlgo.Field{
@@ -494,7 +501,8 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return setZoneConfigResolve(params, registry, invoker), nil
+					mutationSource, mutationSourceAdmitted := mutationSourceProvider()
+					return setZoneConfigResolve(params, registry, invoker, mutationSource, mutationSourceAdmitted), nil
 				},
 			},
 			"set_zone_config": &graphqlgo.Field{
@@ -505,7 +513,8 @@ func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter Bo
 					"value": &graphqlgo.ArgumentConfig{Type: graphqlgo.NewNonNull(graphqlgo.String)},
 				},
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					return setZoneConfigResolve(params, registry, invoker), nil
+					mutationSource, mutationSourceAdmitted := mutationSourceProvider()
+					return setZoneConfigResolve(params, registry, invoker, mutationSource, mutationSourceAdmitted), nil
 				},
 			},
 			"setZoneTimeProgram": &graphqlgo.Field{
@@ -561,7 +570,7 @@ func boilerConfigUnsupportedResult() BoilerConfigMutationResult {
 	}
 }
 
-func setCircuitConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker) ConfigMutationResult {
+func setCircuitConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, mutationSource byte, mutationSourceAdmitted bool) ConfigMutationResult {
 	instance, err := parseConfigInstance(params.Args["index"])
 	if err != nil {
 		return configMutationError(err)
@@ -572,10 +581,10 @@ func setCircuitConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegi
 	if err != nil {
 		return configMutationError(err)
 	}
-	return applyConfigMutation(params.Context, registry, invoker, spec, instance, fieldValue)
+	return applyConfigMutation(params.Context, registry, invoker, mutationSource, mutationSourceAdmitted, spec, instance, fieldValue)
 }
 
-func setSystemConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, systemWriter SystemConfigWriter) ConfigMutationResult {
+func setSystemConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, systemWriter SystemConfigWriter, mutationSource byte, mutationSourceAdmitted bool) ConfigMutationResult {
 	fieldName, _ := params.Args["field"].(string)
 	fieldValue, _ := params.Args["value"].(string)
 	if systemWriter != nil {
@@ -589,10 +598,10 @@ func setSystemConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegis
 	if err != nil {
 		return configMutationError(err)
 	}
-	return applyConfigMutation(params.Context, registry, invoker, spec, 0x00, fieldValue)
+	return applyConfigMutation(params.Context, registry, invoker, mutationSource, mutationSourceAdmitted, spec, 0x00, fieldValue)
 }
 
-func setZoneConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker) ConfigMutationResult {
+func setZoneConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, mutationSource byte, mutationSourceAdmitted bool) ConfigMutationResult {
 	instance, err := parseConfigInstance(params.Args["index"])
 	if err != nil {
 		return configMutationError(err)
@@ -603,7 +612,7 @@ func setZoneConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistr
 	if err != nil {
 		return configMutationError(err)
 	}
-	return applyConfigMutation(params.Context, registry, invoker, spec, instance, fieldValue)
+	return applyConfigMutation(params.Context, registry, invoker, mutationSource, mutationSourceAdmitted, spec, instance, fieldValue)
 }
 
 func setZoneTimeProgramResolve(params graphqlgo.ResolveParams, scheduleWriter ScheduleWriter) *mcp.TimeProgramWriteResult {
@@ -670,9 +679,12 @@ func setDhwTimeProgramResolve(params graphqlgo.ResolveParams, scheduleWriter Sch
 	return result
 }
 
-func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, spec configFieldSpec, instance byte, rawValue string) ConfigMutationResult {
+func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool, spec configFieldSpec, instance byte, rawValue string) ConfigMutationResult {
 	if registry == nil || invoker == nil {
 		return configMutationError(fmt.Errorf("config mutation missing dependencies: %w", ebuserrors.ErrInvalidPayload))
+	}
+	if !sourceAdmitted || source == 0 {
+		return configMutationError(fmt.Errorf("source selection not active: %w", ebuserrors.ErrInvalidPayload))
 	}
 
 	data, err := encodeConfigValue(spec, rawValue)
@@ -690,7 +702,7 @@ func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker I
 	}
 
 	writeParams := map[string]any{
-		"source":   mutationSourceAddr,
+		"source":   source,
 		"opcode":   mutationB524OpcodeLocal,
 		"group":    spec.group,
 		"instance": instance,
@@ -702,7 +714,7 @@ func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker I
 	}
 
 	readParams := map[string]any{
-		"source":   mutationSourceAddr,
+		"source":   source,
 		"opcode":   mutationB524OpcodeLocal,
 		"group":    spec.group,
 		"instance": instance,
@@ -837,12 +849,12 @@ func scheduleWriteMutationError(err error) *mcp.TimeProgramWriteResult {
 }
 
 // ApplyConfigMutation performs a B524 set_ext_register write with read-back verification.
-func ApplyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, fieldName string, rawValue string, specs map[string]configFieldSpec) ConfigMutationResult {
+func ApplyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool, fieldName string, rawValue string, specs map[string]configFieldSpec) ConfigMutationResult {
 	spec, err := resolveConfigFieldSpec("system", fieldName, specs)
 	if err != nil {
 		return configMutationError(err)
 	}
-	return applyConfigMutation(ctx, registry, invoker, spec, 0x00, rawValue)
+	return applyConfigMutation(ctx, registry, invoker, source, sourceAdmitted, spec, 0x00, rawValue)
 }
 
 // SystemConfigFieldSpecs returns a copy of the system config field specs map.
@@ -1258,9 +1270,12 @@ func decodePayloadUint16(payload []byte) (uint16, bool) {
 	return binary.LittleEndian.Uint16(payload[:2]), true
 }
 
-func invokeResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker) (InvokeResult, error) {
+func invokeResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool) (InvokeResult, error) {
 	if registry == nil || invoker == nil {
 		return InvokeResult{}, fmt.Errorf("graphql invoke missing dependencies: %w", ebuserrors.ErrInvalidPayload)
+	}
+	if !sourceAdmitted || source == 0 {
+		return InvokeResult{}, fmt.Errorf("source selection not active: %w", ebuserrors.ErrInvalidPayload)
 	}
 
 	address, err := parseAddress(params.Args["address"])
@@ -1273,6 +1288,9 @@ func invokeResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invo
 	paramMap, err := parseParams(params.Args["params"])
 	if err != nil {
 		return InvokeResult{}, err
+	}
+	if _, ok := paramMap["source"]; ok {
+		return InvokeResult{}, fmt.Errorf("graphql invoke field %q unsupported: %w", "source", ebuserrors.ErrInvalidPayload)
 	}
 
 	entry, ok := registry.Lookup(address)
@@ -1299,6 +1317,7 @@ func invokeResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invo
 	if err != nil {
 		return InvokeResult{}, err
 	}
+	normalizedParams["source"] = source
 
 	ctx := params.Context
 	if ctx == nil {

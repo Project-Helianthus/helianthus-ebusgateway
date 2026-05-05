@@ -10,10 +10,11 @@ import (
 func TestAdmissionArtifact_EmitValidatesAgainstSchema(t *testing.T) {
 	builder := NewAdmissionArtifactBuilder("ens")
 	builder.startedAt = time.Now().Add(-60 * time.Second)
-	if err := builder.SetAdmissionPathSelected("join"); err != nil {
+	if err := builder.SetAdmissionPathSelected("source_selection"); err != nil {
 		t.Fatal(err)
 	}
-	builder.SetJoinerSelection(0x71, 0x08, 5*time.Second)
+	builder.SetSourceSelection(0x71, 0x08, 5*time.Second)
+	builder.SetSourceSelectionActive()
 	builder.RecordProbe(120)
 	builder.RecordProbe(180)
 	builder.SetPostStartupSustainedRateProbesPer15s(1.5)
@@ -31,7 +32,7 @@ func TestAdmissionArtifact_EmitValidatesAgainstSchema(t *testing.T) {
 	if err := json.Unmarshal(data, &reparsed); err != nil {
 		t.Fatalf("reparse artifact: %v", err)
 	}
-	if reparsed.Admission.AdmissionPathSelected != "join" {
+	if reparsed.Admission.AdmissionPathSelected != "source_selection" {
 		t.Fatalf("admission_path_selected=%q", reparsed.Admission.AdmissionPathSelected)
 	}
 	if reparsed.Admission.State != "active" {
@@ -56,7 +57,7 @@ func TestAdmissionArtifact_BadAdmissionPathRejected(t *testing.T) {
 func TestAdmissionArtifact_WireLoadMath(t *testing.T) {
 	builder := NewAdmissionArtifactBuilder("tcp-plain")
 	builder.startedAt = time.Now().Add(-60 * time.Second)
-	if err := builder.SetAdmissionPathSelected("join"); err != nil {
+	if err := builder.SetAdmissionPathSelected("source_selection"); err != nil {
 		t.Fatal(err)
 	}
 	builder.RecordProbe(100)

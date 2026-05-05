@@ -1,65 +1,71 @@
 package mcp
 
 import (
+	"errors"
 	"fmt"
 	"math"
 
 	rpcsource "github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
 )
 
+var errSourceSelectionNotActive = errors.New("source selection not active")
+
 // enforceRPCSourceParam is the rpc.invoke call-site guard enforcing the
-// MEMORY.md invariant "All rpc.invoke MUST use source: 113". If params
-// carries an explicit "source", it MUST be 113 (0x71). If absent (or if
-// the params map itself is nil), the canonical value is injected so
-// downstream transport layers cannot silently use a different initiator.
+// admitted-source invariant. If params omits "source", the startup-admitted
+// source is injected. If params carries an explicit "source", it is treated as
+// a user-requested override and only validated as a byte-shaped source.
 //
 // Note: a nil input map cannot be mutated, so nil is treated as "no
 // params provided and no way to attach a source" — callers that accept
 // absent-params must use enforceRPCSourceOnArgs which operates on the
 // enclosing args envelope and can create a fresh params map.
 //
-// The guard wraps rpc_source.ErrNon113Source; callers classify via
-// errors.Is(err, rpc_source.ErrNon113Source).
-func enforceRPCSourceParam(params map[string]any) error {
+// Invalid explicit source values wrap rpc_source.ErrInvalidSource.
+func enforceRPCSourceParam(params map[string]any, admittedSource byte, admitted bool) error {
 	if params == nil {
 		return nil
 	}
 	raw, ok := params["source"]
 	if !ok {
-		params["source"] = int(rpcsource.Gateway)
+		if !admitted || admittedSource == 0 {
+			return errSourceSelectionNotActive
+		}
+		params["source"] = int(admittedSource)
 		return nil
 	}
-	src, err := toByteSource(raw)
+	source, err := toByteSource(raw)
 	if err != nil {
 		return fmt.Errorf("params.source: %w", err)
 	}
-	if err := rpcsource.Enforce(src); err != nil {
-		return err
+	if err := rpcsource.Enforce(source); err != nil {
+		return fmt.Errorf("params.source: %w", err)
 	}
+	params["source"] = int(source)
 	return nil
 }
 
-// enforceRPCSourceOnArgs enforces the source=113 invariant on the
+// enforceRPCSourceOnArgs enforces the admitted-source invariant on the
 // enclosing rpc.invoke args envelope. Unlike enforceRPCSourceParam it
 // handles the case where args["params"] is absent, nil, or not a map —
-// in which case a fresh params map is materialised with
-// source=rpc_source.Gateway, so the invariant holds regardless of input
-// shape.
+// in which case a fresh params map is materialised with the admitted source.
 //
 // Returns the resolved params map (never nil on success) so callers can
 // use the injected value directly instead of re-reading args["params"].
-func enforceRPCSourceOnArgs(args map[string]any) (map[string]any, error) {
+func enforceRPCSourceOnArgs(args map[string]any, admittedSource byte, admitted bool) (map[string]any, error) {
 	if args == nil {
 		// No envelope to attach params to; caller must handle.
 		return nil, nil
 	}
 	params, _ := args["params"].(map[string]any)
 	if params == nil {
-		params = map[string]any{"source": int(rpcsource.Gateway)}
+		if !admitted || admittedSource == 0 {
+			return nil, errSourceSelectionNotActive
+		}
+		params = map[string]any{"source": int(admittedSource)}
 		args["params"] = params
 		return params, nil
 	}
-	if err := enforceRPCSourceParam(params); err != nil {
+	if err := enforceRPCSourceParam(params, admittedSource, admitted); err != nil {
 		return params, err
 	}
 	return params, nil
@@ -68,7 +74,7 @@ func enforceRPCSourceOnArgs(args map[string]any) (map[string]any, error) {
 // toByteSource coerces a JSON-decoded value into an 8-bit source byte.
 //
 // It returns a non-nil error in two distinguishable cases — both wrap
-// rpc_source.ErrNon113Source so the outer classifier (classifyToolError)
+// rpc_source.ErrInvalidSource so the outer classifier (classifyToolError)
 // still maps them to INVALID_ARGUMENT:
 //
 //   - unsupported type (e.g. bool, string, map, slice, nil): the caller
@@ -82,36 +88,34 @@ func enforceRPCSourceOnArgs(args map[string]any) (map[string]any, error) {
 func toByteSource(v any) (byte, error) {
 	switch x := v.(type) {
 	case byte:
-		// byte is an alias for uint8, always in [0,255] by type;
-		// no range check needed. Accepts rpc_source.Gateway directly
-		// for in-process callers that build params maps
-		// programmatically with the typed constant.
+		// byte is an alias for uint8, always in [0,255] by type; no
+		// range check needed for in-process callers that build params maps
+		// programmatically.
 		return x, nil
 	case int:
 		if x < 0 || x > 255 {
-			return 0, fmt.Errorf("invalid value %d (int out of byte range [0,255]): %w", x, rpcsource.ErrNon113Source)
+			return 0, fmt.Errorf("invalid value %d (int out of byte range [0,255]): %w", x, rpcsource.ErrInvalidSource)
 		}
 		return byte(x), nil
 	case int64:
 		if x < 0 || x > 255 {
-			return 0, fmt.Errorf("invalid value %d (int64 out of byte range [0,255]): %w", x, rpcsource.ErrNon113Source)
+			return 0, fmt.Errorf("invalid value %d (int64 out of byte range [0,255]): %w", x, rpcsource.ErrInvalidSource)
 		}
 		return byte(x), nil
 	case float64:
 		// The underlying transport emits an 8-bit source byte;
-		// byte(113.9) silently truncates to 113 and would bypass the
-		// Enforce check for any near-match fractional value. Only
-		// accept whole-number float64s in range.
+		// byte(127.9) silently truncates to 127. Only accept
+		// whole-number float64s in range.
 		if math.IsNaN(x) || math.IsInf(x, 0) {
-			return 0, fmt.Errorf("invalid value %v (NaN or Inf): %w", x, rpcsource.ErrNon113Source)
+			return 0, fmt.Errorf("invalid value %v (NaN or Inf): %w", x, rpcsource.ErrInvalidSource)
 		}
 		if math.Trunc(x) != x {
-			return 0, fmt.Errorf("invalid value %v (fractional float64, expected whole number): %w", x, rpcsource.ErrNon113Source)
+			return 0, fmt.Errorf("invalid value %v (fractional float64, expected whole number): %w", x, rpcsource.ErrInvalidSource)
 		}
 		if x < 0 || x > 255 {
-			return 0, fmt.Errorf("invalid value %v (float64 out of byte range [0,255]): %w", x, rpcsource.ErrNon113Source)
+			return 0, fmt.Errorf("invalid value %v (float64 out of byte range [0,255]): %w", x, rpcsource.ErrInvalidSource)
 		}
 		return byte(x), nil
 	}
-	return 0, fmt.Errorf("unsupported type %T: %w", v, rpcsource.ErrNon113Source)
+	return 0, fmt.Errorf("unsupported type %T: %w", v, rpcsource.ErrInvalidSource)
 }

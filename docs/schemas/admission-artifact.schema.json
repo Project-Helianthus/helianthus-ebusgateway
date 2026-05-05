@@ -59,12 +59,12 @@
             "tcp-plain",
             "adapter-direct"
           ],
-          "description": "Transport kind from the startup-admission capability matrix. 'adapter-direct' is the multiplexer mode that wraps an underlying ENH/ENS adapter; semantically equivalent to a join-capable transport (main.go special-cases it to admissionPath=JoinCapable)."
+          "description": "Transport kind from the startup-admission capability matrix. 'adapter-direct' is the multiplexer mode that wraps an underlying ENH/ENS adapter; semantically equivalent to a source-selection-capable transport (main.go special-cases it to admissionPath=SourceSelectionCapable)."
         },
         "admission_path_selected": {
           "type": "string",
           "enum": [
-            "join",
+            "source_selection",
             "override",
             "degraded_transport_blind",
             "degraded_no_events"

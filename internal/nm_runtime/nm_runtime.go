@@ -66,12 +66,11 @@ var declaredEmitEvents = map[EmitEvent]struct{}{
 var ErrEmitterRequired = errors.New("nm_runtime: emitter is required")
 
 // Emitter is the transport-facing interface used by the NM runtime to push
-// catalog-driven frames onto the bus. Implementations MUST use the gateway
-// initiator source (rpc_source.Gateway).
+// catalog-driven frames onto the bus. Implementations receive the admitted
+// gateway source chosen by startup admission.
 type Emitter interface {
 	// EmitBroadcast sends a broadcast frame with PB/SB and payload from
-	// the gateway initiator source. The implementation MUST call
-	// rpc_source.Enforce on the source byte it uses.
+	// the admitted gateway initiator source.
 	EmitBroadcast(ctx context.Context, source, pb, sb byte, payload []byte) error
 }
 
@@ -81,6 +80,7 @@ type Emitter interface {
 type Runtime struct {
 	catalog ebusstd.Catalog
 	emitter Emitter
+	source  byte
 }
 
 // NewRuntime constructs a runtime bound to the catalog and emitter. It
@@ -88,19 +88,22 @@ type Runtime struct {
 // valid mode of operation without a transport, and lazy-failing at the
 // first Emit call would only surface the wiring bug much later (and as a
 // nil-pointer panic). Fail-fast at construction per operator preference.
-func NewRuntime(cat ebusstd.Catalog, emitter Emitter) (*Runtime, error) {
+func NewRuntime(cat ebusstd.Catalog, emitter Emitter, source byte) (*Runtime, error) {
 	if emitter == nil {
 		return nil, ErrEmitterRequired
 	}
-	return &Runtime{catalog: cat, emitter: emitter}, nil
+	if err := rpc_source.Enforce(source); err != nil {
+		return nil, err
+	}
+	return &Runtime{catalog: cat, emitter: emitter, source: source}, nil
 }
 
 // Emit dispatches the named NM emit event through the catalog + policy
 // gate. The policy gate is consulted with caller=system_nm_runtime so the
 // compile-time whitelist in execution_policy applies.
 func (r *Runtime) Emit(ctx context.Context, event EmitEvent, payload []byte) error {
-	if err := rpc_source.Enforce(rpc_source.Gateway); err != nil {
-		return err // defensive: Gateway is const, never non-113
+	if err := rpc_source.Enforce(r.source); err != nil {
+		return err
 	}
 	if _, declared := declaredEmitEvents[event]; !declared {
 		return fmt.Errorf("event=%q: %w", event, ErrUnknownEmitEvent)
@@ -114,7 +117,7 @@ func (r *Runtime) Emit(ctx context.Context, event EmitEvent, payload []byte) err
 	}
 	pb := cmd.Identity.PBValue()
 	sb := cmd.Identity.SBValue()
-	return r.emitter.EmitBroadcast(ctx, rpc_source.Gateway, pb, sb, payload)
+	return r.emitter.EmitBroadcast(ctx, r.source, pb, sb, payload)
 }
 
 // findEmit selects the catalog command matching the broadcast emit event.

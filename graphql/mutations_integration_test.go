@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"net/http/httptest"
 	"sync"
 	"testing"
 
@@ -12,8 +13,8 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 	"github.com/Project-Helianthus/helianthus-ebusreg/schema"
+	graphqlgo "github.com/graphql-go/graphql"
 	graphqlclient "github.com/machinebox/graphql"
-	"net/http/httptest"
 )
 
 type invokeTemplate struct {
@@ -241,6 +242,7 @@ func TestInvokeMutation_Integration(t *testing.T) {
 	gateway.Start(ctx)
 
 	builder := NewBuilder(gateway.Registry, nil)
+	builder.SetAdmittedMutationSource(plane.source)
 	if err := builder.Start(context.Background()); err != nil {
 		t.Fatalf("builder.Start error = %v", err)
 	}
@@ -303,6 +305,59 @@ func TestInvokeMutation_Integration(t *testing.T) {
 		t.Fatalf("transport write missing")
 	} else if !equalBytes(got[:len(expectedWrite)], expectedWrite) {
 		t.Fatalf("transport write prefix = %v; want %v", got[:len(expectedWrite)], expectedWrite)
+	}
+}
+
+func TestInvokeMutation_FailsClosedBeforeSourceAdmission(t *testing.T) {
+	method := mockMethod{
+		name:     "set_level",
+		readOnly: false,
+		template: invokeTemplate{
+			primary:   0xB5,
+			secondary: 0x05,
+			params: schema.Schema{
+				Fields: []schema.SchemaField{
+					{Name: "level", Type: types.DATA1b{}},
+				},
+			},
+		},
+	}
+	plane := &invokePlane{
+		name:            "heating",
+		source:          0x10,
+		target:          0x08,
+		hardwareVersion: "7603",
+		methods:         []registry.Method{method},
+	}
+	reg := mutationTestRegistry{
+		entries: map[byte]registry.DeviceEntry{
+			plane.target: mockEntry{
+				info: registry.DeviceInfo{
+					Address:         plane.target,
+					Manufacturer:    "vaillant",
+					DeviceID:        "device-a",
+					HardwareVersion: plane.hardwareVersion,
+				},
+				planes: []registry.Plane{plane},
+			},
+		},
+		order: []byte{plane.target},
+	}
+	invoker := &mutationTestInvoker{}
+
+	_, err := invokeResolve(graphqlgo.ResolveParams{
+		Args: map[string]any{
+			"address": int(plane.target),
+			"plane":   "heating",
+			"method":  "set_level",
+			"params":  map[string]any{"level": 5},
+		},
+	}, reg, invoker, 0, false)
+	if err == nil {
+		t.Fatal("invokeResolve before source admission = nil; want fail-closed error")
+	}
+	if len(invoker.calls) != 0 {
+		t.Fatalf("invoker calls = %d; want 0 before source admission", len(invoker.calls))
 	}
 }
 

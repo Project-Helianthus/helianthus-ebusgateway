@@ -120,12 +120,12 @@ func TestVaillantB503GraphQL_ErrorsGet_Schema(t *testing.T) {
 	// Confirm types present.
 	types, _ := sch["types"].([]any)
 	neededTypes := map[string]bool{
-		"B503Availability":             false,
-		"VaillantB503Errors":           false,
-		"VaillantB503HistoryRecord":    false,
-		"VaillantB503LiveMonitor":      false,
-		"VaillantB503Capability":       false,
-		"VaillantCapabilities":         false,
+		"B503Availability":          false,
+		"VaillantB503Errors":        false,
+		"VaillantB503HistoryRecord": false,
+		"VaillantB503LiveMonitor":   false,
+		"VaillantB503Capability":    false,
+		"VaillantCapabilities":      false,
 	}
 	for _, tEntry := range types {
 		m, _ := tEntry.(map[string]any)

@@ -52,12 +52,12 @@ func TestStartupAdmissionMetrics_StateTransitions(t *testing.T) {
 }
 
 func TestValidateAdmissionPathSelected(t *testing.T) {
-	for _, ok := range []string{"join", "override", "degraded_transport_blind", "degraded_no_events"} {
+	for _, ok := range []string{"source_selection", "override", "degraded_transport_blind", "degraded_no_events"} {
 		if err := ValidateAdmissionPathSelected(ok); err != nil {
 			t.Errorf("valid value %q rejected: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"", "static_fallback", "bogus", "JOIN", "unknown"} {
+	for _, bad := range []string{"", "static_fallback", "bogus", "join", "JOIN", "unknown"} {
 		err := ValidateAdmissionPathSelected(bad)
 		if err == nil {
 			t.Errorf("invalid value %q accepted", bad)
@@ -65,6 +65,9 @@ func TestValidateAdmissionPathSelected(t *testing.T) {
 		}
 		if !strings.HasPrefix(err.Error(), "FATAL:") {
 			t.Errorf("expected FATAL: prefix, got %q", err.Error())
+		}
+		if strings.Contains(err.Error(), "{join,") {
+			t.Errorf("fatal text leaks legacy join enum: %q", err.Error())
 		}
 	}
 }

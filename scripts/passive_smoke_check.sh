@@ -276,7 +276,10 @@ except json.JSONDecodeError as exc:
     raise SystemExit(1)
 
 devices = ((graphql.get("data") or {}).get("devices")) or []
-if not isinstance(devices, list) or len(devices) == 0:
+if not isinstance(devices, list):
+    print(f"{case_id}: devices payload is not a list", file=sys.stderr)
+    raise SystemExit(1)
+if passive_mode == "required" and len(devices) == 0:
     print(f"{case_id}: devices list is empty", file=sys.stderr)
     raise SystemExit(1)
 

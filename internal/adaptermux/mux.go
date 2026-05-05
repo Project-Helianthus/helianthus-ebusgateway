@@ -1688,10 +1688,10 @@ func (m *Mux) tryGrantAndStart() {
 	}
 	// Do not launch a new START while we still expect at least one stale
 	// STARTED/FAILED from a cancelled or deadline-expired RequestStart.
-	// Gateway requests typically reuse the same initiator (0x71), so once
-	// we have a new pending request there is no reliable way to distinguish
-	// the old STARTED from the new one. Treat pendingStartAbsorb as a real
-	// regrant barrier, not just a best-effort diagnostic counter.
+	// A client often reuses the same initiator, so once we have a new
+	// pending request there is no reliable way to distinguish the old
+	// STARTED from the new one. Treat pendingStartAbsorb as a real regrant
+	// barrier, not just a best-effort diagnostic counter.
 	if m.pendingStartAbsorb > 0 {
 		m.logger.Printf("adaptermux: tryGrantAndStart skipped — waiting to absorb %d stale arbitration response(s)", m.pendingStartAbsorb)
 		m.stateMu.Unlock()

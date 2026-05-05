@@ -708,6 +708,52 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 		},
 	})
 
+	busAdmissionType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "BusAdmission",
+		Fields: graphqlgo.Fields{
+			"state": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					admission, ok := busAdmissionFromSource(params.Source)
+					if !ok {
+						return "", nil
+					}
+					return admission.State, nil
+				},
+			},
+			"source": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					admission, ok := busAdmissionFromSource(params.Source)
+					if !ok {
+						return 0, nil
+					}
+					return int(admission.Source), nil
+				},
+			},
+			"companionTarget": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					admission, ok := busAdmissionFromSource(params.Source)
+					if !ok {
+						return 0, nil
+					}
+					return int(admission.CompanionTarget), nil
+				},
+			},
+			"reason": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					admission, ok := busAdmissionFromSource(params.Source)
+					if !ok || admission.Reason == "" {
+						return nil, nil
+					}
+					return admission.Reason, nil
+				},
+			},
+		},
+	})
+
 	statusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "BusObservabilityStatus",
 		Fields: graphqlgo.Fields{
@@ -807,6 +853,20 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 						return BusObservabilityDegraded{}, nil
 					}
 					return value.Degraded, nil
+				},
+			},
+			"busAdmission": &graphqlgo.Field{
+				Type: busAdmissionType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					status, ok := params.Source.(*BusObservabilityStatus)
+					if ok && status != nil {
+						return status.BusAdmission, nil
+					}
+					value, ok := params.Source.(BusObservabilityStatus)
+					if !ok {
+						return nil, nil
+					}
+					return value.BusAdmission, nil
 				},
 			},
 			"startup": &graphqlgo.Field{
@@ -1430,4 +1490,18 @@ func resolveBusPeriodicity(builder *Builder, rootValue any, limit int) *BusPerio
 	result.Count = len(snapshot.Periodicity)
 	result.Capacity = len(snapshot.Periodicity)
 	return result
+}
+
+func busAdmissionFromSource(source any) (BusAdmission, bool) {
+	switch admission := source.(type) {
+	case BusAdmission:
+		return admission, true
+	case *BusAdmission:
+		if admission == nil {
+			return BusAdmission{}, false
+		}
+		return *admission, true
+	default:
+		return BusAdmission{}, false
+	}
 }

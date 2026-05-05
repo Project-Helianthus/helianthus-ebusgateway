@@ -75,15 +75,15 @@ type WatchObserver interface {
 }
 
 // StartupSourceOverride configures opt-in static-source admission on
-// join-capable direct transports per AD09. Default (unset) preserves
-// the standard Joiner warmup path.
+// source-selection-capable direct transports per AD09. Default (unset) preserves
+// the standard source-address selector warmup path.
 type StartupSourceOverride struct {
 	// Source is the static source address to use for all Helianthus-
-	// originated active frames on join-capable direct transports when
+	// originated active frames on source-selection-capable direct transports when
 	// this override is set. When nil, override is unset.
 	Source *uint8
 
-	// Validate, when true, runs the Joiner in advisory-only mode in
+	// Validate, when true, runs the source-address selector in advisory-only mode in
 	// parallel with the override path so the companion-target conflict
 	// heuristic can still detect a mismatch and emit a WARN log. Does
 	// NOT gate active traffic (active frames fire immediately with the
@@ -102,6 +102,8 @@ type Config struct {
 	ScanOnStart              bool
 	ScanSource               byte
 	ScanSourceAuto           bool
+	StartupProbeTargets      []byte
+	StartupCompanionTarget   byte
 	ScanTimeout              time.Duration
 	ScanRequestTimeout       time.Duration
 	ScanInterval             time.Duration

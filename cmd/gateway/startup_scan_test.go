@@ -9,6 +9,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
@@ -176,7 +177,9 @@ func TestShouldRetryDiscoveryWithFullRange(t *testing.T) {
 				ctx = canceledCtx
 			}
 
-			got := shouldRetryDiscoveryWithFullRange(ctx, ebusgateway.DefaultConfig(), gateway, test.usedRestricted, test.retryingFullRange)
+			cfg := ebusgateway.DefaultConfig()
+			cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
+			got := shouldRetryDiscoveryWithFullRange(ctx, cfg, gateway, test.usedRestricted, test.retryingFullRange)
 			if got != test.want {
 				t.Fatalf("shouldRetryDiscoveryWithFullRange(...) = %v; want %v", got, test.want)
 			}
@@ -285,6 +288,44 @@ func TestResolveStartupScanSourceConfig(t *testing.T) {
 				t.Fatal("resolveStartupScanSourceConfig(...) left ScanSourceAuto=true for explicit proxy startup source")
 			}
 		})
+	}
+}
+
+func TestStartupProbeTargetsFromSelection_SanitizesPromotedTargets(t *testing.T) {
+	t.Parallel()
+
+	targets := startupProbeTargetsFromSelection(protocol.SourceAddressSelection{
+		Source: 0x7F,
+		Metrics: protocol.SourceAddressSelectionMetrics{
+			ObservedProbableTargets: []byte{0x15, 0x08, 0x7F, 0xFE, 0xAA, 0x08, 0x02},
+		},
+	})
+	want := []byte{0x08, 0x15}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("startup probe targets = % X; want % X", targets, want)
+	}
+}
+
+func TestSanitizeStartupProbeTargets_PreservesAllConfiguredTargets(t *testing.T) {
+	t.Parallel()
+
+	targets := sanitizeStartupProbeTargets([]byte{0x08, 0x15, 0x26, 0x04}, 0xF0, 0xF5)
+	want := []byte{0x04, 0x08, 0x15, 0x26}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("startup probe targets = % X; want % X", targets, want)
+	}
+}
+
+func TestStartupProbeTargetsForSelection_DefaultPolicySeedsBoundedTarget(t *testing.T) {
+	t.Parallel()
+
+	targets := startupProbeTargetsForSelection(protocol.SourceAddressSelection{
+		Source:    0x7F,
+		Companion: 0x84,
+	})
+	want := []byte{defaultVaillantTarget}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("startup probe targets = % X; want % X", targets, want)
 	}
 }
 
@@ -898,6 +939,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadKeepsScanningUntilControllerCandidat
 	cfg := ebusgateway.DefaultConfig()
 	cfg.ScanOnStart = true
 	cfg.ScanInterval = 10 * time.Millisecond
+	cfg.ScanRequestTimeout = time.Millisecond
 	cfg.TransportConfig = ebusgateway.TransportConfig{
 		Protocol: ebusgateway.TransportEbusdTCP,
 		Network:  "tcp",
@@ -1078,6 +1120,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 	cfg := ebusgateway.DefaultConfig()
 	cfg.ScanOnStart = true
 	cfg.ScanInterval = 10 * time.Millisecond
+	cfg.ScanRequestTimeout = time.Millisecond
 	cfg.TransportConfig = ebusgateway.TransportConfig{
 		Protocol: ebusgateway.TransportEbusdTCP,
 		Network:  "tcp",
@@ -1132,6 +1175,137 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 		t.Fatalf("startup scan readiness probe received canceled context: %v", finalProbeCtxErr)
 	}
 
+}
+
+func TestStartDiscoveryScanLoop_EbusdPreloadRunsWithConfiguredStartupProbeTargets(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanFn := registryScanFn
+	origTargetCandidatesFn := ebusdScanTargetCandidatesFn
+	origResultTargetsFn := ebusdScanResultTargetsFn
+	origResultInfosFn := ebusdScanResultInfosFn
+	origProbeFn := startupScanB524ProbeFn
+	origLoopExitFn := startupScanLoopExitFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	origPostStartupIdentityRetryFn := postStartupIdentityRetryFn
+	t.Cleanup(func() {
+		registryScanFn = origRegistryScanFn
+		ebusdScanTargetCandidatesFn = origTargetCandidatesFn
+		ebusdScanResultTargetsFn = origResultTargetsFn
+		ebusdScanResultInfosFn = origResultInfosFn
+		startupScanB524ProbeFn = origProbeFn
+		startupScanLoopExitFn = origLoopExitFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+		postStartupIdentityRetryFn = origPostStartupIdentityRetryFn
+	})
+
+	var (
+		mu             sync.Mutex
+		targetLookups  int
+		preloadRuns    int
+		registryScans  int
+		retrySchedules int
+	)
+	registryScanFn = func(context.Context, registry.ScanBus, *registry.DeviceRegistry, byte, []byte) ([]registry.DeviceEntry, error) {
+		mu.Lock()
+		registryScans++
+		mu.Unlock()
+		return nil, nil
+	}
+	ebusdScanTargetCandidatesFn = func(cfg ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
+		return []ebusgateway.TransportConfig{cfg}
+	}
+	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
+		mu.Lock()
+		targetLookups++
+		mu.Unlock()
+		return []byte{0x04, 0x08, 0x15}, nil
+	}
+	ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+		mu.Lock()
+		preloadRuns++
+		mu.Unlock()
+		return []registry.DeviceInfo{
+			{Address: 0x04, Manufacturer: "Vaillant", DeviceID: "NETX3"},
+			{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"},
+			{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"},
+		}, nil
+	}
+	startupScanB524ProbeFn = func(context.Context, byte, byte, byte, byte, uint16) bool {
+		return true
+	}
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+	postStartupIdentityRetryFn = func(context.Context, *ebusgateway.Gateway, *graphql.Builder, ebusgateway.Config, *ebusgateway.TransportConfig) {
+		mu.Lock()
+		retrySchedules++
+		mu.Unlock()
+	}
+	loopExited := make(chan struct{}, 1)
+	startupScanLoopExitFn = func() {
+		select {
+		case loopExited <- struct{}{}:
+		default:
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = 10 * time.Millisecond
+	cfg.ScanRequestTimeout = time.Millisecond
+	cfg.TransportConfig = ebusgateway.TransportConfig{
+		Protocol: ebusgateway.TransportEbusdTCP,
+		Network:  "tcp",
+		Address:  "127.0.0.1:8888",
+	}
+	cfg.StartupProbeTargets = []byte{0x08}
+
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	select {
+	case <-signals.semanticBootstrapReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("semanticBootstrapReady was never signaled")
+	}
+	select {
+	case <-loopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scan loop did not exit after coherent ebusd preload")
+	}
+
+	mu.Lock()
+	gotTargetLookups := targetLookups
+	gotPreloadRuns := preloadRuns
+	gotRegistryScans := registryScans
+	gotRetrySchedules := retrySchedules
+	mu.Unlock()
+
+	if gotTargetLookups != 1 {
+		t.Fatalf("ebusd scan result target lookups = %d; want 1 even with configured startup-probe-targets", gotTargetLookups)
+	}
+	if gotPreloadRuns != 1 {
+		t.Fatalf("ebusd scan preload runs = %d; want 1 even with configured startup-probe-targets", gotPreloadRuns)
+	}
+	if gotRegistryScans != 0 {
+		t.Fatalf("registry scan runs = %d; want 0 after coherent preload stop", gotRegistryScans)
+	}
+	if gotRetrySchedules != 1 {
+		t.Fatalf("identity retry schedules = %d; want 1 from ebusd preload target config", gotRetrySchedules)
+	}
 }
 
 func TestSchedulePostStartupIdentityRetryEnrichesMissingVaillantSerials(t *testing.T) {
@@ -1545,11 +1719,13 @@ func TestStartDiscoveryScanLoop_NonEbusdTransportRejectsFullRangeScanByDefault(t
 	})
 
 	origRegistryScanFn := registryScanFn
+	origRegistryScanDirectedFn := registryScanDirectedFn
 	origResultTargetsFn := ebusdScanResultTargetsFn
 	origResultInfosFn := ebusdScanResultInfosFn
 	origLoopExitFn := startupScanLoopExitFn
 	t.Cleanup(func() {
 		registryScanFn = origRegistryScanFn
+		registryScanDirectedFn = origRegistryScanDirectedFn
 		ebusdScanResultTargetsFn = origResultTargetsFn
 		ebusdScanResultInfosFn = origResultInfosFn
 		startupScanLoopExitFn = origLoopExitFn
@@ -1825,6 +2001,7 @@ func TestStartDiscoveryScanLoop_DirectScanSignalsBootstrapAfterConfirmationRetri
 	})
 
 	origRegistryScanFn := registryScanFn
+	origRegistryScanDirectedFn := registryScanDirectedFn
 	origResultTargetsFn := ebusdScanResultTargetsFn
 	origResultInfosFn := ebusdScanResultInfosFn
 	origProbeFn := startupScanB524ProbeFn
@@ -1839,6 +2016,7 @@ func TestStartDiscoveryScanLoop_DirectScanSignalsBootstrapAfterConfirmationRetri
 	evidenceHasVaillantRootFn = func(*registry.DeviceRegistry) bool { return true }
 	t.Cleanup(func() {
 		registryScanFn = origRegistryScanFn
+		registryScanDirectedFn = origRegistryScanDirectedFn
 		ebusdScanResultTargetsFn = origResultTargetsFn
 		ebusdScanResultInfosFn = origResultInfosFn
 		startupScanB524ProbeFn = origProbeFn
@@ -1877,6 +2055,7 @@ func TestStartDiscoveryScanLoop_DirectScanSignalsBootstrapAfterConfirmationRetri
 		}
 		return entries, nil
 	}
+	registryScanDirectedFn = registryScanFn
 	// Non-ebusd-tcp: these should never be called.
 	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
 		t.Fatal("ebusd scan result targets should not be queried for direct transport")
@@ -1912,12 +2091,7 @@ func TestStartDiscoveryScanLoop_DirectScanSignalsBootstrapAfterConfirmationRetri
 		Network:  "tcp",
 		Address:  "127.0.0.1:9999",
 	}
-	// Enable AD05 diagnostic full-range retry: post-cruise-#20, adapter-
-	// direct classifies as JoinCapable so nil-target scans require both
-	// the diag flag AND evidenceHasVaillantRootFn=true (set above in
-	// test setup) to bypass the guard. Without these, the test loop never
-	// runs because the guard rejects.
-	cfg.DiagnosticFullRangeRetry = true
+	cfg.StartupProbeTargets = []byte{0x08, 0x15, 0x26}
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
 
@@ -1969,6 +2143,7 @@ func TestStartDiscoveryScanLoop_DirectScanTimeoutStillSignalsBootstrap(t *testin
 	})
 
 	origRegistryScanFn := registryScanFn
+	origRegistryScanDirectedFn := registryScanDirectedFn
 	origResultTargetsFn := ebusdScanResultTargetsFn
 	origResultInfosFn := ebusdScanResultInfosFn
 	origProbeFn := startupScanB524ProbeFn
@@ -1983,6 +2158,7 @@ func TestStartDiscoveryScanLoop_DirectScanTimeoutStillSignalsBootstrap(t *testin
 	evidenceHasVaillantRootFn = func(*registry.DeviceRegistry) bool { return true }
 	t.Cleanup(func() {
 		registryScanFn = origRegistryScanFn
+		registryScanDirectedFn = origRegistryScanDirectedFn
 		ebusdScanResultTargetsFn = origResultTargetsFn
 		ebusdScanResultInfosFn = origResultInfosFn
 		startupScanB524ProbeFn = origProbeFn
@@ -2022,6 +2198,7 @@ func TestStartDiscoveryScanLoop_DirectScanTimeoutStillSignalsBootstrap(t *testin
 		// Return nil entries + deadline error, exactly like production.
 		return nil, context.DeadlineExceeded
 	}
+	registryScanDirectedFn = registryScanFn
 	// Non-ebusd-tcp: these should never be called.
 	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
 		t.Fatal("ebusd scan result targets should not be queried for direct transport")
@@ -2055,12 +2232,7 @@ func TestStartDiscoveryScanLoop_DirectScanTimeoutStillSignalsBootstrap(t *testin
 		Network:  "tcp",
 		Address:  "127.0.0.1:9999",
 	}
-	// Enable AD05 diagnostic full-range retry: post-cruise-#20, adapter-
-	// direct classifies as JoinCapable so nil-target scans require both
-	// the diag flag AND evidenceHasVaillantRootFn=true (set above in
-	// test setup) to bypass the guard. Without these, the test loop never
-	// runs because the guard rejects.
-	cfg.DiagnosticFullRangeRetry = true
+	cfg.StartupProbeTargets = []byte{0x08, 0x15, 0x26}
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
 
@@ -2156,6 +2328,7 @@ func TestStartDiscoveryScanLoop_SafetyNetForcesBootstrapAfterMaxUnconfirmedPasse
 		}
 		return nil, context.DeadlineExceeded
 	}
+	registryScanDirectedFn = registryScanFn
 	ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) {
 		t.Fatal("ebusd scan result targets should not be queried for direct transport")
 		return nil, nil
@@ -2187,17 +2360,13 @@ func TestStartDiscoveryScanLoop_SafetyNetForcesBootstrapAfterMaxUnconfirmedPasse
 	cfg := ebusgateway.DefaultConfig()
 	cfg.ScanOnStart = true
 	cfg.ScanInterval = 10 * time.Millisecond
+	cfg.ScanRequestTimeout = time.Millisecond
 	cfg.TransportConfig = ebusgateway.TransportConfig{
 		Protocol: ebusgateway.TransportAdapterDirect,
 		Network:  "tcp",
 		Address:  "127.0.0.1:9999",
 	}
-	// Enable AD05 diagnostic full-range retry: post-cruise-#20, adapter-
-	// direct classifies as JoinCapable so nil-target scans require both
-	// the diag flag AND evidenceHasVaillantRootFn=true (set above in
-	// test setup) to bypass the guard. Without these, the test loop never
-	// runs because the guard rejects.
-	cfg.DiagnosticFullRangeRetry = true
+	cfg.StartupProbeTargets = []byte{0x08, 0x15, 0x26}
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
 

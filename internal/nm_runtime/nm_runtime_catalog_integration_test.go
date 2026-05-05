@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/nm_runtime"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source"
 	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
 )
 
@@ -34,7 +33,7 @@ func TestEmit_AgainstEmbeddedCatalog(t *testing.T) {
 		tc := tc
 		t.Run(string(tc.event), func(t *testing.T) {
 			em := &recordingEmitter{}
-			rt, err := nm_runtime.NewRuntime(cat, em)
+			rt, err := nm_runtime.NewRuntime(cat, em, testRuntimeSource)
 			if err != nil {
 				t.Fatalf("NewRuntime err: %v", err)
 			}
@@ -45,8 +44,8 @@ func TestEmit_AgainstEmbeddedCatalog(t *testing.T) {
 				t.Fatalf("emit %q: want 1 emit call, got %d", tc.event, len(em.calls))
 			}
 			c := em.calls[0]
-			if c.src != rpc_source.Gateway {
-				t.Fatalf("emit %q: source = 0x%02X, want 0x71", tc.event, c.src)
+			if c.src != testRuntimeSource {
+				t.Fatalf("emit %q: source = 0x%02X, want 0x%02X", tc.event, c.src, testRuntimeSource)
 			}
 			if c.pb != tc.wantPB || c.sb != tc.wantSB {
 				t.Fatalf("emit %q: pb/sb = 0x%02X/0x%02X, want 0x%02X/0x%02X",

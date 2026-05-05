@@ -1,9 +1,8 @@
-// Package rpc_source centralises the gateway's RPC initiator source byte.
+// Package rpc_source contains shared validation for caller-supplied RPC source
+// bytes.
 //
-// Per project invariant (MEMORY.md): every gateway rpc.invoke call MUST use
-// source=113 (0x71). Non-113 sources are a programming error and MUST
-// surface as compile-time OR sentinel-error failures, not silent traffic
-// under the wrong initiator address.
+// Gateway-owned callers must pass the admitted source selected during startup.
+// This package intentionally does not define a fixed gateway initiator address.
 package rpc_source
 
 import (
@@ -11,28 +10,26 @@ import (
 	"fmt"
 )
 
-// Gateway is the gateway's fixed initiator source byte. Compile-time
-// constant — changing it is a locked-plan decision, not a code change.
-const Gateway byte = 0x71
+// ErrInvalidSource is the sentinel returned when an RPC-invoke call site
+// attempts to use an invalid source byte.
+var ErrInvalidSource = errors.New("rpc_source: source byte is invalid")
 
-// ErrNon113Source is the sentinel returned when an RPC-invoke call site
-// attempts to use a source byte other than Gateway (0x71).
-var ErrNon113Source = errors.New("rpc_source: source byte is not gateway (0x71)")
-
-// Enforce validates that the supplied source byte is the gateway source. It
-// returns a non-nil error wrapping ErrNon113Source when src != Gateway.
+// Enforce validates that the supplied source byte is usable as an active
+// initiator source. It returns a non-nil error wrapping ErrInvalidSource for
+// source zero, which is not a valid admitted active source.
 //
-// Callers SHOULD embed this check at every rpc.invoke call-site. The
-// returned error carries the attempted source byte for audit purposes.
+// Callers SHOULD embed this check at rpc.invoke call-sites that receive a
+// source from startup admission or an explicit user override. The returned
+// error carries the attempted source byte for audit purposes.
 func Enforce(src byte) error {
-	if src == Gateway {
-		return nil
+	if src == 0 {
+		return fmt.Errorf("got 0x%02X: %w", src, ErrInvalidSource)
 	}
-	return fmt.Errorf("got 0x%02X, want 0x%02X: %w", src, Gateway, ErrNon113Source)
+	return nil
 }
 
-// Require panics when src != Gateway. Use in tests or startup-time
-// invariant guards where a non-gateway source is unrecoverable.
+// Require panics when src is not a valid active source. Use in tests or
+// startup-time invariant guards where an invalid source is unrecoverable.
 func Require(src byte) {
 	if err := Enforce(src); err != nil {
 		panic(err)

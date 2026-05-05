@@ -91,12 +91,17 @@ func (b *AdmissionArtifactBuilder) SetAdmissionPathSelected(v string) error {
 	return nil
 }
 
-func (b *AdmissionArtifactBuilder) SetJoinerSelection(source, companionTarget uint8, warmupDuration time.Duration) {
+func (b *AdmissionArtifactBuilder) SetSourceSelection(source, companionTarget uint8, warmupDuration time.Duration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.artifact.Admission.Source = source
 	b.artifact.Admission.CompanionTarget = companionTarget
 	b.artifact.Admission.WarmupDurationS = warmupDuration.Seconds()
+}
+
+func (b *AdmissionArtifactBuilder) SetSourceSelectionActive() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.artifact.Admission.State = "active"
 }
 
@@ -109,7 +114,7 @@ func (b *AdmissionArtifactBuilder) SetOverrideSource(source uint8) {
 // SetActiveOverride flips Admission.State to "active" and records the
 // override Source. Used by the override path (AD09 (c2) soft short-
 // circuit) where the override source is in use from the first active
-// frame regardless of Joiner outcome — so the artifact must reflect
+// frame regardless of source-address selector outcome — so the artifact must reflect
 // state="active", not the default "pending". Found by AD20 second-
 // reviewer M7 pass: the prior code path emitted state=pending on
 // override which was misleading to operators.

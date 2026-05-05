@@ -14,16 +14,16 @@ func FormatStartupAdmissionOverrideLog(source byte) string {
 }
 
 // CheckOverrideCompanionConflict compares the configured override source
-// against the Joiner's selected initiator and emits advisory conflict
+// against the selector's selected source and emits advisory conflict
 // observability when they disagree.
-func CheckOverrideCompanionConflict(overrideSource byte, joinResult protocol.JoinResult, metrics *StartupAdmissionMetrics) bool {
-	if joinResult.Initiator == 0 {
+func CheckOverrideCompanionConflict(overrideSource byte, selection *protocol.SourceAddressSelection, metrics *StartupAdmissionMetrics) bool {
+	if selection == nil {
 		return false
 	}
-	if joinResult.Initiator == overrideSource {
+	if selection.Source == overrideSource {
 		return false
 	}
-	log.Printf("WARN: startup admission override conflict_detected=1 override_source=0x%02X joiner_preferred=0x%02X", overrideSource, joinResult.Initiator)
+	log.Printf("WARN: startup admission override conflict_detected=1 override_source=0x%02X selector_preferred=0x%02X", overrideSource, selection.Source)
 	if metrics != nil {
 		metrics.SetOverrideConflictDetected()
 	}

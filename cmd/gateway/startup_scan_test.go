@@ -306,6 +306,16 @@ func TestStartupProbeTargetsFromSelection_SanitizesPromotedTargets(t *testing.T)
 	}
 }
 
+func TestSanitizeStartupProbeTargets_PreservesAllConfiguredTargets(t *testing.T) {
+	t.Parallel()
+
+	targets := sanitizeStartupProbeTargets([]byte{0x08, 0x15, 0x26, 0x04}, 0xF0, 0xF5)
+	want := []byte{0x04, 0x08, 0x15, 0x26}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("startup probe targets = % X; want % X", targets, want)
+	}
+}
+
 func TestStartupProbeTargetsForSelection_DefaultPolicySeedsBoundedTarget(t *testing.T) {
 	t.Parallel()
 

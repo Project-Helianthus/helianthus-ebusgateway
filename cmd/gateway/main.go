@@ -270,6 +270,25 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			}
 		}
 	}
+	if sourceSelection == nil {
+		result, ok := configuredStartupSourceAdmissionCandidate(cfg, admissionPath, overrideSet)
+		if ok {
+			sourceSelection = &result
+			cfg.ScanSource = result.Source
+			cfg.ScanSourceAuto = false
+			cfg.StartupCompanionTarget = result.Companion
+			cfg.StartupProbeTargets = append(cfg.StartupProbeTargets, startupProbeTargetsForSelection(result)...)
+			artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(cfg)))
+			artifactBuilder.SetSourceSelection(result.Source, result.Companion, 0)
+			if perr := artifactBuilder.SetAdmissionPathSelected("source_selection"); perr != nil {
+				log.Fatalf("FATAL: AD23 enum violation on configured source validation path: %v", perr)
+			}
+			log.Printf("startup admission candidate source=0x%02X companion_target=0x%02X provenance=configured_source", result.Source, result.Companion)
+			if busObservability != nil {
+				busObservability.RecordBusAdmissionTransition("pending", result.Source, result.Companion, "active_probe_pending")
+			}
+		}
+	}
 
 	var (
 		listener      *ebusgateway.BroadcastListener
@@ -650,6 +669,26 @@ func admittedMutationSourceForGateway(cfg ebusgateway.Config, admissionPath ebus
 		return defaultSource, defaultSource != 0
 	}
 	return 0, false
+}
+
+func configuredStartupSourceAdmissionCandidate(cfg ebusgateway.Config, admissionPath ebusgateway.TransportAdmissionPath, overrideSet bool) (protocol.SourceAddressSelection, bool) {
+	if admissionPath != ebusgateway.TransportAdmissionSourceSelectionCapable || overrideSet || shouldStartPassiveObserveFirst(cfg) {
+		return protocol.SourceAddressSelection{}, false
+	}
+	if cfg.ScanSourceAuto || cfg.ScanSource == 0x00 {
+		return protocol.SourceAddressSelection{}, false
+	}
+	companion := cfg.StartupCompanionTarget
+	if companion == 0x00 {
+		companion = protocol.CompanionAddressForSource(cfg.ScanSource)
+	}
+	return protocol.SourceAddressSelection{
+		Source:    cfg.ScanSource,
+		Companion: companion,
+		Metrics: protocol.SourceAddressSelectionMetrics{
+			ObservedProbableTargets: append([]byte(nil), cfg.StartupProbeTargets...),
+		},
+	}, true
 }
 
 func isEbusdTransportProtocol(protocol ebusgateway.TransportProtocol) bool {

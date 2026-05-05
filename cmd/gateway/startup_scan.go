@@ -1107,9 +1107,6 @@ func sanitizeStartupProbeTargets(candidates []byte, source byte, companion byte)
 		targets = append(targets, candidate)
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i] < targets[j] })
-	if len(targets) > 3 {
-		targets = targets[:3]
-	}
 	return targets
 }
 

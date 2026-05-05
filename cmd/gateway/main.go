@@ -258,6 +258,8 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			cfg.ScanSource = result.Source
 			cfg.ScanSourceAuto = false
 			cfg.StartupCompanionTarget = result.Companion
+			cfg.StartupProbeTargets = append(cfg.StartupProbeTargets, startupProbeTargetsForSelection(result)...)
+			artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(cfg)))
 			artifactBuilder.SetSourceSelection(result.Source, result.Companion, result.Metrics.WarmupDurationActual)
 			if perr := artifactBuilder.SetAdmissionPathSelected("source_selection"); perr != nil {
 				log.Fatalf("FATAL: AD23 enum violation on source-selection default-policy path: %v", perr)
@@ -352,7 +354,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				cfg.ScanSource = result.Source
 				cfg.ScanSourceAuto = false
 				cfg.StartupCompanionTarget = result.Companion
-				cfg.StartupProbeTargets = append(cfg.StartupProbeTargets, startupProbeTargetsFromSelection(result)...)
+				cfg.StartupProbeTargets = append(cfg.StartupProbeTargets, startupProbeTargetsForSelection(result)...)
 				artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(cfg)))
 				artifactBuilder.SetSourceSelection(result.Source, result.Companion, time.Since(warmupStartedAt))
 				if perr := artifactBuilder.SetAdmissionPathSelected("source_selection"); perr != nil {

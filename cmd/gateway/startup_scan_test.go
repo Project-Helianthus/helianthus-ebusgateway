@@ -306,6 +306,19 @@ func TestStartupProbeTargetsFromSelection_SanitizesPromotedTargets(t *testing.T)
 	}
 }
 
+func TestStartupProbeTargetsForSelection_DefaultPolicySeedsBoundedTarget(t *testing.T) {
+	t.Parallel()
+
+	targets := startupProbeTargetsForSelection(protocol.SourceAddressSelection{
+		Source:    0x7F,
+		Companion: 0x84,
+	})
+	want := []byte{defaultVaillantTarget}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("startup probe targets = % X; want % X", targets, want)
+	}
+}
+
 func TestEbusdScanTargetCandidates(t *testing.T) {
 	t.Parallel()
 

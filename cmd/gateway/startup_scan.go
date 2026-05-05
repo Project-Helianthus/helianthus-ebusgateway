@@ -1075,6 +1075,14 @@ func startupProbeTargetsFromSelection(selection protocol.SourceAddressSelection)
 	return sanitizeStartupProbeTargets(selection.Metrics.ObservedProbableTargets, selection.Source, selection.Companion)
 }
 
+func startupProbeTargetsForSelection(selection protocol.SourceAddressSelection) []byte {
+	targets := startupProbeTargetsFromSelection(selection)
+	if len(targets) > 0 {
+		return targets
+	}
+	return sanitizeStartupProbeTargets([]byte{defaultVaillantTarget}, selection.Source, selection.Companion)
+}
+
 func startupProbeTargets(cfg ebusgateway.Config) []byte {
 	return sanitizeStartupProbeTargets(cfg.StartupProbeTargets, cfg.ScanSource, cfg.StartupCompanionTarget)
 }

@@ -25,11 +25,6 @@ import (
 // per existing gateway precedent (semantic_vaillant.go).
 const defaultVaillantTarget byte = 0x08
 
-// vaillantGatewaySource is the gateway's eBUS source address (113 / 0x71)
-// per project convention. Populates protocol.Frame.Source on every B503
-// request emitted by the production dispatcher.
-const vaillantGatewaySource byte = 0x71
-
 // b503DispatcherRequestTimeout bounds each individual B503 dispatch.
 // Mirrors the ~2s timeout used by writeB555Frame in semantic_vaillant.go;
 // production live-monitor latency on adapter-direct typically completes
@@ -85,12 +80,10 @@ type b503Runtime struct {
 // falls back to b503StubDispatcher — every Invoke surfaces
 // UPSTREAM_RPC_FAILED, but the FSM and capability signal still operate
 // so consumer envelopes are correctly populated.
-func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgateway.Config) *b503Runtime {
+func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgateway.Config, sourceProvider func() (byte, bool)) *b503Runtime {
 	if s == nil {
 		return nil
 	}
-	_ = cfg // reserved for future config-driven default-target override
-
 	initialTK := b503session.TransportKey{
 		AdapterInstanceID: "gateway",
 		TransportEpoch:    0,
@@ -99,18 +92,28 @@ func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgatewa
 
 	var disp mcp.RPCDispatcher
 	if gw != nil && gw.Bus != nil {
-		// Production path: route through the gateway's *protocol.Bus.
-		// readMu is a fresh sync.Mutex dedicated to the B503 dispatcher
-		// — it is NOT the per-poller readMu inside vaillantSemanticPoller
-		// because that field is package-private. Sharing the mutex with
-		// the poller would require either a public accessor or moving
-		// the poller into the same package; both are out of scope for
-		// M6. The dedicated mutex still serialises B503 dispatches with
-		// each other (the M6-CONC-* tests assert this); B524 vs B503
-		// concurrency is governed at the bus.Send level (the bus
-		// arbitrates per-frame serially regardless).
-		readMu := &sync.Mutex{}
-		disp = newRawFrameDispatcher(gw.Bus, vaillantGatewaySource, readMu, mgr, b503DispatcherRequestTimeout)
+		if sourceProvider == nil && cfg != nil && !cfg.ScanSourceAuto && cfg.ScanSource != 0 {
+			source := cfg.ScanSource
+			sourceProvider = func() (byte, bool) {
+				return source, true
+			}
+		}
+		if sourceProvider == nil {
+			disp = b503StubDispatcher{}
+		} else {
+			// Production path: route through the gateway's *protocol.Bus.
+			// readMu is a fresh sync.Mutex dedicated to the B503 dispatcher
+			// — it is NOT the per-poller readMu inside vaillantSemanticPoller
+			// because that field is package-private. Sharing the mutex with
+			// the poller would require either a public accessor or moving
+			// the poller into the same package; both are out of scope for
+			// M6. The dedicated mutex still serialises B503 dispatches with
+			// each other (the M6-CONC-* tests assert this); B524 vs B503
+			// concurrency is governed at the bus.Send level (the bus
+			// arbitrates per-frame serially regardless).
+			readMu := &sync.Mutex{}
+			disp = newRawFrameDispatcherWithSourceProvider(gw.Bus, sourceProvider, readMu, mgr, b503DispatcherRequestTimeout)
+		}
 	} else {
 		disp = b503StubDispatcher{}
 	}

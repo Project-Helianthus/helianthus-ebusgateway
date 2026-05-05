@@ -36,11 +36,9 @@ func gatewayWithMockBus(t *testing.T) *ebusgateway.Gateway {
 	return &ebusgateway.Gateway{Bus: bus}
 }
 
-// gatewaySource is the gateway's eBUS source address. 0x71 per project
-// convention (gateway = 113). Used by the dispatcher to populate
-// Frame.Source. Defined here as test-package-local; production code
-// references its own constant in vaillant_b503_wiring.go after IMPL.
-const gatewaySource byte = 0x71
+// gatewaySource is the admitted eBUS source used by this test dispatcher.
+// Production wiring receives the admitted source from startup admission.
+const gatewaySource byte = 0x7F
 
 // b503DispatcherMockBus implements b503Bus with a programmable response
 // table keyed on the first 2 bytes of the request payload (the §2 family/
@@ -371,6 +369,21 @@ func TestM6Dispatcher_NilManager_ReturnsMisconfigured(t *testing.T) {
 	}
 }
 
+func TestM6Dispatcher_SourceNotAdmitted_FailsClosedBeforeBusSend(t *testing.T) {
+	bus := newB503DispatcherMockBus()
+	mgr := b503session.New(b503session.TransportKey{}, 30*time.Second, nil)
+	disp := newRawFrameDispatcherWithSourceProvider(bus, func() (byte, bool) {
+		return 0, false
+	}, nil, mgr, 0)
+	_, err := disp.Invoke(context.Background(), 0x08, []byte{0x00, 0x01})
+	if err == nil || !errors.Is(err, errRawFrameSourceNotAdmitted) {
+		t.Fatalf("Invoke before admission = %v; want errRawFrameSourceNotAdmitted", err)
+	}
+	if bus.callCount() != 0 {
+		t.Fatalf("bus.Send calls = %d; want 0 before source admission", bus.callCount())
+	}
+}
+
 // --- Integration: production installVaillantB503 must inject the real dispatcher ---
 
 // TestM6Dispatcher_InstallVaillantB503_InjectsProductionDispatcher exercises
@@ -384,8 +397,8 @@ func TestM6Dispatcher_InstallVaillantB503_InjectsProductionDispatcher(t *testing
 		t.Fatalf("mcp.NewServer = %v", err)
 	}
 	gw := gatewayWithMockBus(t)
-	cfg := &ebusgateway.Config{}
-	rt := installVaillantB503(srv, gw, cfg)
+	cfg := &ebusgateway.Config{ScanSource: 0x7F}
+	rt := installVaillantB503(srv, gw, cfg, func() (byte, bool) { return 0x7F, true })
 	if rt == nil {
 		t.Fatalf("installVaillantB503 returned nil")
 	}

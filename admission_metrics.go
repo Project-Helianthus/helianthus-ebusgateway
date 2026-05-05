@@ -187,6 +187,6 @@ func ValidateAdmissionPathSelected(v string) error {
 	case "source_selection", "override", "degraded_transport_blind", "degraded_no_events":
 		return nil
 	default:
-		return fmt.Errorf("FATAL: admission_path_selected=%q is out of enum {join,override,degraded_transport_blind,degraded_no_events} (AD23)", v)
+		return fmt.Errorf("FATAL: admission_path_selected=%q is out of enum {source_selection,override,degraded_transport_blind,degraded_no_events} (AD23)", v)
 	}
 }

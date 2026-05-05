@@ -259,7 +259,7 @@ func TestSetBoilerConfigMutation_UnsupportedInReducedProfile(t *testing.T) {
 			"noop": &graphqlgo.Field{Type: graphqlgo.String},
 		},
 	})
-	mutationType := buildMutationType(nil, nil, nil, nil, nil)
+	mutationType := buildMutationType(nil, nil, nil, nil, nil, func() (byte, bool) { return 0, false })
 	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
 		Query:    queryType,
 		Mutation: mutationType,
@@ -351,8 +351,8 @@ func TestSetCircuitConfigMutation_Success(t *testing.T) {
 	if got := first.Params["opcode"]; got != byte(0x02) {
 		t.Fatalf("first call opcode = %#v; want 0x02", got)
 	}
-	if got := first.Params["source"]; got != byte(0x31) {
-		t.Fatalf("first call source = %#v; want 0x31", got)
+	if got := first.Params["source"]; got != byte(0x7F) {
+		t.Fatalf("first call source = %#v; want 0x7F", got)
 	}
 	dataBytes, ok := first.Params["data"].([]byte)
 	if !ok || !bytes.Equal(dataBytes, []byte{0x00, 0x00, 0xC0, 0x3F}) {
@@ -365,6 +365,61 @@ func TestSetCircuitConfigMutation_Success(t *testing.T) {
 	}
 	if _, ok := second.Params["data"]; ok {
 		t.Fatalf("second call unexpectedly has data param: %#v", second.Params["data"])
+	}
+}
+
+func TestSetCircuitConfigMutation_FailsClosedBeforeSourceAdmission(t *testing.T) {
+	registry := mutationTestRegistry{
+		entries: map[byte]registry.DeviceEntry{
+			0x15: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod),
+		},
+		order: []byte{0x15},
+	}
+	invoker := &mutationTestInvoker{}
+
+	data := executeMutation(t, buildMutationSchemaWithSourceProvider(t, registry, invoker, nil, nil, func() (byte, bool) {
+		return 0, false
+	}), `mutation {
+		setCircuitConfig(index: 1, field: "heatingCurve", value: "1.5") {
+			success
+			error
+		}
+	}`)
+
+	payload, ok := data["setCircuitConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("setCircuitConfig payload type = %T; want map", data["setCircuitConfig"])
+	}
+	if got, _ := payload["success"].(bool); got {
+		t.Fatalf("setCircuitConfig success = %v; want false", got)
+	}
+	errMessage, _ := payload["error"].(string)
+	if !strings.Contains(errMessage, "source selection not active") {
+		t.Fatalf("setCircuitConfig error = %q; want source selection not active", errMessage)
+	}
+	if len(invoker.calls) != 0 {
+		t.Fatalf("invoker calls = %d; want 0 before source admission", len(invoker.calls))
+	}
+}
+
+func TestApplyConfigMutation_FailsClosedBeforeSourceAdmission(t *testing.T) {
+	registry := mutationTestRegistry{
+		entries: map[byte]registry.DeviceEntry{
+			0x15: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod),
+		},
+		order: []byte{0x15},
+	}
+	invoker := &mutationTestInvoker{}
+
+	result := ApplyConfigMutation(context.Background(), registry, invoker, 0, false, "heatingCurve", "1.5", circuitConfigFieldSpecs)
+	if result.Success {
+		t.Fatalf("ApplyConfigMutation success = true; want false")
+	}
+	if !strings.Contains(result.Error, "source selection not active") {
+		t.Fatalf("ApplyConfigMutation error = %q; want source selection not active", result.Error)
+	}
+	if len(invoker.calls) != 0 {
+		t.Fatalf("invoker calls = %d; want 0 before source admission", len(invoker.calls))
 	}
 }
 
@@ -812,6 +867,10 @@ func TestSetZoneTimeProgramMutation_InvalidJSON(t *testing.T) {
 }
 
 func buildMutationSchema(t *testing.T, registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, scheduleWriter ScheduleWriter) graphqlgo.Schema {
+	return buildMutationSchemaWithSourceProvider(t, registry, invoker, boilerWriter, scheduleWriter, func() (byte, bool) { return 0x7F, true })
+}
+
+func buildMutationSchemaWithSourceProvider(t *testing.T, registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, scheduleWriter ScheduleWriter, sourceProvider func() (byte, bool)) graphqlgo.Schema {
 	t.Helper()
 	queryType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Query",
@@ -819,7 +878,7 @@ func buildMutationSchema(t *testing.T, registry InvokeRegistry, invoker Invoker,
 			"noop": &graphqlgo.Field{Type: graphqlgo.String},
 		},
 	})
-	mutationType := buildMutationType(registry, invoker, boilerWriter, nil, scheduleWriter)
+	mutationType := buildMutationType(registry, invoker, boilerWriter, nil, scheduleWriter, sourceProvider)
 	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
 		Query:    queryType,
 		Mutation: mutationType,

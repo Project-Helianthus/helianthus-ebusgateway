@@ -11,6 +11,8 @@ import (
 	ebusstd "github.com/Project-Helianthus/helianthus-ebusreg/catalog/ebus_standard"
 )
 
+const testRuntimeSource byte = 0x7F
+
 type recordingEmitter struct {
 	calls []struct {
 		src, pb, sb byte
@@ -74,7 +76,7 @@ func syntheticCatalog() ebusstd.Catalog {
 
 func TestRuntime_Emit_ResetStatus_PassesPolicyAndEmits(t *testing.T) {
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em)
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
@@ -85,8 +87,8 @@ func TestRuntime_Emit_ResetStatus_PassesPolicyAndEmits(t *testing.T) {
 		t.Fatalf("want 1 emit call, got %d", len(em.calls))
 	}
 	c := em.calls[0]
-	if c.src != rpc_source.Gateway {
-		t.Fatalf("emit source = 0x%02X, want 0x71", c.src)
+	if c.src != testRuntimeSource {
+		t.Fatalf("emit source = 0x%02X, want 0x%02X", c.src, testRuntimeSource)
 	}
 	if c.pb != 0xFF || c.sb != 0x00 {
 		t.Fatalf("emit pb/sb = 0x%02X/0x%02X, want FF/00", c.pb, c.sb)
@@ -95,7 +97,7 @@ func TestRuntime_Emit_ResetStatus_PassesPolicyAndEmits(t *testing.T) {
 
 func TestRuntime_Emit_FailureBroadcast(t *testing.T) {
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em)
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
@@ -109,7 +111,7 @@ func TestRuntime_Emit_FailureBroadcast(t *testing.T) {
 
 func TestRuntime_Emit_RefusesIfCatalogMissing(t *testing.T) {
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(ebusstd.Catalog{Namespace: "ebus_standard"}, em)
+	rt, err := nm_runtime.NewRuntime(ebusstd.Catalog{Namespace: "ebus_standard"}, em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
@@ -124,7 +126,7 @@ func TestRuntime_Emit_RefusesIfCatalogMissing(t *testing.T) {
 // nil-panic on the first Emit call; now construction must reject it with
 // ErrEmitterRequired.
 func TestNewRuntime_RejectsNilEmitter(t *testing.T) {
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), nil)
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), nil, testRuntimeSource)
 	if err == nil {
 		t.Fatal("NewRuntime(nil emitter) must return error")
 	}
@@ -145,7 +147,7 @@ func TestNewRuntime_RejectsNilEmitter(t *testing.T) {
 // approval.
 func TestRuntime_Emit_RejectsUndeclaredEvent(t *testing.T) {
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em)
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
@@ -166,7 +168,7 @@ func TestRuntime_Emit_RejectsUndeclaredEvent(t *testing.T) {
 // findEmit and policy.
 func TestRuntime_Emit_DeclaredEventContinuesToCatalog(t *testing.T) {
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em)
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}
@@ -198,7 +200,7 @@ func TestRuntime_Emit_PolicyDeniesWhenWhitelistMismatch(t *testing.T) {
 	// policy layer (no emit, policy not consulted). The "policy denies"
 	// path is covered by internal/execution_policy own tests.
 	em := &recordingEmitter{}
-	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em)
+	rt, err := nm_runtime.NewRuntime(syntheticCatalog(), em, testRuntimeSource)
 	if err != nil {
 		t.Fatalf("NewRuntime err: %v", err)
 	}

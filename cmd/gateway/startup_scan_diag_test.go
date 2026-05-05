@@ -39,26 +39,26 @@ func TestStartupScanSourceMode(t *testing.T) {
 			want: "auto-proxy",
 		},
 		{
-			name: "auto kept (auto=true, source=0x71, no proxy change)",
+			name: "auto kept (auto=true, source=0x7F, no proxy change)",
 			original: ebusgateway.Config{
 				ScanSourceAuto: true,
-				ScanSource:     0x71,
+				ScanSource:     0x7F,
 			},
 			resolved: ebusgateway.Config{
 				ScanSourceAuto: true,
-				ScanSource:     0x71,
+				ScanSource:     0x7F,
 			},
 			want: "auto",
 		},
 		{
-			name: "configured (auto=false, source=0x71)",
+			name: "configured (auto=false, source=0x7F)",
 			original: ebusgateway.Config{
 				ScanSourceAuto: false,
-				ScanSource:     0x71,
+				ScanSource:     0x7F,
 			},
 			resolved: ebusgateway.Config{
 				ScanSourceAuto: false,
-				ScanSource:     0x71,
+				ScanSource:     0x7F,
 			},
 			want: "configured",
 		},
@@ -119,12 +119,12 @@ func TestStatsBus_AttemptsBoundedToCap(t *testing.T) {
 	}
 	sb := &statsBus{
 		bus:    &stubBus{errors: errs},
-		source: 0x71,
+		source: 0x7F,
 	}
 
 	var frames []protocol.Frame
 	for i := 0; i < scanAttemptLogCap+20; i++ {
-		frames = append(frames, protocol.Frame{Source: 0x71, Target: byte(0x10 + i)})
+		frames = append(frames, protocol.Frame{Source: 0x7F, Target: byte(0x10 + i)})
 	}
 	for _, f := range frames {
 		_, _ = sb.Send(context.Background(), f)
@@ -154,11 +154,11 @@ func TestStatsBus_AttemptRecordsSourceTargetClass(t *testing.T) {
 			ebuserrors.ErrCRCMismatch,
 			errors.New("unknown protocol error"),
 		}},
-		source: 0x71,
+		source: 0x7F,
 	}
 	targets := []byte{0x08, 0x10, 0x15, 0x26, 0x04, 0x03}
 	for _, tgt := range targets {
-		_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: tgt})
+		_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: tgt})
 	}
 
 	if len(sb.attempts) != 6 {
@@ -166,8 +166,8 @@ func TestStatsBus_AttemptRecordsSourceTargetClass(t *testing.T) {
 	}
 	wantClasses := []string{"ok", "timeout", "collision", "nack", "crc", "other"}
 	for i, a := range sb.attempts {
-		if a.source != 0x71 {
-			t.Errorf("attempt %d source = 0x%02X, want 0x71", i, a.source)
+		if a.source != 0x7F {
+			t.Errorf("attempt %d source = 0x%02X, want 0x7F", i, a.source)
 		}
 		if a.target != targets[i] {
 			t.Errorf("attempt %d target = 0x%02X, want 0x%02X", i, a.target, targets[i])
@@ -231,12 +231,12 @@ func TestScanAttemptLog_IncludesTxnClass(t *testing.T) {
 	fc := &fakeClassifier{val: "echo_only_timeout"}
 	sb := &statsBus{
 		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout, nil}},
-		source:     0x71,
+		source:     0x7F,
 		classifier: fc,
 	}
-	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: 0x08, Primary: 0x07, Secondary: 0x04})
 	fc.val = "success_like"
-	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x10, Primary: 0x07, Secondary: 0x04})
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: 0x10, Primary: 0x07, Secondary: 0x04})
 
 	if len(sb.attempts) != 2 {
 		t.Fatalf("attempts = %d, want 2", len(sb.attempts))
@@ -264,12 +264,12 @@ func TestScanAttemptLog_BoundedWithTxnClass(t *testing.T) {
 	}
 	sb := &statsBus{
 		bus:        &stubBus{errors: errs},
-		source:     0x71,
+		source:     0x7F,
 		classifier: fc,
 	}
 	for i := 0; i < scanAttemptLogCap+10; i++ {
 		_, _ = sb.Send(context.Background(),
-			protocol.Frame{Source: 0x71, Target: byte(0x10 + i), Primary: 0x07, Secondary: 0x04})
+			protocol.Frame{Source: 0x7F, Target: byte(0x10 + i), Primary: 0x07, Secondary: 0x04})
 	}
 	if len(sb.attempts) != scanAttemptLogCap {
 		t.Fatalf("attempts = %d, want %d", len(sb.attempts), scanAttemptLogCap)
@@ -288,10 +288,10 @@ func TestScanAttemptLog_BoundedWithTxnClass(t *testing.T) {
 func TestScanAttemptLog_NoClassifier_EmptyTxnClass(t *testing.T) {
 	sb := &statsBus{
 		bus:    &stubBus{errors: []error{ebuserrors.ErrTimeout}},
-		source: 0x71,
+		source: 0x7F,
 		// classifier: nil (explicit).
 	}
-	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: 0x08, Primary: 0x07, Secondary: 0x04})
 	if len(sb.attempts) != 1 {
 		t.Fatalf("attempts = %d, want 1", len(sb.attempts))
 	}
@@ -340,7 +340,7 @@ func (b *shapeCaptureBus) Send(ctx context.Context, frame protocol.Frame) (*prot
 // TestScanRequestShape_AdapterDirect proves the adapter-direct startup
 // scan builds frames with the exact contract expected by a Vaillant bus:
 //
-//	Frame.Source    == configured ScanSource (e.g. 0xF7 proxy or 0x71)
+//	Frame.Source    == configured ScanSource (e.g. 0xF7 proxy or 0x7F)
 //	Frame.Target    ∈ valid scan-target iteration range (0x01..0xFD)
 //	Frame.Primary   == 0x07 (identification)
 //	Frame.Secondary == 0x04
@@ -354,7 +354,7 @@ func TestScanRequestShape_AdapterDirect(t *testing.T) {
 
 	// Use a small explicit target list so the test finishes quickly.
 	targets := []byte{0x08, 0x15, 0x26}
-	const source byte = 0x71
+	const source byte = 0x7F
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -429,10 +429,10 @@ func TestStatsBus_NonOkPrioritizedOverOk(t *testing.T) {
 	}
 	sb := &statsBus{
 		bus:    &stubBus{errors: errs},
-		source: 0x71,
+		source: 0x7F,
 	}
 	for i := 0; i < len(errs); i++ {
-		_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: byte(0x10 + i)})
+		_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: byte(0x10 + i)})
 	}
 
 	if len(sb.attempts) != scanAttemptLogCap {
@@ -469,11 +469,11 @@ func TestStatsBus_AllNonOk_NoFurtherEvictions(t *testing.T) {
 	}
 	sb := &statsBus{
 		bus:    &stubBus{errors: errs},
-		source: 0x71,
+		source: 0x7F,
 	}
 	// Send cap+10 timeouts with distinct target bytes.
 	for i := 0; i < len(errs); i++ {
-		_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: byte(0x10 + i)})
+		_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: byte(0x10 + i)})
 	}
 
 	if len(sb.attempts) != scanAttemptLogCap {
@@ -500,17 +500,17 @@ func TestStartDiscoveryScanLoopWithClassifier_InstanceScoped(t *testing.T) {
 
 	sbA := &statsBus{
 		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
-		source:     0x71,
+		source:     0x7F,
 		classifier: fcA,
 	}
 	sbB := &statsBus{
 		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
-		source:     0x71,
+		source:     0x7F,
 		classifier: fcB,
 	}
 
-	_, _ = sbA.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
-	_, _ = sbB.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x10, Primary: 0x07, Secondary: 0x04})
+	_, _ = sbA.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	_, _ = sbB.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: 0x10, Primary: 0x07, Secondary: 0x04})
 
 	if len(sbA.attempts) != 1 || sbA.attempts[0].txnClass != "echo_only_timeout" {
 		t.Fatalf("sbA: got %+v, want 1 attempt with txnClass=echo_only_timeout", sbA.attempts)
@@ -540,10 +540,10 @@ func TestStartDiscoveryScanLoop_NoPackageGlobalClassifier(t *testing.T) {
 	// when invoked via the default 4-arg seam (classifier == nil).
 	sb := &statsBus{
 		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
-		source:     0x71,
+		source:     0x7F,
 		classifier: nil,
 	}
-	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: 0x08, Primary: 0x07, Secondary: 0x04})
 	if sb.attempts[0].txnClass != "" {
 		t.Errorf("default entry point leaked a classifier: txnClass=%q", sb.attempts[0].txnClass)
 	}
@@ -566,17 +566,17 @@ func TestWireAdapterDirect_RebindsClassifierPerInstance(t *testing.T) {
 	// run() does after threading `adapterClassifier` as the 5th arg).
 	sb1 := &statsBus{
 		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
-		source:     0x71,
+		source:     0x7F,
 		classifier: fc1,
 	}
 	sb2 := &statsBus{
 		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
-		source:     0x71,
+		source:     0x7F,
 		classifier: fc2,
 	}
 
-	_, _ = sb1.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
-	_, _ = sb2.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x10, Primary: 0x07, Secondary: 0x04})
+	_, _ = sb1.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	_, _ = sb2.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: 0x10, Primary: 0x07, Secondary: 0x04})
 
 	if sb1.attempts[0].txnClass != "gateway1_class" {
 		t.Fatalf("gateway1 statsBus got txnClass=%q, want gateway1_class — cross-attribution from fc2?", sb1.attempts[0].txnClass)
@@ -630,10 +630,10 @@ func TestScanAttemptLog_TxnIDCorrelation(t *testing.T) {
 	}
 	sb := &statsBus{
 		bus:        &stubBus{errors: []error{nil}},
-		source:     0x71,
+		source:     0x7F,
 		classifier: fs,
 	}
-	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: 0x08, Primary: 0x07, Secondary: 0x04})
 
 	if len(sb.attempts) != 1 {
 		t.Fatalf("attempts len=%d, want 1", len(sb.attempts))
@@ -681,12 +681,12 @@ func TestScanAttemptLog_TxnIDAdvancesAcrossAttempts(t *testing.T) {
 			ebuserrors.ErrTimeout,
 			ebuserrors.ErrTimeout,
 		}},
-		source:     0x71,
+		source:     0x7F,
 		classifier: fs,
 	}
 	targets := []byte{0x08, 0x10, 0x15}
 	for _, tgt := range targets {
-		_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: tgt, Primary: 0x07, Secondary: 0x04})
+		_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: tgt, Primary: 0x07, Secondary: 0x04})
 	}
 
 	if len(sb.attempts) != 3 {
@@ -720,10 +720,10 @@ func TestScanAttemptLog_LegacyClassifierOnly(t *testing.T) {
 	fc := &fakeClassifier{val: "schema_error"}
 	sb := &statsBus{
 		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
-		source:     0x71,
+		source:     0x7F,
 		classifier: fc,
 	}
-	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: 0x08, Primary: 0x07, Secondary: 0x04})
 
 	if len(sb.attempts) != 1 {
 		t.Fatalf("attempts len=%d, want 1", len(sb.attempts))
@@ -790,10 +790,10 @@ func TestStartDiscoveryScanLoopFn_SignatureThreadsClassifier(t *testing.T) {
 	fc := &fakeClassifier{val: "threaded_through_signature"}
 	sb := &statsBus{
 		bus:        &stubBus{errors: []error{ebuserrors.ErrTimeout}},
-		source:     0x71,
+		source:     0x7F,
 		classifier: fc,
 	}
-	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04})
+	_, _ = sb.Send(context.Background(), protocol.Frame{Source: 0x7F, Target: 0x08, Primary: 0x07, Secondary: 0x04})
 	if len(sb.attempts) != 1 {
 		t.Fatalf("expected 1 attempt, got %d", len(sb.attempts))
 	}

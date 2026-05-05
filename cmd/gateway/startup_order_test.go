@@ -8,11 +8,11 @@ import (
 
 func TestShouldCloseSemanticBarrier(t *testing.T) {
 	cases := []struct {
-		name             string
-		admissionPath    ebusgateway.TransportAdmissionPath
-		overrideSet      bool
-		joinResultNotNil bool
-		wantClose        bool
+		name                 string
+		admissionPath        ebusgateway.TransportAdmissionPath
+		overrideSet          bool
+		sourceSelectionReady bool
+		wantClose            bool
 	}{
 		{"source-selection-capable + source-address selector success, override unset -> close", ebusgateway.TransportAdmissionSourceSelectionCapable, false, true, true},
 		{"source-selection-capable + no source-address selector result, override unset -> keep open (DEGRADED)", ebusgateway.TransportAdmissionSourceSelectionCapable, false, false, false},
@@ -23,7 +23,7 @@ func TestShouldCloseSemanticBarrier(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := shouldCloseSemanticBarrier(tc.admissionPath, tc.overrideSet, tc.joinResultNotNil)
+			got := shouldCloseSemanticBarrier(tc.admissionPath, tc.overrideSet, tc.sourceSelectionReady)
 			if got != tc.wantClose {
 				t.Errorf("got %v, want %v", got, tc.wantClose)
 			}

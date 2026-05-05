@@ -111,7 +111,7 @@ func TestBindFlags_StartupProbeTargetsRejectInvalid(t *testing.T) {
 	}
 }
 
-func TestApplyTransportSourcePolicy_EbusdTCPAutoUsesEbusdSource(t *testing.T) {
+func TestApplyTransportSourcePolicy_EbusdTCPAutoPreservesAutoSource(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
 	cfg.ScanSource = 0x00
@@ -119,8 +119,8 @@ func TestApplyTransportSourcePolicy_EbusdTCPAutoUsesEbusdSource(t *testing.T) {
 
 	applyTransportSourcePolicy(&cfg)
 
-	if cfg.ScanSource != 0x31 {
-		t.Fatalf("ScanSource = 0x%02x; want 0x31", cfg.ScanSource)
+	if cfg.ScanSource != 0x00 {
+		t.Fatalf("ScanSource = 0x%02x; want 0x00", cfg.ScanSource)
 	}
 }
 
@@ -137,7 +137,7 @@ func TestApplyTransportSourcePolicy_NonEbusdAutoRemainsDynamic(t *testing.T) {
 	}
 }
 
-func TestApplyTransportSourcePolicy_EbusdTCPDefaultF0PromotesToEbusdSource(t *testing.T) {
+func TestApplyTransportSourcePolicy_EbusdTCPConfiguredSourceIsPreserved(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
 	cfg.ScanSource = 0xF0
@@ -145,8 +145,8 @@ func TestApplyTransportSourcePolicy_EbusdTCPDefaultF0PromotesToEbusdSource(t *te
 
 	applyTransportSourcePolicy(&cfg)
 
-	if cfg.ScanSource != 0x31 {
-		t.Fatalf("ScanSource = 0x%02x; want 0x31", cfg.ScanSource)
+	if cfg.ScanSource != 0xF0 {
+		t.Fatalf("ScanSource = 0x%02x; want 0xF0", cfg.ScanSource)
 	}
 }
 
@@ -502,6 +502,7 @@ func TestRun_ProxySingleENSAutoUsesSameSemanticSourceAsStartupConfirmation(t *te
 
 	cfg := ebusgateway.DefaultConfig()
 	cfg.Transport = transport.NewLoopback()
+	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
 	cfg.ScanOnStart = true
 	cfg.BroadcastListen = false
 	cfg.ScanSource = 0x00
@@ -708,6 +709,7 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 
 	cfg := ebusgateway.DefaultConfig()
 	cfg.Transport = transport.NewLoopback()
+	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
 	cfg.ScanOnStart = true
 	cfg.BroadcastListen = false
 

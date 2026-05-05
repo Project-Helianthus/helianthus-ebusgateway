@@ -97,6 +97,11 @@ func (b *AdmissionArtifactBuilder) SetSourceSelection(source, companionTarget ui
 	b.artifact.Admission.Source = source
 	b.artifact.Admission.CompanionTarget = companionTarget
 	b.artifact.Admission.WarmupDurationS = warmupDuration.Seconds()
+}
+
+func (b *AdmissionArtifactBuilder) SetSourceSelectionActive() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.artifact.Admission.State = "active"
 }
 

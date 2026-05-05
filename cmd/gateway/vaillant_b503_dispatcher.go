@@ -82,6 +82,9 @@ var (
 	// errRawFrameMisconfigured indicates the dispatcher was constructed
 	// with a nil bus or nil manager.
 	errRawFrameMisconfigured = errors.New("b503dispatcher: misconfigured (nil bus or manager)")
+	// errRawFrameSourceNotAdmitted indicates startup admission has not yet
+	// made a usable source available for gateway-owned B503 traffic.
+	errRawFrameSourceNotAdmitted = errors.New("b503dispatcher: source not admitted")
 )
 
 // rawFrameDispatcher is the production B503 frame routing component.
@@ -95,6 +98,7 @@ var (
 type rawFrameDispatcher struct {
 	bus            b503Bus
 	source         byte
+	sourceProvider func() (byte, bool)
 	readMu         sync.Locker
 	mgr            *b503session.Manager
 	requestTimeout time.Duration
@@ -104,8 +108,8 @@ type rawFrameDispatcher struct {
 //
 //   - bus: the gateway's *protocol.Bus (or a test mock). The single
 //     bus-access primitive — §12.3 / AD16.
-//   - source: the gateway's eBUS initiator address (0x71 per project
-//     convention). Populates Frame.Source.
+//   - source: the gateway's admitted eBUS initiator address. Populates
+//     Frame.Source.
 //   - readMu: the B524 read mutex. Acquired around bus.Send to serialise
 //     B503 frames with B524 polling. May be nil for tests that don't
 //     care about B524 contention. The Manager has already grabbed
@@ -118,9 +122,15 @@ type rawFrameDispatcher struct {
 //     "use ctx as-is"; a positive value bounds bus.Send via a derived
 //     context.
 func newRawFrameDispatcher(bus b503Bus, source byte, readMu sync.Locker, mgr *b503session.Manager, requestTimeout time.Duration) *rawFrameDispatcher {
+	return newRawFrameDispatcherWithSourceProvider(bus, func() (byte, bool) {
+		return source, source != 0
+	}, readMu, mgr, requestTimeout)
+}
+
+func newRawFrameDispatcherWithSourceProvider(bus b503Bus, sourceProvider func() (byte, bool), readMu sync.Locker, mgr *b503session.Manager, requestTimeout time.Duration) *rawFrameDispatcher {
 	return &rawFrameDispatcher{
 		bus:            bus,
-		source:         source,
+		sourceProvider: sourceProvider,
 		readMu:         readMu,
 		mgr:            mgr,
 		requestTimeout: requestTimeout,
@@ -162,6 +172,10 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 	if len(payload) >= 2 && payload[0] == b503PrimaryByte && payload[1] == b503SecondaryByte {
 		return nil, errRawFrameMalformedPayload
 	}
+	source, admitted := d.admittedSource()
+	if !admitted || source == 0 {
+		return nil, fmt.Errorf("%w: %w", errRawFrameSourceNotAdmitted, b503session.ErrTransportDown)
+	}
 
 	// Capture the current epoch at issue-time. AD18 + R3 A2 fix: epoch
 	// comparison is request-side metadata, populated when the request
@@ -188,7 +202,7 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 		d.readMu.Lock()
 	}
 	frame := protocol.Frame{
-		Source:    d.source,
+		Source:    source,
 		Target:    target,
 		Primary:   b503PrimaryByte,
 		Secondary: b503SecondaryByte,
@@ -225,6 +239,16 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 		return nil, fmt.Errorf("%w: nil response frame", errRawFrameUpstreamRPCFailed)
 	}
 	return resp.Data, nil
+}
+
+func (d *rawFrameDispatcher) admittedSource() (byte, bool) {
+	if d == nil {
+		return 0, false
+	}
+	if d.sourceProvider != nil {
+		return d.sourceProvider()
+	}
+	return d.source, d.source != 0
 }
 
 // classifySendErr maps bus.Send errors to dispatcher sentinels per

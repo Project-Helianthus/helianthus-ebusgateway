@@ -70,10 +70,6 @@ func main() {
 	flag.Parse()
 	applyTransportSourcePolicy(&cfg)
 
-	if cfg.ScanSource == 0x31 && !cfg.ScanSourceAuto {
-		log.Printf("warning: source-addr=0x31 is commonly used by ebusd; when running alongside ebusd pick a different source address (e.g. --source-addr=0xf0)")
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -200,7 +196,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		artifactBuilder.SetBaselineEvidenceProvider(func() map[string]int {
 			counts := make(map[string]int)
 			for _, addr := range ebusgateway.VaillantBaselineTopologySeed {
-				counts[fmt.Sprintf("0x%02X", addr)] = 0
+				counts[fmt.Sprintf("%02X", addr)] = 0
 			}
 			// RecentMessages returns most recent observations; iterate
 			// and count per baseline address (as either source or
@@ -208,11 +204,11 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			// enough to capture passive traffic to all baselines on a
 			// healthy bus.
 			for _, msg := range busObservability.RecentMessages(1024) {
-				srcKey := fmt.Sprintf("0x%02X", msg.Source)
+				srcKey := fmt.Sprintf("%02X", msg.Source)
 				if _, ok := counts[srcKey]; ok {
 					counts[srcKey]++
 				}
-				tgtKey := fmt.Sprintf("0x%02X", msg.Target)
+				tgtKey := fmt.Sprintf("%02X", msg.Target)
 				if _, ok := counts[tgtKey]; ok {
 					counts[tgtKey]++
 				}
@@ -261,47 +257,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			sourceSelection = &result
 			cfg.ScanSource = result.Source
 			cfg.ScanSourceAuto = false
+			cfg.StartupCompanionTarget = result.Companion
 			artifactBuilder.SetSourceSelection(result.Source, result.Companion, result.Metrics.WarmupDurationActual)
 			if perr := artifactBuilder.SetAdmissionPathSelected("source_selection"); perr != nil {
 				log.Fatalf("FATAL: AD23 enum violation on source-selection default-policy path: %v", perr)
 			}
-			log.Printf("startup admission active source=0x%02X companion_target=0x%02X provenance=source_selection_default_policy", result.Source, result.Companion)
+			log.Printf("startup admission candidate source=0x%02X companion_target=0x%02X provenance=source_selection_default_policy", result.Source, result.Companion)
 			if busObservability != nil {
-				busObservability.RecordBusAdmissionTransition("active", result.Source, result.Companion, "")
+				busObservability.RecordBusAdmissionTransition("pending", result.Source, result.Companion, "active_probe_pending")
 			}
-			metrics.MarkActive()
 		}
-	}
-
-	var semanticBarrier chan struct{}
-	if cfg.ScanOnStart && shouldStartPassiveObserveFirst(cfg) {
-		semanticBarrier = make(chan struct{})
-	}
-	semanticCfg := resolveStartupScanSourceConfig(cfg)
-	semanticPoller := startVaillantSemanticPollingFn(ctx, semanticCfg, gateway, semanticRuntime.Provider(), hub, semanticBarrier)
-	if semanticPoller != nil {
-		builder.SetSystemConfigWriter(semanticPoller)
-		builder.SetBoilerConfigWriter(semanticPoller)
-		builder.SetScheduleWriter(semanticPoller)
-		builder.SetWatchSummaryProvider(newGraphQLWatchSummaryProvider(semanticPoller.shadow))
-	}
-	observeFirstFlags := ebusgateway.NormalizeObserveFirstFeatureFlags(
-		cfg.ObserveFirstEnabled,
-		cfg.PassiveStateDirectApply,
-		cfg.PassiveConfigDirectApply,
-		cfg.ExternalWritePolicy,
-	)
-	passiveShadowLaneEnabled := observeFirstFlags.PassiveStateDirectApply() ||
-		observeFirstFlags.PassiveConfigDirectApply() ||
-		observeFirstFlags.ExternalWritePolicy() != ebusgateway.ObserveFirstExternalWritePolicyRecordOnly
-	if semanticPoller != nil && deduplicator != nil && observeFirstFlags.ObserveFirstEnabled() && passiveShadowLaneEnabled {
-		if err := attachPassiveShadowProducerFn(semanticPoller, ctx, deduplicator); err != nil {
-			return err
-		}
-	}
-
-	if err := builder.Start(ctx); err != nil {
-		return err
 	}
 
 	var (
@@ -384,17 +349,19 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				_ = ebusgateway.CheckOverrideCompanionConflict(overrideSource, &result, metrics)
 			} else {
 				sourceSelection = &result
+				cfg.ScanSource = result.Source
+				cfg.ScanSourceAuto = false
+				cfg.StartupCompanionTarget = result.Companion
 				cfg.StartupProbeTargets = append(cfg.StartupProbeTargets, startupProbeTargetsFromSelection(result)...)
 				artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(cfg)))
 				artifactBuilder.SetSourceSelection(result.Source, result.Companion, time.Since(warmupStartedAt))
 				if perr := artifactBuilder.SetAdmissionPathSelected("source_selection"); perr != nil {
 					log.Fatalf("FATAL: AD23 enum violation on source-selection path: %v", perr)
 				}
-				log.Printf("startup admission active source=0x%02X companion_target=0x%02X", result.Source, result.Companion)
+				log.Printf("startup admission candidate source=0x%02X companion_target=0x%02X", result.Source, result.Companion)
 				if busObservability != nil {
-					busObservability.RecordBusAdmissionTransition("active", result.Source, result.Companion, "")
+					busObservability.RecordBusAdmissionTransition("pending", result.Source, result.Companion, "active_probe_pending")
 				}
-				metrics.MarkActive()
 				// Reflect selector-observed event count if exposed by ebusgo.
 				// SourceAddressSelection does not currently surface a count; the
 				// warmup_events_seen stays at the per-cycle reset value
@@ -403,6 +370,50 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				// Tracked as cruise-run #20 follow-up.
 			}
 		}
+	}
+
+	if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && overrideSet {
+		cfg.ScanSource = overrideSource
+		cfg.ScanSourceAuto = false
+	}
+	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
+	if cfg.ScanSource != 0 && !cfg.ScanSourceAuto &&
+		(admissionPath != ebusgateway.TransportAdmissionSourceSelectionCapable || overrideSet) {
+		builder.SetAdmittedMutationSource(cfg.ScanSource)
+	} else {
+		builder.ClearAdmittedMutationSource()
+	}
+
+	sourceSelectionAdmission := admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && !overrideSet
+	var semanticBarrier chan struct{}
+	if cfg.ScanOnStart && (shouldStartPassiveObserveFirst(cfg) || sourceSelectionAdmission) {
+		semanticBarrier = make(chan struct{})
+	}
+	semanticCfg := resolveStartupScanSourceConfig(cfg)
+	semanticPoller := startVaillantSemanticPollingFn(ctx, semanticCfg, gateway, semanticRuntime.Provider(), hub, semanticBarrier)
+	if semanticPoller != nil {
+		builder.SetSystemConfigWriter(semanticPoller)
+		builder.SetBoilerConfigWriter(semanticPoller)
+		builder.SetScheduleWriter(semanticPoller)
+		builder.SetWatchSummaryProvider(newGraphQLWatchSummaryProvider(semanticPoller.shadow))
+	}
+	observeFirstFlags := ebusgateway.NormalizeObserveFirstFeatureFlags(
+		cfg.ObserveFirstEnabled,
+		cfg.PassiveStateDirectApply,
+		cfg.PassiveConfigDirectApply,
+		cfg.ExternalWritePolicy,
+	)
+	passiveShadowLaneEnabled := observeFirstFlags.PassiveStateDirectApply() ||
+		observeFirstFlags.PassiveConfigDirectApply() ||
+		observeFirstFlags.ExternalWritePolicy() != ebusgateway.ObserveFirstExternalWritePolicyRecordOnly
+	if semanticPoller != nil && deduplicator != nil && observeFirstFlags.ObserveFirstEnabled() && passiveShadowLaneEnabled {
+		if err := attachPassiveShadowProducerFn(semanticPoller, ctx, deduplicator); err != nil {
+			return err
+		}
+	}
+
+	if err := builder.Start(ctx); err != nil {
+		return err
 	}
 
 	startupCfg := resolveStartupScanSourceConfig(cfg)
@@ -424,21 +435,43 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}
 	startupScanSignals := startDiscoveryScanLoopFn(ctx, startupCfg, gateway, builder, adapterClassifier)
 
-	if semanticBarrier != nil {
+	if semanticBarrier != nil || sourceSelection != nil {
 		go func() {
 			select {
 			case <-ctx.Done():
-				close(semanticBarrier)
+				if semanticBarrier != nil {
+					close(semanticBarrier)
+				}
 				return
-			case <-startupScanSignals.semanticBootstrapReady:
+			case <-startupScanSignals.activeProbePassed:
+				if sourceSelection != nil {
+					builder.SetAdmittedMutationSource(sourceSelection.Source)
+					artifactBuilder.SetSourceSelectionActive()
+					metrics.MarkActive()
+					if busObservability != nil {
+						busObservability.RecordBusAdmissionTransition("active", sourceSelection.Source, sourceSelection.Companion, "active_probe_passed")
+					}
+				}
+			case <-startupScanSignals.admissionFailed:
+				if sourceSelection != nil {
+					builder.ClearAdmittedMutationSource()
+					artifactBuilder.SetDegraded("active_probe_failed")
+					metrics.MarkDegraded(time.Now())
+					if busObservability != nil {
+						busObservability.RecordBusAdmissionTransition("degraded", sourceSelection.Source, sourceSelection.Companion, "active_probe_failed")
+					}
+				}
+				return
 			}
 			if shouldCloseSemanticBarrier(admissionPath, overrideSet, sourceSelection != nil) {
-				close(semanticBarrier)
+				if semanticBarrier != nil {
+					close(semanticBarrier)
+				}
 			}
 		}()
 	}
 
-	go startBackgroundFullScanFn(ctx, cfg, gateway, builder, startupScanSignals.semanticBootstrapReady)
+	go startBackgroundFullScanFn(ctx, startupCfg, gateway, builder, startupScanSignals.semanticBootstrapReady)
 
 	var scheduleWriter mcp.ScheduleWriter
 	if semanticPoller != nil {
@@ -593,9 +626,7 @@ func applyTransportSourcePolicy(cfg *ebusgateway.Config) {
 	protocol := strings.TrimSpace(strings.ToLower(string(cfg.TransportConfig.Protocol)))
 	switch protocol {
 	case "ebusd", "ebusd-tcp":
-		if cfg.ScanSourceAuto || cfg.ScanSource == 0xF0 {
-			cfg.ScanSource = 0x31
-		}
+		return
 	default:
 		if cfg.ScanSourceAuto {
 			cfg.ScanSource = 0x00
@@ -774,7 +805,7 @@ func parseStartupProbeTargets(value string) ([]byte, error) {
 			return nil, fmt.Errorf("invalid startup-probe-targets address %q", part)
 		}
 		target := byte(parsed)
-		if target < 0x03 || target >= 0xFE || target == 0xAA {
+		if target < 0x03 || target >= 0xFE || target == 0xAA || target == 0xA9 || isInitiatorCapableAddress(target) {
 			return nil, fmt.Errorf("startup-probe-targets address 0x%02X outside target-capable range", target)
 		}
 		if _, ok := seen[target]; ok {
@@ -976,6 +1007,7 @@ func startHTTPServer(
 	if err != nil {
 		return nil, nil, err
 	}
+	mcpServer.SetAdmittedRPCSourceProvider(builder.AdmittedMutationSource)
 	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg, semanticProvider))
 	if busObservability != nil {
 		mcpServer.SetBusObservabilityProvider(newMCPBusObservabilityProvider(busObservability))
@@ -1006,7 +1038,7 @@ func startHTTPServer(
 	// paths use the real session FSM so EXPIRED normalization, session
 	// epochs, and owner-conditional release are all exercised — only the
 	// raw bus dispatch is stubbed.
-	b503rt := installVaillantB503(mcpServer, gateway, &cfg)
+	b503rt := installVaillantB503(mcpServer, gateway, &cfg, builder.AdmittedMutationSource)
 	// M2b_GATEWAY_GRAPHQL (execution-plans#19): wire the GraphQL B503
 	// provider to the same Manager + Dispatcher the MCP surface uses. A
 	// single Manager across both surfaces is mandatory — GraphQL

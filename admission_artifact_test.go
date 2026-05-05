@@ -14,6 +14,7 @@ func TestAdmissionArtifact_EmitValidatesAgainstSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	builder.SetSourceSelection(0x71, 0x08, 5*time.Second)
+	builder.SetSourceSelectionActive()
 	builder.RecordProbe(120)
 	builder.RecordProbe(180)
 	builder.SetPostStartupSustainedRateProbesPer15s(1.5)

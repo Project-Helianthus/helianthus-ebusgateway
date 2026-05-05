@@ -134,6 +134,7 @@ func TestParityMatrixReadAndInvoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
+	server.SetAdmittedRPCSource(0x7F)
 	server.SetStatusProvider(testStatusProvider{daemon: ServiceStatus{Status: "running"}, adapter: ServiceStatus{Status: "connected"}})
 	server.SetSemanticProvider(testSemanticProvider{
 		zones:    []Zone{{ID: "zone-a", Name: "Living", Config: ZoneConfig{OperatingMode: "AUTO", Preset: "COMFORT"}}},

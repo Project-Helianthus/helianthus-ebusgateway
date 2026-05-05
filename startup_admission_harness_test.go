@@ -49,6 +49,7 @@ func TestM2aHarness_SourceSelectionSuccessPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	builder.SetSourceSelection(0x71, 0x08, 5*time.Second)
+	builder.SetSourceSelectionActive()
 	builder.RecordProbe(120)
 
 	artifact, data, err := builder.Emit()

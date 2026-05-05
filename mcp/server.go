@@ -413,18 +413,21 @@ type SemanticProvider interface {
 }
 
 type Server struct {
-	registry       Registry
-	invoker        Invoker
-	statusProvider StatusProvider
-	bus            BusObservabilityProvider
-	watch          WatchSummaryProvider
-	semantic       SemanticProvider
-	scheduleWriter ScheduleWriter
-	configWriter   ConfigWriter
-	idempotencyMu  sync.Mutex
-	idempotency    map[string]idempotencyEntry
-	snapshotMu     sync.RWMutex
-	snapshots      map[string]snapshotState
+	registry          Registry
+	invoker           Invoker
+	statusProvider    StatusProvider
+	bus               BusObservabilityProvider
+	watch             WatchSummaryProvider
+	semantic          SemanticProvider
+	scheduleWriter    ScheduleWriter
+	configWriter      ConfigWriter
+	rpcSource         byte
+	rpcSourceAdmitted bool
+	rpcSourceProvider func() (byte, bool)
+	idempotencyMu     sync.Mutex
+	idempotency       map[string]idempotencyEntry
+	snapshotMu        sync.RWMutex
+	snapshots         map[string]snapshotState
 
 	tools []Tool
 
@@ -1171,6 +1174,31 @@ func (s *Server) SetConfigWriter(writer ConfigWriter) {
 	s.configWriter = writer
 }
 
+func (s *Server) SetAdmittedRPCSource(source byte) {
+	if s == nil {
+		return
+	}
+	s.rpcSource = source
+	s.rpcSourceAdmitted = source != 0
+}
+
+func (s *Server) SetAdmittedRPCSourceProvider(provider func() (byte, bool)) {
+	if s == nil {
+		return
+	}
+	s.rpcSourceProvider = provider
+}
+
+func (s *Server) admittedRPCSource() (byte, bool) {
+	if s == nil {
+		return 0, false
+	}
+	if s.rpcSourceProvider != nil {
+		return s.rpcSourceProvider()
+	}
+	return s.rpcSource, s.rpcSourceAdmitted
+}
+
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(s.ServeHTTP)
 }
@@ -1531,14 +1559,15 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		if err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
-		// Normalize rpc source (inject canonical 113 if omitted) BEFORE
+		// Normalize rpc source (inject admitted source if omitted) BEFORE
 		// computing the idempotency signature, so caller-variance on
-		// params.source (omitted vs. explicit 113) produces identical
+		// params.source (omitted vs. explicit admitted source) produces identical
 		// signatures and thus identical cache keys. Without this, two
 		// semantically identical MUTATE requests would hash differently
 		// and the second would be rejected as "idempotency key reused
 		// with different payload". See PR #505 r3106812547.
-		if _, err := enforceRPCSourceOnArgs(call.Arguments); err != nil {
+		rpcSource, rpcSourceAdmitted := s.admittedRPCSource()
+		if _, err := enforceRPCSourceOnArgs(call.Arguments, rpcSource, rpcSourceAdmitted); err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		signature := ""
@@ -2037,10 +2066,12 @@ func classifyToolError(err error) (code string, retriable bool, sourceLayer stri
 		return "CONFLICT", false, "gateway"
 	case errors.Is(err, errSnapshotNotFound):
 		return "NOT_FOUND", false, "gateway"
-	case errors.Is(err, rpcsource.ErrNon113Source):
-		// Client supplied params.source != 113 (or an unsupported type /
-		// fractional float that cannot be safely narrowed to the gateway
-		// source byte). This is a client input error, not a server fault.
+	case errors.Is(err, errSourceSelectionNotActive):
+		return "INVALID_ARGUMENT", false, "gateway"
+	case errors.Is(err, rpcsource.ErrInvalidSource):
+		// Client supplied an unsupported source type or a numeric value
+		// that cannot be safely narrowed to a nonzero source byte. This is
+		// a client input error, not a server fault.
 		return "INVALID_ARGUMENT", false, "gateway"
 	case errors.Is(err, ebuserrors.ErrInvalidPayload):
 		return "INVALID_ARGUMENT", false, "ebusreg"
@@ -3678,12 +3709,11 @@ func (s *Server) invoke(ctx context.Context, args map[string]any) (any, error) {
 	if methodName == "" {
 		return nil, fmt.Errorf("missing method: %w", ebuserrors.ErrInvalidPayload)
 	}
-	// RPC source byte MUST be the gateway initiator (0x71 == 113). If the
-	// caller supplies an explicit params.source, enforce it; if it is
-	// absent — or if params itself is absent — inject the canonical value
-	// and materialise params so downstream code cannot use a different
-	// initiator by accident. See internal/rpc_source.
-	params, err := enforceRPCSourceOnArgs(args)
+	// Gateway-owned rpc.invoke calls default to the admitted startup source.
+	// An explicit params.source is accepted as the user override path after
+	// byte-shape validation.
+	rpcSource, rpcSourceAdmitted := s.admittedRPCSource()
+	params, err := enforceRPCSourceOnArgs(args, rpcSource, rpcSourceAdmitted)
 	if err != nil {
 		return nil, err
 	}

@@ -103,6 +103,7 @@ type Config struct {
 	ScanSource               byte
 	ScanSourceAuto           bool
 	StartupProbeTargets      []byte
+	StartupCompanionTarget   byte
 	ScanTimeout              time.Duration
 	ScanRequestTimeout       time.Duration
 	ScanInterval             time.Duration

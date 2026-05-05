@@ -6,17 +6,19 @@ import (
 )
 
 type Builder struct {
-	registry     Registry
-	changes      <-chan struct{}
-	status       StatusProvider
-	identity     GatewayIdentityProvider
-	semantic     SemanticProvider
-	bus          BusObservabilityProvider
-	watch        WatchSummaryProvider
-	boiler       BoilerConfigWriter
-	system       SystemConfigWriter
-	schedule     ScheduleWriter
-	vaillantB503 VaillantB503Provider
+	registry               Registry
+	changes                <-chan struct{}
+	status                 StatusProvider
+	identity               GatewayIdentityProvider
+	semantic               SemanticProvider
+	bus                    BusObservabilityProvider
+	watch                  WatchSummaryProvider
+	boiler                 BoilerConfigWriter
+	system                 SystemConfigWriter
+	schedule               ScheduleWriter
+	vaillantB503           VaillantB503Provider
+	mutationSource         byte
+	mutationSourceAdmitted bool
 
 	mu       sync.RWMutex
 	schema   Schema
@@ -256,6 +258,41 @@ func (b *Builder) SetSystemConfigWriter(writer SystemConfigWriter) {
 	b.mu.Lock()
 	b.system = writer
 	b.mu.Unlock()
+}
+
+func (b *Builder) SetAdmittedMutationSource(source byte) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.mutationSource = source
+	b.mutationSourceAdmitted = source != 0
+	b.mu.Unlock()
+}
+
+func (b *Builder) ClearAdmittedMutationSource() {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.mutationSource = 0
+	b.mutationSourceAdmitted = false
+	b.mu.Unlock()
+}
+
+func (b *Builder) admittedMutationSource() (byte, bool) {
+	if b == nil {
+		return 0, false
+	}
+	b.mu.RLock()
+	source := b.mutationSource
+	admitted := b.mutationSourceAdmitted
+	b.mu.RUnlock()
+	return source, admitted
+}
+
+func (b *Builder) AdmittedMutationSource() (byte, bool) {
+	return b.admittedMutationSource()
 }
 
 func (b *Builder) systemConfigWriter() SystemConfigWriter {

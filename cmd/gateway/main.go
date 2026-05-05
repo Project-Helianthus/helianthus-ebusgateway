@@ -643,11 +643,20 @@ func admittedMutationSourceForGateway(cfg ebusgateway.Config, admissionPath ebus
 		(admissionPath != ebusgateway.TransportAdmissionSourceSelectionCapable || overrideSet) {
 		return cfg.ScanSource, true
 	}
-	if admissionPath == ebusgateway.TransportAdmissionStaticFallback && cfg.ScanSourceAuto && cfg.ScanSource == 0 {
+	if admissionPath == ebusgateway.TransportAdmissionStaticFallback && isEbusdTransportProtocol(cfg.TransportConfig.Protocol) && cfg.ScanSourceAuto && cfg.ScanSource == 0 {
 		defaultSource := ebusgateway.DefaultConfig().ScanSource
 		return defaultSource, defaultSource != 0
 	}
 	return 0, false
+}
+
+func isEbusdTransportProtocol(protocol ebusgateway.TransportProtocol) bool {
+	switch strings.TrimSpace(strings.ToLower(string(protocol))) {
+	case "ebusd", string(ebusgateway.TransportEbusdTCP):
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeInstanceGUID(value string) (string, error) {

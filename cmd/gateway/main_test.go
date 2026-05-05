@@ -177,6 +177,18 @@ func TestAdmittedMutationSourceForGateway_SourceSelectionWithoutOverrideFailsClo
 	}
 }
 
+func TestAdmittedMutationSourceForGateway_UnknownStaticFallbackAutoFailsClosed(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.TransportConfig.Protocol = ebusgateway.TransportProtocol("unknown")
+	cfg.ScanSource = 0x00
+	cfg.ScanSourceAuto = true
+
+	source, admitted := admittedMutationSourceForGateway(cfg, ebusgateway.TransportAdmissionStaticFallback, false)
+	if admitted || source != 0 {
+		t.Fatalf("admitted source = 0x%02X admitted=%v; want fail-closed for unknown static fallback", source, admitted)
+	}
+}
+
 func TestWireObserveFirstObserversWiresDedupSnapshotterIntoObservabilityStore(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.BroadcastListen = true

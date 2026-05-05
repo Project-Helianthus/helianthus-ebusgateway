@@ -150,6 +150,33 @@ func TestApplyTransportSourcePolicy_EbusdTCPConfiguredSourceIsPreserved(t *testi
 	}
 }
 
+func TestAdmittedMutationSourceForGateway_EbusdTCPAutoUsesDefaultStaticSource(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
+	cfg.ScanSource = 0x00
+	cfg.ScanSourceAuto = true
+
+	source, admitted := admittedMutationSourceForGateway(cfg, ebusgateway.TransportAdmissionStaticFallback, false)
+	if !admitted {
+		t.Fatal("admitted = false; want true for ebusd-tcp auto static fallback")
+	}
+	if want := ebusgateway.DefaultConfig().ScanSource; source != want {
+		t.Fatalf("admitted source = 0x%02X; want default static source 0x%02X", source, want)
+	}
+}
+
+func TestAdmittedMutationSourceForGateway_SourceSelectionWithoutOverrideFailsClosed(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+	cfg.ScanSource = 0x00
+	cfg.ScanSourceAuto = true
+
+	source, admitted := admittedMutationSourceForGateway(cfg, ebusgateway.TransportAdmissionSourceSelectionCapable, false)
+	if admitted || source != 0 {
+		t.Fatalf("admitted source = 0x%02X admitted=%v; want fail-closed before source selection", source, admitted)
+	}
+}
+
 func TestWireObserveFirstObserversWiresDedupSnapshotterIntoObservabilityStore(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.BroadcastListen = true
@@ -666,6 +693,97 @@ func TestRun_DefersSemanticBootstrapUntilStartupConfirmationReadyOnPassiveObserv
 
 	cancel()
 
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run() did not exit after context cancellation")
+	}
+}
+
+func TestRun_OverrideClosesSemanticBarrierOnAdmissionFailure(t *testing.T) {
+	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
+	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
+	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
+	origStartHTTPServerFn := startHTTPServerFn
+	t.Cleanup(func() {
+		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
+		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
+		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
+		startHTTPServerFn = origStartHTTPServerFn
+	})
+
+	admissionFailed := make(chan struct{})
+	barrierObserved := make(chan bool, 1)
+	semanticStarted := make(chan struct{}, 1)
+
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, nil
+	}
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
+		return startupScanSignals{
+			firstPassDone:          make(chan struct{}),
+			semanticBootstrapReady: make(chan struct{}),
+			admissionFailed:        admissionFailed,
+		}
+	}
+	startVaillantSemanticPollingFn = func(ctx context.Context, _ ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.LiveSemanticProvider, _ *graphql.BroadcastHub, startupBarrier <-chan struct{}) *vaillantSemanticPoller {
+		barrierObserved <- startupBarrier != nil
+		go func() {
+			if startupBarrier == nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+			case <-startupBarrier:
+				select {
+				case semanticStarted <- struct{}{}:
+				default:
+				}
+			}
+		}()
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+		return nil, nil, nil
+	}
+
+	overrideSource := uint8(0x7F)
+	cfg := ebusgateway.DefaultConfig()
+	cfg.Transport = transport.NewLoopback()
+	cfg.PassiveTransport = transport.NewLoopback()
+	cfg.BroadcastListen = true
+	cfg.ScanOnStart = true
+	cfg.StartupSource.Source = &overrideSource
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg)
+	}()
+
+	select {
+	case observed := <-barrierObserved:
+		if !observed {
+			t.Fatal("semantic startup barrier missing on passive observe-first override path")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("semantic poller was not initialized")
+	}
+
+	close(admissionFailed)
+
+	select {
+	case <-semanticStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("semantic bootstrap did not start after override admission failure")
+	}
+
+	cancel()
 	select {
 	case err := <-done:
 		if err != nil {

@@ -377,9 +377,8 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		cfg.ScanSourceAuto = false
 	}
 	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
-	if cfg.ScanSource != 0 && !cfg.ScanSourceAuto &&
-		(admissionPath != ebusgateway.TransportAdmissionSourceSelectionCapable || overrideSet) {
-		builder.SetAdmittedMutationSource(cfg.ScanSource)
+	if source, admitted := admittedMutationSourceForGateway(cfg, admissionPath, overrideSet); admitted {
+		builder.SetAdmittedMutationSource(source)
 	} else {
 		builder.ClearAdmittedMutationSource()
 	}
@@ -459,6 +458,11 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 					metrics.MarkDegraded(time.Now())
 					if busObservability != nil {
 						busObservability.RecordBusAdmissionTransition("degraded", sourceSelection.Source, sourceSelection.Companion, "active_probe_failed")
+					}
+				}
+				if shouldCloseSemanticBarrier(admissionPath, overrideSet, sourceSelection != nil) {
+					if semanticBarrier != nil {
+						close(semanticBarrier)
 					}
 				}
 				return
@@ -632,6 +636,18 @@ func applyTransportSourcePolicy(cfg *ebusgateway.Config) {
 			cfg.ScanSource = 0x00
 		}
 	}
+}
+
+func admittedMutationSourceForGateway(cfg ebusgateway.Config, admissionPath ebusgateway.TransportAdmissionPath, overrideSet bool) (byte, bool) {
+	if cfg.ScanSource != 0 && !cfg.ScanSourceAuto &&
+		(admissionPath != ebusgateway.TransportAdmissionSourceSelectionCapable || overrideSet) {
+		return cfg.ScanSource, true
+	}
+	if admissionPath == ebusgateway.TransportAdmissionStaticFallback && cfg.ScanSourceAuto && cfg.ScanSource == 0 {
+		defaultSource := ebusgateway.DefaultConfig().ScanSource
+		return defaultSource, defaultSource != 0
+	}
+	return 0, false
 }
 
 func normalizeInstanceGUID(value string) (string, error) {

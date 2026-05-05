@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -201,8 +202,8 @@ func classifyScanErr(err error) string {
 }
 
 var (
-	semanticBusCollisionsTotal  = expvar.NewInt("semantic_bus_collisions_total")
-	registryScanFn              = registry.Scan
+	semanticBusCollisionsTotal = expvar.NewInt("semantic_bus_collisions_total")
+	registryScanFn             = registry.Scan
 
 	// evidenceHasVaillantRootFn reports whether the registry contains at
 	// least one Vaillant root candidate (manufacturer 0xB5 device on a
@@ -210,7 +211,7 @@ var (
 	// a full-range retry under the AD05 diagnostic flag. Tests override
 	// this to skip the AD05 guard for transport-agnostic scan-loop tests.
 	// Resolves cruise-run #20 M6 reviewer-flagged finding (#2).
-	evidenceHasVaillantRootFn = defaultEvidenceHasVaillantRoot
+	evidenceHasVaillantRootFn   = defaultEvidenceHasVaillantRoot
 	registryScanDirectedFn      = registry.ScanDirected
 	ebusdScanTargetCandidatesFn = ebusdScanTargetCandidates
 	ebusdScanResultTargetsFn    = ebusdScanResultTargets
@@ -242,7 +243,7 @@ func defaultEvidenceHasVaillantRoot(reg *registry.DeviceRegistry) bool {
 }
 
 func startupScanWithFullRangeGuard(ctx context.Context, bus registry.ScanBus, reg *registry.DeviceRegistry, source byte, targets []byte, admissionPath ebusgateway.TransportAdmissionPath, diagnosticFlag bool, evidenceHasVaillantRoot bool) ([]registry.DeviceEntry, error) {
-	if admissionPath == ebusgateway.TransportAdmissionJoinCapable {
+	if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable {
 		if len(targets) == 0 {
 			if !diagnosticFlag {
 				return nil, fmt.Errorf("full-range retry: disabled by default on non-ebusd-tcp; set --diagnostic-full-range-retry to enable after at least one Vaillant root candidate is observed (AD05)")
@@ -438,7 +439,7 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 	startupCfg := resolveStartupScanSourceConfig(cfg)
 	admissionPath, adapterDirectSpecialCased := ebusgateway.ResolveAdmissionPath(cfg.TransportConfig.Protocol)
 	if adapterDirectSpecialCased {
-		log.Printf("startup scan: adapter-direct multiplexer detected; treating as join-capable (underlying transport is always ENH/ENS)")
+		log.Printf("startup scan: adapter-direct multiplexer detected; treating as source-selection-capable (underlying transport is always ENH/ENS)")
 	}
 	loopExitFn := startupScanLoopExitFn
 	targetCandidatesFn := ebusdScanTargetCandidatesFn
@@ -479,8 +480,8 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 				source:     startupCfg.ScanSource,
 				classifier: classifier,
 			}
-			targets := ([]byte)(nil)
-			targetLabel := ""
+			targets := startupProbeTargets(startupCfg)
+			targetLabel := "startup evidence"
 			var targetConfig *ebusgateway.TransportConfig
 			retryingFullRange := forceFullRangeNextPass
 			forceFullRangeNextPass = false
@@ -491,7 +492,7 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 					targetConfig = &candidateCopy
 				}
 				log.Printf("startup scan: retrying with full target range after partial ebusd inventory")
-			} else {
+			} else if len(targets) == 0 {
 				for _, candidate := range candidates {
 					scanTargets, err := resultTargetsFn(scanCtx, candidate)
 					if err != nil || len(scanTargets) == 0 {
@@ -1023,6 +1024,34 @@ func resolveStartupScanSourceConfig(cfg ebusgateway.Config) ebusgateway.Config {
 	return cfg
 }
 
+func startupProbeTargetsFromSelection(selection protocol.SourceAddressSelection) []byte {
+	return sanitizeStartupProbeTargets(selection.Metrics.ObservedProbableTargets, selection.Source)
+}
+
+func startupProbeTargets(cfg ebusgateway.Config) []byte {
+	return sanitizeStartupProbeTargets(cfg.StartupProbeTargets, cfg.ScanSource)
+}
+
+func sanitizeStartupProbeTargets(candidates []byte, source byte) []byte {
+	if len(candidates) == 0 {
+		return nil
+	}
+	seen := make(map[byte]struct{}, len(candidates))
+	targets := make([]byte, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == source || candidate < 0x03 || candidate >= 0xFE || candidate == 0xAA {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		targets = append(targets, candidate)
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i] < targets[j] })
+	return targets
+}
+
 func countRegistryDevices(reg *registry.DeviceRegistry) int {
 	if reg == nil {
 		return 0
@@ -1407,7 +1436,7 @@ func runBackgroundFullScan(ctx context.Context, cfg ebusgateway.Config, gateway 
 	}
 	admissionPath, adapterDirectSpecialCased := ebusgateway.ResolveAdmissionPath(cfg.TransportConfig.Protocol)
 	if adapterDirectSpecialCased {
-		log.Printf("background scan: adapter-direct multiplexer detected; treating as join-capable")
+		log.Printf("background scan: adapter-direct multiplexer detected; treating as source-selection-capable")
 	}
 
 	beforeTotal := countRegistryDevices(gateway.Registry)

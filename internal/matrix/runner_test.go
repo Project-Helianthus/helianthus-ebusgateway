@@ -198,7 +198,7 @@ func TestRunnerExecuteClassifiesBlockedInfra(t *testing.T) {
 		Target:       "local",
 		IncludeIDs:   []string{"T01"},
 		Execute:      true,
-		StartGateway: "printf 'adapter preflight failed: eBUS signal is not acquired\\n'; exit 1",
+		StartGateway: "printf 'adapter preflight failed: eBUS initial signal is not acquired\\n'; exit 1",
 		StopGateway:  "echo gateway-stop",
 		SmokeCommand: "echo smoke-ok",
 	})
@@ -234,7 +234,7 @@ func TestRunnerExecuteClassifiesExpectedFailure(t *testing.T) {
 		OutputDir:        filepath.Join(tempDir, "results"),
 		Target:           "local",
 		IncludeIDs:       []string{"T01"},
-		ExpectedFailures: map[string]string{"t01": "gentle-join unavailable via ebusd-tcp"},
+		ExpectedFailures: map[string]string{"t01": "source selection unavailable via ebusd-tcp"},
 		Execute:          true,
 		StartGateway:     "echo gateway-start",
 		StopGateway:      "echo gateway-stop",
@@ -262,7 +262,7 @@ func TestRunnerExecuteClassifiesExpectedFailure(t *testing.T) {
 	if verdict.Expected != "fail" {
 		t.Fatalf("verdict expected = %q; want fail", verdict.Expected)
 	}
-	if verdict.Expectation != "gentle-join unavailable via ebusd-tcp" {
+	if verdict.Expectation != "source selection unavailable via ebusd-tcp" {
 		t.Fatalf("verdict expectation = %q", verdict.Expectation)
 	}
 }

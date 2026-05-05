@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
+	"expvar"
 	"flag"
 	"fmt"
 	"log"
 	"net"
-	"expvar"
 	"net/http"
 	"os"
 	"os/signal"
@@ -113,14 +113,14 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	// special case so all classifier call sites (main.go run(),
 	// startup_scan.go startDiscoveryScanLoop, runBackgroundFullScan) agree
 	// on the dispatch. Adapter-direct multiplexer mode always wraps a
-	// join-capable underlying transport (ENH/ENS), so Joiner runs through
+	// source-selection-capable underlying transport (ENH/ENS), so source-address selector runs through
 	// the shared PassiveTransactionReconstructor regardless of multiplexer
 	// presence. Resolves cruise-run #20 M7 follow-up #1 + validation
 	// finding (admission_path_selected was incorrectly degraded_no_events
 	// on adapter-direct deployments).
 	admissionPath, adapterDirectSpecialCased := ebusgateway.ResolveAdmissionPath(cfg.TransportConfig.Protocol)
 	if adapterDirectSpecialCased {
-		log.Printf("startup admission: adapter-direct multiplexer detected; treating as join-capable (underlying transport is always ENH/ENS)")
+		log.Printf("startup admission: adapter-direct multiplexer detected; treating as source-selection-capable (underlying transport is always ENH/ENS)")
 	} else if admissionPath == ebusgateway.TransportAdmissionStaticFallback && cfg.TransportConfig.Protocol != ebusgateway.TransportEbusdTCP {
 		log.Printf("startup admission: classifier produced static-fallback for transport protocol=%q (unknown/empty); legacy static-source path active", cfg.TransportConfig.Protocol)
 	}
@@ -129,7 +129,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if err := artifactBuilder.SetAdmissionPathSelected("degraded_no_events"); err != nil {
 		log.Fatalf("FATAL: AD23 enum violation at startup: %v", err)
 	}
-	overrideSet := admissionPath == ebusgateway.TransportAdmissionJoinCapable && cfg.StartupSource.Source != nil
+	overrideSet := admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && cfg.StartupSource.Source != nil
 	overrideSource := byte(0x00)
 	if overrideSet {
 		overrideSource = *cfg.StartupSource.Source
@@ -142,7 +142,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		}
 		// Override is configured: admission state immediately becomes
 		// "active" because the override Initiator is in use from the
-		// first active frame (AD09 (c2) soft short-circuit). Joiner may
+		// first active frame (AD09 (c2) soft short-circuit). source-address selector may
 		// still run advisory-only under Validate=true but does not gate.
 		artifactBuilder.SetActiveOverride(overrideSource)
 	} else {
@@ -249,6 +249,30 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		})
 	}
 
+	var sourceSelection *protocol.SourceAddressSelection
+	resolvedStartupSource := resolveStartupScanSourceConfig(cfg)
+	if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && !overrideSet && cfg.ScanSourceAuto && resolvedStartupSource.ScanSource == 0x00 && !shouldStartPassiveObserveFirst(cfg) {
+		result, err := ebusgateway.SelectDefaultStartupSourceAddress(ctx)
+		if err != nil {
+			log.Printf("startup admission degraded reason=source_selection_default_policy_failed err=%v", err)
+			metrics.MarkDegraded(time.Now())
+			artifactBuilder.SetDegraded("source_selection_default_policy_failed")
+		} else {
+			sourceSelection = &result
+			cfg.ScanSource = result.Source
+			cfg.ScanSourceAuto = false
+			artifactBuilder.SetSourceSelection(result.Source, result.Companion, result.Metrics.WarmupDurationActual)
+			if perr := artifactBuilder.SetAdmissionPathSelected("source_selection"); perr != nil {
+				log.Fatalf("FATAL: AD23 enum violation on source-selection default-policy path: %v", perr)
+			}
+			log.Printf("startup admission active source=0x%02X companion_target=0x%02X provenance=source_selection_default_policy", result.Source, result.Companion)
+			if busObservability != nil {
+				busObservability.RecordBusAdmissionTransition("active", result.Source, result.Companion, "")
+			}
+			metrics.MarkActive()
+		}
+	}
+
 	var semanticBarrier chan struct{}
 	if cfg.ScanOnStart && shouldStartPassiveObserveFirst(cfg) {
 		semanticBarrier = make(chan struct{})
@@ -283,7 +307,6 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	var (
 		listener      *ebusgateway.BroadcastListener
 		reconstructor *ebusgateway.PassiveTransactionReconstructor
-		joinResult    *protocol.JoinResult
 	)
 	attachPassiveObserveFirst := func() error {
 		if reconstructor == nil {
@@ -309,19 +332,19 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		return nil
 	}
 
-	runAdvisoryJoiner := admissionPath == ebusgateway.TransportAdmissionJoinCapable && shouldStartPassiveObserveFirst(cfg) && (!overrideSet || cfg.StartupSource.Validate)
-	if runAdvisoryJoiner {
+	runAdvisorySourceSelector := admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && shouldStartPassiveObserveFirst(cfg) && (!overrideSet || cfg.StartupSource.Validate)
+	if runAdvisorySourceSelector {
 		reconstructor, err = startPassiveTransactionReconstructor(ctx, cfg)
 		if err != nil {
 			return err
 		}
 		log.Printf("passive reconstructor started")
 
-		joinBus, err := ebusgateway.NewJoinBusAdapter(reconstructor, "startup_admission_joinbus", false)
+		selectionBus, err := ebusgateway.NewSourceSelectionBusAdapter(reconstructor, "startup_admission_source_selection_bus", false)
 		if err != nil {
-			return fmt.Errorf("m3: new joinbus: %w", err)
+			return fmt.Errorf("m3: new source address selection bus: %w", err)
 		}
-		joiner := protocol.NewJoiner(joinBus, nil, ebusgateway.DefaultStartupAdmissionJoinConfig())
+		selector := protocol.NewSourceAddressSelector(selectionBus, ebusgateway.DefaultStartupAdmissionSourceSelectionConfig())
 
 		// Install AD08/AD22 stability window on the bus_observability store
 		// before the first admission state observation. Window is sized
@@ -331,49 +354,51 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			busObservability.SetAdmissionStabilityWindow(
 				ebusgateway.NewAdmissionStabilityWindow(ebusgateway.StartupAdmissionStateMinStabilitySecondsDefault),
 			)
-			busObservability.RecordBusAdmissionTransition("pending", 0, 0, "joiner_warmup_in_progress")
+			busObservability.RecordBusAdmissionTransition("pending", 0, 0, "source_selection_warmup_in_progress")
 		}
 		// Wire M5 expvar surfaces: state pending → warmup cycle starts.
 		// Resolves cruise-run #20 validation finding that the 11
 		// startup_admission_* expvars were defined and Publish()'d via
 		// GetOrInitStartupAdmissionMetrics but never updated by the
-		// runtime — they all stayed at 0 even after Joiner success.
+		// runtime — they all stayed at 0 even after source-address selector success.
 		metrics.MarkPending()
 		metrics.StartWarmupCycle()
 
-		log.Printf("joiner warmup begin")
+		log.Printf("source address selection warmup begin")
 		warmupCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 		warmupStartedAt := time.Now()
-		result, err := joiner.Join(warmupCtx)
+		result, err := selector.Select(warmupCtx)
 		cancel()
 		if err != nil {
-			log.Printf("startup admission degraded reason=joiner_fail err=%v", err)
+			log.Printf("startup admission degraded reason=source_selection_failed err=%v", err)
 			if busObservability != nil {
-				busObservability.RecordBusAdmissionTransition("degraded", 0, 0, "joiner_fail")
+				busObservability.RecordBusAdmissionTransition("degraded", 0, 0, "source_selection_failed")
 			}
 			metrics.MarkDegraded(time.Now())
-			artifactBuilder.SetDegraded("joiner_fail")
+			artifactBuilder.SetDegraded("source_selection_failed")
 			if perr := artifactBuilder.SetAdmissionPathSelected("degraded_no_events"); perr != nil {
-				log.Fatalf("FATAL: AD23 enum violation on joiner-fail path: %v", perr)
+				log.Fatalf("FATAL: AD23 enum violation on source-address selector-fail path: %v", perr)
 			}
 		} else {
 			if overrideSet {
-				_ = ebusgateway.CheckOverrideCompanionConflict(overrideSource, result, metrics)
+				_ = ebusgateway.CheckOverrideCompanionConflict(overrideSource, &result, metrics)
 			} else {
-				joinResult = &result
-				artifactBuilder.SetJoinerSelection(result.Initiator, result.CompanionTarget, time.Since(warmupStartedAt))
-				if perr := artifactBuilder.SetAdmissionPathSelected("join"); perr != nil {
-					log.Fatalf("FATAL: AD23 enum violation on join path: %v", perr)
+				sourceSelection = &result
+				cfg.StartupProbeTargets = append(cfg.StartupProbeTargets, startupProbeTargetsFromSelection(result)...)
+				artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(cfg)))
+				artifactBuilder.SetSourceSelection(result.Source, result.Companion, time.Since(warmupStartedAt))
+				if perr := artifactBuilder.SetAdmissionPathSelected("source_selection"); perr != nil {
+					log.Fatalf("FATAL: AD23 enum violation on source-selection path: %v", perr)
 				}
-				log.Printf("startup admission active source=0x%02X companion_target=0x%02X", result.Initiator, result.CompanionTarget)
+				log.Printf("startup admission active source=0x%02X companion_target=0x%02X", result.Source, result.Companion)
 				if busObservability != nil {
-					busObservability.RecordBusAdmissionTransition("active", result.Initiator, result.CompanionTarget, "")
+					busObservability.RecordBusAdmissionTransition("active", result.Source, result.Companion, "")
 				}
 				metrics.MarkActive()
-				// Reflect Joiner-observed event count if exposed by ebusgo.
-				// JoinResult does not currently surface a count; the
+				// Reflect selector-observed event count if exposed by ebusgo.
+				// SourceAddressSelection does not currently surface a count; the
 				// warmup_events_seen stays at the per-cycle reset value
-				// of 0 unless the JoinBus adapter is extended to call
+				// of 0 unless the selection bus adapter is extended to call
 				// metrics.RecordWarmupEvent on each forwarded frame.
 				// Tracked as cruise-run #20 follow-up.
 			}
@@ -382,14 +407,14 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	startupCfg := resolveStartupScanSourceConfig(cfg)
 	startupSourceProvenance := startupScanSourceMode(cfg, startupCfg)
-	if admissionPath == ebusgateway.TransportAdmissionJoinCapable && overrideSet {
+	if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && overrideSet {
 		startupCfg.ScanSource = overrideSource
 		startupCfg.ScanSourceAuto = false
 		startupSourceProvenance = "override"
-	} else if admissionPath == ebusgateway.TransportAdmissionJoinCapable && joinResult != nil {
-		startupCfg.ScanSource = joinResult.Initiator
+	} else if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && sourceSelection != nil {
+		startupCfg.ScanSource = sourceSelection.Source
 		startupCfg.ScanSourceAuto = false
-		startupSourceProvenance = "join_result"
+		startupSourceProvenance = "source_selection"
 	}
 
 	log.Printf("startup scan pass")
@@ -407,7 +432,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				return
 			case <-startupScanSignals.semanticBootstrapReady:
 			}
-			if shouldCloseSemanticBarrier(admissionPath, overrideSet, joinResult != nil) {
+			if shouldCloseSemanticBarrier(admissionPath, overrideSet, sourceSelection != nil) {
 				close(semanticBarrier)
 			}
 		}()
@@ -704,7 +729,15 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		cfg.ScanSourceAuto = cfg.ScanSource == 0x00
 		return nil
 	})
-	fs.Func("startup-source-override", "override source address for join-capable direct transports (e.g. 0xf0)", func(value string) error {
+	fs.Func("startup-probe-targets", "comma-separated explicit startup directed-probe targets (e.g. 0x08,0x15)", func(value string) error {
+		targets, err := parseStartupProbeTargets(value)
+		if err != nil {
+			return err
+		}
+		cfg.StartupProbeTargets = targets
+		return nil
+	})
+	fs.Func("startup-source-override", "override source address for source-selection-capable direct transports (e.g. 0xf0)", func(value string) error {
 		value = strings.TrimSpace(strings.ToLower(value))
 		if value == "" {
 			cfg.StartupSource.Source = nil
@@ -718,7 +751,39 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		cfg.StartupSource.Source = &source
 		return nil
 	})
-	fs.BoolVar(&cfg.StartupSource.Validate, "startup-source-override-validate", cfg.StartupSource.Validate, "run Joiner in advisory-only mode alongside startup-source-override")
+	fs.BoolVar(&cfg.StartupSource.Validate, "startup-source-override-validate", cfg.StartupSource.Validate, "run source-address selector in advisory-only mode alongside startup-source-override")
+}
+
+func parseStartupProbeTargets(value string) ([]byte, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	})
+	targets := make([]byte, 0, len(parts))
+	seen := make(map[byte]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(strings.ToLower(part))
+		if part == "" {
+			continue
+		}
+		parsed, err := strconv.ParseUint(part, 0, 8)
+		if err != nil {
+			return nil, fmt.Errorf("invalid startup-probe-targets address %q", part)
+		}
+		target := byte(parsed)
+		if target < 0x03 || target >= 0xFE || target == 0xAA {
+			return nil, fmt.Errorf("startup-probe-targets address 0x%02X outside target-capable range", target)
+		}
+		if _, ok := seen[target]; ok {
+			continue
+		}
+		seen[target] = struct{}{}
+		targets = append(targets, target)
+	}
+	return targets, nil
 }
 
 // wireAdapterDirect creates and starts the adapter multiplexer if the

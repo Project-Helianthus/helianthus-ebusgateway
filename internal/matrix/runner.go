@@ -544,7 +544,8 @@ func inferInfraReasonFromLog(logFilePath string) string {
 		return ""
 	}
 	lower := strings.ToLower(string(data))
-	if strings.Contains(lower, "adapter preflight failed: ebus signal is not acquired") {
+	if strings.Contains(lower, "adapter preflight failed: ebus signal is not acquired") ||
+		strings.Contains(lower, "adapter preflight failed: ebus initial signal is not acquired") {
 		return infraReasonAdapterNoSignal
 	}
 	if strings.Contains(lower, "adapter reports ebus signal: no signal") {

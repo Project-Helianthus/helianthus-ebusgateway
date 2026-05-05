@@ -29,8 +29,8 @@ func TestScanWithFullRangeGuard(t *testing.T) {
 	reg := registry.NewDeviceRegistry(nil)
 	bus := &testScanBus{}
 
-	t.Run("join-capable nil targets diag off rejects", func(t *testing.T) {
-		_, err := scanWithFullRangeGuard(context.Background(), bus, reg, 0xF0, nil, TransportAdmissionJoinCapable, false, false)
+	t.Run("source-selection-capable nil targets source zero diag off rejects", func(t *testing.T) {
+		_, err := scanWithFullRangeGuard(context.Background(), bus, reg, 0x00, nil, TransportAdmissionSourceSelectionCapable, false, false)
 		if err == nil || !strings.Contains(err.Error(), "disabled by default") {
 			t.Fatalf("expected disabled-by-default error, got %v", err)
 		}
@@ -39,8 +39,8 @@ func TestScanWithFullRangeGuard(t *testing.T) {
 		}
 	})
 
-	t.Run("join-capable nil targets diag on without root rejects", func(t *testing.T) {
-		_, err := scanWithFullRangeGuard(context.Background(), bus, reg, 0xF0, nil, TransportAdmissionJoinCapable, true, false)
+	t.Run("source-selection-capable nil targets diag on without root rejects", func(t *testing.T) {
+		_, err := scanWithFullRangeGuard(context.Background(), bus, reg, 0x00, nil, TransportAdmissionSourceSelectionCapable, true, false)
 		if err == nil || !strings.Contains(err.Error(), "no Vaillant root candidate yet") {
 			t.Fatalf("expected no-root error, got %v", err)
 		}
@@ -49,13 +49,13 @@ func TestScanWithFullRangeGuard(t *testing.T) {
 		}
 	})
 
-	t.Run("join-capable nil targets diag on with root proceeds via legacy scan", func(t *testing.T) {
+	t.Run("source-selection-capable nil targets diag on with root proceeds via legacy scan", func(t *testing.T) {
 		called := false
 		scanWithFullRangeGuardScanFn = func(context.Context, registry.ScanBus, *registry.DeviceRegistry, byte, []byte) ([]registry.DeviceEntry, error) {
 			called = true
 			return nil, nil
 		}
-		_, err := scanWithFullRangeGuard(context.Background(), bus, reg, 0xF0, nil, TransportAdmissionJoinCapable, true, true)
+		_, err := scanWithFullRangeGuard(context.Background(), bus, reg, 0x00, nil, TransportAdmissionSourceSelectionCapable, true, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -64,7 +64,7 @@ func TestScanWithFullRangeGuard(t *testing.T) {
 		}
 	})
 
-	t.Run("join-capable explicit targets use ScanDirected", func(t *testing.T) {
+	t.Run("source-selection-capable explicit targets use ScanDirected", func(t *testing.T) {
 		scanCalled := false
 		directedCalled := false
 		scanWithFullRangeGuardScanFn = func(context.Context, registry.ScanBus, *registry.DeviceRegistry, byte, []byte) ([]registry.DeviceEntry, error) {
@@ -75,7 +75,7 @@ func TestScanWithFullRangeGuard(t *testing.T) {
 			directedCalled = true
 			return nil, nil
 		}
-		_, err := scanWithFullRangeGuard(context.Background(), bus, reg, 0xF0, []byte{0x08}, TransportAdmissionJoinCapable, false, false)
+		_, err := scanWithFullRangeGuard(context.Background(), bus, reg, 0xF0, []byte{0x08}, TransportAdmissionSourceSelectionCapable, false, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

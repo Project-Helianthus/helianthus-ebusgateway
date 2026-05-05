@@ -6,16 +6,16 @@ import (
 )
 
 type Builder struct {
-	registry Registry
-	changes  <-chan struct{}
-	status   StatusProvider
-	identity GatewayIdentityProvider
-	semantic SemanticProvider
-	bus      BusObservabilityProvider
-	watch    WatchSummaryProvider
-	boiler   BoilerConfigWriter
-	system   SystemConfigWriter
-	schedule ScheduleWriter
+	registry     Registry
+	changes      <-chan struct{}
+	status       StatusProvider
+	identity     GatewayIdentityProvider
+	semantic     SemanticProvider
+	bus          BusObservabilityProvider
+	watch        WatchSummaryProvider
+	boiler       BoilerConfigWriter
+	system       SystemConfigWriter
+	schedule     ScheduleWriter
 	vaillantB503 VaillantB503Provider
 
 	mu       sync.RWMutex

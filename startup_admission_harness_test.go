@@ -27,36 +27,6 @@ func synthesizedTransactionEvent(src, dst byte, hasResponse bool) PassiveClassif
 	return event
 }
 
-func synthesizedBroadcastEvent(src byte) PassiveClassifiedEvent {
-	return PassiveClassifiedEvent{
-		Kind:    PassiveClassifiedEventBroadcastFrame,
-		Request: protocol.Frame{Source: src, Target: protocol.AddressBroadcast, Primary: 0xB5, Secondary: 0x16, Data: []byte{0x01}},
-	}
-}
-
-func feedSynthesizedPassiveStream(t *testing.T, reconstructor *PassiveTransactionReconstructor, events []PassiveClassifiedEvent) func() {
-	t.Helper()
-	stopCh := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		base := time.Unix(0, 0)
-		for i, event := range events {
-			select {
-			case <-stopCh:
-				return
-			default:
-			}
-			feedPassiveSymbols(reconstructor, base.Add(time.Duration(i)*time.Second), synthesizedEventSymbols(t, event))
-			time.Sleep(10 * time.Millisecond)
-		}
-	}()
-	return func() {
-		close(stopCh)
-		<-done
-	}
-}
-
 func validateAdmissionArtifactAgainstSchema(t *testing.T, artifactJSON []byte) {
 	t.Helper()
 	if err := admissionArtifactSchemaError(artifactJSON); err != nil {
@@ -64,9 +34,9 @@ func validateAdmissionArtifactAgainstSchema(t *testing.T, artifactJSON []byte) {
 	}
 }
 
-func TestM2aHarness_JoinerSuccessPath(t *testing.T) {
+func TestM2aHarness_SourceSelectionSuccessPath(t *testing.T) {
 	var forwarded []protocol.Frame
-	forwardJoinBusEvent(synthesizedTransactionEvent(0x71, 0x08, true), func(frame protocol.Frame) {
+	forwardSourceSelectionBusEvent(synthesizedTransactionEvent(0x71, 0x08, true), func(frame protocol.Frame) {
 		forwarded = append(forwarded, frame)
 	})
 	if len(forwarded) == 0 {
@@ -75,10 +45,10 @@ func TestM2aHarness_JoinerSuccessPath(t *testing.T) {
 
 	builder := NewAdmissionArtifactBuilder("ens")
 	builder.startedAt = time.Now().Add(-60 * time.Second)
-	if err := builder.SetAdmissionPathSelected("join"); err != nil {
+	if err := builder.SetAdmissionPathSelected("source_selection"); err != nil {
 		t.Fatal(err)
 	}
-	builder.SetJoinerSelection(0x71, 0x08, 5*time.Second)
+	builder.SetSourceSelection(0x71, 0x08, 5*time.Second)
 	builder.RecordProbe(120)
 
 	artifact, data, err := builder.Emit()
@@ -86,7 +56,7 @@ func TestM2aHarness_JoinerSuccessPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	validateAdmissionArtifactAgainstSchema(t, data)
-	if artifact.Admission.AdmissionPathSelected != "join" {
+	if artifact.Admission.AdmissionPathSelected != "source_selection" {
 		t.Fatalf("admission_path_selected=%q", artifact.Admission.AdmissionPathSelected)
 	}
 	if artifact.Admission.State != "active" {
@@ -94,8 +64,8 @@ func TestM2aHarness_JoinerSuccessPath(t *testing.T) {
 	}
 }
 
-func TestM2aHarness_JoinerFailNoFreeInitiatorPath(t *testing.T) {
-	t.Skip("pending M3: JoinResult error-path capture; ebusgo surfaces ErrNoFreeInitiatorAddress but the gateway's degraded-state transition on that error lands in M3/M4")
+func TestM2aHarness_SourceSelectionFailNoFreeInitiatorPath(t *testing.T) {
+	t.Skip("pending M3: source-address selection error-path capture; ebusgo surfaces no-available-source errors but the gateway's degraded-state transition on that error lands in M3/M4")
 }
 
 func TestM2aHarness_TransportBlindPath(t *testing.T) {
@@ -116,24 +86,24 @@ func TestM2aHarness_OverrideValidateFalsePath(t *testing.T) {
 		t.Fatalf("expected override_bypass_total=1, got %d", m.OverrideBypassTotal.Value())
 	}
 	if m.OverrideConflictDetected.Value() != 0 {
-		t.Fatalf("expected no advisory Joiner conflict when validate=false, got %d", m.OverrideConflictDetected.Value())
+		t.Fatalf("expected no advisory source-address selector conflict when validate=false, got %d", m.OverrideConflictDetected.Value())
 	}
 }
 
 func TestM2aHarness_OverrideValidateTruePath(t *testing.T) {
-	t.Run("advisory joiner agrees", func(t *testing.T) {
+	t.Run("advisory source-address selector agrees", func(t *testing.T) {
 		m := NewStartupAdmissionMetrics()
-		if CheckOverrideCompanionConflict(0xF0, protocol.JoinResult{Initiator: 0xF0}, m) {
-			t.Fatal("expected no conflict when advisory Joiner agrees")
+		if CheckOverrideCompanionConflict(0xF0, &protocol.SourceAddressSelection{Source: 0xF0}, m) {
+			t.Fatal("expected no conflict when advisory selector agrees")
 		}
 		if m.OverrideConflictDetected.Value() != 0 {
 			t.Fatalf("expected override_conflict_detected=0, got %d", m.OverrideConflictDetected.Value())
 		}
 	})
-	t.Run("advisory joiner disagrees", func(t *testing.T) {
+	t.Run("advisory source-address selector disagrees", func(t *testing.T) {
 		m := NewStartupAdmissionMetrics()
-		if !CheckOverrideCompanionConflict(0xF0, protocol.JoinResult{Initiator: 0xF1}, m) {
-			t.Fatal("expected conflict when advisory Joiner disagrees")
+		if !CheckOverrideCompanionConflict(0xF0, &protocol.SourceAddressSelection{Source: 0xF1}, m) {
+			t.Fatal("expected conflict when advisory selector disagrees")
 		}
 		if m.OverrideConflictDetected.Value() != 1 {
 			t.Fatalf("expected override_conflict_detected=1, got %d", m.OverrideConflictDetected.Value())
@@ -166,7 +136,7 @@ func TestM2aHarness_EvidenceBufferFloodBaselineProtection(t *testing.T) {
 
 func TestM2aHarness_AdmissionArtifactEmissionValidatesAgainstSchema(t *testing.T) {
 	t.Run("valid artifact passes", func(t *testing.T) {
-		valid := []byte(`{"admission":{"state":"joined","source":113,"companion_target":8,"warmup_duration_s":5,"reason_if_degraded":"","transport_kind":"enh","admission_path_selected":"join"},"discovery":{"wire_bytes":2048,"window_s":15,"startup_burst_pct":62.5,"post_startup_sustained_rate_probes_per_15s":1.5,"probe_count":12,"promoted_suspects_without_identity":1,"per_baseline_address_evidence_counts":{"08":3,"15":1}}}`)
+		valid := []byte(`{"admission":{"state":"joined","source":113,"companion_target":8,"warmup_duration_s":5,"reason_if_degraded":"","transport_kind":"enh","admission_path_selected":"source_selection"},"discovery":{"wire_bytes":2048,"window_s":15,"startup_burst_pct":62.5,"post_startup_sustained_rate_probes_per_15s":1.5,"probe_count":12,"promoted_suspects_without_identity":1,"per_baseline_address_evidence_counts":{"08":3,"15":1}}}`)
 		validateAdmissionArtifactAgainstSchema(t, valid)
 	})
 	t.Run("invalid enum fails", func(t *testing.T) {
@@ -176,31 +146,11 @@ func TestM2aHarness_AdmissionArtifactEmissionValidatesAgainstSchema(t *testing.T
 		}
 	})
 	t.Run("missing required field fails", func(t *testing.T) {
-		invalid := []byte(`{"admission":{"state":"joined","source":113,"warmup_duration_s":5,"reason_if_degraded":"","transport_kind":"enh","admission_path_selected":"join"},"discovery":{"wire_bytes":2048,"window_s":15,"startup_burst_pct":62.5,"post_startup_sustained_rate_probes_per_15s":1.5,"probe_count":12,"promoted_suspects_without_identity":1,"per_baseline_address_evidence_counts":{"08":3}}}`)
+		invalid := []byte(`{"admission":{"state":"joined","source":113,"warmup_duration_s":5,"reason_if_degraded":"","transport_kind":"enh","admission_path_selected":"source_selection"},"discovery":{"wire_bytes":2048,"window_s":15,"startup_burst_pct":62.5,"post_startup_sustained_rate_probes_per_15s":1.5,"probe_count":12,"promoted_suspects_without_identity":1,"per_baseline_address_evidence_counts":{"08":3}}}`)
 		if err := admissionArtifactSchemaError(invalid); err == nil {
 			t.Fatal("expected missing required field to fail schema validation")
 		}
 	})
-}
-
-func synthesizedEventSymbols(t *testing.T, event PassiveClassifiedEvent) []byte {
-	t.Helper()
-	switch event.Kind {
-	case PassiveClassifiedEventBroadcastFrame:
-		return frameBytes(event.Request)
-	case PassiveClassifiedEventTransaction:
-		payload := append([]byte{}, frameBytes(event.Request)...)
-		payload = append(payload, protocol.SymbolAck)
-		if event.HasResponse {
-			payload = append(payload, responseSegmentBytes(event.Response.Data)...)
-			payload = append(payload, protocol.SymbolAck, protocol.SymbolSyn)
-			return payload
-		}
-		return append(payload, protocol.SymbolSyn)
-	default:
-		t.Fatalf("unsupported synthesized event kind %d", event.Kind)
-		return nil
-	}
 }
 
 func admissionArtifactSchemaError(artifactJSON []byte) error {
@@ -257,7 +207,7 @@ func admissionArtifactSchemaError(artifactJSON []byte) error {
 	if !containsAdmissionEnum([]string{"enh", "ens", "ebusd-tcp", "udp-plain", "tcp-plain", "adapter-direct"}, *artifact.Admission.TransportKind) {
 		return fmt.Errorf("invalid transport_kind %q", *artifact.Admission.TransportKind)
 	}
-	if !containsAdmissionEnum([]string{"join", "override", "degraded_transport_blind", "degraded_no_events"}, *artifact.Admission.AdmissionPathSelected) {
+	if !containsAdmissionEnum([]string{"source_selection", "override", "degraded_transport_blind", "degraded_no_events"}, *artifact.Admission.AdmissionPathSelected) {
 		return fmt.Errorf("invalid admission_path_selected %q", *artifact.Admission.AdmissionPathSelected)
 	}
 	if *artifact.Discovery.WireBytes < 0 || *artifact.Discovery.WindowS <= 0 || *artifact.Discovery.StartupBurstPct < 0 || *artifact.Discovery.StartupBurstPct > 100 || *artifact.Discovery.PostStartupSustainedRateProbes15S < 0 || *artifact.Discovery.ProbeCount < 0 || *artifact.Discovery.PromotedSuspectsWithoutIdentity < 0 {

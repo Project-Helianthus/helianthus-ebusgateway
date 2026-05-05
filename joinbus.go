@@ -1,12 +1,12 @@
 package ebusgateway
 
-// Package-doc continued: JoinBus adapter.
+// Package-doc continued: startup source-address selection bus adapter.
 //
-// This file implements the JoinBus interface from ebusgo/protocol, wired
-// over the PassiveTransactionReconstructor's subscription channel. It is
-// the source-of-truth bridge for startup-admission warmup on join-capable
-// direct transports (ENH, ENS, UDP-plain, TCP-plain). ebusd-tcp does NOT
-// instantiate this adapter per AD13.
+// This file implements the SourceAddressSelectionBus interface from
+// ebusgo/protocol, wired over the PassiveTransactionReconstructor's
+// subscription channel. It is the source-of-truth bridge for startup-admission
+// warmup on source-selection-capable direct transports (ENH, ENS, UDP-plain, TCP-plain).
+// ebusd-tcp does NOT instantiate this adapter per AD13.
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
-var ErrJoinBusInquiryUnsupported = errors.New("joinbus: inquiry not supported (InquiryEnabled=false)")
+var ErrSourceSelectionBusInquiryUnsupported = errors.New("source address selection: inquiry not supported (InquiryEnabled=false)")
 
 // TransportAdmissionPath is the admission-path dispatch decision for a given
 // transport kind per the startup-admission-discovery plan's transport
@@ -26,18 +26,18 @@ var ErrJoinBusInquiryUnsupported = errors.New("joinbus: inquiry not supported (I
 type TransportAdmissionPath uint8
 
 const (
-	// TransportAdmissionJoinCapable denotes a direct transport on which the
-	// gateway runs the Joiner warmup + JoinBus adapter before any
+	// TransportAdmissionSourceSelectionCapable denotes a direct transport on which the
+	// gateway runs the source-address selector warmup before any
 	// non-override active frame. Applies to ENH, ENS, UDP-plain, TCP-plain.
-	TransportAdmissionJoinCapable TransportAdmissionPath = iota + 1
+	TransportAdmissionSourceSelectionCapable TransportAdmissionPath = iota + 1
 
 	// TransportAdmissionStaticFallback denotes the ebusd-tcp path, where the
-	// gateway does NOT instantiate Joiner and uses the configured
+	// gateway does NOT instantiate source-address selection and uses the configured
 	// ScanSource as admission-fallback per AD13.
 	TransportAdmissionStaticFallback
 )
 
-type joinBusAdapter struct {
+type sourceSelectionBusAdapter struct {
 	reconstructor  *PassiveTransactionReconstructor
 	name           string
 	priority       PassiveSubscriberPriority
@@ -45,16 +45,16 @@ type joinBusAdapter struct {
 	inquiryEnabled bool
 }
 
-// NewJoinBusAdapter returns a protocol.JoinBus subscribed to the given
-// reconstructor with priority=NonCritical and default buffer.
-func NewJoinBusAdapter(reconstructor *PassiveTransactionReconstructor, name string, inquiryEnabled bool) (protocol.JoinBus, error) {
+// NewSourceSelectionBusAdapter returns a protocol.SourceAddressSelectionBus subscribed to
+// the given reconstructor with priority=NonCritical and default buffer.
+func NewSourceSelectionBusAdapter(reconstructor *PassiveTransactionReconstructor, name string, inquiryEnabled bool) (protocol.SourceAddressSelectionBus, error) {
 	if reconstructor == nil {
-		return nil, fmt.Errorf("joinbus: reconstructor is nil")
+		return nil, fmt.Errorf("source address selection: reconstructor is nil")
 	}
 	if name == "" {
-		name = "startup_admission_joinbus"
+		name = "startup_admission_source_selection_bus"
 	}
-	return &joinBusAdapter{
+	return &sourceSelectionBusAdapter{
 		reconstructor:  reconstructor,
 		name:           name,
 		priority:       PassiveSubscriberNonCritical,
@@ -63,14 +63,14 @@ func NewJoinBusAdapter(reconstructor *PassiveTransactionReconstructor, name stri
 	}, nil
 }
 
-func (a *joinBusAdapter) Listen(ctx context.Context, onFrame func(protocol.Frame)) error {
+func (a *sourceSelectionBusAdapter) Listen(ctx context.Context, onFrame func(protocol.Frame)) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	subscription, err := a.reconstructor.Subscribe(a.name, a.priority, a.buffer)
 	if err != nil {
-		return fmt.Errorf("joinbus: subscribe: %w", err)
+		return fmt.Errorf("source address selection: subscribe: %w", err)
 	}
 	defer subscription.Close()
 
@@ -83,12 +83,12 @@ func (a *joinBusAdapter) Listen(ctx context.Context, onFrame func(protocol.Frame
 			if !ok {
 				return nil
 			}
-			forwardJoinBusEvent(event, onFrame)
+			forwardSourceSelectionBusEvent(event, onFrame)
 		}
 	}
 }
 
-func forwardJoinBusEvent(event PassiveClassifiedEvent, onFrame func(protocol.Frame)) {
+func forwardSourceSelectionBusEvent(event PassiveClassifiedEvent, onFrame func(protocol.Frame)) {
 	if onFrame == nil {
 		return
 	}
@@ -104,8 +104,8 @@ func forwardJoinBusEvent(event PassiveClassifiedEvent, onFrame func(protocol.Fra
 	}
 }
 
-func (a *joinBusAdapter) InquiryExistence(ctx context.Context) error {
-	return ErrJoinBusInquiryUnsupported
+func (a *sourceSelectionBusAdapter) InquiryExistence(ctx context.Context) error {
+	return ErrSourceSelectionBusInquiryUnsupported
 }
 
 // ClassifyTransportAdmission returns the admission path dispatch for the
@@ -114,24 +114,26 @@ func (a *joinBusAdapter) InquiryExistence(ctx context.Context) error {
 func ClassifyTransportAdmission(kind TransportProtocol) (TransportAdmissionPath, error) {
 	switch kind {
 	case TransportENH, TransportENS, TransportUDPPlain, TransportTCPPlain:
-		return TransportAdmissionJoinCapable, nil
+		return TransportAdmissionSourceSelectionCapable, nil
 	case TransportEbusdTCP:
 		return TransportAdmissionStaticFallback, nil
 	case TransportAdapterDirect:
-		return 0, fmt.Errorf("joinbus: adapter-direct is a multiplexer, classify its underlying transport")
+		return 0, fmt.Errorf("source-selection bus: adapter-direct is a multiplexer, classify its underlying transport")
 	case "":
-		return 0, fmt.Errorf("joinbus: empty transport protocol")
+		return 0, fmt.Errorf("source-selection bus: empty transport protocol")
 	default:
-		return 0, fmt.Errorf("joinbus: unknown transport protocol %q", kind)
+		return 0, fmt.Errorf("source-selection bus: unknown transport protocol %q", kind)
 	}
 }
 
 // ResolveAdmissionPath returns the admission-path dispatch with adapter-direct
 // special-cased to JoinCapable. Adapter-direct multiplexer mode always wraps a
-// join-capable underlying transport (ENH or ENS in practice; UDP/TCP-plain are
-// not configurations the multiplexer is built for). The JoinBus adapter
+// source-selection-capable underlying transport (ENH or ENS in practice; UDP/TCP-plain are
+// not configurations the multiplexer is built for). The source-address
+// selection bus adapter
 // subscribes to the same PassiveTransactionReconstructor regardless of
-// multiplexer presence, so adapter-direct deployments MUST run Joiner.
+// multiplexer presence, so adapter-direct deployments MUST run source-address
+// selection.
 //
 // This helper exists because ClassifyTransportAdmission is intentionally pure
 // (one transport at a time, no multiplexer-context awareness) and rejects
@@ -150,7 +152,7 @@ func ClassifyTransportAdmission(kind TransportProtocol) (TransportAdmissionPath,
 // logic here keeps all call sites in agreement.
 func ResolveAdmissionPath(kind TransportProtocol) (path TransportAdmissionPath, adapterDirectSpecialCase bool) {
 	if kind == TransportAdapterDirect {
-		return TransportAdmissionJoinCapable, true
+		return TransportAdmissionSourceSelectionCapable, true
 	}
 	resolved, err := ClassifyTransportAdmission(kind)
 	if err != nil {
@@ -159,15 +161,36 @@ func ResolveAdmissionPath(kind TransportProtocol) (path TransportAdmissionPath, 
 	return resolved, false
 }
 
-// DefaultStartupAdmissionJoinConfig returns the JoinConfig used by the
-// startup-admission-discovery plan for join-capable direct transports.
+// DefaultStartupAdmissionSourceSelectionConfig returns the SourceAddressSelectionConfig
+// used by the startup-admission-discovery plan for source-selection-capable direct
+// transports.
 // See plan AD01/AD02/AD09 and
 // helianthus-docs-ebus/architecture/startup-admission-and-discovery.md §2.2.3.
-func DefaultStartupAdmissionJoinConfig() protocol.JoinConfig {
-	return protocol.JoinConfig{
-		ListenWarmup:       5 * time.Second,
-		InquiryEnabled:     false,
-		PersistLastGood:    true,
-		PersistLastGoodSet: true,
+func DefaultStartupAdmissionSourceSelectionConfig() protocol.SourceAddressSelectionConfig {
+	return protocol.SourceAddressSelectionConfig{
+		ListenWarmup:   5 * time.Second,
+		InquiryEnabled: false,
 	}
+}
+
+type noObservationSourceSelectionBus struct{}
+
+func (noObservationSourceSelectionBus) Listen(context.Context, func(protocol.Frame)) error {
+	return nil
+}
+
+func (noObservationSourceSelectionBus) InquiryExistence(context.Context) error {
+	return ErrSourceSelectionBusInquiryUnsupported
+}
+
+// SelectDefaultStartupSourceAddress applies the docs-backed Helianthus
+// source-selection policy without passive observations. This covers transports
+// that cannot expose an observe-first lane: "auto" still means source
+// selection, not source 0x00.
+func SelectDefaultStartupSourceAddress(ctx context.Context) (protocol.SourceAddressSelection, error) {
+	cfg := DefaultStartupAdmissionSourceSelectionConfig()
+	cfg.ListenWarmup = time.Nanosecond
+	cfg.InquiryEnabled = false
+	selector := protocol.NewSourceAddressSelector(noObservationSourceSelectionBus{}, cfg)
+	return selector.Select(ctx)
 }

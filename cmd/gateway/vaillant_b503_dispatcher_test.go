@@ -430,37 +430,3 @@ func TestM6Dispatcher_NoStubLiteralInProductionWiring(t *testing.T) {
 		t.Fatalf("M6 acceptance §10: stub-error literal %q still present in production: %v", bad, hits)
 	}
 }
-
-// --- Helpers shared with the truth-table & concurrency suites ---
-
-// installVaillantB503ForTest is a test-only entry point that wires the
-// production dispatcher against a mock bus + readMu. It mirrors the
-// production installVaillantB503 except the bus is a stub. Used by the
-// integration test above and the truth-table tests in
-// vaillant_b503_dispatcher_truthtable_test.go.
-func installVaillantB503ForTest(srv *mcp.Server) *b503Runtime {
-	if srv == nil {
-		return nil
-	}
-	bus := newB503DispatcherMockBus()
-	bus.setResp([2]byte{0x00, 0x01}, []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF})
-	mgr := b503session.New(
-		b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 1},
-		30*time.Second,
-		func(ctx context.Context) (b503session.TransportKey, error) {
-			return b503session.TransportKey{}, b503session.ErrTransportDown
-		},
-	)
-	var readMu sync.Mutex
-	disp := newRawFrameDispatcher(bus, gatewaySource, &readMu, mgr, 2*time.Second)
-	mcp.RegisterVaillantB503Tools(srv, mcp.VaillantB503Options{
-		Dispatcher:     disp,
-		SessionManager: mgr,
-		DefaultTarget:  defaultVaillantTarget,
-	})
-	return &b503Runtime{
-		mcpServer:  srv,
-		manager:    mgr,
-		dispatcher: disp,
-	}
-}

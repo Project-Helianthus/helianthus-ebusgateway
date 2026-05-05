@@ -3,7 +3,7 @@ package main
 import "github.com/Project-Helianthus/helianthus-ebusgateway"
 
 func shouldCloseSemanticBarrier(admissionPath ebusgateway.TransportAdmissionPath, overrideSet bool, joinResultNotNil bool) bool {
-	if admissionPath != ebusgateway.TransportAdmissionJoinCapable {
+	if admissionPath != ebusgateway.TransportAdmissionSourceSelectionCapable {
 		return true
 	}
 	return overrideSet || joinResultNotNil

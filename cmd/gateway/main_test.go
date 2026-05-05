@@ -84,6 +84,33 @@ func TestBindFlags_SourceAddrExplicitDisablesAuto(t *testing.T) {
 	}
 }
 
+func TestBindFlags_StartupProbeTargets(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-startup-probe-targets", "0x08,0x15 0x08"}); err != nil {
+		t.Fatalf("parse startup-probe-targets: %v", err)
+	}
+	want := []byte{0x08, 0x15}
+	if len(cfg.StartupProbeTargets) != len(want) {
+		t.Fatalf("StartupProbeTargets len = %d; want %d (% X)", len(cfg.StartupProbeTargets), len(want), cfg.StartupProbeTargets)
+	}
+	for i := range want {
+		if cfg.StartupProbeTargets[i] != want[i] {
+			t.Fatalf("StartupProbeTargets = % X; want % X", cfg.StartupProbeTargets, want)
+		}
+	}
+}
+
+func TestBindFlags_StartupProbeTargetsRejectInvalid(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-startup-probe-targets", "0xFE"}); err == nil {
+		t.Fatal("parse invalid startup-probe-targets error = nil; want error")
+	}
+}
+
 func TestApplyTransportSourcePolicy_EbusdTCPAutoUsesEbusdSource(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
@@ -763,7 +790,7 @@ func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T)
 	select {
 	case <-passiveStarted:
 	case <-time.After(2 * time.Second):
-		t.Fatal("passive reconstructor did not start before startup scan on join-capable transport")
+		t.Fatal("passive reconstructor did not start before startup scan on source-selection-capable transport")
 	}
 
 	select {

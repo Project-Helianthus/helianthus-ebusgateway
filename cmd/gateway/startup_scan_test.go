@@ -9,6 +9,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
@@ -285,6 +286,21 @@ func TestResolveStartupScanSourceConfig(t *testing.T) {
 				t.Fatal("resolveStartupScanSourceConfig(...) left ScanSourceAuto=true for explicit proxy startup source")
 			}
 		})
+	}
+}
+
+func TestStartupProbeTargetsFromSelection_SanitizesPromotedTargets(t *testing.T) {
+	t.Parallel()
+
+	targets := startupProbeTargetsFromSelection(protocol.SourceAddressSelection{
+		Source: 0x7F,
+		Metrics: protocol.SourceAddressSelectionMetrics{
+			ObservedProbableTargets: []byte{0x15, 0x08, 0x7F, 0xFE, 0xAA, 0x08, 0x02},
+		},
+	})
+	want := []byte{0x08, 0x15}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("startup probe targets = % X; want % X", targets, want)
 	}
 }
 

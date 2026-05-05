@@ -118,7 +118,7 @@ func (store *BusObservabilityStore) SetAdmissionStabilityWindow(window *Admissio
 // RecordBusAdmissionTransition is the production-side setter for the
 // additive bus_admission field per AD08. The state argument MUST be one
 // of {"pending", "active", "degraded"}; source/companionTarget are byte
-// values from JoinResult or override; reason is non-empty only when
+// values from source-address selection or override; reason is non-empty only when
 // state="degraded".
 //
 // When an AdmissionStabilityWindow is installed (production path), the
@@ -132,8 +132,8 @@ func (store *BusObservabilityStore) RecordBusAdmissionTransition(state string, s
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	emittedState := state
-	flipped := true
 	if store.admissionStabilityWindow != nil {
+		var flipped bool
 		emittedState, flipped = store.admissionStabilityWindow.Observe(state)
 		if !flipped {
 			return false

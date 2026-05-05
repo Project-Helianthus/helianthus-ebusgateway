@@ -52,7 +52,7 @@ func TestStartupAdmissionMetrics_StateTransitions(t *testing.T) {
 }
 
 func TestValidateAdmissionPathSelected(t *testing.T) {
-	for _, ok := range []string{"join", "override", "degraded_transport_blind", "degraded_no_events"} {
+	for _, ok := range []string{"source_selection", "override", "degraded_transport_blind", "degraded_no_events"} {
 		if err := ValidateAdmissionPathSelected(ok); err != nil {
 			t.Errorf("valid value %q rejected: %v", ok, err)
 		}

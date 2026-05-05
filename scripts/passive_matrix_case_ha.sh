@@ -200,6 +200,19 @@ build_observe_first_cli_flags() {
   printf '%s\n' "${flags[*]}"
 }
 
+build_startup_probe_cli_flags() {
+  local targets
+  targets="$(printf '%s' "${MATRIX_STARTUP_PROBE_TARGETS:-}" | xargs)"
+  if [[ -z "${targets}" && "${MATRIX_PASSIVE_MODE:-}" == "required" ]]; then
+    targets="${MATRIX_REQUIRED_PASSIVE_STARTUP_PROBE_TARGETS:-0x08,0x15,0x26,0x04}"
+  fi
+  if [[ -z "${targets}" ]]; then
+    printf '\n'
+    return 0
+  fi
+  printf '%s\n' "--startup-probe-targets '${targets}'"
+}
+
 select_ebusd_config_src() {
   if [[ -n "${EBUSD_CONFIG_SRC:-}" ]]; then
     printf '%s\n' "${EBUSD_CONFIG_SRC}"
@@ -329,9 +342,11 @@ restart_gateway_with_passive_mode() {
   local gateway_log_path="${1:-${MATRIX_GATEWAY_LOG_PATH:-${remote_case_dir}/logs/gateway.log}}"
   local protocol network address
   local observe_first_flags=""
+  local startup_probe_flags=""
   enforce_gw15_proof_flag_state
   IFS=';' read -r protocol network address < <(gateway_connection)
   observe_first_flags="$(build_observe_first_cli_flags)"
+  startup_probe_flags="$(build_startup_probe_cli_flags)"
 
   remote_exec "mkdir -p '${remote_case_dir}/state' '${remote_case_dir}/logs'"
   remote_exec "if [ -f '${remote_case_dir}/state/gateway.pid' ]; then kill \$(cat '${remote_case_dir}/state/gateway.pid') >/dev/null 2>&1 || true; rm -f '${remote_case_dir}/state/gateway.pid'; fi"
@@ -344,6 +359,7 @@ restart_gateway_with_passive_mode() {
     --semantic-discovery-interval 5m --semantic-config-interval 5m --semantic-state-interval 1m --semantic-request-timeout 2s \
     --semantic-cache-path '${remote_case_dir}/state/semantic_cache.json' \
     ${observe_first_flags} \
+    ${startup_probe_flags} \
     --http-addr ':${gateway_http_port}' --mdns=false --broadcast=true \
     > '${gateway_log_path}' 2>&1 & echo \$! > '${remote_case_dir}/state/gateway.pid'"
   remote_exec "for i in \$(seq 1 60); do kill -0 \$(cat '${remote_case_dir}/state/gateway.pid') || exit 2; ss -ltn '( sport = :${gateway_http_port} )' | grep -q LISTEN && exit 0; sleep 1; done; exit 1"

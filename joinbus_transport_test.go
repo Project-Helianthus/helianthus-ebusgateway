@@ -17,10 +17,10 @@ func TestClassifyTransportAdmission_AllFivePlanMatrixTransports(t *testing.T) {
 		kind   TransportProtocol
 		expect TransportAdmissionPath
 	}{
-		{"ENH", TransportENH, TransportAdmissionJoinCapable},
-		{"ENS", TransportENS, TransportAdmissionJoinCapable},
-		{"UDP-plain", TransportUDPPlain, TransportAdmissionJoinCapable},
-		{"TCP-plain", TransportTCPPlain, TransportAdmissionJoinCapable},
+		{"ENH", TransportENH, TransportAdmissionSourceSelectionCapable},
+		{"ENS", TransportENS, TransportAdmissionSourceSelectionCapable},
+		{"UDP-plain", TransportUDPPlain, TransportAdmissionSourceSelectionCapable},
+		{"TCP-plain", TransportTCPPlain, TransportAdmissionSourceSelectionCapable},
 		{"ebusd-tcp", TransportEbusdTCP, TransportAdmissionStaticFallback},
 	}
 	for _, tc := range cases {
@@ -39,8 +39,8 @@ func TestClassifyTransportAdmission_AllFivePlanMatrixTransports(t *testing.T) {
 // TestClassifyTransportAdmission_MisclassificationIsTestFailure hardens the
 // plan's M2 acceptance: "Transport classifier is unit-tested against all
 // five transports in the capability matrix {ENH, ENS, ebusd-tcp, UDP-plain,
-// TCP-plain}; misclassification (join-capable routed to static fallback,
-// or ebusd-tcp routed to Joiner) is a test failure."
+// TCP-plain}; misclassification (source-selection-capable routed to static fallback,
+// or ebusd-tcp routed to source-address selector) is a test failure."
 func TestClassifyTransportAdmission_MisclassificationIsTestFailure(t *testing.T) {
 	joinCapableTransports := []TransportProtocol{TransportENH, TransportENS, TransportUDPPlain, TransportTCPPlain}
 	for _, kind := range joinCapableTransports {
@@ -49,15 +49,15 @@ func TestClassifyTransportAdmission_MisclassificationIsTestFailure(t *testing.T)
 			t.Fatalf("unexpected error classifying %s: %v", kind, err)
 		}
 		if got == TransportAdmissionStaticFallback {
-			t.Errorf("FAIL: join-capable transport %s misclassified as static fallback", kind)
+			t.Errorf("FAIL: source-selection-capable transport %s misclassified as static fallback", kind)
 		}
 	}
 	got, err := ClassifyTransportAdmission(TransportEbusdTCP)
 	if err != nil {
 		t.Fatalf("unexpected error classifying ebusd-tcp: %v", err)
 	}
-	if got == TransportAdmissionJoinCapable {
-		t.Error("FAIL: ebusd-tcp misclassified as join-capable (AD13 violation)")
+	if got == TransportAdmissionSourceSelectionCapable {
+		t.Error("FAIL: ebusd-tcp misclassified as source-selection-capable (AD13 violation)")
 	}
 }
 
@@ -86,11 +86,27 @@ func TestClassifyTransportAdmission_UnknownIsError(t *testing.T) {
 	}
 }
 
-func TestForwardJoinBusEvent_BroadcastForwardsRequestOnly(t *testing.T) {
+func TestSelectDefaultStartupSourceAddress_UsesPolicyWithoutObservations(t *testing.T) {
+	result, err := SelectDefaultStartupSourceAddress(context.Background())
+	if err != nil {
+		t.Fatalf("SelectDefaultStartupSourceAddress() error = %v", err)
+	}
+	if result.Source != 0x7F {
+		t.Fatalf("default selected source = 0x%02X; want 0x7F", result.Source)
+	}
+	if result.Companion != 0x84 {
+		t.Fatalf("default companion = 0x%02X; want 0x84", result.Companion)
+	}
+	if !reflect.DeepEqual(result.Metrics.CandidatesConsidered, []byte{0xFF, 0x7F}) {
+		t.Fatalf("candidates considered = % X; want FF 7F", result.Metrics.CandidatesConsidered)
+	}
+}
+
+func TestForwardSourceSelectionBusEvent_BroadcastForwardsRequestOnly(t *testing.T) {
 	var captured []protocol.Frame
 	onFrame := func(f protocol.Frame) { captured = append(captured, f) }
 	req := protocol.Frame{Source: 0x71, Target: 0xFE, Primary: 0xB5}
-	forwardJoinBusEvent(PassiveClassifiedEvent{
+	forwardSourceSelectionBusEvent(PassiveClassifiedEvent{
 		Kind:    PassiveClassifiedEventBroadcastFrame,
 		Request: req,
 	}, onFrame)
@@ -99,11 +115,11 @@ func TestForwardJoinBusEvent_BroadcastForwardsRequestOnly(t *testing.T) {
 	}
 }
 
-func TestForwardJoinBusEvent_MasterForwardsRequestOnly(t *testing.T) {
+func TestForwardSourceSelectionBusEvent_MasterForwardsRequestOnly(t *testing.T) {
 	var captured []protocol.Frame
 	onFrame := func(f protocol.Frame) { captured = append(captured, f) }
 	req := protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04}
-	forwardJoinBusEvent(PassiveClassifiedEvent{
+	forwardSourceSelectionBusEvent(PassiveClassifiedEvent{
 		Kind:    PassiveClassifiedEventMasterFrame,
 		Request: req,
 	}, onFrame)
@@ -112,11 +128,11 @@ func TestForwardJoinBusEvent_MasterForwardsRequestOnly(t *testing.T) {
 	}
 }
 
-func TestForwardJoinBusEvent_TransactionWithoutResponseForwardsRequestOnly(t *testing.T) {
+func TestForwardSourceSelectionBusEvent_TransactionWithoutResponseForwardsRequestOnly(t *testing.T) {
 	var captured []protocol.Frame
 	onFrame := func(f protocol.Frame) { captured = append(captured, f) }
 	req := protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04}
-	forwardJoinBusEvent(PassiveClassifiedEvent{
+	forwardSourceSelectionBusEvent(PassiveClassifiedEvent{
 		Kind:        PassiveClassifiedEventTransaction,
 		Request:     req,
 		HasResponse: false,
@@ -126,12 +142,12 @@ func TestForwardJoinBusEvent_TransactionWithoutResponseForwardsRequestOnly(t *te
 	}
 }
 
-func TestForwardJoinBusEvent_TransactionWithResponseForwardsRequestThenResponse(t *testing.T) {
+func TestForwardSourceSelectionBusEvent_TransactionWithResponseForwardsRequestThenResponse(t *testing.T) {
 	var captured []protocol.Frame
 	onFrame := func(f protocol.Frame) { captured = append(captured, f) }
 	req := protocol.Frame{Source: 0x71, Target: 0x08}
 	resp := protocol.Frame{Source: 0x08, Target: 0x71}
-	forwardJoinBusEvent(PassiveClassifiedEvent{
+	forwardSourceSelectionBusEvent(PassiveClassifiedEvent{
 		Kind:        PassiveClassifiedEventTransaction,
 		Request:     req,
 		Response:    resp,
@@ -148,10 +164,10 @@ func TestForwardJoinBusEvent_TransactionWithResponseForwardsRequestThenResponse(
 	}
 }
 
-func TestForwardJoinBusEvent_AbandonedTransactionIsDropped(t *testing.T) {
+func TestForwardSourceSelectionBusEvent_AbandonedTransactionIsDropped(t *testing.T) {
 	var captured []protocol.Frame
 	onFrame := func(f protocol.Frame) { captured = append(captured, f) }
-	forwardJoinBusEvent(PassiveClassifiedEvent{
+	forwardSourceSelectionBusEvent(PassiveClassifiedEvent{
 		Kind:    PassiveClassifiedEventAbandonedTransaction,
 		Request: protocol.Frame{Source: 0x71},
 	}, onFrame)
@@ -160,10 +176,10 @@ func TestForwardJoinBusEvent_AbandonedTransactionIsDropped(t *testing.T) {
 	}
 }
 
-func TestForwardJoinBusEvent_DiscontinuityIsDropped(t *testing.T) {
+func TestForwardSourceSelectionBusEvent_DiscontinuityIsDropped(t *testing.T) {
 	var captured []protocol.Frame
 	onFrame := func(f protocol.Frame) { captured = append(captured, f) }
-	forwardJoinBusEvent(PassiveClassifiedEvent{
+	forwardSourceSelectionBusEvent(PassiveClassifiedEvent{
 		Kind:    PassiveClassifiedEventDiscontinuity,
 		Request: protocol.Frame{Source: 0x71},
 	}, onFrame)
@@ -173,37 +189,31 @@ func TestForwardJoinBusEvent_DiscontinuityIsDropped(t *testing.T) {
 }
 
 func TestInquiryExistence_AlwaysReturnsSentinel(t *testing.T) {
-	adapterDisabled := &joinBusAdapter{inquiryEnabled: false}
-	adapterEnabled := &joinBusAdapter{inquiryEnabled: true}
-	if err := adapterDisabled.InquiryExistence(context.Background()); err != ErrJoinBusInquiryUnsupported {
-		t.Errorf("disabled: expected ErrJoinBusInquiryUnsupported, got %v", err)
+	adapterDisabled := &sourceSelectionBusAdapter{inquiryEnabled: false}
+	adapterEnabled := &sourceSelectionBusAdapter{inquiryEnabled: true}
+	if err := adapterDisabled.InquiryExistence(context.Background()); err != ErrSourceSelectionBusInquiryUnsupported {
+		t.Errorf("disabled: expected ErrSourceSelectionBusInquiryUnsupported, got %v", err)
 	}
-	if err := adapterEnabled.InquiryExistence(context.Background()); err != ErrJoinBusInquiryUnsupported {
-		t.Errorf("enabled: expected ErrJoinBusInquiryUnsupported, got %v", err)
+	if err := adapterEnabled.InquiryExistence(context.Background()); err != ErrSourceSelectionBusInquiryUnsupported {
+		t.Errorf("enabled: expected ErrSourceSelectionBusInquiryUnsupported, got %v", err)
 	}
 }
 
-func TestDefaultStartupAdmissionJoinConfig(t *testing.T) {
-	cfg := DefaultStartupAdmissionJoinConfig()
+func TestDefaultStartupAdmissionSourceSelectionConfig(t *testing.T) {
+	cfg := DefaultStartupAdmissionSourceSelectionConfig()
 	if cfg.ListenWarmup != 5*time.Second {
 		t.Errorf("ListenWarmup: got %v, want 5s", cfg.ListenWarmup)
 	}
 	if cfg.InquiryEnabled {
 		t.Error("InquiryEnabled: got true, want false")
 	}
-	if !cfg.PersistLastGood {
-		t.Error("PersistLastGood: got false, want true")
-	}
-	if !cfg.PersistLastGoodSet {
-		t.Error("PersistLastGoodSet: got false, want true")
-	}
 }
 
-func TestJoinBusAdapter_WarmupObservationForwardsSynthesizedPassiveTraffic(t *testing.T) {
+func TestSourceSelectionBusAdapter_WarmupObservationForwardsSynthesizedPassiveTraffic(t *testing.T) {
 	reconstructor := newPassiveTransactionReconstructorCore(DefaultConfig())
-	joinBus, err := NewJoinBusAdapter(reconstructor, "warmup_test", false)
+	joinBus, err := NewSourceSelectionBusAdapter(reconstructor, "warmup_test", false)
 	if err != nil {
-		t.Fatalf("NewJoinBusAdapter error = %v", err)
+		t.Fatalf("NewSourceSelectionBusAdapter error = %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -277,11 +287,11 @@ func TestJoinBusAdapter_WarmupObservationForwardsSynthesizedPassiveTraffic(t *te
 	}
 }
 
-func TestJoinBusAdapter_WarmupObservationSilentBusForwardsNothing(t *testing.T) {
+func TestSourceSelectionBusAdapter_WarmupObservationSilentBusForwardsNothing(t *testing.T) {
 	reconstructor := newPassiveTransactionReconstructorCore(DefaultConfig())
-	joinBus, err := NewJoinBusAdapter(reconstructor, "silent_bus_test", false)
+	joinBus, err := NewSourceSelectionBusAdapter(reconstructor, "silent_bus_test", false)
 	if err != nil {
-		t.Fatalf("NewJoinBusAdapter error = %v", err)
+		t.Fatalf("NewSourceSelectionBusAdapter error = %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -473,6 +473,115 @@ func cloneFloatPtr(value *float64) *float64 {
 	return &cp
 }
 
+const semanticWriterSourceNotAdmittedError = "source selection not active"
+
+type admittedSourceProvider func() (byte, bool)
+
+func admittedSourceActive(provider admittedSourceProvider) bool {
+	if provider == nil {
+		return false
+	}
+	source, admitted := provider()
+	return admitted && source != 0
+}
+
+type admittedGraphQLSemanticWriter struct {
+	boiler   graphql.BoilerConfigWriter
+	system   graphql.SystemConfigWriter
+	schedule graphql.ScheduleWriter
+	admitted admittedSourceProvider
+}
+
+func (writer admittedGraphQLSemanticWriter) SetBoilerConfig(ctx context.Context, fieldName string, rawValue string) graphql.BoilerConfigMutationResult {
+	if !admittedSourceActive(writer.admitted) {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: semanticWriterSourceNotAdmittedError}
+	}
+	if writer.boiler == nil {
+		return graphql.BoilerConfigMutationResult{Success: false, Error: "boiler config writer unavailable"}
+	}
+	return writer.boiler.SetBoilerConfig(ctx, fieldName, rawValue)
+}
+
+func (writer admittedGraphQLSemanticWriter) SetSystemConfig(ctx context.Context, fieldName string, rawValue string) graphql.ConfigMutationResult {
+	if !admittedSourceActive(writer.admitted) {
+		return graphql.ConfigMutationResult{Success: false, Error: semanticWriterSourceNotAdmittedError}
+	}
+	if writer.system == nil {
+		return graphql.ConfigMutationResult{Success: false, Error: "system config writer unavailable"}
+	}
+	return writer.system.SetSystemConfig(ctx, fieldName, rawValue)
+}
+
+func (writer admittedGraphQLSemanticWriter) SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+	if !admittedSourceActive(writer.admitted) {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: semanticWriterSourceNotAdmittedError}, nil
+	}
+	if writer.schedule == nil {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: "schedule writer unavailable"}, nil
+	}
+	return writer.schedule.SetZoneTimeProgram(ctx, zone, weekday, slots)
+}
+
+func (writer admittedGraphQLSemanticWriter) SetDhwTimeProgram(ctx context.Context, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+	if !admittedSourceActive(writer.admitted) {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: semanticWriterSourceNotAdmittedError}, nil
+	}
+	if writer.schedule == nil {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: "schedule writer unavailable"}, nil
+	}
+	return writer.schedule.SetDhwTimeProgram(ctx, weekday, slots)
+}
+
+type admittedMCPConfigWriter struct {
+	writer   mcp.ConfigWriter
+	admitted admittedSourceProvider
+}
+
+func (writer admittedMCPConfigWriter) SetSystemConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {
+	if !admittedSourceActive(writer.admitted) {
+		return mcp.ConfigSetResult{Success: false, Error: semanticWriterSourceNotAdmittedError}
+	}
+	if writer.writer == nil {
+		return mcp.ConfigSetResult{Success: false, Error: "system config writer unavailable"}
+	}
+	return writer.writer.SetSystemConfig(ctx, field, value)
+}
+
+func (writer admittedMCPConfigWriter) SetBoilerConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {
+	if !admittedSourceActive(writer.admitted) {
+		return mcp.ConfigSetResult{Success: false, Error: semanticWriterSourceNotAdmittedError}
+	}
+	if writer.writer == nil {
+		return mcp.ConfigSetResult{Success: false, Error: "boiler config writer unavailable"}
+	}
+	return writer.writer.SetBoilerConfig(ctx, field, value)
+}
+
+type admittedMCPScheduleWriter struct {
+	writer   mcp.ScheduleWriter
+	admitted admittedSourceProvider
+}
+
+func (writer admittedMCPScheduleWriter) SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+	if !admittedSourceActive(writer.admitted) {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: semanticWriterSourceNotAdmittedError}, nil
+	}
+	if writer.writer == nil {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: "schedule writer unavailable"}, nil
+	}
+	return writer.writer.SetZoneTimeProgram(ctx, zone, weekday, slots)
+}
+
+func (writer admittedMCPScheduleWriter) SetDhwTimeProgram(ctx context.Context, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
+	if !admittedSourceActive(writer.admitted) {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: semanticWriterSourceNotAdmittedError}, nil
+	}
+	if writer.writer == nil {
+		return &mcp.TimeProgramWriteResult{Success: false, Error: "schedule writer unavailable"}, nil
+	}
+	return writer.writer.SetDhwTimeProgram(ctx, weekday, slots)
+}
+
 // mcpConfigWriterAdapter adapts the semantic poller's config write methods
 // to the MCP ConfigWriter interface.
 type mcpConfigWriterAdapter struct {

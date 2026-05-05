@@ -411,9 +411,15 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	semanticCfg := resolveStartupScanSourceConfig(cfg)
 	semanticPoller := startVaillantSemanticPollingFn(ctx, semanticCfg, gateway, semanticRuntime.Provider(), hub, semanticBarrier)
 	if semanticPoller != nil {
-		builder.SetSystemConfigWriter(semanticPoller)
-		builder.SetBoilerConfigWriter(semanticPoller)
-		builder.SetScheduleWriter(semanticPoller)
+		gatedGraphQLWriter := admittedGraphQLSemanticWriter{
+			boiler:   semanticPoller,
+			system:   semanticPoller,
+			schedule: semanticPoller,
+			admitted: builder.AdmittedMutationSource,
+		}
+		builder.SetSystemConfigWriter(gatedGraphQLWriter)
+		builder.SetBoilerConfigWriter(gatedGraphQLWriter)
+		builder.SetScheduleWriter(gatedGraphQLWriter)
 		builder.SetWatchSummaryProvider(newGraphQLWatchSummaryProvider(semanticPoller.shadow))
 	}
 	observeFirstFlags := ebusgateway.NormalizeObserveFirstFeatureFlags(
@@ -499,11 +505,17 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	var scheduleWriter mcp.ScheduleWriter
 	if semanticPoller != nil {
-		scheduleWriter = semanticPoller
+		scheduleWriter = admittedMCPScheduleWriter{
+			writer:   semanticPoller,
+			admitted: builder.AdmittedMutationSource,
+		}
 	}
 	var configWriter mcp.ConfigWriter
 	if semanticPoller != nil {
-		configWriter = &mcpConfigWriterAdapter{poller: semanticPoller}
+		configWriter = admittedMCPConfigWriter{
+			writer:   &mcpConfigWriterAdapter{poller: semanticPoller},
+			admitted: builder.AdmittedMutationSource,
+		}
 	}
 	var shadowCache *ebusgateway.ShadowCache
 	if semanticPoller != nil {

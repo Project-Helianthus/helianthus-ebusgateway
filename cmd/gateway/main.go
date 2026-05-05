@@ -856,6 +856,9 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 			return fmt.Errorf("invalid startup-source-override %q", value)
 		}
 		source := uint8(parsed)
+		if source == 0x00 {
+			return fmt.Errorf("invalid startup-source-override %q: source 0x00 is not a valid active initiator", value)
+		}
 		cfg.StartupSource.Source = &source
 		return nil
 	})

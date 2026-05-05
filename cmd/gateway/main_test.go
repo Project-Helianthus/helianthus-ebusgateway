@@ -85,6 +85,18 @@ func TestBindFlags_SourceAddrExplicitDisablesAuto(t *testing.T) {
 	}
 }
 
+func TestBindFlags_StartupSourceOverrideRejectsZero(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{"-startup-source-override", "0x00"}); err == nil {
+		t.Fatal("parse startup-source-override 0x00 succeeded; want error")
+	}
+	if cfg.StartupSource.Source != nil {
+		t.Fatalf("StartupSource.Source = %v; want nil after rejected zero override", *cfg.StartupSource.Source)
+	}
+}
+
 func TestBindFlags_StartupProbeTargets(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	fs := flag.NewFlagSet("gateway-test", flag.ContinueOnError)

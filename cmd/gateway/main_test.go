@@ -502,7 +502,7 @@ func TestRun_DoesNotAttachPassiveShadowProducerWhenObserveFirstMasterDisabled(t 
 	}
 }
 
-func TestRun_ProxySingleENSAutoUsesSameSemanticSourceAsStartupConfirmation(t *testing.T) {
+func TestRun_ProxySingleENSAutoUsesDefaultSelectionBeforeProxyResolution(t *testing.T) {
 	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
 	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
 	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
@@ -518,6 +518,7 @@ func TestRun_ProxySingleENSAutoUsesSameSemanticSourceAsStartupConfirmation(t *te
 	semanticAuto := make(chan bool, 1)
 	expectedStartupSource := make(chan byte, 1)
 	expectedStartupAuto := make(chan bool, 1)
+	startupTargets := make(chan []byte, 1)
 
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		return nil, nil, nil
@@ -526,6 +527,7 @@ func TestRun_ProxySingleENSAutoUsesSameSemanticSourceAsStartupConfirmation(t *te
 		resolved := resolveStartupScanSourceConfig(cfg)
 		expectedStartupSource <- resolved.ScanSource
 		expectedStartupAuto <- resolved.ScanSourceAuto
+		startupTargets <- append([]byte(nil), cfg.StartupProbeTargets...)
 		return startupScanSignals{}
 	}
 	startVaillantSemanticPollingFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.LiveSemanticProvider, _ *graphql.BroadcastHub, _ <-chan struct{}) *vaillantSemanticPoller {
@@ -556,14 +558,15 @@ func TestRun_ProxySingleENSAutoUsesSameSemanticSourceAsStartupConfirmation(t *te
 		done <- run(ctx, cfg)
 	}()
 
+	wantSource := byte(0x7F)
 	var gotSemanticSource byte
 	select {
 	case gotSemanticSource = <-semanticSource:
 	case <-time.After(2 * time.Second):
 		t.Fatal("semantic poller was not initialized")
 	}
-	if gotSemanticSource != proxyObserveFirstStartupSource {
-		t.Fatalf("semantic poller source = 0x%02X; want 0x%02X", gotSemanticSource, proxyObserveFirstStartupSource)
+	if gotSemanticSource != wantSource {
+		t.Fatalf("semantic poller source = 0x%02X; want default-selected source 0x%02X", gotSemanticSource, wantSource)
 	}
 
 	select {
@@ -591,6 +594,16 @@ func TestRun_ProxySingleENSAutoUsesSameSemanticSourceAsStartupConfirmation(t *te
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("startup confirmation auto flag was not observed")
+	}
+
+	select {
+	case got := <-startupTargets:
+		want := []byte{defaultVaillantTarget}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("startup probe targets = % X; want % X", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup probe targets were not observed")
 	}
 
 	select {

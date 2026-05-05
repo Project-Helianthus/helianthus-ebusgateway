@@ -246,8 +246,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}
 
 	var sourceSelection *protocol.SourceAddressSelection
-	resolvedStartupSource := resolveStartupScanSourceConfig(cfg)
-	if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && !overrideSet && cfg.ScanSourceAuto && resolvedStartupSource.ScanSource == 0x00 && !shouldStartPassiveObserveFirst(cfg) {
+	if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && !overrideSet && cfg.ScanSourceAuto && cfg.ScanSource == 0x00 && !shouldStartPassiveObserveFirst(cfg) {
 		result, err := ebusgateway.SelectDefaultStartupSourceAddress(ctx)
 		if err != nil {
 			log.Printf("startup admission degraded reason=source_selection_default_policy_failed err=%v", err)

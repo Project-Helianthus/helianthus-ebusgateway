@@ -71,6 +71,111 @@ func TestBusObservabilityStoreRecentRingEvictsOldestButCountersAdvance(t *testin
 	}
 }
 
+func TestBusObservabilityStoreRecordsSourceSelectionAdmissionStatus(t *testing.T) {
+	store := NewBusObservabilityStore(DefaultConfig())
+
+	if changed := store.RecordBusAdmissionTransition("active", 0x7F, 0x08, "active_probe_passed"); !changed {
+		t.Fatal("RecordBusAdmissionTransition changed = false; want true")
+	}
+
+	snapshot := store.Snapshot()
+	admission := snapshot.Summary.Status.BusAdmission
+	if admission == nil {
+		t.Fatal("BusAdmission = nil; want active admission")
+	}
+	if admission.State != "active" || admission.Source != 0x7F || admission.CompanionTarget != 0x08 || admission.Reason != "active_probe_passed" {
+		t.Fatalf("BusAdmission = %+v; want active 0x7F/0x08 active_probe_passed", admission)
+	}
+	selection := admission.SourceSelection
+	if selection == nil {
+		t.Fatal("BusAdmission.SourceSelection = nil; want nested source-selection status")
+	}
+	if selection.State != "active" ||
+		selection.Outcome != "active_probe_passed" ||
+		selection.SelectedSource == nil ||
+		*selection.SelectedSource != 0x7F ||
+		selection.CompanionTarget == nil ||
+		*selection.CompanionTarget != 0x08 ||
+		selection.ActiveProbe == nil ||
+		selection.ActiveProbe.Target == nil ||
+		*selection.ActiveProbe.Target != 0x08 ||
+		selection.ActiveProbe.Status != "active_probe_passed" ||
+		selection.Retryable ||
+		selection.AutomaticRetryScheduled {
+		t.Fatalf("SourceSelection = %+v; want active admitted source-selection status", selection)
+	}
+}
+
+func TestBusObservabilityStoreRefreshesAdmissionMetadataForStableState(t *testing.T) {
+	store := NewBusObservabilityStore(DefaultConfig())
+	window := NewAdmissionStabilityWindow(30)
+	base := time.Now().UTC()
+	window.now = func() time.Time { return base }
+	store.SetAdmissionStabilityWindow(window)
+
+	if changed := store.RecordBusAdmissionTransition("pending", 0x00, 0x00, "source_selection_warmup_in_progress"); changed {
+		t.Fatal("first pending observation changed = true; want stability window to hold emission")
+	}
+	if admission := store.Snapshot().Summary.Status.BusAdmission; admission != nil {
+		t.Fatalf("BusAdmission = %+v; want nil before pending state is stable", admission)
+	}
+
+	window.now = func() time.Time { return base.Add(31 * time.Second) }
+	if changed := store.RecordBusAdmissionTransition("pending", 0x00, 0x00, "source_selection_warmup_in_progress"); !changed {
+		t.Fatal("stable pending observation changed = false; want emitted pending state")
+	}
+
+	window.now = func() time.Time { return base.Add(32 * time.Second) }
+	if changed := store.RecordBusAdmissionTransition("pending", 0x7F, 0x08, "active_probe_pending"); !changed {
+		t.Fatal("same-state metadata refresh changed = false; want source-selection details refreshed")
+	}
+
+	admission := store.Snapshot().Summary.Status.BusAdmission
+	if admission == nil || admission.State != "pending" || admission.Source != 0x7F || admission.CompanionTarget != 0x08 || admission.Reason != "active_probe_pending" {
+		t.Fatalf("BusAdmission after metadata refresh = %+v; want pending 0x7F/0x08 active_probe_pending", admission)
+	}
+	selection := admission.SourceSelection
+	if selection == nil ||
+		selection.State != "pending" ||
+		selection.Outcome != "not_started" ||
+		selection.SelectedSource == nil ||
+		*selection.SelectedSource != 0x7F ||
+		selection.CompanionTarget == nil ||
+		*selection.CompanionTarget != 0x08 ||
+		selection.ActiveProbe == nil ||
+		selection.ActiveProbe.Target == nil ||
+		*selection.ActiveProbe.Target != 0x08 ||
+		selection.ActiveProbe.Status != "active_probe_pending" {
+		t.Fatalf("SourceSelection after metadata refresh = %+v; want pending source/companion active probe metadata", selection)
+	}
+}
+
+func TestBusObservabilityStoreRecordsDegradedSourceSelectionWithoutInventedRetry(t *testing.T) {
+	store := NewBusObservabilityStore(DefaultConfig())
+
+	if changed := store.RecordBusAdmissionTransition("degraded", 0xF7, 0xFC, "active_probe_failed"); !changed {
+		t.Fatal("RecordBusAdmissionTransition changed = false; want degraded admission")
+	}
+
+	admission := store.Snapshot().Summary.Status.BusAdmission
+	if admission == nil || admission.State != "degraded" || admission.Source != 0xF7 || admission.CompanionTarget != 0xFC || admission.Reason != "active_probe_failed" {
+		t.Fatalf("BusAdmission = %+v; want degraded 0xF7/0xFC active_probe_failed", admission)
+	}
+	selection := admission.SourceSelection
+	if selection == nil ||
+		selection.State != "degraded" ||
+		selection.Outcome != "operator_action_required" ||
+		selection.FailedSource == nil ||
+		*selection.FailedSource != 0xF7 ||
+		selection.SelectedSource != nil ||
+		selection.CompanionTarget == nil ||
+		*selection.CompanionTarget != 0xFC ||
+		selection.Retryable ||
+		selection.NextAction != "" {
+		t.Fatalf("SourceSelection = %+v; want degraded failure without invented retry semantics", selection)
+	}
+}
+
 func TestBusObservabilityStorePeriodicityBudgetEvictsLRU(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BroadcastListen = true

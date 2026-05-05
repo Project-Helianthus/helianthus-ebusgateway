@@ -135,7 +135,7 @@ func (store *BusObservabilityStore) RecordBusAdmissionTransition(state string, s
 	if store.admissionStabilityWindow != nil {
 		var flipped bool
 		emittedState, flipped = store.admissionStabilityWindow.Observe(state)
-		if !flipped {
+		if !flipped && (emittedState == "" || emittedState != state) {
 			return false
 		}
 	}
@@ -144,8 +144,70 @@ func (store *BusObservabilityStore) RecordBusAdmissionTransition(state string, s
 		Source:          source,
 		CompanionTarget: companionTarget,
 		Reason:          reason,
+		SourceSelection: busAdmissionSourceSelectionFromTransition(emittedState, source, companionTarget, reason),
 	}
 	return true
+}
+
+func busAdmissionSourceSelectionFromTransition(state string, source, companionTarget uint8, reason string) *BusAdmissionSourceSelection {
+	selection := &BusAdmissionSourceSelection{
+		State:   state,
+		Outcome: busAdmissionSourceSelectionOutcome(state, reason),
+		Reason:  reason,
+	}
+	if source != 0 {
+		if state == "degraded" {
+			selection.FailedSource = uint8Ptr(source)
+		} else {
+			selection.SelectedSource = uint8Ptr(source)
+		}
+		if state == "active" {
+			selection.LastSuccessfulSource = uint8Ptr(source)
+		}
+	}
+	if companionTarget != 0 {
+		selection.CompanionTarget = uint8Ptr(companionTarget)
+	}
+	if status := busAdmissionActiveProbeStatus(state, reason); status != "" {
+		selection.ActiveProbe = &BusAdmissionActiveProbe{
+			Target: selection.CompanionTarget,
+			Status: status,
+		}
+	}
+	return selection
+}
+
+func busAdmissionSourceSelectionOutcome(state, reason string) string {
+	switch reason {
+	case "active_probe_pending":
+		return "not_started"
+	case "active_probe_passed":
+		return "active_probe_passed"
+	case "source_selection_warmup_in_progress":
+		return "not_started"
+	}
+	if state == "active" {
+		return "active_probe_passed"
+	}
+	if state == "degraded" {
+		return "operator_action_required"
+	}
+	return "not_started"
+}
+
+func busAdmissionActiveProbeStatus(state, reason string) string {
+	switch reason {
+	case "active_probe_pending", "active_probe_passed", "active_probe_failed":
+		return reason
+	}
+	if state == "active" {
+		return "active_probe_passed"
+	}
+	return ""
+}
+
+func uint8Ptr(value uint8) *uint8 {
+	return &value
 }
 
 type BusMessageRecord struct {

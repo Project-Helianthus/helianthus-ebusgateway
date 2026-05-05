@@ -402,6 +402,7 @@ func mapGraphQLBusAdmission(admission *ebusgateway.BusAdmission) *graphql.BusAdm
 		Source:          admission.Source,
 		CompanionTarget: admission.CompanionTarget,
 		Reason:          admission.Reason,
+		SourceSelection: mapGraphQLBusAdmissionSourceSelection(admission.SourceSelection),
 	}
 }
 
@@ -415,6 +416,44 @@ func mapMCPBusAdmission(admission *ebusgateway.BusAdmission) *mcp.BusAdmission {
 		CompanionTarget: admission.CompanionTarget,
 		Reason:          admission.Reason,
 	}
+}
+
+func mapGraphQLBusAdmissionSourceSelection(selection *ebusgateway.BusAdmissionSourceSelection) *graphql.BusAdmissionSourceSelection {
+	if selection == nil {
+		return nil
+	}
+	out := &graphql.BusAdmissionSourceSelection{
+		State:                   selection.State,
+		Mode:                    selection.Mode,
+		Outcome:                 selection.Outcome,
+		Reason:                  selection.Reason,
+		SelectedSource:          cloneAdmissionUint8Ptr(selection.SelectedSource),
+		FailedSource:            cloneAdmissionUint8Ptr(selection.FailedSource),
+		CompanionTarget:         cloneAdmissionUint8Ptr(selection.CompanionTarget),
+		Retryable:               selection.Retryable,
+		NextAction:              selection.NextAction,
+		LastSuccessfulSource:    cloneAdmissionUint8Ptr(selection.LastSuccessfulSource),
+		AutomaticRetryScheduled: selection.AutomaticRetryScheduled,
+	}
+	if selection.ActiveProbe != nil {
+		out.ActiveProbe = &graphql.BusAdmissionActiveProbe{
+			Target: cloneAdmissionUint8Ptr(selection.ActiveProbe.Target),
+			Opcode: selection.ActiveProbe.Opcode,
+			Status: selection.ActiveProbe.Status,
+		}
+	}
+	if len(selection.RejectedCandidates) > 0 {
+		out.RejectedCandidates = make([]graphql.BusAdmissionRejectedCandidate, 0, len(selection.RejectedCandidates))
+		for _, candidate := range selection.RejectedCandidates {
+			out.RejectedCandidates = append(out.RejectedCandidates, graphql.BusAdmissionRejectedCandidate{
+				Source:             candidate.Source,
+				Reason:             candidate.Reason,
+				OccupancyState:     candidate.OccupancyState,
+				EvidenceProvenance: candidate.EvidenceProvenance,
+			})
+		}
+	}
+	return out
 }
 
 func mapGraphQLBusMessages(records []ebusgateway.BusMessageRecord) []graphql.BusMessage {
@@ -524,6 +563,14 @@ func cloneTimePtr(source *time.Time) *time.Time {
 	}
 	updatedAt := source.UTC()
 	return &updatedAt
+}
+
+func cloneAdmissionUint8Ptr(source *uint8) *uint8 {
+	if source == nil {
+		return nil
+	}
+	value := *source
+	return &value
 }
 
 func durationString(value time.Duration) string {

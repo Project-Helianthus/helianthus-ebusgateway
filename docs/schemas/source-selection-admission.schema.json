@@ -1,0 +1,206 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "docs/schemas/source-selection-admission.schema.json",
+  "title": "GraphQL Source Selection Admission Status",
+  "description": "HA-consumable schema artifact for busSummary.status.bus_admission.source_selection.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "busSummary"
+  ],
+  "properties": {
+    "busSummary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "bus_admission"
+          ],
+          "properties": {
+            "bus_admission": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": true,
+              "properties": {
+                "source_selection": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": false,
+                  "required": [
+                    "state",
+                    "retryable",
+                    "automatic_retry_scheduled"
+                  ],
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "active",
+                        "degraded"
+                      ]
+                    },
+                    "mode": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "default_policy",
+                        "source_description_constrained_policy",
+                        "priority_filtered_default_policy",
+                        "explicit_validate_only",
+                        null
+                      ]
+                    },
+                    "outcome": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "not_started",
+                        "active_probe_passed",
+                        "candidate_quarantined",
+                        "all_candidates_failed",
+                        "operator_action_required",
+                        null
+                      ]
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "selected_source": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 255
+                    },
+                    "failed_source": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 255
+                    },
+                    "companion_target": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 255
+                    },
+                    "active_probe": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "target": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0,
+                          "maximum": 255
+                        },
+                        "opcode": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "next_action": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "last_successful_source": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 255
+                    },
+                    "automatic_retry_scheduled": {
+                      "type": "boolean"
+                    },
+                    "rejected_candidates": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "source"
+                        ],
+                        "properties": {
+                          "source": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 255
+                          },
+                          "reason": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "occupancy_state": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "evidence_provenance": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

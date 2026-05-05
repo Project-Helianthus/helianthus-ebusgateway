@@ -123,7 +123,7 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 			t.Fatalf("NewInvokeHandler error = %v", err)
 		}
 
-		body := bytes.NewBufferString(`{"query":"{ busSummary { lastUpdatedAt messages { count capacity } status { lastUpdatedAt transportClass publisherCadenceSec publisherCadenceSource capability { activeSupported } busAdmission { state source companionTarget reason } startup { lastUpdatedAt phase cacheEpoch liveEpoch } featureFlags { lastUpdatedAt } } } busMessages(limit: 1) { count items { family sourceAddress targetAddress } } }"}`)
+		body := bytes.NewBufferString(`{"query":"{ busSummary { lastUpdatedAt messages { count capacity } status { lastUpdatedAt transportClass publisherCadenceSec publisherCadenceSource capability { activeSupported } busAdmission { state source companionTarget reason } bus_admission { source_selection { state outcome selected_source companion_target reason active_probe { target status } retryable automatic_retry_scheduled next_action } } startup { lastUpdatedAt phase cacheEpoch liveEpoch } featureFlags { lastUpdatedAt } } } busMessages(limit: 1) { count items { family sourceAddress targetAddress } } }"}`)
 		req := httptest.NewRequest(http.MethodPost, cfg.GraphQLPath, body)
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -155,6 +155,22 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 							CompanionTarget int    `json:"companionTarget"`
 							Reason          string `json:"reason"`
 						} `json:"busAdmission"`
+						BusAdmissionSnake struct {
+							SourceSelection struct {
+								State           string `json:"state"`
+								Outcome         string `json:"outcome"`
+								SelectedSource  int    `json:"selected_source"`
+								CompanionTarget int    `json:"companion_target"`
+								Reason          string `json:"reason"`
+								ActiveProbe     struct {
+									Target int    `json:"target"`
+									Status string `json:"status"`
+								} `json:"active_probe"`
+								Retryable               bool   `json:"retryable"`
+								AutomaticRetryScheduled bool   `json:"automatic_retry_scheduled"`
+								NextAction              string `json:"next_action"`
+							} `json:"source_selection"`
+						} `json:"bus_admission"`
 						Startup struct {
 							LastUpdatedAt string `json:"lastUpdatedAt"`
 							Phase         string `json:"phase"`
@@ -203,6 +219,19 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 			response.Data.BusSummary.Status.BusAdmission.CompanionTarget != 0x08 ||
 			response.Data.BusSummary.Status.BusAdmission.Reason != "active_probe_passed" {
 			t.Fatalf("busSummary.status.busAdmission = %+v; want active admitted source", response.Data.BusSummary.Status.BusAdmission)
+		}
+		sourceSelection := response.Data.BusSummary.Status.BusAdmissionSnake.SourceSelection
+		if sourceSelection.State != "active" ||
+			sourceSelection.Outcome != "active_probe_passed" ||
+			sourceSelection.SelectedSource != 0x7F ||
+			sourceSelection.CompanionTarget != 0x08 ||
+			sourceSelection.Reason != "active_probe_passed" ||
+			sourceSelection.ActiveProbe.Target != 0x08 ||
+			sourceSelection.ActiveProbe.Status != "active_probe_passed" ||
+			sourceSelection.Retryable ||
+			sourceSelection.AutomaticRetryScheduled ||
+			sourceSelection.NextAction != "" {
+			t.Fatalf("busSummary.status.bus_admission.source_selection = %+v; want active admitted source-selection parity", sourceSelection)
 		}
 		if response.Data.BusSummary.Status.Startup.Phase != string(graphql.SemanticStartupPhaseBootInit) {
 			t.Fatalf("busSummary.status.startup.phase = %q; want BOOT_INIT", response.Data.BusSummary.Status.Startup.Phase)

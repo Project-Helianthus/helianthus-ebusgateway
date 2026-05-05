@@ -1,0 +1,44 @@
+type Query {
+  busSummary: BusSummary
+}
+
+type BusSummary {
+  status: BusObservabilityStatus
+}
+
+type BusObservabilityStatus {
+  bus_admission: BusAdmission
+}
+
+type BusAdmission {
+  source_selection: BusAdmissionSourceSelection
+}
+
+type BusAdmissionSourceSelection {
+  state: String!
+  mode: String
+  outcome: String
+  reason: String
+  selected_source: Int
+  failed_source: Int
+  companion_target: Int
+  active_probe: BusAdmissionActiveProbe
+  retryable: Boolean!
+  next_action: String
+  last_successful_source: Int
+  automatic_retry_scheduled: Boolean!
+  rejected_candidates: [BusAdmissionRejectedCandidate!]
+}
+
+type BusAdmissionActiveProbe {
+  target: Int
+  opcode: String
+  status: String
+}
+
+type BusAdmissionRejectedCandidate {
+  source: Int!
+  reason: String
+  occupancy_state: String
+  evidence_provenance: String
+}

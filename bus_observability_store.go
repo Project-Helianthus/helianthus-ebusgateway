@@ -751,10 +751,19 @@ func (store *BusObservabilityStore) recordEvidenceFromEventLocked(event PassiveC
 }
 
 // isPassiveEvidenceCandidate reports whether addr is a valid candidate
-// for the runtime promotion pipeline. Filters out the gateway's own
-// admitted source, broadcast (0xFE), SYN (0xAA), the broadcast
-// destination class (0xFF), and the initiator-pre-arbitration range
-// (<0x03) per Vaillant / eBUS conventions.
+// for the runtime promotion pipeline. Filters out:
+//
+//   - the gateway's own admitted source (self-traffic),
+//   - broadcast (0xFE), SYN (0xAA), the broadcast destination class
+//     (0xFF),
+//   - the initiator pre-arbitration range (<0x03),
+//   - initiator-capable addresses per the eBUS address table
+//     (e.g. 0x10, 0x31, 0x71, 0xF0). These are SOURCES; they do not
+//     respond to active probes as targets. The same filter is
+//     applied at the active-probe entry points
+//     (sanitizeStartupProbeTargets / parseStartupProbeTargets), so
+//     applying it here keeps the passive-evidence path consistent
+//     with the rest of the gateway.
 func isPassiveEvidenceCandidate(addr, admittedSource byte) bool {
 	if addr == 0x00 || addr == 0xAA || addr == 0xFE || addr == 0xFF {
 		return false
@@ -763,6 +772,9 @@ func isPassiveEvidenceCandidate(addr, admittedSource byte) bool {
 		return false
 	}
 	if admittedSource != 0 && addr == admittedSource {
+		return false
+	}
+	if protocol.IsInitiatorCapableAddress(addr) {
 		return false
 	}
 	return true

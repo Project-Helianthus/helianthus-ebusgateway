@@ -203,15 +203,31 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	gateway.Start(ctx)
 
+	builder := graphql.NewBuilder(gateway.Registry, nil)
+
 	// Phase A.5 runtime wire-up: AddressTable + AddressTableInserter consume
 	// the PassiveTransactionReconstructor's classified events to insert
 	// passively-observed addresses (e.g. NETX3 0xF6/0x04, SOL00 0xEC) into
 	// the registry as passive_observed/corroborated_pending. The inserter is
 	// idle until subscribeAddressTableInserter binds it to the reconstructor.
+	//
+	// Inject a live AdmittedSource closure tied to builder.AdmittedMutationSource
+	// — the same pattern PassiveDiscoveryPromoter uses below. This is critical
+	// because cfg.ScanSource may be mutated by source-selection later in run();
+	// a static cfg.ScanSource snapshot here would let the inserter mistake the
+	// gateway's own admitted source for a third-party initiator after auto-
+	// selection, corrupting passive_observed metadata. (Codex P2 from PR #565
+	// review.)
+	addressTableCfg := cfg
+	addressTableCfg.AdmittedSource = func() byte {
+		source, ok := builder.AdmittedMutationSource()
+		if !ok {
+			return 0
+		}
+		return source
+	}
 	addressTable := ebusgateway.NewAddressTable(gateway.Registry)
-	addressTableInserter := ebusgateway.NewAddressTableInserter(addressTable, cfg)
-
-	builder := graphql.NewBuilder(gateway.Registry, nil)
+	addressTableInserter := ebusgateway.NewAddressTableInserter(addressTable, addressTableCfg)
 	if busObservability != nil {
 		builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(busObservability))
 	}

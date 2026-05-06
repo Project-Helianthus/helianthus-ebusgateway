@@ -46,14 +46,14 @@ func (i *AddressTableInserter) OnPassiveClassifiedEvent(event PassiveClassifiedE
 	}
 
 	if srcAddr == 0xFF {
-		i.maybeInsert(0xFF, "master", admittedSrc, event.ObservedAt)
+		i.maybeInsert(0xFF, "initiator", admittedSrc, event.ObservedAt)
 		return
 	}
 	if srcAddr == admittedSrc {
 		return
 	}
 
-	i.maybeInsert(dstAddr, "slave", admittedSrc, event.ObservedAt)
+	i.maybeInsert(dstAddr, "target", admittedSrc, event.ObservedAt)
 	observation := i.observationsByAddr[srcAddr]
 	observation.PositiveACKCount++
 	i.observationsByAddr[srcAddr] = observation
@@ -62,7 +62,7 @@ func (i *AddressTableInserter) OnPassiveClassifiedEvent(event PassiveClassifiedE
 		return
 	}
 	if companion, ok := protocol.Companion(srcAddr); ok {
-		i.maybeInsert(companion, "slave", admittedSrc, event.ObservedAt)
+		i.maybeInsert(companion, "target", admittedSrc, event.ObservedAt)
 	}
 }
 
@@ -93,9 +93,9 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		registrySlot.DiscoverySource = registry.DiscoverySourcePassiveObserved
 		registrySlot.VerificationState = registry.VerificationStateCorroborated
 		switch role {
-		case "master":
+		case "initiator":
 			registrySlot.Role = registry.SlotRoleMaster
-		case "slave":
+		case "target":
 			registrySlot.Role = registry.SlotRoleSlave
 		}
 		if registrySlot.FirstObservedAt.IsZero() {

@@ -6533,15 +6533,7 @@ func parseB524ReadPayload(payload []byte, opcode, group, instance byte, addr uin
 // header-only responses (no value bytes) as coherent — the device returned a
 // valid B524 structure which proves capability.
 func isB524ProbeCoherent(payload []byte, group byte, addr uint16) bool {
-	if len(payload) < 4 {
-		return false
-	}
-	if len(payload) >= 5 {
-		if payload[2] == group && (uint16(payload[3])|uint16(payload[4])<<8) == addr {
-			return true
-		}
-	}
-	return payload[1] == group && (uint16(payload[2])|uint16(payload[3])<<8) == addr
+	return ebusgateway.IsB524ResponseCoherent(payload, group, addr)
 }
 
 // probeB524Register sends a single B524 read request to target and checks
@@ -6750,6 +6742,40 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 		addrs[i] = fmt.Sprintf("0x%02x", c)
 	}
 	return 0, fmt.Errorf("gateway.discoverB524Root: no coherent responder among [%s]", strings.Join(addrs, ", "))
+}
+
+// ConfirmB524Coherent runs the multi-register B524 capability probe
+// against target and returns true if every probe responds coherently.
+// Used by the runtime passive-promotion pipeline to validate that a
+// candidate address discovered via passive evidence actually
+// implements the Vaillant extended-register protocol before
+// registering it. The probe sources from the poller's admitted
+// source — source-address invariant is preserved.
+func (p *vaillantSemanticPoller) ConfirmB524Coherent(ctx context.Context, target byte) bool {
+	if p == nil {
+		return false
+	}
+	probeFn := p.b524ProbeFn
+	if probeFn == nil {
+		probeFn = p.probeB524Register
+	}
+	for _, probe := range b524CapabilityProbes {
+		if !probeFn(ctx, target, probe.opcode, probe.group, probe.instance, probe.addr) {
+			return false
+		}
+	}
+	return true
+}
+
+// EnqueueDiscoveryRefresh signals the semantic poller to re-run
+// discovery on the next available task slot. Used by the passive-
+// promotion pipeline after a late-arrival candidate is registered,
+// so the regulator surface populates without a gateway restart.
+func (p *vaillantSemanticPoller) EnqueueDiscoveryRefresh() {
+	if p == nil {
+		return
+	}
+	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
 }
 
 // registerStructuralControllerIfMissing registers a minimal Vaillant

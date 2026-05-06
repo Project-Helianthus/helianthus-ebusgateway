@@ -5163,6 +5163,69 @@ func TestCapabilityFirstDiscovery_StructuralFallbackSkipsAdmittedCompanion(t *te
 	}
 }
 
+// TestCapabilityFirstDiscovery_DropsAdmittedSourceFromRegistryCandidates closes
+// Codex PR #560 P2 finding: when the admitted source is already in the
+// registry (e.g. preload imported it), the registry-iteration pass would
+// add it to candidates and bypass the structural-augmentation guard.
+// The unified filter must drop it regardless of how it entered.
+func TestCapabilityFirstDiscovery_DropsAdmittedSourceFromRegistryCandidates(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	// Preload contains the configured source address.
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+
+	var probed []byte
+	poller := newTestPoller(reg)
+	poller.source = 0x15
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: true, 0x15: true}, &probed)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v", err)
+	}
+	if addr != 0x08 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x08 (0x15 dropped — admitted source)", addr)
+	}
+	for _, p := range probed {
+		if p == 0x15 {
+			t.Fatalf("self-directed probe issued via registry-derived candidate: 0x15 was probed but is admitted source. probed=%v", probed)
+		}
+	}
+}
+
+// TestCapabilityFirstDiscovery_DropsAdmittedCompanionFromRegistryCandidates
+// closes the registry-side companion guard hole identified by Codex.
+func TestCapabilityFirstDiscovery_DropsAdmittedCompanionFromRegistryCandidates(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	// Registry preload includes the companion target.
+	reg.Register(registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"})
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+
+	var probed []byte
+	poller := newTestPoller(reg)
+	poller.source = 0x7F
+	poller.companion = 0x26 // companion reserved for the gateway
+
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x15: true, 0x26: true}, &probed)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v", err)
+	}
+	if addr != 0x15 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x15 (0x26 dropped — admitted companion)", addr)
+	}
+	for _, p := range probed {
+		if p == 0x26 {
+			t.Fatalf("companion-targeted probe issued via registry-derived candidate: 0x26 was probed. probed=%v", probed)
+		}
+	}
+}
+
 // TestRefreshDiscovery_RecomputesRegulatorCapabilityAfterStructuralRegistration
 // pins the capability-recompute fix (Codex PR #560 P2 re-review): when
 // refreshDiscovery's discoverB524Root succeeds via the structural-

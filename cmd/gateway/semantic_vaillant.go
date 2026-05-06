@@ -6665,6 +6665,25 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 		probeFn = p.probeB524Register
 	}
 
+	// Source-address invariant applies uniformly across both
+	// candidate entry points (registry iteration AND structural
+	// fallback). A configured source / companion target that happens
+	// to be already present in the registry — e.g. an ebusd preload
+	// imports 0x26 before semantic discovery runs, or a prior
+	// session left the companion address registered — would otherwise
+	// bypass the structural-augmentation guard via the dedup map and
+	// be probed unicast. The shared filter ensures any candidate
+	// matching the admitted source or companion is dropped regardless
+	// of how it entered the candidate set.
+	skipReservedSourceCompanion := func(addr byte) bool {
+		if addr == p.source {
+			return true
+		}
+		if p.companion != 0 && addr == p.companion {
+			return true
+		}
+		return false
+	}
 	candidateSet := make(map[byte]struct{})
 	var candidates []byte
 	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
@@ -6672,6 +6691,9 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 			return true
 		}
 		addr := entry.Address()
+		if skipReservedSourceCompanion(addr) {
+			return true
+		}
 		if _, dup := candidateSet[addr]; !dup {
 			candidateSet[addr] = struct{}{}
 			candidates = append(candidates, addr)
@@ -6684,23 +6706,7 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 			if _, dup := candidateSet[addr]; dup {
 				continue
 			}
-			// Source/companion invariant: a structural target that
-			// matches the admitted source would produce a self-
-			// directed unicast probe (probeB524Register builds a
-			// frame with Source=p.source, Target=addr). When an
-			// explicit source configuration admits 0x15 (or the
-			// source-selection result lands on 0x15), the regulator
-			// must not be self-probed. Likewise the admitted
-			// companion target — under source-selection a companion
-			// of 0x26 is reserved for the gateway; probing it would
-			// pre-empt the source-selection arbitration partner.
-			// The startup probe path sanitizes via
-			// sanitizeStartupProbeTargets(... source, companion);
-			// this entry point must apply the same guard.
-			if addr == p.source {
-				continue
-			}
-			if p.companion != 0 && addr == p.companion {
+			if skipReservedSourceCompanion(addr) {
 				continue
 			}
 			candidateSet[addr] = struct{}{}

@@ -314,6 +314,56 @@ func TestPassiveDiscoveryPromoter_CoalesceSemanticRefreshPerTick(t *testing.T) {
 	}
 }
 
+// TestPassiveDiscoveryPromoter_GatesProbesOnAdmittedSource pins the
+// source-admission invariant from Codex PR #561 review: while admission
+// is pending (admittedSource == 0) the promoter MUST NOT issue active
+// confirmation probes. The confirmFn sources from the semantic
+// poller's configured source, which is set even before admission
+// completes; running confirmations during the pending window would
+// emit gateway-originated traffic that the admission FSM has not yet
+// approved.
+func TestPassiveDiscoveryPromoter_GatesProbesOnAdmittedSource(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	buf, _ := NewEvidenceBuffer(128, VaillantBaselineTopologySeed)
+	buf.Record(EvidenceRecord{Address: 0x15, Strength: EvidenceStrong, Observed: time.Now(), Kind: "test"})
+
+	confirmCalls := 0
+	admittedSource := byte(0) // admission pending
+
+	promoter, _ := NewPassiveDiscoveryPromoter(PassiveDiscoveryPromoterOptions{
+		Registry:       reg,
+		EvidenceBuffer: buf,
+		ConfirmFn: func(_ context.Context, _ byte) bool {
+			confirmCalls++
+			return true
+		},
+		AdmittedSourceFn: func() byte { return admittedSource },
+		TickInterval:     1 * time.Millisecond,
+		Now:              time.Now,
+	})
+
+	// Tick 1: admission still pending. No probes should fire.
+	promoter.processOnce(context.Background())
+	if confirmCalls != 0 {
+		t.Fatalf("confirm called %d times while admission pending; admission gate violated", confirmCalls)
+	}
+	if registryContains(reg, 0x15) {
+		t.Fatal("registry mutated while admission pending; promotion side effects must defer until admission resolves")
+	}
+
+	// Tick 2: admission resolves. Probe + register should fire.
+	admittedSource = 0x71
+	promoter.processOnce(context.Background())
+	if confirmCalls != 1 {
+		t.Fatalf("confirm called %d times after admission active; want 1", confirmCalls)
+	}
+	if !registryContains(reg, 0x15) {
+		t.Fatal("post-admission registration did not occur")
+	}
+}
+
 // TestPassiveDiscoveryPromoter_BackoffOnRepeatedFailure pins the
 // rate-limiting contract: a per-address attempt that fails extends
 // the next-attempt deadline; back-to-back ticks must not retry until

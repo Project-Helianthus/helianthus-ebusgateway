@@ -193,6 +193,18 @@ func (p *PassiveDiscoveryPromoter) Run(ctx context.Context) {
 // processOnce runs a single tick of the promotion loop. Public for
 // testing — production callers use Run.
 //
+// Source-admission gate: when no source has been admitted (admission
+// still pending in source-selection mode, or in degraded state after
+// active_probe_failed), the promoter MUST NOT issue active
+// confirmation probes. The downstream confirmFn sources from the
+// semantic poller's configured source, which is set even before
+// admission completes. Issuing probes while admission is unresolved
+// violates the source-admission invariant — admission gates ALL
+// gateway-originated active traffic, including this pipeline. The
+// gate yields the tick (no candidates probed); the next tick re-
+// evaluates admission state. Evidence keeps accumulating in the
+// buffer regardless.
+//
 // Per-candidate deadline: each confirmation runs under a derived
 // context capped at tickInterval/2, so one slow / non-responsive
 // candidate cannot starve subsequent candidates within the same tick
@@ -214,6 +226,12 @@ func (p *PassiveDiscoveryPromoter) processOnce(ctx context.Context) {
 	}
 	now := p.now()
 	admittedSource := p.admittedSourceFn()
+	if admittedSource == 0 {
+		// Source admission is pending or has degraded. Defer all
+		// active confirmation until admission resolves; evidence
+		// keeps accumulating in the buffer for the next tick.
+		return
+	}
 	candidates := p.evidenceBuf.PromotedAddresses()
 	confirmedThisTick := 0
 	perCandidateTimeout := p.tickInterval / 2

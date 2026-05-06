@@ -1007,46 +1007,6 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return admission.SourceSelection, nil
 				},
 			},
-			"state": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.String),
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					admission, ok := busAdmissionFromSource(params.Source)
-					if !ok {
-						return "", nil
-					}
-					return admission.State, nil
-				},
-			},
-			"source": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.Int),
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					admission, ok := busAdmissionFromSource(params.Source)
-					if !ok {
-						return 0, nil
-					}
-					return int(admission.Source), nil
-				},
-			},
-			"companionTarget": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.Int),
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					admission, ok := busAdmissionFromSource(params.Source)
-					if !ok {
-						return 0, nil
-					}
-					return int(admission.CompanionTarget), nil
-				},
-			},
-			"reason": &graphqlgo.Field{
-				Type: graphqlgo.String,
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					admission, ok := busAdmissionFromSource(params.Source)
-					if !ok || admission.Reason == "" {
-						return nil, nil
-					}
-					return admission.Reason, nil
-				},
-			},
 		},
 	})
 
@@ -1149,20 +1109,6 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 						return BusObservabilityDegraded{}, nil
 					}
 					return value.Degraded, nil
-				},
-			},
-			"busAdmission": &graphqlgo.Field{
-				Type: busAdmissionType,
-				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
-					status, ok := params.Source.(*BusObservabilityStatus)
-					if ok && status != nil {
-						return status.BusAdmission, nil
-					}
-					value, ok := params.Source.(BusObservabilityStatus)
-					if !ok {
-						return nil, nil
-					}
-					return value.BusAdmission, nil
 				},
 			},
 			"bus_admission": &graphqlgo.Field{

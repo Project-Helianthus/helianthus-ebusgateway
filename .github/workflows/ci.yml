@@ -14,6 +14,7 @@ jobs:
             echo "Found legacy terminology."
             exit 1
           fi
+      - run: python3 scripts/source_selection_m4_gate.py
 
   build:
     runs-on: ubuntu-latest
@@ -65,7 +66,9 @@ jobs:
           python-version: '3.11'
       - run: go test -race -count=1 ./...
       - run: python3 scripts/passive_canary_verifier_test.py
+      - run: python3 scripts/source_selection_m4_gate_test.py
       - run: python3 scripts/transport_gate_test.py
+      - run: python3 scripts/passive_smoke_gate_test.py
 
   lint:
     runs-on: ubuntu-latest

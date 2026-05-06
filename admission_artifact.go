@@ -10,24 +10,28 @@ import (
 	"time"
 )
 
-// AdmissionArtifact is the machine-readable summary emitted at the end
-// of the startup admission + discovery window per plan §M7.
-type AdmissionArtifact struct {
-	Admission AdmissionArtifactAdmission `json:"admission"`
-	Discovery AdmissionArtifactDiscovery `json:"discovery"`
+// SourceSelectionArtifact is the machine-readable summary emitted at the end
+// of the startup source-selection + discovery window per plan §M7.
+type SourceSelectionArtifact struct {
+	Admission SourceSelectionArtifactAdmission `json:"admission"`
+	Discovery SourceSelectionArtifactDiscovery `json:"discovery"`
 }
 
-type AdmissionArtifactAdmission struct {
-	State                 string  `json:"state"`
-	Source                uint8   `json:"source"`
-	CompanionTarget       uint8   `json:"companion_target"`
-	WarmupDurationS       float64 `json:"warmup_duration_s"`
-	ReasonIfDegraded      string  `json:"reason_if_degraded"`
-	TransportKind         string  `json:"transport_kind"`
-	AdmissionPathSelected string  `json:"admission_path_selected"`
+type SourceSelectionArtifactAdmission struct {
+	State            string                                 `json:"state"`
+	Source           uint8                                  `json:"source"`
+	CompanionTarget  uint8                                  `json:"companion_target"`
+	WarmupDurationS  float64                                `json:"warmup_duration_s"`
+	ReasonIfDegraded string                                 `json:"reason_if_degraded"`
+	TransportKind    string                                 `json:"transport_kind"`
+	SourceSelection  SourceSelectionArtifactSourceSelection `json:"source_selection"`
 }
 
-type AdmissionArtifactDiscovery struct {
+type SourceSelectionArtifactSourceSelection struct {
+	Mode string `json:"mode"`
+}
+
+type SourceSelectionArtifactDiscovery struct {
 	WireBytes                            int            `json:"wire_bytes"`
 	WindowS                              float64        `json:"window_s"`
 	StartupBurstPct                      float64        `json:"startup_burst_pct"`
@@ -37,11 +41,11 @@ type AdmissionArtifactDiscovery struct {
 	PerBaselineAddressEvidenceCounts     map[string]int `json:"per_baseline_address_evidence_counts"`
 }
 
-// AdmissionArtifactBuilder aggregates runtime events over the startup
-// window and produces the final AdmissionArtifact on Emit.
-type AdmissionArtifactBuilder struct {
+// SourceSelectionArtifactBuilder aggregates runtime events over the startup
+// window and produces the final SourceSelectionArtifact on Emit.
+type SourceSelectionArtifactBuilder struct {
 	mu        sync.Mutex
-	artifact  AdmissionArtifact
+	artifact  SourceSelectionArtifact
 	startedAt time.Time
 	emitOnce  uint32 // CAS guard for EmitToFile
 	// baselineEvidenceProvider is called immediately before Emit/EmitToFile
@@ -59,39 +63,41 @@ type AdmissionArtifactBuilder struct {
 // per_baseline_address_evidence_counts was unconditionally empty in the
 // emitted artifact even when the registry observed traffic to baseline
 // addresses.
-func (b *AdmissionArtifactBuilder) SetBaselineEvidenceProvider(provider func() map[string]int) {
+func (b *SourceSelectionArtifactBuilder) SetBaselineEvidenceProvider(provider func() map[string]int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.baselineEvidenceProvider = provider
 }
 
-func NewAdmissionArtifactBuilder(transportKind string) *AdmissionArtifactBuilder {
-	return &AdmissionArtifactBuilder{
+func NewSourceSelectionArtifactBuilder(transportKind string) *SourceSelectionArtifactBuilder {
+	return &SourceSelectionArtifactBuilder{
 		startedAt: time.Now(),
-		artifact: AdmissionArtifact{
-			Admission: AdmissionArtifactAdmission{
-				TransportKind:         transportKind,
-				State:                 "pending",
-				AdmissionPathSelected: "degraded_no_events",
+		artifact: SourceSelectionArtifact{
+			Admission: SourceSelectionArtifactAdmission{
+				TransportKind: transportKind,
+				State:         "pending",
+				SourceSelection: SourceSelectionArtifactSourceSelection{
+					Mode: "degraded_no_events",
+				},
 			},
-			Discovery: AdmissionArtifactDiscovery{
+			Discovery: SourceSelectionArtifactDiscovery{
 				PerBaselineAddressEvidenceCounts: make(map[string]int),
 			},
 		},
 	}
 }
 
-func (b *AdmissionArtifactBuilder) SetAdmissionPathSelected(v string) error {
-	if err := ValidateAdmissionPathSelected(v); err != nil {
+func (b *SourceSelectionArtifactBuilder) SetSourceSelectionMode(v string) error {
+	if err := ValidateSourceSelectionMode(v); err != nil {
 		return err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.artifact.Admission.AdmissionPathSelected = v
+	b.artifact.Admission.SourceSelection.Mode = v
 	return nil
 }
 
-func (b *AdmissionArtifactBuilder) SetSourceSelection(source, companionTarget uint8, warmupDuration time.Duration) {
+func (b *SourceSelectionArtifactBuilder) SetSourceSelection(source, companionTarget uint8, warmupDuration time.Duration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.artifact.Admission.Source = source
@@ -99,66 +105,61 @@ func (b *AdmissionArtifactBuilder) SetSourceSelection(source, companionTarget ui
 	b.artifact.Admission.WarmupDurationS = warmupDuration.Seconds()
 }
 
-func (b *AdmissionArtifactBuilder) SetSourceSelectionActive() {
+func (b *SourceSelectionArtifactBuilder) SetSourceSelectionActive() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.artifact.Admission.State = "active"
 }
 
-func (b *AdmissionArtifactBuilder) SetOverrideSource(source uint8) {
+func (b *SourceSelectionArtifactBuilder) SetExplicitSource(source uint8) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.artifact.Admission.Source = source
 }
 
-// SetActiveOverride flips Admission.State to "active" and records the
-// override Source. Used by the override path (AD09 (c2) soft short-
-// circuit) where the override source is in use from the first active
-// frame regardless of source-address selector outcome — so the artifact must reflect
-// state="active", not the default "pending". Found by AD20 second-
-// reviewer M7 pass: the prior code path emitted state=pending on
-// override which was misleading to operators.
-func (b *AdmissionArtifactBuilder) SetActiveOverride(source uint8) {
+// SetActiveExplicitSource flips Admission.State to "active" and records the
+// explicit Source used from the first active frame.
+func (b *SourceSelectionArtifactBuilder) SetActiveExplicitSource(source uint8) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.artifact.Admission.State = "active"
 	b.artifact.Admission.Source = source
 }
 
-func (b *AdmissionArtifactBuilder) SetDegraded(reason string) {
+func (b *SourceSelectionArtifactBuilder) SetDegraded(reason string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.artifact.Admission.State = "degraded"
 	b.artifact.Admission.ReasonIfDegraded = reason
 }
 
-func (b *AdmissionArtifactBuilder) RecordProbe(wireBytes int) {
+func (b *SourceSelectionArtifactBuilder) RecordProbe(wireBytes int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.artifact.Discovery.WireBytes += wireBytes
 	b.artifact.Discovery.ProbeCount++
 }
 
-func (b *AdmissionArtifactBuilder) SetPromotedSuspects(n int) {
+func (b *SourceSelectionArtifactBuilder) SetPromotedSuspects(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.artifact.Discovery.PromotedSuspectsWithoutIdentity = n
 }
 
-func (b *AdmissionArtifactBuilder) SetPostStartupSustainedRateProbesPer15s(rate float64) {
+func (b *SourceSelectionArtifactBuilder) SetPostStartupSustainedRateProbesPer15s(rate float64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.artifact.Discovery.PostStartupSustainedRateProbesPer15s = rate
 }
 
-func (b *AdmissionArtifactBuilder) RecordBaselineEvidence(address uint8, count int) {
+func (b *SourceSelectionArtifactBuilder) RecordBaselineEvidence(address uint8, count int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	key := fmt.Sprintf("%02X", address)
 	b.artifact.Discovery.PerBaselineAddressEvidenceCounts[key] = count
 }
 
-func (b *AdmissionArtifactBuilder) Emit() (AdmissionArtifact, []byte, error) {
+func (b *SourceSelectionArtifactBuilder) Emit() (SourceSelectionArtifact, []byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	windowS := time.Since(b.startedAt).Seconds()
@@ -173,7 +174,7 @@ func (b *AdmissionArtifactBuilder) Emit() (AdmissionArtifact, []byte, error) {
 	}
 	data, err := json.MarshalIndent(b.artifact, "", "  ")
 	if err != nil {
-		return AdmissionArtifact{}, nil, err
+		return SourceSelectionArtifact{}, nil, err
 	}
 	return b.artifact, data, nil
 }
@@ -185,7 +186,7 @@ func (b *AdmissionArtifactBuilder) Emit() (AdmissionArtifact, []byte, error) {
 // canonical 60s window snapshot with later state.
 //
 // To re-arm the builder for a new window, call ResetEmitOnce.
-func (b *AdmissionArtifactBuilder) EmitToFile(path string) error {
+func (b *SourceSelectionArtifactBuilder) EmitToFile(path string) error {
 	if !atomic.CompareAndSwapUint32(&b.emitOnce, 0, 1) {
 		return nil
 	}
@@ -204,6 +205,6 @@ func (b *AdmissionArtifactBuilder) EmitToFile(path string) error {
 
 // ResetEmitOnce re-arms EmitToFile so the next call will write again.
 // Used by tests; production callers should not need this.
-func (b *AdmissionArtifactBuilder) ResetEmitOnce() {
+func (b *SourceSelectionArtifactBuilder) ResetEmitOnce() {
 	atomic.StoreUint32(&b.emitOnce, 0)
 }

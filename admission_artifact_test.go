@@ -7,10 +7,10 @@ import (
 	"time"
 )
 
-func TestAdmissionArtifact_EmitValidatesAgainstSchema(t *testing.T) {
-	builder := NewAdmissionArtifactBuilder("ens")
+func TestSourceSelectionArtifact_EmitValidatesAgainstSchema(t *testing.T) {
+	builder := NewSourceSelectionArtifactBuilder("ens")
 	builder.startedAt = time.Now().Add(-60 * time.Second)
-	if err := builder.SetAdmissionPathSelected("source_selection"); err != nil {
+	if err := builder.SetSourceSelectionMode("source_selection"); err != nil {
 		t.Fatal(err)
 	}
 	builder.SetSourceSelection(0x71, 0x08, 5*time.Second)
@@ -26,14 +26,14 @@ func TestAdmissionArtifact_EmitValidatesAgainstSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	validateAdmissionArtifactAgainstSchema(t, data)
+	validateSourceSelectionArtifactAgainstSchema(t, data)
 
-	var reparsed AdmissionArtifact
+	var reparsed SourceSelectionArtifact
 	if err := json.Unmarshal(data, &reparsed); err != nil {
 		t.Fatalf("reparse artifact: %v", err)
 	}
-	if reparsed.Admission.AdmissionPathSelected != "source_selection" {
-		t.Fatalf("admission_path_selected=%q", reparsed.Admission.AdmissionPathSelected)
+	if reparsed.Admission.SourceSelection.Mode != "source_selection" {
+		t.Fatalf("source_selection.mode=%q", reparsed.Admission.SourceSelection.Mode)
 	}
 	if reparsed.Admission.State != "active" {
 		t.Fatalf("state=%q", reparsed.Admission.State)
@@ -43,21 +43,21 @@ func TestAdmissionArtifact_EmitValidatesAgainstSchema(t *testing.T) {
 	}
 }
 
-func TestAdmissionArtifact_BadAdmissionPathRejected(t *testing.T) {
-	builder := NewAdmissionArtifactBuilder("enh")
-	err := builder.SetAdmissionPathSelected("bogus")
+func TestSourceSelectionArtifact_BadModeRejected(t *testing.T) {
+	builder := NewSourceSelectionArtifactBuilder("enh")
+	err := builder.SetSourceSelectionMode("bogus")
 	if err == nil {
-		t.Fatal("expected invalid admission_path_selected to fail")
+		t.Fatal("expected invalid source_selection.mode to fail")
 	}
 	if !strings.HasPrefix(err.Error(), "FATAL:") {
 		t.Fatalf("unexpected error %q", err)
 	}
 }
 
-func TestAdmissionArtifact_WireLoadMath(t *testing.T) {
-	builder := NewAdmissionArtifactBuilder("tcp-plain")
+func TestSourceSelectionArtifact_WireLoadMath(t *testing.T) {
+	builder := NewSourceSelectionArtifactBuilder("tcp-plain")
 	builder.startedAt = time.Now().Add(-60 * time.Second)
-	if err := builder.SetAdmissionPathSelected("source_selection"); err != nil {
+	if err := builder.SetSourceSelectionMode("source_selection"); err != nil {
 		t.Fatal(err)
 	}
 	builder.RecordProbe(100)

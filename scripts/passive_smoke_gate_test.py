@@ -10,17 +10,17 @@ import unittest
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
-TRANSPORT_GATE_SCRIPT = REPO_ROOT / "scripts" / "transport_gate.sh"
+PASSIVE_SMOKE_GATE_SCRIPT = REPO_ROOT / "scripts" / "passive_smoke_gate.sh"
 
 
-class TransportGateTests(unittest.TestCase):
+class PassiveSmokeGateTests(unittest.TestCase):
     def _script_env(self, **extra: str) -> dict[str, str]:
         env = dict(os.environ)
         for key in (
-            "TRANSPORT_GATE_OWNER_OVERRIDE",
-            "TRANSPORT_GATE_OWNER_REASON",
-            "TRANSPORT_MATRIX_REPORT",
+            "PASSIVE_SMOKE_GATE_OWNER_OVERRIDE",
+            "PASSIVE_SMOKE_GATE_OWNER_REASON",
             "PASSIVE_SMOKE_REPORT",
+            "TRANSPORT_MATRIX_REPORT",
         ):
             env.pop(key, None)
         env.update(extra)
@@ -47,120 +47,127 @@ class TransportGateTests(unittest.TestCase):
         )
 
         (repo_path / "scripts").mkdir(parents=True, exist_ok=True)
-        shutil.copy2(TRANSPORT_GATE_SCRIPT, repo_path / "scripts" / "transport_gate.sh")
+        shutil.copy2(PASSIVE_SMOKE_GATE_SCRIPT, repo_path / "scripts" / "passive_smoke_gate.sh")
 
         tracked_file = repo_path / changed_file
         tracked_file.parent.mkdir(parents=True, exist_ok=True)
         tracked_file.write_text(base_text, encoding="utf-8")
 
         subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True, text=True)
-        subprocess.run(
-            ["git", "commit", "-m", "base"],
-            cwd=repo_path,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        subprocess.run(["git", "commit", "-m", "base"], cwd=repo_path, check=True, capture_output=True, text=True)
 
         tracked_file.write_text(modified_text, encoding="utf-8")
 
-        report_path = repo_path / "report.json"
+        report_path = repo_path / "passive.json"
         report_path.write_text(
-            json.dumps({"cases": [{"case_id": f"T{i:02d}", "outcome": "pass"} for i in range(1, 89)]}),
+            json.dumps(
+                {
+                    "suite": "passive",
+                    "cases": [
+                        {"case_id": "P01", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+                        {"case_id": "P02", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+                        {"case_id": "P03", "passive_mode": "required", "outcome": "pass"},
+                        {"case_id": "P04", "passive_mode": "required", "outcome": "pass"},
+                        {"case_id": "P05", "passive_mode": "required", "outcome": "pass"},
+                        {"case_id": "P06", "passive_mode": "unsupported_or_misconfigured", "outcome": "pass"},
+                    ],
+                }
+            ),
             encoding="utf-8",
         )
         return repo_path, report_path
 
-    def test_transport_gate_triggers_for_cmd_gateway_main(self) -> None:
+    def test_passive_smoke_gate_triggers_for_real_main_diff(self) -> None:
         repo_path, report_path = self._create_temp_repo(
             "cmd/gateway/main.go",
-            base_text="package main\n\nfunc main() {\n\ttransportProtocol := \"ens\"\n\t_ = transportProtocol\n}\n",
-            modified_text="package main\n\nfunc main() {\n\ttransportProtocol := \"udp-plain\"\n\t_ = transportProtocol\n}\n",
+            base_text="package main\n\nfunc main() {\n\tpassiveMode := \"required\"\n\t_ = passiveMode\n}\n",
+            modified_text="package main\n\nfunc main() {\n\tpassiveMode := \"unsupported_or_misconfigured\"\n\t_ = passiveMode\n}\n",
         )
         result = subprocess.run(
-            ["bash", "scripts/transport_gate.sh"],
+            ["bash", "scripts/passive_smoke_gate.sh"],
             cwd=repo_path,
-            env=self._script_env(
-                TRANSPORT_GATE_BASE_REF="HEAD",
-                TRANSPORT_MATRIX_REPORT=str(report_path),
-            ),
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD", PASSIVE_SMOKE_REPORT=str(report_path)),
             text=True,
             capture_output=True,
             check=False,
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("transport gate: PASS", result.stdout)
+        self.assertIn("passive smoke gate: PASS", result.stdout)
 
-    def test_transport_gate_fails_for_cmd_gateway_main_without_report(self) -> None:
+    def test_passive_smoke_gate_fails_without_report(self) -> None:
         repo_path, _ = self._create_temp_repo(
             "cmd/gateway/main.go",
-            base_text="package main\n\nfunc main() {\n\ttransportProtocol := \"ens\"\n\t_ = transportProtocol\n}\n",
-            modified_text="package main\n\nfunc main() {\n\ttransportProtocol := \"udp-plain\"\n\t_ = transportProtocol\n}\n",
+            base_text="package main\n\nfunc main() {\n\tpassiveMode := \"required\"\n\t_ = passiveMode\n}\n",
+            modified_text="package main\n\nfunc main() {\n\tpassiveMode := \"unsupported_or_misconfigured\"\n\t_ = passiveMode\n}\n",
         )
         result = subprocess.run(
-            ["bash", "scripts/transport_gate.sh"],
+            ["bash", "scripts/passive_smoke_gate.sh"],
             cwd=repo_path,
-            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
             text=True,
             capture_output=True,
             check=False,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
 
-    def test_transport_gate_fails_for_runtime_control_flow_main_diff(self) -> None:
+    def test_passive_smoke_gate_fails_for_runtime_control_flow_main_diff(self) -> None:
         repo_path, _ = self._create_temp_repo(
             "cmd/gateway/main.go",
             base_text=(
                 "package main\n\nfunc main() {\n"
-                "\toverrideSet := admissionPath == TransportAdmissionSourceSelectionCapable && cfg.StartupSource.Source != nil\n"
-                "\t_ = overrideSet\n}\n"
+                "\trunAdvisorySourceSelector := admissionPath == TransportAdmissionSourceSelectionCapable && shouldStartPassiveObserveFirst(cfg)\n"
+                "\t_ = runAdvisorySourceSelector\n}\n"
             ),
-            modified_text="package main\n\nfunc main() {\n\toverrideSet := false\n\t_ = overrideSet\n}\n",
+            modified_text=(
+                "package main\n\nfunc main() {\n"
+                "\trunAdvisorySourceSelector := false\n"
+                "\t_ = runAdvisorySourceSelector\n}\n"
+            ),
         )
         result = subprocess.run(
-            ["bash", "scripts/transport_gate.sh"],
+            ["bash", "scripts/passive_smoke_gate.sh"],
             cwd=repo_path,
-            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
             text=True,
             capture_output=True,
             check=False,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
 
-    def test_transport_gate_fails_for_runtime_call_reorder_main_diff(self) -> None:
+    def test_passive_smoke_gate_fails_for_runtime_call_reorder_main_diff(self) -> None:
         repo_path, _ = self._create_temp_repo(
             "cmd/gateway/main.go",
             base_text=(
                 "package main\n\nfunc main() {\n"
-                "\tstartHTTPServer()\n"
+                "\tstartPassiveTransactionReconstructor()\n"
                 "\trunBackgroundFullScan()\n"
                 "}\n\n"
-                "func startHTTPServer() {}\n"
+                "func startPassiveTransactionReconstructor() {}\n"
                 "func runBackgroundFullScan() {}\n"
             ),
             modified_text=(
                 "package main\n\nfunc main() {\n"
                 "\trunBackgroundFullScan()\n"
-                "\tstartHTTPServer()\n"
+                "\tstartPassiveTransactionReconstructor()\n"
                 "}\n\n"
-                "func startHTTPServer() {}\n"
+                "func startPassiveTransactionReconstructor() {}\n"
                 "func runBackgroundFullScan() {}\n"
             ),
         )
         result = subprocess.run(
-            ["bash", "scripts/transport_gate.sh"],
+            ["bash", "scripts/passive_smoke_gate.sh"],
             cwd=repo_path,
-            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
             text=True,
             capture_output=True,
             check=False,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
 
-    def test_transport_gate_skips_sas05_public_api_main_diff(self) -> None:
+    def test_passive_smoke_gate_skips_sas05_public_api_main_diff(self) -> None:
         repo_path, _ = self._create_temp_repo(
             "cmd/gateway/main.go",
             base_text=(
@@ -179,41 +186,15 @@ class TransportGateTests(unittest.TestCase):
             ),
         )
         result = subprocess.run(
-            ["bash", "scripts/transport_gate.sh"],
+            ["bash", "scripts/passive_smoke_gate.sh"],
             cwd=repo_path,
-            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
             text=True,
             capture_output=True,
             check=False,
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("transport gate: not triggered.", result.stdout)
-
-    def test_transport_gate_skips_non_transport_gateway_observability_file(self) -> None:
-        repo_path, _ = self._create_temp_repo("cmd/gateway/bus_observability_provider.go")
-        result = subprocess.run(
-            ["bash", "scripts/transport_gate.sh"],
-            cwd=repo_path,
-            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("transport gate: not triggered.", result.stdout)
-
-    def test_transport_gate_skips_test_only_adaptermux_change(self) -> None:
-        repo_path, _ = self._create_temp_repo("internal/adaptermux/e2e_test.go")
-        result = subprocess.run(
-            ["bash", "scripts/transport_gate.sh"],
-            cwd=repo_path,
-            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("transport gate: not triggered.", result.stdout)
+        self.assertIn("passive smoke gate: not triggered.", result.stdout)
 
 
 if __name__ == "__main__":

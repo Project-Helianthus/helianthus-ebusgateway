@@ -7,7 +7,9 @@
 
 transport: ens
 adapter_hw_id: "<e.g., ENH28A1>"
-admission_path_selected: join
+admission:
+  source_selection:
+    mode: source_selection
 warmup_events_observed: 0
 degraded_escalations: 0
 passive_event_count_5min: 0

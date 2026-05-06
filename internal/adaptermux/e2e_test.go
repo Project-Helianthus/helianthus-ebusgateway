@@ -50,8 +50,15 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 	// this test — we only care about byte plumbing, not CRC validity).
 	request := []byte{0x71, 0x08, 0x07, 0x04, 0x00, 0x00 /*CRC placeholder*/}
 
+	// Write request bytes (simulates what protocol.Bus does during
+	// sendRawWithEcho).
+	if _, err := at.Write(request); err != nil {
+		t.Fatalf("at.Write err=%v", err)
+	}
+
 	// Async upstream fake: echo every write, then send a canned responder
-	// response + SYN terminator.
+	// response + SYN terminator. Start after Write so the synthetic bus traffic
+	// preserves request-before-echo ordering.
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -77,19 +84,19 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 		}
 	}()
 
-	// Write request bytes (simulates what protocol.Bus does during
-	// sendRawWithEcho).
-	if _, err := at.Write(request); err != nil {
-		t.Fatalf("at.Write err=%v", err)
-	}
-
 	// Read back every byte we expect to appear on activeCh in order:
 	//   echoed request (len(request) bytes)
 	//   + response (10 bytes including final SYN)
 	// The final SYN is the critical one — if it never arrives within
 	// the 2s budget, the hypothesis is confirmed.
 	totalExpected := len(request) + 10
+	var gotMu sync.Mutex
 	got := make([]byte, 0, totalExpected)
+	snapshotGot := func() []byte {
+		gotMu.Lock()
+		defer gotMu.Unlock()
+		return append([]byte(nil), got...)
+	}
 	deadline := time.Now().Add(2 * time.Second)
 
 	readDone := make(chan error, 1)
@@ -100,27 +107,31 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 				readDone <- err
 				return
 			}
+			gotMu.Lock()
 			got = append(got, b)
+			gotMu.Unlock()
 		}
 		readDone <- nil
 	}()
 
 	select {
 	case err := <-readDone:
+		gotSnapshot := snapshotGot()
 		if err != nil {
-			t.Logf("ReadByte error after %d bytes consumed: %v", len(got), err)
-			t.Logf("bytes consumed so far: % X", got)
+			t.Logf("ReadByte error after %d bytes consumed: %v", len(gotSnapshot), err)
+			t.Logf("bytes consumed so far: % X", gotSnapshot)
 			dumpSynDiag(t, mux)
 			wg.Wait()
 			t.Fatalf("E2E read error after %d bytes: %v — final SYN echo may have been "+
 				"consumed by SYN-before-read branch (bytesRead>0 path) before "+
 				"activePathExpectsBytes() was re-evaluated. See SYN ring dump above. "+
 				"C4 (PR #502): this path used to t.Skip; any deviation from the green "+
-				"path is a regression and must fail CI.", len(got), err)
+				"path is a regression and must fail CI.", len(gotSnapshot), err)
 		}
 	case <-time.After(time.Until(deadline)):
-		t.Logf("E2E timeout after %d/%d bytes consumed", len(got), totalExpected)
-		t.Logf("bytes consumed: % X", got)
+		gotSnapshot := snapshotGot()
+		t.Logf("E2E timeout after %d/%d bytes consumed", len(gotSnapshot), totalExpected)
+		t.Logf("bytes consumed: % X", gotSnapshot)
 		dumpSynDiag(t, mux)
 		// Do NOT wg.Wait() here — the reader goroutine is still blocked
 		// on ReadByte; cleanup cancels ctx which releases it after the
@@ -129,7 +140,7 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 		t.Fatalf("E2E timeout after %d/%d bytes — final SYN echo may be consumed "+
 			"by onSYNLocked before active-path delivery. See SYN ring dump above "+
 			"for gwActiveBefore/After transitions and synDeliveredToActive flags.",
-			len(got), totalExpected)
+			len(gotSnapshot), totalExpected)
 	}
 
 	wg.Wait()

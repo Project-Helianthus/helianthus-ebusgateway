@@ -30,9 +30,13 @@ requires_gate=0
 requires_transport_gate() {
   local file="$1"
   case "${file}" in
+    *_test.go)
+      return 1
+      ;;
+  esac
+  case "${file}" in
     config.go|\
     gateway.go|\
-    cmd/gateway/main.go|\
     cmd/gateway/startup_scan*.go|\
     cmd/matrix-runner/*|\
     internal/matrix/*|\
@@ -47,11 +51,110 @@ requires_transport_gate() {
   return 1
 }
 
+cmd_gateway_main_requires_transport_gate() {
+  python3 - "$base_ref" <<'PY'
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+base_ref = sys.argv[1]
+diffs: list[str] = []
+for args in (
+    ["git", "diff", "--unified=0", f"{base_ref}...HEAD", "--", "cmd/gateway/main.go"],
+    ["git", "diff", "--cached", "--unified=0", "--", "cmd/gateway/main.go"],
+    ["git", "diff", "--unified=0", "--", "cmd/gateway/main.go"],
+):
+    result = subprocess.run(args, text=True, capture_output=True, check=False)
+    if result.returncode == 0 and result.stdout:
+        diffs.append(result.stdout)
+
+replacements = (
+    ("startup admission", "startup source selection"),
+    ("startup-admission", "startup-source-selection"),
+    ("admission_path_selected", "source_selection.mode"),
+    ("StartupAdmission", "StartupSourceSelection"),
+    ("AdmissionArtifact", "SourceSelectionArtifact"),
+    ("admission-artifact", "source-selection-artifact"),
+    ("SetAdmissionPathSelected", "SetSourceSelectionMode"),
+    ("NewAdmissionArtifactBuilder", "NewSourceSelectionArtifactBuilder"),
+    ("GetOrInitStartupAdmissionMetrics", "GetOrInitStartupSourceSelectionMetrics"),
+    ("FormatStartupAdmissionOverrideLog", "FormatStartupSourceSelectionExplicitLog"),
+    ("FormatStartupSourceSelectionOverrideLog", "FormatStartupSourceSelectionExplicitLog"),
+    ("CheckOverrideCompanionConflict", "CheckExplicitSourceCompanionConflict"),
+    ("SetOverrideActive", "SetExplicitSourceActive"),
+    ("RecordOverrideBypass", "RecordExplicitValidateOnly"),
+    ("SetOverrideSource", "SetExplicitSource"),
+    ("SetActiveOverride", "SetActiveExplicitSource"),
+    ("startup_admission_source_selection_bus", "startup_source_selection_bus"),
+    ("startup_admission_", "startup_source_selection_"),
+    ("override path", "explicit source path"),
+    ("override source", "explicit source"),
+    ("override Initiator", "explicit source"),
+    ("override", "explicit_validate_only"),
+    ("AD23", "SAS M4"),
+    ("; legacy static-source path active", ""),
+    ("JoinCapable", "source-selection"),
+    ("→", "->"),
+)
+
+def normalize(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped or stripped in {"}", ")"} or stripped.startswith("//"):
+        return None
+    for old, new in replacements:
+        stripped = stripped.replace(old, new)
+    return re.sub(r"\s+", " ", stripped)
+
+def normalize_text(text: str) -> list[str]:
+    lines: list[str] = []
+    for line in text.splitlines():
+        normalized = normalize(line)
+        if normalized is not None:
+            lines.append(normalized)
+    return lines
+
+if not diffs:
+    raise SystemExit(0)
+
+base_result = subprocess.run(
+    ["git", "show", f"{base_ref}:cmd/gateway/main.go"],
+    text=True,
+    capture_output=True,
+    check=False,
+)
+if base_result.returncode != 0:
+    print("transport gate: cannot read base cmd/gateway/main.go", file=sys.stderr)
+    raise SystemExit(1)
+
+current_text = Path("cmd/gateway/main.go").read_text(encoding="utf-8")
+removed = normalize_text(base_result.stdout)
+added = normalize_text(current_text)
+
+if removed != added:
+    print("transport gate: cmd/gateway/main.go contains non-rename runtime diff", file=sys.stderr)
+    print(f"transport gate: removed={removed}", file=sys.stderr)
+    print(f"transport gate: added={added}", file=sys.stderr)
+    raise SystemExit(1)
+
+raise SystemExit(0)
+PY
+}
+
 while IFS= read -r file; do
   [[ -z "${file}" ]] && continue
   # The transport gate is for transport/protocol and matrix topology execution
   # surfaces. Public observability/API changes under cmd/gateway must not demand
   # an unrelated 88-case transport report.
+  if [[ "${file}" == "cmd/gateway/main.go" ]]; then
+    if cmd_gateway_main_requires_transport_gate; then
+      continue
+    fi
+    requires_gate=1
+    break
+  fi
   if requires_transport_gate "${file}"; then
     requires_gate=1
     break

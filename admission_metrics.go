@@ -8,23 +8,23 @@ import (
 	"time"
 )
 
-// StartupAdmissionMetrics bundles the 11 expvar surfaces exposed by the
-// startup-admission-discovery plan (per plan §M5 expvar_surfaces).
+// StartupSourceSelectionMetrics bundles the 11 expvar surfaces exposed by the
+// startup source-selection plan.
 // Names and semantics match the plan exactly; callers publish this
 // bundle via expvar.Publish at startup and update counters/gauges as
 // runtime events occur.
-type StartupAdmissionMetrics struct {
-	DegradedTotal             *expvar.Int
-	State                     *expvar.Int
-	OverrideActive            *expvar.Int
-	WarmupEventsSeen          *expvar.Int
-	WarmupCyclesTotal         *expvar.Int
-	OverrideBypassTotal       *expvar.Int
-	OverrideConflictDetected  *expvar.Int
-	DegradedEscalated         *expvar.Int
-	DegradedSinceMs           *expvar.Int
-	ConsecutiveRejoinFailures *expvar.Int
-	DegradedCumulativeMs      *expvar.Int
+type StartupSourceSelectionMetrics struct {
+	DegradedTotal                  *expvar.Int
+	State                          *expvar.Int
+	ExplicitSourceActive           *expvar.Int
+	WarmupEventsSeen               *expvar.Int
+	WarmupCyclesTotal              *expvar.Int
+	ExplicitValidateOnlyTotal      *expvar.Int
+	ExplicitSourceConflictDetected *expvar.Int
+	DegradedEscalated              *expvar.Int
+	DegradedSinceMs                *expvar.Int
+	ConsecutiveFailures            *expvar.Int
+	DegradedCumulativeMs           *expvar.Int
 
 	mu sync.Mutex
 
@@ -32,61 +32,78 @@ type StartupAdmissionMetrics struct {
 }
 
 var (
-	defaultStartupAdmissionMetrics     *StartupAdmissionMetrics
-	defaultStartupAdmissionMetricsOnce sync.Once
+	defaultStartupSourceSelectionMetrics     *StartupSourceSelectionMetrics
+	defaultStartupSourceSelectionMetricsOnce sync.Once
 )
 
-// NewStartupAdmissionMetrics allocates the metric bundle. Caller decides
-// whether to publish via expvar.Publish or keep per-instance (for tests).
-func NewStartupAdmissionMetrics() *StartupAdmissionMetrics {
-	return &StartupAdmissionMetrics{
-		DegradedTotal:             new(expvar.Int),
-		State:                     new(expvar.Int),
-		OverrideActive:            new(expvar.Int),
-		WarmupEventsSeen:          new(expvar.Int),
-		WarmupCyclesTotal:         new(expvar.Int),
-		OverrideBypassTotal:       new(expvar.Int),
-		OverrideConflictDetected:  new(expvar.Int),
-		DegradedEscalated:         new(expvar.Int),
-		DegradedSinceMs:           new(expvar.Int),
-		ConsecutiveRejoinFailures: new(expvar.Int),
-		DegradedCumulativeMs:      new(expvar.Int),
+func StartupSourceSelectionExpvarNames() []string {
+	return []string{
+		"startup_source_selection_degraded_total",
+		"startup_source_selection_state",
+		"startup_source_selection_explicit_source_active",
+		"startup_source_selection_warmup_events_seen",
+		"startup_source_selection_warmup_cycles_total",
+		"startup_source_selection_explicit_validate_only_total",
+		"startup_source_selection_explicit_source_conflict_detected",
+		"startup_source_selection_degraded_escalated",
+		"startup_source_selection_degraded_since_ms",
+		"startup_source_selection_consecutive_failures",
+		"startup_source_selection_degraded_cumulative_ms",
 	}
 }
 
-// GetOrInitStartupAdmissionMetrics returns the process-global
-// StartupAdmissionMetrics instance, creating it and publishing its
-// expvars on first call.
-func GetOrInitStartupAdmissionMetrics() *StartupAdmissionMetrics {
-	defaultStartupAdmissionMetricsOnce.Do(func() {
-		defaultStartupAdmissionMetrics = NewStartupAdmissionMetrics()
-		defaultStartupAdmissionMetrics.Publish()
-		EmitStartupResetWarn(log.Printf)
-	})
-	return defaultStartupAdmissionMetrics
+// NewStartupSourceSelectionMetrics allocates the metric bundle. Caller decides
+// whether to publish via expvar.Publish or keep per-instance (for tests).
+func NewStartupSourceSelectionMetrics() *StartupSourceSelectionMetrics {
+	return &StartupSourceSelectionMetrics{
+		DegradedTotal:                  new(expvar.Int),
+		State:                          new(expvar.Int),
+		ExplicitSourceActive:           new(expvar.Int),
+		WarmupEventsSeen:               new(expvar.Int),
+		WarmupCyclesTotal:              new(expvar.Int),
+		ExplicitValidateOnlyTotal:      new(expvar.Int),
+		ExplicitSourceConflictDetected: new(expvar.Int),
+		DegradedEscalated:              new(expvar.Int),
+		DegradedSinceMs:                new(expvar.Int),
+		ConsecutiveFailures:            new(expvar.Int),
+		DegradedCumulativeMs:           new(expvar.Int),
+	}
 }
 
-// Publish registers all expvars under the "startup_admission_" prefix.
+// GetOrInitStartupSourceSelectionMetrics returns the process-global
+// StartupSourceSelectionMetrics instance, creating it and publishing its
+// expvars on first call.
+func GetOrInitStartupSourceSelectionMetrics() *StartupSourceSelectionMetrics {
+	defaultStartupSourceSelectionMetricsOnce.Do(func() {
+		defaultStartupSourceSelectionMetrics = NewStartupSourceSelectionMetrics()
+		defaultStartupSourceSelectionMetrics.Publish()
+		EmitStartupResetWarn(log.Printf)
+	})
+	return defaultStartupSourceSelectionMetrics
+}
+
+// Publish registers all expvars under the "startup_source_selection_" prefix.
 // Idempotent-safe behavior: does NOT re-register if Publish was already
 // called (expvar panics on duplicate publishes); caller must only call
 // once per process. In tests, use metrics without publishing.
-func (m *StartupAdmissionMetrics) Publish() {
-	expvar.Publish("startup_admission_degraded_total", m.DegradedTotal)
-	expvar.Publish("startup_admission_state", m.State)
-	expvar.Publish("startup_admission_override_active", m.OverrideActive)
-	expvar.Publish("startup_admission_warmup_events_seen", m.WarmupEventsSeen)
-	expvar.Publish("startup_admission_warmup_cycles_total", m.WarmupCyclesTotal)
-	expvar.Publish("startup_admission_override_bypass_total", m.OverrideBypassTotal)
-	expvar.Publish("startup_admission_override_conflict_detected", m.OverrideConflictDetected)
-	expvar.Publish("startup_admission_degraded_escalated", m.DegradedEscalated)
-	expvar.Publish("startup_admission_degraded_since_ms", m.DegradedSinceMs)
-	expvar.Publish("startup_admission_consecutive_rejoin_failures", m.ConsecutiveRejoinFailures)
-	expvar.Publish("startup_admission_degraded_cumulative_ms", m.DegradedCumulativeMs)
+func (m *StartupSourceSelectionMetrics) Publish() {
+	names := StartupSourceSelectionExpvarNames()
+	expvar.Publish(names[0], m.DegradedTotal)
+	expvar.Publish(names[1], m.State)
+	expvar.Publish(names[2], m.ExplicitSourceActive)
+	expvar.Publish(names[3], m.WarmupEventsSeen)
+	expvar.Publish(names[4], m.WarmupCyclesTotal)
+	expvar.Publish(names[5], m.ExplicitValidateOnlyTotal)
+	expvar.Publish(names[6], m.ExplicitSourceConflictDetected)
+	expvar.Publish(names[7], m.DegradedEscalated)
+	expvar.Publish(names[8], m.DegradedSinceMs)
+	expvar.Publish(names[9], m.ConsecutiveFailures)
+	expvar.Publish(names[10], m.DegradedCumulativeMs)
 }
 
 // StartWarmupCycle resets WarmupEventsSeen to 0 and increments
 // WarmupCyclesTotal. Returns the new cycle sequence number.
-func (m *StartupAdmissionMetrics) StartWarmupCycle() uint64 {
+func (m *StartupSourceSelectionMetrics) StartWarmupCycle() uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.warmupCycleSeq++
@@ -96,13 +113,13 @@ func (m *StartupAdmissionMetrics) StartWarmupCycle() uint64 {
 }
 
 // RecordWarmupEvent increments WarmupEventsSeen by 1.
-func (m *StartupAdmissionMetrics) RecordWarmupEvent() {
+func (m *StartupSourceSelectionMetrics) RecordWarmupEvent() {
 	m.WarmupEventsSeen.Add(1)
 }
 
 // MarkDegraded sets State=2, increments DegradedTotal, records
 // DegradedSinceMs if not already set.
-func (m *StartupAdmissionMetrics) MarkDegraded(now time.Time) {
+func (m *StartupSourceSelectionMetrics) MarkDegraded(now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.State.Value() != 2 {
@@ -116,7 +133,7 @@ func (m *StartupAdmissionMetrics) MarkDegraded(now time.Time) {
 // pair {State, DegradedSinceMs} updates atomically vs MarkDegraded /
 // MarkPending — prevents the AD20-reviewer-flagged race where concurrent
 // transitions could double-count DegradedTotal.
-func (m *StartupAdmissionMetrics) MarkActive() {
+func (m *StartupSourceSelectionMetrics) MarkActive() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.State.Set(1)
@@ -124,35 +141,34 @@ func (m *StartupAdmissionMetrics) MarkActive() {
 }
 
 // MarkPending sets State=0. Holds m.mu (see MarkActive note).
-func (m *StartupAdmissionMetrics) MarkPending() {
+func (m *StartupSourceSelectionMetrics) MarkPending() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.State.Set(0)
 }
 
-// SetOverrideActive(true) sets OverrideActive=1; SetOverrideActive(false) sets 0.
-func (m *StartupAdmissionMetrics) SetOverrideActive(active bool) {
+// SetExplicitSourceActive(true) sets ExplicitSourceActive=1; false sets 0.
+func (m *StartupSourceSelectionMetrics) SetExplicitSourceActive(active bool) {
 	if active {
-		m.OverrideActive.Set(1)
+		m.ExplicitSourceActive.Set(1)
 	} else {
-		m.OverrideActive.Set(0)
+		m.ExplicitSourceActive.Set(0)
 	}
 }
 
-// RecordOverrideBypass increments OverrideBypassTotal (monotonic per
-// admission cycle that selected the override path).
-func (m *StartupAdmissionMetrics) RecordOverrideBypass() {
-	m.OverrideBypassTotal.Add(1)
+// RecordExplicitValidateOnly increments ExplicitValidateOnlyTotal.
+func (m *StartupSourceSelectionMetrics) RecordExplicitValidateOnly() {
+	m.ExplicitValidateOnlyTotal.Add(1)
 }
 
-// SetOverrideConflictDetected flips OverrideConflictDetected to 1
+// SetExplicitSourceConflictDetected flips ExplicitSourceConflictDetected to 1
 // (latching for the current run; a cycle reset would restart it).
-func (m *StartupAdmissionMetrics) SetOverrideConflictDetected() {
-	m.OverrideConflictDetected.Set(1)
+func (m *StartupSourceSelectionMetrics) SetExplicitSourceConflictDetected() {
+	m.ExplicitSourceConflictDetected.Set(1)
 }
 
 // SetDegradedEscalated sets the latch (0 or 1).
-func (m *StartupAdmissionMetrics) SetDegradedEscalated(latched bool) {
+func (m *StartupSourceSelectionMetrics) SetDegradedEscalated(latched bool) {
 	if latched {
 		m.DegradedEscalated.Set(1)
 	} else {
@@ -160,33 +176,33 @@ func (m *StartupAdmissionMetrics) SetDegradedEscalated(latched bool) {
 	}
 }
 
-// SetConsecutiveRejoinFailures records the current count.
-func (m *StartupAdmissionMetrics) SetConsecutiveRejoinFailures(n int) {
-	m.ConsecutiveRejoinFailures.Set(int64(n))
+// SetConsecutiveFailures records the current count.
+func (m *StartupSourceSelectionMetrics) SetConsecutiveFailures(n int) {
+	m.ConsecutiveFailures.Set(int64(n))
 }
 
 // SetDegradedCumulativeMs records the current rolling-window cumulative.
-func (m *StartupAdmissionMetrics) SetDegradedCumulativeMs(ms uint64) {
+func (m *StartupSourceSelectionMetrics) SetDegradedCumulativeMs(ms uint64) {
 	m.DegradedCumulativeMs.Set(int64(ms))
 }
 
 // EmitStartupResetWarn is a package-level log helper for the AD17
 // restart-reset WARN line emitted once on process start. Callers use
-// this immediately after NewStartupAdmissionMetrics to satisfy AD17's
+// this immediately after NewStartupSourceSelectionMetrics to satisfy AD17's
 // observability contract.
 func EmitStartupResetWarn(logger func(format string, args ...interface{})) {
-	logger("WARN: startup admission escalation accumulator zeroed reason=process_start")
+	logger("WARN: startup source selection escalation accumulator zeroed reason=process_start")
 }
 
-// ValidateAdmissionPathSelected returns nil if v is one of the four
+// ValidateSourceSelectionMode returns nil if v is one of the four
 // enum values the plan admits per AD23. Returns a FATAL-level error
 // otherwise — callers should refuse to emit artifacts with an out-of-
 // range value.
-func ValidateAdmissionPathSelected(v string) error {
+func ValidateSourceSelectionMode(v string) error {
 	switch v {
-	case "source_selection", "override", "degraded_transport_blind", "degraded_no_events":
+	case "source_selection", "explicit_validate_only", "degraded_transport_blind", "degraded_no_events":
 		return nil
 	default:
-		return fmt.Errorf("FATAL: admission_path_selected=%q is out of enum {source_selection,override,degraded_transport_blind,degraded_no_events} (AD23)", v)
+		return fmt.Errorf("FATAL: source_selection.mode=%q is out of enum {source_selection,explicit_validate_only,degraded_transport_blind,degraded_no_events} (SAS M4)", v)
 	}
 }

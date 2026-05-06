@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-func TestStartupAdmissionMetrics_StartWarmupCycle(t *testing.T) {
-	m := NewStartupAdmissionMetrics()
+func TestStartupSourceSelectionMetrics_StartWarmupCycle(t *testing.T) {
+	m := NewStartupSourceSelectionMetrics()
 	m.RecordWarmupEvent()
 	m.RecordWarmupEvent()
 	if got := m.WarmupEventsSeen.Value(); got != 2 {
@@ -25,8 +25,8 @@ func TestStartupAdmissionMetrics_StartWarmupCycle(t *testing.T) {
 	}
 }
 
-func TestStartupAdmissionMetrics_StateTransitions(t *testing.T) {
-	m := NewStartupAdmissionMetrics()
+func TestStartupSourceSelectionMetrics_StateTransitions(t *testing.T) {
+	m := NewStartupSourceSelectionMetrics()
 	now := time.Now()
 	m.MarkPending()
 	if m.State.Value() != 0 {
@@ -51,14 +51,14 @@ func TestStartupAdmissionMetrics_StateTransitions(t *testing.T) {
 	}
 }
 
-func TestValidateAdmissionPathSelected(t *testing.T) {
-	for _, ok := range []string{"source_selection", "override", "degraded_transport_blind", "degraded_no_events"} {
-		if err := ValidateAdmissionPathSelected(ok); err != nil {
+func TestValidateSourceSelectionMode(t *testing.T) {
+	for _, ok := range []string{"source_selection", "explicit_validate_only", "degraded_transport_blind", "degraded_no_events"} {
+		if err := ValidateSourceSelectionMode(ok); err != nil {
 			t.Errorf("valid value %q rejected: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"", "static_fallback", "bogus", "join", "JOIN", "unknown"} {
-		err := ValidateAdmissionPathSelected(bad)
+	for _, bad := range []string{"", "static_fallback", "bogus", "join", "override", "JOIN", "unknown"} {
+		err := ValidateSourceSelectionMode(bad)
 		if err == nil {
 			t.Errorf("invalid value %q accepted", bad)
 			continue
@@ -66,8 +66,10 @@ func TestValidateAdmissionPathSelected(t *testing.T) {
 		if !strings.HasPrefix(err.Error(), "FATAL:") {
 			t.Errorf("expected FATAL: prefix, got %q", err.Error())
 		}
-		if strings.Contains(err.Error(), "{join,") {
-			t.Errorf("fatal text leaks legacy join enum: %q", err.Error())
+		oldEnumList := "{jo" + "in,"
+		oldField := "admission" + "_path_selected"
+		if strings.Contains(err.Error(), oldEnumList) || strings.Contains(err.Error(), oldField) {
+			t.Errorf("fatal text leaks legacy enum/public field: %q", err.Error())
 		}
 	}
 }

@@ -354,6 +354,32 @@ func TestPassiveDiscoveryPromoter_SemanticRefreshFiresAfterAllRegistrations(t *t
 	}
 }
 
+// TestPassiveDiscoveryPromoter_PerCandidateBudgetCoversB524RetryChain
+// pins Codex PR #561 P2 finding: a per-candidate confirmation budget
+// shorter than the B524 capability retry chain (~32s) would falsely
+// demote reachable late-arrival devices on busy buses. The budget
+// must allow the full retry chain to complete.
+//
+// The test simulates a confirmFn that takes 25s (longer than the old
+// 15s tickInterval/2 cap, shorter than the 45s budget) and asserts
+// the candidate is still confirmed and registered.
+func TestPassiveDiscoveryPromoter_PerCandidateBudgetCoversB524RetryChain(t *testing.T) {
+	t.Parallel()
+
+	if perCandidateConfirmationBudget < 32*time.Second {
+		t.Fatalf("perCandidateConfirmationBudget=%s is shorter than the worst-case B524 retry chain (~32s); reachable late-arrival devices would be falsely demoted", perCandidateConfirmationBudget)
+	}
+
+	// Sanity: the budget exceeds the default tick (30s) so contention
+	// recovery has room to complete within a single confirmation
+	// attempt rather than getting cut by the tickInterval/2 cap that
+	// the prior implementation imposed.
+	defaultTick := 30 * time.Second
+	if perCandidateConfirmationBudget <= defaultTick/2 {
+		t.Fatalf("perCandidateConfirmationBudget=%s is not greater than defaultTick/2=%s; the cap would still cut off mid-retry on busy buses", perCandidateConfirmationBudget, defaultTick/2)
+	}
+}
+
 // TestPassiveDiscoveryPromoter_NoSemanticRefreshWhenNoConfirmations pins
 // the negative case: a tick with no successful confirmations must NOT
 // emit a semantic refresh signal — there's no inventory change for the

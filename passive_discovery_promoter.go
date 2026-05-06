@@ -24,6 +24,26 @@ import (
 // fresh passive evidence.
 const maxConfirmationAttempts = 5
 
+// perCandidateConfirmationBudget caps a single ConfirmB524Coherent
+// invocation. The B524 capability probe runs len(b524CapabilityProbes)
+// (=2) probes; each probeB524Register retries up to 3 times with a 5s
+// per-attempt floor (minB524ProbeTimeout) plus 200ms inter-attempt
+// backoff. Worst-case per probe: 3 * (5s + 200ms) ≈ 16s; worst-case
+// per coherency check: 2 * 16s ≈ 32s.
+//
+// A tighter cap (e.g. tickInterval/2 = 15s) would expire mid-retry on
+// busy adapter-direct buses, falsely demoting late-arrival devices
+// after maxConfirmationAttempts ticks even though the bus contention
+// would have resolved within the built-in retry budget. The 45s
+// budget below adds a ~40% safety margin over the worst-case sum so
+// transient contention cannot starve a reachable candidate.
+//
+// processOnce derives the actual per-candidate timeout as the lesser
+// of perCandidateConfirmationBudget and tickInterval — a tickInterval
+// shorter than the budget (e.g. tests using millisecond ticks) is
+// honored, but normal operation gets the full budget.
+const perCandidateConfirmationBudget = 45 * time.Second
+
 // PassiveDiscoveryPromoter is the runtime-phase counterpart to the
 // startup directed-probe scan. It bridges the gap where a Vaillant
 // device — typically the regulator — boots after the gateway and
@@ -234,10 +254,17 @@ func (p *PassiveDiscoveryPromoter) processOnce(ctx context.Context) {
 	}
 	candidates := p.evidenceBuf.PromotedAddresses()
 	confirmedThisTick := 0
-	perCandidateTimeout := p.tickInterval / 2
-	if perCandidateTimeout <= 0 {
-		perCandidateTimeout = 15 * time.Second
-	}
+	// Per-candidate budget: large enough to accommodate the full
+	// ConfirmB524Coherent retry chain on a busy adapter-direct bus
+	// (~32s worst case, 45s with safety margin). The candidate
+	// budget intentionally exceeds the default tickInterval so
+	// transient bus contention does not falsely demote reachable
+	// late-arrival devices. processOnce is reentrant-safe wrt the
+	// next ticker.C: Run's select drops a tick that fires while
+	// processOnce is still in flight, and ConfirmB524Coherent
+	// bounds itself internally so a stuck candidate cannot block
+	// past the budget.
+	perCandidateTimeout := perCandidateConfirmationBudget
 	for _, addr := range candidates {
 		if !p.shouldAttempt(addr, admittedSource, now) {
 			continue

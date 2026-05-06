@@ -60,6 +60,39 @@ func TestCompanionInsert_RequiresCorroboration(t *testing.T) {
 	requireATRSlot(t, table, 0xF6)
 }
 
+// TestFirstObservation_SourceInserted asserts that on a positive ACK the
+// initiator address (request src) is inserted as an "initiator" slot — not
+// just the target. Per architecture/atr/03-ack-nack-insertion-rules.md
+// "Address Eligibility":
+//
+//	"request `src` MAY create a slot if it is not the gateway's own admitted source"
+//
+// PR #564 implemented dst insertion + companion-after-corroboration but
+// missed src insertion, so initiator addresses like NETX3 0xF1 never
+// landed in the registry passively even though their traffic was observed.
+func TestFirstObservation_SourceInserted(t *testing.T) {
+	table, inserter := newATRInsertionHarness(t, DefaultConfig())
+
+	event := atrPassiveTransactionEvent(time.Now().UTC(), 0xF1, 0x99, protocol.SymbolAck)
+	inserter.OnPassiveClassifiedEvent(event)
+
+	srcSlot := requireATRSlot(t, table, 0xF1)
+	if srcSlot.Role != "initiator" {
+		t.Fatalf("slot[0xF1].Role = %q; want initiator", srcSlot.Role)
+	}
+	if srcSlot.DiscoverySource != "passive_observed" {
+		t.Fatalf("slot[0xF1].DiscoverySource = %q; want passive_observed", srcSlot.DiscoverySource)
+	}
+	if srcSlot.VerificationState != "corroborated_pending" {
+		t.Fatalf("slot[0xF1].VerificationState = %q; want corroborated_pending", srcSlot.VerificationState)
+	}
+
+	dstSlot := requireATRSlot(t, table, 0x99)
+	if dstSlot.Role != "target" {
+		t.Fatalf("slot[0x99].Role = %q; want target", dstSlot.Role)
+	}
+}
+
 func TestFFDisambiguation_FrameStartVsACKPosition(t *testing.T) {
 	table, inserter := newATRInsertionHarness(t, DefaultConfig())
 	base := time.Now().UTC()

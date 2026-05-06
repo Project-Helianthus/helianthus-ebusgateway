@@ -53,6 +53,13 @@ func (i *AddressTableInserter) OnPassiveClassifiedEvent(event PassiveClassifiedE
 		return
 	}
 
+	// Insert request src as initiator (AD05 Address Eligibility:
+	// "request src MAY create a slot if it is not the gateway's own
+	// admitted source"). PR #564 missed this — observed-only initiators
+	// like NETX3 0xF1 never landed in the registry passively
+	// even though their traffic was seen on the bus.
+	i.maybeInsert(srcAddr, "initiator", admittedSrc, event.ObservedAt)
+
 	i.maybeInsert(dstAddr, "target", admittedSrc, event.ObservedAt)
 	observation := i.observationsByAddr[srcAddr]
 	observation.PositiveACKCount++

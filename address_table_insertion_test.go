@@ -65,11 +65,11 @@ func TestCompanionInsert_RequiresCorroboration(t *testing.T) {
 // just the target. Per architecture/atr/03-ack-nack-insertion-rules.md
 // "Address Eligibility":
 //
-//   "request `src` MAY create a slot if it is not the gateway's own admitted source"
+//	"request `src` MAY create a slot if it is not the gateway's own admitted source"
 //
 // PR #564 implemented dst insertion + companion-after-corroboration but
-// missed src insertion, so addresses like NETX3 master 0xF1 never landed
-// in the registry passively even though their traffic was observed.
+// missed src insertion, so initiator addresses like NETX3 0xF1 never
+// landed in the registry passively even though their traffic was observed.
 func TestFirstObservation_SourceInserted(t *testing.T) {
 	table, inserter := newATRInsertionHarness(t, DefaultConfig())
 

@@ -3,6 +3,7 @@ package ebusgateway
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -704,7 +705,76 @@ func (reconstructor *PassiveTransactionReconstructor) abandonLocked(reason Passi
 		Err:            err,
 	}
 	event.Timing.Terminal = observedAt
+	// A.8 — forensic logging for protocol-classification failures the
+	// inserter cannot consume. Specifically unexpected_symbol /
+	// corrupted_request / corrupted_target / no_response are the
+	// operator-confirmed symptoms that block 0xF1→0x15 / 0x03→X
+	// transactions from creating registry entries. Log raw bytes +
+	// state phase so post-mortem can reproduce + identify root cause
+	// without re-deploying.
+	if shouldLogReconstructorForensics(reason) {
+		reconstructor.logForensicsLocked(reason, observedAt)
+	}
 	return event
+}
+
+func shouldLogReconstructorForensics(reason PassiveAbandonReason) bool {
+	switch reason {
+	case PassiveAbandonReasonUnexpectedSymbol,
+		PassiveAbandonReasonCorruptedRequest,
+		PassiveAbandonReasonCorruptedTarget,
+		PassiveAbandonReasonNoResponse:
+		return true
+	}
+	return false
+}
+
+func (reconstructor *PassiveTransactionReconstructor) logForensicsLocked(reason PassiveAbandonReason, observedAt time.Time) {
+	src, dst, prim, sec := byte(0), byte(0), byte(0), byte(0)
+	if reconstructor.state.frameType != protocol.FrameTypeUnknown {
+		src = reconstructor.state.request.Source
+		dst = reconstructor.state.request.Target
+		prim = reconstructor.state.request.Primary
+		sec = reconstructor.state.request.Secondary
+	} else if len(reconstructor.state.requestRaw) >= 4 {
+		src = reconstructor.state.requestRaw[0]
+		dst = reconstructor.state.requestRaw[1]
+		prim = reconstructor.state.requestRaw[2]
+		sec = reconstructor.state.requestRaw[3]
+	}
+	reqHex := hexBytes(reconstructor.state.requestRaw)
+	respHex := hexBytes(reconstructor.state.responseRaw)
+	log.Printf("passive_reconstructor abandon reason=%s phase=%d src=0x%02X dst=0x%02X prim=0x%02X sec=0x%02X req_raw=%s resp_raw=%s observed_at=%s",
+		reason,
+		int(reconstructor.state.phase),
+		src, dst, prim, sec,
+		reqHex, respHex,
+		observedAt.Format(time.RFC3339Nano))
+}
+
+func hexBytes(b []byte) string {
+	if len(b) == 0 {
+		return "<empty>"
+	}
+	const hex = "0123456789ABCDEF"
+	const maxBytes = 16
+	count := len(b)
+	truncated := false
+	if count > maxBytes {
+		count = maxBytes
+		truncated = true
+	}
+	out := make([]byte, 0, count*3+3)
+	for i := 0; i < count; i++ {
+		if i > 0 {
+			out = append(out, ' ')
+		}
+		out = append(out, hex[b[i]>>4], hex[b[i]&0x0F])
+	}
+	if truncated {
+		out = append(out, '.', '.', '.')
+	}
+	return string(out)
 }
 
 func (reconstructor *PassiveTransactionReconstructor) resetStateLocked() {

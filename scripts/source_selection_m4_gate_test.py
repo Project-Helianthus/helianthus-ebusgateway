@@ -73,6 +73,20 @@ class SourceSelectionM4GateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(legacy, result.stderr)
 
+    def test_blocks_legacy_go_multiline_raw_string_literal(self) -> None:
+        legacy_alias = "bus" + "Admission"
+        text = (
+            "package main\n\n"
+            "var _ = `query {\n"
+            "  busSummary { status {\n"
+            f"    {legacy_alias} {{ state }}\n"
+            "  } }\n"
+            "}`\n"
+        )
+        result = self._run_gate(self._create_temp_repo("x.go", text))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(legacy_alias, result.stderr)
+
     def test_blocks_unjustified_source_addr_flag_spelling(self) -> None:
         legacy = "source" + "-addr"
         result = self._run_gate(self._create_temp_repo("docs/status.md", f"Old flag: {legacy}\n"))

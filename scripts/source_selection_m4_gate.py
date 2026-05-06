@@ -210,12 +210,50 @@ def is_allowed_dot_join(line: str) -> bool:
     )
 
 
-def go_string_literals(line: str) -> list[str]:
-    literals: list[str] = []
-    for match in re.finditer(r'"((?:\\.|[^"\\])*)"', line):
-        literals.append(match.group(1))
-    for match in re.finditer(r"`([^`]*)`", line):
-        literals.append(match.group(1))
+def go_string_literals(text: str) -> list[tuple[int, str]]:
+    literals: list[tuple[int, str]] = []
+    i = 0
+    line = 1
+    while i < len(text):
+        ch = text[i]
+        if ch == "\n":
+            line += 1
+            i += 1
+            continue
+        if ch == "`":
+            start_line = line
+            i += 1
+            start = i
+            while i < len(text) and text[i] != "`":
+                if text[i] == "\n":
+                    line += 1
+                i += 1
+            literals.append((start_line, text[start:i]))
+            if i < len(text):
+                i += 1
+            continue
+        if ch == '"':
+            start_line = line
+            i += 1
+            chars: list[str] = []
+            while i < len(text):
+                if text[i] == "\\" and i + 1 < len(text):
+                    chars.append(text[i])
+                    chars.append(text[i + 1])
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    break
+                if text[i] == "\n":
+                    line += 1
+                    break
+                chars.append(text[i])
+                i += 1
+            literals.append((start_line, "".join(chars)))
+            if i < len(text) and text[i] == '"':
+                i += 1
+            continue
+        i += 1
     return literals
 
 
@@ -251,16 +289,16 @@ def main() -> int:
                             f"{rel}:{lineno}: legacy {pattern.scope} term {pattern.name}: {line.strip()}"
                         )
 
-            if rel.suffix == ".go":
-                literal_text = "\n".join(go_string_literals(line))
+        if rel.suffix == ".go":
+            for literal_lineno, literal_text in go_string_literals(text):
                 for pattern in GO_STRING_PUBLIC_PATTERNS + PUBLIC_SURFACE_PATTERNS:
                     if pattern.regex.search(literal_text):
                         rationale = retained_rationale(rel, pattern)
                         if rationale is not None:
-                            retained.append(f"{rel}:{lineno}: retained {pattern.name}: {rationale}")
+                            retained.append(f"{rel}:{literal_lineno}: retained {pattern.name}: {rationale}")
                             continue
                         failures.append(
-                            f"{rel}:{lineno}: legacy {pattern.scope} term {pattern.name}: {line.strip()}"
+                            f"{rel}:{literal_lineno}: legacy {pattern.scope} term {pattern.name}: {literal_text.strip()}"
                         )
 
     if failures:

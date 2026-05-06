@@ -143,6 +143,7 @@ type Config struct {
 	PassiveDedupRecoveryHysteresis          time.Duration
 	PassiveDedupRecoveryEventThreshold      int
 	LocalAddressSnapshotter                 LocalBusAddressSnapshotter
+	AdmittedSource                          func() byte
 	WatchObserver                           WatchObserver
 	WatchEfficiencyObserver                 WatchEfficiencyObserver
 	HTTPAddr                                string

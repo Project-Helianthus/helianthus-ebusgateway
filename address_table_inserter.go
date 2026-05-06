@@ -1,6 +1,7 @@
 package ebusgateway
 
 import (
+	"log"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
@@ -124,6 +125,14 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		RegistrySlot:      registrySlot,
 	}
 
+	// A.7c — runtime audit trail. Every passive insertion is logged at
+	// INFO with addr/role/admitted-source/observation-time so operator
+	// (and post-mortem diagnostics) can correlate registry growth with
+	// specific passive frames. Closes the visibility gap behind the
+	// 0x38 false-positive forensics from Grafana cross-check.
+	log.Printf("address_table_inserter insert addr=0x%02X role=%s admitted_src=0x%02X observed_at=%s",
+		addr, role, admittedSrc, observedAt.Format(time.RFC3339Nano))
+
 	// A.7b — canonical-pair aliasing. If addr is one half of a canonical
 	// pair from the docs-owned eBUS standard table (sourceAddressTableV1)
 	// and the other half is already in the registry, alias them into a
@@ -144,8 +153,22 @@ func (i *AddressTableInserter) maybeAliasCanonicalCompanion(addr byte) {
 	if !ok {
 		return
 	}
-	if _, exists := i.table.reg.Lookup(companion); !exists {
+	entryAddr, exists := i.table.reg.Lookup(companion)
+	if !exists {
 		return
 	}
-	_ = i.table.reg.AliasAddresses(addr, companion)
+	// Only attempt the alias if the two addresses still resolve to
+	// distinct DeviceEntries; otherwise it's already aliased and we
+	// don't need to log noise on every observation of the pair.
+	primaryAddr, primaryOk := i.table.reg.Lookup(addr)
+	if primaryOk && primaryAddr.Address() == entryAddr.Address() {
+		return
+	}
+	if err := i.table.reg.AliasAddresses(addr, companion); err != nil {
+		log.Printf("address_table_inserter alias_failed addr=0x%02X companion=0x%02X err=%v",
+			addr, companion, err)
+		return
+	}
+	log.Printf("address_table_inserter alias addr=0x%02X companion=0x%02X",
+		addr, companion)
 }

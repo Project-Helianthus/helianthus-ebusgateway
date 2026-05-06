@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -204,6 +206,30 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	gateway.Start(ctx)
 
 	builder := graphql.NewBuilder(gateway.Registry, nil)
+
+	// Phase A.5 runtime wire-up: AddressTable + AddressTableInserter consume
+	// the PassiveTransactionReconstructor's classified events to insert
+	// passively-observed addresses (e.g. NETX3 0xF6/0x04, SOL00 0xEC) into
+	// the registry as passive_observed/corroborated_pending. The inserter is
+	// idle until subscribeAddressTableInserter binds it to the reconstructor.
+	//
+	// Inject a live AdmittedSource closure tied to builder.AdmittedMutationSource
+	// — the same pattern PassiveDiscoveryPromoter uses below. This is critical
+	// because cfg.ScanSource may be mutated by source-selection later in run();
+	// a static cfg.ScanSource snapshot here would let the inserter mistake the
+	// gateway's own admitted source for a third-party initiator after auto-
+	// selection, corrupting passive_observed metadata. (Codex P2 from PR #565
+	// review.)
+	addressTableCfg := cfg
+	addressTableCfg.AdmittedSource = func() byte {
+		source, ok := builder.AdmittedMutationSource()
+		if !ok {
+			return 0
+		}
+		return source
+	}
+	addressTable := ebusgateway.NewAddressTable(gateway.Registry)
+	addressTableInserter := ebusgateway.NewAddressTableInserter(addressTable, addressTableCfg)
 	if busObservability != nil {
 		builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(busObservability))
 	}
@@ -308,9 +334,46 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}
 
 	var (
-		listener      *ebusgateway.BroadcastListener
-		reconstructor *ebusgateway.PassiveTransactionReconstructor
+		listener            *ebusgateway.BroadcastListener
+		reconstructor       *ebusgateway.PassiveTransactionReconstructor
+		insertSubscribeOnce sync.Once
+		insertSubscribed    atomic.Bool
 	)
+	// subscribeAddressTableInserter binds the AddressTableInserter to the
+	// active reconstructor at most once. Subscription is gated on the
+	// admitted source being finalized (builder.AdmittedMutationSource
+	// returns ok=true) so the inserter's self-source filter sees the real
+	// admitted address — never 0 — and cannot mistakenly insert the
+	// gateway's own active-probe targets/companions as passive_observed.
+	// sync.Once + atomic.Bool make the helper safe to call from both the
+	// main run() goroutine and the async activeProbePassed goroutine.
+	// Subscription failure is non-fatal; the inserter is a non-critical
+	// observer.
+	subscribeAddressTableInserter := func() {
+		if insertSubscribed.Load() || reconstructor == nil {
+			return
+		}
+		if _, ok := builder.AdmittedMutationSource(); !ok {
+			return
+		}
+		insertSubscribeOnce.Do(func() {
+			sub, err := reconstructor.Subscribe(
+				"address_table_inserter",
+				ebusgateway.PassiveSubscriberNonCritical,
+				0,
+			)
+			if err != nil {
+				log.Printf("address_table_inserter subscribe failed: %v", err)
+				return
+			}
+			insertSubscribed.Store(true)
+			go func() {
+				for ev := range sub.Events() {
+					addressTableInserter.OnPassiveClassifiedEvent(ev)
+				}
+			}()
+		})
+	}
 	attachPassiveObserveFirst := func() error {
 		if reconstructor == nil {
 			return nil
@@ -332,6 +395,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				return err
 			}
 		}
+		// Best-effort early bind. If admission isn't finalized yet
+		// (sourceSelection path: waits on activeProbePassed), this
+		// returns silently and the wire-up below catches the signal.
+		subscribeAddressTableInserter()
 		return nil
 	}
 
@@ -342,6 +409,20 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			return err
 		}
 		log.Printf("passive reconstructor started")
+
+		// Phase A.5 (Codex P2 round 2): do NOT subscribe the inserter
+		// here. The source-selection warmup runs before
+		// builder.SetAdmittedMutationSource is called, so the
+		// inserter's AdmittedSource() closure would return 0 during
+		// startup_directed_probe_phase. On non-adapter-direct
+		// transports the passive tap can see the gateway's own
+		// active probes; with admitted=0 the inserter's self-source
+		// filter would NOT skip them and could insert the gateway's
+		// own companion/targets as passive_observed.
+		//
+		// Subscription is deferred to attachPassiveObserveFirst (late
+		// path), which runs after builder.SetAdmittedMutationSource is
+		// called and admission is finalized.
 
 		selectionBus, err := ebusgateway.NewSourceSelectionBusAdapter(reconstructor, "startup_source_selection_bus", false)
 		if err != nil {
@@ -413,6 +494,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
 	if source, admitted := admittedMutationSourceForGateway(cfg, admissionPath, overrideSet); admitted {
 		builder.SetAdmittedMutationSource(source)
+		// Phase A.5 (Codex P2 round 3): admission resolved synchronously
+		// (override / static fallback). Bind the inserter now that
+		// AdmittedSource() returns the real source.
+		subscribeAddressTableInserter()
 	} else {
 		builder.ClearAdmittedMutationSource()
 	}
@@ -488,6 +573,12 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 					artifactBuilder.SetSourceSelectionActive()
 					metrics.MarkActive()
 					recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "active", sourceSelection.Source, sourceSelection.Companion, "active_probe_passed")
+					// Phase A.5 (Codex P2 round 3): admission finalized
+					// asynchronously via activeProbePassed. Bind the
+					// inserter now that AdmittedSource() returns the
+					// selected source — closes the directed-probe window
+					// where admitted=0 could leak gateway-own probes.
+					subscribeAddressTableInserter()
 				}
 			case <-startupScanSignals.admissionFailed:
 				if sourceSelection != nil {

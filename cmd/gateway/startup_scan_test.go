@@ -2618,3 +2618,55 @@ func TestCoherentVaillantRootProbeTimeoutScalesWithCandidates(t *testing.T) {
 		t.Fatal("startupScanHasCoherentVaillantRoot returned false; want true — probe timeout should scale with candidate count")
 	}
 }
+
+// TestCoherentVaillantRootSkipsAdmittedCompanion closes Codex PR #560 P2
+// finding: when source-selection has reserved a companion (e.g.
+// StartupCompanionTarget=0x26) and that address is already in the
+// registry from an ebusd preload, the registry-only health check must
+// NOT probe the reserved companion. Without plumbing
+// cfg.StartupCompanionTarget into the temporary poller, the
+// p.companion-based filter in discoverB524RootInRegistry would be a
+// no-op for this entry point.
+func TestCoherentVaillantRootSkipsAdmittedCompanion(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origProbeFn := startupScanB524ProbeFn
+	t.Cleanup(func() { startupScanB524ProbeFn = origProbeFn })
+
+	// Registry preload includes the companion address (0x26) plus the
+	// boiler. Neither 0x15 nor any other coherent root is registered.
+	gateway.Registry.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+	gateway.Registry.Register(registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"})
+
+	probedCompanion := false
+	startupScanB524ProbeFn = func(_ context.Context, target, _opcode, _group, _instance byte, _addr uint16) bool {
+		if target == 0x26 {
+			probedCompanion = true
+		}
+		return target == 0x26 // would otherwise pass coherency
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanSource = 0x7F
+	cfg.StartupCompanionTarget = 0x26
+	cfg.SemanticRequestTimeout = 100 * time.Millisecond
+	cfg.ScanRequestTimeout = 50 * time.Millisecond
+
+	result := startupScanHasCoherentVaillantRoot(context.Background(), cfg, gateway)
+	if probedCompanion {
+		t.Fatal("startupScanHasCoherentVaillantRoot probed reserved companion 0x26; companion guard not propagated to registry-only health check")
+	}
+	if result {
+		t.Fatal("startupScanHasCoherentVaillantRoot returned true; companion was the only coherent target and it must not count as a coherent root")
+	}
+}

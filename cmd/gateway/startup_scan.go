@@ -1046,6 +1046,16 @@ func startupScanHasCoherentVaillantRoot(ctx context.Context, cfg ebusgateway.Con
 		reg:            gateway.Registry,
 		bus:            gateway.Bus,
 		source:         cfg.ScanSource,
+		// Companion is plumbed for the same source-address invariant
+		// the runtime path enforces: when source-selection has
+		// reserved a companion (e.g. StartupCompanionTarget=0x26)
+		// and that address is already in the registry from an ebusd
+		// preload, the registry-only health check must NOT treat
+		// the reserved companion as a coherent root candidate.
+		// discoverB524RootInRegistry filters companion via
+		// p.companion; without setting it here, that guard is a
+		// no-op for this entry point.
+		companion:      cfg.StartupCompanionTarget,
 		requestTimeout: cfg.SemanticRequestTimeout,
 	}
 	if startupScanB524ProbeFn != nil {

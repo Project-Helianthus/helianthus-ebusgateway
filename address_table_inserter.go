@@ -91,6 +91,11 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		return
 	}
 	if _, exists := i.table.Lookup(addr); exists {
+		// Already in registry (active scan, prior passive observation,
+		// or static seed) — but still attempt canonical-pair aliasing
+		// in case the companion was registered separately and never
+		// went through the new-insert alias path. Idempotent.
+		i.maybeAliasCanonicalCompanion(addr)
 		return
 	}
 
@@ -118,4 +123,29 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		VerificationState: "corroborated_pending",
 		RegistrySlot:      registrySlot,
 	}
+
+	// A.7b — canonical-pair aliasing. If addr is one half of a canonical
+	// pair from the docs-owned eBUS standard table (sourceAddressTableV1)
+	// and the other half is already in the registry, alias them into a
+	// single DeviceEntry so MCP/GraphQL queries return one device with
+	// two addresses. Aliasing only fires for the 25 canonical pairs;
+	// non-canonical neighbours (e.g. 0x26 / 0xEC) are never aliased here.
+	i.maybeAliasCanonicalCompanion(addr)
+}
+
+// maybeAliasCanonicalCompanion calls registry.AliasAddresses(addr, companion)
+// when addr is one half of a canonical eBUS source/companion pair AND the
+// other half is already present in the wrapped registry. Idempotent.
+func (i *AddressTableInserter) maybeAliasCanonicalCompanion(addr byte) {
+	if i == nil || i.table == nil || i.table.reg == nil {
+		return
+	}
+	companion, ok := protocol.Companion(addr)
+	if !ok {
+		return
+	}
+	if _, exists := i.table.reg.Lookup(companion); !exists {
+		return
+	}
+	_ = i.table.reg.AliasAddresses(addr, companion)
 }

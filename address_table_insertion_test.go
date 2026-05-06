@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
 func TestFirstObservation_PositiveACKOnly(t *testing.T) {
@@ -90,6 +91,184 @@ func TestFirstObservation_SourceInserted(t *testing.T) {
 	dstSlot := requireATRSlot(t, table, 0x99)
 	if dstSlot.Role != "target" {
 		t.Fatalf("slot[0x99].Role = %q; want target", dstSlot.Role)
+	}
+}
+
+// TestCanonicalAliasing_SourceCompanionPair_AfterSecondCorroboration asserts
+// that when both a canonical source AND its canonical companion land in the
+// registry, the inserter aliases them as a single device — so MCP/GraphQL
+// queries return one device with two addresses, not two unrelated entries.
+//
+// Per architecture/ebus_standard/12-source-address-table.md, 0x10 ↔ 0x15 is
+// the canonical Heating regulator pair. After the inserter sees:
+//  1. positive ACK from 0x10 → some-target  (inserts 0x10 as initiator)
+//  2. positive ACK from some-source → 0x15  (inserts 0x15 as target — but
+//     the companion-pair gate requires 2 observations of source for
+//     companion(source) insertion; here 0x15 is inserted as direct dst)
+//
+// At the moment both 0x10 and 0x15 are present in the table, the inserter
+// MUST call AliasAddresses(0x10, 0x15) so registry.Lookup(0x10) and
+// registry.Lookup(0x15) return the same DeviceEntry.
+func TestCanonicalAliasing_SourceCompanionPair_AfterBothObserved(t *testing.T) {
+	table, inserter := newATRInsertionHarness(t, DefaultConfig())
+	base := time.Now().UTC()
+
+	// Step 1: observe 0x10 → 0x33-style-target (positive ACK) → inserts
+	// 0x10 as initiator + the target as target.
+	first := atrPassiveTransactionEvent(base, 0x10, 0x99, protocol.SymbolAck)
+	inserter.OnPassiveClassifiedEvent(first)
+	requireATRSlot(t, table, 0x10)
+
+	// Step 2: observe a different source emitting to 0x15 (canonical
+	// companion of 0x10) with positive ACK → inserts 0x15 as target.
+	// Now both 0x10 and 0x15 are present — the inserter MUST alias them.
+	second := atrPassiveTransactionEvent(base.Add(time.Second), 0x71, 0x15, protocol.SymbolAck)
+	inserter.OnPassiveClassifiedEvent(second)
+	requireATRSlot(t, table, 0x15)
+
+	// Step 3: assert canonical aliasing — both addresses resolve to the
+	// same DeviceEntry in the wrapped registry, and the entry exposes
+	// both addresses via Addresses().
+	entryA, okA := table.reg.Lookup(0x10)
+	entryB, okB := table.reg.Lookup(0x15)
+	if !okA || !okB {
+		t.Fatalf("registry.Lookup ok values: 0x10=%v 0x15=%v; want both true", okA, okB)
+	}
+	if entryA.Address() != entryB.Address() {
+		t.Fatalf("canonical pair 0x10 ↔ 0x15 not aliased: 0x10 entry primary=0x%02X, 0x15 entry primary=0x%02X; want same primary", entryA.Address(), entryB.Address())
+	}
+	addrs := entryA.Addresses()
+	hasMaster, hasCompanion := false, false
+	for _, a := range addrs {
+		if a == 0x10 {
+			hasMaster = true
+		}
+		if a == 0x15 {
+			hasCompanion = true
+		}
+	}
+	if !hasMaster || !hasCompanion {
+		t.Fatalf("DeviceEntry.Addresses() = %v; want both 0x10 and 0x15", addrs)
+	}
+}
+
+// TestCanonicalAliasing_FFAndZeroFour_BothDirections asserts the wrap-pair
+// aliasing for 0xFF ↔ 0x04. NETX3 publishes a target at 0x04 whose canonical
+// source is 0xFF (per architecture/ebus_standard/12-source-address-table.md
+// row 25, with byte-modulo arithmetic 0xFF + 0x05 = 0x04). Tests both
+// orderings: 0xFF first then 0x04 (forward) and 0x04 first then 0xFF
+// (reverse).
+func TestCanonicalAliasing_FFAndZeroFour_BothDirections(t *testing.T) {
+	t.Parallel()
+
+	t.Run("FF_then_04", func(t *testing.T) {
+		table, inserter := newATRInsertionHarness(t, DefaultConfig())
+		base := time.Now().UTC()
+
+		// 0xFF as src (frame-start, not NACK byte) → inserts 0xFF.
+		ff := atrPassiveTransactionEvent(base, 0xFF, 0x99, protocol.SymbolAck)
+		inserter.OnPassiveClassifiedEvent(ff)
+		requireATRSlot(t, table, 0xFF)
+
+		// Some-source → 0x04 with positive ACK → inserts 0x04.
+		zero4 := atrPassiveTransactionEvent(base.Add(time.Second), 0x10, 0x04, protocol.SymbolAck)
+		inserter.OnPassiveClassifiedEvent(zero4)
+		requireATRSlot(t, table, 0x04)
+
+		entryFF, okFF := table.reg.Lookup(0xFF)
+		entry04, ok04 := table.reg.Lookup(0x04)
+		if !okFF || !ok04 {
+			t.Fatalf("registry.Lookup ok: 0xFF=%v 0x04=%v", okFF, ok04)
+		}
+		if entryFF.Address() != entry04.Address() {
+			t.Fatalf("0xFF ↔ 0x04 wrap-pair not aliased: 0xFF primary=0x%02X, 0x04 primary=0x%02X", entryFF.Address(), entry04.Address())
+		}
+	})
+
+	t.Run("04_then_FF", func(t *testing.T) {
+		table, inserter := newATRInsertionHarness(t, DefaultConfig())
+		base := time.Now().UTC()
+
+		// Reverse ordering: 0x04 inserted first via dst observation.
+		zero4 := atrPassiveTransactionEvent(base, 0x10, 0x04, protocol.SymbolAck)
+		inserter.OnPassiveClassifiedEvent(zero4)
+		requireATRSlot(t, table, 0x04)
+
+		ff := atrPassiveTransactionEvent(base.Add(time.Second), 0xFF, 0x99, protocol.SymbolAck)
+		inserter.OnPassiveClassifiedEvent(ff)
+		requireATRSlot(t, table, 0xFF)
+
+		entryFF, _ := table.reg.Lookup(0xFF)
+		entry04, _ := table.reg.Lookup(0x04)
+		if entryFF.Address() != entry04.Address() {
+			t.Fatalf("0xFF ↔ 0x04 wrap-pair (reverse order) not aliased: 0xFF primary=0x%02X, 0x04 primary=0x%02X", entryFF.Address(), entry04.Address())
+		}
+	})
+}
+
+// TestCanonicalAliasing_NonCanonicalAddresses_NotAliased asserts that
+// non-canonical companions (e.g. real but non-table addresses 0x26 / 0xEC
+// for VR_71 / SOL00) are NOT aliased even if they appear in the registry
+// alongside other addresses. Aliasing only fires for the 25 canonical
+// pairs from sourceAddressTableV1.
+func TestCanonicalAliasing_NonCanonicalAddresses_NotAliased(t *testing.T) {
+	table, inserter := newATRInsertionHarness(t, DefaultConfig())
+	base := time.Now().UTC()
+
+	// 0x26 (VR_71 target-only address) is observed as target. Its hypothetical
+	// "companion" via math 0x21 is not in the canonical table, and the
+	// canonical-table-backed lookup correctly rejects it.
+	first := atrPassiveTransactionEvent(base, 0x10, 0x26, protocol.SymbolAck)
+	inserter.OnPassiveClassifiedEvent(first)
+	requireATRSlot(t, table, 0x26)
+
+	// 0xEC (SOL00 target-only address) is observed as target. Same situation.
+	second := atrPassiveTransactionEvent(base.Add(time.Second), 0x10, 0xEC, protocol.SymbolAck)
+	inserter.OnPassiveClassifiedEvent(second)
+	requireATRSlot(t, table, 0xEC)
+
+	// 0x26 and 0xEC must remain separate device entries.
+	entryA, okA := table.reg.Lookup(0x26)
+	entryB, okB := table.reg.Lookup(0xEC)
+	if !okA || !okB {
+		t.Fatalf("registry.Lookup ok: 0x26=%v 0xEC=%v; want both true", okA, okB)
+	}
+	if entryA.Address() == entryB.Address() {
+		t.Fatalf("non-canonical addresses 0x26 and 0xEC unexpectedly aliased to primary 0x%02X", entryA.Address())
+	}
+}
+
+// TestCanonicalAliasing_BothPreRegistered_AliasOnObservation asserts that
+// when both halves of a canonical pair were registered BEFORE the inserter
+// runs (e.g. via startup active scan or static seed), a subsequent passive
+// observation of either half still triggers the alias merge. Without this,
+// devices that the active scan picks up as separate entries (the common
+// case for 0x10/0x15 BASV2 controller pair) would never become aliased.
+func TestCanonicalAliasing_BothPreRegistered_AliasOnObservation(t *testing.T) {
+	table, inserter := newATRInsertionHarness(t, DefaultConfig())
+
+	// Pre-register both 0x10 and 0x15 as if startup active scan had
+	// discovered them as separate entries. Force them apart by giving
+	// each a distinct identity so registry.Register doesn't auto-merge.
+	table.reg.Register(registry.DeviceInfo{Address: 0x10, Manufacturer: "Vaillant", DeviceID: "VRC700", SerialNumber: "SN-VRC"})
+	table.reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2", SerialNumber: "SN-BASV2"})
+
+	entry10Pre, _ := table.reg.Lookup(0x10)
+	entry15Pre, _ := table.reg.Lookup(0x15)
+	if entry10Pre.Address() == entry15Pre.Address() {
+		t.Fatalf("test setup: 0x10 and 0x15 unexpectedly share primary 0x%02X (Register auto-merged)", entry10Pre.Address())
+	}
+
+	// Observe passive traffic with 0x10 as src. Inserter sees 0x10 in
+	// table.Lookup → existing → MUST still attempt alias of 0x10's
+	// canonical companion 0x15.
+	event := atrPassiveTransactionEvent(time.Now().UTC(), 0x10, 0x99, protocol.SymbolAck)
+	inserter.OnPassiveClassifiedEvent(event)
+
+	entry10, _ := table.reg.Lookup(0x10)
+	entry15, _ := table.reg.Lookup(0x15)
+	if entry10.Address() != entry15.Address() {
+		t.Fatalf("pre-registered canonical pair 0x10 ↔ 0x15 not aliased after passive observation: 0x10 primary=0x%02X, 0x15 primary=0x%02X", entry10.Address(), entry15.Address())
 	}
 }
 

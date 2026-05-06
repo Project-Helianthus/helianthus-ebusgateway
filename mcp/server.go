@@ -2459,8 +2459,14 @@ func cloneDeviceInfoList(source []deviceInfo) []deviceInfo {
 	}
 	out := make([]deviceInfo, len(source))
 	for i, device := range source {
+		var aliases []int
+		if len(device.Addresses) > 0 {
+			aliases = make([]int, len(device.Addresses))
+			copy(aliases, device.Addresses)
+		}
 		out[i] = deviceInfo{
 			Address:         device.Address,
+			Addresses:       aliases,
 			Manufacturer:    device.Manufacturer,
 			DeviceID:        device.DeviceID,
 			SoftwareVersion: device.SoftwareVersion,
@@ -2472,9 +2478,20 @@ func cloneDeviceInfoList(source []deviceInfo) []deviceInfo {
 }
 
 func findDeviceInfoByAddress(devices []deviceInfo, address byte) (deviceInfo, bool) {
+	target := int(address)
 	for _, device := range devices {
-		if device.Address == int(address) {
+		if device.Address == target {
 			return device, true
+		}
+		// A.7b — canonical-pair aliasing collapses paired addresses
+		// (e.g. 0x10/0x15) into one DeviceEntry whose Address() is the
+		// primary; aliased addresses are exposed via Addresses(). The
+		// snapshot must respect that or queries by alias address would
+		// return "unknown device" when live registry would resolve.
+		for _, alias := range device.Addresses {
+			if alias == target {
+				return device, true
+			}
 		}
 	}
 	return deviceInfo{}, false
@@ -2482,6 +2499,7 @@ func findDeviceInfoByAddress(devices []deviceInfo, address byte) (deviceInfo, bo
 
 type deviceInfo struct {
 	Address         int         `json:"address"`
+	Addresses       []int       `json:"addresses,omitempty"`
 	Manufacturer    string      `json:"manufacturer"`
 	DeviceID        string      `json:"device_id"`
 	SoftwareVersion string      `json:"software_version"`
@@ -3523,8 +3541,25 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 }
 
 func buildDeviceInfo(entry registry.DeviceEntry) deviceInfo {
+	primary := entry.Address()
+	all := entry.Addresses()
+	// Surface the complete address set (primary + aliases) to match the
+	// GraphQL `addresses` semantics in graphql/schema.go. Snapshot
+	// consumers (findDeviceInfoByAddress) check this list to resolve
+	// canonical-pair queries regardless of which half the caller asked
+	// for. MCP↔GraphQL parity contract requires identical list contents.
+	var aliases []int
+	if len(all) > 0 {
+		aliases = make([]int, 0, len(all))
+		for _, a := range all {
+			aliases = append(aliases, int(a))
+		}
+	} else {
+		aliases = []int{int(primary)}
+	}
 	return deviceInfo{
-		Address:         int(entry.Address()),
+		Address:         int(primary),
+		Addresses:       aliases,
 		Manufacturer:    entry.Manufacturer(),
 		DeviceID:        entry.DeviceID(),
 		SoftwareVersion: entry.SoftwareVersion(),

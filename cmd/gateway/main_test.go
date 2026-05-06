@@ -202,6 +202,42 @@ func TestAdmittedMutationSourceForGateway_UnknownStaticFallbackAutoFailsClosed(t
 	}
 }
 
+func TestRecordBusAdmissionTransitionWithStabilityRefreshPublishesOneShotActive(t *testing.T) {
+	origDelay := admissionStabilityRefreshDelay
+	admissionStabilityRefreshDelay = 1100 * time.Millisecond
+	t.Cleanup(func() {
+		admissionStabilityRefreshDelay = origDelay
+	})
+
+	store := ebusgateway.NewBusObservabilityStore(ebusgateway.DefaultConfig())
+	store.SetAdmissionStabilityWindow(ebusgateway.NewAdmissionStabilityWindow(1))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	recordBusAdmissionTransitionWithStabilityRefresh(ctx, store, "active", 0x7F, 0x84, "active_probe_passed")
+	if admission := store.Snapshot().Summary.Status.BusAdmission; admission != nil {
+		t.Fatalf("BusAdmission before stability refresh = %+v; want nil", admission)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		admission := store.Snapshot().Summary.Status.BusAdmission
+		if admission != nil {
+			if admission.State != "active" || admission.Source != 0x7F || admission.CompanionTarget != 0x84 || admission.Reason != "active_probe_passed" {
+				t.Fatalf("BusAdmission = %+v; want active 0x7F/0x84 active_probe_passed", admission)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("BusAdmission stayed nil after stability refresh")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
 func TestWireObserveFirstObserversWiresDedupSnapshotterIntoObservabilityStore(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.BroadcastListen = true

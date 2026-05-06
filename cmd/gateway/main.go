@@ -40,6 +40,7 @@ var (
 	startPassiveTransactionReconstructor      = ebusgateway.StartPassiveTransactionReconstructor
 	startBroadcastListenerWithReconstructorFn = ebusgateway.StartBroadcastListenerWithReconstructor
 	startHTTPServerFn                         = startHTTPServer
+	admissionStabilityRefreshDelay            = time.Duration(ebusgateway.StartupAdmissionStateMinStabilitySecondsDefault)*time.Second + 200*time.Millisecond
 	instanceGUIDPattern                       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 )
 
@@ -76,6 +77,28 @@ func main() {
 	if err := run(ctx, cfg); err != nil {
 		log.Fatalf("gateway: %v", err)
 	}
+}
+
+func recordBusAdmissionTransitionWithStabilityRefresh(ctx context.Context, store *ebusgateway.BusObservabilityStore, state string, source, companionTarget byte, reason string) {
+	if store == nil {
+		return
+	}
+	if store.RecordBusAdmissionTransition(state, source, companionTarget, reason) {
+		return
+	}
+	if state != "active" && state != "degraded" {
+		return
+	}
+	go func() {
+		timer := time.NewTimer(admissionStabilityRefreshDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			store.RecordBusAdmissionTransition(state, source, companionTarget, reason)
+		}
+	}()
 }
 
 func run(ctx context.Context, cfg ebusgateway.Config) error {
@@ -263,9 +286,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				log.Fatalf("FATAL: SAS M4 enum violation on source-selection default-policy path: %v", perr)
 			}
 			log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X provenance=source_selection_default_policy", result.Source, result.Companion)
-			if busObservability != nil {
-				busObservability.RecordBusAdmissionTransition("pending", result.Source, result.Companion, "active_probe_pending")
-			}
+			recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "pending", result.Source, result.Companion, "active_probe_pending")
 		}
 	}
 	if sourceSelection == nil {
@@ -282,9 +303,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				log.Fatalf("FATAL: SAS M4 enum violation on configured source validation path: %v", perr)
 			}
 			log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X provenance=configured_source", result.Source, result.Companion)
-			if busObservability != nil {
-				busObservability.RecordBusAdmissionTransition("pending", result.Source, result.Companion, "active_probe_pending")
-			}
+			recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "pending", result.Source, result.Companion, "active_probe_pending")
 		}
 	}
 
@@ -338,7 +357,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			busObservability.SetAdmissionStabilityWindow(
 				ebusgateway.NewAdmissionStabilityWindow(ebusgateway.StartupAdmissionStateMinStabilitySecondsDefault),
 			)
-			busObservability.RecordBusAdmissionTransition("pending", 0, 0, "source_selection_warmup_in_progress")
+			recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "pending", 0, 0, "source_selection_warmup_in_progress")
 		}
 		// Wire M5 expvar surfaces: state pending -> warmup cycle starts.
 		// Resolves cruise-run #20 validation finding that the 11
@@ -355,9 +374,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		cancel()
 		if err != nil {
 			log.Printf("startup source selection degraded reason=source_selection_failed err=%v", err)
-			if busObservability != nil {
-				busObservability.RecordBusAdmissionTransition("degraded", 0, 0, "source_selection_failed")
-			}
+			recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "degraded", 0, 0, "source_selection_failed")
 			metrics.MarkDegraded(time.Now())
 			artifactBuilder.SetDegraded("source_selection_failed")
 			if perr := artifactBuilder.SetSourceSelectionMode("degraded_no_events"); perr != nil {
@@ -378,9 +395,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 					log.Fatalf("FATAL: AD23 enum violation on source-selection path: %v", perr)
 				}
 				log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X", result.Source, result.Companion)
-				if busObservability != nil {
-					busObservability.RecordBusAdmissionTransition("pending", result.Source, result.Companion, "active_probe_pending")
-				}
+				recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "pending", result.Source, result.Companion, "active_probe_pending")
 				// Reflect selector-observed event count if exposed by ebusgo.
 				// SourceAddressSelection does not currently surface a count; the
 				// warmup_events_seen stays at the per-cycle reset value
@@ -472,18 +487,14 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 					builder.SetAdmittedMutationSource(sourceSelection.Source)
 					artifactBuilder.SetSourceSelectionActive()
 					metrics.MarkActive()
-					if busObservability != nil {
-						busObservability.RecordBusAdmissionTransition("active", sourceSelection.Source, sourceSelection.Companion, "active_probe_passed")
-					}
+					recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "active", sourceSelection.Source, sourceSelection.Companion, "active_probe_passed")
 				}
 			case <-startupScanSignals.admissionFailed:
 				if sourceSelection != nil {
 					builder.ClearAdmittedMutationSource()
 					artifactBuilder.SetDegraded("active_probe_failed")
 					metrics.MarkDegraded(time.Now())
-					if busObservability != nil {
-						busObservability.RecordBusAdmissionTransition("degraded", sourceSelection.Source, sourceSelection.Companion, "active_probe_failed")
-					}
+					recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "degraded", sourceSelection.Source, sourceSelection.Companion, "active_probe_failed")
 				}
 				if shouldCloseSemanticBarrier(admissionPath, overrideSet, sourceSelection != nil) {
 					if semanticBarrier != nil {

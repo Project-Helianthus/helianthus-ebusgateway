@@ -51,6 +51,124 @@ func TestShouldStopDiscoveryScan(t *testing.T) {
 	}
 }
 
+func TestSourceAdmissionProbeSatisfied(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		sourceSelectionActive bool
+		activeConfirmed       bool
+		confirmationSatisfied bool
+		want                  bool
+	}{
+		{
+			name:                  "semantic confirmation passes",
+			confirmationSatisfied: true,
+			want:                  true,
+		},
+		{
+			name:                  "source selection active probe passes independently of semantic root confirmation",
+			sourceSelectionActive: true,
+			activeConfirmed:       true,
+			want:                  true,
+		},
+		{
+			name:            "non admission scan cannot use active probe alone",
+			activeConfirmed: true,
+			want:            false,
+		},
+		{
+			name:                  "source selection without active evidence fails",
+			sourceSelectionActive: true,
+			want:                  false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sourceAdmissionProbeSatisfied(test.sourceSelectionActive, test.activeConfirmed, test.confirmationSatisfied); got != test.want {
+				t.Fatalf("sourceAdmissionProbeSatisfied(source_selection_active=%v, active=%v, confirmation=%v) = %v; want %v",
+					test.sourceSelectionActive, test.activeConfirmed, test.confirmationSatisfied, got, test.want)
+			}
+		})
+	}
+}
+
+func TestShouldStopSourceAdmissionScan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                          string
+		sourceSelectionActive         bool
+		activeConfirmed               bool
+		total                         int
+		confirmationPending           bool
+		confirmationSatisfied         bool
+		confirmationFallbackExhausted bool
+		want                          bool
+	}{
+		{
+			name:                  "source selection active probe stops before semantic confirmation resolves",
+			sourceSelectionActive: true,
+			activeConfirmed:       true,
+			total:                 1,
+			confirmationPending:   true,
+			want:                  true,
+		},
+		{
+			name:                "semantic-only scan still waits for pending semantic confirmation",
+			activeConfirmed:     true,
+			total:               1,
+			confirmationPending: true,
+			want:                false,
+		},
+		{
+			name:                  "semantic confirmation still stops any path",
+			total:                 1,
+			confirmationPending:   true,
+			confirmationSatisfied: true,
+			want:                  true,
+		},
+		{
+			name:                          "fallback exhaustion still stops source selection without active evidence",
+			sourceSelectionActive:         true,
+			total:                         1,
+			confirmationPending:           true,
+			confirmationFallbackExhausted: true,
+			want:                          true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := shouldStopSourceAdmissionScan(
+				test.sourceSelectionActive,
+				test.activeConfirmed,
+				test.total,
+				test.confirmationPending,
+				test.confirmationSatisfied,
+				test.confirmationFallbackExhausted,
+			)
+			if got != test.want {
+				t.Fatalf("shouldStopSourceAdmissionScan(source_selection_active=%v, active=%v, total=%d, pending=%v, satisfied=%v, exhausted=%v) = %v; want %v",
+					test.sourceSelectionActive,
+					test.activeConfirmed,
+					test.total,
+					test.confirmationPending,
+					test.confirmationSatisfied,
+					test.confirmationFallbackExhausted,
+					got,
+					test.want,
+				)
+			}
+		})
+	}
+}
+
 func TestShouldRetryDiscoveryWithFullRange(t *testing.T) {
 	origProbeFn := startupScanB524ProbeFn
 	t.Cleanup(func() { startupScanB524ProbeFn = origProbeFn })

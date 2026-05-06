@@ -1046,12 +1046,28 @@ func startupScanHasCoherentVaillantRoot(ctx context.Context, cfg ebusgateway.Con
 		reg:            gateway.Registry,
 		bus:            gateway.Bus,
 		source:         cfg.ScanSource,
+		// Companion is plumbed for the same source-address invariant
+		// the runtime path enforces: when source-selection has
+		// reserved a companion (e.g. StartupCompanionTarget=0x26)
+		// and that address is already in the registry from an ebusd
+		// preload, the registry-only health check must NOT treat
+		// the reserved companion as a coherent root candidate.
+		// discoverB524RootInRegistry filters companion via
+		// p.companion; without setting it here, that guard is a
+		// no-op for this entry point.
+		companion:      cfg.StartupCompanionTarget,
 		requestTimeout: cfg.SemanticRequestTimeout,
 	}
 	if startupScanB524ProbeFn != nil {
 		poller.b524ProbeFn = startupScanB524ProbeFn
 	}
-	_, err := poller.discoverB524Root(probeCtx)
+	// Registry-only flavor: this is a "is the existing registry
+	// coherent?" health check, not a discovery attempt. The recovery
+	// scan flow (shouldRetryDiscoveryWithFullRange) depends on this
+	// returning false when the regulator is not yet in the registry,
+	// even though discoverB524Root's structural-augmentation path
+	// would converge by probing 0x15 directly.
+	_, err := poller.discoverB524RootInRegistry(probeCtx)
 	return err == nil
 }
 
@@ -1097,7 +1113,19 @@ func startupProbeTargetsForSelection(selection protocol.SourceAddressSelection) 
 	if len(targets) > 0 {
 		return targets
 	}
-	return sanitizeStartupProbeTargets([]byte{defaultVaillantTarget}, selection.Source, selection.Companion)
+	// Source-selection passive warmup observed no probable targets.
+	// Falling back to {0x08} alone leaves the regulator (0x15) and
+	// primary controller (0x26) undiscovered — semantic B524 root
+	// discovery cannot converge against a registry that contains
+	// only the boiler. Seed with the bounded Vaillant structural
+	// target set so the directed startup probe registers any of the
+	// three structural devices that respond to identity. Source
+	// remains the admitted selection.Source.
+	return sanitizeStartupProbeTargets(
+		ebusgateway.VaillantStructuralStartupProbeTargets,
+		selection.Source,
+		selection.Companion,
+	)
 }
 
 func startupProbeTargets(cfg ebusgateway.Config) []byte {

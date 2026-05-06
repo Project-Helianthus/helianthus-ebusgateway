@@ -646,7 +646,11 @@ func TestRun_ProxySingleENSAutoUsesDefaultSelectionBeforeProxyResolution(t *test
 
 	select {
 	case got := <-startupTargets:
-		want := []byte{defaultVaillantTarget}
+		// Structural fallback: when source-selection's passive warmup
+		// observed no probable targets, the startup probe seed is the
+		// bounded Vaillant structural set so 0x15 (regulator) and 0x26
+		// (primary controller) enter discovery — not the boiler alone.
+		want := []byte{0x08, 0x15, 0x26}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("startup probe targets = % X; want % X", got, want)
 		}
@@ -711,7 +715,10 @@ func TestRun_DefaultSourceSelectionSeedsStartupProbeTargets(t *testing.T) {
 
 	select {
 	case got := <-startupTargets:
-		want := []byte{defaultVaillantTarget}
+		// Structural fallback: passive warmup on the direct adapter
+		// observed no probable targets in the test harness, so the
+		// startup probe seeds the bounded Vaillant structural set.
+		want := []byte{0x08, 0x15, 0x26}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("startup probe targets = % X; want % X", got, want)
 		}
@@ -791,7 +798,10 @@ func TestRun_ConfiguredDirectSourceSeedsStartupProbeTargets(t *testing.T) {
 		if got.auto {
 			t.Fatal("startup source remained auto; want configured direct source")
 		}
-		wantTargets := []byte{defaultVaillantTarget}
+		// Structural fallback: configured-direct path with no observed
+		// probable targets seeds the bounded Vaillant structural set
+		// (sanitized vs source/companion) — not the boiler alone.
+		wantTargets := []byte{0x08, 0x15, 0x26}
 		if !reflect.DeepEqual(got.targets, wantTargets) {
 			t.Fatalf("startup probe targets = % X; want % X", got.targets, wantTargets)
 		}

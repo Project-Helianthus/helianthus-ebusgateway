@@ -463,6 +463,9 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 	}
 
 	startupCfg := resolveStartupScanSourceConfig(cfg)
+	sourceSelectionActiveAdmission := admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable &&
+		!overrideSet &&
+		startupCfg.StartupCompanionTarget != 0
 	if adapterDirectSpecialCased {
 		log.Printf("startup scan: adapter-direct multiplexer detected; treating as source-selection-capable (underlying transport is always ENH/ENS)")
 	}
@@ -603,8 +606,8 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 						case <-timer.C:
 						}
 						continue
-					} else if shouldStopDiscoveryScan(total, confirmationPending, confirmationSatisfied, false) {
-						if confirmationSatisfied {
+					} else if shouldStopSourceAdmissionScan(sourceSelectionActiveAdmission, false, total, confirmationPending, confirmationSatisfied, false) {
+						if sourceAdmissionProbeSatisfied(sourceSelectionActiveAdmission, false, confirmationSatisfied) {
 							signalActiveProbePassed()
 						} else {
 							signalAdmissionFailed()
@@ -781,8 +784,8 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 				forceFullRangeNextPass = true
 				fullRangeRecoveryAttempted = true
 				restrictedConfirmationAfterRecoveryPending = true
-			} else if shouldStopDiscoveryScan(total, confirmationPending, confirmationSatisfied, confirmationFallbackExhausted) {
-				if confirmationSatisfied {
+			} else if shouldStopSourceAdmissionScan(sourceSelectionActiveAdmission, activeConfirmed, total, confirmationPending, confirmationSatisfied, confirmationFallbackExhausted) {
+				if sourceAdmissionProbeSatisfied(sourceSelectionActiveAdmission, activeConfirmed, confirmationSatisfied) {
 					signalActiveProbePassed()
 				} else {
 					signalAdmissionFailed()
@@ -933,6 +936,20 @@ func shouldStopDiscoveryScan(total int, confirmationPending bool, confirmationSa
 		return false
 	}
 	return true
+}
+
+func sourceAdmissionProbeSatisfied(sourceSelectionActiveAdmission bool, activeConfirmed bool, confirmationSatisfied bool) bool {
+	if confirmationSatisfied {
+		return true
+	}
+	return sourceSelectionActiveAdmission && activeConfirmed
+}
+
+func shouldStopSourceAdmissionScan(sourceSelectionActiveAdmission bool, activeConfirmed bool, total int, confirmationPending bool, confirmationSatisfied bool, confirmationFallbackExhausted bool) bool {
+	if sourceAdmissionProbeSatisfied(sourceSelectionActiveAdmission, activeConfirmed, confirmationSatisfied) {
+		return true
+	}
+	return shouldStopDiscoveryScan(total, confirmationPending, confirmationSatisfied, confirmationFallbackExhausted)
 }
 
 func startupScanConfirmationSatisfied(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, total int, activeConfirmation bool) bool {

@@ -4939,6 +4939,214 @@ func TestCapabilityFirstDiscovery_SkipsNonCoherentDevice(t *testing.T) {
 	}
 }
 
+// TestCapabilityFirstDiscovery_StructuralFallbackWhenRegistryHasOnlyBoiler
+// reproduces the post-source-selection regression where startup admission
+// completes with only the boiler in the registry. discoverB524Root must
+// augment its candidate list with the bounded Vaillant structural target
+// set so the regulator (0x15) can be probed even before it appears in
+// the registry.
+func TestCapabilityFirstDiscovery_StructuralFallbackWhenRegistryHasOnlyBoiler(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+
+	var probed []byte
+	// Only 0x15 is coherent. Without structural fallback, 0x15 is not in
+	// the registry and discoverB524Root would return "no coherent
+	// responder among [0x08]".
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: false, 0x15: true, 0x26: false}, &probed)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v; structural fallback must add 0x15/0x26 to candidates", err)
+	}
+	if addr != 0x15 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x15 (structural fallback regulator)", addr)
+	}
+	if len(probed) == 0 || probed[0] != 0x15 {
+		t.Fatalf("probed = %v; want 0x15 first per D1 ordering", probed)
+	}
+}
+
+// TestCapabilityFirstDiscovery_RichRegistryStopsAt0x15CoherentRoot pins the
+// stop-at-first-coherent invariant when the registry already contains the
+// regulator. Structural augmentation is now unconditional (idempotent — see
+// the hostile-registry rationale in the next test) but D1 ordering must
+// still terminate on the first coherent candidate. With 0x15 coherent,
+// 0x26 must never be probed.
+func TestCapabilityFirstDiscovery_RichRegistryStopsAt0x15CoherentRoot(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+
+	var probed []byte
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: false, 0x15: true, 0x26: true}, &probed)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v", err)
+	}
+	if addr != 0x15 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x15", addr)
+	}
+	for _, p := range probed {
+		if p == 0x26 {
+			t.Fatalf("D1 stop-at-first violated: probed includes 0x26 after 0x15 coherent: %v", probed)
+		}
+	}
+}
+
+// TestCapabilityFirstDiscovery_HostileRegistryWithStaleSlaveStillProbesRegulator
+// closes the post-source-selection regression hole identified during
+// adversarial review: a registry containing the boiler plus any stray
+// non-Vaillant entry (e.g. 0xEC SOL00 from passive observation, or a
+// phantom from a prior process) must NOT suppress the structural
+// fallback. Always-augment guarantees 0x15 enters the candidate list
+// regardless of registry size.
+func TestCapabilityFirstDiscovery_HostileRegistryWithStaleSlaveStillProbesRegulator(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+	// Stale passive-only-responder entry from prior session — never
+	// responds to active B524 probes.
+	reg.Register(registry.DeviceInfo{Address: 0xEC, Manufacturer: "", DeviceID: ""})
+
+	var probed []byte
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: false, 0xEC: false, 0x15: true, 0x26: false}, &probed)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v; structural fallback must still fire when registry contains stray passive-only entries", err)
+	}
+	if addr != 0x15 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x15", addr)
+	}
+	if len(probed) == 0 || probed[0] != 0x15 {
+		t.Fatalf("probed = %v; want 0x15 first per D1 ordering", probed)
+	}
+}
+
+// TestRefreshDiscovery_StructuralFallbackRegistersControllerInRegistry
+// locks the live-evidence claim: when discoverB524Root converges on 0x15
+// via the structural-fallback path (i.e. 0x15 was NOT in the registry
+// when discovery started), refreshDiscovery must register 0x15 so the
+// regulator surfaces in GraphQL devices and on the router plane.
+// Without this side-effect the user-visible "GraphQL devices includes
+// regulator 0x15" outcome is unattainable from the gateway-side fix.
+func TestRefreshDiscovery_StructuralFallbackRegistersControllerInRegistry(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: false, 0x15: true, 0x26: false}, nil)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v", err)
+	}
+	if addr != 0x15 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x15", addr)
+	}
+
+	// Pre-condition: 0x15 not in registry.
+	var has0x15Before bool
+	reg.Iterate(func(e registry.DeviceEntry) bool {
+		if e != nil && e.Address() == 0x15 {
+			has0x15Before = true
+			return false
+		}
+		return true
+	})
+	if has0x15Before {
+		t.Fatal("test setup invalid: 0x15 already in registry before structural-fallback registration")
+	}
+
+	// Trigger the registration helper directly. (refreshDiscovery wraps
+	// this with snapshot rebuilds we don't need to exercise here.)
+	poller.registerStructuralControllerIfMissing(addr)
+
+	var has0x15After bool
+	var manufacturer string
+	reg.Iterate(func(e registry.DeviceEntry) bool {
+		if e != nil && e.Address() == 0x15 {
+			has0x15After = true
+			manufacturer = e.Manufacturer()
+			return false
+		}
+		return true
+	})
+	if !has0x15After {
+		t.Fatal("registry missing 0x15 after structural-fallback registration; GraphQL devices will not surface the regulator")
+	}
+	if manufacturer != "Vaillant" {
+		t.Fatalf("registered 0x15 manufacturer = %q; want %q", manufacturer, "Vaillant")
+	}
+}
+
+// TestRegisterStructuralControllerIfMissing_NoOpWhenAlreadyRegistered pins
+// the idempotence contract: repeated structural-fallback calls for an
+// already-registered controller must not duplicate registry entries or
+// thrash the router plane.
+func TestRegisterStructuralControllerIfMissing_NoOpWhenAlreadyRegistered(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+
+	poller := newTestPoller(reg)
+
+	refreshCount := 0
+	poller.routerPlanesRefreshFn = func() { refreshCount++ }
+
+	poller.registerStructuralControllerIfMissing(0x15)
+
+	if refreshCount != 0 {
+		t.Fatalf("router plane refreshed %d times for already-registered controller; want 0", refreshCount)
+	}
+
+	count := 0
+	reg.Iterate(func(e registry.DeviceEntry) bool {
+		if e != nil && e.Address() == 0x15 {
+			count++
+		}
+		return true
+	})
+	if count != 1 {
+		t.Fatalf("registry has %d entries for 0x15; want 1 (idempotent)", count)
+	}
+}
+
+// TestCapabilityFirstDiscovery_StructuralFallbackEmptyRegistry covers the
+// degenerate case where registry is empty — structural fallback alone
+// must permit discovery to attempt the structural set rather than
+// returning "no devices in registry".
+func TestCapabilityFirstDiscovery_StructuralFallbackEmptyRegistry(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+
+	var probed []byte
+	poller := newTestPoller(reg)
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x15: true}, &probed)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v; want structural fallback to attempt 0x15", err)
+	}
+	if addr != 0x15 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x15", addr)
+	}
+}
+
 func TestEnrichRegulatorIdentity(t *testing.T) {
 	t.Parallel()
 

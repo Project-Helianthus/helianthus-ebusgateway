@@ -339,6 +339,7 @@ type vaillantSemanticPoller struct {
 	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
 	b524ProbeFn            func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
 	sendFrameFn            func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error)
+	routerPlanesRefreshFn  func()
 	nowFn                  func() time.Time
 }
 
@@ -706,6 +707,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		OnSuppressed:       poller.onSemanticReadBreakerSuppressed,
 	})
 	poller.adapterInfo = newVaillantAdapterInfoState(gateway.Bus, gateway.Transport, provider)
+	poller.routerPlanesRefreshFn = func() { _ = gateway.RefreshRouterPlanes() }
 	return poller
 }
 
@@ -1657,6 +1659,16 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.refreshFM5Semantic(ctx)
 		return
 	}
+
+	// When B524 root discovery converges via the structural-fallback
+	// path, the controller address may not yet be in the registry —
+	// the directed startup probe that would normally register it
+	// either has not run for this address (e.g. the regulator missed
+	// the startup window) or did not yield enrichment. Register a
+	// minimal Vaillant entry so GraphQL devices and the router plane
+	// reflect the regulator. Registry de-dupes on address, so a
+	// no-op when the controller is already known.
+	p.registerStructuralControllerIfMissing(controller)
 
 	if enrichment := p.enrichRegulatorIdentity(controller); enrichment != nil {
 		log.Printf("semantic_controller_enrichment address=0x%02x family=%s device=%s",
@@ -6586,10 +6598,49 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 	return false
 }
 
-// discoverB524Root finds the B524 semantic root by probing candidates with
-// multi-register coherency checks. Iterates D1-ordered: 0x15 first (common
-// regulator address), then ascending. Stops at first coherent candidate.
+// b524DiscoveryOptions controls how discoverB524RootWithOptions builds its
+// candidate set. The default zero value (augmentStructural=false) is the
+// registry-health-check semantic — answers "does the existing registry
+// contain a coherent B524 root?" without probing addresses outside the
+// registry. Set augmentStructural=true for the production discovery
+// path used by refreshDiscovery, which unconditionally probes the
+// bounded Vaillant structural target set even when the registry has
+// not yet learned about the regulator.
+type b524DiscoveryOptions struct {
+	augmentStructural bool
+}
+
+// discoverB524Root is the production discovery path. It augments the
+// registry-derived candidate list with the bounded Vaillant structural
+// target set {0x08, 0x15, 0x26}, probes D1-ordered (0x15 first), and
+// stops at the first coherent candidate.
+//
+// Structural augmentation is unconditional and idempotent: the dedup
+// map collapses overlap, and the structural set is bounded to three
+// non-broadcast unicast targets. The alternative — gating on registry
+// size — has a hostile-registry hole where any stray non-Vaillant
+// entry (e.g. {0x08 boiler, 0xEC passive-only responder}) suppresses
+// the fallback exactly when it is needed.
+//
+// Probing structural addresses that are not yet in the registry is
+// safe: the unicast probe either elicits a coherent response (in
+// which case refreshDiscovery registers the controller post-
+// discovery via registerStructuralControllerIfMissing) or it does
+// not. Source-address invariant is upheld — the probe uses the
+// existing admitted source via probeFn.
 func (p *vaillantSemanticPoller) discoverB524Root(ctx context.Context) (byte, error) {
+	return p.discoverB524RootWithOptions(ctx, b524DiscoveryOptions{augmentStructural: true})
+}
+
+// discoverB524RootInRegistry is the registry-health-check path. It
+// considers ONLY candidates already in the registry. Used by startup
+// scan helpers to ask "is the existing registry coherent?", which is
+// a distinct question from "where is the regulator?".
+func (p *vaillantSemanticPoller) discoverB524RootInRegistry(ctx context.Context) (byte, error) {
+	return p.discoverB524RootWithOptions(ctx, b524DiscoveryOptions{augmentStructural: false})
+}
+
+func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context, opts b524DiscoveryOptions) (byte, error) {
 	if p == nil || p.reg == nil {
 		return 0, fmt.Errorf("gateway.discoverB524Root: nil poller or registry")
 	}
@@ -6599,28 +6650,37 @@ func (p *vaillantSemanticPoller) discoverB524Root(ctx context.Context) (byte, er
 		probeFn = p.probeB524Register
 	}
 
+	candidateSet := make(map[byte]struct{})
 	var candidates []byte
-	has0x15 := false
 	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
 		if entry == nil {
 			return true
 		}
 		addr := entry.Address()
-		if addr == 0x15 {
-			has0x15 = true
+		if _, dup := candidateSet[addr]; !dup {
+			candidateSet[addr] = struct{}{}
+			candidates = append(candidates, addr)
 		}
-		candidates = append(candidates, addr)
 		return true
 	})
+
+	if opts.augmentStructural {
+		for _, addr := range ebusgateway.VaillantStructuralStartupProbeTargets {
+			if _, dup := candidateSet[addr]; dup {
+				continue
+			}
+			candidateSet[addr] = struct{}{}
+			candidates = append(candidates, addr)
+		}
+	}
 
 	if len(candidates) == 0 {
 		return 0, fmt.Errorf("gateway.discoverB524Root: no devices in registry")
 	}
 
 	slices.Sort(candidates)
-	candidates = slices.Compact(candidates)
 
-	if has0x15 {
+	if _, has0x15 := candidateSet[0x15]; has0x15 {
 		ordered := make([]byte, 0, len(candidates))
 		ordered = append(ordered, 0x15)
 		for _, c := range candidates {
@@ -6650,6 +6710,45 @@ func (p *vaillantSemanticPoller) discoverB524Root(ctx context.Context) (byte, er
 		addrs[i] = fmt.Sprintf("0x%02x", c)
 	}
 	return 0, fmt.Errorf("gateway.discoverB524Root: no coherent responder among [%s]", strings.Join(addrs, ", "))
+}
+
+// registerStructuralControllerIfMissing registers a minimal Vaillant
+// device entry for a B524-coherent controller address that is not yet
+// in the registry. This closes the gap where discoverB524Root converges
+// via the structural-fallback path (probing 0x15 / 0x26 even when they
+// are absent from the registry) — the address must surface in
+// GraphQL devices and on the router plane after discovery.
+//
+// The minimal entry is safe: the address has just satisfied the B524
+// multi-register coherency check, which is strong evidence of a
+// Vaillant regulator. Registry de-dupes on address, so this is a
+// no-op for already-known controllers. Manufacturer is the only
+// identity field set; richer fields (DeviceID, SerialNumber,
+// SoftwareVersion) are populated naturally by subsequent identity
+// reads or by the discovery promotion pipeline once that lands.
+func (p *vaillantSemanticPoller) registerStructuralControllerIfMissing(controller byte) {
+	if p == nil || p.reg == nil || controller == 0 {
+		return
+	}
+	already := false
+	p.reg.Iterate(func(e registry.DeviceEntry) bool {
+		if e != nil && e.Address() == controller {
+			already = true
+			return false
+		}
+		return true
+	})
+	if already {
+		return
+	}
+	p.reg.Register(registry.DeviceInfo{
+		Address:      controller,
+		Manufacturer: "Vaillant",
+	})
+	log.Printf("semantic_controller_registry_register address=0x%02x source=b524_structural_fallback", controller)
+	if p.routerPlanesRefreshFn != nil {
+		p.routerPlanesRefreshFn()
+	}
 }
 
 // enrichRegulatorIdentity returns enrichment metadata for the B524 root device.

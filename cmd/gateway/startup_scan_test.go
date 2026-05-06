@@ -434,14 +434,56 @@ func TestSanitizeStartupProbeTargets_PreservesAllConfiguredTargets(t *testing.T)
 	}
 }
 
-func TestStartupProbeTargetsForSelection_DefaultPolicySeedsBoundedTarget(t *testing.T) {
+func TestStartupProbeTargetsForSelection_DefaultPolicySeedsStructuralVaillantSet(t *testing.T) {
 	t.Parallel()
 
+	// When source-address selection observes no probable targets, the
+	// fallback MUST seed the bounded Vaillant structural set (boiler,
+	// regulator, primary controller) — not the boiler alone. Otherwise
+	// the regulator (0x15) and VR_71 (0x26) never enter discovery and
+	// the post-source-selection regression of an empty regulator
+	// surface reproduces.
 	targets := startupProbeTargetsForSelection(protocol.SourceAddressSelection{
 		Source:    0x7F,
 		Companion: 0x84,
 	})
-	want := []byte{defaultVaillantTarget}
+	want := []byte{0x08, 0x15, 0x26}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("startup probe targets = % X; want % X", targets, want)
+	}
+}
+
+func TestStartupProbeTargetsForSelection_StructuralFallbackRespectsSourceAndCompanion(t *testing.T) {
+	t.Parallel()
+
+	// Sanitization must continue to drop any structural-set entry that
+	// collides with the admitted source or its companion target. This
+	// guards against accidentally probing our own admitted source as
+	// a target.
+	targets := startupProbeTargetsForSelection(protocol.SourceAddressSelection{
+		Source:    0x15, // regulator address used as source — drops 0x15 from targets
+		Companion: 0x26, // VR_71 used as companion — drops 0x26 from targets
+	})
+	want := []byte{0x08}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("startup probe targets = % X; want % X", targets, want)
+	}
+}
+
+func TestStartupProbeTargetsForSelection_PrefersObservedTargetsWhenAvailable(t *testing.T) {
+	t.Parallel()
+
+	// When passive warmup observed probable targets, the structural
+	// fallback must NOT replace them. Observed evidence > structural
+	// guess.
+	targets := startupProbeTargetsForSelection(protocol.SourceAddressSelection{
+		Source:    0x7F,
+		Companion: 0x84,
+		Metrics: protocol.SourceAddressSelectionMetrics{
+			ObservedProbableTargets: []byte{0x08, 0x15},
+		},
+	})
+	want := []byte{0x08, 0x15}
 	if !reflect.DeepEqual(targets, want) {
 		t.Fatalf("startup probe targets = % X; want % X", targets, want)
 	}

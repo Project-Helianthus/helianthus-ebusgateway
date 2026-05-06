@@ -30,6 +30,19 @@ type EvidenceRecord struct {
 // enforces responder-range [0x03, 0xFE] excluding 0xAA (SYN) and 0xFE (broadcast).
 var VaillantBaselineTopologySeed = []byte{0x08, 0x15, 0x26, 0x04, 0xF6, 0xEC}
 
+// VaillantStructuralStartupProbeTargets is the bounded set of Vaillant
+// device targets used as the structural startup-probe fallback when the
+// source-address selector's passive warmup observed no probable targets.
+//
+// Why this is narrower than VaillantBaselineTopologySeed: stealth slaves
+// (0x04/0xF6 NETX3, 0xEC SOL00) are passive-only and do not respond to
+// directed identity probes. The structural set is the active-probable
+// subset {boiler, regulator, primary controller}.
+//
+// These are TARGETS for active probes from the admitted source —
+// never source addresses themselves.
+var VaillantStructuralStartupProbeTargets = []byte{0x08, 0x15, 0x26}
+
 // ValidateBaselineTopologySeed checks the config-provided seed against the
 // responder-address range.
 func ValidateBaselineTopologySeed(seed []byte) error {

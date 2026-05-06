@@ -40,16 +40,25 @@ func IsB524ResponseCoherent(responseData []byte, group byte, addr uint16) bool {
 // request's Data field. Returns false when the request is too short
 // or the layout is unrecognized.
 //
-// B524 read request Data layout (canonical):
+// B524 read request Data layout (canonical, per buildB524ReadSelector
+// in cmd/gateway/semantic_vaillant.go):
 //
-//	data[0] = opcode  (e.g. 0x06 = remote read, 0x02 = local)
-//	data[1] = group   (semantic group identifier)
-//	data[2] = instance
-//	data[3] = addr_lo
-//	data[4] = addr_hi
+//	data[0] = opcode    (e.g. 0x06 = remote read, 0x02 = local)
+//	data[1] = op        (0x00 = read, 0x01 = write)
+//	data[2] = group     (semantic group identifier)
+//	data[3] = instance
+//	data[4] = addr_lo
+//	data[5] = addr_hi
+//
+// An earlier extractor version used the wrong offsets (data[1] as
+// group, data[3..4] as addr) — that mismatched the canonical builder
+// layout and would have caused real-device B524 responses to fail
+// strong-evidence coherency on the passive promotion path. This
+// implementation now matches the builder exactly so a coherent
+// B524 transaction observed once promotes the responder as intended.
 func b524RequestParameters(requestData []byte) (group byte, addr uint16, ok bool) {
-	if len(requestData) < 5 {
+	if len(requestData) < 6 {
 		return 0, 0, false
 	}
-	return requestData[1], uint16(requestData[3]) | uint16(requestData[4])<<8, true
+	return requestData[2], uint16(requestData[4]) | uint16(requestData[5])<<8, true
 }

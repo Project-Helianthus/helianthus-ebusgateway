@@ -1641,16 +1641,21 @@ func TestPassiveCorruptedRequestIsNonError(t *testing.T) {
 // (response echoes the request's group + addr in canonical position).
 // Used by evidence-strong tests where the strict coherency check must
 // pass for single-observation promotion.
+//
+// Layout matches buildB524ReadSelector exactly (6-byte request):
+//
+//	[opcode, op, group, instance, addr_lo, addr_hi]
 func observabilityCoherentB524TransactionEvent(observedAt time.Time, source, target byte) PassiveClassifiedEvent {
 	const (
 		opcode     = byte(0x06)
+		op         = byte(0x00) // read
 		group      = byte(0x03)
 		instance   = byte(0x01)
 		addrLo     = byte(0x22)
 		addrHi     = byte(0x00)
 		statusByte = byte(0x00)
 	)
-	requestData := []byte{opcode, group, instance, addrLo, addrHi}
+	requestData := []byte{opcode, op, group, instance, addrLo, addrHi}
 	// Response: layout-a coherent ([statusByte, group, addrLo, addrHi, ...payload]).
 	responseData := []byte{statusByte, group, addrLo, addrHi, 0x12, 0x34}
 	return PassiveClassifiedEvent{
@@ -1671,6 +1676,66 @@ func observabilityCoherentB524TransactionEvent(observedAt time.Time, source, tar
 		HasRequest:  true,
 		HasResponse: true,
 		ObservedAt:  observedAt,
+	}
+}
+
+// TestEvidenceBuffer_StrongEvidenceUsesCanonicalRequestLayout closes Codex
+// PR #561 P2 finding: the b524RequestParameters extractor must match
+// buildB524ReadSelector's 6-byte layout exactly (data[2]=group,
+// data[4..5]=addr). An earlier off-by-one extractor would have failed
+// real-device B524 traffic and caused the late-arrival regulator
+// scenario to never promote on a single observation.
+//
+// This test pins the canonical layout end-to-end: a real-device-shaped
+// coherent transaction must extract correctly and promote on a single
+// observation.
+func TestEvidenceBuffer_StrongEvidenceUsesCanonicalRequestLayout(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// Source 0x10 is initiator-capable (filtered), so we use it for
+	// source. Target 0x15 is the responder under test (regulator,
+	// not initiator-capable, valid candidate).
+	event := observabilityCoherentB524TransactionEvent(base.Add(10*time.Second), 0x10, 0x15)
+	store.OnPassiveClassifiedEvent(event)
+
+	promoted := store.EvidenceBuffer().PromotedAddresses()
+	hasRegulator := false
+	for _, addr := range promoted {
+		if addr == 0x15 {
+			hasRegulator = true
+		}
+	}
+	if !hasRegulator {
+		t.Fatalf("canonical-layout coherent B524 transaction targeting 0x15 did not promote on single observation; promoted=%v", promoted)
+	}
+}
+
+// TestEvidenceBuffer_FiltersInitiatorCapableAddresses closes Codex
+// PR #561 P2 finding: an initiator-capable address (e.g. 0x31, 0x10,
+// 0x71) observed as a frame source on the bus must NOT be promoted
+// as a discovery target. Initiator-capable addresses do not respond
+// to active probes as targets, and the active-probe entry points
+// (sanitizeStartupProbeTargets, parseStartupProbeTargets) already
+// reject them; the passive-evidence path applies the same filter.
+func TestEvidenceBuffer_FiltersInitiatorCapableAddresses(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// Two non-coherent transactions sourced from 0x31 (initiator-
+	// capable) targeting 0x08. Each event records 0x31 as
+	// tx_request_source weak evidence. Without the filter, two
+	// observations would promote 0x31.
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(10*time.Second), 0x31, 0x08, 0xB5, 0x09))
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(11*time.Second), 0x31, 0x08, 0xB5, 0x09))
+
+	promoted := store.EvidenceBuffer().PromotedAddresses()
+	for _, addr := range promoted {
+		if addr == 0x31 {
+			t.Fatalf("initiator-capable address 0x31 promoted from passive evidence; promoter would issue probes to a non-target-capable address. promoted=%v", promoted)
+		}
 	}
 }
 
@@ -1834,8 +1899,12 @@ func TestEvidenceBuffer_StrongEvidenceRequiresCoherentB524Echo(t *testing.T) {
 	base := time.Now().UTC()
 	store.now = func() time.Time { return base.Add(10 * time.Second) }
 
-	// B524 transaction with non-coherent response data: response
-	// length is < 4 bytes (the canonical B524 reply minimum).
+	// B524 transaction with a CANONICALLY-LAYOUT request (6 bytes,
+	// matches buildB524ReadSelector) but a NON-coherent response:
+	// the response Data does not echo the request's group/addr in
+	// any valid B524 reply position. Without the strict coherency
+	// check, the responder address would be promoted as strong
+	// evidence on a single observation.
 	event := PassiveClassifiedEvent{
 		Kind:      PassiveClassifiedEventTransaction,
 		FrameType: protocol.FrameTypeInitiatorTarget,
@@ -1844,12 +1913,18 @@ func TestEvidenceBuffer_StrongEvidenceRequiresCoherentB524Echo(t *testing.T) {
 			Target:    0x42,
 			Primary:   0xB5,
 			Secondary: 0x24,
-			Data:      []byte{0x06, 0x03, 0x01, 0x22, 0x00}, // opcode=0x06 group=0x03 instance=0x01 addr=0x0022
+			Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x22, 0x00}, // opcode op group instance addr_lo addr_hi
 		},
 		Response: protocol.Frame{
 			Source: 0x42,
 			Target: 0x10,
-			Data:   []byte{0xFF}, // 1 byte — too short for coherent B524 reply
+			// 4 bytes long enough to pass the length check, but
+			// group/addr in non-canonical positions (does not match
+			// either layout-a or layout-b):
+			//   layout-a expects resp[1]=group=0x03, resp[2..3]=addr=0x0022
+			//   layout-b expects resp[2]=group=0x03, resp[3..4]=addr=0x0022
+			// Neither matches: payload encodes [0x99, 0x99, 0x99, 0x99].
+			Data: []byte{0x99, 0x99, 0x99, 0x99},
 		},
 		HasRequest:  true,
 		HasResponse: true,

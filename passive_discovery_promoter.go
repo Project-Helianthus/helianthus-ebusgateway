@@ -259,17 +259,27 @@ func (p *PassiveDiscoveryPromoter) processOnce(ctx context.Context) {
 			continue
 		}
 		p.recordAttemptSuccess(addr)
-		p.commitConfirmedDeviceCoalesced(addr, &confirmedThisTick)
+		p.commitConfirmedRegistration(addr)
+		confirmedThisTick++
+	}
+
+	// Semantic refresh is emitted ONCE per tick, AFTER all
+	// confirmed candidates have been registered and router planes
+	// refreshed. Firing it during the loop (after the first
+	// registration) would let the semantic discovery task start
+	// and snapshot the registry before later candidates in the
+	// same tick land — those devices would then miss the immediate
+	// refresh and only surface on the next periodic discovery
+	// interval.
+	if confirmedThisTick > 0 && p.semanticRefreshFn != nil {
+		p.semanticRefreshFn()
 	}
 }
 
-// commitConfirmedDeviceCoalesced is commitConfirmedDevice with
-// per-tick semantic-refresh coalescing. The first confirmation in a
-// tick fires the semantic refresh; subsequent confirmations register
-// the device + refresh router planes but do not enqueue another
-// semantic refresh (the already-queued task will see all newly-
-// registered devices on the next discovery scan).
-func (p *PassiveDiscoveryPromoter) commitConfirmedDeviceCoalesced(addr byte, confirmedThisTick *int) {
+// commitConfirmedRegistration registers the candidate in the device
+// registry and refreshes router planes. Semantic refresh is emitted
+// once per tick by processOnce after all registrations commit.
+func (p *PassiveDiscoveryPromoter) commitConfirmedRegistration(addr byte) {
 	p.mu.Lock()
 	registerFn := p.registerFn
 	p.mu.Unlock()
@@ -282,10 +292,6 @@ func (p *PassiveDiscoveryPromoter) commitConfirmedDeviceCoalesced(addr byte, con
 		})
 	}
 	log.Printf("passive_discovery_promoter_registered address=0x%02x source=passive_promotion", addr)
-	if *confirmedThisTick == 0 && p.semanticRefreshFn != nil {
-		p.semanticRefreshFn()
-	}
-	*confirmedThisTick++
 	if p.routerRefreshFn != nil {
 		p.routerRefreshFn()
 	}

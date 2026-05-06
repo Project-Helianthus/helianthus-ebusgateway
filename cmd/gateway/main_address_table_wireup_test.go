@@ -90,10 +90,11 @@ func TestRun_AddressTableInserterWiresThroughPassiveReconstructor(t *testing.T) 
 		t.Fatal("passive reconstructor did not start")
 	}
 
-	feedCtx, stopFeed := context.WithCancel(ctx)
-	defer stopFeed()
-	go feedGatewayAddressTablePassiveObservation(feedCtx, reconstructor)
-
+	// Wait for gateway-ready BEFORE starting the feeder so we don't race
+	// against the source-selection bus subscription being torn down at
+	// selector.Select() return — that bus has its own subscriber on the
+	// reconstructor and its Close() path reads from the same shared
+	// channels the feeder writes to.
 	var gateway *ebusgateway.Gateway
 	select {
 	case gateway = <-gatewayReady:
@@ -101,7 +102,29 @@ func TestRun_AddressTableInserterWiresThroughPassiveReconstructor(t *testing.T) 
 		t.Fatal("gateway runtime did not reach HTTP startup")
 	}
 
-	assertPassiveObservedRegistrySlot(t, gateway.Registry, 0xF6)
+	feedCtx, stopFeed := context.WithCancel(ctx)
+	feedDone := make(chan struct{})
+	go func() {
+		defer close(feedDone)
+		feedGatewayAddressTablePassiveObservation(feedCtx, reconstructor)
+	}()
+
+	// Assert insertion via the registry's lock-safe DeviceEntry API
+	// (interface-method getters synchronize internally). Avoid reading
+	// AddressSlot fields directly — those are mutated by the inserter
+	// without an external lock and would race with the read here. The
+	// AD05/AD06 metadata fields (DiscoverySource, VerificationState)
+	// are already covered by the inserter's unit tests in
+	// address_table_insertion_test.go; this runtime test only proves
+	// the wire-up plumbs events from reconstructor → inserter →
+	// registry.
+	assertPassiveObservedDeviceEntry(t, gateway.Registry, 0xF6)
+
+	// Stop the feeder and wait for it to drain BEFORE cancelling ctx so
+	// run()'s reconstructor.Close() does not race with in-flight
+	// OnPassiveTapEvent calls (race detector finding 2026-05-06).
+	stopFeed()
+	<-feedDone
 
 	cancel()
 	select {
@@ -136,22 +159,16 @@ func feedGatewayAddressTablePassiveObservation(ctx context.Context, reconstructo
 	}
 }
 
-func assertPassiveObservedRegistrySlot(t *testing.T, reg *registry.DeviceRegistry, address byte) {
+func assertPassiveObservedDeviceEntry(t *testing.T, reg *registry.DeviceRegistry, address byte) {
 	t.Helper()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if slot, ok := reg.LookupSlot(address); ok && slot != nil {
-			if slot.DiscoverySource != registry.DiscoverySourcePassiveObserved {
-				t.Fatalf("slot[0x%02X].DiscoverySource = %v; want passive_observed", address, slot.DiscoverySource)
-			}
-			if slot.VerificationState != registry.VerificationStateCorroborated {
-				t.Fatalf("slot[0x%02X].VerificationState = %v; want corroborated_pending", address, slot.VerificationState)
-			}
+		if entry, ok := reg.Lookup(address); ok && entry != nil && entry.Address() == address {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("AddressTableInserter did not insert passive-observed slot 0x%02X into runtime registry", address)
+			t.Fatalf("AddressTableInserter did not insert passive-observed device 0x%02X into runtime registry", address)
 		}
 		time.Sleep(time.Millisecond)
 	}

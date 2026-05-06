@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -332,35 +334,45 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}
 
 	var (
-		listener         *ebusgateway.BroadcastListener
-		reconstructor    *ebusgateway.PassiveTransactionReconstructor
-		insertSubscribed bool
+		listener            *ebusgateway.BroadcastListener
+		reconstructor       *ebusgateway.PassiveTransactionReconstructor
+		insertSubscribeOnce sync.Once
+		insertSubscribed    atomic.Bool
 	)
 	// subscribeAddressTableInserter binds the AddressTableInserter to the
-	// active reconstructor at most once. Safe to call from both the early
-	// source-selection path and the late observe-first path; subsequent
-	// invocations are no-ops once a subscription is live. Subscription
-	// failure is non-fatal — the inserter is a non-critical observer; we
-	// log and continue so reconstructor liveness governs run() lifecycle.
+	// active reconstructor at most once. Subscription is gated on the
+	// admitted source being finalized (builder.AdmittedMutationSource
+	// returns ok=true) so the inserter's self-source filter sees the real
+	// admitted address — never 0 — and cannot mistakenly insert the
+	// gateway's own active-probe targets/companions as passive_observed.
+	// sync.Once + atomic.Bool make the helper safe to call from both the
+	// main run() goroutine and the async activeProbePassed goroutine.
+	// Subscription failure is non-fatal; the inserter is a non-critical
+	// observer.
 	subscribeAddressTableInserter := func() {
-		if insertSubscribed || reconstructor == nil {
+		if insertSubscribed.Load() || reconstructor == nil {
 			return
 		}
-		sub, err := reconstructor.Subscribe(
-			"address_table_inserter",
-			ebusgateway.PassiveSubscriberNonCritical,
-			0,
-		)
-		if err != nil {
-			log.Printf("address_table_inserter subscribe failed: %v", err)
+		if _, ok := builder.AdmittedMutationSource(); !ok {
 			return
 		}
-		insertSubscribed = true
-		go func() {
-			for ev := range sub.Events() {
-				addressTableInserter.OnPassiveClassifiedEvent(ev)
+		insertSubscribeOnce.Do(func() {
+			sub, err := reconstructor.Subscribe(
+				"address_table_inserter",
+				ebusgateway.PassiveSubscriberNonCritical,
+				0,
+			)
+			if err != nil {
+				log.Printf("address_table_inserter subscribe failed: %v", err)
+				return
 			}
-		}()
+			insertSubscribed.Store(true)
+			go func() {
+				for ev := range sub.Events() {
+					addressTableInserter.OnPassiveClassifiedEvent(ev)
+				}
+			}()
+		})
 	}
 	attachPassiveObserveFirst := func() error {
 		if reconstructor == nil {
@@ -383,6 +395,9 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				return err
 			}
 		}
+		// Best-effort early bind. If admission isn't finalized yet
+		// (sourceSelection path: waits on activeProbePassed), this
+		// returns silently and the wire-up below catches the signal.
 		subscribeAddressTableInserter()
 		return nil
 	}
@@ -479,6 +494,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
 	if source, admitted := admittedMutationSourceForGateway(cfg, admissionPath, overrideSet); admitted {
 		builder.SetAdmittedMutationSource(source)
+		// Phase A.5 (Codex P2 round 3): admission resolved synchronously
+		// (override / static fallback). Bind the inserter now that
+		// AdmittedSource() returns the real source.
+		subscribeAddressTableInserter()
 	} else {
 		builder.ClearAdmittedMutationSource()
 	}
@@ -554,6 +573,12 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 					artifactBuilder.SetSourceSelectionActive()
 					metrics.MarkActive()
 					recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "active", sourceSelection.Source, sourceSelection.Companion, "active_probe_passed")
+					// Phase A.5 (Codex P2 round 3): admission finalized
+					// asynchronously via activeProbePassed. Bind the
+					// inserter now that AdmittedSource() returns the
+					// selected source — closes the directed-probe window
+					// where admitted=0 could leak gateway-own probes.
+					subscribeAddressTableInserter()
 				}
 			case <-startupScanSignals.admissionFailed:
 				if sourceSelection != nil {

@@ -35,8 +35,14 @@ func TestRun_AddressTableInserterWiresThroughPassiveReconstructor(t *testing.T) 
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		return nil, nil, nil
 	}
+	// Provide a real activeProbePassed channel so the async admission
+	// goroutine inside run() fires SetAdmittedMutationSource — which the
+	// inserter now gates its subscription on (Phase A.5 round 3 fix).
+	activeProbePassed := make(chan struct{})
 	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
-		return startupScanSignals{}
+		return startupScanSignals{
+			activeProbePassed: activeProbePassed,
+		}
 	}
 	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
 		return nil
@@ -101,6 +107,13 @@ func TestRun_AddressTableInserterWiresThroughPassiveReconstructor(t *testing.T) 
 	case <-time.After(8 * time.Second):
 		t.Fatal("gateway runtime did not reach HTTP startup")
 	}
+
+	// Signal active-probe success so the async goroutine in run() calls
+	// builder.SetAdmittedMutationSource(sourceSelection.Source). The
+	// AddressTableInserter subscription is gated on AdmittedMutationSource
+	// returning ok=true (Phase A.5 round 3 — Codex bot P2). Without this
+	// signal the inserter never binds.
+	close(activeProbePassed)
 
 	feedCtx, stopFeed := context.WithCancel(ctx)
 	feedDone := make(chan struct{})

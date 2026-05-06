@@ -238,6 +238,110 @@ func TestCanonicalAliasing_NonCanonicalAddresses_NotAliased(t *testing.T) {
 	}
 }
 
+// TestAddressSlot_TierAndFreeUse_PopulatedFromCanonicalTable asserts that
+// when a canonical source/companion address lands in the AddressTable, its
+// PriorityTier and FreeUse fields are populated from the docs-owned eBUS
+// standard table (sourceAddressTableV1) — operators can then see at a
+// glance whether an observed address is preallocated (e.g. 0xF1 p1
+// "Heating regulator") or free-use (e.g. 0x7F p4 "free-use Burner controller 8
+// recommendation").
+func TestAddressSlot_TierAndFreeUse_PopulatedFromCanonicalTable(t *testing.T) {
+	table, inserter := newATRInsertionHarness(t, DefaultConfig())
+	base := time.Now().UTC()
+
+	// 0xF1 (Heating regulator p1, NOT free-use)
+	inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base, 0xF1, 0x99, protocol.SymbolAck))
+	slot, _ := table.Lookup(0xF1)
+	if slot == nil {
+		t.Fatalf("Lookup(0xF1) = nil after insertion")
+	}
+	if string(slot.PriorityTier) != "p1" {
+		t.Fatalf("slot[0xF1].PriorityTier = %q; want p1", slot.PriorityTier)
+	}
+	if slot.FreeUse {
+		t.Fatalf("slot[0xF1].FreeUse = true; want false (Heating regulator preallocated)")
+	}
+
+	// 0x7F (free-use Burner controller 8 recommendation, p4)
+	inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(base.Add(time.Second), 0x7F, 0x88, protocol.SymbolAck))
+	slot, _ = table.Lookup(0x7F)
+	if slot == nil {
+		t.Fatalf("Lookup(0x7F) = nil after insertion")
+	}
+	if string(slot.PriorityTier) != "p4" {
+		t.Fatalf("slot[0x7F].PriorityTier = %q; want p4", slot.PriorityTier)
+	}
+	if !slot.FreeUse {
+		t.Fatalf("slot[0x7F].FreeUse = false; want true (free-use Burner controller 8 recommendation)")
+	}
+}
+
+// TestAddressSlot_CompanionInheritsTierFromSourceRow asserts that when a
+// canonical companion (e.g. 0x15, 0xF6, 0x04, 0x84) is inserted as target
+// — without its source ever being observed — the slot's PriorityTier and
+// FreeUse fields are populated from the row's source side. Both halves of
+// a canonical pair share the same tier/free-use because the eBUS standard
+// table row defines a single class for the pair.
+func TestAddressSlot_CompanionInheritsTierFromSourceRow(t *testing.T) {
+	cases := []struct {
+		addr     byte
+		wantTier string
+		wantFree bool
+	}{
+		{0x15, "p0", false}, // companion of 0x10 (Heating regulator p0)
+		{0xF6, "p1", false}, // companion of 0xF1 (Heating regulator p1)
+		{0x04, "p4", false}, // companion of 0xFF (PC p4) — wrap pair
+		{0x84, "p4", true},  // companion of 0x7F (free-use Burner controller 8 p4)
+		{0x38, "p2", false}, // companion of 0x33 (Burner controller 3 p2)
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run("companion_0x"+itoaHex(tc.addr), func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.AdmittedSource = func() byte { return 0x71 }
+			table, inserter := newATRInsertionHarness(t, cfg)
+			// Insert via 0x10 → companion as target with positive ACK.
+			inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(time.Now().UTC(), 0x10, tc.addr, protocol.SymbolAck))
+			slot, _ := table.Lookup(tc.addr)
+			if slot == nil {
+				t.Fatalf("Lookup(0x%02X) = nil", tc.addr)
+			}
+			if string(slot.PriorityTier) != tc.wantTier {
+				t.Fatalf("slot[0x%02X].PriorityTier = %q; want %q", tc.addr, slot.PriorityTier, tc.wantTier)
+			}
+			if slot.FreeUse != tc.wantFree {
+				t.Fatalf("slot[0x%02X].FreeUse = %v; want %v", tc.addr, slot.FreeUse, tc.wantFree)
+			}
+		})
+	}
+}
+
+func itoaHex(b byte) string {
+	const hex = "0123456789ABCDEF"
+	return string([]byte{hex[b>>4], hex[b&0x0F]})
+}
+
+// TestAddressSlot_NonCanonical_TierEmpty asserts that addresses NOT in the
+// canonical table (e.g. 0x26 VR_71 target-only) get empty PriorityTier and
+// FreeUse=false, since they have no canonical row.
+func TestAddressSlot_NonCanonical_TierEmpty(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.AdmittedSource = func() byte { return 0x7F }
+	table, inserter := newATRInsertionHarness(t, cfg)
+
+	inserter.OnPassiveClassifiedEvent(atrPassiveTransactionEvent(time.Now().UTC(), 0x10, 0x26, protocol.SymbolAck))
+	slot, _ := table.Lookup(0x26)
+	if slot == nil {
+		t.Fatalf("Lookup(0x26) = nil after insertion")
+	}
+	if string(slot.PriorityTier) != "" {
+		t.Fatalf("slot[0x26].PriorityTier = %q; want empty (non-canonical)", slot.PriorityTier)
+	}
+	if slot.FreeUse {
+		t.Fatalf("slot[0x26].FreeUse = true; want false (non-canonical)")
+	}
+}
+
 // TestCanonicalAliasing_BothPreRegistered_AliasOnObservation asserts that
 // when both halves of a canonical pair were registered BEFORE the inserter
 // runs (e.g. via startup active scan or static seed), a subsequent passive

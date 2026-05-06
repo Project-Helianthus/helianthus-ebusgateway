@@ -5314,5 +5314,7 @@
         }
       }
     }
-  ]
+  ],
+  "evidence_class": "planning_dry_run_only_NOT_executed_matrix",
+  "acceptance_caveat": "This artifact captures matrix-runner planning output (the 88 case parameters) at current main HEAD. It is NOT a recorded execute-mode run with pass/fail outcomes per case. It serves ONLY as a structural reference for M9 to diff against (case set drift detection). It MUST NOT be presented as transport-gate evidence proving any case passed; live execute-mode matrix is operator-driven via cruise-merge-gate and is out of scope for this artifact."
 }

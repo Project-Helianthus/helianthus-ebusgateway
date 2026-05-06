@@ -1243,6 +1243,22 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		writer.writeCounterSample("ebus_passive_reconstructor_recoveries_total", float64(snapshot.RecoveryTotal[reason]), labelMap("reason", reason))
 	}
 
+	// A.9 — surface per-reason abandon counts so operators can compare
+	// to Grafana ground-truth frame counts. Catches operator-confirmed
+	// regressions like 0xF1→0x15 (B503) being abandoned with
+	// unexpected_symbol or 0x03→0x04 (B511) being abandoned with
+	// no_response despite valid frames on the wire.
+	writer.writeHelp("ebus_passive_reconstructor_abandons_total", "Passive reconstructor abandon counts per reason.")
+	writer.writeType("ebus_passive_reconstructor_abandons_total", "counter")
+	abandonReasonsSorted := make([]string, 0, len(snapshot.AbandonsByReason))
+	for reason := range snapshot.AbandonsByReason {
+		abandonReasonsSorted = append(abandonReasonsSorted, reason)
+	}
+	sort.Strings(abandonReasonsSorted)
+	for _, reason := range abandonReasonsSorted {
+		writer.writeCounterSample("ebus_passive_reconstructor_abandons_total", float64(snapshot.AbandonsByReason[reason]), labelMap("reason", reason))
+	}
+
 	writer.writeHelp("passive_hits_total", "Observe-first scheduler reads served from passive shadow.")
 	writer.writeType("passive_hits_total", "counter")
 	for _, item := range sortedWatchEfficiencyBuckets(watchEfficiency.buckets) {

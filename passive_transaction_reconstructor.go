@@ -186,11 +186,19 @@ type PassiveReconstructorSnapshot struct {
 	TapStatus           PassiveTapStatus
 	FanoutOverflowTotal map[string]uint64
 	RecoveryTotal       map[string]uint64
+	// AbandonsByReason counts how many transactions the reconstructor
+	// classified into each PassiveAbandonReason. Operators query this
+	// to determine if a specific (src, dst) pair is failing
+	// classification at unusual rates — e.g. live evidence of B503
+	// frames hitting unexpected_symbol despite Grafana ground truth
+	// showing positive ACKs on the wire (A.9 diagnostic surface).
+	AbandonsByReason map[string]uint64
 }
 
 type passiveReconstructorMetrics struct {
 	fanoutOverflowTotal map[string]uint64
 	recoveryTotal       map[string]uint64
+	abandonsByReason    map[string]uint64
 }
 
 func StartPassiveTransactionReconstructor(ctx context.Context, cfg Config) (*PassiveTransactionReconstructor, error) {
@@ -314,6 +322,7 @@ func (reconstructor *PassiveTransactionReconstructor) Snapshot() PassiveReconstr
 		TapStatus:           tapStatus,
 		FanoutOverflowTotal: cloneUint64Map(reconstructor.metrics.fanoutOverflowTotal),
 		RecoveryTotal:       cloneUint64Map(reconstructor.metrics.recoveryTotal),
+		AbandonsByReason:    cloneUint64Map(reconstructor.metrics.abandonsByReason),
 	}
 }
 
@@ -706,15 +715,20 @@ func (reconstructor *PassiveTransactionReconstructor) abandonLocked(reason Passi
 	}
 	event.Timing.Terminal = observedAt
 	// A.8 — forensic logging for protocol-classification failures the
-	// inserter cannot consume. Specifically unexpected_symbol /
-	// corrupted_request / corrupted_target / no_response are the
-	// operator-confirmed symptoms that block 0xF1→0x15 / 0x03→X
-	// transactions from creating registry entries. Log raw bytes +
-	// state phase so post-mortem can reproduce + identify root cause
-	// without re-deploying.
+	// inserter cannot consume.
 	if shouldLogReconstructorForensics(reason) {
 		reconstructor.logForensicsLocked(reason, observedAt)
 	}
+	// A.9 — per-reason counter so operators can compare Helianthus
+	// abandon rate to Grafana ground-truth frame counts without
+	// log-grep aggregation. Lock-protected so Snapshot() can read
+	// safely.
+	reconstructor.metricsMu.Lock()
+	if reconstructor.metrics.abandonsByReason == nil {
+		reconstructor.metrics.abandonsByReason = make(map[string]uint64, 8)
+	}
+	reconstructor.metrics.abandonsByReason[string(reason)]++
+	reconstructor.metricsMu.Unlock()
 	return event
 }
 

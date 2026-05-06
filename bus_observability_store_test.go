@@ -1635,3 +1635,307 @@ func TestPassiveCorruptedRequestIsNonError(t *testing.T) {
 		t.Fatalf("passive corrupted_request should not be counted as error:\n%s", metrics)
 	}
 }
+
+// observabilityCoherentB524TransactionEvent builds a passive transaction
+// event whose request/response payloads form a coherent B524 read
+// (response echoes the request's group + addr in canonical position).
+// Used by evidence-strong tests where the strict coherency check must
+// pass for single-observation promotion.
+//
+// Layout matches buildB524ReadSelector exactly (6-byte request):
+//
+//	[opcode, op, group, instance, addr_lo, addr_hi]
+func observabilityCoherentB524TransactionEvent(observedAt time.Time, source, target byte) PassiveClassifiedEvent {
+	const (
+		opcode     = byte(0x06)
+		op         = byte(0x00) // read
+		group      = byte(0x03)
+		instance   = byte(0x01)
+		addrLo     = byte(0x22)
+		addrHi     = byte(0x00)
+		statusByte = byte(0x00)
+	)
+	requestData := []byte{opcode, op, group, instance, addrLo, addrHi}
+	// Response: layout-a coherent ([statusByte, group, addrLo, addrHi, ...payload]).
+	responseData := []byte{statusByte, group, addrLo, addrHi, 0x12, 0x34}
+	return PassiveClassifiedEvent{
+		Kind:      PassiveClassifiedEventTransaction,
+		FrameType: protocol.FrameTypeInitiatorTarget,
+		Request: protocol.Frame{
+			Source:    source,
+			Target:    target,
+			Primary:   0xB5,
+			Secondary: 0x24,
+			Data:      requestData,
+		},
+		Response: protocol.Frame{
+			Source: target,
+			Target: source,
+			Data:   responseData,
+		},
+		HasRequest:  true,
+		HasResponse: true,
+		ObservedAt:  observedAt,
+	}
+}
+
+// TestEvidenceBuffer_StrongEvidenceUsesCanonicalRequestLayout closes Codex
+// PR #561 P2 finding: the b524RequestParameters extractor must match
+// buildB524ReadSelector's 6-byte layout exactly (data[2]=group,
+// data[4..5]=addr). An earlier off-by-one extractor would have failed
+// real-device B524 traffic and caused the late-arrival regulator
+// scenario to never promote on a single observation.
+//
+// This test pins the canonical layout end-to-end: a real-device-shaped
+// coherent transaction must extract correctly and promote on a single
+// observation.
+func TestEvidenceBuffer_StrongEvidenceUsesCanonicalRequestLayout(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// Source 0x10 is initiator-capable (filtered), so we use it for
+	// source. Target 0x15 is the responder under test (regulator,
+	// not initiator-capable, valid candidate).
+	event := observabilityCoherentB524TransactionEvent(base.Add(10*time.Second), 0x10, 0x15)
+	store.OnPassiveClassifiedEvent(event)
+
+	promoted := store.EvidenceBuffer().PromotedAddresses()
+	hasRegulator := false
+	for _, addr := range promoted {
+		if addr == 0x15 {
+			hasRegulator = true
+		}
+	}
+	if !hasRegulator {
+		t.Fatalf("canonical-layout coherent B524 transaction targeting 0x15 did not promote on single observation; promoted=%v", promoted)
+	}
+}
+
+// TestEvidenceBuffer_FiltersInitiatorCapableAddresses closes Codex
+// PR #561 P2 finding: an initiator-capable address (e.g. 0x31, 0x10,
+// 0x71) observed as a frame source on the bus must NOT be promoted
+// as a discovery target. Initiator-capable addresses do not respond
+// to active probes as targets, and the active-probe entry points
+// (sanitizeStartupProbeTargets, parseStartupProbeTargets) already
+// reject them; the passive-evidence path applies the same filter.
+func TestEvidenceBuffer_FiltersInitiatorCapableAddresses(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// Two non-coherent transactions sourced from 0x31 (initiator-
+	// capable) targeting 0x08. Each event records 0x31 as
+	// tx_request_source weak evidence. Without the filter, two
+	// observations would promote 0x31.
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(10*time.Second), 0x31, 0x08, 0xB5, 0x09))
+	store.OnPassiveClassifiedEvent(observabilityPassiveTransactionEvent(base.Add(11*time.Second), 0x31, 0x08, 0xB5, 0x09))
+
+	promoted := store.EvidenceBuffer().PromotedAddresses()
+	for _, addr := range promoted {
+		if addr == 0x31 {
+			t.Fatalf("initiator-capable address 0x31 promoted from passive evidence; promoter would issue probes to a non-target-capable address. promoted=%v", promoted)
+		}
+	}
+}
+
+// TestEvidenceBuffer_RecordsB524ResponseAsStrongEvidence pins the
+// single-observation promotion contract for runtime passive promotion.
+// A passively observed COHERENT B524 transaction (response echoes the
+// request's group + addr in canonical position) carries Vaillant-
+// coherent identity sufficient for single-observation promotion.
+func TestEvidenceBuffer_RecordsB524ResponseAsStrongEvidence(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	if store.EvidenceBuffer() == nil {
+		t.Fatal("specimen store has no evidence buffer; runtime promotion pipeline disabled")
+	}
+
+	store.OnPassiveClassifiedEvent(observabilityCoherentB524TransactionEvent(base.Add(10*time.Second), 0x10, 0x15))
+
+	promoted := store.EvidenceBuffer().PromotedAddresses()
+	hasRegulator := false
+	for _, addr := range promoted {
+		if addr == 0x15 {
+			hasRegulator = true
+		}
+	}
+	if !hasRegulator {
+		t.Fatalf("coherent B524 transaction targeting 0x15 did not promote 0x15; promoted=%v", promoted)
+	}
+}
+
+// TestEvidenceBuffer_DoesNotPromoteOnSingleWeakBroadcast pins the negative
+// case: a single broadcast frame is presence-only (weak) evidence and
+// must NOT trigger promotion. Two observations are required for weak
+// evidence per EvidenceBuffer policy.
+func TestEvidenceBuffer_DoesNotPromoteOnSingleWeakBroadcast(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	store.OnPassiveClassifiedEvent(observabilityPassiveBroadcastEvent(base.Add(10*time.Second), 0x15, 0x07, 0xFF))
+
+	promoted := store.EvidenceBuffer().PromotedAddresses()
+	for _, addr := range promoted {
+		if addr == 0x15 {
+			t.Fatalf("single broadcast observation must not promote 0x15; promoted=%v", promoted)
+		}
+	}
+}
+
+// TestEvidenceBuffer_PromotesOnTwoWeakObservations pins that two weak
+// observations across distinct events cross the promotion threshold
+// (broadcast presence does NOT count as a weak observation; only
+// non-broadcast frames and non-coherent transactions do).
+func TestEvidenceBuffer_PromotesOnTwoWeakObservations(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// Two distinct initiator-class frames where 0x15 is the initiator.
+	// Each contributes one weak observation.
+	store.OnPassiveClassifiedEvent(observabilityPassiveMasterFrameEvent(base.Add(10*time.Second), 0x15, 0x08, 0xB5, 0x09))
+	store.OnPassiveClassifiedEvent(observabilityPassiveMasterFrameEvent(base.Add(20*time.Second), 0x15, 0x08, 0xB5, 0x09))
+
+	promoted := store.EvidenceBuffer().PromotedAddresses()
+	hasRegulator := false
+	for _, addr := range promoted {
+		if addr == 0x15 {
+			hasRegulator = true
+		}
+	}
+	if !hasRegulator {
+		t.Fatalf("two weak observations on 0x15 did not promote; promoted=%v", promoted)
+	}
+}
+
+// TestEvidenceBuffer_FiltersAdmittedSource pins the source-address
+// invariant: the gateway's own admitted source must never enter the
+// promotion pipeline, even if it appears as a frame source on the bus
+// (e.g. self-traffic loop or proxy aliasing).
+func TestEvidenceBuffer_FiltersAdmittedSource(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	store.SetAdmittedSourceProvider(func() byte { return 0x71 })
+
+	store.OnPassiveClassifiedEvent(observabilityCoherentB524TransactionEvent(base.Add(10*time.Second), 0x71, 0x08))
+	store.OnPassiveClassifiedEvent(observabilityCoherentB524TransactionEvent(base.Add(11*time.Second), 0x71, 0x08))
+
+	promoted := store.EvidenceBuffer().PromotedAddresses()
+	for _, addr := range promoted {
+		if addr == 0x71 {
+			t.Fatalf("admitted source 0x71 promoted from passive evidence; promoted=%v", promoted)
+		}
+	}
+}
+
+// TestEvidenceBuffer_FiltersBroadcastAndSyn pins the protocol-artifact
+// filter: 0xFE (broadcast destination), 0xFF (broadcast destination
+// class for 07 FF), 0xAA (SYN), 0x00 / 0x01 (initiator pre-arbitration)
+// must never enter the promotion pipeline regardless of passive
+// observation count. The test exercises both source-side (broadcast
+// frame source) and target-side (initiator-class frame target) recording paths.
+func TestEvidenceBuffer_FiltersBroadcastAndSyn(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// Initiator-class frames whose target is a protocol artifact — exercises
+	// the target-side filter path. Source 0x10 is a real responder
+	// address (not under test); the assertion is that the target
+	// (0xFE/0xAA) never enters promotion.
+	store.OnPassiveClassifiedEvent(observabilityPassiveMasterFrameEvent(base.Add(10*time.Second), 0x10, 0xFE, 0xB5, 0x09))
+	store.OnPassiveClassifiedEvent(observabilityPassiveMasterFrameEvent(base.Add(11*time.Second), 0x10, 0xAA, 0xB5, 0x09))
+
+	promoted := store.EvidenceBuffer().PromotedAddresses()
+	for _, addr := range promoted {
+		if addr == 0xFF || addr == 0xFE || addr == 0xAA || addr < 0x03 {
+			t.Fatalf("protocol-artifact address 0x%02X promoted from passive evidence; promoted=%v", addr, promoted)
+		}
+	}
+}
+
+// TestEvidenceBuffer_BroadcastSourceIsPresenceOnlyDoesNotPromote pins
+// the operator's stated requirement: "07 FF is consumed passively as
+// presence evidence, not used as a discovery probe." Even after many
+// 07 FF sign-of-life broadcasts, the source address 0x07 must NEVER
+// cross the promotion threshold — broadcast traffic alone is not
+// evidence of an active responder.
+func TestEvidenceBuffer_BroadcastSourceIsPresenceOnlyDoesNotPromote(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// 5 sign-of-life broadcasts from 0x07 (PIC initiator class).
+	// On a healthy bus these arrive every few seconds. With weak-
+	// strength evidence, two of these would promote 0x07. With
+	// presence-only strength, no number of broadcasts promote it.
+	for i := 0; i < 5; i++ {
+		store.OnPassiveClassifiedEvent(observabilityPassiveBroadcastEvent(
+			base.Add(time.Duration(10+i)*time.Second), 0x07, 0x07, 0xFF))
+	}
+
+	promoted := store.EvidenceBuffer().PromotedAddresses()
+	for _, addr := range promoted {
+		if addr == 0x07 {
+			t.Fatalf("broadcast source 0x07 promoted after %d sign-of-life observations; presence-only contract violated. promoted=%v", 5, promoted)
+		}
+	}
+}
+
+// TestEvidenceBuffer_StrongEvidenceRequiresCoherentB524Echo pins the
+// strict B524 coherency check on the strong-evidence path. A B524
+// transaction whose response Data is non-empty but does NOT echo the
+// request's group/addr in a valid B524 reply position must NOT
+// classify as strong evidence — guards against single-frame phantom-
+// address promotion via stray fragments or spoofed responses.
+func TestEvidenceBuffer_StrongEvidenceRequiresCoherentB524Echo(t *testing.T) {
+	store := specimenPassiveStore()
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base.Add(10 * time.Second) }
+
+	// B524 transaction with a CANONICALLY-LAYOUT request (6 bytes,
+	// matches buildB524ReadSelector) but a NON-coherent response:
+	// the response Data does not echo the request's group/addr in
+	// any valid B524 reply position. Without the strict coherency
+	// check, the responder address would be promoted as strong
+	// evidence on a single observation.
+	event := PassiveClassifiedEvent{
+		Kind:      PassiveClassifiedEventTransaction,
+		FrameType: protocol.FrameTypeInitiatorTarget,
+		Request: protocol.Frame{
+			Source:    0x10,
+			Target:    0x42,
+			Primary:   0xB5,
+			Secondary: 0x24,
+			Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x22, 0x00}, // opcode op group instance addr_lo addr_hi
+		},
+		Response: protocol.Frame{
+			Source: 0x42,
+			Target: 0x10,
+			// 4 bytes long enough to pass the length check, but
+			// group/addr in non-canonical positions (does not match
+			// either layout-a or layout-b):
+			//   layout-a expects resp[1]=group=0x03, resp[2..3]=addr=0x0022
+			//   layout-b expects resp[2]=group=0x03, resp[3..4]=addr=0x0022
+			// Neither matches: payload encodes [0x99, 0x99, 0x99, 0x99].
+			Data: []byte{0x99, 0x99, 0x99, 0x99},
+		},
+		HasRequest:  true,
+		HasResponse: true,
+		ObservedAt:  base.Add(10 * time.Second),
+	}
+	store.OnPassiveClassifiedEvent(event)
+
+	promoted := store.EvidenceBuffer().PromotedAddresses()
+	for _, addr := range promoted {
+		if addr == 0x42 {
+			t.Fatalf("phantom address 0x42 promoted after single non-coherent B524 response; phantom-promotion guard violated. promoted=%v", promoted)
+		}
+	}
+}

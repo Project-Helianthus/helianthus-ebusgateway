@@ -513,6 +513,41 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	go startBackgroundFullScanFn(ctx, startupCfg, gateway, builder, startupScanSignals.semanticBootstrapReady)
 
+	// Runtime passive-promotion pipeline: late-arriving devices (e.g.
+	// the regulator boots after the gateway) accumulate passive
+	// evidence in busObservability's EvidenceBuffer; the promoter
+	// loop confirms candidates with B524 coherency, registers them
+	// in the registry, refreshes router planes, and signals semantic
+	// discovery refresh.
+	if busObservability != nil && busObservability.EvidenceBuffer() != nil && semanticPoller != nil {
+		busObservability.SetAdmittedSourceProvider(func() byte {
+			source, ok := builder.AdmittedMutationSource()
+			if !ok {
+				return 0
+			}
+			return source
+		})
+		promoter, err := ebusgateway.NewPassiveDiscoveryPromoter(ebusgateway.PassiveDiscoveryPromoterOptions{
+			Registry:          gateway.Registry,
+			EvidenceBuffer:    busObservability.EvidenceBuffer(),
+			ConfirmFn:         semanticPoller.ConfirmB524Coherent,
+			SemanticRefreshFn: semanticPoller.EnqueueDiscoveryRefresh,
+			RouterRefreshFn:   func() { _ = gateway.RefreshRouterPlanes() },
+			AdmittedSourceFn: func() byte {
+				source, ok := builder.AdmittedMutationSource()
+				if !ok {
+					return 0
+				}
+				return source
+			},
+		})
+		if err != nil {
+			log.Printf("passive_discovery_promoter init failed: %v", err)
+		} else {
+			go promoter.Run(ctx)
+		}
+	}
+
 	var scheduleWriter mcp.ScheduleWriter
 	if semanticPoller != nil {
 		scheduleWriter = admittedMCPScheduleWriter{

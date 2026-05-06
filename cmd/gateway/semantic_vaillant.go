@@ -6669,6 +6669,18 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 			if _, dup := candidateSet[addr]; dup {
 				continue
 			}
+			// Source-address invariant: a structural target that
+			// matches the admitted source would produce a self-
+			// directed unicast probe (probeB524Register builds a
+			// frame with Source=p.source, Target=addr). Operators
+			// running with `-source-addr 0x15` (or a source-selection
+			// result that lands on 0x15) must not have the regulator
+			// self-probed. The startup probe path sanitizes via
+			// sanitizeStartupProbeTargets; this path is a separate
+			// entry point and must apply the same guard.
+			if addr == p.source {
+				continue
+			}
 			candidateSet[addr] = struct{}{}
 			candidates = append(candidates, addr)
 		}

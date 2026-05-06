@@ -5092,6 +5092,41 @@ func TestRefreshDiscovery_StructuralFallbackRegistersControllerInRegistry(t *tes
 	}
 }
 
+// TestCapabilityFirstDiscovery_StructuralFallbackSkipsAdmittedSource closes
+// the source-address invariant hole found during Codex adversarial review
+// (PR #560 P2): when the admitted semantic source equals one of the
+// structural targets (operator runs with `-source-addr 0x15` or a
+// source-selection result lands on 0x15), the structural augmentation
+// must NOT add that address to the probe candidates — probeB524Register
+// would issue Source=0x15 / Target=0x15, a self-directed unicast probe.
+func TestCapabilityFirstDiscovery_StructuralFallbackSkipsAdmittedSource(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+
+	var probed []byte
+	poller := newTestPoller(reg)
+	poller.source = 0x15
+	// 0x26 is the only coherent structural target left after 0x15 is
+	// dropped (admitted source). 0x08 stays in candidates from the
+	// registry but is non-coherent.
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: false, 0x15: true, 0x26: true}, &probed)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v", err)
+	}
+	if addr != 0x26 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x26 (0x15 dropped because it equals admitted source)", addr)
+	}
+	for _, p := range probed {
+		if p == 0x15 {
+			t.Fatalf("self-directed probe issued: 0x15 was probed but is admitted source. probed=%v", probed)
+		}
+	}
+}
+
 // TestRegisterStructuralControllerIfMissing_NoOpWhenAlreadyRegistered pins
 // the idempotence contract: repeated structural-fallback calls for an
 // already-registered controller must not duplicate registry entries or

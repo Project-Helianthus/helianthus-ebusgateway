@@ -21,6 +21,77 @@ type AddressSlot struct {
 	RegistrySlot *registry.AddressSlot
 }
 
+// CanonicalAddressView is a snapshot of one canonical eBUS address as seen
+// by the AddressTable: the eBUS standard table row metadata (tier, role,
+// free-use, peer) combined with this address's runtime observation state.
+//
+// Observation state distinguishes:
+//   - "never_observed": the address is in the canonical table but no
+//     passive ACK / active scan has placed it in the registry.
+//   - "passive_observed": placed by AD05 inserter from passive frames.
+//   - "static_seed": placed by EnableStaticSeedTable.
+//   - "active_confirmed": placed by startup scan / probe.
+//
+// This view exists so MCP/GraphQL consumers can distinguish "this canonical
+// address has not yet emitted traffic" from "this canonical address is not
+// real on this bus" — important for A.7e audit + operator UX.
+type CanonicalAddressView struct {
+	Address           byte
+	Role              string // "initiator" or "target"
+	PeerAddress       byte
+	PriorityTier      protocol.SourceAddressPriorityIndex
+	FreeUse           bool
+	Description       string
+	Observed          bool
+	DiscoverySource   string
+	VerificationState string
+}
+
+// CanonicalAddressTableSnapshot returns a snapshot of all 50 canonical eBUS
+// addresses (25 sources + 25 companions per
+// architecture/ebus_standard/12-source-address-table.md), with each row
+// labelled by its current runtime observation state. Addresses present in
+// the wrapped registry are marked Observed=true with their actual
+// DiscoverySource; addresses not yet observed are marked Observed=false
+// with DiscoverySource="never_observed".
+func (t *AddressTable) CanonicalAddressTableSnapshot() []CanonicalAddressView {
+	if t == nil {
+		return nil
+	}
+	rows := protocol.SourceAddressTableRows()
+	out := make([]CanonicalAddressView, 0, len(rows)*2)
+	for _, row := range rows {
+		out = append(out,
+			t.canonicalAddressView(row.Source, "initiator", row.Companion, string(row.CanonicalDescription), row.PriorityIndex, row.FreeUse),
+			t.canonicalAddressView(row.Companion, "target", row.Source, string(row.CanonicalDescription), row.PriorityIndex, row.FreeUse),
+		)
+	}
+	return out
+}
+
+func (t *AddressTable) canonicalAddressView(addr byte, role string, peer byte, desc string, tier protocol.SourceAddressPriorityIndex, free bool) CanonicalAddressView {
+	view := CanonicalAddressView{
+		Address:           addr,
+		Role:              role,
+		PeerAddress:       peer,
+		PriorityTier:      tier,
+		FreeUse:           free,
+		Description:       desc,
+		DiscoverySource:   "never_observed",
+		VerificationState: "never_observed",
+	}
+	if slot, ok := t.Lookup(addr); ok && slot != nil {
+		view.Observed = true
+		if slot.DiscoverySource != "" {
+			view.DiscoverySource = slot.DiscoverySource
+		}
+		if slot.VerificationState != "" {
+			view.VerificationState = slot.VerificationState
+		}
+	}
+	return view
+}
+
 // canonicalSlotMetadata returns the priority tier and free-use flag for
 // addr from the eBUS standard table. Both halves of a canonical pair
 // (source AND companion) inherit the same tier/free-use from the row's

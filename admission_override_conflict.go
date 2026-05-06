@@ -7,25 +7,25 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
-// FormatStartupAdmissionOverrideLog returns the low-confidence override
-// admission log line emitted before the first active frame.
-func FormatStartupAdmissionOverrideLog(source byte) string {
-	return fmt.Sprintf("startup admission override source=0x%02X confidence=low", source)
+// FormatStartupSourceSelectionExplicitLog returns the low-confidence
+// explicit-validate-only log line emitted before the first active frame.
+func FormatStartupSourceSelectionExplicitLog(source byte) string {
+	return fmt.Sprintf("startup source selection explicit_validate_only source=0x%02X confidence=low", source)
 }
 
-// CheckOverrideCompanionConflict compares the configured override source
+// CheckExplicitSourceCompanionConflict compares the configured explicit source
 // against the selector's selected source and emits advisory conflict
 // observability when they disagree.
-func CheckOverrideCompanionConflict(overrideSource byte, selection *protocol.SourceAddressSelection, metrics *StartupAdmissionMetrics) bool {
+func CheckExplicitSourceCompanionConflict(explicitSource byte, selection *protocol.SourceAddressSelection, metrics *StartupSourceSelectionMetrics) bool {
 	if selection == nil {
 		return false
 	}
-	if selection.Source == overrideSource {
+	if selection.Source == explicitSource {
 		return false
 	}
-	log.Printf("WARN: startup admission override conflict_detected=1 override_source=0x%02X selector_preferred=0x%02X", overrideSource, selection.Source)
+	log.Printf("WARN: startup source selection explicit_source_conflict_detected=1 explicit_source=0x%02X selector_preferred=0x%02X", explicitSource, selection.Source)
 	if metrics != nil {
-		metrics.SetOverrideConflictDetected()
+		metrics.SetExplicitSourceConflictDetected()
 	}
 	return true
 }

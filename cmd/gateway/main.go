@@ -105,46 +105,45 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		log.Printf("warning: --proxy-listen requires adapter-direct transport; proxy endpoint not started")
 	}
 
-	// ResolveAdmissionPath centralises the adapter-direct → JoinCapable
+	// ResolveAdmissionPath centralises the adapter-direct -> source-selection
 	// special case so all classifier call sites (main.go run(),
 	// startup_scan.go startDiscoveryScanLoop, runBackgroundFullScan) agree
 	// on the dispatch. Adapter-direct multiplexer mode always wraps a
 	// source-selection-capable underlying transport (ENH/ENS), so source-address selector runs through
 	// the shared PassiveTransactionReconstructor regardless of multiplexer
 	// presence. Resolves cruise-run #20 M7 follow-up #1 + validation
-	// finding (admission_path_selected was incorrectly degraded_no_events
+	// finding (source_selection.mode was incorrectly degraded_no_events
 	// on adapter-direct deployments).
 	admissionPath, adapterDirectSpecialCased := ebusgateway.ResolveAdmissionPath(cfg.TransportConfig.Protocol)
 	if adapterDirectSpecialCased {
-		log.Printf("startup admission: adapter-direct multiplexer detected; treating as source-selection-capable (underlying transport is always ENH/ENS)")
+		log.Printf("startup source selection: adapter-direct multiplexer detected; treating as source-selection-capable (underlying transport is always ENH/ENS)")
 	} else if admissionPath == ebusgateway.TransportAdmissionStaticFallback && cfg.TransportConfig.Protocol != ebusgateway.TransportEbusdTCP {
-		log.Printf("startup admission: classifier produced static-fallback for transport protocol=%q (unknown/empty); legacy static-source path active", cfg.TransportConfig.Protocol)
+		log.Printf("startup source selection: classifier produced static-fallback for transport protocol=%q (unknown/empty)", cfg.TransportConfig.Protocol)
 	}
-	metrics := ebusgateway.GetOrInitStartupAdmissionMetrics()
-	artifactBuilder := ebusgateway.NewAdmissionArtifactBuilder(string(cfg.TransportConfig.Protocol))
-	if err := artifactBuilder.SetAdmissionPathSelected("degraded_no_events"); err != nil {
+	metrics := ebusgateway.GetOrInitStartupSourceSelectionMetrics()
+	artifactBuilder := ebusgateway.NewSourceSelectionArtifactBuilder(string(cfg.TransportConfig.Protocol))
+	if err := artifactBuilder.SetSourceSelectionMode("degraded_no_events"); err != nil {
 		log.Fatalf("FATAL: AD23 enum violation at startup: %v", err)
 	}
 	overrideSet := admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && cfg.StartupSource.Source != nil
 	overrideSource := byte(0x00)
 	if overrideSet {
 		overrideSource = *cfg.StartupSource.Source
-		log.Print(ebusgateway.FormatStartupAdmissionOverrideLog(overrideSource))
-		metrics.SetOverrideActive(true)
-		metrics.RecordOverrideBypass()
-		artifactBuilder.SetOverrideSource(overrideSource)
-		if err := artifactBuilder.SetAdmissionPathSelected("override"); err != nil {
-			log.Fatalf("FATAL: AD23 enum violation on override path: %v", err)
+		log.Print(ebusgateway.FormatStartupSourceSelectionExplicitLog(overrideSource))
+		metrics.SetExplicitSourceActive(true)
+		metrics.RecordExplicitValidateOnly()
+		artifactBuilder.SetExplicitSource(overrideSource)
+		if err := artifactBuilder.SetSourceSelectionMode("explicit_validate_only"); err != nil {
+			log.Fatalf("FATAL: SAS M4 enum violation on explicit source path: %v", err)
 		}
-		// Override is configured: admission state immediately becomes
-		// "active" because the override Initiator is in use from the
-		// first active frame (AD09 (c2) soft short-circuit). source-address selector may
-		// still run advisory-only under Validate=true but does not gate.
-		artifactBuilder.SetActiveOverride(overrideSource)
+		// Exact source is configured: state immediately becomes "active" because
+		// the explicit source is in use from the first active frame. The selector
+		// may still run advisory-only under Validate=true but does not gate.
+		artifactBuilder.SetActiveExplicitSource(overrideSource)
 	} else {
-		metrics.SetOverrideActive(false)
+		metrics.SetExplicitSourceActive(false)
 	}
-	const artifactPath = "/tmp/helianthus-admission-artifact.json"
+	const artifactPath = "/tmp/helianthus-source-selection-artifact.json"
 	go func() {
 		timer := time.NewTimer(60 * time.Second)
 		defer timer.Stop()
@@ -153,13 +152,13 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			return
 		case <-timer.C:
 			if err := artifactBuilder.EmitToFile(artifactPath); err != nil {
-				log.Printf("startup admission artifact emit: %v", err)
+				log.Printf("startup source selection artifact emit: %v", err)
 			}
 		}
 	}()
 	defer func() {
 		if err := artifactBuilder.EmitToFile(artifactPath); err != nil {
-			log.Printf("startup admission artifact emit: %v", err)
+			log.Printf("startup source selection artifact emit: %v", err)
 		}
 	}()
 
@@ -249,7 +248,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && !overrideSet && cfg.ScanSourceAuto && cfg.ScanSource == 0x00 && !shouldStartPassiveObserveFirst(cfg) {
 		result, err := ebusgateway.SelectDefaultStartupSourceAddress(ctx)
 		if err != nil {
-			log.Printf("startup admission degraded reason=source_selection_default_policy_failed err=%v", err)
+			log.Printf("startup source selection degraded reason=source_selection_default_policy_failed err=%v", err)
 			metrics.MarkDegraded(time.Now())
 			artifactBuilder.SetDegraded("source_selection_default_policy_failed")
 		} else {
@@ -260,10 +259,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			cfg.StartupProbeTargets = append(cfg.StartupProbeTargets, startupProbeTargetsForSelection(result)...)
 			artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(cfg)))
 			artifactBuilder.SetSourceSelection(result.Source, result.Companion, result.Metrics.WarmupDurationActual)
-			if perr := artifactBuilder.SetAdmissionPathSelected("source_selection"); perr != nil {
-				log.Fatalf("FATAL: AD23 enum violation on source-selection default-policy path: %v", perr)
+			if perr := artifactBuilder.SetSourceSelectionMode("source_selection"); perr != nil {
+				log.Fatalf("FATAL: SAS M4 enum violation on source-selection default-policy path: %v", perr)
 			}
-			log.Printf("startup admission candidate source=0x%02X companion_target=0x%02X provenance=source_selection_default_policy", result.Source, result.Companion)
+			log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X provenance=source_selection_default_policy", result.Source, result.Companion)
 			if busObservability != nil {
 				busObservability.RecordBusAdmissionTransition("pending", result.Source, result.Companion, "active_probe_pending")
 			}
@@ -279,10 +278,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			cfg.StartupProbeTargets = append(cfg.StartupProbeTargets, startupProbeTargetsForSelection(result)...)
 			artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(cfg)))
 			artifactBuilder.SetSourceSelection(result.Source, result.Companion, 0)
-			if perr := artifactBuilder.SetAdmissionPathSelected("source_selection"); perr != nil {
-				log.Fatalf("FATAL: AD23 enum violation on configured source validation path: %v", perr)
+			if perr := artifactBuilder.SetSourceSelectionMode("source_selection"); perr != nil {
+				log.Fatalf("FATAL: SAS M4 enum violation on configured source validation path: %v", perr)
 			}
-			log.Printf("startup admission candidate source=0x%02X companion_target=0x%02X provenance=configured_source", result.Source, result.Companion)
+			log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X provenance=configured_source", result.Source, result.Companion)
 			if busObservability != nil {
 				busObservability.RecordBusAdmissionTransition("pending", result.Source, result.Companion, "active_probe_pending")
 			}
@@ -325,14 +324,14 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		}
 		log.Printf("passive reconstructor started")
 
-		selectionBus, err := ebusgateway.NewSourceSelectionBusAdapter(reconstructor, "startup_admission_source_selection_bus", false)
+		selectionBus, err := ebusgateway.NewSourceSelectionBusAdapter(reconstructor, "startup_source_selection_bus", false)
 		if err != nil {
 			return fmt.Errorf("m3: new source address selection bus: %w", err)
 		}
 		selector := protocol.NewSourceAddressSelector(selectionBus, ebusgateway.DefaultStartupAdmissionSourceSelectionConfig())
 
 		// Install AD08/AD22 stability window on the bus_observability store
-		// before the first admission state observation. Window is sized
+		// before the first source-selection state observation. Window is sized
 		// from cfg.StateMinStabilitySeconds (default 30, AD22 invariant
 		// enforced at config-load).
 		if busObservability != nil {
@@ -341,10 +340,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			)
 			busObservability.RecordBusAdmissionTransition("pending", 0, 0, "source_selection_warmup_in_progress")
 		}
-		// Wire M5 expvar surfaces: state pending → warmup cycle starts.
+		// Wire M5 expvar surfaces: state pending -> warmup cycle starts.
 		// Resolves cruise-run #20 validation finding that the 11
-		// startup_admission_* expvars were defined and Publish()'d via
-		// GetOrInitStartupAdmissionMetrics but never updated by the
+		// startup_source_selection_* expvars were defined and Publish()'d via
+		// GetOrInitStartupSourceSelectionMetrics but never updated by the
 		// runtime — they all stayed at 0 even after source-address selector success.
 		metrics.MarkPending()
 		metrics.StartWarmupCycle()
@@ -355,18 +354,18 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		result, err := selector.Select(warmupCtx)
 		cancel()
 		if err != nil {
-			log.Printf("startup admission degraded reason=source_selection_failed err=%v", err)
+			log.Printf("startup source selection degraded reason=source_selection_failed err=%v", err)
 			if busObservability != nil {
 				busObservability.RecordBusAdmissionTransition("degraded", 0, 0, "source_selection_failed")
 			}
 			metrics.MarkDegraded(time.Now())
 			artifactBuilder.SetDegraded("source_selection_failed")
-			if perr := artifactBuilder.SetAdmissionPathSelected("degraded_no_events"); perr != nil {
+			if perr := artifactBuilder.SetSourceSelectionMode("degraded_no_events"); perr != nil {
 				log.Fatalf("FATAL: AD23 enum violation on source-address selector-fail path: %v", perr)
 			}
 		} else {
 			if overrideSet {
-				_ = ebusgateway.CheckOverrideCompanionConflict(overrideSource, &result, metrics)
+				_ = ebusgateway.CheckExplicitSourceCompanionConflict(overrideSource, &result, metrics)
 			} else {
 				sourceSelection = &result
 				cfg.ScanSource = result.Source
@@ -375,10 +374,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				cfg.StartupProbeTargets = append(cfg.StartupProbeTargets, startupProbeTargetsForSelection(result)...)
 				artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(cfg)))
 				artifactBuilder.SetSourceSelection(result.Source, result.Companion, time.Since(warmupStartedAt))
-				if perr := artifactBuilder.SetAdmissionPathSelected("source_selection"); perr != nil {
+				if perr := artifactBuilder.SetSourceSelectionMode("source_selection"); perr != nil {
 					log.Fatalf("FATAL: AD23 enum violation on source-selection path: %v", perr)
 				}
-				log.Printf("startup admission candidate source=0x%02X companion_target=0x%02X", result.Source, result.Companion)
+				log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X", result.Source, result.Companion)
 				if busObservability != nil {
 					busObservability.RecordBusAdmissionTransition("pending", result.Source, result.Companion, "active_probe_pending")
 				}
@@ -446,7 +445,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && overrideSet {
 		startupCfg.ScanSource = overrideSource
 		startupCfg.ScanSourceAuto = false
-		startupSourceProvenance = "override"
+		startupSourceProvenance = "explicit_validate_only"
 	} else if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && sourceSelection != nil {
 		startupCfg.ScanSource = sourceSelection.Source
 		startupCfg.ScanSourceAuto = false
@@ -456,7 +455,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	log.Printf("startup scan pass")
 	log.Printf("startup_directed_probe_phase begin source=0x%02X provenance=%s", startupCfg.ScanSource, startupSourceProvenance)
 	if overrideSet {
-		artifactBuilder.SetOverrideSource(startupCfg.ScanSource)
+		artifactBuilder.SetExplicitSource(startupCfg.ScanSource)
 	}
 	startupScanSignals := startDiscoveryScanLoopFn(ctx, startupCfg, gateway, builder, adapterClassifier)
 
@@ -1163,7 +1162,7 @@ func startHTTPServer(
 	if busObservability != nil {
 		mux.Handle(normalizeMountPath(cfg.MetricsPath, ebusgateway.DefaultMetricsPath), busObservability.MetricsHandler())
 	}
-	// Expose expvar surfaces (including the 11 startup_admission_* counters
+	// Expose expvar surfaces (including the 11 startup_source_selection_* counters
 	// from M5) via /debug/vars. The expvar package's init registers the
 	// handler on http.DefaultServeMux, but the gateway uses its own mux so
 	// the handler must be wired explicitly. Resolves cruise-run #20

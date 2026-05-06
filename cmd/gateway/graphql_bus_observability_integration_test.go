@@ -123,7 +123,7 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 			t.Fatalf("NewInvokeHandler error = %v", err)
 		}
 
-		body := bytes.NewBufferString(`{"query":"{ busSummary { lastUpdatedAt messages { count capacity } status { lastUpdatedAt transportClass publisherCadenceSec publisherCadenceSource capability { activeSupported } busAdmission { state source companionTarget reason } bus_admission { source_selection { state outcome selected_source companion_target reason active_probe { target status } retryable automatic_retry_scheduled next_action } } startup { lastUpdatedAt phase cacheEpoch liveEpoch } featureFlags { lastUpdatedAt } } } busMessages(limit: 1) { count items { family sourceAddress targetAddress } } }"}`)
+		body := bytes.NewBufferString(`{"query":"{ busSummary { lastUpdatedAt messages { count capacity } status { lastUpdatedAt transportClass publisherCadenceSec publisherCadenceSource capability { activeSupported } bus_admission { source_selection { state outcome selected_source companion_target reason active_probe { target status } retryable automatic_retry_scheduled next_action } } startup { lastUpdatedAt phase cacheEpoch liveEpoch } featureFlags { lastUpdatedAt } } } busMessages(limit: 1) { count items { family sourceAddress targetAddress } } }"}`)
 		req := httptest.NewRequest(http.MethodPost, cfg.GraphQLPath, body)
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -150,12 +150,6 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 							ActiveSupported bool `json:"activeSupported"`
 						} `json:"capability"`
 						BusAdmission struct {
-							State           string `json:"state"`
-							Source          int    `json:"source"`
-							CompanionTarget int    `json:"companionTarget"`
-							Reason          string `json:"reason"`
-						} `json:"busAdmission"`
-						BusAdmissionSnake struct {
 							SourceSelection struct {
 								State           string `json:"state"`
 								Outcome         string `json:"outcome"`
@@ -214,13 +208,7 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 		if !response.Data.BusSummary.Status.Capability.ActiveSupported {
 			t.Fatal("busSummary.status.capability.activeSupported = false; want true")
 		}
-		if response.Data.BusSummary.Status.BusAdmission.State != "active" ||
-			response.Data.BusSummary.Status.BusAdmission.Source != 0x7F ||
-			response.Data.BusSummary.Status.BusAdmission.CompanionTarget != 0x08 ||
-			response.Data.BusSummary.Status.BusAdmission.Reason != "active_probe_passed" {
-			t.Fatalf("busSummary.status.busAdmission = %+v; want active admitted source", response.Data.BusSummary.Status.BusAdmission)
-		}
-		sourceSelection := response.Data.BusSummary.Status.BusAdmissionSnake.SourceSelection
+		sourceSelection := response.Data.BusSummary.Status.BusAdmission.SourceSelection
 		if sourceSelection.State != "active" ||
 			sourceSelection.Outcome != "active_probe_passed" ||
 			sourceSelection.SelectedSource != 0x7F ||
@@ -268,6 +256,28 @@ func TestRun_WiresBusObservabilityIntoGraphQLQueries(t *testing.T) {
 		}
 		if response.Data.BusMessages.Items[0].Family != "B509" {
 			t.Fatalf("busMessages.items[0].family = %q; want B509", response.Data.BusMessages.Items[0].Family)
+		}
+
+		legacyAlias := "bus" + "Admission"
+		legacyCompanion := "companion" + "Target"
+		legacyBody := bytes.NewBufferString(
+			`{"query":"{ busSummary { status { ` + legacyAlias + ` { state source ` + legacyCompanion + ` reason } } } }"}`,
+		)
+		legacyReq := httptest.NewRequest(http.MethodPost, cfg.GraphQLPath, legacyBody)
+		legacyReq.Header.Set("Content-Type", "application/json")
+		legacyRec := httptest.NewRecorder()
+		handler.ServeHTTP(legacyRec, legacyReq)
+		if legacyRec.Code != http.StatusOK {
+			t.Fatalf("legacy graphql status = %d; want %d body=%s", legacyRec.Code, http.StatusOK, legacyRec.Body.String())
+		}
+		var legacyResponse struct {
+			Errors []any `json:"errors"`
+		}
+		if err := json.Unmarshal(legacyRec.Body.Bytes(), &legacyResponse); err != nil {
+			t.Fatalf("legacy graphql response unmarshal: %v body=%s", err, legacyRec.Body.String())
+		}
+		if len(legacyResponse.Errors) == 0 {
+			t.Fatalf("legacy %s query succeeded; want schema rejection body=%s", legacyAlias, legacyRec.Body.String())
 		}
 
 		cancel()
@@ -421,10 +431,7 @@ func graphQLStatusToMCP(status *graphql.BusObservabilityStatus) *mcp.BusObservab
 	var admission *mcp.BusAdmission
 	if status.BusAdmission != nil {
 		admission = &mcp.BusAdmission{
-			State:           status.BusAdmission.State,
-			Source:          status.BusAdmission.Source,
-			CompanionTarget: status.BusAdmission.CompanionTarget,
-			Reason:          status.BusAdmission.Reason,
+			SourceSelection: graphQLAdmissionSourceSelectionToMCP(status.BusAdmission.SourceSelection),
 		}
 	}
 	return &mcp.BusObservabilityStatus{
@@ -471,6 +478,44 @@ func graphQLStatusToMCP(status *graphql.BusObservabilityStatus) *mcp.BusObservab
 			Normalizations:           append([]string(nil), status.FeatureFlags.Normalizations...),
 		},
 	}
+}
+
+func graphQLAdmissionSourceSelectionToMCP(selection *graphql.BusAdmissionSourceSelection) *mcp.BusAdmissionSourceSelection {
+	if selection == nil {
+		return nil
+	}
+	out := &mcp.BusAdmissionSourceSelection{
+		State:                   selection.State,
+		Mode:                    selection.Mode,
+		Outcome:                 selection.Outcome,
+		Reason:                  selection.Reason,
+		SelectedSource:          cloneUint8Ptr(selection.SelectedSource),
+		FailedSource:            cloneUint8Ptr(selection.FailedSource),
+		CompanionTarget:         cloneUint8Ptr(selection.CompanionTarget),
+		Retryable:               selection.Retryable,
+		NextAction:              selection.NextAction,
+		LastSuccessfulSource:    cloneUint8Ptr(selection.LastSuccessfulSource),
+		AutomaticRetryScheduled: selection.AutomaticRetryScheduled,
+	}
+	if selection.ActiveProbe != nil {
+		out.ActiveProbe = &mcp.BusAdmissionActiveProbe{
+			Target: cloneUint8Ptr(selection.ActiveProbe.Target),
+			Opcode: selection.ActiveProbe.Opcode,
+			Status: selection.ActiveProbe.Status,
+		}
+	}
+	if len(selection.RejectedCandidates) > 0 {
+		out.RejectedCandidates = make([]mcp.BusAdmissionRejectedCandidate, 0, len(selection.RejectedCandidates))
+		for _, candidate := range selection.RejectedCandidates {
+			out.RejectedCandidates = append(out.RejectedCandidates, mcp.BusAdmissionRejectedCandidate{
+				Source:             candidate.Source,
+				Reason:             candidate.Reason,
+				OccupancyState:     candidate.OccupancyState,
+				EvidenceProvenance: candidate.EvidenceProvenance,
+			})
+		}
+	}
+	return out
 }
 
 func parseGraphQLTime(t *testing.T, value string) time.Time {

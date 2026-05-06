@@ -585,12 +585,6 @@ func TestQueryResolvers_Integration(t *testing.T) {
 								active
 								reasons
 							}
-							busAdmission {
-								state
-								source
-								companionTarget
-								reason
-							}
 							bus_admission {
 								source_selection {
 									state
@@ -718,12 +712,6 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						Reasons []string `json:"reasons"`
 					} `json:"degraded"`
 					BusAdmission struct {
-						State           string `json:"state"`
-						Source          int    `json:"source"`
-						CompanionTarget int    `json:"companionTarget"`
-						Reason          string `json:"reason"`
-					} `json:"busAdmission"`
-					BusAdmissionSnake struct {
 						SourceSelection struct {
 							State           string `json:"state"`
 							Outcome         string `json:"outcome"`
@@ -823,13 +811,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		if !response.BusSummary.Status.Degraded.Active || len(response.BusSummary.Status.Degraded.Reasons) != 2 {
 			t.Fatalf("degraded = %+v; want active with 2 reasons", response.BusSummary.Status.Degraded)
 		}
-		if response.BusSummary.Status.BusAdmission.State != "active" ||
-			response.BusSummary.Status.BusAdmission.Source != 0x7F ||
-			response.BusSummary.Status.BusAdmission.CompanionTarget != 0x08 ||
-			response.BusSummary.Status.BusAdmission.Reason != "active_probe_passed" {
-			t.Fatalf("busAdmission = %+v; want legacy active admission mirror", response.BusSummary.Status.BusAdmission)
-		}
-		sourceSelection := response.BusSummary.Status.BusAdmissionSnake.SourceSelection
+		sourceSelection := response.BusSummary.Status.BusAdmission.SourceSelection
 		if sourceSelection.State != "active" ||
 			sourceSelection.Outcome != "active_probe_passed" ||
 			sourceSelection.Reason != "active_probe_passed" ||

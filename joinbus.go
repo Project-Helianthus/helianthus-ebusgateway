@@ -4,8 +4,8 @@ package ebusgateway
 //
 // This file implements the SourceAddressSelectionBus interface from
 // ebusgo/protocol, wired over the PassiveTransactionReconstructor's
-// subscription channel. It is the source-of-truth bridge for startup-admission
-// warmup on source-selection-capable direct transports (ENH, ENS, UDP-plain, TCP-plain).
+// subscription channel. It is the source-of-truth bridge for startup
+// source-selection warmup on direct transports (ENH, ENS, UDP-plain, TCP-plain).
 // ebusd-tcp does NOT instantiate this adapter per AD13.
 
 import (
@@ -19,8 +19,8 @@ import (
 
 var ErrSourceSelectionBusInquiryUnsupported = errors.New("source address selection: inquiry not supported (InquiryEnabled=false)")
 
-// TransportAdmissionPath is the admission-path dispatch decision for a given
-// transport kind per the startup-admission-discovery plan's transport
+// TransportAdmissionPath is the source-selection dispatch decision for a given
+// transport kind per the startup source-selection plan's transport
 // capability matrix (see plan AD11 and
 // helianthus-docs-ebus/architecture/startup-admission-and-discovery.md §10).
 type TransportAdmissionPath uint8
@@ -28,12 +28,12 @@ type TransportAdmissionPath uint8
 const (
 	// TransportAdmissionSourceSelectionCapable denotes a direct transport on which the
 	// gateway runs the source-address selector warmup before any
-	// non-override active frame. Applies to ENH, ENS, UDP-plain, TCP-plain.
+	// non-explicit active frame. Applies to ENH, ENS, UDP-plain, TCP-plain.
 	TransportAdmissionSourceSelectionCapable TransportAdmissionPath = iota + 1
 
 	// TransportAdmissionStaticFallback denotes the ebusd-tcp path, where the
 	// gateway does NOT instantiate source-address selection and uses the configured
-	// ScanSource as admission-fallback per AD13.
+	// ScanSource on the ebusd-owned transport path per AD13.
 	TransportAdmissionStaticFallback
 )
 
@@ -52,7 +52,7 @@ func NewSourceSelectionBusAdapter(reconstructor *PassiveTransactionReconstructor
 		return nil, fmt.Errorf("source address selection: reconstructor is nil")
 	}
 	if name == "" {
-		name = "startup_admission_source_selection_bus"
+		name = "startup_source_selection_bus"
 	}
 	return &sourceSelectionBusAdapter{
 		reconstructor:  reconstructor,

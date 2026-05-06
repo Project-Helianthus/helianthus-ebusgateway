@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "docs/schemas/admission-artifact.schema.json",
-  "title": "Startup Admission And Discovery Artifact",
-  "description": "Normative startup-admission-discovery artifact contract per 00-canonical.md §8 and AD23. This schema is owned by M2a and consumed unchanged by later emission milestones.",
+  "$id": "docs/schemas/source-selection-artifact.schema.json",
+  "title": "Startup Source Selection And Discovery Artifact",
+  "description": "Normative startup source-selection and discovery artifact contract.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,7 +12,7 @@
   "properties": {
     "admission": {
       "type": "object",
-      "description": "Admission decision output summarizing the selected source, companion target, warmup timing, and degraded reason when applicable.",
+      "description": "Source-selection decision output summarizing the selected source, companion target, warmup timing, and degraded reason when applicable.",
       "additionalProperties": false,
       "required": [
         "state",
@@ -21,12 +21,12 @@
         "warmup_duration_s",
         "reason_if_degraded",
         "transport_kind",
-        "admission_path_selected"
+        "source_selection"
       ],
       "properties": {
         "state": {
           "type": "string",
-          "description": "Admission state label emitted by the startup-admission FSM."
+          "description": "State label emitted by the startup source-selection FSM."
         },
         "source": {
           "type": "integer",
@@ -59,17 +59,26 @@
             "tcp-plain",
             "adapter-direct"
           ],
-          "description": "Transport kind from the startup-admission capability matrix. 'adapter-direct' is the multiplexer mode that wraps an underlying ENH/ENS adapter; semantically equivalent to a source-selection-capable transport (main.go special-cases it to admissionPath=SourceSelectionCapable)."
+          "description": "Transport kind from the startup source-selection capability matrix. 'adapter-direct' is the multiplexer mode that wraps an underlying ENH/ENS adapter; semantically equivalent to a source-selection-capable transport."
         },
-        "admission_path_selected": {
-          "type": "string",
-          "enum": [
-            "source_selection",
-            "override",
-            "degraded_transport_blind",
-            "degraded_no_events"
+        "source_selection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode"
           ],
-          "description": "Admission path chosen by the startup-admission flow."
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "source_selection",
+                "explicit_validate_only",
+                "degraded_transport_blind",
+                "degraded_no_events"
+              ],
+              "description": "Source-selection mode chosen by the startup flow."
+            }
+          }
         }
       }
     },

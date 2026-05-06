@@ -47,6 +47,7 @@ func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 			LiveEpoch:     9,
 		}
 	})
+	store.RecordBusAdmissionTransition("active", 0x7F, 0x08, "active_probe_passed")
 	if err := store.OnBusEvent(protocol.BusEvent{
 		Kind: protocol.BusEventAttemptComplete,
 		Request: protocol.Frame{
@@ -149,6 +150,44 @@ func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 	}
 	if got, _ := startup["phase"].(string); got != "LIVE_READY" {
 		t.Fatalf("summary startup.phase = %q; want LIVE_READY", got)
+	}
+	busAdmission, ok := status["bus_admission"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary bus_admission type = %T; want map", status["bus_admission"])
+	}
+	for _, legacyKey := range []string{"state", "source", "companion_target", "reason"} {
+		if _, ok := busAdmission[legacyKey]; ok {
+			t.Fatalf("summary bus_admission contains legacy flat key %q: %#v", legacyKey, busAdmission)
+		}
+	}
+	sourceSelection, ok := busAdmission["source_selection"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary bus_admission.source_selection type = %T; want map", busAdmission["source_selection"])
+	}
+	if got, _ := sourceSelection["state"].(string); got != "active" {
+		t.Fatalf("summary source_selection.state = %q; want active", got)
+	}
+	if got, _ := sourceSelection["outcome"].(string); got != "active_probe_passed" {
+		t.Fatalf("summary source_selection.outcome = %q; want active_probe_passed", got)
+	}
+	if got, _ := sourceSelection["selected_source"].(float64); int(got) != 0x7F {
+		t.Fatalf("summary source_selection.selected_source = %v; want 127", sourceSelection["selected_source"])
+	}
+	if got, _ := sourceSelection["companion_target"].(float64); int(got) != 0x08 {
+		t.Fatalf("summary source_selection.companion_target = %v; want 8", sourceSelection["companion_target"])
+	}
+	if got, _ := sourceSelection["reason"].(string); got != "active_probe_passed" {
+		t.Fatalf("summary source_selection.reason = %q; want active_probe_passed", got)
+	}
+	activeProbe, ok := sourceSelection["active_probe"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary source_selection.active_probe type = %T; want map", sourceSelection["active_probe"])
+	}
+	if got, _ := activeProbe["target"].(float64); int(got) != 0x08 {
+		t.Fatalf("summary source_selection.active_probe.target = %v; want 8", activeProbe["target"])
+	}
+	if got, _ := activeProbe["status"].(string); got != "active_probe_passed" {
+		t.Fatalf("summary source_selection.active_probe.status = %q; want active_probe_passed", got)
 	}
 
 	messagesEnvelope := mcpCallToolEnvelope(t, server.Handler(), mcpToolBusMessagesList, `{"limit":1}`)

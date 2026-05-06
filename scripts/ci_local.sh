@@ -9,6 +9,7 @@ if git grep -nIwiE 'm[a]ster|s[l]ave'; then
   echo "Found legacy terminology."
   exit 1
 fi
+python3 scripts/source_selection_m4_gate.py
 
 echo "==> gofmt"
 unformatted="$(git ls-files '*.go' | xargs -n 50 gofmt -l || true)"
@@ -34,12 +35,14 @@ go build ./...
 echo "==> go test (race)"
 go test -race -count=1 ./...
 
-echo "==> validating admission-artifact schema coverage"
-go test ./... -run "TestAdmissionArtifact_EmitValidatesAgainstSchema" -count=1
+echo "==> validating source-selection artifact schema coverage"
+go test ./... -run "TestSourceSelectionArtifact_EmitValidatesAgainstSchema" -count=1
 
 echo "==> python script tests"
 python3 scripts/passive_canary_verifier_test.py
+python3 scripts/source_selection_m4_gate_test.py
 python3 scripts/transport_gate_test.py
+python3 scripts/passive_smoke_gate_test.py
 
 if command -v golangci-lint >/dev/null 2>&1; then
   echo "==> golangci-lint"

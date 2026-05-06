@@ -773,6 +773,9 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 	}
 
 	base := time.Date(2026, time.March, 12, 12, 0, 0, 0, time.UTC)
+	selectedSource := uint8(0x7F)
+	companionTarget := uint8(0x08)
+	lastSuccessfulSource := uint8(0x7E)
 	server.SetBusObservabilityProvider(&testBusObservabilityProvider{
 		snapshot: BusObservabilitySnapshot{
 			Summary: &BusSummary{
@@ -805,6 +808,23 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 					Degraded: BusObservabilityDegraded{
 						Active:  true,
 						Reasons: []string{"dedup_degraded"},
+					},
+					BusAdmission: &BusAdmission{
+						SourceSelection: &BusAdmissionSourceSelection{
+							State:                   "active",
+							Mode:                    "default_policy",
+							Outcome:                 "active_probe_passed",
+							Reason:                  "active_probe_passed",
+							SelectedSource:          &selectedSource,
+							CompanionTarget:         &companionTarget,
+							ActiveProbe:             &BusAdmissionActiveProbe{Target: &companionTarget, Opcode: "B509", Status: "active_probe_passed"},
+							Retryable:               false,
+							LastSuccessfulSource:    &lastSuccessfulSource,
+							AutomaticRetryScheduled: false,
+							RejectedCandidates: []BusAdmissionRejectedCandidate{
+								{Source: 0xF7, Reason: "occupied", OccupancyState: "occupied", EvidenceProvenance: "passive"},
+							},
+						},
 					},
 					FeatureFlags: ObserveFirstFeatureFlagState{
 						ObserveFirstEnabled:      true,
@@ -884,6 +904,67 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 	}
 	if normalizations, _ := featureFlags["normalizations"].([]any); len(normalizations) != 2 {
 		t.Fatalf("bus summary feature_flags.normalizations = %#v; want 2 entries", featureFlags["normalizations"])
+	}
+	busAdmission, ok := status["bus_admission"].(map[string]any)
+	if !ok {
+		t.Fatalf("bus summary bus_admission type = %T; want map", status["bus_admission"])
+	}
+	for _, legacyKey := range []string{"state", "source", "companion_target", "reason"} {
+		if _, ok := busAdmission[legacyKey]; ok {
+			t.Fatalf("bus summary bus_admission contains legacy flat key %q: %#v", legacyKey, busAdmission)
+		}
+	}
+	sourceSelection, ok := busAdmission["source_selection"].(map[string]any)
+	if !ok {
+		t.Fatalf("bus summary bus_admission.source_selection type = %T; want map", busAdmission["source_selection"])
+	}
+	if got, _ := sourceSelection["state"].(string); got != "active" {
+		t.Fatalf("bus summary source_selection.state = %q; want active", got)
+	}
+	if got, _ := sourceSelection["mode"].(string); got != "default_policy" {
+		t.Fatalf("bus summary source_selection.mode = %q; want default_policy", got)
+	}
+	if got, _ := sourceSelection["outcome"].(string); got != "active_probe_passed" {
+		t.Fatalf("bus summary source_selection.outcome = %q; want active_probe_passed", got)
+	}
+	if got, _ := sourceSelection["selected_source"].(float64); int(got) != int(selectedSource) {
+		t.Fatalf("bus summary source_selection.selected_source = %v; want %d", sourceSelection["selected_source"], selectedSource)
+	}
+	if got, _ := sourceSelection["companion_target"].(float64); int(got) != int(companionTarget) {
+		t.Fatalf("bus summary source_selection.companion_target = %v; want %d", sourceSelection["companion_target"], companionTarget)
+	}
+	activeProbe, ok := sourceSelection["active_probe"].(map[string]any)
+	if !ok {
+		t.Fatalf("bus summary source_selection.active_probe type = %T; want map", sourceSelection["active_probe"])
+	}
+	if got, _ := activeProbe["target"].(float64); int(got) != int(companionTarget) {
+		t.Fatalf("bus summary source_selection.active_probe.target = %v; want %d", activeProbe["target"], companionTarget)
+	}
+	if got, _ := activeProbe["opcode"].(string); got != "B509" {
+		t.Fatalf("bus summary source_selection.active_probe.opcode = %q; want B509", got)
+	}
+	if got, _ := activeProbe["status"].(string); got != "active_probe_passed" {
+		t.Fatalf("bus summary source_selection.active_probe.status = %q; want active_probe_passed", got)
+	}
+	if got, _ := sourceSelection["retryable"].(bool); got {
+		t.Fatalf("bus summary source_selection.retryable = %v; want false", got)
+	}
+	if got, _ := sourceSelection["automatic_retry_scheduled"].(bool); got {
+		t.Fatalf("bus summary source_selection.automatic_retry_scheduled = %v; want false", got)
+	}
+	if got, _ := sourceSelection["last_successful_source"].(float64); int(got) != int(lastSuccessfulSource) {
+		t.Fatalf("bus summary source_selection.last_successful_source = %v; want %d", sourceSelection["last_successful_source"], lastSuccessfulSource)
+	}
+	rejectedCandidates, ok := sourceSelection["rejected_candidates"].([]any)
+	if !ok || len(rejectedCandidates) != 1 {
+		t.Fatalf("bus summary source_selection.rejected_candidates = %#v; want one item", sourceSelection["rejected_candidates"])
+	}
+	rejectedCandidate, ok := rejectedCandidates[0].(map[string]any)
+	if !ok {
+		t.Fatalf("bus summary source_selection.rejected_candidates[0] type = %T; want map", rejectedCandidates[0])
+	}
+	if got, _ := rejectedCandidate["source"].(float64); int(got) != 0xF7 {
+		t.Fatalf("bus summary source_selection.rejected_candidates[0].source = %v; want 247", rejectedCandidate["source"])
 	}
 	if got, _ := summaryData["last_updated_at"].(string); got != base.Format(time.RFC3339Nano) {
 		t.Fatalf("bus summary last_updated_at = %q; want %s", got, base.Format(time.RFC3339Nano))

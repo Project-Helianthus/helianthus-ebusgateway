@@ -203,6 +203,14 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 	gateway.Start(ctx)
 
+	// Phase A.5 runtime wire-up: AddressTable + AddressTableInserter consume
+	// the PassiveTransactionReconstructor's classified events to insert
+	// passively-observed addresses (e.g. NETX3 0xF6/0x04, SOL00 0xEC) into
+	// the registry as passive_observed/corroborated_pending. The inserter is
+	// idle until subscribeAddressTableInserter binds it to the reconstructor.
+	addressTable := ebusgateway.NewAddressTable(gateway.Registry)
+	addressTableInserter := ebusgateway.NewAddressTableInserter(addressTable, cfg)
+
 	builder := graphql.NewBuilder(gateway.Registry, nil)
 	if busObservability != nil {
 		builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(busObservability))
@@ -308,9 +316,36 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}
 
 	var (
-		listener      *ebusgateway.BroadcastListener
-		reconstructor *ebusgateway.PassiveTransactionReconstructor
+		listener         *ebusgateway.BroadcastListener
+		reconstructor    *ebusgateway.PassiveTransactionReconstructor
+		insertSubscribed bool
 	)
+	// subscribeAddressTableInserter binds the AddressTableInserter to the
+	// active reconstructor at most once. Safe to call from both the early
+	// source-selection path and the late observe-first path; subsequent
+	// invocations are no-ops once a subscription is live. Subscription
+	// failure is non-fatal — the inserter is a non-critical observer; we
+	// log and continue so reconstructor liveness governs run() lifecycle.
+	subscribeAddressTableInserter := func() {
+		if insertSubscribed || reconstructor == nil {
+			return
+		}
+		sub, err := reconstructor.Subscribe(
+			"address_table_inserter",
+			ebusgateway.PassiveSubscriberNonCritical,
+			0,
+		)
+		if err != nil {
+			log.Printf("address_table_inserter subscribe failed: %v", err)
+			return
+		}
+		insertSubscribed = true
+		go func() {
+			for ev := range sub.Events() {
+				addressTableInserter.OnPassiveClassifiedEvent(ev)
+			}
+		}()
+	}
 	attachPassiveObserveFirst := func() error {
 		if reconstructor == nil {
 			return nil
@@ -332,6 +367,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				return err
 			}
 		}
+		subscribeAddressTableInserter()
 		return nil
 	}
 
@@ -342,6 +378,12 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			return err
 		}
 		log.Printf("passive reconstructor started")
+
+		// Phase A.5: subscribe AddressTableInserter early so the
+		// source-selection warmup window also feeds passive insertions.
+		// Idempotent — re-called via attachPassiveObserveFirst at the
+		// late path (no-op once bound). Non-fatal on failure.
+		subscribeAddressTableInserter()
 
 		selectionBus, err := ebusgateway.NewSourceSelectionBusAdapter(reconstructor, "startup_source_selection_bus", false)
 		if err != nil {

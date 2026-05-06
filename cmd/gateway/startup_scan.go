@@ -1043,9 +1043,9 @@ func startupScanHasCoherentVaillantRoot(ctx context.Context, cfg ebusgateway.Con
 	probeCtx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()
 	poller := &vaillantSemanticPoller{
-		reg:            gateway.Registry,
-		bus:            gateway.Bus,
-		source:         cfg.ScanSource,
+		reg:    gateway.Registry,
+		bus:    gateway.Bus,
+		source: cfg.ScanSource,
 		// Companion is plumbed for the same source-address invariant
 		// the runtime path enforces: when source-selection has
 		// reserved a companion (e.g. StartupCompanionTarget=0x26)

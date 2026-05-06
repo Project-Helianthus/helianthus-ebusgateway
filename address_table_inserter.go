@@ -117,11 +117,14 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		registrySlot.LastObservedAt = observedAt
 	}
 
+	tier, free := canonicalSlotMetadata(addr)
 	i.table.slots[addr] = &AddressSlot{
 		Addr:              addr,
 		Role:              role,
 		DiscoverySource:   "passive_observed",
 		VerificationState: "corroborated_pending",
+		PriorityTier:      tier,
+		FreeUse:           free,
 		RegistrySlot:      registrySlot,
 	}
 

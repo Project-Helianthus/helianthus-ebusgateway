@@ -431,10 +431,7 @@ func graphQLStatusToMCP(status *graphql.BusObservabilityStatus) *mcp.BusObservab
 	var admission *mcp.BusAdmission
 	if status.BusAdmission != nil {
 		admission = &mcp.BusAdmission{
-			State:           status.BusAdmission.State,
-			Source:          status.BusAdmission.Source,
-			CompanionTarget: status.BusAdmission.CompanionTarget,
-			Reason:          status.BusAdmission.Reason,
+			SourceSelection: graphQLAdmissionSourceSelectionToMCP(status.BusAdmission.SourceSelection),
 		}
 	}
 	return &mcp.BusObservabilityStatus{
@@ -481,6 +478,44 @@ func graphQLStatusToMCP(status *graphql.BusObservabilityStatus) *mcp.BusObservab
 			Normalizations:           append([]string(nil), status.FeatureFlags.Normalizations...),
 		},
 	}
+}
+
+func graphQLAdmissionSourceSelectionToMCP(selection *graphql.BusAdmissionSourceSelection) *mcp.BusAdmissionSourceSelection {
+	if selection == nil {
+		return nil
+	}
+	out := &mcp.BusAdmissionSourceSelection{
+		State:                   selection.State,
+		Mode:                    selection.Mode,
+		Outcome:                 selection.Outcome,
+		Reason:                  selection.Reason,
+		SelectedSource:          cloneUint8Ptr(selection.SelectedSource),
+		FailedSource:            cloneUint8Ptr(selection.FailedSource),
+		CompanionTarget:         cloneUint8Ptr(selection.CompanionTarget),
+		Retryable:               selection.Retryable,
+		NextAction:              selection.NextAction,
+		LastSuccessfulSource:    cloneUint8Ptr(selection.LastSuccessfulSource),
+		AutomaticRetryScheduled: selection.AutomaticRetryScheduled,
+	}
+	if selection.ActiveProbe != nil {
+		out.ActiveProbe = &mcp.BusAdmissionActiveProbe{
+			Target: cloneUint8Ptr(selection.ActiveProbe.Target),
+			Opcode: selection.ActiveProbe.Opcode,
+			Status: selection.ActiveProbe.Status,
+		}
+	}
+	if len(selection.RejectedCandidates) > 0 {
+		out.RejectedCandidates = make([]mcp.BusAdmissionRejectedCandidate, 0, len(selection.RejectedCandidates))
+		for _, candidate := range selection.RejectedCandidates {
+			out.RejectedCandidates = append(out.RejectedCandidates, mcp.BusAdmissionRejectedCandidate{
+				Source:             candidate.Source,
+				Reason:             candidate.Reason,
+				OccupancyState:     candidate.OccupancyState,
+				EvidenceProvenance: candidate.EvidenceProvenance,
+			})
+		}
+	}
+	return out
 }
 
 func parseGraphQLTime(t *testing.T, value string) time.Time {

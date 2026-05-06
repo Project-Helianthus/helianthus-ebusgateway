@@ -411,10 +411,7 @@ func mapMCPBusAdmission(admission *ebusgateway.BusAdmission) *mcp.BusAdmission {
 		return nil
 	}
 	return &mcp.BusAdmission{
-		State:           admission.State,
-		Source:          admission.Source,
-		CompanionTarget: admission.CompanionTarget,
-		Reason:          admission.Reason,
+		SourceSelection: mapMCPBusAdmissionSourceSelection(admission.SourceSelection),
 	}
 }
 
@@ -446,6 +443,44 @@ func mapGraphQLBusAdmissionSourceSelection(selection *ebusgateway.BusAdmissionSo
 		out.RejectedCandidates = make([]graphql.BusAdmissionRejectedCandidate, 0, len(selection.RejectedCandidates))
 		for _, candidate := range selection.RejectedCandidates {
 			out.RejectedCandidates = append(out.RejectedCandidates, graphql.BusAdmissionRejectedCandidate{
+				Source:             candidate.Source,
+				Reason:             candidate.Reason,
+				OccupancyState:     candidate.OccupancyState,
+				EvidenceProvenance: candidate.EvidenceProvenance,
+			})
+		}
+	}
+	return out
+}
+
+func mapMCPBusAdmissionSourceSelection(selection *ebusgateway.BusAdmissionSourceSelection) *mcp.BusAdmissionSourceSelection {
+	if selection == nil {
+		return nil
+	}
+	out := &mcp.BusAdmissionSourceSelection{
+		State:                   selection.State,
+		Mode:                    selection.Mode,
+		Outcome:                 selection.Outcome,
+		Reason:                  selection.Reason,
+		SelectedSource:          cloneAdmissionUint8Ptr(selection.SelectedSource),
+		FailedSource:            cloneAdmissionUint8Ptr(selection.FailedSource),
+		CompanionTarget:         cloneAdmissionUint8Ptr(selection.CompanionTarget),
+		Retryable:               selection.Retryable,
+		NextAction:              selection.NextAction,
+		LastSuccessfulSource:    cloneAdmissionUint8Ptr(selection.LastSuccessfulSource),
+		AutomaticRetryScheduled: selection.AutomaticRetryScheduled,
+	}
+	if selection.ActiveProbe != nil {
+		out.ActiveProbe = &mcp.BusAdmissionActiveProbe{
+			Target: cloneAdmissionUint8Ptr(selection.ActiveProbe.Target),
+			Opcode: selection.ActiveProbe.Opcode,
+			Status: selection.ActiveProbe.Status,
+		}
+	}
+	if len(selection.RejectedCandidates) > 0 {
+		out.RejectedCandidates = make([]mcp.BusAdmissionRejectedCandidate, 0, len(selection.RejectedCandidates))
+		for _, candidate := range selection.RejectedCandidates {
+			out.RejectedCandidates = append(out.RejectedCandidates, mcp.BusAdmissionRejectedCandidate{
 				Source:             candidate.Source,
 				Reason:             candidate.Reason,
 				OccupancyState:     candidate.OccupancyState,

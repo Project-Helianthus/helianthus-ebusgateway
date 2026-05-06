@@ -314,6 +314,75 @@ func TestPassiveDiscoveryPromoter_CoalesceSemanticRefreshPerTick(t *testing.T) {
 	}
 }
 
+// TestPassiveDiscoveryPromoter_SemanticRefreshFiresAfterAllRegistrations
+// closes Codex PR #561 P2 finding: when multiple candidates confirm in
+// the same tick, the single coalesced semantic refresh must fire AFTER
+// all registrations have committed. Otherwise the semantic discovery
+// task could start and snapshot the registry before later candidates
+// in the same tick are added — those devices would miss the immediate
+// refresh and wait for the periodic discovery interval.
+//
+// The test pins the ordering by capturing the registry size at the
+// moment the semantic refresh fires.
+func TestPassiveDiscoveryPromoter_SemanticRefreshFiresAfterAllRegistrations(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	buf, _ := NewEvidenceBuffer(128, VaillantBaselineTopologySeed)
+	buf.Record(EvidenceRecord{Address: 0x15, Strength: EvidenceStrong, Observed: time.Now(), Kind: "test"})
+	buf.Record(EvidenceRecord{Address: 0x26, Strength: EvidenceStrong, Observed: time.Now(), Kind: "test"})
+
+	registrySizeAtRefresh := -1
+	promoter, _ := NewPassiveDiscoveryPromoter(PassiveDiscoveryPromoterOptions{
+		Registry:       reg,
+		EvidenceBuffer: buf,
+		ConfirmFn:      func(_ context.Context, _ byte) bool { return true },
+		SemanticRefreshFn: func() {
+			count := 0
+			reg.Iterate(func(_ registry.DeviceEntry) bool { count++; return true })
+			registrySizeAtRefresh = count
+		},
+		AdmittedSourceFn: func() byte { return 0x71 },
+		TickInterval:     1 * time.Millisecond,
+		Now:              time.Now,
+	})
+
+	promoter.processOnce(context.Background())
+
+	if registrySizeAtRefresh != 2 {
+		t.Fatalf("registry size at semantic refresh = %d; want 2 (refresh must fire AFTER all registrations commit)", registrySizeAtRefresh)
+	}
+}
+
+// TestPassiveDiscoveryPromoter_NoSemanticRefreshWhenNoConfirmations pins
+// the negative case: a tick with no successful confirmations must NOT
+// emit a semantic refresh signal — there's no inventory change for the
+// poller to discover.
+func TestPassiveDiscoveryPromoter_NoSemanticRefreshWhenNoConfirmations(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	buf, _ := NewEvidenceBuffer(128, VaillantBaselineTopologySeed)
+	buf.Record(EvidenceRecord{Address: 0x42, Strength: EvidenceStrong, Observed: time.Now(), Kind: "test"})
+
+	semanticCalls := 0
+	promoter, _ := NewPassiveDiscoveryPromoter(PassiveDiscoveryPromoterOptions{
+		Registry:          reg,
+		EvidenceBuffer:    buf,
+		ConfirmFn:         func(_ context.Context, _ byte) bool { return false }, // never coherent
+		SemanticRefreshFn: func() { semanticCalls++ },
+		AdmittedSourceFn:  func() byte { return 0x71 },
+		TickInterval:      1 * time.Millisecond,
+		Now:               time.Now,
+	})
+
+	promoter.processOnce(context.Background())
+
+	if semanticCalls != 0 {
+		t.Fatalf("semantic refresh fired %d times with zero confirmations; want 0 (no inventory change)", semanticCalls)
+	}
+}
+
 // TestPassiveDiscoveryPromoter_GatesProbesOnAdmittedSource pins the
 // source-admission invariant from Codex PR #561 review: while admission
 // is pending (admittedSource == 0) the promoter MUST NOT issue active

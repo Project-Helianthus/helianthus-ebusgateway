@@ -5127,6 +5127,79 @@ func TestCapabilityFirstDiscovery_StructuralFallbackSkipsAdmittedSource(t *testi
 	}
 }
 
+// TestCapabilityFirstDiscovery_StructuralFallbackSkipsAdmittedCompanion closes
+// the source-address invariant on the companion side (Codex PR #560 P2
+// re-review): under source-selection, a configured / source-selected
+// companion target reserved for the gateway must NOT be probed by the
+// runtime semantic-discovery entry point. The startup probe path
+// sanitizes via sanitizeStartupProbeTargets(... source, companion);
+// discoverB524Root must apply the same guard.
+func TestCapabilityFirstDiscovery_StructuralFallbackSkipsAdmittedCompanion(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+
+	var probed []byte
+	poller := newTestPoller(reg)
+	poller.source = 0x7F
+	poller.companion = 0x26 // companion reserved for the gateway
+
+	// Only 0x15 is coherent. Without the companion guard, 0x26 would
+	// be probed as a structural target (it's in the structural set).
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: false, 0x15: true, 0x26: true}, &probed)
+
+	addr, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v", err)
+	}
+	if addr != 0x15 {
+		t.Fatalf("discoverB524Root = 0x%02x; want 0x15", addr)
+	}
+	for _, p := range probed {
+		if p == 0x26 {
+			t.Fatalf("admitted companion 0x26 was probed; source-address invariant violated. probed=%v", probed)
+		}
+	}
+}
+
+// TestRefreshDiscovery_RecomputesRegulatorCapabilityAfterStructuralRegistration
+// pins the capability-recompute fix (Codex PR #560 P2 re-review): when
+// refreshDiscovery's discoverB524Root succeeds via the structural-
+// fallback path and registers the controller as a side effect, the
+// regulator capability lookup must run against the post-registration
+// inventory. Otherwise p.regulatorCapability stays at ControllerNone
+// until the next regulator-recheck tick.
+func TestRefreshDiscovery_RecomputesRegulatorCapabilityAfterStructuralRegistration(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+
+	poller := newTestPoller(reg)
+	// Initial capability is ControllerNone (registry has only boiler).
+	if cap := poller.findRegulatorCapability(); cap == productids.ControllerPresent {
+		t.Fatalf("test setup invalid: pre-registration capability already %v", cap)
+	}
+
+	// Discover 0x15 via structural fallback, then register it.
+	poller.b524ProbeFn = mockB524Probe(map[byte]bool{0x08: false, 0x15: true, 0x26: false}, nil)
+	controller, err := poller.discoverB524Root(context.Background())
+	if err != nil {
+		t.Fatalf("discoverB524Root error = %v", err)
+	}
+	registered := poller.registerStructuralControllerIfMissing(controller)
+	if !registered {
+		t.Fatal("registerStructuralControllerIfMissing returned false; expected true for newly-discovered 0x15")
+	}
+
+	// findRegulatorCapability must now reflect the new inventory.
+	postCap := poller.findRegulatorCapability()
+	if postCap == productids.ControllerNone {
+		t.Fatalf("post-registration capability = %v; want non-ControllerNone (registry now contains 0x15 Vaillant)", postCap)
+	}
+}
+
 // TestRegisterStructuralControllerIfMissing_NoOpWhenAlreadyRegistered pins
 // the idempotence contract: repeated structural-fallback calls for an
 // already-registered controller must not duplicate registry entries or

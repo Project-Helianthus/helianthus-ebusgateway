@@ -289,6 +289,7 @@ type vaillantSemanticPoller struct {
 	watchEfficiency ebusgateway.WatchEfficiencyObserver
 
 	source                   byte
+	companion                byte
 	requestTimeout           time.Duration
 	discoveryInterval        time.Duration
 	configInterval           time.Duration
@@ -648,6 +649,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		watchObserver:   cfg.WatchObserver,
 		watchEfficiency: cfg.WatchEfficiencyObserver,
 		source:          cfg.ScanSource,
+		companion:       cfg.StartupCompanionTarget,
 
 		requestTimeout:           cfg.SemanticRequestTimeout,
 		discoveryInterval:        cfg.SemanticDiscoveryInterval,
@@ -1668,11 +1670,24 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	// minimal Vaillant entry so GraphQL devices and the router plane
 	// reflect the regulator. Registry de-dupes on address, so a
 	// no-op when the controller is already known.
-	p.registerStructuralControllerIfMissing(controller)
+	registered := p.registerStructuralControllerIfMissing(controller)
 
 	if enrichment := p.enrichRegulatorIdentity(controller); enrichment != nil {
 		log.Printf("semantic_controller_enrichment address=0x%02x family=%s device=%s",
 			controller, enrichment.family, enrichment.deviceID)
+	}
+
+	// Recompute regulator capability after structural registration:
+	// the registry just gained a new Vaillant entry, so the
+	// capability lookup must run against the post-registration
+	// inventory. Without this recompute, p.regulatorCapability
+	// stays at the pre-registration value (typically ControllerNone
+	// when the registry held only the boiler) until the next
+	// regulatorRecheckInterval tick — leaving status surfaces
+	// reporting "no regulator" while semantic discovery already
+	// has one.
+	if registered {
+		regCap = p.findRegulatorCapability()
 	}
 
 	p.mu.Lock()
@@ -6669,16 +6684,23 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 			if _, dup := candidateSet[addr]; dup {
 				continue
 			}
-			// Source-address invariant: a structural target that
+			// Source/companion invariant: a structural target that
 			// matches the admitted source would produce a self-
 			// directed unicast probe (probeB524Register builds a
 			// frame with Source=p.source, Target=addr). When an
 			// explicit source configuration admits 0x15 (or the
 			// source-selection result lands on 0x15), the regulator
-			// must not be self-probed. The startup probe path
-			// sanitizes via sanitizeStartupProbeTargets; this path
-			// is a separate entry point and must apply the same guard.
+			// must not be self-probed. Likewise the admitted
+			// companion target — under source-selection a companion
+			// of 0x26 is reserved for the gateway; probing it would
+			// pre-empt the source-selection arbitration partner.
+			// The startup probe path sanitizes via
+			// sanitizeStartupProbeTargets(... source, companion);
+			// this entry point must apply the same guard.
 			if addr == p.source {
+				continue
+			}
+			if p.companion != 0 && addr == p.companion {
 				continue
 			}
 			candidateSet[addr] = struct{}{}
@@ -6738,9 +6760,14 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 // identity field set; richer fields (DeviceID, SerialNumber,
 // SoftwareVersion) are populated naturally by subsequent identity
 // reads or by the discovery promotion pipeline once that lands.
-func (p *vaillantSemanticPoller) registerStructuralControllerIfMissing(controller byte) {
+// registerStructuralControllerIfMissing returns true iff the registry
+// gained a new entry as a result of this call (false when the
+// controller was already known, was zero, or the poller was nil).
+// Callers use the return value to decide whether downstream caches
+// (e.g. regulator capability) need recomputation.
+func (p *vaillantSemanticPoller) registerStructuralControllerIfMissing(controller byte) bool {
 	if p == nil || p.reg == nil || controller == 0 {
-		return
+		return false
 	}
 	already := false
 	p.reg.Iterate(func(e registry.DeviceEntry) bool {
@@ -6751,7 +6778,7 @@ func (p *vaillantSemanticPoller) registerStructuralControllerIfMissing(controlle
 		return true
 	})
 	if already {
-		return
+		return false
 	}
 	p.reg.Register(registry.DeviceInfo{
 		Address:      controller,
@@ -6761,6 +6788,7 @@ func (p *vaillantSemanticPoller) registerStructuralControllerIfMissing(controlle
 	if p.routerPlanesRefreshFn != nil {
 		p.routerPlanesRefreshFn()
 	}
+	return true
 }
 
 // enrichRegulatorIdentity returns enrichment metadata for the B524 root device.

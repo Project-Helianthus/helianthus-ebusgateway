@@ -5095,10 +5095,10 @@ func TestRefreshDiscovery_StructuralFallbackRegistersControllerInRegistry(t *tes
 // TestCapabilityFirstDiscovery_StructuralFallbackSkipsAdmittedSource closes
 // the source-address invariant hole found during Codex adversarial review
 // (PR #560 P2): when the admitted semantic source equals one of the
-// structural targets (operator runs with `-source-addr 0x15` or a
-// source-selection result lands on 0x15), the structural augmentation
-// must NOT add that address to the probe candidates — probeB524Register
-// would issue Source=0x15 / Target=0x15, a self-directed unicast probe.
+// structural targets (e.g. configured source 0x15, or a source-selection
+// result lands on 0x15), the structural augmentation must NOT add that
+// address to the probe candidates — probeB524Register would issue
+// Source=0x15 / Target=0x15, a self-directed unicast probe.
 func TestCapabilityFirstDiscovery_StructuralFallbackSkipsAdmittedSource(t *testing.T) {
 	t.Parallel()
 

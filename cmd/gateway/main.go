@@ -395,11 +395,19 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		}
 		log.Printf("passive reconstructor started")
 
-		// Phase A.5: subscribe AddressTableInserter early so the
-		// source-selection warmup window also feeds passive insertions.
-		// Idempotent — re-called via attachPassiveObserveFirst at the
-		// late path (no-op once bound). Non-fatal on failure.
-		subscribeAddressTableInserter()
+		// Phase A.5 (Codex P2 round 2): do NOT subscribe the inserter
+		// here. The source-selection warmup runs before
+		// builder.SetAdmittedMutationSource is called, so the
+		// inserter's AdmittedSource() closure would return 0 during
+		// startup_directed_probe_phase. On non-adapter-direct
+		// transports the passive tap can see the gateway's own
+		// active probes; with admitted=0 the inserter's self-source
+		// filter would NOT skip them and could insert the gateway's
+		// own companion/targets as passive_observed.
+		//
+		// Subscription is deferred to attachPassiveObserveFirst (late
+		// path), which runs after builder.SetAdmittedMutationSource is
+		// called and admission is finalized.
 
 		selectionBus, err := ebusgateway.NewSourceSelectionBusAdapter(reconstructor, "startup_source_selection_bus", false)
 		if err != nil {

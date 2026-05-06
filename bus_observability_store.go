@@ -100,6 +100,23 @@ type BusObservabilityStore struct {
 	energyFreshnessMetricsRefresher func(now time.Time, passiveState string)
 	busAdmission                    *BusAdmission
 	admissionStabilityWindow        *AdmissionStabilityWindow
+
+	// evidence buffers passive observations for the runtime discovery
+	// promotion pipeline. Late-arriving devices (e.g. a regulator that
+	// boots after the gateway) accumulate evidence as their request /
+	// response traffic is observed; once an address crosses the
+	// promotion threshold the discovery promoter probes it actively.
+	//
+	// The buffer is read by an external promoter goroutine via
+	// EvidenceBuffer(); writes happen on the passive-event path under
+	// the buffer's own mutex.
+	evidence *EvidenceBuffer
+	// evidenceSourceProvider returns the gateway's admitted source
+	// address. The store filters self-source traffic out of evidence
+	// recording so the gateway never promotes its own admitted source.
+	// Nil-safe: when unset the store records all non-self-evident
+	// traffic (which is the historical / test default).
+	evidenceSourceProvider func() byte
 }
 
 // SetAdmissionStabilityWindow installs the AD08 / AD22 flap-mitigation
@@ -388,10 +405,44 @@ func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 			transitions:      make(map[string]uint64),
 		},
 	}
+	// Evidence buffer feeds the runtime passive-promotion pipeline.
+	// 128 entries / Vaillant baseline seed are the long-standing
+	// defaults validated by evidence_buffer_test.go. Construction
+	// failure is logged but non-fatal — the store still operates as
+	// a pure observability sink without the promotion pathway.
+	if buf, err := NewEvidenceBuffer(128, VaillantBaselineTopologySeed); err == nil {
+		store.evidence = buf
+	}
 	if reason := passiveTransportUnavailableReason(cfg); reason != "" {
 		store.passive.unavailableReason = reason
 	}
 	return store
+}
+
+// EvidenceBuffer returns the runtime passive-evidence buffer used by the
+// discovery promoter. Returns nil if the buffer was not constructed
+// (e.g. invalid seed at startup); callers must nil-check.
+func (store *BusObservabilityStore) EvidenceBuffer() *EvidenceBuffer {
+	if store == nil {
+		return nil
+	}
+	return store.evidence
+}
+
+// SetAdmittedSourceProvider installs the function the store uses to
+// learn which address has been admitted as the gateway's source. This
+// must be set after the source-address selection completes; the store
+// uses it to filter self-source traffic out of evidence recording so
+// the gateway never feeds its own probes back into the promotion
+// pipeline. Nil-safe: when unset, all non-self-evident traffic flows
+// to the buffer (legacy / test default).
+func (store *BusObservabilityStore) SetAdmittedSourceProvider(provider func() byte) {
+	if store == nil {
+		return
+	}
+	store.mu.Lock()
+	store.evidenceSourceProvider = provider
+	store.mu.Unlock()
 }
 
 func (store *BusObservabilityStore) SetStartupSurfaceProvider(provider func() *BusObservabilityStartup) {
@@ -574,6 +625,7 @@ func (store *BusObservabilityStore) OnPassiveClassifiedEvent(event PassiveClassi
 	switch event.Kind {
 	case PassiveClassifiedEventBroadcastFrame, PassiveClassifiedEventMasterFrame, PassiveClassifiedEventTransaction:
 		store.recordPassiveFrameLocked(event)
+		store.recordEvidenceFromEventLocked(event)
 	case PassiveClassifiedEventAbandonedTransaction:
 		store.recordPassiveAbandonedLocked(event)
 	case PassiveClassifiedEventDiscontinuity:
@@ -584,6 +636,177 @@ func (store *BusObservabilityStore) OnPassiveClassifiedEvent(event PassiveClassi
 	} else {
 		store.touchLocked(store.now())
 	}
+}
+
+// recordEvidenceFromEventLocked feeds passive-frame addresses into the
+// runtime evidence buffer for the discovery-promotion pipeline.
+//
+// Evidence-strength classification:
+//   - PassiveClassifiedEventTransaction whose response carries an
+//     identity-bearing or B524 capability response → EvidenceStrong:
+//     the address has demonstrably participated as a coherent Vaillant
+//     responder, sufficient for single-observation promotion.
+//   - PassiveClassifiedEventBroadcastFrame source (e.g. 0x07-class
+//     sign-of-life) → EvidenceWeak: presence-only signal.
+//   - PassiveClassifiedEventMasterFrame source / target,
+//     PassiveClassifiedEventTransaction request source / target →
+//     EvidenceWeak: traffic-only signal.
+//
+// Address filters applied:
+//   - Skip the gateway's admitted source so the gateway never
+//     feeds its own outbound traffic back into promotion.
+//   - Skip broadcast (0xFE), SYN (0xAA), and pre-responder range
+//     (<0x03) — these are protocol artifacts, not device addresses.
+//   - 0xFF is the broadcast destination class (e.g. 0x07 0xFF
+//     sign-of-life); record the SOURCE as presence evidence but
+//     never the broadcast destination as a candidate.
+//
+// Caller holds store.mu.
+func (store *BusObservabilityStore) recordEvidenceFromEventLocked(event PassiveClassifiedEvent) {
+	if store == nil || store.evidence == nil {
+		return
+	}
+	now := event.ObservedAt
+	if now.IsZero() {
+		now = store.now()
+	}
+	admittedSource := byte(0)
+	if store.evidenceSourceProvider != nil {
+		admittedSource = store.evidenceSourceProvider()
+	}
+
+	strongResponseEvidence := false
+	if event.Kind == PassiveClassifiedEventTransaction && event.HasResponse {
+		strongResponseEvidence = passiveResponseIsCoherentVaillantEvidence(event.Request, event.Response)
+	}
+
+	// Per-event dedupe: a single transaction has both
+	// request.Target and response.Source pointing at the same
+	// responder; recording both would double-count and let a single
+	// (non-coherent) frame cross the weak-evidence promotion
+	// threshold. Track the highest-strength record per address
+	// within this event.
+	perEvent := make(map[byte]EvidenceStrength, 4)
+	upgradeCandidate := func(addr byte, strength EvidenceStrength) {
+		if !isPassiveEvidenceCandidate(addr, admittedSource) {
+			return
+		}
+		if existing, ok := perEvent[addr]; !ok || strength > existing {
+			perEvent[addr] = strength
+		}
+	}
+	candidateKind := make(map[byte]string, 4)
+	upgradeKind := func(addr byte, kind string) {
+		if !isPassiveEvidenceCandidate(addr, admittedSource) {
+			return
+		}
+		if _, ok := candidateKind[addr]; !ok {
+			candidateKind[addr] = kind
+		}
+	}
+
+	switch event.Kind {
+	case PassiveClassifiedEventBroadcastFrame:
+		// 07 FF and other sign-of-life broadcasts are presence-only
+		// evidence per operator requirement: "consumed passively as
+		// presence evidence, not used as a discovery probe target."
+		// PresenceOnly keeps the address fresh in the buffer (so LRU
+		// eviction does not lose long-lived presence) but does NOT
+		// contribute to the promotion threshold — broadcast traffic
+		// alone never promotes.
+		upgradeCandidate(event.Request.Source, EvidencePresenceOnly)
+		upgradeKind(event.Request.Source, "broadcast_source")
+	case PassiveClassifiedEventMasterFrame:
+		upgradeCandidate(event.Request.Source, EvidenceWeak)
+		upgradeKind(event.Request.Source, "master_source")
+		upgradeCandidate(event.Request.Target, EvidenceWeak)
+		upgradeKind(event.Request.Target, "master_target")
+	case PassiveClassifiedEventTransaction:
+		responderStrength := EvidenceWeak
+		if strongResponseEvidence {
+			responderStrength = EvidenceStrong
+		}
+		upgradeCandidate(event.Request.Source, EvidenceWeak)
+		upgradeKind(event.Request.Source, "tx_request_source")
+		upgradeCandidate(event.Request.Target, responderStrength)
+		upgradeKind(event.Request.Target, "tx_responder")
+		if event.HasResponse {
+			// Identical to request.Target in normal transactions —
+			// dedupe via perEvent map, but still record the address
+			// when the reconstructor surfaces an aliased response
+			// source distinct from request.Target.
+			upgradeCandidate(event.Response.Source, responderStrength)
+			upgradeKind(event.Response.Source, "tx_responder")
+		}
+	}
+
+	for addr, strength := range perEvent {
+		store.evidence.Record(EvidenceRecord{
+			Address:  addr,
+			Strength: strength,
+			Observed: now,
+			Kind:     candidateKind[addr],
+		})
+	}
+}
+
+// isPassiveEvidenceCandidate reports whether addr is a valid candidate
+// for the runtime promotion pipeline. Filters out the gateway's own
+// admitted source, broadcast (0xFE), SYN (0xAA), the broadcast
+// destination class (0xFF), and the initiator-pre-arbitration range
+// (<0x03) per Vaillant / eBUS conventions.
+func isPassiveEvidenceCandidate(addr, admittedSource byte) bool {
+	if addr == 0x00 || addr == 0xAA || addr == 0xFE || addr == 0xFF {
+		return false
+	}
+	if addr < 0x03 {
+		return false
+	}
+	if admittedSource != 0 && addr == admittedSource {
+		return false
+	}
+	return true
+}
+
+// passiveResponseIsCoherentVaillantEvidence reports whether a request /
+// response pair carries Vaillant-coherent evidence strong enough to
+// promote on a single observation.
+//
+// Acceptance criteria — both must hold:
+//
+//   - request is a B524 extended-register read (Primary=0xB5 Secondary=0x24)
+//     AND response.Data echoes the request's group and addr fields in a
+//     valid B524 reply position (validated via IsB524ResponseCoherent).
+//
+// OR
+//
+//   - request is a B509 ScanID identity reply (Primary=0xB5 Secondary=0x09
+//     with opcode 0x29 at request.Data[0]) and response.Data is at least
+//     4 bytes (an identity-bearing reply payload).
+//
+// The shared B524 coherency helper (IsB524ResponseCoherent) makes the
+// passive-evidence acceptance criterion identical to the active probe
+// acceptance criterion in cmd/gateway/semantic_vaillant.go's
+// isB524ProbeCoherent — both call sites use the same source of truth.
+//
+// This guards against stray fragments or spoofed frames promoting
+// phantom addresses on a single observation: a passively observed
+// frame must echo the requested register parameters in their
+// canonical position before counting as strong evidence.
+func passiveResponseIsCoherentVaillantEvidence(request, response protocol.Frame) bool {
+	if request.Primary == 0xB5 && request.Secondary == 0x24 {
+		group, addr, ok := b524RequestParameters(request.Data)
+		if !ok {
+			return false
+		}
+		return IsB524ResponseCoherent(response.Data, group, addr)
+	}
+	if request.Primary == 0xB5 && request.Secondary == 0x09 &&
+		len(request.Data) > 0 && request.Data[0] == 0x29 &&
+		len(response.Data) >= 4 {
+		return true
+	}
+	return false
 }
 
 func (store *BusObservabilityStore) ObserveWatchRead(event WatchEfficiencyReadEvent) {

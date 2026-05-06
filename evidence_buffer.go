@@ -12,7 +12,20 @@ import (
 type EvidenceStrength uint8
 
 const (
-	EvidenceWeak EvidenceStrength = iota + 1
+	// EvidencePresenceOnly records that an address was observed on
+	// the bus without contributing to promotion. Used for sign-of-
+	// life broadcast sources (e.g. 0x07 0xFF), where the operator's
+	// stated requirement is "consumed passively as presence
+	// evidence, not used as a discovery probe target."
+	EvidencePresenceOnly EvidenceStrength = iota + 1
+	// EvidenceWeak counts toward promotion (>=2 weak observations
+	// promote). Initiator-class frames, request-target traffic without a
+	// coherent B524 response.
+	EvidenceWeak
+	// EvidenceStrong promotes on a single observation. Only used
+	// when the response payload demonstrably implements the
+	// Vaillant extended-register protocol (passes the B524 probe
+	// coherency check) or carries a B509 ScanID identity reply.
 	EvidenceStrong
 )
 
@@ -98,7 +111,13 @@ func NewEvidenceBuffer(maxEntries int, baseline []byte) (*EvidenceBuffer, error)
 }
 
 // Record adds or updates evidence for an address. Returns whether the address
-// crossed the promotion threshold as a result (≥2 observations OR any strong).
+// crossed the promotion threshold as a result (≥2 weak/strong observations
+// OR any strong observation).
+//
+// EvidencePresenceOnly records a touch without contributing to the
+// promotion threshold (`observations` and `strongObs` are NOT
+// incremented). Used to keep an address fresh in the buffer without
+// promoting it (see EvidencePresenceOnly docstring).
 func (b *EvidenceBuffer) Record(record EvidenceRecord) (promoted bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -118,18 +137,47 @@ func (b *EvidenceBuffer) Record(record EvidenceRecord) (promoted bool) {
 		b.entries[record.Address] = state
 	}
 
+	state.lastObserved = record.Observed
+	state.touchedAt = b.tick
+
+	if record.Strength == EvidencePresenceOnly {
+		// Presence-only: refresh the touch timestamp (so the entry
+		// is not LRU-evicted) but do NOT contribute to the
+		// promotion threshold.
+		return false
+	}
+
 	state.observations++
 	if record.Strength == EvidenceStrong {
 		state.strongObs++
 	}
-	state.lastObserved = record.Observed
-	state.touchedAt = b.tick
 
 	if !state.promoted && (state.observations >= 2 || state.strongObs >= 1) {
 		state.promoted = true
 		return true
 	}
 	return false
+}
+
+// Demote clears the promoted flag for an address and resets its
+// observation counters, allowing the runtime promotion pipeline to
+// give up on a candidate that has repeatedly failed active
+// confirmation. The address remains in the buffer (so subsequent
+// fresh evidence can re-promote it after threshold) but is no longer
+// returned by PromotedAddresses.
+//
+// Returns true iff the address was promoted before this call.
+func (b *EvidenceBuffer) Demote(addr byte) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	state, ok := b.entries[addr]
+	if !ok || !state.promoted {
+		return false
+	}
+	state.promoted = false
+	state.observations = 0
+	state.strongObs = 0
+	return true
 }
 
 func (b *EvidenceBuffer) evictOldestNonBaselineLocked() {

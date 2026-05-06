@@ -73,6 +73,20 @@ type PassiveTimingMarkers struct {
 	Terminal      time.Time
 }
 
+type PassiveACKPosition = protocol.ACKPosition
+
+const (
+	PassiveACKPositionRequestACK = protocol.ACKPositionRequestACK
+)
+
+type PassiveACKCorrelator = protocol.ACKCorrelator
+
+const (
+	PassiveACKCorrelatorM2A = protocol.ACKCorrelatorM2A
+)
+
+type PassiveACKCorrelation = protocol.ACKCorrelation
+
 type PassiveClassifiedEvent struct {
 	Kind                PassiveClassifiedEventKind
 	FrameType           protocol.FrameType
@@ -84,6 +98,7 @@ type PassiveClassifiedEvent struct {
 	ObservedAt          time.Time
 	AbandonReason       PassiveAbandonReason
 	DiscontinuityReason PassiveDiscontinuityReason
+	ACKCorrelation      PassiveACKCorrelation
 	Err                 error
 	Subscriber          string
 }
@@ -138,6 +153,7 @@ type passiveTransactionState struct {
 	response            protocol.Frame
 	responseExpectedLen int
 	responseCRCValid    bool
+	ackCorrelation      PassiveACKCorrelation
 	frameType           protocol.FrameType
 	timing              PassiveTimingMarkers
 	lastProgressAt      time.Time
@@ -404,6 +420,7 @@ func (reconstructor *PassiveTransactionReconstructor) startRequestLocked(symbol 
 	reconstructor.state.response = protocol.Frame{}
 	reconstructor.state.responseExpectedLen = 0
 	reconstructor.state.responseCRCValid = false
+	reconstructor.state.ackCorrelation = PassiveACKCorrelation{}
 	reconstructor.state.frameType = protocol.FrameTypeUnknown
 	reconstructor.state.timing = PassiveTimingMarkers{RequestStart: observedAt}
 	reconstructor.state.lastProgressAt = observedAt
@@ -533,6 +550,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(even
 	switch symbol {
 	case protocol.SymbolAck:
 		reconstructor.state.lastProgressAt = observedAt
+		reconstructor.state.ackCorrelation = m2aRequestACKCorrelation(symbol)
 		if reconstructor.state.frameType == protocol.FrameTypeInitiatorInitiator {
 			reconstructor.state.phase = passivePhaseWaitTerminal
 			return events
@@ -543,6 +561,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(even
 		reconstructor.state.responseCRCValid = false
 		return events
 	case protocol.SymbolNack:
+		reconstructor.state.ackCorrelation = m2aRequestACKCorrelation(symbol)
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNACK, observedAt, ebuserrors.ErrNACK))
 		reconstructor.resetStateLocked()
 		return events
@@ -640,24 +659,26 @@ func (reconstructor *PassiveTransactionReconstructor) handleTerminalSymbolLocked
 	case protocol.FrameTypeInitiatorInitiator:
 		reconstructor.recordRecoveryLocked()
 		events = append(events, PassiveClassifiedEvent{
-			Kind:       PassiveClassifiedEventMasterFrame,
-			FrameType:  reconstructor.state.frameType,
-			Request:    reconstructor.state.request,
-			HasRequest: true,
-			Timing:     timing,
-			ObservedAt: observedAt,
+			Kind:           PassiveClassifiedEventMasterFrame,
+			FrameType:      reconstructor.state.frameType,
+			Request:        reconstructor.state.request,
+			HasRequest:     true,
+			Timing:         timing,
+			ObservedAt:     observedAt,
+			ACKCorrelation: reconstructor.state.ackCorrelation,
 		})
 	case protocol.FrameTypeInitiatorTarget:
 		reconstructor.recordRecoveryLocked()
 		events = append(events, PassiveClassifiedEvent{
-			Kind:        PassiveClassifiedEventTransaction,
-			FrameType:   reconstructor.state.frameType,
-			Request:     reconstructor.state.request,
-			Response:    reconstructor.state.response,
-			HasRequest:  true,
-			HasResponse: true,
-			Timing:      timing,
-			ObservedAt:  observedAt,
+			Kind:           PassiveClassifiedEventTransaction,
+			FrameType:      reconstructor.state.frameType,
+			Request:        reconstructor.state.request,
+			Response:       reconstructor.state.response,
+			HasRequest:     true,
+			HasResponse:    true,
+			Timing:         timing,
+			ObservedAt:     observedAt,
+			ACKCorrelation: reconstructor.state.ackCorrelation,
 		})
 	default:
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload))
@@ -670,16 +691,17 @@ func (reconstructor *PassiveTransactionReconstructor) abandonLocked(reason Passi
 	hasRequest := reconstructor.state.frameType != protocol.FrameTypeUnknown
 	hasResponse := reconstructor.state.responseExpectedLen > 0
 	event := PassiveClassifiedEvent{
-		Kind:          PassiveClassifiedEventAbandonedTransaction,
-		FrameType:     reconstructor.state.frameType,
-		Request:       reconstructor.state.request,
-		Response:      reconstructor.state.response,
-		HasRequest:    hasRequest,
-		HasResponse:   hasResponse,
-		Timing:        reconstructor.state.timing,
-		ObservedAt:    observedAt,
-		AbandonReason: reason,
-		Err:           err,
+		Kind:           PassiveClassifiedEventAbandonedTransaction,
+		FrameType:      reconstructor.state.frameType,
+		Request:        reconstructor.state.request,
+		Response:       reconstructor.state.response,
+		HasRequest:     hasRequest,
+		HasResponse:    hasResponse,
+		Timing:         reconstructor.state.timing,
+		ObservedAt:     observedAt,
+		AbandonReason:  reason,
+		ACKCorrelation: reconstructor.state.ackCorrelation,
+		Err:            err,
 	}
 	event.Timing.Terminal = observedAt
 	return event
@@ -693,9 +715,19 @@ func (reconstructor *PassiveTransactionReconstructor) resetStateLocked() {
 	reconstructor.state.response = protocol.Frame{}
 	reconstructor.state.responseExpectedLen = 0
 	reconstructor.state.responseCRCValid = false
+	reconstructor.state.ackCorrelation = PassiveACKCorrelation{}
 	reconstructor.state.frameType = protocol.FrameTypeUnknown
 	reconstructor.state.timing = PassiveTimingMarkers{}
 	reconstructor.state.lastProgressAt = time.Time{}
+}
+
+func m2aRequestACKCorrelation(symbol byte) PassiveACKCorrelation {
+	return PassiveACKCorrelation{
+		Byte:            symbol,
+		Position:        PassiveACKPositionRequestACK,
+		CompleteRequest: true,
+		Correlator:      PassiveACKCorrelatorM2A,
+	}
 }
 
 func parsePassiveResponse(request protocol.Frame, raw []byte) (protocol.Frame, bool) {

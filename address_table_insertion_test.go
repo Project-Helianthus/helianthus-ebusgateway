@@ -134,8 +134,8 @@ func TestCanonicalAliasing_SourceCompanionPair_AfterBothObserved(t *testing.T) {
 	if !okA || !okB {
 		t.Fatalf("registry.Lookup ok values: 0x10=%v 0x15=%v; want both true", okA, okB)
 	}
-	if entryA.Address() != entryB.Address() {
-		t.Fatalf("canonical pair 0x10 ↔ 0x15 not aliased: 0x10 entry primary=0x%02X, 0x15 entry primary=0x%02X; want same primary", entryA.Address(), entryB.Address())
+	if entryA.PrimaryDisplayAddress() != entryB.PrimaryDisplayAddress() {
+		t.Fatalf("canonical pair 0x10 ↔ 0x15 not aliased: 0x10 entry primary=0x%02X, 0x15 entry primary=0x%02X; want same primary", entryA.PrimaryDisplayAddress(), entryB.PrimaryDisplayAddress())
 	}
 	addrs := entryA.Addresses()
 	hasMaster, hasCompanion := false, false
@@ -180,8 +180,8 @@ func TestCanonicalAliasing_FFAndZeroFour_BothDirections(t *testing.T) {
 		if !okFF || !ok04 {
 			t.Fatalf("registry.Lookup ok: 0xFF=%v 0x04=%v", okFF, ok04)
 		}
-		if entryFF.Address() != entry04.Address() {
-			t.Fatalf("0xFF ↔ 0x04 wrap-pair not aliased: 0xFF primary=0x%02X, 0x04 primary=0x%02X", entryFF.Address(), entry04.Address())
+		if entryFF.PrimaryDisplayAddress() != entry04.PrimaryDisplayAddress() {
+			t.Fatalf("0xFF ↔ 0x04 wrap-pair not aliased: 0xFF primary=0x%02X, 0x04 primary=0x%02X", entryFF.PrimaryDisplayAddress(), entry04.PrimaryDisplayAddress())
 		}
 	})
 
@@ -200,8 +200,8 @@ func TestCanonicalAliasing_FFAndZeroFour_BothDirections(t *testing.T) {
 
 		entryFF, _ := table.reg.Lookup(0xFF)
 		entry04, _ := table.reg.Lookup(0x04)
-		if entryFF.Address() != entry04.Address() {
-			t.Fatalf("0xFF ↔ 0x04 wrap-pair (reverse order) not aliased: 0xFF primary=0x%02X, 0x04 primary=0x%02X", entryFF.Address(), entry04.Address())
+		if entryFF.PrimaryDisplayAddress() != entry04.PrimaryDisplayAddress() {
+			t.Fatalf("0xFF ↔ 0x04 wrap-pair (reverse order) not aliased: 0xFF primary=0x%02X, 0x04 primary=0x%02X", entryFF.PrimaryDisplayAddress(), entry04.PrimaryDisplayAddress())
 		}
 	})
 }
@@ -233,8 +233,8 @@ func TestCanonicalAliasing_NonCanonicalAddresses_NotAliased(t *testing.T) {
 	if !okA || !okB {
 		t.Fatalf("registry.Lookup ok: 0x26=%v 0xEC=%v; want both true", okA, okB)
 	}
-	if entryA.Address() == entryB.Address() {
-		t.Fatalf("non-canonical addresses 0x26 and 0xEC unexpectedly aliased to primary 0x%02X", entryA.Address())
+	if entryA.PrimaryDisplayAddress() == entryB.PrimaryDisplayAddress() {
+		t.Fatalf("non-canonical addresses 0x26 and 0xEC unexpectedly aliased to primary 0x%02X", entryA.PrimaryDisplayAddress())
 	}
 }
 
@@ -359,8 +359,8 @@ func TestCanonicalAliasing_BothPreRegistered_AliasOnObservation(t *testing.T) {
 
 	entry10Pre, _ := table.reg.Lookup(0x10)
 	entry15Pre, _ := table.reg.Lookup(0x15)
-	if entry10Pre.Address() == entry15Pre.Address() {
-		t.Fatalf("test setup: 0x10 and 0x15 unexpectedly share primary 0x%02X (Register auto-merged)", entry10Pre.Address())
+	if entry10Pre.PrimaryDisplayAddress() == entry15Pre.PrimaryDisplayAddress() {
+		t.Fatalf("test setup: 0x10 and 0x15 unexpectedly share primary 0x%02X (Register auto-merged)", entry10Pre.PrimaryDisplayAddress())
 	}
 
 	// Observe passive traffic with 0x10 as src. Inserter sees 0x10 in
@@ -371,8 +371,8 @@ func TestCanonicalAliasing_BothPreRegistered_AliasOnObservation(t *testing.T) {
 
 	entry10, _ := table.reg.Lookup(0x10)
 	entry15, _ := table.reg.Lookup(0x15)
-	if entry10.Address() != entry15.Address() {
-		t.Fatalf("pre-registered canonical pair 0x10 ↔ 0x15 not aliased after passive observation: 0x10 primary=0x%02X, 0x15 primary=0x%02X", entry10.Address(), entry15.Address())
+	if entry10.PrimaryDisplayAddress() != entry15.PrimaryDisplayAddress() {
+		t.Fatalf("pre-registered canonical pair 0x10 ↔ 0x15 not aliased after passive observation: 0x10 primary=0x%02X, 0x15 primary=0x%02X", entry10.PrimaryDisplayAddress(), entry15.PrimaryDisplayAddress())
 	}
 }
 

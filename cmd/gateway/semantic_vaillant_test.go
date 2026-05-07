@@ -5060,7 +5060,7 @@ func TestRefreshDiscovery_StructuralFallbackRegistersControllerInRegistry(t *tes
 	// Pre-condition: 0x15 not in registry.
 	var has0x15Before bool
 	reg.Iterate(func(e registry.DeviceEntry) bool {
-		if e != nil && e.Address() == 0x15 {
+		if e != nil && e.PrimaryDisplayAddress() == 0x15 {
 			has0x15Before = true
 			return false
 		}
@@ -5077,7 +5077,7 @@ func TestRefreshDiscovery_StructuralFallbackRegistersControllerInRegistry(t *tes
 	var has0x15After bool
 	var manufacturer string
 	reg.Iterate(func(e registry.DeviceEntry) bool {
-		if e != nil && e.Address() == 0x15 {
+		if e != nil && e.PrimaryDisplayAddress() == 0x15 {
 			has0x15After = true
 			manufacturer = e.Manufacturer()
 			return false
@@ -5286,7 +5286,7 @@ func TestRegisterStructuralControllerIfMissing_NoOpWhenAlreadyRegistered(t *test
 
 	count := 0
 	reg.Iterate(func(e registry.DeviceEntry) bool {
-		if e != nil && e.Address() == 0x15 {
+		if e != nil && e.PrimaryDisplayAddress() == 0x15 {
 			count++
 		}
 		return true

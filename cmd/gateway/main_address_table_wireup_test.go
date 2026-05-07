@@ -177,7 +177,7 @@ func assertPassiveObservedDeviceEntry(t *testing.T, reg *registry.DeviceRegistry
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if entry, ok := reg.Lookup(address); ok && entry != nil && entry.Address() == address {
+		if entry, ok := reg.Lookup(address); ok && entry != nil && entry.PrimaryDisplayAddress() == address {
 			return
 		}
 		if time.Now().After(deadline) {

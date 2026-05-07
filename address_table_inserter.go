@@ -16,6 +16,16 @@ type AddressTableInserter struct {
 	table              *AddressTable
 	cfg                Config
 	observationsByAddr map[byte]AddressObservation
+	// enrichmentRefreshFn is called once per new passive slot insertion.
+	// Wired to semanticPoller.EnqueueDiscoveryRefresh in production: the
+	// next discovery cycle probes B509 ScanID + B524 identity for the
+	// newly-observed address, then re-Registers with full identity
+	// (Manufacturer + DeviceID + SerialNumber). That triggers M6
+	// identity-merge in helianthus-ebusreg, grouping addresses with
+	// matching identity into a single DeviceEntry (e.g. NETX3 0xF1 +
+	// 0xF6 + 0x04 + 0xFF all collapse into one device once enrichment
+	// runs). Nil-safe: skipped when not wired (unit tests, etc.).
+	enrichmentRefreshFn func()
 }
 
 func NewAddressTableInserter(table *AddressTable, cfg Config) *AddressTableInserter {
@@ -24,6 +34,16 @@ func NewAddressTableInserter(table *AddressTable, cfg Config) *AddressTableInser
 		cfg:                cfg,
 		observationsByAddr: make(map[byte]AddressObservation),
 	}
+}
+
+// SetEnrichmentRefreshFn wires the post-insertion enrichment trigger so
+// new passive slots get probed for identity by the semantic poller. See
+// AddressTableInserter.enrichmentRefreshFn for semantics.
+func (i *AddressTableInserter) SetEnrichmentRefreshFn(fn func()) {
+	if i == nil {
+		return
+	}
+	i.enrichmentRefreshFn = fn
 }
 
 func (i *AddressTableInserter) OnPassiveClassifiedEvent(event PassiveClassifiedEvent) {
@@ -133,6 +153,15 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 	// 0x38 false-positive forensics from Grafana cross-check.
 	log.Printf("address_table_inserter insert addr=0x%02X role=%s admitted_src=0x%02X observed_at=%s",
 		addr, role, admittedSrc, observedAt.Format(time.RFC3339Nano))
+
+	// M6 enrichment trigger — schedule a semantic-poller discovery
+	// refresh so the newly-inserted slot gets probed for identity. Once
+	// SerialNumber + Manufacturer are populated via Register, the
+	// registry's M6 identity-merge path collapses canonical pairs that
+	// share identity into a single DeviceEntry.
+	if i.enrichmentRefreshFn != nil {
+		i.enrichmentRefreshFn()
+	}
 
 	// A.7b — canonical-pair aliasing. If addr is one half of a canonical
 	// pair from the docs-owned eBUS standard table (sourceAddressTableV1)

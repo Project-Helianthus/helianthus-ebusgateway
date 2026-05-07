@@ -520,6 +520,7 @@ func (es *explorerStore) readB524GroupDescriptor(ctx context.Context, target, so
 	// Per VRC Explorer protocol, the discovery opcode is 0x00 in Data[0],
 	// but the request opcode for B524 is the configured one.
 	frame := protocol.Frame{
+		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    source,
 		Target:    target,
 		Primary:   0xB5,
@@ -551,6 +552,7 @@ func (es *explorerStore) readB524GroupDescriptor(ctx context.Context, target, so
 // probeInstance checks if instance exists by reading register 0x0000.
 func (es *explorerStore) probeInstance(ctx context.Context, target, source, opcode, group, instance byte) bool {
 	frame := protocol.Frame{
+		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    source,
 		Target:    target,
 		Primary:   0xB5,
@@ -583,6 +585,7 @@ func (es *explorerStore) readB524Register(ctx context.Context, target, source, o
 	}
 
 	frame := protocol.Frame{
+		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    source,
 		Target:    target,
 		Primary:   0xB5,
@@ -628,6 +631,7 @@ func (es *explorerStore) readB509Register(ctx context.Context, target, source by
 		opcode = 0x0D
 	}
 	frame := protocol.Frame{
+		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    source,
 		Target:    target,
 		Primary:   0xB5,
@@ -751,6 +755,7 @@ func (es *explorerStore) readScanID(ctx context.Context, target, source byte) Ex
 	var errs []string
 	for qq := byte(0x24); qq <= byte(0x27); qq++ {
 		frame := protocol.Frame{
+			FrameType: protocol.FrameTypeInitiatorTarget,
 			Source:    source,
 			Target:    target,
 			Primary:   0xB5,

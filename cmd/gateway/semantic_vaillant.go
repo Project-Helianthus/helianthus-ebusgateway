@@ -5559,6 +5559,7 @@ func (p *vaillantSemanticPoller) readB509ValueWithMaxAge(ctx context.Context, ta
 			p.readMu.Lock()
 			reqCtx, cancel := context.WithTimeout(ctx, timeout)
 			request := protocol.Frame{
+				FrameType: protocol.FrameTypeInitiatorTarget,
 				Source:    source,
 				Target:    target,
 				Primary:   vaillantB509Primary,
@@ -5629,6 +5630,7 @@ func (p *vaillantSemanticPoller) writeB509Value(ctx context.Context, target byte
 		p.readMu.Lock()
 		reqCtx, cancel := context.WithTimeout(ctx, timeout)
 		request := protocol.Frame{
+			FrameType: protocol.FrameTypeInitiatorTarget,
 			Source:    source,
 			Target:    target,
 			Primary:   vaillantB509Primary,
@@ -6324,6 +6326,7 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 
 			reqCtx, cancel := context.WithTimeout(ctx, timeout)
 			request := protocol.Frame{
+				FrameType: protocol.FrameTypeInitiatorTarget,
 				Source:    source,
 				Target:    target,
 				Primary:   vaillantExtRegisterPrimary,
@@ -6581,6 +6584,7 @@ func (p *vaillantSemanticPoller) probeB524Register(ctx context.Context, target, 
 
 		data := buildB524ReadSelector(opcode, group, instance, addr)
 		frame := protocol.Frame{
+			FrameType: protocol.FrameTypeInitiatorTarget,
 			Source:    source,
 			Target:    target,
 			Primary:   vaillantExtRegisterPrimary,
@@ -6919,6 +6923,7 @@ func (p *vaillantSemanticPoller) writeB524Value(ctx context.Context, opcode, gro
 		p.readMu.Lock()
 		reqCtx, cancel := context.WithTimeout(ctx, timeout)
 		request := protocol.Frame{
+			FrameType: protocol.FrameTypeInitiatorTarget,
 			Source:    source,
 			Target:    target,
 			Primary:   vaillantExtRegisterPrimary,
@@ -6976,6 +6981,7 @@ func (p *vaillantSemanticPoller) readB524ValueLive(ctx context.Context, opcode, 
 		p.readMu.Lock()
 		reqCtx, cancel := context.WithTimeout(ctx, timeout)
 		request := protocol.Frame{
+			FrameType: protocol.FrameTypeInitiatorTarget,
 			Source:    source,
 			Target:    target,
 			Primary:   vaillantExtRegisterPrimary,
@@ -7387,6 +7393,7 @@ func (p *vaillantSemanticPoller) readB555Frame(ctx context.Context, data []byte)
 	p.readMu.Lock()
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	request := protocol.Frame{
+		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    source,
 		Target:    target,
 		Primary:   vaillantB555Primary,
@@ -7427,6 +7434,7 @@ func (p *vaillantSemanticPoller) writeB555Frame(ctx context.Context, data []byte
 	p.readMu.Lock()
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	request := protocol.Frame{
+		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    source,
 		Target:    target,
 		Primary:   vaillantB555Primary,

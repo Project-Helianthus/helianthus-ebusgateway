@@ -834,6 +834,7 @@ func (p *smokePlane) BuildRequest(method registry.Method, params map[string]any)
 	}
 
 	return protocol.Frame{
+		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    p.source,
 		Target:    TargetAddressForRouting(p.entry),
 		Primary:   template.Primary(),
@@ -884,6 +885,7 @@ func (p *identifyPlane) OnBroadcast(protocol.Frame) error {
 
 func (p *identifyPlane) BuildRequest(registry.Method, map[string]any) (protocol.Frame, error) {
 	return protocol.Frame{
+		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    p.source,
 		Target:    TargetAddressForRouting(p.entry),
 		Primary:   0x07,

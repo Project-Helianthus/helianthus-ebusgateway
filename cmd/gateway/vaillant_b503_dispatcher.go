@@ -202,6 +202,7 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 		d.readMu.Lock()
 	}
 	frame := protocol.Frame{
+		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    source,
 		Target:    target,
 		Primary:   b503PrimaryByte,

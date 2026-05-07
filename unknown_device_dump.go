@@ -315,6 +315,7 @@ type frameSnapshot struct {
 
 func runIdentifyDump(ctx context.Context, bus DumpBus, target, source byte, opts UnknownDeviceDumpOptions, recordTraffic func(trafficFrame)) identifyDump {
 	request := protocol.Frame{
+		FrameType: protocol.FrameTypeForTarget(target),
 		Source:    source,
 		Target:    target,
 		Primary:   0x07,
@@ -386,6 +387,7 @@ func runB509Dump(ctx context.Context, bus DumpBus, target, source byte, opts Unk
 	dump := registerDump{Requests: make([]registerRead, 0, len(opts.B509Addresses))}
 	for _, addr := range opts.B509Addresses {
 		request := protocol.Frame{
+			FrameType: protocol.FrameTypeForTarget(target),
 			Source:    source,
 			Target:    target,
 			Primary:   0xB5,
@@ -427,6 +429,7 @@ func runB524Dump(ctx context.Context, bus DumpBus, target, source byte, opts Unk
 			opcode = 0x02
 		}
 		request := protocol.Frame{
+			FrameType: protocol.FrameTypeForTarget(target),
 			Source:    source,
 			Target:    target,
 			Primary:   0xB5,

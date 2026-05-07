@@ -158,7 +158,7 @@ func dumpUnknownDevice(ctx context.Context, bus DumpBus, entry registry.DeviceEn
 		traffic = append(traffic, record)
 	}
 
-	target := targetAddressForRouting(entry)
+	target := TargetAddressForRouting(entry)
 	identify := runIdentifyDump(ctx, bus, target, opts.SourceAddress, opts, recordTraffic)
 	b509 := runB509Dump(ctx, bus, target, opts.SourceAddress, opts, recordTraffic)
 	b524 := runB524Dump(ctx, bus, target, opts.SourceAddress, opts, recordTraffic)

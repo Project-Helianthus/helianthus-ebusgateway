@@ -1338,8 +1338,12 @@ func enrichVaillantIdentity(ctx context.Context, gw *ebusgateway.Gateway, cfg eb
 		if !strings.EqualFold(entry.Manufacturer(), "Vaillant") {
 			return true
 		}
+		// B5.09 ScanID is M2S; route to the target slot. For an aliased
+		// canonical pair (e.g. BAI 0x03↔0x08), PrimaryDisplayAddress
+		// may be the initiator side; TargetAddressForRouting selects
+		// the target-role face that answers the read. Phase C M-C6b.
 		candidates = append(candidates, candidate{
-			address:      entry.PrimaryDisplayAddress(),
+			address:      ebusgateway.TargetAddressForRouting(entry),
 			manufacturer: entry.Manufacturer(),
 			deviceID:     entry.DeviceID(),
 			swVersion:    entry.SoftwareVersion(),

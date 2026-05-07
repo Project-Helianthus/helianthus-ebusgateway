@@ -6850,9 +6850,15 @@ func (p *vaillantSemanticPoller) enrichRegulatorIdentity(addr byte) *regulatorEn
 		return nil
 	}
 
+	// Phase C M-C6b: discoverB524Root returns the routed controller
+	// face (e.g. 0x15 for an aliased 0x10↔0x15 regulator). The
+	// existing entry is displayed as 0x10, so matching only
+	// PrimaryDisplayAddress would miss it and the enrichment
+	// metadata/logging would be lost for the aliased path. Use the
+	// full address-set membership check instead.
 	var entry registry.DeviceEntry
 	p.reg.Iterate(func(e registry.DeviceEntry) bool {
-		if e != nil && e.PrimaryDisplayAddress() == addr {
+		if ebusgateway.EntryContainsAddress(e, addr) {
 			entry = e
 			return false
 		}

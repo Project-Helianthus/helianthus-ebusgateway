@@ -847,7 +847,13 @@ func (p *smokePlane) DecodeResponse(method registry.Method, response protocol.Fr
 		return nil, fmt.Errorf("smoke decode response missing data: %w", ebuserrors.ErrInvalidPayload)
 	}
 	selector := method.ResponseSchema()
-	schemaValue := selector.Select(p.entry.PrimaryDisplayAddress(), p.entry.HardwareVersion())
+	// Phase C M-C6b: BuildRequest sends to TargetAddressForRouting,
+	// so the schema selector must use the SAME byte to look up the
+	// per-target schema branch. For an aliased canonical pair (e.g.
+	// 0x03↔0x08) BuildRequest routes to 0x08 — selecting the schema
+	// with 0x03 (PrimaryDisplay) decodes the 0x08 response with the
+	// wrong schema and produces incorrect smoke data.
+	schemaValue := selector.Select(TargetAddressForRouting(p.entry), p.entry.HardwareVersion())
 	return schemaValue.Decode(response.Data)
 }
 

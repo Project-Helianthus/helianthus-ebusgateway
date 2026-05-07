@@ -1338,8 +1338,12 @@ func enrichVaillantIdentity(ctx context.Context, gw *ebusgateway.Gateway, cfg eb
 		if !strings.EqualFold(entry.Manufacturer(), "Vaillant") {
 			return true
 		}
+		// B5.09 ScanID is M2S; route to the target slot. For an aliased
+		// canonical pair (e.g. BAI 0x03↔0x08), PrimaryDisplayAddress
+		// may be the initiator side; TargetAddressForRouting selects
+		// the target-role face that answers the read. Phase C M-C6b.
 		candidates = append(candidates, candidate{
-			address:      entry.Address(),
+			address:      ebusgateway.TargetAddressForRouting(entry),
 			manufacturer: entry.Manufacturer(),
 			deviceID:     entry.DeviceID(),
 			swVersion:    entry.SoftwareVersion(),
@@ -1428,8 +1432,26 @@ func enrichSerialsFromEbusd(ctx context.Context, reg *registry.DeviceRegistry, c
 		if entry.SerialNumber() != "" {
 			return true
 		}
-		row, ok := ebusdByAddr[entry.Address()]
-		if !ok {
+		// Phase C M-C6b: ebusd's scan result may report the
+		// companion/target face of an aliased device (e.g. BASV2
+		// at 0x15 while the registry entry displays 0x10). Match
+		// against the full address set, not just the display
+		// address; otherwise the fallback enrichment skips the
+		// device even though the row is present.
+		var (
+			row     ebusdScanResultRow
+			matched bool
+			matchAt byte
+		)
+		for _, a := range entry.Addresses() {
+			if r, ok := ebusdByAddr[a]; ok {
+				row = r
+				matched = true
+				matchAt = a
+				break
+			}
+		}
+		if !matched {
 			return true
 		}
 		// Verify identity fields match to prevent stale cache misassignment.
@@ -1441,7 +1463,7 @@ func enrichSerialsFromEbusd(ctx context.Context, reg *registry.DeviceRegistry, c
 			return true
 		}
 		candidates = append(candidates, candidate{
-			address:      entry.Address(),
+			address:      matchAt,
 			manufacturer: entry.Manufacturer(),
 			deviceID:     entry.DeviceID(),
 			swVersion:    entry.SoftwareVersion(),

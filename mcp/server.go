@@ -3541,7 +3541,7 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 }
 
 func buildDeviceInfo(entry registry.DeviceEntry) deviceInfo {
-	primary := entry.Address()
+	primary := entry.PrimaryDisplayAddress()
 	all := entry.Addresses()
 	// Surface the complete address set (primary + aliases) to match the
 	// GraphQL `addresses` semantics in graphql/schema.go. Snapshot

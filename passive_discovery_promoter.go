@@ -402,12 +402,16 @@ func (p *PassiveDiscoveryPromoter) registryContains(addr byte) bool {
 	if p.registry == nil {
 		return false
 	}
+	// Phase C M-C6b: scan the full address set on each entry, not just
+	// PrimaryDisplayAddress. A promoted address that is already an
+	// alias face on a registered entry (e.g. 0x08 on an aliased BAI
+	// 0x03↔0x08 whose display is 0x03) must be treated as already
+	// registered, otherwise the promoter actively re-confirms and
+	// re-commits it on every cycle, producing redundant bus probes
+	// and router/semantic refreshes.
 	found := false
 	p.registry.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil {
-			return true
-		}
-		if entry.Address() == addr {
+		if EntryContainsAddress(entry, addr) {
 			found = true
 			return false
 		}

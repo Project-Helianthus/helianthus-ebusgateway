@@ -461,6 +461,14 @@ func (entry mockEntry) Address() byte {
 	return entry.info.Address
 }
 
+func (entry mockEntry) PrimaryDisplayAddress() byte {
+	return entry.info.Address
+}
+
+func (entry mockEntry) AddressByRole(registry.SlotRole) (byte, bool) {
+	return entry.info.Address, true
+}
+
 func (entry mockEntry) Addresses() []byte {
 	if len(entry.addresses) == 0 {
 		return []byte{entry.info.Address}

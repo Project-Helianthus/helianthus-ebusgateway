@@ -4340,7 +4340,7 @@ func preserveExistingRegistryMetadata(reg *registry.DeviceRegistry, info registr
 		return info
 	}
 	reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil || entry.Address() != info.Address {
+		if entry == nil || entry.PrimaryDisplayAddress() != info.Address {
 			return true
 		}
 		if info.Manufacturer == "" {
@@ -5186,12 +5186,20 @@ func (p *vaillantSemanticPoller) findBoilerAddress() byte {
 		return 0
 	}
 
+	// Phase C M-C6b: select the routing target byte for B5.09
+	// boiler reads/writes. An aliased canonical pair (e.g. BAI
+	// 0x03↔0x08) whose display is the initiator side (0x03) must
+	// resolve to 0x08 here, otherwise refreshBoilerStatusB509
+	// builds frames with Target: 0x03 and the read/write fails.
+	// TargetAddressForRouting prefers AddressByRole(SlotRoleSlave)
+	// and falls back to PrimaryDisplayAddress when no target-role
+	// face exists.
 	selected := byte(0)
 	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
 		if entry == nil || !isBoilerDeviceCandidate(entry) {
 			return true
 		}
-		addr := entry.Address()
+		addr := ebusgateway.TargetAddressForRouting(entry)
 		if addr == 0x08 {
 			selected = addr
 			return false
@@ -6682,7 +6690,12 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 		if entry == nil {
 			return true
 		}
-		addr := entry.Address()
+		// Phase C M-C6b: B524 candidates are routing targets, not
+		// display addresses. An aliased regulator entry (e.g.
+		// 0x10↔0x15 displayed as 0x10) must be probed at 0x15
+		// where the responder lives — probing 0x10 misses the
+		// coherent responder and reports no B524 root.
+		addr := ebusgateway.TargetAddressForRouting(entry)
 		if skipReservedSourceCompanion(addr) {
 			return true
 		}
@@ -6801,9 +6814,16 @@ func (p *vaillantSemanticPoller) registerStructuralControllerIfMissing(controlle
 	if p == nil || p.reg == nil || controller == 0 {
 		return false
 	}
+	// Phase C M-C6b: containment must check the full address set,
+	// not just PrimaryDisplayAddress. A controller (e.g. 0x15) that
+	// is already an alias face on a registered entry (e.g. an
+	// aliased 0x10↔0x15 regulator displayed as 0x10) must be
+	// treated as already-known, otherwise the function violates
+	// its idempotence contract and re-registers + re-refreshes
+	// router planes on every discovery cycle.
 	already := false
 	p.reg.Iterate(func(e registry.DeviceEntry) bool {
-		if e != nil && e.Address() == controller {
+		if ebusgateway.EntryContainsAddress(e, controller) {
 			already = true
 			return false
 		}
@@ -6830,9 +6850,15 @@ func (p *vaillantSemanticPoller) enrichRegulatorIdentity(addr byte) *regulatorEn
 		return nil
 	}
 
+	// Phase C M-C6b: discoverB524Root returns the routed controller
+	// face (e.g. 0x15 for an aliased 0x10↔0x15 regulator). The
+	// existing entry is displayed as 0x10, so matching only
+	// PrimaryDisplayAddress would miss it and the enrichment
+	// metadata/logging would be lost for the aliased path. Use the
+	// full address-set membership check instead.
 	var entry registry.DeviceEntry
 	p.reg.Iterate(func(e registry.DeviceEntry) bool {
-		if e != nil && e.Address() == addr {
+		if ebusgateway.EntryContainsAddress(e, addr) {
 			entry = e
 			return false
 		}

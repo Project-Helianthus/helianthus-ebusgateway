@@ -1367,7 +1367,7 @@ func startHTTPServer(
 						intAddrs[i] = int(a)
 					}
 					device := portal.RegistryDevice{
-						Address:      int(entry.Address()),
+						Address:      int(entry.PrimaryDisplayAddress()),
 						Addresses:    intAddrs,
 						Manufacturer: entry.Manufacturer(),
 						DeviceID:     entry.DeviceID(),
@@ -1376,7 +1376,7 @@ func startHTTPServer(
 						Hardware:     entry.HardwareVersion(),
 						Planes:       make([]portal.RegistryPlane, 0),
 					}
-					if sd, ok := schemaByAddr[entry.Address()]; ok {
+					if sd, ok := schemaByAddr[entry.PrimaryDisplayAddress()]; ok {
 						device.DisplayName = sd.DisplayName
 						device.Role = sd.Role
 					}

@@ -494,7 +494,7 @@ func TestPassiveDiscoveryPromoter_BackoffOnRepeatedFailure(t *testing.T) {
 func registryContains(reg *registry.DeviceRegistry, addr byte) bool {
 	found := false
 	reg.Iterate(func(e registry.DeviceEntry) bool {
-		if e != nil && e.Address() == addr {
+		if e != nil && e.PrimaryDisplayAddress() == addr {
 			found = true
 			return false
 		}

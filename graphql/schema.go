@@ -104,8 +104,8 @@ func BuildSchema(reg Registry) (Schema, error) {
 		}
 
 		device := Device{
-			Address:         entry.Address(),
-			Addresses:       normalizeDeviceAddresses(entry.Address(), entry.Addresses()),
+			Address:         entry.PrimaryDisplayAddress(),
+			Addresses:       normalizeDeviceAddresses(entry.PrimaryDisplayAddress(), entry.Addresses()),
 			Manufacturer:    entry.Manufacturer(),
 			DeviceID:        entry.DeviceID(),
 			SerialNumber:    entry.SerialNumber(),
@@ -367,7 +367,7 @@ func selectResponseSchema(entry registry.DeviceEntry, selector schema.SchemaSele
 		return ResponseSchema{}, fmt.Errorf("graphql schema build missing device: %w", ebuserrors.ErrInvalidPayload)
 	}
 
-	selected := selector.Select(entry.Address(), entry.HardwareVersion())
+	selected := selector.Select(entry.PrimaryDisplayAddress(), entry.HardwareVersion())
 	fields := make([]Field, 0, len(selected.Fields))
 	for _, field := range selected.Fields {
 		if field.Type == nil {

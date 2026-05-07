@@ -23,12 +23,14 @@ type testDumpEntry struct {
 	planes []registry.Plane
 }
 
-func (e testDumpEntry) Address() byte        { return e.info.Address }
-func (e testDumpEntry) Addresses() []byte    { return []byte{e.info.Address} }
-func (e testDumpEntry) Manufacturer() string { return e.info.Manufacturer }
-func (e testDumpEntry) DeviceID() string     { return e.info.DeviceID }
-func (e testDumpEntry) SerialNumber() string { return e.info.SerialNumber }
-func (e testDumpEntry) MacAddress() string   { return e.info.MacAddress }
+func (e testDumpEntry) Address() byte                                { return e.info.Address }
+func (e testDumpEntry) PrimaryDisplayAddress() byte                  { return e.info.Address }
+func (e testDumpEntry) AddressByRole(registry.SlotRole) (byte, bool) { return e.info.Address, true }
+func (e testDumpEntry) Addresses() []byte                            { return []byte{e.info.Address} }
+func (e testDumpEntry) Manufacturer() string                         { return e.info.Manufacturer }
+func (e testDumpEntry) DeviceID() string                             { return e.info.DeviceID }
+func (e testDumpEntry) SerialNumber() string                         { return e.info.SerialNumber }
+func (e testDumpEntry) MacAddress() string                           { return e.info.MacAddress }
 func (e testDumpEntry) SoftwareVersion() string {
 	return e.info.SoftwareVersion
 }

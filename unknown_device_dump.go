@@ -133,7 +133,7 @@ func filterUnknownEntries(entries []registry.DeviceEntry) []registry.DeviceEntry
 
 func dumpUnknownDevice(ctx context.Context, bus DumpBus, entry registry.DeviceEntry, opts UnknownDeviceDumpOptions) UnknownDeviceDumpResult {
 	result := UnknownDeviceDumpResult{
-		Address: entry.Address(),
+		Address: entry.PrimaryDisplayAddress(),
 	}
 	logger := opts.Logger
 	if logger == nil {
@@ -142,7 +142,7 @@ func dumpUnknownDevice(ctx context.Context, bus DumpBus, entry registry.DeviceEn
 
 	bundleID := newBundleID()
 	createdAt := opts.Now().UTC()
-	deviceLabel := fmt.Sprintf("0x%02x", entry.Address())
+	deviceLabel := fmt.Sprintf("0x%02x", entry.PrimaryDisplayAddress())
 	tempDir, err := os.MkdirTemp(opts.OutputDir, "bundle-"+strings.TrimPrefix(deviceLabel, "0x")+"-")
 	if err != nil {
 		result.Error = err.Error()
@@ -158,9 +158,10 @@ func dumpUnknownDevice(ctx context.Context, bus DumpBus, entry registry.DeviceEn
 		traffic = append(traffic, record)
 	}
 
-	identify := runIdentifyDump(ctx, bus, entry.Address(), opts.SourceAddress, opts, recordTraffic)
-	b509 := runB509Dump(ctx, bus, entry.Address(), opts.SourceAddress, opts, recordTraffic)
-	b524 := runB524Dump(ctx, bus, entry.Address(), opts.SourceAddress, opts, recordTraffic)
+	target := TargetAddressForRouting(entry)
+	identify := runIdentifyDump(ctx, bus, target, opts.SourceAddress, opts, recordTraffic)
+	b509 := runB509Dump(ctx, bus, target, opts.SourceAddress, opts, recordTraffic)
+	b524 := runB524Dump(ctx, bus, target, opts.SourceAddress, opts, recordTraffic)
 
 	files := make([]dumpFileInfo, 0, 4)
 
@@ -572,7 +573,7 @@ type captureSummary struct {
 
 func buildManifest(entry registry.DeviceEntry, bundleID string, createdAt time.Time, opts UnknownDeviceDumpOptions, identify identifyDump, b509 registerDump, b524 registerDump, traffic []trafficFrame, files []dumpFileInfo) dumpManifest {
 	device := manifestDevice{
-		Address:         fmt.Sprintf("0x%02x", entry.Address()),
+		Address:         fmt.Sprintf("0x%02x", entry.PrimaryDisplayAddress()),
 		Manufacturer:    entry.Manufacturer(),
 		DeviceID:        entry.DeviceID(),
 		SerialNumber:    entry.SerialNumber(),

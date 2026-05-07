@@ -362,8 +362,14 @@ func runRegisterProbe(ctx context.Context, cfg smokeConfig, gateway *Gateway, sy
 }
 
 func findEntryByAddress(entries []registry.DeviceEntry, target byte) registry.DeviceEntry {
+	// Phase C M-C6b: match the full address set (display + aliases) so
+	// that a register-dump request naming the companion side of an
+	// aliased canonical pair (e.g. 0x08 on a BAI 0x03↔0x08 entry) still
+	// resolves to the entry. Matching only PrimaryDisplayAddress would
+	// drop the lookup with "target not found in scan results" even
+	// though the requested address is a real face on the entry.
 	for _, entry := range entries {
-		if entry != nil && entry.Address() == target {
+		if EntryContainsAddress(entry, target) {
 			return entry
 		}
 	}

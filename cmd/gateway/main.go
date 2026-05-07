@@ -639,6 +639,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		}
 	}
 
+	// M6 enrichment trigger — once the AddressTableInserter inserts a
+	// new passive slot, schedule a semantic-poller discovery refresh so
+	// the new address gets probed for identity. Once SerialNumber +
+	// Manufacturer land via the post-probe Register, the registry's
+	// M6 identity-merge collapses canonical pairs that share identity
+	// into a single DeviceEntry.
+	if semanticPoller != nil {
+		addressTableInserter.SetEnrichmentRefreshFn(semanticPoller.EnqueueDiscoveryRefresh)
+	}
+
 	var scheduleWriter mcp.ScheduleWriter
 	if semanticPoller != nil {
 		scheduleWriter = admittedMCPScheduleWriter{

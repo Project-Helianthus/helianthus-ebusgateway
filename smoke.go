@@ -364,9 +364,9 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) (runErr e
 	for _, entry := range entries {
 		planes := entry.Planes()
 		if len(planes) == 0 {
-			logger.Printf("device 0x%02x has no planes; running identify", entry.Address())
+			logger.Printf("device 0x%02x has no planes; running identify", entry.PrimaryDisplayAddress())
 			if err := invokeIdentify(ctx, gateway.Router, entry, source, time.Duration(cfg.Smoke.MethodTimeoutSec)*time.Second, logger); err != nil {
-				invokeErrors = append(invokeErrors, fmt.Sprintf("device 0x%02x identify: %v", entry.Address(), err))
+				invokeErrors = append(invokeErrors, fmt.Sprintf("device 0x%02x identify: %v", entry.PrimaryDisplayAddress(), err))
 			}
 			continue
 		}
@@ -384,7 +384,7 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) (runErr e
 				params, ok := smokeParams(entry, invokePlane.Name(), method.Name(), source)
 				if !ok {
 					if smokeMethodNeedsParams(method) {
-						logger.Printf("device 0x%02x plane %s method %s skipped: cannot determine params", entry.Address(), invokePlane.Name(), method.Name())
+						logger.Printf("device 0x%02x plane %s method %s skipped: cannot determine params", entry.PrimaryDisplayAddress(), invokePlane.Name(), method.Name())
 						continue
 					}
 					params = map[string]any{}
@@ -410,21 +410,21 @@ func RunSmoke(ctx context.Context, cfg smokeConfig, opts SmokeOptions) (runErr e
 				invoked = true
 				if err != nil {
 					if errors.Is(err, ebuserrors.ErrInvalidPayload) {
-						logger.Printf("device 0x%02x plane %s method %s skipped: %v", entry.Address(), invokePlane.Name(), method.Name(), err)
+						logger.Printf("device 0x%02x plane %s method %s skipped: %v", entry.PrimaryDisplayAddress(), invokePlane.Name(), method.Name(), err)
 						continue
 					}
-					invokeErrors = append(invokeErrors, fmt.Sprintf("device 0x%02x plane %s method %s: %v", entry.Address(), invokePlane.Name(), method.Name(), err))
+					invokeErrors = append(invokeErrors, fmt.Sprintf("device 0x%02x plane %s method %s: %v", entry.PrimaryDisplayAddress(), invokePlane.Name(), method.Name(), err))
 					break
 				}
-				logger.Printf("device 0x%02x plane %s method %s ok: %+v", entry.Address(), invokePlane.Name(), method.Name(), result)
+				logger.Printf("device 0x%02x plane %s method %s ok: %+v", entry.PrimaryDisplayAddress(), invokePlane.Name(), method.Name(), result)
 				break
 			}
 			if !hasReadOnly {
-				logger.Printf("device 0x%02x plane %s has no read-only methods", entry.Address(), invokePlane.Name())
+				logger.Printf("device 0x%02x plane %s has no read-only methods", entry.PrimaryDisplayAddress(), invokePlane.Name())
 				continue
 			}
 			if !invoked {
-				logger.Printf("device 0x%02x plane %s has no invokable read-only methods", entry.Address(), invokePlane.Name())
+				logger.Printf("device 0x%02x plane %s has no invokable read-only methods", entry.PrimaryDisplayAddress(), invokePlane.Name())
 				continue
 			}
 		}
@@ -450,7 +450,7 @@ func invokeIdentify(ctx context.Context, router *router.BusEventRouter, entry re
 		return err
 	}
 	if logger != nil {
-		logger.Printf("device 0x%02x identify ok: %+v", entry.Address(), result)
+		logger.Printf("device 0x%02x identify ok: %+v", entry.PrimaryDisplayAddress(), result)
 	}
 	return nil
 }
@@ -507,7 +507,7 @@ func defaultSmokeProviders() []registry.PlaneProvider {
 func logDeviceInfo(logger *log.Logger, entries []registry.DeviceEntry) {
 	for _, entry := range entries {
 		logger.Printf("device 0x%02x: manufacturer=%s device=%s sw=%s hw=%s",
-			entry.Address(),
+			entry.PrimaryDisplayAddress(),
 			entry.Manufacturer(),
 			entry.DeviceID(),
 			entry.SoftwareVersion(),
@@ -526,7 +526,7 @@ func logExpectedDevices(logger *log.Logger, expected []expectedDevice, entries [
 	}
 	found := make(map[byte]registry.DeviceEntry, len(entries))
 	for _, entry := range entries {
-		found[entry.Address()] = entry
+		found[entry.PrimaryDisplayAddress()] = entry
 	}
 
 	var missing []string
@@ -835,7 +835,7 @@ func (p *smokePlane) BuildRequest(method registry.Method, params map[string]any)
 
 	return protocol.Frame{
 		Source:    p.source,
-		Target:    p.entry.Address(),
+		Target:    targetAddressForRouting(p.entry),
 		Primary:   template.Primary(),
 		Secondary: template.Secondary(),
 		Data:      data,
@@ -847,7 +847,7 @@ func (p *smokePlane) DecodeResponse(method registry.Method, response protocol.Fr
 		return nil, fmt.Errorf("smoke decode response missing data: %w", ebuserrors.ErrInvalidPayload)
 	}
 	selector := method.ResponseSchema()
-	schemaValue := selector.Select(p.entry.Address(), p.entry.HardwareVersion())
+	schemaValue := selector.Select(p.entry.PrimaryDisplayAddress(), p.entry.HardwareVersion())
 	return schemaValue.Decode(response.Data)
 }
 
@@ -879,7 +879,7 @@ func (p *identifyPlane) OnBroadcast(protocol.Frame) error {
 func (p *identifyPlane) BuildRequest(registry.Method, map[string]any) (protocol.Frame, error) {
 	return protocol.Frame{
 		Source:    p.source,
-		Target:    p.entry.Address(),
+		Target:    targetAddressForRouting(p.entry),
 		Primary:   0x07,
 		Secondary: 0x04,
 	}, nil

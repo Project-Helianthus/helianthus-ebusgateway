@@ -4340,7 +4340,7 @@ func preserveExistingRegistryMetadata(reg *registry.DeviceRegistry, info registr
 		return info
 	}
 	reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil || entry.Address() != info.Address {
+		if entry == nil || entry.PrimaryDisplayAddress() != info.Address {
 			return true
 		}
 		if info.Manufacturer == "" {
@@ -5191,7 +5191,7 @@ func (p *vaillantSemanticPoller) findBoilerAddress() byte {
 		if entry == nil || !isBoilerDeviceCandidate(entry) {
 			return true
 		}
-		addr := entry.Address()
+		addr := entry.PrimaryDisplayAddress()
 		if addr == 0x08 {
 			selected = addr
 			return false
@@ -6682,7 +6682,7 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 		if entry == nil {
 			return true
 		}
-		addr := entry.Address()
+		addr := entry.PrimaryDisplayAddress()
 		if skipReservedSourceCompanion(addr) {
 			return true
 		}
@@ -6803,7 +6803,7 @@ func (p *vaillantSemanticPoller) registerStructuralControllerIfMissing(controlle
 	}
 	already := false
 	p.reg.Iterate(func(e registry.DeviceEntry) bool {
-		if e != nil && e.Address() == controller {
+		if e != nil && e.PrimaryDisplayAddress() == controller {
 			already = true
 			return false
 		}
@@ -6832,7 +6832,7 @@ func (p *vaillantSemanticPoller) enrichRegulatorIdentity(addr byte) *regulatorEn
 
 	var entry registry.DeviceEntry
 	p.reg.Iterate(func(e registry.DeviceEntry) bool {
-		if e != nil && e.Address() == addr {
+		if e != nil && e.PrimaryDisplayAddress() == addr {
 			entry = e
 			return false
 		}

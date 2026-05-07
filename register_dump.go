@@ -363,7 +363,7 @@ func runRegisterProbe(ctx context.Context, cfg smokeConfig, gateway *Gateway, sy
 
 func findEntryByAddress(entries []registry.DeviceEntry, target byte) registry.DeviceEntry {
 	for _, entry := range entries {
-		if entry != nil && entry.Address() == target {
+		if entry != nil && entry.PrimaryDisplayAddress() == target {
 			return entry
 		}
 	}

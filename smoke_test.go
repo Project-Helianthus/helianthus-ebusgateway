@@ -46,15 +46,17 @@ type testEntry struct {
 	planes []registry.Plane
 }
 
-func (e testEntry) Address() byte            { return e.info.Address }
-func (e testEntry) Addresses() []byte        { return []byte{e.info.Address} }
-func (e testEntry) Manufacturer() string     { return e.info.Manufacturer }
-func (e testEntry) DeviceID() string         { return e.info.DeviceID }
-func (e testEntry) SerialNumber() string     { return e.info.SerialNumber }
-func (e testEntry) MacAddress() string       { return e.info.MacAddress }
-func (e testEntry) SoftwareVersion() string  { return e.info.SoftwareVersion }
-func (e testEntry) HardwareVersion() string  { return e.info.HardwareVersion }
-func (e testEntry) Planes() []registry.Plane { return e.planes }
+func (e testEntry) Address() byte                                { return e.info.Address }
+func (e testEntry) PrimaryDisplayAddress() byte                  { return e.info.Address }
+func (e testEntry) AddressByRole(registry.SlotRole) (byte, bool) { return e.info.Address, true }
+func (e testEntry) Addresses() []byte                            { return []byte{e.info.Address} }
+func (e testEntry) Manufacturer() string                         { return e.info.Manufacturer }
+func (e testEntry) DeviceID() string                             { return e.info.DeviceID }
+func (e testEntry) SerialNumber() string                         { return e.info.SerialNumber }
+func (e testEntry) MacAddress() string                           { return e.info.MacAddress }
+func (e testEntry) SoftwareVersion() string                      { return e.info.SoftwareVersion }
+func (e testEntry) HardwareVersion() string                      { return e.info.HardwareVersion }
+func (e testEntry) Planes() []registry.Plane                     { return e.planes }
 func (e testEntry) Projections() []registry.Projection {
 	return nil
 }

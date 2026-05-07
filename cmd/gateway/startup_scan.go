@@ -1339,7 +1339,7 @@ func enrichVaillantIdentity(ctx context.Context, gw *ebusgateway.Gateway, cfg eb
 			return true
 		}
 		candidates = append(candidates, candidate{
-			address:      entry.Address(),
+			address:      entry.PrimaryDisplayAddress(),
 			manufacturer: entry.Manufacturer(),
 			deviceID:     entry.DeviceID(),
 			swVersion:    entry.SoftwareVersion(),
@@ -1428,7 +1428,7 @@ func enrichSerialsFromEbusd(ctx context.Context, reg *registry.DeviceRegistry, c
 		if entry.SerialNumber() != "" {
 			return true
 		}
-		row, ok := ebusdByAddr[entry.Address()]
+		row, ok := ebusdByAddr[entry.PrimaryDisplayAddress()]
 		if !ok {
 			return true
 		}
@@ -1441,7 +1441,7 @@ func enrichSerialsFromEbusd(ctx context.Context, reg *registry.DeviceRegistry, c
 			return true
 		}
 		candidates = append(candidates, candidate{
-			address:      entry.Address(),
+			address:      entry.PrimaryDisplayAddress(),
 			manufacturer: entry.Manufacturer(),
 			deviceID:     entry.DeviceID(),
 			swVersion:    entry.SoftwareVersion(),

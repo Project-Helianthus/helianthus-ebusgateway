@@ -191,7 +191,7 @@ func (i *AddressTableInserter) maybeAliasCanonicalCompanion(addr byte) {
 	// distinct DeviceEntries; otherwise it's already aliased and we
 	// don't need to log noise on every observation of the pair.
 	primaryAddr, primaryOk := i.table.reg.Lookup(addr)
-	if primaryOk && primaryAddr.Address() == entryAddr.Address() {
+	if primaryOk && primaryAddr.PrimaryDisplayAddress() == entryAddr.PrimaryDisplayAddress() {
 		return
 	}
 	if err := i.table.reg.AliasAddresses(addr, companion); err != nil {

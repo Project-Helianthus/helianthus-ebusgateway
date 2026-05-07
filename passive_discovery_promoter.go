@@ -407,7 +407,7 @@ func (p *PassiveDiscoveryPromoter) registryContains(addr byte) bool {
 		if entry == nil {
 			return true
 		}
-		if entry.Address() == addr {
+		if entry.PrimaryDisplayAddress() == addr {
 			found = true
 			return false
 		}

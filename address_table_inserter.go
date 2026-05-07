@@ -101,21 +101,19 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 	}
 
 	i.table.reg.Register(registry.DeviceInfo{Address: addr})
-	registrySlot, _ := i.table.reg.LookupSlot(addr)
-	if registrySlot != nil {
-		registrySlot.DiscoverySource = registry.DiscoverySourcePassiveObserved
-		registrySlot.VerificationState = registry.VerificationStateCorroborated
-		switch role {
-		case "initiator":
-			registrySlot.Role = registry.SlotRoleMaster
-		case "target":
-			registrySlot.Role = registry.SlotRoleSlave
-		}
-		if registrySlot.FirstObservedAt.IsZero() {
-			registrySlot.FirstObservedAt = observedAt
-		}
-		registrySlot.LastObservedAt = observedAt
+	// A.7+M6.1 — use the thread-safe MarkSlotPassiveObserved API
+	// instead of mutating the slot pointer directly. The previous
+	// direct-mutation pattern was racy with concurrent readers via
+	// LookupSlot / Lookup (Codex P2 follow-up from PR #565).
+	var slotRole registry.SlotRole
+	switch role {
+	case "initiator":
+		slotRole = registry.SlotRoleMaster
+	case "target":
+		slotRole = registry.SlotRoleSlave
 	}
+	i.table.reg.MarkSlotPassiveObserved(addr, slotRole, observedAt)
+	registrySlot, _ := i.table.reg.LookupSlot(addr)
 
 	tier, free := canonicalSlotMetadata(addr)
 	i.table.slots[addr] = &AddressSlot{

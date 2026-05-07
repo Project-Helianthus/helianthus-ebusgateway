@@ -1,0 +1,867 @@
+{
+  "artifact": "transport-matrix-baseline-phase-c",
+  "artifact_schema": 2,
+  "baseline_purpose": "M-C9 zero-diff transport verify; full topology per case (kind, gateway_transport, proxy_transport, ebusd_transport, uses_proxy, uses_ebusd, ebusd_via_proxy, passive_mode) is the diff surface",
+  "plan": {
+    "canonical_sha256": "eb2cb53c7d9ad2e05cc384db6b7537067e739f62a8a359f1e89e62aca35b367b",
+    "milestone": "M-C0A_TRANSPORT_BASELINE",
+    "name": "address-table-registry-w19-26.locked",
+    "phase": "C"
+  },
+  "suite": "full88",
+  "total": 88,
+  "cases": [
+    {
+      "id": "T01",
+      "kind": "direct-adapter",
+      "gateway_transport": "ens",
+      "uses_proxy": false,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T02",
+      "kind": "direct-adapter",
+      "gateway_transport": "enh",
+      "uses_proxy": false,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T03",
+      "kind": "direct-adapter",
+      "gateway_transport": "udp",
+      "uses_proxy": false,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T04",
+      "kind": "direct-adapter",
+      "gateway_transport": "tcp",
+      "uses_proxy": false,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T05",
+      "kind": "via-ebusd-tcp",
+      "gateway_transport": "ebusd-tcp",
+      "ebusd_transport": "ens",
+      "uses_proxy": false,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T06",
+      "kind": "via-ebusd-tcp",
+      "gateway_transport": "ebusd-tcp",
+      "ebusd_transport": "enh",
+      "uses_proxy": false,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T07",
+      "kind": "via-ebusd-tcp",
+      "gateway_transport": "ebusd-tcp",
+      "ebusd_transport": "udp",
+      "uses_proxy": false,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T08",
+      "kind": "via-ebusd-tcp",
+      "gateway_transport": "ebusd-tcp",
+      "ebusd_transport": "tcp",
+      "uses_proxy": false,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T09",
+      "kind": "proxy-single-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T10",
+      "kind": "proxy-single-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T11",
+      "kind": "proxy-single-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T12",
+      "kind": "proxy-single-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T13",
+      "kind": "proxy-single-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T14",
+      "kind": "proxy-single-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T15",
+      "kind": "proxy-single-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T16",
+      "kind": "proxy-single-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T17",
+      "kind": "proxy-single-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T18",
+      "kind": "proxy-single-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T19",
+      "kind": "proxy-single-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T20",
+      "kind": "proxy-single-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T21",
+      "kind": "proxy-single-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T22",
+      "kind": "proxy-single-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T23",
+      "kind": "proxy-single-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T24",
+      "kind": "proxy-single-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": false,
+      "ebusd_via_proxy": false
+    },
+    {
+      "id": "T25",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "ens",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T26",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "ens",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T27",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "ens",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T28",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "ens",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T29",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "enh",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T30",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "enh",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T31",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "enh",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T32",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "enh",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T33",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "udp",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T34",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "udp",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T35",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "udp",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T36",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "udp",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T37",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T38",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T39",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T40",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "ens",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T41",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "ens",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T42",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "ens",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T43",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "ens",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T44",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "ens",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T45",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "enh",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T46",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "enh",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T47",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "enh",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T48",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "enh",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T49",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "udp",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T50",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "udp",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T51",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "udp",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T52",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "udp",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T53",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T54",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T55",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T56",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "enh",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T57",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "ens",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T58",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "ens",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T59",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "ens",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T60",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "ens",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T61",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "enh",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T62",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "enh",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T63",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "enh",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T64",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "enh",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T65",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "udp",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T66",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "udp",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T67",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "udp",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T68",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "udp",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T69",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T70",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T71",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T72",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "udp",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T73",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "ens",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T74",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "ens",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T75",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "ens",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T76",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "ens",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T77",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "enh",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T78",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "enh",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T79",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "enh",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T80",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "enh",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T81",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "udp",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T82",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "udp",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T83",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "udp",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T84",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "udp",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T85",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "ens",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T86",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "enh",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T87",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "udp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    },
+    {
+      "id": "T88",
+      "kind": "proxy-dual-client",
+      "gateway_transport": "tcp",
+      "proxy_transport": "tcp",
+      "ebusd_transport": "tcp",
+      "uses_proxy": true,
+      "uses_ebusd": true,
+      "ebusd_via_proxy": true
+    }
+  ]
+}

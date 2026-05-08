@@ -61,11 +61,42 @@ func (i *AddressTableInserter) SetEnrichmentRefreshFn(fn func()) {
 // passive-observed entries (e.g. NETX3 0xF1↔0xF6) stay at empty
 // manufacturer / deviceID / serialNumber forever, which prevents
 // identity-merge from grouping aliased faces.
+//
+// Backfill (P5 round-2 follow-up, Codex P2): if any addresses
+// were inserted before this hook was wired (e.g. subscription
+// firing during the activeProbePassed startup window), iterate
+// the registry's existing entries and probe any address that
+// looks unidentified (manufacturer empty OR (Vaillant + serial
+// empty)). This closes the race where a passive observation
+// during the gateway's startup-admission window would land in
+// the registry without ever getting an identity probe.
 func (i *AddressTableInserter) SetEnrichmentIdentityProbeFn(fn func(addr byte)) {
 	if i == nil {
 		return
 	}
 	i.enrichmentIdentityProbeFn = fn
+	if fn == nil || i.table == nil || i.table.reg == nil {
+		return
+	}
+	// Backfill probe for any address already in the registry that
+	// looks unidentified. The fn implementation is idempotent (per-
+	// address sync.Map in EnqueueAddressIdentityProbe), so repeats
+	// for already-probed addresses are harmless.
+	i.table.reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry == nil {
+			return true
+		}
+		manufacturer := entry.Manufacturer()
+		serial := entry.SerialNumber()
+		needsProbe := manufacturer == "" || (manufacturer == "Vaillant" && serial == "")
+		if !needsProbe {
+			return true
+		}
+		for _, addr := range entry.Addresses() {
+			fn(addr)
+		}
+		return true
+	})
 }
 
 func (i *AddressTableInserter) OnPassiveClassifiedEvent(event PassiveClassifiedEvent) {

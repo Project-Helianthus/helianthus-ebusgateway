@@ -30,6 +30,7 @@ import (
 	ebusgoTransport "github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	vaillantproviders "github.com/Project-Helianthus/helianthus-ebusreg/providers/vaillant"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
 )
 
 var (
@@ -204,6 +205,18 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}()
 
 	gateway.Start(ctx)
+
+	// P3 (post-Phase-C live validation 2026-05-08): when enabled,
+	// plant the productids static seed entries into the registry at
+	// startup. Surfaces Vaillant addresses that don't respond to
+	// active scan (NETX3 0x04, SOL00 0xEC) so they're visible from
+	// MCP/GraphQL/portal even before passive observation produces
+	// corroborated evidence. Identity (Manufacturer, DeviceID) is
+	// authoritative from the seed table; serial/sw/hw versions
+	// remain empty until enrichment populates them.
+	if cfg.EnableStaticSeedTable {
+		applyStaticSeedTable(gateway.Registry)
+	}
 
 	builder := graphql.NewBuilder(gateway.Registry, nil)
 
@@ -951,6 +964,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.StringVar(&cfg.DumpOutputDir, "dump-output-dir", cfg.DumpOutputDir, "unknown device dump output dir")
 	fs.StringVar(&cfg.DumpUploadURL, "dump-upload-url", cfg.DumpUploadURL, "unknown device dump upload url (internal)")
 	fs.BoolVar(&cfg.DumpIncludePII, "dump-include-pii", cfg.DumpIncludePII, "include identifiers in unknown device dumps")
+	fs.BoolVar(&cfg.EnableStaticSeedTable, "enable-static-seed-table", cfg.EnableStaticSeedTable, "plant productids static seed entries (NETX3 0x04 / 0xF1 / 0xF6, BASV2 0x15 / 0xEC) into registry at startup; default false")
 	fs.BoolVar(&cfg.ObserveFirstEnabled, "observe-first-enabled", cfg.ObserveFirstEnabled, "enable observe-first runtime behavior gates")
 	fs.BoolVar(&cfg.PassiveStateDirectApply, "passive-state-direct-apply", cfg.PassiveStateDirectApply, "allow passive state direct-apply when observe-first is enabled")
 	fs.BoolVar(&cfg.PassiveConfigDirectApply, "passive-config-direct-apply", cfg.PassiveConfigDirectApply, "allow passive config direct-apply when state direct-apply is enabled")
@@ -2038,4 +2052,44 @@ func buildResponderCapabilityProvider(cfg ebusgateway.Config, actualTransport eb
 		Transports: transports,
 	}
 	return func() ebus_standard.ResponderCapability { return cap }
+}
+
+// applyStaticSeedTable plants the productids static seed entries
+// into the registry. Each seed entry contributes one DeviceInfo per
+// address with full Vaillant identity (Manufacturer + DeviceID),
+// allowing the registry's identity-merge contract to collapse
+// canonical-pair faces into a single entry. SerialNumber and
+// version fields are intentionally empty — they will be populated
+// by subsequent active enrichment (P5 follow-up) or remain empty
+// for seed-only addresses (e.g. NETX3 broadcast face 0x04 which
+// does not respond to active probes).
+//
+// Phase post-C P3 (live validation 2026-05-08): NETX3's 0x04
+// face was absent from the registry entirely because broadcast-
+// source frames never carry an ACKCorrelation that would feed
+// the inserter. Static seed bypasses that gate at startup.
+//
+// Roles in productids.SeedAddressEntry are strings ("initiator",
+// "target"); we map them to registry.SlotRole indirectly via
+// Register's identity-merge invariant — the SlotRole on the
+// resulting AddressSlot is set by the registry's alias-aware
+// face-syncing logic.
+func applyStaticSeedTable(reg *registry.DeviceRegistry) {
+	seeds := productids.LoadSeedTable(true)
+	if len(seeds) == 0 {
+		return
+	}
+	count := 0
+	for _, seed := range seeds {
+		for _, addr := range seed.Addresses {
+			info := registry.DeviceInfo{
+				Address:      addr.Addr,
+				Manufacturer: seed.Manufacturer,
+				DeviceID:     seed.DeviceID,
+			}
+			reg.Register(info)
+			count++
+		}
+	}
+	log.Printf("static seed table: planted %d address(es) across %d device(s) at startup (source=productids.LoadSeedTable)", count, len(seeds))
 }

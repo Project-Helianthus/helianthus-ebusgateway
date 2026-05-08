@@ -667,6 +667,28 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		// + idempotent (probes each address at most once per
 		// gateway lifetime).
 		addressTableInserter.SetEnrichmentIdentityProbeFn(semanticPoller.EnqueueAddressIdentityProbe)
+
+		// P5 round-3 (Codex P2 follow-up 2026-05-08): backfill
+		// identity probes for any addresses that were inserted
+		// before SetEnrichmentIdentityProbeFn wired the hook (early
+		// subscription in subscribeAddressTableInserter at line 401
+		// can fire during the activeProbePassed window). MUST defer
+		// until the semanticBarrier closes, otherwise the probes
+		// race the startup directed scan and emit bus traffic during
+		// admission validation. When semanticBarrier is nil (no
+		// startup barrier configured), backfill inline.
+		if semanticBarrier != nil {
+			go func() {
+				select {
+				case <-ctx.Done():
+					return
+				case <-semanticBarrier:
+					addressTableInserter.BackfillUnidentifiedAddresses()
+				}
+			}()
+		} else {
+			addressTableInserter.BackfillUnidentifiedAddresses()
+		}
 	}
 
 	var scheduleWriter mcp.ScheduleWriter

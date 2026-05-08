@@ -62,26 +62,38 @@ func (i *AddressTableInserter) SetEnrichmentRefreshFn(fn func()) {
 // manufacturer / deviceID / serialNumber forever, which prevents
 // identity-merge from grouping aliased faces.
 //
-// Backfill (P5 round-2 follow-up, Codex P2): if any addresses
-// were inserted before this hook was wired (e.g. subscription
-// firing during the activeProbePassed startup window), iterate
-// the registry's existing entries and probe any address that
-// looks unidentified (manufacturer empty OR (Vaillant + serial
-// empty)). This closes the race where a passive observation
-// during the gateway's startup-admission window would land in
-// the registry without ever getting an identity probe.
+// This setter is fire-only: it installs the fn pointer and returns
+// without invoking it. Callers that need to backfill addresses
+// inserted before the hook was wired should call
+// BackfillUnidentifiedAddresses AFTER the gateway's startup barrier
+// (semantic scheduler readiness) clears — see main.go for the wiring.
 func (i *AddressTableInserter) SetEnrichmentIdentityProbeFn(fn func(addr byte)) {
 	if i == nil {
 		return
 	}
 	i.enrichmentIdentityProbeFn = fn
-	if fn == nil || i.table == nil || i.table.reg == nil {
+}
+
+// BackfillUnidentifiedAddresses iterates the registry's existing
+// entries and invokes the wired enrichmentIdentityProbeFn for any
+// address that looks unidentified (manufacturer empty OR Vaillant +
+// serial empty). Used to close the race where a passive observation
+// during the gateway's startup-admission window lands in the
+// registry before SetEnrichmentIdentityProbeFn was wired.
+//
+// Callers MUST defer the invocation until the gateway's startup
+// barrier (admittedSource finalization) has closed — otherwise the
+// probe submissions will race the startup directed scan and emit
+// bus traffic during the admission validation window. See P5
+// round-3 finding (Codex P2 on PR #583, 2026-05-08).
+//
+// The probe fn is idempotent (per-address sync.Map in
+// EnqueueAddressIdentityProbe), so repeat calls are harmless.
+func (i *AddressTableInserter) BackfillUnidentifiedAddresses() {
+	if i == nil || i.enrichmentIdentityProbeFn == nil || i.table == nil || i.table.reg == nil {
 		return
 	}
-	// Backfill probe for any address already in the registry that
-	// looks unidentified. The fn implementation is idempotent (per-
-	// address sync.Map in EnqueueAddressIdentityProbe), so repeats
-	// for already-probed addresses are harmless.
+	fn := i.enrichmentIdentityProbeFn
 	i.table.reg.Iterate(func(entry registry.DeviceEntry) bool {
 		if entry == nil {
 			return true

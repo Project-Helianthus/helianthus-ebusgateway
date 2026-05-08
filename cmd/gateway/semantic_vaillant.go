@@ -6828,7 +6828,8 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 	if _, alreadyProbed := p.identityProbedAddresses.LoadOrStore(addr, struct{}{}); alreadyProbed {
 		return
 	}
-	p.enqueueTask(semanticTaskPriorityLow, func(ctx context.Context) {
+	scheduler := p.tasks
+	probeFn := func(ctx context.Context) {
 		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		_, err := registry.ScanDirected(probeCtx, p.bus, p.reg, p.source, []byte{addr})
@@ -6837,7 +6838,31 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 			return
 		}
 		log.Printf("semantic_address_identity_probe address=0x%02X status=ok", addr)
+	}
+	if scheduler == nil {
+		// No scheduler wired (unit tests, etc.) — run inline.
+		probeFn(context.Background())
+		return
+	}
+	// Codex P2 follow-up on PR #583 (2026-05-08): submit BEFORE
+	// committing the per-address probed marker. If the task queue
+	// is overloaded and submit fails, roll back the sync.Map entry
+	// so the address remains eligible for retry on the next passive
+	// observation. Without rollback, an overloaded queue at startup
+	// permanently blocks identity enrichment for the dropped
+	// addresses until the next gateway restart.
+	err := scheduler.submit(semanticTaskPriorityLow, func(taskCtx context.Context) {
+		p.withPollLock(taskCtx, probeFn)
 	})
+	if err != nil {
+		// Rollback so the address is eligible for retry.
+		p.identityProbedAddresses.Delete(addr)
+		if errors.Is(err, errSemanticTaskQueueOverloaded) {
+			log.Printf("semantic_address_identity_probe address=0x%02X status=enqueue_dropped reason=queue_overloaded", addr)
+			return
+		}
+		log.Printf("semantic_address_identity_probe address=0x%02X status=enqueue_failed err=%v", addr, err)
+	}
 }
 
 // registerStructuralControllerIfMissing registers a minimal Vaillant

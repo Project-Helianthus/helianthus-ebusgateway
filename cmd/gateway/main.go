@@ -660,6 +660,13 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	// into a single DeviceEntry.
 	if semanticPoller != nil {
 		addressTableInserter.SetEnrichmentRefreshFn(semanticPoller.EnqueueDiscoveryRefresh)
+		// P5 (post-Phase-C live validation 2026-05-08): per-address
+		// identity probe wired so passive-observed slots (e.g.
+		// NETX3 0xF1↔0xF6, BASV2 0x10) get a 0x07/0x04 + B5.09
+		// ScanID probe and re-Register with full identity. Bounded
+		// + idempotent (probes each address at most once per
+		// gateway lifetime).
+		addressTableInserter.SetEnrichmentIdentityProbeFn(semanticPoller.EnqueueAddressIdentityProbe)
 	}
 
 	var scheduleWriter mcp.ScheduleWriter

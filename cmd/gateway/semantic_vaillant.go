@@ -307,6 +307,11 @@ type vaillantSemanticPoller struct {
 	pollMu sync.Mutex
 	readMu sync.Mutex
 
+	// identityProbedAddresses tracks per-address probe attempts for
+	// EnqueueAddressIdentityProbe (P5). Each address is probed at
+	// most once per gateway lifetime; failures are not retried.
+	identityProbedAddresses sync.Map // map[byte]struct{}
+
 	catalog    productids.Catalog
 	catalogErr error
 
@@ -6793,6 +6798,46 @@ func (p *vaillantSemanticPoller) EnqueueDiscoveryRefresh() {
 		return
 	}
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
+}
+
+// EnqueueAddressIdentityProbe schedules a per-address identity
+// probe for the given address. Runs registry.Scan against just
+// that address using the gateway's current scan source — on
+// success, the registry's M6 identity-merge path collapses
+// canonical pairs that share identity into a single DeviceEntry.
+//
+// Phase post-C P5 (live validation 2026-05-08): closes the gap
+// where passive-observed addresses (e.g. NETX3 0xF1, 0xF6, BASV2
+// 0x10) sit in the registry forever with empty manufacturer /
+// deviceID / serialNumber because no path probes them for
+// identity post-insertion.
+//
+// Bounded + idempotent: probes each address at most once per
+// gateway lifetime via p.identityProbedAddresses (sync.Map).
+// Probes that fail (timeout, NACK, etc.) are NOT retried — the
+// next gateway restart re-attempts. This is intentional: NETX3's
+// 0x04 broadcast face does not respond to active probes by spec,
+// so retry would just spam the bus.
+func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
+	if p == nil || p.bus == nil || p.reg == nil {
+		return
+	}
+	if addr == 0 || addr == 0xFE || addr == 0xAA {
+		return
+	}
+	if _, alreadyProbed := p.identityProbedAddresses.LoadOrStore(addr, struct{}{}); alreadyProbed {
+		return
+	}
+	p.enqueueTask(semanticTaskPriorityLow, func(ctx context.Context) {
+		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		_, err := registry.ScanDirected(probeCtx, p.bus, p.reg, p.source, []byte{addr})
+		if err != nil {
+			log.Printf("semantic_address_identity_probe address=0x%02X status=fail err=%v", addr, err)
+			return
+		}
+		log.Printf("semantic_address_identity_probe address=0x%02X status=ok", addr)
+	})
 }
 
 // registerStructuralControllerIfMissing registers a minimal Vaillant

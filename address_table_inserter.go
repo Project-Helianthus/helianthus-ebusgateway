@@ -47,18 +47,34 @@ func (i *AddressTableInserter) SetEnrichmentRefreshFn(fn func()) {
 }
 
 func (i *AddressTableInserter) OnPassiveClassifiedEvent(event PassiveClassifiedEvent) {
+	if i == nil {
+		return
+	}
+	// P4 (post-Phase-C live validation 2026-05-08): broadcast frames
+	// have a separate insertion path because they have no ACK
+	// correlation by construction (target == 0xFE). Vaillant's
+	// spontaneous broadcasts (DCF time, energy totals, system status
+	// from NETX3) carry the broadcaster's source byte that the
+	// inserter must learn — without this branch, devices that emit
+	// only broadcast traffic (e.g. NETX3's 0xFF face) never land in
+	// the registry.
+	if event.Kind == PassiveClassifiedEventBroadcastFrame {
+		i.handleBroadcastFrameEvent(event)
+		return
+	}
 	// P1 (post-Phase-C live validation 2026-05-08): only fully-
-	// completed M-T transactions create registry slots. Abandoned
-	// transactions in any phase — particularly phase-3 no_response
-	// abandons that retain a populated ACKCorrelation from the prior
-	// successful ACK observation — must NOT promote their src/dst
-	// into the registry. Live evidence: NETX3's identity-scan probes
-	// (e.g. 0xF1 → 0x07/0x04 → 0x24 ACKed but no response) were
-	// inserting phantom 0x24, 0x84, etc. as registry entries.
+	// completed M-T transactions create registry slots via the
+	// ACK-correlation path. Abandoned transactions in any phase —
+	// particularly phase-3 no_response abandons that retain a
+	// populated ACKCorrelation from the prior successful ACK
+	// observation — must NOT promote their src/dst into the
+	// registry. Live evidence: NETX3's identity-scan probes (e.g.
+	// 0xF1 → 0x07/0x04 → 0x24 ACKed but no response) were inserting
+	// phantom 0x24, 0x84, etc. as registry entries.
 	//
 	// This aligns with BusObservabilityStore.recordEvidenceFromEvent-
 	// Locked which already excludes AbandonedTransaction events.
-	if i == nil || event.Kind != PassiveClassifiedEventTransaction {
+	if event.Kind != PassiveClassifiedEventTransaction {
 		return
 	}
 	if !event.ACKCorrelation.CompleteRequest || event.ACKCorrelation.Correlator != PassiveACKCorrelatorM2A {
@@ -100,6 +116,52 @@ func (i *AddressTableInserter) OnPassiveClassifiedEvent(event PassiveClassifiedE
 	observation.PositiveACKCount++
 	i.observationsByAddr[srcAddr] = observation
 
+	if observation.PositiveACKCount < 2 {
+		return
+	}
+	if companion, ok := protocol.Companion(srcAddr); ok {
+		i.maybeInsert(companion, "target", admittedSrc, event.ObservedAt)
+	}
+}
+
+// handleBroadcastFrameEvent inserts the broadcaster's source byte
+// as initiator. Phase post-C P4: broadcast frames (target == 0xFE)
+// have no ACKCorrelation by construction — receivers don't ACK
+// broadcasts in the eBUS protocol. Without this branch, devices
+// that emit only broadcast traffic (e.g. NETX3 0xFF) would never
+// be observed by the inserter, leaving the registry blind to them.
+//
+// Treats only fully-classified broadcast frames (HasRequest=true,
+// Request.Target=0xFE). Doesn't insert the target (always 0xFE,
+// the broadcast indicator), only the source.
+//
+// Same admittedSrc and self-source filtering as the M2A path.
+func (i *AddressTableInserter) handleBroadcastFrameEvent(event PassiveClassifiedEvent) {
+	if !event.HasRequest {
+		return
+	}
+	if event.FrameType != protocol.FrameTypeBroadcast {
+		return
+	}
+	if event.Request.Target != protocol.AddressBroadcast {
+		return
+	}
+	srcAddr := event.Request.Source
+	admittedSrc := i.admittedSource()
+	if srcAddr == admittedSrc {
+		return
+	}
+	if srcAddr == 0xFE || srcAddr == 0xAA {
+		return
+	}
+	i.maybeInsert(srcAddr, "initiator", admittedSrc, event.ObservedAt)
+	// Increment ACK count proxy (broadcast frames are evidence even
+	// without per-frame ACK; treat each broadcast emission as one
+	// observation). Once 2× corroborated, alias the canonical
+	// companion (e.g. 0xFF → 0x04 NETX3 broadcast pair).
+	observation := i.observationsByAddr[srcAddr]
+	observation.PositiveACKCount++
+	i.observationsByAddr[srcAddr] = observation
 	if observation.PositiveACKCount < 2 {
 		return
 	}

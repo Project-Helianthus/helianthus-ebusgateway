@@ -712,8 +712,15 @@ func (reconstructor *PassiveTransactionReconstructor) abandonLocked(reason Passi
 	ackCorrelation := reconstructor.state.ackCorrelation
 	switch reason {
 	case PassiveAbandonReasonNoResponse,
+		PassiveAbandonReasonNoProgress,
 		PassiveAbandonReasonAmbiguousRetransmit,
 		PassiveAbandonReasonCRCMismatch:
+		// NoProgress is the watchdog/read-timeout sibling of
+		// NoResponse: request was ACK'd, then the bus/tap went silent
+		// without a SYN. Same stale-ACK hazard — strip the
+		// correlation so downstream consumers don't treat it as a
+		// completed transaction. (Codex P2 follow-up on PR #579,
+		// 2026-05-08.)
 		ackCorrelation = PassiveACKCorrelation{}
 	}
 	event := PassiveClassifiedEvent{

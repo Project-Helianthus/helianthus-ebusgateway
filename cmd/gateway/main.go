@@ -666,23 +666,42 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		// ScanID probe and re-Register with full identity. Bounded
 		// + idempotent (probes each address at most once per
 		// gateway lifetime).
-		addressTableInserter.SetEnrichmentIdentityProbeFn(semanticPoller.EnqueueAddressIdentityProbe)
+		//
+		// P5 round-5 (Codex P2 follow-up 2026-05-08): gate per-
+		// insert probes on the startup admission barrier. Without
+		// the gate, a passive slot inserted before semanticBarrier
+		// closes would call EnqueueAddressIdentityProbe immediately
+		// and the task scheduler (already running) would emit
+		// ScanDirected bus traffic during the admission validation
+		// window — racing the startup directed scan. When the
+		// gate drops a probe call during admission, the post-
+		// barrier BackfillUnidentifiedAddresses catches up: it
+		// iterates the registry's existing entries and re-fires
+		// the probe for any unidentified address.
+		var probeReady atomic.Bool
+		if semanticBarrier == nil {
+			probeReady.Store(true)
+		}
+		addressTableInserter.SetEnrichmentIdentityProbeFn(func(addr byte) {
+			if !probeReady.Load() {
+				return
+			}
+			semanticPoller.EnqueueAddressIdentityProbe(addr)
+		})
 
-		// P5 round-3 (Codex P2 follow-up 2026-05-08): backfill
-		// identity probes for any addresses that were inserted
-		// before SetEnrichmentIdentityProbeFn wired the hook (early
-		// subscription in subscribeAddressTableInserter at line 401
-		// can fire during the activeProbePassed window). MUST defer
-		// until the semanticBarrier closes, otherwise the probes
-		// race the startup directed scan and emit bus traffic during
-		// admission validation. When semanticBarrier is nil (no
-		// startup barrier configured), backfill inline.
+		// Backfill identity probes for any addresses that were
+		// inserted before the hook was wired (early subscription
+		// in subscribeAddressTableInserter can fire during the
+		// activeProbePassed window) OR while the barrier was open.
+		// Defer until semanticBarrier closes to avoid racing the
+		// startup directed scan.
 		if semanticBarrier != nil {
 			go func() {
 				select {
 				case <-ctx.Done():
 					return
 				case <-semanticBarrier:
+					probeReady.Store(true)
 					addressTableInserter.BackfillUnidentifiedAddresses()
 				}
 			}()

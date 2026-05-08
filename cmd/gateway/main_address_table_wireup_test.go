@@ -158,7 +158,17 @@ func feedGatewayAddressTablePassiveObservation(ctx context.Context, reconstructo
 		Secondary: 0x24,
 		Data:      []byte{0x01},
 	}
-	symbols := append(gatewayWireupFrameBytes(request), protocol.SymbolAck, protocol.SymbolSyn)
+	// Post-Phase-C P1: the inserter now requires a fully-completed
+	// M-T transaction (PassiveClassifiedEventTransaction). Build the
+	// proper wire flow:  request bytes  + ACK + response segment
+	//   + ACK + SYN   so the reconstructor classifies as Transaction
+	// (was previously: request + ACK + SYN, which produced a phase-3
+	// no_response abandon — the inserter accepted those pre-P1, but
+	// that was the bug that produced phantom registry entries from
+	// NETX3's identity scans).
+	symbols := append(gatewayWireupFrameBytes(request), protocol.SymbolAck)
+	symbols = append(symbols, gatewayWireupResponseSegmentBytes([]byte{0x11, 0x55})...)
+	symbols = append(symbols, protocol.SymbolAck, protocol.SymbolSyn)
 
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -170,6 +180,14 @@ func feedGatewayAddressTablePassiveObservation(ctx context.Context, reconstructo
 		case <-ticker.C:
 		}
 	}
+}
+
+func gatewayWireupResponseSegmentBytes(data []byte) []byte {
+	raw := make([]byte, 0, 2+len(data))
+	raw = append(raw, byte(len(data)))
+	raw = append(raw, data...)
+	raw = append(raw, protocol.CRC(raw))
+	return raw
 }
 
 func assertPassiveObservedDeviceEntry(t *testing.T, reg *registry.DeviceRegistry, address byte) {

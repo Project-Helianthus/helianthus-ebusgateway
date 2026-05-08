@@ -700,6 +700,22 @@ func (reconstructor *PassiveTransactionReconstructor) handleTerminalSymbolLocked
 func (reconstructor *PassiveTransactionReconstructor) abandonLocked(reason PassiveAbandonReason, observedAt time.Time, err error) PassiveClassifiedEvent {
 	hasRequest := reconstructor.state.frameType != protocol.FrameTypeUnknown
 	hasResponse := reconstructor.state.responseExpectedLen > 0
+	// P1.5 (post-Phase-C live validation 2026-05-08): strip stale
+	// ACKCorrelation for failure reasons that invalidate the prior
+	// ACK as evidence of a completed transaction. Phase-3 no_response
+	// means responder went silent after ACKing the request; carrying
+	// the ACK forward as if the transaction completed is a
+	// misclassification. Defense-in-depth alongside P1 inserter
+	// kind-filter — if any future consumer relies on ACKCorrelation
+	// from abandoned events, they get an empty correlation rather
+	// than a stale positive ACK from a doomed transaction.
+	ackCorrelation := reconstructor.state.ackCorrelation
+	switch reason {
+	case PassiveAbandonReasonNoResponse,
+		PassiveAbandonReasonAmbiguousRetransmit,
+		PassiveAbandonReasonCRCMismatch:
+		ackCorrelation = PassiveACKCorrelation{}
+	}
 	event := PassiveClassifiedEvent{
 		Kind:           PassiveClassifiedEventAbandonedTransaction,
 		FrameType:      reconstructor.state.frameType,
@@ -710,7 +726,7 @@ func (reconstructor *PassiveTransactionReconstructor) abandonLocked(reason Passi
 		Timing:         reconstructor.state.timing,
 		ObservedAt:     observedAt,
 		AbandonReason:  reason,
-		ACKCorrelation: reconstructor.state.ackCorrelation,
+		ACKCorrelation: ackCorrelation,
 		Err:            err,
 	}
 	event.Timing.Terminal = observedAt

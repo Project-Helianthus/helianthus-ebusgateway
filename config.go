@@ -175,6 +175,20 @@ type Config struct {
 	ObserveFirstWarmupPostResetWindow       time.Duration
 	ObserveFirstWarmupPostResetTransactions int
 	ObserveFirstWarmupOuterWindow           time.Duration
+
+	// EnableStaticSeedTable, when true, plants the
+	// helianthus-ebusreg/vaillant/productids static seed entries
+	// into the registry at gateway startup. Used to deterministically
+	// surface Vaillant addresses that don't respond to active scan
+	// (e.g. NETX3 broadcast face 0x04 / 0xFF, SOL00 0xEC). Default
+	// false to preserve the strict observe-first AD05 contract;
+	// operators opt in via the addon config / CLI flag.
+	//
+	// Phase post-C P3 (live validation 2026-05-08): NETX3's 0x04
+	// face was absent from the registry because broadcast-source
+	// frames never carry an ACKCorrelation that would flow through
+	// the inserter. Static seed bypasses that gate.
+	EnableStaticSeedTable bool
 }
 
 func DefaultConfig() Config {

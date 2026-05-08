@@ -261,6 +261,64 @@ func isBoundedTargetsRequiredError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "active probe requires explicit bounded targets")
 }
 
+// aliasCanonicalCompanionsForDevices iterates each successfully-
+// scanned device and aliases its eBUS-canonical-pair companion
+// when one is defined. For e.g. BAI scanned at 0x08, this calls
+// reg.AliasAddresses(0x03, 0x08) so the registry shows
+// addresses=[0x08, 0x03] under one entry with full identity.
+//
+// Phase post-C P2 (live validation 2026-05-08): pre-A.6, the scan's
+// response.Source-driven Register path implicitly produced this
+// grouping when the initiator byte was in the scan target list. A.6
+// narrowed scan to target-only addresses ({0x08, 0x15, 0x26}) and the
+// initiator-side alias was lost. Explicit AliasAddresses calls here
+// restore the canonical-pair grouping. Identity is preserved by
+// the post-Phase-C P0 absorbIdentityLocked invariant in ebusreg.
+//
+// Failures to alias are logged but never block — the registry has
+// the target-side entry regardless.
+func aliasCanonicalCompanionsForDevices(reg *registry.DeviceRegistry, devices []registry.DeviceEntry) {
+	if reg == nil || len(devices) == 0 {
+		return
+	}
+	for _, entry := range devices {
+		if entry == nil {
+			continue
+		}
+		for _, addr := range entry.Addresses() {
+			companion, ok := protocol.Companion(addr)
+			if !ok {
+				continue
+			}
+			// Skip if already aliased on this entry.
+			if entryContainsAddress(entry, companion) {
+				continue
+			}
+			if err := reg.AliasAddresses(companion, addr); err != nil {
+				log.Printf("startup scan: alias canonical companion 0x%02X↔0x%02X failed: %v", companion, addr, err)
+				continue
+			}
+			log.Printf("startup scan: aliased canonical companion 0x%02X↔0x%02X (mfr=%q devID=%q)",
+				companion, addr, entry.Manufacturer(), entry.DeviceID())
+		}
+	}
+}
+
+// entryContainsAddress reports whether addr is in entry.Addresses().
+// Local helper to avoid importing the gateway-package
+// EntryContainsAddress (cmd/gateway is package main).
+func entryContainsAddress(entry registry.DeviceEntry, addr byte) bool {
+	if entry == nil {
+		return false
+	}
+	for _, a := range entry.Addresses() {
+		if a == addr {
+			return true
+		}
+	}
+	return false
+}
+
 const proxyObserveFirstStartupSource byte = 0xF7
 
 // startupScanMaxUnconfirmedPasses is the number of consecutive scan passes
@@ -655,6 +713,22 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 					return
 				}
 			}
+
+			// P2 (post-Phase-C live validation 2026-05-08): for each
+			// successfully-scanned device, alias its canonical-pair
+			// companion if the eBUS spec defines one. Pre-A.6 the
+			// scan's response.Source-driven Register path produced
+			// 0x03↔0x08 / 0x10↔0x15 grouping when the initiator byte
+			// was in the scan target list. A.6 narrowed scan to
+			// {0x08, 0x15, 0x26} (targets only) and the initiator-
+			// side alias was lost. Explicit AliasAddresses calls here
+			// restore the canonical-pair grouping with identity
+			// preserved (per ebusreg P0 absorbIdentityLocked).
+			//
+			// Companion(0x08)=0x03, Companion(0x15)=0x10,
+			// Companion(0x26)=∅ (VR_71 standalone in canonical map),
+			// Companion(0xF6)=0xF1, Companion(0x04)=0xFF.
+			aliasCanonicalCompanionsForDevices(gateway.Registry, devices)
 
 			total := countRegistryDevices(gateway.Registry)
 			imported := 0
@@ -1596,6 +1670,9 @@ func runBackgroundFullScan(ctx context.Context, cfg ebusgateway.Config, gateway 
 	if err != nil && ctx.Err() == nil {
 		log.Printf("background scan error: %v", err)
 	}
+	// P2: same canonical-pair aliasing on background scan completion
+	// (covers the re-scan path that runs periodically after startup).
+	aliasCanonicalCompanionsForDevices(gateway.Registry, devices)
 	afterTotal := countRegistryDevices(gateway.Registry)
 
 	if afterTotal > beforeTotal {

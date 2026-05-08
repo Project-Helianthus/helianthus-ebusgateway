@@ -324,11 +324,27 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		i.enrichmentRefreshFn()
 	}
 
+	// A.7b — canonical-pair aliasing. If addr is one half of a canonical
+	// pair from the docs-owned eBUS standard table (sourceAddressTableV1)
+	// and the other half is already in the registry, alias them into a
+	// single DeviceEntry so MCP/GraphQL queries return one device with
+	// two addresses. Aliasing only fires for the 25 canonical pairs;
+	// non-canonical neighbours (e.g. 0x26 / 0xEC) are never aliased here.
+	i.maybeAliasCanonicalCompanion(addr)
+
 	// P5 (post-Phase-C live validation 2026-05-08): per-address
 	// identity probe of the just-inserted slot. Triggers a
-	// 0x07/0x04 + B5.09 ScanID read against `addr`; on success the
-	// registry's M6 identity-merge path collapses canonical pairs
-	// that share identity into a single DeviceEntry.
+	// 0x07/0x04 + B5.09 ScanID read against the responder face;
+	// on success the registry's M6 identity-merge path collapses
+	// canonical pairs that share identity into a single DeviceEntry.
+	//
+	// MUST run AFTER maybeAliasCanonicalCompanion so that when the
+	// just-inserted address has a canonical companion already in
+	// the registry, the alias merge happens first and the
+	// EnqueueAddressIdentityProbe lookup sees the merged entry
+	// (with its target-role face) — not a fresh initiator-only
+	// entry that would resolve to no_responder_face. (Codex P2
+	// round-7 finding 2026-05-08 on PR #583.)
 	//
 	// Without this hook, passive-observed entries (e.g. NETX3
 	// 0xF1↔0xF6) stay at empty manufacturer / deviceID /
@@ -339,14 +355,6 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 	if i.enrichmentIdentityProbeFn != nil {
 		i.enrichmentIdentityProbeFn(addr)
 	}
-
-	// A.7b — canonical-pair aliasing. If addr is one half of a canonical
-	// pair from the docs-owned eBUS standard table (sourceAddressTableV1)
-	// and the other half is already in the registry, alias them into a
-	// single DeviceEntry so MCP/GraphQL queries return one device with
-	// two addresses. Aliasing only fires for the 25 canonical pairs;
-	// non-canonical neighbours (e.g. 0x26 / 0xEC) are never aliased here.
-	i.maybeAliasCanonicalCompanion(addr)
 }
 
 // maybeAliasCanonicalCompanion calls registry.AliasAddresses(addr, companion)

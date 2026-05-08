@@ -6825,19 +6825,60 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 	if addr == 0 || addr == 0xFE || addr == 0xAA {
 		return
 	}
-	if _, alreadyProbed := p.identityProbedAddresses.LoadOrStore(addr, struct{}{}); alreadyProbed {
+	// P5 round-6 (Codex P2 follow-up 2026-05-08): resolve the input
+	// address to its responder/target byte before probing. Active
+	// identity reads (0x07/0x04 + B5.09 ScanID) must be addressed
+	// to the responder face — sending them to an initiator/source
+	// byte (e.g. BASV2 0x10, NETX3 0xF1) produces no response and
+	// just times out. The existing startup scan path filters
+	// initiator-capable addresses out of target lists for the same
+	// reason.
+	//
+	// Resolution order:
+	// 1. If addr is non-initiator-capable, it IS already a
+	//    responder/target — probe directly.
+	// 2. Otherwise, look up the entry containing addr and use
+	//    TargetAddressForRouting (prefers SlotRoleSlave, falls
+	//    back to PrimaryDisplayAddress when no target-role face
+	//    exists).
+	// 3. If neither yields a valid target, skip — initiator-only
+	//    devices have no probable identity face.
+	probeAddr := addr
+	if protocol.IsInitiatorCapableAddress(addr) {
+		var resolvedTarget byte
+		p.reg.Iterate(func(entry registry.DeviceEntry) bool {
+			if entry == nil {
+				return true
+			}
+			for _, a := range entry.Addresses() {
+				if a == addr {
+					resolvedTarget = ebusgateway.TargetAddressForRouting(entry)
+					return false
+				}
+			}
+			return true
+		})
+		if resolvedTarget == 0 || protocol.IsInitiatorCapableAddress(resolvedTarget) {
+			// No target-role face on the entry, OR the entry's
+			// only addresses are initiator-capable — skip.
+			log.Printf("semantic_address_identity_probe address=0x%02X status=skipped reason=no_responder_face", addr)
+			return
+		}
+		probeAddr = resolvedTarget
+	}
+	if _, alreadyProbed := p.identityProbedAddresses.LoadOrStore(probeAddr, struct{}{}); alreadyProbed {
 		return
 	}
 	scheduler := p.tasks
 	probeFn := func(ctx context.Context) {
 		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		_, err := registry.ScanDirected(probeCtx, p.bus, p.reg, p.source, []byte{addr})
+		_, err := registry.ScanDirected(probeCtx, p.bus, p.reg, p.source, []byte{probeAddr})
 		if err != nil {
-			log.Printf("semantic_address_identity_probe address=0x%02X status=fail err=%v", addr, err)
+			log.Printf("semantic_address_identity_probe address=0x%02X status=fail err=%v", probeAddr, err)
 			return
 		}
-		log.Printf("semantic_address_identity_probe address=0x%02X status=ok", addr)
+		log.Printf("semantic_address_identity_probe address=0x%02X status=ok", probeAddr)
 	}
 	if scheduler == nil {
 		// No scheduler wired (unit tests, etc.) — run inline.
@@ -6855,13 +6896,13 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 		p.withPollLock(taskCtx, probeFn)
 	})
 	if err != nil {
-		// Rollback so the address is eligible for retry.
-		p.identityProbedAddresses.Delete(addr)
+		// Rollback so the (resolved) address is eligible for retry.
+		p.identityProbedAddresses.Delete(probeAddr)
 		if errors.Is(err, errSemanticTaskQueueOverloaded) {
-			log.Printf("semantic_address_identity_probe address=0x%02X status=enqueue_dropped reason=queue_overloaded", addr)
+			log.Printf("semantic_address_identity_probe address=0x%02X status=enqueue_dropped reason=queue_overloaded", probeAddr)
 			return
 		}
-		log.Printf("semantic_address_identity_probe address=0x%02X status=enqueue_failed err=%v", addr, err)
+		log.Printf("semantic_address_identity_probe address=0x%02X status=enqueue_failed err=%v", probeAddr, err)
 	}
 }
 

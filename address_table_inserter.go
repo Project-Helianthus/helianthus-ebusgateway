@@ -18,14 +18,21 @@ type AddressTableInserter struct {
 	observationsByAddr map[byte]AddressObservation
 	// enrichmentRefreshFn is called once per new passive slot insertion.
 	// Wired to semanticPoller.EnqueueDiscoveryRefresh in production: the
-	// next discovery cycle probes B509 ScanID + B524 identity for the
-	// newly-observed address, then re-Registers with full identity
-	// (Manufacturer + DeviceID + SerialNumber). That triggers M6
-	// identity-merge in helianthus-ebusreg, grouping addresses with
-	// matching identity into a single DeviceEntry (e.g. NETX3 0xF1 +
-	// 0xF6 + 0x04 + 0xFF all collapse into one device once enrichment
-	// runs). Nil-safe: skipped when not wired (unit tests, etc.).
+	// next discovery cycle re-runs B524 root coherency on the controller.
+	// Nil-safe: skipped when not wired (unit tests, etc.).
 	enrichmentRefreshFn func()
+	// enrichmentIdentityProbeFn is called once per new passive slot
+	// insertion with the inserted address. Wired to
+	// semanticPoller.EnqueueAddressIdentityProbe in production: probes
+	// the new address with 0x07/0x04 + B5.09 ScanID and re-Registers
+	// with full identity (Manufacturer + DeviceID + SerialNumber).
+	// That triggers M6 identity-merge in helianthus-ebusreg, grouping
+	// addresses with matching identity into a single DeviceEntry
+	// (e.g. NETX3 0xF1 + 0xF6 + 0x04 + 0xFF all collapse into one
+	// device once enrichment runs). Phase post-C P5 (live validation
+	// 2026-05-08): without this hook, passive-observed entries stay
+	// at empty manufacturer indefinitely. Nil-safe.
+	enrichmentIdentityProbeFn func(addr byte)
 }
 
 func NewAddressTableInserter(table *AddressTable, cfg Config) *AddressTableInserter {
@@ -36,14 +43,72 @@ func NewAddressTableInserter(table *AddressTable, cfg Config) *AddressTableInser
 	}
 }
 
-// SetEnrichmentRefreshFn wires the post-insertion enrichment trigger so
-// new passive slots get probed for identity by the semantic poller. See
-// AddressTableInserter.enrichmentRefreshFn for semantics.
+// SetEnrichmentRefreshFn wires the post-insertion B524 root re-discovery
+// trigger so the regulator surface populates without a gateway restart.
+// See AddressTableInserter.enrichmentRefreshFn for semantics.
 func (i *AddressTableInserter) SetEnrichmentRefreshFn(fn func()) {
 	if i == nil {
 		return
 	}
 	i.enrichmentRefreshFn = fn
+}
+
+// SetEnrichmentIdentityProbeFn wires the post-insertion per-address
+// identity probe so new passive slots get a 0x07/0x04 + B5.09 ScanID
+// read against them. See AddressTableInserter.enrichmentIdentityProbeFn.
+//
+// Phase post-C P5 (live validation 2026-05-08): without this hook
+// passive-observed entries (e.g. NETX3 0xF1↔0xF6) stay at empty
+// manufacturer / deviceID / serialNumber forever, which prevents
+// identity-merge from grouping aliased faces.
+//
+// This setter is fire-only: it installs the fn pointer and returns
+// without invoking it. Callers that need to backfill addresses
+// inserted before the hook was wired should call
+// BackfillUnidentifiedAddresses AFTER the gateway's startup barrier
+// (semantic scheduler readiness) clears — see main.go for the wiring.
+func (i *AddressTableInserter) SetEnrichmentIdentityProbeFn(fn func(addr byte)) {
+	if i == nil {
+		return
+	}
+	i.enrichmentIdentityProbeFn = fn
+}
+
+// BackfillUnidentifiedAddresses iterates the registry's existing
+// entries and invokes the wired enrichmentIdentityProbeFn for any
+// address that looks unidentified (manufacturer empty OR Vaillant +
+// serial empty). Used to close the race where a passive observation
+// during the gateway's startup-admission window lands in the
+// registry before SetEnrichmentIdentityProbeFn was wired.
+//
+// Callers MUST defer the invocation until the gateway's startup
+// barrier (admittedSource finalization) has closed — otherwise the
+// probe submissions will race the startup directed scan and emit
+// bus traffic during the admission validation window. See P5
+// round-3 finding (Codex P2 on PR #583, 2026-05-08).
+//
+// The probe fn is idempotent (per-address sync.Map in
+// EnqueueAddressIdentityProbe), so repeat calls are harmless.
+func (i *AddressTableInserter) BackfillUnidentifiedAddresses() {
+	if i == nil || i.enrichmentIdentityProbeFn == nil || i.table == nil || i.table.reg == nil {
+		return
+	}
+	fn := i.enrichmentIdentityProbeFn
+	i.table.reg.Iterate(func(entry registry.DeviceEntry) bool {
+		if entry == nil {
+			return true
+		}
+		manufacturer := entry.Manufacturer()
+		serial := entry.SerialNumber()
+		needsProbe := manufacturer == "" || (manufacturer == "Vaillant" && serial == "")
+		if !needsProbe {
+			return true
+		}
+		for _, addr := range entry.Addresses() {
+			fn(addr)
+		}
+		return true
+	})
 }
 
 func (i *AddressTableInserter) OnPassiveClassifiedEvent(event PassiveClassifiedEvent) {
@@ -213,6 +278,18 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		// in case the companion was registered separately and never
 		// went through the new-insert alias path. Idempotent.
 		i.maybeAliasCanonicalCompanion(addr)
+		// P5 round-9 (Codex P2 follow-up 2026-05-08): also re-fire
+		// the identity probe on the existing-address path. The
+		// probe fn is idempotent via sync.Map; this matters when a
+		// previous probe attempt was rolled back due to queue
+		// overload (EnqueueAddressIdentityProbe.Delete on submit
+		// failure). Without this, a passive slot that hits the
+		// queue-overload window stays anonymous until a gateway
+		// restart, even though later passive observations of the
+		// same address keep arriving.
+		if i.enrichmentIdentityProbeFn != nil {
+			i.enrichmentIdentityProbeFn(addr)
+		}
 		return
 	}
 
@@ -251,10 +328,10 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		addr, role, admittedSrc, observedAt.Format(time.RFC3339Nano))
 
 	// M6 enrichment trigger — schedule a semantic-poller discovery
-	// refresh so the newly-inserted slot gets probed for identity. Once
-	// SerialNumber + Manufacturer are populated via Register, the
-	// registry's M6 identity-merge path collapses canonical pairs that
-	// share identity into a single DeviceEntry.
+	// refresh so the regulator surface populates without a gateway
+	// restart. Note: this is a B524-root coherency re-run, NOT an
+	// identity probe of the just-inserted address (see
+	// enrichmentIdentityProbeFn below for the latter).
 	if i.enrichmentRefreshFn != nil {
 		i.enrichmentRefreshFn()
 	}
@@ -266,6 +343,30 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 	// two addresses. Aliasing only fires for the 25 canonical pairs;
 	// non-canonical neighbours (e.g. 0x26 / 0xEC) are never aliased here.
 	i.maybeAliasCanonicalCompanion(addr)
+
+	// P5 (post-Phase-C live validation 2026-05-08): per-address
+	// identity probe of the just-inserted slot. Triggers a
+	// 0x07/0x04 + B5.09 ScanID read against the responder face;
+	// on success the registry's M6 identity-merge path collapses
+	// canonical pairs that share identity into a single DeviceEntry.
+	//
+	// MUST run AFTER maybeAliasCanonicalCompanion so that when the
+	// just-inserted address has a canonical companion already in
+	// the registry, the alias merge happens first and the
+	// EnqueueAddressIdentityProbe lookup sees the merged entry
+	// (with its target-role face) — not a fresh initiator-only
+	// entry that would resolve to no_responder_face. (Codex P2
+	// round-7 finding 2026-05-08 on PR #583.)
+	//
+	// Without this hook, passive-observed entries (e.g. NETX3
+	// 0xF1↔0xF6) stay at empty manufacturer / deviceID /
+	// serialNumber forever, which prevents identity-merge from
+	// grouping aliased faces. The probe is bounded + idempotent
+	// per the wired implementation (see semanticPoller.
+	// EnqueueAddressIdentityProbe).
+	if i.enrichmentIdentityProbeFn != nil {
+		i.enrichmentIdentityProbeFn(addr)
+	}
 }
 
 // maybeAliasCanonicalCompanion calls registry.AliasAddresses(addr, companion)

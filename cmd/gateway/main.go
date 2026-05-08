@@ -660,6 +660,54 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	// into a single DeviceEntry.
 	if semanticPoller != nil {
 		addressTableInserter.SetEnrichmentRefreshFn(semanticPoller.EnqueueDiscoveryRefresh)
+		// P5 (post-Phase-C live validation 2026-05-08): per-address
+		// identity probe wired so passive-observed slots (e.g.
+		// NETX3 0xF1↔0xF6, BASV2 0x10) get a 0x07/0x04 + B5.09
+		// ScanID probe and re-Register with full identity. Bounded
+		// + idempotent (probes each address at most once per
+		// gateway lifetime).
+		//
+		// P5 round-5 (Codex P2 follow-up 2026-05-08): gate per-
+		// insert probes on the startup admission barrier. Without
+		// the gate, a passive slot inserted before semanticBarrier
+		// closes would call EnqueueAddressIdentityProbe immediately
+		// and the task scheduler (already running) would emit
+		// ScanDirected bus traffic during the admission validation
+		// window — racing the startup directed scan. When the
+		// gate drops a probe call during admission, the post-
+		// barrier BackfillUnidentifiedAddresses catches up: it
+		// iterates the registry's existing entries and re-fires
+		// the probe for any unidentified address.
+		var probeReady atomic.Bool
+		if semanticBarrier == nil {
+			probeReady.Store(true)
+		}
+		addressTableInserter.SetEnrichmentIdentityProbeFn(func(addr byte) {
+			if !probeReady.Load() {
+				return
+			}
+			semanticPoller.EnqueueAddressIdentityProbe(addr)
+		})
+
+		// Backfill identity probes for any addresses that were
+		// inserted before the hook was wired (early subscription
+		// in subscribeAddressTableInserter can fire during the
+		// activeProbePassed window) OR while the barrier was open.
+		// Defer until semanticBarrier closes to avoid racing the
+		// startup directed scan.
+		if semanticBarrier != nil {
+			go func() {
+				select {
+				case <-ctx.Done():
+					return
+				case <-semanticBarrier:
+					probeReady.Store(true)
+					addressTableInserter.BackfillUnidentifiedAddresses()
+				}
+			}()
+		} else {
+			addressTableInserter.BackfillUnidentifiedAddresses()
+		}
 	}
 
 	var scheduleWriter mcp.ScheduleWriter

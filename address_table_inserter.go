@@ -278,6 +278,18 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		// in case the companion was registered separately and never
 		// went through the new-insert alias path. Idempotent.
 		i.maybeAliasCanonicalCompanion(addr)
+		// P5 round-9 (Codex P2 follow-up 2026-05-08): also re-fire
+		// the identity probe on the existing-address path. The
+		// probe fn is idempotent via sync.Map; this matters when a
+		// previous probe attempt was rolled back due to queue
+		// overload (EnqueueAddressIdentityProbe.Delete on submit
+		// failure). Without this, a passive slot that hits the
+		// queue-overload window stays anonymous until a gateway
+		// restart, even though later passive observations of the
+		// same address keep arriving.
+		if i.enrichmentIdentityProbeFn != nil {
+			i.enrichmentIdentityProbeFn(addr)
+		}
 		return
 	}
 

@@ -47,7 +47,21 @@ func (i *AddressTableInserter) SetEnrichmentRefreshFn(fn func()) {
 }
 
 func (i *AddressTableInserter) OnPassiveClassifiedEvent(event PassiveClassifiedEvent) {
-	if i == nil || !event.ACKCorrelation.CompleteRequest || event.ACKCorrelation.Correlator != PassiveACKCorrelatorM2A {
+	// P1 (post-Phase-C live validation 2026-05-08): only fully-
+	// completed M-T transactions create registry slots. Abandoned
+	// transactions in any phase — particularly phase-3 no_response
+	// abandons that retain a populated ACKCorrelation from the prior
+	// successful ACK observation — must NOT promote their src/dst
+	// into the registry. Live evidence: NETX3's identity-scan probes
+	// (e.g. 0xF1 → 0x07/0x04 → 0x24 ACKed but no response) were
+	// inserting phantom 0x24, 0x84, etc. as registry entries.
+	//
+	// This aligns with BusObservabilityStore.recordEvidenceFromEvent-
+	// Locked which already excludes AbandonedTransaction events.
+	if i == nil || event.Kind != PassiveClassifiedEventTransaction {
+		return
+	}
+	if !event.ACKCorrelation.CompleteRequest || event.ACKCorrelation.Correlator != PassiveACKCorrelatorM2A {
 		return
 	}
 	corr := event.ACKCorrelation

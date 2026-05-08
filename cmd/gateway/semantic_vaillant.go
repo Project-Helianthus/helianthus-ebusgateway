@@ -6825,6 +6825,18 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 	if addr == 0 || addr == 0xFE || addr == 0xAA {
 		return
 	}
+	// P5 round-8 (Codex P2 follow-up 2026-05-08): skip the gateway's
+	// own admitted source + companion. The existing
+	// discoverB524RootInRegistry candidate path explicitly drops
+	// these (skipReservedSourceCompanion); this probe path must
+	// honor the same protection so we don't emit identity traffic
+	// to our own admitted address (or its companion).
+	if addr == p.source {
+		return
+	}
+	if p.companion != 0 && addr == p.companion {
+		return
+	}
 	// P5 round-6 (Codex P2 follow-up 2026-05-08): resolve the input
 	// address to its responder/target byte before probing. Active
 	// identity reads (0x07/0x04 + B5.09 ScanID) must be addressed

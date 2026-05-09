@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"errors"
 	"testing"
 
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
@@ -51,12 +53,14 @@ func (r *getDeviceTrackingRegistry) LookupEntrySnapshot(byte) (registry.DeviceEn
 
 // TestGetDevice_UsesLookupEntrySnapshot proves the P9.1 contract:
 // getDevice calls LookupEntrySnapshot for identity fields and does
-// NOT use the live-pointer Lookup path.
+// NOT use the live-pointer Lookup path FOR IDENTITY FIELDS.
 //
 // NOTE: getDevice's buildDeviceInfoFromSnapshot helper still calls
-// reg.Lookup to fetch Planes (residual surface, P9.2+ follow-up).
-// This test asserts the PRIMARY identity-read path uses the snapshot
-// API by counting LookupEntrySnapshot vs Lookup calls.
+// reg.Lookup ONCE to fetch Planes (residual surface, P9.2+
+// follow-up). The assertion `lookupCalls <= 1` accommodates that
+// expected residual; tightening the assertion to `lookupCalls == 0`
+// would be a regression because the Plane fetch is the documented
+// behavior, not a leftover live-pointer identity read.
 func TestGetDevice_UsesLookupEntrySnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -104,6 +108,14 @@ func TestGetDevice_UsesLookupEntrySnapshot(t *testing.T) {
 
 // TestGetDevice_AbsentEntryReturnsError verifies the error path
 // (LookupEntrySnapshot returns false → ErrNoSuchDevice).
+//
+// Locks down two contracts:
+//   - The error wraps ebuserrors.ErrNoSuchDevice (operator-visible
+//     contract — MCP returns a specific error code for unknown
+//     addresses).
+//   - The live-pointer Lookup path is NEVER consulted on snapshot
+//     miss (P9.1 contract — no fallback that would reintroduce the
+//     race surface).
 func TestGetDevice_AbsentEntryReturnsError(t *testing.T) {
 	t.Parallel()
 
@@ -111,9 +123,15 @@ func TestGetDevice_AbsentEntryReturnsError(t *testing.T) {
 	server := &Server{registry: reg}
 	_, err := server.getDevice(map[string]any{"address": float64(0x42)}, nil)
 	if err == nil {
-		t.Error("getDevice for absent entry: err=nil; want ErrNoSuchDevice")
+		t.Fatal("getDevice for absent entry: err=nil; want ErrNoSuchDevice")
+	}
+	if !errors.Is(err, ebuserrors.ErrNoSuchDevice) {
+		t.Errorf("err = %v; want errors.Is(err, ErrNoSuchDevice)", err)
 	}
 	if reg.lookupSnapshotCalls != 1 {
 		t.Errorf("LookupEntrySnapshot called %d times; want 1", reg.lookupSnapshotCalls)
+	}
+	if reg.lookupCalls != 0 {
+		t.Errorf("Lookup called %d times; want 0 (P9.1 contract: snapshot miss must NOT fall back to live Lookup)", reg.lookupCalls)
 	}
 }

@@ -1,7 +1,7 @@
 github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260507140006-4dfa4a22cec3 h1:U90kuV7LhIkiwnD1iZFGV29Vpd87S119DXDcso4cCp8=
 github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260507140006-4dfa4a22cec3/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
-github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260509165653-c3bef59ee848 h1:si6UKr2oUahl2vLxwsV2DsWRcR9v5gw/V9FYglwR+as=
-github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260509165653-c3bef59ee848/go.mod h1:MhgS/S+s+EJ4+8c9KXom+pAXLTRYcjLI8qVSVCvsQu4=
+github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260509181158-2a12133252d1 h1:hB2AH1usRux5lBCSiYugfrt5XGmJxCkPfbwnD+QF81M=
+github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260509181158-2a12133252d1/go.mod h1:MhgS/S+s+EJ4+8c9KXom+pAXLTRYcjLI8qVSVCvsQu4=
 github.com/cenkalti/backoff v2.2.1+incompatible h1:tNowT99t7UNflLxfYYSlKYsBpXdEet03Pg2g16Swow4=
 github.com/cenkalti/backoff v2.2.1+incompatible/go.mod h1:90ReRw6GdpyfrHakVjL/QHaoyV4aDUVVkXQJJJ3NXXM=
 github.com/gorilla/websocket v1.5.1 h1:gmztn0JnHVt9JZquRuzLw3g4wouNVzKL15iLr/zn/QY=

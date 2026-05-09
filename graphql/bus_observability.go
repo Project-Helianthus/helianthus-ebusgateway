@@ -1307,39 +1307,42 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 			// per-reason recoveries array) is surfaced via MCP/JSON
 			// only; here we expose just the two scalar counters so
 			// dashboard queries can pull them from GraphQL without
-			// designing a nested type.
+			// designing a nested type. Exposed as String! per the
+			// existing BusObservabilityCounters convention (graphql-go
+			// Int is 32-bit; uint64 totals overflow it for sustained
+			// high-rate counters).
 			"reconstructorPrefixResyncSkippedTotal": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					if summary, ok := params.Source.(*BusSummary); ok && summary != nil {
 						if summary.Reconstructor != nil {
-							return int(summary.Reconstructor.PrefixResyncSkippedTotal), nil
+							return strconv.FormatUint(summary.Reconstructor.PrefixResyncSkippedTotal, 10), nil
 						}
-						return 0, nil
+						return "0", nil
 					}
 					if value, ok := params.Source.(BusSummary); ok {
 						if value.Reconstructor != nil {
-							return int(value.Reconstructor.PrefixResyncSkippedTotal), nil
+							return strconv.FormatUint(value.Reconstructor.PrefixResyncSkippedTotal, 10), nil
 						}
 					}
-					return 0, nil
+					return "0", nil
 				},
 			},
 			"reconstructorInvalidSrcClassSkippedTotal": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					if summary, ok := params.Source.(*BusSummary); ok && summary != nil {
 						if summary.Reconstructor != nil {
-							return int(summary.Reconstructor.InvalidSrcClassSkippedTotal), nil
+							return strconv.FormatUint(summary.Reconstructor.InvalidSrcClassSkippedTotal, 10), nil
 						}
-						return 0, nil
+						return "0", nil
 					}
 					if value, ok := params.Source.(BusSummary); ok {
 						if value.Reconstructor != nil {
-							return int(value.Reconstructor.InvalidSrcClassSkippedTotal), nil
+							return strconv.FormatUint(value.Reconstructor.InvalidSrcClassSkippedTotal, 10), nil
 						}
 					}
-					return 0, nil
+					return "0", nil
 				},
 			},
 		},

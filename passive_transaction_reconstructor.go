@@ -674,7 +674,18 @@ func (reconstructor *PassiveTransactionReconstructor) dispatchParsedRequestLocke
 		reset = reconstructor.resetStateLockedAfterSyn
 	}
 
+	// FrameTypeUnknown: abandon before mutating any frame state so
+	// the abandon event observes an EMPTY state.request and an
+	// untouched state.timing.RequestEnd / lastProgressAt — matches
+	// the pre-refactor SYN path AND pre-refactor LEN path observable
+	// behavior (Codex P7 review pass 2 FINDING_1).
 	frameType := frame.Type()
+	if frameType == protocol.FrameTypeUnknown {
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedTarget, observedAt, ebuserrors.ErrInvalidPayload))
+		reset()
+		return events
+	}
+
 	reconstructor.state.timing.RequestEnd = observedAt
 	reconstructor.state.lastProgressAt = observedAt
 	reconstructor.state.request = frame
@@ -699,6 +710,11 @@ func (reconstructor *PassiveTransactionReconstructor) dispatchParsedRequestLocke
 	case protocol.FrameTypeInitiatorInitiator, protocol.FrameTypeInitiatorTarget:
 		reconstructor.state.phase = passivePhaseWaitACK
 	default:
+		// protocol.FrameType enum has only Unknown / M2I / M2T /
+		// Broadcast today; this branch is defensive against future
+		// enum extensions. State has already been populated above
+		// (matches the pre-refactor SYN-path default branch which
+		// also wrote state.request before abandon).
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedTarget, observedAt, ebuserrors.ErrInvalidPayload))
 		reset()
 	}

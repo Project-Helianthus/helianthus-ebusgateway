@@ -75,6 +75,13 @@ type BusObservabilityStore struct {
 	frames     map[frameSeriesKey]uint64
 	errors     map[errorSeriesKey]uint64
 	frameBytes map[frameBytesSeriesKey]uint64
+	// echoMismatchSubclasses is a P10-added parallel counter
+	// breaking down `class=echo_mismatch` events by subclass label.
+	// Stored separately from `errors` so that the existing
+	// `ebus_errors_total` time series shapes are unchanged
+	// (preserves alert backward-compat). Surfaced as the new
+	// `ebus_active_echo_mismatch_subclass_total` Prometheus metric.
+	echoMismatchSubclasses map[echoMismatchSubclassKey]uint64
 
 	recent      []BusMessageRecord
 	recentStart int
@@ -270,6 +277,18 @@ type errorSeriesKey struct {
 	Phase string
 }
 
+// echoMismatchSubclassKey is the storage key for the parallel
+// echo_mismatch subclass counter (P10). Tracked SEPARATELY from
+// errorSeriesKey to preserve backward-compat for existing alerts
+// that filter on `ebus_errors_total{class="echo_mismatch"}` without
+// grouping by subclass. Splitting the existing series via a new
+// label would silently break total-count alerts because Prometheus
+// `rate(...)>N` evaluates per-time-series, not aggregate (Codex P10
+// review pass 1 MAJOR FINDING_1).
+type echoMismatchSubclassKey struct {
+	Subclass string
+}
+
 type frameBytesSeriesKey struct {
 	Scope     string
 	Family    string
@@ -379,20 +398,21 @@ func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 	cfg = applyDefaults(cfg)
 	now := time.Now()
 	store := &BusObservabilityStore{
-		cfg:                   cfg,
-		now:                   time.Now,
-		transportClass:        string(canonicalTransportProtocol(cfg.TransportConfig.Protocol)),
-		activeTimingQuality:   timingQualityForActive(cfg),
-		passiveTimingQuality:  timingQualityForPassive(cfg),
-		lastUpdatedAt:         now,
-		featureFlagsUpdatedAt: now,
-		frames:                make(map[frameSeriesKey]uint64),
-		errors:                make(map[errorSeriesKey]uint64),
-		frameBytes:            make(map[frameBytesSeriesKey]uint64),
-		recent:                make([]BusMessageRecord, cfg.ObserveFirstRecentMessageCapacity),
-		addressBuckets:        make(map[byte]string),
-		specimens:             make(map[string]*specimenFamilyBucket),
-		periodicity:           make(map[periodicityKey]*BusPeriodicityEntry),
+		cfg:                    cfg,
+		now:                    time.Now,
+		transportClass:         string(canonicalTransportProtocol(cfg.TransportConfig.Protocol)),
+		activeTimingQuality:    timingQualityForActive(cfg),
+		passiveTimingQuality:   timingQualityForPassive(cfg),
+		lastUpdatedAt:          now,
+		featureFlagsUpdatedAt:  now,
+		frames:                 make(map[frameSeriesKey]uint64),
+		errors:                 make(map[errorSeriesKey]uint64),
+		frameBytes:             make(map[frameBytesSeriesKey]uint64),
+		echoMismatchSubclasses: make(map[echoMismatchSubclassKey]uint64),
+		recent:                 make([]BusMessageRecord, cfg.ObserveFirstRecentMessageCapacity),
+		addressBuckets:         make(map[byte]string),
+		specimens:              make(map[string]*specimenFamilyBucket),
+		periodicity:            make(map[periodicityKey]*BusPeriodicityEntry),
 		watchEfficiency: watchEfficiencyRuntime{
 			buckets:   make(map[watchEfficiencyBucketKey]*watchEfficiencyBucketRuntime),
 			ambiguous: make(map[watchEfficiencyAmbiguousKey]uint64),
@@ -979,6 +999,7 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 
 	frames := cloneFramesMap(store.frames)
 	errors := cloneErrorsMap(store.errors)
+	echoMismatchSubclasses := cloneEchoMismatchSubclassesMap(store.echoMismatchSubclasses)
 	frameBytes := cloneFrameBytesMap(store.frameBytes)
 	recentLen := store.recentLen
 	totalBusy := store.totalBusy
@@ -1069,6 +1090,18 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 			"scope", item.Key.Scope,
 			"class", item.Key.Class,
 			"phase", item.Key.Phase,
+		))
+	}
+
+	// P10 — parallel echo_mismatch subclass breakdown. Separate
+	// metric (not a label dimension on ebus_errors_total) so that
+	// existing alerts filtering on class=echo_mismatch keep working
+	// without per-series fan-out.
+	writer.writeHelp("ebus_active_echo_mismatch_subclass_total", "Active-scope echo_mismatch event count broken down by inferred subclass: pre_echo_syn (mux suppression canary; should be 0), post_grant_collision_initiator (third-party initiator's SOF on the wire), post_grant_collision_target (third-party mid-frame target/broadcast byte), post_grant_ack (stale 0x00 from previous txn buffer), post_grant_nack (stale 0xFF), post_grant_reserved (mid-escape sequence), bit_flip (fallback; EMI/wire corruption).")
+	writer.writeType("ebus_active_echo_mismatch_subclass_total", "counter")
+	for _, item := range sortedEchoMismatchSubclassSeries(echoMismatchSubclasses) {
+		writer.writeCounterSample("ebus_active_echo_mismatch_subclass_total", float64(item.Value), labelMap(
+			"subclass", item.Key.Subclass,
 		))
 	}
 
@@ -1409,6 +1442,14 @@ func (store *BusObservabilityStore) recordActiveErrorLocked(event protocol.BusEv
 		Class: class,
 		Phase: phase,
 	})
+	if event.Kind == protocol.BusEventEchoMismatch {
+		// P10 — parallel echo_mismatch subclass counter for operator
+		// observability. Stored in a separate map so the existing
+		// `ebus_errors_total{class="echo_mismatch"}` time series is
+		// not split (Codex P10 review pass 1 MAJOR FINDING_1).
+		subclass := classifyEchoMismatchSubclass(event.Byte)
+		store.echoMismatchSubclasses[echoMismatchSubclassKey{Subclass: subclass}]++
+	}
 	if !event.HasRequest {
 		return
 	}
@@ -2076,6 +2117,71 @@ func classifyActiveError(event protocol.BusEvent) (string, string) {
 	}
 }
 
+// classifyEchoMismatchSubclass returns a sub-type label for an
+// echo_mismatch event based on the byte that was read in place of
+// the expected echo. P10 (operator-directed) — the residual
+// echo_mismatch counter (300+ events post-P7.1) hides several
+// distinct phenomena that should be tracked separately for
+// operator clarity:
+//
+//   - "pre_echo_syn" — read 0xAA before any echo. Should have been
+//     suppressed by the mux's pre-echo-SYN gate at internal/
+//     adaptermux/mux.go:1118-1133. If this counter is non-zero the
+//     suppression is leaking; useful canary.
+//
+//   - "post_grant_collision_initiator" — read a initiator-class byte
+//     (initiator address per AddressClassOf). The wire was carrying
+//     a third-party initiator's source byte at the moment our TX
+//     reached the wire. Real bus collision after the adapter's
+//     STARTED but before the wire confirmed idle.
+//
+//   - "post_grant_collision_target" — read a target-class byte
+//     (the wire was carrying a third-party transaction's target
+//     byte; we tried to TX during another initiator's mid-frame
+//     write).
+//
+//   - "post_grant_ack" — read 0x00. Stale ACK byte from a previous
+//     transaction's tail still in the adapter buffer when we TX'd.
+//
+//   - "post_grant_nack" — read 0xFF. Stale NACK byte (rare).
+//
+//   - "post_grant_reserved" — read 0xA9 (escape). The wire was
+//     carrying an escape sequence header from another transaction.
+//
+//   - "bit_flip" — fallback. The byte doesn't match any known
+//     pattern; likely EMI / wire corruption / single-bit flip.
+//     Not fixable in software.
+//
+// Operator framing (2026-05-09): "After P7.1 passive errors dropped
+// dramatically. Apart from CRC + collisions, we shouldn't see much
+// else." The subclass labels surface which echo_mismatch events are
+// real collisions (most of the 300) vs. wire-noise residuals.
+func classifyEchoMismatchSubclass(readByte byte) string {
+	switch readByte {
+	case protocol.SymbolSyn:
+		return "pre_echo_syn"
+	case protocol.SymbolEscape:
+		return "post_grant_reserved"
+	case protocol.SymbolAck:
+		return "post_grant_ack"
+	case protocol.SymbolNack:
+		return "post_grant_nack"
+	}
+	switch protocol.AddressClassOf(readByte) {
+	case protocol.AddressClassMaster:
+		return "post_grant_collision_initiator"
+	case protocol.AddressClassSlave:
+		return "post_grant_collision_target"
+	case protocol.AddressClassBroadcast:
+		// Broadcast is destined for all; reading one in echo
+		// position means another initiator was emitting a broadcast
+		// frame during our TX. Same class as the target case
+		// (someone else was on the wire mid-frame).
+		return "post_grant_collision_target"
+	}
+	return "bit_flip"
+}
+
 func classifyPassiveAbandon(reason PassiveAbandonReason) (string, string) {
 	switch reason {
 	case PassiveAbandonReasonNACK:
@@ -2471,6 +2577,40 @@ func sortedErrorSeries(input map[errorSeriesKey]uint64) []errorSeriesItem {
 			return items[i].Key.Class < items[j].Key.Class
 		}
 		return items[i].Key.Phase < items[j].Key.Phase
+	})
+	return items
+}
+
+// cloneEchoMismatchSubclassesMap returns a copy of the
+// echoMismatchSubclasses map (P10 — parallel echo_mismatch
+// subclass counter). Used by RenderPrometheus to take a stable
+// snapshot under the store mutex.
+func cloneEchoMismatchSubclassesMap(input map[echoMismatchSubclassKey]uint64) map[echoMismatchSubclassKey]uint64 {
+	output := make(map[echoMismatchSubclassKey]uint64, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
+}
+
+// echoMismatchSubclassSeriesItem pairs a subclass key with its
+// counter value for deterministic sorted iteration.
+type echoMismatchSubclassSeriesItem struct {
+	Key   echoMismatchSubclassKey
+	Value uint64
+}
+
+// sortedEchoMismatchSubclassSeries returns the subclass series
+// items sorted by Subclass label for deterministic Prometheus
+// output (operator-friendly: alphabetic order is stable across
+// scrapes).
+func sortedEchoMismatchSubclassSeries(input map[echoMismatchSubclassKey]uint64) []echoMismatchSubclassSeriesItem {
+	items := make([]echoMismatchSubclassSeriesItem, 0, len(input))
+	for key, value := range input {
+		items = append(items, echoMismatchSubclassSeriesItem{Key: key, Value: value})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Key.Subclass < items[j].Key.Subclass
 	})
 	return items
 }

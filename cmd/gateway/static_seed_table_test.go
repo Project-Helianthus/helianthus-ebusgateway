@@ -269,6 +269,107 @@ func TestApplyStaticSeedTable_MCPDeviceListProjection_SnapshotMode(t *testing.T)
 	}
 }
 
+// TestApplyStaticSeedTable_MCPDeviceGetProjectsQueriedAddressSlot
+// covers Codex P3.5 review pass 3 thread 3: when a merged DeviceEntry
+// has aliases at different DiscoverySource levels (e.g. NETX3's three
+// faces — 0xF1, 0xF6, 0x04 — share a Manufacturer+DeviceID and
+// identity-merge into one entry), `ebus.v1.registry.devices.get`
+// MUST project the QUERIED address's slot state, not the primary's.
+//
+// Setup: run applyStaticSeedTable (all NETX3 faces stamp at
+// static_seed/candidate), then re-Register 0xF1 as ActiveConfirmed
+// to advance JUST that face. Now query devices.get(address=0x04) and
+// devices.get(address=0xF1):
+//   - 0x04 must report static_seed/candidate (the static-seeded
+//     broadcast face).
+//   - 0xF1 must report active_confirmed/identity_confirmed.
+//
+// Without the per-queried-address projection, both queries would
+// return the SAME labels (whatever the primary's slot says), which
+// is wrong for either 0x04 or 0xF1 depending on which is primary.
+func TestApplyStaticSeedTable_MCPDeviceGetProjectsQueriedAddressSlot(t *testing.T) {
+	reg := registry.NewDeviceRegistry(nil)
+	applyStaticSeedTable(reg)
+	// Advance just 0xF1 to ActiveConfirmed via Register.
+	reg.Register(registry.DeviceInfo{
+		Address:      0xF1,
+		Manufacturer: "Vaillant",
+		DeviceID:     "NETX3",
+		SerialNumber: "SN-F1-active",
+	})
+
+	server, err := mcp.NewServer(reg, noopMCPInvoker{})
+	if err != nil {
+		t.Fatalf("mcp.NewServer error = %v", err)
+	}
+	server.SetAdmittedRPCSource(0x7F)
+	httpSrv := httptest.NewServer(server.Handler())
+	defer httpSrv.Close()
+
+	queryAddress := func(addr int) (string, string) {
+		t.Helper()
+		body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus.v1.registry.devices.get","arguments":{"address":` + intToHexJSON(addr) + `}}}`)
+		resp, err := http.Post(httpSrv.URL, "application/json", body)
+		if err != nil {
+			t.Fatalf("devices.get(0x%02X) POST error = %v", addr, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		var rpcResp struct {
+			Result struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+				IsError bool `json:"isError"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+			t.Fatalf("devices.get(0x%02X) decode = %v", addr, err)
+		}
+		if rpcResp.Result.IsError {
+			t.Fatalf("devices.get(0x%02X) isError; body=%q", addr, rpcResp.Result.Content[0].Text)
+		}
+		var envelope struct {
+			Data struct {
+				DiscoverySource   string `json:"discovery_source"`
+				VerificationState string `json:"verification_state"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(rpcResp.Result.Content[0].Text), &envelope); err != nil {
+			t.Fatalf("devices.get(0x%02X) envelope decode = %v", addr, err)
+		}
+		return envelope.Data.DiscoverySource, envelope.Data.VerificationState
+	}
+
+	// 0x04 must stay at static_seed/candidate — it was only ever seeded.
+	if got, gotV := queryAddress(0x04); got != "static_seed" || gotV != "candidate" {
+		t.Errorf("devices.get(0x04) discovery=%q, verification=%q; want static_seed, candidate", got, gotV)
+	}
+	// 0xF1 must reflect the ActiveConfirmed advance — not the
+	// primary's stamping.
+	if got, gotV := queryAddress(0xF1); got != "active_confirmed" || gotV != "identity_confirmed" {
+		t.Errorf("devices.get(0xF1) discovery=%q, verification=%q; want active_confirmed, identity_confirmed", got, gotV)
+	}
+}
+
+// intToHexJSON helper renders a hex int literal that the MCP address
+// parser accepts (it accepts both "0xNN" strings and decimal numbers;
+// here we use the decimal form to keep the JSON simple).
+func intToHexJSON(addr int) string {
+	switch addr {
+	case 0xF1:
+		return "241"
+	case 0xF6:
+		return "246"
+	case 0x04:
+		return "4"
+	case 0x15:
+		return "21"
+	case 0xEC:
+		return "236"
+	}
+	return "0"
+}
+
 // TestApplyStaticSeedTable_RoleMapping asserts the gateway-side
 // role-string → registry.SlotRole mapping. Roles in
 // productids.SeedAddressEntry are free-form strings; we map at this

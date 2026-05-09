@@ -2551,7 +2551,9 @@ func (s *Server) listDevices(snapshot *snapshotState) []deviceInfo {
 	}
 	out := make([]deviceInfo, 0)
 	s.registry.Iterate(func(entry registry.DeviceEntry) bool {
-		out = append(out, buildDeviceInfo(entry, s.registry))
+		// list view: project the primary address's slot state.
+		// Per-alias detail is reachable via devices.get(address=alias).
+		out = append(out, buildDeviceInfo(entry, s.registry, entry.PrimaryDisplayAddress()))
 		return true
 	})
 	sort.Slice(out, func(i, j int) bool {
@@ -2582,7 +2584,12 @@ func (s *Server) getDevice(args map[string]any, snapshot *snapshotState) (device
 	if !ok {
 		return deviceInfo{}, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
 	}
-	return buildDeviceInfo(entry, s.registry), nil
+	// devices.get(address=X): project the QUERIED address's slot state
+	// (Codex P3.5 review pass 3 thread 3). For merged entries with
+	// aliases at different DiscoverySource levels, the operator gets
+	// the slot they asked about — not the primary's potentially-
+	// different label.
+	return buildDeviceInfo(entry, s.registry, address), nil
 }
 
 func (s *Server) listPlanes(args map[string]any, snapshot *snapshotState) ([]planeInfo, error) {
@@ -3562,8 +3569,28 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 	return series
 }
 
-func buildDeviceInfo(entry registry.DeviceEntry, reg Registry) deviceInfo {
+// buildDeviceInfo materialises the JSON view of a device entry.
+//
+// preferredAddr selects which AddressSlot is consulted for the
+// top-level discovery_source/verification_state projection. For
+// `ebus.v1.registry.devices.get(address=X)` the caller MUST pass the
+// queried address X so operators querying a specific alias see THAT
+// alias's slot state — not the primary's. This matters when a merged
+// DeviceEntry has aliases at different DiscoverySource levels (e.g.
+// NETX3's 0x04 broadcast face stays at static_seed/candidate while
+// 0xF1 advances to active_confirmed/identity_confirmed via active
+// scan). For `devices.list` callers pass the primary address so the
+// list view reflects the entry-level "best known" provenance; the
+// per-alias state for each address remains queryable via
+// `devices.get(address=alias)`.
+//
+// preferredAddr=0 is treated as "use the primary"; this keeps existing
+// internal callers that do not need per-alias precision working.
+func buildDeviceInfo(entry registry.DeviceEntry, reg Registry, preferredAddr byte) deviceInfo {
 	primary := entry.PrimaryDisplayAddress()
+	if preferredAddr == 0 {
+		preferredAddr = primary
+	}
 	all := entry.Addresses()
 	// Surface the complete address set (primary + aliases) to match the
 	// GraphQL `addresses` semantics in graphql/schema.go. Snapshot
@@ -3579,7 +3606,7 @@ func buildDeviceInfo(entry registry.DeviceEntry, reg Registry) deviceInfo {
 	} else {
 		aliases = []int{int(primary)}
 	}
-	discovery, verification := lookupDiscoveryLabels(reg, primary)
+	discovery, verification := lookupDiscoveryLabels(reg, preferredAddr)
 	return deviceInfo{
 		Address:           int(primary),
 		Addresses:         aliases,

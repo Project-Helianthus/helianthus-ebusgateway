@@ -4344,27 +4344,31 @@ func preserveExistingRegistryMetadata(reg *registry.DeviceRegistry, info registr
 	if reg == nil {
 		return info
 	}
-	reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil || entry.PrimaryDisplayAddress() != info.Address {
+	// P9.3 — race-free identity-field reads via IterateSnapshots. The
+	// previous Iterate path read entry.Manufacturer / DeviceID /
+	// SerialNumber / etc. lock-free outside the registry RLock; under
+	// concurrent Register writes those string reads could tear.
+	reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if snap.PrimaryAddress != info.Address {
 			return true
 		}
 		if info.Manufacturer == "" {
-			info.Manufacturer = entry.Manufacturer()
+			info.Manufacturer = snap.Manufacturer
 		}
 		if info.DeviceID == "" {
-			info.DeviceID = entry.DeviceID()
+			info.DeviceID = snap.DeviceID
 		}
 		if info.SerialNumber == "" {
-			info.SerialNumber = entry.SerialNumber()
+			info.SerialNumber = snap.SerialNumber
 		}
 		if info.MacAddress == "" {
-			info.MacAddress = entry.MacAddress()
+			info.MacAddress = snap.MacAddress
 		}
 		if info.SoftwareVersion == "" {
-			info.SoftwareVersion = entry.SoftwareVersion()
+			info.SoftwareVersion = snap.SoftwareVersion
 		}
 		if info.HardwareVersion == "" {
-			info.HardwareVersion = entry.HardwareVersion()
+			info.HardwareVersion = snap.HardwareVersion
 		}
 		return false
 	})
@@ -4375,12 +4379,10 @@ func (p *vaillantSemanticPoller) hasFM5RegistryEvidence() bool {
 	if p == nil || p.reg == nil {
 		return false
 	}
+	// P9.3 — race-free DeviceID read via snapshot.
 	found := false
-	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil {
-			return true
-		}
-		deviceID := normalizeDeviceID(entry.DeviceID())
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		deviceID := normalizeDeviceID(snap.DeviceID)
 		if strings.HasPrefix(deviceID, "VR71") || strings.HasPrefix(deviceID, "FM5") {
 			found = true
 			return false
@@ -5199,12 +5201,15 @@ func (p *vaillantSemanticPoller) findBoilerAddress() byte {
 	// TargetAddressForRouting prefers AddressByRole(SlotRoleSlave)
 	// and falls back to PrimaryDisplayAddress when no target-role
 	// face exists.
+	// P9.3 — race-free boiler-candidate enumeration via
+	// IterateSnapshots + isBoilerDeviceSnapshotCandidate +
+	// SnapshotTargetAddressForRouting.
 	selected := byte(0)
-	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil || !isBoilerDeviceCandidate(entry) {
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if !isBoilerDeviceSnapshotCandidate(snap) {
 			return true
 		}
-		addr := ebusgateway.TargetAddressForRouting(entry)
+		addr := ebusgateway.SnapshotTargetAddressForRouting(snap)
 		if addr == 0x08 {
 			selected = addr
 			return false
@@ -5217,16 +5222,14 @@ func (p *vaillantSemanticPoller) findBoilerAddress() byte {
 	return selected
 }
 
-func isBoilerDeviceCandidate(entry registry.DeviceEntry) bool {
-	if entry == nil {
-		return false
-	}
-	normalizedID := normalizeDeviceID(entry.DeviceID())
+// isBoilerDeviceSnapshotCandidate is the snapshot-based counterpart of
+// isBoilerDeviceCandidate (P9.3). Reads the snapshot's DeviceID
+// (race-free) and applies the same prefix-based BAI/BMU classification.
+func isBoilerDeviceSnapshotCandidate(snap registry.DeviceEntrySnapshot) bool {
+	normalizedID := normalizeDeviceID(snap.DeviceID)
 	if strings.HasPrefix(normalizedID, "BAI") {
 		return true
 	}
-	// Best-effort fallback for boiler-family boards when the product-family byte
-	// is not directly exposed by the registry contract.
 	return strings.HasPrefix(normalizedID, "BMU")
 }
 
@@ -5248,18 +5251,16 @@ func (p *vaillantSemanticPoller) findRegulatorCapability() productids.Controller
 		return productids.ControllerUnknown
 	}
 
+	// P9.3 — race-free Manufacturer/SerialNumber reads via snapshot.
 	foundPresent := false
 	hasUnknown := false
 	hasAnyDevice := false
-	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil {
-			return true
-		}
-		if !strings.EqualFold(entry.Manufacturer(), "Vaillant") {
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if !strings.EqualFold(snap.Manufacturer, "Vaillant") {
 			return true
 		}
 		hasAnyDevice = true
-		partNumber := extractPartNumberFromSerial(entry.SerialNumber())
+		partNumber := extractPartNumberFromSerial(snap.SerialNumber)
 		cap := p.catalog.ControllerCapability(partNumber)
 		switch cap {
 		case productids.ControllerPresent:

@@ -45,16 +45,17 @@ func TestATRInserter_P82_ConcurrentLookupAndInsertRaceFree(t *testing.T) {
 	var slotWrites uint64
 	stop := make(chan struct{})
 
-	var wg sync.WaitGroup
+	var writerWg sync.WaitGroup
+	var readerWg sync.WaitGroup
 
 	// Writer goroutine: directly hammer t.slots under slotsMu Lock,
 	// using a rotating pool of addresses. Each iteration is a real
 	// map mutation (not gated by the inserter's existence-check
 	// short-circuit), so the slotWrites counter accurately reflects
 	// the number of map assignments.
-	wg.Add(1)
+	writerWg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer writerWg.Done()
 		i := 0
 		for {
 			select {
@@ -77,12 +78,13 @@ func TestATRInserter_P82_ConcurrentLookupAndInsertRaceFree(t *testing.T) {
 	}()
 
 	// Start barrier — wait for at least one slot write before
-	// kicking the readers.
+	// kicking the readers (proves the writer is producing real map
+	// mutations before reads begin).
 	deadline := time.Now().Add(2 * time.Second)
 	for atomic.LoadUint64(&slotWrites) == 0 {
 		if time.Now().After(deadline) {
 			close(stop)
-			wg.Wait()
+			writerWg.Wait()
 			t.Fatal("writer goroutine produced no slot writes within 2s — start barrier exceeded")
 		}
 		time.Sleep(time.Microsecond)
@@ -90,12 +92,16 @@ func TestATRInserter_P82_ConcurrentLookupAndInsertRaceFree(t *testing.T) {
 
 	startWrites := atomic.LoadUint64(&slotWrites)
 
-	// 4 reader goroutines hammering Lookup.
+	// 4 reader goroutines hammering Lookup. Tracked in a separate
+	// WaitGroup so we can join them BEFORE stopping the writer —
+	// Codex P8.2 pass 2 MINOR: closing stop immediately after
+	// spawning readers would let the writer exit before the readers
+	// actually execute map reads, defeating the overlap test.
 	const numReaders = 4
 	for r := 0; r < numReaders; r++ {
-		wg.Add(1)
+		readerWg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer readerWg.Done()
 			for j := 0; j < 1000; j++ {
 				addr := byte(0x10 + (j % writeAddrPool))
 				if slot, ok := table.Lookup(addr); ok && slot != nil {
@@ -107,17 +113,23 @@ func TestATRInserter_P82_ConcurrentLookupAndInsertRaceFree(t *testing.T) {
 		}()
 	}
 
-	// Stop the writer; wg.Wait joins everyone.
-	close(stop)
-	wg.Wait()
-
-	// End-of-phase assertion: at least some writer iterations ran
-	// during the reader phase. The threshold is intentionally low —
-	// the test goal is the race detector exercising any overlap, and
-	// goroutine scheduling can starve the writer when readers
-	// dominate the runqueue. A non-zero advance proves overlap; the
-	// race detector is the authoritative correctness gate.
+	// Wait for readers FIRST — writer keeps producing map writes
+	// throughout the reader phase, ensuring real overlap.
+	readerWg.Wait()
+	// End-of-phase write counter sample: must have advanced during
+	// the reader phase (proves the writer kept producing map
+	// mutations while readers ran, not just before they spawned).
 	endWrites := atomic.LoadUint64(&slotWrites)
+
+	// Now stop the writer.
+	close(stop)
+	writerWg.Wait()
+
+	// The threshold is intentionally low — goroutine scheduling can
+	// starve the writer when readers dominate the runqueue, but the
+	// reader-then-writer join order ensures the writer was running
+	// for the full reader phase. A non-zero advance proves overlap;
+	// the race detector is the authoritative correctness gate.
 	if endWrites-startWrites < 1 {
 		t.Errorf("writer produced 0 slot writes during reader phase; want >= 1 (race window not exercised)")
 	}
@@ -136,10 +148,12 @@ func TestATRInserter_P82_ConcurrentLookupAndInserterEndToEnd(t *testing.T) {
 	stop := make(chan struct{})
 	var inserterCalls uint64
 
-	var wg sync.WaitGroup
-	wg.Add(1)
+	var writerWg sync.WaitGroup
+	var readerWg sync.WaitGroup
+
+	writerWg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer writerWg.Done()
 		i := 0
 		for {
 			select {
@@ -166,7 +180,7 @@ func TestATRInserter_P82_ConcurrentLookupAndInserterEndToEnd(t *testing.T) {
 	for atomic.LoadUint64(&inserterCalls) == 0 {
 		if time.Now().After(deadline) {
 			close(stop)
-			wg.Wait()
+			writerWg.Wait()
 			t.Fatal("inserter goroutine made no calls within 2s")
 		}
 		time.Sleep(time.Microsecond)
@@ -174,9 +188,9 @@ func TestATRInserter_P82_ConcurrentLookupAndInserterEndToEnd(t *testing.T) {
 
 	const numReaders = 4
 	for r := 0; r < numReaders; r++ {
-		wg.Add(1)
+		readerWg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer readerWg.Done()
 			for j := 0; j < 500; j++ {
 				addr := byte(0x10 + byte(j%240))
 				_, _ = table.Lookup(addr)
@@ -184,8 +198,12 @@ func TestATRInserter_P82_ConcurrentLookupAndInserterEndToEnd(t *testing.T) {
 		}()
 	}
 
+	// Codex P8.2 pass 2 MINOR — wait for readers to complete BEFORE
+	// stopping the writer. Closing stop too early would let the
+	// writer exit before the reader phase actually runs.
+	readerWg.Wait()
 	close(stop)
-	wg.Wait()
+	writerWg.Wait()
 }
 
 // TestATRInserter_P82_LookupAfterInsertSeesUpdatedMap is a sanity

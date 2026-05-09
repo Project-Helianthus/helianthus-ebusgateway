@@ -1110,7 +1110,16 @@ func frameBytes(frame protocol.Frame) []byte {
 }
 
 func proxyObserverTransactionBytes(request protocol.Frame, responseData []byte) []byte {
-	payload := append([]byte{}, frameBytes(request)...)
+	// Real eBUS wire always emits at least one SymbolSyn between
+	// frames (bus-idle marker). The original fixture omitted the
+	// leading SYN because the pre-P6 reconstructor accepted any
+	// non-SYN byte as a frame source unconditionally. P6 Layer 1
+	// (inter-frame SYN gate) requires the SYN before accepting a new
+	// frame's source byte, so we now prepend one to mirror real
+	// wire conditions. Bus-tap-only tests are unaffected (they
+	// assert on byte-forwarding behavior, not framing semantics).
+	payload := []byte{protocol.SymbolSyn}
+	payload = append(payload, frameBytes(request)...)
 	payload = append(payload, protocol.SymbolAck)
 	payload = append(payload, responseSegmentBytes(responseData)...)
 	payload = append(payload, protocol.SymbolAck, protocol.SymbolSyn)

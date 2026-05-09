@@ -304,7 +304,32 @@ func TestReconstructorSelfEchoNotTriggeredWithoutSnapshotter(t *testing.T) {
 	}
 }
 
+// feedPassiveSymbols is the standard test helper. After P6 (inter-frame
+// SYN gate), every legitimate frame on the wire is preceded by at least
+// one SymbolSyn — startup-from-cold injection of a non-SYN byte would
+// be dropped by Layer 1. To preserve backwards compatibility with the
+// existing golden tests (which assume the parser starts ready to
+// classify), this helper auto-prepends SymbolSyn whenever the first
+// symbol is not already SYN. Tests that intentionally need to inject
+// pre-SYN bytes (e.g. the Layer 1 startup-requires-SYN coverage) MUST
+// use feedPassiveSymbolsRaw, which does NOT auto-prepend — see Codex
+// P6 Pass 4 MINOR FINDING_5.
 func feedPassiveSymbols(reconstructor *PassiveTransactionReconstructor, start time.Time, symbols []byte) {
+	if len(symbols) == 0 || symbols[0] == protocol.SymbolSyn {
+		feedPassiveSymbolsRaw(reconstructor, start, symbols)
+		return
+	}
+	prepended := make([]byte, 0, len(symbols)+1)
+	prepended = append(prepended, protocol.SymbolSyn)
+	prepended = append(prepended, symbols...)
+	feedPassiveSymbolsRaw(reconstructor, start, prepended)
+}
+
+// feedPassiveSymbolsRaw is the lower-level injection helper. It does
+// NOT auto-prepend SymbolSyn. Use it whenever a test needs to assert
+// behavior on bytes that arrive BEFORE the first observed SYN
+// (startup-from-cold, post-discontinuity, etc.).
+func feedPassiveSymbolsRaw(reconstructor *PassiveTransactionReconstructor, start time.Time, symbols []byte) {
 	for index, symbol := range symbols {
 		reconstructor.OnPassiveTapEvent(PassiveTapEvent{
 			Kind:       PassiveTapEventSymbol,

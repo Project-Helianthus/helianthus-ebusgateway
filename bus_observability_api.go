@@ -146,6 +146,18 @@ type BusReconstructorRecovery struct {
 
 type BusReconstructorAggregate struct {
 	Recoveries []BusReconstructorRecovery `json:"recoveries"`
+	// PrefixResyncSkippedTotal — bytes dropped because the parser had
+	// not observed a SymbolSyn since the previous frame boundary
+	// (P6 Layer 1 inter-frame SYN gate). Operator canary for
+	// continuation-byte injection / startup resync.
+	PrefixResyncSkippedTotal uint64 `json:"prefix_resync_skipped_total"`
+	// InvalidSrcClassSkippedTotal — bytes rejected because the byte in
+	// source position was not initiator-class (P6 Layer 2 SRC
+	// AddressClass validation). Direct measure of operator-confirmed
+	// Mode B (upstream SRC byte loss in ENH StreamEventStarted
+	// handling / proxy STARTED-drop). Sustained non-zero rate after
+	// deploy is the signal to revisit P6.1 / P6.2 follow-ups.
+	InvalidSrcClassSkippedTotal uint64 `json:"invalid_src_class_skipped_total"`
 }
 
 type BusObservabilitySummary struct {
@@ -406,7 +418,9 @@ func reconstructorAggregateFromSnapshot(snapshot PassiveReconstructorSnapshot) *
 		})
 	}
 	return &BusReconstructorAggregate{
-		Recoveries: recoveries,
+		Recoveries:                  recoveries,
+		PrefixResyncSkippedTotal:    snapshot.PrefixResyncSkippedTotal,
+		InvalidSrcClassSkippedTotal: snapshot.InvalidSrcClassSkippedTotal,
 	}
 }
 

@@ -1097,7 +1097,7 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	// metric (not a label dimension on ebus_errors_total) so that
 	// existing alerts filtering on class=echo_mismatch keep working
 	// without per-series fan-out.
-	writer.writeHelp("ebus_active_echo_mismatch_subclass_total", "Active-scope echo_mismatch event count broken down by inferred subclass: pre_echo_syn (mux suppression canary; should be 0), post_grant_collision_initiator (third-party initiator's SOF on the wire), post_grant_collision_target (third-party mid-frame target/broadcast byte), post_grant_ack (stale 0x00 from previous txn buffer), post_grant_nack (stale 0xFF), post_grant_reserved (mid-escape sequence), bit_flip (fallback; EMI/wire corruption).")
+	writer.writeHelp("ebus_active_echo_mismatch_subclass_total", "Active-scope echo_mismatch event count broken down by inferred subclass (byte-value-based, approximate): pre_echo_syn (read 0xAA in echo position — most often a mux SYN-suppression leak OR escape-decoded 0xAA data from a third-party frame), post_grant_collision_initiator (third-party initiator's SOF on the wire), post_grant_collision_target (third-party mid-frame target/broadcast byte), post_grant_ack (stale 0x00 from previous txn buffer), post_grant_nack (stale 0xFF), post_grant_reserved (mid-escape sequence), bit_flip (fallback; EMI/wire corruption).")
 	writer.writeType("ebus_active_echo_mismatch_subclass_total", "counter")
 	for _, item := range sortedEchoMismatchSubclassSeries(echoMismatchSubclasses) {
 		writer.writeCounterSample("ebus_active_echo_mismatch_subclass_total", float64(item.Value), labelMap(
@@ -2122,26 +2122,40 @@ func classifyActiveError(event protocol.BusEvent) (string, string) {
 // the expected echo. P10 (operator-directed) — the residual
 // echo_mismatch counter (300+ events post-P7.1) hides several
 // distinct phenomena that should be tracked separately for
-// operator clarity:
+// operator clarity.
 //
-//   - "pre_echo_syn" — read 0xAA before any echo. Should have been
-//     suppressed by the mux's pre-echo-SYN gate at internal/
-//     adaptermux/mux.go:1118-1133. If this counter is non-zero the
-//     suppression is leaking; useful canary.
+// IMPORTANT — labels are byte-value-based ONLY (P10.1 doc fix). The
+// classifier doesn't have access to the active-path state at the
+// moment of mismatch (e.g. bytesDeliveredToActive, echoCursor
+// position) so labels are best-effort directional signals rather
+// than ground-truth root causes. Example: "pre_echo_syn" fires for
+// ANY 0xAA byte read in echo position — could be a real mux SYN-
+// suppression leak, OR an escape-decoded 0xAA data byte from a
+// third-party frame's payload mid-write. Operators should
+// interpret the breakdown as approximate cause distribution.
 //
-//   - "post_grant_collision_initiator" — read a initiator-class byte
-//     (initiator address per AddressClassOf). The wire was carrying
-//     a third-party initiator's source byte at the moment our TX
+//   - "pre_echo_syn" — read 0xAA. Most often a mux SYN-suppression
+//     leak (the gate at internal/adaptermux/mux.go:1118-1133 was
+//     bypassed) OR an escape-decoded 0xAA data byte from a
+//     third-party frame in flight. Non-zero rate is informative
+//     but not a strict canary.
+//
+//   - "post_grant_collision_initiator" — read an initiator-class
+//     byte (initiator per AddressClassOf). The wire was carrying a
+//     third-party initiator's source byte at the moment our TX
 //     reached the wire. Real bus collision after the adapter's
 //     STARTED but before the wire confirmed idle.
 //
-//   - "post_grant_collision_target" — read a target-class byte
-//     (the wire was carrying a third-party transaction's target
-//     byte; we tried to TX during another initiator's mid-frame
-//     write).
+//   - "post_grant_collision_target" — read a target-class or
+//     broadcast byte. The wire was carrying a third-party
+//     transaction's target/broadcast position; we tried to TX
+//     during another initiator's mid-frame write.
 //
 //   - "post_grant_ack" — read 0x00. Stale ACK byte from a previous
-//     transaction's tail still in the adapter buffer when we TX'd.
+//     transaction's tail still in the adapter / TCP socket buffer
+//     when we TX'd. Indicates adapter-buffering boundary races.
+//     Live observation (P10 deploy 2026-05-10): 50% of residual
+//     echo_mismatch events fall here.
 //
 //   - "post_grant_nack" — read 0xFF. Stale NACK byte (rare).
 //

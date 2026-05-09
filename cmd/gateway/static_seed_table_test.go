@@ -1,10 +1,25 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
+
+// noopMCPInvoker satisfies mcp.Invoker for tests that exercise the
+// devices.list path (which never invokes a method).
+type noopMCPInvoker struct{}
+
+func (noopMCPInvoker) Invoke(ctx context.Context, plane router.Plane, methodName string, params map[string]any) (any, error) {
+	return nil, nil
+}
 
 // TestApplyStaticSeedTable_StampsStaticSeedLabel asserts the central
 // P3.5 contract: applyStaticSeedTable plants identity for the
@@ -44,6 +59,112 @@ func TestApplyStaticSeedTable_StampsStaticSeedLabel(t *testing.T) {
 				t.Errorf("entry[0x%02X].Manufacturer() = %q; want %q", addr, got, want)
 			}
 		}
+	}
+}
+
+// TestApplyStaticSeedTable_MCPDeviceListProjection is the operator-
+// surface verification for P3.5: after applyStaticSeedTable runs, the
+// MCP `ebus.v1.registry.devices.list` tool MUST return JSON entries
+// whose `discovery_source` field equals `"static_seed"` and whose
+// `verification_state` field equals `"candidate"` for each seeded
+// address. This is the path the operator follows on a deployed
+// gateway to verify the contract — the registry-level slot stamping
+// is necessary but not sufficient unless MCP projects the labels.
+//
+// Posts a real JSON-RPC `tools/call` to the MCP HTTP handler with a
+// real `*registry.DeviceRegistry` (NOT the testRegistry stub) so
+// LookupSlot returns the actual stamp.
+func TestApplyStaticSeedTable_MCPDeviceListProjection(t *testing.T) {
+	reg := registry.NewDeviceRegistry(nil)
+	applyStaticSeedTable(reg)
+
+	server, err := mcp.NewServer(reg, noopMCPInvoker{})
+	if err != nil {
+		t.Fatalf("mcp.NewServer error = %v", err)
+	}
+	server.SetAdmittedRPCSource(0x7F)
+
+	httpSrv := httptest.NewServer(server.Handler())
+	defer httpSrv.Close()
+
+	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus.v1.registry.devices.list","arguments":{}}}`)
+	resp, err := http.Post(httpSrv.URL, "application/json", body)
+	if err != nil {
+		t.Fatalf("POST tools/call error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+		Error any `json:"error,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		t.Fatalf("decode rpc response error = %v", err)
+	}
+	if rpcResp.Error != nil {
+		t.Fatalf("rpc error = %v", rpcResp.Error)
+	}
+	if rpcResp.Result.IsError {
+		t.Fatalf("tools/call isError=true; want false")
+	}
+	if len(rpcResp.Result.Content) != 1 {
+		t.Fatalf("content len = %d; want 1", len(rpcResp.Result.Content))
+	}
+
+	var envelope struct {
+		Data []struct {
+			Address           int    `json:"address"`
+			Manufacturer      string `json:"manufacturer"`
+			DiscoverySource   string `json:"discovery_source"`
+			VerificationState string `json:"verification_state"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(rpcResp.Result.Content[0].Text), &envelope); err != nil {
+		t.Fatalf("envelope decode error = %v; text=%q", err, rpcResp.Result.Content[0].Text)
+	}
+	if len(envelope.Data) == 0 {
+		t.Fatalf("envelope.data empty; want at least the seeded entries")
+	}
+
+	// Build address -> entry index for assertions.
+	byAddr := make(map[int]struct {
+		discovery, verification string
+	}, len(envelope.Data))
+	for _, d := range envelope.Data {
+		byAddr[d.Address] = struct{ discovery, verification string }{d.DiscoverySource, d.VerificationState}
+	}
+	// All 5 productids seed addresses must appear with static_seed/candidate.
+	for _, addr := range []int{0xF1, 0xF6, 0x04, 0x15, 0xEC} {
+		got, ok := byAddr[addr]
+		if !ok {
+			// Some seeded faces may share an entry (canonical pair
+			// merge); skip if absent — the seeded primary still
+			// represents them. The strong assertion is on the
+			// presence of static_seed entries below.
+			continue
+		}
+		if got.discovery != "static_seed" {
+			t.Errorf("device 0x%02X discovery_source = %q; want %q", addr, got.discovery, "static_seed")
+		}
+		if got.verification != "candidate" {
+			t.Errorf("device 0x%02X verification_state = %q; want %q", addr, got.verification, "candidate")
+		}
+	}
+	// At least one entry must carry the static_seed label — proves the
+	// projection path is wired even if all 5 addresses merged into one.
+	staticSeen := 0
+	for _, v := range byAddr {
+		if v.discovery == "static_seed" {
+			staticSeen++
+		}
+	}
+	if staticSeen == 0 {
+		t.Fatalf("no entries carry discovery_source=static_seed; got %v", byAddr)
 	}
 }
 

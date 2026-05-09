@@ -26,6 +26,11 @@ import (
 type Registry interface {
 	Iterate(func(registry.DeviceEntry) bool)
 	Lookup(address byte) (registry.DeviceEntry, bool)
+	// LookupSlot exposes the AddressSlot enum state so MCP responses
+	// can project discovery_source / verification_state into
+	// JSON-serializable strings (P3.5). Mirrors the same method on
+	// *registry.DeviceRegistry.
+	LookupSlot(address byte) (*registry.AddressSlot, bool)
 }
 
 type Invoker interface {
@@ -2505,6 +2510,21 @@ type deviceInfo struct {
 	SoftwareVersion string      `json:"software_version"`
 	HardwareVersion string      `json:"hardware_version"`
 	Planes          []planeInfo `json:"planes"`
+	// DiscoverySource encodes how the gateway learned about this
+	// address: "passive_observed" (AD05 inserter from passive frames),
+	// "static_seed" (productids LoadSeedTable planted at boot),
+	// "active_confirmed" (startup scan / probe), or "" when the
+	// registry has no slot record. Operators querying
+	// `ebus.v1.registry.devices.list` use this to distinguish a
+	// pre-known taxonomy entry from one that the gateway actively
+	// confirmed at runtime — required to verify the P3.5 contract.
+	DiscoverySource string `json:"discovery_source,omitempty"`
+	// VerificationState encodes corroboration depth:
+	// "candidate" (e.g. just-seeded, no wire confirmation yet),
+	// "corroborated_pending" (passively observed atop a seed),
+	// "identity_confirmed" (active scan response). Empty when the
+	// registry has no slot record.
+	VerificationState string `json:"verification_state,omitempty"`
 }
 
 type planeInfo struct {
@@ -2529,7 +2549,7 @@ func (s *Server) listDevices(snapshot *snapshotState) []deviceInfo {
 	}
 	out := make([]deviceInfo, 0)
 	s.registry.Iterate(func(entry registry.DeviceEntry) bool {
-		out = append(out, buildDeviceInfo(entry))
+		out = append(out, buildDeviceInfo(entry, s.registry))
 		return true
 	})
 	sort.Slice(out, func(i, j int) bool {
@@ -2560,7 +2580,7 @@ func (s *Server) getDevice(args map[string]any, snapshot *snapshotState) (device
 	if !ok {
 		return deviceInfo{}, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
 	}
-	return buildDeviceInfo(entry), nil
+	return buildDeviceInfo(entry, s.registry), nil
 }
 
 func (s *Server) listPlanes(args map[string]any, snapshot *snapshotState) ([]planeInfo, error) {
@@ -3540,7 +3560,7 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 	return series
 }
 
-func buildDeviceInfo(entry registry.DeviceEntry) deviceInfo {
+func buildDeviceInfo(entry registry.DeviceEntry, reg Registry) deviceInfo {
 	primary := entry.PrimaryDisplayAddress()
 	all := entry.Addresses()
 	// Surface the complete address set (primary + aliases) to match the
@@ -3557,15 +3577,52 @@ func buildDeviceInfo(entry registry.DeviceEntry) deviceInfo {
 	} else {
 		aliases = []int{int(primary)}
 	}
+	discovery, verification := lookupDiscoveryLabels(reg, primary)
 	return deviceInfo{
-		Address:         int(primary),
-		Addresses:       aliases,
-		Manufacturer:    entry.Manufacturer(),
-		DeviceID:        entry.DeviceID(),
-		SoftwareVersion: entry.SoftwareVersion(),
-		HardwareVersion: entry.HardwareVersion(),
-		Planes:          buildPlaneInfoList(entry.Planes()),
+		Address:           int(primary),
+		Addresses:         aliases,
+		Manufacturer:      entry.Manufacturer(),
+		DeviceID:          entry.DeviceID(),
+		SoftwareVersion:   entry.SoftwareVersion(),
+		HardwareVersion:   entry.HardwareVersion(),
+		Planes:            buildPlaneInfoList(entry.Planes()),
+		DiscoverySource:   discovery,
+		VerificationState: verification,
 	}
+}
+
+// lookupDiscoveryLabels projects the registry AddressSlot's enum
+// state for the given address into the JSON-friendly string labels
+// operators see in `ebus.v1.registry.devices.list` and friends.
+// Mirrors the canonical mapping in helianthus-ebusgateway's
+// address_table.go so MCP and the address-table snapshot agree on
+// label spellings. Returns ("", "") when reg is nil or the slot is
+// missing.
+func lookupDiscoveryLabels(reg Registry, addr byte) (discovery string, verification string) {
+	if reg == nil {
+		return "", ""
+	}
+	slot, ok := reg.LookupSlot(addr)
+	if !ok || slot == nil {
+		return "", ""
+	}
+	switch slot.DiscoverySource {
+	case registry.DiscoverySourcePassiveObserved:
+		discovery = "passive_observed"
+	case registry.DiscoverySourceStaticSeed:
+		discovery = "static_seed"
+	case registry.DiscoverySourceActiveConfirmed:
+		discovery = "active_confirmed"
+	}
+	switch slot.VerificationState {
+	case registry.VerificationStateCandidate:
+		verification = "candidate"
+	case registry.VerificationStateCorroborated:
+		verification = "corroborated_pending"
+	case registry.VerificationStateIdentityConfirmed:
+		verification = "identity_confirmed"
+	}
+	return discovery, verification
 }
 
 func buildPlaneInfoList(planes []registry.Plane) []planeInfo {

@@ -94,17 +94,21 @@ func (i *AddressTableInserter) BackfillUnidentifiedAddresses() {
 		return
 	}
 	fn := i.enrichmentIdentityProbeFn
-	i.table.reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil {
-			return true
-		}
-		manufacturer := entry.Manufacturer()
-		serial := entry.SerialNumber()
+	// P9.4 — race-free identity-field reads via IterateSnapshots.
+	// Backfill runs once after the startup barrier closes, but the
+	// passive inserter can be writing to the registry concurrently
+	// (passive frames arriving on the bus). The previous Iterate
+	// path read entry.Manufacturer / SerialNumber / Addresses
+	// lock-free; the snapshot path reads value-typed copies under
+	// the registry's RLock.
+	i.table.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		manufacturer := snap.Manufacturer
+		serial := snap.SerialNumber
 		needsProbe := manufacturer == "" || (manufacturer == "Vaillant" && serial == "")
 		if !needsProbe {
 			return true
 		}
-		for _, addr := range entry.Addresses() {
+		for _, addr := range snap.Addresses {
 			fn(addr)
 		}
 		return true

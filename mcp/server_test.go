@@ -55,6 +55,39 @@ func (r *testRegistry) LookupSlotSnapshot(byte) (registry.AddressSlotSnapshot, b
 	return registry.AddressSlotSnapshot{}, false
 }
 
+// IterateSnapshots satisfies mcp.Registry (added in P9). The test fake
+// has no notion of snapshots; iterate the existing entries map and
+// emit a minimal snapshot per entry so tests that exercise the
+// snapshot-iteration path still work.
+func (r *testRegistry) IterateSnapshots(fn func(registry.DeviceEntrySnapshot) bool) {
+	for _, entry := range r.entries {
+		snap := registry.DeviceEntrySnapshot{
+			PrimaryAddress: entry.PrimaryDisplayAddress(),
+			Addresses:      entry.Addresses(),
+			Manufacturer:   entry.Manufacturer(),
+			DeviceID:       entry.DeviceID(),
+		}
+		if !fn(snap) {
+			return
+		}
+	}
+}
+
+// LookupEntrySnapshot satisfies mcp.Registry (added in P9). Builds a
+// minimal snapshot from the test fake's entries map.
+func (r *testRegistry) LookupEntrySnapshot(addr byte) (registry.DeviceEntrySnapshot, bool) {
+	entry, ok := r.entries[addr]
+	if !ok {
+		return registry.DeviceEntrySnapshot{}, false
+	}
+	return registry.DeviceEntrySnapshot{
+		PrimaryAddress: entry.PrimaryDisplayAddress(),
+		Addresses:      entry.Addresses(),
+		Manufacturer:   entry.Manufacturer(),
+		DeviceID:       entry.DeviceID(),
+	}, true
+}
+
 type testEntry struct {
 	info   registry.DeviceInfo
 	planes []registry.Plane

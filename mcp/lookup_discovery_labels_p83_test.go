@@ -42,6 +42,12 @@ func (t *trackingRegistry) LookupSlotSnapshot(byte) (registry.AddressSlotSnapsho
 	return registry.AddressSlotSnapshot{}, false
 }
 
+func (t *trackingRegistry) IterateSnapshots(func(registry.DeviceEntrySnapshot) bool) {}
+
+func (t *trackingRegistry) LookupEntrySnapshot(byte) (registry.DeviceEntrySnapshot, bool) {
+	return registry.DeviceEntrySnapshot{}, false
+}
+
 func TestLookupDiscoveryLabels_UsesSnapshotPath(t *testing.T) {
 	t.Parallel()
 

@@ -26,6 +26,19 @@ import (
 type Registry interface {
 	Iterate(func(registry.DeviceEntry) bool)
 	Lookup(address byte) (registry.DeviceEntry, bool)
+	// IterateSnapshots is the value-typed counterpart to Iterate
+	// (added in helianthus-ebusreg P9). Each callback invocation
+	// receives a DeviceEntrySnapshot taken under the registry's
+	// RLock; the lock is released before the callback runs.
+	// Race-free reads of identity fields without lock-free
+	// dereferencing of live *deviceEntry pointers.
+	IterateSnapshots(func(registry.DeviceEntrySnapshot) bool)
+	// LookupEntrySnapshot is the value-typed counterpart to Lookup
+	// (added in helianthus-ebusreg P9). Returns a value copy of the
+	// entry's identity fields under the registry's RLock; race-free
+	// for callers that don't need the live pointer or Planes /
+	// Projections.
+	LookupEntrySnapshot(address byte) (registry.DeviceEntrySnapshot, bool)
 	// LookupSlot exposes the AddressSlot enum state so MCP responses
 	// can project discovery_source / verification_state into
 	// JSON-serializable strings (P3.5). Mirrors the same method on
@@ -3677,12 +3690,20 @@ func buildDeviceInfo(entry registry.DeviceEntry, reg Registry, preferredAddr byt
 // slot state instead of falling back to the cached deviceInfo's
 // primary-address labels (Codex P3.5 review pass 4).
 //
+// P9 — uses IterateSnapshots / LookupSlotSnapshot so the iteration
+// reads are race-free with concurrent registry writers (Register /
+// RegisterPassiveObserved / MarkSlot*). The previous Iterate path
+// dereferenced live entry pointers outside the registry's lock.
+//
 // Iterates the registry's known device entries and projects each
 // alias address. Empty when the registry has no entries.
 func (s *Server) snapshotAddressSlots() map[byte]addressSlotLabels {
 	out := make(map[byte]addressSlotLabels)
-	s.registry.Iterate(func(entry registry.DeviceEntry) bool {
-		for _, addr := range entry.Addresses() {
+	if s.registry == nil {
+		return nil
+	}
+	s.registry.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		for _, addr := range snap.Addresses {
 			discovery, verification := lookupDiscoveryLabels(s.registry, addr)
 			if discovery == "" && verification == "" {
 				continue

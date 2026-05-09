@@ -1302,6 +1302,46 @@ func buildBusObservabilityTypes() (*graphqlgo.Object, *graphqlgo.Object, *graphq
 					return value.Counters, nil
 				},
 			},
+			// P6 — passive reconstructor frame-start invariant canaries.
+			// The full BusReconstructorAggregate (including the
+			// per-reason recoveries array) is surfaced via MCP/JSON
+			// only; here we expose just the two scalar counters so
+			// dashboard queries can pull them from GraphQL without
+			// designing a nested type.
+			"reconstructorPrefixResyncSkippedTotal": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if summary, ok := params.Source.(*BusSummary); ok && summary != nil {
+						if summary.Reconstructor != nil {
+							return int(summary.Reconstructor.PrefixResyncSkippedTotal), nil
+						}
+						return 0, nil
+					}
+					if value, ok := params.Source.(BusSummary); ok {
+						if value.Reconstructor != nil {
+							return int(value.Reconstructor.PrefixResyncSkippedTotal), nil
+						}
+					}
+					return 0, nil
+				},
+			},
+			"reconstructorInvalidSrcClassSkippedTotal": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Int),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if summary, ok := params.Source.(*BusSummary); ok && summary != nil {
+						if summary.Reconstructor != nil {
+							return int(summary.Reconstructor.InvalidSrcClassSkippedTotal), nil
+						}
+						return 0, nil
+					}
+					if value, ok := params.Source.(BusSummary); ok {
+						if value.Reconstructor != nil {
+							return int(value.Reconstructor.InvalidSrcClassSkippedTotal), nil
+						}
+					}
+					return 0, nil
+				},
+			},
 		},
 	})
 

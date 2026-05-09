@@ -57,6 +57,43 @@ func TestBackfillUnidentifiedAddresses_ProbesUnidentifiedOnly(t *testing.T) {
 	}
 }
 
+// TestBackfillUnidentifiedAddresses_NonVaillantWithEmptySerialNotProbed
+// pins the implementation's explicit Vaillant-only branch (Codex P9.4
+// pass 1 NIT FINDING_1):
+//
+//	needsProbe := manufacturer == "" || (manufacturer == "Vaillant" && serial == "")
+//
+// Non-Vaillant manufacturers with an empty SerialNumber are NOT
+// probed — only the empty-Manufacturer branch or the Vaillant +
+// empty-Serial branch trigger the probe. Without this regression
+// test, a future change that broadens the condition to
+// `manufacturer != "" && serial == ""` would silently start
+// probing non-Vaillant devices.
+func TestBackfillUnidentifiedAddresses_NonVaillantWithEmptySerialNotProbed(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{
+		Address:      0x40,
+		Manufacturer: "OtherVendor",
+		SerialNumber: "", // empty serial but NOT Vaillant — must NOT trigger probe
+	})
+
+	table := NewAddressTable(reg)
+	inserter := NewAddressTableInserter(table, DefaultConfig())
+
+	probed := make(map[byte]int)
+	inserter.SetEnrichmentIdentityProbeFn(func(addr byte) {
+		probed[addr]++
+	})
+
+	inserter.BackfillUnidentifiedAddresses()
+
+	if probed[0x40] != 0 {
+		t.Errorf("0x40 (OtherVendor + empty SerialNumber) was probed %d times; want 0 (Vaillant-only condition)", probed[0x40])
+	}
+}
+
 // TestBackfillUnidentifiedAddresses_NilProbeFnIsNoop verifies the
 // graceful early-return when no probe fn is wired (e.g. tests that
 // don't enable enrichment).

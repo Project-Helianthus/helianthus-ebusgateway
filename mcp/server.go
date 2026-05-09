@@ -2650,7 +2650,11 @@ func (s *Server) getDevice(args map[string]any, snapshot *snapshotState) (device
 		}
 		return device, nil
 	}
-	entry, ok := s.registry.Lookup(address)
+	// P9.1 — race-free identity-field reads via LookupEntrySnapshot.
+	// Identity fields come from the value-typed snapshot; Planes are
+	// fetched via a live Lookup inside buildDeviceInfoFromSnapshot
+	// (residual race surface: Planes interface tree only).
+	snap, ok := s.registry.LookupEntrySnapshot(address)
 	if !ok {
 		return deviceInfo{}, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
 	}
@@ -2659,7 +2663,7 @@ func (s *Server) getDevice(args map[string]any, snapshot *snapshotState) (device
 	// aliases at different DiscoverySource levels, the operator gets
 	// the slot they asked about — not the primary's potentially-
 	// different label.
-	return buildDeviceInfo(entry, s.registry, address), nil
+	return buildDeviceInfoFromSnapshot(snap, s.registry, address), nil
 }
 
 func (s *Server) listPlanes(args map[string]any, snapshot *snapshotState) ([]planeInfo, error) {
@@ -3639,7 +3643,8 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 	return series
 }
 
-// buildDeviceInfo materialises the JSON view of a device entry.
+// buildDeviceInfoFromSnapshot materialises the JSON view of a device
+// entry from a value-typed DeviceEntrySnapshot.
 //
 // preferredAddr selects which AddressSlot is consulted for the
 // top-level discovery_source/verification_state projection. For
@@ -3656,18 +3661,19 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 //
 // preferredAddr=0 is treated as "use the primary"; this keeps existing
 // internal callers that do not need per-alias precision working.
-// buildDeviceInfoFromSnapshot is the race-free counterpart of
-// buildDeviceInfo. Identity fields (Manufacturer / DeviceID / version
-// strings / Addresses) come from the value-typed snapshot, which is
-// disconnected from registry storage and immune to concurrent
-// Register writes.
+//
+// Race-free counterpart of the legacy buildDeviceInfo (P9.1 — that
+// helper was removed because all known callers migrated). Identity
+// fields (Manufacturer / DeviceID / version strings / Addresses)
+// come from the value-typed snapshot, which is disconnected from
+// registry storage and immune to concurrent Register writes.
 //
 // Planes are still fetched via a live registry.Lookup of the primary
 // address. The Planes interface tree is NOT included in the
 // DeviceEntrySnapshot (P9 SCOPE note in helianthus-ebusreg), so this
 // path retains the live-pointer read for Planes ONLY. The race
 // surface for Planes is much narrower than the full identity-field
-// surface — tracked as P9.1+ residual.
+// surface — tracked as P9.2+ residual.
 func buildDeviceInfoFromSnapshot(snap registry.DeviceEntrySnapshot, reg Registry, preferredAddr byte) deviceInfo {
 	primary := snap.PrimaryDisplayAddress()
 	if preferredAddr == 0 {
@@ -3701,40 +3707,6 @@ func buildDeviceInfoFromSnapshot(snap registry.DeviceEntrySnapshot, reg Registry
 		SoftwareVersion:   snap.SoftwareVersion,
 		HardwareVersion:   snap.HardwareVersion,
 		Planes:            planes,
-		DiscoverySource:   discovery,
-		VerificationState: verification,
-	}
-}
-
-func buildDeviceInfo(entry registry.DeviceEntry, reg Registry, preferredAddr byte) deviceInfo {
-	primary := entry.PrimaryDisplayAddress()
-	if preferredAddr == 0 {
-		preferredAddr = primary
-	}
-	all := entry.Addresses()
-	// Surface the complete address set (primary + aliases) to match the
-	// GraphQL `addresses` semantics in graphql/schema.go. Snapshot
-	// consumers (findDeviceInfoByAddress) check this list to resolve
-	// canonical-pair queries regardless of which half the caller asked
-	// for. MCP↔GraphQL parity contract requires identical list contents.
-	var aliases []int
-	if len(all) > 0 {
-		aliases = make([]int, 0, len(all))
-		for _, a := range all {
-			aliases = append(aliases, int(a))
-		}
-	} else {
-		aliases = []int{int(primary)}
-	}
-	discovery, verification := lookupDiscoveryLabels(reg, preferredAddr)
-	return deviceInfo{
-		Address:           int(primary),
-		Addresses:         aliases,
-		Manufacturer:      entry.Manufacturer(),
-		DeviceID:          entry.DeviceID(),
-		SoftwareVersion:   entry.SoftwareVersion(),
-		HardwareVersion:   entry.HardwareVersion(),
-		Planes:            buildPlaneInfoList(entry.Planes()),
 		DiscoverySource:   discovery,
 		VerificationState: verification,
 	}

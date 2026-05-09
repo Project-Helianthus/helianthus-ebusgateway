@@ -41,6 +41,14 @@ func (emptyMCPRegistry) LookupSlotSnapshot(byte) (registry.AddressSlotSnapshot, 
 	return registry.AddressSlotSnapshot{}, false
 }
 
+// IterateSnapshots satisfies mcp.Registry (added in P9). Empty fake.
+func (emptyMCPRegistry) IterateSnapshots(func(registry.DeviceEntrySnapshot) bool) {}
+
+// LookupEntrySnapshot satisfies mcp.Registry (added in P9). Empty fake.
+func (emptyMCPRegistry) LookupEntrySnapshot(byte) (registry.DeviceEntrySnapshot, bool) {
+	return registry.DeviceEntrySnapshot{}, false
+}
+
 func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.BroadcastListen = true

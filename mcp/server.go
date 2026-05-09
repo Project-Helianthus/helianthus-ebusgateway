@@ -26,6 +26,19 @@ import (
 type Registry interface {
 	Iterate(func(registry.DeviceEntry) bool)
 	Lookup(address byte) (registry.DeviceEntry, bool)
+	// IterateSnapshots is the value-typed counterpart to Iterate
+	// (added in helianthus-ebusreg P9). Each callback invocation
+	// receives a DeviceEntrySnapshot taken under the registry's
+	// RLock; the lock is released before the callback runs.
+	// Race-free reads of identity fields without lock-free
+	// dereferencing of live *deviceEntry pointers.
+	IterateSnapshots(func(registry.DeviceEntrySnapshot) bool)
+	// LookupEntrySnapshot is the value-typed counterpart to Lookup
+	// (added in helianthus-ebusreg P9). Returns a value copy of the
+	// entry's identity fields under the registry's RLock; race-free
+	// for callers that don't need the live pointer or Planes /
+	// Projections.
+	LookupEntrySnapshot(address byte) (registry.DeviceEntrySnapshot, bool)
 	// LookupSlot exposes the AddressSlot enum state so MCP responses
 	// can project discovery_source / verification_state into
 	// JSON-serializable strings (P3.5). Mirrors the same method on
@@ -2592,10 +2605,16 @@ func (s *Server) listDevices(snapshot *snapshotState) []deviceInfo {
 		return cloneDeviceInfoList(snapshot.devices)
 	}
 	out := make([]deviceInfo, 0)
-	s.registry.Iterate(func(entry registry.DeviceEntry) bool {
+	// P9 — race-free identity-field reads via IterateSnapshots. Each
+	// callback receives a value-typed DeviceEntrySnapshot built under
+	// the registry's RLock; the lock is released before the callback
+	// runs. Planes are still fetched via a separate Lookup (residual
+	// race surface for the Planes interface tree — deferred to a
+	// Plane-aware ebusreg snapshot API; documented in the PR body).
+	s.registry.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
 		// list view: project the primary address's slot state.
 		// Per-alias detail is reachable via devices.get(address=alias).
-		out = append(out, buildDeviceInfo(entry, s.registry, entry.PrimaryDisplayAddress()))
+		out = append(out, buildDeviceInfoFromSnapshot(snap, s.registry, snap.PrimaryDisplayAddress()))
 		return true
 	})
 	sort.Slice(out, func(i, j int) bool {
@@ -3637,6 +3656,56 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 //
 // preferredAddr=0 is treated as "use the primary"; this keeps existing
 // internal callers that do not need per-alias precision working.
+// buildDeviceInfoFromSnapshot is the race-free counterpart of
+// buildDeviceInfo. Identity fields (Manufacturer / DeviceID / version
+// strings / Addresses) come from the value-typed snapshot, which is
+// disconnected from registry storage and immune to concurrent
+// Register writes.
+//
+// Planes are still fetched via a live registry.Lookup of the primary
+// address. The Planes interface tree is NOT included in the
+// DeviceEntrySnapshot (P9 SCOPE note in helianthus-ebusreg), so this
+// path retains the live-pointer read for Planes ONLY. The race
+// surface for Planes is much narrower than the full identity-field
+// surface — tracked as P9.1+ residual.
+func buildDeviceInfoFromSnapshot(snap registry.DeviceEntrySnapshot, reg Registry, preferredAddr byte) deviceInfo {
+	primary := snap.PrimaryDisplayAddress()
+	if preferredAddr == 0 {
+		preferredAddr = primary
+	}
+	all := snap.Addresses
+	var aliases []int
+	if len(all) > 0 {
+		aliases = make([]int, 0, len(all))
+		for _, a := range all {
+			aliases = append(aliases, int(a))
+		}
+	} else {
+		aliases = []int{int(primary)}
+	}
+	discovery, verification := lookupDiscoveryLabels(reg, preferredAddr)
+	// Plane data: P9.1+ residual — DeviceEntrySnapshot doesn't
+	// include Planes (interface tree). Fetch via live Lookup; the
+	// Planes() read is still race-prone with concurrent Register.
+	var planes []planeInfo
+	if reg != nil {
+		if entry, ok := reg.Lookup(primary); ok && entry != nil {
+			planes = buildPlaneInfoList(entry.Planes())
+		}
+	}
+	return deviceInfo{
+		Address:           int(primary),
+		Addresses:         aliases,
+		Manufacturer:      snap.Manufacturer,
+		DeviceID:          snap.DeviceID,
+		SoftwareVersion:   snap.SoftwareVersion,
+		HardwareVersion:   snap.HardwareVersion,
+		Planes:            planes,
+		DiscoverySource:   discovery,
+		VerificationState: verification,
+	}
+}
+
 func buildDeviceInfo(entry registry.DeviceEntry, reg Registry, preferredAddr byte) deviceInfo {
 	primary := entry.PrimaryDisplayAddress()
 	if preferredAddr == 0 {
@@ -3677,12 +3746,20 @@ func buildDeviceInfo(entry registry.DeviceEntry, reg Registry, preferredAddr byt
 // slot state instead of falling back to the cached deviceInfo's
 // primary-address labels (Codex P3.5 review pass 4).
 //
+// P9 — uses IterateSnapshots / LookupSlotSnapshot so the iteration
+// reads are race-free with concurrent registry writers (Register /
+// RegisterPassiveObserved / MarkSlot*). The previous Iterate path
+// dereferenced live entry pointers outside the registry's lock.
+//
 // Iterates the registry's known device entries and projects each
 // alias address. Empty when the registry has no entries.
 func (s *Server) snapshotAddressSlots() map[byte]addressSlotLabels {
 	out := make(map[byte]addressSlotLabels)
-	s.registry.Iterate(func(entry registry.DeviceEntry) bool {
-		for _, addr := range entry.Addresses() {
+	if s.registry == nil {
+		return nil
+	}
+	s.registry.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		for _, addr := range snap.Addresses {
 			discovery, verification := lookupDiscoveryLabels(s.registry, addr)
 			if discovery == "" && verification == "" {
 				continue

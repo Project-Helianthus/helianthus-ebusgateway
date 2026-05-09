@@ -95,16 +95,40 @@ func TestSnapshotContainsAddress_AliasResolutionParity(t *testing.T) {
 		t.Fatalf("AliasAddresses error = %v", err)
 	}
 
-	// Build a snapshot of the merged entry; verify both addresses
-	// are visible in the snapshot's Addresses slice.
-	snap, ok := reg.LookupEntrySnapshot(0x10)
-	if !ok {
+	// Take both views of the same entry: live pointer (used by
+	// EntryContainsAddress) and snapshot (used by
+	// SnapshotContainsAddress). Both APIs must agree for every test
+	// address — that's the parity the P9.2 promoter migration depends
+	// on.
+	entry, entryOK := reg.Lookup(0x10)
+	if !entryOK {
+		t.Fatalf("Lookup(0x10) ok=false")
+	}
+	snap, snapOK := reg.LookupEntrySnapshot(0x10)
+	if !snapOK {
 		t.Fatalf("LookupEntrySnapshot(0x10) ok=false")
 	}
-	if !SnapshotContainsAddress(snap, 0x10) {
-		t.Errorf("SnapshotContainsAddress(snap, 0x10) = false; want true")
+
+	cases := []struct {
+		addr byte
+		want bool
+		desc string
+	}{
+		{0x10, true, "primary"},
+		{0x15, true, "alias"},
+		{0x42, false, "miss"},
 	}
-	if !SnapshotContainsAddress(snap, 0x15) {
-		t.Errorf("SnapshotContainsAddress(snap, 0x15) = false; want true (alias)")
+	for _, tc := range cases {
+		gotEntry := EntryContainsAddress(entry, tc.addr)
+		gotSnap := SnapshotContainsAddress(snap, tc.addr)
+		if gotEntry != tc.want {
+			t.Errorf("%s: EntryContainsAddress(entry, 0x%02X) = %v; want %v", tc.desc, tc.addr, gotEntry, tc.want)
+		}
+		if gotSnap != tc.want {
+			t.Errorf("%s: SnapshotContainsAddress(snap, 0x%02X) = %v; want %v", tc.desc, tc.addr, gotSnap, tc.want)
+		}
+		if gotEntry != gotSnap {
+			t.Errorf("%s: EntryContainsAddress=%v != SnapshotContainsAddress=%v for 0x%02X (parity violation — promoter migration would change behavior)", tc.desc, gotEntry, gotSnap, tc.addr)
+		}
 	}
 }

@@ -185,6 +185,58 @@ func TestPassiveTransactionReconstructor_M2T_BackToBack(t *testing.T) {
 	}
 }
 
+// TestPassiveTransactionReconstructor_BroadcastDefersToSYNTrigger covers
+// the Codex P7 review pass 3 contract: broadcast frames whose request
+// bytes structurally complete at LEN+CRC reach MUST NOT be classified
+// before the trailing SYN arrives. Real broadcast wire is
+// [SRC..CRC][SYN] and the broadcast event's timing observables
+// (RequestEnd, Terminal, ObservedAt) must reflect the SYN timestamp.
+//
+// Feeds [SYN] SRC DST=0xFE PB SB LEN data CRC <gap> SYN with a delay
+// before SYN; asserts the BroadcastFrame event is emitted at the SYN
+// timestamp, NOT at the CRC byte's timestamp. Also asserts that a
+// TRUNCATED broadcast (CRC reached but no trailing SYN, then transport
+// reset) does NOT produce a spurious BroadcastFrame event before the
+// SYN.
+func TestPassiveTransactionReconstructor_BroadcastDefersToSYNTrigger(t *testing.T) {
+	t.Parallel()
+
+	reconstructor := newPassiveTransactionReconstructorCore(DefaultConfig())
+	subscription, err := reconstructor.Subscribe("test", PassiveSubscriberCritical, 8)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	frame := protocol.Frame{
+		Source:    0x10,
+		Target:    protocol.AddressBroadcast,
+		Primary:   0xB5,
+		Secondary: 0x16,
+		Data:      []byte{0x01, 0x02},
+	}
+
+	// Feed leading SYN + request bytes WITHOUT trailing SYN. At
+	// LEN+CRC reach, commitRequestFrameLocked sees frameType=Broadcast
+	// and returns ok=false (defers to SYN path). No event yet.
+	requestBytes := requestFrameBytes(frame)
+	feedPassiveSymbolsRaw(reconstructor, time.Unix(0, 0), append([]byte{protocol.SymbolSyn}, requestBytes...))
+	assertNoPassiveClassifiedEvent(t, subscription, 50*time.Millisecond)
+
+	// Now feed the trailing SYN at a LATER timestamp; expect the
+	// BroadcastFrame event to use THIS timestamp (not the CRC byte's).
+	synTimestamp := time.Unix(0, 0).Add(500 * time.Millisecond)
+	feedPassiveSymbolsRaw(reconstructor, synTimestamp, []byte{protocol.SymbolSyn})
+
+	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventBroadcastFrame)
+	if !event.ObservedAt.Equal(synTimestamp) {
+		t.Errorf("event.ObservedAt = %v; want %v (broadcast must be timestamped at trailing SYN, not CRC byte)", event.ObservedAt, synTimestamp)
+	}
+	if !event.Timing.Terminal.Equal(synTimestamp) {
+		t.Errorf("event.Timing.Terminal = %v; want %v", event.Timing.Terminal, synTimestamp)
+	}
+}
+
 // TestPassiveTransactionReconstructor_M2T_CRCMismatchAtLENBoundary
 // covers the parseFrame-failure path inside the LEN-based early
 // transition. When LEN+CRC is reached but parseFrame fails (bad CRC),

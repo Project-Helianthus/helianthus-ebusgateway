@@ -632,24 +632,44 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 
 // commitRequestFrameLocked is the LEN-based early-transition entry
 // point used by handleRequestSymbolLocked while still accumulating
-// non-SYN bytes (Mode C / P7). Returns the possibly-extended events
-// slice and ok=true when parseFrame succeeded (regardless of whether
-// the frame was committed cleanly or routed to abandon via the
-// corrupted_target branch); ok=false means parseFrame itself failed
-// and the caller should keep accumulating until the trailing SYN
-// triggers the legacy abandon-classification path.
+// non-SYN bytes (Mode C / P7).
+//
+// Returns ok=true when the frame was handled (M2I/M2T transitioned
+// to passivePhaseWaitACK without waiting for the SYN that doesn't
+// arrive on real wire). Returns ok=false in two cases:
+//
+//   1. parseFrame itself failed — caller keeps accumulating; the
+//      trailing SYN path classifies the abandon (corrupted_request /
+//      arbitration_fragment / self_echo / scan_collision).
+//
+//   2. Frame parsed cleanly but its frameType is Broadcast or Unknown.
+//      Codex P7 review pass 3 FINDING_1: real broadcast wire IS
+//      [SRC..CRC][SYN] — the trailing SYN is the canonical commit
+//      boundary, and broadcast timing observables (RequestEnd,
+//      Terminal, ObservedAt) must reflect that SYN's timestamp, not
+//      the CRC byte's. Truncated [SYN] SRC..CRC without the trailing
+//      SYN must NOT classify as a complete broadcast. So broadcast
+//      and Unknown fall through to the SYN-triggered path.
 //
 // Caller MUST hold stateMu and MUST have populated requestRaw with
-// the candidate request bytes. The post-commit reset uses
-// resetStateLocked (NOT AfterSyn) because no SYN has been consumed
-// at LEN+CRC reach — the trailing wire SYN re-engages Layer 1 via
-// the passivePhaseIdle handler.
+// the candidate request bytes. When ok=true, the post-commit reset
+// uses resetStateLocked (NOT AfterSyn) because no SYN has been
+// consumed at LEN+CRC reach — the trailing wire SYN re-engages
+// Layer 1 via the passivePhaseIdle handler.
 func (reconstructor *PassiveTransactionReconstructor) commitRequestFrameLocked(events []PassiveClassifiedEvent, observedAt time.Time) ([]PassiveClassifiedEvent, bool) {
 	frame, ok := parseFrame(reconstructor.state.requestRaw)
 	if !ok {
 		return events, false
 	}
-	return reconstructor.dispatchParsedRequestLocked(events, frame, observedAt, false /*afterSyn*/), true
+	switch frame.Type() {
+	case protocol.FrameTypeInitiatorInitiator, protocol.FrameTypeInitiatorTarget:
+		return reconstructor.dispatchParsedRequestLocked(events, frame, observedAt, false /*afterSyn*/), true
+	default:
+		// Broadcast / Unknown: defer to SYN-triggered path so the
+		// terminal SYN provides canonical timing for broadcast and
+		// classification for Unknown.
+		return events, false
+	}
 }
 
 // dispatchParsedRequestLocked is the post-parse-success dispatch used

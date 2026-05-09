@@ -102,6 +102,33 @@ const (
 	mutationGetExtRegisterMethod   = "get_ext_register"
 )
 
+// canonicalRegulatorTargetAddresses lists the eBUS standard target
+// (companion) addresses for heating-regulator-class sources. Per the
+// docs-owned source-address table (helianthus-ebusgo
+// protocol/source_address_selection.go), each entry is a Companion
+// byte from a P0/P1 row whose canonical description names "Heating
+// regulator" or "Heating circuit regulator":
+//
+//	0x15 — companion of 0x10 (P0 Heating regulator)        [Vaillant primary]
+//	0x35 — companion of 0x30 (P0 Heating circuit reg. 1)
+//	0x75 — companion of 0x70 (P0 Heating circuit reg. 2)
+//	0xF5 — companion of 0xF0 (P0 Heating circuit reg. 3)
+//	0x76 — companion of 0x71 (P1 Heating controller)
+//	0xF6 — companion of 0xF1 (P1 Heating controller)
+//
+// Listed in priority order: Vaillant's primary regulator (BASV2 family
+// and successors CTLV*/CTLS*/CTLR*/BASS*) lives at 0x15. P0/P1
+// alternates handle multi-regulator setups and competing vendors.
+//
+// This identifier-free detection replaces the previous BASV-prefix
+// DeviceID scan (PR #598 review pivot 2026-05-09): the prefix check
+// would silently skip any non-BASV controller (CTLV*/CTLS*/CTLR*/
+// BASS*/future identifiers), and even with TOCTOU re-validation the
+// scan was racy with concurrent registry mutation. Looking up by
+// canonical address is atomic per Lookup call and identifier-
+// agnostic.
+var canonicalRegulatorTargetAddresses = []byte{0x15, 0x35, 0x75, 0xF5, 0x76, 0xF6}
+
 var circuitConfigFieldSpecs = map[string]configFieldSpec{
 	"heatingCurve":    {group: 0x02, addr: 0x000F, valueType: configValueFloat32, min: 0.1, max: 4.0},
 	"flowTempMaxC":    {group: 0x02, addr: 0x0010, valueType: configValueFloat32, min: 15.0, max: 80.0},
@@ -1065,30 +1092,45 @@ func findControllerEntry(reg InvokeRegistry) (registry.DeviceEntry, error) {
 		return nil, fmt.Errorf("registry missing: %w", ebuserrors.ErrInvalidPayload)
 	}
 
-	type iterativeRegistry interface {
-		Iterate(func(registry.DeviceEntry) bool)
-	}
-	if iter, ok := reg.(iterativeRegistry); ok {
-		var controller registry.DeviceEntry
-		iter.Iterate(func(entry registry.DeviceEntry) bool {
-			if entry == nil {
-				return true
-			}
-			if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(entry.DeviceID())), "BASV") {
-				controller = entry
-				return false
-			}
-			return true
-		})
-		if controller != nil {
-			return controller, nil
+	// P9.5 (operator-directed pivot 2026-05-09) — identifier-free
+	// controller detection.
+	//
+	// The previous algorithm scanned the registry for any entry
+	// whose DeviceID started with "BASV" and returned that as the
+	// controller. Two problems made it brittle:
+	//
+	//  1. Identifier coupling: only Vaillant BASV2 controllers
+	//     matched. Successor and sibling families (CTLV*, CTLS*,
+	//     CTLR*, BASS*) and any future controller identifier got
+	//     silently skipped, falling through to a hardcoded address
+	//     fallback that may or may not be correct.
+	//
+	//  2. TOCTOU race with concurrent Register: the iteration's
+	//     DeviceID read was lock-free, and even with snapshot-based
+	//     re-validation (P9.5 pass 2 finding) a Register call between
+	//     the snapshot identity-check and the live Lookup could swap
+	//     the entry, returning a non-controller's Planes for
+	//     mutation routing.
+	//
+	// New algorithm: try canonical regulator target addresses (eBUS
+	// standard heating-regulator/heating-circuit-regulator companion
+	// bytes) in priority order via plain Lookup. Each Lookup is
+	// atomic under the registry RLock, so no TOCTOU window exists.
+	// The first registered entry at one of these canonical addresses
+	// is the controller — by construction the device sitting on the
+	// bus at a regulator target address IS the regulator, regardless
+	// of what identifier string the product-id catalog assigns to it.
+	//
+	// `mutationControllerFallbackAddr` (0x15) is the first address
+	// in the canonical list, so the previous fallback behavior is
+	// preserved as a no-op semantic when no other regulator is
+	// registered.
+	for _, addr := range canonicalRegulatorTargetAddresses {
+		if entry, ok := reg.Lookup(addr); ok && entry != nil {
+			return entry, nil
 		}
 	}
-
-	if fallback, ok := reg.Lookup(mutationControllerFallbackAddr); ok && fallback != nil {
-		return fallback, nil
-	}
-	return nil, fmt.Errorf("controller BASV2 not found: %w", ebuserrors.ErrInvalidPayload)
+	return nil, fmt.Errorf("no heating regulator at canonical eBUS target addresses: %w", ebuserrors.ErrInvalidPayload)
 }
 
 func extractExtRegisterValue(result any) ([]byte, error) {

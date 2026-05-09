@@ -2102,42 +2102,63 @@ func buildResponderCapabilityProvider(cfg ebusgateway.Config, actualTransport eb
 	return func() ebus_standard.ResponderCapability { return cap }
 }
 
-// applyStaticSeedTable plants the productids static seed entries
-// into the registry. Each seed entry contributes one DeviceInfo per
-// address with full Vaillant identity (Manufacturer + DeviceID),
-// allowing the registry's identity-merge contract to collapse
-// canonical-pair faces into a single entry. SerialNumber and
-// version fields are intentionally empty — they will be populated
-// by subsequent active enrichment (P5 follow-up) or remain empty
-// for seed-only addresses (e.g. NETX3 broadcast face 0x04 which
-// does not respond to active probes).
+// applyStaticSeedTable plants the productids static seed entries into
+// the registry. Each seed entry contributes one DeviceInfo per address
+// with full Vaillant identity (Manufacturer + DeviceID), allowing the
+// registry's identity-merge contract to collapse canonical-pair faces
+// into a single entry. SerialNumber and version fields are
+// intentionally empty — they will be populated by subsequent active
+// enrichment (P5 follow-up) or remain empty for seed-only addresses
+// (e.g. NETX3 broadcast face 0x04 which does not respond to active
+// probes).
 //
-// Phase post-C P3 (live validation 2026-05-08): NETX3's 0x04
-// face was absent from the registry entirely because broadcast-
-// source frames never carry an ACKCorrelation that would feed
-// the inserter. Static seed bypasses that gate at startup.
+// Phase post-C P3 (live validation 2026-05-08): NETX3's 0x04 face was
+// absent from the registry entirely because broadcast-source frames
+// never carry an ACKCorrelation that would feed the inserter. Static
+// seed bypasses that gate at startup.
 //
-// Roles in productids.SeedAddressEntry are strings ("initiator",
-// "target"); we map them to registry.SlotRole indirectly via
-// Register's identity-merge invariant — the SlotRole on the
-// resulting AddressSlot is set by the registry's alias-aware
-// face-syncing logic.
+// P3.5 (Codex P2 follow-up, ebusreg PR #137): switches the per-address
+// call from registry.Register (which stamps the AddressSlot with
+// DiscoverySourceActiveConfirmed/VerificationStateIdentityConfirmed —
+// wrong observability label for a pre-known seed entry) to
+// registry.RegisterStaticSeed (which stamps DiscoverySourceStaticSeed
+// /VerificationStateCandidate). Operators reading
+// `ebus.v1.registry.devices.list` or the address-table snapshot via
+// MCP/JSON now correctly see seeded addresses labelled
+// `discovery_source: "static_seed"`, `verification: "candidate"`
+// instead of pretending the gateway actively confirmed them at boot.
+//
+// Role mapping happens at this seam (gateway), not in productids or
+// registry: productids.SeedAddressEntry.Role is a free-form string
+// (`"initiator"` / `"target"`); registry.SlotRole is a typed enum
+// (SlotRoleMaster / SlotRoleSlave / SlotRoleUnknown). Unknown role
+// strings fall through to SlotRoleUnknown — registry's monotonic Role
+// guard then leaves Role empty until passive observation or active
+// scan fills it in.
 func applyStaticSeedTable(reg *registry.DeviceRegistry) {
 	seeds := productids.LoadSeedTable(true)
 	if len(seeds) == 0 {
 		return
 	}
+	now := time.Now()
 	count := 0
 	for _, seed := range seeds {
 		for _, addr := range seed.Addresses {
+			role := registry.SlotRoleUnknown
+			switch addr.Role {
+			case "initiator":
+				role = registry.SlotRoleMaster
+			case "target":
+				role = registry.SlotRoleSlave
+			}
 			info := registry.DeviceInfo{
 				Address:      addr.Addr,
 				Manufacturer: seed.Manufacturer,
 				DeviceID:     seed.DeviceID,
 			}
-			reg.Register(info)
+			reg.RegisterStaticSeed(info, role, now)
 			count++
 		}
 	}
-	log.Printf("static seed table: planted %d address(es) across %d device(s) at startup (source=productids.LoadSeedTable)", count, len(seeds))
+	log.Printf("static seed table: planted %d address(es) across %d device(s) at startup (source=productids.LoadSeedTable, label=static_seed/candidate)", count, len(seeds))
 }

@@ -665,7 +665,14 @@ func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(even
 	case protocol.SymbolNack:
 		reconstructor.state.ackCorrelation = m2aRequestACKCorrelation(symbol)
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNACK, observedAt, ebuserrors.ErrNACK))
-		reconstructor.resetStateLocked()
+		// P6 — after a request-phase NACK the eBUS spec (AM2 in
+		// internal/adaptermux/wire_phase.go:185-198) permits the
+		// initiator to retransmit the request immediately without a
+		// SYN gap or re-arbitration. The retry's source byte follows
+		// the NACK directly, so we must keep the Layer 1 inter-frame
+		// SYN gate engaged (synced=true) here. Layer 2 still validates
+		// that the retry's first byte is initiator-class.
+		reconstructor.resetStateLockedAfterSyn()
 		return events
 	case protocol.SymbolSyn:
 		if reconstructor.isScanTimeoutLocked() {

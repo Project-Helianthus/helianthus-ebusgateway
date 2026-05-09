@@ -281,3 +281,63 @@ func TestPassiveTransactionReconstructor_AcceptsMasterSrc(t *testing.T) {
 		t.Fatalf("PrefixResyncSkippedTotal = %d; want 0 (initiator src must pass)", got)
 	}
 }
+
+// P6 — preserve eBUS NACK-retry resynchronization (AM2 / wire_phase.go).
+//
+// After a request-phase NACK, the eBUS spec permits the initiator to
+// retransmit the request immediately, without a SYN gap or
+// re-arbitration. The retry's source byte follows the NACK directly,
+// so the Layer 1 inter-frame SYN gate must remain engaged (synced=true)
+// across the NACK reset. This regression test feeds:
+//   [SYN] [valid request frame ending mid-stream — phase=WaitACK]
+//   [NACK] [retry request frame] [ACK] [response] [ACK] [SYN]
+// and verifies the retry classifies as a Transaction event without any
+// Layer 1 byte drops.
+func TestPassiveTransactionReconstructor_NackRetryPreservesSync(t *testing.T) {
+	t.Parallel()
+
+	reconstructor := newPassiveTransactionReconstructorCore(DefaultConfig())
+	subscription, err := reconstructor.Subscribe("test", PassiveSubscriberCritical, 8)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	request := protocol.Frame{
+		Source:    0x10,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{0x01},
+	}
+	// frameBytes already terminates the request with SymbolSyn, which
+	// triggers parseFrame and transitions the parser to
+	// passivePhaseWaitACK. The SYN at line 644 then serves as the
+	// frame-boundary marker that handleACKSymbolLocked consumes
+	// when NACK arrives with no further SYN gap.
+	wire := []byte{protocol.SymbolSyn}
+	wire = append(wire, frameBytes(request)...)        // includes trailing SYN -> parser enters WaitACK
+	wire = append(wire, protocol.SymbolNack)           // target NACKs the first attempt
+	wire = append(wire, frameBytes(request)...)        // AM2 retry, no SYN gap; frameBytes appends terminator SYN
+	wire = append(wire, protocol.SymbolAck)            // target ACKs the retry
+	wire = append(wire, responseSegmentBytes([]byte{0x11, 0x22})...)
+	wire = append(wire, protocol.SymbolAck, protocol.SymbolSyn)
+
+	feedPassiveSymbolsRaw(reconstructor, time.Unix(0, 0), wire)
+
+	// First event: NACK abandon (the original attempt).
+	abandon := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventAbandonedTransaction)
+	if abandon.AbandonReason != PassiveAbandonReasonNACK {
+		t.Fatalf("first abandon reason = %q; want %q", abandon.AbandonReason, PassiveAbandonReasonNACK)
+	}
+	// Second event: the retry classifies as a successful transaction.
+	requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventTransaction)
+
+	snapshot := reconstructor.Snapshot()
+	if got := snapshot.PrefixResyncSkippedTotal; got != 0 {
+		t.Fatalf("PrefixResyncSkippedTotal = %d; want 0 (NACK retry must preserve sync)", got)
+	}
+	if got := snapshot.InvalidSrcClassSkippedTotal; got != 0 {
+		t.Fatalf("InvalidSrcClassSkippedTotal = %d; want 0", got)
+	}
+}

@@ -605,6 +605,21 @@ type snapshotState struct {
 	schedules      *ScheduleStatus
 	adapterInfo    *AdapterHardwareInfo
 	devices        []deviceInfo
+	// addressSlots captures per-address discovery_source/verification_state
+	// labels at snapshot creation time so devices.get(address=alias)
+	// in SNAPSHOT mode returns the queried alias's labels (not the
+	// primary's, which is what the cached deviceInfo carries).
+	// Codex P3.5 review pass 4: without this, a merged DeviceEntry
+	// whose aliases sit at different DiscoverySource levels would
+	// project the primary's labels for all aliased queries in
+	// SNAPSHOT mode, while LIVE mode correctly projected the queried
+	// alias.
+	addressSlots map[byte]addressSlotLabels
+}
+
+type addressSlotLabels struct {
+	discovery    string
+	verification string
 }
 
 func consistencyInputProperty() map[string]any {
@@ -1885,6 +1900,7 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		schedules:      s.snapshotSchedules(nil),
 		adapterInfo:    s.snapshotAdapterInfo(nil),
 		devices:        s.listDevices(nil),
+		addressSlots:   s.snapshotAddressSlots(),
 	}
 
 	s.snapshotMu.Lock()
@@ -1994,7 +2010,19 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		schedules:      schedulesCopy,
 		adapterInfo:    cloneMCPAdapterHardwareInfo(snapshot.adapterInfo),
 		devices:        cloneDeviceInfoList(snapshot.devices),
+		addressSlots:   cloneAddressSlotLabels(snapshot.addressSlots),
 	}
+}
+
+func cloneAddressSlotLabels(in map[byte]addressSlotLabels) map[byte]addressSlotLabels {
+	if in == nil {
+		return nil
+	}
+	out := make(map[byte]addressSlotLabels, len(in))
+	for addr, labels := range in {
+		out[addr] = labels
+	}
+	return out
 }
 
 func newToolEnvelope(data any, err error) map[string]any {
@@ -2577,6 +2605,15 @@ func (s *Server) getDevice(args map[string]any, snapshot *snapshotState) (device
 		device, ok := findDeviceInfoByAddress(snapshot.devices, address)
 		if !ok {
 			return deviceInfo{}, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
+		}
+		// Snapshot stores one deviceInfo per entry with primary-
+		// projected labels. Override with the queried address's
+		// snapshotted slot labels so devices.get(address=alias) in
+		// SNAPSHOT mode matches LIVE mode behavior (Codex P3.5 review
+		// pass 4 finding #1).
+		if labels, ok := snapshot.addressSlots[address]; ok {
+			device.DiscoverySource = labels.discovery
+			device.VerificationState = labels.verification
 		}
 		return device, nil
 	}
@@ -3618,6 +3655,32 @@ func buildDeviceInfo(entry registry.DeviceEntry, reg Registry, preferredAddr byt
 		DiscoverySource:   discovery,
 		VerificationState: verification,
 	}
+}
+
+// snapshotAddressSlots captures per-address discovery_source /
+// verification_state labels at snapshot creation time so the
+// SNAPSHOT-mode devices.get path can project the queried address's
+// slot state instead of falling back to the cached deviceInfo's
+// primary-address labels (Codex P3.5 review pass 4).
+//
+// Iterates the registry's known device entries and projects each
+// alias address. Empty when the registry has no entries.
+func (s *Server) snapshotAddressSlots() map[byte]addressSlotLabels {
+	out := make(map[byte]addressSlotLabels)
+	s.registry.Iterate(func(entry registry.DeviceEntry) bool {
+		for _, addr := range entry.Addresses() {
+			discovery, verification := lookupDiscoveryLabels(s.registry, addr)
+			if discovery == "" && verification == "" {
+				continue
+			}
+			out[addr] = addressSlotLabels{discovery: discovery, verification: verification}
+		}
+		return true
+	})
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // lookupDiscoveryLabels projects the registry AddressSlot's enum

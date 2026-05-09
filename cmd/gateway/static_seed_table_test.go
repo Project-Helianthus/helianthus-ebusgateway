@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -271,31 +272,74 @@ func TestApplyStaticSeedTable_MCPDeviceListProjection_SnapshotMode(t *testing.T)
 
 // TestApplyStaticSeedTable_MCPDeviceGetProjectsQueriedAddressSlot
 // covers Codex P3.5 review pass 3 thread 3: when a merged DeviceEntry
-// has aliases at different DiscoverySource levels (e.g. NETX3's three
-// faces — 0xF1, 0xF6, 0x04 — share a Manufacturer+DeviceID and
-// identity-merge into one entry), `ebus.v1.registry.devices.get`
+// has aliases at different DiscoverySource levels, `devices.get`
 // MUST project the QUERIED address's slot state, not the primary's.
 //
-// Setup: run applyStaticSeedTable (all NETX3 faces stamp at
-// static_seed/candidate), then re-Register 0xF1 as ActiveConfirmed
-// to advance JUST that face. Now query devices.get(address=0x04) and
-// devices.get(address=0xF1):
-//   - 0x04 must report static_seed/candidate (the static-seeded
-//     broadcast face).
-//   - 0xF1 must report active_confirmed/identity_confirmed.
+// Forces a real merge: Register both 0xF1 and 0x04 with the SAME
+// stable identity (matching SerialNumber+Manufacturer+DeviceID) so
+// ebusreg's identity-merge folds them into a single DeviceEntry.
+// Then advance 0xF1 to ActiveConfirmed via a follow-up Register
+// while leaving the slot for 0x04 at its initial state.
 //
-// Without the per-queried-address projection, both queries would
-// return the SAME labels (whatever the primary's slot says), which
-// is wrong for either 0x04 or 0xF1 depending on which is primary.
+// Without the per-queried-address projection (i.e. with the old
+// always-use-primary behavior), devices.get(0x04) would return the
+// primary's labels — which is wrong.
 func TestApplyStaticSeedTable_MCPDeviceGetProjectsQueriedAddressSlot(t *testing.T) {
 	reg := registry.NewDeviceRegistry(nil)
-	applyStaticSeedTable(reg)
-	// Advance just 0xF1 to ActiveConfirmed via Register.
+	// Step 1: register 0x04 with a stable serial → entry created at
+	// active_confirmed/identity_confirmed for 0x04.
+	reg.Register(registry.DeviceInfo{
+		Address:      0x04,
+		Manufacturer: "Vaillant",
+		DeviceID:     "NETX3-MERGED",
+		SerialNumber: "SN-MERGED",
+	})
+	// Step 2: stamp 0x04 BACK to static_seed via the new
+	// MarkSlotStaticSeed-style API (use applyStaticSeedTable's plain
+	// path: re-register won't downgrade). The simplest way to force
+	// 0x04 onto static_seed/candidate while keeping the merge: use
+	// MarkSlotStaticSeed directly (it's monotonic-no-downgrade against
+	// active_confirmed). So instead, we re-arrange:
+	// drop step 1, plant 0x04 via RegisterStaticSeed, then merge 0xF1
+	// in with the same SerialNumber AT static_seed level too, then
+	// advance 0xF1 only.
+	reg = registry.NewDeviceRegistry(nil)
+	reg.RegisterStaticSeed(registry.DeviceInfo{
+		Address:      0x04,
+		Manufacturer: "Vaillant",
+		DeviceID:     "NETX3-MERGED",
+		SerialNumber: "SN-MERGED",
+	}, registry.SlotRoleSlave, time.Now())
+	reg.RegisterStaticSeed(registry.DeviceInfo{
+		Address:      0xF1,
+		Manufacturer: "Vaillant",
+		DeviceID:     "NETX3-MERGED",
+		SerialNumber: "SN-MERGED",
+	}, registry.SlotRoleMaster, time.Now())
+
+	// Verify the merge actually happened — both addresses must
+	// resolve to the same DeviceEntry.
+	entryF1, ok := reg.Lookup(0xF1)
+	if !ok || entryF1 == nil {
+		t.Fatalf("Lookup(0xF1) failed; want merged entry")
+	}
+	entry04, ok := reg.Lookup(0x04)
+	if !ok || entry04 == nil {
+		t.Fatalf("Lookup(0x04) failed; want merged entry")
+	}
+	addrsF1 := entryF1.Addresses()
+	if !containsByte(addrsF1, 0x04) || !containsByte(addrsF1, 0xF1) {
+		t.Fatalf("merged entry must include both 0x04 and 0xF1 in Addresses; got %v", addrsF1)
+	}
+
+	// Now advance JUST 0xF1 to ActiveConfirmed via Register. The
+	// merge keeps both aliases on the same entry; 0x04's slot stays
+	// at static_seed/candidate.
 	reg.Register(registry.DeviceInfo{
 		Address:      0xF1,
 		Manufacturer: "Vaillant",
-		DeviceID:     "NETX3",
-		SerialNumber: "SN-F1-active",
+		DeviceID:     "NETX3-MERGED",
+		SerialNumber: "SN-MERGED",
 	})
 
 	server, err := mcp.NewServer(reg, noopMCPInvoker{})
@@ -351,9 +395,127 @@ func TestApplyStaticSeedTable_MCPDeviceGetProjectsQueriedAddressSlot(t *testing.
 	}
 }
 
-// intToHexJSON helper renders a hex int literal that the MCP address
-// parser accepts (it accepts both "0xNN" strings and decimal numbers;
-// here we use the decimal form to keep the JSON simple).
+// TestApplyStaticSeedTable_MCPDeviceGetSnapshotPerAlias covers Codex
+// P3.5 review pass 4 finding #1: when a snapshot is captured of a
+// merged DeviceEntry whose aliases sit at different
+// DiscoverySource levels, devices.get(address=alias) in SNAPSHOT
+// mode MUST return the queried alias's labels — not the primary's
+// (which is what cloneDeviceInfoList carries forward via
+// snapshot.devices). Mirrors the merge setup of
+// TestApplyStaticSeedTable_MCPDeviceGetProjectsQueriedAddressSlot
+// but reads through the SNAPSHOT consistency path.
+func TestApplyStaticSeedTable_MCPDeviceGetSnapshotPerAlias(t *testing.T) {
+	reg := registry.NewDeviceRegistry(nil)
+	reg.RegisterStaticSeed(registry.DeviceInfo{
+		Address:      0x04,
+		Manufacturer: "Vaillant",
+		DeviceID:     "NETX3-MERGED",
+		SerialNumber: "SN-MERGED",
+	}, registry.SlotRoleSlave, time.Now())
+	reg.RegisterStaticSeed(registry.DeviceInfo{
+		Address:      0xF1,
+		Manufacturer: "Vaillant",
+		DeviceID:     "NETX3-MERGED",
+		SerialNumber: "SN-MERGED",
+	}, registry.SlotRoleMaster, time.Now())
+	reg.Register(registry.DeviceInfo{
+		Address:      0xF1,
+		Manufacturer: "Vaillant",
+		DeviceID:     "NETX3-MERGED",
+		SerialNumber: "SN-MERGED",
+	})
+	// Verify the merge actually happened.
+	entryF1, _ := reg.Lookup(0xF1)
+	addrsF1 := entryF1.Addresses()
+	if !containsByte(addrsF1, 0x04) {
+		t.Fatalf("merged entry must include 0x04 in Addresses; got %v", addrsF1)
+	}
+
+	server, err := mcp.NewServer(reg, noopMCPInvoker{})
+	if err != nil {
+		t.Fatalf("mcp.NewServer error = %v", err)
+	}
+	server.SetAdmittedRPCSource(0x7F)
+	httpSrv := httptest.NewServer(server.Handler())
+	defer httpSrv.Close()
+
+	// Capture a snapshot.
+	captureBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus.v1.snapshot.capture","arguments":{}}}`)
+	captureResp, err := http.Post(httpSrv.URL, "application/json", captureBody)
+	if err != nil {
+		t.Fatalf("snapshot.capture POST error = %v", err)
+	}
+	defer func() { _ = captureResp.Body.Close() }()
+	var captureRPC struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(captureResp.Body).Decode(&captureRPC); err != nil {
+		t.Fatalf("snapshot.capture decode error = %v", err)
+	}
+	var captureEnvelope struct {
+		Data struct {
+			SnapshotID string `json:"snapshot_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(captureRPC.Result.Content[0].Text), &captureEnvelope); err != nil {
+		t.Fatalf("snapshot.capture envelope decode error = %v", err)
+	}
+	snapID := captureEnvelope.Data.SnapshotID
+	if snapID == "" {
+		t.Fatalf("snapshot.capture returned empty snapshot_id")
+	}
+
+	queryAlias := func(addr int) (string, string) {
+		t.Helper()
+		body := strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ebus.v1.registry.devices.get","arguments":{"address":` + intToHexJSON(addr) + `,"consistency":{"mode":"snapshot","snapshot_id":"` + snapID + `"}}}}`)
+		resp, err := http.Post(httpSrv.URL, "application/json", body)
+		if err != nil {
+			t.Fatalf("snapshot devices.get(0x%02X) POST error = %v", addr, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		var rpcResp struct {
+			Result struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+				IsError bool `json:"isError"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+			t.Fatalf("snapshot devices.get(0x%02X) decode = %v", addr, err)
+		}
+		if rpcResp.Result.IsError {
+			t.Fatalf("snapshot devices.get(0x%02X) isError; body=%q", addr, rpcResp.Result.Content[0].Text)
+		}
+		var envelope struct {
+			Data struct {
+				DiscoverySource   string `json:"discovery_source"`
+				VerificationState string `json:"verification_state"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(rpcResp.Result.Content[0].Text), &envelope); err != nil {
+			t.Fatalf("snapshot devices.get(0x%02X) envelope decode = %v", addr, err)
+		}
+		return envelope.Data.DiscoverySource, envelope.Data.VerificationState
+	}
+
+	if got, gotV := queryAlias(0x04); got != "static_seed" || gotV != "candidate" {
+		t.Errorf("snapshot devices.get(0x04) discovery=%q, verification=%q; want static_seed, candidate", got, gotV)
+	}
+	if got, gotV := queryAlias(0xF1); got != "active_confirmed" || gotV != "identity_confirmed" {
+		t.Errorf("snapshot devices.get(0xF1) discovery=%q, verification=%q; want active_confirmed, identity_confirmed", got, gotV)
+	}
+}
+
+// intToHexJSON renders a decimal address literal for the MCP
+// devices.get JSON args. The MCP `parseAddress` helper accepts the
+// decimal form (it does not currently accept "0xNN" strings); the
+// helper centralises the small set of addresses this test cares
+// about.
 func intToHexJSON(addr int) string {
 	switch addr {
 	case 0xF1:
@@ -368,6 +530,16 @@ func intToHexJSON(addr int) string {
 		return "236"
 	}
 	return "0"
+}
+
+// containsByte returns true when haystack contains the needle byte.
+func containsByte(haystack []byte, needle byte) bool {
+	for _, b := range haystack {
+		if b == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // TestApplyStaticSeedTable_RoleMapping asserts the gateway-side

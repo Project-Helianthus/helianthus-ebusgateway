@@ -6948,9 +6948,15 @@ func (p *vaillantSemanticPoller) registerStructuralControllerIfMissing(controlle
 	// treated as already-known, otherwise the function violates
 	// its idempotence contract and re-registers + re-refreshes
 	// router planes on every discovery cycle.
+	// P9.3 — race-free address-membership check via IterateSnapshots.
+	// The semantic poller runs concurrently with passive inserter /
+	// startup scan / identity probe goroutines that mutate the
+	// registry; the previous Iterate path read entry.Addresses() on
+	// a live *deviceEntry pointer, racing with concurrent Register /
+	// AliasAddresses writes.
 	already := false
-	p.reg.Iterate(func(e registry.DeviceEntry) bool {
-		if ebusgateway.EntryContainsAddress(e, controller) {
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if ebusgateway.SnapshotContainsAddress(snap, controller) {
 			already = true
 			return false
 		}
@@ -6983,23 +6989,31 @@ func (p *vaillantSemanticPoller) enrichRegulatorIdentity(addr byte) *regulatorEn
 	// PrimaryDisplayAddress would miss it and the enrichment
 	// metadata/logging would be lost for the aliased path. Use the
 	// full address-set membership check instead.
-	var entry registry.DeviceEntry
-	p.reg.Iterate(func(e registry.DeviceEntry) bool {
-		if ebusgateway.EntryContainsAddress(e, addr) {
-			entry = e
+	//
+	// P9.3 — race-free via IterateSnapshots; reads entry's DeviceID
+	// from the value-typed snapshot (immune to concurrent Register
+	// writes that would torn-read the deviceID string).
+	var (
+		matched  bool
+		deviceID string
+	)
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if ebusgateway.SnapshotContainsAddress(snap, addr) {
+			matched = true
+			deviceID = snap.DeviceID
 			return false
 		}
 		return true
 	})
-	if entry == nil {
+	if !matched {
 		return nil
 	}
 
-	deviceID := normalizeDeviceID(entry.DeviceID())
+	normalizedID := normalizeDeviceID(deviceID)
 	families := []string{"BASV2", "BASS2", "CTLV2", "CTLS2", "E7C00"}
 	var family string
 	for _, f := range families {
-		if strings.HasPrefix(deviceID, f) {
+		if strings.HasPrefix(normalizedID, f) {
 			family = f
 			break
 		}
@@ -7007,7 +7021,7 @@ func (p *vaillantSemanticPoller) enrichRegulatorIdentity(addr byte) *regulatorEn
 
 	return &regulatorEnrichment{
 		family:   family,
-		deviceID: entry.DeviceID(),
+		deviceID: deviceID,
 	}
 }
 

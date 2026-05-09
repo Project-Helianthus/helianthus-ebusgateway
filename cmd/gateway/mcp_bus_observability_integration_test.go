@@ -28,6 +28,13 @@ func (emptyMCPRegistry) Lookup(byte) (registry.DeviceEntry, bool) {
 	return nil, false
 }
 
+// LookupSlot satisfies mcp.Registry (added in P3.5 so MCP can project
+// AddressSlot discovery_source / verification_state into device JSON).
+// Empty test fake returns no slot.
+func (emptyMCPRegistry) LookupSlot(byte) (*registry.AddressSlot, bool) {
+	return nil, false
+}
+
 func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.BroadcastListen = true

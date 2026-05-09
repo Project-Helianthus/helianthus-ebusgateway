@@ -26,6 +26,11 @@ import (
 type Registry interface {
 	Iterate(func(registry.DeviceEntry) bool)
 	Lookup(address byte) (registry.DeviceEntry, bool)
+	// LookupSlot exposes the AddressSlot enum state so MCP responses
+	// can project discovery_source / verification_state into
+	// JSON-serializable strings (P3.5). Mirrors the same method on
+	// *registry.DeviceRegistry.
+	LookupSlot(address byte) (*registry.AddressSlot, bool)
 }
 
 type Invoker interface {
@@ -600,6 +605,21 @@ type snapshotState struct {
 	schedules      *ScheduleStatus
 	adapterInfo    *AdapterHardwareInfo
 	devices        []deviceInfo
+	// addressSlots captures per-address discovery_source/verification_state
+	// labels at snapshot creation time so devices.get(address=alias)
+	// in SNAPSHOT mode returns the queried alias's labels (not the
+	// primary's, which is what the cached deviceInfo carries).
+	// Codex P3.5 review pass 4: without this, a merged DeviceEntry
+	// whose aliases sit at different DiscoverySource levels would
+	// project the primary's labels for all aliased queries in
+	// SNAPSHOT mode, while LIVE mode correctly projected the queried
+	// alias.
+	addressSlots map[byte]addressSlotLabels
+}
+
+type addressSlotLabels struct {
+	discovery    string
+	verification string
 }
 
 func consistencyInputProperty() map[string]any {
@@ -1880,6 +1900,7 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		schedules:      s.snapshotSchedules(nil),
 		adapterInfo:    s.snapshotAdapterInfo(nil),
 		devices:        s.listDevices(nil),
+		addressSlots:   s.snapshotAddressSlots(),
 	}
 
 	s.snapshotMu.Lock()
@@ -1989,7 +2010,19 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		schedules:      schedulesCopy,
 		adapterInfo:    cloneMCPAdapterHardwareInfo(snapshot.adapterInfo),
 		devices:        cloneDeviceInfoList(snapshot.devices),
+		addressSlots:   cloneAddressSlotLabels(snapshot.addressSlots),
 	}
+}
+
+func cloneAddressSlotLabels(in map[byte]addressSlotLabels) map[byte]addressSlotLabels {
+	if in == nil {
+		return nil
+	}
+	out := make(map[byte]addressSlotLabels, len(in))
+	for addr, labels := range in {
+		out[addr] = labels
+	}
+	return out
 }
 
 func newToolEnvelope(data any, err error) map[string]any {
@@ -2465,13 +2498,15 @@ func cloneDeviceInfoList(source []deviceInfo) []deviceInfo {
 			copy(aliases, device.Addresses)
 		}
 		out[i] = deviceInfo{
-			Address:         device.Address,
-			Addresses:       aliases,
-			Manufacturer:    device.Manufacturer,
-			DeviceID:        device.DeviceID,
-			SoftwareVersion: device.SoftwareVersion,
-			HardwareVersion: device.HardwareVersion,
-			Planes:          clonePlaneInfoList(device.Planes),
+			Address:           device.Address,
+			Addresses:         aliases,
+			Manufacturer:      device.Manufacturer,
+			DeviceID:          device.DeviceID,
+			SoftwareVersion:   device.SoftwareVersion,
+			HardwareVersion:   device.HardwareVersion,
+			Planes:            clonePlaneInfoList(device.Planes),
+			DiscoverySource:   device.DiscoverySource,
+			VerificationState: device.VerificationState,
 		}
 	}
 	return out
@@ -2505,6 +2540,21 @@ type deviceInfo struct {
 	SoftwareVersion string      `json:"software_version"`
 	HardwareVersion string      `json:"hardware_version"`
 	Planes          []planeInfo `json:"planes"`
+	// DiscoverySource encodes how the gateway learned about this
+	// address: "passive_observed" (AD05 inserter from passive frames),
+	// "static_seed" (productids LoadSeedTable planted at boot),
+	// "active_confirmed" (startup scan / probe), or "" when the
+	// registry has no slot record. Operators querying
+	// `ebus.v1.registry.devices.list` use this to distinguish a
+	// pre-known taxonomy entry from one that the gateway actively
+	// confirmed at runtime — required to verify the P3.5 contract.
+	DiscoverySource string `json:"discovery_source,omitempty"`
+	// VerificationState encodes corroboration depth:
+	// "candidate" (e.g. just-seeded, no wire confirmation yet),
+	// "corroborated_pending" (passively observed atop a seed),
+	// "identity_confirmed" (active scan response). Empty when the
+	// registry has no slot record.
+	VerificationState string `json:"verification_state,omitempty"`
 }
 
 type planeInfo struct {
@@ -2529,7 +2579,9 @@ func (s *Server) listDevices(snapshot *snapshotState) []deviceInfo {
 	}
 	out := make([]deviceInfo, 0)
 	s.registry.Iterate(func(entry registry.DeviceEntry) bool {
-		out = append(out, buildDeviceInfo(entry))
+		// list view: project the primary address's slot state.
+		// Per-alias detail is reachable via devices.get(address=alias).
+		out = append(out, buildDeviceInfo(entry, s.registry, entry.PrimaryDisplayAddress()))
 		return true
 	})
 	sort.Slice(out, func(i, j int) bool {
@@ -2554,13 +2606,27 @@ func (s *Server) getDevice(args map[string]any, snapshot *snapshotState) (device
 		if !ok {
 			return deviceInfo{}, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
 		}
+		// Snapshot stores one deviceInfo per entry with primary-
+		// projected labels. Override with the queried address's
+		// snapshotted slot labels so devices.get(address=alias) in
+		// SNAPSHOT mode matches LIVE mode behavior (Codex P3.5 review
+		// pass 4 finding #1).
+		if labels, ok := snapshot.addressSlots[address]; ok {
+			device.DiscoverySource = labels.discovery
+			device.VerificationState = labels.verification
+		}
 		return device, nil
 	}
 	entry, ok := s.registry.Lookup(address)
 	if !ok {
 		return deviceInfo{}, fmt.Errorf("unknown device 0x%02x: %w", address, ebuserrors.ErrNoSuchDevice)
 	}
-	return buildDeviceInfo(entry), nil
+	// devices.get(address=X): project the QUERIED address's slot state
+	// (Codex P3.5 review pass 3 thread 3). For merged entries with
+	// aliases at different DiscoverySource levels, the operator gets
+	// the slot they asked about — not the primary's potentially-
+	// different label.
+	return buildDeviceInfo(entry, s.registry, address), nil
 }
 
 func (s *Server) listPlanes(args map[string]any, snapshot *snapshotState) ([]planeInfo, error) {
@@ -3540,8 +3606,28 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 	return series
 }
 
-func buildDeviceInfo(entry registry.DeviceEntry) deviceInfo {
+// buildDeviceInfo materialises the JSON view of a device entry.
+//
+// preferredAddr selects which AddressSlot is consulted for the
+// top-level discovery_source/verification_state projection. For
+// `ebus.v1.registry.devices.get(address=X)` the caller MUST pass the
+// queried address X so operators querying a specific alias see THAT
+// alias's slot state — not the primary's. This matters when a merged
+// DeviceEntry has aliases at different DiscoverySource levels (e.g.
+// NETX3's 0x04 broadcast face stays at static_seed/candidate while
+// 0xF1 advances to active_confirmed/identity_confirmed via active
+// scan). For `devices.list` callers pass the primary address so the
+// list view reflects the entry-level "best known" provenance; the
+// per-alias state for each address remains queryable via
+// `devices.get(address=alias)`.
+//
+// preferredAddr=0 is treated as "use the primary"; this keeps existing
+// internal callers that do not need per-alias precision working.
+func buildDeviceInfo(entry registry.DeviceEntry, reg Registry, preferredAddr byte) deviceInfo {
 	primary := entry.PrimaryDisplayAddress()
+	if preferredAddr == 0 {
+		preferredAddr = primary
+	}
 	all := entry.Addresses()
 	// Surface the complete address set (primary + aliases) to match the
 	// GraphQL `addresses` semantics in graphql/schema.go. Snapshot
@@ -3557,15 +3643,78 @@ func buildDeviceInfo(entry registry.DeviceEntry) deviceInfo {
 	} else {
 		aliases = []int{int(primary)}
 	}
+	discovery, verification := lookupDiscoveryLabels(reg, preferredAddr)
 	return deviceInfo{
-		Address:         int(primary),
-		Addresses:       aliases,
-		Manufacturer:    entry.Manufacturer(),
-		DeviceID:        entry.DeviceID(),
-		SoftwareVersion: entry.SoftwareVersion(),
-		HardwareVersion: entry.HardwareVersion(),
-		Planes:          buildPlaneInfoList(entry.Planes()),
+		Address:           int(primary),
+		Addresses:         aliases,
+		Manufacturer:      entry.Manufacturer(),
+		DeviceID:          entry.DeviceID(),
+		SoftwareVersion:   entry.SoftwareVersion(),
+		HardwareVersion:   entry.HardwareVersion(),
+		Planes:            buildPlaneInfoList(entry.Planes()),
+		DiscoverySource:   discovery,
+		VerificationState: verification,
 	}
+}
+
+// snapshotAddressSlots captures per-address discovery_source /
+// verification_state labels at snapshot creation time so the
+// SNAPSHOT-mode devices.get path can project the queried address's
+// slot state instead of falling back to the cached deviceInfo's
+// primary-address labels (Codex P3.5 review pass 4).
+//
+// Iterates the registry's known device entries and projects each
+// alias address. Empty when the registry has no entries.
+func (s *Server) snapshotAddressSlots() map[byte]addressSlotLabels {
+	out := make(map[byte]addressSlotLabels)
+	s.registry.Iterate(func(entry registry.DeviceEntry) bool {
+		for _, addr := range entry.Addresses() {
+			discovery, verification := lookupDiscoveryLabels(s.registry, addr)
+			if discovery == "" && verification == "" {
+				continue
+			}
+			out[addr] = addressSlotLabels{discovery: discovery, verification: verification}
+		}
+		return true
+	})
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// lookupDiscoveryLabels projects the registry AddressSlot's enum
+// state for the given address into the JSON-friendly string labels
+// operators see in `ebus.v1.registry.devices.list` and friends.
+// Mirrors the canonical mapping in helianthus-ebusgateway's
+// address_table.go so MCP and the address-table snapshot agree on
+// label spellings. Returns ("", "") when reg is nil or the slot is
+// missing.
+func lookupDiscoveryLabels(reg Registry, addr byte) (discovery string, verification string) {
+	if reg == nil {
+		return "", ""
+	}
+	slot, ok := reg.LookupSlot(addr)
+	if !ok || slot == nil {
+		return "", ""
+	}
+	switch slot.DiscoverySource {
+	case registry.DiscoverySourcePassiveObserved:
+		discovery = "passive_observed"
+	case registry.DiscoverySourceStaticSeed:
+		discovery = "static_seed"
+	case registry.DiscoverySourceActiveConfirmed:
+		discovery = "active_confirmed"
+	}
+	switch slot.VerificationState {
+	case registry.VerificationStateCandidate:
+		verification = "candidate"
+	case registry.VerificationStateCorroborated:
+		verification = "corroborated_pending"
+	case registry.VerificationStateIdentityConfirmed:
+		verification = "identity_confirmed"
+	}
+	return discovery, verification
 }
 
 func buildPlaneInfoList(planes []registry.Plane) []planeInfo {

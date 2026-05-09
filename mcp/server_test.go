@@ -40,6 +40,14 @@ func (r *testRegistry) Lookup(address byte) (registry.DeviceEntry, bool) {
 	return entry, ok
 }
 
+// LookupSlot satisfies mcp.Registry (added in P3.5 so MCP can project
+// AddressSlot discovery_source / verification_state into device JSON).
+// The test fake holds no slots; tests that verify the new fields use
+// a real registry.DeviceRegistry instead of testRegistry.
+func (r *testRegistry) LookupSlot(byte) (*registry.AddressSlot, bool) {
+	return nil, false
+}
+
 type testEntry struct {
 	info   registry.DeviceInfo
 	planes []registry.Plane

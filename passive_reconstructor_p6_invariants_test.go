@@ -289,8 +289,10 @@ func TestPassiveTransactionReconstructor_AcceptsMasterSrc(t *testing.T) {
 // re-arbitration. The retry's source byte follows the NACK directly,
 // so the Layer 1 inter-frame SYN gate must remain engaged (synced=true)
 // across the NACK reset. This regression test feeds:
-//   [SYN] [valid request frame ending mid-stream — phase=WaitACK]
-//   [NACK] [retry request frame] [ACK] [response] [ACK] [SYN]
+//
+//	[SYN] [valid request frame ending mid-stream — phase=WaitACK]
+//	[NACK] [retry request frame] [ACK] [response] [ACK] [SYN]
+//
 // and verifies the retry classifies as a Transaction event without any
 // Layer 1 byte drops.
 func TestPassiveTransactionReconstructor_NackRetryPreservesSync(t *testing.T) {
@@ -316,10 +318,10 @@ func TestPassiveTransactionReconstructor_NackRetryPreservesSync(t *testing.T) {
 	// frame-boundary marker that handleACKSymbolLocked consumes
 	// when NACK arrives with no further SYN gap.
 	wire := []byte{protocol.SymbolSyn}
-	wire = append(wire, frameBytes(request)...)        // includes trailing SYN -> parser enters WaitACK
-	wire = append(wire, protocol.SymbolNack)           // target NACKs the first attempt
-	wire = append(wire, frameBytes(request)...)        // AM2 retry, no SYN gap; frameBytes appends terminator SYN
-	wire = append(wire, protocol.SymbolAck)            // target ACKs the retry
+	wire = append(wire, frameBytes(request)...) // includes trailing SYN -> parser enters WaitACK
+	wire = append(wire, protocol.SymbolNack)    // target NACKs the first attempt
+	wire = append(wire, frameBytes(request)...) // AM2 retry, no SYN gap; frameBytes appends terminator SYN
+	wire = append(wire, protocol.SymbolAck)     // target ACKs the retry
 	wire = append(wire, responseSegmentBytes([]byte{0x11, 0x22})...)
 	wire = append(wire, protocol.SymbolAck, protocol.SymbolSyn)
 

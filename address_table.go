@@ -168,21 +168,26 @@ func (t *AddressTable) Lookup(addr byte) (*AddressSlot, bool) {
 	if t == nil {
 		return nil, false
 	}
+	// P8.1 — race-free reprojection via LookupSlotSnapshot.
+	//
+	// Both branches below project DiscoverySource / VerificationState
+	// from a value-typed AddressSlotSnapshot taken under r.mu.RLock.
+	// Pre-P8.1 these fields were read lock-free through a live
+	// AddressSlot pointer (worked in practice because the underlying
+	// enums are int-typed and atomic on Go's supported architectures,
+	// but the race detector flags it under sufficient contention).
+	// LookupSlotSnapshot's lock-protected value copy eliminates that
+	// race surface — registry writers must acquire r.mu.Lock() which
+	// blocks behind LookupSlotSnapshot's RLock before mutating slot
+	// fields.
 	if slot, ok := t.slots[addr]; ok && slot != nil {
-		// P8 cache-coherence (Codex P8 gateway review MINOR FINDING_1):
-		// the cached slot's DiscoverySource / VerificationState string
-		// fields are projections captured at insertion time and become
-		// stale when the registry's underlying slot upgrades (e.g. a
-		// directed scan promotes a passive-observed slot to
-		// active_confirmed). Reproject from the live RegistrySlot
-		// pointer to keep the snapshot consistent with the registry's
-		// monotonic ladder. Returns a copy so concurrent readers don't
-		// see torn writes through the cached map entry.
-		if slot.RegistrySlot != nil {
-			view := *slot
-			view.DiscoverySource = projectDiscoverySourceLabel(slot.RegistrySlot.DiscoverySource)
-			view.VerificationState = projectVerificationStateLabel(slot.RegistrySlot.VerificationState)
-			return &view, true
+		if t.reg != nil {
+			if snap, snapOK := t.reg.LookupSlotSnapshot(addr); snapOK {
+				view := *slot
+				view.DiscoverySource = projectDiscoverySourceLabel(snap.DiscoverySource)
+				view.VerificationState = projectVerificationStateLabel(snap.VerificationState)
+				return &view, true
+			}
 		}
 		return slot, true
 	}
@@ -190,20 +195,32 @@ func (t *AddressTable) Lookup(addr byte) (*AddressSlot, bool) {
 	// devices are visible here, preventing maybeInsert from rewriting
 	// their metadata (Codex P2: preserve-existing-registry-slots).
 	if t.reg != nil {
-		if regSlot, ok := t.reg.LookupSlot(addr); ok && regSlot != nil {
+		if snap, ok := t.reg.LookupSlotSnapshot(addr); ok {
 			role := ""
-			switch regSlot.Role {
+			switch snap.Role {
 			case registry.SlotRoleMaster:
 				role = "initiator"
 			case registry.SlotRoleSlave:
 				role = "target"
 			}
 			tier, free := canonicalSlotMetadata(addr)
+			// RegistrySlot pointer is still surfaced for fields not
+			// covered by the snapshot (e.g. FirstObservedAt /
+			// LastObservedAt are in the snapshot, but external
+			// projection consumers may walk to slot.Device for
+			// identity). Use LookupSlot (not LookupSlotSnapshot
+			// alone) because the AddressSlot field expects a
+			// pointer; the snapshot already protected the
+			// race-prone enum reads.
+			var regSlot *registry.AddressSlot
+			if liveSlot, ok := t.reg.LookupSlot(addr); ok {
+				regSlot = liveSlot
+			}
 			return &AddressSlot{
 				Addr:              addr,
 				Role:              role,
-				DiscoverySource:   projectDiscoverySourceLabel(regSlot.DiscoverySource),
-				VerificationState: projectVerificationStateLabel(regSlot.VerificationState),
+				DiscoverySource:   projectDiscoverySourceLabel(snap.DiscoverySource),
+				VerificationState: projectVerificationStateLabel(snap.VerificationState),
 				PriorityTier:      tier,
 				FreeUse:           free,
 				RegistrySlot:      regSlot,

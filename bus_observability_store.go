@@ -75,6 +75,13 @@ type BusObservabilityStore struct {
 	frames     map[frameSeriesKey]uint64
 	errors     map[errorSeriesKey]uint64
 	frameBytes map[frameBytesSeriesKey]uint64
+	// echoMismatchSubclasses is a P10-added parallel counter
+	// breaking down `class=echo_mismatch` events by subclass label.
+	// Stored separately from `errors` so that the existing
+	// `ebus_errors_total` time series shapes are unchanged
+	// (preserves alert backward-compat). Surfaced as the new
+	// `ebus_active_echo_mismatch_subclass_total` Prometheus metric.
+	echoMismatchSubclasses map[echoMismatchSubclassKey]uint64
 
 	recent      []BusMessageRecord
 	recentStart int
@@ -268,10 +275,17 @@ type errorSeriesKey struct {
 	Scope string
 	Class string
 	Phase string
-	// Subclass is an optional further breakdown of Class. Empty for
-	// most error types; populated for echo_mismatch (P10) to
-	// distinguish post-grant collisions from rare bit-flip wire
-	// corruption. Surfaced as the `subclass` Prometheus label.
+}
+
+// echoMismatchSubclassKey is the storage key for the parallel
+// echo_mismatch subclass counter (P10). Tracked SEPARATELY from
+// errorSeriesKey to preserve backward-compat for existing alerts
+// that filter on `ebus_errors_total{class="echo_mismatch"}` without
+// grouping by subclass. Splitting the existing series via a new
+// label would silently break total-count alerts because Prometheus
+// `rate(...)>N` evaluates per-time-series, not aggregate (Codex P10
+// review pass 1 MAJOR FINDING_1).
+type echoMismatchSubclassKey struct {
 	Subclass string
 }
 
@@ -384,20 +398,21 @@ func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 	cfg = applyDefaults(cfg)
 	now := time.Now()
 	store := &BusObservabilityStore{
-		cfg:                   cfg,
-		now:                   time.Now,
-		transportClass:        string(canonicalTransportProtocol(cfg.TransportConfig.Protocol)),
-		activeTimingQuality:   timingQualityForActive(cfg),
-		passiveTimingQuality:  timingQualityForPassive(cfg),
-		lastUpdatedAt:         now,
-		featureFlagsUpdatedAt: now,
-		frames:                make(map[frameSeriesKey]uint64),
-		errors:                make(map[errorSeriesKey]uint64),
-		frameBytes:            make(map[frameBytesSeriesKey]uint64),
-		recent:                make([]BusMessageRecord, cfg.ObserveFirstRecentMessageCapacity),
-		addressBuckets:        make(map[byte]string),
-		specimens:             make(map[string]*specimenFamilyBucket),
-		periodicity:           make(map[periodicityKey]*BusPeriodicityEntry),
+		cfg:                    cfg,
+		now:                    time.Now,
+		transportClass:         string(canonicalTransportProtocol(cfg.TransportConfig.Protocol)),
+		activeTimingQuality:    timingQualityForActive(cfg),
+		passiveTimingQuality:   timingQualityForPassive(cfg),
+		lastUpdatedAt:          now,
+		featureFlagsUpdatedAt:  now,
+		frames:                 make(map[frameSeriesKey]uint64),
+		errors:                 make(map[errorSeriesKey]uint64),
+		frameBytes:             make(map[frameBytesSeriesKey]uint64),
+		echoMismatchSubclasses: make(map[echoMismatchSubclassKey]uint64),
+		recent:                 make([]BusMessageRecord, cfg.ObserveFirstRecentMessageCapacity),
+		addressBuckets:         make(map[byte]string),
+		specimens:              make(map[string]*specimenFamilyBucket),
+		periodicity:            make(map[periodicityKey]*BusPeriodicityEntry),
 		watchEfficiency: watchEfficiencyRuntime{
 			buckets:   make(map[watchEfficiencyBucketKey]*watchEfficiencyBucketRuntime),
 			ambiguous: make(map[watchEfficiencyAmbiguousKey]uint64),
@@ -984,6 +999,7 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 
 	frames := cloneFramesMap(store.frames)
 	errors := cloneErrorsMap(store.errors)
+	echoMismatchSubclasses := cloneEchoMismatchSubclassesMap(store.echoMismatchSubclasses)
 	frameBytes := cloneFrameBytesMap(store.frameBytes)
 	recentLen := store.recentLen
 	totalBusy := store.totalBusy
@@ -1067,13 +1083,24 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		))
 	}
 
-	writer.writeHelp("ebus_errors_total", "Bounded observe-first error counters. The optional `subclass` label provides further breakdown for class=echo_mismatch (P10): pre_echo_syn, post_grant_collision_initiator, post_grant_collision_target, post_grant_ack, post_grant_nack, post_grant_reserved, bit_flip.")
+	writer.writeHelp("ebus_errors_total", "Bounded observe-first error counters.")
 	writer.writeType("ebus_errors_total", "counter")
 	for _, item := range sortedErrorSeries(errors) {
 		writer.writeCounterSample("ebus_errors_total", float64(item.Value), labelMap(
 			"scope", item.Key.Scope,
 			"class", item.Key.Class,
 			"phase", item.Key.Phase,
+		))
+	}
+
+	// P10 — parallel echo_mismatch subclass breakdown. Separate
+	// metric (not a label dimension on ebus_errors_total) so that
+	// existing alerts filtering on class=echo_mismatch keep working
+	// without per-series fan-out.
+	writer.writeHelp("ebus_active_echo_mismatch_subclass_total", "Active-scope echo_mismatch event count broken down by inferred subclass: pre_echo_syn (mux suppression canary; should be 0), post_grant_collision_initiator (third-party initiator's SOF on the wire), post_grant_collision_target (third-party mid-frame target/broadcast byte), post_grant_ack (stale 0x00 from previous txn buffer), post_grant_nack (stale 0xFF), post_grant_reserved (mid-escape sequence), bit_flip (fallback; EMI/wire corruption).")
+	writer.writeType("ebus_active_echo_mismatch_subclass_total", "counter")
+	for _, item := range sortedEchoMismatchSubclassSeries(echoMismatchSubclasses) {
+		writer.writeCounterSample("ebus_active_echo_mismatch_subclass_total", float64(item.Value), labelMap(
 			"subclass", item.Key.Subclass,
 		))
 	}
@@ -1410,16 +1437,19 @@ func (store *BusObservabilityStore) recordActiveErrorLocked(event protocol.BusEv
 	if class == "" {
 		return
 	}
-	subclass := ""
-	if event.Kind == protocol.BusEventEchoMismatch {
-		subclass = classifyEchoMismatchSubclass(event.Byte)
-	}
 	store.incrementErrorLocked(errorSeriesKey{
-		Scope:    "active",
-		Class:    class,
-		Phase:    phase,
-		Subclass: subclass,
+		Scope: "active",
+		Class: class,
+		Phase: phase,
 	})
+	if event.Kind == protocol.BusEventEchoMismatch {
+		// P10 — parallel echo_mismatch subclass counter for operator
+		// observability. Stored in a separate map so the existing
+		// `ebus_errors_total{class="echo_mismatch"}` time series is
+		// not split (Codex P10 review pass 1 MAJOR FINDING_1).
+		subclass := classifyEchoMismatchSubclass(event.Byte)
+		store.echoMismatchSubclasses[echoMismatchSubclassKey{Subclass: subclass}]++
+	}
 	if !event.HasRequest {
 		return
 	}
@@ -2547,6 +2577,40 @@ func sortedErrorSeries(input map[errorSeriesKey]uint64) []errorSeriesItem {
 			return items[i].Key.Class < items[j].Key.Class
 		}
 		return items[i].Key.Phase < items[j].Key.Phase
+	})
+	return items
+}
+
+// cloneEchoMismatchSubclassesMap returns a copy of the
+// echoMismatchSubclasses map (P10 — parallel echo_mismatch
+// subclass counter). Used by RenderPrometheus to take a stable
+// snapshot under the store mutex.
+func cloneEchoMismatchSubclassesMap(input map[echoMismatchSubclassKey]uint64) map[echoMismatchSubclassKey]uint64 {
+	output := make(map[echoMismatchSubclassKey]uint64, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
+}
+
+// echoMismatchSubclassSeriesItem pairs a subclass key with its
+// counter value for deterministic sorted iteration.
+type echoMismatchSubclassSeriesItem struct {
+	Key   echoMismatchSubclassKey
+	Value uint64
+}
+
+// sortedEchoMismatchSubclassSeries returns the subclass series
+// items sorted by Subclass label for deterministic Prometheus
+// output (operator-friendly: alphabetic order is stable across
+// scrapes).
+func sortedEchoMismatchSubclassSeries(input map[echoMismatchSubclassKey]uint64) []echoMismatchSubclassSeriesItem {
+	items := make([]echoMismatchSubclassSeriesItem, 0, len(input))
+	for key, value := range input {
+		items = append(items, echoMismatchSubclassSeriesItem{Key: key, Value: value})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Key.Subclass < items[j].Key.Subclass
 	})
 	return items
 }

@@ -49,14 +49,14 @@ func TestClassifyEchoMismatchSubclass_EscapeByte(t *testing.T) {
 }
 
 // TestClassifyEchoMismatchSubclass_InitiatorAddresses verifies that
-// canonical master-class addresses (0x10, 0x30, 0xF1, 0x71, etc.)
+// canonical initiator-class addresses (0x10, 0x30, 0xF1, 0x71, etc.)
 // classify as post_grant_collision_initiator. These represent the
 // dominant residual case observed live (e.g.
 // `writePrefix=15 readPrefix=F1 15 B5 24 ...`).
 func TestClassifyEchoMismatchSubclass_InitiatorAddresses(t *testing.T) {
 	t.Parallel()
 
-	// Sample of P0/P1 master-class addresses from sourceAddressTableV1.
+	// Sample of P0/P1 initiator-class addresses from sourceAddressTableV1.
 	cases := []byte{0x10, 0x30, 0xF1, 0x71, 0x03, 0x13}
 	for _, addr := range cases {
 		if got := classifyEchoMismatchSubclass(addr); got != "post_grant_collision_initiator" {
@@ -65,14 +65,14 @@ func TestClassifyEchoMismatchSubclass_InitiatorAddresses(t *testing.T) {
 	}
 }
 
-// TestClassifyEchoMismatchSubclass_TargetAddresses verifies slave-class
+// TestClassifyEchoMismatchSubclass_TargetAddresses verifies target-class
 // addresses (most non-canonical bytes) classify as
 // post_grant_collision_target.
 func TestClassifyEchoMismatchSubclass_TargetAddresses(t *testing.T) {
 	t.Parallel()
 
-	// Sample slave-class targets: companion bytes from the table
-	// AND non-canonical addresses default to slave.
+	// Sample target-class targets: companion bytes from the table
+	// AND non-canonical addresses default to target.
 	cases := []byte{0x15, 0x35, 0x08, 0x26, 0x42}
 	for _, addr := range cases {
 		if got := classifyEchoMismatchSubclass(addr); got != "post_grant_collision_target" {
@@ -95,7 +95,12 @@ func TestClassifyEchoMismatchSubclass_BroadcastByte(t *testing.T) {
 // TestRecordActiveError_EchoMismatchSubclassPropagates exercises the
 // full path: BusObservabilityStore.OnBusEvent receives a
 // BusEventEchoMismatch with a specific Byte; the rendered Prometheus
-// output must include the corresponding subclass label.
+// output must:
+//   - emit the unchanged `ebus_errors_total{class="echo_mismatch"}`
+//     counter (preserves backward-compat for existing alerts —
+//     Codex P10 review pass 1 MAJOR FINDING_1)
+//   - emit a parallel `ebus_active_echo_mismatch_subclass_total{
+//     subclass="..."}` counter with the inferred subclass
 func TestRecordActiveError_EchoMismatchSubclassPropagates(t *testing.T) {
 	t.Parallel()
 
@@ -112,22 +117,29 @@ func TestRecordActiveError_EchoMismatchSubclassPropagates(t *testing.T) {
 	}
 
 	metrics := store.RenderPrometheus()
-	want := `class="echo_mismatch"`
-	if !strings.Contains(metrics, want) {
-		t.Fatalf("metrics missing %s:\n%s", want, metrics)
+
+	// The legacy ebus_errors_total{class=echo_mismatch} series is
+	// unchanged (no subclass label dimension on it). Existing
+	// alerts that filter only on class=echo_mismatch keep matching
+	// the same single time series.
+	wantLegacy := `ebus_errors_total{class="echo_mismatch",phase="request",scope="active"} 1`
+	if !strings.Contains(metrics, wantLegacy) {
+		t.Errorf("metrics missing legacy line %q:\n%s", wantLegacy, metrics)
 	}
-	wantSubclass := `subclass="post_grant_collision_initiator"`
+
+	// The new parallel counter exposes the subclass breakdown.
+	wantSubclass := `ebus_active_echo_mismatch_subclass_total{subclass="post_grant_collision_initiator"} 1`
 	if !strings.Contains(metrics, wantSubclass) {
-		t.Errorf("metrics missing %s:\n%s", wantSubclass, metrics)
+		t.Errorf("metrics missing subclass line %q:\n%s", wantSubclass, metrics)
 	}
 }
 
-// TestRecordActiveError_NonEchoMismatchHasEmptySubclass verifies that
-// other error classes (timeout, nack, crc_mismatch) do NOT get a
-// subclass label populated — backward-compat check. The rendered
-// Prometheus output should show subclass="" for non-echo-mismatch
-// errors.
-func TestRecordActiveError_NonEchoMismatchHasEmptySubclass(t *testing.T) {
+// TestRecordActiveError_NonEchoMismatchDoesNotEmitSubclassMetric
+// verifies that other error classes (timeout, nack, crc_mismatch)
+// do NOT bump the new echo_mismatch subclass counter — Codex P10
+// review pass 1 NIT FINDING_3 fix: assert against the literal
+// metric line, not via fragile substring search ordering.
+func TestRecordActiveError_NonEchoMismatchDoesNotEmitSubclassMetric(t *testing.T) {
 	t.Parallel()
 
 	store := NewBusObservabilityStore(DefaultConfig())
@@ -140,24 +152,25 @@ func TestRecordActiveError_NonEchoMismatchHasEmptySubclass(t *testing.T) {
 	}
 
 	metrics := store.RenderPrometheus()
-	// timeout class should appear with empty subclass label.
-	if !strings.Contains(metrics, `class="timeout"`) {
-		t.Fatalf("metrics missing class=timeout:\n%s", metrics)
+
+	// timeout error MUST appear in the legacy errors_total series
+	// (unchanged shape).
+	wantLegacy := `ebus_errors_total{class="timeout",phase="terminal",scope="active"} 1`
+	if !strings.Contains(metrics, wantLegacy) {
+		t.Errorf("metrics missing legacy timeout line %q:\n%s", wantLegacy, metrics)
 	}
-	// Should NOT have a populated subclass for timeout.
-	if strings.Contains(metrics, `class="timeout"`) && strings.Contains(metrics, `class="timeout"`+`,phase=`) {
-		// regex would be cleaner but this guards against the obvious
-		// "timeout error tagged with non-empty subclass" regression.
-		// Empty subclass appears as subclass="" in the output.
-		bad := []string{
-			`class="timeout",subclass="post_grant`,
-			`class="timeout",subclass="bit_flip`,
-			`class="timeout",subclass="pre_echo_syn`,
+
+	// The new subclass counter MUST NOT have any non-zero entries
+	// for a timeout-only event. The metric type may still be
+	// emitted (Prometheus convention: declare type even when no
+	// samples), but no counter LINE should appear.
+	for _, line := range strings.Split(metrics, "\n") {
+		// Skip help / type declarations and empty lines.
+		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
+			continue
 		}
-		for _, b := range bad {
-			if strings.Contains(metrics, b) {
-				t.Errorf("timeout error should NOT have subclass=%q; output:\n%s", b, metrics)
-			}
+		if strings.HasPrefix(line, "ebus_active_echo_mismatch_subclass_total") {
+			t.Errorf("subclass metric emitted for non-echo-mismatch event: %q\nfull output:\n%s", line, metrics)
 		}
 	}
 }

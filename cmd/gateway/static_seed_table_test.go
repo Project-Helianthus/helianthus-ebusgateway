@@ -92,7 +92,7 @@ func TestApplyStaticSeedTable_MCPDeviceListProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST tools/call error = %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var rpcResp struct {
 		Result struct {
@@ -196,7 +196,7 @@ func TestApplyStaticSeedTable_MCPDeviceListProjection_SnapshotMode(t *testing.T)
 	if err != nil {
 		t.Fatalf("snapshot.capture POST error = %v", err)
 	}
-	defer captureResp.Body.Close()
+	defer func() { _ = captureResp.Body.Close() }()
 	var captureRPC struct {
 		Result struct {
 			Content []struct {
@@ -229,7 +229,7 @@ func TestApplyStaticSeedTable_MCPDeviceListProjection_SnapshotMode(t *testing.T)
 	if err != nil {
 		t.Fatalf("snapshot devices.list POST error = %v", err)
 	}
-	defer devResp.Body.Close()
+	defer func() { _ = devResp.Body.Close() }()
 	var devRPC struct {
 		Result struct {
 			Content []struct {
@@ -283,7 +283,7 @@ func TestApplyStaticSeedTable_MCPDeviceListProjection_SnapshotMode(t *testing.T)
 //     fills it later)
 //
 // productids.LoadSeedTable assigns:
-//   - 0xF1 → "initiator" (NETX3 master face)  → SlotRoleMaster
+//   - 0xF1 → "initiator" (NETX3 initiator face) → SlotRoleMaster
 //   - 0xF6 / 0x04 → "target" (NETX3 target faces) → SlotRoleSlave
 //   - 0x15 / 0xEC → "target" (BASV2 target faces) → SlotRoleSlave
 func TestApplyStaticSeedTable_RoleMapping(t *testing.T) {

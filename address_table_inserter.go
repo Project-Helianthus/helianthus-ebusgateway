@@ -323,6 +323,11 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 	registrySlot, _ := i.table.reg.LookupSlot(addr)
 
 	tier, free := canonicalSlotMetadata(addr)
+	// P8.2 — guard the slots map mutation with the AddressTable's
+	// slotsMu so concurrent Lookup readers don't observe a partially-
+	// constructed map state. Closes the pre-existing concurrent-map-
+	// access surface flagged by Codex on PR #590.
+	i.table.slotsMu.Lock()
 	i.table.slots[addr] = &AddressSlot{
 		Addr:              addr,
 		Role:              role,
@@ -332,6 +337,7 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		FreeUse:           free,
 		RegistrySlot:      registrySlot,
 	}
+	i.table.slotsMu.Unlock()
 
 	// A.7c — runtime audit trail. Every passive insertion is logged at
 	// INFO with addr/role/admitted-source/observation-time so operator

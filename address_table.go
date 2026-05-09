@@ -1,6 +1,8 @@
 package ebusgateway
 
 import (
+	"sync"
+
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
@@ -146,8 +148,19 @@ func projectVerificationStateLabel(state registry.VerificationState) string {
 }
 
 type AddressTable struct {
-	reg   *registry.DeviceRegistry
-	slots map[byte]*AddressSlot
+	reg *registry.DeviceRegistry
+
+	// slotsMu guards the slots map for concurrent access between the
+	// AddressTableInserter (which writes via OnPassiveClassifiedEvent
+	// from the passive reconstructor's goroutine) and Lookup readers
+	// (MCP / GraphQL / address-table snapshot consumers, all on
+	// distinct goroutines). P8.2 — close the pre-existing
+	// concurrent-map-access surface flagged by Codex on PR #590.
+	// RWMutex over plain Mutex because reads dominate writes (passive
+	// inserts are bounded by new-address-discovery rate; Lookup runs
+	// per MCP query / GraphQL request).
+	slotsMu sync.RWMutex
+	slots   map[byte]*AddressSlot
 }
 
 func NewAddressTable(regs ...*registry.DeviceRegistry) *AddressTable {
@@ -168,6 +181,17 @@ func (t *AddressTable) Lookup(addr byte) (*AddressSlot, bool) {
 	if t == nil {
 		return nil, false
 	}
+	// P8.2 — slotsMu RLock guards the t.slots map read against the
+	// inserter's concurrent map write at address_table_inserter.go.
+	// Pre-P8.2 these reads were unsynced — Go's runtime detects
+	// concurrent map writes (panic) but read+write produces a torn
+	// read that the race detector also flags. The cached slot's
+	// label fields are then reprojected from a registry snapshot
+	// (P8.1) outside the local lock.
+	t.slotsMu.RLock()
+	cached, hit := t.slots[addr]
+	t.slotsMu.RUnlock()
+
 	// P8.1 — race-free reprojection via LookupSlotSnapshot.
 	//
 	// Both branches below project DiscoverySource / VerificationState
@@ -180,16 +204,16 @@ func (t *AddressTable) Lookup(addr byte) (*AddressSlot, bool) {
 	// race surface — registry writers must acquire r.mu.Lock() which
 	// blocks behind LookupSlotSnapshot's RLock before mutating slot
 	// fields.
-	if slot, ok := t.slots[addr]; ok && slot != nil {
+	if hit && cached != nil {
 		if t.reg != nil {
 			if snap, snapOK := t.reg.LookupSlotSnapshot(addr); snapOK {
-				view := *slot
+				view := *cached
 				view.DiscoverySource = projectDiscoverySourceLabel(snap.DiscoverySource)
 				view.VerificationState = projectVerificationStateLabel(snap.VerificationState)
 				return &view, true
 			}
 		}
-		return slot, true
+		return cached, true
 	}
 	// Consult the wrapped registry so static seeds and active-discovered
 	// devices are visible here, preventing maybeInsert from rewriting

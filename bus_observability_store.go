@@ -268,6 +268,11 @@ type errorSeriesKey struct {
 	Scope string
 	Class string
 	Phase string
+	// Subclass is an optional further breakdown of Class. Empty for
+	// most error types; populated for echo_mismatch (P10) to
+	// distinguish post-grant collisions from rare bit-flip wire
+	// corruption. Surfaced as the `subclass` Prometheus label.
+	Subclass string
 }
 
 type frameBytesSeriesKey struct {
@@ -1062,13 +1067,14 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		))
 	}
 
-	writer.writeHelp("ebus_errors_total", "Bounded observe-first error counters.")
+	writer.writeHelp("ebus_errors_total", "Bounded observe-first error counters. The optional `subclass` label provides further breakdown for class=echo_mismatch (P10): pre_echo_syn, post_grant_collision_initiator, post_grant_collision_target, post_grant_ack, post_grant_nack, post_grant_reserved, bit_flip.")
 	writer.writeType("ebus_errors_total", "counter")
 	for _, item := range sortedErrorSeries(errors) {
 		writer.writeCounterSample("ebus_errors_total", float64(item.Value), labelMap(
 			"scope", item.Key.Scope,
 			"class", item.Key.Class,
 			"phase", item.Key.Phase,
+			"subclass", item.Key.Subclass,
 		))
 	}
 
@@ -1404,10 +1410,15 @@ func (store *BusObservabilityStore) recordActiveErrorLocked(event protocol.BusEv
 	if class == "" {
 		return
 	}
+	subclass := ""
+	if event.Kind == protocol.BusEventEchoMismatch {
+		subclass = classifyEchoMismatchSubclass(event.Byte)
+	}
 	store.incrementErrorLocked(errorSeriesKey{
-		Scope: "active",
-		Class: class,
-		Phase: phase,
+		Scope:    "active",
+		Class:    class,
+		Phase:    phase,
+		Subclass: subclass,
 	})
 	if !event.HasRequest {
 		return
@@ -2074,6 +2085,71 @@ func classifyActiveError(event protocol.BusEvent) (string, string) {
 	default:
 		return "", ""
 	}
+}
+
+// classifyEchoMismatchSubclass returns a sub-type label for an
+// echo_mismatch event based on the byte that was read in place of
+// the expected echo. P10 (operator-directed) — the residual
+// echo_mismatch counter (300+ events post-P7.1) hides several
+// distinct phenomena that should be tracked separately for
+// operator clarity:
+//
+//   - "pre_echo_syn" — read 0xAA before any echo. Should have been
+//     suppressed by the mux's pre-echo-SYN gate at internal/
+//     adaptermux/mux.go:1118-1133. If this counter is non-zero the
+//     suppression is leaking; useful canary.
+//
+//   - "post_grant_collision_initiator" — read a initiator-class byte
+//     (initiator address per AddressClassOf). The wire was carrying
+//     a third-party initiator's source byte at the moment our TX
+//     reached the wire. Real bus collision after the adapter's
+//     STARTED but before the wire confirmed idle.
+//
+//   - "post_grant_collision_target" — read a target-class byte
+//     (the wire was carrying a third-party transaction's target
+//     byte; we tried to TX during another initiator's mid-frame
+//     write).
+//
+//   - "post_grant_ack" — read 0x00. Stale ACK byte from a previous
+//     transaction's tail still in the adapter buffer when we TX'd.
+//
+//   - "post_grant_nack" — read 0xFF. Stale NACK byte (rare).
+//
+//   - "post_grant_reserved" — read 0xA9 (escape). The wire was
+//     carrying an escape sequence header from another transaction.
+//
+//   - "bit_flip" — fallback. The byte doesn't match any known
+//     pattern; likely EMI / wire corruption / single-bit flip.
+//     Not fixable in software.
+//
+// Operator framing (2026-05-09): "After P7.1 passive errors dropped
+// dramatically. Apart from CRC + collisions, we shouldn't see much
+// else." The subclass labels surface which echo_mismatch events are
+// real collisions (most of the 300) vs. wire-noise residuals.
+func classifyEchoMismatchSubclass(readByte byte) string {
+	switch readByte {
+	case protocol.SymbolSyn:
+		return "pre_echo_syn"
+	case protocol.SymbolEscape:
+		return "post_grant_reserved"
+	case protocol.SymbolAck:
+		return "post_grant_ack"
+	case protocol.SymbolNack:
+		return "post_grant_nack"
+	}
+	switch protocol.AddressClassOf(readByte) {
+	case protocol.AddressClassMaster:
+		return "post_grant_collision_initiator"
+	case protocol.AddressClassSlave:
+		return "post_grant_collision_target"
+	case protocol.AddressClassBroadcast:
+		// Broadcast is destined for all; reading one in echo
+		// position means another initiator was emitting a broadcast
+		// frame during our TX. Same class as the target case
+		// (someone else was on the wire mid-frame).
+		return "post_grant_collision_target"
+	}
+	return "bit_flip"
 }
 
 func classifyPassiveAbandon(reason PassiveAbandonReason) (string, string) {

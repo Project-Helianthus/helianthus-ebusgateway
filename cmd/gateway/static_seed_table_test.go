@@ -168,6 +168,107 @@ func TestApplyStaticSeedTable_MCPDeviceListProjection(t *testing.T) {
 	}
 }
 
+// TestApplyStaticSeedTable_MCPDeviceListProjection_SnapshotMode covers
+// the SNAPSHOT-consistency path through MCP. Codex P3.5 review pass 2
+// caught that cloneDeviceInfoList (the helper that materialises a
+// snapshot for replay) had not been updated to carry the new
+// discovery_source / verification_state fields, so requests with
+// `consistency: SNAPSHOT` would have lost them silently while LIVE
+// requests carried them. This test creates a snapshot, then issues a
+// devices.list call with the captured snapshot_id and asserts the
+// new fields are still present.
+func TestApplyStaticSeedTable_MCPDeviceListProjection_SnapshotMode(t *testing.T) {
+	reg := registry.NewDeviceRegistry(nil)
+	applyStaticSeedTable(reg)
+
+	server, err := mcp.NewServer(reg, noopMCPInvoker{})
+	if err != nil {
+		t.Fatalf("mcp.NewServer error = %v", err)
+	}
+	server.SetAdmittedRPCSource(0x7F)
+
+	httpSrv := httptest.NewServer(server.Handler())
+	defer httpSrv.Close()
+
+	// 1. Capture a snapshot.
+	captureBody := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ebus.v1.snapshot.capture","arguments":{}}}`)
+	captureResp, err := http.Post(httpSrv.URL, "application/json", captureBody)
+	if err != nil {
+		t.Fatalf("snapshot.capture POST error = %v", err)
+	}
+	defer captureResp.Body.Close()
+	var captureRPC struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(captureResp.Body).Decode(&captureRPC); err != nil {
+		t.Fatalf("snapshot.capture decode error = %v", err)
+	}
+	if captureRPC.Result.IsError {
+		t.Fatalf("snapshot.capture isError=true")
+	}
+	var captureEnvelope struct {
+		Data struct {
+			SnapshotID string `json:"snapshot_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(captureRPC.Result.Content[0].Text), &captureEnvelope); err != nil {
+		t.Fatalf("snapshot.capture envelope decode error = %v", err)
+	}
+	if captureEnvelope.Data.SnapshotID == "" {
+		t.Fatalf("snapshot.capture returned empty snapshot_id")
+	}
+
+	// 2. Call devices.list with consistency: SNAPSHOT and the captured ID.
+	devicesBody := strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ebus.v1.registry.devices.list","arguments":{"consistency":{"mode":"snapshot","snapshot_id":"` + captureEnvelope.Data.SnapshotID + `"}}}}`)
+	devResp, err := http.Post(httpSrv.URL, "application/json", devicesBody)
+	if err != nil {
+		t.Fatalf("snapshot devices.list POST error = %v", err)
+	}
+	defer devResp.Body.Close()
+	var devRPC struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(devResp.Body).Decode(&devRPC); err != nil {
+		t.Fatalf("snapshot devices.list decode error = %v", err)
+	}
+	if devRPC.Result.IsError {
+		t.Fatalf("snapshot devices.list isError=true; body=%q", devRPC.Result.Content[0].Text)
+	}
+	var devEnvelope struct {
+		Data []struct {
+			Address           int    `json:"address"`
+			DiscoverySource   string `json:"discovery_source"`
+			VerificationState string `json:"verification_state"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(devRPC.Result.Content[0].Text), &devEnvelope); err != nil {
+		t.Fatalf("snapshot devices envelope decode error = %v", err)
+	}
+
+	staticSeen := 0
+	for _, d := range devEnvelope.Data {
+		if d.DiscoverySource == "static_seed" {
+			staticSeen++
+			if d.VerificationState != "candidate" {
+				t.Errorf("snapshot device 0x%02X verification_state = %q; want %q", d.Address, d.VerificationState, "candidate")
+			}
+		}
+	}
+	if staticSeen == 0 {
+		t.Fatalf("snapshot devices envelope: no entries carry discovery_source=static_seed (snapshot clone path dropped the field?); data=%v", devEnvelope.Data)
+	}
+}
+
 // TestApplyStaticSeedTable_RoleMapping asserts the gateway-side
 // role-string → registry.SlotRole mapping. Roles in
 // productids.SeedAddressEntry are free-form strings; we map at this

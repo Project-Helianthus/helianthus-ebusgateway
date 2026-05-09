@@ -2470,13 +2470,15 @@ func cloneDeviceInfoList(source []deviceInfo) []deviceInfo {
 			copy(aliases, device.Addresses)
 		}
 		out[i] = deviceInfo{
-			Address:         device.Address,
-			Addresses:       aliases,
-			Manufacturer:    device.Manufacturer,
-			DeviceID:        device.DeviceID,
-			SoftwareVersion: device.SoftwareVersion,
-			HardwareVersion: device.HardwareVersion,
-			Planes:          clonePlaneInfoList(device.Planes),
+			Address:           device.Address,
+			Addresses:         aliases,
+			Manufacturer:      device.Manufacturer,
+			DeviceID:          device.DeviceID,
+			SoftwareVersion:   device.SoftwareVersion,
+			HardwareVersion:   device.HardwareVersion,
+			Planes:            clonePlaneInfoList(device.Planes),
+			DiscoverySource:   device.DiscoverySource,
+			VerificationState: device.VerificationState,
 		}
 	}
 	return out

@@ -534,6 +534,71 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 			}
 			events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
 			reconstructor.state.phase = passivePhaseAbandoned
+			return events
+		}
+
+		// P7 — LEN-based request completion (Mode C fix).
+		//
+		// eBUS protocol fact (Spec_Prot_7 §3, mirrored in
+		// helianthus-docs-ebus protocols/ebus-services/ebus-overview.md
+		// §"Frame Sequence"): for M2I (initiator/initiator) and M2T
+		// (initiator/target) transactions, there is NO SYN between the
+		// command's CRC byte and the target's ACK byte. The wire is
+		//
+		//     I -> T: SRC DST PB SB LEN [data×LEN] CRC
+		//     T -> I: ACK
+		//     [M2T only] T -> I: RESP_LEN [data×RESP_LEN] RESP_CRC
+		//     [M2T only] I -> T: ACK
+		//     I -> T: SYN  (only at the very end of the transaction)
+		//
+		// Without this early-transition, the parser keeps accumulating
+		// post-CRC bytes (ACK + response + final ACK) into requestRaw
+		// until the trailing SYN. parseFrame then rejects the buffer
+		// because len != 6 + LEN, abandoning every M2I/M2T transaction
+		// on real wire as `corrupted_request` — the dominant failure
+		// mode left after P6 (live-validated 2026-05-09: 0/min Layer 1,
+		// ~4/min Layer 2, ~68/min uncategorised — this fix targets that
+		// remainder).
+		//
+		// As soon as `requestRaw` reaches the structurally-complete
+		// length 6 + LEN_byte AND parseFrame succeeds, transition to
+		// the appropriate phase based on frameType:
+		//
+		//   * Broadcast: emit the BroadcastFrame event immediately and
+		//     reset to Idle (synced=false; the next observed SYN will
+		//     re-engage the Layer 1 gate). Real broadcast wire IS
+		//     [request_bytes][SYN] so the SYN that follows is consumed
+		//     cleanly by the Idle handler.
+		//
+		//   * M2I / M2T: transition to passivePhaseWaitACK so the next
+		//     wire byte (the target's ACK or NACK) is processed by
+		//     handleACKSymbolLocked.
+		//
+		// parseFrame failure at LEN reach (e.g. CRC mismatch) does NOT
+		// abandon here — keeps accumulating. The trailing SYN path
+		// below preserves the existing abandon classification (and
+		// matches the historical behavior for genuinely corrupt
+		// frames).
+		//
+		// CAVEAT (P7.1 follow-up): the passive-tap escape decoder
+		// produces a logical 0xAA when the wire carried the escape
+		// sequence 0xA9 0x01 (a logical data byte 0xAA). The current
+		// non-SYN-branch entry condition treats that logical 0xAA as
+		// SYN, so frames whose data region contains a logical 0xAA
+		// still abandon at the SYN branch below before reaching this
+		// LEN-completion check. Tracking raw-vs-logical metadata
+		// through PassiveTapEvent (or making the SYN check
+		// frame-state-aware) is a separate change — see the deferred
+		// follow-ups in the post-cruise plan.
+		if len(reconstructor.state.requestRaw) >= 5 {
+			expectedLen := 6 + int(reconstructor.state.requestRaw[4])
+			if len(reconstructor.state.requestRaw) == expectedLen {
+				if events, ok := reconstructor.commitRequestFrameLocked(events, observedAt); ok {
+					return events
+				}
+				// parseFrame failed: keep accumulating and let the
+				// SYN-triggered path classify the abandon below.
+			}
 		}
 		return events
 	}
@@ -558,16 +623,94 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 		return events
 	}
 
+	// Successful parse: dispatch via the shared helper. The trailing
+	// SYN consumed this frame so the post-commit reset MUST use the
+	// AfterSyn variant to keep Layer 1's synced flag engaged for the
+	// next frame. Codex P7 review pass 1 NIT FINDING_1.
+	return reconstructor.dispatchParsedRequestLocked(events, frame, observedAt, true /*afterSyn*/)
+}
+
+// commitRequestFrameLocked is the LEN-based early-transition entry
+// point used by handleRequestSymbolLocked while still accumulating
+// non-SYN bytes (Mode C / P7).
+//
+// Returns ok=true when the frame was handled (M2I/M2T transitioned
+// to passivePhaseWaitACK without waiting for the SYN that doesn't
+// arrive on real wire). Returns ok=false in two cases:
+//
+//   1. parseFrame itself failed — caller keeps accumulating; the
+//      trailing SYN path classifies the abandon (corrupted_request /
+//      arbitration_fragment / self_echo / scan_collision).
+//
+//   2. Frame parsed cleanly but its frameType is Broadcast or Unknown.
+//      Codex P7 review pass 3 FINDING_1: real broadcast wire IS
+//      [SRC..CRC][SYN] — the trailing SYN is the canonical commit
+//      boundary, and broadcast timing observables (RequestEnd,
+//      Terminal, ObservedAt) must reflect that SYN's timestamp, not
+//      the CRC byte's. Truncated [SYN] SRC..CRC without the trailing
+//      SYN must NOT classify as a complete broadcast. So broadcast
+//      and Unknown fall through to the SYN-triggered path.
+//
+// Caller MUST hold stateMu and MUST have populated requestRaw with
+// the candidate request bytes. When ok=true, the post-commit reset
+// uses resetStateLocked (NOT AfterSyn) because no SYN has been
+// consumed at LEN+CRC reach — the trailing wire SYN re-engages
+// Layer 1 via the passivePhaseIdle handler.
+func (reconstructor *PassiveTransactionReconstructor) commitRequestFrameLocked(events []PassiveClassifiedEvent, observedAt time.Time) ([]PassiveClassifiedEvent, bool) {
+	frame, ok := parseFrame(reconstructor.state.requestRaw)
+	if !ok {
+		return events, false
+	}
+	switch frame.Type() {
+	case protocol.FrameTypeInitiatorInitiator, protocol.FrameTypeInitiatorTarget:
+		return reconstructor.dispatchParsedRequestLocked(events, frame, observedAt, false /*afterSyn*/), true
+	default:
+		// Broadcast / Unknown: defer to SYN-triggered path so the
+		// terminal SYN provides canonical timing for broadcast and
+		// classification for Unknown.
+		return events, false
+	}
+}
+
+// dispatchParsedRequestLocked is the post-parse-success dispatch used
+// by BOTH the LEN-based early-transition path
+// (commitRequestFrameLocked, afterSyn=false) AND the legacy SYN-
+// triggered path (handleRequestSymbolLocked's SYN branch,
+// afterSyn=true). Centralising the frameType switch + Faces / event
+// emission / reset here prevents the two entry points from drifting
+// (Codex P7 review pass 1 NIT FINDING_1).
+//
+// afterSyn selects the post-commit reset variant. The SYN-triggered
+// path consumes a SymbolSyn so the reset re-engages Layer 1's synced
+// flag (resetStateLockedAfterSyn). The LEN-based path has not yet
+// consumed a SYN; the trailing wire SYN re-engages Layer 1 via the
+// passivePhaseIdle handler (resetStateLocked).
+//
+// The FrameTypeUnknown case folds into the default branch (corrupted
+// target abandon), so callers do not need to pre-filter Unknown.
+func (reconstructor *PassiveTransactionReconstructor) dispatchParsedRequestLocked(events []PassiveClassifiedEvent, frame protocol.Frame, observedAt time.Time, afterSyn bool) []PassiveClassifiedEvent {
+	reset := reconstructor.resetStateLocked
+	if afterSyn {
+		reset = reconstructor.resetStateLockedAfterSyn
+	}
+
+	// FrameTypeUnknown: abandon before mutating any frame state so
+	// the abandon event observes an EMPTY state.request and an
+	// untouched state.timing.RequestEnd / lastProgressAt — matches
+	// the pre-refactor SYN path AND pre-refactor LEN path observable
+	// behavior (Codex P7 review pass 2 FINDING_1).
 	frameType := frame.Type()
 	if frameType == protocol.FrameTypeUnknown {
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedTarget, observedAt, ebuserrors.ErrInvalidPayload))
-		// P6 Layer 1 — same SYN-consuming branch as above.
-		reconstructor.resetStateLockedAfterSyn()
+		reset()
 		return events
 	}
 
+	reconstructor.state.timing.RequestEnd = observedAt
+	reconstructor.state.lastProgressAt = observedAt
 	reconstructor.state.request = frame
 	reconstructor.state.frameType = frameType
+
 	switch frameType {
 	case protocol.FrameTypeBroadcast:
 		reconstructor.recordRecoveryLocked()
@@ -583,14 +726,17 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 			},
 			ObservedAt: observedAt,
 		})
-		// P6 Layer 1 — broadcast frame committed on the trailing SYN.
-		reconstructor.resetStateLockedAfterSyn()
+		reset()
 	case protocol.FrameTypeInitiatorInitiator, protocol.FrameTypeInitiatorTarget:
 		reconstructor.state.phase = passivePhaseWaitACK
 	default:
+		// protocol.FrameType enum has only Unknown / M2I / M2T /
+		// Broadcast today; this branch is defensive against future
+		// enum extensions. State has already been populated above
+		// (matches the pre-refactor SYN-path default branch which
+		// also wrote state.request before abandon).
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedTarget, observedAt, ebuserrors.ErrInvalidPayload))
-		// P6 Layer 1 — terminal SYN already consumed at top of arm.
-		reconstructor.resetStateLockedAfterSyn()
+		reset()
 	}
 	return events
 }

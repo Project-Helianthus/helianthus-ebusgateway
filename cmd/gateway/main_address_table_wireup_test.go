@@ -215,10 +215,14 @@ func feedGatewayWireupSymbols(reconstructor *ebusgateway.PassiveTransactionRecon
 	}
 }
 
+// gatewayWireupFrameBytes returns the wire bytes for an M2T request
+// (SRC..CRC) WITHOUT a trailing SymbolSyn — matches real eBUS wire
+// shape (Spec_Prot_7 §3, P7). Caller appends ACK + response segment
+// + ACK + SYN for a full transaction, mirroring real wire.
 func gatewayWireupFrameBytes(frame protocol.Frame) []byte {
-	raw := make([]byte, 0, 7+len(frame.Data))
+	raw := make([]byte, 0, 6+len(frame.Data))
 	raw = append(raw, frame.Source, frame.Target, frame.Primary, frame.Secondary, byte(len(frame.Data)))
 	raw = append(raw, frame.Data...)
-	raw = append(raw, protocol.CRC(raw), protocol.SymbolSyn)
+	raw = append(raw, protocol.CRC(raw))
 	return raw
 }

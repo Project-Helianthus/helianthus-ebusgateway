@@ -53,7 +53,10 @@ func TestPassiveTransactionReconstructor_ClassifiesMasterMaster(t *testing.T) {
 		Secondary: 0x02,
 		Data:      []byte{0x03},
 	}
-	payload := append(frameBytes(frame), protocol.SymbolAck, protocol.SymbolSyn)
+	// M2I (FrameTypeInitiatorInitiator) wire: SRC DST PB SB LEN data
+	// CRC ACK SYN — no SYN between command CRC and the target's ACK
+	// (Spec_Prot_7 §3, P7).
+	payload := append(requestFrameBytes(frame), protocol.SymbolAck, protocol.SymbolSyn)
 	feedPassiveSymbols(reconstructor, time.Unix(0, 0), payload)
 
 	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventMasterFrame)
@@ -79,7 +82,10 @@ func TestPassiveTransactionReconstructor_ClassifiesDirectTransaction(t *testing.
 		Secondary: 0x09,
 		Data:      []byte{0x01},
 	}
-	payload := append(frameBytes(request), protocol.SymbolAck)
+	// M2T wire: SRC DST PB SB LEN data CRC ACK RESP_LEN resp_data
+	// RESP_CRC ACK SYN — no SYN between command CRC and the target's
+	// ACK (Spec_Prot_7 §3, P7).
+	payload := append(requestFrameBytes(request), protocol.SymbolAck)
 	payload = append(payload, responseSegmentBytes([]byte{0x11, 0x55})...)
 	payload = append(payload, protocol.SymbolAck, protocol.SymbolSyn)
 	feedPassiveSymbols(reconstructor, time.Unix(0, 0), payload)
@@ -113,7 +119,10 @@ func TestPassiveTransactionReconstructor_NoResponseBecomesAbandoned(t *testing.T
 		Secondary: 0x09,
 		Data:      []byte{0x01},
 	}
-	payload := append(frameBytes(request), protocol.SymbolAck, protocol.SymbolSyn)
+	// M2T no-response wire: SRC DST PB SB LEN data CRC ACK SYN — no
+	// SYN between command CRC and the target's ACK; the trailing SYN
+	// (with empty response phase) signals no_response (P7).
+	payload := append(requestFrameBytes(request), protocol.SymbolAck, protocol.SymbolSyn)
 	feedPassiveSymbols(reconstructor, time.Unix(0, 0), payload)
 
 	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventAbandonedTransaction)
@@ -140,7 +149,7 @@ func TestPassiveTransactionReconstructor_ResetAbandonsInFlight(t *testing.T) {
 		Data:      []byte{0x01},
 	}
 	base := time.Unix(0, 0)
-	feedPassiveSymbols(reconstructor, base, append(frameBytes(request), protocol.SymbolAck))
+	feedPassiveSymbols(reconstructor, base, append(requestFrameBytes(request), protocol.SymbolAck))
 	reconstructor.OnPassiveTapEvent(PassiveTapEvent{
 		Kind:       PassiveTapEventReset,
 		ObservedAt: base.Add(100 * time.Millisecond),
@@ -176,7 +185,7 @@ func TestPassiveTransactionReconstructor_ReadTimeoutHonorsWatchdog(t *testing.T)
 		Data:      []byte{0x01},
 	}
 	base := time.Unix(0, 0)
-	feedPassiveSymbols(reconstructor, base, append(frameBytes(request), protocol.SymbolAck))
+	feedPassiveSymbols(reconstructor, base, append(requestFrameBytes(request), protocol.SymbolAck))
 
 	reconstructor.OnPassiveTapEvent(PassiveTapEvent{
 		Kind:       PassiveTapEventReadTimeout,
@@ -271,9 +280,12 @@ func TestReconstructorSelfEchoACKPhase(t *testing.T) {
 		Secondary: 0x09,
 		Data:      []byte{0x01},
 	}
-	// frameBytes includes the trailing SYN which transitions to ACK wait phase.
-	// Then send another SYN to trigger the unexpected_syn/self_echo path.
-	payload := append(frameBytes(request), protocol.SymbolSyn)
+	// requestFrameBytes is the M2T-shape (no trailing SYN), matching
+	// real wire. The parser hits LEN+CRC, transitions to WaitACK
+	// (P7), then the SYN below is processed as an unexpected SYN
+	// during ACK wait → self_echo classification because src matches
+	// the local snapshotter address.
+	payload := append(requestFrameBytes(request), protocol.SymbolSyn)
 	feedPassiveSymbols(reconstructor, time.Unix(0, 0), payload)
 
 	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventAbandonedTransaction)

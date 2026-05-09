@@ -20,7 +20,7 @@ func TestClassifyEchoMismatchSubclass_PreEchoSYN(t *testing.T) {
 	t.Parallel()
 
 	if got := classifyEchoMismatchSubclass(protocol.SymbolSyn); got != "pre_echo_syn" {
-		t.Errorf("classifyEchoMismatchSubclass(0xAA) = %q; want pre_echo_syn (mux suppression canary)", got)
+		t.Errorf("classifyEchoMismatchSubclass(0xAA) = %q; want pre_echo_syn (byte-value-based label for 0xAA in echo position; semantic interpretation per P10.1 doc-comment is approximate — could be mux suppression leak OR escape-decoded data byte)", got)
 	}
 }
 

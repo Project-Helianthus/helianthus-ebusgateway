@@ -569,7 +569,8 @@ func TestBuildWireTimingReferenceArtifactFailsOnMalformedSessionSendLine(t *test
 }
 
 func transactionPayload(request protocol.Frame, responseData []byte) []byte {
-	payload := append([]byte{}, frameBytes(request)...)
+	// M2T wire shape (P7 — no SYN between command CRC and target ACK).
+	payload := append([]byte{}, requestFrameBytes(request)...)
 	payload = append(payload, protocol.SymbolAck)
 	payload = append(payload, responseSegmentBytes(responseData)...)
 	payload = append(payload, protocol.SymbolAck, protocol.SymbolSyn)
@@ -580,8 +581,12 @@ func proxyLogLinesForTransaction(at time.Time, request protocol.Frame, responseD
 	lines := make([]string, 0, 32)
 	prefix := at.UTC().Format(proxyLogTimestampLayout)
 	lines = append(lines, fmt.Sprintf("%s session=1 start initiator=0x%02X", prefix, request.Source))
-	sendSymbols := frameBytes(request)
-	sendSymbols = append(sendSymbols[1:len(sendSymbols)-1], protocol.SymbolAck, protocol.SymbolSyn)
+	// proxy "send" log line: source byte is consumed by the
+	// `start initiator=...` event, so the first byte is dropped.
+	// requestFrameBytes returns SRC..CRC (no trailing SYN); skip the
+	// SRC byte and append ACK + SYN to mirror the proxy's outbound
+	// log shape.
+	sendSymbols := append(requestFrameBytes(request)[1:], protocol.SymbolAck, protocol.SymbolSyn)
 	for _, symbol := range sendSymbols {
 		lines = append(lines, fmt.Sprintf("%s session=1 send symbol=0x%02X", prefix, symbol))
 	}

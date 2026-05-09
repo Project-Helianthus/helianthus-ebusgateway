@@ -1101,25 +1101,49 @@ func enhReceivedBytes(values []byte) []byte {
 	return out
 }
 
-func frameBytes(frame protocol.Frame) []byte {
-	raw := make([]byte, 0, 7+len(frame.Data))
+// requestFrameBytes returns the wire bytes for a single eBUS request
+// frame (`SRC DST PB SB LEN [data×LEN] CRC`) WITHOUT a trailing
+// SymbolSyn. This matches the real-wire shape for M2I (initiator/
+// initiator) and M2T (initiator/target) transactions, where the
+// transaction continues with target ACK + (optional) response phase
+// before the trailing SYN — there is NO SYN between the command CRC
+// and the target's ACK byte (Spec_Prot_7 §3, P7).
+//
+// Use frameBytes (with trailing SYN) for broadcast wire tests where
+// the SYN immediately after CRC matches actual broadcast wire shape.
+func requestFrameBytes(frame protocol.Frame) []byte {
+	raw := make([]byte, 0, 6+len(frame.Data))
 	raw = append(raw, frame.Source, frame.Target, frame.Primary, frame.Secondary, byte(len(frame.Data)))
 	raw = append(raw, frame.Data...)
-	raw = append(raw, protocol.CRC(raw), protocol.SymbolSyn)
+	raw = append(raw, protocol.CRC(raw))
 	return raw
 }
 
+// frameBytes returns a request frame with a trailing SymbolSyn — the
+// real-wire shape for broadcast transactions (which have no ACK or
+// response phase, so SYN immediately follows CRC). Most M2I/M2T tests
+// should use requestFrameBytes instead.
+func frameBytes(frame protocol.Frame) []byte {
+	return append(requestFrameBytes(frame), protocol.SymbolSyn)
+}
+
 func proxyObserverTransactionBytes(request protocol.Frame, responseData []byte) []byte {
-	// Real eBUS wire always emits at least one SymbolSyn between
-	// frames (bus-idle marker). The original fixture omitted the
-	// leading SYN because the pre-P6 reconstructor accepted any
-	// non-SYN byte as a frame source unconditionally. P6 Layer 1
-	// (inter-frame SYN gate) requires the SYN before accepting a new
-	// frame's source byte, so we now prepend one to mirror real
-	// wire conditions. Bus-tap-only tests are unaffected (they
-	// assert on byte-forwarding behavior, not framing semantics).
+	// Real eBUS wire (Spec_Prot_7 §3) for an M2T transaction:
+	//
+	//     [SYN]  (bus-idle marker between frames — P6 Layer 1)
+	//     SRC DST PB SB LEN data CRC
+	//     ACK    (target acks command — NO SYN before this byte, P7)
+	//     RESP_LEN resp_data RESP_CRC
+	//     ACK    (initiator acks response)
+	//     SYN    (transaction terminator)
+	//
+	// Pre-P6 fixture lacked the leading SYN; pre-P7 fixture (legacy
+	// frameBytes with trailing SYN) injected a spurious SYN between
+	// command CRC and target ACK that does not exist on real wire.
+	// requestFrameBytes returns SRC..CRC without a trailing SYN, so
+	// the wire shape now matches Spec_Prot_7 exactly.
 	payload := []byte{protocol.SymbolSyn}
-	payload = append(payload, frameBytes(request)...)
+	payload = append(payload, requestFrameBytes(request)...)
 	payload = append(payload, protocol.SymbolAck)
 	payload = append(payload, responseSegmentBytes(responseData)...)
 	payload = append(payload, protocol.SymbolAck, protocol.SymbolSyn)

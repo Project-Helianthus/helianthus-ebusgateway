@@ -33,7 +33,8 @@ func BenchmarkPassiveTransactionReconstructorRetainedTransaction(b *testing.B) {
 		Secondary: 0x09,
 		Data:      []byte{0x01},
 	}
-	payload := append(frameBytes(request), protocol.SymbolAck)
+	// M2T wire shape (P7 — no SYN between command CRC and target ACK).
+	payload := append(requestFrameBytes(request), protocol.SymbolAck)
 	payload = append(payload, responseSegmentBytes([]byte{0x11, 0x55})...)
 	payload = append(payload, protocol.SymbolAck, protocol.SymbolSyn)
 	base := time.Unix(0, 0)

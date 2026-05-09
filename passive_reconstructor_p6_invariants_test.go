@@ -312,16 +312,24 @@ func TestPassiveTransactionReconstructor_NackRetryPreservesSync(t *testing.T) {
 		Secondary: 0x09,
 		Data:      []byte{0x01},
 	}
-	// frameBytes already terminates the request with SymbolSyn, which
-	// triggers parseFrame and transitions the parser to
-	// passivePhaseWaitACK. The SYN at line 644 then serves as the
-	// frame-boundary marker that handleACKSymbolLocked consumes
-	// when NACK arrives with no further SYN gap.
+	// Real eBUS M2T wire shape for AM2 NACK retry (Spec_Prot_7 §3 +
+	// internal/adaptermux/wire_phase.go:185-198):
+	//
+	//   [SYN]                           (Layer 1 idle marker)
+	//   SRC DST PB SB LEN data CRC      (request, no trailing SYN)
+	//   NACK                            (target NACKs first attempt)
+	//   SRC DST PB SB LEN data CRC      (immediate retry, no SYN gap)
+	//   ACK                             (target ACKs retry)
+	//   RESP_LEN resp_data RESP_CRC     (response)
+	//   ACK SYN                         (initiator ACKs + transaction end)
+	//
+	// requestFrameBytes returns SRC..CRC without the trailing SYN
+	// that the legacy frameBytes helper appended (Mode C / P7 fix).
 	wire := []byte{protocol.SymbolSyn}
-	wire = append(wire, frameBytes(request)...) // includes trailing SYN -> parser enters WaitACK
-	wire = append(wire, protocol.SymbolNack)    // target NACKs the first attempt
-	wire = append(wire, frameBytes(request)...) // AM2 retry, no SYN gap; frameBytes appends terminator SYN
-	wire = append(wire, protocol.SymbolAck)     // target ACKs the retry
+	wire = append(wire, requestFrameBytes(request)...) // request
+	wire = append(wire, protocol.SymbolNack)           // target NACKs the first attempt
+	wire = append(wire, requestFrameBytes(request)...) // AM2 retry, immediate, no SYN gap
+	wire = append(wire, protocol.SymbolAck)            // target ACKs the retry
 	wire = append(wire, responseSegmentBytes([]byte{0x11, 0x22})...)
 	wire = append(wire, protocol.SymbolAck, protocol.SymbolSyn)
 

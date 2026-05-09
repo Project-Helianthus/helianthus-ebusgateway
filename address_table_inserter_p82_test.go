@@ -18,27 +18,40 @@ import (
 // mutex, so concurrent map writes can panic Go's runtime and
 // concurrent read+write trips the race detector.
 //
-// Methodology: a writer goroutine drives passive insertions across a
-// rotating address pool while reader goroutines hammer
-// AddressTable.Lookup. Race detector (-race) is the authoritative
-// gate — a torn map read or any concurrent map access would fail.
+// Methodology: a writer goroutine directly mutates t.slots (under
+// the new slotsMu Lock) and reader goroutines hammer
+// AddressTable.Lookup (which takes RLock). Race detector (-race) is
+// the authoritative gate — any unsynced map access would fail.
 //
-// The test also asserts the reader sees a consistent slot value —
-// the cached AddressSlot's label fields are projected from the
-// registry snapshot (P8.1) so the read is doubly guarded: t.slotsMu
-// for the map access, then registry.r.mu for the enum reads.
+// Why bypass the inserter (Codex P8.2 review MINOR FINDING_1): the
+// inserter's maybeInsert short-circuits via `if _, exists :=
+// table.Lookup(addr); exists { return }` once an address has been
+// registered, so a writer cycling a small address pool only mutates
+// the map on the FIRST pass. End-of-phase counters tracking
+// OnPassiveClassifiedEvent calls thus over-count actual writes, and
+// the test could appear to pass while only exercising a tiny race
+// window. Driving the map mutations directly here ensures every
+// iteration of the writer goroutine produces a real
+// `t.slots[addr] = ...` assignment that overlaps with the reader
+// goroutines' map reads.
+//
+// We still go through the slotsMu lock so the test exercises the
+// same locking path the inserter uses in production.
 func TestATRInserter_P82_ConcurrentLookupAndInsertRaceFree(t *testing.T) {
 	reg := registry.NewDeviceRegistry(nil)
 	table := NewAddressTable(reg)
-	inserter := NewAddressTableInserter(table, DefaultConfig())
 
 	const writeAddrPool = 16
-	var writes uint64
+	var slotWrites uint64
 	stop := make(chan struct{})
 
 	var wg sync.WaitGroup
 
-	// Writer goroutine: cycle through addresses 0x10..0x1F.
+	// Writer goroutine: directly hammer t.slots under slotsMu Lock,
+	// using a rotating pool of addresses. Each iteration is a real
+	// map mutation (not gated by the inserter's existence-check
+	// short-circuit), so the slotWrites counter accurately reflects
+	// the number of map assignments.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -50,27 +63,35 @@ func TestATRInserter_P82_ConcurrentLookupAndInsertRaceFree(t *testing.T) {
 			default:
 			}
 			addr := byte(0x10 + (i % writeAddrPool))
-			event := atrPassiveTransactionEvent(time.Now().UTC(), 0xF1, addr, protocol.SymbolAck)
-			inserter.OnPassiveClassifiedEvent(event)
-			atomic.AddUint64(&writes, 1)
+			table.slotsMu.Lock()
+			table.slots[addr] = &AddressSlot{
+				Addr:              addr,
+				Role:              "target",
+				DiscoverySource:   "passive_observed",
+				VerificationState: "corroborated_pending",
+			}
+			table.slotsMu.Unlock()
+			atomic.AddUint64(&slotWrites, 1)
 			i++
 		}
 	}()
 
-	// Start barrier — wait for at least one write before reads.
+	// Start barrier — wait for at least one slot write before
+	// kicking the readers.
 	deadline := time.Now().Add(2 * time.Second)
-	for atomic.LoadUint64(&writes) == 0 {
+	for atomic.LoadUint64(&slotWrites) == 0 {
 		if time.Now().After(deadline) {
 			close(stop)
 			wg.Wait()
-			t.Fatal("writer goroutine produced no writes within 2s — start barrier exceeded")
+			t.Fatal("writer goroutine produced no slot writes within 2s — start barrier exceeded")
 		}
 		time.Sleep(time.Microsecond)
 	}
 
+	startWrites := atomic.LoadUint64(&slotWrites)
+
 	// 4 reader goroutines hammering Lookup.
 	const numReaders = 4
-	startWrites := atomic.LoadUint64(&writes)
 	for r := 0; r < numReaders; r++ {
 		wg.Add(1)
 		go func() {
@@ -78,8 +99,6 @@ func TestATRInserter_P82_ConcurrentLookupAndInsertRaceFree(t *testing.T) {
 			for j := 0; j < 1000; j++ {
 				addr := byte(0x10 + (j % writeAddrPool))
 				if slot, ok := table.Lookup(addr); ok && slot != nil {
-					// Read each label field (these are race-free per
-					// P8.1: snapshot copy under registry RLock).
 					_ = slot.DiscoverySource
 					_ = slot.VerificationState
 					_ = slot.Role
@@ -88,18 +107,85 @@ func TestATRInserter_P82_ConcurrentLookupAndInsertRaceFree(t *testing.T) {
 		}()
 	}
 
-	// Stop the writer; wg.Wait joins both the writer and the reader
-	// goroutines (each reader has a fixed 1000-iteration loop and
-	// exits naturally; the writer exits on stop).
+	// Stop the writer; wg.Wait joins everyone.
 	close(stop)
 	wg.Wait()
 
-	// End-of-phase assertion: writes counter advanced sufficiently
-	// during the test.
-	endWrites := atomic.LoadUint64(&writes)
-	if endWrites <= startWrites {
-		t.Errorf("writer produced %d writes after start barrier; want > 0 (race window not exercised)", endWrites-startWrites)
+	// End-of-phase assertion: at least some writer iterations ran
+	// during the reader phase. The threshold is intentionally low —
+	// the test goal is the race detector exercising any overlap, and
+	// goroutine scheduling can starve the writer when readers
+	// dominate the runqueue. A non-zero advance proves overlap; the
+	// race detector is the authoritative correctness gate.
+	endWrites := atomic.LoadUint64(&slotWrites)
+	if endWrites-startWrites < 1 {
+		t.Errorf("writer produced 0 slot writes during reader phase; want >= 1 (race window not exercised)")
 	}
+}
+
+// TestATRInserter_P82_ConcurrentLookupAndInserterEndToEnd is the
+// end-to-end variant: the writer goes through the actual inserter,
+// which exercises the inserter's call site of slotsMu.Lock. Limited
+// race-window exposure (the inserter short-circuits after first-pass
+// admission), but proves the lock IS taken on the production path.
+func TestATRInserter_P82_ConcurrentLookupAndInserterEndToEnd(t *testing.T) {
+	reg := registry.NewDeviceRegistry(nil)
+	table := NewAddressTable(reg)
+	inserter := NewAddressTableInserter(table, DefaultConfig())
+
+	stop := make(chan struct{})
+	var inserterCalls uint64
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// Cycle distinct addresses so each call MAY produce a
+			// real map write the first time it's seen. After all
+			// 240 candidate addresses have been admitted the
+			// inserter starts short-circuiting — that's fine; this
+			// test focuses on proving the mutex is taken, not on
+			// long-running overlap.
+			addr := byte(0x10 + byte(i%240))
+			event := atrPassiveTransactionEvent(time.Now().UTC(), 0xF1, addr, protocol.SymbolAck)
+			inserter.OnPassiveClassifiedEvent(event)
+			atomic.AddUint64(&inserterCalls, 1)
+			i++
+		}
+	}()
+
+	// Wait for at least one inserter call.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadUint64(&inserterCalls) == 0 {
+		if time.Now().After(deadline) {
+			close(stop)
+			wg.Wait()
+			t.Fatal("inserter goroutine made no calls within 2s")
+		}
+		time.Sleep(time.Microsecond)
+	}
+
+	const numReaders = 4
+	for r := 0; r < numReaders; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 500; j++ {
+				addr := byte(0x10 + byte(j%240))
+				_, _ = table.Lookup(addr)
+			}
+		}()
+	}
+
+	close(stop)
+	wg.Wait()
 }
 
 // TestATRInserter_P82_LookupAfterInsertSeesUpdatedMap is a sanity

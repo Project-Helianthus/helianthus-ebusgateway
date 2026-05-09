@@ -1065,23 +1065,39 @@ func findControllerEntry(reg InvokeRegistry) (registry.DeviceEntry, error) {
 		return nil, fmt.Errorf("registry missing: %w", ebuserrors.ErrInvalidPayload)
 	}
 
-	type iterativeRegistry interface {
-		Iterate(func(registry.DeviceEntry) bool)
+	// P9.5 — race-free DeviceID prefix scan via IterateSnapshots
+	// (added in helianthus-ebusreg P9). Pre-P9.5 the iteration read
+	// entry.DeviceID() lock-free on a live *deviceEntry pointer
+	// concurrent with Register / RegisterPassiveObserved writes that
+	// can mutate entry.info.DeviceID. The snapshot path reads the
+	// DeviceID from a value-typed copy taken under the registry's
+	// RLock.
+	//
+	// The function still returns a live registry.DeviceEntry because
+	// the caller needs entry.Planes() — Planes are NOT in the P9
+	// snapshot (interface tree, separate Plane-aware snapshot
+	// surface tracked as P9.x follow-up). After identifying the
+	// controller's primary address via the snapshot we re-fetch the
+	// live entry via Lookup; the Planes-tree race window is reduced
+	// to a single point-of-use rather than the iteration loop.
+	type snapshotIterativeRegistry interface {
+		IterateSnapshots(func(registry.DeviceEntrySnapshot) bool)
 	}
-	if iter, ok := reg.(iterativeRegistry); ok {
-		var controller registry.DeviceEntry
-		iter.Iterate(func(entry registry.DeviceEntry) bool {
-			if entry == nil {
-				return true
-			}
-			if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(entry.DeviceID())), "BASV") {
-				controller = entry
+	if iter, ok := reg.(snapshotIterativeRegistry); ok {
+		var controllerAddr byte
+		var found bool
+		iter.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+			if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(snap.DeviceID)), "BASV") {
+				controllerAddr = snap.PrimaryAddress
+				found = true
 				return false
 			}
 			return true
 		})
-		if controller != nil {
-			return controller, nil
+		if found {
+			if controller, ok := reg.Lookup(controllerAddr); ok && controller != nil {
+				return controller, nil
+			}
 		}
 	}
 

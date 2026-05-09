@@ -42,3 +42,21 @@ func EntryContainsAddress(entry registry.DeviceEntry, addr byte) bool {
 	}
 	return false
 }
+
+// SnapshotContainsAddress is the value-typed counterpart of
+// EntryContainsAddress for callers that have already taken a
+// DeviceEntrySnapshot via LookupEntrySnapshot / IterateSnapshots.
+//
+// P9.2 — race-free address-membership check. Pre-P9.2 callers had to
+// take an EntryContainsAddress(entry, addr) on a live *deviceEntry
+// pointer (entry.Addresses() reads through to mutable storage); this
+// helper reads the snapshot's Addresses slice (already a value-typed
+// copy taken under the registry's RLock).
+func SnapshotContainsAddress(snap registry.DeviceEntrySnapshot, addr byte) bool {
+	for _, a := range snap.Addresses {
+		if a == addr {
+			return true
+		}
+	}
+	return false
+}

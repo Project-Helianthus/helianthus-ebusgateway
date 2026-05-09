@@ -409,9 +409,16 @@ func (p *PassiveDiscoveryPromoter) registryContains(addr byte) bool {
 	// registered, otherwise the promoter actively re-confirms and
 	// re-commits it on every cycle, producing redundant bus probes
 	// and router/semantic refreshes.
+	//
+	// P9.2 — uses IterateSnapshots so the address-list reads are
+	// race-free with concurrent registry writers (Register /
+	// RegisterPassiveObserved / AliasAddresses). The promoter runs
+	// on its own goroutine and the registry is mutated by other
+	// goroutines (passive inserter, startup scan); the previous
+	// Iterate path read entry.Addresses() lock-free.
 	found := false
-	p.registry.Iterate(func(entry registry.DeviceEntry) bool {
-		if EntryContainsAddress(entry, addr) {
+	p.registry.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if SnapshotContainsAddress(snap, addr) {
 			found = true
 			return false
 		}

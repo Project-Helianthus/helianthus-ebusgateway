@@ -115,6 +115,36 @@ func canonicalSlotMetadata(addr byte) (protocol.SourceAddressPriorityIndex, bool
 	return tier, free
 }
 
+// projectDiscoverySourceLabel maps the registry's DiscoverySource enum
+// to the AddressTable's externally-visible string label. Exposed at
+// package scope so both Lookup branches (cached + registry-fallback)
+// share the same projection — preventing drift between the two paths.
+func projectDiscoverySourceLabel(source registry.DiscoverySource) string {
+	switch source {
+	case registry.DiscoverySourcePassiveObserved:
+		return "passive_observed"
+	case registry.DiscoverySourceStaticSeed:
+		return "static_seed"
+	case registry.DiscoverySourceActiveConfirmed:
+		return "active_confirmed"
+	}
+	return ""
+}
+
+// projectVerificationStateLabel mirrors projectDiscoverySourceLabel for
+// the VerificationState enum.
+func projectVerificationStateLabel(state registry.VerificationState) string {
+	switch state {
+	case registry.VerificationStateCandidate:
+		return "candidate"
+	case registry.VerificationStateCorroborated:
+		return "corroborated_pending"
+	case registry.VerificationStateIdentityConfirmed:
+		return "identity_confirmed"
+	}
+	return ""
+}
+
 type AddressTable struct {
 	reg   *registry.DeviceRegistry
 	slots map[byte]*AddressSlot
@@ -139,6 +169,21 @@ func (t *AddressTable) Lookup(addr byte) (*AddressSlot, bool) {
 		return nil, false
 	}
 	if slot, ok := t.slots[addr]; ok && slot != nil {
+		// P8 cache-coherence (Codex P8 gateway review MINOR FINDING_1):
+		// the cached slot's DiscoverySource / VerificationState string
+		// fields are projections captured at insertion time and become
+		// stale when the registry's underlying slot upgrades (e.g. a
+		// directed scan promotes a passive-observed slot to
+		// active_confirmed). Reproject from the live RegistrySlot
+		// pointer to keep the snapshot consistent with the registry's
+		// monotonic ladder. Returns a copy so concurrent readers don't
+		// see torn writes through the cached map entry.
+		if slot.RegistrySlot != nil {
+			view := *slot
+			view.DiscoverySource = projectDiscoverySourceLabel(slot.RegistrySlot.DiscoverySource)
+			view.VerificationState = projectVerificationStateLabel(slot.RegistrySlot.VerificationState)
+			return &view, true
+		}
 		return slot, true
 	}
 	// Consult the wrapped registry so static seeds and active-discovered
@@ -153,30 +198,12 @@ func (t *AddressTable) Lookup(addr byte) (*AddressSlot, bool) {
 			case registry.SlotRoleSlave:
 				role = "target"
 			}
-			discovery := ""
-			switch regSlot.DiscoverySource {
-			case registry.DiscoverySourcePassiveObserved:
-				discovery = "passive_observed"
-			case registry.DiscoverySourceStaticSeed:
-				discovery = "static_seed"
-			case registry.DiscoverySourceActiveConfirmed:
-				discovery = "active_confirmed"
-			}
-			verification := ""
-			switch regSlot.VerificationState {
-			case registry.VerificationStateCandidate:
-				verification = "candidate"
-			case registry.VerificationStateCorroborated:
-				verification = "corroborated_pending"
-			case registry.VerificationStateIdentityConfirmed:
-				verification = "identity_confirmed"
-			}
 			tier, free := canonicalSlotMetadata(addr)
 			return &AddressSlot{
 				Addr:              addr,
 				Role:              role,
-				DiscoverySource:   discovery,
-				VerificationState: verification,
+				DiscoverySource:   projectDiscoverySourceLabel(regSlot.DiscoverySource),
+				VerificationState: projectVerificationStateLabel(regSlot.VerificationState),
 				PriorityTier:      tier,
 				FreeUse:           free,
 				RegistrySlot:      regSlot,

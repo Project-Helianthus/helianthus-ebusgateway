@@ -62,6 +62,52 @@ func TestATRInserter_P8_SourceInsertStampsPassiveObservedLabel(t *testing.T) {
 	}
 }
 
+// TestATRInserter_P8_AddressTableProjectsLiveRegistryLabel covers the
+// cache-coherence half of P8 (Codex P8 gateway review MINOR FINDING_1):
+// after a passive insertion lands the slot at "passive_observed", a
+// subsequent registry mutation (e.g. directed scan promoting the slot
+// to active_confirmed) MUST be visible through AddressTable.Lookup
+// despite the cached AddressSlot in t.slots. Pre-fix the cached strings
+// were captured at insert time and went stale; post-fix Lookup
+// reprojects from slot.RegistrySlot's live enum.
+func TestATRInserter_P8_AddressTableProjectsLiveRegistryLabel(t *testing.T) {
+	reg := registry.NewDeviceRegistry(nil)
+	table := NewAddressTable(reg)
+	inserter := NewAddressTableInserter(table, DefaultConfig())
+
+	// Passive insertion lands the slot at passive_observed.
+	event := atrPassiveTransactionEvent(time.Now().UTC(), 0x10, 0x99, protocol.SymbolAck)
+	inserter.OnPassiveClassifiedEvent(event)
+	pre, ok := table.Lookup(0x99)
+	if !ok || pre == nil {
+		t.Fatalf("Lookup(0x99) ok=%v slot=%v", ok, pre)
+	}
+	if pre.DiscoverySource != "passive_observed" {
+		t.Fatalf("pre-condition: DiscoverySource = %q; want passive_observed", pre.DiscoverySource)
+	}
+
+	// Now the registry upgrades the slot via an active scan.
+	reg.Register(registry.DeviceInfo{
+		Address:      0x99,
+		Manufacturer: "Vaillant",
+		DeviceID:     "TEST",
+		SerialNumber: "SN-99",
+	})
+
+	// AddressTable.Lookup MUST reflect the upgrade despite the cached
+	// AddressSlot still being in t.slots from the passive insertion.
+	post, ok := table.Lookup(0x99)
+	if !ok || post == nil {
+		t.Fatalf("post-upgrade Lookup(0x99) ok=%v slot=%v", ok, post)
+	}
+	if post.DiscoverySource != "active_confirmed" {
+		t.Errorf("post-upgrade DiscoverySource = %q; want active_confirmed (registry mutation must be visible through cached slot via RegistrySlot reprojection)", post.DiscoverySource)
+	}
+	if post.VerificationState != "identity_confirmed" {
+		t.Errorf("post-upgrade VerificationState = %q; want identity_confirmed", post.VerificationState)
+	}
+}
+
 // TestATRInserter_P8_AddressTableSlotMirrorsRegistryLabel ties the
 // AddressTable's projection (`slots[addr].DiscoverySource` /
 // `.VerificationState`) to the registry's underlying slot. The

@@ -4344,27 +4344,31 @@ func preserveExistingRegistryMetadata(reg *registry.DeviceRegistry, info registr
 	if reg == nil {
 		return info
 	}
-	reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil || entry.PrimaryDisplayAddress() != info.Address {
+	// P9.3 — race-free identity-field reads via IterateSnapshots. The
+	// previous Iterate path read entry.Manufacturer / DeviceID /
+	// SerialNumber / etc. lock-free outside the registry RLock; under
+	// concurrent Register writes those string reads could tear.
+	reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if snap.PrimaryAddress != info.Address {
 			return true
 		}
 		if info.Manufacturer == "" {
-			info.Manufacturer = entry.Manufacturer()
+			info.Manufacturer = snap.Manufacturer
 		}
 		if info.DeviceID == "" {
-			info.DeviceID = entry.DeviceID()
+			info.DeviceID = snap.DeviceID
 		}
 		if info.SerialNumber == "" {
-			info.SerialNumber = entry.SerialNumber()
+			info.SerialNumber = snap.SerialNumber
 		}
 		if info.MacAddress == "" {
-			info.MacAddress = entry.MacAddress()
+			info.MacAddress = snap.MacAddress
 		}
 		if info.SoftwareVersion == "" {
-			info.SoftwareVersion = entry.SoftwareVersion()
+			info.SoftwareVersion = snap.SoftwareVersion
 		}
 		if info.HardwareVersion == "" {
-			info.HardwareVersion = entry.HardwareVersion()
+			info.HardwareVersion = snap.HardwareVersion
 		}
 		return false
 	})
@@ -4375,12 +4379,10 @@ func (p *vaillantSemanticPoller) hasFM5RegistryEvidence() bool {
 	if p == nil || p.reg == nil {
 		return false
 	}
+	// P9.3 — race-free DeviceID read via snapshot.
 	found := false
-	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil {
-			return true
-		}
-		deviceID := normalizeDeviceID(entry.DeviceID())
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		deviceID := normalizeDeviceID(snap.DeviceID)
 		if strings.HasPrefix(deviceID, "VR71") || strings.HasPrefix(deviceID, "FM5") {
 			found = true
 			return false
@@ -5199,12 +5201,15 @@ func (p *vaillantSemanticPoller) findBoilerAddress() byte {
 	// TargetAddressForRouting prefers AddressByRole(SlotRoleSlave)
 	// and falls back to PrimaryDisplayAddress when no target-role
 	// face exists.
+	// P9.3 — race-free boiler-candidate enumeration via
+	// IterateSnapshots + isBoilerDeviceSnapshotCandidate +
+	// SnapshotTargetAddressForRouting.
 	selected := byte(0)
-	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil || !isBoilerDeviceCandidate(entry) {
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if !isBoilerDeviceSnapshotCandidate(snap) {
 			return true
 		}
-		addr := ebusgateway.TargetAddressForRouting(entry)
+		addr := ebusgateway.SnapshotTargetAddressForRouting(snap)
 		if addr == 0x08 {
 			selected = addr
 			return false
@@ -5217,16 +5222,14 @@ func (p *vaillantSemanticPoller) findBoilerAddress() byte {
 	return selected
 }
 
-func isBoilerDeviceCandidate(entry registry.DeviceEntry) bool {
-	if entry == nil {
-		return false
-	}
-	normalizedID := normalizeDeviceID(entry.DeviceID())
+// isBoilerDeviceSnapshotCandidate is the snapshot-based counterpart of
+// isBoilerDeviceCandidate (P9.3). Reads the snapshot's DeviceID
+// (race-free) and applies the same prefix-based BAI/BMU classification.
+func isBoilerDeviceSnapshotCandidate(snap registry.DeviceEntrySnapshot) bool {
+	normalizedID := normalizeDeviceID(snap.DeviceID)
 	if strings.HasPrefix(normalizedID, "BAI") {
 		return true
 	}
-	// Best-effort fallback for boiler-family boards when the product-family byte
-	// is not directly exposed by the registry contract.
 	return strings.HasPrefix(normalizedID, "BMU")
 }
 
@@ -5248,18 +5251,16 @@ func (p *vaillantSemanticPoller) findRegulatorCapability() productids.Controller
 		return productids.ControllerUnknown
 	}
 
+	// P9.3 — race-free Manufacturer/SerialNumber reads via snapshot.
 	foundPresent := false
 	hasUnknown := false
 	hasAnyDevice := false
-	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil {
-			return true
-		}
-		if !strings.EqualFold(entry.Manufacturer(), "Vaillant") {
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if !strings.EqualFold(snap.Manufacturer, "Vaillant") {
 			return true
 		}
 		hasAnyDevice = true
-		partNumber := extractPartNumberFromSerial(entry.SerialNumber())
+		partNumber := extractPartNumberFromSerial(snap.SerialNumber)
 		cap := p.catalog.ControllerCapability(partNumber)
 		switch cap {
 		case productids.ControllerPresent:
@@ -6695,16 +6696,17 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 	}
 	candidateSet := make(map[byte]struct{})
 	var candidates []byte
-	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil {
-			return true
-		}
+	// P9.3 — race-free routing-address enumeration via
+	// IterateSnapshots + SnapshotTargetAddressForRouting. The
+	// previous Iterate path called entry.AddressByRole and
+	// entry.PrimaryDisplayAddress lock-free.
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
 		// Phase C M-C6b: B524 candidates are routing targets, not
 		// display addresses. An aliased regulator entry (e.g.
 		// 0x10↔0x15 displayed as 0x10) must be probed at 0x15
 		// where the responder lives — probing 0x10 misses the
 		// coherent responder and reports no B524 root.
-		addr := ebusgateway.TargetAddressForRouting(entry)
+		addr := ebusgateway.SnapshotTargetAddressForRouting(snap)
 		if skipReservedSourceCompanion(addr) {
 			return true
 		}
@@ -6857,16 +6859,16 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 	//    devices have no probable identity face.
 	probeAddr := addr
 	if protocol.IsInitiatorCapableAddress(addr) {
+		// P9.3 — race-free identity-probe target resolution via
+		// IterateSnapshots + SnapshotTargetAddressForRouting. The
+		// semantic poller runs concurrently with passive inserter /
+		// startup scan registry writes; the previous Iterate path
+		// dereferenced live entry.Addresses() and TargetAddressForRouting.
 		var resolvedTarget byte
-		p.reg.Iterate(func(entry registry.DeviceEntry) bool {
-			if entry == nil {
-				return true
-			}
-			for _, a := range entry.Addresses() {
-				if a == addr {
-					resolvedTarget = ebusgateway.TargetAddressForRouting(entry)
-					return false
-				}
+		p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+			if ebusgateway.SnapshotContainsAddress(snap, addr) {
+				resolvedTarget = ebusgateway.SnapshotTargetAddressForRouting(snap)
+				return false
 			}
 			return true
 		})
@@ -6948,9 +6950,15 @@ func (p *vaillantSemanticPoller) registerStructuralControllerIfMissing(controlle
 	// treated as already-known, otherwise the function violates
 	// its idempotence contract and re-registers + re-refreshes
 	// router planes on every discovery cycle.
+	// P9.3 — race-free address-membership check via IterateSnapshots.
+	// The semantic poller runs concurrently with passive inserter /
+	// startup scan / identity probe goroutines that mutate the
+	// registry; the previous Iterate path read entry.Addresses() on
+	// a live *deviceEntry pointer, racing with concurrent Register /
+	// AliasAddresses writes.
 	already := false
-	p.reg.Iterate(func(e registry.DeviceEntry) bool {
-		if ebusgateway.EntryContainsAddress(e, controller) {
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if ebusgateway.SnapshotContainsAddress(snap, controller) {
 			already = true
 			return false
 		}
@@ -6983,23 +6991,31 @@ func (p *vaillantSemanticPoller) enrichRegulatorIdentity(addr byte) *regulatorEn
 	// PrimaryDisplayAddress would miss it and the enrichment
 	// metadata/logging would be lost for the aliased path. Use the
 	// full address-set membership check instead.
-	var entry registry.DeviceEntry
-	p.reg.Iterate(func(e registry.DeviceEntry) bool {
-		if ebusgateway.EntryContainsAddress(e, addr) {
-			entry = e
+	//
+	// P9.3 — race-free via IterateSnapshots; reads entry's DeviceID
+	// from the value-typed snapshot (immune to concurrent Register
+	// writes that would torn-read the deviceID string).
+	var (
+		matched  bool
+		deviceID string
+	)
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		if ebusgateway.SnapshotContainsAddress(snap, addr) {
+			matched = true
+			deviceID = snap.DeviceID
 			return false
 		}
 		return true
 	})
-	if entry == nil {
+	if !matched {
 		return nil
 	}
 
-	deviceID := normalizeDeviceID(entry.DeviceID())
+	normalizedID := normalizeDeviceID(deviceID)
 	families := []string{"BASV2", "BASS2", "CTLV2", "CTLS2", "E7C00"}
 	var family string
 	for _, f := range families {
-		if strings.HasPrefix(deviceID, f) {
+		if strings.HasPrefix(normalizedID, f) {
 			family = f
 			break
 		}
@@ -7007,7 +7023,7 @@ func (p *vaillantSemanticPoller) enrichRegulatorIdentity(addr byte) *regulatorEn
 
 	return &regulatorEnrichment{
 		family:   family,
-		deviceID: entry.DeviceID(),
+		deviceID: deviceID,
 	}
 }
 

@@ -85,6 +85,43 @@ func TestSnapshotContainsAddress_EmptySliceReturnsFalse(t *testing.T) {
 //     EntryContainsAddress → SnapshotContainsAddress).
 //  2. This behavior-parity test on the underlying helpers.
 //  3. -race ./... on the full suite (race detector authoritative).
+//
+// TestSnapshotTargetAddressForRouting_ParityWithLive verifies the
+// same parity contract for the routing helper added in P9.3:
+// SnapshotTargetAddressForRouting must return the same byte as
+// TargetAddressForRouting for the same registered entry. The
+// post-P9.3 semantic_vaillant migration depends on this parity.
+func TestSnapshotTargetAddressForRouting_ParityWithLive(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x10, SerialNumber: "SN-X"})
+	reg.Register(registry.DeviceInfo{Address: 0x15, SerialNumber: "SN-Y"})
+	if err := reg.AliasAddresses(0x10, 0x15); err != nil {
+		t.Fatalf("AliasAddresses error = %v", err)
+	}
+
+	entry, _ := reg.Lookup(0x10)
+	snap, _ := reg.LookupEntrySnapshot(0x10)
+
+	gotEntry := TargetAddressForRouting(entry)
+	gotSnap := SnapshotTargetAddressForRouting(snap)
+	if gotEntry != gotSnap {
+		t.Errorf("TargetAddressForRouting=0x%02X != SnapshotTargetAddressForRouting=0x%02X (parity violation)", gotEntry, gotSnap)
+	}
+	// At minimum the result must be one of the entry's addresses.
+	addrs := snap.Addresses
+	found := false
+	for _, a := range addrs {
+		if a == gotSnap {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("SnapshotTargetAddressForRouting returned 0x%02X but Addresses=%v", gotSnap, addrs)
+	}
+}
+
 func TestSnapshotContainsAddress_AliasResolutionParity(t *testing.T) {
 	t.Parallel()
 

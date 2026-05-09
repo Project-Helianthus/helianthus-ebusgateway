@@ -64,18 +64,28 @@ func TestSnapshotContainsAddress_EmptySliceReturnsFalse(t *testing.T) {
 	}
 }
 
-// TestPassiveDiscoveryPromoter_RegistryContainsUsesIterateSnapshots
-// is a partial integration check: register an entry, call the
-// promoter's registryContains via reflection or a public proxy. The
-// promoter's registryContains is private; use an alias-aware
-// registry to verify the address-membership semantics still hold
-// post-migration.
+// TestSnapshotContainsAddress_AliasResolutionParity verifies the
+// behavior-equivalence contract between EntryContainsAddress (live
+// pointer) and SnapshotContainsAddress (snapshot) on an aliased
+// canonical pair. The promoter's registryContains migration depends
+// on this parity: both APIs must report the same membership truth on
+// the same registry state, otherwise the migration would change
+// observable behaviour.
 //
-// We use the real *registry.DeviceRegistry (not a tracking mock)
-// because registryContains is unexported. The race-detector run as
-// part of `go test -race ./...` already covers the migration's
-// correctness against concurrent writers.
-func TestPassiveDiscoveryPromoter_RegistryContains_PostP92(t *testing.T) {
+// NOTE (Codex P9.2 review pass 1 NIT FINDING_2): this is NOT a
+// regression test for the promoter's specific IterateSnapshots vs
+// Iterate routing — registryContains is unexported and the promoter
+// uses *registry.DeviceRegistry (concrete type, not interface) so a
+// counter-tracking mock isn't substitutable without refactoring the
+// promoter to take a Registry interface. The migration's correctness
+// is verified by:
+//
+//  1. Code inspection of the diff (one-line API swap at
+//     passive_discovery_promoter.go:420 — Iterate → IterateSnapshots,
+//     EntryContainsAddress → SnapshotContainsAddress).
+//  2. This behavior-parity test on the underlying helpers.
+//  3. -race ./... on the full suite (race detector authoritative).
+func TestSnapshotContainsAddress_AliasResolutionParity(t *testing.T) {
 	t.Parallel()
 
 	reg := registry.NewDeviceRegistry(nil)

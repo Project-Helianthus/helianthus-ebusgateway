@@ -6695,16 +6695,17 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 	}
 	candidateSet := make(map[byte]struct{})
 	var candidates []byte
-	p.reg.Iterate(func(entry registry.DeviceEntry) bool {
-		if entry == nil {
-			return true
-		}
+	// P9.3 — race-free routing-address enumeration via
+	// IterateSnapshots + SnapshotTargetAddressForRouting. The
+	// previous Iterate path called entry.AddressByRole and
+	// entry.PrimaryDisplayAddress lock-free.
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
 		// Phase C M-C6b: B524 candidates are routing targets, not
 		// display addresses. An aliased regulator entry (e.g.
 		// 0x10↔0x15 displayed as 0x10) must be probed at 0x15
 		// where the responder lives — probing 0x10 misses the
 		// coherent responder and reports no B524 root.
-		addr := ebusgateway.TargetAddressForRouting(entry)
+		addr := ebusgateway.SnapshotTargetAddressForRouting(snap)
 		if skipReservedSourceCompanion(addr) {
 			return true
 		}
@@ -6857,16 +6858,16 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 	//    devices have no probable identity face.
 	probeAddr := addr
 	if protocol.IsInitiatorCapableAddress(addr) {
+		// P9.3 — race-free identity-probe target resolution via
+		// IterateSnapshots + SnapshotTargetAddressForRouting. The
+		// semantic poller runs concurrently with passive inserter /
+		// startup scan registry writes; the previous Iterate path
+		// dereferenced live entry.Addresses() and TargetAddressForRouting.
 		var resolvedTarget byte
-		p.reg.Iterate(func(entry registry.DeviceEntry) bool {
-			if entry == nil {
-				return true
-			}
-			for _, a := range entry.Addresses() {
-				if a == addr {
-					resolvedTarget = ebusgateway.TargetAddressForRouting(entry)
-					return false
-				}
+		p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+			if ebusgateway.SnapshotContainsAddress(snap, addr) {
+				resolvedTarget = ebusgateway.SnapshotTargetAddressForRouting(snap)
+				return false
 			}
 			return true
 		})

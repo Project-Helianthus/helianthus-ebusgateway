@@ -23,6 +23,22 @@ func TargetAddressForRouting(entry registry.DeviceEntry) byte {
 	return entry.PrimaryDisplayAddress()
 }
 
+// SnapshotTargetAddressForRouting is the value-typed counterpart of
+// TargetAddressForRouting for callers iterating value-typed
+// DeviceEntrySnapshot via IterateSnapshots / LookupEntrySnapshot.
+//
+// P9.3 — closes the lock-free read race surface for B524 root
+// candidate enumeration in the semantic Vaillant poller. Reads from
+// the snapshot's Faces slice (already a value-typed copy taken under
+// the registry's RLock) and falls back to the snapshot's
+// PrimaryDisplayAddress.
+func SnapshotTargetAddressForRouting(snap registry.DeviceEntrySnapshot) byte {
+	if addr, ok := snap.AddressByRole(registry.SlotRoleSlave); ok {
+		return addr
+	}
+	return snap.PrimaryDisplayAddress()
+}
+
 // EntryContainsAddress reports whether the entry's full address set
 // (including aliases) contains addr. Use this for membership/lookup
 // checks where any face on the entry should match — e.g. register

@@ -48,6 +48,13 @@ func (r *testRegistry) LookupSlot(byte) (*registry.AddressSlot, bool) {
 	return nil, false
 }
 
+// LookupSlotSnapshot satisfies mcp.Registry (added in P8.3 — value-typed
+// snapshot used by lookupDiscoveryLabels for race-free enum reads).
+// The test fake holds no slots.
+func (r *testRegistry) LookupSlotSnapshot(byte) (registry.AddressSlotSnapshot, bool) {
+	return registry.AddressSlotSnapshot{}, false
+}
+
 type testEntry struct {
 	info   registry.DeviceInfo
 	planes []registry.Plane

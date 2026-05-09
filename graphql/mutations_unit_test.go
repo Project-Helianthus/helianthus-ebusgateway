@@ -642,8 +642,11 @@ func TestSetSystemConfigMutation_FailureScenarios(t *testing.T) {
 		if got, _ := payload["success"].(bool); got {
 			t.Fatalf("setSystemConfig success = %v; want false", got)
 		}
-		if errMessage, _ := payload["error"].(string); !strings.Contains(errMessage, "controller BASV2 not found") {
-			t.Fatalf("setSystemConfig error = %q; want missing controller", errMessage)
+		// P9.5 pivot — error message changed from "controller BASV2
+		// not found" (identifier-coupled) to "no heating regulator at
+		// canonical eBUS target addresses" (identifier-free).
+		if errMessage, _ := payload["error"].(string); !strings.Contains(errMessage, "no heating regulator at canonical eBUS target addresses") {
+			t.Fatalf("setSystemConfig error = %q; want missing-regulator error", errMessage)
 		}
 	})
 

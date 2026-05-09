@@ -1,100 +1,66 @@
 package graphql
 
 import (
-	"strings"
+	"errors"
 	"testing"
 
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
-// P9.5 — findControllerEntry uses IterateSnapshots for DeviceID scan.
+// P9.5 (operator-directed pivot 2026-05-09) — findControllerEntry
+// uses canonical regulator target addresses, not BASV-prefix scan.
 //
-// Pre-P9.5 the iteration read entry.DeviceID() lock-free; Post-P9.5
-// it reads from a value-typed snapshot. This test pins the snapshot
-// path with a tracking mock that counts which iteration API was
-// called. Codex P9.5 review pass 1 NIT FINDING_2 noted that
-// existing mutationTestRegistry only implements Iterate (not
-// IterateSnapshots), so without this test the new path isn't
-// directly exercised in regression.
+// The previous BASV-prefix DeviceID scan silently skipped non-BASV
+// controllers (CTLV*/CTLS*/CTLR*/BASS*/future identifiers) and was
+// also race-prone with concurrent Register writes. The new algorithm
+// looks up canonical eBUS regulator target addresses in priority
+// order; the first registered entry is the controller.
 
-type findControllerTrackingRegistry struct {
-	iterateCalls         int
-	iterateSnapshotCalls int
-	lookupCalls          int
-	lookupSnapCalls      int
-	snapshots            []registry.DeviceEntrySnapshot
-	entries              map[byte]registry.DeviceEntry
-	snapByAddr           map[byte]registry.DeviceEntrySnapshot
+// findControllerCanonicalLookupRegistry is a minimal Registry mock
+// that only implements Lookup. Used to verify findControllerEntry's
+// canonical-address-iteration contract: each canonical address gets
+// looked up in priority order until one returns a registered entry.
+type findControllerCanonicalLookupRegistry struct {
+	lookups []byte // ordered list of addresses queried
+	entries map[byte]registry.DeviceEntry
 }
 
-func (r *findControllerTrackingRegistry) Lookup(addr byte) (registry.DeviceEntry, bool) {
-	r.lookupCalls++
+func (r *findControllerCanonicalLookupRegistry) Lookup(addr byte) (registry.DeviceEntry, bool) {
+	r.lookups = append(r.lookups, addr)
 	entry, ok := r.entries[addr]
 	return entry, ok
 }
 
-func (r *findControllerTrackingRegistry) Iterate(fn func(registry.DeviceEntry) bool) {
-	r.iterateCalls++
-}
-
-func (r *findControllerTrackingRegistry) IterateSnapshots(fn func(registry.DeviceEntrySnapshot) bool) {
-	r.iterateSnapshotCalls++
-	for _, snap := range r.snapshots {
-		if !fn(snap) {
-			return
-		}
-	}
-}
-
-func (r *findControllerTrackingRegistry) LookupEntrySnapshot(addr byte) (registry.DeviceEntrySnapshot, bool) {
-	r.lookupSnapCalls++
-	if snap, ok := r.snapByAddr[addr]; ok {
-		return snap, true
-	}
-	return registry.DeviceEntrySnapshot{}, false
-}
-
-// trackingControllerEntry is a minimal DeviceEntry implementation
-// returned by the mock's Lookup. Only methods exercised by
-// findControllerEntry's caller pattern are implemented (Manufacturer,
-// DeviceID, Planes — return safe values).
-type trackingControllerEntry struct {
+// minimalEntry is a stub DeviceEntry returned by the mock's Lookup.
+type minimalEntry struct {
 	primaryAddress byte
 	deviceID       string
 }
 
-func (e *trackingControllerEntry) AddressByRole(registry.SlotRole) (byte, bool) {
-	return e.primaryAddress, true
-}
-func (e *trackingControllerEntry) PrimaryDisplayAddress() byte { return e.primaryAddress }
-func (e *trackingControllerEntry) Addresses() []byte           { return []byte{e.primaryAddress} }
-func (e *trackingControllerEntry) Manufacturer() string        { return "Vaillant" }
-func (e *trackingControllerEntry) DeviceID() string            { return e.deviceID }
-func (e *trackingControllerEntry) SerialNumber() string        { return "" }
-func (e *trackingControllerEntry) MacAddress() string          { return "" }
-func (e *trackingControllerEntry) SoftwareVersion() string     { return "" }
-func (e *trackingControllerEntry) HardwareVersion() string     { return "" }
-func (e *trackingControllerEntry) Planes() []registry.Plane    { return nil }
-func (e *trackingControllerEntry) Projections() []registry.Projection {
-	return nil
-}
+func (e *minimalEntry) AddressByRole(registry.SlotRole) (byte, bool) { return e.primaryAddress, true }
+func (e *minimalEntry) PrimaryDisplayAddress() byte                  { return e.primaryAddress }
+func (e *minimalEntry) Addresses() []byte                            { return []byte{e.primaryAddress} }
+func (e *minimalEntry) Manufacturer() string                         { return "Vaillant" }
+func (e *minimalEntry) DeviceID() string                             { return e.deviceID }
+func (e *minimalEntry) SerialNumber() string                         { return "" }
+func (e *minimalEntry) MacAddress() string                           { return "" }
+func (e *minimalEntry) SoftwareVersion() string                      { return "" }
+func (e *minimalEntry) HardwareVersion() string                      { return "" }
+func (e *minimalEntry) Planes() []registry.Plane                     { return nil }
+func (e *minimalEntry) Projections() []registry.Projection           { return nil }
 
-// TestFindControllerEntry_UsesSnapshotIteration proves the P9.5
-// contract: findControllerEntry calls IterateSnapshots (NOT Iterate)
-// for the BASV2 DeviceID prefix scan.
-func TestFindControllerEntry_UsesSnapshotIteration(t *testing.T) {
+// TestFindControllerEntry_FindsRegulatorAtPrimaryCanonicalAddress
+// verifies the primary canonical regulator target address (0x15) is
+// the FIRST address tried, and the entry there is returned without
+// further Lookup calls.
+func TestFindControllerEntry_FindsRegulatorAtPrimaryCanonicalAddress(t *testing.T) {
 	t.Parallel()
 
-	basvEntry := &trackingControllerEntry{primaryAddress: 0x10, deviceID: "BASV2X"}
-	reg := &findControllerTrackingRegistry{
-		snapshots: []registry.DeviceEntrySnapshot{
-			{PrimaryAddress: 0x10, DeviceID: "BASV2X"},
-		},
+	primaryRegulator := &minimalEntry{primaryAddress: 0x15, deviceID: "BASV2X"}
+	reg := &findControllerCanonicalLookupRegistry{
 		entries: map[byte]registry.DeviceEntry{
-			0x10: basvEntry,
-		},
-		snapByAddr: map[byte]registry.DeviceEntrySnapshot{
-			0x10: {PrimaryAddress: 0x10, DeviceID: "BASV2X"},
+			0x15: primaryRegulator,
 		},
 	}
 
@@ -102,45 +68,26 @@ func TestFindControllerEntry_UsesSnapshotIteration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findControllerEntry error = %v", err)
 	}
-	if got != basvEntry {
-		t.Errorf("returned entry = %v; want the BASV2 entry at 0x10", got)
+	if got != primaryRegulator {
+		t.Errorf("returned entry = %v; want primary regulator at 0x15", got)
 	}
-
-	if reg.iterateSnapshotCalls != 1 {
-		t.Errorf("IterateSnapshots called %d times; want 1 (P9.5 contract)", reg.iterateSnapshotCalls)
-	}
-	if reg.iterateCalls != 0 {
-		t.Errorf("Iterate called %d times; want 0 (P9.5 contract: snapshot path is primary)", reg.iterateCalls)
-	}
-	if reg.lookupSnapCalls != 1 {
-		t.Errorf("LookupEntrySnapshot called %d times; want 1 (TOCTOU re-validation)", reg.lookupSnapCalls)
+	if len(reg.lookups) != 1 || reg.lookups[0] != 0x15 {
+		t.Errorf("lookups = %v; want [0x15] (primary canonical address only)", reg.lookups)
 	}
 }
 
-// TestFindControllerEntry_TOCTOUFallsBackOnRevalidationFailure
-// proves the Codex P9.5 pass 1 MINOR FINDING_1 fix: when the
-// snapshot iteration finds a BASV2 candidate at addr but a
-// concurrent Register has since swapped the entry (LookupEntrySnapshot
-// at the same addr no longer reports BASV-prefixed DeviceID), the
-// function falls back to the canonical-address Lookup instead of
-// returning a non-BASV entry's Planes.
-func TestFindControllerEntry_TOCTOUFallsBackOnRevalidationFailure(t *testing.T) {
+// TestFindControllerEntry_FallsThroughToAlternateCanonicalAddresses
+// verifies that when 0x15 has no registered entry, the function
+// tries the alternate canonical regulator target addresses in the
+// documented priority order: 0x15, 0x35, 0x75, 0xF5, 0x76, 0xF6.
+func TestFindControllerEntry_FallsThroughToAlternateCanonicalAddresses(t *testing.T) {
 	t.Parallel()
 
-	basvEntry := &trackingControllerEntry{primaryAddress: 0x10, deviceID: "BASV2X"}
-	fallbackEntry := &trackingControllerEntry{primaryAddress: mutationControllerFallbackAddr, deviceID: "BASV2-FALLBACK"}
-	reg := &findControllerTrackingRegistry{
-		snapshots: []registry.DeviceEntrySnapshot{
-			// IterateSnapshots reports BASV at 0x10
-			{PrimaryAddress: 0x10, DeviceID: "BASV2X"},
-		},
+	// Register a regulator only at 0x35 (P0 Heating circuit reg. 1).
+	circuitReg1 := &minimalEntry{primaryAddress: 0x35, deviceID: "CTLV2X"}
+	reg := &findControllerCanonicalLookupRegistry{
 		entries: map[byte]registry.DeviceEntry{
-			0x10:                            basvEntry,
-			mutationControllerFallbackAddr:  fallbackEntry,
-		},
-		snapByAddr: map[byte]registry.DeviceEntrySnapshot{
-			// Re-validation: 0x10 has been swapped to a non-BASV entry.
-			0x10: {PrimaryAddress: 0x10, DeviceID: "OTHER-DEVICE"},
+			0x35: circuitReg1,
 		},
 	}
 
@@ -148,46 +95,89 @@ func TestFindControllerEntry_TOCTOUFallsBackOnRevalidationFailure(t *testing.T) 
 	if err != nil {
 		t.Fatalf("findControllerEntry error = %v", err)
 	}
-	// On re-validation failure we must NOT return the original BASV
-	// entry — we must use the fallback path.
-	if got == basvEntry {
-		t.Errorf("returned the snapshot-found entry despite TOCTOU re-validation failure; should have used fallback")
+	if got != circuitReg1 {
+		t.Errorf("returned entry = %v; want circuit regulator at 0x35", got)
 	}
-	if got != fallbackEntry {
-		t.Errorf("returned entry = %v; want the fallback entry at 0x%02X", got, mutationControllerFallbackAddr)
+	want := []byte{0x15, 0x35}
+	if len(reg.lookups) != len(want) {
+		t.Fatalf("lookups = %v; want exactly [0x15, 0x35] (stops on first hit)", reg.lookups)
 	}
-	if reg.lookupSnapCalls != 1 {
-		t.Errorf("LookupEntrySnapshot called %d times; want 1 (re-validation step)", reg.lookupSnapCalls)
-	}
-	deviceID := strings.ToUpper(strings.TrimSpace(got.DeviceID()))
-	if !strings.HasPrefix(deviceID, "BASV") {
-		t.Errorf("returned entry DeviceID = %q; want BASV-prefixed (fallback should be canonical BASV2 address)", deviceID)
+	for i, addr := range want {
+		if reg.lookups[i] != addr {
+			t.Errorf("lookups[%d] = 0x%02X; want 0x%02X", i, reg.lookups[i], addr)
+		}
 	}
 }
 
-// TestFindControllerEntry_AbsentBASVUsesFallback proves the
-// existing fallback path: when no BASV entry exists in the
-// registry, the function returns the entry at
-// mutationControllerFallbackAddr.
-func TestFindControllerEntry_AbsentBASVUsesFallback(t *testing.T) {
+// TestFindControllerEntry_AcceptsNonBASVDeviceIDs verifies the
+// operator-directed core contract: a regulator at 0x15 with a NON-BASV
+// DeviceID (e.g. CTLV2X, CTLS3, CTLR9, BASS4, or a hypothetical
+// future identifier) is STILL returned as the controller. The
+// previous DeviceID-prefix scan would have silently skipped this
+// device.
+func TestFindControllerEntry_AcceptsNonBASVDeviceIDs(t *testing.T) {
 	t.Parallel()
 
-	fallbackEntry := &trackingControllerEntry{primaryAddress: mutationControllerFallbackAddr, deviceID: "BASV2-FALLBACK"}
-	reg := &findControllerTrackingRegistry{
-		snapshots: []registry.DeviceEntrySnapshot{
-			{PrimaryAddress: 0x20, DeviceID: "OTHER"},
-		},
-		entries: map[byte]registry.DeviceEntry{
-			mutationControllerFallbackAddr: fallbackEntry,
-		},
-		snapByAddr: map[byte]registry.DeviceEntrySnapshot{},
+	cases := []struct {
+		name     string
+		deviceID string
+	}{
+		{name: "CTLV", deviceID: "CTLV2X"},
+		{name: "CTLS", deviceID: "CTLS3Y"},
+		{name: "CTLR", deviceID: "CTLR9Z"},
+		{name: "BASS", deviceID: "BASS4Q"},
+		{name: "future identifier", deviceID: "FUTURE99"},
 	}
 
-	got, err := findControllerEntry(reg)
-	if err != nil {
-		t.Fatalf("findControllerEntry error = %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := &minimalEntry{primaryAddress: 0x15, deviceID: tc.deviceID}
+			reg := &findControllerCanonicalLookupRegistry{
+				entries: map[byte]registry.DeviceEntry{
+					0x15: entry,
+				},
+			}
+
+			got, err := findControllerEntry(reg)
+			if err != nil {
+				t.Fatalf("findControllerEntry(%s) error = %v", tc.deviceID, err)
+			}
+			if got != entry {
+				t.Errorf("returned entry = %v; want regulator at 0x15 (DeviceID=%q)", got, tc.deviceID)
+			}
+		})
 	}
-	if got != fallbackEntry {
-		t.Errorf("returned entry = %v; want the fallback entry", got)
+}
+
+// TestFindControllerEntry_ReturnsErrorWhenNoCanonicalRegulator
+// verifies the new error path: when none of the canonical regulator
+// target addresses has a registered entry, the function returns an
+// error wrapping ErrInvalidPayload (not just a hardcoded fallback).
+func TestFindControllerEntry_ReturnsErrorWhenNoCanonicalRegulator(t *testing.T) {
+	t.Parallel()
+
+	reg := &findControllerCanonicalLookupRegistry{
+		entries: map[byte]registry.DeviceEntry{
+			// Only an off-canonical entry — should NOT match.
+			0x42: &minimalEntry{primaryAddress: 0x42, deviceID: "BASV2X"},
+		},
+	}
+
+	_, err := findControllerEntry(reg)
+	if err == nil {
+		t.Fatal("findControllerEntry: err=nil; want error when no canonical regulator")
+	}
+	if !errors.Is(err, ebuserrors.ErrInvalidPayload) {
+		t.Errorf("err = %v; want errors.Is(err, ErrInvalidPayload)", err)
+	}
+	// Verify it tried EVERY canonical address before giving up.
+	want := []byte{0x15, 0x35, 0x75, 0xF5, 0x76, 0xF6}
+	if len(reg.lookups) != len(want) {
+		t.Fatalf("lookups = %v; want all %d canonical addresses tried", reg.lookups, len(want))
+	}
+	for i, addr := range want {
+		if reg.lookups[i] != addr {
+			t.Errorf("lookups[%d] = 0x%02X; want 0x%02X (priority order)", i, reg.lookups[i], addr)
+		}
 	}
 }

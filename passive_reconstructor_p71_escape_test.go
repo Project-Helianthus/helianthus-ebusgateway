@@ -321,8 +321,8 @@ func TestPassiveReconstructor_P71_WireSYNBeforeLENStillAbandons(t *testing.T) {
 	}
 	defer subscription.Close()
 
-	// Wire: SYN (gates Layer 1) + master-class src + DST + PB + SB + SYN.
-	// 4 bytes accumulated when the SYN arrives — still below LEN
+	// Wire: SYN (gates Layer 1) + initiator-class src + DST + PB + SB +
+	// SYN. 4 bytes accumulated when the SYN arrives — still below LEN
 	// position (5). isMidRequestFrame returns false → SYN-handling path
 	// → abandon. requestRaw len > 3 disqualifies the
 	// arbitration_fragment classification, so the abandon reason is
@@ -330,7 +330,7 @@ func TestPassiveReconstructor_P71_WireSYNBeforeLENStillAbandons(t *testing.T) {
 	// the premature SYN as data.
 	wire := []byte{
 		protocol.SymbolSyn, // gate
-		0x10,               // master src (BASV2-master)
+		0x10,               // initiator src (BASV2 initiator face)
 		0x08,               // DST (BAI)
 		0xB5,               // PB
 		0x09,               // SB

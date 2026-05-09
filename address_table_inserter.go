@@ -293,11 +293,18 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		return
 	}
 
-	i.table.reg.Register(registry.DeviceInfo{Address: addr})
-	// A.7+M6.1 — use the thread-safe MarkSlotPassiveObserved API
-	// instead of mutating the slot pointer directly. The previous
-	// direct-mutation pattern was racy with concurrent readers via
-	// LookupSlot / Lookup (Codex P2 follow-up from PR #565).
+	// P8 — atomic identity-merge + correct passive-observed label.
+	//
+	// Pre-P8 the inserter called Register(DeviceInfo{}) followed by
+	// MarkSlotPassiveObserved. Register stamped the slot at
+	// DiscoverySourceActiveConfirmed/VerificationStateIdentityConfirmed,
+	// which the monotonic ladder then prevented MarkSlotPassiveObserved
+	// from downgrading. Net: every passive insertion was misreported
+	// as `active_confirmed` in operator surfaces. RegisterPassiveObserved
+	// performs identity-merge AND the passive-label stamp atomically
+	// under one r.mu acquisition with the correct
+	// DiscoverySourcePassiveObserved/VerificationStateCorroborated
+	// labels — see helianthus-ebusreg PR #138.
 	var slotRole registry.SlotRole
 	switch role {
 	case "initiator":
@@ -305,7 +312,14 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 	case "target":
 		slotRole = registry.SlotRoleSlave
 	}
-	i.table.reg.MarkSlotPassiveObserved(addr, slotRole, observedAt)
+	i.table.reg.RegisterPassiveObserved(registry.DeviceInfo{Address: addr}, slotRole, observedAt)
+	// Capture the slot pointer for the AddressTable's cached
+	// `slots[addr].RegistrySlot` field. RegisterPassiveObserved already
+	// attaches slot.Device, so this LookupSlot is purely for the
+	// projection cache (Codex P8 ebusreg review NIT FINDING_3 — kept
+	// intentionally to preserve the AddressTable.Lookup cached-slot
+	// shape; no internal readers depend on it but external projections
+	// in address_table.go do).
 	registrySlot, _ := i.table.reg.LookupSlot(addr)
 
 	tier, free := canonicalSlotMetadata(addr)

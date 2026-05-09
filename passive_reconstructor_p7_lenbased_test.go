@@ -93,12 +93,15 @@ func TestPassiveTransactionReconstructor_M2I_RealWireShape(t *testing.T) {
 }
 
 // TestPassiveTransactionReconstructor_BroadcastStillWorksAtLENBoundary
-// verifies that broadcast frames continue to work after the P7 fix.
-// Broadcast wire IS [request_bytes][SYN] — no ACK or response phase —
-// so the parser hits LEN+CRC at len(requestRaw) == 6 + LEN_byte, the
-// LEN-based early-transition emits the BroadcastFrame event and resets
-// to Idle, and the trailing SYN re-engages Layer 1 via the
-// passivePhaseIdle handler.
+// verifies that broadcast frames continue to classify correctly after
+// the P7 fix. Per Codex P7 review pass 3, the LEN-based path now
+// DEFERS broadcast classification to the trailing SYN (so timing
+// observables match real wire and truncated [SYN] SRC..CRC does not
+// classify as a complete broadcast). This test feeds a complete
+// broadcast wire `[SYN] SRC..CRC SYN` and asserts the BroadcastFrame
+// event is emitted via the SYN-triggered path. The
+// BroadcastDefersToSYNTrigger test below proves the no-trailing-SYN
+// case explicitly.
 func TestPassiveTransactionReconstructor_BroadcastStillWorksAtLENBoundary(t *testing.T) {
 	t.Parallel()
 

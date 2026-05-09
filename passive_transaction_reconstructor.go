@@ -158,6 +158,29 @@ type passiveTransactionState struct {
 	frameType           protocol.FrameType
 	timing              PassiveTimingMarkers
 	lastProgressAt      time.Time
+	// P6 Layer 1 — inter-frame SYN gate.
+	//
+	// synced records whether the parser has observed at least one
+	// SymbolSyn since the previous frame boundary (commit, abandon,
+	// transport reset, or startup). The reconstructor only accepts a
+	// non-SYN byte as a new frame's source when synced=true; otherwise
+	// the byte is dropped and counted in
+	// passiveReconstructorMetrics.prefixResyncSkippedTotal. This makes
+	// the eBUS bus-idle invariant explicit: a fresh request can only
+	// begin after the bus visibly went idle. Default-false on every
+	// resetStateLocked() call ensures the gate re-engages after every
+	// classified or abandoned transaction.
+	synced bool
+	// P6 Layer 2 cascade suppression.
+	//
+	// awaitingResync is set to true after a Layer 2 rejection (a
+	// non-initiator-class byte appearing in source position, e.g.
+	// "[SYN] [TGT] [PB=0xB5] [SB] [data]" — the operator-confirmed
+	// dropped-SRC signature). While awaitingResync=true and synced=false
+	// the parser drops the trailing PB/SB/data/CRC bytes silently
+	// without inflating prefixResyncSkippedTotal. Cleared on the next
+	// SymbolSyn (which also re-flips synced to true).
+	awaitingResync bool
 }
 
 type PassiveTransactionReconstructor struct {
@@ -193,12 +216,29 @@ type PassiveReconstructorSnapshot struct {
 	// frames hitting unexpected_symbol despite Grafana ground truth
 	// showing positive ACKs on the wire (A.9 diagnostic surface).
 	AbandonsByReason map[string]uint64
+	// PrefixResyncSkippedTotal counts non-SYN bytes the parser dropped
+	// because no SymbolSyn was observed since the previous frame
+	// boundary (P6 Layer 1 — inter-frame SYN gate). Direct measure of
+	// continuation-byte / startup resync events; expected to spike at
+	// startup then plateau near zero on a clean bus.
+	PrefixResyncSkippedTotal uint64
+	// InvalidSrcClassSkippedTotal counts non-initiator-class bytes the
+	// parser rejected in source position (P6 Layer 2 — SRC AddressClass
+	// validation). Direct measure of upstream byte-loss frequency
+	// (operator-confirmed Mode B: "[SYN] [TGT] [PB=0xB5] [SB] [data]"
+	// signature where the actual SRC byte was eaten by the ENH
+	// transport's StreamEventStarted capture or by an analogous proxy
+	// drop). Sustained non-zero rate after deploy quantifies the
+	// cost-of-deferral for the upstream P6.1/P6.2 follow-ups.
+	InvalidSrcClassSkippedTotal uint64
 }
 
 type passiveReconstructorMetrics struct {
-	fanoutOverflowTotal map[string]uint64
-	recoveryTotal       map[string]uint64
-	abandonsByReason    map[string]uint64
+	fanoutOverflowTotal         map[string]uint64
+	recoveryTotal               map[string]uint64
+	abandonsByReason            map[string]uint64
+	prefixResyncSkippedTotal    uint64
+	invalidSrcClassSkippedTotal uint64
 }
 
 func StartPassiveTransactionReconstructor(ctx context.Context, cfg Config) (*PassiveTransactionReconstructor, error) {
@@ -319,10 +359,12 @@ func (reconstructor *PassiveTransactionReconstructor) Snapshot() PassiveReconstr
 	defer reconstructor.metricsMu.Unlock()
 
 	return PassiveReconstructorSnapshot{
-		TapStatus:           tapStatus,
-		FanoutOverflowTotal: cloneUint64Map(reconstructor.metrics.fanoutOverflowTotal),
-		RecoveryTotal:       cloneUint64Map(reconstructor.metrics.recoveryTotal),
-		AbandonsByReason:    cloneUint64Map(reconstructor.metrics.abandonsByReason),
+		TapStatus:                   tapStatus,
+		FanoutOverflowTotal:         cloneUint64Map(reconstructor.metrics.fanoutOverflowTotal),
+		RecoveryTotal:               cloneUint64Map(reconstructor.metrics.recoveryTotal),
+		AbandonsByReason:            cloneUint64Map(reconstructor.metrics.abandonsByReason),
+		PrefixResyncSkippedTotal:    reconstructor.metrics.prefixResyncSkippedTotal,
+		InvalidSrcClassSkippedTotal: reconstructor.metrics.invalidSrcClassSkippedTotal,
 	}
 }
 
@@ -396,7 +438,45 @@ func (reconstructor *PassiveTransactionReconstructor) expireIfStaleLocked(events
 func (reconstructor *PassiveTransactionReconstructor) handleSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
 	switch reconstructor.state.phase {
 	case passivePhaseIdle:
+		// P6 Layer 1 — inter-frame SYN gate.
+		//
+		// SYN re-engages the synced flag and clears any in-flight
+		// Layer-2 cascade-suppression marker so the next non-SYN byte
+		// can attempt to start a frame.
 		if symbol == protocol.SymbolSyn {
+			reconstructor.state.synced = true
+			reconstructor.state.awaitingResync = false
+			return events
+		}
+		// Non-SYN byte but the bus has not visibly gone idle since the
+		// previous frame ended (or since startup). Drop and count.
+		// awaitingResync==true means the byte was already classified as
+		// "garbage trailing a Layer 2 rejection"; suppress the Layer 1
+		// cascade counter to avoid double-counting the same upstream
+		// drop event.
+		if !reconstructor.state.synced {
+			if !reconstructor.state.awaitingResync {
+				reconstructor.metricsMu.Lock()
+				reconstructor.metrics.prefixResyncSkippedTotal++
+				reconstructor.metricsMu.Unlock()
+			}
+			return events
+		}
+		// P6 Layer 2 — SRC AddressClass validation.
+		//
+		// Every legitimate eBUS frame source is initiator-class
+		// (initiator addresses per AD05 / Phase C / sourceAddressTableV1).
+		// A non-initiator byte in source position is structural
+		// evidence that the upstream pipeline lost the actual SRC byte
+		// (e.g. ENH StreamEventStarted captured-as-control-event and
+		// dropped for third-party arbitration). Count, then drop the
+		// rest of the frame body silently until the next SYN re-syncs.
+		if protocol.AddressClassOf(symbol) != protocol.AddressClassMaster {
+			reconstructor.metricsMu.Lock()
+			reconstructor.metrics.invalidSrcClassSkippedTotal++
+			reconstructor.metricsMu.Unlock()
+			reconstructor.state.synced = false
+			reconstructor.state.awaitingResync = true
 			return events
 		}
 		reconstructor.startRequestLocked(symbol, observedAt)
@@ -413,7 +493,9 @@ func (reconstructor *PassiveTransactionReconstructor) handleSymbolLocked(events 
 		return reconstructor.handleTerminalSymbolLocked(events, symbol, observedAt)
 	case passivePhaseAbandoned:
 		if symbol == protocol.SymbolSyn {
-			reconstructor.resetStateLocked()
+			// SYN-consuming reset: re-engage the Layer 1 gate so the
+			// very next non-SYN byte may legitimately start a frame.
+			reconstructor.resetStateLockedAfterSyn()
 		}
 		return events
 	default:
@@ -434,6 +516,11 @@ func (reconstructor *PassiveTransactionReconstructor) startRequestLocked(symbol 
 	reconstructor.state.frameType = protocol.FrameTypeUnknown
 	reconstructor.state.timing = PassiveTimingMarkers{RequestStart: observedAt}
 	reconstructor.state.lastProgressAt = observedAt
+	// We are now mid-frame; the trailing SYN that ends this frame
+	// will re-flip both flags via resetStateLockedAfterSyn at the
+	// commit/abandon site. (P6 Layer 1 + Layer 2 invariant.)
+	reconstructor.state.synced = false
+	reconstructor.state.awaitingResync = false
 }
 
 func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
@@ -465,14 +552,17 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 			reason = PassiveAbandonReasonScanCollision
 		}
 		events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
-		reconstructor.resetStateLocked()
+		// P6 Layer 1 — symbol that triggered this reset is the
+		// trailing SymbolSyn proven at the top of handleRequestSymbolLocked.
+		reconstructor.resetStateLockedAfterSyn()
 		return events
 	}
 
 	frameType := frame.Type()
 	if frameType == protocol.FrameTypeUnknown {
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedTarget, observedAt, ebuserrors.ErrInvalidPayload))
-		reconstructor.resetStateLocked()
+		// P6 Layer 1 — same SYN-consuming branch as above.
+		reconstructor.resetStateLockedAfterSyn()
 		return events
 	}
 
@@ -493,12 +583,14 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 			},
 			ObservedAt: observedAt,
 		})
-		reconstructor.resetStateLocked()
+		// P6 Layer 1 — broadcast frame committed on the trailing SYN.
+		reconstructor.resetStateLockedAfterSyn()
 	case protocol.FrameTypeInitiatorInitiator, protocol.FrameTypeInitiatorTarget:
 		reconstructor.state.phase = passivePhaseWaitACK
 	default:
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedTarget, observedAt, ebuserrors.ErrInvalidPayload))
-		reconstructor.resetStateLocked()
+		// P6 Layer 1 — terminal SYN already consumed at top of arm.
+		reconstructor.resetStateLockedAfterSyn()
 	}
 	return events
 }
@@ -584,7 +676,8 @@ func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(even
 			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
 			reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
 		}
-		reconstructor.resetStateLocked()
+		// P6 Layer 1 — explicit SymbolSyn case in this arm.
+		reconstructor.resetStateLockedAfterSyn()
 		return events
 	default:
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload))
@@ -596,13 +689,15 @@ func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(even
 func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
 	if len(reconstructor.state.responseRaw) == 0 && symbol == protocol.SymbolSyn {
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNoResponse, observedAt, ebuserrors.ErrTimeout))
-		reconstructor.resetStateLocked()
+		// P6 Layer 1 — explicit SymbolSyn at this branch.
+		reconstructor.resetStateLockedAfterSyn()
 		return events
 	}
 	if len(reconstructor.state.responseRaw) > 0 && symbol == protocol.SymbolSyn {
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
 		reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
-		reconstructor.resetStateLocked()
+		// P6 Layer 1 — explicit SymbolSyn at this branch.
+		reconstructor.resetStateLockedAfterSyn()
 		return events
 	}
 
@@ -646,7 +741,8 @@ func (reconstructor *PassiveTransactionReconstructor) handleFinalACKSymbolLocked
 	case protocol.SymbolSyn:
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
 		reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
-		reconstructor.resetStateLocked()
+		// P6 Layer 1 — explicit SymbolSyn case in handleFinalACKSymbolLocked.
+		reconstructor.resetStateLockedAfterSyn()
 		return events
 	default:
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload))
@@ -693,7 +789,9 @@ func (reconstructor *PassiveTransactionReconstructor) handleTerminalSymbolLocked
 	default:
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload))
 	}
-	reconstructor.resetStateLocked()
+	// P6 Layer 1 — handleTerminalSymbolLocked only reaches this site
+	// after the leading-symbol SymbolSyn check at the top.
+	reconstructor.resetStateLockedAfterSyn()
 	return events
 }
 
@@ -826,6 +924,25 @@ func (reconstructor *PassiveTransactionReconstructor) resetStateLocked() {
 	reconstructor.state.frameType = protocol.FrameTypeUnknown
 	reconstructor.state.timing = PassiveTimingMarkers{}
 	reconstructor.state.lastProgressAt = time.Time{}
+	// P6 Layer 1 + Layer 2 — re-engage the inter-frame SYN gate. Every
+	// reset (transport reset, abandon, NACK, default-case fallthrough)
+	// returns the parser to the pre-startup state where it must
+	// observe at least one SymbolSyn before accepting another frame.
+	// Call sites that have just consumed a SYN should use
+	// resetStateLockedAfterSyn instead.
+	reconstructor.state.synced = false
+	reconstructor.state.awaitingResync = false
+}
+
+// resetStateLockedAfterSyn is the SYN-consuming variant of
+// resetStateLocked. Used at every commit/abandon site where the byte
+// that triggered the reset was a SymbolSyn — that SYN already
+// satisfies the Layer 1 inter-frame invariant, so we can leave the
+// gate engaged for the next non-SYN byte. See the P6 plan / Codex
+// Pass 1 verification for the canonical list of SYN-consuming sites.
+func (reconstructor *PassiveTransactionReconstructor) resetStateLockedAfterSyn() {
+	reconstructor.resetStateLocked()
+	reconstructor.state.synced = true
 }
 
 func m2aRequestACKCorrelation(symbol byte) PassiveACKCorrelation {

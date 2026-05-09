@@ -142,7 +142,10 @@ func mapGraphQLBusReconstructor(recon *ebusgateway.BusReconstructorAggregate) *g
 	if recon == nil {
 		return nil
 	}
-	out := &graphql.BusReconstructorAggregate{}
+	out := &graphql.BusReconstructorAggregate{
+		PrefixResyncSkippedTotal:    recon.PrefixResyncSkippedTotal,
+		InvalidSrcClassSkippedTotal: recon.InvalidSrcClassSkippedTotal,
+	}
 	if len(recon.Recoveries) > 0 {
 		out.Recoveries = make([]graphql.BusReconstructorRecovery, len(recon.Recoveries))
 		for i, r := range recon.Recoveries {
@@ -262,7 +265,10 @@ func mapMCPBusReconstructor(recon *ebusgateway.BusReconstructorAggregate) *mcp.B
 	if recon == nil {
 		return nil
 	}
-	out := &mcp.BusReconstructorAggregate{}
+	out := &mcp.BusReconstructorAggregate{
+		PrefixResyncSkippedTotal:    recon.PrefixResyncSkippedTotal,
+		InvalidSrcClassSkippedTotal: recon.InvalidSrcClassSkippedTotal,
+	}
 	if len(recon.Recoveries) > 0 {
 		out.Recoveries = make([]mcp.BusReconstructorRecovery, len(recon.Recoveries))
 		for i, r := range recon.Recoveries {

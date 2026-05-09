@@ -1259,6 +1259,23 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		writer.writeCounterSample("ebus_passive_reconstructor_abandons_total", float64(snapshot.AbandonsByReason[reason]), labelMap("reason", reason))
 	}
 
+	// P6 Layer 1 canary — bytes dropped because no inter-frame SYN
+	// was observed. Spikes briefly at startup, then plateaus at
+	// near-zero on a clean bus. Sustained non-zero rate after warmup
+	// is operator signal for upstream investigation (overflow drop,
+	// continuation-byte injection).
+	writer.writeHelp("ebus_passive_reconstructor_prefix_resync_skipped_total", "Passive reconstructor bytes dropped because no SymbolSyn was observed since the previous frame boundary (P6 inter-frame SYN gate).")
+	writer.writeType("ebus_passive_reconstructor_prefix_resync_skipped_total", "counter")
+	writer.writeCounterSample("ebus_passive_reconstructor_prefix_resync_skipped_total", float64(snapshot.PrefixResyncSkippedTotal), nil)
+
+	// P6 Layer 2 canary — direct measure of operator-confirmed Mode B
+	// (SRC byte loss in the upstream ENH transport / proxy). Sustained
+	// non-zero rate after deploy quantifies the cost of deferring the
+	// P6.1 ENH-transport replay / P6.2 proxy fan-out follow-ups.
+	writer.writeHelp("ebus_passive_reconstructor_invalid_src_class_skipped_total", "Passive reconstructor bytes rejected as non-initiator-class in source position (P6 SRC AddressClass validation; direct measure of upstream byte loss).")
+	writer.writeType("ebus_passive_reconstructor_invalid_src_class_skipped_total", "counter")
+	writer.writeCounterSample("ebus_passive_reconstructor_invalid_src_class_skipped_total", float64(snapshot.InvalidSrcClassSkippedTotal), nil)
+
 	writer.writeHelp("passive_hits_total", "Observe-first scheduler reads served from passive shadow.")
 	writer.writeType("passive_hits_total", "counter")
 	for _, item := range sortedWatchEfficiencyBuckets(watchEfficiency.buckets) {

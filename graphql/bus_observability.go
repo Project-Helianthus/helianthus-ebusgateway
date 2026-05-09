@@ -152,6 +152,13 @@ type BusReconstructorRecovery struct {
 
 type BusReconstructorAggregate struct {
 	Recoveries []BusReconstructorRecovery
+	// PrefixResyncSkippedTotal — see ebusgateway.BusReconstructorAggregate
+	// (P6 Layer 1 inter-frame SYN gate canary).
+	PrefixResyncSkippedTotal uint64
+	// InvalidSrcClassSkippedTotal — see ebusgateway.BusReconstructorAggregate
+	// (P6 Layer 2 SRC AddressClass validation canary; direct measure
+	// of upstream byte loss).
+	InvalidSrcClassSkippedTotal uint64
 }
 
 type BusSummary struct {

@@ -20,6 +20,17 @@ const (
 	minPassiveTransactionWatchdog             = 250 * time.Millisecond
 	maxPassiveTransactionWatchdog             = 5 * time.Second
 	maxPassiveRequestBytes                    = 512
+
+	// maxPassiveDataLen is the eBUS spec-mandated upper bound on the LEN
+	// byte (Spec_Prot_7 §3.1: a single service frame carries up to 16
+	// payload bytes). Used by isMidRequestFrame / isMidResponseFrame
+	// (P7.1) to refuse to absorb wire-SYN bytes as data when the
+	// declared LEN is structurally impossible — i.e. the parser is
+	// almost certainly looking at a misclassified byte (e.g. an
+	// arbitrary bus byte admitted as an initiator-class source after a
+	// prior abandon). Bounding the predicate here prevents a single bad
+	// position from cascading into watchdog-bounded byte absorption.
+	maxPassiveDataLen = 16
 )
 
 type PassiveClassifiedEventKind uint8
@@ -523,8 +534,79 @@ func (reconstructor *PassiveTransactionReconstructor) startRequestLocked(symbol 
 	reconstructor.state.awaitingResync = false
 }
 
+// isMidRequestFrame reports whether requestRaw is structurally
+// mid-frame: the LEN byte (position 4) is observed and the buffer is
+// shorter than the LEN-declared full-frame length 6+LEN. P7.1 uses
+// this predicate to disambiguate a logical 0xAA byte (escape-decoded
+// from wire 0xA9 0x01) from a real wire-SYN frame terminator: in
+// mid-frame state the byte must structurally be data, regardless of
+// whether the upstream tap reported it via the escape decoder or as a
+// raw symbol.
+//
+// SCOPE / DEFERRED: this predicate only disambiguates positions
+// strictly after the LEN byte (positions 5 .. 6+LEN-1, i.e. data and
+// CRC). Logical 0xAA bytes at positions 0..4 (SRC, DST, PB, SB, LEN)
+// remain ambiguous under this approach because the reconstructor
+// hasn't yet learnt the structural length. In practice on the eBUS
+// wire those positions are either statically constrained (SRC must be
+// initiator-class, never 0xAA — Layer 2 rejects; DST must be target
+// or broadcast, never 0xAA — frame would abandon either way) or
+// extremely unlikely (PB/SB=0xAA is not a catalogued opcode for
+// Vaillant traffic; LEN=0xAA = 170 bytes would exceed any service
+// payload bound). Full disambiguation would require plumbing a
+// per-byte WasEscaped flag through transport.StreamEvent →
+// PassiveEvent → PassiveTapEvent (Approach A in the P7.1 consult);
+// deferred until live captures justify the cross-repo change.
+//
+// SAFETY BOUND: the predicate also returns false when the declared
+// LEN exceeds maxPassiveDataLen (eBUS spec §3.1 limit, 16 bytes). An
+// out-of-spec LEN means the parser is almost certainly mid-state on a
+// misclassified byte sequence (e.g. an arbitrary byte was admitted as
+// an initiator-class source after a previous abandon). Refusing to
+// absorb wire-SYNs in that state lets the SYN reach the existing
+// abandon/resync path instead of cascading into a watchdog-bounded
+// byte-absorption window.
+func (reconstructor *PassiveTransactionReconstructor) isMidRequestFrame() bool {
+	if len(reconstructor.state.requestRaw) < 5 {
+		return false
+	}
+	declaredLen := int(reconstructor.state.requestRaw[4])
+	if declaredLen > maxPassiveDataLen {
+		return false
+	}
+	return len(reconstructor.state.requestRaw) < 6+declaredLen
+}
+
+// isMidResponseFrame reports whether responseRaw is structurally
+// mid-frame: the response LEN byte (position 0) is observed and the
+// buffer is shorter than responseExpectedLen (= LEN+2 to include the
+// trailing CRC). Mirrors isMidRequestFrame's role for the response
+// region — see that doc-comment for scope/deferred notes. Also bounds
+// by maxPassiveDataLen for the same safety reason.
+func (reconstructor *PassiveTransactionReconstructor) isMidResponseFrame() bool {
+	if len(reconstructor.state.responseRaw) == 0 {
+		return false
+	}
+	if reconstructor.state.responseExpectedLen > maxPassiveDataLen+2 {
+		return false
+	}
+	return len(reconstructor.state.responseRaw) < reconstructor.state.responseExpectedLen
+}
+
 func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
-	if symbol != protocol.SymbolSyn {
+	// P7.1 — escape-decoded 0xAA disambiguation.
+	//
+	// The passive bus tap's escape decoder produces logical 0xAA when
+	// the wire carried the 2-byte sequence 0xA9 0x01. A naive `symbol
+	// == SymbolSyn` check at this entry treats that logical 0xAA as a
+	// frame-end SYN, abandoning every M2I/M2T/Broadcast frame whose
+	// data or CRC region contains a 0xAA byte. With the LEN byte
+	// already in `requestRaw` (positions 0..4 buffered), the structural
+	// length is known; an SYN-valued byte arriving while
+	// len(requestRaw) < 6+LEN must be data (escape-decoded), not a wire
+	// SYN. Treat it as data and fall through to the data-accumulation
+	// path. See isMidRequestFrame for scope and deferred edge cases.
+	if symbol != protocol.SymbolSyn || reconstructor.isMidRequestFrame() {
 		reconstructor.state.requestRaw = append(reconstructor.state.requestRaw, symbol)
 		reconstructor.state.lastProgressAt = observedAt
 		if len(reconstructor.state.requestRaw) > maxPassiveRequestBytes {
@@ -580,16 +662,12 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 		// matches the historical behavior for genuinely corrupt
 		// frames).
 		//
-		// CAVEAT (P7.1 follow-up): the passive-tap escape decoder
-		// produces a logical 0xAA when the wire carried the escape
-		// sequence 0xA9 0x01 (a logical data byte 0xAA). The current
-		// non-SYN-branch entry condition treats that logical 0xAA as
-		// SYN, so frames whose data region contains a logical 0xAA
-		// still abandon at the SYN branch below before reaching this
-		// LEN-completion check. Tracking raw-vs-logical metadata
-		// through PassiveTapEvent (or making the SYN check
-		// frame-state-aware) is a separate change — see the deferred
-		// follow-ups in the post-cruise plan.
+		// P7.1 — the entry condition above (`symbol != SymbolSyn ||
+		// isMidRequestFrame()`) routes logical 0xAA bytes (escape-
+		// decoded from wire 0xA9 0x01) appearing at positions 5 ..
+		// 6+LEN-1 into the data-accumulation path. They reach this
+		// LEN-completion check naturally and frames whose data /
+		// CRC region contains 0xAA now classify cleanly.
 		if len(reconstructor.state.requestRaw) >= 5 {
 			expectedLen := 6 + int(reconstructor.state.requestRaw[4])
 			if len(reconstructor.state.requestRaw) == expectedLen {
@@ -638,18 +716,18 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 // to passivePhaseWaitACK without waiting for the SYN that doesn't
 // arrive on real wire). Returns ok=false in two cases:
 //
-//   1. parseFrame itself failed — caller keeps accumulating; the
-//      trailing SYN path classifies the abandon (corrupted_request /
-//      arbitration_fragment / self_echo / scan_collision).
+//  1. parseFrame itself failed — caller keeps accumulating; the
+//     trailing SYN path classifies the abandon (corrupted_request /
+//     arbitration_fragment / self_echo / scan_collision).
 //
-//   2. Frame parsed cleanly but its frameType is Broadcast or Unknown.
-//      Codex P7 review pass 3 FINDING_1: real broadcast wire IS
-//      [SRC..CRC][SYN] — the trailing SYN is the canonical commit
-//      boundary, and broadcast timing observables (RequestEnd,
-//      Terminal, ObservedAt) must reflect that SYN's timestamp, not
-//      the CRC byte's. Truncated [SYN] SRC..CRC without the trailing
-//      SYN must NOT classify as a complete broadcast. So broadcast
-//      and Unknown fall through to the SYN-triggered path.
+//  2. Frame parsed cleanly but its frameType is Broadcast or Unknown.
+//     Codex P7 review pass 3 FINDING_1: real broadcast wire IS
+//     [SRC..CRC][SYN] — the trailing SYN is the canonical commit
+//     boundary, and broadcast timing observables (RequestEnd,
+//     Terminal, ObservedAt) must reflect that SYN's timestamp, not
+//     the CRC byte's. Truncated [SYN] SRC..CRC without the trailing
+//     SYN must NOT classify as a complete broadcast. So broadcast
+//     and Unknown fall through to the SYN-triggered path.
 //
 // Caller MUST hold stateMu and MUST have populated requestRaw with
 // the candidate request bytes. When ok=true, the post-commit reset
@@ -846,7 +924,12 @@ func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked
 		reconstructor.resetStateLockedAfterSyn()
 		return events
 	}
-	if len(reconstructor.state.responseRaw) > 0 && symbol == protocol.SymbolSyn {
+	if len(reconstructor.state.responseRaw) > 0 && symbol == protocol.SymbolSyn && !reconstructor.isMidResponseFrame() {
+		// P7.1 — only treat a SYN-valued byte as a wire SYN when we are
+		// past the structurally-required response length (LEN+2,
+		// including CRC). Mid-response 0xAA bytes (escape-decoded from
+		// wire 0xA9 0x01) fall through to the data-accumulation path
+		// below and reach the LEN-completion check.
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
 		reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
 		// P6 Layer 1 — explicit SymbolSyn at this branch.

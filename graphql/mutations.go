@@ -1083,6 +1083,9 @@ func findControllerEntry(reg InvokeRegistry) (registry.DeviceEntry, error) {
 	type snapshotIterativeRegistry interface {
 		IterateSnapshots(func(registry.DeviceEntrySnapshot) bool)
 	}
+	type snapshotLookupRegistry interface {
+		LookupEntrySnapshot(byte) (registry.DeviceEntrySnapshot, bool)
+	}
 	if iter, ok := reg.(snapshotIterativeRegistry); ok {
 		var controllerAddr byte
 		var found bool
@@ -1095,6 +1098,27 @@ func findControllerEntry(reg InvokeRegistry) (registry.DeviceEntry, error) {
 			return true
 		})
 		if found {
+			// Codex P9.5 review pass 1 MINOR FINDING_1 — TOCTOU
+			// re-validation: between IterateSnapshots and Lookup,
+			// Register can replace r.entries[addr] on identity/model
+			// conflict. Re-validate via a second snapshot read at
+			// controllerAddr before returning the live entry. If the
+			// re-validation snapshot's DeviceID no longer matches
+			// "BASV", the entry has been swapped out — fall through
+			// to the fallback Lookup so we don't return a non-BASV
+			// entry's Planes for controller-mutation routing.
+			if snapReg, ok := reg.(snapshotLookupRegistry); ok {
+				revalidate, ok := snapReg.LookupEntrySnapshot(controllerAddr)
+				if !ok || !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(revalidate.DeviceID)), "BASV") {
+					// Entry at controllerAddr no longer BASV (race);
+					// skip to fallback.
+					controller, ok := reg.Lookup(mutationControllerFallbackAddr)
+					if ok && controller != nil {
+						return controller, nil
+					}
+					return nil, fmt.Errorf("controller BASV2 not found: %w", ebuserrors.ErrInvalidPayload)
+				}
+			}
 			if controller, ok := reg.Lookup(controllerAddr); ok && controller != nil {
 				return controller, nil
 			}

@@ -30,7 +30,21 @@ type Registry interface {
 	// can project discovery_source / verification_state into
 	// JSON-serializable strings (P3.5). Mirrors the same method on
 	// *registry.DeviceRegistry.
+	//
+	// DEPRECATED for label projection: prefer LookupSlotSnapshot for
+	// any code that reads `slot.DiscoverySource` / `.VerificationState`
+	// outside the registry's lock. The live pointer can be mutated
+	// concurrently by Register / RegisterPassiveObserved / MarkSlot*
+	// callers; reading the int-typed enums is atomic in practice on
+	// supported architectures but the race detector flags it under
+	// contention. Retained for callers that need a stable pointer
+	// for FirstObservedAt walks or device-attached probes.
 	LookupSlot(address byte) (*registry.AddressSlot, bool)
+	// LookupSlotSnapshot returns a value-typed snapshot of the slot
+	// taken under the registry's RLock. Callers can read snapshot
+	// fields without race risk (P8.1 / P8.3). Mirrors the same
+	// method on *registry.DeviceRegistry.
+	LookupSlotSnapshot(address byte) (registry.AddressSlotSnapshot, bool)
 }
 
 type Invoker interface {
@@ -3690,15 +3704,21 @@ func (s *Server) snapshotAddressSlots() map[byte]addressSlotLabels {
 // address_table.go so MCP and the address-table snapshot agree on
 // label spellings. Returns ("", "") when reg is nil or the slot is
 // missing.
+//
+// P8.3: switched from LookupSlot (live pointer) to LookupSlotSnapshot
+// (value copy under registry RLock) so the enum reads are race-free
+// with concurrent registry writers (Register / RegisterPassiveObserved
+// / MarkSlot*). The race detector flags the live-pointer pattern
+// under contention; the snapshot eliminates that race surface.
 func lookupDiscoveryLabels(reg Registry, addr byte) (discovery string, verification string) {
 	if reg == nil {
 		return "", ""
 	}
-	slot, ok := reg.LookupSlot(addr)
-	if !ok || slot == nil {
+	snap, ok := reg.LookupSlotSnapshot(addr)
+	if !ok {
 		return "", ""
 	}
-	switch slot.DiscoverySource {
+	switch snap.DiscoverySource {
 	case registry.DiscoverySourcePassiveObserved:
 		discovery = "passive_observed"
 	case registry.DiscoverySourceStaticSeed:
@@ -3706,7 +3726,7 @@ func lookupDiscoveryLabels(reg Registry, addr byte) (discovery string, verificat
 	case registry.DiscoverySourceActiveConfirmed:
 		discovery = "active_confirmed"
 	}
-	switch slot.VerificationState {
+	switch snap.VerificationState {
 	case registry.VerificationStateCandidate:
 		verification = "candidate"
 	case registry.VerificationStateCorroborated:

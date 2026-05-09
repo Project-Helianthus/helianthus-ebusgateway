@@ -35,6 +35,12 @@ func (emptyMCPRegistry) LookupSlot(byte) (*registry.AddressSlot, bool) {
 	return nil, false
 }
 
+// LookupSlotSnapshot satisfies mcp.Registry (added in P8.3 — value-typed
+// snapshot for race-free enum reads). Empty test fake.
+func (emptyMCPRegistry) LookupSlotSnapshot(byte) (registry.AddressSlotSnapshot, bool) {
+	return registry.AddressSlotSnapshot{}, false
+}
+
 func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.BroadcastListen = true

@@ -245,7 +245,7 @@ func TestPersist_AtomicTempRename(t *testing.T) {
 	}
 
 	// Mutate state and trigger persist.
-	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodExplicitValidateOnly})
 	// Allow a brief flush window via Stop (M3 will define Stop to flush).
 	if err := mgr.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -372,7 +372,7 @@ func TestPersist_RenameEXDEV_PreservesOldFile(t *testing.T) {
 	// Trigger a write. M3's persister MUST call FsHooks.Rename, get EXDEV,
 	// then FsHooks.Unlink(temp), increment metric reason="rename_exdev",
 	// and return without modifying the existing path.
-	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodExplicitValidateOnly})
 	if err := mgr.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -564,7 +564,7 @@ func TestPersist_FsyncTempFailure_RetainsInMemory(t *testing.T) {
 	tracker := &recordingMetrics{}
 	mgr := New(Options{Path: path, FsHooks: hooks, Metrics: tracker})
 
-	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodExplicitValidateOnly})
 	if err := mgr.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -674,7 +674,7 @@ func TestPersist_WriteFailure_RetainsInMemory(t *testing.T) {
 	tracker := &recordingMetrics{}
 	mgr := New(Options{Path: path, FsHooks: hooks, Metrics: tracker})
 
-	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodExplicitValidateOnly})
 	if err := mgr.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -748,7 +748,7 @@ func TestPersist_P6_KillMidWriteUnderFsyncEINVAL(t *testing.T) {
 
 	// Mutation marker — if the new content lands, it MUST contain
 	// last_admitted_source=0xF1 (241) which is absent from oldContent (247).
-	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodExplicitValidateOnly})
 	if err := mgr.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}

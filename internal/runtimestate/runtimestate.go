@@ -29,8 +29,7 @@ type SelectionMethod string
 
 const (
 	SelectionMethodWarmup           SelectionMethod = "source_selection_warmup"
-	SelectionMethodOverride         SelectionMethod = "override"
-	SelectionMethodOverrideValidate SelectionMethod = "explicit_validate_only"
+	SelectionMethodExplicitValidateOnly SelectionMethod = "explicit_validate_only"
 	SelectionMethodEbusdTCPFallback SelectionMethod = "ebusd-tcp-fallback"
 )
 

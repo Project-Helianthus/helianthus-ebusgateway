@@ -110,6 +110,30 @@ func revalidateRuntimeStateMembers(
 	if mgr == nil || gw == nil || gw.Bus == nil || gw.Registry == nil {
 		return runtimestate.Result{}
 	}
+
+	// Reconcile registry → Manager before each cycle. The
+	// AddressTableInserter passive observer (db9075d/92ae86a) feeds the
+	// Manager from passive bus traffic; the registry additionally
+	// receives entries from the active startup scan path
+	// (registry.ScanDirected from cmd/gateway/startup_scan.go) which
+	// doesn't pass through the inserter. Walking IterateSnapshots and
+	// calling RefreshKnownBusMemberPresence ensures both discovery
+	// paths converge into known_bus_members[]. RefreshKnownBusMemberPresence
+	// preserves existing Identity / CompanionAddr / Confidence on
+	// addresses already in the cache (idempotent for hot iterations
+	// where the same addr has been observed thousands of times).
+	// Codex P2 follow-up on PR #615.
+	now := time.Now().UTC()
+	gw.Registry.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		for _, addr := range snap.Addresses {
+			if addr == admittedSource || addr == 0xFE || addr == 0x00 {
+				continue
+			}
+			mgr.RefreshKnownBusMemberPresence(addr, now, runtimestate.LastSourcePassiveObserved)
+		}
+		return true
+	})
+
 	state := mgr.State()
 	if state == nil || state.EBus == nil || len(state.EBus.KnownBusMembers) == 0 {
 		return runtimestate.Result{}

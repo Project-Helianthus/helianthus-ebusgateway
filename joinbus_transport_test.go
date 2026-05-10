@@ -207,6 +207,53 @@ func TestDefaultStartupAdmissionSourceSelectionConfig(t *testing.T) {
 	if cfg.InquiryEnabled {
 		t.Error("InquiryEnabled: got true, want false")
 	}
+	// Default config never carries a hint — hints come exclusively from
+	// runtime_state.ebus.self loaded at startup, via StartupAdmissionConfigWithHint.
+	if cfg.HintCandidateSet || cfg.HintCandidate != 0 {
+		t.Errorf("default config must not carry a hint; got HintCandidate=0x%02x set=%v",
+			cfg.HintCandidate, cfg.HintCandidateSet)
+	}
+}
+
+func TestStartupAdmissionConfigWithHint_HintSet(t *testing.T) {
+	cfg := StartupAdmissionConfigWithHint(0x77, true)
+	if !cfg.HintCandidateSet || cfg.HintCandidate != 0x77 {
+		t.Fatalf("HintCandidate=0x%02x set=%v; want 0x77 set=true",
+			cfg.HintCandidate, cfg.HintCandidateSet)
+	}
+	// All other fields must equal the default config — hint biasing is the
+	// ONLY change. Listen-warmup / inquiry behavior is governed elsewhere.
+	if cfg.ListenWarmup != 5*time.Second {
+		t.Errorf("ListenWarmup: got %v, want 5s (default preserved)", cfg.ListenWarmup)
+	}
+	if cfg.InquiryEnabled {
+		t.Error("InquiryEnabled: got true, want false (default preserved)")
+	}
+}
+
+func TestStartupAdmissionConfigWithHint_HintUnsetMatchesDefault(t *testing.T) {
+	withHint := StartupAdmissionConfigWithHint(0x77, false)
+	if withHint.HintCandidateSet || withHint.HintCandidate != 0 {
+		t.Fatalf("hintSet=false must produce default config; got HintCandidate=0x%02x set=%v",
+			withHint.HintCandidate, withHint.HintCandidateSet)
+	}
+	def := DefaultStartupAdmissionSourceSelectionConfig()
+	// SourceAddressSelectionConfig embeds KnownAddressEvidence (with
+	// slices/maps), so structural comparison must use reflect.DeepEqual.
+	if !reflect.DeepEqual(withHint, def) {
+		t.Errorf("hintSet=false must equal DefaultStartupAdmissionSourceSelectionConfig; diff:\n  got: %+v\n  def: %+v",
+			withHint, def)
+	}
+}
+
+func TestStartupAdmissionConfigWithHint_HintZeroIsHonoredWhenSet(t *testing.T) {
+	// HintCandidate=0x00 + hintSet=true means "hint = 0x00", not "no hint" —
+	// the byte-zero ambiguity is resolved by the explicit hintSet flag.
+	cfg := StartupAdmissionConfigWithHint(0x00, true)
+	if !cfg.HintCandidateSet || cfg.HintCandidate != 0 {
+		t.Fatalf("HintCandidate=0x%02x set=%v; want 0x00 set=true",
+			cfg.HintCandidate, cfg.HintCandidateSet)
+	}
 }
 
 func TestSourceSelectionBusAdapter_WarmupObservationForwardsSynthesizedPassiveTraffic(t *testing.T) {

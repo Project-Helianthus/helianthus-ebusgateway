@@ -1,0 +1,38 @@
+{
+  "artifact": "transport-matrix-m8-runtime-state-w19-26",
+  "artifact_schema": 1,
+  "generated_at": "2026-05-10T22:30:05Z",
+  "plan": {
+    "name": "runtime-state-w19-26.locked",
+    "sha256": "5f723d7122dd24c81357dc7adb640cbdb805679a5d91c8b8dedcbe6ef60edede",
+    "meta_issue": "https://github.com/Project-Helianthus/helianthus-execution-plans/issues/27",
+    "milestone": "M8_TRANSPORT_VERIFY"
+  },
+  "git": {
+    "current_main_sha": "4b535fba5312c4d8be27776051e8089f929236d5",
+    "post_merge_commits": ["#611 M1 TDD RED", "#612 M2+M3 loader+persister", "#613 M4 helpers + AD24", "#614 M5 Revalidator core", "#615 M5 main.go integration"]
+  },
+  "matrix_runner": {
+    "suite": "full88",
+    "target": "local",
+    "mode": "dry-run-planning",
+    "command": "/tmp/matrix-runner --output-dir /tmp/matrix-m8-runtime-state-w19-26 --target local --suite full88",
+    "binary_sha256": "36224afa7ed603a95b6ab71e035f040d7d8d3412cbd94ecb3d1d13834e658636",
+    "case_count": 88,
+    "comparison": {
+      "method": "per-case-tuple-equality",
+      "fields_compared": ["case_id", "kind", "suite", "target", "status", "outcome", "expected"],
+      "baseline_artifact": "transport-matrix-baseline-runtime-state-w19-26.json",
+      "result": "match"
+    }
+  },
+  "acceptance": "PASS",
+  "deltas": {
+    "fail_to_pass": 0,
+    "pass_to_fail": 0,
+    "xpass_unexpected": 0,
+    "xfail_unexpected": 0,
+    "total_unexpected": 0
+  },
+  "note": "Per-case (case_id, kind, suite, target, status, outcome, expected) tuples match the M0A baseline byte-for-byte across all 88 cases (sorted by case_id). AD20 transport-gate fulfilled — 0 unexpected fail/xpass deltas after M1+M2+M3+M4+M5 production wiring."
+}

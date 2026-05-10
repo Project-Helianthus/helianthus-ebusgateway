@@ -261,18 +261,17 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	addressTable := ebusgateway.NewAddressTable(gateway.Registry)
 	addressTableInserter := ebusgateway.NewAddressTableInserter(addressTable, addressTableCfg)
 	// M3 + M5 wiring: every passive observation flowing through the
-	// inserter also feeds the runtime-state Manager so
-	// known_bus_members[] populates and refreshes for M5 revalidation
-	// ordering. Without this, a fresh install would leave the cache
-	// permanently empty and revalidation would have nothing to probe.
-	// (Codex P2 follow-up on PR #615.)
+	// inserter feeds the runtime-state Manager via
+	// RefreshKnownBusMemberPresence — a presence-only refresh that
+	// preserves Identity / CompanionAddr / Confidence on existing
+	// entries (the directed-probe responder path is the only writer
+	// that may upgrade Confidence to verified, and identity probes
+	// are the only writer to Identity / CompanionAddr). Without this
+	// wiring known_bus_members[] would stay empty after a fresh
+	// install and M5 would have nothing to revalidate. (Codex P2
+	// follow-up on PR #615.)
 	addressTableInserter.SetRuntimeStateObserver(func(addr byte, observedAt time.Time, reportedSource string) {
-		runtimeStateMgr.UpsertKnownBusMember(runtimestate.KnownBusMember{
-			Addr:       addr,
-			LastSeenAt: observedAt,
-			LastSource: runtimestate.LastSource(reportedSource),
-			Confidence: runtimestate.ConfidenceCorroborated,
-		})
+		runtimeStateMgr.RefreshKnownBusMemberPresence(addr, observedAt, runtimestate.LastSource(reportedSource))
 	})
 	if busObservability != nil {
 		builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(busObservability))

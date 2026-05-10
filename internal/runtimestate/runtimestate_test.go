@@ -955,6 +955,94 @@ func TestEvict_RemovesEntry(t *testing.T) {
 	}
 }
 
+// RefreshKnownBusMemberPresence — Codex P2 follow-up on PR #615.
+// Passive-observation hook must NOT overwrite Identity / CompanionAddr /
+// Confidence on existing entries. New addresses get inserted with
+// conservative defaults (Confidence=Corroborated).
+func TestRefreshKnownBusMemberPresence_PreservesIdentityAndConfidence(t *testing.T) {
+	dir := freshTempDir(t)
+	path := filepath.Join(dir, "runtime_state.json")
+	mgr := New(Options{Path: path})
+
+	companion := byte(0x13)
+	original := KnownBusMember{
+		Addr:          0x08,
+		CompanionAddr: &companion,
+		Identity: &Identity{
+			Manufacturer: "Vaillant",
+			DeviceID:     "BAI00",
+			SN:           "0x21000567",
+		},
+		LastSeenAt: time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC),
+		LastSource: LastSourceDirected0704,
+		Confidence: ConfidenceVerified,
+	}
+	mgr.UpsertKnownBusMember(original)
+
+	refreshAt := time.Date(2026, 5, 11, 0, 5, 0, 0, time.UTC)
+	mgr.RefreshKnownBusMemberPresence(0x08, refreshAt, LastSourcePassiveObserved)
+
+	st := mgr.State()
+	var got KnownBusMember
+	for _, m := range st.EBus.KnownBusMembers {
+		if m.Addr == 0x08 {
+			got = m
+			break
+		}
+	}
+	if got.Addr != 0x08 {
+		t.Fatalf("addr 0x08 missing after refresh")
+	}
+	if !got.LastSeenAt.Equal(refreshAt) {
+		t.Errorf("LastSeenAt = %v; want %v", got.LastSeenAt, refreshAt)
+	}
+	if got.LastSource != LastSourcePassiveObserved {
+		t.Errorf("LastSource = %v; want %v", got.LastSource, LastSourcePassiveObserved)
+	}
+	if got.Confidence != ConfidenceVerified {
+		t.Errorf("Confidence = %v; want %v (passive refresh must not downgrade)", got.Confidence, ConfidenceVerified)
+	}
+	if got.Identity == nil || got.Identity.Manufacturer != "Vaillant" || got.Identity.DeviceID != "BAI00" {
+		t.Errorf("Identity = %+v; want preserved Vaillant/BAI00", got.Identity)
+	}
+	if got.CompanionAddr == nil || *got.CompanionAddr != 0x13 {
+		t.Errorf("CompanionAddr = %v; want preserved 0x13", got.CompanionAddr)
+	}
+}
+
+func TestRefreshKnownBusMemberPresence_InsertsNewAddrWithCorroborated(t *testing.T) {
+	dir := freshTempDir(t)
+	path := filepath.Join(dir, "runtime_state.json")
+	mgr := New(Options{Path: path})
+
+	now := time.Date(2026, 5, 11, 0, 5, 0, 0, time.UTC)
+	mgr.RefreshKnownBusMemberPresence(0x15, now, LastSourcePassiveObserved)
+
+	st := mgr.State()
+	if st == nil || st.EBus == nil {
+		t.Fatalf("state nil after refresh of new addr")
+	}
+	if len(st.EBus.KnownBusMembers) != 1 {
+		t.Fatalf("KnownBusMembers length = %d; want 1", len(st.EBus.KnownBusMembers))
+	}
+	got := st.EBus.KnownBusMembers[0]
+	if got.Addr != 0x15 {
+		t.Errorf("Addr = 0x%02x; want 0x15", got.Addr)
+	}
+	if got.Confidence != ConfidenceCorroborated {
+		t.Errorf("Confidence = %v; want %v (initial passive observation is corroborated, not verified)", got.Confidence, ConfidenceCorroborated)
+	}
+	if got.LastSource != LastSourcePassiveObserved {
+		t.Errorf("LastSource = %v; want %v", got.LastSource, LastSourcePassiveObserved)
+	}
+	if got.Identity != nil {
+		t.Errorf("Identity = %+v; want nil for new passive entry", got.Identity)
+	}
+	if got.CompanionAddr != nil {
+		t.Errorf("CompanionAddr = %v; want nil for new passive entry", got.CompanionAddr)
+	}
+}
+
 // =============================================================================
 // AD24 HINT VS SOURCE-OF-TRUTH (test scaffolds; full enforcement is M4)
 // =============================================================================

@@ -1151,7 +1151,29 @@ func (m *Mux) onReceived(symbol byte) {
 			// the gateway owns the bus with gatewayTxnActive=true — count
 			// this enqueue so bytesDeliveredToActive reflects real
 			// adapter-originated bytes delivered during this grant.
-			m.deliverToActive(symbol, true)
+			//
+			// P12 pass-2 (Codex P1): re-acquire stateMu and re-validate
+			// gatewayTxnActive before delivering. Mirrors the non-SYN
+			// path at line ~1220. Pre-pass-2 sendLoop could drain+arm
+			// for byte K+1 between stateMu.Unlock above and this
+			// deliverToActive call — landing the SYN in activeCh AFTER
+			// the drain, where bus.Send.sendRawWithEcho on byte K+1
+			// reads it as 0xAA → echo_mismatch (pre_echo_syn). With
+			// re-acquisition, P12's drain-then-arm under stateMu is
+			// genuinely atomic with this enqueue.
+			m.stateMu.Lock()
+			if m.gatewayTxnActive {
+				select {
+				case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
+					m.activeTxn.bytesDeliveredToActive.Add(1)
+				default:
+					m.activeTxn.terminatorDropOnFullCh.Add(1)
+					m.logger.Printf("adaptermux: active channel full, dropping SYN 0x%02X", symbol)
+				}
+			} else if hasOwner && ownerID == gatewaySessionID {
+				m.activeTxn.afterInactive.Add(1)
+			}
+			m.stateMu.Unlock()
 		}
 		for _, pe := range passiveEvents {
 			m.emitPassive(pe)
@@ -1761,6 +1783,15 @@ func (m *Mux) activePathExpectsByte(symbol byte) bool {
 // active-path delivery under gateway ownership (decided under stateMu
 // via activePathExpectsBytes); pass false for shutdown/reset events or
 // for non-gateway-owned passthrough.
+//
+// P12 pass-2 (Codex P1): both call sites now perform their own
+// stateMu.Lock + revalidation around the enqueue (mirror of the non-SYN
+// path at mux.go:1220-1239). This helper is kept for callers that need
+// the standalone non-blocking send semantics; currently unused at
+// compile time but retained for the documented "shutdown/reset
+// passthrough" use case.
+//
+//nolint:unused // retained for future shutdown/reset callers per godoc
 func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 	select {
 	case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:

@@ -132,6 +132,21 @@ func (NopMetrics) OnWrite(string)               {}
 func (NopMetrics) OnIdentitySource(IdentitySource) {}
 func (NopMetrics) OnRevalidate(string)           {}
 
+// FilesystemHooks is an injection point for fault-tolerant testing of the
+// AD13 atomic-write contract. Tests can supply a mock implementation that
+// returns specific errno values (EXDEV, EINVAL, ENOSYS, etc.) to exercise
+// the failure paths without requiring real filesystem misconfiguration.
+// Production code uses DefaultFilesystemHooks{} (see fs_hooks.go in the
+// M3_GATEWAY_PERSISTER PR), which delegates to the os package.
+type FilesystemHooks interface {
+	// Rename is called for the temp→final rename in the AD13 atomic-write
+	// sequence. Implementations MUST return *PathError with err = syscall.EXDEV
+	// when a cross-device rename is simulated.
+	Rename(oldpath, newpath string) error
+	// Unlink is called to clean up an orphaned temp file after a failed rename.
+	Unlink(path string) error
+}
+
 // Options configures a Manager.
 type Options struct {
 	// Path is the runtime_state.json file path. Defaults to /data/runtime_state.json.
@@ -148,6 +163,10 @@ type Options struct {
 	Logger *slog.Logger
 	// Metrics receives counter increments. Defaults to NopMetrics{}.
 	Metrics MetricsHook
+	// FsHooks is the filesystem-operations injection point. Defaults to nil
+	// (M3 implementation falls back to os.Rename / os.Remove). Tests inject
+	// mocks here to exercise EXDEV / EINVAL / ENOSYS failure paths per AD13.
+	FsHooks FilesystemHooks
 }
 
 // Manager coordinates loading, eager persistence, periodic writes, and shutdown

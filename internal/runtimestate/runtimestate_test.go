@@ -314,10 +314,114 @@ func TestPersist_DeterministicKeyOrder(t *testing.T) {
 	}
 }
 
-// AD13 EXDEV path: cross-device-link rename returns EXDEV → write failure preserves
-// old file (no non-atomic fallback). Hard to fault-inject without a custom FS abstraction;
-// this test verifies that, given a temp file already in the target directory, EXDEV
-// cannot reasonably occur (precondition test). M3 will add fault-injection-based unit tests.
+// fakeExdevHooks is a FilesystemHooks impl that returns EXDEV from Rename and
+// records calls. Used by TestPersist_RenameEXDEV_PreservesOldFile to fault-
+// inject the AD13 cross-device-link failure without requiring filesystem
+// misconfiguration.
+type fakeExdevHooks struct {
+	mu          sync.Mutex
+	renameCalls int
+	unlinkCalls int
+	unlinkPaths []string
+}
+
+func (f *fakeExdevHooks) Rename(oldpath, newpath string) error {
+	f.mu.Lock()
+	f.renameCalls++
+	f.mu.Unlock()
+	return &os.PathError{Op: "rename", Path: oldpath, Err: syscall.EXDEV}
+}
+
+func (f *fakeExdevHooks) Unlink(path string) error {
+	f.mu.Lock()
+	f.unlinkCalls++
+	f.unlinkPaths = append(f.unlinkPaths, path)
+	f.mu.Unlock()
+	return os.Remove(path)
+}
+
+// AD13 EXDEV failure path: rename returning EXDEV (cross-device link) MUST be
+// treated as a write failure that preserves the OLD file authority, unlinks
+// the orphan temp, increments the rename_exdev metric, and leaves no partial
+// state on disk. Per AD13 there is NO non-atomic fallback path. Per Codex R2
+// P1 (3215158524) this RED contract must be in M1, not deferred.
+func TestPersist_RenameEXDEV_PreservesOldFile(t *testing.T) {
+	dir := freshTempDir(t)
+	path := filepath.Join(dir, "runtime_state.json")
+
+	// Pre-existing valid file establishes "old file authority". After a failed
+	// EXDEV rename, this content MUST still be on disk byte-for-byte.
+	oldContent := validV1JSON(t)
+	if err := os.WriteFile(path, oldContent, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	hooks := &fakeExdevHooks{}
+	tracker := &recordingMetrics{}
+	mgr := New(Options{
+		Path:    path,
+		FsHooks: hooks,
+		Metrics: tracker,
+	})
+
+	// Trigger a write. M3's persister MUST call FsHooks.Rename, get EXDEV,
+	// then FsHooks.Unlink(temp), increment metric reason="rename_exdev",
+	// and return without modifying the existing path.
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
+	if err := mgr.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Old file content must be byte-identical (no partial-write artifacts).
+	gotContent, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read post-EXDEV: %v", err)
+	}
+	if !bytes.Equal(gotContent, oldContent) {
+		t.Errorf("AD13 EXDEV violation: old-file authority broken. Old content was overwritten or truncated despite EXDEV failure. want=%d bytes got=%d bytes", len(oldContent), len(gotContent))
+	}
+
+	// Rename hook must have been called.
+	hooks.mu.Lock()
+	rc := hooks.renameCalls
+	uc := hooks.unlinkCalls
+	hooks.mu.Unlock()
+	if rc == 0 {
+		t.Error("AD13 EXDEV: M3 persister never invoked FsHooks.Rename; can't have triggered the failure path")
+	}
+	if uc == 0 {
+		t.Error("AD13 EXDEV: M3 persister never unlinked the orphan temp file after the failed rename")
+	}
+
+	// rename_exdev metric must have been incremented.
+	tracker.mu.Lock()
+	hasExdev := false
+	for _, r := range tracker.writeReasons {
+		if r == "rename_exdev" {
+			hasExdev = true
+			break
+		}
+	}
+	tracker.mu.Unlock()
+	if !hasExdev {
+		t.Errorf("AD13 EXDEV: metric reason=%q not recorded; got reasons=%v", "rename_exdev", tracker.writeReasons)
+	}
+
+	// No partial state on disk: only the original path should exist (no .tmp leftovers).
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.Name() == filepath.Base(path) {
+			continue
+		}
+		if strings.HasSuffix(e.Name(), ".tmp") || strings.Contains(e.Name(), ".tmp.") {
+			t.Errorf("AD13 EXDEV: orphan temp file left on disk after failed rename: %s", e.Name())
+		}
+	}
+}
+
+// AD13 EXDEV precondition test: in normal operation (no fault injection), the
+// temp file is created in the target directory itself, eliminating the EXDEV
+// path. Codex R1 P2 (3215038506-equivalent for fail-shape).
 func TestPersist_TempInTargetDirEliminatesEXDEV(t *testing.T) {
 	dir := freshTempDir(t)
 	path := filepath.Join(dir, "runtime_state.json")

@@ -10,7 +10,13 @@
   },
   "git": {
     "current_main_sha": "4b535fba5312c4d8be27776051e8089f929236d5",
-    "post_merge_commits": ["#611 M1 TDD RED", "#612 M2+M3 loader+persister", "#613 M4 helpers + AD24", "#614 M5 Revalidator core", "#615 M5 main.go integration"]
+    "post_merge_commits": [
+      "#611 M1 TDD RED",
+      "#612 M2+M3 loader+persister",
+      "#613 M4 helpers + AD24",
+      "#614 M5 Revalidator core",
+      "#615 M5 main.go integration"
+    ]
   },
   "matrix_runner": {
     "suite": "full88",
@@ -21,7 +27,15 @@
     "case_count": 88,
     "comparison": {
       "method": "per-case-tuple-equality",
-      "fields_compared": ["case_id", "kind", "suite", "target", "status", "outcome", "expected"],
+      "fields_compared": [
+        "case_id",
+        "kind",
+        "suite",
+        "target",
+        "status",
+        "outcome",
+        "expected"
+      ],
       "baseline_artifact": "transport-matrix-baseline-runtime-state-w19-26.json",
       "result": "match"
     }
@@ -34,5 +48,1781 @@
     "xfail_unexpected": 0,
     "total_unexpected": 0
   },
-  "note": "Per-case (case_id, kind, suite, target, status, outcome, expected) tuples match the M0A baseline byte-for-byte across all 88 cases (sorted by case_id). AD20 transport-gate fulfilled — 0 unexpected fail/xpass deltas after M1+M2+M3+M4+M5 production wiring."
+  "note": "Per-case (case_id, kind, suite, target, status, outcome, expected) tuples match the M0A baseline byte-for-byte across all 88 cases (sorted by case_id). AD20 transport-gate fulfilled — 0 unexpected fail/xpass deltas after M1+M2+M3+M4+M5 production wiring.",
+  "cases": [
+    {
+      "case_id": "T01",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T01/configs/helianthus.json"
+      ],
+      "log_files": [
+        "T01/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T02",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T02/configs/helianthus.json"
+      ],
+      "log_files": [
+        "T02/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T03",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T03/configs/helianthus.json"
+      ],
+      "log_files": [
+        "T03/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T04",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T04/configs/helianthus.json"
+      ],
+      "log_files": [
+        "T04/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T05",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T05/configs/helianthus.json",
+        "T05/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T05/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T06",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T06/configs/helianthus.json",
+        "T06/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T06/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T07",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "ebusd direct udp/tcp to adapter reports no signal in matrix runs",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T07/configs/helianthus.json",
+        "T07/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T07/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T08",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "ebusd direct udp/tcp to adapter reports no signal in matrix runs",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T08/configs/helianthus.json",
+        "T08/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T08/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T09",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T09/configs/helianthus.json",
+        "T09/configs/proxy.json"
+      ],
+      "log_files": [
+        "T09/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T10",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T10/configs/helianthus.json",
+        "T10/configs/proxy.json"
+      ],
+      "log_files": [
+        "T10/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T11",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T11/configs/helianthus.json",
+        "T11/configs/proxy.json"
+      ],
+      "log_files": [
+        "T11/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T12",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T12/configs/helianthus.json",
+        "T12/configs/proxy.json"
+      ],
+      "log_files": [
+        "T12/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T13",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T13/configs/helianthus.json",
+        "T13/configs/proxy.json"
+      ],
+      "log_files": [
+        "T13/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T14",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T14/configs/helianthus.json",
+        "T14/configs/proxy.json"
+      ],
+      "log_files": [
+        "T14/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T15",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T15/configs/helianthus.json",
+        "T15/configs/proxy.json"
+      ],
+      "log_files": [
+        "T15/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T16",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T16/configs/helianthus.json",
+        "T16/configs/proxy.json"
+      ],
+      "log_files": [
+        "T16/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T17",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T17/configs/helianthus.json",
+        "T17/configs/proxy.json"
+      ],
+      "log_files": [
+        "T17/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T18",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T18/configs/helianthus.json",
+        "T18/configs/proxy.json"
+      ],
+      "log_files": [
+        "T18/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T19",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T19/configs/helianthus.json",
+        "T19/configs/proxy.json"
+      ],
+      "log_files": [
+        "T19/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T20",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T20/configs/helianthus.json",
+        "T20/configs/proxy.json"
+      ],
+      "log_files": [
+        "T20/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T21",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T21/configs/helianthus.json",
+        "T21/configs/proxy.json"
+      ],
+      "log_files": [
+        "T21/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T22",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T22/configs/helianthus.json",
+        "T22/configs/proxy.json"
+      ],
+      "log_files": [
+        "T22/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T23",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T23/configs/helianthus.json",
+        "T23/configs/proxy.json"
+      ],
+      "log_files": [
+        "T23/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T24",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T24/configs/helianthus.json",
+        "T24/configs/proxy.json"
+      ],
+      "log_files": [
+        "T24/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T25",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T25/configs/helianthus.json",
+        "T25/configs/proxy.json",
+        "T25/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T25/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T26",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T26/configs/helianthus.json",
+        "T26/configs/proxy.json",
+        "T26/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T26/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T27",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T27/configs/helianthus.json",
+        "T27/configs/proxy.json",
+        "T27/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T27/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T28",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T28/configs/helianthus.json",
+        "T28/configs/proxy.json",
+        "T28/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T28/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T29",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T29/configs/helianthus.json",
+        "T29/configs/proxy.json",
+        "T29/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T29/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T30",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T30/configs/helianthus.json",
+        "T30/configs/proxy.json",
+        "T30/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T30/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T31",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T31/configs/helianthus.json",
+        "T31/configs/proxy.json",
+        "T31/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T31/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T32",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T32/configs/helianthus.json",
+        "T32/configs/proxy.json",
+        "T32/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T32/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T33",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T33/configs/helianthus.json",
+        "T33/configs/proxy.json",
+        "T33/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T33/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T34",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T34/configs/helianthus.json",
+        "T34/configs/proxy.json",
+        "T34/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T34/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T35",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T35/configs/helianthus.json",
+        "T35/configs/proxy.json",
+        "T35/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T35/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T36",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T36/configs/helianthus.json",
+        "T36/configs/proxy.json",
+        "T36/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T36/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T37",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T37/configs/helianthus.json",
+        "T37/configs/proxy.json",
+        "T37/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T37/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T38",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T38/configs/helianthus.json",
+        "T38/configs/proxy.json",
+        "T38/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T38/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T39",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T39/configs/helianthus.json",
+        "T39/configs/proxy.json",
+        "T39/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T39/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T40",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T40/configs/helianthus.json",
+        "T40/configs/proxy.json",
+        "T40/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T40/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T41",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T41/configs/helianthus.json",
+        "T41/configs/proxy.json",
+        "T41/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T41/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T42",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T42/configs/helianthus.json",
+        "T42/configs/proxy.json",
+        "T42/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T42/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T43",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T43/configs/helianthus.json",
+        "T43/configs/proxy.json",
+        "T43/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T43/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T44",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T44/configs/helianthus.json",
+        "T44/configs/proxy.json",
+        "T44/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T44/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T45",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T45/configs/helianthus.json",
+        "T45/configs/proxy.json",
+        "T45/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T45/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T46",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T46/configs/helianthus.json",
+        "T46/configs/proxy.json",
+        "T46/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T46/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T47",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T47/configs/helianthus.json",
+        "T47/configs/proxy.json",
+        "T47/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T47/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T48",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T48/configs/helianthus.json",
+        "T48/configs/proxy.json",
+        "T48/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T48/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T49",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T49/configs/helianthus.json",
+        "T49/configs/proxy.json",
+        "T49/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T49/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T50",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T50/configs/helianthus.json",
+        "T50/configs/proxy.json",
+        "T50/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T50/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T51",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T51/configs/helianthus.json",
+        "T51/configs/proxy.json",
+        "T51/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T51/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T52",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T52/configs/helianthus.json",
+        "T52/configs/proxy.json",
+        "T52/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T52/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T53",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T53/configs/helianthus.json",
+        "T53/configs/proxy.json",
+        "T53/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T53/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T54",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T54/configs/helianthus.json",
+        "T54/configs/proxy.json",
+        "T54/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T54/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T55",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T55/configs/helianthus.json",
+        "T55/configs/proxy.json",
+        "T55/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T55/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T56",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T56/configs/helianthus.json",
+        "T56/configs/proxy.json",
+        "T56/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T56/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T57",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T57/configs/helianthus.json",
+        "T57/configs/proxy.json",
+        "T57/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T57/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T58",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T58/configs/helianthus.json",
+        "T58/configs/proxy.json",
+        "T58/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T58/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T59",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T59/configs/helianthus.json",
+        "T59/configs/proxy.json",
+        "T59/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T59/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T60",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T60/configs/helianthus.json",
+        "T60/configs/proxy.json",
+        "T60/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T60/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T61",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T61/configs/helianthus.json",
+        "T61/configs/proxy.json",
+        "T61/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T61/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T62",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T62/configs/helianthus.json",
+        "T62/configs/proxy.json",
+        "T62/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T62/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T63",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T63/configs/helianthus.json",
+        "T63/configs/proxy.json",
+        "T63/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T63/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T64",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T64/configs/helianthus.json",
+        "T64/configs/proxy.json",
+        "T64/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T64/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T65",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T65/configs/helianthus.json",
+        "T65/configs/proxy.json",
+        "T65/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T65/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T66",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T66/configs/helianthus.json",
+        "T66/configs/proxy.json",
+        "T66/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T66/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T67",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T67/configs/helianthus.json",
+        "T67/configs/proxy.json",
+        "T67/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T67/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T68",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T68/configs/helianthus.json",
+        "T68/configs/proxy.json",
+        "T68/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T68/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T69",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T69/configs/helianthus.json",
+        "T69/configs/proxy.json",
+        "T69/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T69/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T70",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T70/configs/helianthus.json",
+        "T70/configs/proxy.json",
+        "T70/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T70/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T71",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T71/configs/helianthus.json",
+        "T71/configs/proxy.json",
+        "T71/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T71/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T72",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T72/configs/helianthus.json",
+        "T72/configs/proxy.json",
+        "T72/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T72/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T73",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T73/configs/helianthus.json",
+        "T73/configs/proxy.json",
+        "T73/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T73/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T74",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T74/configs/helianthus.json",
+        "T74/configs/proxy.json",
+        "T74/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T74/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T75",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T75/configs/helianthus.json",
+        "T75/configs/proxy.json",
+        "T75/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T75/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T76",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T76/configs/helianthus.json",
+        "T76/configs/proxy.json",
+        "T76/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T76/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T77",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T77/configs/helianthus.json",
+        "T77/configs/proxy.json",
+        "T77/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T77/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T78",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T78/configs/helianthus.json",
+        "T78/configs/proxy.json",
+        "T78/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T78/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T79",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T79/configs/helianthus.json",
+        "T79/configs/proxy.json",
+        "T79/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T79/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T80",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T80/configs/helianthus.json",
+        "T80/configs/proxy.json",
+        "T80/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T80/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T81",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T81/configs/helianthus.json",
+        "T81/configs/proxy.json",
+        "T81/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T81/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T82",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T82/configs/helianthus.json",
+        "T82/configs/proxy.json",
+        "T82/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T82/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T83",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T83/configs/helianthus.json",
+        "T83/configs/proxy.json",
+        "T83/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T83/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T84",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T84/configs/helianthus.json",
+        "T84/configs/proxy.json",
+        "T84/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T84/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T85",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T85/configs/helianthus.json",
+        "T85/configs/proxy.json",
+        "T85/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T85/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T86",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T86/configs/helianthus.json",
+        "T86/configs/proxy.json",
+        "T86/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T86/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T87",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T87/configs/helianthus.json",
+        "T87/configs/proxy.json",
+        "T87/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T87/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T88",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T22:27:51Z",
+      "ended_at": "2026-05-10T22:27:51Z",
+      "config_files": [
+        "T88/configs/helianthus.json",
+        "T88/configs/proxy.json",
+        "T88/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T88/logs/runner.log"
+      ],
+      "commands": []
+    }
+  ]
 }

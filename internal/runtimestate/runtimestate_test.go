@@ -262,17 +262,6 @@ func TestPersist_AtomicTempRename(t *testing.T) {
 	}
 }
 
-// inodeOf returns the inode number of a FileInfo on Unix-like systems. On
-// platforms where syscall.Stat_t is not available, returns (0, false).
-func inodeOf(info os.FileInfo) (uint64, bool) {
-	if info == nil {
-		return 0, false
-	}
-	if sys, ok := info.Sys().(*syscall.Stat_t); ok && sys != nil {
-		return uint64(sys.Ino), true
-	}
-	return 0, false
-}
 
 // AD13 — JSON output uses deterministic key order (stable across writes).
 func TestPersist_DeterministicKeyOrder(t *testing.T) {
@@ -981,5 +970,5 @@ func TestEvict_RemovesEntry(t *testing.T) {
 // does that in the GraphQL/MCP/metrics layer. This test is a documentation marker
 // confirming the API surface separation is in place.
 func TestState_EBusSelfPresentDoesNotImplyAdmitted(t *testing.T) {
-	t.Skip("AD24 enforcement is at the GraphQL/MCP/metrics consumer level (M4_JOINER_HINT). The runtimestate package is intentionally agnostic.")
+	t.Skip("AD24 enforcement is at the GraphQL/MCP/metrics consumer level (M4_SOURCE_SELECTION_HINT). The runtimestate package is intentionally agnostic.")
 }

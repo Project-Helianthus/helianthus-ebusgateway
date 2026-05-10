@@ -75,7 +75,12 @@ type ProjectionEdge struct {
 }
 
 type Registry interface {
-	Iterate(func(registry.DeviceEntry) bool)
+	// IterateSnapshots visits each device as a value-typed snapshot
+	// (P9.x — graphql/BuildSchema is race-free against concurrent
+	// registry mutations because the snapshot's slice headers are
+	// captured under RLock and Plane wrappers ensure Methods()
+	// returns snapshot-owned storage).
+	IterateSnapshots(func(registry.DeviceEntrySnapshot) bool)
 }
 
 func BuildSchema(reg Registry) (Schema, error) {
@@ -89,29 +94,29 @@ func BuildSchema(reg Registry) (Schema, error) {
 	var buildErr error
 	catalog, catalogErr := productids.LoadCatalog()
 
-	reg.Iterate(func(entry registry.DeviceEntry) bool {
+	reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
 		partNumber := ""
 		displayName := ""
 		family := ""
 		model := ""
 		role := ""
-		if strings.EqualFold(entry.Manufacturer(), "Vaillant") {
-			partNumber = extractVaillantPartNumber(entry.SerialNumber())
+		if strings.EqualFold(snap.Manufacturer, "Vaillant") {
+			partNumber = extractVaillantPartNumber(snap.SerialNumber)
 			displayName, family, model, role = resolveVaillantProduct(partNumber, catalog, catalogErr)
 			if displayName == "" && family == "" && model == "" && role == "" {
-				displayName, family, model, role = fallbackVaillantIdentity(entry.DeviceID())
+				displayName, family, model, role = fallbackVaillantIdentity(snap.DeviceID)
 			}
 		}
 
 		device := Device{
-			Address:         entry.PrimaryDisplayAddress(),
-			Addresses:       normalizeDeviceAddresses(entry.PrimaryDisplayAddress(), entry.Addresses()),
-			Manufacturer:    entry.Manufacturer(),
-			DeviceID:        entry.DeviceID(),
-			SerialNumber:    entry.SerialNumber(),
-			MacAddress:      entry.MacAddress(),
-			SoftwareVersion: entry.SoftwareVersion(),
-			HardwareVersion: entry.HardwareVersion(),
+			Address:         snap.PrimaryDisplayAddress(),
+			Addresses:       normalizeDeviceAddresses(snap.PrimaryDisplayAddress(), snap.Addresses),
+			Manufacturer:    snap.Manufacturer,
+			DeviceID:        snap.DeviceID,
+			SerialNumber:    snap.SerialNumber,
+			MacAddress:      snap.MacAddress,
+			SoftwareVersion: snap.SoftwareVersion,
+			HardwareVersion: snap.HardwareVersion,
 			DisplayName:     displayName,
 			ProductFamily:   family,
 			ProductModel:    model,
@@ -121,7 +126,7 @@ func BuildSchema(reg Registry) (Schema, error) {
 			Projections:     make([]Projection, 0),
 		}
 
-		for _, plane := range entry.Planes() {
+		for _, plane := range snap.Planes {
 			methods := make([]Method, 0, len(plane.Methods()))
 			for _, method := range plane.Methods() {
 				template := method.Template()
@@ -130,7 +135,7 @@ func BuildSchema(reg Registry) (Schema, error) {
 					return false
 				}
 
-				response, err := selectResponseSchema(entry, method.ResponseSchema())
+				response, err := selectResponseSchemaFromSnapshot(snap, method.ResponseSchema())
 				if err != nil {
 					buildErr = err
 					return false
@@ -151,7 +156,7 @@ func BuildSchema(reg Registry) (Schema, error) {
 			})
 		}
 
-		for _, projection := range entry.Projections() {
+		for _, projection := range snap.Projections {
 			if err := projection.Validate(); err != nil {
 				buildErr = fmt.Errorf("graphql schema build projection %q invalid: %w", projection.Plane, err)
 				return false
@@ -362,12 +367,12 @@ func isDigits(value string) bool {
 	return true
 }
 
-func selectResponseSchema(entry registry.DeviceEntry, selector schema.SchemaSelector) (ResponseSchema, error) {
-	if entry == nil {
-		return ResponseSchema{}, fmt.Errorf("graphql schema build missing device: %w", ebuserrors.ErrInvalidPayload)
-	}
-
-	selected := selector.Select(entry.PrimaryDisplayAddress(), entry.HardwareVersion())
+// selectResponseSchemaFromSnapshot operates on a value-typed
+// DeviceEntrySnapshot. Used by BuildSchema (P9.x) so the schema build
+// path no longer has to dereference live *deviceEntry pointer fields
+// after the registry RLock has been released.
+func selectResponseSchemaFromSnapshot(snap registry.DeviceEntrySnapshot, selector schema.SchemaSelector) (ResponseSchema, error) {
+	selected := selector.Select(snap.PrimaryDisplayAddress(), snap.HardwareVersion)
 	fields := make([]Field, 0, len(selected.Fields))
 	for _, field := range selected.Fields {
 		if field.Type == nil {

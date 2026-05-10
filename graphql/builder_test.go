@@ -428,6 +428,17 @@ func (reg mockRegistry) Iterate(fn func(registry.DeviceEntry) bool) {
 	}
 }
 
+// IterateSnapshots — P9.x. Synthesizes a DeviceEntrySnapshot from each
+// stored DeviceEntry so the test fixture continues to drive
+// BuildSchema after the migration to snapshot-based iteration.
+func (reg mockRegistry) IterateSnapshots(fn func(registry.DeviceEntrySnapshot) bool) {
+	for _, entry := range reg.entries {
+		if !fn(snapshotFromTestEntry(entry)) {
+			return
+		}
+	}
+}
+
 type mutableRegistry struct {
 	mu      sync.RWMutex
 	entries []registry.DeviceEntry
@@ -441,6 +452,41 @@ func (reg *mutableRegistry) Iterate(fn func(registry.DeviceEntry) bool) {
 		if !fn(entry) {
 			return
 		}
+	}
+}
+
+// IterateSnapshots — P9.x companion of Iterate (see mockRegistry).
+func (reg *mutableRegistry) IterateSnapshots(fn func(registry.DeviceEntrySnapshot) bool) {
+	reg.mu.RLock()
+	entries := append([]registry.DeviceEntry(nil), reg.entries...)
+	reg.mu.RUnlock()
+	for _, entry := range entries {
+		if !fn(snapshotFromTestEntry(entry)) {
+			return
+		}
+	}
+}
+
+// snapshotFromTestEntry converts a test fixture's DeviceEntry into a
+// DeviceEntrySnapshot. Production builds snapshots inside the
+// registry under RLock; tests don't need that lock discipline since
+// fixtures are single-threaded. Method/Plane/Projection slices are
+// passed through (they are immutable after fixture construction).
+func snapshotFromTestEntry(entry registry.DeviceEntry) registry.DeviceEntrySnapshot {
+	if entry == nil {
+		return registry.DeviceEntrySnapshot{}
+	}
+	return registry.DeviceEntrySnapshot{
+		PrimaryAddress:  entry.PrimaryDisplayAddress(),
+		Addresses:       entry.Addresses(),
+		Manufacturer:    entry.Manufacturer(),
+		DeviceID:        entry.DeviceID(),
+		SerialNumber:    entry.SerialNumber(),
+		MacAddress:      entry.MacAddress(),
+		SoftwareVersion: entry.SoftwareVersion(),
+		HardwareVersion: entry.HardwareVersion(),
+		Planes:          entry.Planes(),
+		Projections:     entry.Projections(),
 	}
 }
 

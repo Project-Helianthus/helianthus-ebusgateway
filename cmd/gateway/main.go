@@ -21,6 +21,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
@@ -110,6 +111,22 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if len(cfg.Providers) == 0 {
 		cfg.Providers = vaillantproviders.Default()
 	}
+
+	// Initialize the runtime-state Manager early so the cached
+	// ebus.self.last_admitted_source can be passed as a hint to the
+	// SourceAddressSelector below, and the Manager is available for
+	// post-admission UpdateSelf and address-table-revalidate write-back.
+	// Errors during Load are tolerated — Manager.Load returns an empty
+	// state on missing/corrupt and the gateway continues without a hint.
+	// (runtime-state-w19-26.locked M2_GATEWAY_LOADER + M4_SOURCE_SELECTION_HINT)
+	runtimeStateMgr, runtimeState := initRuntimeStateManager(ctx, cfg)
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := runtimeStateMgr.Stop(stopCtx); err != nil {
+			log.Printf("runtime_state stop: %v", err)
+		}
+	}()
 
 	// Wire adapter-direct mode: create multiplexer, configure active
 	// and passive transports before gateway construction.
@@ -441,7 +458,19 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		if err != nil {
 			return fmt.Errorf("m3: new source address selection bus: %w", err)
 		}
-		selector := protocol.NewSourceAddressSelector(selectionBus, ebusgateway.DefaultStartupAdmissionSourceSelectionConfig())
+		// M4_SOURCE_SELECTION_HINT: bias candidate ordering toward the
+		// cached ebus.self.last_admitted_source from the prior admission
+		// cycle. Validation still runs in full — the hint is a candidate-
+		// ordering aid, NEVER a bypass of warmup or evidence checks.
+		// AD24: HintFromState is the only exported surface that emits
+		// the cached byte; the Manager.State() field exposes it as a
+		// plain struct member but every consumer routes through this
+		// helper for clarity.
+		hintCandidate, hintSet := runtimestate.HintFromState(runtimeState)
+		if hintSet {
+			log.Printf("source address selection hint=0x%02X (cached from prior admission cycle; warmup validation still required)", hintCandidate)
+		}
+		selector := protocol.NewSourceAddressSelector(selectionBus, ebusgateway.StartupAdmissionConfigWithHint(hintCandidate, hintSet))
 
 		// Install AD08/AD22 stability window on the bus_observability store
 		// before the first source-selection state observation. Window is sized
@@ -592,6 +621,37 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 					// selected source — closes the directed-probe window
 					// where admitted=0 could leak gateway-own probes.
 					subscribeAddressTableInserter()
+
+					// M4 write-back: persist the validated source to
+					// runtime_state.ebus.self so the next boot can use
+					// it as a hint. Best-effort; persistence failure
+					// here doesn't gate startup (the gateway is already
+					// admitted; the cache is an optimisation).
+					selectionMethod := runtimestate.SelectionMethodWarmup
+					if overrideSet {
+						selectionMethod = runtimestate.SelectionMethodExplicitValidateOnly
+					}
+					companion := sourceSelection.Companion
+					runtimeStateMgr.UpdateSelf(runtimestate.Self{
+						LastAdmittedSource: sourceSelection.Source,
+						LastAdmittedAt:     time.Now().UTC(),
+						SelectionMethod:    selectionMethod,
+						CompanionTarget:    &companion,
+					})
+
+					// M5_ADDRESS_TABLE_REVALIDATE: now that admission
+					// is finalized and AdmittedSource() returns the
+					// selected source, run one revalidation cycle
+					// against cached known_bus_members[]. Done in a
+					// goroutine so the activeProbePassed callback
+					// remains non-blocking; the gateway proceeds to
+					// semantic discovery regardless of revalidate
+					// outcome (responders refresh confidence; no-reply
+					// triggers AD23 eviction; postponed members wait
+					// for the next periodic cycle).
+					go func(source byte) {
+						revalidateRuntimeStateMembers(ctx, runtimeStateMgr, gateway, cfg, source)
+					}(sourceSelection.Source)
 				}
 			case <-startupScanSignals.admissionFailed:
 				if sourceSelection != nil {
@@ -1009,6 +1069,13 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		cfg.InstanceGUID = normalized
 		return nil
 	})
+	fs.StringVar(&cfg.InstanceGUIDSource, "instance-guid-source",
+		cfg.InstanceGUIDSource,
+		"AD27 provenance tag for -instance-guid (runtime_state | legacy_migrated | generated | cli-override); "+
+			"empty defaults to cli-override with a deprecation log when -instance-guid is provided")
+	fs.StringVar(&cfg.RuntimeStatePath, "runtime-state-path",
+		cfg.RuntimeStatePath,
+		"override /data/runtime_state.json path (empty uses runtimestate package default)")
 	fs.StringVar(&cfg.DumpOutputDir, "dump-output-dir", cfg.DumpOutputDir, "unknown device dump output dir")
 	fs.StringVar(&cfg.DumpUploadURL, "dump-upload-url", cfg.DumpUploadURL, "unknown device dump upload url (internal)")
 	fs.BoolVar(&cfg.DumpIncludePII, "dump-include-pii", cfg.DumpIncludePII, "include identifiers in unknown device dumps")
@@ -2161,4 +2228,64 @@ func applyStaticSeedTable(reg *registry.DeviceRegistry) {
 		}
 	}
 	log.Printf("static seed table: planted %d address(es) across %d device(s) at startup (source=productids.LoadSeedTable, label=static_seed/candidate)", count, len(seeds))
+}
+
+// initRuntimeStateManager constructs and starts the runtime-state Manager,
+// wiring AD08 eager-persist for the instance-guid CLI flag (when present)
+// and exposing the loaded state for hint extraction.
+//
+// On Manager.Load failure (missing / corrupt file), Manager.Load returns an
+// empty state and the gateway continues without a hint — the cache is a
+// best-effort optimisation, not a startup requirement (AD11 + M2 spec).
+func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config) (*runtimestate.Manager, *runtimestate.State) {
+	mgr := runtimestate.New(runtimestate.Options{
+		Path:         cfg.RuntimeStatePath,
+		GatewayBuild: fmt.Sprintf("%s+%s", buildVersion, buildID),
+		AddonVersion: "", // populated by add-on via future flag if needed
+	})
+	state, err := mgr.Load(ctx)
+	if err != nil {
+		log.Printf("runtime_state: load returned error (continuing with empty state): %v", err)
+		state = &runtimestate.State{}
+	}
+
+	// AD08 eager persist: when -instance-guid is supplied, durably write
+	// meta.{schema_version, instance_guid, written_at} within ~1 s so the
+	// crash-before-first-periodic-persist window is closed. Provenance per
+	// AD27.
+	if cfg.InstanceGUID != "" {
+		source := identitySourceFromCfg(cfg.InstanceGUIDSource)
+		if perr := mgr.EagerPersistInstanceGUID(ctx, cfg.InstanceGUID, source); perr != nil {
+			log.Printf("runtime_state: eager-persist instance_guid failed (continuing): %v", perr)
+		}
+	}
+
+	if serr := mgr.Start(ctx); serr != nil {
+		log.Printf("runtime_state: start failed (continuing without periodic persister): %v", serr)
+	}
+
+	return mgr, state
+}
+
+// identitySourceFromCfg maps the CLI -instance-guid-source flag value to the
+// runtimestate.IdentitySource enum, with AD27 deprecation log when the flag
+// is absent. The well-formed value set is enforced here; unknown values fall
+// back to "cli-override" with a warning rather than failing startup.
+func identitySourceFromCfg(raw string) runtimestate.IdentitySource {
+	switch raw {
+	case string(runtimestate.IdentitySourceRuntimeState):
+		return runtimestate.IdentitySourceRuntimeState
+	case string(runtimestate.IdentitySourceLegacyMigrated):
+		return runtimestate.IdentitySourceLegacyMigrated
+	case string(runtimestate.IdentitySourceGenerated):
+		return runtimestate.IdentitySourceGenerated
+	case string(runtimestate.IdentitySourceCLIOverride):
+		return runtimestate.IdentitySourceCLIOverride
+	case "":
+		log.Print("runtime_state: -instance-guid-source absent; defaulting to cli-override (deprecated; pass -instance-guid-source explicitly)")
+		return runtimestate.IdentitySourceCLIOverride
+	default:
+		log.Printf("runtime_state: -instance-guid-source=%q is not a recognised AD27 value; treating as cli-override", raw)
+		return runtimestate.IdentitySourceCLIOverride
+	}
 }

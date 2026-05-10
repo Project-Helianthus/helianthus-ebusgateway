@@ -162,14 +162,31 @@ func (r *Revalidator) Run(ctx context.Context, members []KnownBusMember) Result 
 			return result
 		}
 		probesIssued++
-		var outcome RevalidationOutcome
-		if r.Probe(ctx, m.Addr) {
-			outcome = OutcomeResponder
-		} else {
-			outcome = OutcomeNoReply
+		probeResponded := r.Probe(ctx, m.Addr)
+		if !probeResponded {
+			// AD23 mass-eviction guardrail: a typical ctx-aware probe
+			// returns false after ctx.Err() becomes non-nil. Mapping
+			// that false to OutcomeNoReply would let the caller evict
+			// the address even though there's no evidence the
+			// responder is actually gone — shutdown / transport
+			// cancellation must NOT be observable as "device left the
+			// bus". Re-check ctx.Err() and postpone the rest (including
+			// this member, since we don't know its actual state).
+			//
+			// True outcomes are NOT re-checked: a responder
+			// confirmation is concrete evidence the device exists,
+			// independent of subsequent cancellation. (Codex P1
+			// follow-up on PR #614.)
+			if err := ctx.Err(); err != nil {
+				result.Postponed = collectAddrs(ordered[i:])
+				return result
+			}
+			counter.Inc(OutcomeNoReply)
+			result.Probed = append(result.Probed, ProbeResult{Addr: m.Addr, Outcome: OutcomeNoReply})
+			continue
 		}
-		counter.Inc(outcome)
-		result.Probed = append(result.Probed, ProbeResult{Addr: m.Addr, Outcome: outcome})
+		counter.Inc(OutcomeResponder)
+		result.Probed = append(result.Probed, ProbeResult{Addr: m.Addr, Outcome: OutcomeResponder})
 	}
 	return result
 }

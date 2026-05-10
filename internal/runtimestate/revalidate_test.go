@@ -305,6 +305,57 @@ func TestRevalidator_ContextCancellationPostponesUnprocessed(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// AD23 guardrail: a probe that returns false because ctx was cancelled
+// in-flight MUST NOT be mapped to OutcomeNoReply (which the caller would
+// turn into eviction). The post-probe ctx.Err() recheck postpones the
+// member instead. Codex P1 follow-up on PR #614.
+// -----------------------------------------------------------------------------
+
+func TestRevalidator_CtxCancelledDuringProbeIsPostponedNotEvicted(t *testing.T) {
+	t0 := time.Date(2026, 5, 10, 19, 0, 0, 0, time.UTC)
+	members := []KnownBusMember{
+		makeMember(0x01, t0),
+		makeMember(0x02, t0.Add(-1*time.Second)),
+		makeMember(0x03, t0.Add(-2*time.Second)),
+	}
+	counter := &recordingCounter{}
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &Revalidator{
+		Probe: func(probeCtx context.Context, addr byte) bool {
+			if addr == 0x02 {
+				// Simulate a ctx-aware probe whose underlying transport
+				// returns false after the parent cancels mid-flight.
+				cancel()
+				return false
+			}
+			return true
+		},
+		Counter: counter,
+	}
+	result := r.Run(ctx, members)
+
+	// 0x01 was probed normally (responder).
+	// 0x02 returned false but ctx is cancelled → postpone (NOT no_reply).
+	// 0x03 was never reached.
+	if len(result.Probed) != 1 {
+		t.Fatalf("Probed length = %d; want 1 (only 0x01 has a real outcome)", len(result.Probed))
+	}
+	if result.Probed[0].Addr != 0x01 || result.Probed[0].Outcome != OutcomeResponder {
+		t.Errorf("Probed[0] = %+v; want {0x01, responder}", result.Probed[0])
+	}
+	if len(result.Postponed) != 2 || result.Postponed[0] != 0x02 || result.Postponed[1] != 0x03 {
+		t.Errorf("Postponed = %x; want [0x02, 0x03] (cancelled member + untouched)", result.Postponed)
+	}
+	// Critical: counter must NOT have a no_reply increment for 0x02.
+	if got := counter.Counts()[OutcomeNoReply]; got != 0 {
+		t.Errorf("counter[no_reply] = %d; want 0 (ctx-cancelled probe must not be evicted)", got)
+	}
+	if got := counter.Counts()[OutcomeResponder]; got != 1 {
+		t.Errorf("counter[responder] = %d; want 1", got)
+	}
+}
+
+// -----------------------------------------------------------------------------
 // Nil-probe panic guardrail (catches AD23 mass-eviction misconfiguration).
 // -----------------------------------------------------------------------------
 

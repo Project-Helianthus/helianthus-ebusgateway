@@ -1663,6 +1663,45 @@ func (m *Mux) drainActiveCh() int {
 	}
 }
 
+// drainActiveChBytesOnly discards only byte events (activeEventByte)
+// from the active channel, preserving lifecycle events (activeEventError
+// — reset / disconnect boundaries). Codex P12 review pass-1 P1: the
+// inter-write drain must NOT swallow reset boundary signals; bus.Send
+// needs to see them to abort cleanly. Re-enqueues any preserved error
+// event back onto activeCh in order.
+//
+// Returns the number of byte events drained.
+//
+// Caller must hold stateMu (we're racing onReceived which also writes
+// to activeCh under stateMu — peer-of-equals discipline).
+func (m *Mux) drainActiveChBytesOnly() int {
+	n := 0
+	var preserved []activeEvent
+	for {
+		select {
+		case ev := <-m.activeCh:
+			if ev.kind == activeEventByte {
+				n++
+				continue
+			}
+			preserved = append(preserved, ev)
+		default:
+			// Re-enqueue preserved lifecycle events in order. Non-
+			// blocking — if activeCh is full (capacity 4096), log
+			// and continue (the lifecycle event was already in the
+			// channel pre-drain so this is a no-regression path).
+			for _, ev := range preserved {
+				select {
+				case m.activeCh <- ev:
+				default:
+					m.logger.Printf("adaptermux: drain re-enqueue full, lifecycle event dropped: kind=%d err=%v", ev.kind, ev.err)
+				}
+			}
+			return n
+		}
+	}
+}
+
 // flushSessionEchoTrackers flushes echo trackers for all external sessions
 // at a SYN boundary. The flushed bytes are discarded — they were already
 // delivered live to passive consumers in onReceived. This call only resets
@@ -2378,8 +2417,23 @@ func (m *Mux) sendLoop() {
 				// stateMu is held throughout drain+arm+recordSent so
 				// onReceived (which also acquires stateMu) cannot
 				// interleave a new stale byte between drain and arm.
+				//
+				// CONTRACT (Codex P12 pass-1 P1): drainActiveChBytesOnly
+				// preserves lifecycle (activeEventError) events for
+				// bus.Send abort path. Drain is byte-only.
+				//
+				// CONTRACT (Codex P12 pass-1 P2): bus.sendRawWithEcho calls
+				// activeTransport.Write with single-byte slices and reads
+				// each echo before issuing the next write — so by the
+				// time sendLoop receives a new request, the prior echo
+				// has already been consumed by bus.Send.ReadByte and is
+				// no longer in activeCh. Multi-byte gateway writes would
+				// risk draining a legitimate prior echo; the API
+				// supports them but no production caller uses them.
+				// Tests that use multi-byte Write sequence echoes after
+				// Write returns, so the drain is still safe in practice.
 				m.stateMu.Lock()
-				drained := m.drainActiveCh()
+				drained := m.drainActiveChBytesOnly()
 				if drained > 0 {
 					m.activeTxn.interWriteDrainTotal.Add(uint64(drained))
 				}

@@ -1,6 +1,7 @@
 package adaptermux
 
 import (
+	"io"
 	"testing"
 	"time"
 
@@ -221,6 +222,50 @@ func TestP11_LongFrameMidWriteStaleRejected(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("did not observe legitimate 0x3F echo within 1s")
+}
+
+// TestP12_DrainPreservesErrorEvents (Codex P12 pass-1 P1) — the
+// inter-write drain must NOT discard activeEventError lifecycle
+// events. handleReset / reconnect / mux shutdown enqueue these to
+// signal bus.Send abort boundaries. Pre-fix drainActiveCh nuked
+// everything; post-fix drainActiveChBytesOnly re-enqueues errors.
+func TestP12_DrainPreservesErrorEvents(t *testing.T) {
+	mux, _, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	// Inject a mix: 2 stale bytes + 1 lifecycle error + 1 stale byte.
+	mux.activeCh <- activeEvent{kind: activeEventByte, b: 0x00}
+	mux.activeCh <- activeEvent{kind: activeEventByte, b: 0xAA}
+	mux.activeCh <- activeEvent{kind: activeEventError, err: io.EOF}
+	mux.activeCh <- activeEvent{kind: activeEventByte, b: 0xFF}
+
+	mux.stateMu.Lock()
+	drained := mux.drainActiveChBytesOnly()
+	mux.stateMu.Unlock()
+
+	if drained != 3 {
+		t.Errorf("drained = %d; want 3 (the byte events)", drained)
+	}
+
+	// The lifecycle error must still be readable from activeCh.
+	select {
+	case ev := <-mux.activeCh:
+		if ev.kind != activeEventError {
+			t.Errorf("preserved event kind = %d; want activeEventError (%d)", ev.kind, activeEventError)
+		}
+		if ev.err != io.EOF {
+			t.Errorf("preserved event err = %v; want io.EOF", ev.err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("activeCh empty after drain; lifecycle error was discarded (P12 P1 regression)")
+	}
+
+	// activeCh should now be empty.
+	select {
+	case ev := <-mux.activeCh:
+		t.Errorf("unexpected event left in activeCh after drain: kind=%d byte=0x%02X err=%v", ev.kind, ev.b, ev.err)
+	default:
+	}
 }
 
 // P12 — sendLoop drains stale activeCh bytes BEFORE recordSent. The

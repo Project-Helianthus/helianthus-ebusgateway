@@ -40,7 +40,9 @@ func TestApplyStaticSeedTable_StampsStaticSeedLabel(t *testing.T) {
 	applyStaticSeedTable(reg)
 
 	// Each NETX3 face + each BASV2 face from productids.LoadSeedTable(true).
-	expectedAddresses := []byte{0xF1, 0xF6, 0x04, 0x15, 0xEC}
+	// NETX3 has four faces (operator observation 2026-05-10): 0xF1
+	// initiator, 0xF6 target, 0x04+0xFF target/broadcast pair.
+	expectedAddresses := []byte{0xF1, 0xF6, 0x04, 0xFF, 0x15, 0xEC}
 	for _, addr := range expectedAddresses {
 		slot, ok := reg.LookupSlot(addr)
 		if !ok || slot == nil {
@@ -139,8 +141,9 @@ func TestApplyStaticSeedTable_MCPDeviceListProjection(t *testing.T) {
 	for _, d := range envelope.Data {
 		byAddr[d.Address] = struct{ discovery, verification string }{d.DiscoverySource, d.VerificationState}
 	}
-	// All 5 productids seed addresses must appear with static_seed/candidate.
-	for _, addr := range []int{0xF1, 0xF6, 0x04, 0x15, 0xEC} {
+	// All 6 productids seed addresses must appear with static_seed/candidate
+	// (NETX3 0xF1/0xF6/0x04/0xFF + BASV2 0x15/0xEC).
+	for _, addr := range []int{0xF1, 0xF6, 0x04, 0xFF, 0x15, 0xEC} {
 		got, ok := byAddr[addr]
 		if !ok {
 			// Some seeded faces may share an entry (canonical pair

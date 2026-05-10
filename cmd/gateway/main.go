@@ -1012,7 +1012,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.StringVar(&cfg.DumpOutputDir, "dump-output-dir", cfg.DumpOutputDir, "unknown device dump output dir")
 	fs.StringVar(&cfg.DumpUploadURL, "dump-upload-url", cfg.DumpUploadURL, "unknown device dump upload url (internal)")
 	fs.BoolVar(&cfg.DumpIncludePII, "dump-include-pii", cfg.DumpIncludePII, "include identifiers in unknown device dumps")
-	fs.BoolVar(&cfg.EnableStaticSeedTable, "enable-static-seed-table", cfg.EnableStaticSeedTable, "plant productids static seed entries (NETX3 0x04 / 0xF1 / 0xF6, BASV2 0x15 / 0xEC) into registry at startup; default false")
+	fs.BoolVar(&cfg.EnableStaticSeedTable, "enable-static-seed-table", cfg.EnableStaticSeedTable, "plant productids static seed entries (NETX3 0xF1 / 0xF6 / 0x04 / 0xFF, BASV2 0x15 / 0xEC) into registry at startup; default false")
 	fs.BoolVar(&cfg.ObserveFirstEnabled, "observe-first-enabled", cfg.ObserveFirstEnabled, "enable observe-first runtime behavior gates")
 	fs.BoolVar(&cfg.PassiveStateDirectApply, "passive-state-direct-apply", cfg.PassiveStateDirectApply, "allow passive state direct-apply when observe-first is enabled")
 	fs.BoolVar(&cfg.PassiveConfigDirectApply, "passive-config-direct-apply", cfg.PassiveConfigDirectApply, "allow passive config direct-apply when state direct-apply is enabled")

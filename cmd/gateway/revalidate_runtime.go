@@ -89,16 +89,31 @@ func revalidateRuntimeStateMembers(
 
 	result := revalidator.Run(ctx, state.EBus.KnownBusMembers)
 
+	// Build an addr→cached entry index so responder refreshes can MERGE
+	// presence metadata with existing identity/companion_addr instead of
+	// replacing them. Manager.UpsertKnownBusMember is replace-by-addr,
+	// not merge, so a sparse refresh entry would drop cached
+	// Identity/CompanionAddr until the next inserter enrichment fires.
+	// (Codex P2 follow-up on PR #615.)
+	cachedByAddr := make(map[byte]runtimestate.KnownBusMember, len(state.EBus.KnownBusMembers))
+	for _, m := range state.EBus.KnownBusMembers {
+		cachedByAddr[m.Addr] = m
+	}
+
 	now := time.Now().UTC()
 	for _, p := range result.Probed {
 		switch p.Outcome {
 		case runtimestate.OutcomeResponder:
-			mgr.UpsertKnownBusMember(runtimestate.KnownBusMember{
-				Addr:       p.Addr,
-				LastSeenAt: now,
-				LastSource: runtimestate.LastSourceDirected0704,
-				Confidence: runtimestate.ConfidenceVerified,
-			})
+			refreshed := cachedByAddr[p.Addr] // zero value when address wasn't cached
+			refreshed.Addr = p.Addr
+			refreshed.LastSeenAt = now
+			refreshed.LastSource = runtimestate.LastSourceDirected0704
+			refreshed.Confidence = runtimestate.ConfidenceVerified
+			// Identity / CompanionAddr preserved from prior entry. The
+			// address-table-inserter normal path will refine identity
+			// independently when richer data arrives via passive
+			// observation.
+			mgr.UpsertKnownBusMember(refreshed)
 		case runtimestate.OutcomeNoReply:
 			mgr.EvictKnownBusMember(p.Addr)
 		case runtimestate.OutcomeSkippedPassiveRefresh:
@@ -113,6 +128,44 @@ func revalidateRuntimeStateMembers(
 			len(result.Postponed), runtimestate.RevalidationCap)
 	}
 	return result
+}
+
+// startRuntimeStateRevalidator runs an immediate revalidation cycle and
+// then schedules periodic cycles at the supplied cadence (defaults to
+// 15 min when interval ≤ 0). Each cycle reads the current member list
+// from Manager.State so postponed members from earlier cycles are
+// naturally re-included on the next tick — no separate Postponed
+// queue is needed. (Codex P2 follow-up on PR #615 — without periodic
+// cycles, postponed members beyond cap would stay stale until process
+// restart.)
+//
+// Returns immediately; the cycle goroutine exits on ctx cancellation.
+func startRuntimeStateRevalidator(
+	ctx context.Context,
+	mgr *runtimestate.Manager,
+	gw *ebusgateway.Gateway,
+	cfg ebusgateway.Config,
+	admittedSource byte,
+	interval time.Duration,
+) {
+	if interval <= 0 {
+		interval = 15 * time.Minute
+	}
+	go func() {
+		// First cycle runs immediately so cached responders refresh
+		// confidence within ~5 s of admission per M5 acceptance.
+		revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource)
+			}
+		}
+	}()
 }
 
 // revalidateCounterAdapter bridges runtimestate.RevalidationOutcome to the

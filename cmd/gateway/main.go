@@ -641,17 +641,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 
 					// M5_ADDRESS_TABLE_REVALIDATE: now that admission
 					// is finalized and AdmittedSource() returns the
-					// selected source, run one revalidation cycle
-					// against cached known_bus_members[]. Done in a
-					// goroutine so the activeProbePassed callback
-					// remains non-blocking; the gateway proceeds to
-					// semantic discovery regardless of revalidate
-					// outcome (responders refresh confidence; no-reply
-					// triggers AD23 eviction; postponed members wait
-					// for the next periodic cycle).
-					go func(source byte) {
-						revalidateRuntimeStateMembers(ctx, runtimeStateMgr, gateway, cfg, source)
-					}(sourceSelection.Source)
+					// selected source, schedule an immediate
+					// revalidation cycle against cached
+					// known_bus_members[] plus periodic cycles at
+					// 15-min cadence. The periodic loop is what
+					// guarantees postponed members (overflow beyond
+					// cap=32) are eventually probed; without it
+					// stale ghosts beyond the first 32 would remain
+					// cached until process restart (Codex P2
+					// follow-up on PR #615).
+					startRuntimeStateRevalidator(ctx, runtimeStateMgr, gateway, cfg, sourceSelection.Source, 0)
 				}
 			case <-startupScanSignals.admissionFailed:
 				if sourceSelection != nil {

@@ -1175,23 +1175,52 @@ func (m *Mux) onReceived(symbol byte) {
 	// The echo tracker still runs for internal state tracking, but its
 	// result is not used for passive filtering — we suppress everything.
 	isGatewayOwned := hasOwner && ownerID == gatewaySessionID
-	if isGatewayOwned {
+	// P11 round-2 (Codex P1 findings on PR #606) — capture the echo
+	// queue head BEFORE matchEcho consumes a matching byte. The filter
+	// uses the PRE-MATCH queue head as the protocol-accurate "what byte
+	// is bus.Send currently waiting for" signal.
+	//
+	// Why not echoCursor / writePrefix:
+	//   - writePrefix is capped at txnPrefixCap=8 (diagnostic). Frames
+	//     longer than 8 bytes would have echoCursor==writePrefixLen
+	//     forever after byte 8, opening response phase prematurely.
+	//   - recordReadPrefixAndClassify advances echoCursor on a NON-match
+	//     too (diagnostic side effect). A single mid-write stale byte
+	//     would advance the cursor past the missing echo, and a second
+	//     stale byte before the real echo would slip through.
+	//
+	// gatewayEcho.expectedEchoes is the authoritative protocol state:
+	// every byte bus.Send writes is recorded; matchEcho only consumes
+	// on actual match. Uncapped, mismatch-resistant.
+	preMatchHead, hadPendingEcho := m.gatewayEcho.peekNextExpected()
+	// P11 round-2 cascade fix: only call matchEcho when it will MATCH
+	// (or when the queue is empty — then it's a no-op). matchEcho's
+	// mismatch branch CLEARS the queue, which would destroy our filter
+	// state for cascading stale bytes (a single mid-write stale byte
+	// would clear the queue and the second stale byte would slip
+	// through as response-phase). By gating the call on a match check
+	// we preserve the queue across stale bytes.
+	matchWouldHit := !hadPendingEcho || (hadPendingEcho && symbol == preMatchHead)
+	if isGatewayOwned && matchWouldHit {
 		m.gatewayEcho.matchEcho(symbol) // track echo state internally
 	}
-	// Soak fix: gate activeCh delivery to periods when the active path
-	// is expecting bytes. Non-SYN bytes during third-party traffic
-	// should not accumulate on activeCh.
+	// P11 — gate activeCh delivery: mid-write requires queue-head match;
+	// response phase (no pending writes) accepts any byte.
 	//
-	// P11 — use the per-byte filter (activePathExpectsByte) instead of
-	// the bulk filter (activePathExpectsBytes). The per-byte filter
-	// rejects mid-write stale bytes (e.g. 0x00 ACK from BASV2's just-
-	// finished 0704 scan still sitting in TCP/ENH pipeline) when
-	// echoCursor < writePrefixLen and the byte does not match the
-	// expected echo. Pre-P11 the non-SYN path used the bulk filter
-	// (just gatewayTxnActive), so any byte during ownership flowed
-	// through and post_grant_ack accounted for ~52% of all
-	// echo_mismatch.
-	activeExpects := m.activePathExpectsByte(symbol)
+	// Pre-P11 the non-SYN path used the bulk filter
+	// (activePathExpectsBytes — just gatewayTxnActive), so any byte
+	// during ownership flowed through and post_grant_ack accounted for
+	// ~52% of all echo_mismatch. P11 round-1 used echoCursor /
+	// writePrefix as the gate but those are capped diagnostic state;
+	// P11 round-2 uses gatewayEcho's pre-match queue head, which is
+	// protocol-accurate and uncapped.
+	activeExpects := m.gatewayTxnActive
+	if activeExpects && hadPendingEcho {
+		// Mid-write: only the next expected echo passes.
+		activeExpects = symbol == preMatchHead
+	}
+	// hadPendingEcho == false: response phase open, activeExpects
+	// stays as gatewayTxnActive (true) — any byte delivered.
 	// Codex P2: regression signal — if a non-SYN byte arrives while
 	// gateway still owns the bus but gatewayTxnActive is already false
 	// (post-SYN window before ownership is released), we skipped
@@ -1668,43 +1697,18 @@ func (m *Mux) resetAllSessionEchoes() {
 // embodied by activePathExpectsByte's mid-write/response phase
 // branches).
 
-// activePathExpectsByte reports whether a non-SYN byte should be delivered
-// to the active transport.
-//
-// P11 — symmetric mid-write filter. The byte must satisfy ONE of:
-//
-//   - Mid-write phase (echoCursor < writePrefixLen): byte must equal
-//     writePrefix[echoCursor], i.e. exactly the next expected echo.
-//     Stale third-party tail bytes from a prior frame still sitting
-//     in the TCP/ENH pipeline (e.g. a 0x00 ACK from BASV2's just-
-//     finished 0704 scan) would otherwise leak into activeCh and
-//     race the real echo. bus.Send sees 0x00 in echo position →
-//     echo_mismatch with subclass=post_grant_ack (52% of all
-//     echo_mismatch in production soak before this fix).
-//
-//   - Response phase (echoCursor == writePrefixLen): all writes have
-//     been echoed, the gateway is now reading the target's response.
-//     Accept any byte; bus.Send will surface invalid framing as a
-//     downstream frame error rather than echo_mismatch.
-//
-// Pre-P11 the gate was looser: once `bytesDeliveredToActive > 0`,
-// every byte passed (including mid-write stale bytes). The current
-// gate uses echoCursor as the precise mid-write/response phase
-// boundary, replacing the bytesDeliveredToActive>0 floodgate. This
-// catches the post_grant_ack pattern (~52% of echo_mismatch) without
-// breaking response-phase delivery.
-//
-// Caller must hold stateMu.
+// activePathExpectsByte — REMOVED in P11 round-2. The per-byte gate
+// is now inlined in onReceived using gatewayEcho's pre-match queue
+// head (protocol-accurate; uncapped). The previous round used
+// echoCursor/writePrefix which were capped at txnPrefixCap=8 AND
+// advanced on non-match — both broken signals (Codex P1 findings on
+// PR #606). The SYN-path call site (line 1120) still uses the legacy
+// helper; preserved as a stub returning the same gatewayTxnActive
+// signal the SYN handler expects (the SYN-specific suppression logic
+// lives in onSYNLocked's preEchoMidFrameSuppress / midWriteSyn —
+// independent of this byte-level filter).
 func (m *Mux) activePathExpectsByte(symbol byte) bool {
-	if !m.gatewayTxnActive {
-		return false
-	}
-	if m.activeTxn.echoCursor < m.activeTxn.writePrefixLen {
-		// Mid-write: only the expected echo passes.
-		return m.activeTxn.writePrefix[m.activeTxn.echoCursor] == symbol
-	}
-	// Response phase: all writes echoed, accept anything.
-	return true
+	return m.gatewayTxnActive
 }
 
 // deliverToActive sends a byte to the active path channel.

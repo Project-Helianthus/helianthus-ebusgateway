@@ -4,12 +4,75 @@ import (
 	"context"
 	"expvar"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
+
+// revalidationRotation tracks which cached addresses have been probed in
+// the current rotation round. This is in-process state (deliberately not
+// persisted) — a process restart re-reads runtime_state.json and starts
+// fresh with all members eligible.
+//
+// Rotation rule (Codex P2 follow-up on PR #615): the Revalidator
+// orders members by last_seen_at DESC, so without rotation the
+// MOST-RECENTLY-ACTIVE 32 members would be probed every cycle and
+// the older 32 (which got postponed in cycle 1) would never reach the
+// probe window. The rotation excludes already-probed members from
+// subsequent cycles until ALL members have been probed once; then the
+// round resets and the next 15-min cycle starts a fresh rotation.
+//
+// "Probed" here means OutcomeResponder OR OutcomeNoReply — outcomes
+// where the bus was actually touched. OutcomeSkippedPassiveRefresh
+// does NOT advance the rotation; postponements (cap / ctx-abort)
+// don't either, by definition.
+type revalidationRotation struct {
+	mu     sync.Mutex
+	probed map[byte]struct{}
+}
+
+func newRevalidationRotation() *revalidationRotation {
+	return &revalidationRotation{probed: make(map[byte]struct{})}
+}
+
+// shouldSkip reports whether addr has already been probed in the current
+// rotation round.
+func (r *revalidationRotation) shouldSkip(addr byte) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.probed[addr]
+	return ok
+}
+
+// markProbed records that addr was probed (responder or no_reply) in the
+// current rotation round.
+func (r *revalidationRotation) markProbed(addr byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.probed[addr] = struct{}{}
+}
+
+// resetIfRoundComplete returns true and clears the round if every cached
+// addr in the supplied list is already probed (i.e. nothing left to
+// rotate to). Caller invokes BEFORE filtering so the next cycle sees a
+// fresh round.
+func (r *revalidationRotation) resetIfRoundComplete(addrs []byte) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(addrs) == 0 {
+		return false
+	}
+	for _, a := range addrs {
+		if _, ok := r.probed[a]; !ok {
+			return false
+		}
+	}
+	r.probed = make(map[byte]struct{})
+	return true
+}
 
 // revalidateOutcomesTotal is the M5_ADDRESS_TABLE_REVALIDATE per-outcome
 // counter exposed via /debug/vars. Labels: responder, no_reply,
@@ -42,6 +105,7 @@ func revalidateRuntimeStateMembers(
 	gw *ebusgateway.Gateway,
 	cfg ebusgateway.Config,
 	admittedSource byte,
+	rotation *revalidationRotation,
 ) runtimestate.Result {
 	if mgr == nil || gw == nil || gw.Bus == nil || gw.Registry == nil {
 		return runtimestate.Result{}
@@ -49,6 +113,37 @@ func revalidateRuntimeStateMembers(
 	state := mgr.State()
 	if state == nil || state.EBus == nil || len(state.EBus.KnownBusMembers) == 0 {
 		return runtimestate.Result{}
+	}
+
+	// Rotation: probe only members that haven't been probed yet in the
+	// current round. When all cached addrs have been probed once, reset
+	// and start a fresh round so re-emerging activity gets re-validated.
+	// (Codex P2 follow-up on PR #615 — the Revalidator's
+	// last_seen_at-DESC ordering would otherwise repeatedly probe the
+	// same newest 32 members, starving postponed older members.)
+	allAddrs := make([]byte, 0, len(state.EBus.KnownBusMembers))
+	for _, m := range state.EBus.KnownBusMembers {
+		allAddrs = append(allAddrs, m.Addr)
+	}
+	if rotation != nil {
+		if rotation.resetIfRoundComplete(allAddrs) {
+			log.Printf("runtime_state revalidate: rotation round complete (%d members probed); starting new round", len(allAddrs))
+		}
+	}
+	eligibleMembers := state.EBus.KnownBusMembers
+	if rotation != nil {
+		eligibleMembers = make([]runtimestate.KnownBusMember, 0, len(state.EBus.KnownBusMembers))
+		for _, m := range state.EBus.KnownBusMembers {
+			if rotation.shouldSkip(m.Addr) {
+				continue
+			}
+			eligibleMembers = append(eligibleMembers, m)
+		}
+		if len(eligibleMembers) == 0 {
+			// All cached addrs have been probed; nothing eligible
+			// this cycle. Will rotate fresh on the next tick.
+			return runtimestate.Result{}
+		}
 	}
 
 	// Respect the caller's ScanRequestTimeout per-probe so a stuck
@@ -105,7 +200,7 @@ func revalidateRuntimeStateMembers(
 		Counter: revalidateCounterAdapter{},
 	}
 
-	result := revalidator.Run(probeCtx, state.EBus.KnownBusMembers)
+	result := revalidator.Run(probeCtx, eligibleMembers)
 
 	// Build an addr→cached entry index so responder refreshes can MERGE
 	// presence metadata with existing identity/companion_addr instead of
@@ -118,13 +213,19 @@ func revalidateRuntimeStateMembers(
 		cachedByAddr[m.Addr] = m
 	}
 
-	now := time.Now().UTC()
 	for _, p := range result.Probed {
 		switch p.Outcome {
 		case runtimestate.OutcomeResponder:
 			refreshed := cachedByAddr[p.Addr] // zero value when address wasn't cached
 			refreshed.Addr = p.Addr
-			refreshed.LastSeenAt = now
+			// LastSeenAt deliberately preserved from the prior entry —
+			// updating it would create sticky last_seen_at-DESC
+			// ordering that prevents postponed older members from
+			// reaching the probe window on the next cycle (Codex P2
+			// follow-up on PR #615). Passive observation of bus
+			// traffic is the authoritative LastSeenAt updater; a
+			// directed-probe responder confirms presence without
+			// implying new activity.
 			refreshed.LastSource = runtimestate.LastSourceDirected0704
 			refreshed.Confidence = runtimestate.ConfidenceVerified
 			// Identity / CompanionAddr preserved from prior entry. The
@@ -132,12 +233,20 @@ func revalidateRuntimeStateMembers(
 			// independently when richer data arrives via passive
 			// observation.
 			mgr.UpsertKnownBusMember(refreshed)
+			if rotation != nil {
+				rotation.markProbed(p.Addr)
+			}
 		case runtimestate.OutcomeNoReply:
 			mgr.EvictKnownBusMember(p.Addr)
+			if rotation != nil {
+				rotation.markProbed(p.Addr)
+			}
 		case runtimestate.OutcomeSkippedPassiveRefresh:
 			// No-op: member already refreshed via warmup-window passive
 			// observation; the address-table inserter normal path is
-			// authoritative.
+			// authoritative. Also DOES NOT advance the rotation —
+			// passive-refreshed members weren't bus-touched, so they
+			// still need a chance at the probe window in this round.
 		}
 	}
 
@@ -169,10 +278,11 @@ func startRuntimeStateRevalidator(
 	if interval <= 0 {
 		interval = 15 * time.Minute
 	}
+	rotation := newRevalidationRotation()
 	go func() {
 		// First cycle runs immediately so cached responders refresh
 		// confidence within ~5 s of admission per M5 acceptance.
-		revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource)
+		revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource, rotation)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -180,7 +290,7 @@ func startRuntimeStateRevalidator(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource)
+				revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource, rotation)
 			}
 		}
 	}()

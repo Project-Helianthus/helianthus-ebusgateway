@@ -540,6 +540,18 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		// (override / static fallback). Bind the inserter now that
 		// AdmittedSource() returns the real source.
 		subscribeAddressTableInserter()
+		// M4/M5: also finalize runtime-state for override + static-
+		// fallback admissions. Without this, cached known_bus_members[]
+		// would only ever be revalidated on warmup-based admissions and
+		// stale entries would persist indefinitely on configured
+		// transports (Codex P2 follow-up on PR #615). The selection
+		// method varies by path: ebusd-tcp → ebusd-tcp-fallback,
+		// override / explicit static → explicit_validate_only.
+		selectionMethod := runtimestate.SelectionMethodExplicitValidateOnly
+		if isEbusdTransportProtocol(cfg.TransportConfig.Protocol) {
+			selectionMethod = runtimestate.SelectionMethodEbusdTCPFallback
+		}
+		finalizeRuntimeStateForAdmittedSource(ctx, runtimeStateMgr, gateway, cfg, source, 0, selectionMethod, false)
 	} else {
 		builder.ClearAdmittedMutationSource()
 	}
@@ -622,35 +634,15 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 					// where admitted=0 could leak gateway-own probes.
 					subscribeAddressTableInserter()
 
-					// M4 write-back: persist the validated source to
-					// runtime_state.ebus.self so the next boot can use
-					// it as a hint. Best-effort; persistence failure
-					// here doesn't gate startup (the gateway is already
-					// admitted; the cache is an optimisation).
+					// M4 write-back + M5 revalidator wiring delegate to
+					// finalizeRuntimeStateForAdmittedSource so override
+					// + static-fallback admissions get the same
+					// treatment (Codex P2 follow-up on PR #615).
 					selectionMethod := runtimestate.SelectionMethodWarmup
 					if overrideSet {
 						selectionMethod = runtimestate.SelectionMethodExplicitValidateOnly
 					}
-					companion := sourceSelection.Companion
-					runtimeStateMgr.UpdateSelf(runtimestate.Self{
-						LastAdmittedSource: sourceSelection.Source,
-						LastAdmittedAt:     time.Now().UTC(),
-						SelectionMethod:    selectionMethod,
-						CompanionTarget:    &companion,
-					})
-
-					// M5_ADDRESS_TABLE_REVALIDATE: now that admission
-					// is finalized and AdmittedSource() returns the
-					// selected source, schedule an immediate
-					// revalidation cycle against cached
-					// known_bus_members[] plus periodic cycles at
-					// 15-min cadence. The periodic loop is what
-					// guarantees postponed members (overflow beyond
-					// cap=32) are eventually probed; without it
-					// stale ghosts beyond the first 32 would remain
-					// cached until process restart (Codex P2
-					// follow-up on PR #615).
-					startRuntimeStateRevalidator(ctx, runtimeStateMgr, gateway, cfg, sourceSelection.Source, 0)
+					finalizeRuntimeStateForAdmittedSource(ctx, runtimeStateMgr, gateway, cfg, sourceSelection.Source, sourceSelection.Companion, selectionMethod, true)
 				}
 			case <-startupScanSignals.admissionFailed:
 				if sourceSelection != nil {

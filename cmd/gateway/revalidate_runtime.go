@@ -194,3 +194,39 @@ type revalidateCounterAdapter struct{}
 func (revalidateCounterAdapter) Inc(o runtimestate.RevalidationOutcome) {
 	revalidateOutcomesTotal.Add(string(o), 1)
 }
+
+// finalizeRuntimeStateForAdmittedSource performs the M4 ebus.self write-back
+// and starts the M5 periodic revalidator for any admitted source — whether
+// it came from a SourceAddressSelector warmup, an explicit operator
+// override, an ebusd-tcp fallback, or any other path that finalizes
+// builder.SetAdmittedMutationSource. Codex P2 follow-up on PR #615
+// (without this, override and static-fallback admissions skipped the
+// runtime-state finalization entirely and cached known_bus_members[]
+// stayed stale indefinitely on those transports).
+//
+// hasCompanion gates whether companion is written into ebus.self.
+// Synchronous static-path admissions don't have a SourceAddressSelection
+// result and therefore no companion to record (CompanionTarget remains
+// nil per AD03 — the Manager preserves nil for "no valid companion per
+// bit-pattern rule" rather than synthesising one).
+func finalizeRuntimeStateForAdmittedSource(
+	ctx context.Context,
+	mgr *runtimestate.Manager,
+	gw *ebusgateway.Gateway,
+	cfg ebusgateway.Config,
+	admittedSource byte,
+	companion byte,
+	selectionMethod runtimestate.SelectionMethod,
+	hasCompanion bool,
+) {
+	self := runtimestate.Self{
+		LastAdmittedSource: admittedSource,
+		LastAdmittedAt:     time.Now().UTC(),
+		SelectionMethod:    selectionMethod,
+	}
+	if hasCompanion {
+		self.CompanionTarget = &companion
+	}
+	mgr.UpdateSelf(self)
+	startRuntimeStateRevalidator(ctx, mgr, gw, cfg, admittedSource, 0)
+}

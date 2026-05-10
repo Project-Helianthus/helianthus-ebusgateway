@@ -21,6 +21,9 @@ type emptyRegistry struct{}
 
 func (emptyRegistry) Iterate(func(registry.DeviceEntry) bool) {}
 
+// IterateSnapshots — P9.x. No-op for empty registry.
+func (emptyRegistry) IterateSnapshots(func(registry.DeviceEntrySnapshot) bool) {}
+
 type noopBus struct{}
 
 func (noopBus) Send(context.Context, protocol.Frame) (*protocol.Frame, error) {

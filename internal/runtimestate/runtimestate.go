@@ -28,9 +28,9 @@ const EBusSchemaVersion = 1
 type SelectionMethod string
 
 const (
-	SelectionMethodWarmup           SelectionMethod = "source_selection_warmup"
+	SelectionMethodWarmup               SelectionMethod = "source_selection_warmup"
 	SelectionMethodExplicitValidateOnly SelectionMethod = "explicit_validate_only"
-	SelectionMethodEbusdTCPFallback SelectionMethod = "ebusd-tcp-fallback"
+	SelectionMethodEbusdTCPFallback     SelectionMethod = "ebusd-tcp-fallback"
 )
 
 // LastSource enumerates the persisted last_source values per AD16.
@@ -90,9 +90,9 @@ type EBusNamespace struct {
 // source (AD24).
 type Self struct {
 	LastAdmittedSource byte
-	LastAdmittedAt        time.Time
-	SelectionMethod        SelectionMethod
-	CompanionTarget   *byte // nil when no valid companion per address-table AD03 bit-pattern rule.
+	LastAdmittedAt     time.Time
+	SelectionMethod    SelectionMethod
+	CompanionTarget    *byte // nil when no valid companion per address-table AD03 bit-pattern rule.
 }
 
 // KnownBusMember holds one cached known_bus_members[] entry.
@@ -129,9 +129,9 @@ type MetricsHook interface {
 // NopMetrics is a no-op MetricsHook for tests/local.
 type NopMetrics struct{}
 
-func (NopMetrics) OnWrite(string)               {}
+func (NopMetrics) OnWrite(string)                  {}
 func (NopMetrics) OnIdentitySource(IdentitySource) {}
-func (NopMetrics) OnRevalidate(string)           {}
+func (NopMetrics) OnRevalidate(string)             {}
 
 // FilesystemHooks is an injection point for fault-tolerant testing of the
 // AD13 atomic-write contract. Tests can supply a mock implementation that
@@ -143,11 +143,11 @@ func (NopMetrics) OnRevalidate(string)           {}
 //
 // The persister uses these hooks in this order per atomic-write cycle:
 //
-//	1. WriteFile(temp, data, perm)   — create+write+close the temp file.
-//	2. FsyncFile(temp)               — durably flush temp contents (REQUIRED).
-//	3. Rename(temp, final)           — atomic temp→final.
-//	4. FsyncDir(parent)              — flush parent directory (BEST-EFFORT).
-//	5. Unlink(temp)                  — only if Rename failed (cleanup).
+//  1. WriteFile(temp, data, perm)   — create+write+close the temp file.
+//  2. FsyncFile(temp)               — durably flush temp contents (REQUIRED).
+//  3. Rename(temp, final)           — atomic temp→final.
+//  4. FsyncDir(parent)              — flush parent directory (BEST-EFFORT).
+//  5. Unlink(temp)                  — only if Rename failed (cleanup).
 type FilesystemHooks interface {
 	// WriteFile writes data to path atomically (create+truncate+write+close).
 	// Returns ENOSPC on disk-full, EACCES on permission denied, etc.

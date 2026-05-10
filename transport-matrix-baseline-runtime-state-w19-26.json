@@ -39,7 +39,8 @@
       "\tbuild\tvcs.revision=da230c773a0cd3f92ee56d51e885931c30380ff3",
       "\tbuild\tvcs.time=2026-05-10T11:52:58Z",
       "\tbuild\tvcs.modified=true"
-    ]
+    ],
+    "normalized_cases_sha256": "5e28aadae2ddee904a8c6287b130879e5ae3061f1487ea2f3b6d4a7362ddb9ff"
   },
   "case_count": 88,
   "case_ids": [
@@ -152,12 +153,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T01/configs/helianthus.json"
+        "T01/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T01/logs/runner.log"
+        "T01/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T01",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ens",
+          "kind": "direct-adapter",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T02",
@@ -170,12 +190,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T02/configs/helianthus.json"
+        "T02/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T02/logs/runner.log"
+        "T02/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T02",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "enh",
+          "kind": "direct-adapter",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T03",
@@ -188,12 +227,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T03/configs/helianthus.json"
+        "T03/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T03/logs/runner.log"
+        "T03/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T03",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "udp",
+          "kind": "direct-adapter",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T04",
@@ -206,12 +264,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T04/configs/helianthus.json"
+        "T04/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T04/logs/runner.log"
+        "T04/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T04",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "tcp",
+          "kind": "direct-adapter",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T05",
@@ -224,13 +301,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T05/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T05/configs/ebusd.json"
+        "T05/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T05/logs/runner.log"
+        "T05/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T05",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ebusd-tcp",
+          "kind": "via-ebusd-tcp",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T06",
@@ -243,13 +338,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T06/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T06/configs/ebusd.json"
+        "T06/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T06/logs/runner.log"
+        "T06/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T06",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ebusd-tcp",
+          "kind": "via-ebusd-tcp",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T07",
@@ -263,13 +376,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T07/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T07/configs/ebusd.json"
+        "T07/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T07/logs/runner.log"
+        "T07/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T07",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ebusd-tcp",
+          "kind": "via-ebusd-tcp",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T08",
@@ -283,13 +413,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T08/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T08/configs/ebusd.json"
+        "T08/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T08/logs/runner.log"
+        "T08/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T08",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ebusd-tcp",
+          "kind": "via-ebusd-tcp",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T09",
@@ -302,13 +449,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T09/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T09/configs/proxy.json"
+        "T09/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T09/logs/runner.log"
+        "T09/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T09",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ens",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T10",
@@ -321,13 +486,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T10/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T10/configs/proxy.json"
+        "T10/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T10/logs/runner.log"
+        "T10/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T10",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ens",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T11",
@@ -340,13 +523,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T11/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T11/configs/proxy.json"
+        "T11/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T11/logs/runner.log"
+        "T11/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T11",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ens",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T12",
@@ -359,13 +560,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T12/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T12/configs/proxy.json"
+        "T12/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T12/logs/runner.log"
+        "T12/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T12",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ens",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T13",
@@ -378,13 +597,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T13/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T13/configs/proxy.json"
+        "T13/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T13/logs/runner.log"
+        "T13/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T13",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "enh",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T14",
@@ -397,13 +634,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T14/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T14/configs/proxy.json"
+        "T14/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T14/logs/runner.log"
+        "T14/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T14",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "enh",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T15",
@@ -416,13 +671,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T15/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T15/configs/proxy.json"
+        "T15/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T15/logs/runner.log"
+        "T15/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T15",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "enh",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T16",
@@ -435,13 +708,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T16/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T16/configs/proxy.json"
+        "T16/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T16/logs/runner.log"
+        "T16/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T16",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "enh",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T17",
@@ -454,13 +745,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T17/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T17/configs/proxy.json"
+        "T17/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T17/logs/runner.log"
+        "T17/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T17",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "udp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T18",
@@ -473,13 +782,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T18/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T18/configs/proxy.json"
+        "T18/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T18/logs/runner.log"
+        "T18/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T18",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "udp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T19",
@@ -492,13 +819,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T19/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T19/configs/proxy.json"
+        "T19/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T19/logs/runner.log"
+        "T19/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T19",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "udp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T20",
@@ -511,13 +856,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T20/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T20/configs/proxy.json"
+        "T20/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T20/logs/runner.log"
+        "T20/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T20",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "udp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T21",
@@ -530,13 +893,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T21/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T21/configs/proxy.json"
+        "T21/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T21/logs/runner.log"
+        "T21/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T21",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "tcp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T22",
@@ -549,13 +930,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T22/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T22/configs/proxy.json"
+        "T22/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T22/logs/runner.log"
+        "T22/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T22",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "tcp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T23",
@@ -568,13 +967,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T23/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T23/configs/proxy.json"
+        "T23/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T23/logs/runner.log"
+        "T23/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T23",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "tcp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T24",
@@ -587,13 +1004,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T24/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T24/configs/proxy.json"
+        "T24/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T24/logs/runner.log"
+        "T24/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T24",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "tcp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T25",
@@ -606,14 +1041,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T25/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T25/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T25/configs/ebusd.json"
+        "T25/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T25/logs/runner.log"
+        "T25/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T25",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T26",
@@ -626,14 +1078,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T26/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T26/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T26/configs/ebusd.json"
+        "T26/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T26/logs/runner.log"
+        "T26/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T26",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T27",
@@ -647,14 +1116,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T27/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T27/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T27/configs/ebusd.json"
+        "T27/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T27/logs/runner.log"
+        "T27/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T27",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T28",
@@ -667,14 +1152,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T28/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T28/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T28/configs/ebusd.json"
+        "T28/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T28/logs/runner.log"
+        "T28/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T28",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T29",
@@ -687,14 +1189,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T29/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T29/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T29/configs/ebusd.json"
+        "T29/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T29/logs/runner.log"
+        "T29/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T29",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T30",
@@ -707,14 +1226,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T30/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T30/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T30/configs/ebusd.json"
+        "T30/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T30/logs/runner.log"
+        "T30/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T30",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T31",
@@ -728,14 +1264,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T31/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T31/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T31/configs/ebusd.json"
+        "T31/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T31/logs/runner.log"
+        "T31/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T31",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T32",
@@ -748,14 +1300,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T32/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T32/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T32/configs/ebusd.json"
+        "T32/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T32/logs/runner.log"
+        "T32/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T32",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T33",
@@ -769,14 +1338,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T33/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T33/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T33/configs/ebusd.json"
+        "T33/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T33/logs/runner.log"
+        "T33/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T33",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T34",
@@ -790,14 +1375,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T34/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T34/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T34/configs/ebusd.json"
+        "T34/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T34/logs/runner.log"
+        "T34/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T34",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T35",
@@ -811,14 +1412,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T35/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T35/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T35/configs/ebusd.json"
+        "T35/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T35/logs/runner.log"
+        "T35/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T35",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T36",
@@ -832,14 +1449,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T36/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T36/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T36/configs/ebusd.json"
+        "T36/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T36/logs/runner.log"
+        "T36/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T36",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T37",
@@ -853,14 +1486,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T37/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T37/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T37/configs/ebusd.json"
+        "T37/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T37/logs/runner.log"
+        "T37/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T37",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T38",
@@ -874,14 +1523,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T38/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T38/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T38/configs/ebusd.json"
+        "T38/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T38/logs/runner.log"
+        "T38/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T38",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T39",
@@ -895,14 +1560,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T39/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T39/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T39/configs/ebusd.json"
+        "T39/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T39/logs/runner.log"
+        "T39/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T39",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T40",
@@ -916,14 +1597,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T40/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T40/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T40/configs/ebusd.json"
+        "T40/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T40/logs/runner.log"
+        "T40/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T40",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T41",
@@ -936,14 +1633,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T41/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T41/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T41/configs/ebusd.json"
+        "T41/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T41/logs/runner.log"
+        "T41/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T41",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T42",
@@ -956,14 +1670,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T42/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T42/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T42/configs/ebusd.json"
+        "T42/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T42/logs/runner.log"
+        "T42/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T42",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T43",
@@ -977,14 +1708,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T43/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T43/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T43/configs/ebusd.json"
+        "T43/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T43/logs/runner.log"
+        "T43/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T43",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T44",
@@ -997,14 +1744,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T44/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T44/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T44/configs/ebusd.json"
+        "T44/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T44/logs/runner.log"
+        "T44/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T44",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T45",
@@ -1017,14 +1781,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T45/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T45/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T45/configs/ebusd.json"
+        "T45/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T45/logs/runner.log"
+        "T45/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T45",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T46",
@@ -1037,14 +1818,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T46/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T46/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T46/configs/ebusd.json"
+        "T46/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T46/logs/runner.log"
+        "T46/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T46",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T47",
@@ -1058,14 +1856,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T47/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T47/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T47/configs/ebusd.json"
+        "T47/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T47/logs/runner.log"
+        "T47/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T47",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T48",
@@ -1078,14 +1892,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T48/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T48/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T48/configs/ebusd.json"
+        "T48/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T48/logs/runner.log"
+        "T48/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T48",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T49",
@@ -1099,14 +1930,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T49/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T49/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T49/configs/ebusd.json"
+        "T49/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T49/logs/runner.log"
+        "T49/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T49",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T50",
@@ -1120,14 +1967,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T50/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T50/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T50/configs/ebusd.json"
+        "T50/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T50/logs/runner.log"
+        "T50/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T50",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T51",
@@ -1141,14 +2004,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T51/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T51/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T51/configs/ebusd.json"
+        "T51/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T51/logs/runner.log"
+        "T51/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T51",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T52",
@@ -1162,14 +2041,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T52/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T52/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T52/configs/ebusd.json"
+        "T52/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T52/logs/runner.log"
+        "T52/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T52",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T53",
@@ -1183,14 +2078,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T53/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T53/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T53/configs/ebusd.json"
+        "T53/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T53/logs/runner.log"
+        "T53/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T53",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T54",
@@ -1204,14 +2115,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T54/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T54/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T54/configs/ebusd.json"
+        "T54/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T54/logs/runner.log"
+        "T54/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T54",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T55",
@@ -1225,14 +2152,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T55/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T55/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T55/configs/ebusd.json"
+        "T55/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T55/logs/runner.log"
+        "T55/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T55",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T56",
@@ -1246,14 +2189,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T56/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T56/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T56/configs/ebusd.json"
+        "T56/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T56/logs/runner.log"
+        "T56/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T56",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T57",
@@ -1266,14 +2225,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T57/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T57/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T57/configs/ebusd.json"
+        "T57/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T57/logs/runner.log"
+        "T57/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T57",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T58",
@@ -1286,14 +2262,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T58/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T58/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T58/configs/ebusd.json"
+        "T58/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T58/logs/runner.log"
+        "T58/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T58",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T59",
@@ -1307,14 +2300,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T59/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T59/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T59/configs/ebusd.json"
+        "T59/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T59/logs/runner.log"
+        "T59/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T59",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T60",
@@ -1327,14 +2336,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T60/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T60/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T60/configs/ebusd.json"
+        "T60/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T60/logs/runner.log"
+        "T60/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T60",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T61",
@@ -1347,14 +2373,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T61/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T61/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T61/configs/ebusd.json"
+        "T61/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T61/logs/runner.log"
+        "T61/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T61",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T62",
@@ -1367,14 +2410,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T62/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T62/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T62/configs/ebusd.json"
+        "T62/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T62/logs/runner.log"
+        "T62/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T62",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T63",
@@ -1388,14 +2448,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T63/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T63/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T63/configs/ebusd.json"
+        "T63/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T63/logs/runner.log"
+        "T63/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T63",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T64",
@@ -1408,14 +2484,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T64/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T64/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T64/configs/ebusd.json"
+        "T64/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T64/logs/runner.log"
+        "T64/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T64",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T65",
@@ -1429,14 +2522,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T65/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T65/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T65/configs/ebusd.json"
+        "T65/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T65/logs/runner.log"
+        "T65/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T65",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T66",
@@ -1450,14 +2559,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T66/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T66/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T66/configs/ebusd.json"
+        "T66/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T66/logs/runner.log"
+        "T66/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T66",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T67",
@@ -1471,14 +2596,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T67/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T67/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T67/configs/ebusd.json"
+        "T67/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T67/logs/runner.log"
+        "T67/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T67",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T68",
@@ -1492,14 +2633,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T68/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T68/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T68/configs/ebusd.json"
+        "T68/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T68/logs/runner.log"
+        "T68/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T68",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T69",
@@ -1513,14 +2670,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T69/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T69/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T69/configs/ebusd.json"
+        "T69/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T69/logs/runner.log"
+        "T69/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T69",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T70",
@@ -1534,14 +2707,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T70/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T70/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T70/configs/ebusd.json"
+        "T70/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T70/logs/runner.log"
+        "T70/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T70",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T71",
@@ -1555,14 +2744,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T71/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T71/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T71/configs/ebusd.json"
+        "T71/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T71/logs/runner.log"
+        "T71/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T71",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T72",
@@ -1576,14 +2781,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T72/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T72/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T72/configs/ebusd.json"
+        "T72/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T72/logs/runner.log"
+        "T72/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T72",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T73",
@@ -1596,14 +2817,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T73/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T73/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T73/configs/ebusd.json"
+        "T73/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T73/logs/runner.log"
+        "T73/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T73",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T74",
@@ -1616,14 +2854,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T74/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T74/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T74/configs/ebusd.json"
+        "T74/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T74/logs/runner.log"
+        "T74/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T74",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T75",
@@ -1637,14 +2892,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T75/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T75/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T75/configs/ebusd.json"
+        "T75/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T75/logs/runner.log"
+        "T75/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T75",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T76",
@@ -1657,14 +2928,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T76/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T76/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T76/configs/ebusd.json"
+        "T76/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T76/logs/runner.log"
+        "T76/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T76",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T77",
@@ -1677,14 +2965,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T77/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T77/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T77/configs/ebusd.json"
+        "T77/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T77/logs/runner.log"
+        "T77/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T77",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T78",
@@ -1697,14 +3002,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T78/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T78/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T78/configs/ebusd.json"
+        "T78/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T78/logs/runner.log"
+        "T78/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T78",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T79",
@@ -1718,14 +3040,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T79/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T79/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T79/configs/ebusd.json"
+        "T79/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T79/logs/runner.log"
+        "T79/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T79",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T80",
@@ -1738,14 +3076,31 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T80/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T80/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T80/configs/ebusd.json"
+        "T80/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T80/logs/runner.log"
+        "T80/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T80",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
     },
     {
       "case_id": "T81",
@@ -1759,14 +3114,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T81/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T81/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T81/configs/ebusd.json"
+        "T81/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T81/logs/runner.log"
+        "T81/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T81",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T82",
@@ -1780,14 +3151,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T82/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T82/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T82/configs/ebusd.json"
+        "T82/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T82/logs/runner.log"
+        "T82/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T82",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T83",
@@ -1801,14 +3188,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T83/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T83/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T83/configs/ebusd.json"
+        "T83/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T83/logs/runner.log"
+        "T83/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T83",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T84",
@@ -1822,14 +3225,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T84/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T84/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T84/configs/ebusd.json"
+        "T84/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T84/logs/runner.log"
+        "T84/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T84",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T85",
@@ -1843,14 +3262,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T85/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T85/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T85/configs/ebusd.json"
+        "T85/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T85/logs/runner.log"
+        "T85/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T85",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T86",
@@ -1864,14 +3299,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T86/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T86/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T86/configs/ebusd.json"
+        "T86/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T86/logs/runner.log"
+        "T86/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T86",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T87",
@@ -1885,14 +3336,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T87/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T87/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T87/configs/ebusd.json"
+        "T87/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T87/logs/runner.log"
+        "T87/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T87",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     },
     {
       "case_id": "T88",
@@ -1906,14 +3373,30 @@
       "started_at": "2026-05-10T14:59:24Z",
       "ended_at": "2026-05-10T14:59:24Z",
       "config_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T88/configs/helianthus.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T88/configs/proxy.json",
-        "/tmp/matrix-baseline-runtime-state-w19-26/T88/configs/ebusd.json"
+        "T88/configs/helianthus.json"
       ],
       "log_files": [
-        "/tmp/matrix-baseline-runtime-state-w19-26/T88/logs/runner.log"
+        "T88/logs/runner.log"
       ],
-      "commands": []
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T88",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        }
+      },
+      "passive_mode": "",
+      "error": ""
     }
   ],
   "evidence_class": "dry-run-planning",

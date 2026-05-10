@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 // TestEvictionBlocklist_MarkClearLifecycle pins the AD23 anti-resurrection
@@ -35,6 +36,36 @@ func TestEvictionBlocklist_MarkClearLifecycle(t *testing.T) {
 	b.markEvicted(0x08)
 	if !b.isEvicted(0x08) {
 		t.Errorf("re-marking after clear must work")
+	}
+}
+
+// TestEvictionBlocklist_EvictionTimeMonotonic verifies that evictionTime
+// returns a non-zero timestamp after markEvicted, and that the timestamp
+// advances when an addr is re-evicted after a clear (the reconciler uses
+// this timestamp to gate against registry LastObservedAt for active-
+// rediscovery resurrection — Codex P2 follow-up on PR #615).
+func TestEvictionBlocklist_EvictionTimeMonotonic(t *testing.T) {
+	b := newEvictionBlocklist()
+
+	if _, ok := b.evictionTime(0x08); ok {
+		t.Errorf("fresh blocklist: evictionTime(0x08) must return ok=false")
+	}
+
+	b.markEvicted(0x08)
+	t1, ok := b.evictionTime(0x08)
+	if !ok {
+		t.Fatalf("after markEvicted: evictionTime(0x08) must return ok=true")
+	}
+	if t1.IsZero() {
+		t.Errorf("evictionTime must be a real timestamp, not zero")
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	b.clear(0x08)
+	b.markEvicted(0x08)
+	t2, _ := b.evictionTime(0x08)
+	if !t2.After(t1) {
+		t.Errorf("re-eviction timestamp t2=%v must be after t1=%v", t2, t1)
 	}
 }
 

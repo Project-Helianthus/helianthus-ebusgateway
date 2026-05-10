@@ -30,17 +30,17 @@ import (
 // won't re-add it unless the registry has it AND fresh evidence arrives.
 type evictionBlocklist struct {
 	mu      sync.Mutex
-	evicted map[byte]struct{}
+	evicted map[byte]time.Time
 }
 
 func newEvictionBlocklist() *evictionBlocklist {
-	return &evictionBlocklist{evicted: make(map[byte]struct{})}
+	return &evictionBlocklist{evicted: make(map[byte]time.Time)}
 }
 
 func (b *evictionBlocklist) markEvicted(addr byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.evicted[addr] = struct{}{}
+	b.evicted[addr] = time.Now().UTC()
 }
 
 func (b *evictionBlocklist) clear(addr byte) {
@@ -49,10 +49,22 @@ func (b *evictionBlocklist) clear(addr byte) {
 	delete(b.evicted, addr)
 }
 
-func (b *evictionBlocklist) isEvicted(addr byte) bool {
+// evictionTime returns (when, true) if addr is blocklisted; (zero, false)
+// otherwise. Used by the reconciler to compare with registry's
+// LastObservedAt and accept fresh evidence newer than the eviction.
+// (Codex P2 follow-up on PR #615 — active scans can resurrect evicted
+// addrs once their registry LastObservedAt advances past the eviction.)
+func (b *evictionBlocklist) evictionTime(addr byte) (time.Time, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	_, ok := b.evicted[addr]
+	t, ok := b.evicted[addr]
+	return t, ok
+}
+
+// isEvicted reports whether addr is currently blocklisted. Convenience
+// for callers that don't need the timestamp.
+func (b *evictionBlocklist) isEvicted(addr byte) bool {
+	_, ok := b.evictionTime(addr)
 	return ok
 }
 
@@ -174,13 +186,23 @@ func revalidateRuntimeStateMembers(
 			if addr == admittedSource || addr == 0xFE || addr == 0x00 {
 				continue
 			}
-			// AD23 anti-resurrection: skip addresses M5 has evicted in
-			// this process lifetime. They only re-enter when fresh
-			// passive bus traffic arrives via the AddressTableInserter
-			// observer hook, which clears the blocklist entry. (Codex
-			// P2 follow-up on PR #615.)
-			if blocklist != nil && blocklist.isEvicted(addr) {
-				continue
+			// AD23 anti-resurrection: addresses M5 has evicted are
+			// blocklisted with their eviction timestamp. Active rediscovery
+			// (startup directed scan, background full scan) updates
+			// LastObservedAt in the registry — when that timestamp is
+			// AFTER the eviction time, the AD23 stale-ghost premise no
+			// longer holds and we clear the blocklist. Passive observation
+			// clears via the AddressTableInserter observer hook (already
+			// wired in main.go). (Codex P2 follow-up on PR #615.)
+			if blocklist != nil {
+				if evictedAt, ok := blocklist.evictionTime(addr); ok {
+					slotSnap, slotOK := gw.Registry.LookupSlotSnapshot(addr)
+					if slotOK && slotSnap.LastObservedAt.After(evictedAt) {
+						blocklist.clear(addr)
+					} else {
+						continue
+					}
+				}
 			}
 			mgr.RefreshKnownBusMemberPresence(addr, now, runtimestate.LastSourcePassiveObserved)
 		}

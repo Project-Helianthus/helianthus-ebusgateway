@@ -21,6 +21,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
@@ -110,6 +111,22 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	if len(cfg.Providers) == 0 {
 		cfg.Providers = vaillantproviders.Default()
 	}
+
+	// Initialize the runtime-state Manager early so the cached
+	// ebus.self.last_admitted_source can be passed as a hint to the
+	// SourceAddressSelector below, and the Manager is available for
+	// post-admission UpdateSelf and address-table-revalidate write-back.
+	// Errors during Load are tolerated — Manager.Load returns an empty
+	// state on missing/corrupt and the gateway continues without a hint.
+	// (runtime-state-w19-26.locked M2_GATEWAY_LOADER + M4_SOURCE_SELECTION_HINT)
+	runtimeStateMgr, runtimeState := initRuntimeStateManager(ctx, cfg)
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := runtimeStateMgr.Stop(stopCtx); err != nil {
+			log.Printf("runtime_state stop: %v", err)
+		}
+	}()
 
 	// Wire adapter-direct mode: create multiplexer, configure active
 	// and passive transports before gateway construction.
@@ -243,6 +260,24 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}
 	addressTable := ebusgateway.NewAddressTable(gateway.Registry)
 	addressTableInserter := ebusgateway.NewAddressTableInserter(addressTable, addressTableCfg)
+	// M3 + M5 wiring: every passive observation flowing through the
+	// inserter feeds the runtime-state Manager via
+	// RefreshKnownBusMemberPresence — a presence-only refresh that
+	// preserves Identity / CompanionAddr / Confidence on existing
+	// entries (the directed-probe responder path is the only writer
+	// that may upgrade Confidence to verified, and identity probes
+	// are the only writer to Identity / CompanionAddr). Without this
+	// wiring known_bus_members[] would stay empty after a fresh
+	// install and M5 would have nothing to revalidate. (Codex P2
+	// follow-up on PR #615.)
+	addressTableInserter.SetRuntimeStateObserver(func(addr byte, observedAt time.Time, reportedSource string) {
+		// Fresh passive evidence clears any M5 eviction blocklist
+		// entry — the AD23 stale-ghost premise no longer holds when
+		// the address is observed on the bus again. (Codex P2
+		// follow-up on PR #615.)
+		globalEvictionBlocklist.clear(addr)
+		runtimeStateMgr.RefreshKnownBusMemberPresence(addr, observedAt, runtimestate.LastSource(reportedSource))
+	})
 	if busObservability != nil {
 		builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(busObservability))
 	}
@@ -441,7 +476,19 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		if err != nil {
 			return fmt.Errorf("m3: new source address selection bus: %w", err)
 		}
-		selector := protocol.NewSourceAddressSelector(selectionBus, ebusgateway.DefaultStartupAdmissionSourceSelectionConfig())
+		// M4_SOURCE_SELECTION_HINT: bias candidate ordering toward the
+		// cached ebus.self.last_admitted_source from the prior admission
+		// cycle. Validation still runs in full — the hint is a candidate-
+		// ordering aid, NEVER a bypass of warmup or evidence checks.
+		// AD24: HintFromState is the only exported surface that emits
+		// the cached byte; the Manager.State() field exposes it as a
+		// plain struct member but every consumer routes through this
+		// helper for clarity.
+		hintCandidate, hintSet := runtimestate.HintFromState(runtimeState)
+		if hintSet {
+			log.Printf("source address selection hint=0x%02X (cached from prior admission cycle; warmup validation still required)", hintCandidate)
+		}
+		selector := protocol.NewSourceAddressSelector(selectionBus, ebusgateway.StartupAdmissionConfigWithHint(hintCandidate, hintSet))
 
 		// Install AD08/AD22 stability window on the bus_observability store
 		// before the first source-selection state observation. Window is sized
@@ -505,12 +552,25 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		cfg.ScanSourceAuto = false
 	}
 	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
-	if source, admitted := admittedMutationSourceForGateway(cfg, admissionPath, overrideSet); admitted {
-		builder.SetAdmittedMutationSource(source)
+	syncStaticAdmittedSource, syncStaticAdmitted := admittedMutationSourceForGateway(cfg, admissionPath, overrideSet)
+	if syncStaticAdmitted {
+		builder.SetAdmittedMutationSource(syncStaticAdmittedSource)
 		// Phase A.5 (Codex P2 round 3): admission resolved synchronously
 		// (override / static fallback). Bind the inserter now that
 		// AdmittedSource() returns the real source.
 		subscribeAddressTableInserter()
+		// M4: write the validated source to runtime_state.ebus.self
+		// synchronously — this is just a cache update, not bus
+		// traffic, so it's safe to run before the startup directed-
+		// probe phase. M5 revalidator start is DEFERRED to
+		// post-validation (after startupScanSignals.activeProbePassed)
+		// so directed 07 04 probes don't race the startup admission
+		// scan's bus traffic. Codex P2 follow-up on PR #615.
+		selectionMethod := runtimestate.SelectionMethodExplicitValidateOnly
+		if isEbusdTransportProtocol(cfg.TransportConfig.Protocol) {
+			selectionMethod = runtimestate.SelectionMethodEbusdTCPFallback
+		}
+		recordAdmittedSourceInRuntimeState(runtimeStateMgr, syncStaticAdmittedSource, 0, selectionMethod, false)
 	} else {
 		builder.ClearAdmittedMutationSource()
 	}
@@ -572,6 +632,27 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}
 	startupScanSignals := startDiscoveryScanLoopFn(ctx, startupCfg, gateway, builder, adapterClassifier)
 
+	// Synchronous static / override admission path: defer the M5
+	// revalidator start until activeProbePassed (or ctx cancel) to keep
+	// directed 07 04 probes outside the startup admission scan window.
+	// (Codex P2 follow-up on PR #615 — without this defer, M5 would
+	// emit bus traffic concurrent with startup directed-probe phase.)
+	if syncStaticAdmitted && !sourceSelectionAdmission {
+		go func(source byte) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-startupScanSignals.activeProbePassed:
+				startRuntimeStateRevalidator(ctx, runtimeStateMgr, gateway, cfg, source, 0)
+			case <-startupScanSignals.admissionFailed:
+				// Admission failed mid-validation; skip M5 start —
+				// no point probing cached members when we don't have
+				// a healthy admitted source on the bus.
+				return
+			}
+		}(syncStaticAdmittedSource)
+	}
+
 	if semanticBarrier != nil || sourceSelection != nil {
 		go func() {
 			select {
@@ -592,6 +673,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 					// selected source — closes the directed-probe window
 					// where admitted=0 could leak gateway-own probes.
 					subscribeAddressTableInserter()
+
+					// M4 write-back + M5 revalidator wiring delegate to
+					// finalizeRuntimeStateForAdmittedSource so override
+					// + static-fallback admissions get the same
+					// treatment (Codex P2 follow-up on PR #615).
+					selectionMethod := runtimestate.SelectionMethodWarmup
+					if overrideSet {
+						selectionMethod = runtimestate.SelectionMethodExplicitValidateOnly
+					}
+					finalizeRuntimeStateForAdmittedSource(ctx, runtimeStateMgr, gateway, cfg, sourceSelection.Source, sourceSelection.Companion, selectionMethod, true)
 				}
 			case <-startupScanSignals.admissionFailed:
 				if sourceSelection != nil {
@@ -1009,6 +1100,13 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		cfg.InstanceGUID = normalized
 		return nil
 	})
+	fs.StringVar(&cfg.InstanceGUIDSource, "instance-guid-source",
+		cfg.InstanceGUIDSource,
+		"AD27 provenance tag for -instance-guid (runtime_state | legacy_migrated | generated | cli-override); "+
+			"empty defaults to cli-override with a deprecation log when -instance-guid is provided")
+	fs.StringVar(&cfg.RuntimeStatePath, "runtime-state-path",
+		cfg.RuntimeStatePath,
+		"override /data/runtime_state.json path (empty uses runtimestate package default)")
 	fs.StringVar(&cfg.DumpOutputDir, "dump-output-dir", cfg.DumpOutputDir, "unknown device dump output dir")
 	fs.StringVar(&cfg.DumpUploadURL, "dump-upload-url", cfg.DumpUploadURL, "unknown device dump upload url (internal)")
 	fs.BoolVar(&cfg.DumpIncludePII, "dump-include-pii", cfg.DumpIncludePII, "include identifiers in unknown device dumps")
@@ -2161,4 +2259,64 @@ func applyStaticSeedTable(reg *registry.DeviceRegistry) {
 		}
 	}
 	log.Printf("static seed table: planted %d address(es) across %d device(s) at startup (source=productids.LoadSeedTable, label=static_seed/candidate)", count, len(seeds))
+}
+
+// initRuntimeStateManager constructs and starts the runtime-state Manager,
+// wiring AD08 eager-persist for the instance-guid CLI flag (when present)
+// and exposing the loaded state for hint extraction.
+//
+// On Manager.Load failure (missing / corrupt file), Manager.Load returns an
+// empty state and the gateway continues without a hint — the cache is a
+// best-effort optimisation, not a startup requirement (AD11 + M2 spec).
+func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config) (*runtimestate.Manager, *runtimestate.State) {
+	mgr := runtimestate.New(runtimestate.Options{
+		Path:         cfg.RuntimeStatePath,
+		GatewayBuild: fmt.Sprintf("%s+%s", buildVersion, buildID),
+		AddonVersion: "", // populated by add-on via future flag if needed
+	})
+	state, err := mgr.Load(ctx)
+	if err != nil {
+		log.Printf("runtime_state: load returned error (continuing with empty state): %v", err)
+		state = &runtimestate.State{}
+	}
+
+	// AD08 eager persist: when -instance-guid is supplied, durably write
+	// meta.{schema_version, instance_guid, written_at} within ~1 s so the
+	// crash-before-first-periodic-persist window is closed. Provenance per
+	// AD27.
+	if cfg.InstanceGUID != "" {
+		source := identitySourceFromCfg(cfg.InstanceGUIDSource)
+		if perr := mgr.EagerPersistInstanceGUID(ctx, cfg.InstanceGUID, source); perr != nil {
+			log.Printf("runtime_state: eager-persist instance_guid failed (continuing): %v", perr)
+		}
+	}
+
+	if serr := mgr.Start(ctx); serr != nil {
+		log.Printf("runtime_state: start failed (continuing without periodic persister): %v", serr)
+	}
+
+	return mgr, state
+}
+
+// identitySourceFromCfg maps the CLI -instance-guid-source flag value to the
+// runtimestate.IdentitySource enum, with AD27 deprecation log when the flag
+// is absent. The well-formed value set is enforced here; unknown values fall
+// back to "cli-override" with a warning rather than failing startup.
+func identitySourceFromCfg(raw string) runtimestate.IdentitySource {
+	switch raw {
+	case string(runtimestate.IdentitySourceRuntimeState):
+		return runtimestate.IdentitySourceRuntimeState
+	case string(runtimestate.IdentitySourceLegacyMigrated):
+		return runtimestate.IdentitySourceLegacyMigrated
+	case string(runtimestate.IdentitySourceGenerated):
+		return runtimestate.IdentitySourceGenerated
+	case string(runtimestate.IdentitySourceCLIOverride):
+		return runtimestate.IdentitySourceCLIOverride
+	case "":
+		log.Print("runtime_state: -instance-guid-source absent; defaulting to cli-override (deprecated; pass -instance-guid-source explicitly)")
+		return runtimestate.IdentitySourceCLIOverride
+	default:
+		log.Printf("runtime_state: -instance-guid-source=%q is not a recognised AD27 value; treating as cli-override", raw)
+		return runtimestate.IdentitySourceCLIOverride
+	}
 }

@@ -157,6 +157,16 @@ type Config struct {
 	MDNSAdvertise                           bool
 	MDNSInstance                            string
 	InstanceGUID                            string
+	// InstanceGUIDSource is the AD27 provenance tag passed by the
+	// add-on alongside InstanceGUID. One of: "runtime_state",
+	// "legacy_migrated", "generated", "cli-override". Empty when the
+	// flag wasn't supplied (older add-on, direct CLI invocation), in
+	// which case the Manager defaults to "cli-override" with a
+	// deprecation log.
+	InstanceGUIDSource string
+	// RuntimeStatePath overrides /data/runtime_state.json for tests +
+	// alternate deployments. Empty uses the runtimestate package default.
+	RuntimeStatePath string
 	DumpOutputDir                           string
 	DumpUploadPath                          string
 	DumpUploadURL                           string
@@ -253,6 +263,8 @@ func DefaultConfig() Config {
 		MDNSAdvertise:                           true,
 		MDNSInstance:                            "helianthus",
 		InstanceGUID:                            "",
+		InstanceGUIDSource:                      "",
+		RuntimeStatePath:                        "",
 		DumpOutputDir:                           "./dumps",
 		ObserveFirstEnabled:                     featureFlags.ObserveFirstEnabled(),
 		PassiveStateDirectApply:                 true,

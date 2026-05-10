@@ -411,6 +411,54 @@ func (m *Manager) UpsertKnownBusMember(member KnownBusMember) {
 	m.mu.Unlock()
 }
 
+// RefreshKnownBusMemberPresence atomically updates LastSeenAt + LastSource
+// for an existing entry without touching Identity / CompanionAddr /
+// Confidence — the address-table-inserter passive-observation hook calls
+// this on every bus event to keep LastSeenAt current as a basis for M5
+// revalidation ordering, without overwriting cached identity that earlier
+// directed probes / enrichment populated. (Codex P2 follow-up on PR #615 —
+// the observer's prior call to UpsertKnownBusMember dropped Identity and
+// downgraded ConfidenceVerified back to corroborated on every passive
+// observation.)
+//
+// When the address is not yet in the cache, inserts a new entry with
+// Confidence=corroborated as the initial classification; subsequent
+// directed-probe responder outcomes upgrade it to verified.
+//
+// Atomic under m.mu; safe to call at bus-event rate.
+func (m *Manager) RefreshKnownBusMemberPresence(addr byte, observedAt time.Time, source LastSource) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state == nil {
+		m.state = &State{SchemaVersion: SchemaVersion}
+	}
+	if m.state.EBus == nil {
+		m.state.EBus = &EBusNamespace{SchemaVersion: EBusSchemaVersion}
+	}
+	for i := range m.state.EBus.KnownBusMembers {
+		if m.state.EBus.KnownBusMembers[i].Addr == addr {
+			// In-place refresh of presence-only fields. Identity,
+			// CompanionAddr, and Confidence preserved verbatim.
+			m.state.EBus.KnownBusMembers[i].LastSeenAt = observedAt
+			m.state.EBus.KnownBusMembers[i].LastSource = source
+			m.dirty = true
+			m.writeGen++
+			return
+		}
+	}
+	// New address: insert with conservative defaults. Subsequent
+	// directed-probe responder outcomes will upgrade Confidence via
+	// the M5 revalidator's UpsertKnownBusMember call.
+	m.state.EBus.KnownBusMembers = append(m.state.EBus.KnownBusMembers, KnownBusMember{
+		Addr:       addr,
+		LastSeenAt: observedAt,
+		LastSource: source,
+		Confidence: ConfidenceCorroborated,
+	})
+	m.dirty = true
+	m.writeGen++
+}
+
 // EvictKnownBusMember removes the entry with the given Addr. No-op if absent.
 // Used by M5 directed-revalidation on no_reply outcomes (AD23).
 func (m *Manager) EvictKnownBusMember(addr byte) {

@@ -12,6 +12,21 @@ type AddressObservation struct {
 	PositiveACKCount int
 }
 
+// RuntimeStateObserver is the runtime-state cache notification hook.
+// AddressTableInserter calls it once per passive observation (new insert
+// OR refresh of an existing slot) so the runtimestate.Manager can
+// populate/refresh known_bus_members[] for M5 revalidation.
+//
+// observedAt is the bus-event timestamp; reportedSource is the
+// runtimestate.LastSource string (e.g. "passive_observed").
+//
+// Production wiring lives in cmd/gateway/main.go, calling
+// runtimeStateMgr.UpsertKnownBusMember. The hook is fired
+// synchronously inside maybeInsert; observers MUST be cheap (the
+// Manager's UpsertKnownBusMember is a brief mu-guarded field swap and
+// is safe to call at bus-event rate).
+type RuntimeStateObserver func(addr byte, observedAt time.Time, reportedSource string)
+
 type AddressTableInserter struct {
 	table              *AddressTable
 	cfg                Config
@@ -33,6 +48,10 @@ type AddressTableInserter struct {
 	// 2026-05-08): without this hook, passive-observed entries stay
 	// at empty manufacturer indefinitely. Nil-safe.
 	enrichmentIdentityProbeFn func(addr byte)
+	// runtimeStateObserver is called once per passive observation so
+	// the runtimestate.Manager can populate/refresh known_bus_members[]
+	// for M5_ADDRESS_TABLE_REVALIDATE. Nil-safe.
+	runtimeStateObserver RuntimeStateObserver
 }
 
 func NewAddressTableInserter(table *AddressTable, cfg Config) *AddressTableInserter {
@@ -72,6 +91,20 @@ func (i *AddressTableInserter) SetEnrichmentIdentityProbeFn(fn func(addr byte)) 
 		return
 	}
 	i.enrichmentIdentityProbeFn = fn
+}
+
+// SetRuntimeStateObserver wires the runtime-state Manager hook. The
+// inserter calls fn once per passive observation (new insert OR refresh
+// of an existing slot) so known_bus_members[] gets populated and
+// LastSeenAt stays current as a basis for M5 revalidation ordering.
+// Codex P2 follow-up on PR #615 — without this wiring, runtime_state.json's
+// known_bus_members[] stays empty after a fresh install and M5 has
+// nothing to revalidate.
+func (i *AddressTableInserter) SetRuntimeStateObserver(fn RuntimeStateObserver) {
+	if i == nil {
+		return
+	}
+	i.runtimeStateObserver = fn
 }
 
 // BackfillUnidentifiedAddresses iterates the registry's existing
@@ -275,6 +308,14 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 	}
 	if addr == admittedSrc || addr == 0xFE {
 		return
+	}
+	// Notify runtime-state on every passive observation (new insert OR
+	// refresh of existing slot). The Manager.UpsertKnownBusMember call
+	// behind this hook is a brief mu-guarded field swap and is safe to
+	// call at bus-event rate; the persister batches writes on the
+	// 15-min ticker. Codex P2 follow-up on PR #615.
+	if i.runtimeStateObserver != nil {
+		i.runtimeStateObserver(addr, observedAt, "passive_observed")
 	}
 	if _, exists := i.table.Lookup(addr); exists {
 		// Already in registry (active scan, prior passive observation,

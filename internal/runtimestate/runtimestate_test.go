@@ -726,8 +726,12 @@ func (p *p6CrashHooks) FsyncDir(path string) error {
 	return p.recordingHooks.FsyncDir(path)
 }
 
-// P6 falsifiability gate: kill -9 mid-write under simulated fsync-EINVAL → next
-// start has fully old or fully new content; never partial.
+// P6 falsifiability gate (consultant MF-2): kill -9 mid-write under simulated
+// fsync-EINVAL → next start has FULLY OLD or FULLY NEW content; never partial,
+// never empty, never an unrelated valid-JSON shape. Codex R5 P2 (3215181145)
+// caught that a previous version only checked syntactic validity, so a
+// persister leaving `{}` or `{"schema_version":1}` would pass — the test must
+// require the EXACT old bytes or the EXACT expected new mutation.
 func TestPersist_P6_KillMidWriteUnderFsyncEINVAL(t *testing.T) {
 	dir := freshTempDir(t)
 	path := filepath.Join(dir, "runtime_state.json")
@@ -742,24 +746,44 @@ func TestPersist_P6_KillMidWriteUnderFsyncEINVAL(t *testing.T) {
 	}
 	mgr := New(Options{Path: path, FsHooks: hooks})
 
+	// Mutation marker — if the new content lands, it MUST contain
+	// last_admitted_source=0xF1 (241) which is absent from oldContent (247).
 	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
 	if err := mgr.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	// Read the file after the simulated crash.
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("post-crash read: %v", err)
 	}
 
-	// The content must be EITHER fully old OR fully new — never partial.
-	// We can't easily compute "the new content" without involving M2/M3
-	// implementation, so we assert: (a) bytes are valid JSON, (b) bytes are
-	// either bytes-equal to oldContent OR contain the new initiator value.
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(got, &parsed); err != nil {
-		t.Errorf("P6 violation: post-crash file is not valid JSON (partial write): %v\n--- bytes ---\n%s", err, got)
+	// Outcome 1: fully OLD — bytes are exactly oldContent (rename never
+	// completed; persister bailed on FsyncDir EINVAL before publish).
+	isExactlyOld := bytes.Equal(got, oldContent)
+
+	// Outcome 2: fully NEW — bytes parse as a valid runtime_state.json AND
+	// carry the mutation marker (last_admitted_source: 241 / 0xF1) AND retain
+	// the original instance_guid. A persister that wrote the new content
+	// before failing on FsyncDir is in this outcome.
+	isFullyNew := false
+	if !isExactlyOld {
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(got, &parsed); err == nil {
+			ebus, _ := parsed["ebus"].(map[string]interface{})
+			self, _ := ebus["self"].(map[string]interface{})
+			source, _ := self["last_admitted_source"].(float64)
+			meta, _ := parsed["meta"].(map[string]interface{})
+			guid, _ := meta["instance_guid"].(string)
+			if int(source) == 0xF1 && guid == "8a3f2b9e-4d7c-4f1a-9b5e-2c1f3e7a9d5b" {
+				isFullyNew = true
+			}
+		}
+	}
+
+	if !isExactlyOld && !isFullyNew {
+		t.Errorf("P6 falsifiability gate violation: post-crash file is neither EXACTLY the old bytes nor a complete new write carrying the 0xF1 mutation marker + original instance_guid. Empty `{}` or partial-write JSON would also fail this assertion.\n--- got %d bytes ---\n%s\n--- expected old ---\n%s",
+			len(got), got, oldContent)
 	}
 }
 

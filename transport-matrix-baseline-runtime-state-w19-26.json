@@ -1,0 +1,5316 @@
+{
+  "artifact": "transport-matrix-baseline-runtime-state-w19-26",
+  "artifact_schema": 1,
+  "generated_at": "2026-05-10T15:00:02Z",
+  "plan": {
+    "name": "runtime-state-w19-26.locked",
+    "sha256": "f1129d0c442d3b2704f6f7e7eed2042c05df3f83e21ad57ccebdd6884f42241d",
+    "meta_issue": "https://github.com/Project-Helianthus/helianthus-execution-plans/issues/27",
+    "milestone": "M0A_TRANSPORT_BASELINE"
+  },
+  "git": {
+    "branch": "feat/runtime-state-m0a-transport-baseline",
+    "current_main_sha": "da230c773a0cd3f92ee56d51e885931c30380ff3"
+  },
+  "matrix_runner": {
+    "suite": "full88",
+    "target": "local",
+    "mode": "dry-run-planning",
+    "command": "/tmp/matrix-runner --output-dir /tmp/matrix-baseline-runtime-state-w19-26 --target local --suite full88",
+    "source_sha": "da230c773a0cd3f92ee56d51e885931c30380ff3",
+    "binary_path": "/tmp/matrix-runner",
+    "binary_sha256": "bbaf32bcbee164bde6cbcffe7e2e46a9fcd3b66dc8570759f3d06a1b9f528ce7",
+    "build_info": [
+      "/tmp/matrix-runner: go1.26.2",
+      "\tpath\tgithub.com/Project-Helianthus/helianthus-ebusgateway/cmd/matrix-runner",
+      "\tmod\tgithub.com/Project-Helianthus/helianthus-ebusgateway\tv0.5.1-0.20260510115258-da230c773a0c+dirty\t",
+      "\tbuild\t-buildmode=exe",
+      "\tbuild\t-compiler=gc",
+      "\tbuild\tDefaultGODEBUG=containermaxprocs=0,cryptocustomrand=1,decoratemappings=0,gotestjsonbuildtext=1,httpcookiemaxnum=0,multipathtcp=0,randseednop=0,rsa1024min=0,tlsmlkem=0,tlssecpmlkem=0,tlssha1=1,updatemaxprocs=0,urlmaxqueryparams=0,urlstrictcolons=0,x509rsacrt=0,x509sha256skid=0,x509usepolicies=0",
+      "\tbuild\tCGO_ENABLED=1",
+      "\tbuild\tCGO_CFLAGS=",
+      "\tbuild\tCGO_CPPFLAGS=",
+      "\tbuild\tCGO_CXXFLAGS=",
+      "\tbuild\tCGO_LDFLAGS=",
+      "\tbuild\tGOARCH=arm64",
+      "\tbuild\tGOOS=darwin",
+      "\tbuild\tGOARM64=v8.0",
+      "\tbuild\tvcs=git",
+      "\tbuild\tvcs.revision=da230c773a0cd3f92ee56d51e885931c30380ff3",
+      "\tbuild\tvcs.time=2026-05-10T11:52:58Z",
+      "\tbuild\tvcs.modified=true"
+    ],
+    "normalized_cases_sha256": "3cc203ace880724a0c404abc8e9b625616a4a0eae0ac2579d6af4b7be20ee039"
+  },
+  "case_count": 88,
+  "case_ids": [
+    "T01",
+    "T02",
+    "T03",
+    "T04",
+    "T05",
+    "T06",
+    "T07",
+    "T08",
+    "T09",
+    "T10",
+    "T11",
+    "T12",
+    "T13",
+    "T14",
+    "T15",
+    "T16",
+    "T17",
+    "T18",
+    "T19",
+    "T20",
+    "T21",
+    "T22",
+    "T23",
+    "T24",
+    "T25",
+    "T26",
+    "T27",
+    "T28",
+    "T29",
+    "T30",
+    "T31",
+    "T32",
+    "T33",
+    "T34",
+    "T35",
+    "T36",
+    "T37",
+    "T38",
+    "T39",
+    "T40",
+    "T41",
+    "T42",
+    "T43",
+    "T44",
+    "T45",
+    "T46",
+    "T47",
+    "T48",
+    "T49",
+    "T50",
+    "T51",
+    "T52",
+    "T53",
+    "T54",
+    "T55",
+    "T56",
+    "T57",
+    "T58",
+    "T59",
+    "T60",
+    "T61",
+    "T62",
+    "T63",
+    "T64",
+    "T65",
+    "T66",
+    "T67",
+    "T68",
+    "T69",
+    "T70",
+    "T71",
+    "T72",
+    "T73",
+    "T74",
+    "T75",
+    "T76",
+    "T77",
+    "T78",
+    "T79",
+    "T80",
+    "T81",
+    "T82",
+    "T83",
+    "T84",
+    "T85",
+    "T86",
+    "T87",
+    "T88"
+  ],
+  "outcome_summary": {
+    "planned": 88,
+    "pass": 0,
+    "fail": 0,
+    "xfail": 0,
+    "xpass": 0,
+    "blocked": 0
+  },
+  "cases": [
+    {
+      "case_id": "T01",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T01/configs/helianthus.json"
+      ],
+      "log_files": [
+        "T01/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T01",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ens",
+          "kind": "direct-adapter",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T02",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T02/configs/helianthus.json"
+      ],
+      "log_files": [
+        "T02/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T02",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "enh",
+          "kind": "direct-adapter",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T03",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T03/configs/helianthus.json"
+      ],
+      "log_files": [
+        "T03/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T03",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "udp",
+          "kind": "direct-adapter",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T04",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T04/configs/helianthus.json"
+      ],
+      "log_files": [
+        "T04/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T04",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "tcp",
+          "kind": "direct-adapter",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": false
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T05",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T05/configs/helianthus.json",
+        "T05/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T05/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T05",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ebusd-tcp",
+          "kind": "via-ebusd-tcp",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": false
+        },
+        "ebusd": {
+          "case_id": "T05",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_ADAPTER_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "adapter"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T06",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T06/configs/helianthus.json",
+        "T06/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T06/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T06",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ebusd-tcp",
+          "kind": "via-ebusd-tcp",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": false
+        },
+        "ebusd": {
+          "case_id": "T06",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_ADAPTER_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "adapter"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T07",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "ebusd direct udp/tcp to adapter reports no signal in matrix runs",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T07/configs/helianthus.json",
+        "T07/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T07/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T07",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ebusd-tcp",
+          "kind": "via-ebusd-tcp",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": false
+        },
+        "ebusd": {
+          "case_id": "T07",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_ADAPTER_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "adapter"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T08",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "ebusd direct udp/tcp to adapter reports no signal in matrix runs",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T08/configs/helianthus.json",
+        "T08/configs/ebusd.json"
+      ],
+      "log_files": [
+        "T08/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T08",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ebusd-tcp",
+          "kind": "via-ebusd-tcp",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": false
+        },
+        "ebusd": {
+          "case_id": "T08",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_ADAPTER_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "adapter"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T09",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T09/configs/helianthus.json",
+        "T09/configs/proxy.json"
+      ],
+      "log_files": [
+        "T09/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T09",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ens",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T09",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T10",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T10/configs/helianthus.json",
+        "T10/configs/proxy.json"
+      ],
+      "log_files": [
+        "T10/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T10",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ens",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T10",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T11",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T11/configs/helianthus.json",
+        "T11/configs/proxy.json"
+      ],
+      "log_files": [
+        "T11/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T11",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ens",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T11",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T12",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T12/configs/helianthus.json",
+        "T12/configs/proxy.json"
+      ],
+      "log_files": [
+        "T12/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T12",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "ens",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T12",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T13",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T13/configs/helianthus.json",
+        "T13/configs/proxy.json"
+      ],
+      "log_files": [
+        "T13/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T13",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "enh",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T13",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T14",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T14/configs/helianthus.json",
+        "T14/configs/proxy.json"
+      ],
+      "log_files": [
+        "T14/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T14",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "enh",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T14",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T15",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T15/configs/helianthus.json",
+        "T15/configs/proxy.json"
+      ],
+      "log_files": [
+        "T15/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T15",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "enh",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T15",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T16",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T16/configs/helianthus.json",
+        "T16/configs/proxy.json"
+      ],
+      "log_files": [
+        "T16/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T16",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "enh",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T16",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T17",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T17/configs/helianthus.json",
+        "T17/configs/proxy.json"
+      ],
+      "log_files": [
+        "T17/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T17",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "udp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T17",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T18",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T18/configs/helianthus.json",
+        "T18/configs/proxy.json"
+      ],
+      "log_files": [
+        "T18/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T18",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "udp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T18",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T19",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T19/configs/helianthus.json",
+        "T19/configs/proxy.json"
+      ],
+      "log_files": [
+        "T19/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T19",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "udp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T19",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T20",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T20/configs/helianthus.json",
+        "T20/configs/proxy.json"
+      ],
+      "log_files": [
+        "T20/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T20",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "udp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T20",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T21",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T21/configs/helianthus.json",
+        "T21/configs/proxy.json"
+      ],
+      "log_files": [
+        "T21/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T21",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "tcp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T21",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T22",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T22/configs/helianthus.json",
+        "T22/configs/proxy.json"
+      ],
+      "log_files": [
+        "T22/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T22",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "tcp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T22",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T23",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T23/configs/helianthus.json",
+        "T23/configs/proxy.json"
+      ],
+      "log_files": [
+        "T23/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T23",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "tcp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T23",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T24",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T24/configs/helianthus.json",
+        "T24/configs/proxy.json"
+      ],
+      "log_files": [
+        "T24/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T24",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": false,
+          "gateway_transport": "tcp",
+          "kind": "proxy-single-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": false,
+          "uses_proxy": true
+        },
+        "proxy": {
+          "case_id": "T24",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T25",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T25/configs/helianthus.json",
+        "T25/configs/ebusd.json",
+        "T25/configs/proxy.json"
+      ],
+      "log_files": [
+        "T25/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T25",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T25",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T25",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T26",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T26/configs/helianthus.json",
+        "T26/configs/ebusd.json",
+        "T26/configs/proxy.json"
+      ],
+      "log_files": [
+        "T26/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T26",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T26",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T26",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T27",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T27/configs/helianthus.json",
+        "T27/configs/ebusd.json",
+        "T27/configs/proxy.json"
+      ],
+      "log_files": [
+        "T27/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T27",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T27",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T27",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T28",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T28/configs/helianthus.json",
+        "T28/configs/ebusd.json",
+        "T28/configs/proxy.json"
+      ],
+      "log_files": [
+        "T28/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T28",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T28",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T28",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T29",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T29/configs/helianthus.json",
+        "T29/configs/ebusd.json",
+        "T29/configs/proxy.json"
+      ],
+      "log_files": [
+        "T29/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T29",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T29",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T29",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T30",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T30/configs/helianthus.json",
+        "T30/configs/ebusd.json",
+        "T30/configs/proxy.json"
+      ],
+      "log_files": [
+        "T30/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T30",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T30",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T30",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T31",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T31/configs/helianthus.json",
+        "T31/configs/ebusd.json",
+        "T31/configs/proxy.json"
+      ],
+      "log_files": [
+        "T31/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T31",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T31",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T31",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T32",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T32/configs/helianthus.json",
+        "T32/configs/ebusd.json",
+        "T32/configs/proxy.json"
+      ],
+      "log_files": [
+        "T32/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T32",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T32",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T32",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T33",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T33/configs/helianthus.json",
+        "T33/configs/ebusd.json",
+        "T33/configs/proxy.json"
+      ],
+      "log_files": [
+        "T33/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T33",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T33",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T33",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T34",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T34/configs/helianthus.json",
+        "T34/configs/ebusd.json",
+        "T34/configs/proxy.json"
+      ],
+      "log_files": [
+        "T34/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T34",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T34",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T34",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T35",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T35/configs/helianthus.json",
+        "T35/configs/ebusd.json",
+        "T35/configs/proxy.json"
+      ],
+      "log_files": [
+        "T35/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T35",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T35",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T35",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T36",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T36/configs/helianthus.json",
+        "T36/configs/ebusd.json",
+        "T36/configs/proxy.json"
+      ],
+      "log_files": [
+        "T36/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T36",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T36",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T36",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T37",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T37/configs/helianthus.json",
+        "T37/configs/ebusd.json",
+        "T37/configs/proxy.json"
+      ],
+      "log_files": [
+        "T37/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T37",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T37",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T37",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T38",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T38/configs/helianthus.json",
+        "T38/configs/ebusd.json",
+        "T38/configs/proxy.json"
+      ],
+      "log_files": [
+        "T38/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T38",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T38",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T38",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T39",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T39/configs/helianthus.json",
+        "T39/configs/ebusd.json",
+        "T39/configs/proxy.json"
+      ],
+      "log_files": [
+        "T39/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T39",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T39",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T39",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T40",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T40/configs/helianthus.json",
+        "T40/configs/ebusd.json",
+        "T40/configs/proxy.json"
+      ],
+      "log_files": [
+        "T40/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T40",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "ens",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T40",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T40",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T41",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T41/configs/helianthus.json",
+        "T41/configs/ebusd.json",
+        "T41/configs/proxy.json"
+      ],
+      "log_files": [
+        "T41/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T41",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T41",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T41",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T42",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T42/configs/helianthus.json",
+        "T42/configs/ebusd.json",
+        "T42/configs/proxy.json"
+      ],
+      "log_files": [
+        "T42/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T42",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T42",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T42",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T43",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T43/configs/helianthus.json",
+        "T43/configs/ebusd.json",
+        "T43/configs/proxy.json"
+      ],
+      "log_files": [
+        "T43/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T43",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T43",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T43",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T44",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T44/configs/helianthus.json",
+        "T44/configs/ebusd.json",
+        "T44/configs/proxy.json"
+      ],
+      "log_files": [
+        "T44/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T44",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T44",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T44",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T45",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T45/configs/helianthus.json",
+        "T45/configs/ebusd.json",
+        "T45/configs/proxy.json"
+      ],
+      "log_files": [
+        "T45/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T45",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T45",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T45",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T46",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T46/configs/helianthus.json",
+        "T46/configs/ebusd.json",
+        "T46/configs/proxy.json"
+      ],
+      "log_files": [
+        "T46/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T46",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T46",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T46",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T47",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T47/configs/helianthus.json",
+        "T47/configs/ebusd.json",
+        "T47/configs/proxy.json"
+      ],
+      "log_files": [
+        "T47/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T47",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T47",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T47",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T48",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T48/configs/helianthus.json",
+        "T48/configs/ebusd.json",
+        "T48/configs/proxy.json"
+      ],
+      "log_files": [
+        "T48/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T48",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T48",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T48",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T49",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T49/configs/helianthus.json",
+        "T49/configs/ebusd.json",
+        "T49/configs/proxy.json"
+      ],
+      "log_files": [
+        "T49/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T49",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T49",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T49",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T50",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T50/configs/helianthus.json",
+        "T50/configs/ebusd.json",
+        "T50/configs/proxy.json"
+      ],
+      "log_files": [
+        "T50/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T50",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T50",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T50",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T51",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T51/configs/helianthus.json",
+        "T51/configs/ebusd.json",
+        "T51/configs/proxy.json"
+      ],
+      "log_files": [
+        "T51/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T51",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T51",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T51",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T52",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T52/configs/helianthus.json",
+        "T52/configs/ebusd.json",
+        "T52/configs/proxy.json"
+      ],
+      "log_files": [
+        "T52/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T52",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T52",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T52",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T53",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T53/configs/helianthus.json",
+        "T53/configs/ebusd.json",
+        "T53/configs/proxy.json"
+      ],
+      "log_files": [
+        "T53/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T53",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T53",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T53",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T54",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T54/configs/helianthus.json",
+        "T54/configs/ebusd.json",
+        "T54/configs/proxy.json"
+      ],
+      "log_files": [
+        "T54/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T54",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T54",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T54",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T55",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T55/configs/helianthus.json",
+        "T55/configs/ebusd.json",
+        "T55/configs/proxy.json"
+      ],
+      "log_files": [
+        "T55/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T55",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T55",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T55",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T56",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T56/configs/helianthus.json",
+        "T56/configs/ebusd.json",
+        "T56/configs/proxy.json"
+      ],
+      "log_files": [
+        "T56/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T56",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "enh",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T56",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T56",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T57",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T57/configs/helianthus.json",
+        "T57/configs/ebusd.json",
+        "T57/configs/proxy.json"
+      ],
+      "log_files": [
+        "T57/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T57",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T57",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T57",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T58",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T58/configs/helianthus.json",
+        "T58/configs/ebusd.json",
+        "T58/configs/proxy.json"
+      ],
+      "log_files": [
+        "T58/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T58",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T58",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T58",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T59",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T59/configs/helianthus.json",
+        "T59/configs/ebusd.json",
+        "T59/configs/proxy.json"
+      ],
+      "log_files": [
+        "T59/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T59",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T59",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T59",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T60",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T60/configs/helianthus.json",
+        "T60/configs/ebusd.json",
+        "T60/configs/proxy.json"
+      ],
+      "log_files": [
+        "T60/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T60",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T60",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T60",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T61",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T61/configs/helianthus.json",
+        "T61/configs/ebusd.json",
+        "T61/configs/proxy.json"
+      ],
+      "log_files": [
+        "T61/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T61",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T61",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T61",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T62",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T62/configs/helianthus.json",
+        "T62/configs/ebusd.json",
+        "T62/configs/proxy.json"
+      ],
+      "log_files": [
+        "T62/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T62",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T62",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T62",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T63",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T63/configs/helianthus.json",
+        "T63/configs/ebusd.json",
+        "T63/configs/proxy.json"
+      ],
+      "log_files": [
+        "T63/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T63",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T63",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T63",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T64",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T64/configs/helianthus.json",
+        "T64/configs/ebusd.json",
+        "T64/configs/proxy.json"
+      ],
+      "log_files": [
+        "T64/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T64",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T64",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T64",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T65",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T65/configs/helianthus.json",
+        "T65/configs/ebusd.json",
+        "T65/configs/proxy.json"
+      ],
+      "log_files": [
+        "T65/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T65",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T65",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T65",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T66",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T66/configs/helianthus.json",
+        "T66/configs/ebusd.json",
+        "T66/configs/proxy.json"
+      ],
+      "log_files": [
+        "T66/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T66",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T66",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T66",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T67",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T67/configs/helianthus.json",
+        "T67/configs/ebusd.json",
+        "T67/configs/proxy.json"
+      ],
+      "log_files": [
+        "T67/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T67",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T67",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T67",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T68",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T68/configs/helianthus.json",
+        "T68/configs/ebusd.json",
+        "T68/configs/proxy.json"
+      ],
+      "log_files": [
+        "T68/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T68",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T68",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T68",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T69",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T69/configs/helianthus.json",
+        "T69/configs/ebusd.json",
+        "T69/configs/proxy.json"
+      ],
+      "log_files": [
+        "T69/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T69",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T69",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T69",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T70",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T70/configs/helianthus.json",
+        "T70/configs/ebusd.json",
+        "T70/configs/proxy.json"
+      ],
+      "log_files": [
+        "T70/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T70",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T70",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T70",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T71",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T71/configs/helianthus.json",
+        "T71/configs/ebusd.json",
+        "T71/configs/proxy.json"
+      ],
+      "log_files": [
+        "T71/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T71",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T71",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T71",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T72",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T72/configs/helianthus.json",
+        "T72/configs/ebusd.json",
+        "T72/configs/proxy.json"
+      ],
+      "log_files": [
+        "T72/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T72",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "udp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T72",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T72",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T73",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T73/configs/helianthus.json",
+        "T73/configs/ebusd.json",
+        "T73/configs/proxy.json"
+      ],
+      "log_files": [
+        "T73/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T73",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T73",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T73",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T74",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T74/configs/helianthus.json",
+        "T74/configs/ebusd.json",
+        "T74/configs/proxy.json"
+      ],
+      "log_files": [
+        "T74/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T74",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T74",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T74",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T75",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T75/configs/helianthus.json",
+        "T75/configs/ebusd.json",
+        "T75/configs/proxy.json"
+      ],
+      "log_files": [
+        "T75/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T75",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T75",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T75",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T76",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T76/configs/helianthus.json",
+        "T76/configs/ebusd.json",
+        "T76/configs/proxy.json"
+      ],
+      "log_files": [
+        "T76/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T76",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T76",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T76",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "ens",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T77",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T77/configs/helianthus.json",
+        "T77/configs/ebusd.json",
+        "T77/configs/proxy.json"
+      ],
+      "log_files": [
+        "T77/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T77",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T77",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T77",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T78",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T78/configs/helianthus.json",
+        "T78/configs/ebusd.json",
+        "T78/configs/proxy.json"
+      ],
+      "log_files": [
+        "T78/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T78",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T78",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T78",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T79",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T79/configs/helianthus.json",
+        "T79/configs/ebusd.json",
+        "T79/configs/proxy.json"
+      ],
+      "log_files": [
+        "T79/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T79",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T79",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T79",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T80",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T80/configs/helianthus.json",
+        "T80/configs/ebusd.json",
+        "T80/configs/proxy.json"
+      ],
+      "log_files": [
+        "T80/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T80",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T80",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T80",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "enh",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "expectation": "",
+      "error": ""
+    },
+    {
+      "case_id": "T81",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T81/configs/helianthus.json",
+        "T81/configs/ebusd.json",
+        "T81/configs/proxy.json"
+      ],
+      "log_files": [
+        "T81/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T81",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T81",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T81",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T82",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T82/configs/helianthus.json",
+        "T82/configs/ebusd.json",
+        "T82/configs/proxy.json"
+      ],
+      "log_files": [
+        "T82/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T82",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T82",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T82",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T83",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T83/configs/helianthus.json",
+        "T83/configs/ebusd.json",
+        "T83/configs/proxy.json"
+      ],
+      "log_files": [
+        "T83/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T83",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T83",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T83",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T84",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T84/configs/helianthus.json",
+        "T84/configs/ebusd.json",
+        "T84/configs/proxy.json"
+      ],
+      "log_files": [
+        "T84/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T84",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T84",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T84",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "udp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T85",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T85/configs/helianthus.json",
+        "T85/configs/ebusd.json",
+        "T85/configs/proxy.json"
+      ],
+      "log_files": [
+        "T85/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T85",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T85",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENS_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "ens",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T85",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T86",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T86/configs/helianthus.json",
+        "T86/configs/ebusd.json",
+        "T86/configs/proxy.json"
+      ],
+      "log_files": [
+        "T86/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T86",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T86",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_ENH_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "enh",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T86",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T87",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T87/configs/helianthus.json",
+        "T87/configs/ebusd.json",
+        "T87/configs/proxy.json"
+      ],
+      "log_files": [
+        "T87/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T87",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T87",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_UDP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "udp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T87",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    },
+    {
+      "case_id": "T88",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "T88/configs/helianthus.json",
+        "T88/configs/ebusd.json",
+        "T88/configs/proxy.json"
+      ],
+      "log_files": [
+        "T88/logs/runner.log"
+      ],
+      "commands": [],
+      "planned_targets": {
+        "helianthus": {
+          "adapter_addr_env": "MATRIX_ADAPTER_ADDR",
+          "case_id": "T88",
+          "ebusd_tcp_addr_env": "MATRIX_EBUSD_TCP_ADDR",
+          "ebusd_via_proxy": true,
+          "gateway_transport": "tcp",
+          "kind": "proxy-dual-client",
+          "passive_mode": "",
+          "proxy_addr_env": "MATRIX_PROXY_ADDR",
+          "suite": "full88",
+          "target": "local",
+          "uses_ebusd": true,
+          "uses_proxy": true
+        },
+        "ebusd": {
+          "case_id": "T88",
+          "commandline_opts": "--enablehex",
+          "config_path_env": "MATRIX_EBUSD_CONFIG_PATH",
+          "http_port_env": "MATRIX_EBUSD_HTTP_PORT",
+          "mqtt_host_env": "MATRIX_MQTT_HOST",
+          "mqtt_port_env": "MATRIX_MQTT_PORT",
+          "network_device": "MATRIX_PROXY_TCP_ADDR",
+          "scanconfig": true,
+          "target": "local",
+          "transport": "tcp",
+          "upstream": "proxy"
+        },
+        "proxy": {
+          "case_id": "T88",
+          "max_parallel_sessions": 2,
+          "northbound_enh_env": "MATRIX_PROXY_ENH_ADDR",
+          "northbound_ens_env": "MATRIX_PROXY_ENS_ADDR",
+          "northbound_tcp_env": "MATRIX_PROXY_TCP_ADDR",
+          "northbound_udp_env": "MATRIX_PROXY_UDP_ADDR",
+          "southbound_addr_env": "MATRIX_ADAPTER_ADDR",
+          "southbound_transport": "tcp",
+          "target": "local"
+        }
+      },
+      "passive_mode": "",
+      "error": ""
+    }
+  ],
+  "evidence_class": "dry-run-planning",
+  "acceptance_caveat": "This is a dry-run planning baseline (no live bus execution). M8_TRANSPORT_VERIFY post-merge dry-run vs this index must show 0 unexpected fail/xpass deltas. Live-execution runs are out of scope for M0A."
+}

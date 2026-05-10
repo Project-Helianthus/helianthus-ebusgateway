@@ -223,6 +223,76 @@ func TestP11_LongFrameMidWriteStaleRejected(t *testing.T) {
 	t.Fatalf("did not observe legitimate 0x3F echo within 1s")
 }
 
+// P12 — sendLoop drains stale activeCh bytes BEFORE recordSent. The
+// inter-write queue-empty window (between matchEcho consuming byte
+// K's echo and sendLoop arming byte K+1) briefly opens response-phase
+// delivery. Stale bytes that landed in that window must be discarded
+// before bus.Send.sendRawWithEcho on byte K+1 reads from activeCh.
+// Pre-P12 a stale 0x00 here fired post_grant_ack; a stale 0xAA fired
+// pre_echo_syn. Both subclasses share this root cause per agent
+// deep-dive 2026-05-10.
+func TestP12_InterWriteDrainStale(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+
+	// Step 1: source byte echoes, consumed. Queue now empty.
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write(0x71) err=%v", err)
+	}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+	if b, err := at.ReadByte(); err != nil || b != 0x71 {
+		t.Fatalf("ReadByte echo of 0x71 = (0x%02X, %v); want (0x71, nil)", b, err)
+	}
+
+	// Step 2: stale 0x00 arrives DURING the inter-write window.
+	// activePathExpectsByte (queue empty → response phase open) lets
+	// it through to activeCh. Pre-P12 this would be read by bus.Send
+	// on the next Write's echo readback.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x00}
+	time.Sleep(20 * time.Millisecond)
+
+	preDrain := mux.ActiveTxnSnapshot().InterWriteDrainTotal
+
+	// Step 3: write the next byte. P12's sendLoop drain MUST clear
+	// the stale 0x00 BEFORE arming the next write.
+	if _, err := at.Write([]byte{0x15}); err != nil {
+		t.Fatalf("Write(0x15) err=%v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	// Step 4: feed the legitimate 0x15 echo.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x15}
+
+	// Step 5: bus.Send.ReadByte must observe 0x15 (the real echo),
+	// NOT 0x00 (the stale byte that should have been drained).
+	deadline := time.Now().Add(1 * time.Second)
+	got15 := false
+	for time.Now().Before(deadline) {
+		b, err := at.ReadByte()
+		if err == nil {
+			if b == 0x00 {
+				t.Fatalf("ReadByte returned stale 0x00 — P12 inter-write drain regressed (post_grant_ack would fire)")
+			}
+			if b == 0x15 {
+				got15 = true
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !got15 {
+		t.Fatalf("did not observe legitimate 0x15 echo within 1s")
+	}
+
+	postDrain := mux.ActiveTxnSnapshot().InterWriteDrainTotal
+	if postDrain <= preDrain {
+		t.Errorf("InterWriteDrainTotal = %d (pre=%d); want increment after stale 0x00 was drained", postDrain, preDrain)
+	}
+}
+
 // P11 — once all writes have been echoed (echoCursor == writePrefixLen),
 // the response-phase gate opens. ANY byte (even 0x00) reaches
 // bus.Send for downstream interpretation. Guards against an

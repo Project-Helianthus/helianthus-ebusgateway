@@ -91,6 +91,18 @@ type activeTxnDiag struct {
 	// promptly during bus.Send). Non-zero indicates runtime backpressure.
 	terminatorDropOnFullCh atomic.Uint64
 
+	// interWriteDrainTotal counts bytes drained from activeCh in
+	// sendLoop's pre-recordSent critical section (P12). Each drained
+	// byte was a stale entry sitting in activeCh during the inter-write
+	// queue-empty window — i.e., between matchEcho consuming byte K's
+	// echo and sendLoop arming byte K+1. Without the drain those bytes
+	// would have been read by bus.Send.sendRawWithEcho on the next
+	// write and fired echo_mismatch (post_grant_ack on stale 0x00,
+	// pre_echo_syn on stale 0xAA). Non-zero is normal under busy bus
+	// load; persistent zero post-deploy means the upstream pipeline
+	// is fully drained between writes (clean).
+	interWriteDrainTotal atomic.Uint64
+
 	// synSuppressedPreEcho counts SYN bytes that arrived during gateway
 	// ownership with gatewayTxnActive=true and were classified as
 	// non-terminator noise (NOT a legitimate frame-end SYN echo). These
@@ -168,6 +180,11 @@ type ActiveTxnSnapshot struct {
 	TerminatorDropOnFullCh uint64
 	// SynSuppressedPreEcho mirrors activeTxnDiag.synSuppressedPreEcho.
 	SynSuppressedPreEcho uint64
+	// InterWriteDrainTotal mirrors activeTxnDiag.interWriteDrainTotal
+	// (P12). Bytes drained from activeCh in sendLoop's pre-recordSent
+	// section. Non-zero is normal; persistent zero indicates the
+	// upstream pipeline is fully drained between writes.
+	InterWriteDrainTotal uint64
 	// EchoQueueOverflowResets mirrors gatewayEcho.totalOverflowResets
 	// (P10.2.1). Non-zero indicates the gateway-write loop produced
 	// more than 256 unacknowledged writes, triggering a queue reset.
@@ -223,6 +240,7 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		AfterInactive:           m.activeTxn.afterInactive.Load(),
 		TerminatorDropOnFullCh:  m.activeTxn.terminatorDropOnFullCh.Load(),
 		SynSuppressedPreEcho:    m.activeTxn.synSuppressedPreEcho.Load(),
+		InterWriteDrainTotal:    m.activeTxn.interWriteDrainTotal.Load(),
 		EchoQueueOverflowResets: m.gatewayEcho.overflowResets(),
 		BytesDeliveredToActive:  m.activeTxn.bytesDeliveredToActive.Load(),
 		WritePrefix:             wp,

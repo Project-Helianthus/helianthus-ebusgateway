@@ -2361,7 +2361,28 @@ func (m *Mux) sendLoop() {
 				// where gatewayTxnActive=true && gatewayEcho empty: stale
 				// bytes leaked through as response-phase. Hoisting the call
 				// closes the gap.
+				//
+				// P12 (echo_mismatch deep-dive 2026-05-10): drain activeCh
+				// of any stale bytes BEFORE arming the next write. The
+				// inter-byte queue-empty window (between matchEcho
+				// consuming byte K's echo and sendLoop recording byte K+1)
+				// briefly opens response-phase delivery in
+				// activePathExpectsByte. Stale bytes that landed in that
+				// window must be discarded before we arm gatewayTxnActive
+				// on the next write — otherwise bus.Send.sendRawWithEcho
+				// would read them in echo position and fire
+				// echo_mismatch (post_grant_ack on stale 0x00,
+				// pre_echo_syn on stale 0xAA). Both subclasses share this
+				// root cause; agent deep-dive 2026-05-10 confirmed.
+				//
+				// stateMu is held throughout drain+arm+recordSent so
+				// onReceived (which also acquires stateMu) cannot
+				// interleave a new stale byte between drain and arm.
 				m.stateMu.Lock()
+				drained := m.drainActiveCh()
+				if drained > 0 {
+					m.activeTxn.interWriteDrainTotal.Add(uint64(drained))
+				}
 				if !m.gatewayTxnActive {
 					m.gatewayTxnActive = true
 				}

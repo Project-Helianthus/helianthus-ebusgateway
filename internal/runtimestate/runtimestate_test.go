@@ -18,12 +18,15 @@
 package runtimestate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -61,6 +64,14 @@ func validV1JSON(t *testing.T) []byte {
         "last_seen_at": "2026-05-10T19:39:55Z",
         "last_source": "passive_observed",
         "confidence": "verified"
+      },
+      {
+        "addr": 38,
+        "companion_addr": null,
+        "identity": null,
+        "last_seen_at": "2026-05-10T19:39:48Z",
+        "last_source": "passive_observed",
+        "confidence": "corroborated"
       }
     ]
   }
@@ -172,18 +183,36 @@ func TestLoad_ValidV1_ParsesAllFields(t *testing.T) {
 	if got.EBus.Self.SelectionMethod != SelectionMethodWarmup {
 		t.Errorf("SelectionMethod: %q", got.EBus.Self.SelectionMethod)
 	}
-	if len(got.EBus.KnownBusMembers) != 1 {
-		t.Fatalf("KnownBusMembers: want 1, got %d", len(got.EBus.KnownBusMembers))
+	if len(got.EBus.KnownBusMembers) != 2 {
+		t.Fatalf("KnownBusMembers: want 2 (one with non-null identity/companion, one with null both), got %d", len(got.EBus.KnownBusMembers))
 	}
-	m := got.EBus.KnownBusMembers[0]
-	if m.Addr != 0x08 || m.LastSource != LastSourcePassiveObserved || m.Confidence != ConfidenceVerified {
-		t.Errorf("member fields: addr=0x%X source=%q confidence=%q", m.Addr, m.LastSource, m.Confidence)
+	// Member 0: non-null companion + non-null identity (BAI 0x08 ↔ 0x03 pinned pair).
+	m0 := got.EBus.KnownBusMembers[0]
+	if m0.Addr != 0x08 || m0.LastSource != LastSourcePassiveObserved || m0.Confidence != ConfidenceVerified {
+		t.Errorf("member[0] fields: addr=0x%X source=%q confidence=%q", m0.Addr, m0.LastSource, m0.Confidence)
 	}
-	if m.CompanionAddr == nil || *m.CompanionAddr != 0x03 {
-		t.Errorf("CompanionAddr: want 0x03 (per atr/02-companion-derivation pinned pair), got %v", m.CompanionAddr)
+	if m0.CompanionAddr == nil || *m0.CompanionAddr != 0x03 {
+		t.Errorf("member[0] CompanionAddr: want 0x03 (per atr/02-companion-derivation pinned pair), got %v", m0.CompanionAddr)
 	}
-	if m.Identity == nil || m.Identity.DeviceID != "BAI00" {
-		t.Errorf("Identity: %+v", m.Identity)
+	if m0.Identity == nil || m0.Identity.DeviceID != "BAI00" {
+		t.Errorf("member[0] Identity: %+v", m0.Identity)
+	}
+	// Member 1: null companion + null identity (AD22 optional axis; 0x26 has no
+	// valid companion per ATR exception list; identity unknown is permitted at
+	// any confidence). A loader that rejects null companion or null identity
+	// MUST fail this assertion.
+	m1 := got.EBus.KnownBusMembers[1]
+	if m1.Addr != 0x26 {
+		t.Errorf("member[1] Addr: want 0x26, got 0x%X", m1.Addr)
+	}
+	if m1.CompanionAddr != nil {
+		t.Errorf("member[1] CompanionAddr: want nil (0x26 has no valid companion per ATR exception list), got %v", *m1.CompanionAddr)
+	}
+	if m1.Identity != nil {
+		t.Errorf("member[1] Identity: want nil (AD22 optional regardless of confidence), got %+v", m1.Identity)
+	}
+	if m1.Confidence != ConfidenceCorroborated {
+		t.Errorf("member[1] Confidence: want corroborated, got %q", m1.Confidence)
 	}
 }
 
@@ -191,8 +220,12 @@ func TestLoad_ValidV1_ParsesAllFields(t *testing.T) {
 // PERSISTER tests (M3_GATEWAY_PERSISTER will satisfy)
 // =============================================================================
 
-// AD13 — atomic temp+rename: file appears via rename, never via partial write.
-// We assert that during a write, an inode-stable rename happens (no truncate-in-place).
+// AD13 — atomic temp+rename: file appears via rename, never via truncate-in-place.
+// Asserts inode REPLACEMENT (different inode number post-write). A rename
+// operation creates a NEW inode and unlinks the old one; truncate-in-place
+// keeps the same inode and just updates ModTime, which would also pass a
+// ModTime-only check. Codex R2 caught this and we now distinguish the two
+// behaviors via syscall.Stat_t.Ino on Unix systems.
 func TestPersist_AtomicTempRename(t *testing.T) {
 	dir := freshTempDir(t)
 	path := filepath.Join(dir, "runtime_state.json")
@@ -206,6 +239,10 @@ func TestPersist_AtomicTempRename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat pre: %v", err)
 	}
+	preInode, ok := inodeOf(preInfo)
+	if !ok {
+		t.Skip("inode info unavailable on this platform; skipping rename-vs-truncate distinction")
+	}
 
 	// Mutate state and trigger persist.
 	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
@@ -218,11 +255,23 @@ func TestPersist_AtomicTempRename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat post: %v", err)
 	}
-	// The post-write inode (or modtime) should differ from the pre-write inode,
-	// reflecting a rename operation rather than truncate-in-place.
-	if !postInfo.ModTime().After(preInfo.ModTime()) {
-		t.Errorf("expected rename to produce a newer ModTime; pre=%v post=%v", preInfo.ModTime(), postInfo.ModTime())
+	postInode, _ := inodeOf(postInfo)
+	if postInode == preInode {
+		t.Errorf("AD13 atomic-rename violation: post-write inode (%d) equals pre-write inode (%d). A truncate-in-place rewrite would also pass a ModTime-only check; rename MUST replace the inode. ModTime: pre=%v post=%v",
+			postInode, preInode, preInfo.ModTime(), postInfo.ModTime())
 	}
+}
+
+// inodeOf returns the inode number of a FileInfo on Unix-like systems. On
+// platforms where syscall.Stat_t is not available, returns (0, false).
+func inodeOf(info os.FileInfo) (uint64, bool) {
+	if info == nil {
+		return 0, false
+	}
+	if sys, ok := info.Sys().(*syscall.Stat_t); ok && sys != nil {
+		return uint64(sys.Ino), true
+	}
+	return 0, false
 }
 
 // AD13 — JSON output uses deterministic key order (stable across writes).
@@ -248,18 +297,20 @@ func TestPersist_DeterministicKeyOrder(t *testing.T) {
 		t.Fatalf("read 2: %v", err)
 	}
 
-	// Strip the dynamic written_at field for stable comparison.
+	// Strip ONLY the dynamic written_at value from the raw bytes (preserving
+	// the surrounding key order) and compare the raw bytes. A naïve approach
+	// that round-trips through map[string]interface{} would canonicalize the
+	// key order on remarshal and silently mask non-deterministic order in the
+	// persister output (Codex R2 caught this). Instead, we replace the
+	// written_at value in-place with a fixed sentinel and byte-compare.
+	writtenAtRe := regexp.MustCompile(`"written_at"\s*:\s*"[^"]*"`)
 	stripWrittenAt := func(in []byte) []byte {
-		var v map[string]interface{}
-		_ = json.Unmarshal(in, &v)
-		if meta, ok := v["meta"].(map[string]interface{}); ok {
-			delete(meta, "written_at")
-		}
-		out, _ := json.Marshal(v)
-		return out
+		return writtenAtRe.ReplaceAll(in, []byte(`"written_at":"<SENTINEL>"`))
 	}
-	if string(stripWrittenAt(a)) != string(stripWrittenAt(b)) {
-		t.Errorf("expected deterministic key order; got divergent output:\nA=%s\nB=%s", a, b)
+	stripA := stripWrittenAt(a)
+	stripB := stripWrittenAt(b)
+	if !bytes.Equal(stripA, stripB) {
+		t.Errorf("AD13 deterministic key order violation: post-strip raw bytes differ between two writes (regex-strip preserves surrounding order, so any divergence reflects key-order non-determinism in the persister, not just timestamp drift):\nA=%s\nB=%s", stripA, stripB)
 	}
 }
 

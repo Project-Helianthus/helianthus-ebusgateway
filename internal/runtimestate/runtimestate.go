@@ -349,6 +349,10 @@ func (m *Manager) State() *State {
 
 // UpdateSelf replaces ebus.self with the given Self and marks state dirty.
 // Used after a successful SourceAddressSelection per AD14.
+//
+// Deep-copies pointer fields (CompanionTarget) so a caller mutating the
+// pointed-to byte after returning from UpdateSelf cannot reach in and modify
+// manager state outside the mutex (Codex R3 P2).
 func (m *Manager) UpdateSelf(self Self) {
 	m.mu.Lock()
 	if m.state == nil {
@@ -358,6 +362,10 @@ func (m *Manager) UpdateSelf(self Self) {
 		m.state.EBus = &EBusNamespace{SchemaVersion: EBusSchemaVersion}
 	}
 	cp := self
+	if self.CompanionTarget != nil {
+		v := *self.CompanionTarget
+		cp.CompanionTarget = &v
+	}
 	m.state.EBus.Self = &cp
 	m.dirty = true
 	m.writeGen++
@@ -366,7 +374,21 @@ func (m *Manager) UpdateSelf(self Self) {
 
 // UpsertKnownBusMember adds or updates an entry in ebus.known_bus_members[].
 // Uniqueness on Addr is enforced (AD18); duplicate Addr replaces.
+//
+// Deep-copies pointer fields (CompanionAddr, Identity) so a caller mutating
+// the pointed-to data after returning cannot reach in and modify manager
+// state outside the mutex (Codex R3 P2).
 func (m *Manager) UpsertKnownBusMember(member KnownBusMember) {
+	stored := member
+	if member.CompanionAddr != nil {
+		v := *member.CompanionAddr
+		stored.CompanionAddr = &v
+	}
+	if member.Identity != nil {
+		idCopy := *member.Identity
+		stored.Identity = &idCopy
+	}
+
 	m.mu.Lock()
 	if m.state == nil {
 		m.state = &State{SchemaVersion: SchemaVersion}
@@ -375,15 +397,15 @@ func (m *Manager) UpsertKnownBusMember(member KnownBusMember) {
 		m.state.EBus = &EBusNamespace{SchemaVersion: EBusSchemaVersion}
 	}
 	for i, existing := range m.state.EBus.KnownBusMembers {
-		if existing.Addr == member.Addr {
-			m.state.EBus.KnownBusMembers[i] = member
+		if existing.Addr == stored.Addr {
+			m.state.EBus.KnownBusMembers[i] = stored
 			m.dirty = true
 			m.writeGen++
 			m.mu.Unlock()
 			return
 		}
 	}
-	m.state.EBus.KnownBusMembers = append(m.state.EBus.KnownBusMembers, member)
+	m.state.EBus.KnownBusMembers = append(m.state.EBus.KnownBusMembers, stored)
 	m.dirty = true
 	m.writeGen++
 	m.mu.Unlock()

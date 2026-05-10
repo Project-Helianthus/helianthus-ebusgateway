@@ -107,6 +107,11 @@ func stateToDTO(s *State) fileDTO {
 	return dto
 }
 
+// inByteRange reports whether v fits in [0, 255]. Used to reject malformed
+// persisted address values before byte-casting (Codex R3 P2 — bare casts
+// silently wrap, e.g. 300 → 0x2C, which would seed the wrong bus member).
+func inByteRange(v int) bool { return v >= 0 && v <= 0xFF }
+
 // dtoToState converts a parsed DTO back into the in-memory State.
 func dtoToState(dto fileDTO) (*State, error) {
 	s := &State{
@@ -123,6 +128,9 @@ func dtoToState(dto fileDTO) (*State, error) {
 	if dto.EBus != nil {
 		ebus := &EBusNamespace{SchemaVersion: dto.EBus.SchemaVersion}
 		if dto.EBus.Self != nil {
+			if !inByteRange(dto.EBus.Self.LastAdmittedSource) {
+				return nil, fmt.Errorf("ebus.self.last_admitted_source %d out of byte range [0,255]", dto.EBus.Self.LastAdmittedSource)
+			}
 			selfT, _ := parseTime(dto.EBus.Self.LastAdmittedAt)
 			ebus.Self = &Self{
 				LastAdmittedSource: byte(dto.EBus.Self.LastAdmittedSource),
@@ -130,12 +138,18 @@ func dtoToState(dto fileDTO) (*State, error) {
 				SelectionMethod:    SelectionMethod(dto.EBus.Self.SelectionMethod),
 			}
 			if dto.EBus.Self.CompanionTarget != nil {
+				if !inByteRange(*dto.EBus.Self.CompanionTarget) {
+					return nil, fmt.Errorf("ebus.self.companion_target %d out of byte range [0,255]", *dto.EBus.Self.CompanionTarget)
+				}
 				v := byte(*dto.EBus.Self.CompanionTarget)
 				ebus.Self.CompanionTarget = &v
 			}
 		}
 		seen := map[byte]int{}
-		for _, m := range dto.EBus.KnownBusMembers {
+		for i, m := range dto.EBus.KnownBusMembers {
+			if !inByteRange(m.Addr) {
+				return nil, fmt.Errorf("ebus.known_bus_members[%d].addr %d out of byte range [0,255]", i, m.Addr)
+			}
 			if _, dup := seen[byte(m.Addr)]; dup {
 				return nil, fmt.Errorf("AD18: duplicate addr 0x%02X in known_bus_members", byte(m.Addr))
 			}
@@ -148,6 +162,9 @@ func dtoToState(dto fileDTO) (*State, error) {
 				Confidence: Confidence(m.Confidence),
 			}
 			if m.CompanionAddr != nil {
+				if !inByteRange(*m.CompanionAddr) {
+					return nil, fmt.Errorf("ebus.known_bus_members[%d].companion_addr %d out of byte range [0,255]", i, *m.CompanionAddr)
+				}
 				v := byte(*m.CompanionAddr)
 				km.CompanionAddr = &v
 			}

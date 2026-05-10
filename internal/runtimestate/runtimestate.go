@@ -286,7 +286,11 @@ func (m *Manager) EagerPersistInstanceGUID(ctx context.Context, guid string, sou
 	m.state.Meta.WrittenAt = time.Now().UTC()
 	m.state.Meta.GatewayBuild = m.opts.GatewayBuild
 	m.state.Meta.AddonVersion = m.opts.AddonVersion
-	m.dirty = false // we'll persist now
+	// Pre-mark dirty so that if persistLocked fails (ENOSPC / fsync_temp /
+	// etc.) the next ticker/Stop retries (Codex R4 P2 — clearing before
+	// persist would silently skip the retry path on transient failure).
+	m.dirty = true
+	genAtSnapshot := m.writeGen
 	snap := cloneState(m.state)
 	m.mu.Unlock()
 
@@ -295,6 +299,12 @@ func (m *Manager) EagerPersistInstanceGUID(ctx context.Context, guid string, sou
 	if err := m.persistLocked(snap); err != nil {
 		return err
 	}
+	// Persist succeeded; clear dirty if no concurrent mutation slipped in.
+	m.mu.Lock()
+	if m.writeGen == genAtSnapshot {
+		m.dirty = false
+	}
+	m.mu.Unlock()
 	return nil
 }
 
@@ -587,15 +597,19 @@ func (m *Manager) persistLocked(snap *State) error {
 		return err
 	}
 
-	// Stage 4: FsyncDir — BEST-EFFORT.
+	// Stage 4: FsyncDir — BEST-EFFORT. Per the MetricsHook contract, OnWrite
+	// is called exactly ONCE per persist attempt with a single reason label
+	// (Codex R4 P2 — emitting both parent_fsync_unsupported AND ok would
+	// double-count successful writes on platforms where directory fsync is
+	// unsupported).
 	if err := m.hooks.FsyncDir(dir); err != nil {
 		if isParentFsyncSwallowed(err) {
 			m.opts.Metrics.OnWrite("parent_fsync_unsupported")
-			// Fall through; write succeeded.
 		} else {
 			m.opts.Metrics.OnWrite("fsync_dir")
 			// Don't undo the rename — file is on disk; just record metric.
 		}
+		return nil
 	}
 
 	m.opts.Metrics.OnWrite("ok")

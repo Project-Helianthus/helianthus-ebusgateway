@@ -55,13 +55,31 @@ func revalidateRuntimeStateMembers(
 	// responder can't block the entire 32-probe burst.
 	probeBus := &timeoutBus{bus: gw.Bus, timeout: cfg.ScanRequestTimeout}
 
-	probe := func(probeCtx context.Context, target byte) bool {
+	// Sub-context lets the probe abort the cycle on transport-level
+	// errors. Without this, ScanDirected returning a non-nil error for
+	// a bus / arbitration / adapter-disconnect failure would map to
+	// `false` → OutcomeNoReply → AD23 eviction, deleting valid cached
+	// members during a transient bus failure (Codex P2 follow-up on
+	// PR #615). On cancellation the Revalidator's existing ctx.Err()
+	// recheck postpones the rest of the cycle for retry next tick.
+	probeCtx, cancelProbe := context.WithCancel(ctx)
+	defer cancelProbe()
+
+	probe := func(_ context.Context, target byte) bool {
 		entries, err := registry.ScanDirected(probeCtx, probeBus, gw.Registry, admittedSource, []byte{target})
 		if err != nil {
-			// Errors here include context cancellation (Revalidator
-			// will recheck ctx.Err() and postpone), or transport
-			// failures that we treat as "no_reply" since the device
-			// effectively didn't answer this cycle.
+			// Transport / arbitration / adapter-level failure.
+			// Cancel the sub-context so the Revalidator's
+			// post-probe ctx.Err() recheck postpones this member +
+			// the rest of the cycle. Returning false on a
+			// healthy bus would have meant "no reply"; with ctx
+			// cancelled it's interpreted as "cycle aborted".
+			//
+			// We log here rather than letting the failure stay
+			// silent — the cycle abort is observable but the
+			// reason should be too.
+			log.Printf("runtime_state revalidate: ScanDirected target=0x%02X failed (cycle aborted, members postponed): %v", target, err)
+			cancelProbe()
 			return false
 		}
 		// Responder iff the scan returned an entry whose addresses
@@ -87,7 +105,7 @@ func revalidateRuntimeStateMembers(
 		Counter: revalidateCounterAdapter{},
 	}
 
-	result := revalidator.Run(ctx, state.EBus.KnownBusMembers)
+	result := revalidator.Run(probeCtx, state.EBus.KnownBusMembers)
 
 	// Build an addr→cached entry index so responder refreshes can MERGE
 	// presence metadata with existing identity/companion_addr instead of

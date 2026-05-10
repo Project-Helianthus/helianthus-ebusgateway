@@ -23,7 +23,7 @@ func (DefaultFilesystemHooks) FsyncFile(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return f.Sync()
 }
 
@@ -36,7 +36,7 @@ func (DefaultFilesystemHooks) FsyncDir(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return f.Sync()
 }
 

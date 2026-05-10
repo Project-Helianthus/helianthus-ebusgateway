@@ -429,7 +429,7 @@ func (r *recordingHooks) FsyncFile(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return f.Sync()
 }
 func (r *recordingHooks) FsyncDir(path string) error {
@@ -440,7 +440,7 @@ func (r *recordingHooks) FsyncDir(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return f.Sync()
 }
 func (r *recordingHooks) Rename(oldpath, newpath string) error {
@@ -519,9 +519,9 @@ type fsyncTempFailHooks struct {
 }
 
 func (f *fsyncTempFailHooks) FsyncFile(path string) error {
-	f.recordingHooks.mu.Lock()
-	f.recordingHooks.fsyncFilePaths = append(f.recordingHooks.fsyncFilePaths, path)
-	f.recordingHooks.mu.Unlock()
+	f.mu.Lock()
+	f.fsyncFilePaths = append(f.fsyncFilePaths, path)
+	f.mu.Unlock()
 	return &os.PathError{Op: "fsync", Path: path, Err: syscall.ENOSPC}
 }
 
@@ -553,9 +553,9 @@ func TestPersist_FsyncTempFailure_RetainsInMemory(t *testing.T) {
 	}
 
 	// No rename should have been attempted (fsync failed first).
-	hooks.recordingHooks.mu.Lock()
-	renameCount := len(hooks.recordingHooks.renameOlds)
-	hooks.recordingHooks.mu.Unlock()
+	hooks.mu.Lock()
+	renameCount := len(hooks.renameOlds)
+	hooks.mu.Unlock()
 	if renameCount != 0 {
 		t.Errorf("AD13 fsync_temp: rename was attempted (count=%d) despite fsync failure; persister should bail before rename", renameCount)
 	}
@@ -582,9 +582,9 @@ type fsyncDirSwallowsHooks struct {
 }
 
 func (f *fsyncDirSwallowsHooks) FsyncDir(path string) error {
-	f.recordingHooks.mu.Lock()
-	f.recordingHooks.fsyncDirPaths = append(f.recordingHooks.fsyncDirPaths, path)
-	f.recordingHooks.mu.Unlock()
+	f.mu.Lock()
+	f.fsyncDirPaths = append(f.fsyncDirPaths, path)
+	f.mu.Unlock()
 	return &os.PathError{Op: "fsync", Path: path, Err: syscall.ENOSYS}
 }
 
@@ -629,9 +629,9 @@ type writeFailHooks struct {
 }
 
 func (w *writeFailHooks) WriteFile(path string, data []byte, perm uint32) error {
-	w.recordingHooks.mu.Lock()
-	w.recordingHooks.writeFilePaths = append(w.recordingHooks.writeFilePaths, path)
-	w.recordingHooks.mu.Unlock()
+	w.mu.Lock()
+	w.writeFilePaths = append(w.writeFilePaths, path)
+	w.mu.Unlock()
 	return &os.PathError{Op: "write", Path: path, Err: syscall.ENOSPC}
 }
 
@@ -661,9 +661,9 @@ func TestPersist_WriteFailure_RetainsInMemory(t *testing.T) {
 		t.Errorf("AD13: old file modified despite WriteFile ENOSPC")
 	}
 
-	hooks.recordingHooks.mu.Lock()
-	renameCount := len(hooks.recordingHooks.renameOlds)
-	hooks.recordingHooks.mu.Unlock()
+	hooks.mu.Lock()
+	renameCount := len(hooks.renameOlds)
+	hooks.mu.Unlock()
 	if renameCount != 0 {
 		t.Errorf("AD13: rename attempted after write failure (count=%d); persister should bail at write stage", renameCount)
 	}
@@ -692,11 +692,11 @@ type p6CrashHooks struct {
 }
 
 func (p *p6CrashHooks) FsyncDir(path string) error {
-	p.recordingHooks.mu.Lock()
-	p.recordingHooks.fsyncDirPaths = append(p.recordingHooks.fsyncDirPaths, path)
+	p.mu.Lock()
+	p.fsyncDirPaths = append(p.fsyncDirPaths, path)
 	first := p.failParentFsyncOnceWith
 	p.failParentFsyncOnceWith = nil
-	p.recordingHooks.mu.Unlock()
+	p.mu.Unlock()
 	if first != nil {
 		return first
 	}

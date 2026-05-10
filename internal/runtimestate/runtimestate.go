@@ -6,7 +6,6 @@ package runtimestate
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -571,6 +570,3 @@ func (m *Manager) persistLocked(snap *State) error {
 	return nil
 }
 
-// errNotImplemented retained for backward-compat in any test that imports
-// the symbol; production Manager methods no longer return it.
-var errNotImplemented = errors.New("runtimestate: legacy stub error (no longer used post-M2/M3)")

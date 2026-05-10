@@ -1292,11 +1292,52 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	wasGatewayOwned := hasOwner && ownerID == gatewaySessionID
 	gwActiveBefore := m.gatewayTxnActive
 
+	// P10.2 — peek the gateway echo tracker BEFORE flushOnSYN clears it.
+	// The next-expected-echo byte discriminates the *only* unsafe case
+	// (mid-write race) from all the legitimate ones. Using the queue
+	// head as the discriminator preserves backward-compat with the
+	// pre-P10.2 terminator semantics for the common shape (queue empty
+	// at SYN time — gateway between writes or in response-read) while
+	// closing the specific bug where a buffered/colliding SYN arrives
+	// while the gateway is still awaiting the echo of a non-SYN body
+	// byte:
+	//
+	//   - hasPending=true  && nextExpected == SymbolSyn: bus.Send just
+	//     wrote the terminator SYN (sendEndOfMessage path); the wire
+	//     echo IS the legitimate terminator. Allow terminator gate.
+	//   - hasPending=false: queue is empty. Either the gateway has
+	//     consumed all its echoes (between request and response, or
+	//     during response read), or it has never written. A SYN here
+	//     was the assumed-terminator under pre-P10.2 semantics. Allow
+	//     terminator gate (preserves all existing tests / lifecycle
+	//     contracts; legacy behavior from PR #502).
+	//   - hasPending=true  && nextExpected != SymbolSyn: gateway is
+	//     mid-write (waiting for echo of a request body byte). This
+	//     wire SYN CANNOT be a terminator — eBUS protocol guarantees
+	//     no foreign SYN appears mid-frame after arbitration. SUPPRESS
+	//     activeCh delivery, idle release, and flushOnSYN. This is the
+	//     P10.2-specific behavior change that closes the 671
+	//     pre_echo_syn events observed in production.
+	//
+	// Codex P10.2 review: idle release MUST be gated on the suppression
+	// decision — otherwise a mid-frame noise SYN that arrives after
+	// IdleReleaseGrace elapses (slow txn) would still abort the
+	// legitimate transaction even though we suppressed activeCh delivery.
+	nextExpectedEcho, hasPendingEcho := m.gatewayEcho.peekNextExpected()
+	midWriteSyn := hasPendingEcho && nextExpectedEcho != protocol.SymbolSyn
+
 	// Flush gateway echo tracker at SYN boundary. Flushed bytes are
 	// confirmed gateway self-traffic — do NOT emit to passive path
 	// (passive is third-party only). They are delivered to external
 	// sessions via deliverSYNToSessions + deliverToSessions elsewhere.
-	m.gatewayEcho.flushOnSYN()
+	//
+	// P10.2: skip flush when this SYN is mid-write noise. The expected-
+	// echo queue must survive so the next real echo of the pending
+	// non-SYN byte still matches.
+	preEchoMidFrameSuppress := wasGatewayOwned && m.gatewayTxnActive && midWriteSyn
+	if !preEchoMidFrameSuppress {
+		m.gatewayEcho.flushOnSYN()
+	}
 
 	// Runtime-soak P0 + lifecycle correctness + Codex PR #502 P1:
 	// clear gatewayTxnActive on SYN during gateway ownership ONLY if
@@ -1348,9 +1389,22 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// Use ReasonSYNTerminator (not ReasonSYNIdle) to distinguish a
 	// successful terminator delivery from the abandoned-grant SYN-idle
 	// path in onSYNLocked's idle-release branch below.
+	// P10.2: terminator gate gains an additional guard `!midWriteSyn`.
+	// Without this guard, mid-write SYNs (stale buffered SYN from before
+	// grant interleaved into mid-frame echo flow, wire collision,
+	// foreign-initiator glitch) would be delivered to activeCh while
+	// bus.Send is waiting for echo of a non-SYN data byte → 0xAA in
+	// echo position → echo_mismatch with subclass=pre_echo_syn (671
+	// events observed in production soak before this fix; ~16% of all
+	// echo_mismatch). The legacy "queue empty → assume terminator"
+	// branch (pre-P10.2 default) still fires for the bytesDeliveredToActive>0
+	// case where the gateway has consumed all its echoes — that
+	// preserves the lifecycle contract and existing tests. Only the
+	// specific mid-write race (queue head is a non-SYN byte) is closed.
 	terminatorDelivered := false
 	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive &&
-		m.activeTxn.bytesDeliveredToActive.Load() > 0 {
+		m.activeTxn.bytesDeliveredToActive.Load() > 0 &&
+		!midWriteSyn {
 		select {
 		case m.activeCh <- activeEvent{kind: activeEventByte, b: protocol.SymbolSyn}:
 			terminatorDelivered = true
@@ -1380,7 +1434,22 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	}
 
 	// Release ownership on idle SYN after grace period.
-	if phaseEvent == wirePhaseEventSYNIdle && hasOwner {
+	//
+	// P10.2 — gate idle release ONLY for live mid-frame races, NOT for
+	// stuck-write timeouts. The distinguishing signal:
+	//   - bytesDeliveredToActive > 0 + preEchoMidFrameSuppress: the
+	//     gateway has live echo activity AND a noise SYN arrived
+	//     mid-write. Aborting the txn would discard real progress.
+	//     Suppress idle release.
+	//   - bytesDeliveredToActive == 0 + preEchoMidFrameSuppress: the
+	//     gateway wrote bytes but NO echo ever arrived. The bus is
+	//     stuck/unresponsive. The IdleReleaseGrace mechanism is exactly
+	//     designed to bail out here. Allow idle release. (Used by
+	//     TestRegression_StartedButNoResponse to model production
+	//     unresponsive-target scenarios.)
+	suppressIdleRelease := preEchoMidFrameSuppress &&
+		m.activeTxn.bytesDeliveredToActive.Load() > 0
+	if phaseEvent == wirePhaseEventSYNIdle && hasOwner && !suppressIdleRelease {
 		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
 			m.logger.Printf("adaptermux: ownership released for session %d (idle grace expired) (AM6)", ownerID)
 			m.arb.releaseOwnership(ownerID)
@@ -1403,29 +1472,24 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	})
 
 	// Pre-echo SYN suppression decision (echo_mismatch fix).
-	// Computed AFTER the terminator/idle branches so that a gwActive flag
-	// that was just cleared by those branches does not incorrectly trigger
-	// suppression. The pre-echo case is: gateway still owns, gatewayTxnActive
-	// still true, and no real adapter byte has been enqueued on activeCh
-	// yet for this txn — i.e. the mux has not yet observed post-grant
-	// traffic on the active path. A SYN observed in this window is buffer
-	// noise that pre-dates the grant's first Write and must not race the
-	// real echo on activeCh. See onReceived for the counter increment and
-	// activeExpects gating.
 	//
-	// Codex PR #502 P1: the gate here is complementary to the terminator
-	// gate above — one single signal (bytesDeliveredToActive) governs
-	// both branches. See the terminator comment block for the full
-	// rationale on why bytesDeliveredToActive beats bytesRead (lags,
-	// consumer side) and bytesWritten (leads, initiator side before echo
-	// returns). The critical win on busy/idle-chatter links: bytesWritten
-	// flips to ≥1 the moment Write returns, so a buffered idle SYN in the
-	// window between Write and echo-enqueue would falsely pass the
-	// terminator gate and deliver 0xAA to sendRawWithEcho; with
-	// bytesDeliveredToActive, that same SYN is correctly classified as
-	// pre-echo and suppressed.
-	preEchoSuppressed := hasOwner && ownerID == gatewaySessionID &&
+	// P10.2 — combines the original "pre-first-echo" suppression
+	// (bytesDeliveredToActive == 0 — buffered idle SYN that pre-dates
+	// any post-grant byte) with the new "mid-write-race" suppression
+	// (gateway owns + txn active + queue head is non-SYN). Both cases
+	// describe a SYN that cannot be a legitimate terminator and that
+	// would corrupt sendRawWithEcho if delivered to activeCh.
+	//
+	// Codex PR #502 P1 originally defined the pre-first-echo gate using
+	// bytesDeliveredToActive (chosen for its precise mid-point semantics
+	// between bytesWritten leading and bytesRead lagging). P10.2 keeps
+	// that branch and adds the mid-write branch as an OR.
+	//
+	// Counter (synSuppressedPreEcho) preserved for backward-compat with
+	// existing diag tests; semantically it now covers a superset.
+	preFirstEchoSyn := hasOwner && ownerID == gatewaySessionID &&
 		m.gatewayTxnActive && m.activeTxn.bytesDeliveredToActive.Load() == 0
+	preEchoSuppressed := preFirstEchoSyn || preEchoMidFrameSuppress
 	if preEchoSuppressed {
 		m.activeTxn.synSuppressedPreEcho.Add(1)
 	}

@@ -160,6 +160,20 @@ func (t *echoTracker) hasPendingEchoes() bool {
 	return len(t.expectedEchoes) > 0
 }
 
+// peekNextExpected returns the byte at the head of the expected-echo
+// queue and a boolean indicating whether the queue is non-empty. Used by
+// the mux to discriminate legitimate terminator-SYN echoes (next expected
+// is a SYN that the gateway just wrote) from mid-frame SYN noise (next
+// expected is a non-SYN data byte) and from response-phase SYN noise
+// (queue empty — gateway is reading the target's response and has no
+// pending writes). Read-only; does NOT consume the queue head. P10.2.
+func (t *echoTracker) peekNextExpected() (byte, bool) {
+	if len(t.expectedEchoes) == 0 {
+		return 0, false
+	}
+	return t.expectedEchoes[0], true
+}
+
 // reset clears all tracking state.
 func (t *echoTracker) reset() {
 	t.expectedEchoes = t.expectedEchoes[:0]

@@ -236,12 +236,13 @@ func TestPreEchoSyn_StuckWrite_IdleReleaseStillFires(t *testing.T) {
 	if snap.Active {
 		t.Errorf("Active=true after idle-grace expiry — idle release was suppressed by P10.2 mid-write gate (regression)")
 	}
+	// Codex P10.2 review LOW: require ReasonSYNIdle ONLY. Accepting
+	// ReasonSYNTerminator here would hide the regression this test is
+	// meant to catch — in this scenario bytesDeliveredToActive==0 and
+	// the queue head is non-SYN (mid-write), so a terminator
+	// classification would mean we falsely treated the wire SYN as a
+	// frame terminator instead of a stuck-write idle bail-out.
 	if snap.InactiveReason != ReasonSYNIdle {
-		// SYN-terminator is acceptable too if the test fixture happened
-		// to deliver the SYN as terminator, but for this scenario the
-		// canonical reason is idle release.
-		if snap.InactiveReason != ReasonSYNTerminator {
-			t.Errorf("InactiveReason=%q, want %q (or ReasonSYNTerminator)", snap.InactiveReason, ReasonSYNIdle)
-		}
+		t.Errorf("InactiveReason=%q, want %q (stuck-write must terminate via idle release, NOT terminator)", snap.InactiveReason, ReasonSYNIdle)
 	}
 }

@@ -98,16 +98,23 @@ type activeTxnDiag struct {
 	// real echo byte and cause sendRawWithEcho to observe SYN (0xAA)
 	// in place of the expected echo, emitting echo_mismatch.
 	//
-	// P10.2 — the gate now uses `gatewayEcho.peekNextExpected()`:
+	// P10.2 — the gate now uses `gatewayEcho.peekNextExpected()` to
+	// classify SYNs that arrive during an active gateway txn:
 	//   - hasPending=true && nextExpected==SymbolSyn → legitimate
 	//     terminator (bus.Send wrote SYN, awaiting its echo); NOT
 	//     suppressed.
-	//   - hasPending=true && nextExpected!=SymbolSyn → mid-frame
-	//     noise (gateway awaiting echo of a non-SYN data byte);
+	//   - hasPending=true && nextExpected!=SymbolSyn → mid-write
+	//     noise (gateway awaiting echo of a non-SYN body byte);
 	//     SUPPRESSED.
-	//   - hasPending=false → response-read phase (gateway has no
-	//     pending writes, so this SYN cannot be a terminator);
-	//     SUPPRESSED.
+	//   - hasPending=false (queue empty): the gate is OPEN —
+	//     `midWriteSyn=false`, so the terminator branch fires per
+	//     the legacy PR #502 contract whenever
+	//     bytesDeliveredToActive>0 (the gateway has consumed all its
+	//     echoes — typical end-of-frame shape, including tests that
+	//     omit the explicit terminator-write step). The pre-first-
+	//     echo branch (separate gate, bytesDeliveredToActive==0)
+	//     suppresses queue-empty SYNs that arrive before the first
+	//     adapter byte has been delivered to activeCh.
 	//
 	// Original semantics (P0): pre-first-echo case where
 	// bytesDeliveredToActive==0. P10.2 generalizes — that case still

@@ -92,17 +92,33 @@ type activeTxnDiag struct {
 	terminatorDropOnFullCh atomic.Uint64
 
 	// synSuppressedPreEcho counts SYN bytes that arrived during gateway
-	// ownership with gatewayTxnActive=true but bytesRead==0 (i.e. BEFORE
-	// the first real echo byte). These SYNs are pre-echo noise (buffered
-	// in the TCP/ENH pipeline from before bus.Send's first Write reached
-	// the adapter) and MUST NOT be delivered to activeCh — doing so would
-	// race the real echo byte and cause sendRawWithEcho to observe SYN
-	// (0xAA) in place of the expected echo, emitting echo_mismatch
-	// (13,904 events observed in production soak before this fix).
-	// Expected to be non-zero under normal adapter-direct operation (one
-	// or two suppressed SYNs per transaction is common); a persistent
-	// zero after deploy would indicate the readLoop is no longer racing
-	// bus.Send on the grant boundary.
+	// ownership with gatewayTxnActive=true and were classified as
+	// non-terminator noise (NOT a legitimate frame-end SYN echo). These
+	// SYNs MUST NOT be delivered to activeCh — doing so would race the
+	// real echo byte and cause sendRawWithEcho to observe SYN (0xAA)
+	// in place of the expected echo, emitting echo_mismatch.
+	//
+	// P10.2 — the gate now uses `gatewayEcho.peekNextExpected()`:
+	//   - hasPending=true && nextExpected==SymbolSyn → legitimate
+	//     terminator (bus.Send wrote SYN, awaiting its echo); NOT
+	//     suppressed.
+	//   - hasPending=true && nextExpected!=SymbolSyn → mid-frame
+	//     noise (gateway awaiting echo of a non-SYN data byte);
+	//     SUPPRESSED.
+	//   - hasPending=false → response-read phase (gateway has no
+	//     pending writes, so this SYN cannot be a terminator);
+	//     SUPPRESSED.
+	//
+	// Original semantics (P0): pre-first-echo case where
+	// bytesDeliveredToActive==0. P10.2 generalizes — that case still
+	// suppresses (no echoes yet, so any pending entry is non-SYN by
+	// construction in normal request flow), but additionally suppresses
+	// late mid-frame SYN races and response-phase noise. 671 pre_echo_syn
+	// events observed pre-P10.2 (~16% of all echo_mismatch); expected to
+	// drop to floor (single-digit per hour) after deploy.
+	//
+	// Expected to be non-zero under normal adapter-direct operation
+	// (typically 1–3 suppressed SYNs per transaction).
 	synSuppressedPreEcho atomic.Uint64
 
 	// --- Transaction-shape diagnostics (bounded) ---

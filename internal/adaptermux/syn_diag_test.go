@@ -28,6 +28,14 @@ import (
 // records synDeliveredToActive=true and the reason is ReasonSYNTerminator
 // (distinct from ReasonSYNIdle which is reserved for abandoned-grant
 // idle-release).
+//
+// P10.2: this scenario remains a legitimate terminator under the new
+// gate. After ReadByte consumes the echo, gatewayEcho.expectedEchoes is
+// empty, so peekNextExpected returns hasPending=false → midWriteSyn=false
+// → terminator branch fires as before. The mid-write race the new gate
+// closes is the *different* scenario where queue head is a non-SYN byte
+// (gateway awaiting echo of body byte at SYN arrival) — exercised by
+// the new TestPreEchoSyn_MidWriteSyn_Suppressed test.
 func TestSynDiag_RecordsOwnershipTransition(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()

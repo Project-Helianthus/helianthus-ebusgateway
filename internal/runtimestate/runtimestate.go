@@ -200,6 +200,7 @@ type Manager struct {
 	state    *State
 	dirty    bool
 	writeGen uint64 // bumped on every mutation; used by flushIfDirty to detect concurrent updates
+	writeMu  sync.Mutex
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 	started  bool
@@ -517,7 +518,16 @@ func (m *Manager) tickerLoop() {
 // persistLocked atomically writes the snapshot to disk per AD13. Caller must
 // NOT hold m.mu (we never call back into Manager). The snapshot is treated
 // as authoritative for the write.
+//
+// Acquires m.writeMu so concurrent persisters (e.g. ticker mid-flush + Stop's
+// final flushIfDirty after a 5s timeout, or EagerPersistInstanceGUID racing
+// the ticker) cannot interleave and let an older snapshot's rename land
+// after a newer snapshot's rename — which would silently discard the newer
+// mutation (Codex R3 P2).
 func (m *Manager) persistLocked(snap *State) error {
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+
 	data, err := marshalState(snap)
 	if err != nil {
 		m.opts.Metrics.OnWrite("marshal")

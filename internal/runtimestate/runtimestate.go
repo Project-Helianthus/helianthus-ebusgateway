@@ -195,15 +195,16 @@ type Options struct {
 // Manager coordinates loading, eager persistence, periodic writes, and shutdown
 // flushes for /data/runtime_state.json. It is the sole writer (AD07).
 type Manager struct {
-	opts    Options
-	hooks   FilesystemHooks
-	mu      sync.Mutex
-	state   *State
-	dirty   bool
-	stopCh  chan struct{}
-	doneCh  chan struct{}
-	started bool
-	stopped bool
+	opts     Options
+	hooks    FilesystemHooks
+	mu       sync.Mutex
+	state    *State
+	dirty    bool
+	writeGen uint64 // bumped on every mutation; used by flushIfDirty to detect concurrent updates
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	started  bool
+	stopped  bool
 }
 
 // New constructs a Manager. The Manager is not started until Start is called.
@@ -359,6 +360,7 @@ func (m *Manager) UpdateSelf(self Self) {
 	cp := self
 	m.state.EBus.Self = &cp
 	m.dirty = true
+	m.writeGen++
 	m.mu.Unlock()
 }
 
@@ -376,12 +378,14 @@ func (m *Manager) UpsertKnownBusMember(member KnownBusMember) {
 		if existing.Addr == member.Addr {
 			m.state.EBus.KnownBusMembers[i] = member
 			m.dirty = true
+			m.writeGen++
 			m.mu.Unlock()
 			return
 		}
 	}
 	m.state.EBus.KnownBusMembers = append(m.state.EBus.KnownBusMembers, member)
 	m.dirty = true
+	m.writeGen++
 	m.mu.Unlock()
 }
 
@@ -401,6 +405,7 @@ func (m *Manager) EvictKnownBusMember(addr byte) {
 	}
 	if len(out) != len(m.state.EBus.KnownBusMembers) {
 		m.dirty = true
+		m.writeGen++
 	}
 	m.state.EBus.KnownBusMembers = out
 }
@@ -461,9 +466,24 @@ func (m *Manager) flushIfDirty() {
 	}
 	m.state.Meta.WrittenAt = time.Now().UTC()
 	snap := cloneState(m.state)
-	m.dirty = false
+	genAtSnapshot := m.writeGen
 	m.mu.Unlock()
-	_ = m.persistLocked(snap)
+	// Only clear dirty AFTER a successful persist AND no mutation happened
+	// during the persist call. On error (ENOSPC, fsync_temp, etc.) keep
+	// dirty=true so the next ticker tick or shutdown retries (Codex R1 P2 —
+	// otherwise transient errors would silently lose in-memory mutations).
+	if err := m.persistLocked(snap); err != nil {
+		m.opts.Logger.Warn("runtime_state: persist failed; keeping dirty for retry", "error", err)
+		return
+	}
+	m.mu.Lock()
+	if m.writeGen == genAtSnapshot {
+		// No mutation happened during persist; safe to clear dirty.
+		m.dirty = false
+	}
+	// else: a mutation slipped in while we were persisting; dirty stays true
+	// and the next flushIfDirty cycle will pick up the new state.
+	m.mu.Unlock()
 }
 
 // tickerLoop runs the 15-min jittered persist ticker.

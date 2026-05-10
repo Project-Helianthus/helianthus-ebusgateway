@@ -286,26 +286,16 @@ func (m *Manager) EagerPersistInstanceGUID(ctx context.Context, guid string, sou
 	m.state.Meta.WrittenAt = time.Now().UTC()
 	m.state.Meta.GatewayBuild = m.opts.GatewayBuild
 	m.state.Meta.AddonVersion = m.opts.AddonVersion
-	// Pre-mark dirty so that if persistLocked fails (ENOSPC / fsync_temp /
+	// Pre-mark dirty so that if persistFlush fails (ENOSPC / fsync_temp /
 	// etc.) the next ticker/Stop retries (Codex R4 P2 — clearing before
 	// persist would silently skip the retry path on transient failure).
 	m.dirty = true
-	genAtSnapshot := m.writeGen
-	snap := cloneState(m.state)
+	m.writeGen++
 	m.mu.Unlock()
 
 	m.opts.Metrics.OnIdentitySource(source)
 
-	if err := m.persistLocked(snap); err != nil {
-		return err
-	}
-	// Persist succeeded; clear dirty if no concurrent mutation slipped in.
-	m.mu.Lock()
-	if m.writeGen == genAtSnapshot {
-		m.dirty = false
-	}
-	m.mu.Unlock()
-	return nil
+	return m.persistFlush()
 }
 
 // Start begins the periodic ticker (PersistInterval ± JitterRange/2) and
@@ -484,38 +474,59 @@ func cloneState(s *State) *State {
 	return &cp
 }
 
-// flushIfDirty acquires the lock, snapshots state, persists if dirty.
+// flushIfDirty persists the current in-memory state if dirty=true.
+// Equivalent to persistFlush() but exits early when nothing to do.
 func (m *Manager) flushIfDirty() {
 	m.mu.Lock()
-	if !m.dirty {
-		m.mu.Unlock()
+	dirty := m.dirty && m.state != nil
+	m.mu.Unlock()
+	if !dirty {
 		return
 	}
+	_ = m.persistFlush()
+}
+
+// persistFlush serializes snapshot + write under writeMu so two overlapping
+// persisters cannot land their renames out of snapshot order (Codex R5 —
+// previously the snapshot was captured BEFORE writeMu.Lock(), which let an
+// older snapshot's rename land after a newer snapshot's rename, silently
+// reverting on-disk state to a stale generation).
+//
+// Sequence:
+//  1. writeMu.Lock — exclude other persisters.
+//  2. mu.Lock — snapshot fresh state + record writeGen.
+//  3. mu.Unlock — release in-memory mutex while we hit disk.
+//  4. atomicWrite(snap) — temp+rename per AD13.
+//  5. mu.Lock — clear dirty IFF writeGen unchanged (no concurrent mutation).
+//  6. mu.Unlock + writeMu.Unlock.
+func (m *Manager) persistFlush() error {
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+
+	m.mu.Lock()
 	if m.state == nil {
 		m.dirty = false
 		m.mu.Unlock()
-		return
+		return nil
 	}
 	m.state.Meta.WrittenAt = time.Now().UTC()
 	snap := cloneState(m.state)
 	genAtSnapshot := m.writeGen
 	m.mu.Unlock()
-	// Only clear dirty AFTER a successful persist AND no mutation happened
-	// during the persist call. On error (ENOSPC, fsync_temp, etc.) keep
-	// dirty=true so the next ticker tick or shutdown retries (Codex R1 P2 —
-	// otherwise transient errors would silently lose in-memory mutations).
-	if err := m.persistLocked(snap); err != nil {
+
+	if err := m.atomicWrite(snap); err != nil {
 		m.opts.Logger.Warn("runtime_state: persist failed; keeping dirty for retry", "error", err)
-		return
+		return err
 	}
+
 	m.mu.Lock()
 	if m.writeGen == genAtSnapshot {
-		// No mutation happened during persist; safe to clear dirty.
 		m.dirty = false
 	}
 	// else: a mutation slipped in while we were persisting; dirty stays true
-	// and the next flushIfDirty cycle will pick up the new state.
+	// and the next persistFlush cycle will pick up the new state.
 	m.mu.Unlock()
+	return nil
 }
 
 // tickerLoop runs the 15-min jittered persist ticker.
@@ -547,19 +558,10 @@ func (m *Manager) tickerLoop() {
 	}
 }
 
-// persistLocked atomically writes the snapshot to disk per AD13. Caller must
-// NOT hold m.mu (we never call back into Manager). The snapshot is treated
-// as authoritative for the write.
-//
-// Acquires m.writeMu so concurrent persisters (e.g. ticker mid-flush + Stop's
-// final flushIfDirty after a 5s timeout, or EagerPersistInstanceGUID racing
-// the ticker) cannot interleave and let an older snapshot's rename land
-// after a newer snapshot's rename — which would silently discard the newer
-// mutation (Codex R3 P2).
-func (m *Manager) persistLocked(snap *State) error {
-	m.writeMu.Lock()
-	defer m.writeMu.Unlock()
-
+// atomicWrite executes the AD13 atomic temp+rename sequence for the given
+// snapshot. Caller MUST hold m.writeMu (see persistFlush) so concurrent
+// persisters cannot interleave their renames out of snapshot order.
+func (m *Manager) atomicWrite(snap *State) error {
 	data, err := marshalState(snap)
 	if err != nil {
 		m.opts.Metrics.OnWrite("marshal")

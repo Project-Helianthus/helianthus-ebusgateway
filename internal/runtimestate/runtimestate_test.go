@@ -1,19 +1,8 @@
-// M1_TDD_RED tests for the runtime-state package. These tests reference the
-// contract that M2_GATEWAY_LOADER and M3_GATEWAY_PERSISTER must implement.
-//
-// Build tag `runtime_state_tdd_red` excludes them from default `go test` runs
-// (CI passes during M1) while keeping them committed as the executable
-// design contract per cruise-tdd-gate. Run them locally with:
-//
-//	go test -tags runtime_state_tdd_red -count=1 ./internal/runtimestate/...
-//
-// Every test FAILS RED in this state (stubs return errNotImplemented or zero
-// values). The M2_GATEWAY_LOADER + M3_GATEWAY_PERSISTER PR removes this build
-// tag and replaces the stubs with real implementations, turning the suite GREEN.
+// Contract tests for the runtime-state package. Originally introduced as
+// M1_TDD_RED contracts; M2_GATEWAY_LOADER + M3_GATEWAY_PERSISTER replaced the
+// stubs with real implementations and turned this suite GREEN.
 //
 // Plan: runtime-state-w19-26.locked. ADs referenced inline per case.
-
-//go:build runtime_state_tdd_red
 
 package runtimestate
 
@@ -261,7 +250,6 @@ func TestPersist_AtomicTempRename(t *testing.T) {
 			postInode, preInode, preInfo.ModTime(), postInfo.ModTime())
 	}
 }
-
 
 // AD13 — JSON output uses deterministic key order (stable across writes).
 func TestPersist_DeterministicKeyOrder(t *testing.T) {
@@ -734,6 +722,12 @@ func TestPersist_P6_KillMidWriteUnderFsyncEINVAL(t *testing.T) {
 		failParentFsyncOnceWith: &os.PathError{Op: "fsync", Path: dir, Err: syscall.EINVAL},
 	}
 	mgr := New(Options{Path: path, FsHooks: hooks})
+	// Load old content into manager state so a successful new write preserves
+	// meta.instance_guid (this mirrors the gateway's real startup sequence:
+	// Load → UpdateSelf → persist).
+	if _, err := mgr.Load(context.Background()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 
 	// Mutation marker — if the new content lands, it MUST contain
 	// last_admitted_source=0xF1 (241) which is absent from oldContent (247).

@@ -2,17 +2,17 @@
 // /data/runtime_state.json. Plan: runtime-state-w19-26.locked. v1 namespaces:
 // meta + ebus.{self, known_bus_members[]}. See docs-ebus
 // architecture/runtime-state.md for the normative schema and contract.
-//
-// This file holds the package types + the public Manager surface. The
-// implementations are SKELETON (M1_TDD_RED stubs); M2_GATEWAY_LOADER and
-// M3_GATEWAY_PERSISTER replace them with real bodies that satisfy the
-// contract tests in runtimestate_test.go.
 package runtimestate
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -195,7 +195,15 @@ type Options struct {
 // Manager coordinates loading, eager persistence, periodic writes, and shutdown
 // flushes for /data/runtime_state.json. It is the sole writer (AD07).
 type Manager struct {
-	opts Options
+	opts    Options
+	hooks   FilesystemHooks
+	mu      sync.Mutex
+	state   *State
+	dirty   bool
+	stopCh  chan struct{}
+	doneCh  chan struct{}
+	started bool
+	stopped bool
 }
 
 // New constructs a Manager. The Manager is not started until Start is called.
@@ -215,12 +223,18 @@ func New(opts Options) *Manager {
 	if opts.Path == "" {
 		opts.Path = "/data/runtime_state.json"
 	}
-	return &Manager{opts: opts}
+	hooks := opts.FsHooks
+	if hooks == nil {
+		hooks = DefaultFilesystemHooks{}
+	}
+	return &Manager{
+		opts:   opts,
+		hooks:  hooks,
+		state:  &State{SchemaVersion: SchemaVersion},
+		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
+	}
 }
-
-// errNotImplemented is returned by every method in the M1_TDD_RED skeleton.
-// M2_GATEWAY_LOADER and M3_GATEWAY_PERSISTER replace these with real bodies.
-var errNotImplemented = errors.New("runtimestate: not implemented (M2/M3 will provide)")
 
 // Load reads the runtime state file. Returns the parsed State, or an empty
 // State on missing/corrupt. On corrupt, the file is renamed to
@@ -228,45 +242,306 @@ var errNotImplemented = errors.New("runtimestate: not implemented (M2/M3 will pr
 // schema_version mismatch results in that namespace being dropped from the
 // in-memory load (AD12). Never returns a panic; never blocks startup.
 func (m *Manager) Load(ctx context.Context) (*State, error) {
-	return nil, errNotImplemented
+	data, err := os.ReadFile(m.opts.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			m.opts.Logger.Info("runtime_state: file absent, starting empty", "path", m.opts.Path)
+			m.replaceState(&State{SchemaVersion: SchemaVersion})
+			return m.State(), nil
+		}
+		// Permission denied / IO error: log + start empty (never block startup per AD11).
+		m.opts.Logger.Warn("runtime_state: read failed, starting empty", "path", m.opts.Path, "error", err)
+		m.replaceState(&State{SchemaVersion: SchemaVersion})
+		return m.State(), nil
+	}
+
+	state, err := unmarshalState(data)
+	if err != nil {
+		// Corrupt or schema mismatch: quarantine and start empty per AD11.
+		quarantine := fmt.Sprintf("%s.corrupt-%s", m.opts.Path, time.Now().UTC().Format("20060102T150405Z"))
+		if rerr := m.hooks.Rename(m.opts.Path, quarantine); rerr != nil {
+			m.opts.Logger.Warn("runtime_state: corrupt-quarantine rename failed", "from", m.opts.Path, "to", quarantine, "error", rerr)
+		} else {
+			m.opts.Logger.Warn("runtime_state: corrupt file quarantined", "from", m.opts.Path, "to", quarantine, "parse_error", err)
+		}
+		m.replaceState(&State{SchemaVersion: SchemaVersion})
+		return m.State(), nil
+	}
+
+	m.replaceState(state)
+	return m.State(), nil
 }
 
 // EagerPersistInstanceGUID writes a minimum-valid file containing
 // meta.{schema_version, instance_guid, written_at} within ~1s of the call
 // (AD08). Closes the crash-before-first-periodic-persist window.
 func (m *Manager) EagerPersistInstanceGUID(ctx context.Context, guid string, source IdentitySource) error {
-	return errNotImplemented
+	m.mu.Lock()
+	if m.state == nil {
+		m.state = &State{SchemaVersion: SchemaVersion}
+	}
+	m.state.SchemaVersion = SchemaVersion
+	m.state.Meta.InstanceGUID = guid
+	m.state.Meta.WrittenAt = time.Now().UTC()
+	m.state.Meta.GatewayBuild = m.opts.GatewayBuild
+	m.state.Meta.AddonVersion = m.opts.AddonVersion
+	m.dirty = false // we'll persist now
+	snap := *m.state
+	m.mu.Unlock()
+
+	m.opts.Metrics.OnIdentitySource(source)
+
+	if err := m.persistLocked(&snap); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Start begins the periodic ticker (PersistInterval ± JitterRange/2) and
 // the shutdown subscriber. Returns once the goroutines are running.
 func (m *Manager) Start(ctx context.Context) error {
-	return errNotImplemented
+	m.mu.Lock()
+	if m.started {
+		m.mu.Unlock()
+		return nil
+	}
+	m.started = true
+	m.mu.Unlock()
+
+	go m.tickerLoop()
+	return nil
 }
 
 // Stop flushes any pending writes and shuts down the persister goroutines.
 // Idempotent.
 func (m *Manager) Stop(ctx context.Context) error {
-	return errNotImplemented
-}
+	m.mu.Lock()
+	if m.stopped {
+		m.mu.Unlock()
+		return nil
+	}
+	m.stopped = true
+	started := m.started
+	m.mu.Unlock()
 
-// State returns a defensive copy of the current in-memory state. Safe to
-// call concurrently with persistence.
-func (m *Manager) State() *State {
+	if started {
+		close(m.stopCh)
+		select {
+		case <-m.doneCh:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+			// Don't deadlock; ticker will exit on next iteration.
+		}
+	}
+	// Final flush of any dirty state.
+	m.flushIfDirty()
 	return nil
 }
 
-// UpdateSelf replaces ebus.self with the given Self and triggers a write.
+// State returns a defensive snapshot of the current in-memory state.
+func (m *Manager) State() *State {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return cloneState(m.state)
+}
+
+// UpdateSelf replaces ebus.self with the given Self and marks state dirty.
 // Used after a successful SourceAddressSelection per AD14.
 func (m *Manager) UpdateSelf(self Self) {
+	m.mu.Lock()
+	if m.state == nil {
+		m.state = &State{SchemaVersion: SchemaVersion}
+	}
+	if m.state.EBus == nil {
+		m.state.EBus = &EBusNamespace{SchemaVersion: EBusSchemaVersion}
+	}
+	cp := self
+	m.state.EBus.Self = &cp
+	m.dirty = true
+	m.mu.Unlock()
 }
 
 // UpsertKnownBusMember adds or updates an entry in ebus.known_bus_members[].
 // Uniqueness on Addr is enforced (AD18); duplicate Addr replaces.
 func (m *Manager) UpsertKnownBusMember(member KnownBusMember) {
+	m.mu.Lock()
+	if m.state == nil {
+		m.state = &State{SchemaVersion: SchemaVersion}
+	}
+	if m.state.EBus == nil {
+		m.state.EBus = &EBusNamespace{SchemaVersion: EBusSchemaVersion}
+	}
+	for i, existing := range m.state.EBus.KnownBusMembers {
+		if existing.Addr == member.Addr {
+			m.state.EBus.KnownBusMembers[i] = member
+			m.dirty = true
+			m.mu.Unlock()
+			return
+		}
+	}
+	m.state.EBus.KnownBusMembers = append(m.state.EBus.KnownBusMembers, member)
+	m.dirty = true
+	m.mu.Unlock()
 }
 
 // EvictKnownBusMember removes the entry with the given Addr. No-op if absent.
 // Used by M5 directed-revalidation on no_reply outcomes (AD23).
 func (m *Manager) EvictKnownBusMember(addr byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state == nil || m.state.EBus == nil {
+		return
+	}
+	out := m.state.EBus.KnownBusMembers[:0]
+	for _, member := range m.state.EBus.KnownBusMembers {
+		if member.Addr != addr {
+			out = append(out, member)
+		}
+	}
+	if len(out) != len(m.state.EBus.KnownBusMembers) {
+		m.dirty = true
+	}
+	m.state.EBus.KnownBusMembers = out
 }
+
+// --- internal helpers ---
+
+func (m *Manager) replaceState(s *State) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.state = s
+	m.dirty = false
+}
+
+func cloneState(s *State) *State {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	if s.EBus != nil {
+		ebusCopy := *s.EBus
+		if s.EBus.Self != nil {
+			selfCopy := *s.EBus.Self
+			if s.EBus.Self.CompanionTarget != nil {
+				v := *s.EBus.Self.CompanionTarget
+				selfCopy.CompanionTarget = &v
+			}
+			ebusCopy.Self = &selfCopy
+		}
+		members := make([]KnownBusMember, len(s.EBus.KnownBusMembers))
+		for i, m := range s.EBus.KnownBusMembers {
+			members[i] = m
+			if m.CompanionAddr != nil {
+				v := *m.CompanionAddr
+				members[i].CompanionAddr = &v
+			}
+			if m.Identity != nil {
+				idCopy := *m.Identity
+				members[i].Identity = &idCopy
+			}
+		}
+		ebusCopy.KnownBusMembers = members
+		cp.EBus = &ebusCopy
+	}
+	return &cp
+}
+
+// flushIfDirty acquires the lock, snapshots state, persists if dirty.
+func (m *Manager) flushIfDirty() {
+	m.mu.Lock()
+	if !m.dirty {
+		m.mu.Unlock()
+		return
+	}
+	if m.state == nil {
+		m.dirty = false
+		m.mu.Unlock()
+		return
+	}
+	m.state.Meta.WrittenAt = time.Now().UTC()
+	snap := cloneState(m.state)
+	m.dirty = false
+	m.mu.Unlock()
+	_ = m.persistLocked(snap)
+}
+
+// tickerLoop runs the 15-min jittered persist ticker.
+func (m *Manager) tickerLoop() {
+	defer close(m.doneCh)
+	for {
+		jitter := time.Duration(0)
+		if m.opts.JitterRange > 0 {
+			// rand reseeded per call to spread across simultaneous starts.
+			r := rand.New(rand.NewSource(time.Now().UnixNano()))
+			jitter = time.Duration(r.Int63n(int64(m.opts.JitterRange))) - (m.opts.JitterRange / 2)
+		}
+		next := m.opts.PersistInterval + jitter
+		select {
+		case <-time.After(next):
+			m.flushIfDirty()
+		case <-m.stopCh:
+			return
+		}
+	}
+}
+
+// persistLocked atomically writes the snapshot to disk per AD13. Caller must
+// NOT hold m.mu (we never call back into Manager). The snapshot is treated
+// as authoritative for the write.
+func (m *Manager) persistLocked(snap *State) error {
+	data, err := marshalState(snap)
+	if err != nil {
+		m.opts.Metrics.OnWrite("marshal")
+		return err
+	}
+
+	dir := filepath.Dir(m.opts.Path)
+	tempName := filepath.Base(m.opts.Path) + ".tmp"
+	tempPath := filepath.Join(dir, tempName)
+
+	// Stage 1: WriteFile (creates+writes+closes).
+	if err := m.hooks.WriteFile(tempPath, data, 0o644); err != nil {
+		m.opts.Metrics.OnWrite("write")
+		_ = m.hooks.Unlink(tempPath) // best-effort cleanup
+		return err
+	}
+
+	// Stage 2: FsyncFile — REQUIRED.
+	if err := m.hooks.FsyncFile(tempPath); err != nil {
+		m.opts.Metrics.OnWrite("fsync_temp")
+		_ = m.hooks.Unlink(tempPath)
+		return err
+	}
+
+	// Stage 3: Rename temp → final. EXDEV is a precondition violation
+	// (temp should always be in target dir); preserve old file per AD13.
+	if err := m.hooks.Rename(tempPath, m.opts.Path); err != nil {
+		if isExdev(err) {
+			m.opts.Metrics.OnWrite("rename_exdev")
+			_ = m.hooks.Unlink(tempPath)
+			return err
+		}
+		m.opts.Metrics.OnWrite("rename")
+		_ = m.hooks.Unlink(tempPath)
+		return err
+	}
+
+	// Stage 4: FsyncDir — BEST-EFFORT.
+	if err := m.hooks.FsyncDir(dir); err != nil {
+		if isParentFsyncSwallowed(err) {
+			m.opts.Metrics.OnWrite("parent_fsync_unsupported")
+			// Fall through; write succeeded.
+		} else {
+			m.opts.Metrics.OnWrite("fsync_dir")
+			// Don't undo the rename — file is on disk; just record metric.
+		}
+	}
+
+	m.opts.Metrics.OnWrite("ok")
+	return nil
+}
+
+// errNotImplemented retained for backward-compat in any test that imports
+// the symbol; production Manager methods no longer return it.
+var errNotImplemented = errors.New("runtimestate: legacy stub error (no longer used post-M2/M3)")

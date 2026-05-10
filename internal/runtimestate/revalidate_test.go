@@ -305,6 +305,71 @@ func TestRevalidator_ContextCancellationPostponesUnprocessed(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// Cap-full + passive suffix: passive members AFTER a cap-full probe-eligible
+// member still get telemetry counted (cap applies exclusively to bus probes).
+// Codex P2 follow-up on PR #614.
+// -----------------------------------------------------------------------------
+
+func TestRevalidator_PassiveRefreshAfterCapStillFlows(t *testing.T) {
+	t0 := time.Date(2026, 5, 10, 19, 0, 0, 0, time.UTC)
+	// Codex's exact fixture: [probe, probe, active-miss, passive-refresh].
+	// Cap=2 → first two probed; third is probe-eligible but cap full
+	// → postponed; fourth is passive-refresh and must be telemetry-
+	// counted, NOT lumped into Postponed.
+	members := []KnownBusMember{
+		makeMember(0x01, t0),                     // probe
+		makeMember(0x02, t0.Add(-1*time.Second)), // probe
+		makeMember(0x03, t0.Add(-2*time.Second)), // active-miss → postponed
+		makeMember(0x04, t0.Add(-3*time.Second)), // passive-refresh → counted
+	}
+	passivelyRefreshed := map[byte]bool{0x04: true}
+
+	probed := []byte{}
+	counter := &recordingCounter{}
+	r := &Revalidator{
+		Probe: func(_ context.Context, addr byte) bool {
+			probed = append(probed, addr)
+			return true
+		},
+		PassivelyRefreshed: func(addr byte) bool { return passivelyRefreshed[addr] },
+		Counter:            counter,
+		Cap:                2,
+	}
+	result := r.Run(context.Background(), members)
+
+	if len(probed) != 2 || probed[0] != 0x01 || probed[1] != 0x02 {
+		t.Errorf("probed = %x; want [0x01, 0x02]", probed)
+	}
+	// 0x03 hits cap → Postponed; 0x04 keeps flowing (passive-refresh).
+	if len(result.Postponed) != 1 || result.Postponed[0] != 0x03 {
+		t.Errorf("Postponed = %x; want [0x03] only (0x04 is passive, must be counted not postponed)",
+			result.Postponed)
+	}
+	// Counter must have the skipped_passive_refresh increment for 0x04
+	// even though cap was full when we reached it.
+	if got := counter.Counts()[OutcomeSkippedPassiveRefresh]; got != 1 {
+		t.Errorf("counter[skipped_passive_refresh] = %d; want 1 (post-cap passive must still flow)", got)
+	}
+	if got := counter.Counts()[OutcomeResponder]; got != 2 {
+		t.Errorf("counter[responder] = %d; want 2", got)
+	}
+	// Result.Probed must include the post-cap passive-refresh entry.
+	wantProbedOrder := []ProbeResult{
+		{Addr: 0x01, Outcome: OutcomeResponder},
+		{Addr: 0x02, Outcome: OutcomeResponder},
+		{Addr: 0x04, Outcome: OutcomeSkippedPassiveRefresh},
+	}
+	if len(result.Probed) != len(wantProbedOrder) {
+		t.Fatalf("Probed length = %d; want %d", len(result.Probed), len(wantProbedOrder))
+	}
+	for i, want := range wantProbedOrder {
+		if result.Probed[i] != want {
+			t.Errorf("Probed[%d] = %+v; want %+v", i, result.Probed[i], want)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------------
 // AD23 guardrail: a probe that returns false because ctx was cancelled
 // in-flight MUST NOT be mapped to OutcomeNoReply (which the caller would
 // turn into eviction). The post-probe ctx.Err() recheck postpones the

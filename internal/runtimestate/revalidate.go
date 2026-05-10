@@ -149,7 +149,7 @@ func (r *Revalidator) Run(ctx context.Context, members []KnownBusMember) Result 
 			// Context cancelled mid-cycle: postpone the rest. Already-
 			// processed entries stay in Probed; their Counter.Inc has
 			// already fired.
-			result.Postponed = collectAddrs(ordered[i:])
+			result.Postponed = append(result.Postponed, collectAddrs(ordered[i:])...)
 			return result
 		}
 		if passivelyRefreshed(m.Addr) {
@@ -158,8 +158,14 @@ func (r *Revalidator) Run(ctx context.Context, members []KnownBusMember) Result 
 			continue
 		}
 		if probesIssued >= cap {
-			result.Postponed = collectAddrs(ordered[i:])
-			return result
+			// Cap full but iteration continues — passively-refreshed
+			// members further down the list still need their telemetry
+			// counters (per the contract that cap applies exclusively
+			// to bus-touching probes). Probe-eligible members hitting
+			// the cap accumulate in Postponed for the next cycle.
+			// (Codex P2 follow-up on PR #614.)
+			result.Postponed = append(result.Postponed, m.Addr)
+			continue
 		}
 		probesIssued++
 		probeResponded := r.Probe(ctx, m.Addr)
@@ -178,7 +184,7 @@ func (r *Revalidator) Run(ctx context.Context, members []KnownBusMember) Result 
 			// independent of subsequent cancellation. (Codex P1
 			// follow-up on PR #614.)
 			if err := ctx.Err(); err != nil {
-				result.Postponed = collectAddrs(ordered[i:])
+				result.Postponed = append(result.Postponed, collectAddrs(ordered[i:])...)
 				return result
 			}
 			counter.Inc(OutcomeNoReply)

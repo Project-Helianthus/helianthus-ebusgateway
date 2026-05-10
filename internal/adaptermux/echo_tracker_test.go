@@ -154,3 +154,61 @@ func TestEchoTracker_EmptyTracker(t *testing.T) {
 		t.Fatalf("empty flush: len = %d, want 0", len(flushed))
 	}
 }
+
+// TestEchoTracker_OverflowReset (P10.2.1) — exceeding maxPendingEchoes
+// must RESET the queue rather than silently FIFO-drop the head. P10.2's
+// flushOnSYN-skip-on-mid-write would compound the silent FIFO drop into
+// a cascading echo_mismatch storm; reset semantics make the failure
+// noisy (next byte returns echoMatchNone, bus.Send observes timeout +
+// retry) and the totalOverflowResets counter exposes the regression.
+func TestEchoTracker_OverflowReset(t *testing.T) {
+	tracker := newEchoTracker()
+
+	// Fill queue to capacity with sentinel byte 0x71.
+	for i := 0; i < maxPendingEchoes; i++ {
+		tracker.recordSent(0x71)
+	}
+	if got := len(tracker.expectedEchoes); got != maxPendingEchoes {
+		t.Fatalf("queue len at cap = %d; want %d", got, maxPendingEchoes)
+	}
+	if got := tracker.overflowResets(); got != 0 {
+		t.Fatalf("overflowResets pre-overflow = %d; want 0", got)
+	}
+
+	// One more recordSent triggers the overflow path: queue must be
+	// reset to a single entry with the new byte (NOT FIFO-shifted).
+	tracker.recordSent(0x08)
+	if got := len(tracker.expectedEchoes); got != 1 {
+		t.Fatalf("queue len after overflow = %d; want 1 (reset semantics)", got)
+	}
+	if got := tracker.expectedEchoes[0]; got != 0x08 {
+		t.Errorf("queue head after overflow = 0x%02X; want 0x08 (latest write)", got)
+	}
+	if got := tracker.overflowResets(); got != 1 {
+		t.Errorf("overflowResets after overflow = %d; want 1", got)
+	}
+
+	// matchEcho against the latest write 0x08 succeeds — the post-reset
+	// queue head IS 0x08 (the only entry).
+	result, _ := tracker.matchEcho(0x08)
+	if result != echoMatchSuppressed {
+		t.Errorf("matchEcho(0x08) = %v; want Suppressed (post-reset head)", result)
+	}
+
+	// All later stale echoes (the original 256 sentinels still buffered
+	// upstream) now fail to match. Pre-P10.2.1 (FIFO drop) the queue
+	// would have kept [byte_2 ... byte_257] — first mismatch flushes
+	// the queue; downstream echoes are then treated as observer
+	// traffic. Reset semantics produce the same downstream behavior
+	// but expose the regression via overflowResets, which is the
+	// operator tripwire. Verify queue is empty and subsequent stale
+	// echoes return echoMatchNone (NOT echoMatchSuppressed — the
+	// gateway no longer claims them).
+	if got := len(tracker.expectedEchoes); got != 0 {
+		t.Errorf("queue len after consuming 0x08 = %d; want 0", got)
+	}
+	result, _ = tracker.matchEcho(0x71)
+	if result != echoMatchNone {
+		t.Errorf("stale echo of 0x71 post-overflow = %v; want echoMatchNone (queue empty after consume)", result)
+	}
+}

@@ -22,14 +22,14 @@ const SchemaVersion = 1
 // EBusSchemaVersion is the v1 ebus namespace version.
 const EBusSchemaVersion = 1
 
-// JoinMethod enumerates the persisted join_method values per AD17.
-type JoinMethod string
+// SelectionMethod enumerates the persisted join_method values per AD17.
+type SelectionMethod string
 
 const (
-	JoinMethodWarmup           JoinMethod = "joiner-warmup"
-	JoinMethodOverride         JoinMethod = "override"
-	JoinMethodOverrideValidate JoinMethod = "override-validate"
-	JoinMethodEbusdTCPFallback JoinMethod = "ebusd-tcp-fallback"
+	SelectionMethodWarmup           SelectionMethod = "source_selection_warmup"
+	SelectionMethodOverride         SelectionMethod = "override"
+	SelectionMethodOverrideValidate SelectionMethod = "explicit_validate_only"
+	SelectionMethodEbusdTCPFallback SelectionMethod = "ebusd-tcp-fallback"
 )
 
 // LastSource enumerates the persisted last_source values per AD16.
@@ -88,9 +88,9 @@ type EBusNamespace struct {
 // Self holds ebus.self — historical hint only, not the current admitted
 // source (AD24).
 type Self struct {
-	LastJoinInitiator byte
-	LastJoinAt        time.Time
-	JoinMethod        JoinMethod
+	LastAdmittedSource byte
+	LastAdmittedAt        time.Time
+	SelectionMethod        SelectionMethod
 	CompanionTarget   *byte // nil when no valid companion per address-table AD03 bit-pattern rule.
 }
 
@@ -215,7 +215,7 @@ func (m *Manager) State() *State {
 }
 
 // UpdateSelf replaces ebus.self with the given Self and triggers a write.
-// Used after a successful JoinResult per AD14.
+// Used after a successful SourceAddressSelection per AD14.
 func (m *Manager) UpdateSelf(self Self) {
 }
 

@@ -48,9 +48,9 @@ func validV1JSON(t *testing.T) []byte {
   "ebus": {
     "schema_version": 1,
     "self": {
-      "last_join_initiator": 247,
-      "last_join_at": "2026-05-10T19:38:55Z",
-      "join_method": "joiner-warmup",
+      "last_admitted_source": 247,
+      "last_admitted_at": "2026-05-10T19:38:55Z",
+      "selection_method": "source_selection_warmup",
       "companion_target": 252
     },
     "known_bus_members": [
@@ -124,7 +124,7 @@ func TestLoad_PluginSchemaVersionMismatch_IgnoresNamespace(t *testing.T) {
 	src := `{
   "schema_version": 1,
   "meta": {"instance_guid": "8a3f2b9e-4d7c-4f1a-9b5e-2c1f3e7a9d5b", "written_at": "2026-05-10T19:42:11Z"},
-  "ebus": {"schema_version": 99, "self": {"last_join_initiator": 247}}
+  "ebus": {"schema_version": 99, "self": {"last_admitted_source": 247}}
 }`
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
@@ -166,11 +166,11 @@ func TestLoad_ValidV1_ParsesAllFields(t *testing.T) {
 	if got.EBus == nil || got.EBus.Self == nil {
 		t.Fatalf("expected ebus.self to be parsed")
 	}
-	if got.EBus.Self.LastJoinInitiator != 0xF7 {
-		t.Errorf("LastJoinInitiator: want 0xF7, got 0x%X", got.EBus.Self.LastJoinInitiator)
+	if got.EBus.Self.LastAdmittedSource != 0xF7 {
+		t.Errorf("LastAdmittedSource: want 0xF7, got 0x%X", got.EBus.Self.LastAdmittedSource)
 	}
-	if got.EBus.Self.JoinMethod != JoinMethodWarmup {
-		t.Errorf("JoinMethod: %q", got.EBus.Self.JoinMethod)
+	if got.EBus.Self.SelectionMethod != SelectionMethodWarmup {
+		t.Errorf("SelectionMethod: %q", got.EBus.Self.SelectionMethod)
 	}
 	if len(got.EBus.KnownBusMembers) != 1 {
 		t.Fatalf("KnownBusMembers: want 1, got %d", len(got.EBus.KnownBusMembers))
@@ -208,7 +208,7 @@ func TestPersist_AtomicTempRename(t *testing.T) {
 	}
 
 	// Mutate state and trigger persist.
-	mgr.UpdateSelf(Self{LastJoinInitiator: 0xF1, JoinMethod: JoinMethodOverride})
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
 	// Allow a brief flush window via Stop (M3 will define Stop to flush).
 	if err := mgr.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -312,7 +312,7 @@ func TestPersist_ConcurrentWritesSerialized(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			mgr.UpdateSelf(Self{LastJoinInitiator: byte(0xF0 + i%8), JoinMethod: JoinMethodWarmup})
+			mgr.UpdateSelf(Self{LastAdmittedSource: byte(0xF0 + i%8), SelectionMethod: SelectionMethodWarmup})
 		}(i)
 	}
 	wg.Wait()

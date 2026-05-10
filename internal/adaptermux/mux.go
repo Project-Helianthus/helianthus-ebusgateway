@@ -2407,8 +2407,23 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 	_, err := tr.Write([]byte{data})
 	if err != nil {
 		// Rollback echo expectation on send failure.
+		//
+		// P11 round-4 (Codex pass-3 P1): clear gatewayTxnActive in the
+		// SAME stateMu critical section as the rollback. Pre-round-4 the
+		// rollback ran under stateMu, then doSend returned err, then the
+		// caller's activeTransport.Write fired markActiveWriteError to
+		// clear gatewayTxnActive — leaving a window where stateMu was
+		// released with gatewayTxnActive=true and gatewayEcho queue
+		// empty. onReceived in that window would read response-phase
+		// open and deliver stale bytes. recordGatewayInactive is
+		// idempotent so the activeTransport.Write call site's
+		// markActiveWriteError remains safe (no double-clear).
 		if sessionID == gatewaySessionID {
 			m.stateMu.Lock()
+			if m.gatewayTxnActive {
+				m.gatewayTxnActive = false
+				m.recordGatewayInactive(ReasonActiveWriteError)
+			}
 			m.gatewayEcho.rollbackSent()
 			m.stateMu.Unlock()
 		} else {

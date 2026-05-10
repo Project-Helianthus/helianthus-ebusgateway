@@ -39,6 +39,18 @@ type echoTracker struct {
 	// Stats.
 	totalSuppressed uint64
 	totalMismatches uint64
+
+	// totalOverflowResets counts how many times recordSent reset the
+	// expectedEchoes queue because it would have exceeded
+	// maxPendingEchoes. Pre-P10.2 the queue silently dropped its oldest
+	// entry on overflow (FIFO); under sustained mid-write SYN noise
+	// (P10.2 keeps the queue across suppressed SYNs) that silent drop
+	// would desync subsequent matchEcho calls — every comparison would
+	// be against a wrong head, producing a cascading echo_mismatch
+	// storm hard to diagnose. Reset semantics make the failure noisy
+	// (next received byte won't match an empty queue → echoMatchNone)
+	// and operator-visible via this counter (P10.2.1).
+	totalOverflowResets uint64
 }
 
 // newEchoTracker creates a fresh echo tracker.
@@ -51,10 +63,24 @@ func newEchoTracker() *echoTracker {
 
 // recordSent records a byte that the session is sending to the adapter.
 // We expect the adapter to echo this byte back as ENHResReceived.
+//
+// Overflow handling (P10.2.1 — replaces the AM16 silent FIFO drop):
+// at the cap (maxPendingEchoes=256) the queue is RESET, NOT shifted.
+// FIFO drop preserved length but silently rotated the head, which
+// post-P10.2 (mid-write SYN now keeps the queue rather than flushing
+// it on SYN) would desynchronize subsequent matchEcho calls — every
+// comparison would be against the wrong head, producing a cascading
+// echo_mismatch storm hard to diagnose. Reset semantics make the
+// failure noisy (echoMatchNone on the next byte; bus.Send will see
+// the lost-echo timeout and retry the txn) and the
+// `totalOverflowResets` counter exposes the regression for
+// operators. Real eBUS frames are <30 bytes; reaching 256 implies a
+// pathological condition (TCP backpressure, paused readLoop, runaway
+// gateway write loop) where loud failure is preferable to drift.
 func (t *echoTracker) recordSent(data byte) {
-	// AM16: drop oldest if queue is at capacity.
 	if len(t.expectedEchoes) >= maxPendingEchoes {
-		t.expectedEchoes = t.expectedEchoes[1:]
+		t.expectedEchoes = t.expectedEchoes[:0]
+		t.totalOverflowResets++
 	}
 	t.expectedEchoes = append(t.expectedEchoes, data)
 }
@@ -184,4 +210,13 @@ func (t *echoTracker) reset() {
 // stats returns echo tracking statistics.
 func (t *echoTracker) stats() (suppressed, mismatches uint64) {
 	return t.totalSuppressed, t.totalMismatches
+}
+
+// overflowResets returns the number of times recordSent reset the
+// expectedEchoes queue because it was about to exceed
+// maxPendingEchoes. Non-zero means the gateway-write loop produced
+// more than 256 unacknowledged writes — a pathological condition
+// that matters as a tripwire for operator visibility (P10.2.1).
+func (t *echoTracker) overflowResets() uint64 {
+	return t.totalOverflowResets
 }

@@ -168,6 +168,13 @@ type ActiveTxnSnapshot struct {
 	TerminatorDropOnFullCh uint64
 	// SynSuppressedPreEcho mirrors activeTxnDiag.synSuppressedPreEcho.
 	SynSuppressedPreEcho uint64
+	// EchoQueueOverflowResets mirrors gatewayEcho.totalOverflowResets
+	// (P10.2.1). Non-zero indicates the gateway-write loop produced
+	// more than 256 unacknowledged writes, triggering a queue reset.
+	// Real eBUS frames are <30 bytes; reaching 256 implies a
+	// pathological condition (TCP backpressure, paused readLoop,
+	// runaway write loop) and warrants operator investigation.
+	EchoQueueOverflowResets uint64
 	// BytesDeliveredToActive mirrors activeTxnDiag.bytesDeliveredToActive.
 	BytesDeliveredToActive uint64
 
@@ -201,29 +208,30 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 	rp := make([]byte, m.activeTxn.readPrefixLen)
 	copy(rp, m.activeTxn.readPrefix[:m.activeTxn.readPrefixLen])
 	return ActiveTxnSnapshot{
-		ID:                     m.activeTxn.id,
-		Initiator:              m.activeTxn.initiator,
-		GrantedAt:              m.activeTxn.grantedAt,
-		InactiveAt:             m.activeTxn.inactiveAt,
-		InactiveReason:         m.activeTxn.inactiveReas,
-		DrainedOnGrant:         m.activeTxn.drainedOnGrant,
-		Active:                 m.gatewayTxnActive,
-		BytesWritten:           m.activeTxn.bytesWritten.Load(),
-		BytesRead:              m.activeTxn.bytesRead.Load(),
-		GrantsTotal:            m.activeTxn.grantsTotal.Load(),
-		WriteErrTotal:          m.activeTxn.writeErrTotal.Load(),
-		ReadTimeoutTot:         m.activeTxn.readTimeoutTot.Load(),
-		AfterInactive:          m.activeTxn.afterInactive.Load(),
-		TerminatorDropOnFullCh: m.activeTxn.terminatorDropOnFullCh.Load(),
-		SynSuppressedPreEcho:   m.activeTxn.synSuppressedPreEcho.Load(),
-		BytesDeliveredToActive: m.activeTxn.bytesDeliveredToActive.Load(),
-		WritePrefix:            wp,
-		ReadPrefix:             rp,
-		EchoLike:               m.activeTxn.echoLike.Load(),
-		NonEcho:                m.activeTxn.nonEcho.Load(),
-		SynMarkers:             m.activeTxn.synMarkers.Load(),
-		TxnClass:               m.activeTxn.txnClass,
-		LastTxnClass:           m.activeTxn.lastClass,
+		ID:                      m.activeTxn.id,
+		Initiator:               m.activeTxn.initiator,
+		GrantedAt:               m.activeTxn.grantedAt,
+		InactiveAt:              m.activeTxn.inactiveAt,
+		InactiveReason:          m.activeTxn.inactiveReas,
+		DrainedOnGrant:          m.activeTxn.drainedOnGrant,
+		Active:                  m.gatewayTxnActive,
+		BytesWritten:            m.activeTxn.bytesWritten.Load(),
+		BytesRead:               m.activeTxn.bytesRead.Load(),
+		GrantsTotal:             m.activeTxn.grantsTotal.Load(),
+		WriteErrTotal:           m.activeTxn.writeErrTotal.Load(),
+		ReadTimeoutTot:          m.activeTxn.readTimeoutTot.Load(),
+		AfterInactive:           m.activeTxn.afterInactive.Load(),
+		TerminatorDropOnFullCh:  m.activeTxn.terminatorDropOnFullCh.Load(),
+		SynSuppressedPreEcho:    m.activeTxn.synSuppressedPreEcho.Load(),
+		EchoQueueOverflowResets: m.gatewayEcho.overflowResets(),
+		BytesDeliveredToActive:  m.activeTxn.bytesDeliveredToActive.Load(),
+		WritePrefix:             wp,
+		ReadPrefix:              rp,
+		EchoLike:                m.activeTxn.echoLike.Load(),
+		NonEcho:                 m.activeTxn.nonEcho.Load(),
+		SynMarkers:              m.activeTxn.synMarkers.Load(),
+		TxnClass:                m.activeTxn.txnClass,
+		LastTxnClass:            m.activeTxn.lastClass,
 	}
 }
 

@@ -4,6 +4,40 @@ import (
 	"testing"
 )
 
+// TestEvictionBlocklist_MarkClearLifecycle pins the AD23 anti-resurrection
+// contract: M5 eviction marks an addr; subsequent passive observation
+// (via the AddressTableInserter observer hook) clears it; the registry
+// reconciler skips marked addrs. Codex P2 follow-up on PR #615.
+func TestEvictionBlocklist_MarkClearLifecycle(t *testing.T) {
+	b := newEvictionBlocklist()
+
+	if b.isEvicted(0x08) {
+		t.Errorf("fresh blocklist: 0x08 must not be evicted")
+	}
+
+	b.markEvicted(0x08)
+	if !b.isEvicted(0x08) {
+		t.Errorf("after markEvicted(0x08): isEvicted must return true")
+	}
+	if b.isEvicted(0x15) {
+		t.Errorf("other addrs must not be affected by markEvicted(0x08)")
+	}
+
+	// Fresh passive observation clears the eviction.
+	b.clear(0x08)
+	if b.isEvicted(0x08) {
+		t.Errorf("after clear(0x08): isEvicted must return false")
+	}
+
+	// Re-eviction (later cycle re-discovers the address as no_reply)
+	// is idempotent.
+	b.markEvicted(0x08)
+	b.markEvicted(0x08)
+	if !b.isEvicted(0x08) {
+		t.Errorf("re-marking after clear must work")
+	}
+}
+
 // TestRevalidationRotation_ShouldSkipBeforeAndAfterMark verifies the basic
 // "probed-once then skip" contract.
 func TestRevalidationRotation_ShouldSkipBeforeAndAfterMark(t *testing.T) {

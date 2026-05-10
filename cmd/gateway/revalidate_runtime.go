@@ -12,6 +12,50 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
+// evictionBlocklist tracks addresses that M5 has evicted (no_reply outcome)
+// in the current process lifetime. The registry → Manager reconciliation
+// step at the top of revalidateRuntimeStateMembers MUST skip these addrs;
+// otherwise an AD23 eviction would be undone within 15 min by the
+// reconciler re-inserting the stale registry entry, repeating
+// indefinitely for static/registry-only entries. (Codex P2 follow-up on
+// PR #615.)
+//
+// Entries clear on fresh passive observation via the AddressTableInserter
+// observer hook — that's evidence the address is alive again on the bus
+// (the AD23 stale-ghost premise no longer holds).
+//
+// In-process state by design; a process restart loses the blocklist,
+// which is correct: Manager.Load reads runtime_state.json which already
+// has the address evicted (M5 persisted the eviction), so the reconciler
+// won't re-add it unless the registry has it AND fresh evidence arrives.
+type evictionBlocklist struct {
+	mu      sync.Mutex
+	evicted map[byte]struct{}
+}
+
+func newEvictionBlocklist() *evictionBlocklist {
+	return &evictionBlocklist{evicted: make(map[byte]struct{})}
+}
+
+func (b *evictionBlocklist) markEvicted(addr byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.evicted[addr] = struct{}{}
+}
+
+func (b *evictionBlocklist) clear(addr byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.evicted, addr)
+}
+
+func (b *evictionBlocklist) isEvicted(addr byte) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.evicted[addr]
+	return ok
+}
+
 // revalidationRotation tracks which cached addresses have been probed in
 // the current rotation round. This is in-process state (deliberately not
 // persisted) — a process restart re-reads runtime_state.json and starts
@@ -106,6 +150,7 @@ func revalidateRuntimeStateMembers(
 	cfg ebusgateway.Config,
 	admittedSource byte,
 	rotation *revalidationRotation,
+	blocklist *evictionBlocklist,
 ) runtimestate.Result {
 	if mgr == nil || gw == nil || gw.Bus == nil || gw.Registry == nil {
 		return runtimestate.Result{}
@@ -127,6 +172,14 @@ func revalidateRuntimeStateMembers(
 	gw.Registry.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
 		for _, addr := range snap.Addresses {
 			if addr == admittedSource || addr == 0xFE || addr == 0x00 {
+				continue
+			}
+			// AD23 anti-resurrection: skip addresses M5 has evicted in
+			// this process lifetime. They only re-enter when fresh
+			// passive bus traffic arrives via the AddressTableInserter
+			// observer hook, which clears the blocklist entry. (Codex
+			// P2 follow-up on PR #615.)
+			if blocklist != nil && blocklist.isEvicted(addr) {
 				continue
 			}
 			mgr.RefreshKnownBusMemberPresence(addr, now, runtimestate.LastSourcePassiveObserved)
@@ -265,6 +318,13 @@ func revalidateRuntimeStateMembers(
 			if rotation != nil {
 				rotation.markProbed(p.Addr)
 			}
+			// AD23 anti-resurrection (Codex P2 follow-up on PR #615):
+			// block the registry reconciler from re-adding this addr
+			// until fresh passive traffic clears the blocklist via the
+			// inserter observer hook.
+			if blocklist != nil {
+				blocklist.markEvicted(p.Addr)
+			}
 		case runtimestate.OutcomeSkippedPassiveRefresh:
 			// No-op: member already refreshed via warmup-window passive
 			// observation; the address-table inserter normal path is
@@ -303,10 +363,11 @@ func startRuntimeStateRevalidator(
 		interval = 15 * time.Minute
 	}
 	rotation := newRevalidationRotation()
+	blocklist := globalEvictionBlocklist
 	go func() {
 		// First cycle runs immediately so cached responders refresh
 		// confidence within ~5 s of admission per M5 acceptance.
-		revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource, rotation)
+		revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource, rotation, blocklist)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -314,11 +375,19 @@ func startRuntimeStateRevalidator(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource, rotation)
+				revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource, rotation, blocklist)
 			}
 		}
 	}()
 }
+
+// globalEvictionBlocklist is the per-process M5 eviction blocklist used by
+// both the revalidator loop (to skip resurrection during reconciliation)
+// and the AddressTableInserter observer hook (to clear entries on fresh
+// passive traffic). Package-level singleton so the observer wired in
+// main.go can clear without taking a function parameter. In-process
+// state; cleared on restart by virtue of process termination.
+var globalEvictionBlocklist = newEvictionBlocklist()
 
 // revalidateCounterAdapter bridges runtimestate.RevalidationOutcome to the
 // expvar map. Each Inc adds 1 to the per-outcome key.
@@ -329,25 +398,22 @@ func (revalidateCounterAdapter) Inc(o runtimestate.RevalidationOutcome) {
 	revalidateOutcomesTotal.Add(string(o), 1)
 }
 
-// finalizeRuntimeStateForAdmittedSource performs the M4 ebus.self write-back
-// and starts the M5 periodic revalidator for any admitted source — whether
-// it came from a SourceAddressSelector warmup, an explicit operator
-// override, an ebusd-tcp fallback, or any other path that finalizes
-// builder.SetAdmittedMutationSource. Codex P2 follow-up on PR #615
-// (without this, override and static-fallback admissions skipped the
-// runtime-state finalization entirely and cached known_bus_members[]
-// stayed stale indefinitely on those transports).
+// recordAdmittedSourceInRuntimeState writes ebus.self with the validated
+// source, companion (if any), and SelectionMethod. Cache mutation only —
+// no bus traffic — so it's safe to call synchronously regardless of
+// startup-scan progress. The M5 revalidator start is intentionally
+// separated into startRuntimeStateRevalidator so the caller can defer it
+// to post-validation (after startupScanSignals.activeProbePassed) and
+// avoid emitting directed 07 04 probes during the startup admission
+// scan window. (Codex P2 follow-up on PR #615.)
 //
-// hasCompanion gates whether companion is written into ebus.self.
-// Synchronous static-path admissions don't have a SourceAddressSelection
-// result and therefore no companion to record (CompanionTarget remains
-// nil per AD03 — the Manager preserves nil for "no valid companion per
-// bit-pattern rule" rather than synthesising one).
-func finalizeRuntimeStateForAdmittedSource(
-	ctx context.Context,
+// hasCompanion gates whether companion is written. Synchronous static-
+// path admissions don't have a SourceAddressSelection result and
+// therefore no companion to record (CompanionTarget remains nil per
+// AD03 — "no valid companion per bit-pattern rule" — rather than
+// synthesising one).
+func recordAdmittedSourceInRuntimeState(
 	mgr *runtimestate.Manager,
-	gw *ebusgateway.Gateway,
-	cfg ebusgateway.Config,
 	admittedSource byte,
 	companion byte,
 	selectionMethod runtimestate.SelectionMethod,
@@ -362,5 +428,24 @@ func finalizeRuntimeStateForAdmittedSource(
 		self.CompanionTarget = &companion
 	}
 	mgr.UpdateSelf(self)
+}
+
+// finalizeRuntimeStateForAdmittedSource is the convenience composition
+// used by the warmup admission path (where activeProbePassed has already
+// fired): records ebus.self synchronously AND immediately starts the M5
+// revalidator. For the synchronous static / override admission path,
+// the caller MUST instead call recordAdmittedSourceInRuntimeState
+// directly and defer startRuntimeStateRevalidator to post-validation.
+func finalizeRuntimeStateForAdmittedSource(
+	ctx context.Context,
+	mgr *runtimestate.Manager,
+	gw *ebusgateway.Gateway,
+	cfg ebusgateway.Config,
+	admittedSource byte,
+	companion byte,
+	selectionMethod runtimestate.SelectionMethod,
+	hasCompanion bool,
+) {
+	recordAdmittedSourceInRuntimeState(mgr, admittedSource, companion, selectionMethod, hasCompanion)
 	startRuntimeStateRevalidator(ctx, mgr, gw, cfg, admittedSource, 0)
 }

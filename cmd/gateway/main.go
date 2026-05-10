@@ -271,6 +271,11 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	// install and M5 would have nothing to revalidate. (Codex P2
 	// follow-up on PR #615.)
 	addressTableInserter.SetRuntimeStateObserver(func(addr byte, observedAt time.Time, reportedSource string) {
+		// Fresh passive evidence clears any M5 eviction blocklist
+		// entry — the AD23 stale-ghost premise no longer holds when
+		// the address is observed on the bus again. (Codex P2
+		// follow-up on PR #615.)
+		globalEvictionBlocklist.clear(addr)
 		runtimeStateMgr.RefreshKnownBusMemberPresence(addr, observedAt, runtimestate.LastSource(reportedSource))
 	})
 	if busObservability != nil {
@@ -547,24 +552,25 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		cfg.ScanSourceAuto = false
 	}
 	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
-	if source, admitted := admittedMutationSourceForGateway(cfg, admissionPath, overrideSet); admitted {
-		builder.SetAdmittedMutationSource(source)
+	syncStaticAdmittedSource, syncStaticAdmitted := admittedMutationSourceForGateway(cfg, admissionPath, overrideSet)
+	if syncStaticAdmitted {
+		builder.SetAdmittedMutationSource(syncStaticAdmittedSource)
 		// Phase A.5 (Codex P2 round 3): admission resolved synchronously
 		// (override / static fallback). Bind the inserter now that
 		// AdmittedSource() returns the real source.
 		subscribeAddressTableInserter()
-		// M4/M5: also finalize runtime-state for override + static-
-		// fallback admissions. Without this, cached known_bus_members[]
-		// would only ever be revalidated on warmup-based admissions and
-		// stale entries would persist indefinitely on configured
-		// transports (Codex P2 follow-up on PR #615). The selection
-		// method varies by path: ebusd-tcp → ebusd-tcp-fallback,
-		// override / explicit static → explicit_validate_only.
+		// M4: write the validated source to runtime_state.ebus.self
+		// synchronously — this is just a cache update, not bus
+		// traffic, so it's safe to run before the startup directed-
+		// probe phase. M5 revalidator start is DEFERRED to
+		// post-validation (after startupScanSignals.activeProbePassed)
+		// so directed 07 04 probes don't race the startup admission
+		// scan's bus traffic. Codex P2 follow-up on PR #615.
 		selectionMethod := runtimestate.SelectionMethodExplicitValidateOnly
 		if isEbusdTransportProtocol(cfg.TransportConfig.Protocol) {
 			selectionMethod = runtimestate.SelectionMethodEbusdTCPFallback
 		}
-		finalizeRuntimeStateForAdmittedSource(ctx, runtimeStateMgr, gateway, cfg, source, 0, selectionMethod, false)
+		recordAdmittedSourceInRuntimeState(runtimeStateMgr, syncStaticAdmittedSource, 0, selectionMethod, false)
 	} else {
 		builder.ClearAdmittedMutationSource()
 	}
@@ -625,6 +631,27 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		artifactBuilder.SetExplicitSource(startupCfg.ScanSource)
 	}
 	startupScanSignals := startDiscoveryScanLoopFn(ctx, startupCfg, gateway, builder, adapterClassifier)
+
+	// Synchronous static / override admission path: defer the M5
+	// revalidator start until activeProbePassed (or ctx cancel) to keep
+	// directed 07 04 probes outside the startup admission scan window.
+	// (Codex P2 follow-up on PR #615 — without this defer, M5 would
+	// emit bus traffic concurrent with startup directed-probe phase.)
+	if syncStaticAdmitted && !sourceSelectionAdmission {
+		go func(source byte) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-startupScanSignals.activeProbePassed:
+				startRuntimeStateRevalidator(ctx, runtimeStateMgr, gateway, cfg, source, 0)
+			case <-startupScanSignals.admissionFailed:
+				// Admission failed mid-validation; skip M5 start —
+				// no point probing cached members when we don't have
+				// a healthy admitted source on the bus.
+				return
+			}
+		}(syncStaticAdmittedSource)
+	}
 
 	if semanticBarrier != nil || sourceSelection != nil {
 		go func() {

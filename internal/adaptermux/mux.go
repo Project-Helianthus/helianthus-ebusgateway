@@ -2376,7 +2376,31 @@ func (m *Mux) sendLoop() {
 }
 
 // doSend writes a byte to the adapter for the given session.
+//
+// P11 round-5 (Codex P2 finding on PR #606): every error path —
+// errNotBusOwner / errNotConnected / tr.Write failure — must roll
+// back gateway echo state (the byte never reached the wire) AND
+// clear gatewayTxnActive in the SAME stateMu critical section. The
+// pre-write returns previously skipped both, leaving phantom echo
+// expectations and a stuck gatewayTxnActive=true state until the
+// next SYN/grant reset. The deferred rollback below handles all
+// failure exits uniformly.
 func (m *Mux) doSend(sessionID uint64, data byte) error {
+	isGateway := sessionID == gatewaySessionID
+	sendOK := false
+	defer func() {
+		if !isGateway || sendOK {
+			return
+		}
+		m.stateMu.Lock()
+		if m.gatewayTxnActive {
+			m.gatewayTxnActive = false
+			m.recordGatewayInactive(ReasonActiveWriteError)
+		}
+		m.gatewayEcho.rollbackSent()
+		m.stateMu.Unlock()
+	}()
+
 	if !m.arb.isOwner(sessionID) {
 		return errNotBusOwner
 	}
@@ -2396,7 +2420,7 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 	// state-ordering race where gatewayTxnActive=true but gatewayEcho
 	// queue is still empty. External sessions still record here — they
 	// don't gate the active-path filter.
-	if sessionID != gatewaySessionID {
+	if !isGateway {
 		m.sessionsMu.Lock()
 		if sess, ok := m.sessions[sessionID]; ok {
 			sess.echoTracker.recordSent(data)
@@ -2406,27 +2430,9 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 
 	_, err := tr.Write([]byte{data})
 	if err != nil {
-		// Rollback echo expectation on send failure.
-		//
-		// P11 round-4 (Codex pass-3 P1): clear gatewayTxnActive in the
-		// SAME stateMu critical section as the rollback. Pre-round-4 the
-		// rollback ran under stateMu, then doSend returned err, then the
-		// caller's activeTransport.Write fired markActiveWriteError to
-		// clear gatewayTxnActive — leaving a window where stateMu was
-		// released with gatewayTxnActive=true and gatewayEcho queue
-		// empty. onReceived in that window would read response-phase
-		// open and deliver stale bytes. recordGatewayInactive is
-		// idempotent so the activeTransport.Write call site's
-		// markActiveWriteError remains safe (no double-clear).
-		if sessionID == gatewaySessionID {
-			m.stateMu.Lock()
-			if m.gatewayTxnActive {
-				m.gatewayTxnActive = false
-				m.recordGatewayInactive(ReasonActiveWriteError)
-			}
-			m.gatewayEcho.rollbackSent()
-			m.stateMu.Unlock()
-		} else {
+		if !isGateway {
+			// External session rollback (gateway handled by deferred
+			// rollback above).
 			m.sessionsMu.Lock()
 			if sess, ok := m.sessions[sessionID]; ok {
 				sess.echoTracker.rollbackSent()
@@ -2436,6 +2442,7 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 		return fmt.Errorf("%w: %v", errAdapterWrite, err)
 	}
 
+	sendOK = true
 	return nil
 }
 

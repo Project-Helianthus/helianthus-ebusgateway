@@ -1,0 +1,1921 @@
+{
+  "artifact": "transport-matrix-baseline-runtime-state-w19-26",
+  "artifact_schema": 1,
+  "generated_at": "2026-05-10T15:00:02Z",
+  "plan": {
+    "name": "runtime-state-w19-26.locked",
+    "sha256": "f1129d0c442d3b2704f6f7e7eed2042c05df3f83e21ad57ccebdd6884f42241d",
+    "meta_issue": "https://github.com/Project-Helianthus/helianthus-execution-plans/issues/27",
+    "milestone": "M0A_TRANSPORT_BASELINE"
+  },
+  "git": {
+    "branch": "feat/runtime-state-m0a-transport-baseline",
+    "current_main_sha": "da230c773a0cd3f92ee56d51e885931c30380ff3"
+  },
+  "matrix_runner": {
+    "suite": "full88",
+    "target": "local",
+    "mode": "dry-run-planning",
+    "command": "/tmp/matrix-runner --output-dir /tmp/matrix-baseline-runtime-state-w19-26 --target local --suite full88",
+    "source_sha": "da230c773a0cd3f92ee56d51e885931c30380ff3",
+    "binary_path": "/tmp/matrix-runner",
+    "binary_sha256": "bbaf32bcbee164bde6cbcffe7e2e46a9fcd3b66dc8570759f3d06a1b9f528ce7",
+    "build_info": [
+      "/tmp/matrix-runner: go1.26.2",
+      "\tpath\tgithub.com/Project-Helianthus/helianthus-ebusgateway/cmd/matrix-runner",
+      "\tmod\tgithub.com/Project-Helianthus/helianthus-ebusgateway\tv0.5.1-0.20260510115258-da230c773a0c+dirty\t",
+      "\tbuild\t-buildmode=exe",
+      "\tbuild\t-compiler=gc",
+      "\tbuild\tDefaultGODEBUG=containermaxprocs=0,cryptocustomrand=1,decoratemappings=0,gotestjsonbuildtext=1,httpcookiemaxnum=0,multipathtcp=0,randseednop=0,rsa1024min=0,tlsmlkem=0,tlssecpmlkem=0,tlssha1=1,updatemaxprocs=0,urlmaxqueryparams=0,urlstrictcolons=0,x509rsacrt=0,x509sha256skid=0,x509usepolicies=0",
+      "\tbuild\tCGO_ENABLED=1",
+      "\tbuild\tCGO_CFLAGS=",
+      "\tbuild\tCGO_CPPFLAGS=",
+      "\tbuild\tCGO_CXXFLAGS=",
+      "\tbuild\tCGO_LDFLAGS=",
+      "\tbuild\tGOARCH=arm64",
+      "\tbuild\tGOOS=darwin",
+      "\tbuild\tGOARM64=v8.0",
+      "\tbuild\tvcs=git",
+      "\tbuild\tvcs.revision=da230c773a0cd3f92ee56d51e885931c30380ff3",
+      "\tbuild\tvcs.time=2026-05-10T11:52:58Z",
+      "\tbuild\tvcs.modified=true"
+    ]
+  },
+  "case_count": 88,
+  "case_ids": [
+    "T01",
+    "T02",
+    "T03",
+    "T04",
+    "T05",
+    "T06",
+    "T07",
+    "T08",
+    "T09",
+    "T10",
+    "T11",
+    "T12",
+    "T13",
+    "T14",
+    "T15",
+    "T16",
+    "T17",
+    "T18",
+    "T19",
+    "T20",
+    "T21",
+    "T22",
+    "T23",
+    "T24",
+    "T25",
+    "T26",
+    "T27",
+    "T28",
+    "T29",
+    "T30",
+    "T31",
+    "T32",
+    "T33",
+    "T34",
+    "T35",
+    "T36",
+    "T37",
+    "T38",
+    "T39",
+    "T40",
+    "T41",
+    "T42",
+    "T43",
+    "T44",
+    "T45",
+    "T46",
+    "T47",
+    "T48",
+    "T49",
+    "T50",
+    "T51",
+    "T52",
+    "T53",
+    "T54",
+    "T55",
+    "T56",
+    "T57",
+    "T58",
+    "T59",
+    "T60",
+    "T61",
+    "T62",
+    "T63",
+    "T64",
+    "T65",
+    "T66",
+    "T67",
+    "T68",
+    "T69",
+    "T70",
+    "T71",
+    "T72",
+    "T73",
+    "T74",
+    "T75",
+    "T76",
+    "T77",
+    "T78",
+    "T79",
+    "T80",
+    "T81",
+    "T82",
+    "T83",
+    "T84",
+    "T85",
+    "T86",
+    "T87",
+    "T88"
+  ],
+  "outcome_summary": {
+    "planned": 88,
+    "pass": 0,
+    "fail": 0,
+    "xfail": 0,
+    "xpass": 0,
+    "blocked": 0
+  },
+  "cases": [
+    {
+      "case_id": "T01",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T01/configs/helianthus.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T01/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T02",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T02/configs/helianthus.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T02/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T03",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T03/configs/helianthus.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T03/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T04",
+      "suite": "full88",
+      "kind": "direct-adapter",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T04/configs/helianthus.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T04/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T05",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T05/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T05/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T05/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T06",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T06/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T06/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T06/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T07",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "ebusd direct udp/tcp to adapter reports no signal in matrix runs",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T07/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T07/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T07/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T08",
+      "suite": "full88",
+      "kind": "via-ebusd-tcp",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "ebusd direct udp/tcp to adapter reports no signal in matrix runs",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T08/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T08/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T08/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T09",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T09/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T09/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T09/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T10",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T10/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T10/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T10/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T11",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T11/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T11/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T11/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T12",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T12/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T12/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T12/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T13",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T13/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T13/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T13/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T14",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T14/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T14/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T14/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T15",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T15/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T15/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T15/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T16",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T16/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T16/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T16/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T17",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T17/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T17/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T17/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T18",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T18/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T18/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T18/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T19",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T19/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T19/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T19/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T20",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T20/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T20/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T20/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T21",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T21/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T21/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T21/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T22",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T22/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T22/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T22/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T23",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T23/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T23/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T23/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T24",
+      "suite": "full88",
+      "kind": "proxy-single-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T24/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T24/configs/proxy.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T24/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T25",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T25/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T25/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T25/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T25/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T26",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T26/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T26/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T26/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T26/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T27",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T27/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T27/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T27/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T27/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T28",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T28/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T28/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T28/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T28/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T29",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T29/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T29/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T29/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T29/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T30",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T30/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T30/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T30/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T30/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T31",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T31/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T31/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T31/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T31/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T32",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T32/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T32/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T32/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T32/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T33",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T33/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T33/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T33/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T33/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T34",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T34/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T34/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T34/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T34/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T35",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T35/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T35/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T35/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T35/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T36",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T36/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T36/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T36/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T36/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T37",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T37/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T37/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T37/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T37/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T38",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T38/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T38/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T38/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T38/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T39",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T39/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T39/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T39/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T39/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T40",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T40/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T40/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T40/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T40/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T41",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T41/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T41/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T41/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T41/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T42",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T42/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T42/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T42/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T42/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T43",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T43/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T43/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T43/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T43/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T44",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T44/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T44/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T44/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T44/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T45",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T45/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T45/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T45/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T45/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T46",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T46/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T46/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T46/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T46/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T47",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T47/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T47/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T47/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T47/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T48",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T48/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T48/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T48/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T48/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T49",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T49/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T49/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T49/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T49/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T50",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T50/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T50/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T50/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T50/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T51",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T51/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T51/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T51/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T51/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T52",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T52/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T52/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T52/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T52/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T53",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T53/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T53/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T53/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T53/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T54",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T54/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T54/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T54/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T54/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T55",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T55/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T55/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T55/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T55/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T56",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T56/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T56/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T56/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T56/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T57",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T57/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T57/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T57/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T57/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T58",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T58/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T58/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T58/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T58/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T59",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T59/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T59/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T59/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T59/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T60",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T60/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T60/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T60/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T60/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T61",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T61/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T61/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T61/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T61/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T62",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T62/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T62/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T62/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T62/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T63",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T63/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T63/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T63/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T63/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T64",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T64/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T64/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T64/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T64/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T65",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T65/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T65/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T65/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T65/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T66",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T66/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T66/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T66/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T66/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T67",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T67/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T67/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T67/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T67/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T68",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T68/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T68/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T68/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T68/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T69",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T69/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T69/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T69/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T69/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T70",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T70/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T70/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T70/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T70/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T71",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T71/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T71/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T71/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T71/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T72",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T72/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T72/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T72/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T72/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T73",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T73/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T73/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T73/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T73/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T74",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T74/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T74/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T74/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T74/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T75",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T75/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T75/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T75/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T75/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T76",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T76/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T76/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T76/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T76/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T77",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T77/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T77/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T77/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T77/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T78",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T78/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T78/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T78/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T78/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T79",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with ebusd northbound udp reports no signal",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T79/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T79/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T79/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T79/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T80",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "pass",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T80/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T80/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T80/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T80/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T81",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T81/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T81/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T81/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T81/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T82",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T82/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T82/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T82/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T82/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T83",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T83/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T83/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T83/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T83/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T84",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T84/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T84/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T84/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T84/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T85",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T85/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T85/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T85/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T85/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T86",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T86/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T86/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T86/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T86/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T87",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T87/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T87/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T87/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T87/logs/runner.log"
+      ],
+      "commands": []
+    },
+    {
+      "case_id": "T88",
+      "suite": "full88",
+      "kind": "proxy-dual-client",
+      "target": "local",
+      "status": "planned",
+      "outcome": "planned",
+      "expected": "fail",
+      "expectation": "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)",
+      "started_at": "2026-05-10T14:59:24Z",
+      "ended_at": "2026-05-10T14:59:24Z",
+      "config_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T88/configs/helianthus.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T88/configs/proxy.json",
+        "/tmp/matrix-baseline-runtime-state-w19-26/T88/configs/ebusd.json"
+      ],
+      "log_files": [
+        "/tmp/matrix-baseline-runtime-state-w19-26/T88/logs/runner.log"
+      ],
+      "commands": []
+    }
+  ],
+  "evidence_class": "dry-run-planning",
+  "acceptance_caveat": "This is a dry-run planning baseline (no live bus execution). M8_TRANSPORT_VERIFY post-merge dry-run vs this index must show 0 unexpected fail/xpass deltas. Live-execution runs are out of scope for M0A."
+}

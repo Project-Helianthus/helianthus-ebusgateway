@@ -40,7 +40,7 @@
       "result": "match"
     }
   },
-  "acceptance": "PASS",
+  "acceptance": "PASS (M8 plan-spec contract: dry-run vs M0A baseline)",
   "deltas": {
     "fail_to_pass": 0,
     "pass_to_fail": 0,
@@ -48,7 +48,7 @@
     "xfail_unexpected": 0,
     "total_unexpected": 0
   },
-  "note": "Per-case (case_id, kind, suite, target, status, outcome, expected) tuples match the M0A baseline byte-for-byte across all 88 cases (sorted by case_id). AD20 transport-gate fulfilled — 0 unexpected fail/xpass deltas after M1+M2+M3+M4+M5 production wiring.",
+  "note": "Per-case (case_id, kind, suite, target, status, outcome, expected) tuples match the M0A baseline byte-for-byte across all 88 cases. This artifact fulfills the M8_TRANSPORT_VERIFY plan-spec acceptance (\"88-case transport-matrix dry-run vs M0A baseline ... 0 unexpected fail/xpass deltas\") — NOT the scripts/transport_gate.sh runtime gate. transport_gate.sh expects executed-mode reports with outcome ∈ {pass, xfail, blocked-infra}; dry-run-planning artifacts (this file + transport-matrix-baseline-runtime-state-w19-26.json) intentionally carry outcome=\"planned\" because they describe the planned matrix surface, not an execution. transport_gate.sh consumption is satisfied separately by M7_LIVE_VALIDATION execution-mode reports against live HA hardware.",
   "cases": [
     {
       "case_id": "T01",
@@ -1824,5 +1824,10 @@
       ],
       "commands": []
     }
-  ]
+  ],
+  "scope": {
+    "plan_spec_acceptance": "PASS",
+    "transport_gate_sh_input": "NOT_INTENDED",
+    "transport_gate_sh_satisfaction_path": "M7_LIVE_VALIDATION execution-mode reports"
+  }
 }

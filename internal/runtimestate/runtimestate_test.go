@@ -419,34 +419,82 @@ func TestPersist_RenameEXDEV_PreservesOldFile(t *testing.T) {
 	}
 }
 
-// AD13 EXDEV precondition test: in normal operation (no fault injection), the
-// temp file is created in the target directory itself, eliminating the EXDEV
-// path. Codex R1 P2 (3215038506-equivalent for fail-shape).
-func TestPersist_TempInTargetDirEliminatesEXDEV(t *testing.T) {
+// recordingHooks captures Rename / Unlink invocations and forwards to the
+// real os.* operations. Used by TestPersist_TempIsBesideTarget to OBSERVE the
+// rename source path rather than only inspecting the directory after the
+// write succeeds.
+type recordingHooks struct {
+	mu          sync.Mutex
+	renameOlds  []string
+	renameNews  []string
+	unlinkPaths []string
+}
+
+func (r *recordingHooks) Rename(oldpath, newpath string) error {
+	r.mu.Lock()
+	r.renameOlds = append(r.renameOlds, oldpath)
+	r.renameNews = append(r.renameNews, newpath)
+	r.mu.Unlock()
+	return os.Rename(oldpath, newpath)
+}
+
+func (r *recordingHooks) Unlink(path string) error {
+	r.mu.Lock()
+	r.unlinkPaths = append(r.unlinkPaths, path)
+	r.mu.Unlock()
+	return os.Remove(path)
+}
+
+// AD13 — temp file MUST be created in the target directory itself
+// (eliminating the EXDEV path under normal operation). Codex R3 P2
+// (3215167134) caught that the previous version of this test only inspected
+// directory contents after success — a persister using os.CreateTemp("")
+// (i.e. /tmp) would pass on a same-fs test machine. The fix observes the
+// rename source path via FsHooks and asserts its parent dir == target dir.
+func TestPersist_TempIsBesideTarget(t *testing.T) {
 	dir := freshTempDir(t)
 	path := filepath.Join(dir, "runtime_state.json")
-	mgr := New(Options{Path: path})
+	hooks := &recordingHooks{}
+	mgr := New(Options{Path: path, FsHooks: hooks})
 
-	// Run a write and inspect the directory for stray temp files.
 	if err := mgr.EagerPersistInstanceGUID(context.Background(),
 		"8a3f2b9e-4d7c-4f1a-9b5e-2c1f3e7a9d5b", IdentitySourceGenerated); err != nil {
 		t.Fatalf("eager persist: %v", err)
 	}
+
+	hooks.mu.Lock()
+	olds := append([]string(nil), hooks.renameOlds...)
+	news := append([]string(nil), hooks.renameNews...)
+	hooks.mu.Unlock()
+
+	if len(olds) == 0 {
+		t.Fatalf("AD13 violation: M3 persister never called FsHooks.Rename — write path may have used direct os.WriteFile (truncate-in-place) instead of temp+rename")
+	}
+
+	// Every observed rename MUST have its source path in the same directory as
+	// the destination (and as the target file). A persister using
+	// os.CreateTemp("", ...) would have the source under TMPDIR, which is
+	// typically /var/folders/... or /tmp on macOS/Linux — definitely not the
+	// test's target dir.
+	for i, src := range olds {
+		dst := news[i]
+		if filepath.Dir(src) != dir {
+			t.Errorf("AD13 violation: rename source %q is in dir %q, expected %q (temp must be beside target)", src, filepath.Dir(src), dir)
+		}
+		if filepath.Dir(dst) != dir {
+			t.Errorf("AD13 violation: rename dest %q is in dir %q, expected %q", dst, filepath.Dir(dst), dir)
+		}
+	}
+
+	// No leftover temp files after success.
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		name := e.Name()
-		// Allow only the target file + corrupt-* renames + any in-target temp pattern (.tmp prefix).
 		if name == filepath.Base(path) {
 			continue
 		}
-		if strings.HasPrefix(name, filepath.Base(path)+".tmp") {
-			t.Errorf("temp file leaked after successful write: %s", name)
-		}
-		if !strings.HasPrefix(name, filepath.Base(path)+".corrupt-") &&
-			!strings.HasPrefix(name, filepath.Base(path)+".tmp") &&
-			name != filepath.Base(path) {
-			// Unexpected sidecar file; M3's writer should keep target dir clean.
-			t.Logf("unexpected dir entry: %s (M3 should keep target dir tidy)", name)
+		if strings.Contains(name, ".tmp") {
+			t.Errorf("AD13: temp file leaked after successful write: %s", name)
 		}
 	}
 }
@@ -563,27 +611,42 @@ func (r *recordingMetrics) OnRevalidate(o string) {
 // AD18 UNIQUENESS tests
 // =============================================================================
 
-// AD18 — UpsertKnownBusMember with duplicate Addr replaces, never appends.
+// AD18 — UpsertKnownBusMember with duplicate Addr replaces, never appends. The
+// surviving entry MUST carry the second call's payload — an implementation
+// that ignores the second upsert (no-op-on-duplicate) would also satisfy a
+// count-only check and ship a stale cache (Codex R3 P2 caught this).
 func TestUpsert_DuplicateAddrReplaces(t *testing.T) {
 	dir := freshTempDir(t)
 	path := filepath.Join(dir, "runtime_state.json")
 	mgr := New(Options{Path: path})
 
-	mgr.UpsertKnownBusMember(KnownBusMember{Addr: 0x08, LastSource: LastSourcePassiveObserved, Confidence: ConfidenceCorroborated, LastSeenAt: time.Now()})
-	mgr.UpsertKnownBusMember(KnownBusMember{Addr: 0x08, LastSource: LastSourceDirected0704, Confidence: ConfidenceVerified, LastSeenAt: time.Now()})
+	earlier := time.Now().Add(-1 * time.Hour)
+	later := time.Now()
+	mgr.UpsertKnownBusMember(KnownBusMember{Addr: 0x08, LastSource: LastSourcePassiveObserved, Confidence: ConfidenceCorroborated, LastSeenAt: earlier})
+	mgr.UpsertKnownBusMember(KnownBusMember{Addr: 0x08, LastSource: LastSourceDirected0704, Confidence: ConfidenceVerified, LastSeenAt: later})
 
 	st := mgr.State()
 	if st == nil || st.EBus == nil {
 		t.Fatalf("expected ebus state present after upsert")
 	}
-	count := 0
+	var found []KnownBusMember
 	for _, m := range st.EBus.KnownBusMembers {
 		if m.Addr == 0x08 {
-			count++
+			found = append(found, m)
 		}
 	}
-	if count != 1 {
-		t.Errorf("AD18 violation: expected exactly 1 entry for addr 0x08, got %d", count)
+	if len(found) != 1 {
+		t.Fatalf("AD18 violation: expected exactly 1 entry for addr 0x08, got %d", len(found))
+	}
+	survivor := found[0]
+	if survivor.LastSource != LastSourceDirected0704 {
+		t.Errorf("AD18 violation: survivor LastSource is the FIRST call's value (%q), but the SECOND upsert (LastSource=%q) should have replaced it. A no-op-on-duplicate impl would silently keep stale cache.", survivor.LastSource, LastSourceDirected0704)
+	}
+	if survivor.Confidence != ConfidenceVerified {
+		t.Errorf("AD18 violation: survivor Confidence is %q, expected %q from the second call", survivor.Confidence, ConfidenceVerified)
+	}
+	if !survivor.LastSeenAt.Equal(later) {
+		t.Errorf("AD18 violation: survivor LastSeenAt is %v, expected %v from the second call", survivor.LastSeenAt, later)
 	}
 }
 

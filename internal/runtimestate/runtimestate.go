@@ -22,7 +22,9 @@ const SchemaVersion = 1
 // EBusSchemaVersion is the v1 ebus namespace version.
 const EBusSchemaVersion = 1
 
-// SelectionMethod enumerates the persisted join_method values per AD17.
+// SelectionMethod enumerates the persisted ebus.self.selection_method values
+// per AD17 (renamed from join_method by the runtime-state-w19-26 v1.1
+// amendment which migrated to the SourceAddressSelection terminology).
 type SelectionMethod string
 
 const (

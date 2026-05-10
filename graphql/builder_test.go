@@ -472,6 +472,16 @@ func (reg *mutableRegistry) IterateSnapshots(fn func(registry.DeviceEntrySnapsho
 // registry under RLock; tests don't need that lock discipline since
 // fixtures are single-threaded. Method/Plane/Projection slices are
 // passed through (they are immutable after fixture construction).
+//
+// CONTRACT FOR FUTURE TESTS (angry-tester P9.x LOW finding 2026-05-10):
+// callers MUST treat snap.Planes / snap.Projections / their nested
+// slices as READ-ONLY. The production snapshot path uses
+// snapshotPlaneFromLocked to return a fresh Methods() slice on each
+// call; this test helper passes the live fixture's slice through, so
+// mutating the returned slice would corrupt the fixture and leak
+// across iterations. If you need a mutation-isolated snapshot for a
+// new test, switch the fixture to a real DeviceRegistry and call
+// reg.LookupEntrySnapshot, which uses the production wrapper.
 func snapshotFromTestEntry(entry registry.DeviceEntry) registry.DeviceEntrySnapshot {
 	if entry == nil {
 		return registry.DeviceEntrySnapshot{}

@@ -287,12 +287,12 @@ func (m *Manager) EagerPersistInstanceGUID(ctx context.Context, guid string, sou
 	m.state.Meta.GatewayBuild = m.opts.GatewayBuild
 	m.state.Meta.AddonVersion = m.opts.AddonVersion
 	m.dirty = false // we'll persist now
-	snap := *m.state
+	snap := cloneState(m.state)
 	m.mu.Unlock()
 
 	m.opts.Metrics.OnIdentitySource(source)
 
-	if err := m.persistLocked(&snap); err != nil {
+	if err := m.persistLocked(snap); err != nil {
 		return err
 	}
 	return nil
@@ -489,6 +489,7 @@ func (m *Manager) flushIfDirty() {
 // tickerLoop runs the 15-min jittered persist ticker.
 func (m *Manager) tickerLoop() {
 	defer close(m.doneCh)
+	const minTickDelay = time.Second
 	for {
 		jitter := time.Duration(0)
 		if m.opts.JitterRange > 0 {
@@ -497,6 +498,14 @@ func (m *Manager) tickerLoop() {
 			jitter = time.Duration(r.Int63n(int64(m.opts.JitterRange))) - (m.opts.JitterRange / 2)
 		}
 		next := m.opts.PersistInterval + jitter
+		// Clamp to a positive minimum so a misconfigured combination of
+		// short PersistInterval + large JitterRange (or any
+		// JitterRange > 2*PersistInterval) doesn't spin the goroutine
+		// (Codex R2 P2 — time.After(<=0) fires immediately and the loop
+		// would busy-flush state).
+		if next < minTickDelay {
+			next = minTickDelay
+		}
 		select {
 		case <-time.After(next):
 			m.flushIfDirty()

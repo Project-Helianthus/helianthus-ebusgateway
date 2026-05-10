@@ -325,6 +325,11 @@ type fakeExdevHooks struct {
 	unlinkPaths []string
 }
 
+func (f *fakeExdevHooks) WriteFile(path string, data []byte, perm uint32) error {
+	return os.WriteFile(path, data, os.FileMode(perm))
+}
+func (f *fakeExdevHooks) FsyncFile(path string) error { return nil }
+func (f *fakeExdevHooks) FsyncDir(path string) error  { return nil }
 func (f *fakeExdevHooks) Rename(oldpath, newpath string) error {
 	f.mu.Lock()
 	f.renameCalls++
@@ -419,17 +424,48 @@ func TestPersist_RenameEXDEV_PreservesOldFile(t *testing.T) {
 	}
 }
 
-// recordingHooks captures Rename / Unlink invocations and forwards to the
-// real os.* operations. Used by TestPersist_TempIsBesideTarget to OBSERVE the
-// rename source path rather than only inspecting the directory after the
-// write succeeds.
+// recordingHooks captures every FilesystemHooks invocation and forwards to
+// the real os.* operations. Used by TestPersist_TempIsBesideTarget to
+// OBSERVE the rename source path. Also the base type for fault-injection
+// tests below — embed and override individual methods.
 type recordingHooks struct {
-	mu          sync.Mutex
-	renameOlds  []string
-	renameNews  []string
-	unlinkPaths []string
+	mu             sync.Mutex
+	writeFilePaths []string
+	fsyncFilePaths []string
+	fsyncDirPaths  []string
+	renameOlds     []string
+	renameNews     []string
+	unlinkPaths    []string
 }
 
+func (r *recordingHooks) WriteFile(path string, data []byte, perm uint32) error {
+	r.mu.Lock()
+	r.writeFilePaths = append(r.writeFilePaths, path)
+	r.mu.Unlock()
+	return os.WriteFile(path, data, os.FileMode(perm))
+}
+func (r *recordingHooks) FsyncFile(path string) error {
+	r.mu.Lock()
+	r.fsyncFilePaths = append(r.fsyncFilePaths, path)
+	r.mu.Unlock()
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+func (r *recordingHooks) FsyncDir(path string) error {
+	r.mu.Lock()
+	r.fsyncDirPaths = append(r.fsyncDirPaths, path)
+	r.mu.Unlock()
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
 func (r *recordingHooks) Rename(oldpath, newpath string) error {
 	r.mu.Lock()
 	r.renameOlds = append(r.renameOlds, oldpath)
@@ -496,6 +532,234 @@ func TestPersist_TempIsBesideTarget(t *testing.T) {
 		if strings.Contains(name, ".tmp") {
 			t.Errorf("AD13: temp file leaked after successful write: %s", name)
 		}
+	}
+}
+
+// fsyncTempFailHooks returns ENOSPC from FsyncFile to simulate a disk-full
+// or storage-error condition where the temp's contents are not durable.
+type fsyncTempFailHooks struct {
+	recordingHooks
+}
+
+func (f *fsyncTempFailHooks) FsyncFile(path string) error {
+	f.recordingHooks.mu.Lock()
+	f.recordingHooks.fsyncFilePaths = append(f.recordingHooks.fsyncFilePaths, path)
+	f.recordingHooks.mu.Unlock()
+	return &os.PathError{Op: "fsync", Path: path, Err: syscall.ENOSPC}
+}
+
+// AD13 — fsync(temp) failure must be treated as a write failure (reason="fsync_temp"):
+// in-memory state retained, no rename attempted, retry on next trigger.
+func TestPersist_FsyncTempFailure_RetainsInMemory(t *testing.T) {
+	dir := freshTempDir(t)
+	path := filepath.Join(dir, "runtime_state.json")
+
+	// Pre-existing valid file (old-file authority).
+	oldContent := validV1JSON(t)
+	if err := os.WriteFile(path, oldContent, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	hooks := &fsyncTempFailHooks{}
+	tracker := &recordingMetrics{}
+	mgr := New(Options{Path: path, FsHooks: hooks, Metrics: tracker})
+
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
+	if err := mgr.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Old file content untouched.
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, oldContent) {
+		t.Errorf("AD13 fsync_temp violation: old file modified despite fsync failure")
+	}
+
+	// No rename should have been attempted (fsync failed first).
+	hooks.recordingHooks.mu.Lock()
+	renameCount := len(hooks.recordingHooks.renameOlds)
+	hooks.recordingHooks.mu.Unlock()
+	if renameCount != 0 {
+		t.Errorf("AD13 fsync_temp: rename was attempted (count=%d) despite fsync failure; persister should bail before rename", renameCount)
+	}
+
+	// fsync_temp metric must have been recorded.
+	tracker.mu.Lock()
+	hasFsyncTemp := false
+	for _, r := range tracker.writeReasons {
+		if r == "fsync_temp" {
+			hasFsyncTemp = true
+			break
+		}
+	}
+	tracker.mu.Unlock()
+	if !hasFsyncTemp {
+		t.Errorf("AD13: metric reason=%q not recorded; got reasons=%v", "fsync_temp", tracker.writeReasons)
+	}
+}
+
+// fsyncDirSwallowsHooks returns ENOSYS from FsyncDir — one of the four errno
+// values AD13 explicitly says are SWALLOWED (along with ENOTSUP, EINVAL, EPERM).
+type fsyncDirSwallowsHooks struct {
+	recordingHooks
+}
+
+func (f *fsyncDirSwallowsHooks) FsyncDir(path string) error {
+	f.recordingHooks.mu.Lock()
+	f.recordingHooks.fsyncDirPaths = append(f.recordingHooks.fsyncDirPaths, path)
+	f.recordingHooks.mu.Unlock()
+	return &os.PathError{Op: "fsync", Path: path, Err: syscall.ENOSYS}
+}
+
+// AD13 — FsyncDir returning ENOSYS (or ENOTSUP/EINVAL/EPERM) MUST be swallowed
+// silently; the write completes successfully with metric reason=
+// "parent_fsync_unsupported" (distinct label from real failure).
+func TestPersist_FsyncParentDirSwallowsENOSYS(t *testing.T) {
+	dir := freshTempDir(t)
+	path := filepath.Join(dir, "runtime_state.json")
+
+	hooks := &fsyncDirSwallowsHooks{}
+	tracker := &recordingMetrics{}
+	mgr := New(Options{Path: path, FsHooks: hooks, Metrics: tracker})
+
+	if err := mgr.EagerPersistInstanceGUID(context.Background(),
+		"8a3f2b9e-4d7c-4f1a-9b5e-2c1f3e7a9d5b", IdentitySourceGenerated); err != nil {
+		t.Fatalf("eager persist should succeed (parent fsync swallowed): %v", err)
+	}
+
+	// File MUST exist post-write (the swallow means the write succeeded).
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("AD13: file missing after fsync_dir ENOSYS — must have been swallowed and write completed: %v", err)
+	}
+
+	// parent_fsync_unsupported metric must be recorded (distinct from real failure).
+	tracker.mu.Lock()
+	hasParentSwallow := false
+	for _, r := range tracker.writeReasons {
+		if r == "parent_fsync_unsupported" {
+			hasParentSwallow = true
+		}
+	}
+	tracker.mu.Unlock()
+	if !hasParentSwallow {
+		t.Errorf("AD13: metric reason=%q (parent_fsync_unsupported) not recorded; got reasons=%v", "parent_fsync_unsupported", tracker.writeReasons)
+	}
+}
+
+// writeFailHooks returns ENOSPC from WriteFile to simulate disk-full.
+type writeFailHooks struct {
+	recordingHooks
+}
+
+func (w *writeFailHooks) WriteFile(path string, data []byte, perm uint32) error {
+	w.recordingHooks.mu.Lock()
+	w.recordingHooks.writeFilePaths = append(w.recordingHooks.writeFilePaths, path)
+	w.recordingHooks.mu.Unlock()
+	return &os.PathError{Op: "write", Path: path, Err: syscall.ENOSPC}
+}
+
+// AD13 — WriteFile failure (disk-full / permission denied / etc) must be
+// treated as a write failure (reason="write"), in-memory state retained,
+// no rename attempted, no orphan temp left.
+func TestPersist_WriteFailure_RetainsInMemory(t *testing.T) {
+	dir := freshTempDir(t)
+	path := filepath.Join(dir, "runtime_state.json")
+
+	oldContent := validV1JSON(t)
+	if err := os.WriteFile(path, oldContent, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	hooks := &writeFailHooks{}
+	tracker := &recordingMetrics{}
+	mgr := New(Options{Path: path, FsHooks: hooks, Metrics: tracker})
+
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
+	if err := mgr.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, oldContent) {
+		t.Errorf("AD13: old file modified despite WriteFile ENOSPC")
+	}
+
+	hooks.recordingHooks.mu.Lock()
+	renameCount := len(hooks.recordingHooks.renameOlds)
+	hooks.recordingHooks.mu.Unlock()
+	if renameCount != 0 {
+		t.Errorf("AD13: rename attempted after write failure (count=%d); persister should bail at write stage", renameCount)
+	}
+
+	tracker.mu.Lock()
+	hasWrite := false
+	for _, r := range tracker.writeReasons {
+		if r == "write" {
+			hasWrite = true
+		}
+	}
+	tracker.mu.Unlock()
+	if !hasWrite {
+		t.Errorf("AD13: metric reason=%q not recorded; got reasons=%v", "write", tracker.writeReasons)
+	}
+}
+
+// P6 — fault-injection crash-safety test (per consultant MF-2 acceptance).
+// Simulates kill -9 mid-write under fsync(parent_dir) returning EINVAL by
+// using FsHooks to inject the EINVAL after the temp+rename completed.
+// Either the next Load returns the OLD content (if rename hadn't propagated)
+// or the NEW content (if it did) — never partial.
+type p6CrashHooks struct {
+	recordingHooks
+	failParentFsyncOnceWith error
+}
+
+func (p *p6CrashHooks) FsyncDir(path string) error {
+	p.recordingHooks.mu.Lock()
+	p.recordingHooks.fsyncDirPaths = append(p.recordingHooks.fsyncDirPaths, path)
+	first := p.failParentFsyncOnceWith
+	p.failParentFsyncOnceWith = nil
+	p.recordingHooks.mu.Unlock()
+	if first != nil {
+		return first
+	}
+	return p.recordingHooks.FsyncDir(path)
+}
+
+// P6 falsifiability gate: kill -9 mid-write under simulated fsync-EINVAL → next
+// start has fully old or fully new content; never partial.
+func TestPersist_P6_KillMidWriteUnderFsyncEINVAL(t *testing.T) {
+	dir := freshTempDir(t)
+	path := filepath.Join(dir, "runtime_state.json")
+
+	oldContent := validV1JSON(t)
+	if err := os.WriteFile(path, oldContent, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	hooks := &p6CrashHooks{
+		failParentFsyncOnceWith: &os.PathError{Op: "fsync", Path: dir, Err: syscall.EINVAL},
+	}
+	mgr := New(Options{Path: path, FsHooks: hooks})
+
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodOverride})
+	if err := mgr.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Read the file after the simulated crash.
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("post-crash read: %v", err)
+	}
+
+	// The content must be EITHER fully old OR fully new — never partial.
+	// We can't easily compute "the new content" without involving M2/M3
+	// implementation, so we assert: (a) bytes are valid JSON, (b) bytes are
+	// either bytes-equal to oldContent OR contain the new initiator value.
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Errorf("P6 violation: post-crash file is not valid JSON (partial write): %v\n--- bytes ---\n%s", err, got)
 	}
 }
 

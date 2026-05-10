@@ -134,16 +134,38 @@ func (NopMetrics) OnRevalidate(string)           {}
 
 // FilesystemHooks is an injection point for fault-tolerant testing of the
 // AD13 atomic-write contract. Tests can supply a mock implementation that
-// returns specific errno values (EXDEV, EINVAL, ENOSYS, etc.) to exercise
-// the failure paths without requiring real filesystem misconfiguration.
-// Production code uses DefaultFilesystemHooks{} (see fs_hooks.go in the
-// M3_GATEWAY_PERSISTER PR), which delegates to the os package.
+// returns specific errno values (EXDEV, EINVAL, ENOSYS, ENOSPC, etc.) to
+// exercise every failure path without requiring real filesystem
+// misconfiguration. Production code uses DefaultFilesystemHooks{} (see
+// fs_hooks.go in the M3_GATEWAY_PERSISTER PR), which delegates to the os
+// package.
+//
+// The persister uses these hooks in this order per atomic-write cycle:
+//
+//	1. WriteFile(temp, data, perm)   — create+write+close the temp file.
+//	2. FsyncFile(temp)               — durably flush temp contents (REQUIRED).
+//	3. Rename(temp, final)           — atomic temp→final.
+//	4. FsyncDir(parent)              — flush parent directory (BEST-EFFORT).
+//	5. Unlink(temp)                  — only if Rename failed (cleanup).
 type FilesystemHooks interface {
-	// Rename is called for the temp→final rename in the AD13 atomic-write
-	// sequence. Implementations MUST return *PathError with err = syscall.EXDEV
-	// when a cross-device rename is simulated.
+	// WriteFile writes data to path atomically (create+truncate+write+close).
+	// Returns ENOSPC on disk-full, EACCES on permission denied, etc.
+	WriteFile(path string, data []byte, perm uint32) error
+	// FsyncFile flushes the file at path to durable storage. Failure here
+	// means the temp file may not be on disk; persister MUST treat as
+	// write failure (reason="fsync_temp") and retain in-memory state.
+	FsyncFile(path string) error
+	// Rename is called for the temp→final atomic rename. EXDEV indicates
+	// cross-device link (precondition violation; should not happen since
+	// temp is in target dir). Persister handles EXDEV per AD13:
+	// preserve old file, unlink temp, metric reason="rename_exdev".
 	Rename(oldpath, newpath string) error
-	// Unlink is called to clean up an orphaned temp file after a failed rename.
+	// FsyncDir flushes directory metadata to make the rename durable. Per
+	// AD13 this is BEST-EFFORT — ENOTSUP/EINVAL/EPERM/ENOSYS are SWALLOWED
+	// by the persister with metric reason="parent_fsync_unsupported"
+	// (distinct from real failures).
+	FsyncDir(path string) error
+	// Unlink removes the orphan temp file after a failed rename. Cleanup-only.
 	Unlink(path string) error
 }
 

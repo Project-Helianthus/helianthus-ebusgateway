@@ -1,19 +1,8 @@
-// M1_TDD_RED tests for the runtime-state package. These tests reference the
-// contract that M2_GATEWAY_LOADER and M3_GATEWAY_PERSISTER must implement.
-//
-// Build tag `runtime_state_tdd_red` excludes them from default `go test` runs
-// (CI passes during M1) while keeping them committed as the executable
-// design contract per cruise-tdd-gate. Run them locally with:
-//
-//	go test -tags runtime_state_tdd_red -count=1 ./internal/runtimestate/...
-//
-// Every test FAILS RED in this state (stubs return errNotImplemented or zero
-// values). The M2_GATEWAY_LOADER + M3_GATEWAY_PERSISTER PR removes this build
-// tag and replaces the stubs with real implementations, turning the suite GREEN.
+// Contract tests for the runtime-state package. Originally introduced as
+// M1_TDD_RED contracts; M2_GATEWAY_LOADER + M3_GATEWAY_PERSISTER replaced the
+// stubs with real implementations and turned this suite GREEN.
 //
 // Plan: runtime-state-w19-26.locked. ADs referenced inline per case.
-
-//go:build runtime_state_tdd_red
 
 package runtimestate
 
@@ -262,7 +251,6 @@ func TestPersist_AtomicTempRename(t *testing.T) {
 	}
 }
 
-
 // AD13 — JSON output uses deterministic key order (stable across writes).
 func TestPersist_DeterministicKeyOrder(t *testing.T) {
 	dir := freshTempDir(t)
@@ -441,7 +429,7 @@ func (r *recordingHooks) FsyncFile(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return f.Sync()
 }
 func (r *recordingHooks) FsyncDir(path string) error {
@@ -452,7 +440,7 @@ func (r *recordingHooks) FsyncDir(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return f.Sync()
 }
 func (r *recordingHooks) Rename(oldpath, newpath string) error {
@@ -531,9 +519,9 @@ type fsyncTempFailHooks struct {
 }
 
 func (f *fsyncTempFailHooks) FsyncFile(path string) error {
-	f.recordingHooks.mu.Lock()
-	f.recordingHooks.fsyncFilePaths = append(f.recordingHooks.fsyncFilePaths, path)
-	f.recordingHooks.mu.Unlock()
+	f.mu.Lock()
+	f.fsyncFilePaths = append(f.fsyncFilePaths, path)
+	f.mu.Unlock()
 	return &os.PathError{Op: "fsync", Path: path, Err: syscall.ENOSPC}
 }
 
@@ -565,9 +553,9 @@ func TestPersist_FsyncTempFailure_RetainsInMemory(t *testing.T) {
 	}
 
 	// No rename should have been attempted (fsync failed first).
-	hooks.recordingHooks.mu.Lock()
-	renameCount := len(hooks.recordingHooks.renameOlds)
-	hooks.recordingHooks.mu.Unlock()
+	hooks.mu.Lock()
+	renameCount := len(hooks.renameOlds)
+	hooks.mu.Unlock()
 	if renameCount != 0 {
 		t.Errorf("AD13 fsync_temp: rename was attempted (count=%d) despite fsync failure; persister should bail before rename", renameCount)
 	}
@@ -594,9 +582,9 @@ type fsyncDirSwallowsHooks struct {
 }
 
 func (f *fsyncDirSwallowsHooks) FsyncDir(path string) error {
-	f.recordingHooks.mu.Lock()
-	f.recordingHooks.fsyncDirPaths = append(f.recordingHooks.fsyncDirPaths, path)
-	f.recordingHooks.mu.Unlock()
+	f.mu.Lock()
+	f.fsyncDirPaths = append(f.fsyncDirPaths, path)
+	f.mu.Unlock()
 	return &os.PathError{Op: "fsync", Path: path, Err: syscall.ENOSYS}
 }
 
@@ -641,9 +629,9 @@ type writeFailHooks struct {
 }
 
 func (w *writeFailHooks) WriteFile(path string, data []byte, perm uint32) error {
-	w.recordingHooks.mu.Lock()
-	w.recordingHooks.writeFilePaths = append(w.recordingHooks.writeFilePaths, path)
-	w.recordingHooks.mu.Unlock()
+	w.mu.Lock()
+	w.writeFilePaths = append(w.writeFilePaths, path)
+	w.mu.Unlock()
 	return &os.PathError{Op: "write", Path: path, Err: syscall.ENOSPC}
 }
 
@@ -673,9 +661,9 @@ func TestPersist_WriteFailure_RetainsInMemory(t *testing.T) {
 		t.Errorf("AD13: old file modified despite WriteFile ENOSPC")
 	}
 
-	hooks.recordingHooks.mu.Lock()
-	renameCount := len(hooks.recordingHooks.renameOlds)
-	hooks.recordingHooks.mu.Unlock()
+	hooks.mu.Lock()
+	renameCount := len(hooks.renameOlds)
+	hooks.mu.Unlock()
 	if renameCount != 0 {
 		t.Errorf("AD13: rename attempted after write failure (count=%d); persister should bail at write stage", renameCount)
 	}
@@ -704,11 +692,11 @@ type p6CrashHooks struct {
 }
 
 func (p *p6CrashHooks) FsyncDir(path string) error {
-	p.recordingHooks.mu.Lock()
-	p.recordingHooks.fsyncDirPaths = append(p.recordingHooks.fsyncDirPaths, path)
+	p.mu.Lock()
+	p.fsyncDirPaths = append(p.fsyncDirPaths, path)
 	first := p.failParentFsyncOnceWith
 	p.failParentFsyncOnceWith = nil
-	p.recordingHooks.mu.Unlock()
+	p.mu.Unlock()
 	if first != nil {
 		return first
 	}
@@ -734,6 +722,12 @@ func TestPersist_P6_KillMidWriteUnderFsyncEINVAL(t *testing.T) {
 		failParentFsyncOnceWith: &os.PathError{Op: "fsync", Path: dir, Err: syscall.EINVAL},
 	}
 	mgr := New(Options{Path: path, FsHooks: hooks})
+	// Load old content into manager state so a successful new write preserves
+	// meta.instance_guid (this mirrors the gateway's real startup sequence:
+	// Load → UpdateSelf → persist).
+	if _, err := mgr.Load(context.Background()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 
 	// Mutation marker — if the new content lands, it MUST contain
 	// last_admitted_source=0xF1 (241) which is absent from oldContent (247).

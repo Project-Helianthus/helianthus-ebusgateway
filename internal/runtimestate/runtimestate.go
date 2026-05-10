@@ -2,17 +2,16 @@
 // /data/runtime_state.json. Plan: runtime-state-w19-26.locked. v1 namespaces:
 // meta + ebus.{self, known_bus_members[]}. See docs-ebus
 // architecture/runtime-state.md for the normative schema and contract.
-//
-// This file holds the package types + the public Manager surface. The
-// implementations are SKELETON (M1_TDD_RED stubs); M2_GATEWAY_LOADER and
-// M3_GATEWAY_PERSISTER replace them with real bodies that satisfy the
-// contract tests in runtimestate_test.go.
 package runtimestate
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"log/slog"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -195,7 +194,17 @@ type Options struct {
 // Manager coordinates loading, eager persistence, periodic writes, and shutdown
 // flushes for /data/runtime_state.json. It is the sole writer (AD07).
 type Manager struct {
-	opts Options
+	opts     Options
+	hooks    FilesystemHooks
+	mu       sync.Mutex
+	state    *State
+	dirty    bool
+	writeGen uint64 // bumped on every mutation; used by flushIfDirty to detect concurrent updates
+	writeMu  sync.Mutex
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	started  bool
+	stopped  bool
 }
 
 // New constructs a Manager. The Manager is not started until Start is called.
@@ -215,12 +224,18 @@ func New(opts Options) *Manager {
 	if opts.Path == "" {
 		opts.Path = "/data/runtime_state.json"
 	}
-	return &Manager{opts: opts}
+	hooks := opts.FsHooks
+	if hooks == nil {
+		hooks = DefaultFilesystemHooks{}
+	}
+	return &Manager{
+		opts:   opts,
+		hooks:  hooks,
+		state:  &State{SchemaVersion: SchemaVersion},
+		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
+	}
 }
-
-// errNotImplemented is returned by every method in the M1_TDD_RED skeleton.
-// M2_GATEWAY_LOADER and M3_GATEWAY_PERSISTER replace these with real bodies.
-var errNotImplemented = errors.New("runtimestate: not implemented (M2/M3 will provide)")
 
 // Load reads the runtime state file. Returns the parsed State, or an empty
 // State on missing/corrupt. On corrupt, the file is renamed to
@@ -228,45 +243,378 @@ var errNotImplemented = errors.New("runtimestate: not implemented (M2/M3 will pr
 // schema_version mismatch results in that namespace being dropped from the
 // in-memory load (AD12). Never returns a panic; never blocks startup.
 func (m *Manager) Load(ctx context.Context) (*State, error) {
-	return nil, errNotImplemented
+	data, err := os.ReadFile(m.opts.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			m.opts.Logger.Info("runtime_state: file absent, starting empty", "path", m.opts.Path)
+			m.replaceState(&State{SchemaVersion: SchemaVersion})
+			return m.State(), nil
+		}
+		// Permission denied / IO error: log + start empty (never block startup per AD11).
+		m.opts.Logger.Warn("runtime_state: read failed, starting empty", "path", m.opts.Path, "error", err)
+		m.replaceState(&State{SchemaVersion: SchemaVersion})
+		return m.State(), nil
+	}
+
+	state, err := unmarshalState(data)
+	if err != nil {
+		// Corrupt or schema mismatch: quarantine and start empty per AD11.
+		quarantine := fmt.Sprintf("%s.corrupt-%s", m.opts.Path, time.Now().UTC().Format("20060102T150405Z"))
+		if rerr := m.hooks.Rename(m.opts.Path, quarantine); rerr != nil {
+			m.opts.Logger.Warn("runtime_state: corrupt-quarantine rename failed", "from", m.opts.Path, "to", quarantine, "error", rerr)
+		} else {
+			m.opts.Logger.Warn("runtime_state: corrupt file quarantined", "from", m.opts.Path, "to", quarantine, "parse_error", err)
+		}
+		m.replaceState(&State{SchemaVersion: SchemaVersion})
+		return m.State(), nil
+	}
+
+	m.replaceState(state)
+	return m.State(), nil
 }
 
 // EagerPersistInstanceGUID writes a minimum-valid file containing
 // meta.{schema_version, instance_guid, written_at} within ~1s of the call
 // (AD08). Closes the crash-before-first-periodic-persist window.
 func (m *Manager) EagerPersistInstanceGUID(ctx context.Context, guid string, source IdentitySource) error {
-	return errNotImplemented
+	m.mu.Lock()
+	if m.state == nil {
+		m.state = &State{SchemaVersion: SchemaVersion}
+	}
+	m.state.SchemaVersion = SchemaVersion
+	m.state.Meta.InstanceGUID = guid
+	m.state.Meta.WrittenAt = time.Now().UTC()
+	m.state.Meta.GatewayBuild = m.opts.GatewayBuild
+	m.state.Meta.AddonVersion = m.opts.AddonVersion
+	// Pre-mark dirty so that if persistFlush fails (ENOSPC / fsync_temp /
+	// etc.) the next ticker/Stop retries (Codex R4 P2 — clearing before
+	// persist would silently skip the retry path on transient failure).
+	m.dirty = true
+	m.writeGen++
+	m.mu.Unlock()
+
+	m.opts.Metrics.OnIdentitySource(source)
+
+	return m.persistFlush()
 }
 
 // Start begins the periodic ticker (PersistInterval ± JitterRange/2) and
 // the shutdown subscriber. Returns once the goroutines are running.
 func (m *Manager) Start(ctx context.Context) error {
-	return errNotImplemented
+	m.mu.Lock()
+	if m.started {
+		m.mu.Unlock()
+		return nil
+	}
+	m.started = true
+	m.mu.Unlock()
+
+	go m.tickerLoop()
+	return nil
 }
 
 // Stop flushes any pending writes and shuts down the persister goroutines.
 // Idempotent.
 func (m *Manager) Stop(ctx context.Context) error {
-	return errNotImplemented
-}
+	m.mu.Lock()
+	if m.stopped {
+		m.mu.Unlock()
+		return nil
+	}
+	m.stopped = true
+	started := m.started
+	m.mu.Unlock()
 
-// State returns a defensive copy of the current in-memory state. Safe to
-// call concurrently with persistence.
-func (m *Manager) State() *State {
+	if started {
+		close(m.stopCh)
+		select {
+		case <-m.doneCh:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+			// Don't deadlock; ticker will exit on next iteration.
+		}
+	}
+	// Final flush of any dirty state.
+	m.flushIfDirty()
 	return nil
 }
 
-// UpdateSelf replaces ebus.self with the given Self and triggers a write.
+// State returns a defensive snapshot of the current in-memory state.
+func (m *Manager) State() *State {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return cloneState(m.state)
+}
+
+// UpdateSelf replaces ebus.self with the given Self and marks state dirty.
 // Used after a successful SourceAddressSelection per AD14.
+//
+// Deep-copies pointer fields (CompanionTarget) so a caller mutating the
+// pointed-to byte after returning from UpdateSelf cannot reach in and modify
+// manager state outside the mutex (Codex R3 P2).
 func (m *Manager) UpdateSelf(self Self) {
+	m.mu.Lock()
+	if m.state == nil {
+		m.state = &State{SchemaVersion: SchemaVersion}
+	}
+	if m.state.EBus == nil {
+		m.state.EBus = &EBusNamespace{SchemaVersion: EBusSchemaVersion}
+	}
+	cp := self
+	if self.CompanionTarget != nil {
+		v := *self.CompanionTarget
+		cp.CompanionTarget = &v
+	}
+	m.state.EBus.Self = &cp
+	m.dirty = true
+	m.writeGen++
+	m.mu.Unlock()
 }
 
 // UpsertKnownBusMember adds or updates an entry in ebus.known_bus_members[].
 // Uniqueness on Addr is enforced (AD18); duplicate Addr replaces.
+//
+// Deep-copies pointer fields (CompanionAddr, Identity) so a caller mutating
+// the pointed-to data after returning cannot reach in and modify manager
+// state outside the mutex (Codex R3 P2).
 func (m *Manager) UpsertKnownBusMember(member KnownBusMember) {
+	stored := member
+	if member.CompanionAddr != nil {
+		v := *member.CompanionAddr
+		stored.CompanionAddr = &v
+	}
+	if member.Identity != nil {
+		idCopy := *member.Identity
+		stored.Identity = &idCopy
+	}
+
+	m.mu.Lock()
+	if m.state == nil {
+		m.state = &State{SchemaVersion: SchemaVersion}
+	}
+	if m.state.EBus == nil {
+		m.state.EBus = &EBusNamespace{SchemaVersion: EBusSchemaVersion}
+	}
+	for i, existing := range m.state.EBus.KnownBusMembers {
+		if existing.Addr == stored.Addr {
+			m.state.EBus.KnownBusMembers[i] = stored
+			m.dirty = true
+			m.writeGen++
+			m.mu.Unlock()
+			return
+		}
+	}
+	m.state.EBus.KnownBusMembers = append(m.state.EBus.KnownBusMembers, stored)
+	m.dirty = true
+	m.writeGen++
+	m.mu.Unlock()
 }
 
 // EvictKnownBusMember removes the entry with the given Addr. No-op if absent.
 // Used by M5 directed-revalidation on no_reply outcomes (AD23).
 func (m *Manager) EvictKnownBusMember(addr byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state == nil || m.state.EBus == nil {
+		return
+	}
+	out := m.state.EBus.KnownBusMembers[:0]
+	for _, member := range m.state.EBus.KnownBusMembers {
+		if member.Addr != addr {
+			out = append(out, member)
+		}
+	}
+	if len(out) != len(m.state.EBus.KnownBusMembers) {
+		m.dirty = true
+		m.writeGen++
+	}
+	m.state.EBus.KnownBusMembers = out
 }
+
+// --- internal helpers ---
+
+func (m *Manager) replaceState(s *State) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.state = s
+	m.dirty = false
+}
+
+func cloneState(s *State) *State {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	if s.EBus != nil {
+		ebusCopy := *s.EBus
+		if s.EBus.Self != nil {
+			selfCopy := *s.EBus.Self
+			if s.EBus.Self.CompanionTarget != nil {
+				v := *s.EBus.Self.CompanionTarget
+				selfCopy.CompanionTarget = &v
+			}
+			ebusCopy.Self = &selfCopy
+		}
+		members := make([]KnownBusMember, len(s.EBus.KnownBusMembers))
+		for i, m := range s.EBus.KnownBusMembers {
+			members[i] = m
+			if m.CompanionAddr != nil {
+				v := *m.CompanionAddr
+				members[i].CompanionAddr = &v
+			}
+			if m.Identity != nil {
+				idCopy := *m.Identity
+				members[i].Identity = &idCopy
+			}
+		}
+		ebusCopy.KnownBusMembers = members
+		cp.EBus = &ebusCopy
+	}
+	return &cp
+}
+
+// flushIfDirty persists the current in-memory state if dirty=true.
+// Equivalent to persistFlush() but exits early when nothing to do.
+func (m *Manager) flushIfDirty() {
+	m.mu.Lock()
+	dirty := m.dirty && m.state != nil
+	m.mu.Unlock()
+	if !dirty {
+		return
+	}
+	_ = m.persistFlush()
+}
+
+// persistFlush serializes snapshot + write under writeMu so two overlapping
+// persisters cannot land their renames out of snapshot order (Codex R5 —
+// previously the snapshot was captured BEFORE writeMu.Lock(), which let an
+// older snapshot's rename land after a newer snapshot's rename, silently
+// reverting on-disk state to a stale generation).
+//
+// Sequence:
+//  1. writeMu.Lock — exclude other persisters.
+//  2. mu.Lock — snapshot fresh state + record writeGen.
+//  3. mu.Unlock — release in-memory mutex while we hit disk.
+//  4. atomicWrite(snap) — temp+rename per AD13.
+//  5. mu.Lock — clear dirty IFF writeGen unchanged (no concurrent mutation).
+//  6. mu.Unlock + writeMu.Unlock.
+func (m *Manager) persistFlush() error {
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+
+	m.mu.Lock()
+	if m.state == nil {
+		m.dirty = false
+		m.mu.Unlock()
+		return nil
+	}
+	m.state.Meta.WrittenAt = time.Now().UTC()
+	snap := cloneState(m.state)
+	genAtSnapshot := m.writeGen
+	m.mu.Unlock()
+
+	if err := m.atomicWrite(snap); err != nil {
+		m.opts.Logger.Warn("runtime_state: persist failed; keeping dirty for retry", "error", err)
+		return err
+	}
+
+	m.mu.Lock()
+	if m.writeGen == genAtSnapshot {
+		m.dirty = false
+	}
+	// else: a mutation slipped in while we were persisting; dirty stays true
+	// and the next persistFlush cycle will pick up the new state.
+	m.mu.Unlock()
+	return nil
+}
+
+// tickerLoop runs the 15-min jittered persist ticker.
+func (m *Manager) tickerLoop() {
+	defer close(m.doneCh)
+	const minTickDelay = time.Second
+	for {
+		jitter := time.Duration(0)
+		if m.opts.JitterRange > 0 {
+			// rand reseeded per call to spread across simultaneous starts.
+			r := rand.New(rand.NewSource(time.Now().UnixNano()))
+			jitter = time.Duration(r.Int63n(int64(m.opts.JitterRange))) - (m.opts.JitterRange / 2)
+		}
+		next := m.opts.PersistInterval + jitter
+		// Clamp to a positive minimum so a misconfigured combination of
+		// short PersistInterval + large JitterRange (or any
+		// JitterRange > 2*PersistInterval) doesn't spin the goroutine
+		// (Codex R2 P2 — time.After(<=0) fires immediately and the loop
+		// would busy-flush state).
+		if next < minTickDelay {
+			next = minTickDelay
+		}
+		select {
+		case <-time.After(next):
+			m.flushIfDirty()
+		case <-m.stopCh:
+			return
+		}
+	}
+}
+
+// atomicWrite executes the AD13 atomic temp+rename sequence for the given
+// snapshot. Caller MUST hold m.writeMu (see persistFlush) so concurrent
+// persisters cannot interleave their renames out of snapshot order.
+func (m *Manager) atomicWrite(snap *State) error {
+	data, err := marshalState(snap)
+	if err != nil {
+		m.opts.Metrics.OnWrite("marshal")
+		return err
+	}
+
+	dir := filepath.Dir(m.opts.Path)
+	tempName := filepath.Base(m.opts.Path) + ".tmp"
+	tempPath := filepath.Join(dir, tempName)
+
+	// Stage 1: WriteFile (creates+writes+closes).
+	if err := m.hooks.WriteFile(tempPath, data, 0o644); err != nil {
+		m.opts.Metrics.OnWrite("write")
+		_ = m.hooks.Unlink(tempPath) // best-effort cleanup
+		return err
+	}
+
+	// Stage 2: FsyncFile — REQUIRED.
+	if err := m.hooks.FsyncFile(tempPath); err != nil {
+		m.opts.Metrics.OnWrite("fsync_temp")
+		_ = m.hooks.Unlink(tempPath)
+		return err
+	}
+
+	// Stage 3: Rename temp → final. EXDEV is a precondition violation
+	// (temp should always be in target dir); preserve old file per AD13.
+	if err := m.hooks.Rename(tempPath, m.opts.Path); err != nil {
+		if isExdev(err) {
+			m.opts.Metrics.OnWrite("rename_exdev")
+			_ = m.hooks.Unlink(tempPath)
+			return err
+		}
+		m.opts.Metrics.OnWrite("rename")
+		_ = m.hooks.Unlink(tempPath)
+		return err
+	}
+
+	// Stage 4: FsyncDir — BEST-EFFORT. Per the MetricsHook contract, OnWrite
+	// is called exactly ONCE per persist attempt with a single reason label
+	// (Codex R4 P2 — emitting both parent_fsync_unsupported AND ok would
+	// double-count successful writes on platforms where directory fsync is
+	// unsupported).
+	if err := m.hooks.FsyncDir(dir); err != nil {
+		if isParentFsyncSwallowed(err) {
+			m.opts.Metrics.OnWrite("parent_fsync_unsupported")
+		} else {
+			m.opts.Metrics.OnWrite("fsync_dir")
+			// Don't undo the rename — file is on disk; just record metric.
+		}
+		return nil
+	}
+
+	m.opts.Metrics.OnWrite("ok")
+	return nil
+}
+

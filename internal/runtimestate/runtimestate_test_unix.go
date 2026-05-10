@@ -1,10 +1,9 @@
-// Unix-only helper for the M1_TDD_RED contract suite. Production code does
-// not depend on this package; only the test build under
-// `runtime_state_tdd_red` does. The Unix-only `syscall.Stat_t.Ino` is
-// referenced here so the rest of the suite stays portable to non-Unix Go
-// targets (Windows, Plan 9, etc.) where `syscall.Stat_t` is undefined.
+// Unix-only helper for the runtime-state contract test suite. The Unix-only
+// `syscall.Stat_t.Ino` is referenced here so the rest of the suite stays
+// portable to non-Unix Go targets (Windows, Plan 9, etc.) where
+// `syscall.Stat_t` is undefined.
 
-//go:build runtime_state_tdd_red && (linux || darwin || freebsd || netbsd || openbsd || dragonfly || solaris)
+//go:build linux || darwin || freebsd || netbsd || openbsd || dragonfly || solaris
 
 package runtimestate
 

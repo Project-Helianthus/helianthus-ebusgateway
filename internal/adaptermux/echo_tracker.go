@@ -51,6 +51,19 @@ type echoTracker struct {
 	// (next received byte won't match an empty queue → echoMatchNone)
 	// and operator-visible via this counter (P10.2.1).
 	totalOverflowResets uint64
+
+	// preOverflowEchoes captures the queue contents IMMEDIATELY BEFORE
+	// the most recent overflow-reset-triggering recordSent call.
+	// rollbackSent restores from this snapshot to guarantee the cap
+	// behavior is transactional with the adapter Write that follows
+	// recordSent (Codex PR #603 P2). nil if the most recent recordSent
+	// did NOT trigger an overflow reset.
+	//
+	// Invariant: at most one snapshot is retained; subsequent successful
+	// recordSent calls (no overflow) clear it. This matches the doSend
+	// call sequence (recordSent → Write → maybe rollbackSent) where the
+	// snapshot is only valid for the duration of a single doSend.
+	preOverflowEchoes []byte
 }
 
 // newEchoTracker creates a fresh echo tracker.
@@ -77,16 +90,48 @@ func newEchoTracker() *echoTracker {
 // operators. Real eBUS frames are <30 bytes; reaching 256 implies a
 // pathological condition (TCP backpressure, paused readLoop, runaway
 // gateway write loop) where loud failure is preferable to drift.
+//
+// Codex PR #603 P2 follow-up: the reset is now TRANSACTIONAL with the
+// adapter Write that follows in doSend. preOverflowEchoes snapshots
+// the prior queue so rollbackSent (called when Write fails) can
+// restore the 256 prior expectations and revert the counter
+// increment. Without this, a Write-fails-at-cap path would lose all
+// prior echo expectations even though the adapter never accepted the
+// new byte — subsequent real echoes would all return echoMatchNone.
 func (t *echoTracker) recordSent(data byte) {
 	if len(t.expectedEchoes) >= maxPendingEchoes {
+		t.preOverflowEchoes = make([]byte, len(t.expectedEchoes))
+		copy(t.preOverflowEchoes, t.expectedEchoes)
 		t.expectedEchoes = t.expectedEchoes[:0]
 		t.totalOverflowResets++
+	} else {
+		// Successful append without overflow: clear any stale
+		// snapshot from a prior overflow that was never rolled back
+		// (the adapter Write succeeded; the reset is now committed).
+		t.preOverflowEchoes = nil
 	}
 	t.expectedEchoes = append(t.expectedEchoes, data)
 }
 
 // rollbackSent removes the last recorded sent byte (e.g., on SEND error).
+//
+// Codex PR #603 P2 follow-up: when the prior recordSent triggered an
+// overflow reset, rollbackSent restores the pre-overflow queue and
+// reverts the counter increment. The adapter Write failed so byte 257
+// never reached the wire AND the 256 prior expectations are still
+// awaiting their echoes — restore them.
 func (t *echoTracker) rollbackSent() {
+	if t.preOverflowEchoes != nil {
+		// Overflow path: restore prior 256 + drop counter increment.
+		// The new byte was appended after the reset; it never reached
+		// the adapter, so we fully revert.
+		t.expectedEchoes = t.preOverflowEchoes
+		t.preOverflowEchoes = nil
+		if t.totalOverflowResets > 0 {
+			t.totalOverflowResets--
+		}
+		return
+	}
 	if len(t.expectedEchoes) > 0 {
 		t.expectedEchoes = t.expectedEchoes[:len(t.expectedEchoes)-1]
 	}
@@ -123,6 +168,11 @@ func (t *echoTracker) matchEcho(received byte) (result echoMatchResult, flushedB
 	if len(t.expectedEchoes) == 0 {
 		return echoMatchNone, nil
 	}
+
+	// Codex PR #603 P2 invariant: any matchEcho commits the prior
+	// recordSent (the adapter actually replied to it), so the
+	// preOverflowEchoes snapshot is no longer eligible for rollback.
+	t.preOverflowEchoes = nil
 
 	if received == t.expectedEchoes[0] {
 		// Match: consume from expected, accumulate in seen.
@@ -168,6 +218,10 @@ func (t *echoTracker) flushOnSYN() (flushedBytes []byte, wasAtStart bool) {
 
 	// Clear expected echoes at SYN boundary.
 	t.expectedEchoes = t.expectedEchoes[:0]
+	// Codex PR #603 P2 invariant: a SYN boundary commits any
+	// in-flight overflow reset. preOverflowEchoes no longer eligible
+	// for rollback.
+	t.preOverflowEchoes = nil
 
 	return flushedBytes, wasAtStart
 }
@@ -178,6 +232,9 @@ func (t *echoTracker) markRequestStart() {
 	t.atRequestStart = true
 	t.seenEchoes = t.seenEchoes[:0]
 	t.expectedEchoes = t.expectedEchoes[:0]
+	// Codex PR #603 P2 invariant: a new request boundary invalidates
+	// any pending overflow snapshot.
+	t.preOverflowEchoes = nil
 }
 
 // hasPendingEchoes reports whether there are expected echoes that
@@ -205,6 +262,7 @@ func (t *echoTracker) reset() {
 	t.expectedEchoes = t.expectedEchoes[:0]
 	t.seenEchoes = t.seenEchoes[:0]
 	t.atRequestStart = false
+	t.preOverflowEchoes = nil
 }
 
 // stats returns echo tracking statistics.

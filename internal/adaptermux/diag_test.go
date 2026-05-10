@@ -82,8 +82,19 @@ func TestActiveTxnDiag_ReadCounterIncrements(t *testing.T) {
 		t.Fatalf("Write err=%v", err)
 	}
 
-	// Feed response bytes via mock. While gateway txn is active these
-	// are delivered to activeCh and consumed by ReadByte.
+	// P11 — feed the source-byte echo first to leave mid-write phase
+	// (echoCursor catches up to writePrefixLen). Without this, the new
+	// per-byte filter rejects subsequent bytes that don't match
+	// writePrefix[echoCursor]. Pre-P11 the bulk filter let any byte
+	// flow through during ownership; the new filter requires
+	// protocol-correctness (echo first, then response bytes).
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+	if _, err := at.ReadByte(); err != nil {
+		t.Fatalf("ReadByte echo err=%v", err)
+	}
+
+	// Feed response bytes via mock. Now in response phase
+	// (echoCursor == writePrefixLen), so any byte is delivered.
 	bytes := []byte{0x10, 0x08, 0xB5}
 	for _, b := range bytes {
 		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
@@ -97,8 +108,8 @@ func TestActiveTxnDiag_ReadCounterIncrements(t *testing.T) {
 	}
 
 	snap := mux.ActiveTxnSnapshot()
-	if snap.BytesRead < 3 {
-		t.Fatalf("BytesRead = %d, want >= 3", snap.BytesRead)
+	if snap.BytesRead < 4 {
+		t.Fatalf("BytesRead = %d, want >= 4 (1 echo + 3 response)", snap.BytesRead)
 	}
 }
 
@@ -125,7 +136,14 @@ func TestActiveTxnDiag_InactiveReason_SYNIdle(t *testing.T) {
 		t.Fatalf("at.Write err=%v", err)
 	}
 
-	// Simulate a response read (bytesRead > 0 too, for realism).
+	// P11 — feed echo of 0x71 first so we leave mid-write phase.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := at.ReadByte(); err != nil {
+		t.Fatalf("ReadByte echo err=%v", err)
+	}
+
+	// Simulate a response read (response phase open, any byte ok).
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
 	time.Sleep(20 * time.Millisecond)
 	if _, err := at.ReadByte(); err != nil {
@@ -240,6 +258,12 @@ func TestActiveTxnDiag_InactiveReason_Idempotent(t *testing.T) {
 	// is treated as the frame terminator, not pre-echo suppressed.
 	if _, err := at.Write([]byte{0x71}); err != nil {
 		t.Fatalf("Write err=%v", err)
+	}
+	// P11 — feed echo of 0x71 first to leave mid-write phase.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := at.ReadByte(); err != nil {
+		t.Fatalf("ReadByte echo err=%v", err)
 	}
 	// Also feed + consume a response byte for realism.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
@@ -418,8 +442,14 @@ func TestActiveTxnDiag_DrainedOnGrant_ZeroInSteadyState(t *testing.T) {
 	if _, err := at.Write([]byte{0x71}); err != nil {
 		t.Fatalf("Write err=%v", err)
 	}
+	// P11 — feed echo of 0x71 first to leave mid-write phase.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := at.ReadByte(); err != nil {
+		t.Fatalf("ReadByte echo err=%v", err)
+	}
 	// Feed response byte + consume via activeTransport so bytesRead > 0
-	// (for realism; the clear is gated on bytesWritten, not bytesRead).
+	// (response phase is open after first echo).
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}
 	time.Sleep(20 * time.Millisecond)
 	if _, err := at.ReadByte(); err != nil {
@@ -493,6 +523,12 @@ func TestActiveTxnDiag_AfterInactive_Counter(t *testing.T) {
 	// SYN is treated as terminator, not pre-echo suppressed.
 	if _, err := at.Write([]byte{0x71}); err != nil {
 		t.Fatalf("Write err=%v", err)
+	}
+	// P11 — feed echo of 0x71 first to leave mid-write phase.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := at.ReadByte(); err != nil {
+		t.Fatalf("ReadByte echo err=%v", err)
 	}
 	// Simulate a completed transaction read.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x10}

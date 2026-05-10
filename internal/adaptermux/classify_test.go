@@ -78,16 +78,16 @@ func TestTxnClass_NonEchoInvalidFrame(t *testing.T) {
 	}
 
 	// Feed back bytes that do NOT match the write prefix. No SYN.
+	// P11 — these bytes are now FILTERED from activeCh (mid-write
+	// non-match), but they still reach recordReadPrefixAndClassify
+	// before the filter and contribute to the nonEcho counter for
+	// classification purposes. Do not attempt to ReadByte — those
+	// reads would time out under the P11 filter.
 	noise := []byte{0x11, 0x22, 0x33}
 	for _, b := range noise {
 		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
 	}
 	time.Sleep(50 * time.Millisecond)
-	for range noise {
-		if _, err := at.ReadByte(); err != nil {
-			t.Fatalf("ReadByte err=%v", err)
-		}
-	}
 
 	mux.markActiveReadTimeout()
 
@@ -282,15 +282,14 @@ func TestTxnClass_BoundedWriteReadCapture(t *testing.T) {
 
 	// Feed 20 bytes back (non-echo, distinct values) — read prefix
 	// must also cap at 8.
+	// P11 — these are filtered from activeCh (mid-write non-match)
+	// but recordReadPrefixAndClassify runs BEFORE the filter, so
+	// readPrefix is still populated. Don't attempt ReadByte (would
+	// timeout under the P11 filter).
 	for i := 0; i < 20; i++ {
 		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: byte(0x80 + i)}
 	}
 	time.Sleep(60 * time.Millisecond)
-	for i := 0; i < 20; i++ {
-		if _, err := at.ReadByte(); err != nil {
-			t.Fatalf("ReadByte err=%v", err)
-		}
-	}
 
 	snap := mux.ActiveTxnSnapshot()
 	if len(snap.WritePrefix) != txnPrefixCap {
@@ -370,11 +369,11 @@ func TestLastTxnClass_AfterTerminal(t *testing.T) {
 	at := mux.ActiveTransport()
 	_, _ = at.Write([]byte{0xAA})
 	// Feed mismatched byte, no SYN → NonEchoInvalidFrame on timeout.
+	// P11 — 0x55 is filtered from activeCh (mid-write, doesn't match
+	// 0xAA), but recordReadPrefixAndClassify counts it as nonEcho
+	// before the filter, which is what classifies the txn.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x55}
 	time.Sleep(20 * time.Millisecond)
-	if _, err := at.ReadByte(); err != nil {
-		t.Fatalf("ReadByte err=%v", err)
-	}
 	mux.markActiveReadTimeout()
 
 	if got := mux.LastTxnClass(); got != string(TxnClassNonEchoInvalidFrame) {

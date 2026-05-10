@@ -1181,7 +1181,17 @@ func (m *Mux) onReceived(symbol byte) {
 	// Soak fix: gate activeCh delivery to periods when the active path
 	// is expecting bytes. Non-SYN bytes during third-party traffic
 	// should not accumulate on activeCh.
-	activeExpects := m.activePathExpectsBytes()
+	//
+	// P11 — use the per-byte filter (activePathExpectsByte) instead of
+	// the bulk filter (activePathExpectsBytes). The per-byte filter
+	// rejects mid-write stale bytes (e.g. 0x00 ACK from BASV2's just-
+	// finished 0704 scan still sitting in TCP/ENH pipeline) when
+	// echoCursor < writePrefixLen and the byte does not match the
+	// expected echo. Pre-P11 the non-SYN path used the bulk filter
+	// (just gatewayTxnActive), so any byte during ownership flowed
+	// through and post_grant_ack accounted for ~52% of all
+	// echo_mismatch.
+	activeExpects := m.activePathExpectsByte(symbol)
 	// Codex P2: regression signal — if a non-SYN byte arrives while
 	// gateway still owns the bus but gatewayTxnActive is already false
 	// (post-SYN window before ownership is released), we skipped
@@ -1649,41 +1659,52 @@ func (m *Mux) resetAllSessionEchoes() {
 	}
 }
 
-// activePathExpectsBytes reports whether bus.Send is CURRENTLY consuming
-// activeCh for a gateway transaction. Ownership alone is insufficient:
-// after a transaction completes or aborts, ownership can linger up to
-// IdleReleaseGrace while bus.Send has already returned. Third-party
-// bytes in that idle window must NOT accumulate on activeCh.
-//
-// Policy (runtime soak fix):
-//   - gatewayTxnActive: true iff bus.Send was granted and has not yet
-//     released (set in completeArbitrationGrant, cleared on ownership
-//     release via SYN timeout/idle grace, NACK, or TransactionDone).
-//   - Do NOT deliver idle SYN bursts (no active txn → no consumer).
-//   - Do NOT use activeCh as a passive backlog — passive traffic goes
-//     through the passive path and external sessions, not activeCh.
-//
-// Caller must hold stateMu.
-func (m *Mux) activePathExpectsBytes() bool {
-	return m.gatewayTxnActive
-}
+// activePathExpectsBytes — REMOVED in P11. Pre-P11 the non-SYN
+// delivery path used this bulk filter (just gatewayTxnActive); P11
+// switched to the per-byte filter activePathExpectsByte(symbol) which
+// is symmetric across pre/post-first-echo and rejects mid-write stale
+// bytes. The function's comments still appear historically in
+// onSYNLocked (referring to the gating semantics, which are now
+// embodied by activePathExpectsByte's mid-write/response phase
+// branches).
 
 // activePathExpectsByte reports whether a non-SYN byte should be delivered
-// to the active transport. Before the first active byte is delivered, only
-// the next expected echo may pass; stale non-SYN noise must not race the real
-// echo into sendRawWithEcho. After the first delivered byte, the active path
-// owns the transaction stream and response bytes must flow through.
+// to the active transport.
+//
+// P11 — symmetric mid-write filter. The byte must satisfy ONE of:
+//
+//   - Mid-write phase (echoCursor < writePrefixLen): byte must equal
+//     writePrefix[echoCursor], i.e. exactly the next expected echo.
+//     Stale third-party tail bytes from a prior frame still sitting
+//     in the TCP/ENH pipeline (e.g. a 0x00 ACK from BASV2's just-
+//     finished 0704 scan) would otherwise leak into activeCh and
+//     race the real echo. bus.Send sees 0x00 in echo position →
+//     echo_mismatch with subclass=post_grant_ack (52% of all
+//     echo_mismatch in production soak before this fix).
+//
+//   - Response phase (echoCursor == writePrefixLen): all writes have
+//     been echoed, the gateway is now reading the target's response.
+//     Accept any byte; bus.Send will surface invalid framing as a
+//     downstream frame error rather than echo_mismatch.
+//
+// Pre-P11 the gate was looser: once `bytesDeliveredToActive > 0`,
+// every byte passed (including mid-write stale bytes). The current
+// gate uses echoCursor as the precise mid-write/response phase
+// boundary, replacing the bytesDeliveredToActive>0 floodgate. This
+// catches the post_grant_ack pattern (~52% of echo_mismatch) without
+// breaking response-phase delivery.
 //
 // Caller must hold stateMu.
 func (m *Mux) activePathExpectsByte(symbol byte) bool {
 	if !m.gatewayTxnActive {
 		return false
 	}
-	if m.activeTxn.bytesDeliveredToActive.Load() > 0 {
-		return true
+	if m.activeTxn.echoCursor < m.activeTxn.writePrefixLen {
+		// Mid-write: only the expected echo passes.
+		return m.activeTxn.writePrefix[m.activeTxn.echoCursor] == symbol
 	}
-	return m.activeTxn.echoCursor < m.activeTxn.writePrefixLen &&
-		m.activeTxn.writePrefix[m.activeTxn.echoCursor] == symbol
+	// Response phase: all writes echoed, accept anything.
+	return true
 }
 
 // deliverToActive sends a byte to the active path channel.

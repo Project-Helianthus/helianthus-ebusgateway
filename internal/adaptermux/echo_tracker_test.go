@@ -212,3 +212,79 @@ func TestEchoTracker_OverflowReset(t *testing.T) {
 		t.Errorf("stale echo of 0x71 post-overflow = %v; want echoMatchNone (queue empty after consume)", result)
 	}
 }
+
+// TestEchoTracker_OverflowRollbackRestoresQueue (Codex PR #603 P2) —
+// when recordSent triggers an overflow reset and the subsequent
+// adapter Write fails, rollbackSent must restore the prior 256
+// expectations and revert the counter increment. Pre-fix the prior
+// queue was lost forever and incoming real echoes mismatched.
+func TestEchoTracker_OverflowRollbackRestoresQueue(t *testing.T) {
+	tracker := newEchoTracker()
+
+	// Fill queue to capacity with distinct sentinels so we can verify
+	// the exact pre-overflow contents are restored.
+	for i := 0; i < maxPendingEchoes; i++ {
+		tracker.recordSent(byte(i % 256))
+	}
+
+	// Trigger overflow + immediate rollback (simulates Write failure).
+	tracker.recordSent(0xFE)
+	if got := tracker.overflowResets(); got != 1 {
+		t.Fatalf("overflowResets after overflow = %d; want 1", got)
+	}
+	if got := len(tracker.expectedEchoes); got != 1 {
+		t.Fatalf("queue len after overflow = %d; want 1", got)
+	}
+
+	tracker.rollbackSent()
+
+	// Counter reverted.
+	if got := tracker.overflowResets(); got != 0 {
+		t.Errorf("overflowResets after rollback = %d; want 0 (must revert)", got)
+	}
+	// Queue restored to the original 256 expectations.
+	if got := len(tracker.expectedEchoes); got != maxPendingEchoes {
+		t.Fatalf("queue len after rollback = %d; want %d (must restore)", got, maxPendingEchoes)
+	}
+	for i := 0; i < maxPendingEchoes; i++ {
+		want := byte(i % 256)
+		if got := tracker.expectedEchoes[i]; got != want {
+			t.Errorf("expectedEchoes[%d] post-rollback = 0x%02X; want 0x%02X", i, got, want)
+		}
+	}
+
+	// Real echoes (e.g. of byte 0) now match correctly — pre-fix they
+	// would have all returned echoMatchNone because the prior queue
+	// was destroyed.
+	result, _ := tracker.matchEcho(0)
+	if result != echoMatchSuppressed {
+		t.Errorf("matchEcho(0) post-rollback = %v; want Suppressed (restored queue head)", result)
+	}
+}
+
+// TestEchoTracker_OverflowSnapshotInvalidatedByMatch (Codex PR #603 P2
+// invariant) — once any echo matches, the prior recordSent is
+// considered committed; a subsequent rollbackSent must NOT restore the
+// snapshot. Otherwise: overflow recordSent → match → rollback would
+// resurrect a stale 256-element queue + drop the counter, both wrong.
+func TestEchoTracker_OverflowSnapshotInvalidatedByMatch(t *testing.T) {
+	tracker := newEchoTracker()
+
+	for i := 0; i < maxPendingEchoes; i++ {
+		tracker.recordSent(0x71)
+	}
+	tracker.recordSent(0x08) // overflow → snapshot stored
+
+	// matchEcho commits → snapshot must be cleared.
+	tracker.matchEcho(0x08)
+
+	// Now rollback must NOT restore the prior 256 entries (we already
+	// committed the overflow by consuming the post-reset head).
+	tracker.rollbackSent()
+	if got := len(tracker.expectedEchoes); got != 0 {
+		t.Errorf("queue len after match+rollback = %d; want 0 (snapshot invalidated)", got)
+	}
+	if got := tracker.overflowResets(); got != 1 {
+		t.Errorf("overflowResets after match+rollback = %d; want 1 (counter NOT reverted)", got)
+	}
+}

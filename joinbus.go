@@ -173,6 +173,25 @@ func DefaultStartupAdmissionSourceSelectionConfig() protocol.SourceAddressSelect
 	}
 }
 
+// StartupAdmissionConfigWithHint returns the default startup-admission selector
+// config augmented with a hint candidate, when a hint is available. When
+// hintSet is false the returned config is identical to
+// DefaultStartupAdmissionSourceSelectionConfig (no hint biasing applied).
+//
+// The hint is a HISTORICAL signal from a prior admission cycle (loaded from
+// runtime_state.ebus.self.last_admitted_source per
+// runtime-state-w19-26.locked M4_SOURCE_SELECTION_HINT). It biases candidate
+// ordering so the cached source is tried first; the selector still validates
+// the candidate against the live bus (AD24 — cache never bypasses warmup).
+func StartupAdmissionConfigWithHint(hint byte, hintSet bool) protocol.SourceAddressSelectionConfig {
+	cfg := DefaultStartupAdmissionSourceSelectionConfig()
+	if hintSet {
+		cfg.HintCandidate = hint
+		cfg.HintCandidateSet = true
+	}
+	return cfg
+}
+
 type noObservationSourceSelectionBus struct{}
 
 func (noObservationSourceSelectionBus) Listen(context.Context, func(protocol.Frame)) error {

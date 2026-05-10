@@ -2353,11 +2353,20 @@ func (m *Mux) sendLoop() {
 				// writes to the adapter. That closes the immediate-echo
 				// race without arming transactions that never entered the
 				// mux write path.
+				//
+				// P11 round-3 (Codex pass-2 P1): record the echo expectation
+				// in the SAME critical section as gatewayTxnActive flip +
+				// recordWritePrefix. Pre-round-3 recordSent ran in doSend
+				// AFTER stateMu was released, leaving a state-ordering race
+				// where gatewayTxnActive=true && gatewayEcho empty: stale
+				// bytes leaked through as response-phase. Hoisting the call
+				// closes the gap.
 				m.stateMu.Lock()
 				if !m.gatewayTxnActive {
 					m.gatewayTxnActive = true
 				}
 				m.recordWritePrefix(req.data)
+				m.gatewayEcho.recordSent(req.data)
 				m.stateMu.Unlock()
 			}
 			err := m.doSend(req.sessionID, req.data)
@@ -2381,11 +2390,13 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 	}
 
 	// Record echo expectation.
-	if sessionID == gatewaySessionID {
-		m.stateMu.Lock()
-		m.gatewayEcho.recordSent(data)
-		m.stateMu.Unlock()
-	} else {
+	//
+	// P11 round-3: gateway session's recordSent is hoisted into sendLoop
+	// (same critical section as gatewayTxnActive flip) to close the
+	// state-ordering race where gatewayTxnActive=true but gatewayEcho
+	// queue is still empty. External sessions still record here — they
+	// don't gate the active-path filter.
+	if sessionID != gatewaySessionID {
 		m.sessionsMu.Lock()
 		if sess, ok := m.sessions[sessionID]; ok {
 			sess.echoTracker.recordSent(data)

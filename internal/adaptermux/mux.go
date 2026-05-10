@@ -1175,13 +1175,52 @@ func (m *Mux) onReceived(symbol byte) {
 	// The echo tracker still runs for internal state tracking, but its
 	// result is not used for passive filtering — we suppress everything.
 	isGatewayOwned := hasOwner && ownerID == gatewaySessionID
-	if isGatewayOwned {
+	// P11 round-2 (Codex P1 findings on PR #606) — capture the echo
+	// queue head BEFORE matchEcho consumes a matching byte. The filter
+	// uses the PRE-MATCH queue head as the protocol-accurate "what byte
+	// is bus.Send currently waiting for" signal.
+	//
+	// Why not echoCursor / writePrefix:
+	//   - writePrefix is capped at txnPrefixCap=8 (diagnostic). Frames
+	//     longer than 8 bytes would have echoCursor==writePrefixLen
+	//     forever after byte 8, opening response phase prematurely.
+	//   - recordReadPrefixAndClassify advances echoCursor on a NON-match
+	//     too (diagnostic side effect). A single mid-write stale byte
+	//     would advance the cursor past the missing echo, and a second
+	//     stale byte before the real echo would slip through.
+	//
+	// gatewayEcho.expectedEchoes is the authoritative protocol state:
+	// every byte bus.Send writes is recorded; matchEcho only consumes
+	// on actual match. Uncapped, mismatch-resistant.
+	preMatchHead, hadPendingEcho := m.gatewayEcho.peekNextExpected()
+	// P11 round-2 cascade fix: only call matchEcho when it will MATCH
+	// (or when the queue is empty — then it's a no-op). matchEcho's
+	// mismatch branch CLEARS the queue, which would destroy our filter
+	// state for cascading stale bytes (a single mid-write stale byte
+	// would clear the queue and the second stale byte would slip
+	// through as response-phase). By gating the call on a match check
+	// we preserve the queue across stale bytes.
+	matchWouldHit := !hadPendingEcho || (hadPendingEcho && symbol == preMatchHead)
+	if isGatewayOwned && matchWouldHit {
 		m.gatewayEcho.matchEcho(symbol) // track echo state internally
 	}
-	// Soak fix: gate activeCh delivery to periods when the active path
-	// is expecting bytes. Non-SYN bytes during third-party traffic
-	// should not accumulate on activeCh.
-	activeExpects := m.activePathExpectsBytes()
+	// P11 — gate activeCh delivery: mid-write requires queue-head match;
+	// response phase (no pending writes) accepts any byte.
+	//
+	// Pre-P11 the non-SYN path used the bulk filter
+	// (activePathExpectsBytes — just gatewayTxnActive), so any byte
+	// during ownership flowed through and post_grant_ack accounted for
+	// ~52% of all echo_mismatch. P11 round-1 used echoCursor /
+	// writePrefix as the gate but those are capped diagnostic state;
+	// P11 round-2 uses gatewayEcho's pre-match queue head, which is
+	// protocol-accurate and uncapped.
+	activeExpects := m.gatewayTxnActive
+	if activeExpects && hadPendingEcho {
+		// Mid-write: only the next expected echo passes.
+		activeExpects = symbol == preMatchHead
+	}
+	// hadPendingEcho == false: response phase open, activeExpects
+	// stays as gatewayTxnActive (true) — any byte delivered.
 	// Codex P2: regression signal — if a non-SYN byte arrives while
 	// gateway still owns the bus but gatewayTxnActive is already false
 	// (post-SYN window before ownership is released), we skipped
@@ -1649,41 +1688,27 @@ func (m *Mux) resetAllSessionEchoes() {
 	}
 }
 
-// activePathExpectsBytes reports whether bus.Send is CURRENTLY consuming
-// activeCh for a gateway transaction. Ownership alone is insufficient:
-// after a transaction completes or aborts, ownership can linger up to
-// IdleReleaseGrace while bus.Send has already returned. Third-party
-// bytes in that idle window must NOT accumulate on activeCh.
-//
-// Policy (runtime soak fix):
-//   - gatewayTxnActive: true iff bus.Send was granted and has not yet
-//     released (set in completeArbitrationGrant, cleared on ownership
-//     release via SYN timeout/idle grace, NACK, or TransactionDone).
-//   - Do NOT deliver idle SYN bursts (no active txn → no consumer).
-//   - Do NOT use activeCh as a passive backlog — passive traffic goes
-//     through the passive path and external sessions, not activeCh.
-//
-// Caller must hold stateMu.
-func (m *Mux) activePathExpectsBytes() bool {
-	return m.gatewayTxnActive
-}
+// activePathExpectsBytes — REMOVED in P11. Pre-P11 the non-SYN
+// delivery path used this bulk filter (just gatewayTxnActive); P11
+// switched to the per-byte filter activePathExpectsByte(symbol) which
+// is symmetric across pre/post-first-echo and rejects mid-write stale
+// bytes. The function's comments still appear historically in
+// onSYNLocked (referring to the gating semantics, which are now
+// embodied by activePathExpectsByte's mid-write/response phase
+// branches).
 
-// activePathExpectsByte reports whether a non-SYN byte should be delivered
-// to the active transport. Before the first active byte is delivered, only
-// the next expected echo may pass; stale non-SYN noise must not race the real
-// echo into sendRawWithEcho. After the first delivered byte, the active path
-// owns the transaction stream and response bytes must flow through.
-//
-// Caller must hold stateMu.
+// activePathExpectsByte — REMOVED in P11 round-2. The per-byte gate
+// is now inlined in onReceived using gatewayEcho's pre-match queue
+// head (protocol-accurate; uncapped). The previous round used
+// echoCursor/writePrefix which were capped at txnPrefixCap=8 AND
+// advanced on non-match — both broken signals (Codex P1 findings on
+// PR #606). The SYN-path call site (line 1120) still uses the legacy
+// helper; preserved as a stub returning the same gatewayTxnActive
+// signal the SYN handler expects (the SYN-specific suppression logic
+// lives in onSYNLocked's preEchoMidFrameSuppress / midWriteSyn —
+// independent of this byte-level filter).
 func (m *Mux) activePathExpectsByte(symbol byte) bool {
-	if !m.gatewayTxnActive {
-		return false
-	}
-	if m.activeTxn.bytesDeliveredToActive.Load() > 0 {
-		return true
-	}
-	return m.activeTxn.echoCursor < m.activeTxn.writePrefixLen &&
-		m.activeTxn.writePrefix[m.activeTxn.echoCursor] == symbol
+	return m.gatewayTxnActive
 }
 
 // deliverToActive sends a byte to the active path channel.
@@ -2328,11 +2353,20 @@ func (m *Mux) sendLoop() {
 				// writes to the adapter. That closes the immediate-echo
 				// race without arming transactions that never entered the
 				// mux write path.
+				//
+				// P11 round-3 (Codex pass-2 P1): record the echo expectation
+				// in the SAME critical section as gatewayTxnActive flip +
+				// recordWritePrefix. Pre-round-3 recordSent ran in doSend
+				// AFTER stateMu was released, leaving a state-ordering race
+				// where gatewayTxnActive=true && gatewayEcho empty: stale
+				// bytes leaked through as response-phase. Hoisting the call
+				// closes the gap.
 				m.stateMu.Lock()
 				if !m.gatewayTxnActive {
 					m.gatewayTxnActive = true
 				}
 				m.recordWritePrefix(req.data)
+				m.gatewayEcho.recordSent(req.data)
 				m.stateMu.Unlock()
 			}
 			err := m.doSend(req.sessionID, req.data)
@@ -2342,7 +2376,31 @@ func (m *Mux) sendLoop() {
 }
 
 // doSend writes a byte to the adapter for the given session.
+//
+// P11 round-5 (Codex P2 finding on PR #606): every error path —
+// errNotBusOwner / errNotConnected / tr.Write failure — must roll
+// back gateway echo state (the byte never reached the wire) AND
+// clear gatewayTxnActive in the SAME stateMu critical section. The
+// pre-write returns previously skipped both, leaving phantom echo
+// expectations and a stuck gatewayTxnActive=true state until the
+// next SYN/grant reset. The deferred rollback below handles all
+// failure exits uniformly.
 func (m *Mux) doSend(sessionID uint64, data byte) error {
+	isGateway := sessionID == gatewaySessionID
+	sendOK := false
+	defer func() {
+		if !isGateway || sendOK {
+			return
+		}
+		m.stateMu.Lock()
+		if m.gatewayTxnActive {
+			m.gatewayTxnActive = false
+			m.recordGatewayInactive(ReasonActiveWriteError)
+		}
+		m.gatewayEcho.rollbackSent()
+		m.stateMu.Unlock()
+	}()
+
 	if !m.arb.isOwner(sessionID) {
 		return errNotBusOwner
 	}
@@ -2356,11 +2414,13 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 	}
 
 	// Record echo expectation.
-	if sessionID == gatewaySessionID {
-		m.stateMu.Lock()
-		m.gatewayEcho.recordSent(data)
-		m.stateMu.Unlock()
-	} else {
+	//
+	// P11 round-3: gateway session's recordSent is hoisted into sendLoop
+	// (same critical section as gatewayTxnActive flip) to close the
+	// state-ordering race where gatewayTxnActive=true but gatewayEcho
+	// queue is still empty. External sessions still record here — they
+	// don't gate the active-path filter.
+	if !isGateway {
 		m.sessionsMu.Lock()
 		if sess, ok := m.sessions[sessionID]; ok {
 			sess.echoTracker.recordSent(data)
@@ -2370,12 +2430,9 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 
 	_, err := tr.Write([]byte{data})
 	if err != nil {
-		// Rollback echo expectation on send failure.
-		if sessionID == gatewaySessionID {
-			m.stateMu.Lock()
-			m.gatewayEcho.rollbackSent()
-			m.stateMu.Unlock()
-		} else {
+		if !isGateway {
+			// External session rollback (gateway handled by deferred
+			// rollback above).
 			m.sessionsMu.Lock()
 			if sess, ok := m.sessions[sessionID]; ok {
 				sess.echoTracker.rollbackSent()
@@ -2385,6 +2442,7 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 		return fmt.Errorf("%w: %v", errAdapterWrite, err)
 	}
 
+	sendOK = true
 	return nil
 }
 

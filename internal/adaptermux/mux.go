@@ -1151,7 +1151,29 @@ func (m *Mux) onReceived(symbol byte) {
 			// the gateway owns the bus with gatewayTxnActive=true — count
 			// this enqueue so bytesDeliveredToActive reflects real
 			// adapter-originated bytes delivered during this grant.
-			m.deliverToActive(symbol, true)
+			//
+			// P12 pass-2 (Codex P1): re-acquire stateMu and re-validate
+			// gatewayTxnActive before delivering. Mirrors the non-SYN
+			// path at line ~1220. Pre-pass-2 sendLoop could drain+arm
+			// for byte K+1 between stateMu.Unlock above and this
+			// deliverToActive call — landing the SYN in activeCh AFTER
+			// the drain, where bus.Send.sendRawWithEcho on byte K+1
+			// reads it as 0xAA → echo_mismatch (pre_echo_syn). With
+			// re-acquisition, P12's drain-then-arm under stateMu is
+			// genuinely atomic with this enqueue.
+			m.stateMu.Lock()
+			if m.gatewayTxnActive {
+				select {
+				case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
+					m.activeTxn.bytesDeliveredToActive.Add(1)
+				default:
+					m.activeTxn.terminatorDropOnFullCh.Add(1)
+					m.logger.Printf("adaptermux: active channel full, dropping SYN 0x%02X", symbol)
+				}
+			} else if hasOwner && ownerID == gatewaySessionID {
+				m.activeTxn.afterInactive.Add(1)
+			}
+			m.stateMu.Unlock()
 		}
 		for _, pe := range passiveEvents {
 			m.emitPassive(pe)
@@ -1663,6 +1685,45 @@ func (m *Mux) drainActiveCh() int {
 	}
 }
 
+// drainActiveChBytesOnly discards only byte events (activeEventByte)
+// from the active channel, preserving lifecycle events (activeEventError
+// — reset / disconnect boundaries). Codex P12 review pass-1 P1: the
+// inter-write drain must NOT swallow reset boundary signals; bus.Send
+// needs to see them to abort cleanly. Re-enqueues any preserved error
+// event back onto activeCh in order.
+//
+// Returns the number of byte events drained.
+//
+// Caller must hold stateMu (we're racing onReceived which also writes
+// to activeCh under stateMu — peer-of-equals discipline).
+func (m *Mux) drainActiveChBytesOnly() int {
+	n := 0
+	var preserved []activeEvent
+	for {
+		select {
+		case ev := <-m.activeCh:
+			if ev.kind == activeEventByte {
+				n++
+				continue
+			}
+			preserved = append(preserved, ev)
+		default:
+			// Re-enqueue preserved lifecycle events in order. Non-
+			// blocking — if activeCh is full (capacity 4096), log
+			// and continue (the lifecycle event was already in the
+			// channel pre-drain so this is a no-regression path).
+			for _, ev := range preserved {
+				select {
+				case m.activeCh <- ev:
+				default:
+					m.logger.Printf("adaptermux: drain re-enqueue full, lifecycle event dropped: kind=%d err=%v", ev.kind, ev.err)
+				}
+			}
+			return n
+		}
+	}
+}
+
 // flushSessionEchoTrackers flushes echo trackers for all external sessions
 // at a SYN boundary. The flushed bytes are discarded — they were already
 // delivered live to passive consumers in onReceived. This call only resets
@@ -1722,6 +1783,15 @@ func (m *Mux) activePathExpectsByte(symbol byte) bool {
 // active-path delivery under gateway ownership (decided under stateMu
 // via activePathExpectsBytes); pass false for shutdown/reset events or
 // for non-gateway-owned passthrough.
+//
+// P12 pass-2 (Codex P1): both call sites now perform their own
+// stateMu.Lock + revalidation around the enqueue (mirror of the non-SYN
+// path at mux.go:1220-1239). This helper is kept for callers that need
+// the standalone non-blocking send semantics; currently unused at
+// compile time but retained for the documented "shutdown/reset
+// passthrough" use case.
+//
+//nolint:unused // retained for future shutdown/reset callers per godoc
 func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 	select {
 	case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
@@ -2361,7 +2431,43 @@ func (m *Mux) sendLoop() {
 				// where gatewayTxnActive=true && gatewayEcho empty: stale
 				// bytes leaked through as response-phase. Hoisting the call
 				// closes the gap.
+				//
+				// P12 (echo_mismatch deep-dive 2026-05-10): drain activeCh
+				// of any stale bytes BEFORE arming the next write. The
+				// inter-byte queue-empty window (between matchEcho
+				// consuming byte K's echo and sendLoop recording byte K+1)
+				// briefly opens response-phase delivery in
+				// activePathExpectsByte. Stale bytes that landed in that
+				// window must be discarded before we arm gatewayTxnActive
+				// on the next write — otherwise bus.Send.sendRawWithEcho
+				// would read them in echo position and fire
+				// echo_mismatch (post_grant_ack on stale 0x00,
+				// pre_echo_syn on stale 0xAA). Both subclasses share this
+				// root cause; agent deep-dive 2026-05-10 confirmed.
+				//
+				// stateMu is held throughout drain+arm+recordSent so
+				// onReceived (which also acquires stateMu) cannot
+				// interleave a new stale byte between drain and arm.
+				//
+				// CONTRACT (Codex P12 pass-1 P1): drainActiveChBytesOnly
+				// preserves lifecycle (activeEventError) events for
+				// bus.Send abort path. Drain is byte-only.
+				//
+				// CONTRACT (Codex P12 pass-1 P2): bus.sendRawWithEcho calls
+				// activeTransport.Write with single-byte slices and reads
+				// each echo before issuing the next write — so by the
+				// time sendLoop receives a new request, the prior echo
+				// has already been consumed by bus.Send.ReadByte and is
+				// no longer in activeCh. Multi-byte gateway writes would
+				// risk draining a legitimate prior echo; the API
+				// supports them but no production caller uses them.
+				// Tests that use multi-byte Write sequence echoes after
+				// Write returns, so the drain is still safe in practice.
 				m.stateMu.Lock()
+				drained := m.drainActiveChBytesOnly()
+				if drained > 0 {
+					m.activeTxn.interWriteDrainTotal.Add(uint64(drained))
+				}
 				if !m.gatewayTxnActive {
 					m.gatewayTxnActive = true
 				}

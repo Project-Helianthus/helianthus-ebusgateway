@@ -337,6 +337,7 @@ func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
 		// drain (default 50 ms would reject the external pending
 		// during the test's 150 ms deadline window).
 		PendingStartTTL: 24 * time.Hour,
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1103,6 +1104,7 @@ func TestBlockingArbDeadline_TriggersReconnect_NoOverlap(t *testing.T) {
 		StartDeadline: 120 * time.Millisecond,
 		// C1/C3 test isolation (see paired test above).
 		PendingStartTTL: 24 * time.Hour,
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -88,8 +88,20 @@ type Config struct {
 	// enqueuedAt has aged past this value are dropped from the queue
 	// head and rejected with errStaleStartRequest so external clients
 	// (ebusd) can retry cleanly when they actually want the bus.
-	// Default 50 ms — calibrated to ebusd's local arbitration deadline.
-	// (Proxy-bug C3 / R3.) Zero disables the policy.
+	// (Proxy-bug C3 / R3.)
+	//
+	// Sentinels:
+	//   - 0 (the zero value): use the production default (currently
+	//     250 ms — slightly above the default ReadTimeout so an
+	//     enqueue right after a read timeout still sees its first
+	//     grant attempt before the TTL drain fires; the request will
+	//     have been kicked via requestStartForSession's idle path
+	//     well before that, so the TTL only catches genuinely stuck
+	//     entries).
+	//   - Negative: disables the drain entirely. Tests and the very
+	//     rare deployment that needs pre-C3 behavior under long
+	//     gateway contention can pass -1 (or any negative duration)
+	//     to opt out.
 	PendingStartTTL time.Duration
 
 	// IsKnownInitiatorByte is an optional predicate that classifies a
@@ -183,11 +195,17 @@ func (c *Config) defaults() {
 		c.SYNInterval = 4576 * time.Microsecond
 	}
 	if c.PendingStartTTL == 0 {
-		// Matches ebusd's per-START local arbitration deadline. Smaller
-		// values lose throughput to spurious failures on a heavily-
-		// contended bus; larger values risk delivering grants past the
-		// client's deadline. (Proxy-bug C3 / R3.)
-		c.PendingStartTTL = 50 * time.Millisecond
+		// Default 250 ms — slightly above the default ReadTimeout
+		// (200 ms) so a START enqueued right after a read timeout
+		// still sees a grant attempt before the TTL drain fires.
+		// requestStartForSession kicks tryGrantAndStart on every
+		// enqueue, so on an idle bus the request typically lands a
+		// grant in < 1 ms; the 250 ms window is only there for
+		// genuinely stuck requests where the kick saw no idle path
+		// (e.g. blockingArbActive, pendingStartAbsorb > 0).
+		// Negative values disable the drain. (Proxy-bug C3 / R3 +
+		// Codex P1 round 1 on PR #623.)
+		c.PendingStartTTL = 250 * time.Millisecond
 	}
 	if c.ExternalSessionSYNGrace == 0 {
 		// 2s covers a broadcast scan to address 0xFE (~25 responder
@@ -2259,6 +2277,67 @@ func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 // handleArbitrationResponse. This ensures passive observers continue
 // to receive bus bytes during gateway arbitration.
 //
+// requestStartForSession submits a START request via the arbitrator
+// and additionally:
+//
+//   - Marks any in-flight grant for the SAME session as cancelled
+//     (proxy-bug C4 / R4 in-flight branch — Codex P1 round 1 on
+//     PR #623). The arbitrator's replace path inside requestStart
+//     can only flag entries that are still in pendingExternal /
+//     pendingGateway; once tryGrant has popped a request into
+//     m.pendingStart, a same-session re-submit no longer finds it
+//     in the arbitrator and the cancelled flag would otherwise stay
+//     false. Catching the in-flight case here is what makes
+//     handleArbitrationResponse's cancelled-check actually fire in
+//     production.
+//
+//   - Opportunistically kicks tryGrantAndStart if the bus is idle
+//     (proxy-bug C1 fast-path enqueue trigger — Codex P1 round 1
+//     on PR #623). The mux's primary grant rhythm is driven by SYN
+//     arrivals via readLoop; on a quiet bus that means a new START
+//     can wait up to ReadTimeout (~200 ms default) before the first
+//     grant attempt — long past the C3 PendingStartTTL window of
+//     50 ms. Kicking on enqueue lets the idle fast-path grant a
+//     submission immediately when no SYN is imminent.
+//
+// All Mux/session/active-path callers MUST route through this method
+// rather than calling m.arb.requestStart directly, so both branches
+// of the C4 cancel + the C1 enqueue-kick are guaranteed to run.
+func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan startResult {
+	// Step 1: cancel any in-flight grant for this session BEFORE
+	// the arbitrator admits the new request. Under stateMu so the
+	// snapshot of m.pendingStart is coherent.
+	m.stateMu.Lock()
+	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID && m.pendingStart.req != nil {
+		m.arb.markInFlightCancelled(m.pendingStart.req)
+	}
+	m.stateMu.Unlock()
+
+	// Step 2: hand off to the arbitrator. The replace path inside
+	// requestStart also covers any prior entry that's still in
+	// pendingExternal/pendingGateway (not yet in-flight).
+	ch := m.arb.requestStart(sessionID, initiator)
+
+	// Step 3: opportunistic kick — only when the wire has been quiet
+	// for at least one SYN interval. The SYN-driven grant rhythm in
+	// readLoop won't fire for up to ReadTimeout (~200 ms) on a
+	// genuinely quiet bus; without this kick a START can sit
+	// unattended past the C3 PendingStartTTL window. On a busy bus
+	// the next SYN handler will pick up the grant naturally, so we
+	// don't intrude on the established arbitration cadence. The
+	// idle check mirrors the snapshot used inside tryGrantAndStart
+	// for the C1 fast path.
+	m.stateMu.Lock()
+	idle := m.lastWireActivity.IsZero() ||
+		time.Since(m.lastWireActivity) >= m.cfg.SYNInterval
+	m.stateMu.Unlock()
+	if idle {
+		m.tryGrantAndStart()
+	}
+
+	return ch
+}
+
 // Guard: only one pending START at a time. If pendingStart is non-nil,
 // this method is a no-op — the next tryGrantAndStart will fire after
 // the current one resolves.

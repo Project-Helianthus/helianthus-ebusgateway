@@ -502,7 +502,9 @@ func (s *session) handleStart(initiator byte) {
 	// (EBUSD-VERIFICATION-2026-05-10.md).
 	s.mux.logger.Printf("adaptermux: session %d START 0x%02X requested (RequestStart(0x%02X) sent for session %d)", s.id, initiator, initiator, s.id)
 	s.sawHandshake.Store(true) // F-7 diagnostic: legitimate ENH client
-	ch := s.mux.arb.requestStart(s.id, initiator)
+	// Use the Mux wrapper so the proxy-bug C4 in-flight cancel and
+	// C1 enqueue-kick fire on every external START submission.
+	ch := s.mux.requestStartForSession(s.id, initiator)
 
 	// Wait for arbitration result in a tracked goroutine.
 	s.wg.Add(1)

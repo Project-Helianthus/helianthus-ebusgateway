@@ -999,10 +999,45 @@ func (m *Mux) readLoop() {
 		case transport.StreamEventStarted:
 			m.logger.Printf("adaptermux: readLoop got StreamEventStarted data=0x%02X", event.Data)
 			m.handleArbitrationResponse(true, event.Data)
+			// Synthesize the arbitration-winner byte as a passive
+			// observation for external sessions. The wire DID carry
+			// this byte (e.g. 0x7F) at this point, but the ENH
+			// adapter consumes it as a STARTED control event instead
+			// of echoing it via ResReceived. Without this synthesis,
+			// external sessions like ebusd see the gateway's
+			// transaction stream as `... SYN, 0x15 (target), 0xB5,
+			// 0x24, ...` with no master-byte boundary. Their bus
+			// parser then discards the frame as malformed (0x15 isn't
+			// a valid master byte — low nibble 5 isn't a valid
+			// arbitration nibble) and the gateway's traffic vanishes
+			// from their grab buffer / master enumeration. Worse,
+			// their bus state machine thinks the bus is idle when it
+			// isn't, leading to mis-timed bid attempts and the
+			// "won in invalid state" + read-timeout cascade seen in
+			// EBUSD-VERIFICATION-2026-05-10.md F-9 / F-10.
+			//
+			// Query the actual owner from the arbitrator (set by
+			// handleArbitrationResponse above) — could be gateway OR
+			// an external session that just won. If hasOwner is
+			// false, the STARTED was absorbed as stale and we should
+			// NOT synthesize (it belongs to a cancelled bid; nobody
+			// is using the bus from this win).
+			if owner, _, owned := m.arb.owner(); owned {
+				m.deliverToSessions(event.Data, owner, true, time.Now())
+			}
 			continue
 		case transport.StreamEventFailed:
 			m.logger.Printf("adaptermux: readLoop got StreamEventFailed data=0x%02X", event.Data)
 			m.handleArbitrationResponse(false, event.Data)
+			// Symmetric synthesis: when another master beats our
+			// gateway's bid, the winner byte was on the wire but
+			// the adapter consumed it as a FAILED control event.
+			// External sessions need to see the winner byte to
+			// keep their bus state machine synchronized with the
+			// physical wire. Includes the no-owner indicator
+			// because the gateway's bid lost and the winner is a
+			// third-party device, not one of our sessions.
+			m.deliverToSessions(event.Data, 0, false, time.Now())
 			continue
 		case transport.StreamEventReset:
 			m.handleReset()

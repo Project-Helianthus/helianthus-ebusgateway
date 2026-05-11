@@ -847,3 +847,95 @@ func TestSession_LegitimateENHClientNotClosedByDiagnostic(t *testing.T) {
 		t.Fatalf("session %d removed despite legitimate ENH INIT handshake; diagnostic must not fire when sawHandshake=true", id)
 	}
 }
+
+// --- F-9/F-10 architectural fix: arbitration-winner byte synthesis ---
+
+// TestArbitrationWinnerSynthesis_DeliveredToExternalSession verifies that
+// when the mux processes a StreamEventStarted (or equivalent), the
+// arbitration-winner byte is delivered to external sessions as a passive
+// observation. Without this, external bus monitors (e.g. ebusd) never see
+// gateway-initiated master wins on the wire — the ENH adapter consumes
+// the byte as a control event — and their bus parsers desynchronize from
+// physical wire reality. (EBUSD-VERIFICATION-2026-05-10.md F-9/F-10
+// root-cause discovery.)
+//
+// The test exercises the deliverToSessions code path directly (which is
+// what the synthesis call invokes after handleArbitrationResponse). End-
+// to-end coverage of the StreamEventStarted handler requires a fake
+// adapter that emits STARTED frames; that integration is implicit when
+// the readLoop processes a real STARTED — this unit test pins the
+// session-side delivery semantics.
+func TestArbitrationWinnerSynthesis_DeliveredToExternalSession(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	client, server := net.Pipe()
+	defer closeOrLog(t, client, "client")
+
+	id := mux.AddSession(server)
+	if id == 0 {
+		t.Fatalf("AddSession returned 0")
+	}
+	defer mux.RemoveSession(id)
+
+	// Drain the initial INIT-response RESETTED that AddSession's flow
+	// or session bootstrap might emit, so the pipe doesn't back up.
+	drainDone := make(chan struct{})
+	received := make(chan byte, 16)
+	go func() {
+		defer close(drainDone)
+		buf := make([]byte, 256)
+		deadline := time.Now().Add(1500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			_ = client.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			n, err := client.Read(buf)
+			if err != nil {
+				continue
+			}
+			for i := 0; i < n; i++ {
+				b := buf[i]
+				// Short-form ENHResReceived: a byte < 0x80 is the
+				// payload directly. We're looking for 0x7F to confirm
+				// the synthesized arbitration-winner reached the
+				// session's TCP socket.
+				if b < 0x80 {
+					select {
+					case received <- b:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	// Simulate the synthesis call that StreamEventStarted handling
+	// in readLoop now makes. owner = gatewaySessionID, hasOwner = true
+	// (the gateway just won arbitration; confirmOwnership was called
+	// by handleArbitrationResponse before this point).
+	mux.arb.confirmOwnership(gatewaySessionID, 0x7F)
+	mux.deliverToSessions(0x7F, gatewaySessionID, true, time.Now())
+
+	// Expect the byte to arrive at the external session's TCP socket.
+	select {
+	case got := <-received:
+		if got != 0x7F {
+			// We may have read other bytes first (INIT-response etc.);
+			// keep draining until we either see 0x7F or run out of time.
+			for {
+				select {
+				case got := <-received:
+					if got == 0x7F {
+						return
+					}
+				case <-time.After(500 * time.Millisecond):
+					t.Fatalf("never received synthesized arbitration-winner 0x7F at session; got other bytes but not the synthesized one")
+				}
+			}
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("synthesized arbitration-winner 0x7F was never delivered to session 1")
+	}
+
+	mux.arb.releaseOwnership(gatewaySessionID)
+	_ = drainDone
+}

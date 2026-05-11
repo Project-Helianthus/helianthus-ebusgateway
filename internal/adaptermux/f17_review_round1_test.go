@@ -230,6 +230,80 @@ func TestArbitrator_CancelStart_GatewaySession_SetsCancelledFlag(t *testing.T) {
 	}
 }
 
+// TestHandleArbitrationResponse_InFlightCancelled_AM56Mismatch_SuppressedSilently
+// pins F-NEW-1 (review round-2): the third branch of
+// handleArbitrationResponse — the AM56 STARTED-mismatch path where
+// the adapter responds with a STARTED whose byte does not match
+// pending.initiator — must also honor `pending.req.cancelled`. The
+// reproducer: slow adapter, fast client re-submit, adapter delivers
+// stale STARTED for a previous unrelated bid that happens to be in
+// flight. Without the cancelled check, the AM56 branch delivers
+// `{granted:false, initiator:winner_byte, err:STARTED-mismatch}` —
+// session.go's handleStart falls through to `deliverFailed(winner)`,
+// emitting ENHResFailed(winner) on the wire to a session that has
+// already moved on. Same retry-loop class as F-1.
+func TestHandleArbitrationResponse_InFlightCancelled_AM56Mismatch_SuppressedSilently(t *testing.T) {
+	var buf cancelledStartedLogBuffer
+	mux := New(Config{
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		SYNInterval:     time.Hour,
+		PendingStartTTL: 24 * time.Hour,
+		Logger:          log.New(&buf, "", 0),
+	})
+
+	chA := mux.arb.requestStart(1, 0x31)
+	mux.stateMu.Lock()
+	reqA := mux.arb.pendingExternal[0]
+	mux.arb.pendingExternal = mux.arb.pendingExternal[:0]
+	mux.pendingStart = &pendingStartState{
+		sessionID: 1,
+		initiator: 0x31,
+		notify:    reqA.notify,
+		req:       reqA,
+	}
+	mux.stateMu.Unlock()
+	reqA.cancelled.Store(true)
+
+	// Feed STARTED with a MISMATCHED byte (some other master won;
+	// adapter delivered a stale STARTED for a previous bid).
+	mux.handleArbitrationResponse(true, 0x10)
+
+	select {
+	case result := <-chA:
+		if result.granted {
+			t.Fatal("AM56 mismatch must not grant")
+		}
+		if !result.cancelled {
+			t.Fatalf("startResult.cancelled = %v on AM56 mismatch + in-flight-cancelled; want true (F-NEW-1 regression — session.go handleStart would emit ENHResFailed(0x10) on the wire to a session that moved on, regressing F-17 closure on the AM56 branch)", result.cancelled)
+		}
+		// Initiator carries the bidder's own byte (0x31), not the
+		// stale-STARTED winner. Symmetric with the FAILED-half
+		// suppression at handleArbitrationResponse's tail: the
+		// cancelled session is silent-returning, so the field is
+		// not consumed — but pinning it prevents future drift.
+		if result.initiator != 0x31 {
+			t.Fatalf("startResult.initiator = 0x%02X on suppressed AM56-half; want 0x31 (bidder's byte, matching STARTED-half + FAILED-half symmetry)", result.initiator)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("notify channel did not fire after handleArbitrationResponse(STARTED-mismatch)")
+	}
+
+	// F-NEW-5 log-marker invariant: AM56-half must emit a distinct
+	// log line so the diagnostic trail clearly shows the suppression.
+	got := buf.String()
+	if !strings.Contains(got, "AM56-half") {
+		t.Errorf("expected AM56-half suppression log line, got:\n%s", got)
+	}
+	// And it must NOT emit the un-suppressed "STARTED mismatch:
+	// got initiator ... failing pending session" line.
+	if strings.Contains(got, "STARTED mismatch: got initiator") {
+		t.Errorf("AM56-mismatch + cancelled-in-flight must NOT log the un-suppressed failure line; got:\n%s", got)
+	}
+}
+
 // TestArbitrator_CancelStart_AlsoSetsStructFlag is the symmetric
 // guard to F-17's TestArbitrator_SameSessionReplace_StructFlagAlsoSet:
 // callers downstream may still read the struct flag (e.g., the C4/R4

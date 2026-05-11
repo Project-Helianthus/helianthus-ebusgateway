@@ -493,6 +493,20 @@ func (a *arbitrator) hasPending() bool {
 
 // failAllPending fails all pending START requests (e.g., on shutdown
 // or adapter RESETTED).
+//
+// F-17 follow-up (PR #626 review round-2, angry-tester finding F-NEW-6
+// documentation): callers pass a non-nil `err` that
+// `isResetOrDisconnectError` matches (adapter disconnect, adapter
+// reset, mux closed). Session.go's handleStart routes such results to
+// `deliverReset(...)`, which is the correct boundary-event notification
+// for the client. This function MUST NOT set `cancelled: true` on the
+// startResult — even when `req.cancelled.Load()` is true — because
+// session.go's branch order (`granted → cancelled → err(reset) →
+// deliverFailed`) favors `cancelled` and would silent-return on a
+// boundary event where the client legitimately needs RESETTED.
+// The current code accidentally relies on this NOT setting cancelled;
+// the comment makes the precedence explicit so future "consistency"
+// edits don't regress reset delivery.
 func (a *arbitrator) failAllPending(err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

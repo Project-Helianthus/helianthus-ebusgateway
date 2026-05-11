@@ -2875,6 +2875,19 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			// The adapter sent this STARTED for a previous RequestStart that
 			// is no longer tracked. The real response for our pending request
 			// may still arrive — absorb it when it does.
+			//
+			// F-17 follow-up (PR #626 review round-2, angry-tester finding
+			// F-NEW-1): like the matched-STARTED and FAILED branches below,
+			// the AM56 mismatch branch must also honor an in-flight
+			// `pending.req.cancelled` flag. If the session has issued a
+			// same-session re-submit (markInFlightCancelled flipped the
+			// struct flag) and the adapter responds with a STALE STARTED
+			// whose byte happens not to match the cancelled bid, the
+			// session has already moved on. Delivering
+			// `ENHResFailed(winner_byte)` to the old wait goroutine
+			// reproduces F-17's retry feedback loop on a narrow but real
+			// path. Suppress silently with cancelled=true.
+			cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 			m.pendingStart = nil
 			m.armPendingStartAbsorbLocked("started-mismatch")
 			if pending.deadline != nil {
@@ -2888,20 +2901,33 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			// on PR #623.)
 			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: STARTED mismatch: got initiator 0x%02X, pending 0x%02X — failing pending session %d (AM56)", data, pending.initiator, pending.sessionID)
-			// Notify the bidder with the THIRD-PARTY winner byte (`data`),
-			// not the bidder's own `pending.initiator`. This matches the
-			// regular FAILED-path semantics below: the bidder's handleStart
-			// goroutine forwards `result.initiator` to deliverFailed, so the
-			// external session sees ENHResFailed(winner_byte) and learns
-			// the actual wire owner. Without this, the bidder would only
-			// learn its own bid byte from the failure and its bus
-			// reconstructor would misread the next target/PB byte as the
-			// frame source (Codex P2 round 7 on PR #620).
-			pending.notify <- startResult{
-				granted:   false,
-				initiator: data,
-				err:       fmt.Errorf("adaptermux: STARTED mismatch (got 0x%02X, want 0x%02X)", data, pending.initiator),
+			if cancelledInFlight {
+				m.logger.Printf("adaptermux: suppressing STARTED-mismatch(0x%02X, pending 0x%02X) for session %d — request was cancelled/replaced; absorbed (C4/R4 AM56-half)", data, pending.initiator, pending.sessionID)
+				select {
+				case pending.notify <- startResult{
+					granted:   false,
+					cancelled: true,
+					initiator: pending.initiator,
+					err:       errors.New("adaptermux: STARTED-mismatch superseded by client re-submit"),
+				}:
+				default:
+				}
+			} else {
+				m.logger.Printf("adaptermux: STARTED mismatch: got initiator 0x%02X, pending 0x%02X — failing pending session %d (AM56)", data, pending.initiator, pending.sessionID)
+				// Notify the bidder with the THIRD-PARTY winner byte (`data`),
+				// not the bidder's own `pending.initiator`. This matches the
+				// regular FAILED-path semantics below: the bidder's handleStart
+				// goroutine forwards `result.initiator` to deliverFailed, so the
+				// external session sees ENHResFailed(winner_byte) and learns
+				// the actual wire owner. Without this, the bidder would only
+				// learn its own bid byte from the failure and its bus
+				// reconstructor would misread the next target/PB byte as the
+				// frame source (Codex P2 round 7 on PR #620).
+				pending.notify <- startResult{
+					granted:   false,
+					initiator: data,
+					err:       fmt.Errorf("adaptermux: STARTED mismatch (got 0x%02X, want 0x%02X)", data, pending.initiator),
+				}
 			}
 			// After resolving, check if more requests are pending.
 			if m.arb.hasPending() {
@@ -2955,17 +2981,30 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			// F-17 was filed to fix, just on the in-flight-cancel
 			// branch instead of the pendingExternal-replace branch.
 			//
-			// Symmetry: arb.requestStart's pendingExternal-replace and
-			// pendingGateway-replace paths set both the struct flag
-			// AND the channel-value flag (arbitration.go:175,188).
-			// arb.cancelStart sets both as well (arbitration.go:283,
-			// 292). markInFlightCancelled (called from
-			// requestStartForSession) sets only the struct flag
+			// Symmetry: `arb.requestStart`'s pendingExternal-replace
+			// and pendingGateway-replace paths set both the struct
+			// flag AND the channel-value flag. `arb.cancelStart` sets
+			// both as well. `markInFlightCancelled` (called from
+			// `requestStartForSession`) sets only the struct flag
 			// because the channel-value send was deferred to whichever
-			// handleArbitrationResponse path eventually fires — THIS
-			// branch. The contract is: any code that observes a
-			// cancelled startRequest and resolves its notify channel
-			// MUST set `cancelled: true` on the value.
+			// `handleArbitrationResponse` path eventually fires —
+			// THIS branch (matched STARTED for cancelled bid), the
+			// FAILED-with-cancelled-req branch below, AND the AM56
+			// STARTED-mismatch-with-cancelled-req branch above.
+			//
+			// The contract is: any code in `handleArbitrationResponse`
+			// that observes a cancelled startRequest while resolving
+			// the bid normally (no transport-level error) MUST set
+			// `cancelled: true` on the value so `session.handleStart`'s
+			// branch order (`granted → cancelled → err(reset) →
+			// deliverFailed`) silent-returns.
+			//
+			// EXCEPTION: code paths that deliver a transport-level
+			// boundary error via `err` matching `isResetOrDisconnectError`
+			// (e.g., `failAllPending` on shutdown / `reconnect`) MUST
+			// NOT set `cancelled: true`. Session.go's check order
+			// favors `cancelled` over `err(reset)`, so setting both
+			// would suppress the RESETTED delivery the client needs.
 			//
 			// Best-effort send: the old notify channel is buffered to
 			// 1 and may already hold the replace's granted=false

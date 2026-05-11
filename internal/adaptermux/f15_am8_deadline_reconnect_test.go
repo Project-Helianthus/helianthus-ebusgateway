@@ -235,7 +235,13 @@ func TestAM8Deadline_BlockingPath_StillReconnects(t *testing.T) {
 func TestAM8Deadline_NonBlockingPath_AbsorbTimerReconnectsOnTrulyHungAdapter(t *testing.T) {
 	mock := newP3MockTransport()
 
-	const startDeadline = 120 * time.Millisecond
+	// F-NEW-2 (review round-2): use 200ms StartDeadline + 1500ms
+	// slack so the chained AM8 → absorb timer wait stays robust on
+	// slow CI runners under -race (each time.AfterFunc can jitter
+	// 150-200ms; two timers compound). Nominal expected time to
+	// conn.Close: 2 × 200ms = 400ms; ceiling 2 × 200ms + 1500ms =
+	// 1900ms.
+	const startDeadline = 200 * time.Millisecond
 
 	mux := New(Config{
 		Protocol:        "enh",
@@ -290,8 +296,10 @@ func TestAM8Deadline_NonBlockingPath_AbsorbTimerReconnectsOnTrulyHungAdapter(t *
 	}
 
 	// Wait for the absorb timer's own StartDeadline to fire and
-	// close the conn. Total elapsed ≈ 2×StartDeadline + slack.
-	deadline := time.Now().Add(2*startDeadline + 500*time.Millisecond)
+	// close the conn. Total elapsed ≈ 2×StartDeadline + 1500ms
+	// slack (review round-2 F-NEW-2 — robust against -race jitter
+	// on slow CI runners).
+	deadline := time.Now().Add(2*startDeadline + 1500*time.Millisecond)
 	for time.Now().Before(deadline) {
 		if connMock.closed.Load() {
 			break

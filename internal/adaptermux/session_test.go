@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"expvar"
 	"fmt"
 	"io"
 	"net"
@@ -1089,5 +1090,95 @@ func TestArbitrationWinnerSynthesis_MultiSessionDeliversToNonWinner(t *testing.T
 		// Expected.
 	default:
 		t.Errorf("non-winning session B did NOT receive synthesized 0x7F — multi-session synthesis broken (PR #620 round 3)")
+	}
+}
+
+
+// --- F-10 instrumentation: byte-pipeline latency bucketing ---
+
+func TestLatencyBucketLabel_BucketBoundaries(t *testing.T) {
+	cases := []struct {
+		us   int64
+		want string
+	}{
+		{0, "le_1000"},
+		{500, "le_1000"},
+		{1_000, "le_1000"},
+		{1_001, "le_5000"},
+		{5_000, "le_5000"},
+		{5_001, "le_25000"},
+		{25_000, "le_25000"},
+		{25_001, "le_100000"},
+		{100_000, "le_100000"},
+		{100_001, "gt_100000"},
+		{1_000_000, "gt_100000"},
+	}
+	for _, c := range cases {
+		if got := latencyBucketLabel(c.us); got != c.want {
+			t.Errorf("latencyBucketLabel(%d) = %q; want %q", c.us, got, c.want)
+		}
+	}
+}
+
+func TestSessionFrame_EnqueuedAtPropagatesThroughWriteLoop(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	client, server := net.Pipe()
+	defer closeOrLog(t, client, "client")
+
+	id := mux.AddSession(server)
+	if id == 0 {
+		t.Fatalf("AddSession returned 0")
+	}
+	defer mux.RemoveSession(id)
+
+	// Capture initial counts across ALL buckets — expvar is process-
+	// global so other tests in the same binary share these counters.
+	// We assert "total across all buckets increased" rather than any
+	// single bucket, which makes the test robust to environmental
+	// latency variance (pipe under load could land frames in le_5000
+	// instead of le_1000 on slower runners).
+	buckets := []string{"le_1000", "le_5000", "le_25000", "le_100000", "gt_100000"}
+	readTotal := func() int64 {
+		var sum int64
+		for _, b := range buckets {
+			if v := adaptermuxSessionFrameLatencyBucketTotal.Get(b); v != nil {
+				sum += v.(*expvar.Int).Value()
+			}
+		}
+		return sum
+	}
+	before := readTotal()
+
+	// Drain whatever ENH framing the writeLoop emits (e.g. RESETTED
+	// during early INIT) so the pipe doesn't back up. Read in a loop
+	// for ~300 ms while we generate frames below.
+	go func() {
+		buf := make([]byte, 256)
+		deadline := time.Now().Add(400 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			_ = client.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+			_, _ = client.Read(buf)
+		}
+	}()
+
+	mux.sessionsMu.Lock()
+	sess := mux.sessions[id]
+	mux.sessionsMu.Unlock()
+	if sess == nil {
+		t.Fatalf("session %d not found in mux.sessions", id)
+	}
+	for i := 0; i < 5; i++ {
+		sess.deliverReceived(byte(0x31))
+	}
+
+	// Give writeLoop time to drain the queue.
+	time.Sleep(150 * time.Millisecond)
+
+	after := readTotal()
+	if after-before < 5 {
+		t.Errorf("frame latency bucket total grew by %d (before=%d after=%d); expected ≥5 (one per deliverReceived call)",
+			after-before, before, after)
 	}
 }

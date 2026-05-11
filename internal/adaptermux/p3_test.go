@@ -1,10 +1,13 @@
 package adaptermux
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2308,4 +2311,275 @@ scan:
 	if !foundReset {
 		t.Fatalf("reset error event lost under byte flood (preLen=%d, scanned=%d)", preLen, eventsAfterReset)
 	}
+}
+
+// TestSYNTimeoutRelease_BranchesOnOwnerIdentity pins the F-10v2 fix
+// (EBUSD-VERIFICATION-2026-05-11-batch3.md): a wirePhaseEventSYNTimeout
+// must release ownership IMMEDIATELY for the gateway, but only after
+// ExternalSessionSYNGrace for an external session.
+//
+// Background: the wire-phase machine emits SYN-timeout when SYN appears
+// during WaitCmdAck/CollectRequest. For the gateway's tight B524
+// protocol that signal is reliable ("txn died"). For external clients
+// like ebusd running broadcast scans, the protocol legitimately
+// produces multi-second gaps that look identical to SYN-timeout but
+// are not transaction death. Without this branch the mux yanked
+// ownership from ebusd mid-frame (80 false-positive releases vs 0 for
+// the gateway in a 5000-line capture).
+func TestSYNTimeoutRelease_BranchesOnOwnerIdentity(t *testing.T) {
+	t.Run("gateway_owner_releases_immediately", func(t *testing.T) {
+		mux, _, _, cleanup := newP3TestMux(t)
+		defer cleanup()
+		mux.cfg.ExternalSessionSYNGrace = 2 * time.Second
+
+		// Grant the bus to the gateway and pretend a request was just
+		// dispatched (busOwned = now).
+		mux.stateMu.Lock()
+		mux.arb.confirmOwnership(gatewaySessionID, 0x31)
+		mux.busOwned = time.Now()
+		mux.lastWireActivity = mux.busOwned
+		mux.gatewayTxnActive = true
+		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, gatewaySessionID, true, time.Now())
+		_, _, owned := mux.arb.owner()
+		mux.stateMu.Unlock()
+
+		if owned {
+			t.Fatalf("gateway-owned SYN-timeout: ownership must release immediately, still owned")
+		}
+	})
+
+	t.Run("external_owner_held_below_grace", func(t *testing.T) {
+		mux, _, _, cleanup := newP3TestMux(t)
+		defer cleanup()
+		mux.cfg.ExternalSessionSYNGrace = 2 * time.Second
+
+		const extSessionID = uint64(42)
+		mux.stateMu.Lock()
+		mux.arb.confirmOwnership(extSessionID, 0x31)
+		mux.busOwned = time.Now() // just acquired → elapsed ~0
+		mux.lastWireActivity = mux.busOwned
+		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, time.Now())
+		ownerID, _, owned := mux.arb.owner()
+		mux.stateMu.Unlock()
+
+		if !owned {
+			t.Fatalf("external owner SYN-timeout: ownership must be held until grace expires (got owned=false at elapsed≈0)")
+		}
+		if ownerID != extSessionID {
+			t.Fatalf("external owner SYN-timeout: ownerID changed to %d (want %d)", ownerID, extSessionID)
+		}
+	})
+
+	t.Run("external_owner_released_after_grace", func(t *testing.T) {
+		mux, _, _, cleanup := newP3TestMux(t)
+		defer cleanup()
+		// Use a small grace so the test isn't slow.
+		mux.cfg.ExternalSessionSYNGrace = 30 * time.Millisecond
+
+		const extSessionID = uint64(43)
+		mux.stateMu.Lock()
+		mux.arb.confirmOwnership(extSessionID, 0x31)
+		// Pretend the bus was acquired 100ms ago — well past the
+		// 30ms grace.
+		mux.busOwned = time.Now().Add(-100 * time.Millisecond)
+		mux.lastWireActivity = mux.busOwned // no wire activity since grant
+		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, time.Now())
+		_, _, owned := mux.arb.owner()
+		mux.stateMu.Unlock()
+
+		if owned {
+			t.Fatalf("external owner SYN-timeout past grace: ownership must release, still owned")
+		}
+	})
+}
+
+// TestSessionRemoteAddrSideIndex verifies the lock-free RemoteAddr
+// index stays in sync with AddSession/RemoveSession and that
+// sessionRemoteAddrOrUnknown returns the recorded value (or
+// "unknown" after removal).
+func TestSessionRemoteAddrSideIndex(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	clientA, serverA := net.Pipe()
+	defer closeOrLog(t, clientA, "clientA")
+	idA := mux.AddSession(serverA)
+	if idA == 0 {
+		t.Fatalf("AddSession returned 0")
+	}
+	addrA := mux.sessionRemoteAddrOrUnknown(idA)
+	if addrA == "unknown" || addrA == "" {
+		t.Fatalf("expected non-unknown RemoteAddr for active session, got %q", addrA)
+	}
+
+	mux.RemoveSession(idA)
+	if got := mux.sessionRemoteAddrOrUnknown(idA); got != "unknown" {
+		t.Errorf("after RemoveSession: sessionRemoteAddrOrUnknown(%d) = %q, want %q", idA, got, "unknown")
+	}
+	if got := mux.sessionRemoteAddrOrUnknown(99999); got != "unknown" {
+		t.Errorf("never-seen session: sessionRemoteAddrOrUnknown(99999) = %q, want %q", got, "unknown")
+	}
+}
+
+// syncBuffer is a goroutine-safe wrapper around bytes.Buffer for use
+// with log.Logger in concurrent tests. log.Logger holds its mutex
+// across each Write call, but the test goroutine reading the buffer
+// concurrently with the loop goroutine's writes still needs explicit
+// synchronization (CI's -race detector flags the bare bytes.Buffer).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestLatencyHistogramReportLoop_EmitsLine verifies the periodic
+// histogram log loop emits the expected log line shape. We don't
+// inspect content beyond the marker prefix — the bucket-counter
+// rendering is covered by TestRecordLatencyBuckets_CumulativeSemantics
+// in session_test.go.
+//
+// Race safety under `go test -race`:
+//
+//   - The custom mux.logger writes through a syncBuffer (above),
+//     so the loop's Printf calls and the test's String() read are
+//     race-free at the buffer level.
+//   - We do NOT defer a logger restore. mux.logger is read
+//     concurrently by the goroutine; restoring it would race even
+//     with a synchronized buffer (Codex P2 on PR #621 round 3).
+//     newP3TestMux creates a per-test mux that cleanup() tears
+//     down completely, so there is no need to restore the field.
+//   - We do NOT manually cancel/wait the loop before reading the
+//     buffer. cancelling the mux ctx alone does not unblock the
+//     readLoop/sendLoop spawned by newP3TestMux (they wait on the
+//     mock transport), so cancel+wait would deadlock the test.
+//     The syncBuffer's mutex is sufficient: it serializes the
+//     loop's Write calls with the test's String() read, which is
+//     exactly what -race needs.
+func TestLatencyHistogramReportLoop_EmitsLine(t *testing.T) {
+	mux, _, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	var logBuf syncBuffer
+	mux.logger = log.New(&logBuf, "", 0)
+
+	mux.wg.Add(1)
+	mux.cfg.LatencyHistogramReportInterval = 25 * time.Millisecond
+	go mux.latencyHistogramReportLoop()
+
+	// Pump a sample so the histogram has non-trivial content.
+	recordLatencyBuckets(500)
+	recordLatencyBuckets(50_000)
+
+	// Give the ticker at least 2 cycles to fire.
+	time.Sleep(80 * time.Millisecond)
+
+	if !strings.Contains(logBuf.String(), "session frame latency histogram") {
+		t.Fatalf("expected histogram report log line, got:\n%s", logBuf.String())
+	}
+}
+
+// TestExternalSessionRelease_MeasuresGapNotGrant covers Codex P1 + P2
+// on PR #621: long-running external transactions must not be torn
+// down based on grant age alone. The release decision must measure
+// the inter-byte idle gap (m.lastWireActivity), not the time since
+// the original grant (m.busOwned).
+func TestExternalSessionRelease_MeasuresGapNotGrant(t *testing.T) {
+	t.Run("SYNTimeout_long_grant_recent_activity_holds", func(t *testing.T) {
+		mux, _, _, cleanup := newP3TestMux(t)
+		defer cleanup()
+		mux.cfg.ExternalSessionSYNGrace = 50 * time.Millisecond
+
+		const extSessionID = uint64(7)
+		mux.stateMu.Lock()
+		mux.arb.confirmOwnership(extSessionID, 0x31)
+		// Grant is 5s old (well past grace) but wire activity is fresh
+		// (10ms ago) — the protocol is alive, must NOT release.
+		now := time.Now()
+		mux.busOwned = now.Add(-5 * time.Second)
+		mux.lastWireActivity = now.Add(-10 * time.Millisecond)
+		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, now)
+		_, _, owned := mux.arb.owner()
+		mux.stateMu.Unlock()
+
+		if !owned {
+			t.Fatalf("SYNTimeout with fresh wire activity (10ms ago) must hold ownership despite old grant (5s)")
+		}
+	})
+
+	t.Run("SYNTimeout_long_grant_stale_activity_releases", func(t *testing.T) {
+		mux, _, _, cleanup := newP3TestMux(t)
+		defer cleanup()
+		mux.cfg.ExternalSessionSYNGrace = 50 * time.Millisecond
+
+		const extSessionID = uint64(8)
+		mux.stateMu.Lock()
+		mux.arb.confirmOwnership(extSessionID, 0x31)
+		// Both grant AND activity are old → idle gap exceeds grace → release.
+		now := time.Now()
+		mux.busOwned = now.Add(-5 * time.Second)
+		mux.lastWireActivity = now.Add(-200 * time.Millisecond)
+		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, now)
+		_, _, owned := mux.arb.owner()
+		mux.stateMu.Unlock()
+
+		if owned {
+			t.Fatalf("SYNTimeout with stale wire activity (200ms ≥ 50ms grace) must release")
+		}
+	})
+
+	t.Run("SYNIdle_external_owner_uses_gap_grace_not_idle_release", func(t *testing.T) {
+		mux, _, _, cleanup := newP3TestMux(t)
+		defer cleanup()
+		mux.cfg.ExternalSessionSYNGrace = 500 * time.Millisecond
+		mux.cfg.IdleReleaseGrace = 50 * time.Millisecond // would have fired
+
+		const extSessionID = uint64(9)
+		mux.stateMu.Lock()
+		mux.arb.confirmOwnership(extSessionID, 0x31)
+		now := time.Now()
+		// Grant is 200ms old (past IdleReleaseGrace 50ms) but wire
+		// activity is fresh (10ms ago). The legacy code would have
+		// released here; the fix must hold because the external
+		// gap-based grace (500ms) hasn't elapsed.
+		mux.busOwned = now.Add(-200 * time.Millisecond)
+		mux.lastWireActivity = now.Add(-10 * time.Millisecond)
+		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNIdle, extSessionID, true, now)
+		_, _, owned := mux.arb.owner()
+		mux.stateMu.Unlock()
+
+		if !owned {
+			t.Fatalf("SYNIdle on external owner with fresh activity must hold (legacy IdleReleaseGrace bypass closed; Codex P1 PR #621)")
+		}
+	})
+
+	t.Run("SYNIdle_gateway_owner_still_uses_busOwned", func(t *testing.T) {
+		mux, _, _, cleanup := newP3TestMux(t)
+		defer cleanup()
+		mux.cfg.IdleReleaseGrace = 50 * time.Millisecond
+
+		mux.stateMu.Lock()
+		mux.arb.confirmOwnership(gatewaySessionID, 0x31)
+		now := time.Now()
+		// Gateway uses grant-age, not gap. Grant is 200ms old → release.
+		mux.busOwned = now.Add(-200 * time.Millisecond)
+		mux.lastWireActivity = now // even with fresh "activity"
+		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNIdle, gatewaySessionID, true, now)
+		_, _, owned := mux.arb.owner()
+		mux.stateMu.Unlock()
+
+		if owned {
+			t.Fatalf("SYNIdle on gateway owner must still use busOwned-based IdleReleaseGrace; legacy behavior preserved")
+		}
+	})
 }

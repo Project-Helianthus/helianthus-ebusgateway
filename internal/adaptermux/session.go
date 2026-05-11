@@ -219,12 +219,33 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 	m.sessions[id] = sess
 	m.sessionsMu.Unlock()
 
+	// Populate the lock-free RemoteAddr side index so diagnostic logs
+	// taken from stateMu-holding code paths (onSYNLocked, etc.) can
+	// label themselves with the client endpoint without sessionsMu.
+	if remote := conn.RemoteAddr(); remote != nil {
+		m.sessionRemoteAddrs.Store(id, remote.String())
+	}
+
 	sess.wg.Add(2)
 	go sess.readLoop()  // goroutine: reads ENH commands from client
 	go sess.writeLoop() // goroutine: writes ENH responses to client
 
 	m.logger.Printf("adaptermux: session %d connected from %s", id, conn.RemoteAddr())
 	return id
+}
+
+// sessionRemoteAddrOrUnknown returns the cached RemoteAddr string for
+// the given session ID, or "unknown" if the session has never been
+// registered or has already been removed. Safe to call from any
+// goroutine and from any lock-holding context — the underlying
+// sync.Map performs no ordering with other mutexes.
+func (m *Mux) sessionRemoteAddrOrUnknown(id uint64) string {
+	if v, ok := m.sessionRemoteAddrs.Load(id); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return "unknown"
 }
 
 // RemoveSession disconnects and cleans up an external session.
@@ -235,6 +256,9 @@ func (m *Mux) RemoveSession(id uint64) {
 		delete(m.sessions, id)
 	}
 	m.sessionsMu.Unlock()
+	// Drop the lock-free RemoteAddr side index entry too. Done after
+	// sessionsMu is released so this never blocks the critical section.
+	m.sessionRemoteAddrs.Delete(id)
 
 	if ok {
 		m.arb.removeSession(id)

@@ -3,6 +3,7 @@ package adaptermux
 import (
 	"context"
 	"errors"
+	"expvar"
 	"fmt"
 	"log"
 	"net"
@@ -54,6 +55,39 @@ type Config struct {
 	// idle SYN can release ownership. Default: 200ms.
 	IdleReleaseGrace time.Duration
 
+	// ExternalSessionSYNGrace is the grace period applied to SYN-timeout
+	// events (wirePhaseEventSYNTimeout) when the bus owner is an external
+	// session, rather than the gateway itself. Default: 2s.
+	//
+	// The wire-phase machine emits SYN-timeout when SYN appears during
+	// the WaitCmdAck/CollectRequest phase. For the gateway's own tight
+	// protocol (B524 directed reads with no inter-byte gap) that signal
+	// genuinely means "txn died". For external sessions like ebusd
+	// running broadcast scans (0xFE address), the protocol naturally
+	// has multi-second gaps while each responder replies in turn — those
+	// inter-responder gaps look identical to SYN-timeout but are NOT a dead
+	// transaction.
+	//
+	// F-10v2 (EBUSD-VERIFICATION-2026-05-11-batch3.md): immediate-
+	// release on SYN-timeout fired 80 times against ebusd's session vs
+	// 0 times against the gateway in a 5000-line window. Adding a grace
+	// window for external sessions decouples the per-protocol timing
+	// expectations from the immediate-release policy that fits the
+	// gateway's own pattern.
+	ExternalSessionSYNGrace time.Duration
+
+	// LatencyHistogramReportInterval controls how often a single-line
+	// summary of the adaptermux_session_frame_latency_us_bucket_total
+	// expvar is emitted via the logger. Default: 60s. Set to a negative
+	// duration to disable the periodic emission entirely (still
+	// available via /debug/vars).
+	//
+	// This was added so the F-10 falsifying data is visible in
+	// `ha addons logs` without requiring an operator to wget
+	// /debug/vars from inside the addon container (per the batch-3
+	// side-observation in EBUSD-VERIFICATION-2026-05-11-batch3.md).
+	LatencyHistogramReportInterval time.Duration
+
 	// StartDeadline is the maximum time to wait for the adapter to
 	// respond with STARTED/FAILED after a START request. Default: 5s.
 	// If the adapter does not respond within this duration, the pending
@@ -103,6 +137,20 @@ func (c *Config) defaults() {
 		// probe. The wire phase is not advanced during gateway ownership,
 		// so there's no premature idle/WaitCmdAck issue.
 		c.IdleReleaseGrace = 200 * time.Millisecond
+	}
+	if c.LatencyHistogramReportInterval == 0 {
+		c.LatencyHistogramReportInterval = 60 * time.Second
+	}
+	if c.ExternalSessionSYNGrace == 0 {
+		// 2s covers a broadcast scan to address 0xFE (~25 responder
+		// responses × ~30-50ms each) plus arbitration jitter, while
+		// still bounding the worst-case idle hold. Calibrated against
+		// the 13:46:13 ebusd scan trace in
+		// _work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-11-batch3.md:
+		// the protocol gap between ebusd's broadcast 0xFE and the
+		// last responder's response was ~190ms in that capture; 2s leaves
+		// generous headroom for buses with more participants.
+		c.ExternalSessionSYNGrace = 2 * time.Second
 	}
 	if c.StartDeadline <= 0 {
 		c.StartDeadline = 5 * time.Second
@@ -167,10 +215,24 @@ type Mux struct {
 	upstreamFeatures atomic.Uint32 // features byte from upstream INIT handshake
 
 	// Multiplexer state (guarded by stateMu).
-	stateMu            sync.Mutex
-	phase              wirePhaseTracker
-	arb                *arbitrator
-	busOwned           time.Time          // when current owner acquired the bus
+	stateMu  sync.Mutex
+	phase    wirePhaseTracker
+	arb      *arbitrator
+	busOwned time.Time // when current owner acquired the bus
+
+	// lastWireActivity is the timestamp of the most recent adapter
+	// byte (StreamEventByte) seen on the wire after the current
+	// ownership grant, plus the grant moment itself. The release
+	// paths use this — rather than busOwned — to measure how long
+	// the wire has actually been idle, so a long-running external
+	// transaction (e.g. an ebusd broadcast scan that runs > 2s with
+	// real inter-responder traffic) is not torn down purely because
+	// the grant is old. Reset to time.Now() in
+	// completeArbitrationGrant alongside busOwned, then bumped on
+	// every observed adapter byte while ownership is held.
+	// (Codex P1+P2 round on PR #621.)
+	lastWireActivity time.Time
+
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int                // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
 	pendingAbsorbGen   uint64             // generation for stale-response absorb fail-safe timers
@@ -212,6 +274,17 @@ type Mux struct {
 	sessionsMu sync.Mutex // write lock — protects map AND session echo trackers
 	sessions   map[uint64]*session
 	sessionSeq atomic.Uint64
+
+	// sessionRemoteAddrs is a lock-free side index from session ID to
+	// the client's RemoteAddr string, written on AddSession and deleted
+	// on RemoveSession. It exists so code paths that already hold
+	// stateMu (e.g. onSYNLocked) can label diagnostic logs with the
+	// remote endpoint without acquiring sessionsMu — that would invert
+	// the established sessionsMu → stateMu lock order and risk ABBA
+	// deadlock with doSend. Reads use sync.Map.Load and are safe from
+	// any goroutine; writes happen under sessionsMu in AddSession /
+	// RemoveSession but do not require any extra synchronization.
+	sessionRemoteAddrs sync.Map // key uint64 sessionID → value string remote addr
 
 	// Active path channels.
 	activeSendCh chan sendRequest
@@ -315,6 +388,11 @@ func (m *Mux) Start(ctx context.Context) error {
 
 	m.wg.Add(1)
 	go m.sendLoop() // goroutine: processes send requests from active path + sessions
+
+	if m.cfg.LatencyHistogramReportInterval > 0 {
+		m.wg.Add(1)
+		go m.latencyHistogramReportLoop() // goroutine: periodic dump of F-10 histogram
+	}
 
 	m.emitPassive(PassiveEvent{
 		Kind:       PassiveEventConnected,
@@ -1270,6 +1348,19 @@ func (m *Mux) onReceived(symbol byte) {
 
 	ownerID, _, hasOwner := m.arb.owner()
 
+	// Track wire activity for the inter-byte-gap measurement that drives
+	// SYN-timeout / idle-release decisions for external sessions. Every
+	// non-SYN byte resets the activity clock, so a long-running external
+	// transaction with real inter-responder traffic does not get torn
+	// down purely because the grant itself is old.
+	//
+	// SYN markers do NOT bump the activity clock — they are the very
+	// signal we use to decide when the bus has been idle long enough
+	// for a release. (Codex P1+P2 on PR #621.)
+	if hasOwner && symbol != protocol.SymbolSyn {
+		m.lastWireActivity = now
+	}
+
 	// Skip wire phase tracking for non-SYN bytes during gateway ownership.
 	// The gateway's bus.Send handles the transaction directly via echo
 	// matching. Skipping advance() for data bytes prevents premature
@@ -1694,12 +1785,53 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// with doSend which acquires sessionsMu→stateMu.
 
 	// Release ownership if SYN timeout.
+	//
+	// F-10v2 (EBUSD-VERIFICATION-2026-05-11-batch3.md): branch the
+	// SYN-timeout release on owner identity.
+	//
+	//   - Gateway-owned: SYN during WaitCmdAck/CollectRequest genuinely
+	//     means the gateway's B524 directed-read transaction died. The
+	//     gateway's protocol pattern has no legitimate inter-byte gap,
+	//     so SYN-timeout is a reliable signal. Release immediately.
+	//   - External-session-owned: an external client (e.g. ebusd
+	//     running a broadcast scan to 0xFE) legitimately produces
+	//     inter-responder-response gaps that the wire-phase machine
+	//     reports as SYN-timeout. Treat those as soft idle and only
+	//     release if the gap exceeds ExternalSessionSYNGrace (default
+	//     2s). Without this branch, the mux yanked ownership mid-
+	//     frame from ebusd, producing the read-timeout cascade
+	//     observed in the batch-3 trace (80 SYN-timeout releases vs
+	//     0 for the gateway in the same window).
 	if phaseEvent == wirePhaseEventSYNTimeout && hasOwner {
-		m.logger.Printf("adaptermux: ownership released for session %d (SYN timeout) (AM6)", ownerID)
-		m.arb.releaseOwnership(ownerID)
-		if ownerID == gatewaySessionID && m.gatewayTxnActive {
-			m.gatewayTxnActive = false
-			m.recordGatewayInactive(ReasonSYNTimeout)
+		releaseNow := ownerID == gatewaySessionID
+		if !releaseNow {
+			// Measure the actual inter-byte gap, not time since
+			// grant. m.lastWireActivity is bumped by every non-SYN
+			// adapter byte while ownership is held, so an external
+			// transaction with live wire traffic resets the clock
+			// each time. A 5-second-long ebusd scan with regular
+			// inter-responder bytes will never trip this branch
+			// based on grant age alone. (Codex P2 round-1 on PR
+			// #621.)
+			elapsed := time.Since(m.lastWireActivity)
+			if elapsed >= m.cfg.ExternalSessionSYNGrace {
+				releaseNow = true
+				m.logger.Printf("adaptermux: external session %d remote=%s SYN-timeout idle-gap %v ≥ grace %v — releasing",
+					ownerID, m.sessionRemoteAddrOrUnknown(ownerID), elapsed, m.cfg.ExternalSessionSYNGrace)
+			}
+			// Otherwise: hold ownership. The external session's
+			// protocol is still mid-frame from its own perspective;
+			// the next legitimate adapter event will either advance
+			// the wire phase or trigger MaxOwnershipDuration.
+		}
+		if releaseNow {
+			m.logger.Printf("adaptermux: ownership released for session %d remote=%s (SYN timeout) (AM6)",
+				ownerID, m.sessionRemoteAddrOrUnknown(ownerID))
+			m.arb.releaseOwnership(ownerID)
+			if ownerID == gatewaySessionID && m.gatewayTxnActive {
+				m.gatewayTxnActive = false
+				m.recordGatewayInactive(ReasonSYNTimeout)
+			}
 		}
 	}
 
@@ -1720,8 +1852,34 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	suppressIdleRelease := preEchoMidFrameSuppress &&
 		m.activeTxn.bytesDeliveredToActive.Load() > 0
 	if phaseEvent == wirePhaseEventSYNIdle && hasOwner && !suppressIdleRelease {
-		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
-			m.logger.Printf("adaptermux: ownership released for session %d (idle grace expired) (AM6)", ownerID)
+		// Two thresholds:
+		//   - Gateway owner: 200 ms IdleReleaseGrace measured from
+		//     grant (legacy behavior — correct for the gateway's tight
+		//     directed-read protocol).
+		//   - External owner: ExternalSessionSYNGrace measured from
+		//     the most recent wire activity (NOT from grant). This
+		//     closes the bypass Codex P1 round-1 identified: after
+		//     wirePhaseTracker.advance() resets the tracker to idle,
+		//     subsequent SYNs are classified as SYNIdle rather than
+		//     SYNTimeout, so the SYN-timeout branch above is never
+		//     re-entered. Without this gap-based external grace, the
+		//     200ms IdleReleaseGrace would still tear down ebusd's
+		//     scan after the first 200ms. (Codex P1 + P2 on PR #621.)
+		var releaseNow bool
+		var elapsed time.Duration
+		var graceUsed time.Duration
+		if ownerID == gatewaySessionID {
+			elapsed = time.Since(m.busOwned)
+			graceUsed = m.cfg.IdleReleaseGrace
+			releaseNow = elapsed > graceUsed
+		} else {
+			elapsed = time.Since(m.lastWireActivity)
+			graceUsed = m.cfg.ExternalSessionSYNGrace
+			releaseNow = elapsed >= graceUsed
+		}
+		if releaseNow {
+			m.logger.Printf("adaptermux: ownership released for session %d remote=%s (idle grace expired: %v ≥ %v) (AM6)",
+				ownerID, m.sessionRemoteAddrOrUnknown(ownerID), elapsed, graceUsed)
 			m.arb.releaseOwnership(ownerID)
 			// Codex: clear gatewayTxnActive here too — the "SYN-before-read"
 			// guard above only clears when bytesRead > 0, so an abandoned
@@ -2374,7 +2532,9 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	} else {
 		m.phase.startRequest()
 	}
-	m.busOwned = time.Now()
+	now := time.Now()
+	m.busOwned = now
+	m.lastWireActivity = now
 	// Drain activeCh BEFORE marking the transaction active so the
 	// drain count belongs to this grant (not the previous transaction).
 	// Safety net: normal flow should produce zero drains after the
@@ -2768,6 +2928,52 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 
 	sendOK = true
 	return nil
+}
+
+// latencyHistogramReportLoop periodically emits a single-line summary
+// of the F-10 per-session-frame pipeline latency histogram to the
+// logger. The bucket counters themselves remain authoritative on
+// /debug/vars; this loop exists so the same data is visible in
+// `ha addons logs` for ad-hoc operator inspection — the batch-3
+// EBUSD-VERIFICATION audit flagged that grepping the addon log for
+// histogram data returned nothing despite the data being live in
+// memory.
+//
+// Cadence is governed by Config.LatencyHistogramReportInterval
+// (default 60s). The loop exits when m.ctx is cancelled.
+//
+// The cumulative semantics of the histogram are preserved in the log
+// surface: each `le_*` figure is the count of frames at or under the
+// labelled upper bound; `gt_100000` is the non-cumulative overflow.
+// Operators can therefore compute "frames over the 25 ms ebusd
+// budget" as `(le_100000 + gt_100000) - le_25000` without leaving
+// the addon log.
+func (m *Mux) latencyHistogramReportLoop() {
+	defer m.wg.Done()
+	ticker := time.NewTicker(m.cfg.LatencyHistogramReportInterval)
+	defer ticker.Stop()
+	bucketNames := []string{"le_1000", "le_5000", "le_25000", "le_100000", "gt_100000"}
+	readBucket := func(name string) int64 {
+		if v := adaptermuxSessionFrameLatencyBucketTotal.Get(name); v != nil {
+			if ev, ok := v.(*expvar.Int); ok {
+				return ev.Value()
+			}
+		}
+		return 0
+	}
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			vals := make([]string, 0, len(bucketNames))
+			for _, name := range bucketNames {
+				vals = append(vals, fmt.Sprintf("%s=%d", name, readBucket(name)))
+			}
+			m.logger.Printf("adaptermux: session frame latency histogram (cumulative le_*, overflow gt_*): %s",
+				strings.Join(vals, " "))
+		}
+	}
 }
 
 // emitPassive delivers a passive event to the callback.

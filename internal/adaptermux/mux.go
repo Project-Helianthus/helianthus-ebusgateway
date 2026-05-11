@@ -92,16 +92,16 @@ type Config struct {
 	// (Proxy-bug C3 / R3.) Zero disables the policy.
 	PendingStartTTL time.Duration
 
-	// IsKnownMasterByte is an optional predicate that classifies a
-	// FAILED arbitration data byte as a real bus master (true) versus
+	// IsKnownInitiatorByte is an optional predicate that classifies a
+	// FAILED arbitration data byte as a real bus initiator (true) versus
 	// a transient AND-collision artifact (false). When two real
-	// masters arbitrate, the wire byte is the bit-wise AND of their
+	// initiators arbitrate, the wire byte is the bit-wise AND of their
 	// addresses, which can land on a value that is NOT itself a
-	// physically-present master — e.g. 0x7F (gateway) AND'd with 0xF1
-	// (radio) produces 0x71 on the wire even though no master at
+	// physically-present initiator — e.g. 0x7F (gateway) AND'd with 0xF1
+	// (radio) produces 0x71 on the wire even though no initiator at
 	// 0x71 exists on the bus. Mirror clients (ebusd) that consume
 	// the proxy's StreamEventFailed bytes interpret 0x71 as a
-	// fictitious bus master and pollute their passive view.
+	// fictitious bus initiator and pollute their passive view.
 	//
 	// Returning false on a byte suppresses its delivery to the
 	// per-session sendCh mirror; the passive emit and the error
@@ -110,7 +110,7 @@ type Config struct {
 	// When nil (the default), no filtering is performed — all FAILED
 	// data bytes flow to mirror clients as before. Production wires
 	// this to a runtime_state-backed lookup. (Proxy-bug C5 / R5.)
-	IsKnownMasterByte func(b byte) bool
+	IsKnownInitiatorByte func(b byte) bool
 
 	// LatencyHistogramReportInterval controls how often a single-line
 	// summary of the adaptermux_session_frame_latency_us_bucket_total
@@ -1312,21 +1312,21 @@ func (m *Mux) readLoop() {
 			m.handleArbitrationResponse(false, event.Data)
 
 			// Phantom-collision filter (proxy-bug C5 / R5): when two
-			// real masters arbitrate, the wire byte is the bit-wise
+			// real initiators arbitrate, the wire byte is the bit-wise
 			// AND of their addresses and can land on a value that is
-			// NOT itself a physically-present master (e.g. 0x7F &
-			// 0xF1 = 0x71 on a bus with masters at 0x7F + 0xF1 + 0x03
+			// NOT itself a physically-present initiator (e.g. 0x7F &
+			// 0xF1 = 0x71 on a bus with initiators at 0x7F + 0xF1 + 0x03
 			// + 0x10 but NOT 0x71). Mirror clients (ebusd) treat the
-			// byte as a fictitious bus master and pollute their
+			// byte as a fictitious bus initiator and pollute their
 			// passive view. If the operator-supplied predicate
-			// reports the byte is not a known master, skip the
+			// reports the byte is not a known initiator, skip the
 			// mirror delivery to external sessions; the passive emit
 			// and the error logging still fire so observability
 			// stays complete.
 			isPhantom := false
-			if m.cfg.IsKnownMasterByte != nil && !m.cfg.IsKnownMasterByte(event.Data) {
+			if m.cfg.IsKnownInitiatorByte != nil && !m.cfg.IsKnownInitiatorByte(event.Data) {
 				isPhantom = true
-				m.logger.Printf("adaptermux: suppressing mirror delivery for phantom FAILED data=0x%02X (not a known bus master)", event.Data)
+				m.logger.Printf("adaptermux: suppressing mirror delivery for phantom FAILED data=0x%02X (not a known bus initiator)", event.Data)
 			}
 
 			// Synthesize the winner byte:

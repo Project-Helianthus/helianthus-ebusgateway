@@ -92,19 +92,13 @@ func TestPendingExternalTTL_StaleEntryRejected(t *testing.T) {
 	arb.nowFn = func() time.Time { return clock }
 	arb.setPolicy(50 * time.Millisecond)
 
-	// Two external requests; the head will age past TTL.
+	// Stale entry first.
 	staleCh := arb.requestStart(1, 0x31)
-	freshCh := arb.requestStart(2, 0x32)
 
-	// Advance the clock past the first request's TTL but not the
-	// second's. The second was enqueued at the same instant in this
-	// fixed-clock test, so both should appear stale — fix that by
-	// advancing AFTER enqueueing the fresh one.
-	// Re-arrange: re-enqueue the fresh one with a later timestamp.
+	// Fresh entry enqueued at clock=60ms so it stays under the 50 ms
+	// TTL when we eventually call tryGrant at clock=80ms.
 	clock = base.Add(60 * time.Millisecond)
-	// session 2 was enqueued at base too; replace it so its
-	// enqueuedAt is "now" (60ms later, still within TTL).
-	freshCh = arb.requestStart(2, 0x32)
+	freshCh := arb.requestStart(2, 0x32)
 
 	clock = base.Add(80 * time.Millisecond) // session 1 now 80ms old (>50ms TTL)
 	// session 2 was enqueued at 60ms; at clock=80ms it is 20ms old — fresh.

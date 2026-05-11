@@ -11,10 +11,10 @@ import (
 
 // TestReadLoop_PhantomCollisionByteNotMirrored pins proxy-bug C5
 // (R5): when a StreamEventFailed data byte is classified as a phantom
-// (not a known bus master) by Mux.cfg.IsKnownMasterByte, the byte
+// (not a known bus initiator) by Mux.cfg.IsKnownInitiatorByte, the byte
 // MUST NOT be enqueued on external session sendChs as a synthesized
 // passive observation. ebusd otherwise reads it as a fictitious bus
-// master and pollutes its passive view. The passive emit and error
+// initiator and pollutes its passive view. The passive emit and error
 // log still fire so observability remains complete.
 func TestReadLoop_PhantomCollisionByteNotMirrored(t *testing.T) {
 	mock := newP3MockTransport()
@@ -25,9 +25,9 @@ func TestReadLoop_PhantomCollisionByteNotMirrored(t *testing.T) {
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
 		// C5: classify 0x71 (the documented AND-collision artifact
-		// 0x7F & 0xF1) as NOT a known master. Everything else is
+		// 0x7F & 0xF1) as NOT a known initiator. Everything else is
 		// real for the purposes of this test.
-		IsKnownMasterByte: func(b byte) bool {
+		IsKnownInitiatorByte: func(b byte) bool {
 			return b != 0x71
 		},
 		// Keep legacy invariants stable for this mux-level test.
@@ -103,7 +103,7 @@ func TestReadLoop_PhantomCollisionByteNotMirrored(t *testing.T) {
 }
 
 // TestReadLoop_RealMasterByteStillMirrored is the inverse pin: when
-// IsKnownMasterByte returns true for a byte, the existing
+// IsKnownInitiatorByte returns true for a byte, the existing
 // synthesis-to-sessions path runs unchanged. This guards against a
 // regression where the C5 filter unconditionally suppresses.
 func TestReadLoop_RealMasterByteStillMirrored(t *testing.T) {
@@ -114,8 +114,8 @@ func TestReadLoop_RealMasterByteStillMirrored(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
-		// Treat every byte as a known master — C5 must be a no-op.
-		IsKnownMasterByte: func(b byte) bool { return true },
+		// Treat every byte as a known initiator — C5 must be a no-op.
+		IsKnownInitiatorByte: func(b byte) bool { return true },
 		PendingStartTTL:   24 * time.Hour,
 	})
 
@@ -176,6 +176,6 @@ func TestReadLoop_RealMasterByteStillMirrored(t *testing.T) {
 		bytesAfterInject += n
 	}
 	if bytesAfterInject == 0 {
-		t.Fatal("real master byte 0xF1 produced 0 bytes on session sendCh — C5 filter is over-suppressing")
+		t.Fatal("real initiator byte 0xF1 produced 0 bytes on session sendCh — C5 filter is over-suppressing")
 	}
 }

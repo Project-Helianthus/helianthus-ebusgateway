@@ -2448,14 +2448,30 @@ func (b *syncBuffer) String() string {
 // inspect content beyond the marker prefix — the bucket-counter
 // rendering is covered by TestRecordLatencyBuckets_CumulativeSemantics
 // in session_test.go.
+//
+// Race safety under `go test -race`:
+//
+//   - The custom mux.logger writes through a syncBuffer (above),
+//     so the loop's Printf calls and the test's String() read are
+//     race-free at the buffer level.
+//   - We do NOT defer a logger restore. mux.logger is read
+//     concurrently by the goroutine; restoring it would race even
+//     with a synchronized buffer (Codex P2 on PR #621 round 3).
+//     newP3TestMux creates a per-test mux that cleanup() tears
+//     down completely, so there is no need to restore the field.
+//   - We do NOT manually cancel/wait the loop before reading the
+//     buffer. cancelling the mux ctx alone does not unblock the
+//     readLoop/sendLoop spawned by newP3TestMux (they wait on the
+//     mock transport), so cancel+wait would deadlock the test.
+//     The syncBuffer's mutex is sufficient: it serializes the
+//     loop's Write calls with the test's String() read, which is
+//     exactly what -race needs.
 func TestLatencyHistogramReportLoop_EmitsLine(t *testing.T) {
 	mux, _, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
 	var logBuf syncBuffer
-	origLogger := mux.logger
 	mux.logger = log.New(&logBuf, "", 0)
-	defer func() { mux.logger = origLogger }()
 
 	mux.wg.Add(1)
 	mux.cfg.LatencyHistogramReportInterval = 25 * time.Millisecond

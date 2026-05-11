@@ -1042,18 +1042,45 @@ func (m *Mux) readLoop() {
 			continue
 		case transport.StreamEventFailed:
 			m.logger.Printf("adaptermux: readLoop got StreamEventFailed data=0x%02X", event.Data)
+			// Peek the pending bidder's session ID BEFORE
+			// handleArbitrationResponse clears pendingStart. We need
+			// it to decide whether this FAILED was for a gateway-
+			// initiated bid (synthesis safe — no per-session control
+			// event will race) or an external-session bid (the
+			// session's handleStart goroutine will deliver
+			// ENHResFailed asynchronously; synthesizing here races
+			// that). Codex P2 round 2 on PR #620.
+			//
+			// pendingStartAbsorb > 0 means the response is for a
+			// cancelled bid — neither path needs synthesis, the bus
+			// state for that bid is already torn down on the gateway
+			// side.
+			m.stateMu.Lock()
+			gatewayWasBidder := false
+			if m.pendingStartAbsorb == 0 && m.pendingStart != nil && m.pendingStart.sessionID == gatewaySessionID {
+				gatewayWasBidder = true
+			}
+			m.stateMu.Unlock()
+
 			m.handleArbitrationResponse(false, event.Data)
-			// No synthesis on FAILED. The losing bidder's session
-			// receives ENHResFailed(winner) via its own handleStart
-			// goroutine; adding a synthesized ENHResReceived(winner)
-			// here would race the FAILED frame for the same byte,
-			// presenting an out-of-order arbitration result. The
-			// FAILED frame itself already carries the winner
-			// address, so the bidder has the information it needs
-			// to update bus state. Other sessions (in the rare
-			// multi-external-session case) miss the winner byte,
-			// but the impact is bounded and lower-risk than the
-			// ordering hazard. (Codex P2 follow-up on PR #620.)
+
+			// Synthesize the winner byte only when the gateway was
+			// the losing bidder. External monitors (e.g. ebusd) need
+			// to see the byte to update their bus state — without
+			// it, they'll misread the next target/PB byte as the
+			// frame source, in the same way the pre-fix gateway-win
+			// case desynchronized them. Gateway-side state has
+			// already been torn down by handleArbitrationResponse;
+			// no per-session control event competes with this synth.
+			//
+			// When an external session was the losing bidder, that
+			// session's deliverFailed delivers ENHResFailed(winner)
+			// via its handleStart goroutine. We skip synthesis there
+			// to avoid the ordering race. (Other multi-external-
+			// session cases miss the winner byte; bounded impact.)
+			if gatewayWasBidder {
+				m.deliverToSessions(event.Data, 0, false, time.Now())
+			}
 			continue
 		case transport.StreamEventReset:
 			m.handleReset()

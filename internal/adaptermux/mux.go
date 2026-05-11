@@ -2844,17 +2844,21 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
-			// Do NOT arm pendingStartAbsorb here. The STARTED we are
-			// consuming RIGHT NOW is the only adapter response that
-			// corresponds to the cancelled request — there's no
-			// further stale STARTED/FAILED in flight that needs to
-			// be swallowed. Arming absorb would block the next
-			// tryGrantAndStart on the absorb barrier for up to
-			// StartDeadline (5 s), so the replacement request would
-			// sit idle long past the client's retry budget. (Codex
-			// P1 round 2 on PR #623.)
+			// Adapter resync (Codex P1 round 3 on PR #623): the
+			// STARTED we are consuming is a real adapter grant —
+			// the adapter believes the abandoned bid won the bus
+			// and is now driving its in-progress transaction state
+			// for that grant. Launching a fresh RequestStart on the
+			// same transport would put us one arbitration behind
+			// the adapter (mux thinks no owner, adapter still
+			// holding the cancelled session's grant). Mirror the
+			// stale-STARTED-absorb reconnect: close the upstream
+			// conn so readLoop's error handler invokes reconnect(),
+			// which fails/re-queues arbitration safely. Do NOT
+			// invoke tryGrantAndStart in-line — the reconnect path
+			// advances the queue.
 			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was replaced (C4/R4)", pending.sessionID)
+			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was replaced; forcing reconnect for adapter resync (C4/R4)", pending.sessionID)
 			// Best-effort send: the old notify channel is buffered
 			// to 1 and may already hold the replace's
 			// granted=false result, so a stale STARTED never blocks
@@ -2867,8 +2871,15 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			}:
 			default:
 			}
-			if m.arb.hasPending() {
-				m.tryGrantAndStart()
+			m.connMu.Lock()
+			c := m.conn
+			m.connMu.Unlock()
+			if c != nil {
+				if err := c.Close(); err != nil {
+					m.logger.Printf("adaptermux: cancelled-STARTED reconnect close: %v", err)
+				} else {
+					m.logger.Printf("adaptermux: cancelled-STARTED triggered transport reconnect for adapter resync")
+				}
 			}
 			return
 		}

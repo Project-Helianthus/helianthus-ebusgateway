@@ -2,6 +2,7 @@ package adaptermux
 
 import (
 	"context"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -129,16 +130,21 @@ func TestRequestStartForSession_IdleKickDispatchesImmediately(t *testing.T) {
 	}
 }
 
-// TestHandleArbitrationResponse_CancelledStartedDoesNotArmAbsorb pins
-// Codex P1 round 2 on PR #623: when handleArbitrationResponse consumes
-// a STARTED whose request was marked cancelled via the C4 in-flight
-// path, it MUST NOT call armPendingStartAbsorbLocked. The STARTED
-// being consumed is the only adapter response for the cancelled
-// request — there's no further stale response in flight. Arming
-// absorb would gate the next tryGrantAndStart on the absorb barrier
-// for up to StartDeadline (5 s) and starve the replacement request
-// for the duration of the client's retry budget.
-func TestHandleArbitrationResponse_CancelledStartedDoesNotArmAbsorb(t *testing.T) {
+// TestHandleArbitrationResponse_CancelledStartedResyncsAndDoesNotArmAbsorb
+// pins two Codex P1 rounds on PR #623:
+//
+//   - Round 2: handleArbitrationResponse MUST NOT arm
+//     pendingStartAbsorb when consuming a cancelled STARTED — there's
+//     no further stale response in flight; arming would gate the next
+//     tryGrantAndStart on the absorb barrier for up to StartDeadline.
+//
+//   - Round 3: the adapter has already granted the abandoned bid, so
+//     before any replacement START can launch, the mux must force a
+//     transport resync (close the upstream conn so readLoop's error
+//     handler invokes reconnect). Otherwise the adapter is one
+//     arbitration ahead of the mux's view and the replacement would
+//     collide with the in-progress (but abandoned) transaction.
+func TestHandleArbitrationResponse_CancelledStartedResyncsAndDoesNotArmAbsorb(t *testing.T) {
 	mux := New(Config{
 		Protocol:        "enh",
 		Network:         "tcp",
@@ -147,6 +153,12 @@ func TestHandleArbitrationResponse_CancelledStartedDoesNotArmAbsorb(t *testing.T
 		SYNInterval:     time.Hour,
 		PendingStartTTL: 24 * time.Hour,
 	})
+
+	// Install a fake conn so we can observe the reconnect-via-close.
+	connMock := newCancelledStartedConnMock()
+	mux.connMu.Lock()
+	mux.conn = connMock
+	mux.connMu.Unlock()
 
 	// Stage 1: simulate an in-flight cancelled grant.
 	chA := mux.arb.requestStart(1, 0x31)
@@ -170,15 +182,41 @@ func TestHandleArbitrationResponse_CancelledStartedDoesNotArmAbsorb(t *testing.T
 	// Stage 2: feed the STARTED response for the cancelled request.
 	mux.handleArbitrationResponse(true, 0x31)
 
-	// pendingStartAbsorb MUST be zero — there's no further stale
-	// response to swallow.
+	// Round-2 assertion: pendingStartAbsorb MUST be zero.
 	mux.stateMu.Lock()
 	absorb := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
 	if absorb != 0 {
-		t.Fatalf("pendingStartAbsorb = %d after consuming cancelled STARTED; want 0 (Codex P1 round 2 regression — would gate next tryGrantAndStart for up to StartDeadline)", absorb)
+		t.Errorf("pendingStartAbsorb = %d after consuming cancelled STARTED; want 0 (Codex P1 round 2 regression)", absorb)
+	}
+
+	// Round-3 assertion: the upstream conn MUST have been closed to
+	// force a reconnect/resync with the adapter.
+	if !connMock.closed.Load() {
+		t.Error("upstream conn was NOT closed after cancelled STARTED — adapter resync skipped (Codex P1 round 3 regression)")
 	}
 }
+
+// cancelledStartedConnMock is a minimal net.Conn-compatible stub used
+// to observe whether handleArbitrationResponse's cancelled-STARTED
+// branch closes the upstream conn for reconnect. Only Close is
+// inspected; other methods are no-ops sufficient for the test path.
+type cancelledStartedConnMock struct {
+	closed atomic.Bool
+}
+
+func newCancelledStartedConnMock() *cancelledStartedConnMock {
+	return &cancelledStartedConnMock{}
+}
+
+func (c *cancelledStartedConnMock) Read(_ []byte) (int, error)         { return 0, nil }
+func (c *cancelledStartedConnMock) Write(p []byte) (int, error)        { return len(p), nil }
+func (c *cancelledStartedConnMock) Close() error                       { c.closed.Store(true); return nil }
+func (c *cancelledStartedConnMock) LocalAddr() net.Addr                { return nil }
+func (c *cancelledStartedConnMock) RemoteAddr() net.Addr               { return nil }
+func (c *cancelledStartedConnMock) SetDeadline(_ time.Time) error      { return nil }
+func (c *cancelledStartedConnMock) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *cancelledStartedConnMock) SetWriteDeadline(_ time.Time) error { return nil }
 
 // getStartReqCount peeks into p3MockTransport's startRequests slice
 // for the test above. p3_test.go exposes getStartRequests(); we count

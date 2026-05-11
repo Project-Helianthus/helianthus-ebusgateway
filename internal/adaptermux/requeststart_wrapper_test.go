@@ -129,6 +129,57 @@ func TestRequestStartForSession_IdleKickDispatchesImmediately(t *testing.T) {
 	}
 }
 
+// TestHandleArbitrationResponse_CancelledStartedDoesNotArmAbsorb pins
+// Codex P1 round 2 on PR #623: when handleArbitrationResponse consumes
+// a STARTED whose request was marked cancelled via the C4 in-flight
+// path, it MUST NOT call armPendingStartAbsorbLocked. The STARTED
+// being consumed is the only adapter response for the cancelled
+// request — there's no further stale response in flight. Arming
+// absorb would gate the next tryGrantAndStart on the absorb barrier
+// for up to StartDeadline (5 s) and starve the replacement request
+// for the duration of the client's retry budget.
+func TestHandleArbitrationResponse_CancelledStartedDoesNotArmAbsorb(t *testing.T) {
+	mux := New(Config{
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		SYNInterval:     time.Hour,
+		PendingStartTTL: 24 * time.Hour,
+	})
+
+	// Stage 1: simulate an in-flight cancelled grant.
+	chA := mux.arb.requestStart(1, 0x31)
+	_ = chA
+	mux.stateMu.Lock()
+	if len(mux.arb.pendingExternal) == 0 {
+		mux.stateMu.Unlock()
+		t.Fatal("setup: pendingExternal empty after requestStart")
+	}
+	reqA := mux.arb.pendingExternal[0]
+	mux.arb.pendingExternal = mux.arb.pendingExternal[:0]
+	mux.pendingStart = &pendingStartState{
+		sessionID: 1,
+		initiator: 0x31,
+		notify:    reqA.notify,
+		req:       reqA,
+	}
+	reqA.cancelled.Store(true)
+	mux.stateMu.Unlock()
+
+	// Stage 2: feed the STARTED response for the cancelled request.
+	mux.handleArbitrationResponse(true, 0x31)
+
+	// pendingStartAbsorb MUST be zero — there's no further stale
+	// response to swallow.
+	mux.stateMu.Lock()
+	absorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if absorb != 0 {
+		t.Fatalf("pendingStartAbsorb = %d after consuming cancelled STARTED; want 0 (Codex P1 round 2 regression — would gate next tryGrantAndStart for up to StartDeadline)", absorb)
+	}
+}
+
 // getStartReqCount peeks into p3MockTransport's startRequests slice
 // for the test above. p3_test.go exposes getStartRequests(); we count
 // via that.

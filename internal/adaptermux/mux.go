@@ -2844,7 +2844,15 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
-			m.armPendingStartAbsorbLocked("replace-cancelled")
+			// Do NOT arm pendingStartAbsorb here. The STARTED we are
+			// consuming RIGHT NOW is the only adapter response that
+			// corresponds to the cancelled request — there's no
+			// further stale STARTED/FAILED in flight that needs to
+			// be swallowed. Arming absorb would block the next
+			// tryGrantAndStart on the absorb barrier for up to
+			// StartDeadline (5 s), so the replacement request would
+			// sit idle long past the client's retry budget. (Codex
+			// P1 round 2 on PR #623.)
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was replaced (C4/R4)", pending.sessionID)
 			// Best-effort send: the old notify channel is buffered

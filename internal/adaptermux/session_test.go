@@ -1017,3 +1017,77 @@ func TestArbitrationWinnerSynthesis_SkippedWhenExternalSessionWins(t *testing.T)
 		}
 	}
 }
+
+// TestArbitrationWinnerSynthesis_MultiSessionDeliversToNonWinner verifies
+// the multi-session future-proofing rule (Codex P2 round 3 on PR #620):
+// when an external session wins arbitration, OTHER external sessions
+// (e.g. a second bus monitor) still need the winner byte for their bus
+// state, but the WINNING session must NOT receive the synthesized byte
+// (its handleStart goroutine delivers ENHResStarted asynchronously and
+// the synthesis would race the control frame).
+func TestArbitrationWinnerSynthesis_MultiSessionDeliversToNonWinner(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	// Two external sessions: A (winner of arbitration) and B (passive
+	// monitor). We use deliverWinnerByteToOtherSessions directly so the
+	// test pins the helper's exclusion contract without standing up a
+	// full ENH winner-handshake flow.
+	clientA, serverA := net.Pipe()
+	defer closeOrLog(t, clientA, "clientA")
+	clientB, serverB := net.Pipe()
+	defer closeOrLog(t, clientB, "clientB")
+
+	idA := mux.AddSession(serverA)
+	idB := mux.AddSession(serverB)
+	if idA == 0 || idB == 0 {
+		t.Fatalf("AddSession returned 0 (idA=%d idB=%d)", idA, idB)
+	}
+	defer mux.RemoveSession(idA)
+	defer mux.RemoveSession(idB)
+
+	// Drain INIT chatter from both pipes; flag any 0x7F appearance.
+	sawWinnerOnA := make(chan struct{}, 1)
+	sawWinnerOnB := make(chan struct{}, 1)
+	drain := func(c net.Conn, sink chan<- struct{}) {
+		buf := make([]byte, 256)
+		deadline := time.Now().Add(700 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			_ = c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			n, err := c.Read(buf)
+			if err != nil {
+				continue
+			}
+			for i := 0; i < n; i++ {
+				if buf[i] == 0x7F {
+					select {
+					case sink <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}
+	}
+	go drain(clientA, sawWinnerOnA)
+	go drain(clientB, sawWinnerOnB)
+
+	// Simulate: session A won arbitration with 0x7F. Synthesis should
+	// skip A (its handleStart goroutine would deliver STARTED) and
+	// deliver to B.
+	mux.deliverWinnerByteToOtherSessions(0x7F, idA)
+
+	// Wait briefly and verify A did NOT receive 0x7F; B DID.
+	time.Sleep(400 * time.Millisecond)
+
+	select {
+	case <-sawWinnerOnA:
+		t.Errorf("winning session A received synthesized 0x7F — ordering-race regression (PR #620 round 3)")
+	default:
+	}
+	select {
+	case <-sawWinnerOnB:
+		// Expected.
+	default:
+		t.Errorf("non-winning session B did NOT receive synthesized 0x7F — multi-session synthesis broken (PR #620 round 3)")
+	}
+}

@@ -1036,8 +1036,22 @@ func (m *Mux) readLoop() {
 			// the STARTED was absorbed as stale (cancelled bid).
 			// Don't synthesize — nobody is using the bus from this
 			// stale win.
-			if owner, _, owned := m.arb.owner(); owned && owner == gatewaySessionID {
-				m.deliverToSessions(event.Data, owner, true, time.Now())
+			if owner, _, owned := m.arb.owner(); owned {
+				if owner == gatewaySessionID {
+					// Gateway won — every external session needs the
+					// byte; no per-session control event competes.
+					m.deliverToSessions(event.Data, owner, true, time.Now())
+				} else {
+					// External session won — skip the winner (its
+					// handleStart goroutine delivers ENHResStarted
+					// asynchronously; synthesis here would race that
+					// frame). Other external sessions (multi-monitor
+					// deployments) still need the byte to keep their
+					// bus state synced — without it they'd misread
+					// the next target/PB byte as the frame source.
+					// (Codex P2 round 3 on PR #620.)
+					m.deliverWinnerByteToOtherSessions(event.Data, owner)
+				}
 			}
 			continue
 		case transport.StreamEventFailed:
@@ -1062,24 +1076,36 @@ func (m *Mux) readLoop() {
 			}
 			m.stateMu.Unlock()
 
+			// Snapshot the external bidder (if not gateway) so we can
+			// skip-the-bidder for the multi-session synthesis below.
+			m.stateMu.Lock()
+			var externalBidderSessionID uint64
+			var externalBidderValid bool
+			if !gatewayWasBidder && m.pendingStartAbsorb == 0 && m.pendingStart != nil {
+				externalBidderSessionID = m.pendingStart.sessionID
+				externalBidderValid = true
+			}
+			m.stateMu.Unlock()
+
 			m.handleArbitrationResponse(false, event.Data)
 
-			// Synthesize the winner byte only when the gateway was
-			// the losing bidder. External monitors (e.g. ebusd) need
-			// to see the byte to update their bus state — without
-			// it, they'll misread the next target/PB byte as the
-			// frame source, in the same way the pre-fix gateway-win
-			// case desynchronized them. Gateway-side state has
-			// already been torn down by handleArbitrationResponse;
-			// no per-session control event competes with this synth.
-			//
-			// When an external session was the losing bidder, that
-			// session's deliverFailed delivers ENHResFailed(winner)
-			// via its handleStart goroutine. We skip synthesis there
-			// to avoid the ordering race. (Other multi-external-
-			// session cases miss the winner byte; bounded impact.)
+			// Synthesize the winner byte:
+			//   - Gateway-lost: deliver to all external sessions (no
+			//     per-session control event competes — the gateway
+			//     has no session in m.sessions).
+			//   - External-lost: deliver to all OTHER external
+			//     sessions (skip the losing bidder; their session's
+			//     handleStart goroutine delivers ENHResFailed via
+			//     deliverFailed, which would race a synthesized
+			//     RECEIVED(winner)). Multi-monitor deployments need
+			//     the byte on the non-bidder sessions to keep their
+			//     bus state synced. (Codex P2 round 3 on PR #620.)
+			//   - Absorbed-stale: skip entirely — bus state for the
+			//     cancelled bid is already torn down.
 			if gatewayWasBidder {
 				m.deliverToSessions(event.Data, 0, false, time.Now())
+			} else if externalBidderValid {
+				m.deliverWinnerByteToOtherSessions(event.Data, externalBidderSessionID)
 			}
 			continue
 		case transport.StreamEventReset:
@@ -2669,6 +2695,30 @@ func (m *Mux) deliverToSessions(symbol byte, currentOwner uint64, hasOwner bool,
 					sess.deliverReceived(b)
 				}
 			}
+		}
+		sess.deliverReceived(symbol)
+	}
+}
+
+// deliverWinnerByteToOtherSessions delivers an arbitration-winner byte
+// as a passive observation to every external session EXCEPT the one
+// identified by exceptSessionID. Used by the readLoop's STARTED/FAILED
+// synthesis paths when an external session won (STARTED) or lost
+// (FAILED): the winning/losing session's handleStart goroutine
+// delivers ENHResStarted/ENHResFailed asynchronously, so adding a
+// synthesized ENHResReceived(winner_byte) to that session would race
+// the control frame. Other external sessions (in multi-monitor
+// deployments) still need the byte to keep their bus state synced
+// with physical wire reality.
+//
+// EBUSD-VERIFICATION-2026-05-10.md F-9/F-10 follow-up; Codex P2
+// round 3 on PR #620.
+func (m *Mux) deliverWinnerByteToOtherSessions(symbol byte, exceptSessionID uint64) {
+	m.sessionsMu.Lock()
+	defer m.sessionsMu.Unlock()
+	for _, sess := range m.sessions {
+		if sess.id == exceptSessionID {
+			continue
 		}
 		sess.deliverReceived(symbol)
 	}

@@ -2511,12 +2511,41 @@ func (m *Mux) tryGrantAndStart() {
 			// so the reconnect is still required to unstick it — same
 			// shape as `cancelPendingStart`.
 			wasBlocking := pending.blockingArb
+			// F-17 follow-up (PR #626 review round-3, angry-tester
+			// finding M1): the AM8 deadline path resolves the same
+			// pending startRequest that the three branches of
+			// handleArbitrationResponse resolve, and it can fire
+			// PRECISELY when the adapter is slow — the exact
+			// production condition that motivated this PR cycle.
+			// Without the cancelled-check, a same-session re-submit
+			// that flipped `pending.req.cancelled` via
+			// markInFlightCancelled will see the old wait goroutine
+			// fall through to deliverFailed("…deadline expired…")
+			// → ENHResFailed on the wire. Same retry-feedback-loop
+			// class as F-17 / F-NEW-1, just gated on AM8 instead of
+			// the normal arrival.
+			cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8, wasBlocking=%v)", pending.sessionID, wasBlocking)
+			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8, wasBlocking=%v, cancelledInFlight=%v)", pending.sessionID, wasBlocking, cancelledInFlight)
 			// AM8: guard the send — if another path already delivered a
 			// result, the channel is full and this send would block forever.
+			var result startResult
+			if cancelledInFlight {
+				result = startResult{
+					granted:   false,
+					cancelled: true,
+					initiator: pending.initiator,
+					err:       errors.New("adaptermux: START deadline expired (superseded by client re-submit)"),
+				}
+			} else {
+				result = startResult{
+					granted:   false,
+					initiator: pending.initiator,
+					err:       errors.New("adaptermux: START deadline expired"),
+				}
+			}
 			select {
-			case pending.notify <- startResult{granted: false, initiator: pending.initiator, err: errors.New("adaptermux: START deadline expired")}:
+			case pending.notify <- result:
 			default:
 				m.logger.Printf("adaptermux: pendingStart deadline: notify channel full for session %d, result already delivered", pending.sessionID)
 			}
@@ -2556,12 +2585,23 @@ func (m *Mux) tryGrantAndStart() {
 			// on the cap-1 channel would block forever, pinning readLoop.
 			m.stateMu.Lock()
 			if m.pendingStart != nil && m.pendingStart.notify == notify {
+				// F-17 follow-up (PR #626 review round-3, angry-tester
+				// finding M2): a same-session re-submit could race
+				// with the transport-call returning an error. If
+				// cancelled-in-flight, suppress with `cancelled: true`
+				// so the old wait goroutine silent-returns rather than
+				// emitting ENHResFailed on the wire (same class as M1).
+				cancelledInFlight := m.pendingStart.req != nil && m.pendingStart.req.cancelled.Load()
 				if m.pendingStart.deadline != nil {
 					m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 				}
 				m.pendingStart = nil
 				m.stateMu.Unlock()
-				notify <- startResult{granted: false, initiator: initiator, err: err}
+				if cancelledInFlight {
+					notify <- startResult{granted: false, cancelled: true, initiator: initiator, err: err}
+				} else {
+					notify <- startResult{granted: false, initiator: initiator, err: err}
+				}
 			} else {
 				// RequestStart failed AND pending was already cancelled.
 				// Since the adapter never received the START, no stale
@@ -2659,12 +2699,23 @@ func (m *Mux) tryGrantAndStart() {
 					m.blockingArbActive = false
 				}
 				if m.pendingStart != nil && m.pendingStart.notify == notify {
+					// F-17 follow-up (PR #626 review round-3, angry-tester
+					// finding M2, blocking-half): same as the non-blocking
+					// RequestStart-err path — a same-session re-submit
+					// could race with the transport-call returning an
+					// error. Suppress with `cancelled: true` when the
+					// in-flight req is cancelled.
+					cancelledInFlight := m.pendingStart.req != nil && m.pendingStart.req.cancelled.Load()
 					if m.pendingStart.deadline != nil {
 						m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 					}
 					m.pendingStart = nil
 					m.stateMu.Unlock()
-					notify <- startResult{granted: false, initiator: initiator, err: err}
+					if cancelledInFlight {
+						notify <- startResult{granted: false, cancelled: true, initiator: initiator, err: err}
+					} else {
+						notify <- startResult{granted: false, initiator: initiator, err: err}
+					}
 				} else {
 					// StartArbitration failed AND pending was already cancelled.
 					// Codex-R8: scope absorb decrement + queue advance to our

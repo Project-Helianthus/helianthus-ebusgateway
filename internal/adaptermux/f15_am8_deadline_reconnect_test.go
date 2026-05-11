@@ -57,10 +57,19 @@ func TestAM8Deadline_NonBlockingPath_NoReconnect(t *testing.T) {
 	mux.wg.Add(2)
 	go mux.readLoop()
 	go mux.sendLoop()
+	// L3 (review round-3): bound the drain so a stray goroutine
+	// surfaces as a test failure rather than a deadlock. Sibling
+	// tests already use this pattern.
 	defer func() {
 		cancel()
 		_ = mock.Close()
-		mux.wg.Wait()
+		done := make(chan struct{})
+		go func() { mux.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("mux goroutine drain exceeded 2s")
+		}
 	}()
 
 	// Queue a gateway START and feed a SYN so tryGrantAndStart pops
@@ -187,15 +196,24 @@ func TestAM8Deadline_BlockingPath_StillReconnects(t *testing.T) {
 	gwCh := mux.arb.requestStart(gatewaySessionID, 0x71)
 	mux.tryGrantAndStart()
 
-	// Confirm the blocking goroutine is in flight before the
-	// deadline fires.
-	time.Sleep(50 * time.Millisecond)
-	mux.stateMu.Lock()
-	if mux.pendingStart == nil || !mux.pendingStart.blockingArb {
+	// L2 (review round-3): poll for pendingStart-armed instead of a
+	// fixed sleep. Under -race on slow CI the fixed 50ms could miss
+	// the window between dispatch and the AM8 deadline (150ms).
+	setupDeadline := time.Now().Add(500 * time.Millisecond)
+	armed := false
+	for time.Now().Before(setupDeadline) {
+		mux.stateMu.Lock()
+		if mux.pendingStart != nil && mux.pendingStart.blockingArb {
+			armed = true
+			mux.stateMu.Unlock()
+			break
+		}
 		mux.stateMu.Unlock()
-		t.Fatal("setup: expected pendingStart with blockingArb=true on blocking path")
+		time.Sleep(5 * time.Millisecond)
 	}
-	mux.stateMu.Unlock()
+	if !armed {
+		t.Fatal("setup: expected pendingStart with blockingArb=true on blocking path within 500ms")
+	}
 
 	// Wait for the AM8 deadline.
 	select {

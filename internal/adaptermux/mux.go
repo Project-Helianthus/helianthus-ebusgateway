@@ -1147,43 +1147,43 @@ func (m *Mux) readLoop() {
 			continue
 		case transport.StreamEventFailed:
 			m.logger.Printf("adaptermux: readLoop got StreamEventFailed data=0x%02X", event.Data)
-			// Peek the pending bidder's session ID BEFORE
-			// handleArbitrationResponse clears pendingStart. We need
-			// it to decide whether this FAILED was for a gateway-
-			// initiated bid (synthesis safe — no per-session control
-			// event will race) or an external-session bid (the
-			// session's handleStart goroutine will deliver
-			// ENHResFailed asynchronously; synthesizing here races
-			// that). Codex P2 round 2 on PR #620.
+			// Peek the *active* bidder (if any) BEFORE
+			// handleArbitrationResponse clears pendingStart. The
+			// presence and identity of the bidder dictate how we
+			// route the synthesized winner byte; the wire byte
+			// itself always needs to flow to observers regardless.
 			//
-			// pendingStartAbsorb > 0 means the response is for a
-			// cancelled bid — neither path needs synthesis, the bus
-			// state for that bid is already torn down on the gateway
-			// side.
+			// `pendingStartAbsorb > 0` indicates this FAILED is the
+			// stale response to a cancelled bid. The bid is gone, so
+			// no per-session control event races us — but the byte
+			// was still consumed from the wire and the third-party
+			// transaction continues, so observers still need it.
+			// (Codex P2 round 8 on PR #620.)
+			//
+			// `pendingStart == nil` (no bid at all) is similarly a
+			// pure passive observation: deliver to all sessions +
+			// emit passive.
 			m.stateMu.Lock()
-			gatewayWasBidder := false
-			if m.pendingStartAbsorb == 0 && m.pendingStart != nil && m.pendingStart.sessionID == gatewaySessionID {
-				gatewayWasBidder = true
-			}
-			m.stateMu.Unlock()
-
-			// Snapshot the external bidder (if not gateway) so we can
-			// skip-the-bidder for the multi-session synthesis below.
-			m.stateMu.Lock()
-			var externalBidderSessionID uint64
-			var externalBidderValid bool
-			if !gatewayWasBidder && m.pendingStartAbsorb == 0 && m.pendingStart != nil {
-				externalBidderSessionID = m.pendingStart.sessionID
-				externalBidderValid = true
+			var activeBidderSessionID uint64
+			var hasActiveBidder bool
+			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
+				activeBidderSessionID = m.pendingStart.sessionID
+				hasActiveBidder = true
 			}
 			m.stateMu.Unlock()
 
 			m.handleArbitrationResponse(false, event.Data)
 
 			// Synthesize the winner byte:
-			//   - Gateway-lost: deliver to all external sessions (no
-			//     per-session control event competes — the gateway
-			//     has no session in m.sessions).
+			//   - No active bidder (absorbed-stale OR no pending):
+			//     deliver to all external sessions. The wire byte
+			//     was consumed; the rest of the third-party frame
+			//     will continue through onReceived. Without this,
+			//     external monitors and the passive reconstructor
+			//     would parse the next target/PB byte as the frame
+			//     source and desynchronize.
+			//   - Gateway-lost: deliver to all external sessions
+			//     (gateway has no session in m.sessions, no skip).
 			//   - External-lost: deliver to all OTHER external
 			//     sessions (skip the losing bidder; their session's
 			//     handleStart goroutine delivers ENHResFailed via
@@ -1191,26 +1191,27 @@ func (m *Mux) readLoop() {
 			//     RECEIVED(winner)). Multi-monitor deployments need
 			//     the byte on the non-bidder sessions to keep their
 			//     bus state synced. (Codex P2 round 3 on PR #620.)
-			//   - Absorbed-stale: skip entirely — bus state for the
-			//     cancelled bid is already torn down.
-			if gatewayWasBidder {
+			switch {
+			case !hasActiveBidder:
 				m.deliverToSessions(event.Data, 0, false, time.Now())
-			} else if externalBidderValid {
-				m.deliverWinnerByteToOtherSessions(event.Data, externalBidderSessionID)
+			case activeBidderSessionID == gatewaySessionID:
+				m.deliverToSessions(event.Data, 0, false, time.Now())
+			default:
+				m.deliverWinnerByteToOtherSessions(event.Data, activeBidderSessionID)
 			}
 			// FAILED always means a non-gateway initiator won the
 			// arbitration (gateway-win produces STARTED, not FAILED).
 			// Emit the winner byte to passive observers so the bus
 			// reconstructor sees the correct frame source for the
 			// third-party transaction that's about to flow through
-			// onReceived. (Codex P2 round 5 on PR #620.)
-			if gatewayWasBidder || externalBidderValid {
-				m.emitPassive(PassiveEvent{
-					Kind:       PassiveEventSymbol,
-					Symbol:     event.Data,
-					ObservedAt: time.Now(),
-				})
-			}
+			// onReceived. Emit unconditionally — the wire byte
+			// happened irrespective of whether a gateway bid was
+			// pending. (Codex P2 round 5 + round 8 on PR #620.)
+			m.emitPassive(PassiveEvent{
+				Kind:       PassiveEventSymbol,
+				Symbol:     event.Data,
+				ObservedAt: time.Now(),
+			})
 			continue
 		case transport.StreamEventReset:
 			m.handleReset()

@@ -41,11 +41,12 @@ func TestRequestStartForSession_MarksInFlightCancelledOnResubmit(t *testing.T) {
 	_ = chA
 
 	mux.stateMu.Lock()
-	var reqA *startRequest
-	if len(mux.arb.pendingExternal) > 0 {
-		reqA = mux.arb.pendingExternal[0]
-		mux.arb.pendingExternal = mux.arb.pendingExternal[:0]
+	if len(mux.arb.pendingExternal) == 0 {
+		mux.stateMu.Unlock()
+		t.Fatal("setup: expected enqueued request to be present in pendingExternal")
 	}
+	reqA := mux.arb.pendingExternal[0]
+	mux.arb.pendingExternal = mux.arb.pendingExternal[:0]
 	mux.pendingStart = &pendingStartState{
 		sessionID: 1,
 		initiator: 0x31,
@@ -53,9 +54,6 @@ func TestRequestStartForSession_MarksInFlightCancelledOnResubmit(t *testing.T) {
 		req:       reqA,
 	}
 	mux.stateMu.Unlock()
-	if reqA == nil {
-		t.Fatal("setup: expected enqueued request to be present in pendingExternal")
-	}
 	if reqA.cancelled.Load() {
 		t.Fatal("setup: cancelled flag set prematurely")
 	}

@@ -2882,13 +2882,36 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	if m.pendingStartAbsorb > 0 {
 		m.pendingStartAbsorb--
 		shouldAdvance := !started && m.pendingStartAbsorb == 0 && m.pendingStart == nil && m.arb.hasPending()
-		needReconnect := started
+		// F-15 follow-up (PR #626 Codex bot review on b3b7f13 + e6b96ee
+		// — P1 finding): the absorb-consume branch used to reconnect
+		// unconditionally on STARTED (`needReconnect := started`). On
+		// the non-blocking ENH path that's the same asymmetric design
+		// defect F-15 fixed in the AM8 deadline callback — just
+		// delayed: AM8 arms absorb without closing, but then the late
+		// STARTED arrives, hits THIS branch, and conn.Close fires.
+		// The F-15 fix only prevented the IMMEDIATE close; the late
+		// absorb still tore down TCP, preserving the retry-feedback
+		// loop F-15 was meant to eliminate.
+		//
+		// Mirror F-15's transport-type gate: reconnect only on the
+		// blocking StartArbitration path (where a hung goroutine may
+		// still need unsticking). On the non-blocking RequestStart
+		// path the adapter is merely slow, eBUS arbitration is
+		// per-SYN stateless, and the absorb counter has already done
+		// its bookkeeping job by decrementing.
+		m.connMu.Lock()
+		tr := m.upstream
+		m.connMu.Unlock()
+		_, hasRequestStart := tr.(arbitrationRequester)
+		_, hasBlockingStart := tr.(interface{ StartArbitration(byte) error })
+		isBlockingPath := !hasRequestStart && hasBlockingStart
+		needReconnect := started && isBlockingPath
 		m.stateMu.Unlock()
 		kind := "FAILED"
 		if started {
 			kind = "STARTED"
 		}
-		m.logger.Printf("adaptermux: absorbed stale %s from cancelled request (data=0x%02X)", kind, data)
+		m.logger.Printf("adaptermux: absorbed stale %s from cancelled request (data=0x%02X, isBlockingPath=%v)", kind, data, isBlockingPath)
 		if needReconnect {
 			m.connMu.Lock()
 			c := m.conn
@@ -2897,7 +2920,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 				if err := c.Close(); err != nil {
 					m.logger.Printf("adaptermux: stale STARTED reconnect close: %v", err)
 				} else {
-					m.logger.Printf("adaptermux: stale STARTED triggered transport reconnect for arbitration resync")
+					m.logger.Printf("adaptermux: stale STARTED triggered transport reconnect for arbitration resync (blocking path)")
 				}
 			}
 		}

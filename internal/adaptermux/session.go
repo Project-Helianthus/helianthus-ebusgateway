@@ -281,6 +281,12 @@ func (s *session) handleSend(data byte) {
 		s.deliverErrorHost()
 		return
 	}
+	// F-6 observability: log accepted SEND bytes too. Without this, the
+	// happy-path forwarding to activeSendCh is silent and session logs
+	// can show START/INIT/INFO with no per-session SEND traffic even
+	// though bytes are flowing to the bus
+	// (EBUSD-VERIFICATION-2026-05-10.md, Codex P2 follow-up on PR #617).
+	s.mux.logger.Printf("adaptermux: session %d SEND 0x%02X forwarded", s.id, data)
 
 	result := make(chan error, 1)
 	select {

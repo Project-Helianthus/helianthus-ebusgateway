@@ -274,6 +274,10 @@ func (s *session) handleMessage(msg transport.ENHMessage) {
 func (s *session) handleSend(data byte) {
 	if !s.mux.arb.isOwner(s.id) {
 		// Session is not bus owner — host-side error, not bus error.
+		// F-6 observability: log so operators can correlate orphan
+		// SEND attempts with missing/lost STARTs
+		// (EBUSD-VERIFICATION-2026-05-10.md).
+		s.mux.logger.Printf("adaptermux: session %d SEND 0x%02X rejected — session does not own bus", s.id, data)
 		s.deliverErrorHost()
 		return
 	}
@@ -316,12 +320,18 @@ func (s *session) handleStart(initiator byte) {
 	// P1 fix: also cancel any in-flight pending START at the adapter
 	// level if it belongs to this session.
 	if initiator == protocol.SymbolSyn {
+		s.mux.logger.Printf("adaptermux: session %d START 0xAA (SYN cancel)", s.id)
 		s.mux.arb.cancelStart(s.id)
 		s.mux.arb.releaseOwnership(s.id)
 		s.mux.cancelPendingStart(s.id)
 		return
 	}
 
+	// F-6 observability: log every START dispatch so operators can
+	// distinguish "no client traffic" from "client traffic but no
+	// grants" when debugging arbitration starvation
+	// (EBUSD-VERIFICATION-2026-05-10.md).
+	s.mux.logger.Printf("adaptermux: session %d START 0x%02X requested (RequestStart(0x%02X) sent for session %d)", s.id, initiator, initiator, s.id)
 	ch := s.mux.arb.requestStart(s.id, initiator)
 
 	// Wait for arbitration result in a tracked goroutine.
@@ -372,6 +382,9 @@ func (s *session) handleInit(features byte) {
 	if stored == 0 {
 		stored = features
 	}
+	// F-6 observability: log INIT handshake so operators can confirm
+	// ENH framing reached the mux (EBUSD-VERIFICATION-2026-05-10.md).
+	s.mux.logger.Printf("adaptermux: session %d INIT features=0x%02X (stored=0x%02X)", s.id, features, stored)
 	s.deliverReset(stored)
 }
 
@@ -380,6 +393,8 @@ func (s *session) handleInit(features byte) {
 // instead of querying the upstream transport directly, avoiding
 // readMu contention with the readLoop.
 func (s *session) handleInfo(id byte) {
+	// F-6 observability: log INFO dispatch (EBUSD-VERIFICATION-2026-05-10.md).
+	s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X", s.id, id)
 	data, err := s.mux.CachedInfo(transport.AdapterInfoID(id))
 	if err != nil {
 		s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X: %v", s.id, id, err)

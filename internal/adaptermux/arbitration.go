@@ -3,24 +3,40 @@ package adaptermux
 import "sync"
 
 // arbitrator manages bus ownership between the gateway (internal) and
-// external sessions (ebusd) using a two-class priority model.
+// external sessions (ebusd) using a two-class priority model with an
+// adaptive fairness window.
 //
-// XR_GATEWAY_PRIORITY — scheduling policy:
+// XR_GATEWAY_PRIORITY (default behavior, no external sessions):
 //
 //	At each SYN boundary (or idle tick), tryGrant checks pendingGateway
 //	BEFORE pendingExternal. The gateway always gets first pick for bus
-//	ownership. External requests are serviced at the next boundary when
-//	the gateway has no pending work.
+//	ownership.
 //
-//	This is a deliberate design choice: the gateway's semantic poller
-//	drives periodic register scans that must complete within their
-//	polling window. External clients (ebusd) are best-effort consumers
-//	that can tolerate arbitration delays without functional impact.
+//	The gateway's semantic poller drives periodic register scans that
+//	must complete within their polling window; treating it as the
+//	priority class minimises poll-window jitter when no external
+//	clients are connected.
+//
+// XR_EXTERNAL_FAIRNESS_WINDOW (when ≥1 external session has a pending
+// START AND fairnessCounter has reached FairnessRatio — F-4 fix per
+// EBUSD-VERIFICATION-2026-05-10.md):
+//
+//	Every FairnessRatio'th tryGrant rotation with both classes pending,
+//	the external FIFO is serviced before pendingGateway. This bounds
+//	the worst-case external START latency to ~FairnessRatio gateway-
+//	transaction windows even when the semantic poller is continuously
+//	busy, which restores ebusd's ability to complete its initial scan
+//	(its per-START retry budget is 3× ~1.5 s = 4.5 s; the gateway's
+//	typical 200–300 ms grants comfortably fit into 1-in-4 fairness).
+//
+//	When no external sessions are pending, fairness reduces to a no-op
+//	and gateway-priority is unchanged — zero overhead in the standalone
+//	helianthus deployment.
 //
 // The arbitrator is informed by the proxy's boundary-based arbitration
 // (proxy M2) but simplified for a two-class model:
-//   - Gateway (sessionID = gatewaySessionID): always has priority
-//   - External sessions: queued FIFO, serviced when gateway is idle
+//   - Gateway (sessionID = gatewaySessionID): priority class
+//   - External sessions: FIFO with adaptive fairness window
 type arbitrator struct {
 	mu sync.Mutex
 
@@ -42,7 +58,28 @@ type arbitrator struct {
 	// currentInitiator is the eBUS source address of the current
 	// owner's START request.
 	currentInitiator byte
+
+	// fairnessCounter tracks tryGrant rotations where BOTH gateway and
+	// external have pending requests. When it reaches FairnessRatio,
+	// the next such rotation grants to external FIFO instead of
+	// gateway, then resets. F-4 anti-starvation. Only advances when
+	// both classes have pending work — otherwise gateway-priority is
+	// unchanged and the counter holds at its current value (no-op
+	// when standalone).
+	fairnessCounter int
 }
+
+// FairnessRatio is the every-Nth grant that goes to external FIFO when
+// both gateway and ≥1 external session have pending START requests.
+// Default 4 = ~25% of grants under contention go to external,
+// bounding worst-case external START latency to ~4 gateway-transaction
+// windows (typical 200–300 ms each → ~1 s worst case, well within
+// ebusd's ~4.5 s per-scan-iteration deadline).
+//
+// Constant for now; can be promoted to a config field if operators
+// need to tune the balance between gateway poll-window jitter and
+// external client throughput.
+const FairnessRatio = 4
 
 // startRequest represents a pending START arbitration request.
 type startRequest struct {
@@ -151,15 +188,34 @@ func (a *arbitrator) tryGrant() (sessionID uint64, initiator byte, notify chan s
 		return 0, 0, nil, false
 	}
 
-	// Gateway-priority: check gateway first.
-	if a.pendingGateway != nil {
+	gatewayPending := a.pendingGateway != nil
+	externalPending := len(a.pendingExternal) > 0
+
+	// F-4 fairness window: when BOTH classes are pending AND the
+	// fairness counter has reached the ratio, prefer external FIFO
+	// this rotation. Reset the counter and fall through to the
+	// external-FIFO branch below. When only one class is pending the
+	// counter doesn't advance — gateway-priority is unchanged in the
+	// no-external-clients case.
+	preferExternalThisGrant := false
+	if gatewayPending && externalPending {
+		a.fairnessCounter++
+		if a.fairnessCounter >= FairnessRatio {
+			a.fairnessCounter = 0
+			preferExternalThisGrant = true
+		}
+	}
+
+	if gatewayPending && !preferExternalThisGrant {
 		req := a.pendingGateway
 		a.pendingGateway = nil
 		return gatewaySessionID, req.initiator, req.notify, true
 	}
 
-	// External FIFO: grant to first external request.
-	if len(a.pendingExternal) > 0 {
+	// External FIFO: grant to first external request. Reached when
+	// (a) gateway has no pending request, or (b) fairness window
+	// rotated this grant to external.
+	if externalPending {
 		req := a.pendingExternal[0]
 		a.pendingExternal = a.pendingExternal[1:]
 		return req.sessionID, req.initiator, req.notify, true

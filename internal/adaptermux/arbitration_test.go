@@ -382,3 +382,108 @@ func TestArbitrator_DuplicateReplaceCarriesInitiator(t *testing.T) {
 		t.Fatal("timeout")
 	}
 }
+
+// --- F-4 fix: external fairness window (EBUSD-VERIFICATION-2026-05-10.md) ---
+
+// TestArbitrator_FairnessWindow_ExternalGetsEveryNthGrant verifies the
+// adaptive fairness rotation: when BOTH gateway and external have
+// continuously-renewed pending START requests, every FairnessRatio'th
+// grant goes to external FIFO instead of gateway. This bounds the
+// worst-case external START latency to ~FairnessRatio gateway-transaction
+// windows so ebusd can complete its initial scan despite continuous
+// semantic poller activity.
+func TestArbitrator_FairnessWindow_ExternalGetsEveryNthGrant(t *testing.T) {
+	arb := newArbitrator()
+
+	totalRounds := FairnessRatio * 3 // 3 full fairness cycles
+	gatewayGrants := 0
+	externalGrants := 0
+
+	for i := 0; i < totalRounds; i++ {
+		// Both gateway and external request — simulating continuous
+		// contention (gateway poller + ebusd initial scan).
+		gwCh := arb.requestStart(gatewaySessionID, 0x71)
+		extCh := arb.requestStart(1, 0x31)
+
+		sessionID, _, notify, granted := arb.tryGrant()
+		if !granted {
+			t.Fatalf("round %d: expected grant", i)
+		}
+
+		// Confirm + complete the grant so we can loop.
+		arb.confirmOwnership(sessionID, 0)
+		notify <- startResult{granted: true}
+
+		if sessionID == gatewaySessionID {
+			gatewayGrants++
+			// External must still be pending — cancel it before next
+			// iteration so requestStart's "one pending per session"
+			// invariant holds.
+			arb.cancelStart(1)
+			<-extCh
+		} else {
+			externalGrants++
+			// Gateway still pending — cancel it.
+			arb.cancelStart(gatewaySessionID)
+			<-gwCh
+		}
+
+		arb.releaseOwnership(sessionID)
+	}
+
+	// Expect exactly 3 external grants out of 12 total (every 4th).
+	wantExternal := totalRounds / FairnessRatio
+	wantGateway := totalRounds - wantExternal
+	if externalGrants != wantExternal {
+		t.Errorf("externalGrants = %d; want %d (1-in-%d fairness over %d rounds)",
+			externalGrants, wantExternal, FairnessRatio, totalRounds)
+	}
+	if gatewayGrants != wantGateway {
+		t.Errorf("gatewayGrants = %d; want %d", gatewayGrants, wantGateway)
+	}
+}
+
+// TestArbitrator_FairnessWindow_NoOpWhenNoExternal verifies that the
+// fairness rotation does NOT advance when no external session is
+// pending — gateway-priority remains the steady-state when running
+// standalone (no ebusd attached). Zero overhead in the common case.
+func TestArbitrator_FairnessWindow_NoOpWhenNoExternal(t *testing.T) {
+	arb := newArbitrator()
+
+	for i := 0; i < FairnessRatio*5; i++ {
+		gwCh := arb.requestStart(gatewaySessionID, 0x71)
+		sessionID, _, notify, granted := arb.tryGrant()
+		if !granted || sessionID != gatewaySessionID {
+			t.Fatalf("round %d: gateway must win every grant when no external pending; got sessionID=%d granted=%v", i, sessionID, granted)
+		}
+		arb.confirmOwnership(sessionID, 0)
+		notify <- startResult{granted: true}
+		<-gwCh
+		arb.releaseOwnership(sessionID)
+	}
+	// fairnessCounter must remain at 0 — never advanced since no
+	// external was ever pending.
+	if arb.fairnessCounter != 0 {
+		t.Errorf("fairnessCounter = %d; want 0 (no external pending = no rotation)", arb.fairnessCounter)
+	}
+}
+
+// TestArbitrator_FairnessWindow_GatewayAloneWhenExternalAbsent verifies
+// the inverse of the previous test: when only external is pending,
+// gateway-priority is structurally unreachable so external wins
+// immediately. (Sanity for the asymmetric branch.)
+func TestArbitrator_FairnessWindow_GatewayAloneWhenExternalAbsent(t *testing.T) {
+	arb := newArbitrator()
+
+	extCh := arb.requestStart(1, 0x31)
+	sessionID, _, notify, granted := arb.tryGrant()
+	if !granted || sessionID != 1 {
+		t.Fatalf("only external pending: want sessionID=1; got sessionID=%d granted=%v", sessionID, granted)
+	}
+	arb.confirmOwnership(sessionID, 0)
+	notify <- startResult{granted: true}
+	<-extCh
+	if arb.fairnessCounter != 0 {
+		t.Errorf("fairnessCounter = %d; want 0 (only-external grants don't advance the counter)", arb.fairnessCounter)
+	}
+}

@@ -2901,29 +2901,35 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 		// (no-grant) so the bus is released cleanly and the next
 		// tryGrantAndStart re-picks the session's current request.
 		if pending.req != nil && pending.req.cancelled.Load() {
+			// REVERTED in 0.6.6 (operator hand-off after the v0.6.5
+			// regression): previously this branch closed the upstream
+			// TCP to the adapter to "resync" after a cancelled bid's
+			// STARTED arrived. Live capture proved that reconnect
+			// produced a continuous 5-second cycle of "device invalid"
+			// / "signal lost" on ebusd's side and tore down the
+			// upstream every time any session replaced an in-flight
+			// START. The adapter does NOT need TCP resync on a
+			// cancelled-bid STARTED — the eBUS protocol is per-SYN
+			// stateless from the adapter's perspective; the next SYN
+			// boundary resets arbitration. The minimum-correct
+			// behaviour is to absorb the STARTED, never deliver it
+			// to the originating session, and leave the upstream and
+			// every other session alone.
+			//
+			// This is essentially the original spec for C4/R4:
+			// "convert STARTED to FAILED for cancelled requests"
+			// without any cross-cutting transport action.
 			m.pendingStart = nil
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
-			// Adapter resync (Codex P1 round 3 on PR #623): the
-			// STARTED we are consuming is a real adapter grant —
-			// the adapter believes the abandoned bid won the bus
-			// and is now driving its in-progress transaction state
-			// for that grant. Launching a fresh RequestStart on the
-			// same transport would put us one arbitration behind
-			// the adapter (mux thinks no owner, adapter still
-			// holding the cancelled session's grant). Mirror the
-			// stale-STARTED-absorb reconnect: close the upstream
-			// conn so readLoop's error handler invokes reconnect(),
-			// which fails/re-queues arbitration safely. Do NOT
-			// invoke tryGrantAndStart in-line — the reconnect path
-			// advances the queue.
 			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was replaced; forcing reconnect for adapter resync (C4/R4)", pending.sessionID)
+			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was cancelled/replaced; absorbed (C4/R4)", pending.sessionID)
 			// Best-effort send: the old notify channel is buffered
-			// to 1 and may already hold the replace's
-			// granted=false result, so a stale STARTED never blocks
-			// the readLoop here.
+			// to 1 and may already hold the replace's granted=false
+			// result. A late STARTED for a cancelled bid still
+			// resolves the channel cleanly when the read-side
+			// hasn't drained it yet.
 			select {
 			case pending.notify <- startResult{
 				granted:   false,
@@ -2932,15 +2938,11 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			}:
 			default:
 			}
-			m.connMu.Lock()
-			c := m.conn
-			m.connMu.Unlock()
-			if c != nil {
-				if err := c.Close(); err != nil {
-					m.logger.Printf("adaptermux: cancelled-STARTED reconnect close: %v", err)
-				} else {
-					m.logger.Printf("adaptermux: cancelled-STARTED triggered transport reconnect for adapter resync")
-				}
+			// Advance the queue if anything else is pending. The
+			// adapter is fine; eBUS arbitration is per-SYN; no
+			// transport-level action is required.
+			if m.arb.hasPending() {
+				m.tryGrantAndStart()
 			}
 			return
 		}

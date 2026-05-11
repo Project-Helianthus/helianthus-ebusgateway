@@ -3,6 +3,7 @@ package adaptermux
 import (
 	"context"
 	"errors"
+	"expvar"
 	"fmt"
 	"log"
 	"net"
@@ -75,6 +76,18 @@ type Config struct {
 	// gateway's own pattern.
 	ExternalSessionSYNGrace time.Duration
 
+	// LatencyHistogramReportInterval controls how often a single-line
+	// summary of the adaptermux_session_frame_latency_us_bucket_total
+	// expvar is emitted via the logger. Default: 60s. Set to a negative
+	// duration to disable the periodic emission entirely (still
+	// available via /debug/vars).
+	//
+	// This was added so the F-10 falsifying data is visible in
+	// `ha addons logs` without requiring an operator to wget
+	// /debug/vars from inside the addon container (per the batch-3
+	// side-observation in EBUSD-VERIFICATION-2026-05-11-batch3.md).
+	LatencyHistogramReportInterval time.Duration
+
 	// StartDeadline is the maximum time to wait for the adapter to
 	// respond with STARTED/FAILED after a START request. Default: 5s.
 	// If the adapter does not respond within this duration, the pending
@@ -124,6 +137,9 @@ func (c *Config) defaults() {
 		// probe. The wire phase is not advanced during gateway ownership,
 		// so there's no premature idle/WaitCmdAck issue.
 		c.IdleReleaseGrace = 200 * time.Millisecond
+	}
+	if c.LatencyHistogramReportInterval == 0 {
+		c.LatencyHistogramReportInterval = 60 * time.Second
 	}
 	if c.ExternalSessionSYNGrace == 0 {
 		// 2s covers a broadcast scan to address 0xFE (~25 responder
@@ -245,6 +261,17 @@ type Mux struct {
 	sessions   map[uint64]*session
 	sessionSeq atomic.Uint64
 
+	// sessionRemoteAddrs is a lock-free side index from session ID to
+	// the client's RemoteAddr string, written on AddSession and deleted
+	// on RemoveSession. It exists so code paths that already hold
+	// stateMu (e.g. onSYNLocked) can label diagnostic logs with the
+	// remote endpoint without acquiring sessionsMu — that would invert
+	// the established sessionsMu → stateMu lock order and risk ABBA
+	// deadlock with doSend. Reads use sync.Map.Load and are safe from
+	// any goroutine; writes happen under sessionsMu in AddSession /
+	// RemoveSession but do not require any extra synchronization.
+	sessionRemoteAddrs sync.Map // key uint64 sessionID → value string remote addr
+
 	// Active path channels.
 	activeSendCh chan sendRequest
 	activeCh     chan activeEvent // capacity 4096: unified byte+error channel (FIFO ordered)
@@ -347,6 +374,11 @@ func (m *Mux) Start(ctx context.Context) error {
 
 	m.wg.Add(1)
 	go m.sendLoop() // goroutine: processes send requests from active path + sessions
+
+	if m.cfg.LatencyHistogramReportInterval > 0 {
+		m.wg.Add(1)
+		go m.latencyHistogramReportLoop() // goroutine: periodic dump of F-10 histogram
+	}
 
 	m.emitPassive(PassiveEvent{
 		Kind:       PassiveEventConnected,
@@ -1749,7 +1781,8 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 			elapsed := time.Since(m.busOwned)
 			if elapsed >= m.cfg.ExternalSessionSYNGrace {
 				releaseNow = true
-				m.logger.Printf("adaptermux: external session %d SYN-timeout grace exceeded (%v ≥ %v) — releasing", ownerID, elapsed, m.cfg.ExternalSessionSYNGrace)
+				m.logger.Printf("adaptermux: external session %d remote=%s SYN-timeout grace exceeded (%v ≥ %v) — releasing",
+					ownerID, m.sessionRemoteAddrOrUnknown(ownerID), elapsed, m.cfg.ExternalSessionSYNGrace)
 			}
 			// Otherwise: hold ownership. The external session's
 			// protocol is still mid-frame from its own perspective;
@@ -1757,7 +1790,8 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 			// the wire phase or trigger MaxOwnershipDuration.
 		}
 		if releaseNow {
-			m.logger.Printf("adaptermux: ownership released for session %d (SYN timeout) (AM6)", ownerID)
+			m.logger.Printf("adaptermux: ownership released for session %d remote=%s (SYN timeout) (AM6)",
+				ownerID, m.sessionRemoteAddrOrUnknown(ownerID))
 			m.arb.releaseOwnership(ownerID)
 			if ownerID == gatewaySessionID && m.gatewayTxnActive {
 				m.gatewayTxnActive = false
@@ -1784,7 +1818,8 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		m.activeTxn.bytesDeliveredToActive.Load() > 0
 	if phaseEvent == wirePhaseEventSYNIdle && hasOwner && !suppressIdleRelease {
 		if time.Since(m.busOwned) > m.cfg.IdleReleaseGrace {
-			m.logger.Printf("adaptermux: ownership released for session %d (idle grace expired) (AM6)", ownerID)
+			m.logger.Printf("adaptermux: ownership released for session %d remote=%s (idle grace expired) (AM6)",
+				ownerID, m.sessionRemoteAddrOrUnknown(ownerID))
 			m.arb.releaseOwnership(ownerID)
 			// Codex: clear gatewayTxnActive here too — the "SYN-before-read"
 			// guard above only clears when bytesRead > 0, so an abandoned
@@ -2831,6 +2866,52 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 
 	sendOK = true
 	return nil
+}
+
+// latencyHistogramReportLoop periodically emits a single-line summary
+// of the F-10 per-session-frame pipeline latency histogram to the
+// logger. The bucket counters themselves remain authoritative on
+// /debug/vars; this loop exists so the same data is visible in
+// `ha addons logs` for ad-hoc operator inspection — the batch-3
+// EBUSD-VERIFICATION audit flagged that grepping the addon log for
+// histogram data returned nothing despite the data being live in
+// memory.
+//
+// Cadence is governed by Config.LatencyHistogramReportInterval
+// (default 60s). The loop exits when m.ctx is cancelled.
+//
+// The cumulative semantics of the histogram are preserved in the log
+// surface: each `le_*` figure is the count of frames at or under the
+// labelled upper bound; `gt_100000` is the non-cumulative overflow.
+// Operators can therefore compute "frames over the 25 ms ebusd
+// budget" as `(le_100000 + gt_100000) - le_25000` without leaving
+// the addon log.
+func (m *Mux) latencyHistogramReportLoop() {
+	defer m.wg.Done()
+	ticker := time.NewTicker(m.cfg.LatencyHistogramReportInterval)
+	defer ticker.Stop()
+	bucketNames := []string{"le_1000", "le_5000", "le_25000", "le_100000", "gt_100000"}
+	readBucket := func(name string) int64 {
+		if v := adaptermuxSessionFrameLatencyBucketTotal.Get(name); v != nil {
+			if ev, ok := v.(*expvar.Int); ok {
+				return ev.Value()
+			}
+		}
+		return 0
+	}
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			vals := make([]string, 0, len(bucketNames))
+			for _, name := range bucketNames {
+				vals = append(vals, fmt.Sprintf("%s=%d", name, readBucket(name)))
+			}
+			m.logger.Printf("adaptermux: session frame latency histogram (cumulative le_*, overflow gt_*): %s",
+				strings.Join(vals, " "))
+		}
+	}
 }
 
 // emitPassive delivers a passive event to the callback.

@@ -1,10 +1,13 @@
 package adaptermux
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2385,4 +2388,62 @@ func TestSYNTimeoutRelease_BranchesOnOwnerIdentity(t *testing.T) {
 			t.Fatalf("external owner SYN-timeout past grace: ownership must release, still owned")
 		}
 	})
+}
+
+// TestSessionRemoteAddrSideIndex verifies the lock-free RemoteAddr
+// index stays in sync with AddSession/RemoveSession and that
+// sessionRemoteAddrOrUnknown returns the recorded value (or
+// "unknown" after removal).
+func TestSessionRemoteAddrSideIndex(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	clientA, serverA := net.Pipe()
+	defer closeOrLog(t, clientA, "clientA")
+	idA := mux.AddSession(serverA)
+	if idA == 0 {
+		t.Fatalf("AddSession returned 0")
+	}
+	addrA := mux.sessionRemoteAddrOrUnknown(idA)
+	if addrA == "unknown" || addrA == "" {
+		t.Fatalf("expected non-unknown RemoteAddr for active session, got %q", addrA)
+	}
+
+	mux.RemoveSession(idA)
+	if got := mux.sessionRemoteAddrOrUnknown(idA); got != "unknown" {
+		t.Errorf("after RemoveSession: sessionRemoteAddrOrUnknown(%d) = %q, want %q", idA, got, "unknown")
+	}
+	if got := mux.sessionRemoteAddrOrUnknown(99999); got != "unknown" {
+		t.Errorf("never-seen session: sessionRemoteAddrOrUnknown(99999) = %q, want %q", got, "unknown")
+	}
+}
+
+// TestLatencyHistogramReportLoop_EmitsLine verifies the periodic
+// histogram log loop emits the expected log line shape. We don't
+// inspect content beyond the marker prefix — the bucket-counter
+// rendering is covered by TestRecordLatencyBuckets_CumulativeSemantics
+// in session_test.go.
+func TestLatencyHistogramReportLoop_EmitsLine(t *testing.T) {
+	mux, _, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	var logBuf bytes.Buffer
+	origLogger := mux.logger
+	mux.logger = log.New(&logBuf, "", 0)
+	defer func() { mux.logger = origLogger }()
+
+	mux.wg.Add(1)
+	mux.cfg.LatencyHistogramReportInterval = 25 * time.Millisecond
+	go mux.latencyHistogramReportLoop()
+
+	// Pump a sample so the histogram has non-trivial content.
+	recordLatencyBuckets(500)
+	recordLatencyBuckets(50_000)
+
+	// Give the ticker at least 2 cycles to fire.
+	time.Sleep(80 * time.Millisecond)
+
+	if !strings.Contains(logBuf.String(), "session frame latency histogram") {
+		t.Fatalf("expected histogram report log line, got:\n%s", logBuf.String())
+	}
 }

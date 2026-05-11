@@ -2309,3 +2309,80 @@ scan:
 		t.Fatalf("reset error event lost under byte flood (preLen=%d, scanned=%d)", preLen, eventsAfterReset)
 	}
 }
+
+// TestSYNTimeoutRelease_BranchesOnOwnerIdentity pins the F-10v2 fix
+// (EBUSD-VERIFICATION-2026-05-11-batch3.md): a wirePhaseEventSYNTimeout
+// must release ownership IMMEDIATELY for the gateway, but only after
+// ExternalSessionSYNGrace for an external session.
+//
+// Background: the wire-phase machine emits SYN-timeout when SYN appears
+// during WaitCmdAck/CollectRequest. For the gateway's tight B524
+// protocol that signal is reliable ("txn died"). For external clients
+// like ebusd running broadcast scans, the protocol legitimately
+// produces multi-second gaps that look identical to SYN-timeout but
+// are not transaction death. Without this branch the mux yanked
+// ownership from ebusd mid-frame (80 false-positive releases vs 0 for
+// the gateway in a 5000-line capture).
+func TestSYNTimeoutRelease_BranchesOnOwnerIdentity(t *testing.T) {
+	t.Run("gateway_owner_releases_immediately", func(t *testing.T) {
+		mux, _, _, cleanup := newP3TestMux(t)
+		defer cleanup()
+		mux.cfg.ExternalSessionSYNGrace = 2 * time.Second
+
+		// Grant the bus to the gateway and pretend a request was just
+		// dispatched (busOwned = now).
+		mux.stateMu.Lock()
+		mux.arb.confirmOwnership(gatewaySessionID, 0x31)
+		mux.busOwned = time.Now()
+		mux.gatewayTxnActive = true
+		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, gatewaySessionID, true, time.Now())
+		_, _, owned := mux.arb.owner()
+		mux.stateMu.Unlock()
+
+		if owned {
+			t.Fatalf("gateway-owned SYN-timeout: ownership must release immediately, still owned")
+		}
+	})
+
+	t.Run("external_owner_held_below_grace", func(t *testing.T) {
+		mux, _, _, cleanup := newP3TestMux(t)
+		defer cleanup()
+		mux.cfg.ExternalSessionSYNGrace = 2 * time.Second
+
+		const extSessionID = uint64(42)
+		mux.stateMu.Lock()
+		mux.arb.confirmOwnership(extSessionID, 0x31)
+		mux.busOwned = time.Now() // just acquired → elapsed ~0
+		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, time.Now())
+		ownerID, _, owned := mux.arb.owner()
+		mux.stateMu.Unlock()
+
+		if !owned {
+			t.Fatalf("external owner SYN-timeout: ownership must be held until grace expires (got owned=false at elapsed≈0)")
+		}
+		if ownerID != extSessionID {
+			t.Fatalf("external owner SYN-timeout: ownerID changed to %d (want %d)", ownerID, extSessionID)
+		}
+	})
+
+	t.Run("external_owner_released_after_grace", func(t *testing.T) {
+		mux, _, _, cleanup := newP3TestMux(t)
+		defer cleanup()
+		// Use a small grace so the test isn't slow.
+		mux.cfg.ExternalSessionSYNGrace = 30 * time.Millisecond
+
+		const extSessionID = uint64(43)
+		mux.stateMu.Lock()
+		mux.arb.confirmOwnership(extSessionID, 0x31)
+		// Pretend the bus was acquired 100ms ago — well past the
+		// 30ms grace.
+		mux.busOwned = time.Now().Add(-100 * time.Millisecond)
+		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, time.Now())
+		_, _, owned := mux.arb.owner()
+		mux.stateMu.Unlock()
+
+		if owned {
+			t.Fatalf("external owner SYN-timeout past grace: ownership must release, still owned")
+		}
+	})
+}

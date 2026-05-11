@@ -54,6 +54,27 @@ type Config struct {
 	// idle SYN can release ownership. Default: 200ms.
 	IdleReleaseGrace time.Duration
 
+	// ExternalSessionSYNGrace is the grace period applied to SYN-timeout
+	// events (wirePhaseEventSYNTimeout) when the bus owner is an external
+	// session, rather than the gateway itself. Default: 2s.
+	//
+	// The wire-phase machine emits SYN-timeout when SYN appears during
+	// the WaitCmdAck/CollectRequest phase. For the gateway's own tight
+	// protocol (B524 directed reads with no inter-byte gap) that signal
+	// genuinely means "txn died". For external sessions like ebusd
+	// running broadcast scans (0xFE address), the protocol naturally
+	// has multi-second gaps while each slave responds in turn — those
+	// inter-slave gaps look identical to SYN-timeout but are NOT a dead
+	// transaction.
+	//
+	// F-10v2 (EBUSD-VERIFICATION-2026-05-11-batch3.md): immediate-
+	// release on SYN-timeout fired 80 times against ebusd's session vs
+	// 0 times against the gateway in a 5000-line window. Adding a grace
+	// window for external sessions decouples the per-protocol timing
+	// expectations from the immediate-release policy that fits the
+	// gateway's own pattern.
+	ExternalSessionSYNGrace time.Duration
+
 	// StartDeadline is the maximum time to wait for the adapter to
 	// respond with STARTED/FAILED after a START request. Default: 5s.
 	// If the adapter does not respond within this duration, the pending
@@ -103,6 +124,17 @@ func (c *Config) defaults() {
 		// probe. The wire phase is not advanced during gateway ownership,
 		// so there's no premature idle/WaitCmdAck issue.
 		c.IdleReleaseGrace = 200 * time.Millisecond
+	}
+	if c.ExternalSessionSYNGrace == 0 {
+		// 2s covers a broadcast scan to address 0xFE (~25 slave
+		// responses × ~30-50ms each) plus arbitration jitter, while
+		// still bounding the worst-case idle hold. Calibrated against
+		// the 13:46:13 ebusd scan trace in
+		// _work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-11-batch3.md:
+		// the protocol gap between ebusd's broadcast 0xFE and the
+		// last slave's response was ~190ms in that capture; 2s leaves
+		// generous headroom for buses with more participants.
+		c.ExternalSessionSYNGrace = 2 * time.Second
 	}
 	if c.StartDeadline <= 0 {
 		c.StartDeadline = 5 * time.Second
@@ -1694,12 +1726,43 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// with doSend which acquires sessionsMu→stateMu.
 
 	// Release ownership if SYN timeout.
+	//
+	// F-10v2 (EBUSD-VERIFICATION-2026-05-11-batch3.md): branch the
+	// SYN-timeout release on owner identity.
+	//
+	//   - Gateway-owned: SYN during WaitCmdAck/CollectRequest genuinely
+	//     means the gateway's B524 directed-read transaction died. The
+	//     gateway's protocol pattern has no legitimate inter-byte gap,
+	//     so SYN-timeout is a reliable signal. Release immediately.
+	//   - External-session-owned: an external client (e.g. ebusd
+	//     running a broadcast scan to 0xFE) legitimately produces
+	//     inter-slave-response gaps that the wire-phase machine
+	//     reports as SYN-timeout. Treat those as soft idle and only
+	//     release if the gap exceeds ExternalSessionSYNGrace (default
+	//     2s). Without this branch, the mux yanked ownership mid-
+	//     frame from ebusd, producing the read-timeout cascade
+	//     observed in the batch-3 trace (80 SYN-timeout releases vs
+	//     0 for the gateway in the same window).
 	if phaseEvent == wirePhaseEventSYNTimeout && hasOwner {
-		m.logger.Printf("adaptermux: ownership released for session %d (SYN timeout) (AM6)", ownerID)
-		m.arb.releaseOwnership(ownerID)
-		if ownerID == gatewaySessionID && m.gatewayTxnActive {
-			m.gatewayTxnActive = false
-			m.recordGatewayInactive(ReasonSYNTimeout)
+		releaseNow := ownerID == gatewaySessionID
+		if !releaseNow {
+			elapsed := time.Since(m.busOwned)
+			if elapsed >= m.cfg.ExternalSessionSYNGrace {
+				releaseNow = true
+				m.logger.Printf("adaptermux: external session %d SYN-timeout grace exceeded (%v ≥ %v) — releasing", ownerID, elapsed, m.cfg.ExternalSessionSYNGrace)
+			}
+			// Otherwise: hold ownership. The external session's
+			// protocol is still mid-frame from its own perspective;
+			// the next legitimate adapter event will either advance
+			// the wire phase or trigger MaxOwnershipDuration.
+		}
+		if releaseNow {
+			m.logger.Printf("adaptermux: ownership released for session %d (SYN timeout) (AM6)", ownerID)
+			m.arb.releaseOwnership(ownerID)
+			if ownerID == gatewaySessionID && m.gatewayTxnActive {
+				m.gatewayTxnActive = false
+				m.recordGatewayInactive(ReasonSYNTimeout)
+			}
 		}
 	}
 

@@ -1329,54 +1329,54 @@ func (m *Mux) readLoop() {
 			// `pendingStart == nil` (no bid at all) is similarly a
 			// pure passive observation: deliver to all sessions +
 			// emit passive.
-			m.stateMu.Lock()
-			var activeBidderSessionID uint64
-			var hasActiveBidder bool
-			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
-				activeBidderSessionID = m.pendingStart.sessionID
-				hasActiveBidder = true
-			}
-			m.stateMu.Unlock()
-
 			// Phantom-collision filter (proxy-bug C5 / R5): compute
-			// BEFORE handleArbitrationResponse so the bidder's
-			// notify channel does not carry the fictitious byte
-			// either. handleArbitrationResponse forwards `data` to
-			// the active bidder's startResult.initiator, which the
-			// bidder's handleStart goroutine then writes through
-			// deliverFailed → ENHResFailed(initiator). If we
-			// filtered only the synthesis-to-other-sessions path,
-			// the active bidder still saw the phantom byte in its
-			// own FAILED response — defeating the filter for the
-			// exact session that triggered the arbitration. (Codex
-			// P2 round 5 on PR #623.)
+			// the predicate result BEFORE we take stateMu so the
+			// (potentially operator-supplied) callback never runs
+			// under lock. The IsKnownInitiatorByte predicate is
+			// pure / read-only by contract, so this snapshot is
+			// safe regardless of any concurrent state change.
 			isPhantom := false
 			if m.cfg.IsKnownInitiatorByte != nil && !m.cfg.IsKnownInitiatorByte(event.Data) {
 				isPhantom = true
 				m.logger.Printf("adaptermux: phantom FAILED data=0x%02X (not a known bus initiator) — substituting bidder's own initiator on notify", event.Data)
 			}
 
-			// Choose the byte we propagate into the bidder's notify
-			// channel. For a real winner this is `event.Data`. For a
-			// phantom we substitute the bidder's own pending
-			// initiator: the bidder learns "you lost" but does not
-			// learn a fictitious winner address. When there's no
-			// active bidder (no pending start), this fallback is
-			// unused.
+			// Single stateMu critical section that fuses three
+			// previously-separate steps and closes the round-6
+			// unlock/relock race (Codex P2 on PR #624). Order matters:
+			//
+			//   - Bump lastWireActivity FIRST so any concurrent
+			//     requestStartForSession that grabs stateMu after
+			//     this section observes the fresh timestamp and does
+			//     NOT take the idle-kick path. (Codex P2 round 6
+			//     on PR #623 + Codex P2 on PR #624.)
+			//
+			//   - Snapshot the active bidder so the FAILED routing
+			//     below can decide where to deliver the winner byte
+			//     and whether to suppress the bidder's own notify.
+			//     `pendingStartAbsorb > 0` indicates a stale FAILED
+			//     for a cancelled bid; `pendingStart == nil` is a
+			//     pure passive observation.
+			//
+			//   - Substitute the phantom-byte → bidder's own
+			//     initiator atomically with the snapshot so a
+			//     concurrent re-submit cannot move the pointer
+			//     between read and use.
+			//
+			// All three reads happen under one acquire/release of
+			// stateMu — no goroutine can interleave between the
+			// bump and the snapshot.
 			notifyByte := event.Data
-			// Bump lastWireActivity AND substitute the phantom byte
-			// in one stateMu critical section. The FAILED event
-			// represents a real winner byte that the adapter
-			// consumed from the wire — bumping lastWireActivity
-			// keeps the C1 fast path / requestStartForSession
-			// enqueue-kick from treating the wire as idle during
-			// the third-party transaction that follows. (Codex P2
-			// round 6 on PR #623.)
+			var activeBidderSessionID uint64
+			var hasActiveBidder bool
 			m.stateMu.Lock()
 			m.lastWireActivity = time.Now()
-			if isPhantom && hasActiveBidder &&
-				m.pendingStart != nil && m.pendingStart.sessionID == activeBidderSessionID {
-				notifyByte = m.pendingStart.initiator
+			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
+				activeBidderSessionID = m.pendingStart.sessionID
+				hasActiveBidder = true
+				if isPhantom && m.pendingStart.sessionID == activeBidderSessionID {
+					notifyByte = m.pendingStart.initiator
+				}
 			}
 			m.stateMu.Unlock()
 

@@ -1122,12 +1122,16 @@ func (m *Mux) readLoop() {
 						m.deliverToSessions(event.Data, 0, false, time.Now())
 					} else {
 						// External session was bidder but lost.
-						// Skip the loser (its handleStart will
-						// receive ENHResFailed via the failed
-						// pending notify channel — synthesizing
-						// RECEIVED(winner) here would race it on
-						// the same session). Other external
-						// sessions still need the byte.
+						// Skip the loser: handleArbitrationResponse's
+						// mismatch path now notifies the bidder with
+						// initiator=event.Data (the third-party
+						// winner) — see Codex P2 round 7 fix. The
+						// bidder's handleStart goroutine therefore
+						// delivers ENHResFailed(winner_byte), which
+						// conveys the actual wire owner and keeps the
+						// bidder's bus reconstructor in sync. A
+						// synthesized RECEIVED(winner) here would
+						// race that frame on the same session.
 						m.deliverWinnerByteToOtherSessions(event.Data, startedBidderSessionID)
 					}
 					// Third-party winner byte is a true passive
@@ -2467,9 +2471,18 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			}
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: STARTED mismatch: got initiator 0x%02X, pending 0x%02X — failing pending session %d (AM56)", data, pending.initiator, pending.sessionID)
+			// Notify the bidder with the THIRD-PARTY winner byte (`data`),
+			// not the bidder's own `pending.initiator`. This matches the
+			// regular FAILED-path semantics below: the bidder's handleStart
+			// goroutine forwards `result.initiator` to deliverFailed, so the
+			// external session sees ENHResFailed(winner_byte) and learns
+			// the actual wire owner. Without this, the bidder would only
+			// learn its own bid byte from the failure and its bus
+			// reconstructor would misread the next target/PB byte as the
+			// frame source (Codex P2 round 7 on PR #620).
 			pending.notify <- startResult{
 				granted:   false,
-				initiator: pending.initiator,
+				initiator: data,
 				err:       fmt.Errorf("adaptermux: STARTED mismatch (got 0x%02X, want 0x%02X)", data, pending.initiator),
 			}
 			// After resolving, check if more requests are pending.

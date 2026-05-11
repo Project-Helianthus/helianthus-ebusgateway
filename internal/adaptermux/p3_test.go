@@ -1399,6 +1399,12 @@ func TestHandleArbitrationResponse_StaleStartedFailsPending(t *testing.T) {
 	}
 
 	// AM56: FAILED must have been delivered on the notify channel.
+	// Codex P2 round 7 on PR #620: result.initiator carries the
+	// THIRD-PARTY winner byte (the value observed on the wire), not the
+	// pending bidder's own initiator. This matches normal FAILED
+	// semantics so the bidder's handleStart goroutine can deliver
+	// ENHResFailed(winner_byte), giving the external session enough
+	// information to keep its bus reconstructor in sync.
 	select {
 	case result := <-ch:
 		if result.granted {
@@ -1407,8 +1413,8 @@ func TestHandleArbitrationResponse_StaleStartedFailsPending(t *testing.T) {
 		if result.err == nil {
 			t.Fatal("expected error on STARTED mismatch")
 		}
-		if result.initiator != 0x71 {
-			t.Fatalf("result.initiator = 0x%02X, want 0x71 (pending initiator)", result.initiator)
+		if result.initiator != 0x31 {
+			t.Fatalf("result.initiator = 0x%02X, want 0x31 (third-party winner observed on wire, Codex P2 round 7 PR #620)", result.initiator)
 		}
 	default:
 		t.Fatal("expected result on notify channel after STARTED mismatch")

@@ -854,7 +854,7 @@ func TestSession_LegitimateENHClientNotClosedByDiagnostic(t *testing.T) {
 // when the mux processes a StreamEventStarted (or equivalent), the
 // arbitration-winner byte is delivered to external sessions as a passive
 // observation. Without this, external bus monitors (e.g. ebusd) never see
-// gateway-initiated master wins on the wire — the ENH adapter consumes
+// gateway-initiated arbitration wins on the wire — the ENH adapter consumes
 // the byte as a control event — and their bus parsers desynchronize from
 // physical wire reality. (EBUSD-VERIFICATION-2026-05-10.md F-9/F-10
 // root-cause discovery.)

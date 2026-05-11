@@ -1006,11 +1006,11 @@ func (m *Mux) readLoop() {
 			// of echoing it via ResReceived. Without this synthesis,
 			// external sessions like ebusd see the gateway's
 			// transaction stream as `... SYN, 0x15 (target), 0xB5,
-			// 0x24, ...` with no master-byte boundary. Their bus
+			// 0x24, ...` with no initiator-byte boundary. Their bus
 			// parser then discards the frame as malformed (0x15 isn't
-			// a valid master byte — low nibble 5 isn't a valid
+			// a valid initiator byte — low nibble 5 isn't a valid
 			// arbitration nibble) and the gateway's traffic vanishes
-			// from their grab buffer / master enumeration. Worse,
+			// from their grab buffer / initiator enumeration. Worse,
 			// their bus state machine thinks the bus is idle when it
 			// isn't, leading to mis-timed bid attempts and the
 			// "won in invalid state" + read-timeout cascade seen in
@@ -1029,7 +1029,7 @@ func (m *Mux) readLoop() {
 		case transport.StreamEventFailed:
 			m.logger.Printf("adaptermux: readLoop got StreamEventFailed data=0x%02X", event.Data)
 			m.handleArbitrationResponse(false, event.Data)
-			// Symmetric synthesis: when another master beats our
+			// Symmetric synthesis: when another initiator beats our
 			// gateway's bid, the winner byte was on the wire but
 			// the adapter consumed it as a FAILED control event.
 			// External sessions need to see the winner byte to

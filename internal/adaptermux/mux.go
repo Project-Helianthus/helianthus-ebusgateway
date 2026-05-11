@@ -1066,7 +1066,9 @@ func (m *Mux) readLoop() {
 				if startedBidderSessionID == gatewaySessionID {
 					// Gateway won — every external session needs
 					// the byte; no per-session control event
-					// competes.
+					// competes. Passive observers are intentionally
+					// NOT notified (gateway-owned bytes are
+					// suppressed in onReceived too — consistent).
 					m.deliverToSessions(event.Data, gatewaySessionID, true, time.Now())
 				} else {
 					// External session won — skip the winner (its
@@ -1078,6 +1080,19 @@ func (m *Mux) readLoop() {
 					// it they'd misread the next target/PB byte as
 					// the frame source. (Codex P2 round 3.)
 					m.deliverWinnerByteToOtherSessions(event.Data, startedBidderSessionID)
+					// Passive observer pipeline also needs the
+					// non-gateway winner byte — the PassiveTransport
+					// / bus reconstructor otherwise sees the next
+					// target/PB byte as the frame source for
+					// externally-owned frames. onReceived's normal
+					// PassiveEventSymbol path is bypassed for
+					// StreamEventStarted, so synthesize here.
+					// (Codex P2 round 5 on PR #620.)
+					m.emitPassive(PassiveEvent{
+						Kind:       PassiveEventSymbol,
+						Symbol:     event.Data,
+						ObservedAt: time.Now(),
+					})
 				}
 			}
 			continue
@@ -1133,6 +1148,19 @@ func (m *Mux) readLoop() {
 				m.deliverToSessions(event.Data, 0, false, time.Now())
 			} else if externalBidderValid {
 				m.deliverWinnerByteToOtherSessions(event.Data, externalBidderSessionID)
+			}
+			// FAILED always means a non-gateway initiator won the
+			// arbitration (gateway-win produces STARTED, not FAILED).
+			// Emit the winner byte to passive observers so the bus
+			// reconstructor sees the correct frame source for the
+			// third-party transaction that's about to flow through
+			// onReceived. (Codex P2 round 5 on PR #620.)
+			if gatewayWasBidder || externalBidderValid {
+				m.emitPassive(PassiveEvent{
+					Kind:       PassiveEventSymbol,
+					Symbol:     event.Data,
+					ObservedAt: time.Now(),
+				})
 			}
 			continue
 		case transport.StreamEventReset:

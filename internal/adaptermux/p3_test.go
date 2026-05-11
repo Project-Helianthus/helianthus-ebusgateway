@@ -2421,6 +2421,28 @@ func TestSessionRemoteAddrSideIndex(t *testing.T) {
 	}
 }
 
+// syncBuffer is a goroutine-safe wrapper around bytes.Buffer for use
+// with log.Logger in concurrent tests. log.Logger holds its mutex
+// across each Write call, but the test goroutine reading the buffer
+// concurrently with the loop goroutine's writes still needs explicit
+// synchronization (CI's -race detector flags the bare bytes.Buffer).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // TestLatencyHistogramReportLoop_EmitsLine verifies the periodic
 // histogram log loop emits the expected log line shape. We don't
 // inspect content beyond the marker prefix — the bucket-counter
@@ -2430,7 +2452,7 @@ func TestLatencyHistogramReportLoop_EmitsLine(t *testing.T) {
 	mux, _, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	origLogger := mux.logger
 	mux.logger = log.New(&logBuf, "", 0)
 	defer func() { mux.logger = origLogger }()

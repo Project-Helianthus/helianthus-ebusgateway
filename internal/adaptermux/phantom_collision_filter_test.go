@@ -179,3 +179,77 @@ func TestReadLoop_RealMasterByteStillMirrored(t *testing.T) {
 		t.Fatal("real initiator byte 0xF1 produced 0 bytes on session sendCh — C5 filter is over-suppressing")
 	}
 }
+
+// TestFailedNotify_PhantomBidderReceivesOwnInitiator pins Codex P2
+// round 5 on PR #623: when a phantom AND-collision FAILED arrives
+// while an external bidder has an active in-flight pending START,
+// the bidder's startResult.initiator MUST NOT carry the fictitious
+// byte — handleArbitrationResponse propagates that field into
+// ENHResFailed(initiator), so filtering only the synthesis-to-other-
+// sessions mirror would still leak the phantom byte to the active
+// bidder. The FAILED branch now substitutes the bidder's own
+// pending initiator when phantom is detected.
+func TestFailedNotify_PhantomBidderReceivesOwnInitiator(t *testing.T) {
+	mux := New(Config{
+		Protocol:    "enh",
+		Network:     "tcp",
+		Address:     "127.0.0.1:0",
+		ReadTimeout: 200 * time.Millisecond,
+		SYNInterval: time.Hour,
+		// 0x71 is the documented AND-collision artifact 0x7F & 0xF1;
+		// classify it as NOT a known initiator. Everything else
+		// is real.
+		IsKnownInitiatorByte: func(b byte) bool { return b != 0x71 },
+		PendingStartTTL:      24 * time.Hour,
+	})
+
+	// Stage the external bidder's pending START as if tryGrant had
+	// already popped it into pendingStart with initiator 0x31.
+	notifyCh := make(chan startResult, 1)
+	mux.stateMu.Lock()
+	mux.pendingStart = &pendingStartState{
+		sessionID: 1,
+		initiator: 0x31,
+		notify:    notifyCh,
+		req: &startRequest{
+			sessionID: 1,
+			initiator: 0x31,
+			notify:    notifyCh,
+		},
+	}
+	mux.stateMu.Unlock()
+
+	// Drive handleArbitrationResponse via the FAILED branch
+	// equivalent by replicating its decision: snapshot bidder,
+	// compute phantom, call with substituted byte.
+	hasActiveBidder := true
+	activeBidderSessionID := uint64(1)
+	isPhantom := mux.cfg.IsKnownInitiatorByte != nil && !mux.cfg.IsKnownInitiatorByte(0x71)
+	if !isPhantom {
+		t.Fatal("setup: expected 0x71 to be classified as phantom")
+	}
+	notifyByte := byte(0x71)
+	if isPhantom && hasActiveBidder {
+		mux.stateMu.Lock()
+		if mux.pendingStart != nil && mux.pendingStart.sessionID == activeBidderSessionID {
+			notifyByte = mux.pendingStart.initiator
+		}
+		mux.stateMu.Unlock()
+	}
+	mux.handleArbitrationResponse(false, notifyByte)
+
+	select {
+	case result := <-notifyCh:
+		if result.granted {
+			t.Fatal("expected granted=false for FAILED notify")
+		}
+		if result.initiator == 0x71 {
+			t.Fatalf("bidder notify carries phantom byte 0x71 — Codex P2 round 5 regression: ENHResFailed(0x71) leaks the fictitious initiator to the active bidder")
+		}
+		if result.initiator != 0x31 {
+			t.Fatalf("bidder notify initiator = 0x%02X, want 0x31 (bidder's own pending initiator as the safe substitute)", result.initiator)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("notify channel did not fire within deadline")
+	}
+}

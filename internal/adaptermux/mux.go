@@ -1327,25 +1327,41 @@ func (m *Mux) readLoop() {
 			}
 			m.stateMu.Unlock()
 
-			m.handleArbitrationResponse(false, event.Data)
-
-			// Phantom-collision filter (proxy-bug C5 / R5): when two
-			// real initiators arbitrate, the wire byte is the bit-wise
-			// AND of their addresses and can land on a value that is
-			// NOT itself a physically-present initiator (e.g. 0x7F &
-			// 0xF1 = 0x71 on a bus with initiators at 0x7F + 0xF1 + 0x03
-			// + 0x10 but NOT 0x71). Mirror clients (ebusd) treat the
-			// byte as a fictitious bus initiator and pollute their
-			// passive view. If the operator-supplied predicate
-			// reports the byte is not a known initiator, skip the
-			// mirror delivery to external sessions; the passive emit
-			// and the error logging still fire so observability
-			// stays complete.
+			// Phantom-collision filter (proxy-bug C5 / R5): compute
+			// BEFORE handleArbitrationResponse so the bidder's
+			// notify channel does not carry the fictitious byte
+			// either. handleArbitrationResponse forwards `data` to
+			// the active bidder's startResult.initiator, which the
+			// bidder's handleStart goroutine then writes through
+			// deliverFailed → ENHResFailed(initiator). If we
+			// filtered only the synthesis-to-other-sessions path,
+			// the active bidder still saw the phantom byte in its
+			// own FAILED response — defeating the filter for the
+			// exact session that triggered the arbitration. (Codex
+			// P2 round 5 on PR #623.)
 			isPhantom := false
 			if m.cfg.IsKnownInitiatorByte != nil && !m.cfg.IsKnownInitiatorByte(event.Data) {
 				isPhantom = true
-				m.logger.Printf("adaptermux: suppressing mirror delivery for phantom FAILED data=0x%02X (not a known bus initiator)", event.Data)
+				m.logger.Printf("adaptermux: phantom FAILED data=0x%02X (not a known bus initiator) — substituting bidder's own initiator on notify", event.Data)
 			}
+
+			// Choose the byte we propagate into the bidder's notify
+			// channel. For a real winner this is `event.Data`. For a
+			// phantom we substitute the bidder's own pending
+			// initiator: the bidder learns "you lost" but does not
+			// learn a fictitious winner address. When there's no
+			// active bidder (no pending start), this fallback is
+			// unused.
+			notifyByte := event.Data
+			if isPhantom && hasActiveBidder {
+				m.stateMu.Lock()
+				if m.pendingStart != nil && m.pendingStart.sessionID == activeBidderSessionID {
+					notifyByte = m.pendingStart.initiator
+				}
+				m.stateMu.Unlock()
+			}
+
+			m.handleArbitrationResponse(false, notifyByte)
 
 			// Synthesize the winner byte:
 			//   - No active bidder (absorbed-stale OR no pending):
@@ -1445,16 +1461,26 @@ func (m *Mux) onReceived(symbol byte) {
 
 	ownerID, _, hasOwner := m.arb.owner()
 
-	// Track wire activity for the inter-byte-gap measurement that drives
-	// SYN-timeout / idle-release decisions for external sessions. Every
-	// non-SYN byte resets the activity clock, so a long-running external
-	// transaction with real inter-responder traffic does not get torn
-	// down purely because the grant itself is old.
+	// Track wire activity for two purposes:
+	//   1. F-10v2 (PR #621): inter-byte-gap measurement that drives
+	//      SYN-timeout / idle-release decisions for external owners.
+	//      Every non-SYN byte resets the activity clock, so a long-
+	//      running external transaction with real inter-responder
+	//      traffic does not get torn down purely because the grant
+	//      itself is old.
+	//   2. Proxy-bug C1 (PR #623): the bus-idle fast path in
+	//      tryGrant + the requestStartForSession enqueue-kick both
+	//      consult lastWireActivity to decide whether the wire is
+	//      quiescent. THIRD-PARTY passive frames must count as "wire
+	//      busy" too — otherwise the idle check fires while a non-
+	//      mux master is mid-transaction and the kick issues an
+	//      adapter START in the middle of passive traffic. (Codex
+	//      P2 round 5 on PR #623.)
 	//
 	// SYN markers do NOT bump the activity clock — they are the very
 	// signal we use to decide when the bus has been idle long enough
-	// for a release. (Codex P1+P2 on PR #621.)
-	if hasOwner && symbol != protocol.SymbolSyn {
+	// for a release.
+	if symbol != protocol.SymbolSyn {
 		m.lastWireActivity = now
 	}
 

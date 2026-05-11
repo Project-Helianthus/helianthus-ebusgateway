@@ -5,6 +5,21 @@ import (
 	"time"
 )
 
+// tryGrantLegacy is a back-compat shim for tests written against the
+// old tryGrant signature `(sessionID, initiator, notify, granted)`.
+// The production signature is now `(*startRequest, granted)` with the
+// new busIdle parameter. Defaulting busIdle to false here keeps the
+// legacy tests asserting the SYN-boundary fairness behaviour they
+// were written for; the C1 bus-idle fast path has its own coverage
+// in arbitration_busidle_test.go.
+func tryGrantLegacy(arb *arbitrator) (uint64, byte, chan startResult, bool) {
+	req, ok := arb.tryGrant(false)
+	if !ok {
+		return 0, 0, nil, false
+	}
+	return req.sessionID, req.initiator, req.notify, true
+}
+
 func TestArbitrator_GatewayPriority(t *testing.T) {
 	arb := newArbitrator()
 
@@ -13,7 +28,7 @@ func TestArbitrator_GatewayPriority(t *testing.T) {
 	_ = arb.requestStart(1, 0x31)
 
 	// Grant: gateway should win.
-	sessionID, initiator, notify, granted := arb.tryGrant()
+	sessionID, initiator, notify, granted := tryGrantLegacy(arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -40,7 +55,7 @@ func TestArbitrator_GatewayPriority(t *testing.T) {
 	}
 
 	// External should still be pending (bus is owned by gateway).
-	_, _, _, granted2 := arb.tryGrant()
+	_, _, _, granted2 := tryGrantLegacy(arb)
 	if granted2 {
 		t.Fatal("should not grant while bus is owned")
 	}
@@ -49,7 +64,7 @@ func TestArbitrator_GatewayPriority(t *testing.T) {
 	arb.releaseOwnership(gatewaySessionID)
 
 	// Now external should win.
-	sessionID, initiator, notify2, granted3 := arb.tryGrant()
+	sessionID, initiator, notify2, granted3 := tryGrantLegacy(arb)
 	if !granted3 {
 		t.Fatal("expected grant for external")
 	}
@@ -71,7 +86,7 @@ func TestArbitrator_ExternalFIFO(t *testing.T) {
 	ch2 := arb.requestStart(2, 0x32)
 
 	// First external (FIFO) should win.
-	sessionID, initiator, notify, granted := arb.tryGrant()
+	sessionID, initiator, notify, granted := tryGrantLegacy(arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -94,7 +109,7 @@ func TestArbitrator_ExternalFIFO(t *testing.T) {
 	arb.releaseOwnership(1)
 
 	// Second external should be next.
-	sessionID, initiator, notify2, granted2 := arb.tryGrant()
+	sessionID, initiator, notify2, granted2 := tryGrantLegacy(arb)
 	if !granted2 {
 		t.Fatal("expected second grant")
 	}
@@ -134,7 +149,7 @@ func TestArbitrator_CancelStart(t *testing.T) {
 	}
 
 	// Nothing to grant now.
-	_, _, _, granted := arb.tryGrant()
+	_, _, _, granted := tryGrantLegacy(arb)
 	if granted {
 		t.Fatal("should not grant after cancel")
 	}
@@ -146,7 +161,7 @@ func TestArbitrator_RemoveSession(t *testing.T) {
 	arb.requestStart(1, 0x31)
 
 	// Grant and confirm ownership.
-	_, initiator, notify, granted := arb.tryGrant()
+	_, initiator, notify, granted := tryGrantLegacy(arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -192,7 +207,7 @@ func TestArbitrator_ForceRelease(t *testing.T) {
 	arb := newArbitrator()
 
 	arb.requestStart(1, 0x31)
-	_, initiator, notify, _ := arb.tryGrant()
+	_, initiator, notify, _ := tryGrantLegacy(arb)
 	arb.confirmOwnership(1, initiator)
 	notify <- startResult{granted: true}
 
@@ -227,7 +242,7 @@ func TestArbitrator_DuplicateGatewayRequest(t *testing.T) {
 	}
 
 	// Second should be grantable.
-	_, initiator, notify, granted := arb.tryGrant()
+	_, initiator, notify, granted := tryGrantLegacy(arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -250,7 +265,7 @@ func TestArbitrator_DuplicateGatewayRequest(t *testing.T) {
 func TestArbitrator_NoPendingNothingToGrant(t *testing.T) {
 	arb := newArbitrator()
 
-	_, _, _, granted := arb.tryGrant()
+	_, _, _, granted := tryGrantLegacy(arb)
 	if granted {
 		t.Fatal("should not grant with no pending requests")
 	}
@@ -265,7 +280,7 @@ func TestArbitrator_GrantFailureReleasesOwnership(t *testing.T) {
 
 	ch := arb.requestStart(1, 0x31)
 
-	_, _, notify, granted := arb.tryGrant()
+	_, _, notify, granted := tryGrantLegacy(arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -290,7 +305,7 @@ func TestArbitrator_StartResultCarriesInitiator(t *testing.T) {
 
 	ch := arb.requestStart(1, 0x31)
 
-	sessionID, initiator, notify, granted := arb.tryGrant()
+	sessionID, initiator, notify, granted := tryGrantLegacy(arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -405,7 +420,7 @@ func TestArbitrator_FairnessWindow_ExternalGetsEveryNthGrant(t *testing.T) {
 		gwCh := arb.requestStart(gatewaySessionID, 0x71)
 		extCh := arb.requestStart(1, 0x31)
 
-		sessionID, _, notify, granted := arb.tryGrant()
+		sessionID, _, notify, granted := tryGrantLegacy(arb)
 		if !granted {
 			t.Fatalf("round %d: expected grant", i)
 		}
@@ -452,7 +467,7 @@ func TestArbitrator_FairnessWindow_NoOpWhenNoExternal(t *testing.T) {
 
 	for i := 0; i < FairnessRatio*5; i++ {
 		gwCh := arb.requestStart(gatewaySessionID, 0x71)
-		sessionID, _, notify, granted := arb.tryGrant()
+		sessionID, _, notify, granted := tryGrantLegacy(arb)
 		if !granted || sessionID != gatewaySessionID {
 			t.Fatalf("round %d: gateway must win every grant when no external pending; got sessionID=%d granted=%v", i, sessionID, granted)
 		}
@@ -476,7 +491,7 @@ func TestArbitrator_FairnessWindow_GatewayAloneWhenExternalAbsent(t *testing.T) 
 	arb := newArbitrator()
 
 	extCh := arb.requestStart(1, 0x31)
-	sessionID, _, notify, granted := arb.tryGrant()
+	sessionID, _, notify, granted := tryGrantLegacy(arb)
 	if !granted || sessionID != 1 {
 		t.Fatalf("only external pending: want sessionID=1; got sessionID=%d granted=%v", sessionID, granted)
 	}

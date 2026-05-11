@@ -152,7 +152,7 @@ func TestSession_StartCancelReleasesOwnership(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Grant ownership via arbitrator.
-	sessionID, initiator, notify, granted := mux.arb.tryGrant()
+	sessionID, initiator, notify, granted := tryGrantLegacy(mux.arb)
 	if !granted {
 		t.Fatal("expected grant from arbitrator")
 	}
@@ -464,7 +464,7 @@ func TestSession_SendErrorFromDoSend_NotConnected(t *testing.T) {
 
 	// Grant ownership to this session so it passes the pre-check.
 	ch := mux.arb.requestStart(id, 0x31)
-	_, initiator, notify, granted := mux.arb.tryGrant()
+	_, initiator, notify, granted := tryGrantLegacy(mux.arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -566,7 +566,7 @@ func TestOwnership_NotSetUntilStartSucceeds(t *testing.T) {
 	arb.requestStart(1, 0x31)
 
 	// tryGrant selects the winner but must NOT set ownership.
-	sessionID, initiator, _, granted := arb.tryGrant()
+	sessionID, initiator, _, granted := tryGrantLegacy(arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -610,7 +610,7 @@ func TestOwnership_FailurePathNeverSetsOwnership(t *testing.T) {
 
 	ch := arb.requestStart(1, 0x31)
 
-	_, _, notify, granted := arb.tryGrant()
+	_, _, notify, granted := tryGrantLegacy(arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -634,7 +634,7 @@ func TestOwnership_FailurePathNeverSetsOwnership(t *testing.T) {
 
 	// A second request should be immediately grantable.
 	arb.requestStart(2, 0x42)
-	sid, _, _, g := arb.tryGrant()
+	sid, _, _, g := tryGrantLegacy(arb)
 	if !g {
 		t.Fatal("bus should be free for a new grant after failure")
 	}
@@ -839,7 +839,7 @@ func TestSession_AdapterWriteFailure_ReturnsErrorHost(t *testing.T) {
 
 	// Grant ownership to the session.
 	ch := mux.arb.requestStart(id, 0x31)
-	_, initiator, notify, granted := mux.arb.tryGrant()
+	_, initiator, notify, granted := tryGrantLegacy(mux.arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}

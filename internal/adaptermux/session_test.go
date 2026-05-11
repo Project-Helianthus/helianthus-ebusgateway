@@ -779,8 +779,8 @@ func TestSession_RawTCPDiagnosticFiresAfterFloodWithoutHandshake(t *testing.T) {
 	}
 
 	// Flood with short-form ENHResReceived bytes (every byte < 0x80 is
-	// parsed as one). 0x31 is a typical eBUS master address that ebusd
-	// emits raw. None of these preceded by an INIT/INFO/START.
+	// parsed as one). 0x31 is a typical eBUS initiator address that
+	// ebusd emits raw. None of these preceded by an INIT/INFO/START.
 	for i := 0; i < int(rawTCPDiagnosticThreshold)+4; i++ {
 		// Short-form ENH: a single byte < 0x80 represents ENHResReceived.
 		if _, err := client.Write([]byte{0x31}); err != nil {

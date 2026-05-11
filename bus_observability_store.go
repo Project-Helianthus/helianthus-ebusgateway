@@ -1453,10 +1453,48 @@ func (store *BusObservabilityStore) recordActiveErrorLocked(event protocol.BusEv
 	if !event.HasRequest {
 		return
 	}
+	family := classifyFamily(event.Request)
+	frameType := classifyActiveFrameType(event.Request, store.localAddressSnapshotLocked())
+	// Active-path counting alignment with the passive path
+	// (recordPassiveAbandonedLocked). The gateway began an active
+	// transaction whose initial bytes hit the wire; that constitutes
+	// an "observed attempt on the wire" exactly as a passive
+	// abandoned transaction does. Count it under
+	// `ebus_frames_observed_total{scope="active", …}` so the active
+	// and passive scopes share semantics:
+	//
+	//   ebus_frames_observed_total{scope=X}     = attempts (success + failure)
+	//   ebus_errors_total{scope=X, class=Y}     = subset of failures, by class
+	//   active-error ratio                      = 1 - errors/observed
+	//
+	// Before this change, active frames_observed counted only
+	// successes, so dashboards that read `rate(frames_observed{
+	// scope="active"})` silently underreported attempts and offered
+	// no comparable error-ratio query across scopes. Operator
+	// confirmed Option A on the design discussion (release-note
+	// flag: any consumer that read the active counter as "success
+	// rate" must subtract `errors_total` to recover the old
+	// meaning).
+	store.incrementFrameLocked(frameSeriesKey{
+		Scope:     "active",
+		Source:    store.normalizeAddressLocked(event.Request.Source),
+		Target:    store.normalizeAddressLocked(event.Request.Target),
+		Family:    family,
+		FrameType: frameType,
+	})
+	store.frameBytes[frameBytesSeriesKey{Scope: "active", Family: family, FrameType: frameType, Part: "request"}] += float64Frame(frameWireLen(event.Request))
+	if event.HasResponse {
+		// Partial-response failures (e.g. CRC mismatch on the
+		// response) still carry response bytes that were on the
+		// wire; book them so request+response bytes sum on
+		// active-scope failure rows just as they do on the
+		// passive abandoned-event row.
+		store.frameBytes[frameBytesSeriesKey{Scope: "active", Family: family, FrameType: frameType, Part: "response"}] += float64Frame(responseWireLen(event.Response))
+	}
 	store.pushRecentLocked(BusMessageRecord{
 		Scope:       "active",
-		Family:      classifyFamily(event.Request),
-		FrameType:   classifyActiveFrameType(event.Request, store.localAddressSnapshotLocked()),
+		Family:      family,
+		FrameType:   frameType,
 		Outcome:     class,
 		ObservedAt:  store.now(),
 		Source:      event.Request.Source,

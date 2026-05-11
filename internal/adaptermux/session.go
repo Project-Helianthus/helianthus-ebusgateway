@@ -20,9 +20,18 @@ import (
 // per-frame enqueue→TCP-write latency bucketed at /debug/vars. ebusd's
 // default --receivetimeout is 25 ms; bytes that take longer than that
 // to traverse our pipeline are the suspected root cause of "send to fe:
-// ERR: read timeout" events. The bucket label is the upper bound in
-// microseconds (cumulative-by-bucket; bucket "gt_100000" is the
-// overflow bin).
+// ERR: read timeout" events.
+//
+// Prometheus-style cumulative histogram: each `le_X` counter holds the
+// total number of samples with elapsed_us ≤ X. A sample at 500 µs
+// increments le_1000, le_5000, le_25000, and le_100000. The `gt_100000`
+// counter is the overflow bin for samples > 100 ms; it is NOT
+// cumulative with the le_* counters. To compute "frames over the
+// 25 ms ebusd budget", read `samples_total - le_25000` where
+// samples_total = le_100000 + gt_100000.
+//
+// Codex P2 round 3 on PR #619 — single-bucket increments under `le_X`
+// labels were misleading; le_25000 must include faster frames.
 var adaptermuxSessionFrameLatencyBucketTotal = expvar.NewMap("adaptermux_session_frame_latency_us_bucket_total")
 
 // adaptermuxSessionFrameLatencySlowThresholdMicros is the per-frame
@@ -45,20 +54,29 @@ const adaptermuxSessionFrameLatencySlowThresholdMicros int64 = 25_000
 // Codex P2 round 2 on PR #619.
 var monoAnchor = time.Now()
 
-// latencyBucketLabel maps a per-frame elapsed-microseconds value to its
-// histogram bucket label.
-func latencyBucketLabel(elapsedUs int64) string {
-	switch {
-	case elapsedUs <= 1_000:
-		return "le_1000"
-	case elapsedUs <= 5_000:
-		return "le_5000"
-	case elapsedUs <= 25_000:
-		return "le_25000"
-	case elapsedUs <= 100_000:
-		return "le_100000"
-	default:
-		return "gt_100000"
+// recordLatencyBuckets increments every cumulative `le_X` bucket whose
+// upper bound is ≥ elapsedUs, plus the `gt_100000` overflow bin when
+// elapsedUs exceeds the highest le_* boundary.
+//
+// Cumulative semantics: a single sample at e.g. 500 µs increments
+// le_1000, le_5000, le_25000, and le_100000 — so reading le_25000 at
+// any point yields the exact count of frames that met the 25 ms ebusd
+// budget. (Codex P2 round 3 on PR #619.)
+func recordLatencyBuckets(elapsedUs int64) {
+	if elapsedUs <= 1_000 {
+		adaptermuxSessionFrameLatencyBucketTotal.Add("le_1000", 1)
+	}
+	if elapsedUs <= 5_000 {
+		adaptermuxSessionFrameLatencyBucketTotal.Add("le_5000", 1)
+	}
+	if elapsedUs <= 25_000 {
+		adaptermuxSessionFrameLatencyBucketTotal.Add("le_25000", 1)
+	}
+	if elapsedUs <= 100_000 {
+		adaptermuxSessionFrameLatencyBucketTotal.Add("le_100000", 1)
+	} else {
+		// Overflow bin: outside every cumulative le_* boundary.
+		adaptermuxSessionFrameLatencyBucketTotal.Add("gt_100000", 1)
 	}
 }
 
@@ -604,7 +622,7 @@ func (s *session) writeLoop() {
 				// Monotonic subtraction relative to monoAnchor; immune
 				// to wall-clock steps (Codex P2 round 2 on PR #619).
 				elapsedUs := (time.Since(monoAnchor).Nanoseconds() - frame.enqueuedAtNano) / 1_000
-				adaptermuxSessionFrameLatencyBucketTotal.Add(latencyBucketLabel(elapsedUs), 1)
+				recordLatencyBuckets(elapsedUs)
 				if elapsedUs > adaptermuxSessionFrameLatencySlowThresholdMicros && !s.closed.Load() {
 					s.mux.logger.Printf("adaptermux: session %d frame delivery slow: kind=%d latency=%dus (threshold=%dus — exceeds ebusd's default --receivetimeout)",
 						s.id, frame.kind, elapsedUs, adaptermuxSessionFrameLatencySlowThresholdMicros)

@@ -1096,27 +1096,67 @@ func TestArbitrationWinnerSynthesis_MultiSessionDeliversToNonWinner(t *testing.T
 
 // --- F-10 instrumentation: byte-pipeline latency bucketing ---
 
-func TestLatencyBucketLabel_BucketBoundaries(t *testing.T) {
-	cases := []struct {
-		us   int64
-		want string
-	}{
-		{0, "le_1000"},
-		{500, "le_1000"},
-		{1_000, "le_1000"},
-		{1_001, "le_5000"},
-		{5_000, "le_5000"},
-		{5_001, "le_25000"},
-		{25_000, "le_25000"},
-		{25_001, "le_100000"},
-		{100_000, "le_100000"},
-		{100_001, "gt_100000"},
-		{1_000_000, "gt_100000"},
-	}
-	for _, c := range cases {
-		if got := latencyBucketLabel(c.us); got != c.want {
-			t.Errorf("latencyBucketLabel(%d) = %q; want %q", c.us, got, c.want)
+// TestRecordLatencyBuckets_CumulativeSemantics pins the Prometheus-style
+// cumulative histogram contract: every `le_X` bucket counts ALL frames
+// with elapsed_us ≤ X. `gt_100000` is the non-cumulative overflow bin.
+// (Codex P2 round 3 on PR #619.)
+func TestRecordLatencyBuckets_CumulativeSemantics(t *testing.T) {
+	// Capture baseline counts so the test is robust to other tests in
+	// the same binary having already pumped samples through.
+	buckets := []string{"le_1000", "le_5000", "le_25000", "le_100000", "gt_100000"}
+	readBucket := func(name string) int64 {
+		if v := adaptermuxSessionFrameLatencyBucketTotal.Get(name); v != nil {
+			return v.(*expvar.Int).Value()
 		}
+		return 0
+	}
+	baseline := make(map[string]int64, len(buckets))
+	for _, b := range buckets {
+		baseline[b] = readBucket(b)
+	}
+
+	cases := []struct {
+		us       int64
+		hits     []string // which buckets must increment by exactly 1
+		excludes []string // which buckets must NOT change
+	}{
+		{0, []string{"le_1000", "le_5000", "le_25000", "le_100000"}, []string{"gt_100000"}},
+		{500, []string{"le_1000", "le_5000", "le_25000", "le_100000"}, []string{"gt_100000"}},
+		{1_000, []string{"le_1000", "le_5000", "le_25000", "le_100000"}, []string{"gt_100000"}},
+		{1_001, []string{"le_5000", "le_25000", "le_100000"}, []string{"le_1000", "gt_100000"}},
+		{5_000, []string{"le_5000", "le_25000", "le_100000"}, []string{"le_1000", "gt_100000"}},
+		{5_001, []string{"le_25000", "le_100000"}, []string{"le_1000", "le_5000", "gt_100000"}},
+		{25_000, []string{"le_25000", "le_100000"}, []string{"le_1000", "le_5000", "gt_100000"}},
+		{25_001, []string{"le_100000"}, []string{"le_1000", "le_5000", "le_25000", "gt_100000"}},
+		{100_000, []string{"le_100000"}, []string{"le_1000", "le_5000", "le_25000", "gt_100000"}},
+		{100_001, []string{"gt_100000"}, []string{"le_1000", "le_5000", "le_25000", "le_100000"}},
+		{1_000_000, []string{"gt_100000"}, []string{"le_1000", "le_5000", "le_25000", "le_100000"}},
+	}
+
+	for _, c := range cases {
+		before := make(map[string]int64, len(buckets))
+		for _, b := range buckets {
+			before[b] = readBucket(b)
+		}
+		recordLatencyBuckets(c.us)
+		for _, b := range c.hits {
+			if got := readBucket(b) - before[b]; got != 1 {
+				t.Errorf("recordLatencyBuckets(%d): bucket %q delta = %d, want 1", c.us, b, got)
+			}
+		}
+		for _, b := range c.excludes {
+			if got := readBucket(b) - before[b]; got != 0 {
+				t.Errorf("recordLatencyBuckets(%d): bucket %q delta = %d, want 0 (must not change)", c.us, b, got)
+			}
+		}
+	}
+
+	// Final cross-check: le_25000 (cumulative) must equal the count of
+	// inputs with us ≤ 25_000. From the cases above, that's 7 samples
+	// (0, 500, 1000, 1001, 5000, 5001, 25000). Verify the cumulative
+	// semantic at this concrete vantage point.
+	if got := readBucket("le_25000") - baseline["le_25000"]; got != 7 {
+		t.Errorf("le_25000 cumulative count = %d, want 7 (samples ≤ 25 ms across the 11 cases)", got)
 	}
 }
 

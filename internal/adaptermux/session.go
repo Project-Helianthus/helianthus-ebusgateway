@@ -52,9 +52,35 @@ type session struct {
 	// enh.md:128 — reset parser after arbitration complete).
 	parserResetNeeded atomic.Bool
 
+	// sawHandshake records whether the client has ever sent an INIT,
+	// INFO, or START frame. Clients that have NOT performed any
+	// handshake yet (sawHandshake.Load() == false) but flood the
+	// listener with SEND bytes are almost certainly speaking raw TCP
+	// rather than ENH — most commonly an ebusd configured with
+	// `network_device: "HOST:PORT"` (no `enh:` scheme prefix).
+	// Tracked atomically because handleMessage runs on the readLoop
+	// goroutine while the diagnostic check below reads the value
+	// without holding any session-wide lock.
+	// (EBUSD-VERIFICATION-2026-05-10.md F-7 diagnostic.)
+	sawHandshake atomic.Bool
+
+	// rejectedSendsWithoutHandshake counts handleSend calls that hit
+	// the not-bus-owner rejection path while sawHandshake is still
+	// false. Once this exceeds rawTCPDiagnosticThreshold, the session
+	// is closed with a clear "did you forget enh:HOST:PORT?" log line.
+	rejectedSendsWithoutHandshake atomic.Uint32
+
 	// wg waits for reader, writer, and handleStart goroutines to finish.
 	wg sync.WaitGroup
 }
+
+// rawTCPDiagnosticThreshold is the number of consecutive SEND-rejections
+// (with no preceding ENH handshake) after which the listener emits the
+// F-7 raw-TCP diagnostic and closes the session. 16 chosen so a short
+// burst of legitimate-but-misordered traffic doesn't trip it — the
+// observed-in-the-wild pattern shows tens of rejections per second from
+// a misconfigured client, so 16 fires within ~1 s of connect.
+const rawTCPDiagnosticThreshold uint32 = 16
 
 // sessionFrame is a frame to deliver to an external session.
 type sessionFrame struct {
@@ -278,6 +304,31 @@ func (s *session) handleSend(data byte) {
 		// SEND attempts with missing/lost STARTs
 		// (EBUSD-VERIFICATION-2026-05-10.md).
 		s.mux.logger.Printf("adaptermux: session %d SEND 0x%02X rejected — session does not own bus", s.id, data)
+		// F-7 diagnostic: a client that has never sent an ENH
+		// INIT/INFO/START but floods the listener with SEND
+		// rejections is almost certainly speaking raw TCP, not ENH.
+		// The most common cause (observed in the wild) is an ebusd
+		// configured with `network_device: "HOST:PORT"` instead of
+		// `network_device: "enh:HOST:PORT"` — ebusd then transmits
+		// raw eBUS bytes, our parser decodes each one as a short-
+		// form ENHResReceived (== SEND), and every byte fails the
+		// owner check. After rawTCPDiagnosticThreshold consecutive
+		// rejections without a handshake, emit a clear diagnostic
+		// and close the session so the misconfiguration is obvious
+		// instead of an ever-spinning log spam.
+		// (EBUSD-VERIFICATION-2026-05-10.md F-7.)
+		if !s.sawHandshake.Load() {
+			n := s.rejectedSendsWithoutHandshake.Add(1)
+			if n == rawTCPDiagnosticThreshold {
+				remote := "unknown"
+				if s.conn != nil && s.conn.RemoteAddr() != nil {
+					remote = s.conn.RemoteAddr().String()
+				}
+				s.mux.logger.Printf("adaptermux: session %d (%s) sent %d SEND frames with no preceding ENH INIT/INFO/START — closing as suspected raw-TCP client (did you forget the `enh:` scheme prefix? e.g. ebusd `network_device: enh:HOST:PORT`)",
+					s.id, remote, rawTCPDiagnosticThreshold)
+				go s.mux.RemoveSession(s.id) // goroutine: close out-of-band so handleMessage can return
+			}
+		}
 		s.deliverErrorHost()
 		return
 	}
@@ -327,6 +378,7 @@ func (s *session) handleStart(initiator byte) {
 	// level if it belongs to this session.
 	if initiator == protocol.SymbolSyn {
 		s.mux.logger.Printf("adaptermux: session %d START 0xAA (SYN cancel)", s.id)
+		s.sawHandshake.Store(true) // F-7: SYN-cancel is still a START
 		s.mux.arb.cancelStart(s.id)
 		s.mux.arb.releaseOwnership(s.id)
 		s.mux.cancelPendingStart(s.id)
@@ -338,6 +390,7 @@ func (s *session) handleStart(initiator byte) {
 	// grants" when debugging arbitration starvation
 	// (EBUSD-VERIFICATION-2026-05-10.md).
 	s.mux.logger.Printf("adaptermux: session %d START 0x%02X requested (RequestStart(0x%02X) sent for session %d)", s.id, initiator, initiator, s.id)
+	s.sawHandshake.Store(true) // F-7 diagnostic: legitimate ENH client
 	ch := s.mux.arb.requestStart(s.id, initiator)
 
 	// Wait for arbitration result in a tracked goroutine.
@@ -391,6 +444,7 @@ func (s *session) handleInit(features byte) {
 	// F-6 observability: log INIT handshake so operators can confirm
 	// ENH framing reached the mux (EBUSD-VERIFICATION-2026-05-10.md).
 	s.mux.logger.Printf("adaptermux: session %d INIT features=0x%02X (stored=0x%02X)", s.id, features, stored)
+	s.sawHandshake.Store(true) // F-7 diagnostic: legitimate ENH client
 	s.deliverReset(stored)
 }
 
@@ -401,6 +455,7 @@ func (s *session) handleInit(features byte) {
 func (s *session) handleInfo(id byte) {
 	// F-6 observability: log INFO dispatch (EBUSD-VERIFICATION-2026-05-10.md).
 	s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X", s.id, id)
+	s.sawHandshake.Store(true) // F-7 diagnostic: legitimate ENH client
 	data, err := s.mux.CachedInfo(transport.AdapterInfoID(id))
 	if err != nil {
 		s.mux.logger.Printf("adaptermux: session %d INFO id=0x%02X: %v", s.id, id, err)

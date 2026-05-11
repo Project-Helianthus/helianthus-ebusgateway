@@ -756,3 +756,94 @@ func TestMux_CloseConcurrent(t *testing.T) {
 		}
 	}
 }
+
+// --- F-7 raw-TCP diagnostic (EBUSD-VERIFICATION-2026-05-10.md) ---
+
+// TestSession_RawTCPDiagnosticFiresAfterFloodWithoutHandshake verifies
+// that a client which sends >= rawTCPDiagnosticThreshold SEND bytes
+// without ever sending INIT/INFO/START is closed by the diagnostic
+// path. This catches the operationally-common case of ebusd configured
+// with `network_device: "HOST:PORT"` (no `enh:` scheme prefix), where
+// ebusd transmits raw eBUS bytes that our parser decodes as short-form
+// ENHResReceived (== SEND).
+func TestSession_RawTCPDiagnosticFiresAfterFloodWithoutHandshake(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	client, server := net.Pipe()
+	defer closeOrLog(t, client, "client")
+
+	id := mux.AddSession(server)
+	if id == 0 {
+		t.Fatalf("AddSession returned 0")
+	}
+
+	// Flood with short-form ENHResReceived bytes (every byte < 0x80 is
+	// parsed as one). 0x31 is a typical eBUS master address that ebusd
+	// emits raw. None of these preceded by an INIT/INFO/START.
+	for i := 0; i < int(rawTCPDiagnosticThreshold)+4; i++ {
+		// Short-form ENH: a single byte < 0x80 represents ENHResReceived.
+		if _, err := client.Write([]byte{0x31}); err != nil {
+			break // pipe closes on session removal — expected
+		}
+	}
+
+	// Wait for the session to be removed. The diagnostic threshold
+	// triggers a goroutine that calls mux.RemoveSession; give it time.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mux.sessionsMu.Lock()
+		_, exists := mux.sessions[id]
+		mux.sessionsMu.Unlock()
+		if !exists {
+			return // session removed — diagnostic fired correctly
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("session %d still present after raw-TCP flood; diagnostic should have closed it", id)
+}
+
+// TestSession_LegitimateENHClientNotClosedByDiagnostic verifies the
+// inverse: a well-behaved ENH client that performs an INIT handshake
+// before any SEND is NOT closed even if a transient ownership race
+// causes individual SEND rejections.
+func TestSession_LegitimateENHClientNotClosedByDiagnostic(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+
+	client, server := net.Pipe()
+	defer closeOrLog(t, client, "client")
+
+	id := mux.AddSession(server)
+	if id == 0 {
+		t.Fatalf("AddSession returned 0")
+	}
+	defer mux.RemoveSession(id)
+
+	// Proper ENH handshake first: INIT with requested features.
+	initReq := transport.EncodeENH(transport.ENHReqInit, 0x01)
+	if _, err := client.Write(initReq[:]); err != nil {
+		t.Fatalf("write INIT: %v", err)
+	}
+	// Drain the RESETTED response so the pipe doesn't back up.
+	_ = readENHFrame(t, client, 2*time.Second)
+
+	// Now flood with SEND attempts (rejected because no bus ownership)
+	// — but the diagnostic must NOT fire because sawHandshake is set.
+	for i := 0; i < int(rawTCPDiagnosticThreshold)+10; i++ {
+		sendReq := transport.EncodeENH(transport.ENHReqSend, 0x31)
+		if _, err := client.Write(sendReq[:]); err != nil {
+			break
+		}
+	}
+
+	// Give the diagnostic time to fire if it were going to.
+	time.Sleep(500 * time.Millisecond)
+
+	mux.sessionsMu.Lock()
+	_, exists := mux.sessions[id]
+	mux.sessionsMu.Unlock()
+	if !exists {
+		t.Fatalf("session %d removed despite legitimate ENH INIT handshake; diagnostic must not fire when sawHandshake=true", id)
+	}
+}

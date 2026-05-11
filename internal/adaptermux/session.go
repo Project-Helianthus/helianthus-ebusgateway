@@ -3,6 +3,7 @@ package adaptermux
 import (
 	"bufio"
 	"errors"
+	"expvar"
 	"fmt"
 	"net"
 	"strings"
@@ -14,6 +15,70 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
+
+// F-10 diagnostic instrumentation (EBUSD-VERIFICATION-2026-05-10.md):
+// per-frame enqueue→TCP-write latency bucketed at /debug/vars. ebusd's
+// default --receivetimeout is 25 ms; bytes that take longer than that
+// to traverse our pipeline are the suspected root cause of "send to fe:
+// ERR: read timeout" events.
+//
+// Prometheus-style cumulative histogram: each `le_X` counter holds the
+// total number of samples with elapsed_us ≤ X. A sample at 500 µs
+// increments le_1000, le_5000, le_25000, and le_100000. The `gt_100000`
+// counter is the overflow bin for samples > 100 ms; it is NOT
+// cumulative with the le_* counters. To compute "frames over the
+// 25 ms ebusd budget", read `samples_total - le_25000` where
+// samples_total = le_100000 + gt_100000.
+//
+// Codex P2 round 3 on PR #619 — single-bucket increments under `le_X`
+// labels were misleading; le_25000 must include faster frames.
+var adaptermuxSessionFrameLatencyBucketTotal = expvar.NewMap("adaptermux_session_frame_latency_us_bucket_total")
+
+// adaptermuxSessionFrameLatencySlowThresholdMicros is the per-frame
+// latency above which we emit a structured log line so operators can
+// see concrete slow samples without parsing the bucket histogram. 25 ms
+// matches ebusd's default --receivetimeout (the budget that, when
+// exceeded, produces "read timeout" errors on ebusd's side).
+const adaptermuxSessionFrameLatencySlowThresholdMicros int64 = 25_000
+
+// monoAnchor is a process-start time.Time captured WITH its monotonic
+// clock reading. Subtractions via time.Since(monoAnchor) preserve the
+// monotonic component (per the time package docs: "later time-measuring
+// operations, specifically comparisons and subtractions, use the
+// monotonic clock reading"), which guarantees that wall-clock steps
+// from NTP/chrony or manual `date -s` do not produce negative or
+// inflated latency samples.
+//
+// We store frame timestamps as int64 nanoseconds *relative to this
+// anchor* rather than as time.Time (24 B → 8 B per sessionFrame).
+// Codex P2 round 2 on PR #619.
+var monoAnchor = time.Now()
+
+// recordLatencyBuckets increments every cumulative `le_X` bucket whose
+// upper bound is ≥ elapsedUs, plus the `gt_100000` overflow bin when
+// elapsedUs exceeds the highest le_* boundary.
+//
+// Cumulative semantics: a single sample at e.g. 500 µs increments
+// le_1000, le_5000, le_25000, and le_100000 — so reading le_25000 at
+// any point yields the exact count of frames that met the 25 ms ebusd
+// budget. (Codex P2 round 3 on PR #619.)
+func recordLatencyBuckets(elapsedUs int64) {
+	if elapsedUs <= 1_000 {
+		adaptermuxSessionFrameLatencyBucketTotal.Add("le_1000", 1)
+	}
+	if elapsedUs <= 5_000 {
+		adaptermuxSessionFrameLatencyBucketTotal.Add("le_5000", 1)
+	}
+	if elapsedUs <= 25_000 {
+		adaptermuxSessionFrameLatencyBucketTotal.Add("le_25000", 1)
+	}
+	if elapsedUs <= 100_000 {
+		adaptermuxSessionFrameLatencyBucketTotal.Add("le_100000", 1)
+	} else {
+		// Overflow bin: outside every cumulative le_* boundary.
+		adaptermuxSessionFrameLatencyBucketTotal.Add("gt_100000", 1)
+	}
+}
 
 const (
 	// defaultSessionSendBuffer is the default send channel capacity
@@ -86,6 +151,28 @@ const rawTCPDiagnosticThreshold uint32 = 16
 type sessionFrame struct {
 	kind    sessionFrameKind
 	payload byte
+	// enqueuedAtNano is the elapsed nanoseconds from the package-level
+	// monoAnchor at the moment the frame was enqueued on sendCh. The
+	// writeLoop computes latency as
+	// `time.Since(monoAnchor).Nanoseconds() - frame.enqueuedAtNano`,
+	// which is a pure monotonic-clock subtraction and is therefore
+	// immune to wall-clock steps (NTP/chrony, manual `date -s`).
+	//
+	// We store an int64 (8 bytes) rather than a time.Time (24 bytes,
+	// because of the wall/ext/Location triple) because every external
+	// session preallocates an 8192-entry ring buffer (sendCh) and the
+	// gateway may host up to maxSessions=1000 sessions; a 24-byte
+	// field would inflate baseline channel capacity by ~128 MiB across
+	// the session pool versus the 8-byte form (Codex P2 PR #619).
+	//
+	// Zero value indicates "not measured" — paths that bypass the
+	// latency instrumentation may construct frames without setting
+	// this field. The first frame enqueued in the program's first
+	// nanosecond would also read zero, but that race is irrelevant
+	// for a diagnostic histogram.
+	//
+	// (F-10 diagnostic instrumentation per EBUSD-VERIFICATION-2026-05-10.md.)
+	enqueuedAtNano int64
 }
 
 type sessionFrameKind uint8
@@ -187,7 +274,7 @@ func (s *session) deliverReceived(symbol byte) {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: symbol}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: symbol, enqueuedAtNano: time.Since(monoAnchor).Nanoseconds()}:
 	default:
 		// Buffer overflow — close session (backpressure protection).
 		s.mux.logger.Printf("adaptermux: session %d send buffer overflow, closing", s.id)
@@ -206,7 +293,7 @@ func (s *session) deliverReset(payload byte) {
 	// Block until delivered (matching passive_transport reset delivery).
 	// s.done unblocks on session close/shutdown.
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameResetted, payload: payload}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameResetted, payload: payload, enqueuedAtNano: time.Since(monoAnchor).Nanoseconds()}:
 	case <-s.done:
 	}
 }
@@ -218,7 +305,7 @@ func (s *session) deliverStarted(payload byte) {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameStarted, payload: payload}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameStarted, payload: payload, enqueuedAtNano: time.Since(monoAnchor).Nanoseconds()}:
 	default:
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
 	}
@@ -231,7 +318,7 @@ func (s *session) deliverFailed(payload byte) {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameFailed, payload: payload}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameFailed, payload: payload, enqueuedAtNano: time.Since(monoAnchor).Nanoseconds()}:
 	default:
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
 	}
@@ -483,7 +570,7 @@ func (s *session) deliverError() {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameErrorEBUS}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameErrorEBUS, enqueuedAtNano: time.Since(monoAnchor).Nanoseconds()}:
 	default:
 		s.mux.logger.Printf("adaptermux: session %d send buffer full, unable to deliver error", s.id)
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal on error delivery
@@ -497,7 +584,7 @@ func (s *session) deliverErrorHost() {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameErrorHost}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameErrorHost, enqueuedAtNano: time.Since(monoAnchor).Nanoseconds()}:
 	default:
 		s.mux.logger.Printf("adaptermux: session %d send buffer full, unable to deliver host error", s.id)
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal on error delivery
@@ -510,7 +597,7 @@ func (s *session) deliverInfo(b byte) {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameInfo, payload: b}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameInfo, payload: b, enqueuedAtNano: time.Since(monoAnchor).Nanoseconds()}:
 	default:
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
 	}
@@ -523,7 +610,25 @@ func (s *session) writeLoop() {
 	for {
 		select {
 		case frame := <-s.sendCh:
-			if err := s.writeFrame(frame); err != nil {
+			err := s.writeFrame(frame)
+			// F-10 instrumentation: measure enqueue→TCP-write latency
+			// for every frame so operators can correlate "send to fe:
+			// ERR: read timeout" events on ebusd's side with concrete
+			// pipeline-latency samples. ebusd's 25 ms per-byte budget
+			// is the threshold: frames slower than that get a log line
+			// in addition to bucket counts. (Measure on every frame,
+			// not just slow ones, so the histogram surface is complete.)
+			if frame.enqueuedAtNano != 0 {
+				// Monotonic subtraction relative to monoAnchor; immune
+				// to wall-clock steps (Codex P2 round 2 on PR #619).
+				elapsedUs := (time.Since(monoAnchor).Nanoseconds() - frame.enqueuedAtNano) / 1_000
+				recordLatencyBuckets(elapsedUs)
+				if elapsedUs > adaptermuxSessionFrameLatencySlowThresholdMicros && !s.closed.Load() {
+					s.mux.logger.Printf("adaptermux: session %d frame delivery slow: kind=%d latency=%dus (threshold=%dus — exceeds ebusd's default --receivetimeout)",
+						s.id, frame.kind, elapsedUs, adaptermuxSessionFrameLatencySlowThresholdMicros)
+				}
+			}
+			if err != nil {
 				if !s.closed.Load() && !errors.Is(err, net.ErrClosed) {
 					s.mux.logger.Printf("adaptermux: session %d write error: %v", s.id, err)
 				}

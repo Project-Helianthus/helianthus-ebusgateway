@@ -267,7 +267,7 @@ func TestHandleArbitrationResponse_InFlightCancelled_AM56Mismatch_SuppressedSile
 	mux.stateMu.Unlock()
 	reqA.cancelled.Store(true)
 
-	// Feed STARTED with a MISMATCHED byte (some other master won;
+	// Feed STARTED with a MISMATCHED byte (some other initiator won;
 	// adapter delivered a stale STARTED for a previous bid).
 	mux.handleArbitrationResponse(true, 0x10)
 

@@ -182,7 +182,7 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 			// deliverFailed(initiator) branch that produces a
 			// spurious ENHResFailed on the wire. Without this,
 			// ebusd reads the FAILED as "lost arbitration to its
-			// own master byte," retries within ~50 ms, and
+			// own initiator byte," retries within ~50 ms, and
 			// triggers the positive-feedback loop where no
 			// request ever reaches the adapter. pcap-confirmed
 			// root cause of "ebusd never lands a frame."
@@ -220,7 +220,7 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 				// ~0.3 ms — far faster than the bus can
 				// possibly arbitrate (eBUS bit-time ~4 ms).
 				// ebusd reads it as "lost arbitration to my
-				// own master byte 0x31" and retries within
+				// own initiator byte 0x31" and retries within
 				// ~50 ms, producing a same-session-replace
 				// that cancels the new request, and so on.
 				// Positive-feedback loop; no bid ever

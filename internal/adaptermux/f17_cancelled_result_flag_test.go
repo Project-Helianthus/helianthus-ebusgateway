@@ -16,7 +16,7 @@ import (
 // Without `cancelled: true` on the result, the bidder reads a spurious
 // `ENHResFailed(initiator)` within ~0.3 ms of its own ReqStart (faster
 // than the bus can possibly arbitrate). ebusd interprets that as "you
-// lost arbitration to your own master byte" and retries within ~50 ms,
+// lost arbitration to your own initiator byte" and retries within ~50 ms,
 // which cancels the just-queued entry, producing another spurious
 // FAILED, and so on — positive-feedback loop where no bid ever reaches
 // the adapter. This is the pcap-confirmed root cause of "ebusd never

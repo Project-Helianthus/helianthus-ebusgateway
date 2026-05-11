@@ -120,11 +120,24 @@ const rawTCPDiagnosticThreshold uint32 = 16
 type sessionFrame struct {
 	kind    sessionFrameKind
 	payload byte
-	// enqueuedAt is when the frame was placed on sendCh. writeLoop
-	// uses it to compute the enqueue→TCP-write latency for
-	// observability of the per-byte pipeline budget.
+	// enqueuedAtNano is the monotonic nanosecond timestamp captured
+	// when the frame was placed on sendCh. writeLoop uses it to
+	// compute the enqueue→TCP-write latency for observability of
+	// the per-byte pipeline budget.
+	//
+	// We store an int64 (8 bytes) rather than a time.Time (24 bytes,
+	// because of the wall/ext/Location triple) because every external
+	// session preallocates an 8192-entry ring buffer (sendCh) and the
+	// gateway may host up to maxSessions=1000 sessions; a 24-byte
+	// field would inflate baseline channel capacity by ~128 MiB across
+	// the session pool versus the 8-byte form (Codex P2 PR #619).
+	//
+	// Zero value indicates "not measured" — paths that bypass the
+	// latency instrumentation may construct frames without setting
+	// this field.
+	//
 	// (F-10 diagnostic instrumentation per EBUSD-VERIFICATION-2026-05-10.md.)
-	enqueuedAt time.Time
+	enqueuedAtNano int64
 }
 
 type sessionFrameKind uint8
@@ -226,7 +239,7 @@ func (s *session) deliverReceived(symbol byte) {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: symbol, enqueuedAt: time.Now()}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: symbol, enqueuedAtNano: time.Now().UnixNano()}:
 	default:
 		// Buffer overflow — close session (backpressure protection).
 		s.mux.logger.Printf("adaptermux: session %d send buffer overflow, closing", s.id)
@@ -245,7 +258,7 @@ func (s *session) deliverReset(payload byte) {
 	// Block until delivered (matching passive_transport reset delivery).
 	// s.done unblocks on session close/shutdown.
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameResetted, payload: payload, enqueuedAt: time.Now()}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameResetted, payload: payload, enqueuedAtNano: time.Now().UnixNano()}:
 	case <-s.done:
 	}
 }
@@ -257,7 +270,7 @@ func (s *session) deliverStarted(payload byte) {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameStarted, payload: payload, enqueuedAt: time.Now()}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameStarted, payload: payload, enqueuedAtNano: time.Now().UnixNano()}:
 	default:
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
 	}
@@ -270,7 +283,7 @@ func (s *session) deliverFailed(payload byte) {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameFailed, payload: payload, enqueuedAt: time.Now()}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameFailed, payload: payload, enqueuedAtNano: time.Now().UnixNano()}:
 	default:
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
 	}
@@ -522,7 +535,7 @@ func (s *session) deliverError() {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameErrorEBUS, enqueuedAt: time.Now()}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameErrorEBUS, enqueuedAtNano: time.Now().UnixNano()}:
 	default:
 		s.mux.logger.Printf("adaptermux: session %d send buffer full, unable to deliver error", s.id)
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal on error delivery
@@ -536,7 +549,7 @@ func (s *session) deliverErrorHost() {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameErrorHost, enqueuedAt: time.Now()}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameErrorHost, enqueuedAtNano: time.Now().UnixNano()}:
 	default:
 		s.mux.logger.Printf("adaptermux: session %d send buffer full, unable to deliver host error", s.id)
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal on error delivery
@@ -549,7 +562,7 @@ func (s *session) deliverInfo(b byte) {
 		return
 	}
 	select {
-	case s.sendCh <- sessionFrame{kind: sessionFrameInfo, payload: b, enqueuedAt: time.Now()}:
+	case s.sendCh <- sessionFrame{kind: sessionFrameInfo, payload: b, enqueuedAtNano: time.Now().UnixNano()}:
 	default:
 		go s.mux.RemoveSession(s.id) // goroutine: overflow removal
 	}
@@ -570,8 +583,8 @@ func (s *session) writeLoop() {
 			// is the threshold: frames slower than that get a log line
 			// in addition to bucket counts. (Measure on every frame,
 			// not just slow ones, so the histogram surface is complete.)
-			if !frame.enqueuedAt.IsZero() {
-				elapsedUs := time.Since(frame.enqueuedAt).Microseconds()
+			if frame.enqueuedAtNano != 0 {
+				elapsedUs := (time.Now().UnixNano() - frame.enqueuedAtNano) / 1_000
 				adaptermuxSessionFrameLatencyBucketTotal.Add(latencyBucketLabel(elapsedUs), 1)
 				if elapsedUs > adaptermuxSessionFrameLatencySlowThresholdMicros && !s.closed.Load() {
 					s.mux.logger.Printf("adaptermux: session %d frame delivery slow: kind=%d latency=%dus (threshold=%dus — exceeds ebusd's default --receivetimeout)",

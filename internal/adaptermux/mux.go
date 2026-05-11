@@ -2304,18 +2304,27 @@ func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 // rather than calling m.arb.requestStart directly, so both branches
 // of the C4 cancel + the C1 enqueue-kick are guaranteed to run.
 func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan startResult {
-	// Step 1: cancel any in-flight grant for this session BEFORE
-	// the arbitrator admits the new request. Under stateMu so the
-	// snapshot of m.pendingStart is coherent.
+	// Steps 1+2 MUST be atomic under stateMu so a concurrent
+	// tryGrantAndStart cannot pop the OLD request out of
+	// pendingExternal between the in-flight check and the
+	// arbitrator replacement — that gap would leave a re-submitted
+	// session with neither flag set (Codex P1 round 4 on PR #623).
+	// Lock order stateMu → arb.mu matches tryGrantAndStart's order,
+	// so no ABBA risk.
 	m.stateMu.Lock()
+	// Step 1: cancel any in-flight grant for THIS session. The
+	// arbitrator's replace path (inside requestStart) only sees
+	// pendingExternal/pendingGateway entries; once an entry has
+	// been popped into m.pendingStart this is the only place the
+	// cancelled flag gets set.
 	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID && m.pendingStart.req != nil {
 		m.arb.markInFlightCancelled(m.pendingStart.req)
 	}
-	m.stateMu.Unlock()
 
-	// Step 2: hand off to the arbitrator. The replace path inside
-	// requestStart also covers any prior entry that's still in
-	// pendingExternal/pendingGateway (not yet in-flight).
+	// Step 2: hand off to the arbitrator. Holding stateMu across
+	// this call is what closes the race: tryGrantAndStart's pop
+	// is also gated on stateMu, so it cannot interleave between
+	// step 1 and step 2.
 	ch := m.arb.requestStart(sessionID, initiator)
 
 	// Step 3: opportunistic kick — only when the wire has been quiet
@@ -2326,8 +2335,8 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	// the next SYN handler will pick up the grant naturally, so we
 	// don't intrude on the established arbitration cadence. The
 	// idle check mirrors the snapshot used inside tryGrantAndStart
-	// for the C1 fast path.
-	m.stateMu.Lock()
+	// for the C1 fast path. Read the snapshot while still holding
+	// stateMu so we get a coherent view before releasing.
 	idle := m.lastWireActivity.IsZero() ||
 		time.Since(m.lastWireActivity) >= m.cfg.SYNInterval
 	m.stateMu.Unlock()

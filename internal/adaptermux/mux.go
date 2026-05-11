@@ -1000,44 +1000,60 @@ func (m *Mux) readLoop() {
 			m.logger.Printf("adaptermux: readLoop got StreamEventStarted data=0x%02X", event.Data)
 			m.handleArbitrationResponse(true, event.Data)
 			// Synthesize the arbitration-winner byte as a passive
-			// observation for external sessions. The wire DID carry
-			// this byte (e.g. 0x7F) at this point, but the ENH
-			// adapter consumes it as a STARTED control event instead
-			// of echoing it via ResReceived. Without this synthesis,
-			// external sessions like ebusd see the gateway's
-			// transaction stream as `... SYN, 0x15 (target), 0xB5,
-			// 0x24, ...` with no initiator-byte boundary. Their bus
-			// parser then discards the frame as malformed (0x15 isn't
-			// a valid initiator byte — low nibble 5 isn't a valid
-			// arbitration nibble) and the gateway's traffic vanishes
-			// from their grab buffer / initiator enumeration. Worse,
-			// their bus state machine thinks the bus is idle when it
-			// isn't, leading to mis-timed bid attempts and the
-			// "won in invalid state" + read-timeout cascade seen in
+			// observation for external sessions ONLY when the gateway
+			// is the winner. The wire DID carry this byte (e.g. 0x7F)
+			// at this point, but the ENH adapter consumes it as a
+			// STARTED control event instead of echoing it via
+			// ResReceived. Without this synthesis, external sessions
+			// like ebusd see the gateway's transaction stream as
+			// `... SYN, 0x15 (target), 0xB5, 0x24, ...` with no
+			// initiator-byte boundary. Their bus parser discards the
+			// frame as malformed (0x15 isn't a valid initiator byte
+			// — low nibble 5 isn't a valid arbitration nibble) and
+			// the gateway's traffic vanishes from their grab buffer
+			// / initiator enumeration. Worse, their bus state
+			// machine thinks the bus is idle when it isn't, leading
+			// to mis-timed bid attempts and the "won in invalid
+			// state" + read-timeout cascade seen in
 			// EBUSD-VERIFICATION-2026-05-10.md F-9 / F-10.
 			//
-			// Query the actual owner from the arbitrator (set by
-			// handleArbitrationResponse above) — could be gateway OR
-			// an external session that just won. If hasOwner is
-			// false, the STARTED was absorbed as stale and we should
-			// NOT synthesize (it belongs to a cancelled bid; nobody
-			// is using the bus from this win).
-			if owner, _, owned := m.arb.owner(); owned {
+			// We restrict synthesis to gateway-wins because:
+			//   - When an external session wins, it receives
+			//     ENHResStarted via its own handleStart goroutine
+			//     (session.go: deliverStarted). That goroutine and
+			//     this readLoop are independent, so an unconditional
+			//     synthesis here could enqueue ENHResReceived
+			//     (winner_byte) BEFORE the session's own
+			//     ENHResStarted, presenting an out-of-order
+			//     arbitration result to a strict ENH parser
+			//     (Codex P2 follow-up on PR #620).
+			//   - For gateway wins, there is no competing per-
+			//     session control event — the gateway consumes
+			//     STARTED synchronously, so no goroutine race
+			//     exists.
+			//
+			// If hasOwner is false after handleArbitrationResponse,
+			// the STARTED was absorbed as stale (cancelled bid).
+			// Don't synthesize — nobody is using the bus from this
+			// stale win.
+			if owner, _, owned := m.arb.owner(); owned && owner == gatewaySessionID {
 				m.deliverToSessions(event.Data, owner, true, time.Now())
 			}
 			continue
 		case transport.StreamEventFailed:
 			m.logger.Printf("adaptermux: readLoop got StreamEventFailed data=0x%02X", event.Data)
 			m.handleArbitrationResponse(false, event.Data)
-			// Symmetric synthesis: when another initiator beats our
-			// gateway's bid, the winner byte was on the wire but
-			// the adapter consumed it as a FAILED control event.
-			// External sessions need to see the winner byte to
-			// keep their bus state machine synchronized with the
-			// physical wire. Includes the no-owner indicator
-			// because the gateway's bid lost and the winner is a
-			// third-party device, not one of our sessions.
-			m.deliverToSessions(event.Data, 0, false, time.Now())
+			// No synthesis on FAILED. The losing bidder's session
+			// receives ENHResFailed(winner) via its own handleStart
+			// goroutine; adding a synthesized ENHResReceived(winner)
+			// here would race the FAILED frame for the same byte,
+			// presenting an out-of-order arbitration result. The
+			// FAILED frame itself already carries the winner
+			// address, so the bidder has the information it needs
+			// to update bus state. Other sessions (in the rare
+			// multi-external-session case) miss the winner byte,
+			// but the impact is bounded and lower-risk than the
+			// ordering hazard. (Codex P2 follow-up on PR #620.)
 			continue
 		case transport.StreamEventReset:
 			m.handleReset()

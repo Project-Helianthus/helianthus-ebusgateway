@@ -2483,16 +2483,35 @@ func (m *Mux) tryGrantAndStart() {
 			pending := m.pendingStart
 			m.pendingStart = nil
 			m.armPendingStartAbsorbLocked("deadline")
-			// Once START times out we no longer trust adapter arbitration
-			// state, even on the non-blocking RequestStart path. A later
-			// STARTED means the adapter granted the old request after we
-			// had already abandoned it; if we simply absorb that event and
-			// launch a new RequestStart, the mux and adapter can stay one
-			// arbitration behind forever. Reconnect is the only reliable
-			// resync boundary for both blocking and non-blocking paths.
-			needReconnect := true
+			// F-15 (operator hand-off, batch-9/11): gate the reconnect by
+			// transport type, mirroring cancelPendingStart's existing
+			// pattern (mux.go:3004 `wasBlocking := pending.blockingArb`).
+			//
+			// PRIOR BUG (`needReconnect := true` unconditionally): every
+			// deadline expiry forced an upstream reconnect — including on
+			// the non-blocking ENH RequestStart path where the adapter is
+			// only slow, not hung. F-17's retry storm amplified this:
+			// adapter backlog → slow STARTED → AM8 trips → forced
+			// reconnect → drops the next ReqStart → loop. Even without
+			// F-17 the asymmetric reconnect is a design defect on the
+			// non-blocking path.
+			//
+			// LIVE EVIDENCE: 0 absorb-timeout reconnects across the entire
+			// 30k-line batch-9 log. The absorb safety-net at
+			// armPendingStartAbsorbLocked (mux.go:3056) drained naturally
+			// on every late-STARTED in production. The unconditional
+			// reconnect here was therefore never needed for the
+			// non-blocking transport in observed runs; for the rare
+			// truly-hung case the absorb timer's own
+			// StartDeadline-bounded reconnect path takes over.
+			//
+			// BLOCKING TRANSPORT (legacy StartArbitration): the goroutine
+			// may still be hung in the transport call after the deadline,
+			// so the reconnect is still required to unstick it — same
+			// shape as cancelPendingStart at mux.go:3013.
+			wasBlocking := pending.blockingArb
 			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8)", pending.sessionID)
+			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8, wasBlocking=%v)", pending.sessionID, wasBlocking)
 			// AM8: guard the send — if another path already delivered a
 			// result, the channel is full and this send would block forever.
 			select {
@@ -2500,7 +2519,7 @@ func (m *Mux) tryGrantAndStart() {
 			default:
 				m.logger.Printf("adaptermux: pendingStart deadline: notify channel full for session %d, result already delivered", pending.sessionID)
 			}
-			if needReconnect {
+			if wasBlocking {
 				// Close the current conn to force the hung blocking
 				// StartArbitration call to return with an I/O error.
 				// readLoop's error handler invokes reconnect() which

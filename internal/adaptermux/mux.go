@@ -76,6 +76,54 @@ type Config struct {
 	// gateway's own pattern.
 	ExternalSessionSYNGrace time.Duration
 
+	// SYNInterval is the expected eBUS SYN cadence on the wire (default
+	// 4576 µs at 2400 baud). Used by tryGrantAndStart to decide whether
+	// the bus is idle enough to short-circuit fairness arbitration and
+	// hand the next pending external START to its session immediately.
+	// (Proxy-bug C1 / R1.)
+	SYNInterval time.Duration
+
+	// PendingStartTTL bounds the dwell time of an external pending
+	// START in the arbitrator's pendingExternal queue. Requests whose
+	// enqueuedAt has aged past this value are dropped from the queue
+	// head and rejected with errStaleStartRequest so external clients
+	// (ebusd) can retry cleanly when they actually want the bus.
+	// (Proxy-bug C3 / R3.)
+	//
+	// Sentinels:
+	//   - 0 (the zero value): use the production default (currently
+	//     250 ms — slightly above the default ReadTimeout so an
+	//     enqueue right after a read timeout still sees its first
+	//     grant attempt before the TTL drain fires; the request will
+	//     have been kicked via requestStartForSession's idle path
+	//     well before that, so the TTL only catches genuinely stuck
+	//     entries).
+	//   - Negative: disables the drain entirely. Tests and the very
+	//     rare deployment that needs pre-C3 behavior under long
+	//     gateway contention can pass -1 (or any negative duration)
+	//     to opt out.
+	PendingStartTTL time.Duration
+
+	// IsKnownInitiatorByte is an optional predicate that classifies a
+	// FAILED arbitration data byte as a real bus initiator (true) versus
+	// a transient AND-collision artifact (false). When two real
+	// initiators arbitrate, the wire byte is the bit-wise AND of their
+	// addresses, which can land on a value that is NOT itself a
+	// physically-present initiator — e.g. 0x7F (gateway) AND'd with 0xF1
+	// (radio) produces 0x71 on the wire even though no initiator at
+	// 0x71 exists on the bus. Mirror clients (ebusd) that consume
+	// the proxy's StreamEventFailed bytes interpret 0x71 as a
+	// fictitious bus initiator and pollute their passive view.
+	//
+	// Returning false on a byte suppresses its delivery to the
+	// per-session sendCh mirror; the passive emit and the error
+	// logging still fire so observability stays complete.
+	//
+	// When nil (the default), no filtering is performed — all FAILED
+	// data bytes flow to mirror clients as before. Production wires
+	// this to a runtime_state-backed lookup. (Proxy-bug C5 / R5.)
+	IsKnownInitiatorByte func(b byte) bool
+
 	// LatencyHistogramReportInterval controls how often a single-line
 	// summary of the adaptermux_session_frame_latency_us_bucket_total
 	// expvar is emitted via the logger. Default: 60s. Set to a negative
@@ -141,6 +189,24 @@ func (c *Config) defaults() {
 	if c.LatencyHistogramReportInterval == 0 {
 		c.LatencyHistogramReportInterval = 60 * time.Second
 	}
+	if c.SYNInterval == 0 {
+		// 4576 µs ≈ one SYN period at 2400 baud on a clean eBUS line.
+		// (Proxy-bug C1 / R1.)
+		c.SYNInterval = 4576 * time.Microsecond
+	}
+	if c.PendingStartTTL == 0 {
+		// Default 250 ms — slightly above the default ReadTimeout
+		// (200 ms) so a START enqueued right after a read timeout
+		// still sees a grant attempt before the TTL drain fires.
+		// requestStartForSession kicks tryGrantAndStart on every
+		// enqueue, so on an idle bus the request typically lands a
+		// grant in < 1 ms; the 250 ms window is only there for
+		// genuinely stuck requests where the kick saw no idle path
+		// (e.g. blockingArbActive, pendingStartAbsorb > 0).
+		// Negative values disable the drain. (Proxy-bug C3 / R3 +
+		// Codex P1 round 1 on PR #623.)
+		c.PendingStartTTL = 250 * time.Millisecond
+	}
 	if c.ExternalSessionSYNGrace == 0 {
 		// 2s covers a broadcast scan to address 0xFE (~25 responder
 		// responses × ~30-50ms each) plus arbitration jitter, while
@@ -197,6 +263,15 @@ type pendingStartState struct {
 	notify      chan startResult
 	deadline    *time.Timer // AM8: fires if adapter doesn't respond before cfg.StartDeadline
 	blockingArb bool        // true when using blocking StartArbitration fallback
+
+	// req is the arbitrator's startRequest pointer kept by the mux for
+	// the duration of the in-flight grant. It carries the cancelled
+	// flag the mux checks before delivering a late STARTED: if the
+	// session has re-submitted a START while this grant was in flight
+	// at the adapter, the cancelled flag is true and the delivery path
+	// converts STARTED into FAILED instead of handing the bus to a
+	// session that abandoned the grant. (Proxy-bug C4 / R4.)
+	req *startRequest
 }
 
 // Mux is the adapter multiplexer. It owns a single ENH/ENS connection
@@ -362,10 +437,12 @@ type sendRequest struct {
 // Call Start() to connect to the adapter and begin processing.
 func New(cfg Config) *Mux {
 	cfg.defaults()
+	arb := newArbitrator()
+	arb.setPolicy(cfg.PendingStartTTL)
 	return &Mux{
 		cfg:          cfg,
 		logger:       cfg.Logger,
-		arb:          newArbitrator(),
+		arb:          arb,
 		gatewayEcho:  newEchoTracker(),
 		sessions:     make(map[uint64]*session),
 		infoCache:    make(map[transport.AdapterInfoID][]byte),
@@ -1250,7 +1327,41 @@ func (m *Mux) readLoop() {
 			}
 			m.stateMu.Unlock()
 
-			m.handleArbitrationResponse(false, event.Data)
+			// Phantom-collision filter (proxy-bug C5 / R5): compute
+			// BEFORE handleArbitrationResponse so the bidder's
+			// notify channel does not carry the fictitious byte
+			// either. handleArbitrationResponse forwards `data` to
+			// the active bidder's startResult.initiator, which the
+			// bidder's handleStart goroutine then writes through
+			// deliverFailed → ENHResFailed(initiator). If we
+			// filtered only the synthesis-to-other-sessions path,
+			// the active bidder still saw the phantom byte in its
+			// own FAILED response — defeating the filter for the
+			// exact session that triggered the arbitration. (Codex
+			// P2 round 5 on PR #623.)
+			isPhantom := false
+			if m.cfg.IsKnownInitiatorByte != nil && !m.cfg.IsKnownInitiatorByte(event.Data) {
+				isPhantom = true
+				m.logger.Printf("adaptermux: phantom FAILED data=0x%02X (not a known bus initiator) — substituting bidder's own initiator on notify", event.Data)
+			}
+
+			// Choose the byte we propagate into the bidder's notify
+			// channel. For a real winner this is `event.Data`. For a
+			// phantom we substitute the bidder's own pending
+			// initiator: the bidder learns "you lost" but does not
+			// learn a fictitious winner address. When there's no
+			// active bidder (no pending start), this fallback is
+			// unused.
+			notifyByte := event.Data
+			if isPhantom && hasActiveBidder {
+				m.stateMu.Lock()
+				if m.pendingStart != nil && m.pendingStart.sessionID == activeBidderSessionID {
+					notifyByte = m.pendingStart.initiator
+				}
+				m.stateMu.Unlock()
+			}
+
+			m.handleArbitrationResponse(false, notifyByte)
 
 			// Synthesize the winner byte:
 			//   - No active bidder (absorbed-stale OR no pending):
@@ -1269,13 +1380,15 @@ func (m *Mux) readLoop() {
 			//     RECEIVED(winner)). Multi-monitor deployments need
 			//     the byte on the non-bidder sessions to keep their
 			//     bus state synced. (Codex P2 round 3 on PR #620.)
-			switch {
-			case !hasActiveBidder:
-				m.deliverToSessions(event.Data, 0, false, time.Now())
-			case activeBidderSessionID == gatewaySessionID:
-				m.deliverToSessions(event.Data, 0, false, time.Now())
-			default:
-				m.deliverWinnerByteToOtherSessions(event.Data, activeBidderSessionID)
+			if !isPhantom {
+				switch {
+				case !hasActiveBidder:
+					m.deliverToSessions(event.Data, 0, false, time.Now())
+				case activeBidderSessionID == gatewaySessionID:
+					m.deliverToSessions(event.Data, 0, false, time.Now())
+				default:
+					m.deliverWinnerByteToOtherSessions(event.Data, activeBidderSessionID)
+				}
 			}
 			// FAILED always means a non-gateway initiator won the
 			// arbitration (gateway-win produces STARTED, not FAILED).
@@ -1348,16 +1461,26 @@ func (m *Mux) onReceived(symbol byte) {
 
 	ownerID, _, hasOwner := m.arb.owner()
 
-	// Track wire activity for the inter-byte-gap measurement that drives
-	// SYN-timeout / idle-release decisions for external sessions. Every
-	// non-SYN byte resets the activity clock, so a long-running external
-	// transaction with real inter-responder traffic does not get torn
-	// down purely because the grant itself is old.
+	// Track wire activity for two purposes:
+	//   1. F-10v2 (PR #621): inter-byte-gap measurement that drives
+	//      SYN-timeout / idle-release decisions for external owners.
+	//      Every non-SYN byte resets the activity clock, so a long-
+	//      running external transaction with real inter-responder
+	//      traffic does not get torn down purely because the grant
+	//      itself is old.
+	//   2. Proxy-bug C1 (PR #623): the bus-idle fast path in
+	//      tryGrant + the requestStartForSession enqueue-kick both
+	//      consult lastWireActivity to decide whether the wire is
+	//      quiescent. THIRD-PARTY passive frames must count as "wire
+	//      busy" too — otherwise the idle check fires while a non-
+	//      mux initiator is mid-transaction and the kick issues an
+	//      adapter START in the middle of passive traffic. (Codex
+	//      P2 round 5 on PR #623.)
 	//
 	// SYN markers do NOT bump the activity clock — they are the very
 	// signal we use to decide when the bus has been idle long enough
-	// for a release. (Codex P1+P2 on PR #621.)
-	if hasOwner && symbol != protocol.SymbolSyn {
+	// for a release.
+	if symbol != protocol.SymbolSyn {
 		m.lastWireActivity = now
 	}
 
@@ -2180,6 +2303,76 @@ func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 // handleArbitrationResponse. This ensures passive observers continue
 // to receive bus bytes during gateway arbitration.
 //
+// requestStartForSession submits a START request via the arbitrator
+// and additionally:
+//
+//   - Marks any in-flight grant for the SAME session as cancelled
+//     (proxy-bug C4 / R4 in-flight branch — Codex P1 round 1 on
+//     PR #623). The arbitrator's replace path inside requestStart
+//     can only flag entries that are still in pendingExternal /
+//     pendingGateway; once tryGrant has popped a request into
+//     m.pendingStart, a same-session re-submit no longer finds it
+//     in the arbitrator and the cancelled flag would otherwise stay
+//     false. Catching the in-flight case here is what makes
+//     handleArbitrationResponse's cancelled-check actually fire in
+//     production.
+//
+//   - Opportunistically kicks tryGrantAndStart if the bus is idle
+//     (proxy-bug C1 fast-path enqueue trigger — Codex P1 round 1
+//     on PR #623). The mux's primary grant rhythm is driven by SYN
+//     arrivals via readLoop; on a quiet bus that means a new START
+//     can wait up to ReadTimeout (~200 ms default) before the first
+//     grant attempt — long past the C3 PendingStartTTL window of
+//     50 ms. Kicking on enqueue lets the idle fast-path grant a
+//     submission immediately when no SYN is imminent.
+//
+// All Mux/session/active-path callers MUST route through this method
+// rather than calling m.arb.requestStart directly, so both branches
+// of the C4 cancel + the C1 enqueue-kick are guaranteed to run.
+func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan startResult {
+	// Steps 1+2 MUST be atomic under stateMu so a concurrent
+	// tryGrantAndStart cannot pop the OLD request out of
+	// pendingExternal between the in-flight check and the
+	// arbitrator replacement — that gap would leave a re-submitted
+	// session with neither flag set (Codex P1 round 4 on PR #623).
+	// Lock order stateMu → arb.mu matches tryGrantAndStart's order,
+	// so no ABBA risk.
+	m.stateMu.Lock()
+	// Step 1: cancel any in-flight grant for THIS session. The
+	// arbitrator's replace path (inside requestStart) only sees
+	// pendingExternal/pendingGateway entries; once an entry has
+	// been popped into m.pendingStart this is the only place the
+	// cancelled flag gets set.
+	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID && m.pendingStart.req != nil {
+		m.arb.markInFlightCancelled(m.pendingStart.req)
+	}
+
+	// Step 2: hand off to the arbitrator. Holding stateMu across
+	// this call is what closes the race: tryGrantAndStart's pop
+	// is also gated on stateMu, so it cannot interleave between
+	// step 1 and step 2.
+	ch := m.arb.requestStart(sessionID, initiator)
+
+	// Step 3: opportunistic kick — only when the wire has been quiet
+	// for at least one SYN interval. The SYN-driven grant rhythm in
+	// readLoop won't fire for up to ReadTimeout (~200 ms) on a
+	// genuinely quiet bus; without this kick a START can sit
+	// unattended past the C3 PendingStartTTL window. On a busy bus
+	// the next SYN handler will pick up the grant naturally, so we
+	// don't intrude on the established arbitration cadence. The
+	// idle check mirrors the snapshot used inside tryGrantAndStart
+	// for the C1 fast path. Read the snapshot while still holding
+	// stateMu so we get a coherent view before releasing.
+	idle := m.lastWireActivity.IsZero() ||
+		time.Since(m.lastWireActivity) >= m.cfg.SYNInterval
+	m.stateMu.Unlock()
+	if idle {
+		m.tryGrantAndStart()
+	}
+
+	return ch
+}
+
 // Guard: only one pending START at a time. If pendingStart is non-nil,
 // this method is a no-op — the next tryGrantAndStart will fire after
 // the current one resolves.
@@ -2196,7 +2389,7 @@ func (m *Mux) tryGrantAndStart() {
 	isBlockingPath := !hasRequestStart && hasBlockingStart
 
 	// P1 fix (#3062924968): serialize the pendingStart guard, the
-	// arb.tryGrant() dequeue, and the pendingStart assignment in a
+	// tryGrantLegacy(arb) dequeue, and the pendingStart assignment in a
 	// single stateMu critical section.  Without this, two concurrent
 	// callers (readLoop + RemoveSession goroutine) can both pass the
 	// nil-guard, dequeue different requests, and one overwrites the
@@ -2233,17 +2426,35 @@ func (m *Mux) tryGrantAndStart() {
 		return
 	}
 
-	sessionID, initiator, notify, granted := m.arb.tryGrant()
+	// Bus-idle snapshot for the proxy-bug C1 (R1) fast path: the
+	// wire has been quiet for at least one SYN interval. When the
+	// fast path engages, tryGrant hands the external FIFO head over
+	// directly and skips the fairness rotation — fairness has
+	// nothing to balance when there is no real contention.
+	// lastWireActivity is bumped on every non-SYN adapter byte while
+	// ownership is held; on a fresh boot it may be zero (no traffic
+	// yet), which we treat as idle so the first external START
+	// doesn't wait a fairness quantum. tryGrant itself rejects when
+	// the bus is owned, so this snapshot does not need to consult
+	// the arbitrator's ownership state.
+	busIdle := m.lastWireActivity.IsZero() ||
+		time.Since(m.lastWireActivity) >= m.cfg.SYNInterval
+
+	req, granted := m.arb.tryGrant(busIdle)
 	if !granted {
 		m.stateMu.Unlock()
 		return
 	}
+	sessionID := req.sessionID
+	initiator := req.initiator
+	notify := req.notify
 
 	m.pendingStart = &pendingStartState{
 		sessionID:   sessionID,
 		initiator:   initiator,
 		notify:      notify,
 		blockingArb: isBlockingPath,
+		req:         req,
 	}
 	// AM8: start a deadline timer so pendingStart cannot block indefinitely
 	// if the adapter never responds with STARTED/FAILED.
@@ -2649,6 +2860,61 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			// After resolving, check if more requests are pending.
 			if m.arb.hasPending() {
 				m.tryGrantAndStart()
+			}
+			return
+		}
+		// Proxy-bug C4 / R4: if the session has re-submitted a START
+		// for this session while THIS grant was in flight at the
+		// adapter, the original startRequest's cancelled flag has
+		// been set by arb.requestStart's replace path. The session
+		// has already drained its old notify channel (granted=false
+		// on the replace) and is now waiting on a fresh notify.
+		// Handing it ENHResStarted for the abandoned grant would
+		// leave the mux thinking the bus is owned by a session that
+		// has moved on; instead, convert the STARTED into a FAILED
+		// (no-grant) so the bus is released cleanly and the next
+		// tryGrantAndStart re-picks the session's current request.
+		if pending.req != nil && pending.req.cancelled.Load() {
+			m.pendingStart = nil
+			if pending.deadline != nil {
+				pending.deadline.Stop() // AM8: cancel deadline timer
+			}
+			// Adapter resync (Codex P1 round 3 on PR #623): the
+			// STARTED we are consuming is a real adapter grant —
+			// the adapter believes the abandoned bid won the bus
+			// and is now driving its in-progress transaction state
+			// for that grant. Launching a fresh RequestStart on the
+			// same transport would put us one arbitration behind
+			// the adapter (mux thinks no owner, adapter still
+			// holding the cancelled session's grant). Mirror the
+			// stale-STARTED-absorb reconnect: close the upstream
+			// conn so readLoop's error handler invokes reconnect(),
+			// which fails/re-queues arbitration safely. Do NOT
+			// invoke tryGrantAndStart in-line — the reconnect path
+			// advances the queue.
+			m.stateMu.Unlock()
+			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was replaced; forcing reconnect for adapter resync (C4/R4)", pending.sessionID)
+			// Best-effort send: the old notify channel is buffered
+			// to 1 and may already hold the replace's
+			// granted=false result, so a stale STARTED never blocks
+			// the readLoop here.
+			select {
+			case pending.notify <- startResult{
+				granted:   false,
+				initiator: pending.initiator,
+				err:       errors.New("adaptermux: START superseded by client re-submit"),
+			}:
+			default:
+			}
+			m.connMu.Lock()
+			c := m.conn
+			m.connMu.Unlock()
+			if c != nil {
+				if err := c.Close(); err != nil {
+					m.logger.Printf("adaptermux: cancelled-STARTED reconnect close: %v", err)
+				} else {
+					m.logger.Printf("adaptermux: cancelled-STARTED triggered transport reconnect for adapter resync")
+				}
 			}
 			return
 		}

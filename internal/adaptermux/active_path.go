@@ -175,7 +175,10 @@ func (t *activeTransport) Close() error {
 // disconnect — pending START requests do not hang for the duration of
 // the reconnection backoff.
 func (t *activeTransport) StartArbitration(initiator byte) error {
-	ch := t.mux.arb.requestStart(gatewaySessionID, initiator)
+	// Use the Mux wrapper so the proxy-bug C4 in-flight cancel + C1
+	// enqueue-kick fire on every gateway START submission, same as
+	// for external sessions.
+	ch := t.mux.requestStartForSession(gatewaySessionID, initiator)
 
 	select {
 	case result := <-ch:

@@ -1,6 +1,22 @@
 package adaptermux
 
-import "sync"
+import (
+	"errors"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// errStaleStartRequest is delivered to the notify channel of an
+// external pending START whose enqueued-at age exceeds
+// Config.PendingStartTTL by the time tryGrant pops it. ebusd (and
+// other external clients) typically have a ~50ms local arbitration
+// deadline; delivering a STARTED past that window produces "won in
+// invalid state" errors on their side. Returning a clean failure
+// instead lets them re-request when they actually want the bus.
+//
+// Proxy-bug C3 (R3).
+var errStaleStartRequest = errors.New("adaptermux: pending START rejected — exceeded PendingStartTTL")
 
 // arbitrator manages bus ownership between the gateway (internal) and
 // external sessions (ebusd) using a two-class priority model with an
@@ -67,6 +83,16 @@ type arbitrator struct {
 	// unchanged and the counter holds at its current value (no-op
 	// when standalone).
 	fairnessCounter int
+
+	// nowFn is the time source the arbitrator uses for enqueuedAt
+	// timestamps and PendingStartTTL comparisons. Defaults to
+	// time.Now; tests override to run TTL drains deterministically.
+	nowFn func() time.Time
+
+	// pendingStartTTL is the maximum dwell time of an external pending
+	// START before tryGrant drops + rejects it with errStaleStartRequest.
+	// Zero disables the policy. Configured via Mux.cfg.PendingStartTTL.
+	pendingStartTTL time.Duration
 }
 
 // FairnessRatio is the every-Nth grant that goes to external FIFO when
@@ -86,6 +112,21 @@ type startRequest struct {
 	sessionID uint64
 	initiator byte
 	notify    chan startResult // receives exactly one result
+
+	// enqueuedAt is the monotonic time the request was admitted to
+	// the arbitrator. Used by tryGrant for PendingStartTTL drop-and-
+	// reject on stale heads (proxy-bug C3 / R3).
+	enqueuedAt time.Time
+
+	// cancelled is set when a session re-submits a START for the
+	// same session ID — the old request's notify channel is already
+	// closed-out with granted=false in requestStart, but the adapter
+	// may still return STARTED/FAILED for an in-flight grant that
+	// was popped from pendingExternal before the replace. The mux
+	// checks this flag on the delivery path and converts a late
+	// STARTED into a FAILED to avoid handing the bus to a session
+	// that already gave up. (Proxy-bug C4 / R4.)
+	cancelled atomic.Bool
 }
 
 // startResult is the outcome of a START arbitration request.
@@ -103,6 +144,7 @@ const gatewaySessionID uint64 = 0
 func newArbitrator() *arbitrator {
 	return &arbitrator{
 		pendingExternal: make([]*startRequest, 0, 4),
+		nowFn:           time.Now,
 	}
 }
 
@@ -114,18 +156,24 @@ func newArbitrator() *arbitrator {
 // via a call to tryGrant() by the mux loop.
 func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan startResult {
 	ch := make(chan startResult, 1)
-	req := &startRequest{
-		sessionID: sessionID,
-		initiator: initiator,
-		notify:    ch,
-	}
-
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	req := &startRequest{
+		sessionID:  sessionID,
+		initiator:  initiator,
+		notify:     ch,
+		enqueuedAt: a.now(),
+	}
 
 	if sessionID == gatewaySessionID {
-		// Cancel any existing gateway request.
+		// Cancel any existing gateway request. The old request is
+		// also flagged cancelled so that — if it has already been
+		// popped by tryGrant and is now in flight at the adapter —
+		// the mux's delivery path can convert a late STARTED into
+		// a FAILED instead of handing the bus to a session that
+		// abandoned the grant. (Proxy-bug C4 / R4.)
 		if a.pendingGateway != nil {
+			a.pendingGateway.cancelled.Store(true)
 			a.pendingGateway.notify <- startResult{granted: false, initiator: a.pendingGateway.initiator}
 		}
 		a.pendingGateway = req
@@ -133,6 +181,7 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 		// Remove any existing request from this session.
 		for i, existing := range a.pendingExternal {
 			if existing.sessionID == sessionID {
+				existing.cancelled.Store(true)
 				existing.notify <- startResult{granted: false, initiator: existing.initiator}
 				a.pendingExternal = append(a.pendingExternal[:i], a.pendingExternal[i+1:]...)
 				break
@@ -142,6 +191,38 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 	}
 
 	return ch
+}
+
+// markInFlightCancelled is called by the mux when a new requestStart
+// arrives for a session whose previous grant has already been popped
+// from pendingExternal/pendingGateway and is in flight at the adapter.
+// The pendingStartState that the mux holds carries the *startRequest;
+// flagging cancelled here is what handleArbitrationResponse checks to
+// short-circuit a late STARTED into a FAILED. Returns the previous
+// value of the flag so the caller can detect double-cancels.
+// (Proxy-bug C4 / R4.)
+func (a *arbitrator) markInFlightCancelled(req *startRequest) bool {
+	if req == nil {
+		return false
+	}
+	return req.cancelled.Swap(true)
+}
+
+// now returns the arbitrator's clock. Indirected for tests that need
+// deterministic PendingStartTTL drains.
+func (a *arbitrator) now() time.Time {
+	if a.nowFn == nil {
+		return time.Now()
+	}
+	return a.nowFn()
+}
+
+// setPolicy injects per-cycle policy fields the mux derives from
+// Config. Called once on mux construction.
+func (a *arbitrator) setPolicy(pendingStartTTL time.Duration) {
+	a.mu.Lock()
+	a.pendingStartTTL = pendingStartTTL
+	a.mu.Unlock()
 }
 
 // cancelStart cancels a pending START request for the given session.
@@ -173,23 +254,56 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 // for bus ownership. Called at SYN boundaries and when the bus becomes
 // idle.
 //
+// busIdle is the caller's snapshot of "the wire has been quiet for at
+// least one SYN interval AND the arbitrator does not believe it has
+// granted ownership yet." On an idle bus the fairness rotation is
+// counter-productive — there is no real contention to balance, so
+// holding an external pending START in the queue until a fairness
+// quantum elapses only wastes wall-clock that ebusd's local
+// arbitration deadline counts against the gateway. When busIdle is
+// true and external is pending, this function grants the external
+// FIFO head immediately and does NOT advance the fairness counter.
+// (Proxy-bug C1 / R1.)
+//
 // Ownership is NOT set here — the caller MUST call confirmOwnership
 // after the adapter's StartArbitration succeeds (Codex P1 #3060199707:
 // defer ownership until adapter START confirms). The caller MUST also
 // send a startResult on the notify channel after success or failure.
 //
-// Returns (0, 0, nil, false) if no requests are pending or the bus
-// is already owned.
-func (a *arbitrator) tryGrant() (sessionID uint64, initiator byte, notify chan startResult, granted bool) {
+// Returns (nil, false) if no requests are pending or the bus is
+// already owned.
+func (a *arbitrator) tryGrant(busIdle bool) (req *startRequest, granted bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if a.hasOwner {
-		return 0, 0, nil, false
+		return nil, false
 	}
+
+	// Drain stale entries from the head of pendingExternal:
+	// requests whose enqueuedAt has aged past PendingStartTTL get a
+	// clean failure with errStaleStartRequest. ebusd's local
+	// arbitration deadline is ~50 ms; delivering a STARTED past that
+	// window produces "won in invalid state" errors on its side.
+	// (Proxy-bug C3 / R3.) Drain ALWAYS before any grant decision so
+	// stale heads can't claim grants the gateway might otherwise
+	// have served.
+	a.drainStalePendingExternalLocked()
 
 	gatewayPending := a.pendingGateway != nil
 	externalPending := len(a.pendingExternal) > 0
+
+	// Bus-idle fast path: grant external immediately and skip the
+	// fairness rotation entirely. The bus is wide open, so there's
+	// no reason to defer external for a fairness quantum. Gateway
+	// would also be granted on the next tryGrant invocation if it
+	// has any pending work (caller invokes tryGrantAndStart on every
+	// SYN boundary). (Proxy-bug C1 / R1.)
+	if busIdle && externalPending {
+		ext := a.pendingExternal[0]
+		a.pendingExternal = a.pendingExternal[1:]
+		return ext, true
+	}
 
 	// F-4 fairness window: when BOTH classes are pending AND the
 	// fairness counter has reached the ratio, prefer external FIFO
@@ -207,21 +321,54 @@ func (a *arbitrator) tryGrant() (sessionID uint64, initiator byte, notify chan s
 	}
 
 	if gatewayPending && !preferExternalThisGrant {
-		req := a.pendingGateway
+		gw := a.pendingGateway
 		a.pendingGateway = nil
-		return gatewaySessionID, req.initiator, req.notify, true
+		return gw, true
 	}
 
 	// External FIFO: grant to first external request. Reached when
 	// (a) gateway has no pending request, or (b) fairness window
 	// rotated this grant to external.
 	if externalPending {
-		req := a.pendingExternal[0]
+		ext := a.pendingExternal[0]
 		a.pendingExternal = a.pendingExternal[1:]
-		return req.sessionID, req.initiator, req.notify, true
+		return ext, true
 	}
 
-	return 0, 0, nil, false
+	return nil, false
+}
+
+// drainStalePendingExternalLocked rejects any external pending START
+// whose enqueuedAt is older than pendingStartTTL. Each stale entry's
+// notify channel receives granted=false with errStaleStartRequest so
+// the client (ebusd) can retry cleanly when it actually wants the bus
+// again. (Proxy-bug C3 / R3.) Must be called with a.mu held.
+func (a *arbitrator) drainStalePendingExternalLocked() {
+	if a.pendingStartTTL <= 0 || len(a.pendingExternal) == 0 {
+		return
+	}
+	now := a.now()
+	keep := a.pendingExternal[:0]
+	for _, req := range a.pendingExternal {
+		if now.Sub(req.enqueuedAt) > a.pendingStartTTL {
+			req.cancelled.Store(true)
+			// Best-effort notify — buffer is 1, but a session that
+			// has already drained the channel (replaced this
+			// request meanwhile) would have left it empty, so the
+			// send succeeds. Use non-blocking send for safety.
+			select {
+			case req.notify <- startResult{granted: false, initiator: req.initiator, err: errStaleStartRequest}:
+			default:
+			}
+			continue
+		}
+		keep = append(keep, req)
+	}
+	// In-place rebuild to preserve capacity.
+	for i := len(keep); i < len(a.pendingExternal); i++ {
+		a.pendingExternal[i] = nil
+	}
+	a.pendingExternal = keep
 }
 
 // confirmOwnership sets bus ownership after the adapter's

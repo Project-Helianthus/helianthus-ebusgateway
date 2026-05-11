@@ -124,6 +124,14 @@ func (t *p3MockTransport) getStartRequests() []byte {
 
 // newP3TestMux creates a Mux with a p3MockTransport injected, fully
 // started with readLoop and sendLoop goroutines running.
+//
+// IMPORTANT: the helper marks the bus as RECENTLY-ACTIVE
+// (lastWireActivity = now) so that tests defaulting to "no wire
+// traffic" still take the contended-bus arbitration path. This
+// preserves the pre-C1 gateway-priority semantics that most legacy
+// p3 tests pin. Tests that want to exercise the C1 bus-idle fast
+// path should call mux.markBusIdleForTest() (or set
+// lastWireActivity to a time older than cfg.SYNInterval) explicitly.
 func newP3TestMux(t *testing.T) (*Mux, *p3MockTransport, context.CancelFunc, func()) {
 	t.Helper()
 
@@ -134,6 +142,8 @@ func newP3TestMux(t *testing.T) (*Mux, *p3MockTransport, context.CancelFunc, fun
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
+	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -144,6 +154,12 @@ func newP3TestMux(t *testing.T) (*Mux, *p3MockTransport, context.CancelFunc, fun
 	mux.upstream = mock
 	mux.connMu.Unlock()
 	mux.upstreamFeatures.Store(0x01)
+
+	// Force the contended-bus arbitration path by default (C1 fast
+	// path stays asleep). See helper docstring above.
+	mux.stateMu.Lock()
+	mux.lastWireActivity = time.Now()
+	mux.stateMu.Unlock()
 
 	// Start readLoop and sendLoop.
 	mux.wg.Add(2)
@@ -614,6 +630,8 @@ func TestCancelPendingStart_DuringRequestStart(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
+	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -956,6 +974,8 @@ func TestP3_Close_ClearsPendingStart(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
+	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1013,6 +1033,8 @@ func TestP3_FallbackStartArbitration(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
+	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 	mux.ctx, mux.cancel = ctx, cancel
 
@@ -1125,6 +1147,8 @@ func TestRequestStartFailAfterCancel_NoDoubleSend(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
+	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1224,6 +1248,8 @@ func TestAbsorbDecrementOnRequestStartFailAfterCancel(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
+	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1680,6 +1706,8 @@ func TestConcurrentTryGrantAndStart(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
+	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1818,6 +1846,8 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
+	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1913,6 +1943,8 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 		Network:     "tcp",
 		Address:     "127.0.0.1:0",
 		ReadTimeout: 200 * time.Millisecond,
+	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

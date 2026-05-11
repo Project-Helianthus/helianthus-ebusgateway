@@ -332,6 +332,12 @@ func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
 		Address:       "127.0.0.1:0",
 		ReadTimeout:   200 * time.Millisecond,
 		StartDeadline: 150 * time.Millisecond,
+		// C1/C3 test isolation: this test pins blocking-START no-
+		// overlap semantics on the gateway, so disable the TTL
+		// drain (default 50 ms would reject the external pending
+		// during the test's 150 ms deadline window).
+		PendingStartTTL: 24 * time.Hour,
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -342,6 +348,11 @@ func TestBlockingArbDeadline_NoOverlap(t *testing.T) {
 	mux.upstream = mock
 	mux.connMu.Unlock()
 	mux.upstreamFeatures.Store(0x01)
+	// Force contended-bus path so gateway gets the first grant
+	// (test pre-dates the C1 idle fast-path).
+	mux.stateMu.Lock()
+	mux.lastWireActivity = time.Now()
+	mux.stateMu.Unlock()
 
 	// Queue two requests: gateway + external.
 	gwCh := mux.arb.requestStart(gatewaySessionID, 0x71)
@@ -1091,6 +1102,9 @@ func TestBlockingArbDeadline_TriggersReconnect_NoOverlap(t *testing.T) {
 		Address:       "127.0.0.1:0",
 		ReadTimeout:   200 * time.Millisecond,
 		StartDeadline: 120 * time.Millisecond,
+		// C1/C3 test isolation (see paired test above).
+		PendingStartTTL: 24 * time.Hour,
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1104,6 +1118,11 @@ func TestBlockingArbDeadline_TriggersReconnect_NoOverlap(t *testing.T) {
 	mux.upstream = mock
 	mux.connMu.Unlock()
 	mux.upstreamFeatures.Store(0x01)
+	// Force contended-bus path so gateway gets the first grant
+	// (test pre-dates the C1 idle fast-path).
+	mux.stateMu.Lock()
+	mux.lastWireActivity = time.Now()
+	mux.stateMu.Unlock()
 
 	// Queue two requests: the first will hit the blocking path, the
 	// second should remain queued while the first is hung.
@@ -1449,7 +1468,7 @@ func TestDeliverToActive_RechecksGatingAtomically(t *testing.T) {
 
 	// Grant gateway ownership so isGatewayOwned=true in onReceived.
 	_ = mux.arb.requestStart(gatewaySessionID, 0x71)
-	mux.arb.tryGrant()
+	tryGrantLegacy(mux.arb)
 	mux.arb.confirmOwnership(gatewaySessionID, 0x71)
 	mux.stateMu.Lock()
 	mux.gatewayTxnActive = true
@@ -1549,7 +1568,7 @@ func TestDeliverToActive_RecheckSkipsEnqueueAfterFlip(t *testing.T) {
 	defer cleanup()
 
 	_ = mux.arb.requestStart(gatewaySessionID, 0x71)
-	mux.arb.tryGrant()
+	tryGrantLegacy(mux.arb)
 	mux.arb.confirmOwnership(gatewaySessionID, 0x71)
 	mux.stateMu.Lock()
 	mux.gatewayTxnActive = false // active path does NOT expect bytes

@@ -53,7 +53,7 @@ func TestSession_StartedCarriesInitiator(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// tryGrant pulls the pending request (ownership not yet set).
-	sessionID, initiator, notify, granted := mux.arb.tryGrant()
+	sessionID, initiator, notify, granted := tryGrantLegacy(mux.arb)
 	if !granted {
 		t.Fatal("expected grant from arbitrator")
 	}
@@ -93,7 +93,7 @@ func TestSession_FailedCarriesInitiator(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	_, initiator, notify, granted := mux.arb.tryGrant()
+	_, initiator, notify, granted := tryGrantLegacy(mux.arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -453,7 +453,7 @@ func TestSession_StartFailedByResetDeliversResetted(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	_, _, notify, granted := mux.arb.tryGrant()
+	_, _, notify, granted := tryGrantLegacy(mux.arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}
@@ -495,7 +495,7 @@ func TestSession_StartFailedByCollisionDeliversFailed(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	_, initiator, notify, granted := mux.arb.tryGrant()
+	_, initiator, notify, granted := tryGrantLegacy(mux.arb)
 	if !granted {
 		t.Fatal("expected grant")
 	}

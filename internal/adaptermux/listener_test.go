@@ -80,6 +80,8 @@ func newTestMux(t *testing.T) (*Mux, context.CancelFunc, func()) {
 		Address:     adapterAddr,
 		DialTimeout: 2 * time.Second,
 		ReadTimeout: 200 * time.Millisecond,
+	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	}
 
 	mux := New(cfg)
@@ -90,6 +92,14 @@ func newTestMux(t *testing.T) (*Mux, context.CancelFunc, func()) {
 		cancel()
 		t.Fatalf("mux.Start: %v", err)
 	}
+
+	// Default to contended-bus arbitration so legacy tests that
+	// assume gateway-priority continue to pass under the C1 fast
+	// path. Tests that explicitly want to exercise the bus-idle
+	// fast path should override this in their setup.
+	mux.stateMu.Lock()
+	mux.lastWireActivity = time.Now()
+	mux.stateMu.Unlock()
 
 	cleanup := func() {
 		cancel()
@@ -322,6 +332,8 @@ func TestConnect_INITRetrySucceeds(t *testing.T) {
 		Address:     adapterAddr,
 		DialTimeout: 2 * time.Second,
 		ReadTimeout: 200 * time.Millisecond,
+	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
+	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
 	}
 
 	mux := New(cfg)

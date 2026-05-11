@@ -1473,7 +1473,7 @@ func (m *Mux) onReceived(symbol byte) {
 	//      consult lastWireActivity to decide whether the wire is
 	//      quiescent. THIRD-PARTY passive frames must count as "wire
 	//      busy" too — otherwise the idle check fires while a non-
-	//      mux master is mid-transaction and the kick issues an
+	//      mux initiator is mid-transaction and the kick issues an
 	//      adapter START in the middle of passive traffic. (Codex
 	//      P2 round 5 on PR #623.)
 	//

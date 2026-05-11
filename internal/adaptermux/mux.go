@@ -1174,6 +1174,17 @@ func (m *Mux) readLoop() {
 				startedBidderInitiator = m.pendingStart.initiator
 				startedBidderValid = true
 			}
+			// The STARTED event represents a real winner byte that
+			// the adapter consumed from the wire. Bump
+			// lastWireActivity so the C1 fast path / requestStart-
+			// ForSession enqueue-kick correctly treat the wire as
+			// non-idle during the third-party transaction that is
+			// about to flow through onReceived. Without this, a new
+			// external START enqueued in the gap between this
+			// control event and the next StreamEventByte would see
+			// an old timestamp and idle-kick mid-frame. (Codex P2
+			// round 6 on PR #623.)
+			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
 			m.handleArbitrationResponse(true, event.Data)
 			// Synthesize the arbitration-winner byte as a passive
@@ -1353,13 +1364,21 @@ func (m *Mux) readLoop() {
 			// active bidder (no pending start), this fallback is
 			// unused.
 			notifyByte := event.Data
-			if isPhantom && hasActiveBidder {
-				m.stateMu.Lock()
-				if m.pendingStart != nil && m.pendingStart.sessionID == activeBidderSessionID {
-					notifyByte = m.pendingStart.initiator
-				}
-				m.stateMu.Unlock()
+			// Bump lastWireActivity AND substitute the phantom byte
+			// in one stateMu critical section. The FAILED event
+			// represents a real winner byte that the adapter
+			// consumed from the wire — bumping lastWireActivity
+			// keeps the C1 fast path / requestStartForSession
+			// enqueue-kick from treating the wire as idle during
+			// the third-party transaction that follows. (Codex P2
+			// round 6 on PR #623.)
+			m.stateMu.Lock()
+			m.lastWireActivity = time.Now()
+			if isPhantom && hasActiveBidder &&
+				m.pendingStart != nil && m.pendingStart.sessionID == activeBidderSessionID {
+				notifyByte = m.pendingStart.initiator
 			}
+			m.stateMu.Unlock()
 
 			m.handleArbitrationResponse(false, notifyByte)
 
@@ -2841,6 +2860,13 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			if pending.deadline != nil {
 				pending.deadline.Stop() // AM8: cancel deadline timer
 			}
+			// The mismatched-STARTED's `data` byte was consumed
+			// from the wire and a third-party transaction is about
+			// to flow through onReceived; bump lastWireActivity so
+			// the C1 fast path / enqueue-kick treat the wire as
+			// non-idle until the next byte event. (Codex P2 round 6
+			// on PR #623.)
+			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: STARTED mismatch: got initiator 0x%02X, pending 0x%02X — failing pending session %d (AM56)", data, pending.initiator, pending.sessionID)
 			// Notify the bidder with the THIRD-PARTY winner byte (`data`),

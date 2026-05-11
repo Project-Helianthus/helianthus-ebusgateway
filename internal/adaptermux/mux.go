@@ -2484,8 +2484,8 @@ func (m *Mux) tryGrantAndStart() {
 			m.pendingStart = nil
 			m.armPendingStartAbsorbLocked("deadline")
 			// F-15 (operator hand-off, batch-9/11): gate the reconnect by
-			// transport type, mirroring cancelPendingStart's existing
-			// pattern (mux.go:3004 `wasBlocking := pending.blockingArb`).
+			// transport type, mirroring `cancelPendingStart`'s existing
+			// `wasBlocking := pending.blockingArb` pattern.
 			//
 			// PRIOR BUG (`needReconnect := true` unconditionally): every
 			// deadline expiry forced an upstream reconnect — including on
@@ -2497,18 +2497,19 @@ func (m *Mux) tryGrantAndStart() {
 			// non-blocking path.
 			//
 			// LIVE EVIDENCE: 0 absorb-timeout reconnects across the entire
-			// 30k-line batch-9 log. The absorb safety-net at
-			// armPendingStartAbsorbLocked (mux.go:3056) drained naturally
-			// on every late-STARTED in production. The unconditional
-			// reconnect here was therefore never needed for the
-			// non-blocking transport in observed runs; for the rare
-			// truly-hung case the absorb timer's own
-			// StartDeadline-bounded reconnect path takes over.
+			// 30k-line batch-9 log. The absorb safety-net inside
+			// `armPendingStartAbsorbLocked` drained naturally on every
+			// late-STARTED in production. The unconditional reconnect
+			// here was therefore never needed for the non-blocking
+			// transport in observed runs; for the rare truly-hung case
+			// the absorb timer's own StartDeadline-bounded reconnect path
+			// takes over (covered by
+			// `TestAM8Deadline_NonBlockingPath_AbsorbTimerReconnectsOnTrulyHungAdapter`).
 			//
 			// BLOCKING TRANSPORT (legacy StartArbitration): the goroutine
 			// may still be hung in the transport call after the deadline,
 			// so the reconnect is still required to unstick it — same
-			// shape as cancelPendingStart at mux.go:3013.
+			// shape as `cancelPendingStart`.
 			wasBlocking := pending.blockingArb
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8, wasBlocking=%v)", pending.sessionID, wasBlocking)
@@ -2944,14 +2945,37 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			}
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was cancelled/replaced; absorbed (C4/R4)", pending.sessionID)
-			// Best-effort send: the old notify channel is buffered
-			// to 1 and may already hold the replace's granted=false
+			// F-17 follow-up (PR #626 review round-1, angry-tester
+			// finding F-1): the old notify channel MUST receive
+			// `cancelled: true` so session.go's handleStart goroutine
+			// (session.go:524) takes the silent-return branch instead
+			// of falling through to deliverFailed(initiator). Without
+			// this flag, the old goroutine still emits
+			// ENHResFailed(0x31) on the wire — the exact failure mode
+			// F-17 was filed to fix, just on the in-flight-cancel
+			// branch instead of the pendingExternal-replace branch.
+			//
+			// Symmetry: arb.requestStart's pendingExternal-replace and
+			// pendingGateway-replace paths set both the struct flag
+			// AND the channel-value flag (arbitration.go:175,188).
+			// arb.cancelStart sets both as well (arbitration.go:283,
+			// 292). markInFlightCancelled (called from
+			// requestStartForSession) sets only the struct flag
+			// because the channel-value send was deferred to whichever
+			// handleArbitrationResponse path eventually fires — THIS
+			// branch. The contract is: any code that observes a
+			// cancelled startRequest and resolves its notify channel
+			// MUST set `cancelled: true` on the value.
+			//
+			// Best-effort send: the old notify channel is buffered to
+			// 1 and may already hold the replace's granted=false
 			// result. A late STARTED for a cancelled bid still
-			// resolves the channel cleanly when the read-side
-			// hasn't drained it yet.
+			// resolves the channel cleanly when the read-side hasn't
+			// drained it yet.
 			select {
 			case pending.notify <- startResult{
 				granted:   false,
+				cancelled: true,
 				initiator: pending.initiator,
 				err:       errors.New("adaptermux: START superseded by client re-submit"),
 			}:
@@ -2972,15 +2996,42 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 		m.stateMu.Unlock()
 		m.completeArbitrationGrant(pending.sessionID, pending.initiator, pending.notify)
 	} else {
+		// F-17 follow-up (PR #626 review round-1, angry-tester finding
+		// F-1, FAILED-half): if the in-flight request was cancelled by
+		// markInFlightCancelled (called from requestStartForSession on
+		// a same-session re-submit), the FAILED arriving for the OLD
+		// bid is also addressed to a session that has already moved
+		// on. Without `cancelled: true` on the notify, session.go's
+		// handleStart goroutine takes the deliverFailed branch and
+		// emits ENHResFailed(winner) on the wire — same
+		// retry-feedback-loop class as F-17's STARTED-half. Suppress
+		// silently with the cancelled flag; the new request waits on
+		// its own fresh notify channel and the queue advances below.
+		cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 		m.pendingStart = nil
 		if pending.deadline != nil {
 			pending.deadline.Stop() // AM8: cancel deadline timer
 		}
 		m.stateMu.Unlock()
-		pending.notify <- startResult{
-			granted:   false,
-			initiator: data,
-			err:       fmt.Errorf("adaptermux: arbitration lost to 0x%02X: %w", data, ebuserrors.ErrBusCollision),
+		if cancelledInFlight {
+			m.logger.Printf("adaptermux: suppressing FAILED(0x%02X) for session %d — request was cancelled/replaced; absorbed (C4/R4 FAILED-half)", data, pending.sessionID)
+			// Best-effort send (cap-1 channel may already hold the
+			// replace's granted=false result).
+			select {
+			case pending.notify <- startResult{
+				granted:   false,
+				cancelled: true,
+				initiator: pending.initiator,
+				err:       errors.New("adaptermux: START superseded by client re-submit (FAILED arrived)"),
+			}:
+			default:
+			}
+		} else {
+			pending.notify <- startResult{
+				granted:   false,
+				initiator: data,
+				err:       fmt.Errorf("adaptermux: arbitration lost to 0x%02X: %w", data, ebuserrors.ErrBusCollision),
+			}
 		}
 	}
 

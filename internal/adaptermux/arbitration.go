@@ -274,13 +274,26 @@ func (a *arbitrator) setPolicy(pendingStartTTL time.Duration) {
 
 // cancelStart cancels a pending START request for the given session.
 // Returns true if a request was found and cancelled.
+//
+// AM55 / F-17 follow-up (PR #626 review round-1, angry-tester finding
+// F-2): callers are session.handleStart on a client-initiated SYN
+// cancel (session.go:493). The session has signalled it no longer
+// wants the bid, so the silent-return branch in handleStart
+// (session.go:524 — gated on `result.cancelled`) is the correct
+// resolution. Without `cancelled: true` on the notify, the old wait
+// goroutine falls through to deliverFailed → ENHResFailed on the
+// wire — exactly the failure mode F-17 was filed to fix. Pre-existing
+// latent before this PR (no observed-wild repro) but trivially racy
+// with the SYN-cancel-before-tryGrant window; fixed for symmetry with
+// every other cancellation path in the arbitrator.
 func (a *arbitrator) cancelStart(sessionID uint64) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if sessionID == gatewaySessionID {
 		if a.pendingGateway != nil {
-			a.pendingGateway.notify <- startResult{granted: false, initiator: a.pendingGateway.initiator}
+			a.pendingGateway.cancelled.Store(true)
+			a.pendingGateway.notify <- startResult{granted: false, cancelled: true, initiator: a.pendingGateway.initiator}
 			a.pendingGateway = nil
 			return true
 		}
@@ -289,7 +302,8 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 
 	for i, req := range a.pendingExternal {
 		if req.sessionID == sessionID {
-			req.notify <- startResult{granted: false, initiator: req.initiator}
+			req.cancelled.Store(true)
+			req.notify <- startResult{granted: false, cancelled: true, initiator: req.initiator}
 			a.pendingExternal = append(a.pendingExternal[:i], a.pendingExternal[i+1:]...)
 			return true
 		}

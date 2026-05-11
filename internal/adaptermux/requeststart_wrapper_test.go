@@ -1,8 +1,12 @@
 package adaptermux
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,21 +134,23 @@ func TestRequestStartForSession_IdleKickDispatchesImmediately(t *testing.T) {
 	}
 }
 
-// TestHandleArbitrationResponse_CancelledStartedResyncsAndDoesNotArmAbsorb
-// pins two Codex P1 rounds on PR #623:
+// TestHandleArbitrationResponse_CancelledStartedAbsorbsWithoutReconnect
+// pins the 0.6.6 revert of the earlier "force reconnect on cancelled
+// STARTED" behaviour:
 //
-//   - Round 2: handleArbitrationResponse MUST NOT arm
-//     pendingStartAbsorb when consuming a cancelled STARTED — there's
-//     no further stale response in flight; arming would gate the next
-//     tryGrantAndStart on the absorb barrier for up to StartDeadline.
+//   - pendingStartAbsorb MUST stay at 0 (round 2 of PR #623 review).
+//     The STARTED we are consuming is the only adapter response for
+//     the cancelled request; nothing further to swallow.
 //
-//   - Round 3: the adapter has already granted the abandoned bid, so
-//     before any replacement START can launch, the mux must force a
-//     transport resync (close the upstream conn so readLoop's error
-//     handler invokes reconnect). Otherwise the adapter is one
-//     arbitration ahead of the mux's view and the replacement would
-//     collide with the in-progress (but abandoned) transaction.
-func TestHandleArbitrationResponse_CancelledStartedResyncsAndDoesNotArmAbsorb(t *testing.T) {
+//   - The upstream conn MUST NOT be closed (regression introduced by
+//     Codex round-3 advice on PR #623, surfaced as the v0.6.5
+//     "device invalid" / "signal lost" 5-second cycle observed by
+//     the operator). eBUS arbitration is per-SYN stateless from the
+//     adapter's perspective; the next SYN boundary resets state, so
+//     no TCP teardown is required. Round-3's "the adapter is one
+//     arbitration ahead" intuition turned out to be wrong in
+//     practice on the live bus.
+func TestHandleArbitrationResponse_CancelledStartedAbsorbsWithoutReconnect(t *testing.T) {
 	mux := New(Config{
 		Protocol:        "enh",
 		Network:         "tcp",
@@ -154,7 +160,7 @@ func TestHandleArbitrationResponse_CancelledStartedResyncsAndDoesNotArmAbsorb(t 
 		PendingStartTTL: 24 * time.Hour,
 	})
 
-	// Install a fake conn so we can observe the reconnect-via-close.
+	// Install a fake conn whose Close-counter we can assert on.
 	connMock := newCancelledStartedConnMock()
 	mux.connMu.Lock()
 	mux.conn = connMock
@@ -182,19 +188,93 @@ func TestHandleArbitrationResponse_CancelledStartedResyncsAndDoesNotArmAbsorb(t 
 	// Stage 2: feed the STARTED response for the cancelled request.
 	mux.handleArbitrationResponse(true, 0x31)
 
-	// Round-2 assertion: pendingStartAbsorb MUST be zero.
+	// Assertion 1: pendingStartAbsorb MUST be zero.
 	mux.stateMu.Lock()
 	absorb := mux.pendingStartAbsorb
 	mux.stateMu.Unlock()
 	if absorb != 0 {
-		t.Errorf("pendingStartAbsorb = %d after consuming cancelled STARTED; want 0 (Codex P1 round 2 regression)", absorb)
+		t.Errorf("pendingStartAbsorb = %d after consuming cancelled STARTED; want 0", absorb)
 	}
 
-	// Round-3 assertion: the upstream conn MUST have been closed to
-	// force a reconnect/resync with the adapter.
-	if !connMock.closed.Load() {
-		t.Error("upstream conn was NOT closed after cancelled STARTED — adapter resync skipped (Codex P1 round 3 regression)")
+	// Assertion 2: the upstream conn MUST NOT have been closed. This
+	// is the v0.6.5 regression guard: closing the upstream produces a
+	// continuous teardown/reconnect cycle that takes ebusd offline
+	// every ~5 s (StartDeadline). Live capture confirmed the
+	// "forcing reconnect for adapter resync (C4/R4)" log line fired
+	// on every external re-submit. Reverted in 0.6.6.
+	if connMock.closed.Load() {
+		t.Error("upstream conn was closed after cancelled STARTED — v0.6.5 regression has returned; cancelled-STARTED MUST NOT force transport resync")
 	}
+}
+
+// TestCancelledStartedLog_DoesNotMentionReconnect is a string-level
+// regression guard. The "forcing reconnect for adapter resync (C4/R4)"
+// log line was the visible signature of the v0.6.5 regression — keep
+// it from coming back via a subtle re-introduction in another
+// commit.
+func TestCancelledStartedLog_DoesNotMentionReconnect(t *testing.T) {
+	var buf cancelledStartedLogBuffer
+	mux := New(Config{
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		SYNInterval:     time.Hour,
+		PendingStartTTL: 24 * time.Hour,
+		Logger:          log.New(&buf, "", 0),
+	})
+
+	// Same setup as the test above.
+	mux.connMu.Lock()
+	mux.conn = newCancelledStartedConnMock()
+	mux.connMu.Unlock()
+	_ = mux.arb.requestStart(1, 0x31)
+	mux.stateMu.Lock()
+	reqA := mux.arb.pendingExternal[0]
+	mux.arb.pendingExternal = mux.arb.pendingExternal[:0]
+	mux.pendingStart = &pendingStartState{
+		sessionID: 1, initiator: 0x31, notify: reqA.notify, req: reqA,
+	}
+	reqA.cancelled.Store(true)
+	mux.stateMu.Unlock()
+
+	mux.handleArbitrationResponse(true, 0x31)
+
+	got := buf.String()
+	bannedSubstrings := []string{
+		"forcing reconnect for adapter resync",
+		"cancelled-STARTED triggered transport reconnect",
+		"cancelled-STARTED reconnect close",
+	}
+	for _, banned := range bannedSubstrings {
+		if strings.Contains(got, banned) {
+			t.Errorf("log output mentions banned regression substring %q\nfull log:\n%s", banned, got)
+		}
+	}
+	// Sanity: positive marker for the absorb branch should appear.
+	if !strings.Contains(got, "absorbed (C4/R4)") {
+		t.Errorf("expected absorb-suppression log line, got:\n%s", got)
+	}
+}
+
+// cancelledStartedLogBuffer is a goroutine-safe log.Logger sink for
+// the regression test above. log.Logger holds its own mutex around
+// each Write, but the test reads the buffer concurrently with the
+// goroutines triggered by handleArbitrationResponse → tryGrantAndStart.
+type cancelledStartedLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *cancelledStartedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+func (b *cancelledStartedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // cancelledStartedConnMock is a minimal net.Conn-compatible stub used

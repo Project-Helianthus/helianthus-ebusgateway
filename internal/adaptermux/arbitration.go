@@ -174,7 +174,35 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 		// abandoned the grant. (Proxy-bug C4 / R4.)
 		if a.pendingGateway != nil {
 			a.pendingGateway.cancelled.Store(true)
-			a.pendingGateway.notify <- startResult{granted: false, initiator: a.pendingGateway.initiator}
+			// F-17 (operator hand-off, batch-9): MUST set
+			// startResult.cancelled = true so the waiter's
+			// handleStart goroutine takes the silent-suppression
+			// branch in session.go (around line 524 — same path
+			// that AM55 SYN-cancel uses) instead of the
+			// deliverFailed(initiator) branch that produces a
+			// spurious ENHResFailed on the wire. Without this,
+			// ebusd reads the FAILED as "lost arbitration to its
+			// own initiator byte," retries within ~50 ms, and
+			// triggers the positive-feedback loop where no
+			// request ever reaches the adapter. pcap-confirmed
+			// root cause of "ebusd never lands a frame."
+			//
+			// startRequest.cancelled (struct field) is separate
+			// from startResult.cancelled (channel value):
+			//   - The struct flag is checked by the mux's late-
+			//     STARTED suppression path (C4/R4) when the
+			//     request has already been popped into
+			//     pendingStart.
+			//   - The result flag is checked by the session's
+			//     handleStart goroutine when the request is
+			//     still in pendingExternal and gets a
+			//     not-granted result.
+			// Both flags must be set on a cancellation.
+			a.pendingGateway.notify <- startResult{
+				granted:   false,
+				cancelled: true,
+				initiator: a.pendingGateway.initiator,
+			}
 		}
 		a.pendingGateway = req
 	} else {
@@ -182,7 +210,26 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 		for i, existing := range a.pendingExternal {
 			if existing.sessionID == sessionID {
 				existing.cancelled.Store(true)
-				existing.notify <- startResult{granted: false, initiator: existing.initiator}
+				// F-17 (operator hand-off, batch-9): see the
+				// gateway-path comment above. Without
+				// `cancelled: true` here, ebusd's handleStart
+				// receives a startResult{granted: false}
+				// (default cancelled=false), takes the
+				// deliverFailed branch in session.go, and
+				// emits ENHResFailed(0x31) on the wire within
+				// ~0.3 ms — far faster than the bus can
+				// possibly arbitrate (eBUS bit-time ~4 ms).
+				// ebusd reads it as "lost arbitration to my
+				// own initiator byte 0x31" and retries within
+				// ~50 ms, producing a same-session-replace
+				// that cancels the new request, and so on.
+				// Positive-feedback loop; no bid ever
+				// reaches the adapter for real arbitration.
+				existing.notify <- startResult{
+					granted:   false,
+					cancelled: true,
+					initiator: existing.initiator,
+				}
 				a.pendingExternal = append(a.pendingExternal[:i], a.pendingExternal[i+1:]...)
 				break
 			}
@@ -227,13 +274,26 @@ func (a *arbitrator) setPolicy(pendingStartTTL time.Duration) {
 
 // cancelStart cancels a pending START request for the given session.
 // Returns true if a request was found and cancelled.
+//
+// AM55 / F-17 follow-up (PR #626 review round-1, angry-tester finding
+// F-2): callers are session.handleStart on a client-initiated SYN
+// cancel (session.go:493). The session has signalled it no longer
+// wants the bid, so the silent-return branch in handleStart
+// (session.go:524 — gated on `result.cancelled`) is the correct
+// resolution. Without `cancelled: true` on the notify, the old wait
+// goroutine falls through to deliverFailed → ENHResFailed on the
+// wire — exactly the failure mode F-17 was filed to fix. Pre-existing
+// latent before this PR (no observed-wild repro) but trivially racy
+// with the SYN-cancel-before-tryGrant window; fixed for symmetry with
+// every other cancellation path in the arbitrator.
 func (a *arbitrator) cancelStart(sessionID uint64) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if sessionID == gatewaySessionID {
 		if a.pendingGateway != nil {
-			a.pendingGateway.notify <- startResult{granted: false, initiator: a.pendingGateway.initiator}
+			a.pendingGateway.cancelled.Store(true)
+			a.pendingGateway.notify <- startResult{granted: false, cancelled: true, initiator: a.pendingGateway.initiator}
 			a.pendingGateway = nil
 			return true
 		}
@@ -242,7 +302,8 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 
 	for i, req := range a.pendingExternal {
 		if req.sessionID == sessionID {
-			req.notify <- startResult{granted: false, initiator: req.initiator}
+			req.cancelled.Store(true)
+			req.notify <- startResult{granted: false, cancelled: true, initiator: req.initiator}
 			a.pendingExternal = append(a.pendingExternal[:i], a.pendingExternal[i+1:]...)
 			return true
 		}
@@ -432,6 +493,20 @@ func (a *arbitrator) hasPending() bool {
 
 // failAllPending fails all pending START requests (e.g., on shutdown
 // or adapter RESETTED).
+//
+// F-17 follow-up (PR #626 review round-2, angry-tester finding F-NEW-6
+// documentation): callers pass a non-nil `err` that
+// `isResetOrDisconnectError` matches (adapter disconnect, adapter
+// reset, mux closed). Session.go's handleStart routes such results to
+// `deliverReset(...)`, which is the correct boundary-event notification
+// for the client. This function MUST NOT set `cancelled: true` on the
+// startResult — even when `req.cancelled.Load()` is true — because
+// session.go's branch order (`granted → cancelled → err(reset) →
+// deliverFailed`) favors `cancelled` and would silent-return on a
+// boundary event where the client legitimately needs RESETTED.
+// The current code accidentally relies on this NOT setting cancelled;
+// the comment makes the precedence explicit so future "consistency"
+// edits don't regress reset delivery.
 func (a *arbitrator) failAllPending(err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

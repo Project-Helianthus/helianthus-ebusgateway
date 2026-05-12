@@ -2483,24 +2483,73 @@ func (m *Mux) tryGrantAndStart() {
 			pending := m.pendingStart
 			m.pendingStart = nil
 			m.armPendingStartAbsorbLocked("deadline")
-			// Once START times out we no longer trust adapter arbitration
-			// state, even on the non-blocking RequestStart path. A later
-			// STARTED means the adapter granted the old request after we
-			// had already abandoned it; if we simply absorb that event and
-			// launch a new RequestStart, the mux and adapter can stay one
-			// arbitration behind forever. Reconnect is the only reliable
-			// resync boundary for both blocking and non-blocking paths.
-			needReconnect := true
+			// F-15 (operator hand-off, batch-9/11): gate the reconnect by
+			// transport type, mirroring `cancelPendingStart`'s existing
+			// `wasBlocking := pending.blockingArb` pattern.
+			//
+			// PRIOR BUG (`needReconnect := true` unconditionally): every
+			// deadline expiry forced an upstream reconnect — including on
+			// the non-blocking ENH RequestStart path where the adapter is
+			// only slow, not hung. F-17's retry storm amplified this:
+			// adapter backlog → slow STARTED → AM8 trips → forced
+			// reconnect → drops the next ReqStart → loop. Even without
+			// F-17 the asymmetric reconnect is a design defect on the
+			// non-blocking path.
+			//
+			// LIVE EVIDENCE: 0 absorb-timeout reconnects across the entire
+			// 30k-line batch-9 log. The absorb safety-net inside
+			// `armPendingStartAbsorbLocked` drained naturally on every
+			// late-STARTED in production. The unconditional reconnect
+			// here was therefore never needed for the non-blocking
+			// transport in observed runs; for the rare truly-hung case
+			// the absorb timer's own StartDeadline-bounded reconnect path
+			// takes over (covered by
+			// `TestAM8Deadline_NonBlockingPath_AbsorbTimerReconnectsOnTrulyHungAdapter`).
+			//
+			// BLOCKING TRANSPORT (legacy StartArbitration): the goroutine
+			// may still be hung in the transport call after the deadline,
+			// so the reconnect is still required to unstick it — same
+			// shape as `cancelPendingStart`.
+			wasBlocking := pending.blockingArb
+			// F-17 follow-up (PR #626 review round-3, angry-tester
+			// finding M1): the AM8 deadline path resolves the same
+			// pending startRequest that the three branches of
+			// handleArbitrationResponse resolve, and it can fire
+			// PRECISELY when the adapter is slow — the exact
+			// production condition that motivated this PR cycle.
+			// Without the cancelled-check, a same-session re-submit
+			// that flipped `pending.req.cancelled` via
+			// markInFlightCancelled will see the old wait goroutine
+			// fall through to deliverFailed("…deadline expired…")
+			// → ENHResFailed on the wire. Same retry-feedback-loop
+			// class as F-17 / F-NEW-1, just gated on AM8 instead of
+			// the normal arrival.
+			cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8)", pending.sessionID)
+			m.logger.Printf("adaptermux: pendingStart deadline expired for session %d (AM8, wasBlocking=%v, cancelledInFlight=%v)", pending.sessionID, wasBlocking, cancelledInFlight)
 			// AM8: guard the send — if another path already delivered a
 			// result, the channel is full and this send would block forever.
+			var result startResult
+			if cancelledInFlight {
+				result = startResult{
+					granted:   false,
+					cancelled: true,
+					initiator: pending.initiator,
+					err:       errors.New("adaptermux: START deadline expired (superseded by client re-submit)"),
+				}
+			} else {
+				result = startResult{
+					granted:   false,
+					initiator: pending.initiator,
+					err:       errors.New("adaptermux: START deadline expired"),
+				}
+			}
 			select {
-			case pending.notify <- startResult{granted: false, initiator: pending.initiator, err: errors.New("adaptermux: START deadline expired")}:
+			case pending.notify <- result:
 			default:
 				m.logger.Printf("adaptermux: pendingStart deadline: notify channel full for session %d, result already delivered", pending.sessionID)
 			}
-			if needReconnect {
+			if wasBlocking {
 				// Close the current conn to force the hung blocking
 				// StartArbitration call to return with an I/O error.
 				// readLoop's error handler invokes reconnect() which
@@ -2536,12 +2585,36 @@ func (m *Mux) tryGrantAndStart() {
 			// on the cap-1 channel would block forever, pinning readLoop.
 			m.stateMu.Lock()
 			if m.pendingStart != nil && m.pendingStart.notify == notify {
+				// F-17 follow-up (PR #626 review round-3, angry-tester
+				// finding M2): a same-session re-submit could race
+				// with the transport-call returning an error. If
+				// cancelled-in-flight, suppress with `cancelled: true`
+				// so the old wait goroutine silent-returns rather than
+				// emitting ENHResFailed on the wire (same class as M1).
+				//
+				// F-17 follow-up (PR #626 Codex bot P2, 2026-05-11):
+				// EXCEPTION — when the transport err is a reset/
+				// disconnect boundary event (isResetOrDisconnectError),
+				// the cancelled flag MUST NOT be set, even if the
+				// in-flight req is cancelled. Session.go's branch order
+				// (`granted → cancelled → err(reset) → deliverFailed`)
+				// would silent-return on `cancelled: true` and the
+				// client would miss the RESETTED delivery it needs to
+				// observe the boundary event. This is the same
+				// precedence rule documented in
+				// `arbitration.failAllPending`'s contract block.
+				cancelledInFlight := m.pendingStart.req != nil && m.pendingStart.req.cancelled.Load()
+				deliverAsCancelled := cancelledInFlight && !isResetOrDisconnectError(err)
 				if m.pendingStart.deadline != nil {
 					m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 				}
 				m.pendingStart = nil
 				m.stateMu.Unlock()
-				notify <- startResult{granted: false, initiator: initiator, err: err}
+				if deliverAsCancelled {
+					notify <- startResult{granted: false, cancelled: true, initiator: initiator, err: err}
+				} else {
+					notify <- startResult{granted: false, initiator: initiator, err: err}
+				}
 			} else {
 				// RequestStart failed AND pending was already cancelled.
 				// Since the adapter never received the START, no stale
@@ -2639,12 +2712,32 @@ func (m *Mux) tryGrantAndStart() {
 					m.blockingArbActive = false
 				}
 				if m.pendingStart != nil && m.pendingStart.notify == notify {
+					// F-17 follow-up (PR #626 review round-3, angry-tester
+					// finding M2, blocking-half): same as the non-blocking
+					// RequestStart-err path — a same-session re-submit
+					// could race with the transport-call returning an
+					// error. Suppress with `cancelled: true` when the
+					// in-flight req is cancelled.
+					//
+					// F-17 follow-up (PR #626 Codex bot P2, 2026-05-11):
+					// EXCEPTION — when the transport err is a reset/
+					// disconnect boundary event, the cancelled flag MUST
+					// NOT be set so session.go's err-routing path drives
+					// deliverReset(...) instead of silent-returning. Same
+					// precedence as the non-blocking RequestStart-err
+					// path above.
+					cancelledInFlight := m.pendingStart.req != nil && m.pendingStart.req.cancelled.Load()
+					deliverAsCancelled := cancelledInFlight && !isResetOrDisconnectError(err)
 					if m.pendingStart.deadline != nil {
 						m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 					}
 					m.pendingStart = nil
 					m.stateMu.Unlock()
-					notify <- startResult{granted: false, initiator: initiator, err: err}
+					if deliverAsCancelled {
+						notify <- startResult{granted: false, cancelled: true, initiator: initiator, err: err}
+					} else {
+						notify <- startResult{granted: false, initiator: initiator, err: err}
+					}
 				} else {
 					// StartArbitration failed AND pending was already cancelled.
 					// Codex-R8: scope absorb decrement + queue advance to our
@@ -2811,13 +2904,36 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	if m.pendingStartAbsorb > 0 {
 		m.pendingStartAbsorb--
 		shouldAdvance := !started && m.pendingStartAbsorb == 0 && m.pendingStart == nil && m.arb.hasPending()
-		needReconnect := started
+		// F-15 follow-up (PR #626 Codex bot review on b3b7f13 + e6b96ee
+		// — P1 finding): the absorb-consume branch used to reconnect
+		// unconditionally on STARTED (`needReconnect := started`). On
+		// the non-blocking ENH path that's the same asymmetric design
+		// defect F-15 fixed in the AM8 deadline callback — just
+		// delayed: AM8 arms absorb without closing, but then the late
+		// STARTED arrives, hits THIS branch, and conn.Close fires.
+		// The F-15 fix only prevented the IMMEDIATE close; the late
+		// absorb still tore down TCP, preserving the retry-feedback
+		// loop F-15 was meant to eliminate.
+		//
+		// Mirror F-15's transport-type gate: reconnect only on the
+		// blocking StartArbitration path (where a hung goroutine may
+		// still need unsticking). On the non-blocking RequestStart
+		// path the adapter is merely slow, eBUS arbitration is
+		// per-SYN stateless, and the absorb counter has already done
+		// its bookkeeping job by decrementing.
+		m.connMu.Lock()
+		tr := m.upstream
+		m.connMu.Unlock()
+		_, hasRequestStart := tr.(arbitrationRequester)
+		_, hasBlockingStart := tr.(interface{ StartArbitration(byte) error })
+		isBlockingPath := !hasRequestStart && hasBlockingStart
+		needReconnect := started && isBlockingPath
 		m.stateMu.Unlock()
 		kind := "FAILED"
 		if started {
 			kind = "STARTED"
 		}
-		m.logger.Printf("adaptermux: absorbed stale %s from cancelled request (data=0x%02X)", kind, data)
+		m.logger.Printf("adaptermux: absorbed stale %s from cancelled request (data=0x%02X, isBlockingPath=%v)", kind, data, isBlockingPath)
 		if needReconnect {
 			m.connMu.Lock()
 			c := m.conn
@@ -2826,7 +2942,7 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 				if err := c.Close(); err != nil {
 					m.logger.Printf("adaptermux: stale STARTED reconnect close: %v", err)
 				} else {
-					m.logger.Printf("adaptermux: stale STARTED triggered transport reconnect for arbitration resync")
+					m.logger.Printf("adaptermux: stale STARTED triggered transport reconnect for arbitration resync (blocking path)")
 				}
 			}
 		}
@@ -2855,6 +2971,19 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			// The adapter sent this STARTED for a previous RequestStart that
 			// is no longer tracked. The real response for our pending request
 			// may still arrive — absorb it when it does.
+			//
+			// F-17 follow-up (PR #626 review round-2, angry-tester finding
+			// F-NEW-1): like the matched-STARTED and FAILED branches below,
+			// the AM56 mismatch branch must also honor an in-flight
+			// `pending.req.cancelled` flag. If the session has issued a
+			// same-session re-submit (markInFlightCancelled flipped the
+			// struct flag) and the adapter responds with a STALE STARTED
+			// whose byte happens not to match the cancelled bid, the
+			// session has already moved on. Delivering
+			// `ENHResFailed(winner_byte)` to the old wait goroutine
+			// reproduces F-17's retry feedback loop on a narrow but real
+			// path. Suppress silently with cancelled=true.
+			cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 			m.pendingStart = nil
 			m.armPendingStartAbsorbLocked("started-mismatch")
 			if pending.deadline != nil {
@@ -2868,20 +2997,33 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			// on PR #623.)
 			m.lastWireActivity = time.Now()
 			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: STARTED mismatch: got initiator 0x%02X, pending 0x%02X — failing pending session %d (AM56)", data, pending.initiator, pending.sessionID)
-			// Notify the bidder with the THIRD-PARTY winner byte (`data`),
-			// not the bidder's own `pending.initiator`. This matches the
-			// regular FAILED-path semantics below: the bidder's handleStart
-			// goroutine forwards `result.initiator` to deliverFailed, so the
-			// external session sees ENHResFailed(winner_byte) and learns
-			// the actual wire owner. Without this, the bidder would only
-			// learn its own bid byte from the failure and its bus
-			// reconstructor would misread the next target/PB byte as the
-			// frame source (Codex P2 round 7 on PR #620).
-			pending.notify <- startResult{
-				granted:   false,
-				initiator: data,
-				err:       fmt.Errorf("adaptermux: STARTED mismatch (got 0x%02X, want 0x%02X)", data, pending.initiator),
+			if cancelledInFlight {
+				m.logger.Printf("adaptermux: suppressing STARTED-mismatch(0x%02X, pending 0x%02X) for session %d — request was cancelled/replaced; absorbed (C4/R4 AM56-half)", data, pending.initiator, pending.sessionID)
+				select {
+				case pending.notify <- startResult{
+					granted:   false,
+					cancelled: true,
+					initiator: pending.initiator,
+					err:       errors.New("adaptermux: STARTED-mismatch superseded by client re-submit"),
+				}:
+				default:
+				}
+			} else {
+				m.logger.Printf("adaptermux: STARTED mismatch: got initiator 0x%02X, pending 0x%02X — failing pending session %d (AM56)", data, pending.initiator, pending.sessionID)
+				// Notify the bidder with the THIRD-PARTY winner byte (`data`),
+				// not the bidder's own `pending.initiator`. This matches the
+				// regular FAILED-path semantics below: the bidder's handleStart
+				// goroutine forwards `result.initiator` to deliverFailed, so the
+				// external session sees ENHResFailed(winner_byte) and learns
+				// the actual wire owner. Without this, the bidder would only
+				// learn its own bid byte from the failure and its bus
+				// reconstructor would misread the next target/PB byte as the
+				// frame source (Codex P2 round 7 on PR #620).
+				pending.notify <- startResult{
+					granted:   false,
+					initiator: data,
+					err:       fmt.Errorf("adaptermux: STARTED mismatch (got 0x%02X, want 0x%02X)", data, pending.initiator),
+				}
 			}
 			// After resolving, check if more requests are pending.
 			if m.arb.hasPending() {
@@ -2925,14 +3067,50 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			}
 			m.stateMu.Unlock()
 			m.logger.Printf("adaptermux: suppressing STARTED for session %d — request was cancelled/replaced; absorbed (C4/R4)", pending.sessionID)
-			// Best-effort send: the old notify channel is buffered
-			// to 1 and may already hold the replace's granted=false
+			// F-17 follow-up (PR #626 review round-1, angry-tester
+			// finding F-1): the old notify channel MUST receive
+			// `cancelled: true` so session.go's handleStart goroutine
+			// (session.go:524) takes the silent-return branch instead
+			// of falling through to deliverFailed(initiator). Without
+			// this flag, the old goroutine still emits
+			// ENHResFailed(0x31) on the wire — the exact failure mode
+			// F-17 was filed to fix, just on the in-flight-cancel
+			// branch instead of the pendingExternal-replace branch.
+			//
+			// Symmetry: `arb.requestStart`'s pendingExternal-replace
+			// and pendingGateway-replace paths set both the struct
+			// flag AND the channel-value flag. `arb.cancelStart` sets
+			// both as well. `markInFlightCancelled` (called from
+			// `requestStartForSession`) sets only the struct flag
+			// because the channel-value send was deferred to whichever
+			// `handleArbitrationResponse` path eventually fires —
+			// THIS branch (matched STARTED for cancelled bid), the
+			// FAILED-with-cancelled-req branch below, AND the AM56
+			// STARTED-mismatch-with-cancelled-req branch above.
+			//
+			// The contract is: any code in `handleArbitrationResponse`
+			// that observes a cancelled startRequest while resolving
+			// the bid normally (no transport-level error) MUST set
+			// `cancelled: true` on the value so `session.handleStart`'s
+			// branch order (`granted → cancelled → err(reset) →
+			// deliverFailed`) silent-returns.
+			//
+			// EXCEPTION: code paths that deliver a transport-level
+			// boundary error via `err` matching `isResetOrDisconnectError`
+			// (e.g., `failAllPending` on shutdown / `reconnect`) MUST
+			// NOT set `cancelled: true`. Session.go's check order
+			// favors `cancelled` over `err(reset)`, so setting both
+			// would suppress the RESETTED delivery the client needs.
+			//
+			// Best-effort send: the old notify channel is buffered to
+			// 1 and may already hold the replace's granted=false
 			// result. A late STARTED for a cancelled bid still
-			// resolves the channel cleanly when the read-side
-			// hasn't drained it yet.
+			// resolves the channel cleanly when the read-side hasn't
+			// drained it yet.
 			select {
 			case pending.notify <- startResult{
 				granted:   false,
+				cancelled: true,
 				initiator: pending.initiator,
 				err:       errors.New("adaptermux: START superseded by client re-submit"),
 			}:
@@ -2953,15 +3131,42 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 		m.stateMu.Unlock()
 		m.completeArbitrationGrant(pending.sessionID, pending.initiator, pending.notify)
 	} else {
+		// F-17 follow-up (PR #626 review round-1, angry-tester finding
+		// F-1, FAILED-half): if the in-flight request was cancelled by
+		// markInFlightCancelled (called from requestStartForSession on
+		// a same-session re-submit), the FAILED arriving for the OLD
+		// bid is also addressed to a session that has already moved
+		// on. Without `cancelled: true` on the notify, session.go's
+		// handleStart goroutine takes the deliverFailed branch and
+		// emits ENHResFailed(winner) on the wire — same
+		// retry-feedback-loop class as F-17's STARTED-half. Suppress
+		// silently with the cancelled flag; the new request waits on
+		// its own fresh notify channel and the queue advances below.
+		cancelledInFlight := pending.req != nil && pending.req.cancelled.Load()
 		m.pendingStart = nil
 		if pending.deadline != nil {
 			pending.deadline.Stop() // AM8: cancel deadline timer
 		}
 		m.stateMu.Unlock()
-		pending.notify <- startResult{
-			granted:   false,
-			initiator: data,
-			err:       fmt.Errorf("adaptermux: arbitration lost to 0x%02X: %w", data, ebuserrors.ErrBusCollision),
+		if cancelledInFlight {
+			m.logger.Printf("adaptermux: suppressing FAILED(0x%02X) for session %d — request was cancelled/replaced; absorbed (C4/R4 FAILED-half)", data, pending.sessionID)
+			// Best-effort send (cap-1 channel may already hold the
+			// replace's granted=false result).
+			select {
+			case pending.notify <- startResult{
+				granted:   false,
+				cancelled: true,
+				initiator: pending.initiator,
+				err:       errors.New("adaptermux: START superseded by client re-submit (FAILED arrived)"),
+			}:
+			default:
+			}
+		} else {
+			pending.notify <- startResult{
+				granted:   false,
+				initiator: data,
+				err:       fmt.Errorf("adaptermux: arbitration lost to 0x%02X: %w", data, ebuserrors.ErrBusCollision),
+			}
 		}
 	}
 

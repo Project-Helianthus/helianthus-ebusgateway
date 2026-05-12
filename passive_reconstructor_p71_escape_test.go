@@ -311,6 +311,15 @@ func TestPassiveReconstructor_P71_ResponseCRC0xAA_Commits(t *testing.T) {
 // and abandons. This covers the "isMidRequestFrame returns false when
 // len < 5" branch and ensures the fix does not silently mask
 // genuinely-corrupt arbitration fragments.
+//
+// F-19b (batch-15) update: the abandon reason changed from
+// corrupted_request to arbitration_fragment. The original threshold
+// was `len <= 3` for fragment classification; F-19b widens it to
+// `len < 5` (i.e., LEN byte never observed) because a 4-byte buffer
+// reaching SB but not LEN is structurally a truncated arbitration
+// attempt, not a corrupted frame. The premature-SYN-rejection
+// invariant is unchanged — the abandon still fires, just with the
+// more accurate metric label.
 func TestPassiveReconstructor_P71_WireSYNBeforeLENStillAbandons(t *testing.T) {
 	t.Parallel()
 
@@ -324,10 +333,8 @@ func TestPassiveReconstructor_P71_WireSYNBeforeLENStillAbandons(t *testing.T) {
 	// Wire: SYN (gates Layer 1) + initiator-class src + DST + PB + SB +
 	// SYN. 4 bytes accumulated when the SYN arrives — still below LEN
 	// position (5). isMidRequestFrame returns false → SYN-handling path
-	// → abandon. requestRaw len > 3 disqualifies the
-	// arbitration_fragment classification, so the abandon reason is
-	// corrupted_request — proving the predicate didn't silently swallow
-	// the premature SYN as data.
+	// → abandon. Post-F-19b, requestRaw len < 5 classifies as
+	// arbitration_fragment.
 	wire := []byte{
 		protocol.SymbolSyn, // gate
 		0x10,               // initiator src (BASV2 initiator face)
@@ -339,8 +346,8 @@ func TestPassiveReconstructor_P71_WireSYNBeforeLENStillAbandons(t *testing.T) {
 	feedPassiveSymbolsRaw(reconstructor, time.Unix(0, 0), wire)
 
 	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventAbandonedTransaction)
-	if event.AbandonReason != PassiveAbandonReasonCorruptedRequest {
-		t.Errorf("AbandonReason = %v; want corrupted_request (premature SYN must still abandon)", event.AbandonReason)
+	if event.AbandonReason != PassiveAbandonReasonArbitrationFragment {
+		t.Errorf("AbandonReason = %v; want arbitration_fragment (F-19b: len<5 truncation classifies as arbitration_fragment, not corrupted_request)", event.AbandonReason)
 	}
 }
 

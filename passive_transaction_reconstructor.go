@@ -1344,7 +1344,23 @@ func shouldLogReconstructorForensics(reason PassiveAbandonReason) bool {
 	case PassiveAbandonReasonUnexpectedSymbol,
 		PassiveAbandonReasonCorruptedRequest,
 		PassiveAbandonReasonCorruptedTarget,
-		PassiveAbandonReasonNoResponse:
+		PassiveAbandonReasonNoResponse,
+		// F-19c (batch-16, Codex bot review P2 on PR #629): the new
+		// spec-bound reasons are reclassifications of the same
+		// production-symptom abandons that previously emitted
+		// `corrupted_request` and logged forensics. Without these
+		// entries the operator-facing `req_raw=...` evidence for
+		// invalid NN_m, invalid NN_s, invalid QQ/ZZ, and buffer
+		// overflow disappears from logs — precisely the signal the
+		// batch-16 live verification used to detect F-19c in the
+		// first place. Keep emitting forensics for the F-19c
+		// classifications so post-deploy verification can confirm
+		// the rate drop AND preserve the diagnostic trail.
+		PassiveAbandonReasonInvalidQQ,
+		PassiveAbandonReasonInvalidZZ,
+		PassiveAbandonReasonInvalidNNMaster,
+		PassiveAbandonReasonInvalidNNSlave,
+		PassiveAbandonReasonBufferOverflow:
 		return true
 	}
 	return false

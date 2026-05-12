@@ -493,6 +493,36 @@ func TestF19c_F18_RegressionGuard(t *testing.T) {
 	}
 }
 
+// TestF19c_ForensicLogFires pins the Codex-bot P2 fix on PR #629:
+// the new F-19c reasons MUST be included in
+// shouldLogReconstructorForensics so that the operator-facing
+// `req_raw=...` evidence is preserved in the log. Without the
+// inclusion, post-deploy verification cannot confirm the rate drop
+// and loses the diagnostic trail batch-16 itself used to find
+// F-19c.
+func TestF19c_ForensicLogFires(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		reason PassiveAbandonReason
+	}{
+		{"InvalidQQ", PassiveAbandonReasonInvalidQQ},
+		{"InvalidZZ", PassiveAbandonReasonInvalidZZ},
+		{"InvalidNNMaster", PassiveAbandonReasonInvalidNNMaster},
+		{"InvalidNNSlave", PassiveAbandonReasonInvalidNNSlave},
+		{"BufferOverflow", PassiveAbandonReasonBufferOverflow},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if !shouldLogReconstructorForensics(tc.reason) {
+				t.Fatalf("shouldLogReconstructorForensics(%v) = false; want true so the live req_raw= evidence is logged for post-deploy verification (Codex bot P2 review on PR #629)", tc.reason)
+			}
+		})
+	}
+}
+
 // requireNoFurtherPassiveEvent asserts that no additional classified
 // event arrives within a short window. Used to confirm that bytes
 // arriving AFTER an F-19c abandon (during the closed-Layer-1 window)

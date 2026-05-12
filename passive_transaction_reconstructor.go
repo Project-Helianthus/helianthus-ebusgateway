@@ -711,11 +711,26 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 					//
 					// Fix: abandon immediately, replicating the same
 					// classification helpers the SYN-triggered path
-					// uses (line ~689-696). The Layer 1 invariant is
-					// preserved by calling resetStateLocked (NOT
-					// resetStateLockedAfterSyn) — no wire SYN has been
-					// consumed at this point; the next real wire SYN
-					// re-engages the synced gate via the Idle handler.
+					// uses (line ~689-696).
+					//
+					// Layer 1 invariant (Codex bot P2 review, 2026-05-12):
+					// the current `symbol` was just absorbed into the
+					// buffer. It may be either a SYN-valued byte (the
+					// operator's `... AA AA` case — escape-decoded 0xAA
+					// at CRC position) or a non-SYN byte (some other
+					// CRC mismatch). The reset variant depends:
+					//   - symbol == SymbolSyn: use AfterSyn variant. The
+					//     SYN we consumed satisfies the inter-frame
+					//     invariant; the next non-SYN byte can start a
+					//     fresh frame immediately. Calling the plain
+					//     resetStateLocked here would close the Layer-1
+					//     gate and drop the next frame's SRC byte,
+					//     CONTINUING the cascade this fix is meant to
+					//     stop.
+					//   - symbol != SymbolSyn: use plain reset. No wire
+					//     SYN has been consumed; the next observed wire
+					//     SYN re-engages the synced gate via the Idle
+					//     handler.
 					reason := PassiveAbandonReasonCorruptedRequest
 					if reconstructor.isSelfOriginatedRaw() {
 						reason = PassiveAbandonReasonSelfEcho
@@ -724,7 +739,11 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 					}
 					events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
 					reconstructor.state.phase = passivePhaseAbandoned
-					reconstructor.resetStateLocked()
+					if symbol == protocol.SymbolSyn {
+						reconstructor.resetStateLockedAfterSyn()
+					} else {
+						reconstructor.resetStateLocked()
+					}
 					return events
 				}
 				// Case (B): broadcast/unknown defer path. Keep

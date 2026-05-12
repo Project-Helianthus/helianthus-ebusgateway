@@ -1,5 +1,20 @@
 package adaptermux
 
+// Echo-tracker unit tests — GATEWAY SCOPE ONLY.
+//
+// F-18 (_work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-12-batch13.md)
+// removed per-external-session echo suppression. The echoTracker struct
+// remains in use only for the gateway path (m.gatewayEcho); these
+// existing unit tests continue to validate that struct as a unit in its
+// remaining gateway-side capacity (matchEcho on adapter-mirrored bytes,
+// recordSent in sendLoop, rollbackSent on adapter-write failure,
+// flushOnSYN on transaction boundaries, etc.).
+//
+// External ENH sessions must receive their own post-arbitration echoes
+// per john30/ebusd's enhanced_proto.md and no longer carry an echo
+// tracker. The integration tests for external echo passthrough live in
+// `echo_passthrough_test.go`.
+
 import "testing"
 
 func TestEchoTracker_BasicSuppression(t *testing.T) {

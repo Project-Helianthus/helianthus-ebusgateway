@@ -92,13 +92,20 @@ const (
 )
 
 // session represents an external ENH client connected via the proxy
-// endpoint (e.g., ebusd). Each session has its own echo tracker and
-// send buffer.
+// endpoint (e.g., ebusd). Each session has its own send buffer.
+//
+// F-18 (_work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-12-batch13.md):
+// the per-session echoTracker field was removed. External ENH sessions
+// must receive their own post-arbitration echoes per
+// john30/ebusd's enhanced_proto.md, which means there is no echo to
+// "suppress" — the per-session echo tracker was load-bearing for the
+// wrong behavior. Gateway-side echo accounting still uses
+// m.gatewayEcho (the same echoTracker struct is retained), but it is
+// strictly gateway-scoped.
 type session struct {
-	id          uint64
-	conn        net.Conn
-	mux         *Mux
-	echoTracker *echoTracker
+	id   uint64
+	conn net.Conn
+	mux  *Mux
 
 	// sendCh buffers outgoing frames (ENHResReceived bytes) for the
 	// session's writer goroutine. Overflow causes session close.
@@ -200,12 +207,11 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 
 	id := m.nextSessionID()
 	sess := &session{
-		id:          id,
-		conn:        conn,
-		mux:         m,
-		echoTracker: newEchoTracker(),
-		sendCh:      make(chan sessionFrame, defaultSessionSendBuffer),
-		done:        make(chan struct{}),
+		id:     id,
+		conn:   conn,
+		mux:    m,
+		sendCh: make(chan sessionFrame, defaultSessionSendBuffer),
+		done:   make(chan struct{}),
 	}
 
 	// AM25/AM50: check + insert under a single lock to prevent TOCTOU.

@@ -533,12 +533,11 @@ func TestSession_StartedArrivesBeforeReceivedBytes(t *testing.T) {
 	defer cleanup()
 
 	sess := &session{
-		id:          100,
-		conn:        server,
-		mux:         mux,
-		echoTracker: newEchoTracker(),
-		sendCh:      make(chan sessionFrame, defaultSessionSendBuffer),
-		done:        make(chan struct{}),
+		id:     100,
+		conn:   server,
+		mux:    mux,
+		sendCh: make(chan sessionFrame, defaultSessionSendBuffer),
+		done:   make(chan struct{}),
 	}
 
 	// Start the writeLoop goroutine to drain sendCh -> conn.
@@ -588,12 +587,11 @@ func TestSession_ResetDeliveryIsLossless(t *testing.T) {
 	defer cleanup()
 
 	sess := &session{
-		id:          999,
-		conn:        server,
-		mux:         mux,
-		echoTracker: newEchoTracker(),
-		sendCh:      make(chan sessionFrame, 2), // tiny buffer
-		done:        make(chan struct{}),
+		id:     999,
+		conn:   server,
+		mux:    mux,
+		sendCh: make(chan sessionFrame, 2), // tiny buffer
+		done:   make(chan struct{}),
 	}
 
 	// Fill the buffer completely with received bytes.
@@ -640,12 +638,11 @@ func TestSession_ResetDeliveryIsLossless(t *testing.T) {
 
 	// Part 2: Verify that closing the session unblocks a blocked deliverReset.
 	sess2 := &session{
-		id:          998,
-		conn:        server,
-		mux:         mux,
-		echoTracker: newEchoTracker(),
-		sendCh:      make(chan sessionFrame, 1),
-		done:        make(chan struct{}),
+		id:     998,
+		conn:   server,
+		mux:    mux,
+		sendCh: make(chan sessionFrame, 1),
+		done:   make(chan struct{}),
 	}
 	// Fill buffer.
 	sess2.sendCh <- sessionFrame{kind: sessionFrameReceived, payload: 0xAA}
@@ -1092,7 +1089,6 @@ func TestArbitrationWinnerSynthesis_MultiSessionDeliversToNonWinner(t *testing.T
 		t.Errorf("non-winning session B did NOT receive synthesized 0x7F — multi-session synthesis broken (PR #620 round 3)")
 	}
 }
-
 
 // --- F-10 instrumentation: byte-pipeline latency bucketing ---
 

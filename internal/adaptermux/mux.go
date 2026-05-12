@@ -980,12 +980,8 @@ func (m *Mux) reconnect() error {
 		}
 	}
 
-	// Reset external session echo trackers (HIGH-6 fix).
-	m.sessionsMu.Lock()
-	for _, sess := range m.sessions {
-		sess.echoTracker.reset()
-	}
-	m.sessionsMu.Unlock()
+	// F-18: per-session echo trackers were removed; gateway-side reset
+	// happens via m.gatewayEcho.reset() in flushOnSYN paths.
 
 	// Fail pending arbitration.
 	m.arb.failAllPending(errors.New("adaptermux: adapter disconnected"))
@@ -1118,10 +1114,9 @@ func (m *Mux) readLoop() {
 				}
 				m.stateMu.Unlock()
 
-				// AM11: clear external session echo trackers on ownership timeout.
-				if quietBusTimedOut {
-					m.resetAllSessionEchoes()
-				}
+				// F-18: per-session echo trackers removed; nothing to
+				// reset for external sessions on ownership timeout.
+				_ = quietBusTimedOut
 
 				// On a quiet bus no SYN or transaction-complete events
 				// reach onReceived, so tryGrantAndStart is never called.
@@ -1575,18 +1570,13 @@ func (m *Mux) onReceived(symbol byte) {
 		}
 		m.stateMu.Unlock()
 
-		// AM11: clear external session echo trackers on ownership timeout.
-		if ownershipTimedOut {
-			m.resetAllSessionEchoes()
-		}
+		// F-18: per-session echo trackers removed; nothing to reset
+		// for external sessions on ownership timeout, and no SYN-flush
+		// to perform. Gateway-side echo handling continues unchanged
+		// via m.gatewayEcho.
+		_ = ownershipTimedOut
 
 		// --- Phase 2: deliver outside all locks ---
-		// Flush external session echo trackers. Called outside stateMu to
-		// avoid ABBA deadlock with doSend (sessionsMu→stateMu).
-		// The flushed bytes are NOT emitted to passive — they were already
-		// delivered live in onReceived (they're third-party from gateway's
-		// perspective). Re-emitting would produce duplicates (Codex P1).
-		m.flushSessionEchoTrackers()
 
 		if activeExpects {
 			// activeExpects was decided under stateMu above and implies
@@ -1704,10 +1694,9 @@ func (m *Mux) onReceived(symbol byte) {
 
 	m.stateMu.Unlock()
 
-	// AM11: clear external session echo trackers on ownership timeout.
-	if ownershipTimedOut {
-		m.resetAllSessionEchoes()
-	}
+	// F-18: per-session echo trackers removed; nothing to reset on
+	// ownership timeout.
+	_ = ownershipTimedOut
 
 	// --- Phase 2: deliver outside all locks ---
 	// Codex PR #502 P2: revalidate active-path gating atomically with
@@ -2134,12 +2123,7 @@ func (m *Mux) handleReset() {
 		}
 	}
 
-	// Reset external session echo trackers.
-	m.sessionsMu.Lock()
-	for _, sess := range m.sessions {
-		sess.echoTracker.reset()
-	}
-	m.sessionsMu.Unlock()
+	// F-18: per-session echo trackers were removed.
 
 	m.arb.forceRelease()
 	m.arb.failAllPending(fmt.Errorf("adaptermux: %w", ebuserrors.ErrAdapterReset))
@@ -2230,31 +2214,6 @@ func (m *Mux) drainActiveChBytesOnly() int {
 			}
 			return n
 		}
-	}
-}
-
-// flushSessionEchoTrackers flushes echo trackers for all external sessions
-// at a SYN boundary. The flushed bytes are discarded — they were already
-// delivered live to passive consumers in onReceived. This call only resets
-// tracker state for the next transaction cycle. Must be called WITHOUT
-// stateMu held to avoid ABBA deadlock with doSend.
-func (m *Mux) flushSessionEchoTrackers() {
-	m.sessionsMu.Lock()
-	defer m.sessionsMu.Unlock()
-	for _, sess := range m.sessions {
-		sess.echoTracker.flushOnSYN()
-	}
-}
-
-// resetAllSessionEchoes resets echo trackers for all external sessions.
-// Called on ownership timeout to prevent stale echo state from leaking
-// into the next ownership cycle (AM11). Must be called WITHOUT stateMu
-// held to avoid ABBA deadlock with doSend.
-func (m *Mux) resetAllSessionEchoes() {
-	m.sessionsMu.Lock()
-	defer m.sessionsMu.Unlock()
-	for _, sess := range m.sessions {
-		sess.echoTracker.reset()
 	}
 }
 
@@ -2875,14 +2834,8 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	m.arb.confirmOwnership(sessionID, initiator)
 	m.stateMu.Unlock()
 
-	// Mark external session echo tracker for request start.
-	if sessionID != gatewaySessionID {
-		m.sessionsMu.Lock()
-		if sess, ok := m.sessions[sessionID]; ok {
-			sess.echoTracker.markRequestStart()
-		}
-		m.sessionsMu.Unlock()
-	}
+	// F-18: per-session echo tracker removed; gateway-side
+	// markRequestStart is invoked above for the gateway path only.
 
 	// Notify requester of success.
 	notify <- startResult{granted: true, initiator: initiator}
@@ -3401,27 +3354,18 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 	// P11 round-3: gateway session's recordSent is hoisted into sendLoop
 	// (same critical section as gatewayTxnActive flip) to close the
 	// state-ordering race where gatewayTxnActive=true but gatewayEcho
-	// queue is still empty. External sessions still record here — they
-	// don't gate the active-path filter.
-	if !isGateway {
-		m.sessionsMu.Lock()
-		if sess, ok := m.sessions[sessionID]; ok {
-			sess.echoTracker.recordSent(data)
-		}
-		m.sessionsMu.Unlock()
-	}
-
+	// queue is still empty.
+	//
+	// F-18 (_work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-12-batch13.md):
+	// the external-session recordSent + rollback block that used to live
+	// here is removed. Per the ENH protocol spec, external sessions must
+	// receive their own echoes (handled by deliverToSessions above), and
+	// they no longer need a per-session expected-echoes queue. Keeping
+	// recordSent without the matching matchEcho consumer would let the
+	// per-session queue grow to the 256-byte cap and trigger spurious
+	// totalOverflowResets alarms every 256 external SENDs.
 	_, err := tr.Write([]byte{data})
 	if err != nil {
-		if !isGateway {
-			// External session rollback (gateway handled by deferred
-			// rollback above).
-			m.sessionsMu.Lock()
-			if sess, ok := m.sessions[sessionID]; ok {
-				sess.echoTracker.rollbackSent()
-			}
-			m.sessionsMu.Unlock()
-		}
 		return fmt.Errorf("%w: %v", errAdapterWrite, err)
 	}
 
@@ -3491,30 +3435,38 @@ func (m *Mux) nextSessionID() uint64 {
 	return m.sessionSeq.Add(1)
 }
 
-// deliverToSessions delivers a non-SYN byte to external sessions with
-// per-session echo suppression. Uses sessionsMu write lock because
-// matchEcho mutates the echo tracker (HIGH-7 data race fix).
+// deliverToSessions delivers a non-SYN byte to every external session,
+// including the owner. This is the F-18 fix
+// (_work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-12-batch13.md):
+// external ENH sessions MUST receive their own post-arbitration echoes
+// per john30/ebusd's enhanced_proto.md ("ENH_RES_RECEIVED ... shall not
+// be sent when the byte received was part of an arbitration request
+// initiated by ebusd"). Arbitration-byte echoes are handled separately
+// by deliverWinnerByteToOtherSessions below, which correctly skips the
+// winning session — that path delivers the 0x31 byte to OTHER sessions,
+// while the winner gets ENHResStarted via session.handleStart.
 //
-// AM40: sessionsMu.Lock is used because matchEcho mutates per-session
-// echo trackers. Moving to per-session locks would reduce contention
-// but adds complexity. Current lock convoy is acceptable for <=100 sessions.
+// Gateway echo accounting is performed via m.gatewayEcho on the
+// activeSendCh/sendLoop path; the gateway's sessionID (gatewaySessionID
+// = 0) is provably never inserted into m.sessions (nextSessionID starts
+// at 1), so this loop only ever operates on external sessions.
+//
+// Pre-F-18 this method per-session-suppressed each owner byte via
+// sess.echoTracker.matchEcho — that suppression matched the standalone
+// proxy's behavior for non-ENH clients but broke ENH external clients
+// (ebusd's DirectProtocolHandler at protocol_direct.cpp:412-414 requires
+// the echo to advance bs_sendCmd through multi-byte frames). It also
+// hosted a latent reorder hazard via the echoMatchFlushed branch
+// (Codex bonus finding in batch-13), which is eliminated by the
+// deletion.
+//
+// AM40 lock note: sessionsMu is held purely to iterate m.sessions
+// safely. No tracker mutation happens here anymore.
 func (m *Mux) deliverToSessions(symbol byte, currentOwner uint64, hasOwner bool, now time.Time) {
 	m.sessionsMu.Lock()
 	defer m.sessionsMu.Unlock()
 
 	for _, sess := range m.sessions {
-		if hasOwner && sess.id == currentOwner {
-			result, flushed := sess.echoTracker.matchEcho(symbol)
-			if result == echoMatchSuppressed {
-				continue
-			}
-			// Deliver flushed bytes on mismatch (MEDIUM-2 fix).
-			if result == echoMatchFlushed {
-				for _, b := range flushed {
-					sess.deliverReceived(b)
-				}
-			}
-		}
 		sess.deliverReceived(symbol)
 	}
 }

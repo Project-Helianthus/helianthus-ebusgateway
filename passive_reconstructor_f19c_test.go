@@ -16,6 +16,9 @@ package ebusgateway
 
 import (
 	"bytes"
+	"io"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -294,7 +297,9 @@ func TestF19c_InvalidZZ_Esc(t *testing.T) {
 // bytes of next-frame noise. Post-F-19c: abandon at the first
 // response byte with reason `invalid_nn_s`.
 func TestF19c_InvalidNNSlave_OnMSResponse(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel() — this test captures the global log output to
+	// assert resp_raw= contents; running in parallel with other
+	// tests that emit log lines could pollute the buffer.
 
 	reconstructor := newPassiveTransactionReconstructorCore(DefaultConfig())
 	subscription, err := reconstructor.Subscribe("test", PassiveSubscriberCritical, 8)
@@ -321,12 +326,40 @@ func TestF19c_InvalidNNSlave_OnMSResponse(t *testing.T) {
 	wire = append(wire, protocol.SymbolAck) // S_ACK
 	wire = append(wire, 0x20)               // NN_s = 32, invalid
 
+	// Codex bot P2 round 2 on PR #629: capture the forensic log so
+	// we can pin that the offending NN_s byte is preserved in
+	// resp_raw. Without the pre-append in handleResponseSymbolLocked
+	// (before the F-19c bound check), the log would show
+	// `resp_raw=<empty>` and the diagnostic evidence would be lost.
+	var logBuf bytes.Buffer
+	logRestore := captureGoLog(&logBuf)
+	defer logRestore()
+
 	feedPassiveSymbolsRaw(reconstructor, time.Unix(0, 0), wire)
 
 	event := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventAbandonedTransaction)
 	if event.AbandonReason != PassiveAbandonReasonInvalidNNSlave {
 		t.Fatalf("AbandonReason = %v; want invalid_nn_s", event.AbandonReason)
 	}
+
+	// Assert the forensic log captured `resp_raw=20` (the offending
+	// NN_s value 0x20 = 32, > maxPassiveDataLen).
+	logText := logBuf.String()
+	if !strings.Contains(logText, "resp_raw=20") {
+		t.Fatalf("forensic log lacked the offending NN_s byte: want resp_raw=20 substring, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, "reason=invalid_nn_s") {
+		t.Fatalf("forensic log lacked the reason marker: want reason=invalid_nn_s substring, got:\n%s", logText)
+	}
+}
+
+// captureGoLog redirects the default log package output to w and
+// returns a restore function. Used by tests that need to assert on
+// log line content emitted by logForensicsLocked.
+func captureGoLog(w io.Writer) func() {
+	prev := log.Writer()
+	log.SetOutput(w)
+	return func() { log.SetOutput(prev) }
 }
 
 // TestF19c_BufferOverflow_LogicalCap pins the watchdog. Construct a

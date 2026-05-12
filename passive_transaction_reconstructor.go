@@ -1179,7 +1179,16 @@ func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked
 		// reach 257 on a corrupt 0xFF symbol, and the response
 		// buffer would accumulate up to 257 bytes of next-frame
 		// noise before the response-side mid-frame guard fires.
+		//
+		// Codex bot P2 round 2 on PR #629: append the candidate
+		// NN_s byte to responseRaw BEFORE the bound check fires,
+		// so the forensic log emitted by abandonLocked includes
+		// the offending value as `resp_raw=<NN_s>`. Without the
+		// pre-append, the log would show `resp_raw=<empty>`,
+		// losing the diagnostic evidence the F-19c forensic
+		// inclusion (the previous P2 fix) was meant to preserve.
 		if int(symbol) > maxPassiveDataLen {
+			reconstructor.state.responseRaw = append(reconstructor.state.responseRaw, symbol)
 			events = append(events, reconstructor.abandonLocked(
 				PassiveAbandonReasonInvalidNNSlave, observedAt, ebuserrors.ErrInvalidPayload))
 			reconstructor.state.phase = passivePhaseAbandoned

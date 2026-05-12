@@ -261,22 +261,29 @@ func TestPassiveReconstructor_F19_NoRegression_BroadcastDeferToSYN(t *testing.T)
 	}
 }
 
-// TestPassiveReconstructor_F19a_LayerOneInvariant_SynConsumed_KeepsSynced
-// pins the Codex-bot P2 finding (2026-05-12): when F-19a is triggered
-// by a SYN-valued byte (the operator's exact `... AA AA` case, where
-// the second 0xAA is an escape-decoded wire SYN), the implementation
-// MUST call resetStateLockedAfterSyn — the wire SYN we absorbed
-// satisfies the Layer-1 inter-frame invariant; the next non-SYN byte
-// can start a fresh frame immediately.
+// TestPassiveReconstructor_F19a_LayerOneInvariant_EscapeDecodedAA_ClosesGate
+// pins the Codex-bot P2 round-2 finding (2026-05-12): in the
+// operator's exact `... AA AA` case, the second 0xAA was
+// escape-decoded by the tap (from wire `0xA9 0x01`) and is NOT a
+// real wire SYN. The Layer-1 inter-frame gate must NOT be left
+// engaged just because the logical byte value happens to equal
+// SymbolSyn — that would incorrectly accept the very next byte
+// (typically an ACK/NACK/body byte of the in-progress wire
+// transaction) as a new frame's SRC, creating a second false
+// reconstruction cascade.
 //
-// Pre-fix: resetStateLocked was called unconditionally → Layer-1 gate
-// closed → next frame's SRC byte was dropped → CASCADE CONTINUED
-// (exactly what this PR was meant to stop).
+// The fix: always call plain resetStateLocked at the F-19a
+// abandon site, regardless of the symbol's value. The next
+// observed real wire SYN re-engages the synced gate via the Idle
+// handler. The "wasted SYN" cost (one SRC dropped if the symbol
+// genuinely was a wire SYN — which we cannot distinguish without
+// a WasEscaped flag on the tap) is bounded by the next
+// guaranteed inter-frame wire SYN.
 //
-// Post-fix: resetStateLockedAfterSyn keeps synced=true after a
-// SYN-valued absorbed byte → next non-SYN byte engages frame collection
-// immediately.
-func TestPassiveReconstructor_F19a_LayerOneInvariant_SynConsumed_KeepsSynced(t *testing.T) {
+// This test pins the safe-fail behavior: after F-19a abandons on
+// an absorbed 0xAA-valued byte, the gate is CLOSED, and any
+// non-SYN bytes that follow are dropped until the next wire SYN.
+func TestPassiveReconstructor_F19a_LayerOneInvariant_EscapeDecodedAA_ClosesGate(t *testing.T) {
 	t.Parallel()
 
 	reconstructor := newPassiveTransactionReconstructorCore(DefaultConfig())
@@ -286,16 +293,15 @@ func TestPassiveReconstructor_F19a_LayerOneInvariant_SynConsumed_KeepsSynced(t *
 	}
 	defer subscription.Close()
 
-	// Step 1: trigger F-19a abandon via the operator's exact `... AA AA`
-	// shape. Both 0xAA bytes are SYN-valued (escape-decoded from
-	// `0xA9 0x01` on wire). The SECOND 0xAA is the symbol that
-	// triggers the LEN-completion CRC fail → F-19a abandon. The
-	// reset variant MUST be AfterSyn (post-Codex-bot-P2 fix).
+	// Step 1: trigger F-19a abandon via the operator's exact
+	// `... AA AA` shape. The trailing 0xAA cannot be reliably
+	// distinguished from an escape-decoded data byte at this
+	// layer, so the safe choice is to close the gate.
 	wire := []byte{
 		protocol.SymbolSyn, // Layer 1 gate
 		0x10, 0x26, 0xB5, 0x23, 0x01,
-		0xAA, // DATA[0]
-		0xAA, // CRC position — SYN-valued byte triggering F-19a abandon
+		0xAA, // DATA[0] (escape-decoded)
+		0xAA, // CRC position (potentially escape-decoded too)
 	}
 	feedPassiveSymbolsRaw(reconstructor, time.Unix(0, 0), wire)
 
@@ -304,14 +310,16 @@ func TestPassiveReconstructor_F19a_LayerOneInvariant_SynConsumed_KeepsSynced(t *
 		t.Fatalf("setup: F-19a abandon AbandonReason = %v; want corrupted_request", event.AbandonReason)
 	}
 
-	// Step 2: feed a NON-SYN byte (the start of the next frame's SRC).
-	// Post-Codex-bot-P2 fix: synced=true (carried over from the
-	// absorbed SYN-valued 0xAA), so this byte engages frame collection
-	// at requestRaw[0]. Pre-fix: it would have been dropped because
-	// resetStateLocked closed the gate.
-	//
-	// Then feed the rest of a valid broadcast frame to confirm it
-	// reconstructs cleanly with SRC=0x30 in position 0.
+	// Step 2: feed a NON-SYN byte. The gate MUST be closed
+	// (resetStateLocked, NOT AfterSyn). This byte is dropped
+	// silently because we cannot prove the previous 0xAA was a
+	// wire SYN. Without this guarantee, an in-progress wire
+	// transaction's ACK/NACK/body byte could be misinterpreted
+	// as a new frame's SRC.
+	feedPassiveSymbolsRaw(reconstructor, time.Unix(0, 1), []byte{0x30, 0x08, 0xB5, 0x09})
+
+	// Step 3: feed a real wire SYN + a valid follow-up frame. The
+	// wire SYN re-engages the synced gate via the Idle handler.
 	follow := protocol.Frame{
 		Source:    0x30,
 		Target:    protocol.AddressBroadcast,
@@ -319,24 +327,22 @@ func TestPassiveReconstructor_F19a_LayerOneInvariant_SynConsumed_KeepsSynced(t *
 		Secondary: 0x16,
 		Data:      []byte{0x07},
 	}
-	// No leading SYN here — the SYN-valued byte we absorbed in step 1
-	// is what re-engages the gate. Append a trailing SYN so the
-	// broadcast commits via the SYN-triggered path.
-	feedPassiveSymbolsRaw(reconstructor, time.Unix(0, 1), frameBytes(follow))
+	wireFollow := append([]byte{protocol.SymbolSyn}, frameBytes(follow)...)
+	feedPassiveSymbolsRaw(reconstructor, time.Unix(0, 2), wireFollow)
 
 	next := requirePassiveClassifiedEvent(t, subscription, PassiveClassifiedEventBroadcastFrame)
 	if next.Request.Source != 0x30 {
-		t.Fatalf("F-19a Codex-P2 regression: follow-up frame Source = 0x%02X; want 0x30 (the SYN-valued byte that triggered F-19a abandon must satisfy Layer 1 — resetStateLockedAfterSyn keeps synced=true so the next SRC byte engages frame collection immediately)", next.Request.Source)
+		t.Fatalf("F-19a Layer-1 safe-fail: follow-up frame Source = 0x%02X; want 0x30 (non-SYN bytes after F-19a abandon must be dropped until a real wire SYN re-engages the gate; the dropped bytes from step 2 must not have polluted the reconstruction)", next.Request.Source)
 	}
 }
 
 // TestPassiveReconstructor_F19a_LayerOneInvariant_NonSynTrigger_RequiresNextSyn
-// pins the other half of the Codex-bot-P2 reset-selection logic: when
-// F-19a is triggered by a NON-SYN byte (a non-0xAA byte that fails
-// CRC validation at LEN-completion — rarer but possible), the
-// implementation MUST call resetStateLocked (NOT AfterSyn). No wire
-// SYN was consumed; the next observed wire SYN re-engages the synced
-// gate via the Idle handler.
+// pins the same safe-fail behavior for the non-SYN-byte case (a
+// non-0xAA byte that fails CRC validation at LEN-completion).
+// Implementation calls plain resetStateLocked in BOTH branches
+// (the SYN-valued and non-SYN-valued cases) post-Codex-P2-round-2;
+// this test pins that the non-SYN-trigger path behaves
+// identically to the escape-decoded-0xAA path.
 func TestPassiveReconstructor_F19a_LayerOneInvariant_NonSynTrigger_RequiresNextSyn(t *testing.T) {
 	t.Parallel()
 
@@ -366,8 +372,7 @@ func TestPassiveReconstructor_F19a_LayerOneInvariant_NonSynTrigger_RequiresNextS
 	}
 
 	// Step 2: feed a NON-SYN byte. The Layer-1 gate is CLOSED
-	// (resetStateLocked, not AfterSyn) because no wire SYN was
-	// consumed in step 1. This byte must be dropped silently.
+	// (plain resetStateLocked). This byte must be dropped silently.
 	feedPassiveSymbolsRaw(reconstructor, time.Unix(0, 1), []byte{0x30, 0x08, 0xB5, 0x09})
 
 	// Step 3: feed a wire SYN + valid follow-up. The SYN re-engages

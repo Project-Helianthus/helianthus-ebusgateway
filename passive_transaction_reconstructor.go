@@ -30,7 +30,28 @@ const (
 	// arbitrary bus byte admitted as an initiator-class source after a
 	// prior abandon). Bounding the predicate here prevents a single bad
 	// position from cascading into watchdog-bounded byte absorption.
+	//
+	// F-19c (batch-16) also uses this cap as the at-observation reject
+	// threshold for NN_m / NN_s: any LEN byte > maxPassiveDataLen is
+	// spec-illegal and triggers an immediate abandon with reason
+	// invalid_nn_m / invalid_nn_s, before the F-19a `5+LEN+1`
+	// completion target is computed (which would otherwise overshoot
+	// the next bus SYN and let the buffer eat next-frame bytes).
 	maxPassiveDataLen = 16
+
+	// maxPassiveLogicalRequestBytes is the F-19c (batch-16) tight
+	// defensive cap on the post-unescape request-buffer length. The
+	// worst-case legitimate initiator/target exchange is:
+	//
+	//   5 (header: QQ ZZ PB SB NN_m) + 16 (NN_m data) + 1 (CRC_m)
+	//   + 1 (T_ACK) + 1 (NN_s) + 16 (NN_s data) + 1 (CRC_s)
+	//   + 1 (I_ACK) + 1 (SYN) = 43 logical bytes.
+	//
+	// 50 bytes gives 7 bytes of margin without permitting runaway
+	// accumulation. Replaces the loose maxPassiveRequestBytes = 512 cap
+	// for the early-abandon path; the buffer_overflow reason fires
+	// here before the looser 512-cap can be reached.
+	maxPassiveLogicalRequestBytes = 50
 )
 
 type PassiveClassifiedEventKind uint8
@@ -75,6 +96,28 @@ const (
 	PassiveAbandonReasonScanCollision       PassiveAbandonReason = "scan_collision"
 	PassiveAbandonReasonArbitrationFragment PassiveAbandonReason = "arbitration_fragment"
 	PassiveAbandonReasonSelfEcho            PassiveAbandonReason = "self_echo"
+
+	// F-19c (batch-16): defensive bound-check abandon reasons. These
+	// fire at byte-observation time in handleRequestSymbolLocked /
+	// handleResponseSymbolLocked when the candidate frame violates the
+	// eBUS spec at a structural offset (QQ initiator-address rule, ZZ
+	// non-SYN/non-ESC, NN_m / NN_s ≤ maxPassiveDataLen), before the
+	// LEN-completion or SYN-trigger paths could mis-classify the
+	// buffer.
+	//
+	// Spec references:
+	//   - OSI-7 Application Layer Spec V1.6.1 §2.3 (NN cap: 14
+	//     mfr-specific, 10 standardised; codebase uses 16 per
+	//     industry folklore via maxPassiveDataLen).
+	//   - john30/ebusd symbol.h:39-66 + symbol.cpp:209-229
+	//     (initiator-address nibble rule).
+	//   - Wikipedia OSI-2 / eBUS data-link layer reference for
+	//     escape encoding scope (QQ/ZZ never escape-encoded).
+	PassiveAbandonReasonInvalidQQ       PassiveAbandonReason = "invalid_qq"
+	PassiveAbandonReasonInvalidZZ       PassiveAbandonReason = "invalid_zz"
+	PassiveAbandonReasonInvalidNNMaster PassiveAbandonReason = "invalid_nn_m"
+	PassiveAbandonReasonInvalidNNSlave  PassiveAbandonReason = "invalid_nn_s"
+	PassiveAbandonReasonBufferOverflow  PassiveAbandonReason = "buffer_overflow"
 )
 
 type PassiveTimingMarkers struct {
@@ -490,6 +533,28 @@ func (reconstructor *PassiveTransactionReconstructor) handleSymbolLocked(events 
 			reconstructor.state.awaitingResync = true
 			return events
 		}
+		// F-19c (batch-16) QQ defense-in-depth check (Codex CLI
+		// review FINDING_1, 2026-05-12): Layer 2 above admits the
+		// byte by matching protocol.AddressClassMaster, which is
+		// currently equivalent to the nibble rule because
+		// sourceAddressTableV1 in helianthus-ebusgo contains exactly
+		// the 25 nibble-rule initiators (verified against
+		// symbol.cpp:209-229). But if Layer 2's lookup table is ever
+		// widened, the spec's nibble rule must still be enforced —
+		// otherwise a non-nibble-rule QQ would be appended into
+		// requestRaw by startRequestLocked below and the F-19c
+		// per-byte switch in handleRequestSymbolLocked would never
+		// see it (the first byte arriving at handleRequestSymbolLocked
+		// is ZZ at rawLen=2, not QQ at rawLen=1). Place the QQ check
+		// HERE, between the Layer-2 gate and startRequestLocked, so
+		// it is reachable independent of Layer 2's evolution.
+		if !isInitiatorAddr(symbol) {
+			events = append(events, reconstructor.abandonLocked(
+				PassiveAbandonReasonInvalidQQ, observedAt, ebuserrors.ErrInvalidPayload))
+			reconstructor.state.phase = passivePhaseAbandoned
+			reconstructor.resetStateLocked()
+			return events
+		}
 		reconstructor.startRequestLocked(symbol, observedAt)
 		return events
 	case passivePhaseRequest:
@@ -609,13 +674,82 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 	if symbol != protocol.SymbolSyn || reconstructor.isMidRequestFrame() {
 		reconstructor.state.requestRaw = append(reconstructor.state.requestRaw, symbol)
 		reconstructor.state.lastProgressAt = observedAt
-		if len(reconstructor.state.requestRaw) > maxPassiveRequestBytes {
-			reason := PassiveAbandonReasonCorruptedRequest
-			if reconstructor.isSelfOriginatedRaw() {
-				reason = PassiveAbandonReasonSelfEcho
+
+		// F-19c (batch-16) spec-bound checks at structural offsets.
+		// These fire AT byte-observation time, after the new symbol
+		// has been appended to requestRaw, so the candidate frame
+		// preserves the offending byte for forensics. All abandon
+		// paths use the plain resetStateLocked variant (no wire SYN
+		// has been consumed; the next bus SYN re-engages Layer 1
+		// via the Idle handler — same Codex-P2-round-2 safe-fail
+		// rationale used by F-19a's abandon site).
+		rawLen := len(reconstructor.state.requestRaw)
+		switch rawLen {
+		// NOTE: the QQ (rawLen=1) defense-in-depth check is NOT
+		// here — startRequestLocked appends QQ before
+		// handleRequestSymbolLocked is reached, so the first byte
+		// to arrive HERE is ZZ at rawLen=2. The QQ check lives at
+		// the Idle-handler call site (passivePhaseIdle branch above)
+		// between the Layer-2 AddressClass gate and
+		// startRequestLocked. See Codex CLI review FINDING_1 on
+		// PR #629.
+		case 2:
+			// ZZ (target address): per `symbol.h:41` QQ/ZZ are NEVER
+			// escape-encoded on the wire, so a literal 0xAA or 0xA9
+			// at this position is invalid (an escape sequence would
+			// require a leading 0xA9 byte that wasn't present in
+			// this position). Anything that's not the broadcast
+			// address (0xFE), not an initiator, and not a valid
+			// secondary-class address is also invalid; the
+			// redundant compound check is kept as an explicit
+			// guard since a future addition of reserved address
+			// classes could otherwise slip through.
+			zz := reconstructor.state.requestRaw[1]
+			if zz == 0xAA || zz == 0xA9 {
+				events = append(events, reconstructor.abandonLocked(
+					PassiveAbandonReasonInvalidZZ, observedAt, ebuserrors.ErrInvalidPayload))
+				reconstructor.state.phase = passivePhaseAbandoned
+				reconstructor.resetStateLocked()
+				return events
 			}
-			events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
+			if zz != 0xFE && !isInitiatorAddr(zz) && !isValidTargetAddr(zz) {
+				events = append(events, reconstructor.abandonLocked(
+					PassiveAbandonReasonInvalidZZ, observedAt, ebuserrors.ErrInvalidPayload))
+				reconstructor.state.phase = passivePhaseAbandoned
+				reconstructor.resetStateLocked()
+				return events
+			}
+		case 5:
+			// NN_m (initiator-side LEN byte) observation. The spec
+			// caps NN at 16. Live evidence (batch-16): bogus values
+			// 0x84, 0xAF, 0xFF appear in production. Without this
+			// check, F-19a's `5+LEN+1` completion target overshoots
+			// the next bus SYN and the buffer eats next-frame bytes
+			// before the SYN-trigger path classifies the abandon.
+			nnM := reconstructor.state.requestRaw[4]
+			if int(nnM) > maxPassiveDataLen {
+				events = append(events, reconstructor.abandonLocked(
+					PassiveAbandonReasonInvalidNNMaster, observedAt, ebuserrors.ErrInvalidPayload))
+				reconstructor.state.phase = passivePhaseAbandoned
+				reconstructor.resetStateLocked()
+				return events
+			}
+		}
+
+		// F-19c watchdog: tight defensive cap on the post-unescape
+		// request buffer. Worst-case legitimate MS exchange is 43
+		// logical bytes (see maxPassiveLogicalRequestBytes
+		// docstring). Hitting 51 here means either runaway
+		// accumulation (a real wire SYN was missed and bytes from
+		// multiple frames are piling up) or a spec violation that
+		// the per-offset checks above didn't catch. Replaces the
+		// looser maxPassiveRequestBytes=512 cap that previously
+		// fired here.
+		if rawLen > maxPassiveLogicalRequestBytes {
+			events = append(events, reconstructor.abandonLocked(
+				PassiveAbandonReasonBufferOverflow, observedAt, ebuserrors.ErrInvalidPayload))
 			reconstructor.state.phase = passivePhaseAbandoned
+			reconstructor.resetStateLocked()
 			return events
 		}
 
@@ -1032,6 +1166,38 @@ func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked
 
 	reconstructor.state.lastProgressAt = observedAt
 	if len(reconstructor.state.responseRaw) == 0 {
+		// F-19c (batch-16): the first byte of responseRaw is NN_s
+		// (responder-side LEN). By the time control reaches this
+		// handler, handleACKSymbolLocked at the previous phase
+		// boundary has already confirmed S_ACK=0x00 (the
+		// S_NAK=0xFF path at
+		// passive_transaction_reconstructor.go:982-993 abandons
+		// with reason=nack BEFORE reaching here, so the
+		// S_NAK-retry-restart case doesn't reach this check). NN_s
+		// must respect the same OSI-7 §2.3 cap as NN_m. Without
+		// this guard, responseExpectedLen = int(symbol) + 2 could
+		// reach 257 on a corrupt 0xFF symbol, and the response
+		// buffer would accumulate up to 257 bytes of next-frame
+		// noise before the response-side mid-frame guard fires.
+		//
+		// Codex bot P2 round 2 on PR #629: append the candidate
+		// NN_s byte to responseRaw BEFORE the bound check fires,
+		// so the forensic log emitted by abandonLocked includes
+		// the offending value as `resp_raw=<NN_s>`. Without the
+		// pre-append, the log would show `resp_raw=<empty>`,
+		// losing the diagnostic evidence the F-19c forensic
+		// inclusion (the previous P2 fix) was meant to preserve.
+		if int(symbol) > maxPassiveDataLen {
+			reconstructor.state.responseRaw = append(reconstructor.state.responseRaw, symbol)
+			events = append(events, reconstructor.abandonLocked(
+				PassiveAbandonReasonInvalidNNSlave, observedAt, ebuserrors.ErrInvalidPayload))
+			reconstructor.state.phase = passivePhaseAbandoned
+			// Plain reset: the offending byte is the NN_s data
+			// byte, not a wire SYN. Layer 1 re-syncs on the next
+			// observed bus SYN via the Idle handler.
+			reconstructor.resetStateLocked()
+			return events
+		}
 		reconstructor.state.timing.ResponseStart = observedAt
 		reconstructor.state.responseExpectedLen = int(symbol) + 2
 	}
@@ -1187,7 +1353,23 @@ func shouldLogReconstructorForensics(reason PassiveAbandonReason) bool {
 	case PassiveAbandonReasonUnexpectedSymbol,
 		PassiveAbandonReasonCorruptedRequest,
 		PassiveAbandonReasonCorruptedTarget,
-		PassiveAbandonReasonNoResponse:
+		PassiveAbandonReasonNoResponse,
+		// F-19c (batch-16, Codex bot review P2 on PR #629): the new
+		// spec-bound reasons are reclassifications of the same
+		// production-symptom abandons that previously emitted
+		// `corrupted_request` and logged forensics. Without these
+		// entries the operator-facing `req_raw=...` evidence for
+		// invalid NN_m, invalid NN_s, invalid QQ/ZZ, and buffer
+		// overflow disappears from logs — precisely the signal the
+		// batch-16 live verification used to detect F-19c in the
+		// first place. Keep emitting forensics for the F-19c
+		// classifications so post-deploy verification can confirm
+		// the rate drop AND preserve the diagnostic trail.
+		PassiveAbandonReasonInvalidQQ,
+		PassiveAbandonReasonInvalidZZ,
+		PassiveAbandonReasonInvalidNNMaster,
+		PassiveAbandonReasonInvalidNNSlave,
+		PassiveAbandonReasonBufferOverflow:
 		return true
 	}
 	return false

@@ -2250,7 +2250,22 @@ func classifyPassiveAbandon(reason PassiveAbandonReason) (string, string) {
 		PassiveAbandonReasonUnexpectedSYN, PassiveAbandonReasonUnexpectedSymbol,
 		PassiveAbandonReasonScanTimeout, PassiveAbandonReasonScanCollision,
 		PassiveAbandonReasonArbitrationFragment, PassiveAbandonReasonSelfEcho,
-		PassiveAbandonReasonAmbiguousRetransmit:
+		PassiveAbandonReasonAmbiguousRetransmit,
+		// F-19c (batch-16, Codex bot P2 round 2 on PR #629): the
+		// new spec-bound reasons are STRUCTURAL reclassifications
+		// of bus-noise abandons that were previously classified as
+		// corrupted_request (or arbitration_fragment). They share
+		// the same operational character — expected on a shared
+		// bus passive tap, not a software error — so they must
+		// fall into the same non-error bucket. Routing them
+		// through the default ("abandoned", "terminal") branch
+		// would increment passive error metrics on every
+		// bad-LEN or buffer-overflow event and potentially fire
+		// alerts in production windows where F-19c reclassifies
+		// the same noise corruption_request used to silently absorb.
+		PassiveAbandonReasonInvalidQQ, PassiveAbandonReasonInvalidZZ,
+		PassiveAbandonReasonInvalidNNMaster, PassiveAbandonReasonInvalidNNSlave,
+		PassiveAbandonReasonBufferOverflow:
 		// Bus contention artifacts: CRC failures, arbitration noise, and
 		// reconstructor desync are expected on a shared-bus passive tap.
 		// The CRC check correctly identifies invalid frames — that is not

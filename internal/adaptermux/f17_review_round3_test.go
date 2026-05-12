@@ -191,6 +191,77 @@ func TestRequestStartErr_InFlightCancelled_SuppressedSilently(t *testing.T) {
 	}
 }
 
+// TestRequestStartErr_InFlightCancelled_ResetErr_DeliversReset pins the
+// Codex bot P2 finding on PR #626 (2026-05-11): when the M2 RequestStart
+// err path observes BOTH `cancelledInFlight=true` AND a transport err
+// matching `isResetOrDisconnectError` (e.g. "adapter disconnected" /
+// "adapter reset" / "adaptermux: closed" / ErrAdapterReset), the result
+// MUST NOT carry `cancelled: true`. session.go's branch order is
+// `granted → cancelled → err(reset) → deliverFailed`, so setting both
+// flags would silent-return on the cancelled branch and the session
+// would miss the RESETTED boundary event the client needs.
+//
+// The contract is documented in arbitration.failAllPending's block
+// comment. The M2 fix originally violated it for the narrow case where
+// a same-session re-submit raced with an adapter-reset-triggered
+// RequestStart failure. Codex bot caught the gap; this test pins it.
+func TestRequestStartErr_InFlightCancelled_ResetErr_DeliversReset(t *testing.T) {
+	mock := &requestStartErrTransport{
+		eventCh: make(chan transport.StreamEvent, 16),
+		err:     errors.New("adapter disconnected during RequestStart"),
+	}
+
+	mux := New(Config{
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		StartDeadline:   2 * time.Second,
+		PendingStartTTL: 24 * time.Hour,
+		SYNInterval:     time.Hour,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+	mux.upstreamFeatures.Store(0x01)
+
+	// Same setup as TestRequestStartErr_InFlightCancelled_SuppressedSilently:
+	// pre-flip the struct flag so the err-path observes cancelledInFlight.
+	ch := mux.arb.requestStart(1, 0x31)
+	mux.arb.mu.Lock()
+	req := mux.arb.pendingExternal[0]
+	mux.arb.mu.Unlock()
+	req.cancelled.Store(true)
+
+	mux.tryGrantAndStart()
+
+	select {
+	case result := <-ch:
+		if result.granted {
+			t.Fatal("expected granted=false after RequestStart error")
+		}
+		// Codex P2 ASSERTION: the result MUST NOT carry cancelled=true
+		// when the err matches isResetOrDisconnectError, even though
+		// the in-flight request was cancelled. Setting both would
+		// suppress the RESETTED delivery the client needs.
+		if result.cancelled {
+			t.Fatalf("startResult.cancelled = true on RequestStart-err + cancelledInFlight + reset-err; want false so session.go's err(reset) → deliverReset branch fires (Codex P2 regression — the precedence rule in failAllPending's contract block applies here too)")
+		}
+		if result.err == nil {
+			t.Fatal("expected non-nil err on transport-failure result")
+		}
+		if !isResetOrDisconnectError(result.err) {
+			t.Fatalf("result.err must still match isResetOrDisconnectError so session.go routes to deliverReset; got: %v", result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for RequestStart-err result")
+	}
+}
+
 // requestStartErrTransport implements arbitrationRequester returning
 // a fixed error from RequestStart. Used to exercise M2's
 // non-blocking-half err branch deterministically.

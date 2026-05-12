@@ -2591,13 +2591,26 @@ func (m *Mux) tryGrantAndStart() {
 				// cancelled-in-flight, suppress with `cancelled: true`
 				// so the old wait goroutine silent-returns rather than
 				// emitting ENHResFailed on the wire (same class as M1).
+				//
+				// F-17 follow-up (PR #626 Codex bot P2, 2026-05-11):
+				// EXCEPTION — when the transport err is a reset/
+				// disconnect boundary event (isResetOrDisconnectError),
+				// the cancelled flag MUST NOT be set, even if the
+				// in-flight req is cancelled. Session.go's branch order
+				// (`granted → cancelled → err(reset) → deliverFailed`)
+				// would silent-return on `cancelled: true` and the
+				// client would miss the RESETTED delivery it needs to
+				// observe the boundary event. This is the same
+				// precedence rule documented in
+				// `arbitration.failAllPending`'s contract block.
 				cancelledInFlight := m.pendingStart.req != nil && m.pendingStart.req.cancelled.Load()
+				deliverAsCancelled := cancelledInFlight && !isResetOrDisconnectError(err)
 				if m.pendingStart.deadline != nil {
 					m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 				}
 				m.pendingStart = nil
 				m.stateMu.Unlock()
-				if cancelledInFlight {
+				if deliverAsCancelled {
 					notify <- startResult{granted: false, cancelled: true, initiator: initiator, err: err}
 				} else {
 					notify <- startResult{granted: false, initiator: initiator, err: err}
@@ -2705,13 +2718,22 @@ func (m *Mux) tryGrantAndStart() {
 					// could race with the transport-call returning an
 					// error. Suppress with `cancelled: true` when the
 					// in-flight req is cancelled.
+					//
+					// F-17 follow-up (PR #626 Codex bot P2, 2026-05-11):
+					// EXCEPTION — when the transport err is a reset/
+					// disconnect boundary event, the cancelled flag MUST
+					// NOT be set so session.go's err-routing path drives
+					// deliverReset(...) instead of silent-returning. Same
+					// precedence as the non-blocking RequestStart-err
+					// path above.
 					cancelledInFlight := m.pendingStart.req != nil && m.pendingStart.req.cancelled.Load()
+					deliverAsCancelled := cancelledInFlight && !isResetOrDisconnectError(err)
 					if m.pendingStart.deadline != nil {
 						m.pendingStart.deadline.Stop() // AM8: cancel deadline timer
 					}
 					m.pendingStart = nil
 					m.stateMu.Unlock()
-					if cancelledInFlight {
+					if deliverAsCancelled {
 						notify <- startResult{granted: false, cancelled: true, initiator: initiator, err: err}
 					} else {
 						notify <- startResult{granted: false, initiator: initiator, err: err}

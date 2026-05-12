@@ -533,6 +533,28 @@ func (reconstructor *PassiveTransactionReconstructor) handleSymbolLocked(events 
 			reconstructor.state.awaitingResync = true
 			return events
 		}
+		// F-19c (batch-16) QQ defense-in-depth check (Codex CLI
+		// review FINDING_1, 2026-05-12): Layer 2 above admits the
+		// byte by matching protocol.AddressClassMaster, which is
+		// currently equivalent to the nibble rule because
+		// sourceAddressTableV1 in helianthus-ebusgo contains exactly
+		// the 25 nibble-rule initiators (verified against
+		// symbol.cpp:209-229). But if Layer 2's lookup table is ever
+		// widened, the spec's nibble rule must still be enforced —
+		// otherwise a non-nibble-rule QQ would be appended into
+		// requestRaw by startRequestLocked below and the F-19c
+		// per-byte switch in handleRequestSymbolLocked would never
+		// see it (the first byte arriving at handleRequestSymbolLocked
+		// is ZZ at rawLen=2, not QQ at rawLen=1). Place the QQ check
+		// HERE, between the Layer-2 gate and startRequestLocked, so
+		// it is reachable independent of Layer 2's evolution.
+		if !isInitiatorAddr(symbol) {
+			events = append(events, reconstructor.abandonLocked(
+				PassiveAbandonReasonInvalidQQ, observedAt, ebuserrors.ErrInvalidPayload))
+			reconstructor.state.phase = passivePhaseAbandoned
+			reconstructor.resetStateLocked()
+			return events
+		}
 		reconstructor.startRequestLocked(symbol, observedAt)
 		return events
 	case passivePhaseRequest:
@@ -663,30 +685,14 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 		// rationale used by F-19a's abandon site).
 		rawLen := len(reconstructor.state.requestRaw)
 		switch rawLen {
-		case 1:
-			// QQ (initiator address): must satisfy the nibble rule
-			// (symbol.cpp:209-229). Common bogus values: 0x12, 0x52,
-			// 0x88 — any byte whose nibbles fall outside {0,1,3,7,F}.
-			//
-			// NOTE: this check is currently REDUNDANT with the
-			// Layer-2 gate at line ~528, which uses
-			// protocol.AddressClassOf and the sourceAddressTableV1
-			// in helianthus-ebusgo. That table is exactly the 25
-			// nibble-rule initiators, so any non-initiator byte is
-			// dropped at Layer 2 before reaching this handler. The
-			// check stays here as defense-in-depth: it guarantees
-			// the spec rule independent of Layer 2's lookup table,
-			// so a future widening of sourceAddressTableV1 cannot
-			// accidentally admit a non-nibble-rule QQ. The check is
-			// O(1) and harmless when unreachable.
-			qq := reconstructor.state.requestRaw[0]
-			if !isInitiatorAddr(qq) {
-				events = append(events, reconstructor.abandonLocked(
-					PassiveAbandonReasonInvalidQQ, observedAt, ebuserrors.ErrInvalidPayload))
-				reconstructor.state.phase = passivePhaseAbandoned
-				reconstructor.resetStateLocked()
-				return events
-			}
+		// NOTE: the QQ (rawLen=1) defense-in-depth check is NOT
+		// here — startRequestLocked appends QQ before
+		// handleRequestSymbolLocked is reached, so the first byte
+		// to arrive HERE is ZZ at rawLen=2. The QQ check lives at
+		// the Idle-handler call site (passivePhaseIdle branch above)
+		// between the Layer-2 AddressClass gate and
+		// startRequestLocked. See Codex CLI review FINDING_1 on
+		// PR #629.
 		case 2:
 			// ZZ (target address): per `symbol.h:41` QQ/ZZ are NEVER
 			// escape-encoded on the wire, so a literal 0xAA or 0xA9

@@ -154,15 +154,22 @@ func TestF19c_BoundaryNN16_Accepted(t *testing.T) {
 
 // TestF19c_InvalidQQ_NotMaster covers the QQ check.
 //
-// The F-19c per-byte QQ check at byte 1 of handleRequestSymbolLocked
-// is currently REDUNDANT with the Layer 2 gate at
-// passive_transaction_reconstructor.go:528, which uses
+// The F-19c QQ defense-in-depth check lives at the Idle-handler
+// call site in passive_transaction_reconstructor.go (between the
+// Layer 2 AddressClass gate and startRequestLocked). It is
+// currently REDUNDANT with the Layer 2 gate, which uses
 // protocol.AddressClassOf and the sourceAddressTableV1 in
 // helianthus-ebusgo. That table contains exactly the 25 nibble-rule
 // initiators (verified vs symbol.cpp:209-229), so any non-initiator
-// byte is silently dropped at Layer 2 before
-// handleRequestSymbolLocked is reached, and the F-19c QQ check
-// never fires.
+// byte is silently dropped at Layer 2 before the F-19c check is
+// reached. The F-19c QQ check never fires today.
+//
+// (Codex CLI review FINDING_1 on PR #629 identified that an earlier
+// placement inside handleRequestSymbolLocked's per-byte switch was
+// dead — startRequestLocked appends QQ BEFORE that handler runs.
+// The check has been relocated to the Idle handler call site to
+// make the defense-in-depth claim reachable for any future
+// widening of sourceAddressTableV1.)
 //
 // The check is kept anyway as a defense-in-depth invariant: it
 // guarantees the spec rule independent of Layer 2's lookup table.

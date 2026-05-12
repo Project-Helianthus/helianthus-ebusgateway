@@ -674,8 +674,62 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 				if events, ok := reconstructor.commitRequestFrameLocked(events, observedAt); ok {
 					return events
 				}
-				// parseFrame failed: keep accumulating and let the
-				// SYN-triggered path classify the abandon below.
+				// commitRequestFrameLocked returned ok=false for one of
+				// two distinct reasons:
+				//
+				//   (A) parseFrame failed (CRC mismatch / structural
+				//       invalid) — this is the F-19a case.
+				//
+				//   (B) parseFrame succeeded but the frame is Broadcast
+				//       or Unknown; commitRequestFrameLocked defers to
+				//       the SYN-triggered path for canonical timing
+				//       (commitRequestFrameLocked docstring at
+				//       lines 723-730).
+				//
+				// Re-parse to disambiguate. For (A), abandon early per
+				// F-19a (below). For (B), preserve the pre-F-19a
+				// behavior: keep accumulating, let the trailing SYN
+				// commit the broadcast cleanly.
+				if _, parseOk := parseFrame(reconstructor.state.requestRaw); !parseOk {
+					// F-19a (batch-15): parseFrame failed at
+					// LEN-completion. This is the "logical 0xAA
+					// absorbed at the CRC position" scenario: a
+					// wire-SYN byte that should have terminated a
+					// shorter frame was routed into the buffer by
+					// isMidRequestFrame() (it returns true while
+					// len < 6+LEN), and the resulting len=6+LEN buffer
+					// fails CRC validation.
+					//
+					// Pre-F-19a: this path "kept accumulating" —
+					// consuming bytes from the NEXT frame into a buffer
+					// that would never validate. The eventual abandon
+					// (via SYN at line ~684 or over-length at line
+					// ~612) cascaded the corruption: bytes that
+					// legitimately belonged to the next frame were
+					// lost. Live evidence (batch-14): ~146 src=0x10
+					// abandons per 30k log lines.
+					//
+					// Fix: abandon immediately, replicating the same
+					// classification helpers the SYN-triggered path
+					// uses (line ~689-696). The Layer 1 invariant is
+					// preserved by calling resetStateLocked (NOT
+					// resetStateLockedAfterSyn) — no wire SYN has been
+					// consumed at this point; the next real wire SYN
+					// re-engages the synced gate via the Idle handler.
+					reason := PassiveAbandonReasonCorruptedRequest
+					if reconstructor.isSelfOriginatedRaw() {
+						reason = PassiveAbandonReasonSelfEcho
+					} else if isScanProbeRaw(reconstructor.state.requestRaw) {
+						reason = PassiveAbandonReasonScanCollision
+					}
+					events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
+					reconstructor.state.phase = passivePhaseAbandoned
+					reconstructor.resetStateLocked()
+					return events
+				}
+				// Case (B): broadcast/unknown defer path. Keep
+				// accumulating; the trailing wire SYN commits the
+				// frame via dispatchParsedRequestLocked.
 			}
 		}
 		return events
@@ -687,7 +741,17 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 	frame, ok := parseFrame(reconstructor.state.requestRaw)
 	if !ok {
 		reason := PassiveAbandonReasonCorruptedRequest
-		if len(reconstructor.state.requestRaw) <= 3 {
+		// F-19b (batch-15): widen arbitration_fragment from `<= 3` to
+		// `< 5`. A buffer of length 4 (SRC DST PB SB) has reached SB
+		// but never observed LEN — structurally this is a truncated
+		// arbitration attempt (lost to a higher-priority initiator,
+		// or wire byte loss), not a corrupted frame. The previous
+		// `<= 3` threshold mis-attributed these to corrupted_request,
+		// inflating the F-19 metric for src values that frequently
+		// lose arbitration on a 3-initiator bus (live evidence
+		// batch-14: ~115 src=0xF1 abandons per 30k lines, almost all
+		// in the 4-byte truncated shape).
+		if len(reconstructor.state.requestRaw) < 5 {
 			reason = PassiveAbandonReasonArbitrationFragment
 		} else if reconstructor.isSelfOriginatedRaw() {
 			reason = PassiveAbandonReasonSelfEcho

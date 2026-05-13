@@ -341,14 +341,136 @@ func feedPassiveSymbols(reconstructor *PassiveTransactionReconstructor, start ti
 // NOT auto-prepend SymbolSyn. Use it whenever a test needs to assert
 // behavior on bytes that arrive BEFORE the first observed SYN
 // (startup-from-cold, post-discontinuity, etc.).
+//
+// Auto-marks 0xAA bytes inside a candidate frame body as
+// WasEscaped=true so that the F-19d (batch-17) wire-side
+// disambiguation treats them as data, matching the pre-F-19d
+// heuristic isMidRequestFrame() semantics used by P7.1 regression
+// tests. The detection is conservative: only 0xAA bytes that
+// follow at least one initiator-class byte and precede the next
+// wire SYN are marked. Tests that need to inject a real wire SYN
+// 0xAA (not an escape-decoded one) should use
+// feedPassiveSymbolsRawWithEscapes with an explicit per-byte mask.
 func feedPassiveSymbolsRaw(reconstructor *PassiveTransactionReconstructor, start time.Time, symbols []byte) {
+	mask := autoEscapeMaskForLegacyTests(symbols)
+	feedPassiveSymbolsRawWithEscapes(reconstructor, start, symbols, mask)
+}
+
+// feedPassiveSymbolsRawWithEscapes is the F-19d-aware injection
+// helper. The escapes slice is parallel to symbols: escapes[i] is
+// the WasEscaped flag for the byte at symbols[i]. The caller must
+// size escapes to len(symbols). Use a zero-mask
+// (`make([]bool, len(symbols))`) to feed every byte as raw-wire.
+func feedPassiveSymbolsRawWithEscapes(reconstructor *PassiveTransactionReconstructor, start time.Time, symbols []byte, escapes []bool) {
+	if len(escapes) != len(symbols) {
+		panic("feedPassiveSymbolsRawWithEscapes: escapes slice length must equal symbols length")
+	}
 	for index, symbol := range symbols {
 		reconstructor.OnPassiveTapEvent(PassiveTapEvent{
 			Kind:       PassiveTapEventSymbol,
 			Symbol:     symbol,
 			ObservedAt: start.Add(time.Duration(index) * 10 * time.Millisecond),
+			WasEscaped: escapes[index],
 		})
 	}
+}
+
+// autoEscapeMaskForLegacyTests reproduces the pre-F-19d
+// isMidRequestFrame() heuristic for synthetic test byte streams:
+// a 0xAA byte is marked WasEscaped=true if and only if it appears
+// inside the request body (positions 6 .. 6+NN_m-1 + CRC at
+// 6+NN_m) AND/OR inside the response body (positions 1..NN_s+1
+// after S_ACK). The walker conservatively assumes the stream is
+// either a broadcast (req only, terminated by SYN) or a full MS
+// transaction (req + ACK + resp + ACK + SYN). Anything ambiguous
+// is left unmarked (treated as wire SYN by F-19d's data path).
+//
+// Used by tests that pre-date F-19d's per-byte escape plumbing —
+// they feed full frames as a single byte slice and expect logical-
+// 0xAA-as-data semantics for the data/CRC region. F-19d-aware
+// tests should use feedPassiveSymbolsRawWithEscapes with an
+// explicit mask.
+func autoEscapeMaskForLegacyTests(symbols []byte) []bool {
+	mask := make([]bool, len(symbols))
+	i := 0
+	for i < len(symbols) {
+		b := symbols[i]
+		if b == 0xAA {
+			// Wire SYN between frames (or leading SYN gate).
+			// Leave unmarked.
+			i++
+			continue
+		}
+		// Frame header expected at symbols[i .. i+4] (QQ ZZ PB SB
+		// NN_m). Bail out if the slice is too short.
+		if i+5 > len(symbols) {
+			break
+		}
+		dst := symbols[i+1]
+		nnM := int(symbols[i+4])
+		if nnM > 16 {
+			// Out-of-spec LEN — leave the rest of the slice
+			// unmarked; F-19c will catch this anyway.
+			i++
+			continue
+		}
+		// Request body spans positions i+5 .. i+5+nnM (data) and
+		// i+5+nnM (CRC). Mark any 0xAA bytes in that range.
+		bodyEnd := i + 5 + nnM + 1 // exclusive
+		if bodyEnd > len(symbols) {
+			bodyEnd = len(symbols)
+		}
+		for j := i + 5; j < bodyEnd; j++ {
+			if symbols[j] == 0xAA {
+				mask[j] = true
+			}
+		}
+		i = bodyEnd
+		if dst == protocol.AddressBroadcast {
+			// Broadcast: trailing SYN at i (wire SYN, not data).
+			continue
+		}
+		// MS / MI: ACK byte at i. The ACK is structural (0x00
+		// /0xFF, not 0xAA), so no mask needed.
+		if i >= len(symbols) {
+			break
+		}
+		i++ // consume ACK
+		// MS only: response LEN at i, data at i+1..i+1+NN_s-1,
+		// CRC at i+1+NN_s, final ACK at i+2+NN_s, SYN at
+		// i+3+NN_s. Skip MI (which has only ACK + SYN).
+		if i >= len(symbols) {
+			break
+		}
+		// Peek to decide MS vs MI: if the next byte is a SYN, MI
+		// terminated and the stream is done with this frame.
+		if symbols[i] == 0xAA {
+			continue
+		}
+		nnS := int(symbols[i])
+		if nnS > 16 {
+			i++
+			continue
+		}
+		respEnd := i + 1 + nnS + 1 // exclusive (LEN + data + CRC)
+		if respEnd > len(symbols) {
+			respEnd = len(symbols)
+		}
+		for j := i + 1; j < respEnd; j++ {
+			if symbols[j] == 0xAA {
+				mask[j] = true
+			}
+		}
+		i = respEnd
+		// Final ACK + trailing SYN — consume both.
+		if i < len(symbols) {
+			i++ // final ACK
+		}
+		if i < len(symbols) && symbols[i] == 0xAA {
+			i++ // trailing SYN
+		}
+	}
+	return mask
 }
 
 func requirePassiveClassifiedEvent(t *testing.T, subscription *PassiveClassifiedSubscription, kind PassiveClassifiedEventKind) PassiveClassifiedEvent {

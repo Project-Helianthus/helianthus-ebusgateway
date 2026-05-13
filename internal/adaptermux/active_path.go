@@ -20,10 +20,11 @@ type activeTransport struct {
 
 // Compile-time interface checks.
 var (
-	_ transport.RawTransport      = (*activeTransport)(nil)
-	_ transport.StreamEventReader = (*activeTransport)(nil)
-	_ transport.InfoRequester     = (*activeTransport)(nil)
-	_ transport.EscapeAware       = (*activeTransport)(nil)
+	_ transport.RawTransport        = (*activeTransport)(nil)
+	_ transport.StreamEventReader   = (*activeTransport)(nil)
+	_ transport.InfoRequester       = (*activeTransport)(nil)
+	_ transport.EscapeAware         = (*activeTransport)(nil)
+	_ transport.EscapeFlaggedReader = (*activeTransport)(nil)
 )
 
 // NOTE: activeTransport intentionally does NOT implement
@@ -54,6 +55,27 @@ const activeChanTimeout = 2 * time.Second
 // readLoop resumes, so the consumer sees events in exact enqueue
 // order — no priority select needed.
 func (t *activeTransport) ReadByte() (byte, error) {
+	b, _, err := t.readByteAndFlag()
+	return b, err
+}
+
+// ReadByteWithEscape (F-23 / Codex bot on PR-2) surfaces the
+// per-byte WasEscaped provenance from the upstream ENH transport
+// through the mux's active channel. protocol.Bus uses this on
+// EscapeFlaggedReader-implementing transports so waitForSyn /
+// sendRawWithEcho can distinguish real wire SYN (false) from
+// escape-decoded payload 0xAA (true). Without this method,
+// protocol.Bus would fall back to the lossy ReadByte path and
+// the post-F-23 SYN / echo guards in the protocol layer would
+// silently revert to pre-F-23 value-only semantics.
+func (t *activeTransport) ReadByteWithEscape() (byte, bool, error) {
+	return t.readByteAndFlag()
+}
+
+// readByteAndFlag is the shared implementation for ReadByte +
+// ReadByteWithEscape — drains one activeEvent and returns its byte +
+// wasEscaped + error. Single timer + ctx select.
+func (t *activeTransport) readByteAndFlag() (byte, bool, error) {
 	timer := time.NewTimer(activeChanTimeout)
 	defer timer.Stop()
 
@@ -61,19 +83,19 @@ func (t *activeTransport) ReadByte() (byte, error) {
 	case ev := <-t.mux.activeCh:
 		if ev.kind == activeEventError {
 			if ev.err != nil {
-				return 0, ev.err
+				return 0, false, ev.err
 			}
-			return 0, errors.New("adaptermux: unexpected nil error")
+			return 0, false, errors.New("adaptermux: unexpected nil error")
 		}
 		t.mux.activeTxn.bytesRead.Add(1)
-		return ev.b, nil
+		return ev.b, ev.wasEscaped, nil
 	case <-timer.C:
 		t.mux.activeTxn.readTimeoutTot.Add(1)
 		t.mux.markActiveReadTimeout()
-		return 0, fmt.Errorf("adaptermux: %w", ebuserrors.ErrTimeout)
+		return 0, false, fmt.Errorf("adaptermux: %w", ebuserrors.ErrTimeout)
 	case <-t.mux.ctx.Done():
 		t.mux.markActiveContextCancel()
-		return 0, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
+		return 0, false, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
 	}
 }
 
@@ -99,9 +121,14 @@ func (t *activeTransport) ReadEvent() (transport.StreamEvent, error) {
 			return transport.StreamEvent{}, errors.New("adaptermux: unexpected nil error")
 		}
 		t.mux.activeTxn.bytesRead.Add(1)
+		// F-23 (Codex bot on PR-2): propagate the per-event
+		// wasEscaped flag so StreamEventReader consumers (passive
+		// tap in adapter-direct mode, etc.) see the same
+		// provenance ReadByteWithEscape exposes.
 		return transport.StreamEvent{
-			Kind: transport.StreamEventByte,
-			Byte: ev.b,
+			Kind:       transport.StreamEventByte,
+			Byte:       ev.b,
+			WasEscaped: ev.wasEscaped,
 		}, nil
 	case <-timer.C:
 		t.mux.activeTxn.readTimeoutTot.Add(1)

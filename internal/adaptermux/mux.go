@@ -231,9 +231,20 @@ func (c *Config) defaults() {
 
 // PassiveEvent is delivered to the passive path callback when a
 // third-party symbol is received from the bus.
+//
+// F-23 (batch-19, 2026-05-13, Codex bot review on PR-2): WasEscaped
+// carries the wire-side provenance flag for Symbol. It is valid for
+// PassiveEventSymbol only; other kinds leave it at the zero value.
+// The flag is sourced from upstream transport.StreamEvent.WasEscaped
+// (added in helianthus-ebusgo PR #154 / F-23) so adapter-direct
+// consumers — which read from the mux's passiveTransport bridge —
+// can distinguish escape-decoded payload 0xAA (WasEscaped=true) from
+// raw wire SYN (WasEscaped=false), matching the contract honored by
+// raw-TCP passive observers via the local escape decoder.
 type PassiveEvent struct {
 	Kind       PassiveEventKind
 	Symbol     byte
+	WasEscaped bool
 	ObservedAt time.Time
 }
 
@@ -311,6 +322,20 @@ type Mux struct {
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int                // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
 	pendingAbsorbGen   uint64             // generation for stale-response absorb fail-safe timers
+	// absorbResetTotal counts how many times the absorb-timeout
+	// fail-safe (armPendingStartAbsorbLocked) fired and reset the
+	// pending absorb counter to zero. F-22 (batch-19, 2026-05-13):
+	// replaces the prior transport-reconnect side effect at the
+	// absorb-timeout site. The old behavior closed the upstream ENH
+	// connection on every timeout, which severed external sessions
+	// (ebusd) and triggered cascade RequestStart failures for no
+	// transport-level reason — batch-19 measured 5 reconnects /
+	// 68 min producing 92 cascade failures. The new behavior just
+	// resets the counter and lets the next poll iteration issue a
+	// fresh RequestStart cleanly. atomic.Uint64 because external
+	// readers (ActiveTxnSnapshot, tests) may load it without
+	// holding stateMu.
+	absorbResetTotal atomic.Uint64
 	// Blocking StartArbitration tracking. blockingArbGen is monotonically
 	// increasing (never reset to 0 or reused) — reconnect/handleReset
 	// bump it forward so any stale goroutine's captured gen no longer
@@ -409,10 +434,17 @@ const (
 // handleReset drains the channel and enqueues the reset event before
 // readLoop resumes enqueuing bytes, so the consumer sees events in
 // exact enqueue order — no Go-select non-determinism.
+//
+// F-23 (batch-19, Codex bot on PR-2): wasEscaped carries the
+// upstream WasEscaped provenance for activeEventByte. Surfaced via
+// activeTransport.ReadByteWithEscape (transport.EscapeFlaggedReader)
+// so protocol.Bus's waitForSyn / sendRawWithEcho can distinguish
+// real wire SYN (false) from escape-decoded payload 0xAA (true).
 type activeEvent struct {
-	kind activeEventKind
-	b    byte  // valid when kind == activeEventByte
-	err  error // valid when kind == activeEventError
+	kind       activeEventKind
+	b          byte  // valid when kind == activeEventByte
+	wasEscaped bool  // valid when kind == activeEventByte (F-23)
+	err        error // valid when kind == activeEventError
 }
 
 // Sentinel errors returned by doSend for error classification.
@@ -1422,9 +1454,13 @@ func (m *Mux) readLoop() {
 			m.handleReset()
 			continue
 		case transport.StreamEventByte:
-			m.onReceived(event.Byte)
+			// F-23 (batch-19, Codex bot on PR-2): thread the upstream
+			// WasEscaped flag through onReceived so adapter-direct
+			// passive consumers see the same provenance the raw-TCP
+			// passive observers get via their local escape decoder.
+			m.onReceived(event.Byte, event.WasEscaped)
 		default:
-			m.onReceived(event.Byte)
+			m.onReceived(event.Byte, event.WasEscaped)
 		}
 	}
 }
@@ -1467,7 +1503,17 @@ func (m *Mux) readUpstream() (transport.StreamEvent, error) {
 //	TestMux_0xAA_MockTransportAlwaysSYN for the test coverage.
 //	A cleaner long-term contract is an explicit StreamEventSyn
 //	instead of inferring SYN from byte value; not changed here.
-func (m *Mux) onReceived(symbol byte) {
+//
+// onReceived processes one logical byte from the upstream
+// transport. wasEscaped (F-23 / Codex bot on PR-2) is the provenance
+// flag from transport.StreamEvent.WasEscaped — true when the byte
+// was decoded from an eBUS wire escape pair (so a logical 0xAA value
+// is user payload, not a wire SYN; a logical 0xA9 is data, not an
+// escape lead). It's threaded into the passive-event emissions and
+// into activeCh so consumers downstream of the mux see the same
+// per-byte truth as a raw-TCP passive observer would via the local
+// escape decoder.
+func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	now := time.Now()
 
 	// --- Phase 1: state update under stateMu ---
@@ -1494,7 +1540,13 @@ func (m *Mux) onReceived(symbol byte) {
 	// SYN markers do NOT bump the activity clock — they are the very
 	// signal we use to decide when the bus has been idle long enough
 	// for a release.
-	if symbol != protocol.SymbolSyn {
+	//
+	// F-23 (batch-19, Codex bot on PR-2): the SYN exclusion keys on
+	// the wire-side classification, not on byte value. An escape-
+	// decoded payload 0xAA (wasEscaped=true) is genuine bus traffic
+	// from a third-party frame and MUST refresh the activity clock;
+	// only a real un-escaped wire SYN counts as bus-idle.
+	if !(symbol == protocol.SymbolSyn && !wasEscaped) {
 		m.lastWireActivity = now
 	}
 
@@ -1507,18 +1559,36 @@ func (m *Mux) onReceived(symbol byte) {
 	// handler (SYNIdle + IdleReleaseGrace or SYNTimeout). During gateway
 	// ownership, treat SYN as SYNIdle since the data-phase tracking is
 	// skipped.
+	//
+	// F-23 (batch-19, Codex bot on PR-2): require wasEscaped=false
+	// for the SYN classification. An escape-decoded payload 0xAA
+	// (wasEscaped=true) is user data from a third-party frame, NOT
+	// a wire SYN — treating it as SYN would falsely release
+	// ownership and corrupt the wire-phase tracker. Same
+	// distinction the passive reconstructor already enforces (F-19d).
+	isWireSyn := symbol == protocol.SymbolSyn && !wasEscaped
 	var phaseEvent wirePhaseEvent
-	if symbol == protocol.SymbolSyn {
+	if isWireSyn {
 		if hasOwner && ownerID == gatewaySessionID {
 			// Gateway owns bus, phase tracking skipped for data bytes.
 			// Treat SYN as idle so IdleReleaseGrace controls release.
 			phaseEvent = wirePhaseEventSYNIdle
 			m.phase.reset(wirePhaseIdle)
 		} else {
-			phaseEvent = m.phase.advance(symbol)
+			// F-23 (Codex bot on PR-2): provenance-aware advance —
+			// isWireSyn=true tells the tracker this byte IS a real
+			// wire SYN. Equivalent to the value-only contract here
+			// but propagates the classification consistently.
+			phaseEvent = m.phase.advanceWithProvenance(symbol, true)
 		}
 	} else if !hasOwner || ownerID != gatewaySessionID {
-		phaseEvent = m.phase.advance(symbol)
+		// F-23 (Codex bot on PR-2): non-SYN branch. Pass
+		// isWireSyn=false explicitly so the tracker does NOT
+		// internally fall back to its value-only `symbol ==
+		// SymbolSyn` check — an escape-decoded payload 0xAA
+		// (wasEscaped=true here) must be treated as data, not as
+		// a SYN frame terminator.
+		phaseEvent = m.phase.advanceWithProvenance(symbol, false)
 	}
 	// AM11: track ownership timeout so we can reset external session
 	// echo trackers after releasing stateMu (ABBA avoidance).
@@ -1539,7 +1609,10 @@ func (m *Mux) onReceived(symbol byte) {
 	var passiveEvents []PassiveEvent
 	var shouldTryGrant bool
 
-	if symbol == protocol.SymbolSyn {
+	// F-23 (batch-19, Codex bot on PR-2): use the wire-SYN
+	// classification computed above so escape-decoded payload 0xAA
+	// (wasEscaped=true) takes the non-SYN branch.
+	if isWireSyn {
 		// Shape diag: count SYN markers seen during gateway ownership
 		// while a gateway transaction is actually active. Pre-write or
 		// post-inactive idle chatter must not contaminate the current txn.
@@ -1713,7 +1786,13 @@ func (m *Mux) onReceived(symbol byte) {
 		m.stateMu.Lock()
 		if m.gatewayTxnActive {
 			select {
-			case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol}:
+			// F-23 (Codex bot on PR-2): thread the upstream
+			// WasEscaped flag into activeCh so the gateway's
+			// protocol.Bus consumer (via
+			// activeTransport.ReadByteWithEscape) can distinguish
+			// real wire SYN from escape-decoded payload 0xAA in
+			// waitForSyn / sendRawWithEcho.
+			case m.activeCh <- activeEvent{kind: activeEventByte, b: symbol, wasEscaped: wasEscaped}:
 				// Codex PR #502 P1: count real adapter-originated byte
 				// enqueued on activeCh during gateway-owned active txn.
 				// Decision was re-validated under stateMu on the line
@@ -1734,7 +1813,7 @@ func (m *Mux) onReceived(symbol byte) {
 
 	if !isGatewayOwned {
 		passiveEvents = append(passiveEvents, PassiveEvent{
-			Kind: PassiveEventSymbol, Symbol: symbol, ObservedAt: now,
+			Kind: PassiveEventSymbol, Symbol: symbol, WasEscaped: wasEscaped, ObservedAt: now,
 		})
 	}
 	for _, pe := range passiveEvents {
@@ -3199,8 +3278,16 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 // STARTED/FAILED from a cancelled adapter-level START. The hard absorb barrier
 // prevents stale responses from being misapplied to newer requests, but it
 // needs a fail-safe because some adapters may never emit the stale response.
-// On timeout, force a reconnect boundary and clear the barrier so queued STARTs
-// cannot starve forever.
+//
+// F-22 (batch-19, 2026-05-13): on timeout, RESET the absorb counter
+// only. The prior behavior also closed the upstream ENH transport on
+// every timeout, which severed external sessions (ebusd) and produced
+// a cascade of RequestStart failures for no transport-level reason
+// (batch-19 measured 13 reconnects / 90 min producing 263 cascade
+// failures). The wire-level stale response we expected to absorb was
+// lost (likely dropped by upstream soft parser errors). The transport
+// itself is fine. Mirrors F-15's reasoning that internal state-machine
+// timeouts don't justify a transport reset.
 //
 // Caller must hold stateMu.
 func (m *Mux) armPendingStartAbsorbLocked(reason string) {
@@ -3217,22 +3304,24 @@ func (m *Mux) armPendingStartAbsorbLocked(reason string) {
 			m.stateMu.Unlock()
 			return
 		}
-		m.logger.Printf("adaptermux: stale arbitration absorb timeout reason=%s count=%d", reason, m.pendingStartAbsorb)
+		// F-22 (batch-19): log the reset event and bump the metric,
+		// but do NOT close the upstream transport. The next semantic
+		// poll iteration will issue a fresh RequestStart cleanly
+		// over the still-open ENH connection.
+		count := m.pendingStartAbsorb
+		m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22)", reason, count)
+		m.absorbResetTotal.Add(1)
 		m.pendingStartAbsorb = 0
 		m.pendingAbsorbGen++
 		shouldAdvance := m.pendingStart == nil && m.arb.hasPending()
 		m.stateMu.Unlock()
 
-		m.connMu.Lock()
-		c := m.conn
-		m.connMu.Unlock()
-		if c != nil {
-			if err := c.Close(); err != nil {
-				m.logger.Printf("adaptermux: absorb timeout reconnect close: %v", err)
-			} else {
-				m.logger.Printf("adaptermux: absorb timeout triggered transport reconnect for arbitration resync")
-			}
-		}
+		// F-22: NO transport-reconnect side effect. Closing the
+		// upstream ENH connection here would have severed ebusd
+		// external sessions and produced cascade RequestStart
+		// failures (batch-19 evidence). The bus poll loop's next
+		// iteration will issue a fresh START arbitration which the
+		// adapter handles on the existing connection.
 		if shouldAdvance {
 			m.tryGrantAndStart()
 		}

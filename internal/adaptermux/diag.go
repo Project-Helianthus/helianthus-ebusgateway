@@ -194,6 +194,18 @@ type ActiveTxnSnapshot struct {
 	EchoQueueOverflowResets uint64
 	// BytesDeliveredToActive mirrors activeTxnDiag.bytesDeliveredToActive.
 	BytesDeliveredToActive uint64
+	// AbsorbResetTotal mirrors Mux.absorbResetTotal. F-22
+	// (batch-19, 2026-05-13): counts every fail-safe firing of
+	// armPendingStartAbsorbLocked where the absorb counter was
+	// reset to zero because the expected stale STARTED/FAILED
+	// never arrived. Replaces the prior transport-reconnect side
+	// effect: closing the upstream ENH connection on each timeout
+	// severed external sessions (ebusd) and triggered cascade
+	// RequestStart failures (batch-19 measured 13 reconnects /
+	// 90 min producing 263 cascade failures). Non-zero is
+	// expected on a busy bus; a sustained climb on an otherwise
+	// quiet bus warrants investigation.
+	AbsorbResetTotal uint64
 
 	// Transaction-shape diagnostics (bounded).
 	WritePrefix []byte
@@ -243,6 +255,7 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		InterWriteDrainTotal:    m.activeTxn.interWriteDrainTotal.Load(),
 		EchoQueueOverflowResets: m.gatewayEcho.overflowResets(),
 		BytesDeliveredToActive:  m.activeTxn.bytesDeliveredToActive.Load(),
+		AbsorbResetTotal:        m.absorbResetTotal.Load(),
 		WritePrefix:             wp,
 		ReadPrefix:              rp,
 		EchoLike:                m.activeTxn.echoLike.Load(),

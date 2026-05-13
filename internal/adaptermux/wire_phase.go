@@ -88,9 +88,25 @@ const (
 
 // advance processes a received symbol and returns what event occurred.
 // This must be called for every byte received from the adapter.
+// Value-only SYN classification: any `symbol == protocol.SymbolSyn`
+// is treated as a wire SYN. Callers with provenance information
+// (post-F-23) should use advanceWithProvenance instead so an
+// escape-decoded payload 0xAA is not misclassified as SYN.
 func (t *wirePhaseTracker) advance(symbol byte) wirePhaseEvent {
+	return t.advanceWithProvenance(symbol, symbol == protocol.SymbolSyn)
+}
+
+// advanceWithProvenance is the F-23-aware (batch-19, Codex bot on
+// PR-2) variant of advance. Callers pass `isWireSyn` explicitly
+// instead of letting the tracker key on the byte value; this lets
+// escape-decoded payload 0xAA (wasEscaped=true at the upstream
+// transport, isWireSyn=false here) flow through as data rather
+// than triggering SYN-as-frame-terminator semantics. The mux's
+// onReceived path uses this; legacy plain-transport callers and
+// tests use the value-only advance() wrapper above.
+func (t *wirePhaseTracker) advanceWithProvenance(symbol byte, isWireSyn bool) wirePhaseEvent {
 	// SYN resets the tracker. If we were in a wait phase, it's a timeout.
-	if symbol == protocol.SymbolSyn {
+	if isWireSyn {
 		if t.phase.isSYNTimeoutBoundary() {
 			t.reset(wirePhaseIdle)
 			return wirePhaseEventSYNTimeout

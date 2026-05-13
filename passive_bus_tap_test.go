@@ -317,7 +317,7 @@ func TestPassiveBusTap_ProxyLikeObserverStreamEmitsLogicalSymbolsWithoutDecodeFa
 			}()
 
 			go func() {
-				_, _ = server.Write(enhReceivedBytes(logicalPayload))
+				_, _ = server.Write(enhReceivedBytes(wireEscapeSymbols(logicalPayload)))
 			}()
 
 			events := waitForPassiveEvents(t, recorder, 2*time.Second, func(events []PassiveTapEvent) bool {
@@ -325,7 +325,7 @@ func TestPassiveBusTap_ProxyLikeObserverStreamEmitsLogicalSymbolsWithoutDecodeFa
 			})
 
 			if got := countPassiveEventKind(events, PassiveTapEventDecodeFault); got != 0 {
-				t.Fatalf("decode fault count = %d; want 0 for proxy-like logical observer payload", got)
+				t.Fatalf("decode fault count = %d; want 0 for proxy-like observer payload", got)
 			}
 
 			snapshot := tap.Snapshot()
@@ -463,7 +463,7 @@ func TestPassiveBusTap_RemoteDirectAdapterEndpointAcceptsLogicalObserverPayloadW
 			}()
 
 			go func() {
-				_, _ = server.Write(enhReceivedBytes(logicalPayload))
+				_, _ = server.Write(enhReceivedBytes(wireEscapeSymbols(logicalPayload)))
 			}()
 
 			events := waitForPassiveEvents(t, recorder, 2*time.Second, func(events []PassiveTapEvent) bool {
@@ -471,7 +471,7 @@ func TestPassiveBusTap_RemoteDirectAdapterEndpointAcceptsLogicalObserverPayloadW
 			})
 
 			if got := countPassiveEventKind(events, PassiveTapEventDecodeFault); got != 0 {
-				t.Fatalf("decode fault count = %d; want 0 for direct remote logical ENH observer payload", got)
+				t.Fatalf("decode fault count = %d; want 0 for direct remote ENH observer payload", got)
 			}
 
 			snapshot := tap.Snapshot()

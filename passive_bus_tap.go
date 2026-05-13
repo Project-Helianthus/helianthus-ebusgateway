@@ -46,10 +46,10 @@ type PassiveTapEvent struct {
 	// stuffing decoder from a wire `0xA9 0x00` (→ logical 0xA9) or
 	// `0xA9 0x01` (→ logical 0xAA). False means EITHER (a) a raw
 	// passthrough byte that the local decoder saw on the wire, OR
-	// (b) "unknown" because the upstream stream is already logical
-	// (Path 2: adapter-direct or ENH/ENS proxy-like observer; the
-	// upstream layer decoded escapes and the wire-side ground truth
-	// is not recoverable at this layer).
+	// (b) an upstream-logical byte where the transport did not expose
+	// escape provenance. For F-23 transports that do expose
+	// transport.StreamEvent.WasEscaped, the passive tap preserves the
+	// upstream wire-side ground truth instead of hardcoding false.
 	//
 	// F-19d (_work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-13-batch17.md):
 	// the passive transaction reconstructor uses this flag to
@@ -204,6 +204,9 @@ func (tap *PassiveBusTap) run() {
 func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 	decoder := passiveEscapeDecoder{}
 	decodeWireEscapes := passiveTapDecodesWireEscapes(tap.cfg)
+	if passiveTransportDeliversLogicalBytes(tr) {
+		decodeWireEscapes = false
+	}
 	lastSymbolAt := time.Now()
 	absenceDisconnect := passiveTapEnforcesAbsenceDisconnect(tap.cfg)
 
@@ -243,19 +246,32 @@ func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 			tap.recordReset(now)
 		case transport.StreamEventByte:
 			symbol := event.Byte
-			// F-19d (batch-17): WasEscaped carries the wire-side
-			// ground truth from the local escape decoder. For
-			// Path-1 (decodeWireEscapes=true) it is set
-			// authoritatively from the decoder output. For Path-2
-			// (already-logical streams: adapter-direct via
-			// PassiveTransport, ENH/ENS proxy-like) the upstream
-			// layer has already decoded escapes and we cannot
-			// recover the ground truth at this layer — leave it
-			// false (zero value). The reconstructor treats
-			// !WasEscaped logical 0xAA as a wire SYN per F-19d's
-			// disambiguation, which is the dominant interpretation
-			// for production Vaillant traffic per batch-17.
-			wasEscaped := false
+			// F-19d (batch-17) / F-23 (batch-19, 2026-05-13):
+			// WasEscaped carries the wire-side ground truth.
+			//
+			// Path-1 (decodeWireEscapes=true): the local escape
+			// decoder runs on raw wire bytes and authoritatively
+			// produces wasEscaped from the wire-pair observation.
+			//
+			// Path-2 (decodeWireEscapes=false; already-logical
+			// streams — adapter-direct via PassiveTransport, ENH/
+			// ENS proxy-like, or remote ENH direct-adapter): the
+			// upstream layer decoded escapes and surfaces the
+			// per-byte WasEscaped flag via transport.StreamEvent
+			// (added in helianthus-ebusgo PR #154 / F-23). Source
+			// it directly instead of hardcoding false — this is
+			// the F-23 consumer-side cleanup that closes the
+			// Pattern A/B unexpected_symbol abandons from
+			// batch-19. Pre-F-23 the upstream ENH transport
+			// leaked escape pairs as raw bytes and the gateway
+			// passive tap saw them as bare 0xA9 0x00 sequences;
+			// post-F-23 PR-1 the upstream delivers logical 0xA9
+			// with WasEscaped=true and logical 0xAA payload as
+			// WasEscaped=true (distinct from raw wire SYN 0xAA
+			// with WasEscaped=false). Honoring this flag here is
+			// what lets the reconstructor distinguish payload
+			// 0xAA from wire SYN at every emission site.
+			wasEscaped := event.WasEscaped
 			if decodeWireEscapes {
 				var ok bool
 				var decodeErr error
@@ -470,6 +486,11 @@ func passiveTapDecodesWireEscapes(cfg Config) bool {
 	return !passiveTapObserverStreamAlreadyLogical(cfg)
 }
 
+func passiveTransportDeliversLogicalBytes(tr transport.RawTransport) bool {
+	escapeAware, ok := tr.(transport.EscapeAware)
+	return ok && escapeAware.BytesAreUnescaped()
+}
+
 func passiveTapObserverStreamAlreadyLogical(cfg Config) bool {
 	// Adapter-direct mode: multiplexer delivers logical bytes
 	// (post-ENH-decode), no escape decoding needed.
@@ -606,12 +627,8 @@ func enablePassiveKeepalive(conn net.Conn) error {
 // NOTE: this decoder only runs in the Path-1 (decodeWireEscapes=true)
 // observe-the-raw-wire configuration. In Path-2 (already-logical
 // observer streams: adapter-direct, ENH/ENS proxy-like), the upstream
-// layer has already decoded escapes and a logical 0xAA cannot be
-// distinguished from a wire SYN at this layer. The caller MUST set
-// WasEscaped=false for Path-2 bytes — the reconstructor's F-19d
-// disambiguation treats !WasEscaped 0xAA as a wire SYN, which is the
-// dominant interpretation for the Vaillant-bus production environment
-// per the batch-17 evidence.
+// layer has already decoded escapes; F-23 transports surface the
+// original provenance through transport.StreamEvent.WasEscaped.
 func (decoder *passiveEscapeDecoder) push(raw byte) (decoded byte, ok bool, wasEscaped bool, err error) {
 	if decoder.escape {
 		decoder.escape = false

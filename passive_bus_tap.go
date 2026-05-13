@@ -41,6 +41,23 @@ type PassiveTapEvent struct {
 	Symbol     byte
 	ObservedAt time.Time
 	Err        error
+
+	// WasEscaped is true iff Symbol was produced by the eBUS byte-
+	// stuffing decoder from a wire `0xA9 0x00` (→ logical 0xA9) or
+	// `0xA9 0x01` (→ logical 0xAA). False means EITHER (a) a raw
+	// passthrough byte that the local decoder saw on the wire, OR
+	// (b) "unknown" because the upstream stream is already logical
+	// (Path 2: adapter-direct or ENH/ENS proxy-like observer; the
+	// upstream layer decoded escapes and the wire-side ground truth
+	// is not recoverable at this layer).
+	//
+	// F-19d (_work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-13-batch17.md):
+	// the passive transaction reconstructor uses this flag to
+	// disambiguate logical 0xAA bytes — escape-decoded data vs wire
+	// SYN frame-terminator — replacing the heuristic
+	// isMidRequestFrame() that mis-classified ~9 events/hour into
+	// next-frame cascades.
+	WasEscaped bool
 }
 
 type PassiveTapConsumer interface {
@@ -226,10 +243,23 @@ func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 			tap.recordReset(now)
 		case transport.StreamEventByte:
 			symbol := event.Byte
+			// F-19d (batch-17): WasEscaped carries the wire-side
+			// ground truth from the local escape decoder. For
+			// Path-1 (decodeWireEscapes=true) it is set
+			// authoritatively from the decoder output. For Path-2
+			// (already-logical streams: adapter-direct via
+			// PassiveTransport, ENH/ENS proxy-like) the upstream
+			// layer has already decoded escapes and we cannot
+			// recover the ground truth at this layer — leave it
+			// false (zero value). The reconstructor treats
+			// !WasEscaped logical 0xAA as a wire SYN per F-19d's
+			// disambiguation, which is the dominant interpretation
+			// for production Vaillant traffic per batch-17.
+			wasEscaped := false
 			if decodeWireEscapes {
 				var ok bool
 				var decodeErr error
-				symbol, ok, decodeErr = decoder.push(event.Byte)
+				symbol, ok, wasEscaped, decodeErr = decoder.push(event.Byte)
 				if decodeErr != nil {
 					tap.recordDecodeFault(decodeErr)
 					continue
@@ -245,6 +275,7 @@ func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 				Kind:       PassiveTapEventSymbol,
 				Symbol:     symbol,
 				ObservedAt: now,
+				WasEscaped: wasEscaped,
 			})
 		}
 	}
@@ -563,24 +594,42 @@ func enablePassiveKeepalive(conn net.Conn) error {
 	return nil
 }
 
-func (decoder *passiveEscapeDecoder) push(raw byte) (byte, bool, error) {
+// push consumes one raw wire byte and returns the decoded logical
+// byte. The third return value is true iff the decoded byte was
+// produced by an escape sequence (raw `0xA9 0x00` → logical `0xA9`,
+// raw `0xA9 0x01` → logical `0xAA`). False means the byte was a raw
+// passthrough — including raw wire SYN (0xAA) bytes which the
+// reconstructor must distinguish from escape-decoded data 0xAA per
+// F-19d (batch-17 EBUSD-VERIFICATION). Reference: eBUS byte-stuffing
+// rule + john30/ebusd `symbol.h:79-82`.
+//
+// NOTE: this decoder only runs in the Path-1 (decodeWireEscapes=true)
+// observe-the-raw-wire configuration. In Path-2 (already-logical
+// observer streams: adapter-direct, ENH/ENS proxy-like), the upstream
+// layer has already decoded escapes and a logical 0xAA cannot be
+// distinguished from a wire SYN at this layer. The caller MUST set
+// WasEscaped=false for Path-2 bytes — the reconstructor's F-19d
+// disambiguation treats !WasEscaped 0xAA as a wire SYN, which is the
+// dominant interpretation for the Vaillant-bus production environment
+// per the batch-17 evidence.
+func (decoder *passiveEscapeDecoder) push(raw byte) (decoded byte, ok bool, wasEscaped bool, err error) {
 	if decoder.escape {
 		decoder.escape = false
 		switch raw {
 		case 0x00:
-			return protocol.SymbolEscape, true, nil
+			return protocol.SymbolEscape, true, true, nil
 		case 0x01:
-			return protocol.SymbolSyn, true, nil
+			return protocol.SymbolSyn, true, true, nil
 		default:
-			return 0, false, fmt.Errorf("passive tap invalid escape sequence 0x%02x: %w", raw, ebuserrors.ErrInvalidPayload)
+			return 0, false, false, fmt.Errorf("passive tap invalid escape sequence 0x%02x: %w", raw, ebuserrors.ErrInvalidPayload)
 		}
 	}
 
 	if raw == protocol.SymbolEscape {
 		decoder.escape = true
-		return 0, false, nil
+		return 0, false, false, nil
 	}
-	return raw, true, nil
+	return raw, true, false, nil
 }
 
 func (decoder *passiveEscapeDecoder) reset() {

@@ -23,20 +23,21 @@ const (
 
 	// maxPassiveDataLen is the eBUS spec-mandated upper bound on the LEN
 	// byte (Spec_Prot_7 §3.1: a single service frame carries up to 16
-	// payload bytes). Used by isMidRequestFrame / isMidResponseFrame
-	// (P7.1) to refuse to absorb wire-SYN bytes as data when the
-	// declared LEN is structurally impossible — i.e. the parser is
-	// almost certainly looking at a misclassified byte (e.g. an
-	// arbitrary bus byte admitted as an initiator-class source after a
-	// prior abandon). Bounding the predicate here prevents a single bad
-	// position from cascading into watchdog-bounded byte absorption.
+	// payload bytes).
 	//
-	// F-19c (batch-16) also uses this cap as the at-observation reject
+	// F-19c (batch-16) uses this cap as the at-observation reject
 	// threshold for NN_m / NN_s: any LEN byte > maxPassiveDataLen is
 	// spec-illegal and triggers an immediate abandon with reason
 	// invalid_nn_m / invalid_nn_s, before the F-19a `5+LEN+1`
 	// completion target is computed (which would otherwise overshoot
 	// the next bus SYN and let the buffer eat next-frame bytes).
+	//
+	// F-19d (batch-17) removed the isMidRequestFrame /
+	// isMidResponseFrame heuristic predicates that previously used
+	// this constant to refuse to absorb wire-SYN bytes as data when
+	// the declared LEN was structurally impossible. The disambiguation
+	// now uses the wasEscaped flag plumbed through PassiveTapEvent
+	// from the upstream escape decoder.
 	maxPassiveDataLen = 16
 
 	// maxPassiveLogicalRequestBytes is the F-19c (batch-16) tight
@@ -438,7 +439,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleTapEventLocked(event
 	switch event.Kind {
 	case PassiveTapEventSymbol:
 		events = reconstructor.expireIfStaleLocked(events, event.ObservedAt)
-		return reconstructor.handleSymbolLocked(events, event.Symbol, event.ObservedAt)
+		return reconstructor.handleSymbolLocked(events, event.Symbol, event.WasEscaped, event.ObservedAt)
 	case PassiveTapEventConnected:
 		reconstructor.resetStateLocked()
 		return append(events, PassiveClassifiedEvent{
@@ -489,7 +490,16 @@ func (reconstructor *PassiveTransactionReconstructor) expireIfStaleLocked(events
 	return events
 }
 
-func (reconstructor *PassiveTransactionReconstructor) handleSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
+// handleSymbolLocked is the central dispatch for a single observed
+// passive symbol. The wasEscaped flag (added in F-19d, batch-17)
+// is the wire-side ground truth from the upstream escape decoder
+// (passive_bus_tap.go:566 for Path-1, always false for Path-2
+// already-logical streams). It is threaded into
+// handleRequestSymbolLocked / handleResponseSymbolLocked where
+// the logical-0xAA-vs-wire-SYN disambiguation lives. Phases that
+// do not observe ambiguous 0xAA bytes (Idle, WaitACK,
+// WaitFinalACK, WaitTerminal, Abandoned) do not consume the flag.
+func (reconstructor *PassiveTransactionReconstructor) handleSymbolLocked(events []PassiveClassifiedEvent, symbol byte, wasEscaped bool, observedAt time.Time) []PassiveClassifiedEvent {
 	switch reconstructor.state.phase {
 	case passivePhaseIdle:
 		// P6 Layer 1 — inter-frame SYN gate.
@@ -558,11 +568,11 @@ func (reconstructor *PassiveTransactionReconstructor) handleSymbolLocked(events 
 		reconstructor.startRequestLocked(symbol, observedAt)
 		return events
 	case passivePhaseRequest:
-		return reconstructor.handleRequestSymbolLocked(events, symbol, observedAt)
+		return reconstructor.handleRequestSymbolLocked(events, symbol, wasEscaped, observedAt)
 	case passivePhaseWaitACK:
 		return reconstructor.handleACKSymbolLocked(events, symbol, observedAt)
 	case passivePhaseWaitResponse:
-		return reconstructor.handleResponseSymbolLocked(events, symbol, observedAt)
+		return reconstructor.handleResponseSymbolLocked(events, symbol, wasEscaped, observedAt)
 	case passivePhaseWaitFinalACK:
 		return reconstructor.handleFinalACKSymbolLocked(events, symbol, observedAt)
 	case passivePhaseWaitTerminal:
@@ -599,79 +609,50 @@ func (reconstructor *PassiveTransactionReconstructor) startRequestLocked(symbol 
 	reconstructor.state.awaitingResync = false
 }
 
-// isMidRequestFrame reports whether requestRaw is structurally
-// mid-frame: the LEN byte (position 4) is observed and the buffer is
-// shorter than the LEN-declared full-frame length 6+LEN. P7.1 uses
-// this predicate to disambiguate a logical 0xAA byte (escape-decoded
-// from wire 0xA9 0x01) from a real wire-SYN frame terminator: in
-// mid-frame state the byte must structurally be data, regardless of
-// whether the upstream tap reported it via the escape decoder or as a
-// raw symbol.
+// F-19d (_work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-13-batch17.md)
+// removed the isMidRequestFrame() and isMidResponseFrame()
+// heuristic predicates. They previously disambiguated escape-
+// decoded 0xAA (data) from wire-SYN (frame terminator) by
+// inspecting buffer structural completeness. The wasEscaped flag
+// plumbed through PassiveTapEvent now carries the wire-side
+// ground truth — when wasEscaped is true the byte is data; when
+// false it is a wire SYN. The structural completeness check is
+// no longer needed for that disambiguation.
 //
-// SCOPE / DEFERRED: this predicate only disambiguates positions
-// strictly after the LEN byte (positions 5 .. 6+LEN-1, i.e. data and
-// CRC). Logical 0xAA bytes at positions 0..4 (SRC, DST, PB, SB, LEN)
-// remain ambiguous under this approach because the reconstructor
-// hasn't yet learnt the structural length. In practice on the eBUS
-// wire those positions are either statically constrained (SRC must be
-// initiator-class, never 0xAA — Layer 2 rejects; DST must be target
-// or broadcast, never 0xAA — frame would abandon either way) or
-// extremely unlikely (PB/SB=0xAA is not a catalogued opcode for
-// Vaillant traffic; LEN=0xAA = 170 bytes would exceed any service
-// payload bound). Full disambiguation would require plumbing a
-// per-byte WasEscaped flag through transport.StreamEvent →
-// PassiveEvent → PassiveTapEvent (Approach A in the P7.1 consult);
-// deferred until live captures justify the cross-repo change.
-//
-// SAFETY BOUND: the predicate also returns false when the declared
-// LEN exceeds maxPassiveDataLen (eBUS spec §3.1 limit, 16 bytes). An
-// out-of-spec LEN means the parser is almost certainly mid-state on a
-// misclassified byte sequence (e.g. an arbitrary byte was admitted as
-// an initiator-class source after a previous abandon). Refusing to
-// absorb wire-SYNs in that state lets the SYN reach the existing
-// abandon/resync path instead of cascading into a watchdog-bounded
-// byte-absorption window.
-func (reconstructor *PassiveTransactionReconstructor) isMidRequestFrame() bool {
-	if len(reconstructor.state.requestRaw) < 5 {
-		return false
-	}
-	declaredLen := int(reconstructor.state.requestRaw[4])
-	if declaredLen > maxPassiveDataLen {
-		return false
-	}
-	return len(reconstructor.state.requestRaw) < 6+declaredLen
-}
+// The SCOPE / DEFERRED block in the predecessor predicates'
+// docstrings flagged this as "Approach A in the P7.1 consult;
+// deferred until live captures justify the cross-repo change."
+// Live captures in batch-17 (~9 events/hour of cascade-fingerprint
+// abandons) justified the change.
 
-// isMidResponseFrame reports whether responseRaw is structurally
-// mid-frame: the response LEN byte (position 0) is observed and the
-// buffer is shorter than responseExpectedLen (= LEN+2 to include the
-// trailing CRC). Mirrors isMidRequestFrame's role for the response
-// region — see that doc-comment for scope/deferred notes. Also bounds
-// by maxPassiveDataLen for the same safety reason.
-func (reconstructor *PassiveTransactionReconstructor) isMidResponseFrame() bool {
-	if len(reconstructor.state.responseRaw) == 0 {
-		return false
-	}
-	if reconstructor.state.responseExpectedLen > maxPassiveDataLen+2 {
-		return false
-	}
-	return len(reconstructor.state.responseRaw) < reconstructor.state.responseExpectedLen
-}
-
-func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
-	// P7.1 — escape-decoded 0xAA disambiguation.
+func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(events []PassiveClassifiedEvent, symbol byte, wasEscaped bool, observedAt time.Time) []PassiveClassifiedEvent {
+	// F-19d (_work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-13-batch17.md):
+	// wire-side ground-truth disambiguation between escape-decoded
+	// data 0xAA (originally `0xA9 0x01` on the wire) and a real
+	// wire SYN frame-terminator. The wasEscaped flag — true iff
+	// the upstream escape decoder produced this byte from an
+	// escape sequence — is decisive when known.
 	//
-	// The passive bus tap's escape decoder produces logical 0xAA when
-	// the wire carried the 2-byte sequence 0xA9 0x01. A naive `symbol
-	// == SymbolSyn` check at this entry treats that logical 0xAA as a
-	// frame-end SYN, abandoning every M2I/M2T/Broadcast frame whose
-	// data or CRC region contains a 0xAA byte. With the LEN byte
-	// already in `requestRaw` (positions 0..4 buffered), the structural
-	// length is known; an SYN-valued byte arriving while
-	// len(requestRaw) < 6+LEN must be data (escape-decoded), not a wire
-	// SYN. Treat it as data and fall through to the data-accumulation
-	// path. See isMidRequestFrame for scope and deferred edge cases.
-	if symbol != protocol.SymbolSyn || reconstructor.isMidRequestFrame() {
+	// Path-1 (passive_bus_tap.go's local escape decoder, raw-wire
+	// transports): wasEscaped is the precise wire-side truth.
+	//
+	// Path-2 (already-logical observer streams: adapter-direct via
+	// PassiveTransport, ENH/ENS proxy-like): the upstream layer has
+	// already decoded escapes; we cannot recover the truth at this
+	// layer. The PassiveTapEvent emit site sets wasEscaped=false in
+	// that mode. This treats any logical 0xAA arriving via Path 2
+	// as a wire SYN — the dominant interpretation for production
+	// Vaillant traffic per batch-17 (~9 cascades/hour with a
+	// heuristic-only fallback). Frames with legitimate 0xAA in
+	// data on Path 2 will now abandon with reason=unexpected_syn
+	// instead of cascading, which is a net win: cleaner metric
+	// attribution, and the bytes that previously got swallowed as
+	// cascade are now visible to downstream frame consumers.
+	//
+	// REPLACES the pre-F-19d heuristic isMidRequestFrame()-based
+	// disambiguation. isMidRequestFrame is retained as a
+	// documented legacy safety bound (see its docstring).
+	if symbol != protocol.SymbolSyn || wasEscaped {
 		reconstructor.state.requestRaw = append(reconstructor.state.requestRaw, symbol)
 		reconstructor.state.lastProgressAt = observedAt
 
@@ -920,6 +901,24 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 			reason = PassiveAbandonReasonSelfEcho
 		} else if isScanProbeRaw(reconstructor.state.requestRaw) {
 			reason = PassiveAbandonReasonScanCollision
+		} else {
+			// F-19d (batch-17): a wire SYN arrived while the buffer
+			// is structurally INCOMPLETE (len < 6+NN_m). Pre-F-19d
+			// this was masked because the heuristic
+			// isMidRequestFrame() absorbed the SYN as data,
+			// cascading into next-frame bytes — abandon then fired
+			// late as corrupted_request on the bogus accumulated
+			// buffer. With wasEscaped ground truth, the SYN
+			// correctly takes the SYN-trigger path here; classify
+			// it as unexpected_syn so operators can distinguish
+			// "frame had bad CRC" (corrupted_request) from "frame
+			// got terminated by a bus event mid-stream"
+			// (unexpected_syn).
+			declared := int(reconstructor.state.requestRaw[4])
+			if declared <= maxPassiveDataLen && len(reconstructor.state.requestRaw) < 6+declared {
+				reason = PassiveAbandonReasonUnexpectedSYN
+				reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
+			}
 		}
 		events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
 		// P6 Layer 1 — symbol that triggered this reset is the
@@ -1144,19 +1143,28 @@ func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(even
 	}
 }
 
-func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
-	if len(reconstructor.state.responseRaw) == 0 && symbol == protocol.SymbolSyn {
+func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked(events []PassiveClassifiedEvent, symbol byte, wasEscaped bool, observedAt time.Time) []PassiveClassifiedEvent {
+	if len(reconstructor.state.responseRaw) == 0 && symbol == protocol.SymbolSyn && !wasEscaped {
+		// F-19d: an empty response buffer + an UN-escaped SymbolSyn
+		// means the responder didn't reply; the wire SYN terminates
+		// the initiator-only frame as a no_response. An ESCAPED
+		// 0xAA at this offset (wasEscaped=true) means the
+		// responder's NN_s = 0xAA — which fails the F-19c NN bound
+		// check below since 0xAA > maxPassiveDataLen.
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNoResponse, observedAt, ebuserrors.ErrTimeout))
 		// P6 Layer 1 — explicit SymbolSyn at this branch.
 		reconstructor.resetStateLockedAfterSyn()
 		return events
 	}
-	if len(reconstructor.state.responseRaw) > 0 && symbol == protocol.SymbolSyn && !reconstructor.isMidResponseFrame() {
-		// P7.1 — only treat a SYN-valued byte as a wire SYN when we are
-		// past the structurally-required response length (LEN+2,
-		// including CRC). Mid-response 0xAA bytes (escape-decoded from
-		// wire 0xA9 0x01) fall through to the data-accumulation path
-		// below and reach the LEN-completion check.
+	if len(reconstructor.state.responseRaw) > 0 && symbol == protocol.SymbolSyn && !wasEscaped {
+		// F-19d: mid-response un-escaped wire SYN aborts the
+		// response phase. Pre-F-19d the predicate
+		// isMidResponseFrame() heuristically allowed mid-response
+		// 0xAA to be absorbed as data when below the LEN-completion
+		// target; that mis-classified real wire SYN events into
+		// data-byte cascades. With wasEscaped carrying the upstream
+		// truth, the disambiguation is now precise: escaped 0xAA →
+		// data, un-escaped 0xAA → wire SYN.
 		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
 		reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
 		// P6 Layer 1 — explicit SymbolSyn at this branch.

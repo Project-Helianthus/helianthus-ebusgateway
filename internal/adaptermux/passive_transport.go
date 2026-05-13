@@ -52,7 +52,15 @@ func (t *passiveTransport) deliver(event PassiveEvent) {
 	var se transport.StreamEvent
 	switch event.Kind {
 	case PassiveEventSymbol:
-		se = transport.StreamEvent{Kind: transport.StreamEventByte, Byte: event.Symbol}
+		// F-23 (batch-19, Codex bot review on PR-2): propagate the
+		// upstream WasEscaped flag through the mux's passive-bridge
+		// so adapter-direct consumers see the same provenance the
+		// raw-TCP path delivers via the local escape decoder.
+		se = transport.StreamEvent{
+			Kind:       transport.StreamEventByte,
+			Byte:       event.Symbol,
+			WasEscaped: event.WasEscaped,
+		}
 	case PassiveEventReset:
 		se = transport.StreamEvent{Kind: transport.StreamEventReset}
 	case PassiveEventConnected:

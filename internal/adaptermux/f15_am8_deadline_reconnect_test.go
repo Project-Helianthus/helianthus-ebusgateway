@@ -236,21 +236,31 @@ func TestAM8Deadline_BlockingPath_StillReconnects(t *testing.T) {
 	}
 }
 
-// TestAM8Deadline_NonBlockingPath_AbsorbTimerReconnectsOnTrulyHungAdapter
-// pins the F-15 fallback contract surfaced by review round-1 finding
-// F-3: when the non-blocking adapter is TRULY hung (no STARTED or
-// FAILED ever arrives), the AM8 deadline must NOT itself reconnect
-// (proven by `TestAM8Deadline_NonBlockingPath_NoReconnect` above), but
-// the absorb safety-net (armPendingStartAbsorbLocked's own
-// time.AfterFunc) MUST drive a reconnect after another StartDeadline
-// elapses. Otherwise the mux is permanently stuck behind the
-// pendingStartAbsorb>0 guard at tryGrantAndStart and no new arbitration
-// can proceed.
+// TestF22_AbsorbTimerResetsCounterWithoutReconnect pins the F-22
+// (batch-19, 2026-05-13) contract for the non-blocking absorb
+// safety-net. Pre-F-22 the safety-net closed the upstream ENH
+// connection on every timeout — batch-19 live evidence measured
+// 13 reconnects / 90 min producing 263 cascade RequestStart
+// failures, all caused by the silent-adapter scenario this test
+// exercises. F-22 replaces the transport-reconnect side effect
+// with a counter-reset and lets the bus poll loop's next
+// iteration issue a fresh RequestStart on the still-open
+// connection.
 //
-// This test waits past 2×StartDeadline against a silent non-blocking
-// adapter and asserts conn.Close was eventually invoked by the absorb
-// timer path.
-func TestAM8Deadline_NonBlockingPath_AbsorbTimerReconnectsOnTrulyHungAdapter(t *testing.T) {
+// Assertions:
+//   - conn.Close is NOT called by the absorb safety-net firing
+//     (the prior contract is intentionally reversed).
+//   - AbsorbResetTotal is incremented when the timer fires.
+//   - pendingStartAbsorb returns to 0 (so tryGrantAndStart is no
+//     longer blocked).
+//
+// The blocking-path F-15 reconnect (AM8 deadline + blockingArb=true)
+// is UNAFFECTED and pinned by TestF15_AM8_DeadlineReconnect.
+//
+// Supersedes the prior
+// TestAM8Deadline_NonBlockingPath_AbsorbTimerReconnectsOnTrulyHungAdapter
+// which enforced the OLD reconnect contract.
+func TestF22_AbsorbTimerResetsCounterWithoutReconnect(t *testing.T) {
 	mock := newP3MockTransport()
 
 	// F-NEW-2 (review round-2): use 200ms StartDeadline + 1500ms
@@ -313,21 +323,41 @@ func TestAM8Deadline_NonBlockingPath_AbsorbTimerReconnectsOnTrulyHungAdapter(t *
 		t.Fatal("F-15 broke: non-blocking AM8 deadline reconnected directly — see sibling TestAM8Deadline_NonBlockingPath_NoReconnect")
 	}
 
-	// Wait for the absorb timer's own StartDeadline to fire and
-	// close the conn. Total elapsed ≈ 2×StartDeadline + 1500ms
-	// slack (review round-2 F-NEW-2 — robust against -race jitter
-	// on slow CI runners).
+	// Wait for the absorb timer's StartDeadline to fire. Under F-22
+	// the timer should reset the absorb counter and bump
+	// AbsorbResetTotal, but MUST NOT close the conn.
+	priorAbsorbReset := mux.absorbResetTotal.Load()
 	deadline := time.Now().Add(2*startDeadline + 1500*time.Millisecond)
 	for time.Now().Before(deadline) {
-		if connMock.closed.Load() {
+		if mux.absorbResetTotal.Load() > priorAbsorbReset {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// F-3 ASSERTION: absorb-safety-net must have closed the conn.
-	if !connMock.closed.Load() {
-		t.Fatal("absorb safety-net did NOT close the conn after AM8 deadline + absorb timer window — F-15's claim that armPendingStartAbsorbLocked covers the truly-hung case is unsubstantiated; either the absorb timer never fired, or its reconnect path was removed. Recovery from a permanently silent non-blocking adapter requires this fallback to fire reliably.")
+	// F-22 ASSERTION (a): the absorb timer fired and bumped the
+	// reset counter.
+	if got := mux.absorbResetTotal.Load(); got <= priorAbsorbReset {
+		t.Fatalf("absorb safety-net did NOT fire (AbsorbResetTotal stayed at %d after %v): the fail-safe timer was never armed or never elapsed",
+			got, 2*startDeadline+1500*time.Millisecond)
+	}
+
+	// F-22 ASSERTION (b): conn MUST NOT have been closed. This is
+	// the deliberate inversion of the pre-F-22 contract. Closing
+	// the upstream ENH connection on every absorb-timeout was the
+	// root cause of the 13/90min reconnect cascade measured in
+	// batch-19; removing the side effect is the F-22 fix.
+	if connMock.closed.Load() {
+		t.Fatal("F-22 regression: absorb safety-net closed the upstream conn — the post-F-22 contract is that the absorb-timeout fail-safe resets the counter only, NO transport reconnect. Closing the conn here severs external sessions (ebusd) and triggers cascade RequestStart failures.")
+	}
+
+	// F-22 ASSERTION (c): pendingStartAbsorb returns to 0 so the
+	// next tryGrantAndStart is no longer blocked.
+	mux.stateMu.Lock()
+	stillBlocked := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+	if stillBlocked != 0 {
+		t.Fatalf("pendingStartAbsorb = %d after safety-net fire; want 0 (reset must clear the barrier)", stillBlocked)
 	}
 }
 

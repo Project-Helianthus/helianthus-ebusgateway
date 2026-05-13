@@ -1517,7 +1517,7 @@ func TestDeliverToActive_RechecksGatingAtomically(t *testing.T) {
 	baselineAfterInactive := mux.activeTxn.afterInactive.Load()
 	for i := 0; i < N; i++ {
 		// Non-SYN byte (0x55 is arbitrary, not 0xAA).
-		mux.onReceived(0x55)
+		mux.onReceived(0x55, false)
 	}
 
 	close(stopFlip)
@@ -1581,7 +1581,7 @@ func TestDeliverToActive_RecheckSkipsEnqueueAfterFlip(t *testing.T) {
 	// land on activeCh; each must increment afterInactive.
 	const N = 10
 	for i := 0; i < N; i++ {
-		mux.onReceived(0x55)
+		mux.onReceived(0x55, false)
 	}
 
 	if got := len(mux.activeCh) - baselineActiveCh; got != 0 {

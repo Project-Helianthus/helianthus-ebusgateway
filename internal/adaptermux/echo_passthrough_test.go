@@ -476,7 +476,7 @@ func TestDeliverToSessions_NoReorderUnderBurst(t *testing.T) {
 //  2. Initialize m.phase via startRequestWithSource as the production
 //     grant code does at mux.go:2813.
 //  3. Feed a complete request/response sequence through
-//     mux.onReceived(byte) one byte at a time.
+//     mux.onReceived(byte, false) one byte at a time.
 //  4. Assert at each step:
 //     a. Owner session receives each byte (F-18 contract).
 //     b. Ownership held until the final ACK.
@@ -554,7 +554,7 @@ func TestExternalSession_OnReceivedIntegration_FullFrame(t *testing.T) {
 	// Feed each byte through onReceived and assert ownership
 	// status at the right boundaries.
 	for i, b := range frameAfterSrc {
-		mux.onReceived(b)
+		mux.onReceived(b, false)
 
 		// Ownership must hold until the FINAL byte (which triggers
 		// TransactionDone). Any premature release would indicate

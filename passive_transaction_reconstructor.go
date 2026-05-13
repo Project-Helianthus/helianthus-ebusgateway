@@ -157,6 +157,26 @@ type PassiveClassifiedEvent struct {
 	ACKCorrelation      PassiveACKCorrelation
 	Err                 error
 	Subscriber          string
+	// OffendingSymbol is the raw observed byte that triggered the
+	// abandon at the moment abandonLocked was called. Populated for
+	// abandons whose cause is a single observed wire byte (e.g.
+	// UnexpectedSymbol, NACK, UnexpectedSYN, InvalidQQ/ZZ/NN, NN-bound
+	// overruns). Zero for lifecycle abandons that are not byte-driven
+	// (Shutdown, TransportReset, NoProgress watchdog) and for default
+	// frame-type defensive fall-throughs that cannot identify a single
+	// causal byte. F-19e (batch-18, 2026-05-13): added so the 0.7
+	// events/min `unexpected_symbol` rate observed post-F-19d becomes
+	// forensically diagnosable — the offending byte distribution
+	// reveals whether the cascade is dominated by wire SYN at
+	// unexpected phases, mid-frame data bytes, or escape-sequence
+	// fragments.
+	OffendingSymbol byte
+	// OffendingWasEscaped carries the upstream wasEscaped flag
+	// (F-19d) for the offending byte. Meaningful for phases that
+	// receive bytes from the unescape decoder (Request, Response);
+	// always false for phases that observe only structural bytes
+	// (Idle, ACK, FinalACK, Terminal) or for lifecycle abandons.
+	OffendingWasEscaped bool
 }
 
 type PassiveSubscriberPriority uint8
@@ -463,7 +483,11 @@ func (reconstructor *PassiveTransactionReconstructor) handleTapEventLocked(event
 
 func (reconstructor *PassiveTransactionReconstructor) handleTransportDiscontinuityLocked(events []PassiveClassifiedEvent, observedAt time.Time, reason PassiveDiscontinuityReason, abandonReason PassiveAbandonReason, err error) []PassiveClassifiedEvent {
 	if reconstructor.state.phase != passivePhaseIdle && reconstructor.state.phase != passivePhaseAbandoned {
-		events = append(events, reconstructor.abandonLocked(abandonReason, observedAt, err))
+		// F-19e (batch-18): transport-level discontinuities (reset,
+		// decode_fault, disconnect) are not byte-driven — there is
+		// no observed wire byte that triggered the abandon. Pass
+		// (0, false) per the abandonLocked contract.
+		events = append(events, reconstructor.abandonLocked(abandonReason, observedAt, err, 0, false))
 	}
 	switch reason {
 	case PassiveDiscontinuityTransportReset, PassiveDiscontinuityDecodeFault:
@@ -485,7 +509,10 @@ func (reconstructor *PassiveTransactionReconstructor) expireIfStaleLocked(events
 	if observedAt.Sub(reconstructor.state.lastProgressAt) <= reconstructor.watchdog {
 		return events
 	}
-	events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNoProgress, observedAt, ebuserrors.ErrTimeout))
+	// F-19e (batch-18): the NoProgress watchdog fires when the bus
+	// goes silent (no byte received within the watchdog window). No
+	// single causal byte exists — pass (0, false).
+	events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNoProgress, observedAt, ebuserrors.ErrTimeout, 0, false))
 	reconstructor.state.phase = passivePhaseAbandoned
 	return events
 }
@@ -559,8 +586,9 @@ func (reconstructor *PassiveTransactionReconstructor) handleSymbolLocked(events 
 		// HERE, between the Layer-2 gate and startRequestLocked, so
 		// it is reachable independent of Layer 2's evolution.
 		if !isInitiatorAddr(symbol) {
+			// F-19e: the offending byte is the failed QQ candidate.
 			events = append(events, reconstructor.abandonLocked(
-				PassiveAbandonReasonInvalidQQ, observedAt, ebuserrors.ErrInvalidPayload))
+				PassiveAbandonReasonInvalidQQ, observedAt, ebuserrors.ErrInvalidPayload, symbol, wasEscaped))
 			reconstructor.state.phase = passivePhaseAbandoned
 			reconstructor.resetStateLocked()
 			return events
@@ -570,13 +598,13 @@ func (reconstructor *PassiveTransactionReconstructor) handleSymbolLocked(events 
 	case passivePhaseRequest:
 		return reconstructor.handleRequestSymbolLocked(events, symbol, wasEscaped, observedAt)
 	case passivePhaseWaitACK:
-		return reconstructor.handleACKSymbolLocked(events, symbol, observedAt)
+		return reconstructor.handleACKSymbolLocked(events, symbol, wasEscaped, observedAt)
 	case passivePhaseWaitResponse:
 		return reconstructor.handleResponseSymbolLocked(events, symbol, wasEscaped, observedAt)
 	case passivePhaseWaitFinalACK:
-		return reconstructor.handleFinalACKSymbolLocked(events, symbol, observedAt)
+		return reconstructor.handleFinalACKSymbolLocked(events, symbol, wasEscaped, observedAt)
 	case passivePhaseWaitTerminal:
-		return reconstructor.handleTerminalSymbolLocked(events, symbol, observedAt)
+		return reconstructor.handleTerminalSymbolLocked(events, symbol, wasEscaped, observedAt)
 	case passivePhaseAbandoned:
 		if symbol == protocol.SymbolSyn {
 			// SYN-consuming reset: re-engage the Layer 1 gate so the
@@ -687,15 +715,31 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 			// classes could otherwise slip through.
 			zz := reconstructor.state.requestRaw[1]
 			if zz == 0xAA || zz == 0xA9 {
+				// F-19e (Codex bot P2 on PR #631): the offending byte
+				// IS the ZZ candidate just appended on line 684.
+				// `symbol` and `requestRaw[1]` reference the same
+				// byte at this rawLen==2 site, so the handler's
+				// `wasEscaped` parameter is the upstream truth flag
+				// for the ZZ byte. The spec rule (symbol.h:41 — QQ/ZZ
+				// are never escape-encoded) is what the SENDER must
+				// do; a wasEscaped=true byte arriving at ZZ would be
+				// a spec violation that the F-19e forensic data
+				// SHOULD preserve, not hide. Forward `wasEscaped`
+				// directly so post-deploy analysis can distinguish
+				// "raw 0xAA at ZZ position = mis-routed wire SYN"
+				// from "escape-encoded byte at ZZ position = sender
+				// or wire corruption".
 				events = append(events, reconstructor.abandonLocked(
-					PassiveAbandonReasonInvalidZZ, observedAt, ebuserrors.ErrInvalidPayload))
+					PassiveAbandonReasonInvalidZZ, observedAt, ebuserrors.ErrInvalidPayload, zz, wasEscaped))
 				reconstructor.state.phase = passivePhaseAbandoned
 				reconstructor.resetStateLocked()
 				return events
 			}
 			if zz != 0xFE && !isInitiatorAddr(zz) && !isValidTargetAddr(zz) {
+				// F-19e: same forwarding rationale as above — ZZ at
+				// rawLen==2 is the current handler byte.
 				events = append(events, reconstructor.abandonLocked(
-					PassiveAbandonReasonInvalidZZ, observedAt, ebuserrors.ErrInvalidPayload))
+					PassiveAbandonReasonInvalidZZ, observedAt, ebuserrors.ErrInvalidPayload, zz, wasEscaped))
 				reconstructor.state.phase = passivePhaseAbandoned
 				reconstructor.resetStateLocked()
 				return events
@@ -709,8 +753,13 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 			// before the SYN-trigger path classifies the abandon.
 			nnM := reconstructor.state.requestRaw[4]
 			if int(nnM) > maxPassiveDataLen {
+				// F-19e: the offending byte is the NN_m value that
+				// exceeds the spec cap. NN_m can legitimately be an
+				// escape-decoded 0xAA (decoded 0xAA = data-side
+				// length-byte sentinel), so forward the current
+				// wasEscaped flag rather than hardcoding false.
 				events = append(events, reconstructor.abandonLocked(
-					PassiveAbandonReasonInvalidNNMaster, observedAt, ebuserrors.ErrInvalidPayload))
+					PassiveAbandonReasonInvalidNNMaster, observedAt, ebuserrors.ErrInvalidPayload, nnM, wasEscaped))
 				reconstructor.state.phase = passivePhaseAbandoned
 				reconstructor.resetStateLocked()
 				return events
@@ -727,8 +776,10 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 		// looser maxPassiveRequestBytes=512 cap that previously
 		// fired here.
 		if rawLen > maxPassiveLogicalRequestBytes {
+			// F-19e: the offending byte is the current symbol that
+			// pushed rawLen past the watchdog threshold.
 			events = append(events, reconstructor.abandonLocked(
-				PassiveAbandonReasonBufferOverflow, observedAt, ebuserrors.ErrInvalidPayload))
+				PassiveAbandonReasonBufferOverflow, observedAt, ebuserrors.ErrInvalidPayload, symbol, wasEscaped))
 			reconstructor.state.phase = passivePhaseAbandoned
 			reconstructor.resetStateLocked()
 			return events
@@ -866,7 +917,10 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 					} else if isScanProbeRaw(reconstructor.state.requestRaw) {
 						reason = PassiveAbandonReasonScanCollision
 					}
-					events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
+					// F-19e: the offending byte at LEN-completion is
+					// the current symbol that completed the buffer to
+					// a structurally-invalid (CRC-failing) frame.
+					events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload, symbol, wasEscaped))
 					reconstructor.state.phase = passivePhaseAbandoned
 					reconstructor.resetStateLocked()
 					return events
@@ -920,7 +974,14 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 				reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
 			}
 		}
-		events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload))
+		// F-19e: the offending byte is the trailing wire SYN that
+		// terminated the structurally-incomplete buffer; wasEscaped
+		// here is the upstream truth flag for that terminating byte
+		// (false for an un-escaped wire SYN — the typical case post
+		// F-19d). Forward the parameter unconditionally so the
+		// post-deploy bucket can confirm 100% un-escaped at this
+		// site.
+		events = append(events, reconstructor.abandonLocked(reason, observedAt, ebuserrors.ErrInvalidPayload, symbol, wasEscaped))
 		// P6 Layer 1 — symbol that triggered this reset is the
 		// trailing SymbolSyn proven at the top of handleRequestSymbolLocked.
 		reconstructor.resetStateLockedAfterSyn()
@@ -1005,7 +1066,15 @@ func (reconstructor *PassiveTransactionReconstructor) dispatchParsedRequestLocke
 	// behavior (Codex P7 review pass 2 FINDING_1).
 	frameType := frame.Type()
 	if frameType == protocol.FrameTypeUnknown {
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedTarget, observedAt, ebuserrors.ErrInvalidPayload))
+		// F-19e: corrupted-target abandons fire after a structurally
+		// valid frame parse on a frame whose target byte places it in
+		// FrameTypeUnknown. The "offending byte" concept does not map
+		// cleanly to a single observed wire byte — the failure is at
+		// the frame-classification layer, not the byte layer. Pass
+		// (0, false) per the abandonLocked contract; the existing
+		// req_raw/resp_raw fields in the forensic log already carry
+		// the diagnostic evidence for this reason.
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedTarget, observedAt, ebuserrors.ErrInvalidPayload, 0, false))
 		reset()
 		return events
 	}
@@ -1039,7 +1108,10 @@ func (reconstructor *PassiveTransactionReconstructor) dispatchParsedRequestLocke
 		// enum extensions. State has already been populated above
 		// (matches the pre-refactor SYN-path default branch which
 		// also wrote state.request before abandon).
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedTarget, observedAt, ebuserrors.ErrInvalidPayload))
+		//
+		// F-19e: see CorruptedTarget rationale above — frame-class
+		// failure is not byte-driven. Pass (0, false).
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCorruptedTarget, observedAt, ebuserrors.ErrInvalidPayload, 0, false))
 		reset()
 	}
 	return events
@@ -1098,7 +1170,7 @@ func (reconstructor *PassiveTransactionReconstructor) isSelfOriginatedParsed() b
 	return snapshot.Known && reconstructor.state.request.Source == snapshot.Address
 }
 
-func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
+func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(events []PassiveClassifiedEvent, symbol byte, wasEscaped bool, observedAt time.Time) []PassiveClassifiedEvent {
 	switch symbol {
 	case protocol.SymbolAck:
 		reconstructor.state.lastProgressAt = observedAt
@@ -1114,7 +1186,7 @@ func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(even
 		return events
 	case protocol.SymbolNack:
 		reconstructor.state.ackCorrelation = m2aRequestACKCorrelation(symbol)
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNACK, observedAt, ebuserrors.ErrNACK))
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNACK, observedAt, ebuserrors.ErrNACK, symbol, wasEscaped))
 		// P6 — after a request-phase NACK the eBUS spec (AM2 in
 		// internal/adaptermux/wire_phase.go:185-198) permits the
 		// initiator to retransmit the request immediately without a
@@ -1126,18 +1198,26 @@ func (reconstructor *PassiveTransactionReconstructor) handleACKSymbolLocked(even
 		return events
 	case protocol.SymbolSyn:
 		if reconstructor.isScanTimeoutLocked() {
-			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonScanTimeout, observedAt, ebuserrors.ErrTimeout))
+			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonScanTimeout, observedAt, ebuserrors.ErrTimeout, symbol, wasEscaped))
 		} else if reconstructor.isSelfOriginatedParsed() {
-			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonSelfEcho, observedAt, ebuserrors.ErrTimeout))
+			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonSelfEcho, observedAt, ebuserrors.ErrTimeout, symbol, wasEscaped))
 		} else {
-			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
+			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout, symbol, wasEscaped))
 			reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
 		}
 		// P6 Layer 1 — explicit SymbolSyn case in this arm.
 		reconstructor.resetStateLockedAfterSyn()
 		return events
 	default:
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload))
+		// F-19e (batch-18): forensic instrumentation. The default arm
+		// fires when a non-ACK/NACK/SYN byte arrives at the WaitACK
+		// phase — production rate ~0.7 events/min per batch-18
+		// recommendation. Capture the offending byte so the
+		// post-deploy bucketing pass can determine whether the
+		// distribution clusters at specific bytes (e.g. 0x00 / 0xFF
+		// near-ACK values, escape-sequence fragments, or arbitrary
+		// data bytes that hint at upstream phase-tracking drift).
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload, symbol, wasEscaped))
 		reconstructor.state.phase = passivePhaseAbandoned
 		return events
 	}
@@ -1151,7 +1231,11 @@ func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked
 		// 0xAA at this offset (wasEscaped=true) means the
 		// responder's NN_s = 0xAA — which fails the F-19c NN bound
 		// check below since 0xAA > maxPassiveDataLen.
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNoResponse, observedAt, ebuserrors.ErrTimeout))
+		// F-19e: the offending byte is the trailing un-escaped wire
+		// SYN that terminated the empty response. wasEscaped is
+		// guaranteed false here (the guard above tests `!wasEscaped`)
+		// but we forward the parameter anyway for site uniformity.
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonNoResponse, observedAt, ebuserrors.ErrTimeout, symbol, wasEscaped))
 		// P6 Layer 1 — explicit SymbolSyn at this branch.
 		reconstructor.resetStateLockedAfterSyn()
 		return events
@@ -1165,7 +1249,9 @@ func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked
 		// data-byte cascades. With wasEscaped carrying the upstream
 		// truth, the disambiguation is now precise: escaped 0xAA →
 		// data, un-escaped 0xAA → wire SYN.
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
+		// F-19e: the offending byte is the mid-response un-escaped
+		// wire SYN. wasEscaped is guaranteed false (guard above).
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout, symbol, wasEscaped))
 		reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
 		// P6 Layer 1 — explicit SymbolSyn at this branch.
 		reconstructor.resetStateLockedAfterSyn()
@@ -1197,8 +1283,12 @@ func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked
 		// inclusion (the previous P2 fix) was meant to preserve.
 		if int(symbol) > maxPassiveDataLen {
 			reconstructor.state.responseRaw = append(reconstructor.state.responseRaw, symbol)
+			// F-19e: the offending byte IS the NN_s value that
+			// exceeds the spec cap. wasEscaped is forwarded from the
+			// upstream decoder — an escape-decoded 0xAA (logical NN_s
+			// = 170) hits this guard with wasEscaped=true.
 			events = append(events, reconstructor.abandonLocked(
-				PassiveAbandonReasonInvalidNNSlave, observedAt, ebuserrors.ErrInvalidPayload))
+				PassiveAbandonReasonInvalidNNSlave, observedAt, ebuserrors.ErrInvalidPayload, symbol, wasEscaped))
 			reconstructor.state.phase = passivePhaseAbandoned
 			// Plain reset: the offending byte is the NN_s data
 			// byte, not a wire SYN. Layer 1 re-syncs on the next
@@ -1215,7 +1305,16 @@ func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked
 		return events
 	}
 	if len(reconstructor.state.responseRaw) > reconstructor.state.responseExpectedLen {
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload))
+		// F-19e (batch-18): response overrun is one of the five
+		// unexpected_symbol emit sites in the operator's diagnostic
+		// spec. The offending byte is the current symbol that pushed
+		// responseRaw past responseExpectedLen — i.e. the
+		// post-completion byte that should have been a structural
+		// SYN-or-ACK but landed inside the response phase. wasEscaped
+		// is the per-byte truth flag from the upstream decoder, so
+		// the bucketing pass can correlate "post-completion overrun"
+		// with "escape-sequence drift".
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload, symbol, wasEscaped))
 		reconstructor.state.phase = passivePhaseAbandoned
 		return events
 	}
@@ -1226,11 +1325,11 @@ func (reconstructor *PassiveTransactionReconstructor) handleResponseSymbolLocked
 	return events
 }
 
-func (reconstructor *PassiveTransactionReconstructor) handleFinalACKSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
+func (reconstructor *PassiveTransactionReconstructor) handleFinalACKSymbolLocked(events []PassiveClassifiedEvent, symbol byte, wasEscaped bool, observedAt time.Time) []PassiveClassifiedEvent {
 	switch symbol {
 	case protocol.SymbolAck:
 		if !reconstructor.state.responseCRCValid {
-			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCRCMismatch, observedAt, ebuserrors.ErrCRCMismatch))
+			events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonCRCMismatch, observedAt, ebuserrors.ErrCRCMismatch, symbol, wasEscaped))
 			reconstructor.state.phase = passivePhaseAbandoned
 			return events
 		}
@@ -1238,25 +1337,31 @@ func (reconstructor *PassiveTransactionReconstructor) handleFinalACKSymbolLocked
 		reconstructor.state.phase = passivePhaseWaitTerminal
 		return events
 	case protocol.SymbolNack:
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonAmbiguousRetransmit, observedAt, ebuserrors.ErrNACK))
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonAmbiguousRetransmit, observedAt, ebuserrors.ErrNACK, symbol, wasEscaped))
 		reconstructor.state.phase = passivePhaseAbandoned
 		return events
 	case protocol.SymbolSyn:
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout))
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSYN, observedAt, ebuserrors.ErrTimeout, symbol, wasEscaped))
 		reconstructor.pendingRecoveryReason = string(PassiveAbandonReasonUnexpectedSYN)
 		// P6 Layer 1 — explicit SymbolSyn case in handleFinalACKSymbolLocked.
 		reconstructor.resetStateLockedAfterSyn()
 		return events
 	default:
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload))
+		// F-19e (batch-18): forensic instrumentation. WaitFinalACK
+		// expects ACK / NACK / SYN; anything else captured here is
+		// diagnostic evidence for the post-deploy bucketing pass.
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload, symbol, wasEscaped))
 		reconstructor.state.phase = passivePhaseAbandoned
 		return events
 	}
 }
 
-func (reconstructor *PassiveTransactionReconstructor) handleTerminalSymbolLocked(events []PassiveClassifiedEvent, symbol byte, observedAt time.Time) []PassiveClassifiedEvent {
+func (reconstructor *PassiveTransactionReconstructor) handleTerminalSymbolLocked(events []PassiveClassifiedEvent, symbol byte, wasEscaped bool, observedAt time.Time) []PassiveClassifiedEvent {
 	if symbol != protocol.SymbolSyn {
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload))
+		// F-19e (batch-18): forensic instrumentation. WaitTerminal
+		// only accepts a trailing wire SYN; capture the offending
+		// byte for the post-deploy bucketing pass.
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload, symbol, wasEscaped))
 		reconstructor.state.phase = passivePhaseAbandoned
 		return events
 	}
@@ -1290,7 +1395,15 @@ func (reconstructor *PassiveTransactionReconstructor) handleTerminalSymbolLocked
 			ACKCorrelation: reconstructor.state.ackCorrelation,
 		})
 	default:
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload))
+		// F-19e (batch-18): defensive fall-through for future
+		// protocol.FrameType enum extensions. This branch is
+		// unreachable in normal operation (FrameType enum is
+		// exhausted by the cases above); pass (0, false) since no
+		// single observed wire byte triggered the abandon — the
+		// failure is a frame-classification fall-through, not a
+		// per-byte event. Per the operator's F-19e spec: "this case
+		// is unreachable in normal operation; static 0 is fine".
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonUnexpectedSymbol, observedAt, ebuserrors.ErrInvalidPayload, 0, false))
 	}
 	// P6 Layer 1 — handleTerminalSymbolLocked only reaches this site
 	// after the leading-symbol SymbolSyn check at the top.
@@ -1298,7 +1411,14 @@ func (reconstructor *PassiveTransactionReconstructor) handleTerminalSymbolLocked
 	return events
 }
 
-func (reconstructor *PassiveTransactionReconstructor) abandonLocked(reason PassiveAbandonReason, observedAt time.Time, err error) PassiveClassifiedEvent {
+// abandonLocked builds and records an AbandonedTransaction event. The
+// trailing offendingSymbol/offendingWasEscaped pair (added F-19e,
+// batch-18) captures the observed wire byte that triggered the
+// abandon — when the abandon is byte-driven. Lifecycle / structural
+// abandons (Shutdown, TransportReset, NoProgress watchdog,
+// FrameTypeUnknown defensive fall-through) pass (0, false) because
+// no single causal byte exists.
+func (reconstructor *PassiveTransactionReconstructor) abandonLocked(reason PassiveAbandonReason, observedAt time.Time, err error, offendingSymbol byte, offendingWasEscaped bool) PassiveClassifiedEvent {
 	hasRequest := reconstructor.state.frameType != protocol.FrameTypeUnknown
 	hasResponse := reconstructor.state.responseExpectedLen > 0
 	// P1.5 (post-Phase-C live validation 2026-05-08): strip stale
@@ -1325,23 +1445,25 @@ func (reconstructor *PassiveTransactionReconstructor) abandonLocked(reason Passi
 		ackCorrelation = PassiveACKCorrelation{}
 	}
 	event := PassiveClassifiedEvent{
-		Kind:           PassiveClassifiedEventAbandonedTransaction,
-		FrameType:      reconstructor.state.frameType,
-		Request:        reconstructor.state.request,
-		Response:       reconstructor.state.response,
-		HasRequest:     hasRequest,
-		HasResponse:    hasResponse,
-		Timing:         reconstructor.state.timing,
-		ObservedAt:     observedAt,
-		AbandonReason:  reason,
-		ACKCorrelation: ackCorrelation,
-		Err:            err,
+		Kind:                PassiveClassifiedEventAbandonedTransaction,
+		FrameType:           reconstructor.state.frameType,
+		Request:             reconstructor.state.request,
+		Response:            reconstructor.state.response,
+		HasRequest:          hasRequest,
+		HasResponse:         hasResponse,
+		Timing:              reconstructor.state.timing,
+		ObservedAt:          observedAt,
+		AbandonReason:       reason,
+		ACKCorrelation:      ackCorrelation,
+		Err:                 err,
+		OffendingSymbol:     offendingSymbol,
+		OffendingWasEscaped: offendingWasEscaped,
 	}
 	event.Timing.Terminal = observedAt
 	// A.8 — forensic logging for protocol-classification failures the
 	// inserter cannot consume.
 	if shouldLogReconstructorForensics(reason) {
-		reconstructor.logForensicsLocked(reason, observedAt)
+		reconstructor.logForensicsLocked(reason, observedAt, offendingSymbol, offendingWasEscaped)
 	}
 	// A.9 — per-reason counter so operators can compare Helianthus
 	// abandon rate to Grafana ground-truth frame counts without
@@ -1383,7 +1505,7 @@ func shouldLogReconstructorForensics(reason PassiveAbandonReason) bool {
 	return false
 }
 
-func (reconstructor *PassiveTransactionReconstructor) logForensicsLocked(reason PassiveAbandonReason, observedAt time.Time) {
+func (reconstructor *PassiveTransactionReconstructor) logForensicsLocked(reason PassiveAbandonReason, observedAt time.Time, offendingSymbol byte, offendingWasEscaped bool) {
 	src, dst, prim, sec := byte(0), byte(0), byte(0), byte(0)
 	if reconstructor.state.frameType != protocol.FrameTypeUnknown {
 		src = reconstructor.state.request.Source
@@ -1398,12 +1520,36 @@ func (reconstructor *PassiveTransactionReconstructor) logForensicsLocked(reason 
 	}
 	reqHex := hexBytes(reconstructor.state.requestRaw)
 	respHex := hexBytes(reconstructor.state.responseRaw)
-	log.Printf("passive_reconstructor abandon reason=%s phase=%d src=0x%02X dst=0x%02X prim=0x%02X sec=0x%02X req_raw=%s resp_raw=%s observed_at=%s",
+	// F-19e (batch-18, 2026-05-13): emit offending_symbol +
+	// offending_was_escaped at the END of the line so existing log
+	// regexes that match the leading fields keep working; new
+	// post-deploy analysis can grep the trailing tokens to bucket
+	// the offending-byte distribution. `0x%02X` matches the existing
+	// src/dst/prim/sec field rendering.
+	//
+	// Ambiguity note: the truly-lifecycle reasons (shutdown,
+	// transport_reset, decode_fault, no_progress watchdog,
+	// disconnected) pass (0, false) and are gated OUT of forensics
+	// by shouldLogReconstructorForensics, so their zero values
+	// never reach this log line.
+	//
+	// The remaining `(0, false)`-passing site is `corrupted_target`,
+	// which DOES log forensics (the reason is reachable via a frame
+	// whose parsed type maps to FrameTypeUnknown or a future enum
+	// extension). When that fires, the log line will show
+	// `offending_symbol=0x00 offending_was_escaped=false`; the
+	// `reason=corrupted_target` token plus the `req_raw=` evidence
+	// disambiguate it from a real byte-driven
+	// `reason=unexpected_symbol offending_symbol=0x00`. Post-deploy
+	// analysis scripts MUST key off `reason=` before interpreting
+	// the offending tokens.
+	log.Printf("passive_reconstructor abandon reason=%s phase=%d src=0x%02X dst=0x%02X prim=0x%02X sec=0x%02X req_raw=%s resp_raw=%s observed_at=%s offending_symbol=0x%02X offending_was_escaped=%v",
 		reason,
 		int(reconstructor.state.phase),
 		src, dst, prim, sec,
 		reqHex, respHex,
-		observedAt.Format(time.RFC3339Nano))
+		observedAt.Format(time.RFC3339Nano),
+		offendingSymbol, offendingWasEscaped)
 }
 
 func hexBytes(b []byte) string {
@@ -1575,7 +1721,11 @@ func (reconstructor *PassiveTransactionReconstructor) shutdownEvents() []Passive
 	events := make([]PassiveClassifiedEvent, 0, 2)
 	now := time.Now()
 	if reconstructor.state.phase != passivePhaseIdle && reconstructor.state.phase != passivePhaseAbandoned {
-		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonShutdown, now, context.Canceled))
+		// F-19e: shutdown is a lifecycle event, not byte-driven.
+		// Pass (0, false). `shutdown` is also excluded from
+		// shouldLogReconstructorForensics, so the zero values never
+		// reach the log line.
+		events = append(events, reconstructor.abandonLocked(PassiveAbandonReasonShutdown, now, context.Canceled, 0, false))
 	}
 	reconstructor.resetStateLocked()
 	return append(events, PassiveClassifiedEvent{

@@ -1199,6 +1199,19 @@ func (m *Mux) readLoop() {
 		switch event.Kind {
 		case transport.StreamEventStarted:
 			m.logger.Printf("adaptermux: readLoop got StreamEventStarted data=0x%02X", event.Data)
+			// F-22 (Codex bot P1 round-2 on PR #632): if the
+			// absorb safety-net's stale-response window is active,
+			// drop this STARTED entirely — including the
+			// synthesis side effects below. The wire byte for the
+			// cancelled bid happened in the past; emitting it now
+			// would corrupt the passive reconstructor's view and
+			// could route a phantom winner to the wrong session.
+			// handleArbitrationResponse's own internal stale-window
+			// check still exists for the test-call surface.
+			if d := m.staleAbsorbDeadline.Load(); d > 0 && time.Now().UnixNano() < d {
+				m.logger.Printf("adaptermux: readLoop dropping stale-window STARTED data=0x%02X (F-22)", event.Data)
+				continue
+			}
 			// Peek the pending bidder's session ID BEFORE
 			// handleArbitrationResponse fires. Without this, an
 			// external winner can call RemoveSession immediately
@@ -1215,7 +1228,20 @@ func (m *Mux) readLoop() {
 			var startedBidderSessionID uint64
 			var startedBidderInitiator byte
 			var startedBidderValid bool
-			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
+			// F-22 (Codex bot P1 round-2 on PR #632): also treat the
+			// stale-absorb window as "no valid bidder" so the
+			// synthesis logic below does not emit a phantom winner
+			// byte for external sessions / passive observers when
+			// the STARTED/FAILED is going to be silently absorbed
+			// as stale-for-cancelled. Pre-fix the snapshot used the
+			// FRESH pendingStart and synthesis would route the
+			// winner byte as if the new bidder won — when actually
+			// the response was for the cancelled bid.
+			staleAbsorbWindowActive := false
+			if deadlineNanos := m.staleAbsorbDeadline.Load(); deadlineNanos > 0 && time.Now().UnixNano() < deadlineNanos {
+				staleAbsorbWindowActive = true
+			}
+			if m.pendingStartAbsorb == 0 && m.pendingStart != nil && !staleAbsorbWindowActive {
 				startedBidderSessionID = m.pendingStart.sessionID
 				startedBidderInitiator = m.pendingStart.initiator
 				startedBidderValid = true
@@ -1359,6 +1385,19 @@ func (m *Mux) readLoop() {
 			continue
 		case transport.StreamEventFailed:
 			m.logger.Printf("adaptermux: readLoop got StreamEventFailed data=0x%02X", event.Data)
+			// F-22 (Codex bot P1 round-2 on PR #632): same
+			// stale-window guard as StreamEventStarted above —
+			// drop the entire FAILED (including the unconditional
+			// passive emit) when the absorb safety-net is in its
+			// drop-stale-responses window. Without this gate, a
+			// stale FAILED from the cancelled bid would still
+			// drive lastWireActivity bump + unconditional
+			// emitPassive, corrupting the passive reconstructor's
+			// view of the bus.
+			if d := m.staleAbsorbDeadline.Load(); d > 0 && time.Now().UnixNano() < d {
+				m.logger.Printf("adaptermux: readLoop dropping stale-window FAILED data=0x%02X (F-22)", event.Data)
+				continue
+			}
 			// Peek the *active* bidder (if any) BEFORE
 			// handleArbitrationResponse clears pendingStart. The
 			// presence and identity of the bidder dictate how we
@@ -1417,7 +1456,19 @@ func (m *Mux) readLoop() {
 			var hasActiveBidder bool
 			m.stateMu.Lock()
 			m.lastWireActivity = time.Now()
-			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
+			// F-22 (Codex bot P1 round-2 on PR #632): mirror the
+			// STARTED-handler snapshot gating — the stale-absorb
+			// window means the FAILED is going to be silently
+			// absorbed by handleArbitrationResponse, so we MUST NOT
+			// snapshot a bidder identity here (downstream routing
+			// would treat the FAILED as if it were for the fresh
+			// pendingStart and deliver phantom bytes / fail the
+			// wrong session).
+			failedStaleAbsorbWindowActive := false
+			if deadlineNanos := m.staleAbsorbDeadline.Load(); deadlineNanos > 0 && time.Now().UnixNano() < deadlineNanos {
+				failedStaleAbsorbWindowActive = true
+			}
+			if m.pendingStartAbsorb == 0 && m.pendingStart != nil && !failedStaleAbsorbWindowActive {
 				activeBidderSessionID = m.pendingStart.sessionID
 				hasActiveBidder = true
 				if isPhantom && m.pendingStart.sessionID == activeBidderSessionID {

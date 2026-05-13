@@ -336,25 +336,6 @@ type Mux struct {
 	// readers (ActiveTxnSnapshot, tests) may load it without
 	// holding stateMu.
 	absorbResetTotal atomic.Uint64
-	// staleAbsorbDeadline (F-22, Codex bot P1 on PR #632) carries
-	// the absolute deadline (Unix nanos) past which adapter
-	// responses are no longer suspected of being stale-for-cancelled.
-	// Set by the absorb-safety-net timer when it resets the counter
-	// to zero without closing the transport. Pre-F-22 the reconnect
-	// itself was the boundary that dropped any in-flight stale
-	// STARTED/FAILED from the adapter; without the reconnect, a
-	// stale response can land on a fresh tryGrantAndStart and be
-	// misapplied (Codex P1: "a reused initiator can be granted as
-	// the wrong owner, and any stale FAILED will fail the new
-	// request"). This deadline provides a bounded equivalent: any
-	// STARTED/FAILED arriving while now < staleAbsorbDeadline is
-	// absorbed as stale instead of being routed to the current
-	// pendingStart. The window length is one StartDeadline
-	// (typically ≤ 2s) — long enough to catch the late-emitter
-	// case Codex flagged, short enough that a quiet adapter
-	// re-arbitration converges naturally within one extra poll
-	// iteration. 0 = no active stale-absorb window.
-	staleAbsorbDeadline atomic.Int64
 	// Blocking StartArbitration tracking. blockingArbGen is monotonically
 	// increasing (never reset to 0 or reused) — reconnect/handleReset
 	// bump it forward so any stale goroutine's captured gen no longer
@@ -1199,19 +1180,6 @@ func (m *Mux) readLoop() {
 		switch event.Kind {
 		case transport.StreamEventStarted:
 			m.logger.Printf("adaptermux: readLoop got StreamEventStarted data=0x%02X", event.Data)
-			// F-22 (Codex bot P1 round-2 on PR #632): if the
-			// absorb safety-net's stale-response window is active,
-			// drop this STARTED entirely — including the
-			// synthesis side effects below. The wire byte for the
-			// cancelled bid happened in the past; emitting it now
-			// would corrupt the passive reconstructor's view and
-			// could route a phantom winner to the wrong session.
-			// handleArbitrationResponse's own internal stale-window
-			// check still exists for the test-call surface.
-			if d := m.staleAbsorbDeadline.Load(); d > 0 && time.Now().UnixNano() < d {
-				m.logger.Printf("adaptermux: readLoop dropping stale-window STARTED data=0x%02X (F-22)", event.Data)
-				continue
-			}
 			// Peek the pending bidder's session ID BEFORE
 			// handleArbitrationResponse fires. Without this, an
 			// external winner can call RemoveSession immediately
@@ -1228,20 +1196,7 @@ func (m *Mux) readLoop() {
 			var startedBidderSessionID uint64
 			var startedBidderInitiator byte
 			var startedBidderValid bool
-			// F-22 (Codex bot P1 round-2 on PR #632): also treat the
-			// stale-absorb window as "no valid bidder" so the
-			// synthesis logic below does not emit a phantom winner
-			// byte for external sessions / passive observers when
-			// the STARTED/FAILED is going to be silently absorbed
-			// as stale-for-cancelled. Pre-fix the snapshot used the
-			// FRESH pendingStart and synthesis would route the
-			// winner byte as if the new bidder won — when actually
-			// the response was for the cancelled bid.
-			staleAbsorbWindowActive := false
-			if deadlineNanos := m.staleAbsorbDeadline.Load(); deadlineNanos > 0 && time.Now().UnixNano() < deadlineNanos {
-				staleAbsorbWindowActive = true
-			}
-			if m.pendingStartAbsorb == 0 && m.pendingStart != nil && !staleAbsorbWindowActive {
+			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
 				startedBidderSessionID = m.pendingStart.sessionID
 				startedBidderInitiator = m.pendingStart.initiator
 				startedBidderValid = true
@@ -1385,19 +1340,6 @@ func (m *Mux) readLoop() {
 			continue
 		case transport.StreamEventFailed:
 			m.logger.Printf("adaptermux: readLoop got StreamEventFailed data=0x%02X", event.Data)
-			// F-22 (Codex bot P1 round-2 on PR #632): same
-			// stale-window guard as StreamEventStarted above —
-			// drop the entire FAILED (including the unconditional
-			// passive emit) when the absorb safety-net is in its
-			// drop-stale-responses window. Without this gate, a
-			// stale FAILED from the cancelled bid would still
-			// drive lastWireActivity bump + unconditional
-			// emitPassive, corrupting the passive reconstructor's
-			// view of the bus.
-			if d := m.staleAbsorbDeadline.Load(); d > 0 && time.Now().UnixNano() < d {
-				m.logger.Printf("adaptermux: readLoop dropping stale-window FAILED data=0x%02X (F-22)", event.Data)
-				continue
-			}
 			// Peek the *active* bidder (if any) BEFORE
 			// handleArbitrationResponse clears pendingStart. The
 			// presence and identity of the bidder dictate how we
@@ -1456,19 +1398,7 @@ func (m *Mux) readLoop() {
 			var hasActiveBidder bool
 			m.stateMu.Lock()
 			m.lastWireActivity = time.Now()
-			// F-22 (Codex bot P1 round-2 on PR #632): mirror the
-			// STARTED-handler snapshot gating — the stale-absorb
-			// window means the FAILED is going to be silently
-			// absorbed by handleArbitrationResponse, so we MUST NOT
-			// snapshot a bidder identity here (downstream routing
-			// would treat the FAILED as if it were for the fresh
-			// pendingStart and deliver phantom bytes / fail the
-			// wrong session).
-			failedStaleAbsorbWindowActive := false
-			if deadlineNanos := m.staleAbsorbDeadline.Load(); deadlineNanos > 0 && time.Now().UnixNano() < deadlineNanos {
-				failedStaleAbsorbWindowActive = true
-			}
-			if m.pendingStartAbsorb == 0 && m.pendingStart != nil && !failedStaleAbsorbWindowActive {
+			if m.pendingStartAbsorb == 0 && m.pendingStart != nil {
 				activeBidderSessionID = m.pendingStart.sessionID
 				hasActiveBidder = true
 				if isPhantom && m.pendingStart.sessionID == activeBidderSessionID {
@@ -2609,10 +2539,16 @@ func (m *Mux) tryGrantAndStart() {
 			// `armPendingStartAbsorbLocked` drained naturally on every
 			// late-STARTED in production. The unconditional reconnect
 			// here was therefore never needed for the non-blocking
-			// transport in observed runs; for the rare truly-hung case
-			// the absorb timer's own StartDeadline-bounded reconnect path
-			// takes over (covered by
-			// `TestAM8Deadline_NonBlockingPath_AbsorbTimerReconnectsOnTrulyHungAdapter`).
+			// transport in observed runs.
+			//
+			// F-22 (batch-19, 2026-05-13): the absorb safety-net's own
+			// timeout side effect is now a counter reset ONLY — it does
+			// NOT close the transport. Covered by
+			// `TestF22_AbsorbTimerResetsCounterWithoutReconnect`. The
+			// truly-hung scenario the original code feared is recovered
+			// via the bus poll loop's next RequestStart on the still-
+			// open connection; the prior reconnect-on-absorb-timeout
+			// was load-bearing only on the legacy blocking transport.
 			//
 			// BLOCKING TRANSPORT (legacy StartArbitration): the goroutine
 			// may still be hung in the transport call after the deadline,
@@ -2995,38 +2931,6 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	m.logger.Printf("adaptermux: arbitration response started=%v data=0x%02X", started, data)
 	m.stateMu.Lock()
-
-	// F-22 (batch-19, Codex bot P1 on PR #632): stale-absorb window.
-	// When the absorb-safety-net fired (armPendingStartAbsorbLocked
-	// timer), the absorb counter was cleared to zero but the
-	// cancelled request's STARTED/FAILED may still arrive from the
-	// adapter. Pre-F-22 the transport reconnect dropped those
-	// in-flight responses; without it, an arriving stale STARTED
-	// could match a reused-initiator pendingStart and grant the
-	// wrong owner, or a stale FAILED could fail a fresh pending
-	// request. The staleAbsorbDeadline window (one StartDeadline
-	// long, set when the safety-net fired) catches that case:
-	// responses arriving inside the window are absorbed regardless
-	// of the counter.
-	//
-	// Tradeoff: a legitimate FAILED arriving in this window also
-	// gets absorbed; the new pending then times out via AM8 and
-	// the caller retries one cycle later. Acceptable, and bounded
-	// by StartDeadline.
-	if deadlineNanos := m.staleAbsorbDeadline.Load(); deadlineNanos > 0 {
-		if time.Now().UnixNano() < deadlineNanos {
-			kind := "FAILED"
-			if started {
-				kind = "STARTED"
-			}
-			m.logger.Printf("adaptermux: F-22 stale-absorb window absorbed %s data=0x%02X", kind, data)
-			m.stateMu.Unlock()
-			return
-		}
-		// Window expired — clear the deadline so subsequent
-		// responses are routed normally.
-		m.staleAbsorbDeadline.Store(0)
-	}
 
 	// Absorb stale responses from cancelled RequestStart calls.
 	// cancelPendingStart increments pendingStartAbsorb when it clears a
@@ -3415,16 +3319,6 @@ func (m *Mux) armPendingStartAbsorbLocked(reason string) {
 		m.absorbResetTotal.Add(1)
 		m.pendingStartAbsorb = 0
 		m.pendingAbsorbGen++
-		// F-22 (Codex bot P1 on PR #632): open a stale-absorb
-		// window so any STARTED/FAILED arriving from the cancelled
-		// request within the next StartDeadline is recognised as
-		// stale and absorbed by handleArbitrationResponse instead
-		// of being routed to the fresh tryGrantAndStart's
-		// pendingStart. Pre-F-22 the transport reconnect was the
-		// boundary that dropped these stale wire-level responses;
-		// without it we need this software-side equivalent.
-		windowEnd := time.Now().Add(deadline).UnixNano()
-		m.staleAbsorbDeadline.Store(windowEnd)
 		shouldAdvance := m.pendingStart == nil && m.arb.hasPending()
 		m.stateMu.Unlock()
 

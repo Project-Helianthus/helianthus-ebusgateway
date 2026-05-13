@@ -336,6 +336,25 @@ type Mux struct {
 	// readers (ActiveTxnSnapshot, tests) may load it without
 	// holding stateMu.
 	absorbResetTotal atomic.Uint64
+	// staleAbsorbDeadline (F-22, Codex bot P1 on PR #632) carries
+	// the absolute deadline (Unix nanos) past which adapter
+	// responses are no longer suspected of being stale-for-cancelled.
+	// Set by the absorb-safety-net timer when it resets the counter
+	// to zero without closing the transport. Pre-F-22 the reconnect
+	// itself was the boundary that dropped any in-flight stale
+	// STARTED/FAILED from the adapter; without the reconnect, a
+	// stale response can land on a fresh tryGrantAndStart and be
+	// misapplied (Codex P1: "a reused initiator can be granted as
+	// the wrong owner, and any stale FAILED will fail the new
+	// request"). This deadline provides a bounded equivalent: any
+	// STARTED/FAILED arriving while now < staleAbsorbDeadline is
+	// absorbed as stale instead of being routed to the current
+	// pendingStart. The window length is one StartDeadline
+	// (typically ≤ 2s) — long enough to catch the late-emitter
+	// case Codex flagged, short enough that a quiet adapter
+	// re-arbitration converges naturally within one extra poll
+	// iteration. 0 = no active stale-absorb window.
+	staleAbsorbDeadline atomic.Int64
 	// Blocking StartArbitration tracking. blockingArbGen is monotonically
 	// increasing (never reset to 0 or reused) — reconnect/handleReset
 	// bump it forward so any stale goroutine's captured gen no longer
@@ -2926,6 +2945,38 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	m.logger.Printf("adaptermux: arbitration response started=%v data=0x%02X", started, data)
 	m.stateMu.Lock()
 
+	// F-22 (batch-19, Codex bot P1 on PR #632): stale-absorb window.
+	// When the absorb-safety-net fired (armPendingStartAbsorbLocked
+	// timer), the absorb counter was cleared to zero but the
+	// cancelled request's STARTED/FAILED may still arrive from the
+	// adapter. Pre-F-22 the transport reconnect dropped those
+	// in-flight responses; without it, an arriving stale STARTED
+	// could match a reused-initiator pendingStart and grant the
+	// wrong owner, or a stale FAILED could fail a fresh pending
+	// request. The staleAbsorbDeadline window (one StartDeadline
+	// long, set when the safety-net fired) catches that case:
+	// responses arriving inside the window are absorbed regardless
+	// of the counter.
+	//
+	// Tradeoff: a legitimate FAILED arriving in this window also
+	// gets absorbed; the new pending then times out via AM8 and
+	// the caller retries one cycle later. Acceptable, and bounded
+	// by StartDeadline.
+	if deadlineNanos := m.staleAbsorbDeadline.Load(); deadlineNanos > 0 {
+		if time.Now().UnixNano() < deadlineNanos {
+			kind := "FAILED"
+			if started {
+				kind = "STARTED"
+			}
+			m.logger.Printf("adaptermux: F-22 stale-absorb window absorbed %s data=0x%02X", kind, data)
+			m.stateMu.Unlock()
+			return
+		}
+		// Window expired — clear the deadline so subsequent
+		// responses are routed normally.
+		m.staleAbsorbDeadline.Store(0)
+	}
+
 	// Absorb stale responses from cancelled RequestStart calls.
 	// cancelPendingStart increments pendingStartAbsorb when it clears a
 	// pending request, because the adapter will still deliver STARTED or
@@ -3313,6 +3364,16 @@ func (m *Mux) armPendingStartAbsorbLocked(reason string) {
 		m.absorbResetTotal.Add(1)
 		m.pendingStartAbsorb = 0
 		m.pendingAbsorbGen++
+		// F-22 (Codex bot P1 on PR #632): open a stale-absorb
+		// window so any STARTED/FAILED arriving from the cancelled
+		// request within the next StartDeadline is recognised as
+		// stale and absorbed by handleArbitrationResponse instead
+		// of being routed to the fresh tryGrantAndStart's
+		// pendingStart. Pre-F-22 the transport reconnect was the
+		// boundary that dropped these stale wire-level responses;
+		// without it we need this software-side equivalent.
+		windowEnd := time.Now().Add(deadline).UnixNano()
+		m.staleAbsorbDeadline.Store(windowEnd)
 		shouldAdvance := m.pendingStart == nil && m.arb.hasPending()
 		m.stateMu.Unlock()
 

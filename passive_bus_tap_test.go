@@ -1270,7 +1270,17 @@ func runProxyENSObserverHarness(t *testing.T, writes []proxyObserverWrite, waitC
 			if write.delay > 0 {
 				time.Sleep(write.delay)
 			}
-			_, _ = server.Write(enhReceivedBytes(write.logicalSymbols))
+			// F-23 (post-PR-1 ENH transport unescape): the test
+			// fixtures here construct LOGICAL byte streams, but
+			// the post-F-23 ENH transport runs an escape decoder
+			// on the inbound byte stream. To match the real-wire
+			// shape (where logical 0xA9 is transmitted as `A9
+			// 00` and logical 0xAA as `A9 01`), wire-escape the
+			// logical payload before wrapping in ENH RECEIVED
+			// frames. The transport then unescapes back to the
+			// original logical stream the test expects. Same
+			// fix Codex applied at the sibling test fixtures.
+			_, _ = server.Write(enhReceivedBytes(wireEscapeSymbols(write.logicalSymbols)))
 		}
 	}()
 

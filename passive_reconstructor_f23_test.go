@@ -46,7 +46,7 @@ import (
 )
 
 // TestF23_PatternA_VRC720_BAI_CRC_A9_Commits replays the recurring
-// VRC720→BAI poll fingerprint from batch-19. The slave CRC is 0xA9.
+// VRC720→BAI poll fingerprint from batch-19. The target CRC is 0xA9.
 // Post-F-23 the upstream ENH transport delivers the CRC as logical
 // 0xA9 with WasEscaped=true; the reconstructor's response-phase
 // counter sees 1 byte (CRC), the WaitFinalACK ACK arrives next,
@@ -70,7 +70,7 @@ func TestF23_PatternA_VRC720_BAI_CRC_A9_Commits(t *testing.T) {
 	}
 	defer subscription.Close()
 
-	// VRC720→BAI master frame: SRC=0x10, DST=0x08, PB=0xB5,
+	// VRC720→BAI initiator frame: SRC=0x10, DST=0x08, PB=0xB5,
 	// SB=0x09 (from batch-19 sample), 0-length data, CRC computed
 	// from logical bytes.
 	req := protocol.Frame{
@@ -82,7 +82,7 @@ func TestF23_PatternA_VRC720_BAI_CRC_A9_Commits(t *testing.T) {
 	}
 	reqBytes := requestFrameBytes(req)
 
-	// Slave response (post-F-23: logical bytes). Construct a
+	// Target response (post-F-23: logical bytes). Construct a
 	// 4-byte response payload whose CRC happens to be 0xA9 so the
 	// F-23 unescape path is exercised at the CRC position. Use a
 	// data sequence that brute-forces CRC=0xA9.

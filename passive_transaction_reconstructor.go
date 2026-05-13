@@ -715,24 +715,31 @@ func (reconstructor *PassiveTransactionReconstructor) handleRequestSymbolLocked(
 			// classes could otherwise slip through.
 			zz := reconstructor.state.requestRaw[1]
 			if zz == 0xAA || zz == 0xA9 {
-				// F-19e: the offending byte is the ZZ candidate. The
-				// current symbol parameter holds the same value when
-				// the per-offset check fires at rawLen==2 (ZZ just
-				// landed), but we forward zz explicitly to keep the
-				// log line semantically aligned with the reason name.
-				// QQ/ZZ are never escape-encoded (symbol.h:41), so
-				// pass wasEscaped=false unconditionally; if a wire
-				// 0xAA reaches this position it is mis-routed wire
-				// SYN, not an escape sequence.
+				// F-19e (Codex bot P2 on PR #631): the offending byte
+				// IS the ZZ candidate just appended on line 684.
+				// `symbol` and `requestRaw[1]` reference the same
+				// byte at this rawLen==2 site, so the handler's
+				// `wasEscaped` parameter is the upstream truth flag
+				// for the ZZ byte. The spec rule (symbol.h:41 — QQ/ZZ
+				// are never escape-encoded) is what the SENDER must
+				// do; a wasEscaped=true byte arriving at ZZ would be
+				// a spec violation that the F-19e forensic data
+				// SHOULD preserve, not hide. Forward `wasEscaped`
+				// directly so post-deploy analysis can distinguish
+				// "raw 0xAA at ZZ position = mis-routed wire SYN"
+				// from "escape-encoded byte at ZZ position = sender
+				// or wire corruption".
 				events = append(events, reconstructor.abandonLocked(
-					PassiveAbandonReasonInvalidZZ, observedAt, ebuserrors.ErrInvalidPayload, zz, false))
+					PassiveAbandonReasonInvalidZZ, observedAt, ebuserrors.ErrInvalidPayload, zz, wasEscaped))
 				reconstructor.state.phase = passivePhaseAbandoned
 				reconstructor.resetStateLocked()
 				return events
 			}
 			if zz != 0xFE && !isInitiatorAddr(zz) && !isValidTargetAddr(zz) {
+				// F-19e: same forwarding rationale as above — ZZ at
+				// rawLen==2 is the current handler byte.
 				events = append(events, reconstructor.abandonLocked(
-					PassiveAbandonReasonInvalidZZ, observedAt, ebuserrors.ErrInvalidPayload, zz, false))
+					PassiveAbandonReasonInvalidZZ, observedAt, ebuserrors.ErrInvalidPayload, zz, wasEscaped))
 				reconstructor.state.phase = passivePhaseAbandoned
 				reconstructor.resetStateLocked()
 				return events

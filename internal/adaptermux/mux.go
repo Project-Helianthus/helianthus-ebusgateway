@@ -2201,18 +2201,55 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		var releaseNow bool
 		var elapsed time.Duration
 		var graceUsed time.Duration
+		var f26ExternalBypass bool
 		if ownerID == gatewaySessionID {
 			elapsed = time.Since(m.busOwned)
 			graceUsed = m.cfg.IdleReleaseGrace
 			releaseNow = elapsed > graceUsed
+			// F-26 (batch-23, iter3, 2026-05-14): bypass IdleReleaseGrace
+			// when an external session has a pending START. The grace
+			// period exists to absorb mid-transaction wire stalls on the
+			// gateway's own protocol (e.g. slow B524 responses). It does
+			// NOT need to apply when an external bidder is waiting,
+			// because:
+			//
+			//   1. Once the gateway's transaction has produced its
+			//      trailing SYN, the phaseEvent here is SYNIdle —
+			//      meaning the wire-phase tracker has already
+			//      committed the gateway's transaction as complete.
+			//      Releasing immediately doesn't truncate any in-flight
+			//      work.
+			//
+			//   2. Pre-F-26, the grace combined with the gateway's
+			//      back-to-back poll cadence produced 595 ms median
+			//      / 4.2 s p95 START-to-STARTED latency on ebusd —
+			//      far past its arbitration-wait timeout, triggering
+			//      the `arbitration won in invalid state` cascade.
+			//      Wire-byte trace evidence:
+			//      /tmp/iter3-enh-stream.txt, latency analysis in
+			//      /tmp/measure_start_latency.py.
+			//
+			//   3. The fix is gated on `arb.hasExternalPending()` so
+			//      steady-state gateway-only operation is unaffected
+			//      (the grace still fires when no external bidder is
+			//      waiting).
+			if !releaseNow && m.arb.hasExternalPending() {
+				releaseNow = true
+				f26ExternalBypass = true
+			}
 		} else {
 			elapsed = time.Since(m.lastWireActivity)
 			graceUsed = m.cfg.ExternalSessionSYNGrace
 			releaseNow = elapsed >= graceUsed
 		}
 		if releaseNow {
-			m.logger.Printf("adaptermux: ownership released for session %d remote=%s (idle grace expired: %v ≥ %v) (AM6)",
-				ownerID, m.sessionRemoteAddrOrUnknown(ownerID), elapsed, graceUsed)
+			if f26ExternalBypass {
+				m.logger.Printf("adaptermux: ownership released for session %d remote=%s (F-26 external START pending: elapsed %v skipping grace %v) (AM6)",
+					ownerID, m.sessionRemoteAddrOrUnknown(ownerID), elapsed, graceUsed)
+			} else {
+				m.logger.Printf("adaptermux: ownership released for session %d remote=%s (idle grace expired: %v ≥ %v) (AM6)",
+					ownerID, m.sessionRemoteAddrOrUnknown(ownerID), elapsed, graceUsed)
+			}
 			m.arb.releaseOwnership(ownerID)
 			// Codex: clear gatewayTxnActive here too — the "SYN-before-read"
 			// guard above only clears when bytesRead > 0, so an abandoned

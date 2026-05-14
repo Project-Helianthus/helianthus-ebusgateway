@@ -520,6 +520,24 @@ func (a *arbitrator) hasPending() bool {
 	return a.pendingGateway != nil || len(a.pendingExternal) > 0
 }
 
+// hasExternalPending reports whether at least one external-session START
+// request is queued. F-26 (batch-23, iter3, 2026-05-14): used by the
+// SYN-idle release path to skip the gateway's IdleReleaseGrace when an
+// external bidder (e.g. ebusd) is already waiting. Without this gate,
+// the gateway holds bus ownership for the full 200 ms grace period
+// after its own transaction completes, even though the bus has been
+// physically idle and an external START is queued. The wire-byte
+// trace measured median 596 ms / p95 4.2 s latency between ebusd's
+// ENH_REQ_START and the gateway's ENH_RES_STARTED for this exact
+// reason, with 100/260 paired events landing in the 1-5 s bucket —
+// far past ebusd's arbitration-wait timeout, producing the
+// `arbitration won in invalid state` cascade.
+func (a *arbitrator) hasExternalPending() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.pendingExternal) > 0
+}
+
 // failAllPending fails all pending START requests (e.g., on shutdown
 // or adapter RESETTED).
 //

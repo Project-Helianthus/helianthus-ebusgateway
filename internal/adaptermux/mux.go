@@ -264,11 +264,40 @@ func (c *Config) defaults() {
 		c.MaxOwnershipDuration = 10 * time.Second
 	}
 	if c.IdleReleaseGrace == 0 {
-		// 200ms is enough for any eBUS transaction to complete (~100ms for
-		// the longest B524 frame) while releasing promptly after each scan
-		// probe. The wire phase is not advanced during gateway ownership,
-		// so there's no premature idle/WaitCmdAck issue.
-		c.IdleReleaseGrace = 200 * time.Millisecond
+		// F-33 (batch-29, iter10, 2026-05-15): lowered 200ms → 30ms.
+		//
+		// Pre-F-33 rationale was "200ms is enough for any eBUS
+		// transaction to complete (~100ms for the longest B524 frame)
+		// while releasing promptly after each scan probe." That value
+		// pre-dated F-21 (deferred terminal-SYN ownership release) which
+		// now handles normal-path completion at the trailing SYN
+		// observation. IdleReleaseGrace exists only as a SAFETY NET for
+		// cases where F-21 doesn't fire (protocol error / garbled byte
+		// fallback).
+		//
+		// Iter10 forensic (484 grants in 5-min capture): 467 / 484
+		// (96%) burned the FULL 200ms grace post-completion despite
+		// F-21 being deployed and ebusd's session-1 having pending
+		// STARTs queued during 21 of those releases (F-26 fired only
+		// 4% of the time). The remaining 96% of releases sat idle for
+		// 200ms, monopolizing ~40% of total bus wall-clock — directly
+		// preventing ebusd's tight-scan-08 sub-reads from landing
+		// inter-poll.
+		//
+		// 30ms = 6 SYN periods at 2400 baud (each SYN is ~4.5ms). Well
+		// above the longest legitimate inter-byte stall on the wire
+		// (eBUS spec: <15ms per SLAVE_RECV_TIMEOUT) but far below the
+		// pre-F-33 200ms monopoly cliff. Aligns with ebusd's own
+		// --acquiretimeout=10ms default scale.
+		//
+		// Risk: if F-21 misses a normal-path completion (un-audited
+		// edge case), a 30ms grace may rip ownership before the
+		// gateway's protocol.Bus.sendEndOfMessage path completes. The
+		// existing `suppressIdleRelease` predicate (mux.go ~2247)
+		// already guards against pre-first-echo rip; this should
+		// remain sufficient. If iter11 measurement shows passive
+		// abandons spiking, the grace can be raised to 50-100ms.
+		c.IdleReleaseGrace = 30 * time.Millisecond
 	}
 	if c.LatencyHistogramReportInterval == 0 {
 		c.LatencyHistogramReportInterval = 60 * time.Second

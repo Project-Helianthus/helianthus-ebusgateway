@@ -3179,7 +3179,13 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.sessionsMu.Unlock()
 		if sess != nil {
 			sess.bytesSentSinceGrant.Store(0)
-			deadline := 25 * time.Millisecond
+			// F-35 (iter12): 25ms was too tight — legitimate grants
+			// where ebusd's TCP roundtrip + bus-state transition takes
+			// >25ms got force-released, producing 503 watchdog firings
+			// / 2 min and regressing scan success 65%→60%. 75ms gives
+			// ebusd time for the legit happy path while still cutting
+			// the silent-drop tail by 3x (vs F-27's 250ms).
+			deadline := 75 * time.Millisecond
 			time.AfterFunc(deadline, func() {
 				if sess.closed.Load() {
 					return

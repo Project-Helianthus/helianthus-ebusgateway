@@ -77,14 +77,23 @@ func TestWirePhase_FullTransaction(t *testing.T) {
 		t.Fatalf("response CRC: got event %d, want ResponseDone", got)
 	}
 
-	// Final ACK from initiator.
+	// F-21 (batch-20): final ACK now defers to trailing SYN. Final
+	// ACK byte returns None and transitions to WaitTerminalSyn.
 	got = tracker.advance(protocol.SymbolAck)
-	if got != wirePhaseEventTransactionDone {
-		t.Fatalf("final ACK: got event %d, want TransactionDone", got)
+	if got != wirePhaseEventNone {
+		t.Fatalf("final ACK: got event %d, want None (F-21 deferred terminal)", got)
+	}
+	if tracker.phase != wirePhaseWaitTerminalSyn {
+		t.Fatalf("phase after final ACK = %d, want WaitTerminalSyn (%d) (F-21)", tracker.phase, wirePhaseWaitTerminalSyn)
 	}
 
+	// F-21: trailing wire SYN fires TransactionDone and resets to Idle.
+	got = tracker.advance(protocol.SymbolSyn)
+	if got != wirePhaseEventTransactionDone {
+		t.Fatalf("trailing SYN: got event %d, want TransactionDone (F-21)", got)
+	}
 	if !tracker.isIdle() {
-		t.Fatal("expected idle after transaction")
+		t.Fatal("expected idle after trailing SYN (F-21)")
 	}
 }
 
@@ -102,10 +111,20 @@ func TestWirePhase_BroadcastTransaction(t *testing.T) {
 		t.Fatalf("CRC: got event %d, want RequestComplete", got)
 	}
 
-	// ACK on broadcast → transaction done (no response expected).
+	// F-21 (batch-20): broadcast ACK now defers to trailing SYN.
 	got = tracker.advance(protocol.SymbolAck)
+	if got != wirePhaseEventNone {
+		t.Fatalf("broadcast ACK: got event %d, want None (F-21 deferred terminal)", got)
+	}
+	if tracker.phase != wirePhaseWaitTerminalSyn {
+		t.Fatalf("phase after broadcast ACK = %d, want WaitTerminalSyn (F-21)", tracker.phase)
+	}
+	got = tracker.advance(protocol.SymbolSyn)
 	if got != wirePhaseEventTransactionDone {
-		t.Fatalf("broadcast ACK: got event %d, want TransactionDone", got)
+		t.Fatalf("broadcast trailing SYN: got event %d, want TransactionDone (F-21)", got)
+	}
+	if !tracker.isIdle() {
+		t.Fatal("expected idle after broadcast trailing SYN (F-21)")
 	}
 }
 
@@ -136,8 +155,16 @@ func TestWirePhase_NACK_FirstRetries(t *testing.T) {
 	}
 }
 
-func TestWirePhase_NACK_SecondGoesToIdle(t *testing.T) {
-	// AM2: second CMD NACK resets to idle.
+func TestWirePhase_NACK_SecondGoesToWaitTerminalSyn(t *testing.T) {
+	// AM2 + F-21 (batch-20): second CMD NACK now defers to trailing
+	// SYN. The byte returns None and transitions to WaitTerminalSyn;
+	// the trailing SYN fires TransactionDone. F-21 deviation from the
+	// pre-revert build (which returned CmdNACK at this byte position
+	// and reset to Idle): the non-SYN release block at mux.go
+	// previously released ownership on CmdNACK, which rejected
+	// ebusd's trailing-SYN ENH_REQ_SEND. CmdNACK is now folded into
+	// TransactionDone at the SYN observation; the diagnostic
+	// distinction (ReasonCmdNACK) is irrelevant for external paths.
 	var tracker wirePhaseTracker
 	tracker.startRequest()
 
@@ -157,13 +184,21 @@ func TestWirePhase_NACK_SecondGoesToIdle(t *testing.T) {
 		t.Fatalf("retry CRC: got event %d, want RequestComplete", got)
 	}
 
-	// Second NACK -> idle.
+	// F-21: second NACK -> None + WaitTerminalSyn (was CmdNACK + Idle).
 	got = tracker.advance(protocol.SymbolNack)
-	if got != wirePhaseEventCmdNACK {
-		t.Fatalf("second NACK: got event %d, want CmdNACK", got)
+	if got != wirePhaseEventNone {
+		t.Fatalf("second NACK: got event %d, want None (F-21 deferred terminal)", got)
+	}
+	if tracker.phase != wirePhaseWaitTerminalSyn {
+		t.Fatalf("phase after second NACK = %d, want WaitTerminalSyn (F-21)", tracker.phase)
+	}
+	// Trailing SYN -> TransactionDone + Idle.
+	got = tracker.advance(protocol.SymbolSyn)
+	if got != wirePhaseEventTransactionDone {
+		t.Fatalf("trailing SYN: got event %d, want TransactionDone (F-21)", got)
 	}
 	if !tracker.isIdle() {
-		t.Fatal("expected idle after second NACK")
+		t.Fatal("expected idle after trailing SYN (F-21)")
 	}
 }
 
@@ -421,9 +456,17 @@ func TestWirePhase_ZeroLengthResponse(t *testing.T) {
 		t.Fatalf("response CRC: got event %d, want ResponseDone", got)
 	}
 
-	got = tracker.advance(protocol.SymbolAck) // final ACK
+	// F-21 (batch-20): final ACK defers to trailing SYN.
+	got = tracker.advance(protocol.SymbolAck)
+	if got != wirePhaseEventNone {
+		t.Fatalf("final ACK: got event %d, want None (F-21 deferred terminal)", got)
+	}
+	if tracker.phase != wirePhaseWaitTerminalSyn {
+		t.Fatalf("phase after final ACK = %d, want WaitTerminalSyn (F-21)", tracker.phase)
+	}
+	got = tracker.advance(protocol.SymbolSyn)
 	if got != wirePhaseEventTransactionDone {
-		t.Fatalf("final ACK: got event %d, want TransactionDone", got)
+		t.Fatalf("trailing SYN: got event %d, want TransactionDone (F-21)", got)
 	}
 }
 
@@ -468,13 +511,20 @@ func TestWirePhase_NACKResponseRetry(t *testing.T) {
 		t.Fatalf("retry response CRC: event=%d, want ResponseDone", got)
 	}
 
-	// Initiator ACK -- transaction done.
+	// F-21 (batch-20): retry ACK defers to trailing SYN.
 	got = tracker.advance(protocol.SymbolAck)
+	if got != wirePhaseEventNone {
+		t.Fatalf("retry ACK: event=%d, want None (F-21 deferred terminal)", got)
+	}
+	if tracker.phase != wirePhaseWaitTerminalSyn {
+		t.Fatalf("phase after retry ACK = %d, want WaitTerminalSyn (F-21)", tracker.phase)
+	}
+	got = tracker.advance(protocol.SymbolSyn)
 	if got != wirePhaseEventTransactionDone {
-		t.Fatalf("retry ACK: event=%d, want TransactionDone", got)
+		t.Fatalf("trailing SYN: event=%d, want TransactionDone (F-21)", got)
 	}
 	if !tracker.isIdle() {
-		t.Fatal("expected idle after retry ACK")
+		t.Fatal("expected idle after trailing SYN (F-21)")
 	}
 }
 
@@ -499,12 +549,20 @@ func TestWirePhase_ResponseDoubleNACK(t *testing.T) {
 	tracker.advance(0x01)                       // LEN
 	tracker.advance(0xAB)                       // DATA
 	tracker.advance(0xEE)                       // CRC -> ResponseDone
-	got := tracker.advance(protocol.SymbolNack) // second NACK -> done
+	// F-21 (batch-20): second response NACK defers to trailing SYN.
+	got := tracker.advance(protocol.SymbolNack)
+	if got != wirePhaseEventNone {
+		t.Fatalf("second response NACK: event=%d, want None (F-21 deferred terminal)", got)
+	}
+	if tracker.phase != wirePhaseWaitTerminalSyn {
+		t.Fatalf("phase after second response NACK = %d, want WaitTerminalSyn (F-21)", tracker.phase)
+	}
+	got = tracker.advance(protocol.SymbolSyn)
 	if got != wirePhaseEventTransactionDone {
-		t.Fatalf("second response NACK: event=%d, want TransactionDone", got)
+		t.Fatalf("trailing SYN: event=%d, want TransactionDone (F-21)", got)
 	}
 	if !tracker.isIdle() {
-		t.Fatal("expected idle after second response NACK")
+		t.Fatal("expected idle after trailing SYN (F-21)")
 	}
 }
 
@@ -527,13 +585,22 @@ func TestWirePhase_InitiatorToInitiator(t *testing.T) {
 		t.Fatalf("expected RequestComplete, got %d", ev)
 	}
 
-	// ACK for i2i: should go directly to TransactionDone (no response).
+	// F-21 (batch-20): i2i ACK defers to trailing SYN. Pre-F-21 the
+	// AM1 fast-track returned TransactionDone immediately; post-F-21
+	// it transitions to WaitTerminalSyn and waits for the SYN.
 	ev = tracker.advance(protocol.SymbolAck)
+	if ev != wirePhaseEventNone {
+		t.Fatalf("i2i ACK: expected None (F-21 deferred terminal), got %d", ev)
+	}
+	if tracker.phase != wirePhaseWaitTerminalSyn {
+		t.Fatalf("phase after i2i ACK = %d, want WaitTerminalSyn (F-21)", tracker.phase)
+	}
+	ev = tracker.advance(protocol.SymbolSyn)
 	if ev != wirePhaseEventTransactionDone {
-		t.Fatalf("i2i ACK: expected TransactionDone, got %d", ev)
+		t.Fatalf("i2i trailing SYN: expected TransactionDone, got %d", ev)
 	}
 	if !tracker.isIdle() {
-		t.Fatal("expected idle after i2i ACK")
+		t.Fatal("expected idle after i2i trailing SYN (F-21)")
 	}
 }
 

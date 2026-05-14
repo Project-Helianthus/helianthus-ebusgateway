@@ -1824,6 +1824,20 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 
 	if phaseEvent == wirePhaseEventTransactionDone ||
 		phaseEvent == wirePhaseEventCmdNACK {
+		// F-21 (batch-20): under F-21 this non-SYN release block is
+		// reachable ONLY via the protocol-error garbled-byte fallback
+		// in advanceWaitCmdAck (which still resets to Idle and returns
+		// wirePhaseEventCmdNACK at the non-SYN byte position — see the
+		// "Neither ACK nor NACK" branch comment in wire_phase.go for
+		// the rationale). All five normal structural-terminal sites
+		// (broadcast ACK, i2i ACK, CMD double-NACK, response double-
+		// NACK, response success ACK) now transition to
+		// wirePhaseWaitTerminalSyn and defer TransactionDone to the
+		// trailing-SYN observation; that release happens in
+		// onSYNLocked's F-21 branch. Keeping this block intact closes
+		// the rare protocol-error case where the bus is too degraded
+		// to emit a clean trailing SYN.
+		//
 		// Codex-R9: atomic release + gatewayTxnActive clear.
 		// Must re-verify ownership under stateMu — between the phase
 		// event and this point another goroutine may have granted a
@@ -1993,6 +2007,43 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// Note: external session echo tracker flush is done AFTER stateMu.Unlock()
 	// by the caller (flushSessionEchoTrackersOnSYN) to avoid ABBA deadlock
 	// with doSend which acquires sessionsMu→stateMu.
+
+	// F-21 (batch-20, 2026-05-14): release ownership when the wire-phase
+	// tracker resolves this SYN as wirePhaseEventTransactionDone. That
+	// event fires only from advanceWaitTerminalSyn — meaning the tracker
+	// was in wirePhaseWaitTerminalSyn before this byte, which means the
+	// PREVIOUS observation was a structural terminal (broadcast ACK,
+	// i2i ACK, response success ACK, response double-NACK, CMD double-
+	// NACK). Pre-F-21 the release fired at that previous-byte position
+	// via the non-SYN release block (mux.go release for
+	// wirePhaseEventTransactionDone / wirePhaseEventCmdNACK), which
+	// dropped ownership before external sessions could forward their
+	// trailing-SYN ENH_REQ_SEND through session.handleSend's owner
+	// check. F-21 defers the release one wire byte: by the time we
+	// observe the trailing SYN echo here, ebusd's terminal SYN send
+	// has already passed handleSend (ownership was still with the
+	// external session) and has been forwarded to the adapter.
+	//
+	// No grace period — the tracker already confirmed the structural
+	// terminal, so the SYN here is unambiguous. This branch is
+	// orthogonal to the SYNTimeout / SYNIdle paths below (they check
+	// different phaseEvent values).
+	//
+	// Gateway session 0: the gateway-owned SYN takes the SYNIdle
+	// branch (set above at the start of onReceived for gateway-owned
+	// bus); the tracker never enters WaitTerminalSyn under gateway
+	// ownership, so this branch never fires for the gateway and the
+	// existing SYNIdle / IdleReleaseGrace contract is preserved.
+	if phaseEvent == wirePhaseEventTransactionDone && hasOwner {
+		m.logger.Printf("adaptermux: ownership released for session %d remote=%s (terminal SYN, F-21)",
+			ownerID, m.sessionRemoteAddrOrUnknown(ownerID))
+		m.arb.releaseOwnership(ownerID)
+		if ownerID == gatewaySessionID && m.gatewayTxnActive {
+			m.gatewayTxnActive = false
+			m.recordGatewayInactive(ReasonTransactionDone)
+		}
+		hasOwner = false
+	}
 
 	// Release ownership if SYN timeout.
 	//

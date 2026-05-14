@@ -20,6 +20,30 @@ const (
 	wirePhaseWaitResponseLen                   // waiting for response LEN byte
 	wirePhaseWaitResponseBody                  // counting response body + CRC
 	wirePhaseWaitResponseAck                   // waiting for initiator final ACK
+	// wirePhaseWaitTerminalSyn (F-21, batch-20, 2026-05-14) is entered
+	// at every structural terminal of a master frame — broadcast ACK,
+	// i2i ACK, response success ACK, response double-NACK, CMD double-
+	// NACK. Pre-F-21 each of those byte positions immediately fired
+	// wirePhaseEventTransactionDone (or wirePhaseEventCmdNACK) and the
+	// mux released ownership at the SAME observation. That premature
+	// release rejected external sessions' (ebusd's) trailing-SYN
+	// ENH_REQ_SEND with "session N SEND 0xAA rejected — session does
+	// not own bus" because the wire round-trip between the gateway
+	// observing M_ACK and ebusd sending its terminal SYN crosses the
+	// ownership-release boundary. F-21 defers the terminal event one
+	// byte later: at the SYN observation the wire-phase tracker fires
+	// TransactionDone via advanceWaitTerminalSyn, and onSYNLocked
+	// releases ownership atomically with the SYN — by then ebusd's
+	// session.handleSend has already passed the owner check and
+	// forwarded the SYN to the adapter.
+	//
+	// Gateway session 0 is structurally unaffected: gateway-owned
+	// non-SYN bytes do NOT go through advanceWithProvenance (mux.go
+	// gates the call on !gateway-owned), so the tracker never enters
+	// any of these terminal sites under gateway ownership; the
+	// gateway's trailing SYN flows through the SYNIdle path with its
+	// own IdleReleaseGrace.
+	wirePhaseWaitTerminalSyn
 )
 
 // isSYNTimeoutBoundary reports whether receiving a SYN in this phase
@@ -105,6 +129,23 @@ func (t *wirePhaseTracker) advance(symbol byte) wirePhaseEvent {
 // onReceived path uses this; legacy plain-transport callers and
 // tests use the value-only advance() wrapper above.
 func (t *wirePhaseTracker) advanceWithProvenance(symbol byte, isWireSyn bool) wirePhaseEvent {
+	// F-21 (batch-20): wirePhaseWaitTerminalSyn is the deferred-terminal
+	// state entered by every structural terminal site (broadcast ACK,
+	// i2i ACK, response success ACK, response double-NACK, CMD double-
+	// NACK). Dispatch ANY byte arriving in that state directly to
+	// advanceWaitTerminalSyn BEFORE the generic isWireSyn handler runs.
+	// Without this intercept, the trailing SYN would be classified by
+	// the SYN-fallthrough branch below: WaitTerminalSyn is intentionally
+	// NOT in isSYNTimeoutBoundary's wait-set, so the fallthrough returns
+	// wirePhaseEventSYNIdle — which routes through the SYNIdle/idle-
+	// grace release path instead of firing TransactionDone. F-21 needs
+	// TransactionDone specifically so onSYNLocked's terminal release
+	// branch (no grace, immediate) fires; SYNIdle would impose
+	// IdleReleaseGrace and reorder relative to external session
+	// follow-up writes.
+	if t.phase == wirePhaseWaitTerminalSyn {
+		return t.advanceWaitTerminalSyn(symbol)
+	}
 	// SYN resets the tracker. If we were in a wait phase, it's a timeout.
 	if isWireSyn {
 		if t.phase.isSYNTimeoutBoundary() {
@@ -181,16 +222,22 @@ func (t *wirePhaseTracker) advanceWaitCmdAck(symbol byte) wirePhaseEvent {
 	if symbol == protocol.SymbolAck {
 		// Target ACK'd. Check if this is a broadcast (no response expected).
 		if t.requestDst == protocol.AddressBroadcast {
-			t.reset(wirePhaseIdle)
-			return wirePhaseEventTransactionDone
+			// F-21 (batch-20): defer TransactionDone to trailing SYN.
+			// Broadcast frames still have a SYN terminator; releasing
+			// ownership at ACK position rejected ebusd's trailing SYN
+			// ENH_REQ_SEND on external-session paths.
+			t.phase = wirePhaseWaitTerminalSyn
+			return wirePhaseEventNone
 		}
 		// AM1 fix: initiator-to-initiator (i2i) frames have no response
 		// phase. Initiator-capable addresses cannot be targets in a
 		// request-response transaction (eBUS spec). Transition to done
 		// instead of waiting for a response that will never arrive.
 		if protocol.IsInitiatorCapableAddress(t.requestDst) {
-			t.reset(wirePhaseIdle)
-			return wirePhaseEventTransactionDone
+			// F-21 (batch-20): defer TransactionDone to trailing SYN —
+			// same rationale as the broadcast branch above.
+			t.phase = wirePhaseWaitTerminalSyn
+			return wirePhaseEventNone
 		}
 		t.phase = wirePhaseWaitResponseLen
 		return wirePhaseEventCmdACK
@@ -209,11 +256,31 @@ func (t *wirePhaseTracker) advanceWaitCmdAck(symbol byte) wirePhaseEvent {
 			t.phase = wirePhaseCollectRequest
 			return wirePhaseEventCmdNACKRetry
 		}
-		t.reset(wirePhaseIdle)
-		return wirePhaseEventCmdNACK
+		// F-21 (batch-20): defer the terminal event to trailing SYN.
+		// Returning wirePhaseEventNone instead of wirePhaseEventCmdNACK
+		// here is a deliberate deviation from the F-21 prompt: the
+		// non-SYN release block at mux.go:1825-1846 fires on BOTH
+		// TransactionDone AND CmdNACK, so returning CmdNACK at this
+		// byte position would still release ownership prematurely and
+		// reject ebusd's trailing SYN. The diagnostic distinction
+		// (ReasonCmdNACK vs ReasonTransactionDone) is irrelevant on
+		// external paths (recordGatewayInactive only fires for
+		// gateway-owned txns, and gateway txns don't enter this branch
+		// because gateway-owned non-SYN bytes bypass the wire-phase
+		// tracker).
+		t.phase = wirePhaseWaitTerminalSyn
+		return wirePhaseEventNone
 	}
 
 	// Neither ACK nor NACK -- garbled byte, protocol error.
+	// F-21 NOTE: this defensive path is intentionally NOT redirected to
+	// wirePhaseWaitTerminalSyn. The bus is in a degraded state at this
+	// point; the initiator may or may not emit a trailing SYN. Falling
+	// through to Idle keeps the existing non-SYN CmdNACK release
+	// semantics for the protocol-error case; the eventual SYN (whether
+	// from the initiator or the bus's natural idle SYN burst) will
+	// arrive in Idle phase and fire SYNIdle through the generic
+	// fallthrough.
 	t.reset(wirePhaseIdle)
 	return wirePhaseEventCmdNACK
 }
@@ -251,11 +318,44 @@ func (t *wirePhaseTracker) advanceWaitResponseAck(symbol byte) wirePhaseEvent {
 			t.phase = wirePhaseWaitResponseLen
 			return wirePhaseEventNone
 		}
-		// Second NACK -- transaction considered complete (response failed).
-		t.reset(wirePhaseIdle)
-		return wirePhaseEventTransactionDone
+		// F-21 (batch-20): second NACK is a structural terminal. Defer
+		// TransactionDone to trailing SYN.
+		t.phase = wirePhaseWaitTerminalSyn
+		return wirePhaseEventNone
 	}
-	// ACK (0x00) or any other non-SYN symbol: transaction complete.
+	// F-21 (batch-20): ACK (0x00) or any other non-SYN symbol is the
+	// successful structural terminal. Defer TransactionDone to trailing
+	// SYN. The trailing SYN will be the ebusd-emitted 0xAA arriving via
+	// session.handleSend forwarded to the adapter; under F-21 deferral
+	// ownership remains with the external session through this round-
+	// trip, so the SYN send is accepted instead of rejected.
+	t.phase = wirePhaseWaitTerminalSyn
+	return wirePhaseEventNone
+}
+
+// advanceWaitTerminalSyn handles the byte that arrives while the tracker
+// is waiting for the trailing SYN of a fully-acknowledged (or terminally-
+// NACKed / broadcast / i2i-ACKed) master frame. F-21 (batch-20).
+//
+// Expected: the byte IS the trailing wire SYN (0xAA). When it arrives,
+// fire TransactionDone so onSYNLocked's terminal-SYN release branch
+// drops ownership atomically with the SYN observation. By this point
+// the external owner's session.handleSend has already forwarded its
+// SYN to the adapter — the owner check passed because the tracker
+// (and the mux) still considered the session the owner during the
+// wire round-trip.
+//
+// Defensive: any non-SYN byte arriving in this state is a protocol
+// anomaly (the initiator emitted something other than 0xAA after a
+// structural terminal). Still fire TransactionDone so the mux can
+// release ownership and the bus can recover; the next-frame parser
+// will treat the next byte as either junk (Layer 1 resync) or as a
+// fresh SRC. Without this defensive fire, a misbehaving initiator
+// could leave the tracker in WaitTerminalSyn indefinitely (the bus's
+// natural idle SYN burst would eventually rescue it, but explicit
+// recovery is cheaper than waiting on bus-idle physics).
+func (t *wirePhaseTracker) advanceWaitTerminalSyn(symbol byte) wirePhaseEvent {
+	_ = symbol
 	t.reset(wirePhaseIdle)
 	return wirePhaseEventTransactionDone
 }

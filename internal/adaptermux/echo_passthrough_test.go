@@ -255,17 +255,21 @@ func TestExternalSession_PhaseAdvance_FullFrame(t *testing.T) {
 	// behavior that becomes "live" under F-18 for external owners.
 	tracker.reset(wirePhaseCollectRequest)
 
-	// A complete eBUS transaction (request + ACK + response + ACK).
+	// A complete eBUS transaction (request + ACK + response + ACK + SYN).
 	// LEN=2 keeps it short. DST=0x08 (a non-initiator boiler address)
 	// so the WaitCmdAck branch transitions to WaitResponseLen rather
 	// than short-circuiting on broadcast or i2i.
 	//
-	// Phase progression:
-	//   CollectRequest → WaitCmdAck     (RequestComplete after LEN+DATA+CRC)
-	//   WaitCmdAck     → WaitResponseLen(CmdACK)
-	//   WaitResponseLen→ WaitResponseBody(LEN consumed)
-	//   WaitResponseBody → WaitResponseAck(ResponseDone after DATA+CRC)
-	//   WaitResponseAck→ Idle           (TransactionDone via final ACK)
+	// Phase progression (F-21, batch-20):
+	//   CollectRequest    → WaitCmdAck       (RequestComplete after LEN+DATA+CRC)
+	//   WaitCmdAck        → WaitResponseLen  (CmdACK)
+	//   WaitResponseLen   → WaitResponseBody (LEN consumed)
+	//   WaitResponseBody  → WaitResponseAck  (ResponseDone after DATA+CRC)
+	//   WaitResponseAck   → WaitTerminalSyn  (final ACK — pre-F-21 fired
+	//                                          TransactionDone at this byte
+	//                                          and reset to Idle; F-21 defers
+	//                                          to trailing SYN)
+	//   WaitTerminalSyn   → Idle             (TransactionDone via trailing SYN)
 	frame := []byte{
 		0x31, // SRC (initiator) — captured by CollectRequest
 		0x08, // DST
@@ -280,7 +284,8 @@ func TestExternalSession_PhaseAdvance_FullFrame(t *testing.T) {
 		0x56, // response DATA[0]
 		0x78, // response DATA[1]
 		0xAB, // response CRC (placeholder)
-		0x00, // final ACK
+		0x00, // final ACK   → F-21: None + WaitTerminalSyn
+		0xAA, // trailing SYN → F-21: TransactionDone + Idle
 	}
 
 	var sawRequestComplete, sawCmdACK, sawResponseDone, sawTransactionDone bool
@@ -467,25 +472,31 @@ func TestDeliverToSessions_NoReorderUnderBurst(t *testing.T) {
 // because ebusd never wrote frame bodies (the F-17 retry loop
 // blocked the first SEND). Post-F-18 the tracker is live during
 // external ownership and `wirePhaseEventTransactionDone` actually
-// fires at mux.go:~1746-1767 → releases ownership → kicks
-// tryGrantAndStart. This integration test exercises that exact
-// path end-to-end:
+// fires → releases ownership → kicks tryGrantAndStart.
+//
+// F-21 (batch-20): TransactionDone now fires at the TRAILING SYN, not
+// at the final ACK byte. This integration test was extended with the
+// trailing-SYN byte at the end of the frame and the boundary
+// assertions now require ownership to be held through the final ACK
+// (which under F-21 transitions to WaitTerminalSyn rather than
+// releasing) and released only at the SYN.
 //
 //  1. Install external session, give it ownership through the
 //     real arbitration path (requestStart → tryGrant → confirmOwnership).
 //  2. Initialize m.phase via startRequestWithSource as the production
-//     grant code does at mux.go:2813.
-//  3. Feed a complete request/response sequence through
-//     mux.onReceived(byte, false) one byte at a time.
+//     grant code does at mux.go's grant path.
+//  3. Feed a complete request/response sequence — including the
+//     trailing wire SYN — through mux.onReceived(byte, false).
 //  4. Assert at each step:
 //     a. Owner session receives each byte (F-18 contract).
-//     b. Ownership held until the final ACK.
-//     c. Ownership released exactly when TransactionDone fires.
+//     b. Ownership held until the trailing SYN (NOT the final ACK,
+//        per F-21).
+//     c. Ownership released exactly at the SYN observation.
 //     d. After release, m.phase is back at Idle.
 //
 // This pins the C3.1 risk: external owners now drive phase to
 // TransactionDone, which must NOT prematurely rip ownership
-// mid-frame and MUST release cleanly on the final ACK.
+// mid-frame and MUST release cleanly on the trailing SYN.
 func TestExternalSession_OnReceivedIntegration_FullFrame(t *testing.T) {
 	mux, muxCancel := newF18TestMux(t)
 	defer muxCancel()
@@ -528,6 +539,11 @@ func TestExternalSession_OnReceivedIntegration_FullFrame(t *testing.T) {
 	// DST=0x08 (non-broadcast, non-initiator) so the WaitCmdAck →
 	// WaitResponseLen branch fires (not the short-circuit broadcast
 	// or i2i transitions).
+	// F-21 (batch-20): the trailing wire SYN at the end of the frame
+	// is what now drives TransactionDone → release. Pre-F-21 the
+	// final-ACK byte (0x00) released ownership directly; post-F-21
+	// the final ACK only transitions phase to WaitTerminalSyn and the
+	// trailing SYN observation is the real terminator.
 	frameAfterSrc := []byte{
 		0x08, // DST
 		0xB5, // PB
@@ -541,7 +557,8 @@ func TestExternalSession_OnReceivedIntegration_FullFrame(t *testing.T) {
 		0x56, // response DATA[0]
 		0x78, // response DATA[1]
 		0xAB, // response CRC
-		0x00, // final ACK — triggers TransactionDone → release
+		0x00, // final ACK — F-21: transitions phase to WaitTerminalSyn
+		0xAA, // trailing SYN — F-21: triggers TransactionDone → release
 	}
 
 	// Concurrently drain the client pipe so deliverReceived doesn't
@@ -566,11 +583,10 @@ func TestExternalSession_OnReceivedIntegration_FullFrame(t *testing.T) {
 		}
 	}
 
-	// After the final ACK, ownership must have been released
-	// (mux.go:~1746-1767 path: TransactionDone → releaseOwnership
-	// → tryGrantAndStart).
+	// F-21 (batch-20): after the trailing SYN, ownership must have
+	// been released via onSYNLocked's TransactionDone branch.
 	if mux.arb.isOwner(51) {
-		t.Fatal("ownership not released after TransactionDone — F-18 risk C3.1: phase tracker became live for external owners and the release path must fire on final ACK")
+		t.Fatal("ownership not released after trailing-SYN TransactionDone — F-21 risk: the SYN-branch release in onSYNLocked failed to fire")
 	}
 
 	// Phase tracker must be back at Idle.

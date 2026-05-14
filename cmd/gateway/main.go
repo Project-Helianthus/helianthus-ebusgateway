@@ -1270,6 +1270,45 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		DialTimeout:  cfg.TransportConfig.DialTimeout,
 		ReadTimeout:  cfg.TransportConfig.ReadTimeout,
 		WriteTimeout: cfg.TransportConfig.WriteTimeout,
+		// F-30 (batch-27, iter7, 2026-05-14): wire IsKnownInitiatorByte
+		// to filter bit-arbitration phantom bytes from external session
+		// forwarding. When the gateway loses arbitration to another
+		// master, the adapter reports FAILED with the bit-wise-AND
+		// result of the colliding initiators. This AND result is often
+		// NOT a real master on the bus (e.g., 0x7F & 0xF1 = 0x71,
+		// where no 0x71 master exists on the observed bus).
+		//
+		// Pre-F-30: phantom bytes were forwarded to ebusd as ENH_RES_FAILED
+		// data; ebusd's bus reconstructor interpreted each phantom as a
+		// real frame source and advanced its state machine to expect a
+		// frame from that fictitious master. The next real wire bytes
+		// (from the actual winning master) then mismatched, leaving
+		// ebusd's state in bs_recvCmd/bs_skip — the "arbitration won in
+		// invalid state" trigger when ebusd's NEXT grant arrives.
+		//
+		// Iter6 forensic measured 58 invalid-state events / 5 min
+		// despite F-28+F-29 cooldowns reducing the cause-1 (timeout)
+		// path. Cause-2 (state mismatch from phantom forwarding) is now
+		// the dominant residual.
+		//
+		// Pragmatic filter (iter7, hardcoded): reject the SPECIFIC
+		// phantom 0x71 observed on this bus. Generalizes to a
+		// runtime_state.known_bus_members-backed lookup in iter8.
+		//
+		// Returning false on the predicate routes the FAILED byte
+		// through the gateway's suppression path (mux.go ~1523): the
+		// byte is NOT delivered to external sessions, the per-session
+		// notify gets the bidder's own initiator instead of the
+		// phantom, and the passive emit / logging still fires for
+		// observability.
+		IsKnownInitiatorByte: func(b byte) bool {
+			// Known bit-arbitration phantoms on this bus:
+			//   0x71 = 0x7F (gateway) & 0xF1 (master #10)
+			// Other phantoms have not been observed in production
+			// traces; add them here if forensic capture surfaces
+			// new ones.
+			return b != 0x71
+		},
 	}
 	if muxCfg.DialTimeout == 0 {
 		muxCfg.DialTimeout = 5 * time.Second

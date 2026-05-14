@@ -265,15 +265,37 @@ func (c *Config) defaults() {
 		c.PendingStartTTL = 250 * time.Millisecond
 	}
 	if c.ExternalSessionSYNGrace == 0 {
-		// 2s covers a broadcast scan to address 0xFE (~25 responder
-		// responses × ~30-50ms each) plus arbitration jitter, while
-		// still bounding the worst-case idle hold. Calibrated against
-		// the 13:46:13 ebusd scan trace in
-		// _work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-11-batch3.md:
-		// the protocol gap between ebusd's broadcast 0xFE and the
-		// last responder's response was ~190ms in that capture; 2s leaves
-		// generous headroom for buses with more participants.
-		c.ExternalSessionSYNGrace = 2 * time.Second
+		// F-27 (batch-24, iter4, 2026-05-14): lowered from 2s to 250ms.
+		//
+		// Pre-F-27 rationale was "leave generous headroom for buses with
+		// more participants" — calibrated against a 13:46:13 ebusd scan
+		// trace where the longest inter-responder gap was ~190ms. The
+		// 2s value was a 10x safety margin over that.
+		//
+		// The 2s margin turned out to be the dominant cause of the
+		// tight-scan-08 failures observed in batch-23 (iter3): when
+		// ebusd's bus state machine silently dropped a grant due to
+		// "arbitration won in invalid state" (a state collision caused
+		// by gateway queue delay timing out ebusd's internal arbitration
+		// wait), the gateway then held the now-dead external ownership
+		// for the FULL 2s grace before reclaiming. Byte-trace forensic
+		// evidence: /tmp/iter3-postfix-enh.txt latency analysis showed
+		// 246/580 events in the 1-5s bucket, with concrete examples of
+		// 8-second lockouts (gateway log 2026-05-14 21:53:25-21:53:39:
+		// 14 consecutive ebusd START 0x31 requests during a single
+		// stalled external ownership hold).
+		//
+		// Why 250ms: legitimate ebusd transactions bump
+		// `lastWireActivity` per echoed byte (mux.go ~1622, gated on
+		// !wire-SYN). At 2400 baud each byte is ~4-5ms on the wire, plus
+		// ENH framing overhead through TCP; observed median ebusd
+		// inter-byte gap is well under 50ms even for multi-responder
+		// scans. 250ms is 5x that worst-case while killing the
+		// silent-drop lockout. If a target's response really takes
+		// 250+ms (none observed in production traces), the grace
+		// expires and the next tryGrantAndStart re-grants the still-
+		// pending session immediately.
+		c.ExternalSessionSYNGrace = 250 * time.Millisecond
 	}
 	if c.StartDeadline <= 0 {
 		c.StartDeadline = 5 * time.Second

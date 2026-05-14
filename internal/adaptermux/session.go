@@ -142,6 +142,20 @@ type session struct {
 	// is closed with a clear "did you forget enh:HOST:PORT?" log line.
 	rejectedSendsWithoutHandshake atomic.Uint32
 
+	// F-34 (batch-30, iter11, 2026-05-15): "first SEND deadline"
+	// watchdog support. Bumped on every accepted handleSend call.
+	// The arbitrator's completeArbitrationGrant resets this to 0
+	// when granting ownership to this session and starts a timer; if
+	// the timer fires while this counter is still 0, the grant is
+	// declared abandoned (ebusd silently dropped it due to bs_skip
+	// state) and ownership is force-released.
+	//
+	// Live evidence (iter10): 23 `arbitration won in invalid state
+	// skip` events / 60-scan tight burst, each costing ~250ms F-27
+	// grace period before release. Reducing this to ~25ms watchdog
+	// is the surgical fix.
+	bytesSentSinceGrant atomic.Uint32
+
 	// wg waits for reader, writer, and handleStart goroutines to finish.
 	wg sync.WaitGroup
 }
@@ -449,6 +463,11 @@ func (s *session) handleSend(data byte) {
 		s.deliverErrorHost()
 		return
 	}
+	// F-34 (iter11): bump the bytes-since-grant counter so the
+	// abandon watchdog (started in completeArbitrationGrant) can
+	// distinguish a live transaction from a silently-dropped grant.
+	s.bytesSentSinceGrant.Add(1)
+
 	// F-6 observability: log accepted SEND bytes too. Without this, the
 	// happy-path forwarding to activeSendCh is silent and session logs
 	// can show START/INIT/INFO with no per-session SEND traffic even

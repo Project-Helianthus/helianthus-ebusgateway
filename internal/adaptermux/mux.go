@@ -3154,6 +3154,52 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 	m.arb.confirmOwnership(sessionID, initiator)
 	m.stateMu.Unlock()
 
+	// F-34 (batch-30, iter11, 2026-05-15): external-session
+	// abandon-watchdog. Codex iter10 attack #1: when ebusd is
+	// granted while its bus reconstructor is in `bs_skip` (parsing
+	// a foreign frame), ebusd silently drops the grant — no
+	// session.handleSend ever follows. Pre-F-34, the gateway then
+	// waits the full ExternalSessionSYNGrace (250ms post-F-27)
+	// before reclaiming. F-34 detects the silent-drop within a
+	// short window (default 25ms) by checking
+	// session.bytesSentSinceGrant after the watchdog deadline; if
+	// still 0 and the session still owns the bus, force-release.
+	//
+	// Live evidence (iter10): 23 `arbitration won in invalid state
+	// skip` events / 60-scan tight burst. Each cost ~250ms post-
+	// F-27. Reducing to ~25ms-deadline+release closes 23 × ~225ms =
+	// ~5.2 seconds of dead-bus-time per burst.
+	//
+	// Gateway-session-0 is exempt: the gateway's own active path
+	// always sends bytes immediately after grant (sendEndOfMessage
+	// pipeline), so no abandon scenario exists.
+	if sessionID != gatewaySessionID {
+		m.sessionsMu.Lock()
+		sess := m.sessions[sessionID]
+		m.sessionsMu.Unlock()
+		if sess != nil {
+			sess.bytesSentSinceGrant.Store(0)
+			deadline := 25 * time.Millisecond
+			time.AfterFunc(deadline, func() {
+				if sess.closed.Load() {
+					return
+				}
+				if sess.bytesSentSinceGrant.Load() > 0 {
+					return // grant was used; nothing to do
+				}
+				if !m.arb.isOwner(sessionID) {
+					return // ownership already released by some other path
+				}
+				m.logger.Printf("adaptermux: F-34 abandon-watchdog firing for session %d (no SEND within %v after grant) — force-releasing ownership",
+					sessionID, deadline)
+				m.arb.releaseOwnership(sessionID)
+				if m.arb.hasPending() {
+					m.tryGrantAndStart()
+				}
+			})
+		}
+	}
+
 	// F-18: per-session echo tracker removed; gateway-side
 	// markRequestStart is invoked above for the gateway path only.
 

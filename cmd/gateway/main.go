@@ -1302,12 +1302,31 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		// phantom, and the passive emit / logging still fires for
 		// observability.
 		IsKnownInitiatorByte: func(b byte) bool {
-			// Known bit-arbitration phantoms on this bus:
-			//   0x71 = 0x7F (gateway) & 0xF1 (master #10)
-			// Other phantoms have not been observed in production
-			// traces; add them here if forensic capture surfaces
-			// new ones.
-			return b != 0x71
+			// F-31 (batch-28, iter8, 2026-05-14): generalize the
+			// phantom filter to the observed master set on this bus.
+			// Any byte NOT in the discovered master list is treated as
+			// a bit-arbitration phantom and routed away from external
+			// sessions.
+			//
+			// Bootstrap: this list is hardcoded for the production
+			// deployment (per ebusctl info: masters 0x03, 0x10, 0x31,
+			// 0x7F, 0xF1, 0xFF — 6 active masters). The gateway address
+			// 0x7F and ebusd's address 0x31 are both included. Iter9
+			// will promote this to a runtime_state.known_bus_members-
+			// backed lookup that adapts dynamically.
+			//
+			// Filtered phantoms include (any AND-result of the above
+			// pairs that isn't itself a member):
+			//   0x7F & 0xF1 = 0x71  ✗ phantom
+			//   0x31 & 0x03 = 0x01  ✗ phantom
+			//   0x7F & 0xFF = 0x7F  ✓ self
+			//   0x31 & 0xF1 = 0x31  ✓ self
+			//   ...etc
+			switch b {
+			case 0x03, 0x10, 0x31, 0x7F, 0xF1, 0xFF:
+				return true
+			}
+			return false
 		},
 	}
 	if muxCfg.DialTimeout == 0 {

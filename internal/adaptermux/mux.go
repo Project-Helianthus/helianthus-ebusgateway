@@ -336,9 +336,17 @@ func (c *Config) defaults() {
 		c.ExternalStartStaleness = 300 * time.Millisecond
 	}
 	if c.PostExternalReleaseGrace == 0 {
-		// F-28 (batch-25, iter5, 2026-05-14): default 50ms. See
-		// PostExternalReleaseGrace doc comment for rationale.
-		c.PostExternalReleaseGrace = 50 * time.Millisecond
+		// F-29 (batch-26, iter6, 2026-05-14): widened from F-28 50ms to
+		// 100ms. iter5 byte-trace showed median ebusd START→STARTED
+		// latency dropped to 70ms with the 50ms cooldown, but 60 events
+		// remained in the 1-5s tail caused by ebusd's internal
+		// arbitration-wait timing out before STARTED arrives, then
+		// re-issuing STARTs that cascade through the same race window.
+		// 100ms gives ebusd ~50ms of "guaranteed gateway-silence" after
+		// every external release, well within ebusd's typical
+		// arbitration-wait tolerance (~150ms), while still allowing the
+		// gateway to do ~10 polls/sec when ebusd is idle.
+		c.PostExternalReleaseGrace = 100 * time.Millisecond
 	}
 	if c.FairnessRatio == 0 {
 		// F-25 (batch-22, iter2, 2026-05-14): 2 = 50/50 split under

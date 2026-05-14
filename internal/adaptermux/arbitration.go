@@ -99,6 +99,22 @@ type arbitrator struct {
 	// requests. Configured via Mux.cfg.FairnessRatio; defaults to 2.
 	// 0 maps to DefaultFairnessRatio in setPolicy().
 	fairnessRatio int
+
+	// F-28 (batch-25, iter5, 2026-05-14): post-external-release
+	// cooldown. When an external session releases bus ownership,
+	// this timestamp is set to now. While `time.Since(lastExternalReleaseAt)
+	// < postExternalGrace`, tryGrant defers gateway-only grants
+	// (returns no-grant) so the gateway's tight semantic-poll loop
+	// cannot race ebusd's TCP-delayed next START.
+	//
+	// Live evidence: byte-trace measured the race at every external
+	// session release — gateway re-bids within µs while ebusd's next
+	// ENH_REQ_START arrives 10-100ms later via TCP. Pre-F-28 the
+	// gateway nearly always wins this race, queuing ebusd behind its
+	// own next transaction and producing the 200-500ms median latency
+	// observed in iter5 (post-F-27).
+	lastExternalReleaseAt time.Time
+	postExternalGrace     time.Duration
 }
 
 // DefaultFairnessRatio is the every-Nth grant that goes to external FIFO
@@ -283,17 +299,21 @@ func (a *arbitrator) now() time.Time {
 // setPolicy injects per-cycle policy fields the mux derives from
 // Config. Called once on mux construction.
 //
-// F-25 (batch-22, iter2): accepts fairnessRatio. 0 maps to
-// DefaultFairnessRatio inside tryGrant; negative values are clamped
-// to DefaultFairnessRatio (defensive; legacy behaviour preferred
-// over starvation).
-func (a *arbitrator) setPolicy(pendingStartTTL time.Duration, fairnessRatio int) {
+// F-25 (batch-22, iter2): accepts fairnessRatio.
+// F-28 (batch-25, iter5): accepts postExternalGrace.
+//
+// Zero/negative sentinels:
+//   - fairnessRatio: 0 or negative → DefaultFairnessRatio (2)
+//   - postExternalGrace: 0 → use mux-default (50ms); negative → disable
+//     the cooldown entirely
+func (a *arbitrator) setPolicy(pendingStartTTL time.Duration, fairnessRatio int, postExternalGrace time.Duration) {
 	a.mu.Lock()
 	a.pendingStartTTL = pendingStartTTL
 	if fairnessRatio < 0 {
 		fairnessRatio = DefaultFairnessRatio
 	}
 	a.fairnessRatio = fairnessRatio
+	a.postExternalGrace = postExternalGrace
 	a.mu.Unlock()
 }
 
@@ -411,6 +431,27 @@ func (a *arbitrator) tryGrant(busIdle bool) (req *startRequest, granted bool) {
 	}
 
 	if gatewayPending && !preferExternalThisGrant {
+		// F-28 (batch-25, iter5, 2026-05-14): post-external-release
+		// cooldown. If an external session released bus ownership
+		// within `postExternalGrace` of now, defer the gateway grant
+		// so ebusd's TCP-delayed next ENH_REQ_START has a window to
+		// arrive and be queued before the gateway re-claims the bus.
+		// Without this, the gateway's semantic poll loop (which can
+		// submit a new RequestStart within microseconds of release
+		// via the in-process scheduler) outraces ebusd's next TCP
+		// request and locks ebusd into a serialized-behind-gateway
+		// queue, producing the 200-500ms median pre-F-28 latency.
+		//
+		// The check is intentionally inside tryGrant — caller
+		// (tryGrantAndStart) is invoked on every SYN observation, so
+		// a no-grant return causes a quick (~4.5ms) retry. After
+		// postExternalGrace elapses, the gateway grant fires
+		// normally. Net effect: a brief "polite yield" window after
+		// every ebusd transaction.
+		if a.postExternalGrace > 0 && !a.lastExternalReleaseAt.IsZero() &&
+			a.now().Sub(a.lastExternalReleaseAt) < a.postExternalGrace {
+			return nil, false
+		}
 		gw := a.pendingGateway
 		a.pendingGateway = nil
 		return gw, true
@@ -482,6 +523,14 @@ func (a *arbitrator) releaseOwnership(sessionID uint64) {
 		a.hasOwner = false
 		a.currentOwner = 0
 		a.currentInitiator = 0
+		// F-28 (batch-25, iter5): when an EXTERNAL session releases
+		// ownership, start the post-external-release cooldown so the
+		// gateway's semantic poll loop can't race ebusd's TCP-delayed
+		// next START. Gateway-session-0 releases do NOT trigger the
+		// cooldown (no race exists for gateway-after-gateway).
+		if sessionID != gatewaySessionID {
+			a.lastExternalReleaseAt = a.now()
+		}
 	}
 }
 

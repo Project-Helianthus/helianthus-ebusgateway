@@ -35,7 +35,7 @@ func TestF25_DefaultFairnessRatioIsTwo(t *testing.T) {
 // path (operator-friendly: Config.FairnessRatio=0 → default).
 func TestF25_ZeroRatioMapsToDefault(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24*time.Hour, 0) // zero -> default
+	arb.setPolicy(24*time.Hour, 0, 0) // zero -> default
 
 	// Run DefaultFairnessRatio*3 contended rounds and assert the
 	// external grant share matches the default ratio.
@@ -55,7 +55,7 @@ func TestF25_ZeroRatioMapsToDefault(t *testing.T) {
 func TestF25_CustomRatioApplied(t *testing.T) {
 	const customRatio = 3
 	arb := newArbitrator()
-	arb.setPolicy(24*time.Hour, customRatio)
+	arb.setPolicy(24*time.Hour, customRatio, 0)
 
 	totalRounds := customRatio * 4 // 4 cycles
 	external, gateway := runContendedRotation(t, arb, totalRounds)
@@ -72,7 +72,7 @@ func TestF25_CustomRatioApplied(t *testing.T) {
 // degenerating into "external never gets a slot" or panicking.
 func TestF25_NegativeRatioClampedToDefault(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24*time.Hour, -7)
+	arb.setPolicy(24*time.Hour, -7, 0)
 
 	totalRounds := DefaultFairnessRatio * 2
 	external, gateway := runContendedRotation(t, arb, totalRounds)
@@ -90,7 +90,7 @@ func TestF25_NegativeRatioClampedToDefault(t *testing.T) {
 // rotation grants to external.
 func TestF25_RatioOneAlternates(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24*time.Hour, 1)
+	arb.setPolicy(24*time.Hour, 1, 0)
 
 	totalRounds := 8
 	external, gateway := runContendedRotation(t, arb, totalRounds)

@@ -142,6 +142,33 @@ type Config struct {
 	// start is cleared and the session is notified of failure (AM8).
 	StartDeadline time.Duration
 
+	// PostExternalReleaseGrace is the F-28 (batch-25, iter5,
+	// 2026-05-14) "polite yield" window. When an external session
+	// releases bus ownership, the arbitrator defers gateway-only
+	// grants for this duration so ebusd's TCP-delayed next
+	// ENH_REQ_START has time to arrive and be queued before the
+	// gateway's semantic poll loop re-bids and locks the bus.
+	//
+	// Live evidence (iter5 byte trace): without this gate, the
+	// gateway re-bids within microseconds after every external
+	// release, outracing ebusd's ~10-100ms TCP roundtrip every
+	// time. The result was a 200-500ms median ebusd START → STARTED
+	// latency, which compounds across multi-register scans into
+	// the residual 1-5s tail observed post-F-27.
+	//
+	// Sentinels:
+	//   - 0 (default): use 50ms.
+	//   - Negative: disable the cooldown entirely (legacy).
+	//
+	// 50ms is approximately:
+	//   ebusd's typical TCP roundtrip (~5-15ms)
+	//   + ebusd's bus-state-machine transition (~5-20ms)
+	//   + safety margin (10-30ms)
+	// Each 50ms cooldown sacrifices ~10% of the gateway's
+	// raw poll throughput when tight ebusd activity is happening,
+	// in exchange for ebusd actually completing its scans.
+	PostExternalReleaseGrace time.Duration
+
 	// FairnessRatio controls the gateway-vs-external grant rotation
 	// when BOTH a gateway pending START and at least one external
 	// pending START coexist. The arbitrator counts contended rotations
@@ -307,6 +334,11 @@ func (c *Config) defaults() {
 		// (~50-150ms median) so normal traffic is unaffected. Operators
 		// can tune via the addon options.
 		c.ExternalStartStaleness = 300 * time.Millisecond
+	}
+	if c.PostExternalReleaseGrace == 0 {
+		// F-28 (batch-25, iter5, 2026-05-14): default 50ms. See
+		// PostExternalReleaseGrace doc comment for rationale.
+		c.PostExternalReleaseGrace = 50 * time.Millisecond
 	}
 	if c.FairnessRatio == 0 {
 		// F-25 (batch-22, iter2, 2026-05-14): 2 = 50/50 split under
@@ -564,7 +596,7 @@ type sendRequest struct {
 func New(cfg Config) *Mux {
 	cfg.defaults()
 	arb := newArbitrator()
-	arb.setPolicy(cfg.PendingStartTTL, cfg.FairnessRatio)
+	arb.setPolicy(cfg.PendingStartTTL, cfg.FairnessRatio, cfg.PostExternalReleaseGrace)
 	return &Mux{
 		cfg:          cfg,
 		logger:       cfg.Logger,

@@ -359,7 +359,7 @@ func (c *Config) defaults() {
 		// burst (5 starts/sec), the gateway essentially never
 		// re-bids until ebusd is quiet. Reduces wire contention
 		// driving ebusd into bs_skip.
-		c.PostExternalReleaseGrace = 500 * time.Millisecond
+		c.PostExternalReleaseGrace = 250 * time.Millisecond
 	}
 	if c.FairnessRatio == 0 {
 		// F-25 (batch-22, iter2, 2026-05-14): 2 = 50/50 split under

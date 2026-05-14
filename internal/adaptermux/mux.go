@@ -142,6 +142,37 @@ type Config struct {
 	// start is cleared and the session is notified of failure (AM8).
 	StartDeadline time.Duration
 
+	// ExternalStartStaleness bounds the wall-clock age (measured from
+	// startRequest.enqueuedAt) of an EXTERNAL-session START at the
+	// moment the adapter reports `StreamEventStarted`. If the request
+	// has been in the gateway's path (pendingExternal queue + in-flight
+	// adapter arbitration) for longer than this budget, the grant is
+	// silently aborted: the session's notify channel receives
+	// `cancelled: true` (session.go's handleStart silent-suppress per
+	// F-17 takes the no-deliver branch) and ownership is NOT confirmed.
+	// The wire-level arbitration win still happened — bus state
+	// recovers naturally via the next SYN idle burst when no SEND
+	// frame follows.
+	//
+	// Iter1 fix (F-24, batch-21, 2026-05-14): ebusd's bus state machine
+	// times out internally before the gateway's queue+arbitration
+	// pipeline can deliver ENH_RES_STARTED for tight-scan-08 sub-
+	// register reads. When the late STARTED arrives, ebusd is in
+	// bs_recvCmd / bs_skip (mid-parsing the gateway's prior poll
+	// response) and logs `arbitration won in invalid state {skip|
+	// receive command|ready}`, silently dropping the request. The
+	// staleness guard prevents the gateway from delivering a grant
+	// that ebusd has already discarded, eliminating the bus-state
+	// desync. Default: 300ms (well below ebusd's typical 1-2s
+	// arbitration-wait timeout, but above the steady-state median
+	// queue+arbitration latency of ~50-150ms).
+	//
+	// Sentinels:
+	//   - 0 (zero value): use the 300ms default.
+	//   - Negative: disable the guard entirely (legacy behavior;
+	//     useful for regression testing). Tests use -1.
+	ExternalStartStaleness time.Duration
+
 	// BlackholeThreshold is the duration of consecutive read timeouts
 	// (after the bus was previously active) before triggering a TCP
 	// blackhole reconnect. Default: 30s.
@@ -220,6 +251,14 @@ func (c *Config) defaults() {
 	}
 	if c.StartDeadline <= 0 {
 		c.StartDeadline = 5 * time.Second
+	}
+	if c.ExternalStartStaleness == 0 {
+		// F-24 (batch-21, 2026-05-14): 300ms default. Well below ebusd's
+		// arbitration-wait timeout (~1-2s) so legitimate grants flow
+		// through; above the steady-state queue+arbitration latency
+		// (~50-150ms median) so normal traffic is unaffected. Operators
+		// can tune via the addon options.
+		c.ExternalStartStaleness = 300 * time.Millisecond
 	}
 	if c.BlackholeThreshold <= 0 {
 		c.BlackholeThreshold = 30 * time.Second
@@ -3208,6 +3247,52 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			// Advance the queue if anything else is pending. The
 			// adapter is fine; eBUS arbitration is per-SYN; no
 			// transport-level action is required.
+			if m.arb.hasPending() {
+				m.tryGrantAndStart()
+			}
+			return
+		}
+		// F-24 (batch-21, 2026-05-14): external-session START staleness
+		// guard. ebusd's bus state machine has an internal arbitration-
+		// wait timeout (~1-2s); when the gateway's queue+arbitration
+		// pipeline takes longer than ebusd's timeout, ebusd silently
+		// abandons the request internally. A late ENH_RES_STARTED then
+		// arrives in ebusd's bs_recvCmd / bs_skip / bs_ready-wrong
+		// state and ebusd logs `arbitration won in invalid state` and
+		// silently drops the bid — never sending the M2S frame bytes.
+		// ebusctl reports `ERR: arbitration lost`. Live evidence
+		// (2026-05-14 17:03-17:24): 31 invalid-state events over 27
+		// minutes; tight-scan-08 success rate 13-20% vs 95% target.
+		//
+		// Suppress grants whose age exceeds ExternalStartStaleness so
+		// the gateway never delivers a STARTED that ebusd will
+		// discard. Wire-level arbitration win recovers via the next
+		// SYN-idle burst because no SEND frame follows. The session's
+		// notify is set to cancelled:true so session.go's handleStart
+		// takes the silent-suppress branch (mirroring the F-17 C4/R4
+		// path semantics). Gateway session 0 is not subject to this
+		// guard because the gateway's own send path doesn't fall
+		// through ebusd's state machine.
+		if pending.sessionID != gatewaySessionID && pending.req != nil &&
+			m.cfg.ExternalStartStaleness > 0 &&
+			time.Since(pending.req.enqueuedAt) > m.cfg.ExternalStartStaleness {
+			m.pendingStart = nil
+			if pending.deadline != nil {
+				pending.deadline.Stop()
+			}
+			age := time.Since(pending.req.enqueuedAt)
+			m.stateMu.Unlock()
+			m.logger.Printf("adaptermux: suppressing stale STARTED for session %d — request age %v > budget %v (F-24)",
+				pending.sessionID, age, m.cfg.ExternalStartStaleness)
+			select {
+			case pending.notify <- startResult{
+				granted:   false,
+				cancelled: true,
+				initiator: pending.initiator,
+				err:       errors.New("adaptermux: external START exceeded ExternalStartStaleness budget (F-24)"),
+			}:
+			default:
+			}
 			if m.arb.hasPending() {
 				m.tryGrantAndStart()
 			}

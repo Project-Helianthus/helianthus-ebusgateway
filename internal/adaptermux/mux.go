@@ -349,20 +349,17 @@ func (c *Config) defaults() {
 		c.ExternalStartStaleness = 300 * time.Millisecond
 	}
 	if c.PostExternalReleaseGrace == 0 {
-		// F-36 (batch-31, iter13, 2026-05-15): widened to 250ms after
-		// F-35's 75ms watchdog stabilized at 73.3% tight-scan rate.
-		// Codex iter10 attack #2 recommendation: "External scan-burst
-		// lease — prefer ebusd for short bursts instead of 50/50
-		// fairness during `scan 08`". With 250ms cooldown, the gateway
-		// effectively yields a quarter-second window after every
-		// external release. During sustained ebusd activity (5 starts/
-		// sec under tight scan), the gateway poll rate drops to near-
-		// zero, eliminating most of the wire-contention that puts
-		// ebusd's reconstructor into bs_skip in the first place.
+		// F-37 (batch-32, iter14, 2026-05-15): widened 250ms → 500ms.
+		// F-36 at 250ms got 76.6% tight; gateway grants 96/90s (1.07
+		// tx/sec). To halve gateway wire occupancy (16% → 8%) and
+		// give ebusd more uncontended slots, double the cooldown.
 		//
-		// Tradeoff: gateway semantic data freshness drops during
-		// external scan bursts. Acceptable — bursts are short.
-		c.PostExternalReleaseGrace = 250 * time.Millisecond
+		// Implements Codex iter10 attack #2 fully: 500ms "external
+		// lease" after every release means during a tight ebusd
+		// burst (5 starts/sec), the gateway essentially never
+		// re-bids until ebusd is quiet. Reduces wire contention
+		// driving ebusd into bs_skip.
+		c.PostExternalReleaseGrace = 500 * time.Millisecond
 	}
 	if c.FairnessRatio == 0 {
 		// F-25 (batch-22, iter2, 2026-05-14): 2 = 50/50 split under

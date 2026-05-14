@@ -180,7 +180,7 @@ func TestHandleArbitrationResponse_InFlightCancelled_FAILED_LogMarksSuppression(
 // cancelled=true so handleStart silent-returns.
 func TestArbitrator_CancelStart_ExternalSession_SetsCancelledFlag(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour)
+	arb.setPolicy(24 * time.Hour, 0)
 
 	ch := arb.requestStart(1, 0x31)
 	if !arb.cancelStart(1) {
@@ -207,7 +207,7 @@ func TestArbitrator_CancelStart_ExternalSession_SetsCancelledFlag(t *testing.T) 
 // for the gateway-session path. Same contract as the external path.
 func TestArbitrator_CancelStart_GatewaySession_SetsCancelledFlag(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour)
+	arb.setPolicy(24 * time.Hour, 0)
 
 	ch := arb.requestStart(gatewaySessionID, 0x71)
 	if !arb.cancelStart(gatewaySessionID) {
@@ -310,7 +310,7 @@ func TestHandleArbitrationResponse_InFlightCancelled_AM56Mismatch_SuppressedSile
 // late-STARTED suppression path), so cancelStart must set both flags.
 func TestArbitrator_CancelStart_AlsoSetsStructFlag(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour)
+	arb.setPolicy(24 * time.Hour, 0)
 
 	_ = arb.requestStart(1, 0x31)
 	arb.mu.Lock()

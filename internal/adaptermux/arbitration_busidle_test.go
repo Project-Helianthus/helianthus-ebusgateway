@@ -15,7 +15,7 @@ import (
 // gateway, even when no contention exists.
 func TestTryGrant_BusIdle_ExternalPreemptsFairnessWindow(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour) // disable C3 TTL for this test
+	arb.setPolicy(24 * time.Hour, 0) // disable C3 TTL for this test
 
 	// Both classes pending — same shape as the legacy fairness test.
 	_ = arb.requestStart(gatewaySessionID, 0x71)
@@ -45,7 +45,7 @@ func TestTryGrant_BusIdle_ExternalPreemptsFairnessWindow(t *testing.T) {
 // branch grants normally.
 func TestTryGrant_BusIdle_GatewayOnly_StillGranted(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour)
+	arb.setPolicy(24 * time.Hour, 0)
 
 	_ = arb.requestStart(gatewaySessionID, 0x71)
 
@@ -60,11 +60,11 @@ func TestTryGrant_BusIdle_GatewayOnly_StillGranted(t *testing.T) {
 
 // TestTryGrant_NotIdle_GatewayPriorityPreserved ensures the C1 fast
 // path is GATED on busIdle — when the bus is actively contended
-// (busIdle=false), gateway-priority + FairnessRatio rotation apply
+// (busIdle=false), gateway-priority + DefaultFairnessRatio rotation apply
 // unchanged. This is the regression guard for the legacy semantic.
 func TestTryGrant_NotIdle_GatewayPriorityPreserved(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour)
+	arb.setPolicy(24 * time.Hour, 0)
 
 	_ = arb.requestStart(gatewaySessionID, 0x71)
 	_ = arb.requestStart(1, 0x31)
@@ -90,7 +90,7 @@ func TestPendingExternalTTL_StaleEntryRejected(t *testing.T) {
 	base := time.Now()
 	clock := base
 	arb.nowFn = func() time.Time { return clock }
-	arb.setPolicy(50 * time.Millisecond)
+	arb.setPolicy(50 * time.Millisecond, 0)
 
 	// Stale entry first.
 	staleCh := arb.requestStart(1, 0x31)
@@ -141,7 +141,7 @@ func TestPendingExternalTTL_StaleEntryRejected(t *testing.T) {
 // abandoned request.
 func TestRequestStart_ReplaceMarksCancelledFlag(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour)
+	arb.setPolicy(24 * time.Hour, 0)
 
 	// Reach into pendingExternal to grab the pointer before replace.
 	_ = arb.requestStart(1, 0x31)

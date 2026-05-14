@@ -142,6 +142,32 @@ type Config struct {
 	// start is cleared and the session is notified of failure (AM8).
 	StartDeadline time.Duration
 
+	// FairnessRatio controls the gateway-vs-external grant rotation
+	// when BOTH a gateway pending START and at least one external
+	// pending START coexist. The arbitrator counts contended rotations
+	// and every Nth rotation hands the grant to external FIFO instead
+	// of the gateway (the default-priority bidder). Larger values
+	// favor the gateway; smaller values favor external sessions
+	// (ebusd).
+	//
+	// F-25 (batch-22, iter2, 2026-05-14): default 2 (50/50 split).
+	// Pre-F-25 this was a hard-coded constant of 4 (75% gateway /
+	// 25% external) which produced live `arbitration won in invalid
+	// state` cascades from ebusd because gateway-poll bursts left
+	// only ~25% of bus slots for ebusd to bid into, and the resulting
+	// stale STARTED dispatches collided with ebusd's bs_recvCmd
+	// state. See DefaultFairnessRatio in arbitration.go for the full
+	// rationale and the live evidence trail (iter1-result-
+	// 20260514T145344Z.md).
+	//
+	// Sentinels:
+	//   - 0 (zero value): use DefaultFairnessRatio (2).
+	//   - Negative: clamped to DefaultFairnessRatio (defensive).
+	//   - 1: every contended rotation alternates; expected gateway
+	//     share ~50% but ebusd MAY pre-empt back-to-back if it has
+	//     a queue. Tests use 1 to force-deterministic ebusd grants.
+	FairnessRatio int
+
 	// ExternalStartStaleness bounds the wall-clock age (measured from
 	// startRequest.enqueuedAt) of an EXTERNAL-session START at the
 	// moment the adapter reports `StreamEventStarted`. If the request
@@ -259,6 +285,13 @@ func (c *Config) defaults() {
 		// (~50-150ms median) so normal traffic is unaffected. Operators
 		// can tune via the addon options.
 		c.ExternalStartStaleness = 300 * time.Millisecond
+	}
+	if c.FairnessRatio == 0 {
+		// F-25 (batch-22, iter2, 2026-05-14): 2 = 50/50 split under
+		// gateway+external contention. Lowered from the previous
+		// hard-coded 4 (75% gateway / 25% external) which starved
+		// ebusd of bus slots during tight-scan-08 loops.
+		c.FairnessRatio = DefaultFairnessRatio
 	}
 	if c.BlackholeThreshold <= 0 {
 		c.BlackholeThreshold = 30 * time.Second
@@ -509,7 +542,7 @@ type sendRequest struct {
 func New(cfg Config) *Mux {
 	cfg.defaults()
 	arb := newArbitrator()
-	arb.setPolicy(cfg.PendingStartTTL)
+	arb.setPolicy(cfg.PendingStartTTL, cfg.FairnessRatio)
 	return &Mux{
 		cfg:          cfg,
 		logger:       cfg.Logger,

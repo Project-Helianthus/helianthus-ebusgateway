@@ -402,15 +402,15 @@ func TestArbitrator_DuplicateReplaceCarriesInitiator(t *testing.T) {
 
 // TestArbitrator_FairnessWindow_ExternalGetsEveryNthGrant verifies the
 // adaptive fairness rotation: when BOTH gateway and external have
-// continuously-renewed pending START requests, every FairnessRatio'th
+// continuously-renewed pending START requests, every DefaultFairnessRatio'th
 // grant goes to external FIFO instead of gateway. This bounds the
-// worst-case external START latency to ~FairnessRatio gateway-transaction
+// worst-case external START latency to ~DefaultFairnessRatio gateway-transaction
 // windows so ebusd can complete its initial scan despite continuous
 // semantic poller activity.
 func TestArbitrator_FairnessWindow_ExternalGetsEveryNthGrant(t *testing.T) {
 	arb := newArbitrator()
 
-	totalRounds := FairnessRatio * 3 // 3 full fairness cycles
+	totalRounds := DefaultFairnessRatio * 3 // 3 full fairness cycles
 	gatewayGrants := 0
 	externalGrants := 0
 
@@ -446,12 +446,14 @@ func TestArbitrator_FairnessWindow_ExternalGetsEveryNthGrant(t *testing.T) {
 		arb.releaseOwnership(sessionID)
 	}
 
-	// Expect exactly 3 external grants out of 12 total (every 4th).
-	wantExternal := totalRounds / FairnessRatio
+	// Expect totalRounds/DefaultFairnessRatio external grants.
+	// At ratio=2 (F-25 default): 3 external grants out of 6 rounds.
+	// At ratio=4 (legacy): 3 external grants out of 12 rounds.
+	wantExternal := totalRounds / DefaultFairnessRatio
 	wantGateway := totalRounds - wantExternal
 	if externalGrants != wantExternal {
 		t.Errorf("externalGrants = %d; want %d (1-in-%d fairness over %d rounds)",
-			externalGrants, wantExternal, FairnessRatio, totalRounds)
+			externalGrants, wantExternal, DefaultFairnessRatio, totalRounds)
 	}
 	if gatewayGrants != wantGateway {
 		t.Errorf("gatewayGrants = %d; want %d", gatewayGrants, wantGateway)
@@ -465,7 +467,7 @@ func TestArbitrator_FairnessWindow_ExternalGetsEveryNthGrant(t *testing.T) {
 func TestArbitrator_FairnessWindow_NoOpWhenNoExternal(t *testing.T) {
 	arb := newArbitrator()
 
-	for i := 0; i < FairnessRatio*5; i++ {
+	for i := 0; i < DefaultFairnessRatio*5; i++ {
 		gwCh := arb.requestStart(gatewaySessionID, 0x71)
 		sessionID, _, notify, granted := tryGrantLegacy(arb)
 		if !granted || sessionID != gatewaySessionID {

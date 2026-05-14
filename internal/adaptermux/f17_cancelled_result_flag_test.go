@@ -32,7 +32,7 @@ import (
 func TestArbitrator_SameSessionReplace_StartResultCarriesCancelledFlag(t *testing.T) {
 	t.Run("external_session_replace", func(t *testing.T) {
 		arb := newArbitrator()
-		arb.setPolicy(24 * time.Hour) // disable C3 TTL for this test
+		arb.setPolicy(24 * time.Hour, 0) // disable C3 TTL for this test
 
 		chOld := arb.requestStart(1, 0x31)
 		_ = arb.requestStart(1, 0x32) // replaces chOld in pendingExternal
@@ -55,7 +55,7 @@ func TestArbitrator_SameSessionReplace_StartResultCarriesCancelledFlag(t *testin
 
 	t.Run("gateway_session_replace", func(t *testing.T) {
 		arb := newArbitrator()
-		arb.setPolicy(24 * time.Hour)
+		arb.setPolicy(24 * time.Hour, 0)
 
 		chOld := arb.requestStart(gatewaySessionID, 0x71)
 		_ = arb.requestStart(gatewaySessionID, 0x72) // replaces pendingGateway
@@ -84,7 +84,7 @@ func TestArbitrator_SameSessionReplace_StartResultCarriesCancelledFlag(t *testin
 // is not regressed.
 func TestArbitrator_SameSessionReplace_StructFlagAlsoSet(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour)
+	arb.setPolicy(24 * time.Hour, 0)
 
 	_ = arb.requestStart(1, 0x31)
 	arb.mu.Lock()

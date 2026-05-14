@@ -93,19 +93,35 @@ type arbitrator struct {
 	// START before tryGrant drops + rejects it with errStaleStartRequest.
 	// Zero disables the policy. Configured via Mux.cfg.PendingStartTTL.
 	pendingStartTTL time.Duration
+
+	// fairnessRatio is the every-Nth grant that goes to external FIFO
+	// when both gateway and ≥1 external session have pending START
+	// requests. Configured via Mux.cfg.FairnessRatio; defaults to 2.
+	// 0 maps to DefaultFairnessRatio in setPolicy().
+	fairnessRatio int
 }
 
-// FairnessRatio is the every-Nth grant that goes to external FIFO when
-// both gateway and ≥1 external session have pending START requests.
-// Default 4 = ~25% of grants under contention go to external,
-// bounding worst-case external START latency to ~4 gateway-transaction
-// windows (typical 200–300 ms each → ~1 s worst case, well within
-// ebusd's ~4.5 s per-scan-iteration deadline).
+// DefaultFairnessRatio is the every-Nth grant that goes to external FIFO
+// when both gateway and ≥1 external session have pending START requests.
+// Default 2 = 50/50 split under contention.
 //
-// Constant for now; can be promoted to a config field if operators
-// need to tune the balance between gateway poll-window jitter and
-// external client throughput.
-const FairnessRatio = 4
+// F-25 (batch-22, iter2, 2026-05-14): lowered from 4 to 2 in response
+// to live evidence that the gateway-favoring 25%-external ratio
+// starved ebusd of bus slots during tight-scan-08 loops. Pre-F-25
+// measurements (iter1 with F-22 revert + F-21 + F-24 inert):
+//   - tight-scan success: 8-18% over 60 attempts vs 95% target
+//   - ebusd `arbitration won in invalid state`: 33 / 12 min
+//   - gateway grants: 1.6 tx/sec; ebusd won 28% of 329 START attempts.
+//
+// At ratio=2, ebusd should win ~50% of contended slots, giving its
+// bus state machine larger inter-gateway-poll windows and reducing
+// the ENH_RES_STARTED-arrives-in-bs_recvCmd collision rate.
+//
+// Tradeoff: gateway poll throughput halves under sustained external
+// contention. Acceptable: scans are bursts, steady-state polling
+// resumes when external sessions go quiet. Operator can tune via
+// Mux.cfg.FairnessRatio.
+const DefaultFairnessRatio = 2
 
 // startRequest represents a pending START arbitration request.
 type startRequest struct {
@@ -266,9 +282,18 @@ func (a *arbitrator) now() time.Time {
 
 // setPolicy injects per-cycle policy fields the mux derives from
 // Config. Called once on mux construction.
-func (a *arbitrator) setPolicy(pendingStartTTL time.Duration) {
+//
+// F-25 (batch-22, iter2): accepts fairnessRatio. 0 maps to
+// DefaultFairnessRatio inside tryGrant; negative values are clamped
+// to DefaultFairnessRatio (defensive; legacy behaviour preferred
+// over starvation).
+func (a *arbitrator) setPolicy(pendingStartTTL time.Duration, fairnessRatio int) {
 	a.mu.Lock()
 	a.pendingStartTTL = pendingStartTTL
+	if fairnessRatio < 0 {
+		fairnessRatio = DefaultFairnessRatio
+	}
+	a.fairnessRatio = fairnessRatio
 	a.mu.Unlock()
 }
 
@@ -375,7 +400,11 @@ func (a *arbitrator) tryGrant(busIdle bool) (req *startRequest, granted bool) {
 	preferExternalThisGrant := false
 	if gatewayPending && externalPending {
 		a.fairnessCounter++
-		if a.fairnessCounter >= FairnessRatio {
+		ratio := a.fairnessRatio
+		if ratio <= 0 {
+			ratio = DefaultFairnessRatio
+		}
+		if a.fairnessCounter >= ratio {
 			a.fairnessCounter = 0
 			preferExternalThisGrant = true
 		}

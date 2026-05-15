@@ -156,6 +156,16 @@ type session struct {
 	// is the surgical fix.
 	bytesSentSinceGrant atomic.Uint32
 
+	// grantGeneration increments on every grant of this session via
+	// completeArbitrationGrant. The F-34/F-35 abandon watchdog captures
+	// the generation at arm time and only fires if the captured
+	// generation still matches at deadline; otherwise the timer is for
+	// an OLDER grant that has already been superseded by a fresh one,
+	// and firing would force-release the new grant's ownership before
+	// it can write any bytes (PR #633 P1 review on line 3196,
+	// 2026-05-15).
+	grantGeneration atomic.Uint64
+
 	// wg waits for reader, writer, and handleStart goroutines to finish.
 	wg sync.WaitGroup
 }

@@ -374,12 +374,20 @@ func (a *arbitrator) now() time.Time {
 //
 // Zero/negative sentinels:
 //   - fairnessRatio: 0 or negative → DefaultFairnessRatio (2)
+//   - fairnessRatio: 1 → clamped to DefaultFairnessRatio (2). PR #633
+//     P2 (Codex review, line 427, 2026-05-15): with ratio=1 the
+//     fairnessCounter rotation degenerates to "external every grant"
+//     which starves the gateway entirely whenever an external session
+//     keeps a non-empty queue. Operators who configure ratio=1 expect
+//     the documented "alternating / 50-50 behavior" — that's what
+//     ratio=2 actually delivers (G,E,G,E,...). Clamp ratio=1 to the
+//     default so operator intent matches code reality.
 //   - postExternalGrace: 0 → use mux-default (50ms); negative → disable
 //     the cooldown entirely
 func (a *arbitrator) setPolicy(pendingStartTTL time.Duration, fairnessRatio int, postExternalGrace time.Duration) {
 	a.mu.Lock()
 	a.pendingStartTTL = pendingStartTTL
-	if fairnessRatio < 0 {
+	if fairnessRatio <= 1 {
 		fairnessRatio = DefaultFairnessRatio
 	}
 	a.fairnessRatio = fairnessRatio

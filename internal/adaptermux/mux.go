@@ -3223,6 +3223,17 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 		m.sessionsMu.Unlock()
 		if sess != nil {
 			sess.bytesSentSinceGrant.Store(0)
+			// F-34-fix (PR #633 P1 line 3196, 2026-05-15): bind the
+			// watchdog to the GRANT it armed via grantGeneration.
+			// Without this, when the same session completes one
+			// transaction and is re-granted within 75 ms, the OLD
+			// timer fires for the NEW grant — sees bytesSentSinceGrant
+			// == 0 (just reset) and isOwner true (re-granted) — and
+			// force-releases the fresh ownership before any byte can
+			// be sent. Per-grant generation gives the timer a
+			// discriminator: if generation has advanced, the timer is
+			// stale and exits silently.
+			grantGen := sess.grantGeneration.Add(1)
 			// F-35 (iter12): 25ms was too tight — legitimate grants
 			// where ebusd's TCP roundtrip + bus-state transition takes
 			// >25ms got force-released, producing 503 watchdog firings
@@ -3234,14 +3245,17 @@ func (m *Mux) completeArbitrationGrant(sessionID uint64, initiator byte, notify 
 				if sess.closed.Load() {
 					return
 				}
+				if sess.grantGeneration.Load() != grantGen {
+					return // a newer grant superseded the one this timer was armed for
+				}
 				if sess.bytesSentSinceGrant.Load() > 0 {
 					return // grant was used; nothing to do
 				}
 				if !m.arb.isOwner(sessionID) {
 					return // ownership already released by some other path
 				}
-				m.logger.Printf("adaptermux: F-34 abandon-watchdog firing for session %d (no SEND within %v after grant) — force-releasing ownership",
-					sessionID, deadline)
+				m.logger.Printf("adaptermux: F-34 abandon-watchdog firing for session %d gen=%d (no SEND within %v after grant) — force-releasing ownership",
+					sessionID, grantGen, deadline)
 				m.arb.releaseOwnership(sessionID)
 				if m.arb.hasPending() {
 					m.tryGrantAndStart()

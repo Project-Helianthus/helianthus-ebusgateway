@@ -104,6 +104,13 @@ type BusObservabilityStore struct {
 
 	startupSurfaceProvider func() *BusObservabilityStartup
 
+	// adaptermuxDiagProvider returns the latest adaptermux diagnostic
+	// snapshot. Set via SetAdaptermuxDiagProvider; nil when no
+	// adaptermux is wired (e.g. in tests). When non-nil, RenderPrometheus
+	// emits the batch-21 forensic counters
+	// (ebus_adaptermux_syn_seen_*) alongside the rest of the surface.
+	adaptermuxDiagProvider func() AdaptermuxDiagSnapshot
+
 	energyFreshnessMetricsRefresher func(now time.Time, passiveState string)
 	busAdmission                    *BusAdmission
 	admissionStabilityWindow        *AdmissionStabilityWindow
@@ -986,6 +993,46 @@ func (store *BusObservabilityStore) SetEnergyFreshnessMetricsRefresher(refresher
 	store.mu.Unlock()
 }
 
+// AdaptermuxDiagSnapshot is the subset of adaptermux's
+// activeTxnDiag snapshot exposed via the Prometheus surface for
+// batch-21 forensic instrumentation. Field semantics match the
+// originating counters in `internal/adaptermux/diag.go`. Plumbing
+// through this small struct (rather than importing the full
+// ActiveTxnSnapshot) keeps `bus_observability_store` decoupled from
+// the adaptermux package.
+type AdaptermuxDiagSnapshot struct {
+	// SynSuppressedPreEcho mirrors activeTxnDiag.synSuppressedPreEcho
+	// — total SYNs the existing P10.2 / pre-first-echo gate has
+	// suppressed. Provided for context alongside the new batch-21
+	// counters so an operator reading /metrics can compare the
+	// suppressed population to the gap populations below.
+	SynSuppressedPreEcho uint64
+	// SynSeenDuringGrantWindow counts SYNs observed during gateway
+	// ownership where gatewayTxnActive=false (Attack 1 — grant→first-
+	// write window).
+	SynSeenDuringGrantWindow uint64
+	// SynSeenWhileInterWriteEmpty counts SYNs observed during a
+	// gateway-owned active txn where the echo queue is empty AND at
+	// least one byte has been delivered to active (Attack 3 — inter-
+	// write queue-empty window).
+	SynSeenWhileInterWriteEmpty uint64
+}
+
+// SetAdaptermuxDiagProvider registers a snapshot provider callback for
+// batch-21 forensic counters. Wired in cmd/gateway/main.go after the
+// adaptermux is constructed; the callback closes over the mux and is
+// invoked on each /metrics scrape. nil-store and nil-provider are no-
+// ops (defensive — keeps test setup that does not exercise adaptermux
+// from blowing up).
+func (store *BusObservabilityStore) SetAdaptermuxDiagProvider(provider func() AdaptermuxDiagSnapshot) {
+	if store == nil {
+		return
+	}
+	store.mu.Lock()
+	store.adaptermuxDiagProvider = provider
+	store.mu.Unlock()
+}
+
 func (store *BusObservabilityStore) RenderPrometheus() string {
 	if store == nil {
 		return ""
@@ -1016,7 +1063,20 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	featureFlags := store.cfg.ObserveFirstFlags
 	energyMetricsRefresher := store.energyFreshnessMetricsRefresher
 	passiveState := passive.state
+	adaptermuxDiagProvider := store.adaptermuxDiagProvider
 	store.mu.Unlock()
+
+	// batch-21 diagnostic counters — snapshot OUTSIDE store.mu (the
+	// provider holds adaptermux's stateMu internally; nesting locks
+	// across packages would invite ABBA risk). Provider is nil when
+	// no adaptermux is wired (tests, smoke setups); skip the section
+	// in that case so the surface degrades cleanly.
+	var adaptermuxDiag AdaptermuxDiagSnapshot
+	haveAdaptermuxDiag := false
+	if adaptermuxDiagProvider != nil {
+		adaptermuxDiag = adaptermuxDiagProvider()
+		haveAdaptermuxDiag = true
+	}
 
 	if energyMetricsRefresher != nil {
 		energyMetricsRefresher(now, passiveState)
@@ -1103,6 +1163,32 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		writer.writeCounterSample("ebus_active_echo_mismatch_subclass_total", float64(item.Value), labelMap(
 			"subclass", item.Key.Subclass,
 		))
+	}
+
+	// batch-21 forensic counters (set via SetAdaptermuxDiagProvider).
+	// Three SYN observation populations the operator measures vs the
+	// `class=echo_mismatch,subclass=pre_echo_syn` rate to identify
+	// which suppression-gap dominates. Forensic only — no behavior
+	// change. See _work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-15-batch21.md
+	// for hypothesis A/B/C and the round-3 fix-prompt criteria.
+	if haveAdaptermuxDiag {
+		writer.writeHelp("ebus_adaptermux_syn_suppressed_pre_echo_total",
+			"Total SYNs the adaptermux P10.2 + pre-first-echo gate has suppressed during gateway-owned active txns. Provided alongside the batch-21 syn_seen_* counters so the operator can compare suppressed vs leaked populations on a single scrape.")
+		writer.writeType("ebus_adaptermux_syn_suppressed_pre_echo_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_syn_suppressed_pre_echo_total",
+			float64(adaptermuxDiag.SynSuppressedPreEcho), nil)
+
+		writer.writeHelp("ebus_adaptermux_syn_seen_during_grant_window_total",
+			"Diagnostic (batch-21): SYNs observed while gateway owned bus but gatewayTxnActive=false (the brief window between completeArbitrationGrant and the first activeTransport.Write recordSent). preEchoMidFrameSuppress requires gatewayTxnActive=true so any SYN here bypasses the gate. Forensic only — no behavior change. Operator measures rate vs ebus_active_echo_mismatch_subclass_total{subclass=\"pre_echo_syn\"} to confirm Attack 1 (grant-lifecycle) dominance.")
+		writer.writeType("ebus_adaptermux_syn_seen_during_grant_window_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_syn_seen_during_grant_window_total",
+			float64(adaptermuxDiag.SynSeenDuringGrantWindow), nil)
+
+		writer.writeHelp("ebus_adaptermux_syn_seen_while_inter_write_empty_total",
+			"Diagnostic (batch-21): SYNs observed during a gateway-owned active txn where the echo queue is empty AND at least one byte has been delivered to active. The peek-based P10.2 gate cannot suppress because there is no expected head to compare against. Forensic only — no behavior change. CAVEAT: this counter cannot be cleanly separated at SYN observation time from a legitimate end-of-transaction terminator SYN — both match the same state. Operator analysis: leak_rate ≈ counter − grantsTotal_in_window (each successful transaction has one legitimate terminator SYN; subtract that baseline to estimate the inter-write leak rate). Compare the residual to ebus_active_echo_mismatch_subclass_total{subclass=\"pre_echo_syn\"} rate to confirm Attack 3 (queue-empty inter-write) dominance.")
+		writer.writeType("ebus_adaptermux_syn_seen_while_inter_write_empty_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_syn_seen_while_inter_write_empty_total",
+			float64(adaptermuxDiag.SynSeenWhileInterWriteEmpty), nil)
 	}
 
 	writer.writeHelp("ebus_frame_bytes_total", "Aggregate retained frame byte counts.")

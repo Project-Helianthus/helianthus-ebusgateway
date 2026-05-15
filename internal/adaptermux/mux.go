@@ -2033,6 +2033,13 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// frame terminator).
 	wasGatewayOwned := hasOwner && ownerID == gatewaySessionID
 	gwActiveBefore := m.gatewayTxnActive
+	// batch-21 diagnostic: snapshot the delivery counter at observation
+	// time as well. The terminator-delivery branch increments
+	// bytesDeliveredToActive at line ~2155 mid-function; the Attack 3
+	// gate must classify against the SYN-arrival state, not the post-
+	// mutation state, otherwise a terminator SYN whose own delivery
+	// pushed the count from 0→1 would falsely satisfy the >0 gate.
+	bytesDeliveredBefore := m.activeTxn.bytesDeliveredToActive.Load()
 
 	// P10.2 — peek the gateway echo tracker BEFORE flushOnSYN clears it.
 	// The next-expected-echo byte discriminates the *only* unsafe case
@@ -2375,6 +2382,67 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	preEchoSuppressed := preFirstEchoSyn || preEchoMidFrameSuppress
 	if preEchoSuppressed {
 		m.activeTxn.synSuppressedPreEcho.Add(1)
+	}
+
+	// batch-21 diagnostic: classify which suppression gap a SYN passes
+	// through at the wire-SYN observation point. Forensic only — no
+	// behavior change. Counters are incremented under stateMu (held by
+	// the caller of onSYNLocked) and read OBSERVATION-TIME snapshots:
+	//
+	//   - wasGatewayOwned: derived from the function's hasOwner+ownerID
+	//     parameters, which the caller pinned at SYN arrival.
+	//   - gwActiveBefore: snapshotted at function entry (line ~2035)
+	//     before the terminator/idle/timeout branches mutate
+	//     m.gatewayTxnActive. CRITICAL: reading m.gatewayTxnActive at
+	//     this site would misclassify a legitimate terminator SYN
+	//     (which clears m.gatewayTxnActive at line ~2160) as Attack 1.
+	//     Codex pre-push review caught this.
+	//   - hasPendingEcho: snapshotted at function entry (line ~2068)
+	//     before flushOnSYN clears the echo queue.
+	//   - bytesDeliveredBefore: snapshotted at function entry (line
+	//     ~2036) before the terminator branch increments the counter
+	//     for its own delivery.
+	//
+	// Three mutually-exclusive populations are counted (a fourth case
+	// — "fully covered by existing P10.2 suppression" — is implicit in
+	// preEchoSuppressed=true above and isn't recounted here to avoid
+	// double-counting against echo_mismatch):
+	//
+	//   Attack 1 (synSeenDuringGrantWindow): gateway owns the bus but
+	//     the txn-active flag is still false — the brief window between
+	//     completeArbitrationGrant() and the first activeTransport.Write
+	//     calling recordSent. preEchoMidFrameSuppress requires
+	//     gatewayTxnActive=true so a SYN here bypasses the gate.
+	//
+	//   Attack 3 (synSeenWhileInterWriteEmpty): txn is active, at
+	//     least one byte has been delivered (so we're past the
+	//     pre-first-echo branch), but the echo queue is currently empty
+	//     (peekNextExpected returns hasPending=false). This is the
+	//     "between two writes" window where matchEcho consumed echo K
+	//     and sendLoop hasn't yet armed echo K+1. The peek-based gate
+	//     can't suppress because there's no expected head to compare to.
+	//
+	//     IMPORTANT (Codex pre-push review, 2026-05-15): at the SYN
+	//     observation point this condition CANNOT be cleanly separated
+	//     from a legitimate end-of-transaction terminator SYN. Both
+	//     match {gwActive=true, hasPendingEcho=false,
+	//     bytesDeliveredBefore>0}. The forensic interpretation:
+	//
+	//       leak_rate ≈ synSeenWhileInterWriteEmpty − grantsTotal
+	//
+	//     where grantsTotal is the per-window transaction count (each
+	//     transaction has one legitimate terminator SYN). Operator
+	//     compares the residual to ebus_errors_total{class=
+	//     echo_mismatch,subclass=pre_echo_syn} rate. If the residual
+	//     matches the leak rate, Attack 3 is confirmed. The metric
+	//     help text in bus_observability_store.go documents this
+	//     subtraction explicitly.
+	if wasGatewayOwned {
+		if !gwActiveBefore {
+			m.activeTxn.synSeenDuringGrantWindow.Add(1)
+		} else if !hasPendingEcho && bytesDeliveredBefore > 0 {
+			m.activeTxn.synSeenWhileInterWriteEmpty.Add(1)
+		}
 	}
 
 	// SYN-path diagnostics: record only when gateway owned the bus at

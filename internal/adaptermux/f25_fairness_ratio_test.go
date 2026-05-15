@@ -84,18 +84,29 @@ func TestF25_NegativeRatioClampedToDefault(t *testing.T) {
 	}
 }
 
-// TestF25_RatioOneAlternates pins the every-rotation-alternates edge
-// case (ratio=1). Useful for deterministic tests that need ebusd to
-// win on a predictable rotation. With ratio=1, EVERY contended
-// rotation grants to external.
-func TestF25_RatioOneAlternates(t *testing.T) {
+// TestF25_RatioOneClampsToDefault pins the post-PR-#633-P2-fix
+// behavior (commit aec342f, 2026-05-15): operators who configure
+// FairnessRatio=1 expecting the documented "alternating / 50-50
+// behavior" now get the behavior they intended.
+//
+// Pre-fix, ratio=1 degenerated to "external every rotation" (the
+// fairnessCounter reached the threshold on the first increment, so
+// preferExternalThisGrant fired every contended grant) — starving
+// the gateway entirely whenever external had a non-empty queue. The
+// fix clamps fairnessRatio<=1 to DefaultFairnessRatio in setPolicy,
+// so an operator who sets ratio=1 now gets the same G,E,G,E,...
+// alternation that ratio=2 has always produced.
+func TestF25_RatioOneClampsToDefault(t *testing.T) {
 	arb := newArbitrator()
 	arb.setPolicy(24*time.Hour, 1, 0)
 
 	totalRounds := 8
 	external, gateway := runContendedRotation(t, arb, totalRounds)
-	if external != totalRounds || gateway != 0 {
-		t.Fatalf("F-25 ratio=1: expected every contended rotation -> external; got ext=%d gw=%d", external, gateway)
+	// With ratio=1 clamped to DefaultFairnessRatio (2), the rotation
+	// alternates: G,E,G,E,... Across 8 contended rounds we expect
+	// 4 gateway grants + 4 external grants.
+	if external != 4 || gateway != 4 {
+		t.Fatalf("PR #633 P2 fix: ratio=1 should clamp to default and alternate 50/50; got ext=%d gw=%d (want 4/4)", external, gateway)
 	}
 }
 

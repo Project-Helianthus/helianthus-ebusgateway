@@ -210,6 +210,24 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		return err
 	}
 
+	// batch-21 forensic counters — wire the adaptermux diagnostic
+	// snapshot through the BusObservabilityStore Prometheus surface.
+	// Type-assert through the optional adaptermuxDiagSnapshotter seam
+	// (satisfied by *adaptermux.Mux). When the active transport isn't
+	// adapter-direct (no mux), classifier is nil and the provider
+	// stays unset — Prometheus surface degrades cleanly (the
+	// ebus_adaptermux_syn_seen_* metrics are simply absent).
+	if snap, ok := adapterClassifier.(adaptermuxDiagSnapshotter); ok {
+		busObservability.SetAdaptermuxDiagProvider(func() ebusgateway.AdaptermuxDiagSnapshot {
+			s := snap.ActiveTxnSnapshot()
+			return ebusgateway.AdaptermuxDiagSnapshot{
+				SynSuppressedPreEcho:        s.SynSuppressedPreEcho,
+				SynSeenDuringGrantWindow:    s.SynSeenDuringGrantWindow,
+				SynSeenWhileInterWriteEmpty: s.SynSeenWhileInterWriteEmpty,
+			}
+		})
+	}
+
 	gateway, err := ebusgateway.New(ctx, cfg)
 	if err != nil {
 		return err

@@ -140,6 +140,38 @@ type activeTxnDiag struct {
 	// (typically 1–3 suppressed SYNs per transaction).
 	synSuppressedPreEcho atomic.Uint64
 
+	// batch-21 diagnostic counters — disambiguate three competing
+	// hypotheses about residual `pre_echo_syn` echo_mismatch events
+	// (~11/min as of 2026-05-15). Forensic only; no behavior change.
+	// Reference: _work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-15-batch21.md.
+	//
+	// synSeenDuringGrantWindow counts SYN observations where the gateway
+	// is the owner but gatewayTxnActive is still false (the brief
+	// window between completeArbitrationGrant and the first
+	// recordSent). preEchoMidFrameSuppress requires gatewayTxnActive=
+	// true, so any SYN in this window bypasses the suppression. If this
+	// counter dominates the residual echo_mismatch rate, Attack 1
+	// (gatewayTxnActive grant-lifecycle gap) is confirmed.
+	synSeenDuringGrantWindow atomic.Uint64
+
+	// synSeenWhileInterWriteEmpty counts SYN observations where the
+	// gateway owns the bus, gatewayTxnActive is true, the echo queue
+	// is empty (peekNextExpected returns hasPending=false) AND we've
+	// already delivered at least one byte to active. P10.2's peek-based
+	// gate requires hasPendingEcho=true to suppress; the brief inter-
+	// write window between echo K being consumed and recordSent(K+1)
+	// arming the next expected echo leaves the queue empty. If this
+	// counter dominates, Attack 3 (queue-empty inter-write window) is
+	// confirmed.
+	synSeenWhileInterWriteEmpty atomic.Uint64
+
+	// Attack 2 (postGrantPreEcho transport window expired) requires a
+	// counter on the upstream ENH transport (helianthus-ebusgo). Per
+	// the round-2 prompt, that counter is skipped to avoid a
+	// cross-repo dependency bump for this instrumentation round; if
+	// counters 1 + 3 do not account for the rate, a follow-up will
+	// add the transport-side counter and bump go.mod.
+
 	// --- Transaction-shape diagnostics (bounded) ---
 	// Captured under stateMu via recordWritePrefix/recordReadPrefix.
 	writePrefix    [txnPrefixCap]byte
@@ -180,6 +212,19 @@ type ActiveTxnSnapshot struct {
 	TerminatorDropOnFullCh uint64
 	// SynSuppressedPreEcho mirrors activeTxnDiag.synSuppressedPreEcho.
 	SynSuppressedPreEcho uint64
+	// SynSeenDuringGrantWindow mirrors
+	// activeTxnDiag.synSeenDuringGrantWindow (batch-21 diagnostic).
+	// Counts SYNs observed while gateway owned bus but
+	// gatewayTxnActive=false. Operator measures rate vs echo_mismatch
+	// to identify Attack 1 dominance.
+	SynSeenDuringGrantWindow uint64
+	// SynSeenWhileInterWriteEmpty mirrors
+	// activeTxnDiag.synSeenWhileInterWriteEmpty (batch-21 diagnostic).
+	// Counts SYNs observed during gateway-owned active txn while the
+	// echo queue is empty AND at least one byte has been delivered.
+	// Operator measures rate vs echo_mismatch to identify Attack 3
+	// dominance.
+	SynSeenWhileInterWriteEmpty uint64
 	// InterWriteDrainTotal mirrors activeTxnDiag.interWriteDrainTotal
 	// (P12). Bytes drained from activeCh in sendLoop's pre-recordSent
 	// section. Non-zero is normal; persistent zero indicates the
@@ -237,32 +282,34 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 	rp := make([]byte, m.activeTxn.readPrefixLen)
 	copy(rp, m.activeTxn.readPrefix[:m.activeTxn.readPrefixLen])
 	return ActiveTxnSnapshot{
-		ID:                      m.activeTxn.id,
-		Initiator:               m.activeTxn.initiator,
-		GrantedAt:               m.activeTxn.grantedAt,
-		InactiveAt:              m.activeTxn.inactiveAt,
-		InactiveReason:          m.activeTxn.inactiveReas,
-		DrainedOnGrant:          m.activeTxn.drainedOnGrant,
-		Active:                  m.gatewayTxnActive,
-		BytesWritten:            m.activeTxn.bytesWritten.Load(),
-		BytesRead:               m.activeTxn.bytesRead.Load(),
-		GrantsTotal:             m.activeTxn.grantsTotal.Load(),
-		WriteErrTotal:           m.activeTxn.writeErrTotal.Load(),
-		ReadTimeoutTot:          m.activeTxn.readTimeoutTot.Load(),
-		AfterInactive:           m.activeTxn.afterInactive.Load(),
-		TerminatorDropOnFullCh:  m.activeTxn.terminatorDropOnFullCh.Load(),
-		SynSuppressedPreEcho:    m.activeTxn.synSuppressedPreEcho.Load(),
-		InterWriteDrainTotal:    m.activeTxn.interWriteDrainTotal.Load(),
-		EchoQueueOverflowResets: m.gatewayEcho.overflowResets(),
-		BytesDeliveredToActive:  m.activeTxn.bytesDeliveredToActive.Load(),
-		AbsorbResetTotal:        m.absorbResetTotal.Load(),
-		WritePrefix:             wp,
-		ReadPrefix:              rp,
-		EchoLike:                m.activeTxn.echoLike.Load(),
-		NonEcho:                 m.activeTxn.nonEcho.Load(),
-		SynMarkers:              m.activeTxn.synMarkers.Load(),
-		TxnClass:                m.activeTxn.txnClass,
-		LastTxnClass:            m.activeTxn.lastClass,
+		ID:                          m.activeTxn.id,
+		Initiator:                   m.activeTxn.initiator,
+		GrantedAt:                   m.activeTxn.grantedAt,
+		InactiveAt:                  m.activeTxn.inactiveAt,
+		InactiveReason:              m.activeTxn.inactiveReas,
+		DrainedOnGrant:              m.activeTxn.drainedOnGrant,
+		Active:                      m.gatewayTxnActive,
+		BytesWritten:                m.activeTxn.bytesWritten.Load(),
+		BytesRead:                   m.activeTxn.bytesRead.Load(),
+		GrantsTotal:                 m.activeTxn.grantsTotal.Load(),
+		WriteErrTotal:               m.activeTxn.writeErrTotal.Load(),
+		ReadTimeoutTot:              m.activeTxn.readTimeoutTot.Load(),
+		AfterInactive:               m.activeTxn.afterInactive.Load(),
+		TerminatorDropOnFullCh:      m.activeTxn.terminatorDropOnFullCh.Load(),
+		SynSuppressedPreEcho:        m.activeTxn.synSuppressedPreEcho.Load(),
+		SynSeenDuringGrantWindow:    m.activeTxn.synSeenDuringGrantWindow.Load(),
+		SynSeenWhileInterWriteEmpty: m.activeTxn.synSeenWhileInterWriteEmpty.Load(),
+		InterWriteDrainTotal:        m.activeTxn.interWriteDrainTotal.Load(),
+		EchoQueueOverflowResets:     m.gatewayEcho.overflowResets(),
+		BytesDeliveredToActive:      m.activeTxn.bytesDeliveredToActive.Load(),
+		AbsorbResetTotal:            m.absorbResetTotal.Load(),
+		WritePrefix:                 wp,
+		ReadPrefix:                  rp,
+		EchoLike:                    m.activeTxn.echoLike.Load(),
+		NonEcho:                     m.activeTxn.nonEcho.Load(),
+		SynMarkers:                  m.activeTxn.synMarkers.Load(),
+		TxnClass:                    m.activeTxn.txnClass,
+		LastTxnClass:                m.activeTxn.lastClass,
 	}
 }
 

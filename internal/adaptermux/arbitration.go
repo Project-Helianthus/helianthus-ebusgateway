@@ -238,9 +238,62 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 		}
 		a.pendingGateway = req
 	} else {
-		// Remove any existing request from this session.
+		// F-39 (2026-05-15, Codex adversarial round on PR #633):
+		// when the new request has the SAME initiator as an existing
+		// queued bid from the same session, COALESCE rather than
+		// replace.
+		//
+		// Why: pcap forensics on the live HA host (4.85 s cluster
+		// captured 2026-05-15) showed 9 consecutive REQ_START 0x31
+		// frames from ebusd receiving NO ENH response within 500 ms,
+		// then sudden catch-up. Mechanism: ebusd's internal scan
+		// timeout (~150-200 ms) is shorter than the gateway's
+		// REQ_START → STARTED latency under contention. Each ebusd
+		// retry hit this branch, set existing.cancelled=true, and
+		// REMOVED the prior request from pendingExternal. The bid
+		// effectively lost its FIFO position on every retry and
+		// never reached the adapter for real arbitration — until
+		// ebusd's retries finally stopped and one slipped through.
+		//
+		// F-17 (batch-9) fixed an EARLIER cascade where the cancel
+		// path emitted ENHResFailed within 0.3 ms, causing a
+		// tight ~50 ms retry loop. F-17 substituted silent-cancel
+		// via cancelled:true, which broke the tight loop but kept
+		// the queue-position-reset that produces the wider
+		// silent-drop cluster observed in pcap.
+		//
+		// F-39 preserves the F-17 invariant (no ENHResFailed
+		// emitted on replace) AND preserves the queued bid's FIFO
+		// position. The OLD notify channel still receives
+		// cancelled:true so its handleStart goroutine exits
+		// silently — but the queued startRequest stays in place
+		// with notify retargeted to the latest caller's channel.
+		// When the adapter eventually grants the bid, the response
+		// reaches the most recent REQ_START's waiter.
+		//
+		// Different-initiator replacements still fall through to
+		// the F-17 cancel+replace path: a real change of intent
+		// from the session is a legitimate replace.
 		for i, existing := range a.pendingExternal {
 			if existing.sessionID == sessionID {
+				if existing.initiator == initiator {
+					// F-39: coalesce — keep queued bid in
+					// place, retarget notify to new caller.
+					// Do NOT set existing.cancelled — the
+					// bid is still valid; only the waiter
+					// goroutine identity changes.
+					existing.notify <- startResult{
+						granted:   false,
+						cancelled: true,
+						initiator: existing.initiator,
+					}
+					existing.notify = ch
+					return ch
+				}
+				// Different initiator — fall back to F-17
+				// cancel+replace semantics. The session
+				// genuinely changed its bid; the old one
+				// must be retired and the new one queued.
 				existing.cancelled.Store(true)
 				// F-17 (operator hand-off, batch-9): see the
 				// gateway-path comment above. Without

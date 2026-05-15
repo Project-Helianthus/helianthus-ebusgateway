@@ -2630,6 +2630,40 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	// Lock order stateMu → arb.mu matches tryGrantAndStart's order,
 	// so no ABBA risk.
 	m.stateMu.Lock()
+	// F-39 (2026-05-15, Codex adversarial on PR #633):
+	// in-flight same-session+same-initiator duplicate. The pending
+	// START is a real bid for the same arbitration the new caller
+	// wants; cancelling it would mark the in-flight request as
+	// cancelled and convert a real late STARTED into a suppressed
+	// grant. Instead, silently close out the new waiter — its
+	// session.handleStart goroutine reads cancelled:true and exits
+	// without emitting any ENH frame. The in-flight request will
+	// deliver STARTED via its OWN notify channel when the adapter
+	// responds; ebusd accepts that STARTED as the grant for
+	// whichever REQ_START it was most recently waiting on (the ENH
+	// protocol does not tag responses to specific requests, so any
+	// STARTED in ebusd's wait window satisfies its arbitration
+	// wait).
+	//
+	// NOTE: deliberately does NOT retarget pendingStart.notify
+	// because the AM8 deadline timer (mux.go ~L2753) captures the
+	// original notify and a pointer change would invalidate the
+	// deadline check. The in-flight grant proceeds under its
+	// original deadline; the new caller exits silently.
+	//
+	// Different-initiator in-flight duplicate still goes through
+	// markInFlightCancelled — that's a real change of intent.
+	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID &&
+		sessionID != gatewaySessionID && m.pendingStart.initiator == initiator {
+		m.stateMu.Unlock()
+		ch := make(chan startResult, 1)
+		ch <- startResult{
+			granted:   false,
+			cancelled: true,
+			initiator: initiator,
+		}
+		return ch
+	}
 	// Step 1: cancel any in-flight grant for THIS session. The
 	// arbitrator's replace path (inside requestStart) only sees
 	// pendingExternal/pendingGateway entries; once an entry has

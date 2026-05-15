@@ -288,6 +288,23 @@ func (a *arbitrator) requestStart(sessionID uint64, initiator byte) <-chan start
 						initiator: existing.initiator,
 					}
 					existing.notify = ch
+					// F-39-fix (PR #634 P1, Codex review):
+					// refresh enqueuedAt on coalesce so the
+					// stale-drain in tryGrant
+					// (drainStalePendingExternalLocked, gated
+					// by PendingStartTTL ~250 ms) does not
+					// kill a freshly-retried bid as stale.
+					// Without this, a same-session retry at
+					// e.g. t=240 ms inherits the original
+					// enqueuedAt and is failed at t=260 ms
+					// even though the latest ebusd request
+					// has waited only 20 ms. Pre-F-39 the
+					// replace path created a fresh
+					// enqueuedAt by allocating a new
+					// startRequest, so retries within the
+					// TTL window naturally got a clean
+					// freshness clock.
+					existing.enqueuedAt = a.now()
 					return ch
 				}
 				// Different initiator — fall back to F-17

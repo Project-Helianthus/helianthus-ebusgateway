@@ -204,6 +204,50 @@ func TestF39_QueuedSameInitiator_NewCallerEventuallyGetsGrant(t *testing.T) {
 	}
 }
 
+// TestF39Fix_CoalesceRefreshesEnqueuedAt verifies the PR #634 P1 fix:
+// a same-session+same-initiator coalesce updates the existing
+// startRequest's enqueuedAt to "now", so drainStalePendingExternalLocked
+// does NOT prune a freshly-retried bid as stale. Without this fix, a
+// retry that arrives near the end of the PendingStartTTL window
+// inherits the original enqueuedAt and is killed by the stale-drain on
+// the next tryGrant.
+func TestF39Fix_CoalesceRefreshesEnqueuedAt(t *testing.T) {
+	arb := newArbitrator()
+
+	// Make `now` controllable so we can simulate the retry-late-in-TTL
+	// scenario deterministically.
+	current := time.Unix(1_700_000_000, 0)
+	arb.nowFn = func() time.Time { return current }
+
+	ch1 := arb.requestStart(1, 0x31)
+	go func() { <-ch1 }() // drain old cancel
+	time.Sleep(2 * time.Millisecond)
+
+	arb.mu.Lock()
+	originalEnqueuedAt := arb.pendingExternal[0].enqueuedAt
+	arb.mu.Unlock()
+
+	// Advance the clock substantially (close to PendingStartTTL).
+	current = current.Add(240 * time.Millisecond)
+
+	_ = arb.requestStart(1, 0x31)
+
+	arb.mu.Lock()
+	defer arb.mu.Unlock()
+
+	if got := len(arb.pendingExternal); got != 1 {
+		t.Fatalf("after coalesce: pendingExternal len=%d; want 1", got)
+	}
+	got := arb.pendingExternal[0].enqueuedAt
+	if !got.After(originalEnqueuedAt) {
+		t.Fatalf("F-39-fix: enqueuedAt was NOT refreshed on coalesce (got %v, original %v); stale-drain will kill the freshly-retried bid",
+			got, originalEnqueuedAt)
+	}
+	if !got.Equal(current) {
+		t.Fatalf("F-39-fix: enqueuedAt should equal current now() after coalesce: got %v want %v", got, current)
+	}
+}
+
 // TestF39_GatewaySessionUnaffected ensures the gateway session-0
 // arbitration path is NOT changed by F-39 (no coalescing). Gateway
 // session bids retain pendingGateway replace semantics.

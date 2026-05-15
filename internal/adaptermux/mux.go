@@ -349,16 +349,19 @@ func (c *Config) defaults() {
 		c.ExternalStartStaleness = 300 * time.Millisecond
 	}
 	if c.PostExternalReleaseGrace == 0 {
-		// F-37 (batch-32, iter14, 2026-05-15): widened 250ms → 500ms.
-		// F-36 at 250ms got 76.6% tight; gateway grants 96/90s (1.07
-		// tx/sec). To halve gateway wire occupancy (16% → 8%) and
-		// give ebusd more uncontended slots, double the cooldown.
+		// F-36 (batch-32, iter13): 250ms cooldown after every external
+		// release to give ebusd's TCP-delayed next ENH_REQ_START a
+		// window to arrive and queue before the gateway re-claims the
+		// bus. This curbs the gateway's semantic poll loop from
+		// outracing ebusd's next request via the in-process scheduler.
 		//
-		// Implements Codex iter10 attack #2 fully: 500ms "external
-		// lease" after every release means during a tight ebusd
-		// burst (5 starts/sec), the gateway essentially never
-		// re-bids until ebusd is quiet. Reduces wire contention
-		// driving ebusd into bs_skip.
+		// History: F-27 (250ms→2s tested but regressed; reverted),
+		// F-28/F-29 set 50→100ms, F-36 widened to 250ms — current
+		// value. F-37 attempted 500ms but regressed in measurement
+		// and was reverted to F-36's 250ms. PR #634 P2 (Codex review,
+		// 2026-05-15): comment previously claimed F-37 widened to
+		// 500ms; that change was rolled back, so 250ms (F-36) is the
+		// authoritative value.
 		c.PostExternalReleaseGrace = 250 * time.Millisecond
 	}
 	if c.FairnessRatio == 0 {
@@ -1606,6 +1609,13 @@ func (m *Mux) readLoop() {
 			// passive consumers see the same provenance the raw-TCP
 			// passive observers get via their local escape decoder.
 			m.onReceived(event.Byte, event.WasEscaped)
+		case transport.StreamEventWireSyn:
+			// F-38-fix (PR #155 P1, 2026-05-15): pre-grant SYN passive
+			// marker emitted by enh_transport during awaitingStart.
+			// Identical downstream effect to a wire SYN byte (route to
+			// onReceived as 0xAA with wasEscaped=false), but the new
+			// kind keeps the active sender's ReadByte queue clean.
+			m.onReceived(event.Byte, false)
 		default:
 			m.onReceived(event.Byte, event.WasEscaped)
 		}

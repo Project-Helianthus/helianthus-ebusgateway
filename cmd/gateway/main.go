@@ -1144,6 +1144,10 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 
 	fs.StringVar(&cfg.ProxyListenAddr, "proxy-listen", cfg.ProxyListenAddr, "TCP listen address for ENH proxy clients (e.g. :19001, empty disables)")
 
+	fs.StringVar(&cfg.PhantomInitiatorRejectBytes, "phantom-initiator-reject-bytes",
+		cfg.PhantomInitiatorRejectBytes,
+		"comma-separated hex bytes treated as phantom AND-collision artifacts (e.g. 0x71,0xFD); empty disables filtering. Default 0x71 covers the gateway=0x7F & initiator=0xF1 collision case observed on the live HA bus. Operators on different buses should set this explicitly.")
+
 	fs.Func("source-addr", "source address for scans/semantic reads (e.g. 0xf0, 0x00, or auto)", func(value string) error {
 		value = strings.TrimSpace(strings.ToLower(value))
 		if value == "" {
@@ -1188,6 +1192,49 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		return nil
 	})
 	fs.BoolVar(&cfg.StartupSource.Validate, "startup-source-override-validate", cfg.StartupSource.Validate, "run source-address selector in advisory-only mode alongside startup-source-override")
+}
+
+// parseHexByteList parses a comma-separated list of hex byte literals
+// (e.g. "0x71, 0xFD" or "71,FD") into []byte. Empty input returns a nil
+// slice with no error. Whitespace around items is trimmed. Per-byte
+// parsing accepts the standard Go base prefix (0x / 0X / no-prefix-hex),
+// so "0x71", "0X71", and "71" all parse to 0x71. Invalid items return an
+// error naming the offending substring.
+//
+// Used to materialize the --phantom-initiator-reject-bytes CLI flag into
+// the IsKnownInitiatorByte predicate plumbed into adaptermux (Codex P2
+// thread on PR #634, batch-24).
+func parseHexByteList(value string) ([]byte, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]byte, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		// strconv.ParseUint with base 0 accepts "0x71", "0X71", "71"
+		// (treated as decimal!) — to keep "71" parsing as hex we
+		// fall back to base 16 when no 0x prefix is present.
+		var (
+			parsed uint64
+			err    error
+		)
+		lower := strings.ToLower(part)
+		if strings.HasPrefix(lower, "0x") {
+			parsed, err = strconv.ParseUint(part[2:], 16, 8)
+		} else {
+			parsed, err = strconv.ParseUint(part, 16, 8)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("invalid hex byte %q: %w", part, err)
+		}
+		out = append(out, byte(parsed))
+	}
+	return out, nil
 }
 
 func parseStartupProbeTargets(value string) ([]byte, error) {
@@ -1289,8 +1336,9 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		DialTimeout:  cfg.TransportConfig.DialTimeout,
 		ReadTimeout:  cfg.TransportConfig.ReadTimeout,
 		WriteTimeout: cfg.TransportConfig.WriteTimeout,
-		// F-30 (batch-27, iter7, 2026-05-14): wire IsKnownInitiatorByte
-		// to filter bit-arbitration phantom bytes from external session
+		// F-30 (batch-27, iter7, 2026-05-14; batch-24 round-5
+		// parameterization, 2026-05-17): wire IsKnownInitiatorByte to
+		// filter bit-arbitration phantom bytes from external session
 		// forwarding. When the gateway loses arbitration to another
 		// initiator, the adapter reports FAILED with the bit-wise-AND
 		// result of the colliding initiators. This AND result is often
@@ -1310,9 +1358,14 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		// path. Cause-2 (state mismatch from phantom forwarding) is now
 		// the dominant residual.
 		//
-		// Pragmatic filter (iter7, hardcoded): reject the SPECIFIC
-		// phantom 0x71 observed on this bus. Generalizes to a
-		// runtime_state.known_bus_members-backed lookup in iter8.
+		// Iter7 (hardcoded): rejected the SPECIFIC phantom 0x71 observed
+		// on this bus. Round-5 (batch-24) generalizes via the
+		// --phantom-initiator-reject-bytes CLI flag — default "0x71"
+		// preserves iter7 behavior; operators on different buses should
+		// set this explicitly (empty disables filtering, CSV extends
+		// rejection to additional phantoms). The runtime_state-backed
+		// lookup originally planned for iter8 is still on the table but
+		// requires bus-membership convergence first.
 		//
 		// Returning false on the predicate routes the FAILED byte
 		// through the gateway's suppression path (mux.go ~1523): the
@@ -1320,15 +1373,28 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		// notify gets the bidder's own initiator instead of the
 		// phantom, and the passive emit / logging still fires for
 		// observability.
-		IsKnownInitiatorByte: func(b byte) bool {
-			// F-30 (iter7) narrow filter: reject ONLY the dominant
-			// phantom 0x71 = 0x7F (gateway) & 0xF1 (initiator #10).
-			// F-31's broader allowlist regressed in production (variance
-			// 60% vs F-30's 71%); reverted in iter9. The narrow filter
-			// is more conservative: it doesn't drop any REAL FAILED
-			// winner byte that might be a transient unobserved initiator.
-			return b != 0x71
-		},
+	}
+	phantomBytes, err := parseHexByteList(cfg.PhantomInitiatorRejectBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid -phantom-initiator-reject-bytes %q: %w", cfg.PhantomInitiatorRejectBytes, err)
+	}
+	if len(phantomBytes) == 0 {
+		// Empty CSV disables filtering entirely — every byte is
+		// "known", so the suppression path in mux.go never fires.
+		muxCfg.IsKnownInitiatorByte = nil
+	} else {
+		// Copy the slice into the closure so subsequent mutations of
+		// the caller's slice (none today, but defensive) can't shift
+		// the predicate's behavior at runtime.
+		pb := append([]byte(nil), phantomBytes...)
+		muxCfg.IsKnownInitiatorByte = func(b byte) bool {
+			for _, r := range pb {
+				if r == b {
+					return false
+				}
+			}
+			return true
+		}
 	}
 	if muxCfg.DialTimeout == 0 {
 		muxCfg.DialTimeout = 5 * time.Second

@@ -2750,6 +2750,23 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	// markInFlightCancelled — that's a real change of intent.
 	if m.pendingStart != nil && m.pendingStart.sessionID == sessionID &&
 		sessionID != gatewaySessionID && m.pendingStart.initiator == initiator {
+		// F-39-fix² (PR #634 P1 Codex review, 2026-05-17): refresh
+		// the in-flight request's enqueuedAt to "now" so the
+		// staleness drain at the response-arrival site
+		// (handleArbitrationResponse's
+		// drainStalePendingExternalLocked-style check via
+		// ExternalStartStaleness, default 300 ms) does not suppress
+		// the eventual STARTED as stale. The latest ebusd retry may
+		// be only a few ms old even though the original bid has been
+		// in-flight for >300 ms; without this refresh the gateway
+		// silently cancels the new waiter (above) AND suppresses the
+		// upstream grant, leaving the fresh retry with no ENH
+		// response on the wire. Mirrors the queued-coalesce path's
+		// `existing.enqueuedAt = a.now()` refresh in
+		// arb.requestStart (round-2 F-39-fix landed in 24bbed7).
+		if m.pendingStart.req != nil {
+			m.pendingStart.req.enqueuedAt = m.arb.now()
+		}
 		m.stateMu.Unlock()
 		ch := make(chan startResult, 1)
 		ch <- startResult{

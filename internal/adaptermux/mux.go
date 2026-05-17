@@ -708,6 +708,13 @@ func (m *Mux) Close() error {
 		if pendingToCancel != nil && pendingToCancel.deadline != nil {
 			pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 		}
+		// batch-23 round-5 (Codex P2 2026-05-17 PR #634): clear F-24
+		// stale-STARTED deferral latch on Close. Close is the strongest
+		// possible boundary — no further grants will be attempted on
+		// this mux, but clearing the flag keeps state coherent for any
+		// observer/test that inspects post-Close state and matches the
+		// invariant set by reconnect() / handleReset().
+		m.deferRegrantUntilNextSyn = false
 		m.stateMu.Unlock()
 		if pendingToCancel != nil {
 			// AM53: guarded send to avoid blocking Close if nobody reads notify.
@@ -1160,6 +1167,17 @@ func (m *Mux) reconnect() error {
 	// Clear blockingArbActive here because the transport is being replaced.
 	m.blockingArbGen++
 	m.blockingArbActive = false
+	// batch-23 round-5 (Codex P2 2026-05-17 PR #634): clear F-24
+	// stale-STARTED deferral latch on the reset boundary. The latch
+	// is set by tryGrantAndStart's F-24-fix path (~3689) and normally
+	// cleared by onSYNLocked (~2051) when the next SYN observation
+	// proves the abandoned external initiator's slot has terminated.
+	// A TCP disconnect/reconnect is stronger evidence than a SYN that
+	// the abandoned slot is gone; without this clear, a reconnect
+	// between stale-STARTED suppression and the next SYN would leave
+	// post-reconnect grants permanently blocked on a quiet/blackholed
+	// bus.
+	m.deferRegrantUntilNextSyn = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
@@ -2539,6 +2557,12 @@ func (m *Mux) handleReset() {
 	// Bump gen forward (monotonic) — see reconnect() for rationale.
 	m.blockingArbGen++
 	m.blockingArbActive = false
+	// batch-23 round-5 (Codex P2 2026-05-17 PR #634): clear F-24
+	// stale-STARTED deferral latch on the reset boundary. See the
+	// matching comment in reconnect() for the rationale — a RESETTED
+	// boundary is stronger evidence than a SYN that the abandoned
+	// external initiator's slot is gone.
+	m.deferRegrantUntilNextSyn = false
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive

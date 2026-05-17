@@ -220,6 +220,68 @@ func TestF24_StaleSuppression_DefersRegrantUntilNextSyn(t *testing.T) {
 	_ = gwReqCh
 }
 
+// TestF24_DeferralLatchClearedOnHandleReset pins the batch-23 round-5
+// (Codex P2 2026-05-17 PR #634) survival fix. The F-24 stale-STARTED
+// deferral latch (deferRegrantUntilNextSyn) is set by tryGrantAndStart
+// at mux.go ~3689 and normally cleared by onSYNLocked at ~2051. If a
+// reset/disconnect boundary lands between F-24 suppression and the
+// next SYN observation — and the bus is then quiet/blackholed
+// post-reset — the latch would survive forever, leaving every
+// subsequent grant attempt as a no-op at ~2896.
+//
+// Fix: handleReset clears the latch under stateMu (alongside the
+// other state resets). A RESETTED boundary is stronger evidence than
+// a SYN that the abandoned external initiator's slot is gone.
+func TestF24_DeferralLatchClearedOnHandleReset(t *testing.T) {
+	mock := newP3MockTransport()
+	var logBuf cancelledStartedLogBuffer
+	mux := newF24TestMux(t, mock, &logBuf, 100*time.Millisecond)
+	defer mux.shutdown()
+
+	// Simulate post-F-24-suppression state directly.
+	mux.stateMu.Lock()
+	mux.deferRegrantUntilNextSyn = true
+	mux.stateMu.Unlock()
+
+	mux.handleReset()
+
+	mux.stateMu.Lock()
+	cleared := !mux.deferRegrantUntilNextSyn
+	mux.stateMu.Unlock()
+	if !cleared {
+		t.Fatal("Codex P2 batch-23 regression: handleReset did not clear deferRegrantUntilNextSyn — a reset boundary between F-24 suppression and the next SYN would leave post-reset grants permanently blocked on a quiet bus")
+	}
+}
+
+// TestF24_DeferralLatchClearedOnClose pins the symmetric Close-path
+// invariant. Close is the strongest possible boundary; the latch
+// must not survive into post-Close state inspection.
+func TestF24_DeferralLatchClearedOnClose(t *testing.T) {
+	mock := newP3MockTransport()
+	var logBuf cancelledStartedLogBuffer
+	mux := newF24TestMux(t, mock, &logBuf, 100*time.Millisecond)
+	// NOTE: no defer mux.shutdown() — we drive Close() explicitly and
+	// then inspect; calling shutdown() on top would double-cancel.
+
+	mux.stateMu.Lock()
+	mux.deferRegrantUntilNextSyn = true
+	mux.stateMu.Unlock()
+
+	if err := mux.Close(); err != nil {
+		// Close is idempotent and may surface transport-shutdown errors
+		// from the mock; tolerate them. The invariant under test is the
+		// stateMu-protected flag value below.
+		_ = err
+	}
+
+	mux.stateMu.Lock()
+	cleared := !mux.deferRegrantUntilNextSyn
+	mux.stateMu.Unlock()
+	if !cleared {
+		t.Fatal("Codex P2 batch-23 regression: Close did not clear deferRegrantUntilNextSyn — post-Close state diverges from reconnect()/handleReset() invariant")
+	}
+}
+
 // TestF24_NegativeBudgetDisablesGuard verifies the legacy-behavior
 // escape hatch — passing a negative ExternalStartStaleness disables
 // the guard entirely, preserving pre-F-24 grant semantics for

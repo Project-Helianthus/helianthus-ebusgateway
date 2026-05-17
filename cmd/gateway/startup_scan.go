@@ -16,6 +16,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -109,6 +110,15 @@ type activeTxnClassifier interface {
 // completed between Send return and the log write.
 type activeTxnSnapshotter interface {
 	ActiveTxnSnapshotForScan() (id uint64, writePrefix []byte, readPrefix []byte, class string)
+}
+
+// adaptermuxDiagSnapshotter is the seam for an adaptermux that can
+// surface its full activeTxnDiag snapshot. Implemented by
+// *adaptermux.Mux. Used in cmd/gateway/main.go to wire the batch-21
+// forensic counters into the BusObservabilityStore's Prometheus
+// surface via SetAdaptermuxDiagProvider.
+type adaptermuxDiagSnapshotter interface {
+	ActiveTxnSnapshot() adaptermux.ActiveTxnSnapshot
 }
 
 // hexN encodes at most n bytes of b as uppercase hex (2 chars per byte).

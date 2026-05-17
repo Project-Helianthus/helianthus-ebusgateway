@@ -656,6 +656,28 @@ func grantGateway(t *testing.T, mux *Mux, mock *p3MockTransport, initiator byte)
 	}
 }
 
+// gatewayEndOfMessage is a test helper that emulates
+// bus.Bus.sendEndOfMessage by writing a terminator SYN via the active
+// path. Round-6 (batch-24) of the echo_mismatch fix retracted the
+// legacy "queue empty → assume terminator" behavior: the terminator
+// gate now requires an explicit recordSent(SymbolSyn) on the gateway
+// echo queue, which is what every real bus.Bus.Send call produces via
+// sendEndOfMessage. Tests that previously injected a bare wire SYN to
+// end a transaction must now go through this helper.
+//
+// The helper issues the Write in a goroutine so sendLoop can run while
+// the caller's stateMu critical section is not held, then sleeps
+// briefly to let recordSent populate the queue before returning.
+func gatewayEndOfMessage(t *testing.T, at transport.RawTransport) {
+	t.Helper()
+	done := make(chan struct{}, 1)
+	go func() {
+		_, _ = at.Write([]byte{protocol.SymbolSyn})
+		done <- struct{}{}
+	}()
+	time.Sleep(20 * time.Millisecond)
+}
+
 // TestActivePath_RealFlow_NoAccumulationAfterTxnSyn verifies the real
 // production lifecycle: after a gateway transaction, the first SYN
 // clears gatewayTxnActive and subsequent third-party bytes do NOT
@@ -701,11 +723,11 @@ func TestActivePath_RealFlow_NoAccumulationAfterTxnSyn(t *testing.T) {
 		}
 	}
 
-	// End-of-transaction: bus.Send has returned. Next SYN clears
-	// gatewayTxnActive BEFORE IdleReleaseGrace expires. PR #502 E2E
-	// fix: the terminator SYN is delivered to activeCh before the
-	// clear — drain it here so the "no accumulation" assertion below
-	// reflects third-party noise only, not the legitimate terminator.
+	// Round-6 (batch-24): emulate sendEndOfMessage so the terminator
+	// gate fires through the explicit-terminator branch
+	// (hasPendingEcho=true && nextExpected==SymbolSyn). The wire echo
+	// is then delivered to activeCh as the terminator byte.
+	gatewayEndOfMessage(t, at)
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 	if b, err := at.ReadByte(); err != nil || b != protocol.SymbolSyn {
@@ -810,12 +832,14 @@ func TestActivePath_SoakCycle_NoSustainedGrowth(t *testing.T) {
 			}
 		}
 
-		// End-of-txn SYN: clears gatewayTxnActive (bytesRead > 0).
-		// PR #502 E2E fix: the SYN is delivered to activeCh as the
-		// frame terminator. Drain it so the no-accumulation assertion
-		// below reflects noise only, not the legitimate terminator.
+		// Round-6 (batch-24): emulate sendEndOfMessage so the
+		// terminator gate fires (queue armed with [SymbolSyn]). The
+		// wire echo is then delivered to activeCh; the test consumer
+		// drains it so the no-accumulation assertion below reflects
+		// noise only.
+		gatewayEndOfMessage(t, at)
 		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond)
 		if b, err := at.ReadByte(); err != nil || b != protocol.SymbolSyn {
 			t.Fatalf("cycle %d: ReadByte terminator=(0x%02X,%v), want (0xAA,nil)", i, b, err)
 		}

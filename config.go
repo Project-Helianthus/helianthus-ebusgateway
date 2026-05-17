@@ -199,6 +199,25 @@ type Config struct {
 	// frames never carry an ACKCorrelation that would flow through
 	// the inserter. Static seed bypasses that gate.
 	EnableStaticSeedTable bool
+
+	// PhantomInitiatorRejectBytes is a comma-separated list of hex bytes
+	// (e.g. "0x71,0xFD") that the adapter-direct mux's IsKnownInitiatorByte
+	// predicate rejects as transient bit-arbitration AND-collision
+	// artifacts. When an external session's FAILED winner byte matches
+	// one of these values, the byte is suppressed instead of forwarded
+	// — preventing downstream consumers (ebusd's bus reconstructor)
+	// from mistaking the phantom for a real initiator and advancing
+	// their state machine into a stuck state.
+	//
+	// Default "0x71" preserves the live-HA test bus behavior observed
+	// in batch-27 iter7 (F-30): gateway 0x7F AND-collided with
+	// initiator 0xF1 yields 0x71, which is NOT a real initiator on
+	// that bus. Empty string disables filtering entirely on deployments
+	// where 0x71 IS a real initiator. Multi-byte CSV (e.g. "0x71,0xFD")
+	// extends rejection to additional phantoms — operators should set
+	// this explicitly when deploying onto a bus whose topology differs
+	// from the reference. Per Codex P2 thread on PR #634 (batch-24).
+	PhantomInitiatorRejectBytes string
 }
 
 func DefaultConfig() Config {
@@ -280,6 +299,12 @@ func DefaultConfig() Config {
 		ObserveFirstWarmupPostResetWindow:       DefaultObserveFirstWarmupPostResetWindow,
 		ObserveFirstWarmupPostResetTransactions: DefaultObserveFirstWarmupPostResetTransactions,
 		ObserveFirstWarmupOuterWindow:           DefaultObserveFirstWarmupOuterWindow,
+		// F-30 default preserves the live HA test bus behavior
+		// (gateway 0x7F & initiator 0xF1 = 0x71). Operators on
+		// different buses should override via the
+		// --phantom-initiator-reject-bytes CLI flag — empty disables
+		// filtering, CSV (e.g. "0x71,0xFD") extends it.
+		PhantomInitiatorRejectBytes: "0x71",
 	}
 }
 

@@ -104,6 +104,13 @@ type BusObservabilityStore struct {
 
 	startupSurfaceProvider func() *BusObservabilityStartup
 
+	// adaptermuxDiagProvider returns the latest adaptermux diagnostic
+	// snapshot. Set via SetAdaptermuxDiagProvider; nil when no
+	// adaptermux is wired (e.g. in tests). When non-nil, RenderPrometheus
+	// emits the batch-21 forensic counters
+	// (ebus_adaptermux_syn_seen_*) alongside the rest of the surface.
+	adaptermuxDiagProvider func() AdaptermuxDiagSnapshot
+
 	energyFreshnessMetricsRefresher func(now time.Time, passiveState string)
 	busAdmission                    *BusAdmission
 	admissionStabilityWindow        *AdmissionStabilityWindow
@@ -986,6 +993,53 @@ func (store *BusObservabilityStore) SetEnergyFreshnessMetricsRefresher(refresher
 	store.mu.Unlock()
 }
 
+// AdaptermuxDiagSnapshot is the subset of adaptermux's
+// activeTxnDiag snapshot exposed via the Prometheus surface for
+// batch-21 forensic instrumentation. Field semantics match the
+// originating counters in `internal/adaptermux/diag.go`. Plumbing
+// through this small struct (rather than importing the full
+// ActiveTxnSnapshot) keeps `bus_observability_store` decoupled from
+// the adaptermux package.
+type AdaptermuxDiagSnapshot struct {
+	// SynSuppressedPreEcho mirrors activeTxnDiag.synSuppressedPreEcho
+	// — total SYNs the existing P10.2 / pre-first-echo gate has
+	// suppressed. Provided for context alongside the new batch-21
+	// counters so an operator reading /metrics can compare the
+	// suppressed population to the gap populations below.
+	SynSuppressedPreEcho uint64
+	// SynSeenDuringGrantWindow counts SYNs observed during gateway
+	// ownership where gatewayTxnActive=false (Attack 1 — grant→first-
+	// write window).
+	SynSeenDuringGrantWindow uint64
+	// SynSeenWhileInterWriteEmpty counts SYNs observed during a
+	// gateway-owned active txn where the echo queue is empty AND at
+	// least one byte has been delivered to active (Attack 3 — inter-
+	// write queue-empty window).
+	SynSeenWhileInterWriteEmpty uint64
+	// SynSeenAfterTransportWindowExpired counts SYNs observed during
+	// gateway ownership where the upstream ENH transport's
+	// postGrantPreEcho window has closed via deadline-expiry in the
+	// current transaction (Attack 2 — batch-22 round-3). Forensic
+	// only; correlates with the residual pre_echo_syn rate
+	// unexplained by Attack 1 + Attack 3 instrumentation.
+	SynSeenAfterTransportWindowExpired uint64
+}
+
+// SetAdaptermuxDiagProvider registers a snapshot provider callback for
+// batch-21 forensic counters. Wired in cmd/gateway/main.go after the
+// adaptermux is constructed; the callback closes over the mux and is
+// invoked on each /metrics scrape. nil-store and nil-provider are no-
+// ops (defensive — keeps test setup that does not exercise adaptermux
+// from blowing up).
+func (store *BusObservabilityStore) SetAdaptermuxDiagProvider(provider func() AdaptermuxDiagSnapshot) {
+	if store == nil {
+		return
+	}
+	store.mu.Lock()
+	store.adaptermuxDiagProvider = provider
+	store.mu.Unlock()
+}
+
 func (store *BusObservabilityStore) RenderPrometheus() string {
 	if store == nil {
 		return ""
@@ -1016,7 +1070,20 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	featureFlags := store.cfg.ObserveFirstFlags
 	energyMetricsRefresher := store.energyFreshnessMetricsRefresher
 	passiveState := passive.state
+	adaptermuxDiagProvider := store.adaptermuxDiagProvider
 	store.mu.Unlock()
+
+	// batch-21 diagnostic counters — snapshot OUTSIDE store.mu (the
+	// provider holds adaptermux's stateMu internally; nesting locks
+	// across packages would invite ABBA risk). Provider is nil when
+	// no adaptermux is wired (tests, smoke setups); skip the section
+	// in that case so the surface degrades cleanly.
+	var adaptermuxDiag AdaptermuxDiagSnapshot
+	haveAdaptermuxDiag := false
+	if adaptermuxDiagProvider != nil {
+		adaptermuxDiag = adaptermuxDiagProvider()
+		haveAdaptermuxDiag = true
+	}
 
 	if energyMetricsRefresher != nil {
 		energyMetricsRefresher(now, passiveState)
@@ -1097,12 +1164,44 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	// metric (not a label dimension on ebus_errors_total) so that
 	// existing alerts filtering on class=echo_mismatch keep working
 	// without per-series fan-out.
-	writer.writeHelp("ebus_active_echo_mismatch_subclass_total", "Active-scope echo_mismatch event count broken down by inferred subclass (byte-value-based, approximate): pre_echo_syn (read 0xAA in echo position — most often a mux SYN-suppression leak OR escape-decoded 0xAA data from a third-party frame), post_grant_collision_initiator (third-party initiator's SOF on the wire), post_grant_collision_target (third-party mid-frame target/broadcast byte), post_grant_ack (stale 0x00 from previous txn buffer), post_grant_nack (stale 0xFF), post_grant_reserved (mid-escape sequence), bit_flip (fallback; EMI/wire corruption).")
+	writer.writeHelp("ebus_active_echo_mismatch_subclass_total", "Active-scope echo_mismatch event count broken down by inferred subclass (byte-value-based + EchoWasEscaped discriminator for 0xAA; approximate for non-0xAA bytes): pre_echo_syn_raw (read 0xAA with WasEscaped=false — REAL wire SYN intrusion; mux SYN-suppression leak class) [batch-23 round-4 2026-05-17], pre_echo_syn_escaped_data (read 0xAA with WasEscaped=true — escape-decoded 0xAA payload from a third-party frame; wire-level contention class, Attack 10) [batch-23 round-4 2026-05-17], post_grant_collision_initiator (third-party initiator's SOF on the wire), post_grant_collision_target (third-party mid-frame target/broadcast byte), post_grant_ack (stale 0x00 from previous txn buffer), post_grant_nack (stale 0xFF), post_grant_reserved (mid-escape sequence), bit_flip (fallback; EMI/wire corruption). NOTE: the pre-batch-23 `pre_echo_syn` label is RETIRED — operators querying that legacy label after deploy see no data; sum `pre_echo_syn_raw` + `pre_echo_syn_escaped_data` to recover pre-batch-23 semantics.")
 	writer.writeType("ebus_active_echo_mismatch_subclass_total", "counter")
 	for _, item := range sortedEchoMismatchSubclassSeries(echoMismatchSubclasses) {
 		writer.writeCounterSample("ebus_active_echo_mismatch_subclass_total", float64(item.Value), labelMap(
 			"subclass", item.Key.Subclass,
 		))
+	}
+
+	// batch-21 forensic counters (set via SetAdaptermuxDiagProvider).
+	// Three SYN observation populations the operator measures vs the
+	// `class=echo_mismatch,subclass=pre_echo_syn` rate to identify
+	// which suppression-gap dominates. Forensic only — no behavior
+	// change. See _work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-15-batch21.md
+	// for hypothesis A/B/C and the round-3 fix-prompt criteria.
+	if haveAdaptermuxDiag {
+		writer.writeHelp("ebus_adaptermux_syn_suppressed_pre_echo_total",
+			"Total SYNs the adaptermux P10.2 + pre-first-echo gate has suppressed during gateway-owned active txns. Provided alongside the batch-21 syn_seen_* counters so the operator can compare suppressed vs leaked populations on a single scrape.")
+		writer.writeType("ebus_adaptermux_syn_suppressed_pre_echo_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_syn_suppressed_pre_echo_total",
+			float64(adaptermuxDiag.SynSuppressedPreEcho), nil)
+
+		writer.writeHelp("ebus_adaptermux_syn_seen_during_grant_window_total",
+			"Diagnostic (batch-21): SYNs observed while gateway owned bus but gatewayTxnActive=false (the brief window between completeArbitrationGrant and the first activeTransport.Write recordSent). preEchoMidFrameSuppress requires gatewayTxnActive=true so any SYN here bypasses the gate. Forensic only — no behavior change. Operator measures rate vs ebus_active_echo_mismatch_subclass_total{subclass=\"pre_echo_syn_raw\"} to confirm Attack 1 (grant-lifecycle) dominance. NOTE (batch-23 round-5, 2026-05-17): the prior `pre_echo_syn` label was retired and split into `pre_echo_syn_raw` (real wire SYN intrusion — the class this counter correlates with) and `pre_echo_syn_escaped_data` (escape-decoded payload 0xAA from a third-party frame); Attack 1 is a raw-wire-SYN-leak hypothesis and does not implicate the escape-decoded subclass.")
+		writer.writeType("ebus_adaptermux_syn_seen_during_grant_window_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_syn_seen_during_grant_window_total",
+			float64(adaptermuxDiag.SynSeenDuringGrantWindow), nil)
+
+		writer.writeHelp("ebus_adaptermux_syn_seen_while_inter_write_empty_total",
+			"Diagnostic (batch-21): SYNs observed during a gateway-owned active txn where the echo queue is empty AND at least one byte has been delivered to active. The peek-based P10.2 gate cannot suppress because there is no expected head to compare against. Forensic only — no behavior change. CAVEAT: this counter cannot be cleanly separated at SYN observation time from a legitimate end-of-transaction terminator SYN — both match the same state. Operator analysis: leak_rate ≈ counter − grantsTotal_in_window (each successful transaction has one legitimate terminator SYN; subtract that baseline to estimate the inter-write leak rate). Compare the residual to ebus_active_echo_mismatch_subclass_total{subclass=\"pre_echo_syn_raw\"} rate to confirm Attack 3 (queue-empty inter-write) dominance. NOTE (batch-23 round-5, 2026-05-17): the prior `pre_echo_syn` label was retired and split into `pre_echo_syn_raw` (real wire SYN intrusion — the class this counter correlates with) and `pre_echo_syn_escaped_data` (escape-decoded payload 0xAA from a third-party frame); Attack 3 is a raw-wire-SYN-leak hypothesis and does not implicate the escape-decoded subclass.")
+		writer.writeType("ebus_adaptermux_syn_seen_while_inter_write_empty_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_syn_seen_while_inter_write_empty_total",
+			float64(adaptermuxDiag.SynSeenWhileInterWriteEmpty), nil)
+
+		writer.writeHelp("ebus_adaptermux_syn_seen_after_transport_window_expired_total",
+			"Diagnostic (batch-22 round-3): SYNs observed while gateway owned the bus AND the upstream ENH transport's postGrantPreEcho window had already closed via deadline-expiry in the current gateway transaction. The transport's 50ms window normally closes on the first non-SYN echo; closure-by-expiry indicates the gateway has not yet seen a real echo and the transport-layer SYN suppression is no longer active for this txn — any subsequent idle 0xAA on the wire reaches the gateway unsuppressed at the transport layer. Forensic only — no behavior change. Per Attack 2 (batch-22): events here are leak candidates beyond what Attack 1 + Attack 3 instrumentation covers (~54% pre_echo_syn residual unaccounted-for after round-2). Operator analysis: compare rate to ebus_active_echo_mismatch_subclass_total{subclass=\"pre_echo_syn_raw\"} to confirm Attack 2 dominance. NOTE (batch-23 round-5, 2026-05-17): the prior `pre_echo_syn` label was retired and split into `pre_echo_syn_raw` (real wire SYN intrusion — the class this counter correlates with) and `pre_echo_syn_escaped_data` (escape-decoded payload 0xAA from a third-party frame); Attack 2 is a raw-wire-SYN-leak hypothesis and does not implicate the escape-decoded subclass.")
+		writer.writeType("ebus_adaptermux_syn_seen_after_transport_window_expired_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_syn_seen_after_transport_window_expired_total",
+			float64(adaptermuxDiag.SynSeenAfterTransportWindowExpired), nil)
 	}
 
 	writer.writeHelp("ebus_frame_bytes_total", "Aggregate retained frame byte counts.")
@@ -1447,7 +1546,12 @@ func (store *BusObservabilityStore) recordActiveErrorLocked(event protocol.BusEv
 		// observability. Stored in a separate map so the existing
 		// `ebus_errors_total{class="echo_mismatch"}` time series is
 		// not split (Codex P10 review pass 1 MAJOR FINDING_1).
-		subclass := classifyEchoMismatchSubclass(event.Byte)
+		// batch-23 round-4 (2026-05-17): pass EchoWasEscaped so the
+		// classifier can split `pre_echo_syn` into `pre_echo_syn_raw`
+		// vs `pre_echo_syn_escaped_data` per the Attack 10 hypothesis.
+		// Field is populated upstream by sendRawWithEcho's escape-
+		// aware guards in protocol/bus.go ~1054.
+		subclass := classifyEchoMismatchSubclass(event.Byte, event.EchoWasEscaped)
 		store.echoMismatchSubclasses[echoMismatchSubclassKey{Subclass: subclass}]++
 	}
 	if !event.HasRequest {
@@ -2157,26 +2261,43 @@ func classifyActiveError(event protocol.BusEvent) (string, string) {
 
 // classifyEchoMismatchSubclass returns a sub-type label for an
 // echo_mismatch event based on the byte that was read in place of
-// the expected echo. P10 (operator-directed) — the residual
+// the expected echo AND whether the byte was escape-decoded by the
+// ENH transport. P10 (operator-directed) — the residual
 // echo_mismatch counter (300+ events post-P7.1) hides several
 // distinct phenomena that should be tracked separately for
 // operator clarity.
 //
-// IMPORTANT — labels are byte-value-based ONLY (P10.1 doc fix). The
-// classifier doesn't have access to the active-path state at the
-// moment of mismatch (e.g. bytesDeliveredToActive, echoCursor
-// position) so labels are best-effort directional signals rather
-// than ground-truth root causes. Example: "pre_echo_syn" fires for
-// ANY 0xAA byte read in echo position — could be a real mux SYN-
-// suppression leak, OR an escape-decoded 0xAA data byte from a
-// third-party frame's payload mid-write. Operators should
-// interpret the breakdown as approximate cause distribution.
+// IMPORTANT — labels are byte-value-based with a single
+// WasEscaped discriminator on the 0xAA case (batch-23 round-4 doc
+// fix, 2026-05-17). For non-0xAA bytes the WasEscaped flag is
+// ignored. The classifier still doesn't have access to active-path
+// state (bytesDeliveredToActive, echoCursor position) so labels
+// for non-0xAA bytes are best-effort directional signals rather
+// than ground-truth root causes.
 //
-//   - "pre_echo_syn" — read 0xAA. Most often a mux SYN-suppression
-//     leak (the gate at internal/adaptermux/mux.go:1118-1133 was
-//     bypassed) OR an escape-decoded 0xAA data byte from a
-//     third-party frame in flight. Non-zero rate is informative
-//     but not a strict canary.
+//   - "pre_echo_syn_raw" (batch-23 round-4, 2026-05-17) — read 0xAA
+//     with WasEscaped=false. A REAL wire SYN arrived in echo
+//     position. Most often a mux SYN-suppression leak (the gate at
+//     internal/adaptermux/mux.go:1118-1133 was bypassed) OR an
+//     idle SYN arriving in the brief window between the adapter
+//     reporting STARTED and our first write byte reaching the
+//     wire.
+//
+//   - "pre_echo_syn_escaped_data" (batch-23 round-4, 2026-05-17) —
+//     read 0xAA with WasEscaped=true. The transport's escape
+//     decoder unwrapped a wire `A9 01` pair from a third-party
+//     frame's payload into a logical 0xAA. This is "Attack 10":
+//     a foreign initiator was mid-frame on the wire and its
+//     escaped payload byte 0xAA reached our echo-comparison
+//     position. NOT a gateway-internal bug — wire-level
+//     contention, same operational character as
+//     post_grant_collision_*.
+//
+//   - "pre_echo_syn" (RETIRED, batch-23 round-4, 2026-05-17) —
+//     pre-batch-23 this single label conflated both of the above.
+//     Operators querying the old label see no data after deploy;
+//     sum `pre_echo_syn_raw` + `pre_echo_syn_escaped_data` to
+//     recover pre-batch-23 semantics.
 //
 //   - "post_grant_collision_initiator" — read an initiator-class
 //     byte (initiator per AddressClassOf). The wire was carrying a
@@ -2208,10 +2329,23 @@ func classifyActiveError(event protocol.BusEvent) (string, string) {
 // dramatically. Apart from CRC + collisions, we shouldn't see much
 // else." The subclass labels surface which echo_mismatch events are
 // real collisions (most of the 300) vs. wire-noise residuals.
-func classifyEchoMismatchSubclass(readByte byte) string {
+func classifyEchoMismatchSubclass(readByte byte, echoWasEscaped bool) string {
 	switch readByte {
 	case protocol.SymbolSyn:
-		return "pre_echo_syn"
+		// batch-23 round-4 (2026-05-17): split the previously single
+		// `pre_echo_syn` label by EchoWasEscaped to distinguish a
+		// real wire SYN intrusion (mux SYN-suppression leak class)
+		// from an escape-decoded 0xAA data byte from a third-party
+		// frame's payload (wire `A9 01` → logical 0xAA, WasEscaped=
+		// true). Per Attack 10 hypothesis: the latter is responsible
+		// for the ~19.6× pre_echo_syn:leak ratio observed in live HA
+		// soak round-3 (cumulative=1216, Attack 1 counter=23820)
+		// where none of the byte-value-only SYN counters tracked
+		// 1:1 with the residual.
+		if echoWasEscaped {
+			return "pre_echo_syn_escaped_data"
+		}
+		return "pre_echo_syn_raw"
 	case protocol.SymbolEscape:
 		return "post_grant_reserved"
 	case protocol.SymbolAck:

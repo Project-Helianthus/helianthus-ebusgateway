@@ -140,6 +140,61 @@ type activeTxnDiag struct {
 	// (typically 1–3 suppressed SYNs per transaction).
 	synSuppressedPreEcho atomic.Uint64
 
+	// batch-21 diagnostic counters — disambiguate three competing
+	// hypotheses about residual `pre_echo_syn` echo_mismatch events
+	// (~11/min as of 2026-05-15). Forensic only; no behavior change.
+	// Reference: _work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-15-batch21.md.
+	//
+	// synSeenDuringGrantWindow counts SYN observations where the gateway
+	// is the owner but gatewayTxnActive is still false (the brief
+	// window between completeArbitrationGrant and the first
+	// recordSent). preEchoMidFrameSuppress requires gatewayTxnActive=
+	// true, so any SYN in this window bypasses the suppression. If this
+	// counter dominates the residual echo_mismatch rate, Attack 1
+	// (gatewayTxnActive grant-lifecycle gap) is confirmed.
+	synSeenDuringGrantWindow atomic.Uint64
+
+	// synSeenWhileInterWriteEmpty counts SYN observations where the
+	// gateway owns the bus, gatewayTxnActive is true, the echo queue
+	// is empty (peekNextExpected returns hasPending=false) AND we've
+	// already delivered at least one byte to active. P10.2's peek-based
+	// gate requires hasPendingEcho=true to suppress; the brief inter-
+	// write window between echo K being consumed and recordSent(K+1)
+	// arming the next expected echo leaves the queue empty. If this
+	// counter dominates, Attack 3 (queue-empty inter-write window) is
+	// confirmed.
+	synSeenWhileInterWriteEmpty atomic.Uint64
+
+	// synSeenAfterTransportWindowExpired (batch-22 round-3 Attack 2
+	// instrumentation, 2026-05-17) counts SYN observations where
+	// the upstream ENH transport's postGrantPreEcho window has
+	// closed via DEADLINE EXPIRY in the current gateway transaction
+	// (vs. closed normally via first-real-echo arrival). The check
+	// compares transport.PostGrantWindowExpiredCount() against
+	// `transportExpiredAtTxnStart` (captured at recordGatewayGrant)
+	// so the delta reflects only THIS transaction's expiry events.
+	//
+	// Per batch-22: events here are leak candidates beyond what
+	// Attack 1 (grant-window race) and Attack 3 (inter-write empty)
+	// instrumentation surfaced — they target the ~54% of the
+	// pre_echo_syn residual unaccounted-for after round-2.
+	//
+	// Implemented via the helianthus-ebusgo
+	// transport.PostGrantWindowExpiredReporter optional interface;
+	// the gateway type-asserts m.upstream against it. Transports
+	// that don't implement the interface (plain TCP/UDP, ebusd_tcp)
+	// leave the counter at zero — diagnostic degrades cleanly.
+	synSeenAfterTransportWindowExpired atomic.Uint64
+
+	// transportExpiredAtTxnStart is the snapshot of
+	// transport.PostGrantWindowExpiredCount() taken at the moment
+	// the current gateway transaction was granted (in
+	// recordGatewayGrant). Distinguishes "the window expired in
+	// THIS txn" from "the window has expired in some past txn."
+	// Atomic so the SYN-observation site (under stateMu) and the
+	// txn-start site can both interact lock-free.
+	transportExpiredAtTxnStart atomic.Uint64
+
 	// --- Transaction-shape diagnostics (bounded) ---
 	// Captured under stateMu via recordWritePrefix/recordReadPrefix.
 	writePrefix    [txnPrefixCap]byte
@@ -180,6 +235,27 @@ type ActiveTxnSnapshot struct {
 	TerminatorDropOnFullCh uint64
 	// SynSuppressedPreEcho mirrors activeTxnDiag.synSuppressedPreEcho.
 	SynSuppressedPreEcho uint64
+	// SynSeenDuringGrantWindow mirrors
+	// activeTxnDiag.synSeenDuringGrantWindow (batch-21 diagnostic).
+	// Counts SYNs observed while gateway owned bus but
+	// gatewayTxnActive=false. Operator measures rate vs echo_mismatch
+	// to identify Attack 1 dominance.
+	SynSeenDuringGrantWindow uint64
+	// SynSeenWhileInterWriteEmpty mirrors
+	// activeTxnDiag.synSeenWhileInterWriteEmpty (batch-21 diagnostic).
+	// Counts SYNs observed during gateway-owned active txn while the
+	// echo queue is empty AND at least one byte has been delivered.
+	// Operator measures rate vs echo_mismatch to identify Attack 3
+	// dominance.
+	SynSeenWhileInterWriteEmpty uint64
+	// SynSeenAfterTransportWindowExpired mirrors
+	// activeTxnDiag.synSeenAfterTransportWindowExpired (batch-22
+	// round-3 Attack 2 instrumentation). Counts SYNs observed while
+	// gateway owned bus AND the upstream transport's postGrantPreEcho
+	// window has already closed via deadline-expiry in the current
+	// transaction. Targets the ~54% pre_echo_syn residual unexplained
+	// by Attack 1 + Attack 3 instrumentation.
+	SynSeenAfterTransportWindowExpired uint64
 	// InterWriteDrainTotal mirrors activeTxnDiag.interWriteDrainTotal
 	// (P12). Bytes drained from activeCh in sendLoop's pre-recordSent
 	// section. Non-zero is normal; persistent zero indicates the
@@ -237,32 +313,35 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 	rp := make([]byte, m.activeTxn.readPrefixLen)
 	copy(rp, m.activeTxn.readPrefix[:m.activeTxn.readPrefixLen])
 	return ActiveTxnSnapshot{
-		ID:                      m.activeTxn.id,
-		Initiator:               m.activeTxn.initiator,
-		GrantedAt:               m.activeTxn.grantedAt,
-		InactiveAt:              m.activeTxn.inactiveAt,
-		InactiveReason:          m.activeTxn.inactiveReas,
-		DrainedOnGrant:          m.activeTxn.drainedOnGrant,
-		Active:                  m.gatewayTxnActive,
-		BytesWritten:            m.activeTxn.bytesWritten.Load(),
-		BytesRead:               m.activeTxn.bytesRead.Load(),
-		GrantsTotal:             m.activeTxn.grantsTotal.Load(),
-		WriteErrTotal:           m.activeTxn.writeErrTotal.Load(),
-		ReadTimeoutTot:          m.activeTxn.readTimeoutTot.Load(),
-		AfterInactive:           m.activeTxn.afterInactive.Load(),
-		TerminatorDropOnFullCh:  m.activeTxn.terminatorDropOnFullCh.Load(),
-		SynSuppressedPreEcho:    m.activeTxn.synSuppressedPreEcho.Load(),
-		InterWriteDrainTotal:    m.activeTxn.interWriteDrainTotal.Load(),
-		EchoQueueOverflowResets: m.gatewayEcho.overflowResets(),
-		BytesDeliveredToActive:  m.activeTxn.bytesDeliveredToActive.Load(),
-		AbsorbResetTotal:        m.absorbResetTotal.Load(),
-		WritePrefix:             wp,
-		ReadPrefix:              rp,
-		EchoLike:                m.activeTxn.echoLike.Load(),
-		NonEcho:                 m.activeTxn.nonEcho.Load(),
-		SynMarkers:              m.activeTxn.synMarkers.Load(),
-		TxnClass:                m.activeTxn.txnClass,
-		LastTxnClass:            m.activeTxn.lastClass,
+		ID:                          m.activeTxn.id,
+		Initiator:                   m.activeTxn.initiator,
+		GrantedAt:                   m.activeTxn.grantedAt,
+		InactiveAt:                  m.activeTxn.inactiveAt,
+		InactiveReason:              m.activeTxn.inactiveReas,
+		DrainedOnGrant:              m.activeTxn.drainedOnGrant,
+		Active:                      m.gatewayTxnActive,
+		BytesWritten:                m.activeTxn.bytesWritten.Load(),
+		BytesRead:                   m.activeTxn.bytesRead.Load(),
+		GrantsTotal:                 m.activeTxn.grantsTotal.Load(),
+		WriteErrTotal:               m.activeTxn.writeErrTotal.Load(),
+		ReadTimeoutTot:              m.activeTxn.readTimeoutTot.Load(),
+		AfterInactive:               m.activeTxn.afterInactive.Load(),
+		TerminatorDropOnFullCh:      m.activeTxn.terminatorDropOnFullCh.Load(),
+		SynSuppressedPreEcho:               m.activeTxn.synSuppressedPreEcho.Load(),
+		SynSeenDuringGrantWindow:           m.activeTxn.synSeenDuringGrantWindow.Load(),
+		SynSeenWhileInterWriteEmpty:        m.activeTxn.synSeenWhileInterWriteEmpty.Load(),
+		SynSeenAfterTransportWindowExpired: m.activeTxn.synSeenAfterTransportWindowExpired.Load(),
+		InterWriteDrainTotal:        m.activeTxn.interWriteDrainTotal.Load(),
+		EchoQueueOverflowResets:     m.gatewayEcho.overflowResets(),
+		BytesDeliveredToActive:      m.activeTxn.bytesDeliveredToActive.Load(),
+		AbsorbResetTotal:            m.absorbResetTotal.Load(),
+		WritePrefix:                 wp,
+		ReadPrefix:                  rp,
+		EchoLike:                    m.activeTxn.echoLike.Load(),
+		NonEcho:                     m.activeTxn.nonEcho.Load(),
+		SynMarkers:                  m.activeTxn.synMarkers.Load(),
+		TxnClass:                    m.activeTxn.txnClass,
+		LastTxnClass:                m.activeTxn.lastClass,
 	}
 }
 
@@ -298,6 +377,16 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 	m.activeTxn.bytesDeliveredToActive.Store(0)
 	m.activeTxn.drainedOnGrant = drained
 	m.activeTxn.grantsTotal.Add(1)
+	// batch-22 round-3 Attack 2: snapshot the upstream transport's
+	// post-grant-window expiry counter so the SYN observation site
+	// can compute the per-txn delta. postGrantWindowExpiredCountSafe
+	// acquires connMu internally (m.upstream is connMu-guarded and
+	// can be replaced concurrently by reconnect; reading it without
+	// connMu would race — Codex pre-push review). Transports that
+	// don't implement PostGrantWindowExpiredReporter leave the
+	// snapshot at 0 (and the diagnostic counter stays at 0).
+	current, _ := m.postGrantWindowExpiredCountSafe()
+	m.activeTxn.transportExpiredAtTxnStart.Store(current)
 	// Reset per-txn shape diagnostics.
 	m.activeTxn.writePrefixLen = 0
 	m.activeTxn.readPrefixLen = 0

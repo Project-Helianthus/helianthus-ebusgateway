@@ -142,7 +142,10 @@ func TestTxnClass_SuccessLike(t *testing.T) {
 			t.Fatalf("ReadByte err=%v", err)
 		}
 	}
-	// Trailing SYN — lifecycle-correct end-of-txn with bytesRead>0.
+	// Round-6: emulate bus.Bus.sendEndOfMessage by writing the
+	// terminator SYN via the active path so recordSent arms the echo
+	// queue. The wire echo below then fires the terminator gate.
+	gatewayEndOfMessage(t, at)
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
@@ -184,6 +187,8 @@ func TestTxnClass_SYNTerminatorEchoOnly(t *testing.T) {
 		}
 	}
 
+	// Round-6: emulate sendEndOfMessage so the terminator gate fires.
+	gatewayEndOfMessage(t, at)
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
@@ -338,6 +343,8 @@ func TestTxnClass_SchemaError_OverridesCandidateNoParse(t *testing.T) {
 	if _, err := at.ReadByte(); err != nil {
 		t.Fatalf("ReadByte err=%v", err)
 	}
+	// Round-6: emulate sendEndOfMessage so the terminator gate fires.
+	gatewayEndOfMessage(t, at)
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 

@@ -150,7 +150,8 @@ func TestActiveTxnDiag_InactiveReason_SYNIdle(t *testing.T) {
 		t.Fatalf("ReadByte err=%v", err)
 	}
 
-	// NOW the trailing SYN legitimately ends the transaction.
+	// Round-6: emulate sendEndOfMessage so the terminator gate fires.
+	gatewayEndOfMessage(t, at)
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
@@ -167,9 +168,11 @@ func TestActiveTxnDiag_InactiveReason_SYNIdle(t *testing.T) {
 }
 
 // TestActiveTxnDiag_SYNBeforeRead_DoesNotClear proves that a SYN arriving
-// during gateway ownership BEFORE any Write is ignored for the active
-// path. The transaction has not started yet, so the SYN must neither
-// terminate it nor be counted as active-path traffic.
+// during gateway ownership BEFORE any Write must not terminate the
+// nascent transaction. Round-6 (batch-24) update: the SYN IS now
+// counted as suppressed pre-echo via the grantSyn branch (was unchanged
+// pre-round-6). The transaction has not started yet, so the SYN must
+// not terminate it; only the counter classification changes.
 func TestActiveTxnDiag_SYNBeforeRead_DoesNotClear(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
@@ -179,8 +182,8 @@ func TestActiveTxnDiag_SYNBeforeRead_DoesNotClear(t *testing.T) {
 	// NOTE: no Write yet — simulating the grant-to-first-write window.
 	before := mux.ActiveTxnSnapshot().SynSuppressedPreEcho
 
-	// SYN arrives BEFORE any Write. Must NOT clear AND must be
-	// ignored by the active path.
+	// SYN arrives BEFORE any Write. Must NOT clear the nascent active
+	// state.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
@@ -192,8 +195,9 @@ func TestActiveTxnDiag_SYNBeforeRead_DoesNotClear(t *testing.T) {
 	if snap.InactiveReason != ReasonNone {
 		t.Fatalf("InactiveReason must be empty, got %q", snap.InactiveReason)
 	}
-	if snap.SynSuppressedPreEcho != before {
-		t.Fatalf("SynSuppressedPreEcho must stay unchanged before first write; got %d before=%d",
+	// Round-6: grantSyn branch fires, synSuppressedPreEcho must increment.
+	if snap.SynSuppressedPreEcho <= before {
+		t.Fatalf("SynSuppressedPreEcho must increment under round-6 grantSyn branch; got %d before=%d",
 			snap.SynSuppressedPreEcho, before)
 	}
 }
@@ -272,7 +276,8 @@ func TestActiveTxnDiag_InactiveReason_Idempotent(t *testing.T) {
 		t.Fatalf("ReadByte err=%v", err)
 	}
 
-	// First SYN — idle (clears because bytesRead > 0).
+	// Round-6: emulate sendEndOfMessage so the terminator gate fires.
+	gatewayEndOfMessage(t, at)
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
 
@@ -455,13 +460,16 @@ func TestActiveTxnDiag_DrainedOnGrant_ZeroInSteadyState(t *testing.T) {
 	if _, err := at.ReadByte(); err != nil {
 		t.Fatalf("ReadByte err=%v", err)
 	}
-	// End-of-txn SYN clears because bytesRead > 0. PR #502 E2E fix:
-	// the terminator SYN is delivered to activeCh before clearing, so
-	// bus.Send (or the test's consumer) MUST drain it; otherwise the
-	// next grant would drain it as a stale byte and break the steady-
-	// state DrainedOnGrant==0 invariant.
+	// Round-6: emulate sendEndOfMessage so the terminator gate fires.
+	// The terminator SYN is delivered to activeCh before clearing, so
+	// the test's consumer MUST drain it; otherwise the next grant would
+	// drain it as a stale byte and break the steady-state
+	// DrainedOnGrant==0 invariant.
+	gatewayEndOfMessage(t, at)
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
+	// Consume the terminator echo (recordSent put SymbolSyn on the queue,
+	// the wire echo matches and is delivered to activeCh).
 	if b, err := at.ReadByte(); err != nil || b != protocol.SymbolSyn {
 		t.Fatalf("ReadByte terminator=(0x%02X,%v), want (0xAA,nil)", b, err)
 	}
@@ -537,9 +545,12 @@ func TestActiveTxnDiag_AfterInactive_Counter(t *testing.T) {
 		t.Fatalf("ReadByte err=%v", err)
 	}
 
-	// End-of-txn SYN clears gatewayTxnActive. Ownership stays (idle grace).
+	// Round-6: emulate sendEndOfMessage so the terminator gate fires.
+	gatewayEndOfMessage(t, at)
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(30 * time.Millisecond)
+	// Drain the terminator byte delivered to activeCh.
+	_, _ = at.ReadByte()
 
 	// Confirm ownership still held and txn inactive.
 	snap := mux.ActiveTxnSnapshot()

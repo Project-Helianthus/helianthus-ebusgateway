@@ -9,63 +9,74 @@ import (
 )
 
 // TestSynDiag_RecordsOwnershipTransition verifies that the SYN
-// diagnostics ring records a single entry capturing gwActiveBefore,
-// gwActiveAfter, lastWrittenByte, bytesRead, and synDeliveredToActive
-// when a SYN arrives while the gateway owns the bus.
+// diagnostics ring records the expected entries when a SYN arrives while
+// the gateway owns the bus.
 //
-// Sequence:
+// Sequence (round-6, batch-24):
 //  1. grant gateway ownership (initiator 0x71)
-//  2. feed one write byte + its echo so writePrefix has a last byte and
-//     bytesRead > 0 (so the SYN-before-read guard lets the SYN-terminator
-//     branch clear gatewayTxnActive)
-//  3. inject a SYN
-//  4. assert ring has exactly 1 entry with the expected transition
+//  2. write one body byte + feed its echo so writePrefix has a last byte
+//     and bytesDeliveredToActive>0
+//  3. write the terminator SYN via the active path so sendLoop's
+//     recordSent populates gatewayEcho with [SymbolSyn] (this models
+//     the real bus.Bus.sendEndOfMessage path: every legitimate end-of-
+//     transaction SYN goes through sendRawWithEcho(SymbolSyn))
+//  4. inject the wire echo of the terminator SYN
+//  5. assert ring records an entry with synDeliveredToActive=true and
+//     ReasonSYNTerminator
 //
-// The critical field under test is synDeliveredToActive: with the
-// PR #502 E2E fix, when onSYNLocked's bytesRead>0 branch fires it
-// delivers the SYN byte to activeCh BEFORE clearing gatewayTxnActive,
-// so the bus.Send consumer DOES see the terminator. The diag entry
-// records synDeliveredToActive=true and the reason is ReasonSYNTerminator
-// (distinct from ReasonSYNIdle which is reserved for abandoned-grant
-// idle-release).
-//
-// P10.2: this scenario remains a legitimate terminator under the new
-// gate. After ReadByte consumes the echo, gatewayEcho.expectedEchoes is
-// empty, so peekNextExpected returns hasPending=false → midWriteSyn=false
-// → terminator branch fires as before. The mid-write race the new gate
-// closes is the *different* scenario where queue head is a non-SYN byte
-// (gateway awaiting echo of body byte at SYN arrival) — exercised by
-// the new TestPreEchoSyn_MidWriteSyn_Suppressed test.
+// Round-6 contract: a wire SYN that arrives while the gateway echo
+// queue is empty is treated as a wire intrusion (suppressed), not as a
+// terminator. The terminator path now requires hasPendingEcho=true with
+// nextExpected==SymbolSyn — which is exactly what sendEndOfMessage
+// produces. The previous "queue empty → assume terminator" legacy
+// (pre-P10.2 PR #502 semantics) has been retracted to close the
+// remaining echo_mismatch:pre_echo_syn_raw leak class observed in
+// production soak after round-5.
 func TestSynDiag_RecordsOwnershipTransition(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
 
-	// Write one byte so writePrefix has a last entry.
 	at := mux.ActiveTransport()
+	// Write one body byte and feed its echo.
 	if _, err := at.Write([]byte{0x71}); err != nil {
 		t.Fatalf("Write err=%v", err)
 	}
-
-	// Feed the echo so bytesRead becomes > 0 (required for the SYN-
-	// before-read guard to LET the SYN-terminator branch clear
-	// gatewayTxnActive — otherwise the SYN is treated as pre-grant stale
-	// and gatewayTxnActive stays true).
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
 	if _, err := at.ReadByte(); err != nil {
 		t.Fatalf("ReadByte (echo) err=%v", err)
 	}
 
-	// Inject the trailing SYN.
+	// Round-6: emulate sendEndOfMessage by writing SymbolSyn via the
+	// active path. This populates gatewayEcho with [SymbolSyn] so the
+	// next wire SYN matches the terminator gate's
+	// `hasPendingEcho && nextExpected==SymbolSyn` branch.
+	go func() { _, _ = at.Write([]byte{protocol.SymbolSyn}) }()
+	time.Sleep(20 * time.Millisecond)
+
+	// Inject the trailing SYN (wire echo of the terminator).
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	time.Sleep(50 * time.Millisecond)
 
 	entries := mux.SynDiagSnapshot()
-	if len(entries) != 1 {
-		t.Fatalf("SynDiagSnapshot len=%d, want 1: %+v", len(entries), entries)
+	if len(entries) == 0 {
+		t.Fatalf("SynDiagSnapshot empty, want >=1 entry: %+v", entries)
 	}
-	e := entries[0]
+	// Find the entry that captured the terminator transition (last entry
+	// with GwActiveBefore=true && GwActiveAfter=false).
+	var e SynDiagEntry
+	found := false
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].GwActiveBefore && !entries[i].GwActiveAfter {
+			e = entries[i]
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no SynDiagEntry with terminator transition (before=true,after=false) in: %+v", entries)
+	}
 
 	if !e.GatewayOwned {
 		t.Errorf("GatewayOwned=false, want true (gateway should own at SYN arrival)")
@@ -74,19 +85,19 @@ func TestSynDiag_RecordsOwnershipTransition(t *testing.T) {
 		t.Errorf("GwActiveBefore=false, want true (txn was active at SYN entry)")
 	}
 	if e.GwActiveAfter {
-		t.Errorf("GwActiveAfter=true, want false (bytesRead>0 → SYN-idle branch clears)")
+		t.Errorf("GwActiveAfter=true, want false (terminator gate fires through sendEndOfMessage path)")
 	}
-	if !e.HasLastWrittenByte || e.LastWrittenByte != 0x71 {
-		t.Errorf("LastWrittenByte=(has=%v,val=0x%02X), want has=true val=0x71", e.HasLastWrittenByte, e.LastWrittenByte)
+	if !e.HasLastWrittenByte {
+		t.Errorf("LastWrittenByte not present, want present (Write must have populated writePrefix)")
 	}
 	if e.BytesRead == 0 {
 		t.Errorf("BytesRead=0, want >0 (echo was consumed before SYN)")
 	}
 	if !e.SynDeliveredToActive {
-		t.Errorf("SynDeliveredToActive=false, want true — PR #502 E2E fix: the bytesRead>0 branch MUST deliver the SYN terminator to activeCh before clearing gatewayTxnActive so bus.Send sees the frame-terminating SYN.")
+		t.Errorf("SynDeliveredToActive=false, want true — round-6 terminator gate (sendEndOfMessage path: hasPendingEcho && nextExpected==SymbolSyn) MUST deliver the SYN terminator to activeCh before clearing gatewayTxnActive.")
 	}
 	if e.InactiveReason != ReasonSYNTerminator {
-		t.Errorf("InactiveReason=%q, want %q (PR #502: terminator path is distinct from SYN-idle abandoned-grant path)", e.InactiveReason, ReasonSYNTerminator)
+		t.Errorf("InactiveReason=%q, want %q (round-6: explicit-terminator path is distinct from SYN-idle abandoned-grant path)", e.InactiveReason, ReasonSYNTerminator)
 	}
 }
 
@@ -138,10 +149,11 @@ func TestSynDiag_SkipsNonGatewayOwnership(t *testing.T) {
 }
 
 // TestOnSYNLocked_DeliversTerminatorToActive_WhenBytesReadPositive verifies
-// the PR #502 E2E fix: when a SYN arrives mid-transaction (the initiator
-// has left the pre-echo window, i.e. bytesWritten>0), onSYNLocked MUST
-// deliver the SYN byte to activeCh BEFORE clearing gatewayTxnActive, so
-// bus.Send observes the frame terminator on its FIFO activeCh reader.
+// the E2E fix as updated by round-6 (batch-24): when a SYN arrives that
+// matches the gateway's own sendEndOfMessage write (hasPendingEcho=true
+// with nextExpected==SymbolSyn), onSYNLocked MUST deliver the SYN byte
+// to activeCh BEFORE clearing gatewayTxnActive, so bus.Send observes
+// the frame terminator on its FIFO activeCh reader.
 //
 // Without this delivery, the last byte of a transaction is consumed as
 // a lifecycle signal inside the mux and never reaches the protocol.Bus
@@ -149,11 +161,12 @@ func TestSynDiag_SkipsNonGatewayOwnership(t *testing.T) {
 // timeouts in soak), which is the exact symptom documented by
 // TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow.
 //
-// Note: the name retains "BytesReadPositive" for historical continuity
-// with PR #502, but the actual gate is bytesWritten>0 (see comment on
-// preEchoSuppressed in onSYNLocked — gating on bytesRead would lag
-// behind activeCh delivery whenever the consumer is slower than
-// readLoop, over-suppressing legitimate terminator SYNs).
+// Round-6 contract update: the previous "queue empty + bytesDelivered>0
+// → terminator" legacy semantics (PR #502) is retracted. The terminator
+// gate now fires ONLY when sendEndOfMessage has explicitly armed
+// recordSent(SymbolSyn) — this matches the real bus.Bus path and closes
+// the inter-write wire-intrusion leak class. Test updated to write the
+// terminator SYN explicitly before injecting its wire echo.
 func TestOnSYNLocked_DeliversTerminatorToActive_WhenBytesReadPositive(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
@@ -173,6 +186,13 @@ func TestOnSYNLocked_DeliversTerminatorToActive_WhenBytesReadPositive(t *testing
 	if b, err := at.ReadByte(); err != nil || b != 0x71 {
 		t.Fatalf("ReadByte=(0x%02X,%v), want (0x71,nil)", b, err)
 	}
+
+	// Round-6: emulate sendEndOfMessage by writing the terminator SYN
+	// via the active path. This populates gatewayEcho with [SymbolSyn]
+	// so the wire echo below matches via the hasPendingEcho+SymbolSyn
+	// branch of the terminator gate.
+	go func() { _, _ = at.Write([]byte{protocol.SymbolSyn}) }()
+	time.Sleep(20 * time.Millisecond)
 
 	// Inject the trailing SYN — this should be delivered to activeCh.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
@@ -233,11 +253,18 @@ func TestOnSYNLocked_DeliversTerminatorToActive_WhenBytesReadPositive(t *testing
 }
 
 // TestOnSYNLocked_NoTerminatorDeliveryWhenBytesReadZero documents the
-// pre-write stale-SYN semantics: a SYN arriving after grant but before the
-// active caller has started Write must not be treated as a terminator and
-// must not be delivered to activeCh. The active transaction is armed by
-// Write, so this SYN is ignored rather than counted as active pre-echo
-// suppression.
+// grant-window stale-SYN semantics under round-6: a SYN arriving after
+// grant but before the active caller has started Write must not be
+// treated as a terminator and must not be delivered to activeCh.
+//
+// Round-6 (batch-24) update: the synSuppressedPreEcho counter NOW
+// increments in this window because round-6 broadens preEchoMidFrameSuppress
+// to include the grantSyn condition (gatewayTxnActive=false &&
+// hasPendingEcho=false while wasGatewayOwned=true). Pre-round-6 this
+// counter stayed unchanged because the preFirstEchoSyn gate required
+// gatewayTxnActive=true. The behavior change is intentional: the
+// grant-window SYN was the root of Attack 1 leak class (~127/min
+// observation) and round-6 explicitly classifies it as wire-SYN noise.
 func TestOnSYNLocked_NoTerminatorDeliveryWhenBytesReadZero(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
@@ -261,9 +288,10 @@ func TestOnSYNLocked_NoTerminatorDeliveryWhenBytesReadZero(t *testing.T) {
 		t.Errorf("InactiveReason=%q — terminator path must NOT fire when bytesRead==0", snap.InactiveReason)
 	}
 
-	// The SYN is ignored before Write arms the active transaction.
-	if snap.SynSuppressedPreEcho != before {
-		t.Errorf("SynSuppressedPreEcho=%d before=%d, want unchanged before first Write", snap.SynSuppressedPreEcho, before)
+	// Round-6: the grant-window SYN is now classified as wire noise via
+	// the grantSyn branch, so synSuppressedPreEcho MUST increment.
+	if snap.SynSuppressedPreEcho <= before {
+		t.Errorf("SynSuppressedPreEcho=%d before=%d, want increment under round-6 grantSyn branch", snap.SynSuppressedPreEcho, before)
 	}
 
 	// SYN diag entry: no active transaction was armed, and nothing reached
@@ -336,11 +364,13 @@ func TestEchoMismatch_SYNAfterGrantBeforeFirstEcho(t *testing.T) {
 		t.Fatalf("ReadByte=0x%02X, want 0x15 (the real echo)", b)
 	}
 
-	// The stale SYN arrived before Write armed the active transaction, so it
-	// is ignored rather than counted as an active pre-echo suppression.
+	// Round-6 (batch-24): the stale grant-window SYN is now classified as
+	// wire intrusion via preEchoMidFrameSuppress's grantSyn branch, so
+	// synSuppressedPreEcho MUST increment. Pre-round-6 this counter was
+	// unchanged here (the preFirstEchoSyn gate required gatewayTxnActive=true).
 	after := mux.ActiveTxnSnapshot().SynSuppressedPreEcho
-	if after != before {
-		t.Errorf("SynSuppressedPreEcho=%d before=%d, want unchanged for pre-write SYN", after, before)
+	if after <= before {
+		t.Errorf("SynSuppressedPreEcho=%d before=%d, want increment under round-6 grantSyn branch", after, before)
 	}
 
 	// Gateway still owns the bus and the txn is still active — the stale
@@ -440,9 +470,17 @@ func TestEchoMismatch_SYNAfterWriteBeforeFirstEcho(t *testing.T) {
 }
 
 // TestTerminatorSYN_AfterFirstDelivery verifies the complementary half
-// of the gate: once a real adapter byte has been enqueued on activeCh
-// (bytesDeliveredToActive>=1), a subsequent SYN IS the legitimate frame
-// terminator and MUST fire the terminator path.
+// of the gate (round-6 contract, batch-24): once a real adapter byte
+// has been enqueued on activeCh AND the gateway has explicitly written
+// the terminator SYN via the active path (so recordSent armed the echo
+// queue with [SymbolSyn]), a subsequent wire SYN IS the legitimate
+// frame terminator and MUST fire the terminator path.
+//
+// Pre-round-6 (PR #502 legacy) the gate fired off bytesDeliveredToActive>0
+// + empty queue alone. Round-6 retracts that branch: an empty queue
+// now indicates a wire intrusion, not a terminator. The terminator
+// gate fires through the hasPendingEcho + nextExpected==SymbolSyn
+// branch, which matches the real bus.Bus.sendEndOfMessage path.
 func TestTerminatorSYN_AfterFirstDelivery(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
@@ -467,10 +505,17 @@ func TestTerminatorSYN_AfterFirstDelivery(t *testing.T) {
 		t.Fatalf("BytesDeliveredToActive=0 after echo enqueued+consumed, want >=1 — test precondition for terminator gate")
 	}
 
-	// Inject trailing SYN. Because bytesDeliveredToActive>=1 the terminator
-	// path MUST fire: SYN is delivered to activeCh, gatewayTxnActive
-	// clears with ReasonSYNTerminator, and the next ReadByte returns the
-	// SYN to the bus.Send consumer.
+	// Round-6: emulate sendEndOfMessage by writing the terminator SYN
+	// via the active path. recordSent arms gatewayEcho with [SymbolSyn]
+	// so the wire echo below matches the explicit-terminator branch.
+	go func() { _, _ = at.Write([]byte{protocol.SymbolSyn}) }()
+	time.Sleep(20 * time.Millisecond)
+
+	// Inject trailing SYN. With round-6 gating (hasPendingEcho=true,
+	// nextExpected==SymbolSyn) the terminator path MUST fire: SYN is
+	// delivered to activeCh, gatewayTxnActive clears with
+	// ReasonSYNTerminator, and the next ReadByte returns the SYN to the
+	// bus.Send consumer.
 	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 
 	readDone := make(chan struct {

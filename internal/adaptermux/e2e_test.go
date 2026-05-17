@@ -57,8 +57,21 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 	}
 
 	// Async upstream fake: echo every write, then send a canned responder
-	// response + SYN terminator. Start after Write so the synthetic bus traffic
-	// preserves request-before-echo ordering.
+	// response. Start after Write so the synthetic bus traffic preserves
+	// request-before-echo ordering.
+	//
+	// Round-6 (batch-24): the final SYN terminator is no longer injected
+	// as a bare wire SYN. The real bus.Bus.Send path always ends with
+	// sendEndOfMessage → sendRawWithEcho(SymbolSyn), and round-6's
+	// terminator gate now requires that explicit write (so a wire SYN
+	// without a matching recordSent is correctly classified as a wire
+	// intrusion). The test models this by:
+	//   - response goroutine echoes the request bytes + response payload
+	//     + listens on a channel for the "issue terminator now" signal
+	//   - main goroutine consumes all non-SYN bytes, THEN signals the
+	//     response goroutine to inject the terminator wire echo, THEN
+	//     issues at.Write(SymbolSyn) via gatewayEndOfMessage
+	terminatorReady := make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -70,26 +83,33 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 		}
 
 		// Responder ACK=0x00, then response: NN=0x05, 5 data bytes, CRC=0x00,
-		// then initiator ACK=0x00, then trailing SYN=0xAA.
+		// then initiator ACK=0x00.
 		response := []byte{
 			0x00,                         // responder ACK
 			0x05,                         // NN (response data length)
 			0x56, 0x41, 0x49, 0x4C, 0x4C, // "VAILL" identification data
-			0x00,               // response CRC placeholder
-			0x00,               // initiator ACK
-			protocol.SymbolSyn, // trailing SYN terminator
+			0x00, // response CRC placeholder
+			0x00, // initiator ACK
 		}
 		for _, b := range response {
 			mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
 		}
+
+		// Wait for main goroutine to consume the response and signal
+		// readiness for the terminator. Then echo SymbolSyn so the
+		// gateway echo queue (armed by gatewayEndOfMessage) matches.
+		<-terminatorReady
+		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
 	}()
 
 	// Read back every byte we expect to appear on activeCh in order:
 	//   echoed request (len(request) bytes)
-	//   + response (10 bytes including final SYN)
-	// The final SYN is the critical one — if it never arrives within
-	// the 2s budget, the hypothesis is confirmed.
-	totalExpected := len(request) + 10
+	//   + response (9 bytes: responder ACK, NN, 5 data, CRC, initiator ACK)
+	// Then issue gatewayEndOfMessage (writes terminator SYN, arms recordSent),
+	// signal the response goroutine to inject the SYN echo, then read the
+	// terminator (16th byte).
+	preTerminatorExpected := len(request) + 9
+	totalExpected := preTerminatorExpected + 1
 	var gotMu sync.Mutex
 	got := make([]byte, 0, totalExpected)
 	snapshotGot := func() []byte {
@@ -99,18 +119,57 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 
-	readDone := make(chan error, 1)
+	// Phase 1: read everything up to (but not including) the terminator.
+	preReadDone := make(chan error, 1)
 	go func() {
-		for len(got) < totalExpected {
+		for len(got) < preTerminatorExpected {
 			b, err := at.ReadByte()
 			if err != nil {
-				readDone <- err
+				preReadDone <- err
 				return
 			}
 			gotMu.Lock()
 			got = append(got, b)
 			gotMu.Unlock()
 		}
+		preReadDone <- nil
+	}()
+
+	select {
+	case err := <-preReadDone:
+		if err != nil {
+			gotSnapshot := snapshotGot()
+			t.Logf("Phase-1 ReadByte error after %d bytes consumed: %v", len(gotSnapshot), err)
+			t.Logf("bytes consumed so far: % X", gotSnapshot)
+			dumpSynDiag(t, mux)
+			t.Fatalf("Phase-1 read error after %d bytes: %v", len(gotSnapshot), err)
+		}
+	case <-time.After(time.Until(deadline)):
+		gotSnapshot := snapshotGot()
+		t.Logf("Phase-1 timeout after %d/%d bytes consumed", len(gotSnapshot), preTerminatorExpected)
+		t.Logf("bytes consumed: % X", gotSnapshot)
+		dumpSynDiag(t, mux)
+		t.Fatalf("Phase-1 timeout: %d/%d bytes consumed", len(gotSnapshot), preTerminatorExpected)
+	}
+
+	// Phase 2: emulate sendEndOfMessage. Issue the terminator write via
+	// the active path so recordSent populates gatewayEcho with [SymbolSyn],
+	// then signal the response goroutine to inject the wire echo.
+	go func() { _, _ = at.Write([]byte{protocol.SymbolSyn}) }()
+	time.Sleep(20 * time.Millisecond) // let recordSent run
+	terminatorReady <- struct{}{}
+
+	// Phase 3: read the terminator byte from activeCh.
+	readDone := make(chan error, 1)
+	go func() {
+		b, err := at.ReadByte()
+		if err != nil {
+			readDone <- err
+			return
+		}
+		gotMu.Lock()
+		got = append(got, b)
+		gotMu.Unlock()
 		readDone <- nil
 	}()
 
@@ -118,29 +177,22 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 	case err := <-readDone:
 		gotSnapshot := snapshotGot()
 		if err != nil {
-			t.Logf("ReadByte error after %d bytes consumed: %v", len(gotSnapshot), err)
+			t.Logf("Phase-3 ReadByte error after %d bytes consumed: %v", len(gotSnapshot), err)
 			t.Logf("bytes consumed so far: % X", gotSnapshot)
 			dumpSynDiag(t, mux)
 			wg.Wait()
-			t.Fatalf("E2E read error after %d bytes: %v — final SYN echo may have been "+
-				"consumed by SYN-before-read branch (bytesRead>0 path) before "+
-				"activePathExpectsBytes() was re-evaluated. See SYN ring dump above. "+
-				"C4 (PR #502): this path used to t.Skip; any deviation from the green "+
-				"path is a regression and must fail CI.", len(gotSnapshot), err)
+			t.Fatalf("Phase-3 read error: %v — terminator SYN echo may have been "+
+				"suppressed by round-6 P10.2 gate despite explicit sendEndOfMessage. "+
+				"See SYN ring dump above.", err)
 		}
 	case <-time.After(time.Until(deadline)):
 		gotSnapshot := snapshotGot()
-		t.Logf("E2E timeout after %d/%d bytes consumed", len(gotSnapshot), totalExpected)
+		t.Logf("Phase-3 timeout after %d/%d bytes consumed", len(gotSnapshot), totalExpected)
 		t.Logf("bytes consumed: % X", gotSnapshot)
 		dumpSynDiag(t, mux)
-		// Do NOT wg.Wait() here — the reader goroutine is still blocked
-		// on ReadByte; cleanup cancels ctx which releases it after the
-		// test returns. C4 (PR #502): this path used to t.Skip; a
-		// regression in active-path terminator delivery must fail CI.
-		t.Fatalf("E2E timeout after %d/%d bytes — final SYN echo may be consumed "+
-			"by onSYNLocked before active-path delivery. See SYN ring dump above "+
-			"for gwActiveBefore/After transitions and synDeliveredToActive flags.",
-			len(gotSnapshot), totalExpected)
+		t.Fatalf("Phase-3 timeout: terminator SYN never delivered to activeCh after explicit "+
+			"sendEndOfMessage. Round-6 regression — the hasPendingEcho+SymbolSyn branch of "+
+			"the terminator gate failed to fire.")
 	}
 
 	wg.Wait()

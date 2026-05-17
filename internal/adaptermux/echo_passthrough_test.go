@@ -503,6 +503,20 @@ func TestExternalSession_OnReceivedIntegration_FullFrame(t *testing.T) {
 	sess, client, cleanup := installExternalSession(t, mux, 51)
 	defer cleanup()
 
+	// Disable the F-28 post-external-release cooldown for this test:
+	// it exercises the ownership lifecycle (release + immediate
+	// re-grant after trailing-SYN TransactionDone), not the gateway-
+	// after-external fairness deferral. With the production default
+	// (250ms) active, the trailing SYN sets `lastExternalReleaseAt`
+	// to now and the subsequent `tryGrantLegacy(mux.arb)` rejects
+	// the gateway grant due to the cooldown window — masking the
+	// invariant this test pins. Pattern mirrors the
+	// `arb.setPolicy(24*time.Hour, 0, 0)` usage in
+	// arbitration_busidle_test.go which disables unrelated policy
+	// knobs to isolate a single behavior. Pass -1 to fully disable
+	// the cooldown (postExternalGrace > 0 gate in tryGrant).
+	mux.arb.setPolicy(24*time.Hour, 0, -1)
+
 	// Grant external session ownership through the real arbitrator
 	// path (mirrors the production grant flow).
 	ch := mux.arb.requestStart(51, 0x31)

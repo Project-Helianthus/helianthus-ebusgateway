@@ -12,7 +12,7 @@ import (
 // 2026-05-14). The fix defers `wirePhaseEventTransactionDone` from the
 // non-SYN structural-terminal byte (M_ACK, broadcast ACK, i2i ACK,
 // response double-NACK, CMD double-NACK) to the trailing wire SYN of
-// the master frame, so external sessions' (ebusd's) terminal-SYN
+// the initiator frame, so external sessions' (ebusd's) terminal-SYN
 // ENH_REQ_SEND can pass session.handleSend's owner check BEFORE the
 // mux releases ownership.
 //

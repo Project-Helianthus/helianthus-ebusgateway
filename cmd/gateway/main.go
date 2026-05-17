@@ -1292,16 +1292,16 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		// F-30 (batch-27, iter7, 2026-05-14): wire IsKnownInitiatorByte
 		// to filter bit-arbitration phantom bytes from external session
 		// forwarding. When the gateway loses arbitration to another
-		// master, the adapter reports FAILED with the bit-wise-AND
+		// initiator, the adapter reports FAILED with the bit-wise-AND
 		// result of the colliding initiators. This AND result is often
-		// NOT a real master on the bus (e.g., 0x7F & 0xF1 = 0x71,
-		// where no 0x71 master exists on the observed bus).
+		// NOT a real initiator on the bus (e.g., 0x7F & 0xF1 = 0x71,
+		// where no 0x71 initiator exists on the observed bus).
 		//
 		// Pre-F-30: phantom bytes were forwarded to ebusd as ENH_RES_FAILED
 		// data; ebusd's bus reconstructor interpreted each phantom as a
 		// real frame source and advanced its state machine to expect a
-		// frame from that fictitious master. The next real wire bytes
-		// (from the actual winning master) then mismatched, leaving
+		// frame from that fictitious initiator. The next real wire bytes
+		// (from the actual winning initiator) then mismatched, leaving
 		// ebusd's state in bs_recvCmd/bs_skip — the "arbitration won in
 		// invalid state" trigger when ebusd's NEXT grant arrives.
 		//
@@ -1322,11 +1322,11 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		// observability.
 		IsKnownInitiatorByte: func(b byte) bool {
 			// F-30 (iter7) narrow filter: reject ONLY the dominant
-			// phantom 0x71 = 0x7F (gateway) & 0xF1 (master #10).
+			// phantom 0x71 = 0x7F (gateway) & 0xF1 (initiator #10).
 			// F-31's broader allowlist regressed in production (variance
 			// 60% vs F-30's 71%); reverted in iter9. The narrow filter
 			// is more conservative: it doesn't drop any REAL FAILED
-			// winner byte that might be a transient unobserved master.
+			// winner byte that might be a transient unobserved initiator.
 			return b != 0x71
 		},
 	}

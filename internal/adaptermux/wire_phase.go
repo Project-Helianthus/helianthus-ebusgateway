@@ -21,7 +21,7 @@ const (
 	wirePhaseWaitResponseBody                  // counting response body + CRC
 	wirePhaseWaitResponseAck                   // waiting for initiator final ACK
 	// wirePhaseWaitTerminalSyn (F-21, batch-20, 2026-05-14) is entered
-	// at every structural terminal of a master frame — broadcast ACK,
+	// at every structural terminal of an initiator frame — broadcast ACK,
 	// i2i ACK, response success ACK, response double-NACK, CMD double-
 	// NACK. Pre-F-21 each of those byte positions immediately fired
 	// wirePhaseEventTransactionDone (or wirePhaseEventCmdNACK) and the
@@ -335,7 +335,7 @@ func (t *wirePhaseTracker) advanceWaitResponseAck(symbol byte) wirePhaseEvent {
 
 // advanceWaitTerminalSyn handles the byte that arrives while the tracker
 // is waiting for the trailing SYN of a fully-acknowledged (or terminally-
-// NACKed / broadcast / i2i-ACKed) master frame. F-21 (batch-20).
+// NACKed / broadcast / i2i-ACKed) initiator frame. F-21 (batch-20).
 //
 // Expected: the byte IS the trailing wire SYN (0xAA). When it arrives,
 // fire TransactionDone so onSYNLocked's terminal-SYN release branch

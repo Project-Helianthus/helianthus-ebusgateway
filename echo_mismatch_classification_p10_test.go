@@ -15,19 +15,75 @@ import (
 // hides several distinct phenomena (post-grant collision, stale
 // adapter buffer, wire bit-flip). P10 surfaces them as separate
 // subclass labels on `ebus_errors_total{class="echo_mismatch"}`.
+//
+// Batch-23 round-4 (2026-05-17, Attack 10 hypothesis): the
+// previously-monolithic `pre_echo_syn` label is split by the
+// upstream-emitted EchoWasEscaped flag into `pre_echo_syn_raw`
+// (real wire SYN intrusion) vs `pre_echo_syn_escaped_data`
+// (escape-decoded payload 0xAA from a third-party frame, wire
+// `A9 01`). The legacy `pre_echo_syn` label is RETIRED.
 
-func TestClassifyEchoMismatchSubclass_PreEchoSYN(t *testing.T) {
+// TestClassify_PreEchoSyn_Raw pins the batch-23 round-4 split:
+// 0xAA with EchoWasEscaped=false is a REAL wire SYN — classified
+// as `pre_echo_syn_raw` (mux SYN-suppression leak class).
+func TestClassify_PreEchoSyn_Raw(t *testing.T) {
 	t.Parallel()
 
-	if got := classifyEchoMismatchSubclass(protocol.SymbolSyn); got != "pre_echo_syn" {
-		t.Errorf("classifyEchoMismatchSubclass(0xAA) = %q; want pre_echo_syn (byte-value-based label for 0xAA in echo position; semantic interpretation per P10.1 doc-comment is approximate — could be mux suppression leak OR escape-decoded data byte)", got)
+	if got := classifyEchoMismatchSubclass(protocol.SymbolSyn, false); got != "pre_echo_syn_raw" {
+		t.Errorf("classifyEchoMismatchSubclass(0xAA, wasEscaped=false) = %q; want pre_echo_syn_raw (real wire SYN intrusion — Attack 1/3 class; mux SYN-suppression leak)", got)
+	}
+}
+
+// TestClassify_PreEchoSyn_EscapedData pins the Attack 10 case:
+// 0xAA with EchoWasEscaped=true is an escape-decoded payload byte
+// from a third-party frame (wire `A9 01` → logical 0xAA via the
+// ENH transport's unescape). Classified as
+// `pre_echo_syn_escaped_data` to separate this from
+// gateway-internal SYN-suppression bugs.
+func TestClassify_PreEchoSyn_EscapedData(t *testing.T) {
+	t.Parallel()
+
+	if got := classifyEchoMismatchSubclass(protocol.SymbolSyn, true); got != "pre_echo_syn_escaped_data" {
+		t.Errorf("classifyEchoMismatchSubclass(0xAA, wasEscaped=true) = %q; want pre_echo_syn_escaped_data (Attack 10: escape-decoded data byte from third-party frame's payload; wire-contention class)", got)
+	}
+}
+
+// TestClassify_OtherSubclassesUnchanged_WithWasEscaped verifies
+// the WasEscaped discriminator only affects the 0xAA case.
+// Non-SYN bytes return the same subclass regardless of the flag —
+// the discriminator semantics only matter for 0xAA because that is
+// the only byte value that ENH transports legitimately escape.
+func TestClassify_OtherSubclassesUnchanged_WithWasEscaped(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		readByte byte
+		want     string
+	}{
+		{protocol.SymbolEscape, "post_grant_reserved"},
+		{protocol.SymbolAck, "post_grant_ack"},
+		{protocol.SymbolNack, "post_grant_nack"},
+		{0xF1, "post_grant_collision_initiator"},
+		{0x71, "post_grant_collision_initiator"},
+		{0x15, "post_grant_collision_target"},
+		{protocol.AddressBroadcast, "post_grant_collision_target"},
+	}
+	for _, tc := range cases {
+		got1 := classifyEchoMismatchSubclass(tc.readByte, false)
+		got2 := classifyEchoMismatchSubclass(tc.readByte, true)
+		if got1 != tc.want {
+			t.Errorf("classifyEchoMismatchSubclass(0x%02X, false) = %q; want %q", tc.readByte, got1, tc.want)
+		}
+		if got2 != tc.want {
+			t.Errorf("classifyEchoMismatchSubclass(0x%02X, true) = %q; want %q (WasEscaped must not affect non-0xAA classification)", tc.readByte, got2, tc.want)
+		}
 	}
 }
 
 func TestClassifyEchoMismatchSubclass_AckByte(t *testing.T) {
 	t.Parallel()
 
-	if got := classifyEchoMismatchSubclass(protocol.SymbolAck); got != "post_grant_ack" {
+	if got := classifyEchoMismatchSubclass(protocol.SymbolAck, false); got != "post_grant_ack" {
 		t.Errorf("classifyEchoMismatchSubclass(0x00=ACK) = %q; want post_grant_ack", got)
 	}
 }
@@ -35,7 +91,7 @@ func TestClassifyEchoMismatchSubclass_AckByte(t *testing.T) {
 func TestClassifyEchoMismatchSubclass_NackByte(t *testing.T) {
 	t.Parallel()
 
-	if got := classifyEchoMismatchSubclass(protocol.SymbolNack); got != "post_grant_nack" {
+	if got := classifyEchoMismatchSubclass(protocol.SymbolNack, false); got != "post_grant_nack" {
 		t.Errorf("classifyEchoMismatchSubclass(0xFF=NACK) = %q; want post_grant_nack", got)
 	}
 }
@@ -43,7 +99,7 @@ func TestClassifyEchoMismatchSubclass_NackByte(t *testing.T) {
 func TestClassifyEchoMismatchSubclass_EscapeByte(t *testing.T) {
 	t.Parallel()
 
-	if got := classifyEchoMismatchSubclass(protocol.SymbolEscape); got != "post_grant_reserved" {
+	if got := classifyEchoMismatchSubclass(protocol.SymbolEscape, false); got != "post_grant_reserved" {
 		t.Errorf("classifyEchoMismatchSubclass(0xA9=ESCAPE) = %q; want post_grant_reserved", got)
 	}
 }
@@ -59,7 +115,7 @@ func TestClassifyEchoMismatchSubclass_InitiatorAddresses(t *testing.T) {
 	// Sample of P0/P1 initiator-class addresses from sourceAddressTableV1.
 	cases := []byte{0x10, 0x30, 0xF1, 0x71, 0x03, 0x13}
 	for _, addr := range cases {
-		if got := classifyEchoMismatchSubclass(addr); got != "post_grant_collision_initiator" {
+		if got := classifyEchoMismatchSubclass(addr, false); got != "post_grant_collision_initiator" {
 			t.Errorf("classifyEchoMismatchSubclass(0x%02X) = %q; want post_grant_collision_initiator", addr, got)
 		}
 	}
@@ -75,7 +131,7 @@ func TestClassifyEchoMismatchSubclass_TargetAddresses(t *testing.T) {
 	// AND non-canonical addresses default to target.
 	cases := []byte{0x15, 0x35, 0x08, 0x26, 0x42}
 	for _, addr := range cases {
-		if got := classifyEchoMismatchSubclass(addr); got != "post_grant_collision_target" {
+		if got := classifyEchoMismatchSubclass(addr, false); got != "post_grant_collision_target" {
 			t.Errorf("classifyEchoMismatchSubclass(0x%02X) = %q; want post_grant_collision_target", addr, got)
 		}
 	}
@@ -87,7 +143,7 @@ func TestClassifyEchoMismatchSubclass_TargetAddresses(t *testing.T) {
 func TestClassifyEchoMismatchSubclass_BroadcastByte(t *testing.T) {
 	t.Parallel()
 
-	if got := classifyEchoMismatchSubclass(protocol.AddressBroadcast); got != "post_grant_collision_target" {
+	if got := classifyEchoMismatchSubclass(protocol.AddressBroadcast, false); got != "post_grant_collision_target" {
 		t.Errorf("classifyEchoMismatchSubclass(0xFE=broadcast) = %q; want post_grant_collision_target", got)
 	}
 }
@@ -131,6 +187,60 @@ func TestRecordActiveError_EchoMismatchSubclassPropagates(t *testing.T) {
 	wantSubclass := `ebus_active_echo_mismatch_subclass_total{subclass="post_grant_collision_initiator"} 1`
 	if !strings.Contains(metrics, wantSubclass) {
 		t.Errorf("metrics missing subclass line %q:\n%s", wantSubclass, metrics)
+	}
+}
+
+// TestRecordActiveError_PreEchoSynSplitByWasEscaped pins the
+// batch-23 round-4 plumbing end-to-end through
+// BusObservabilityStore: a BusEventEchoMismatch with Byte=0xAA
+// AND EchoWasEscaped=false emits the `pre_echo_syn_raw` subclass;
+// the same byte with EchoWasEscaped=true emits
+// `pre_echo_syn_escaped_data`. The legacy `pre_echo_syn` label
+// MUST NOT appear in either case (RETIRED label).
+func TestRecordActiveError_PreEchoSynSplitByWasEscaped(t *testing.T) {
+	t.Parallel()
+
+	store := NewBusObservabilityStore(DefaultConfig())
+
+	// Raw wire SYN intrusion.
+	if err := store.OnBusEvent(protocol.BusEvent{
+		Kind:           protocol.BusEventEchoMismatch,
+		Outcome:        protocol.BusOutcomeEchoMismatch,
+		Byte:           protocol.SymbolSyn,
+		EchoWasEscaped: false,
+	}); err != nil {
+		t.Fatalf("OnBusEvent (raw) error = %v", err)
+	}
+
+	// Attack 10: escape-decoded payload 0xAA from third-party frame.
+	if err := store.OnBusEvent(protocol.BusEvent{
+		Kind:           protocol.BusEventEchoMismatch,
+		Outcome:        protocol.BusOutcomeEchoMismatch,
+		Byte:           protocol.SymbolSyn,
+		EchoWasEscaped: true,
+	}); err != nil {
+		t.Fatalf("OnBusEvent (escaped) error = %v", err)
+	}
+
+	metrics := store.RenderPrometheus()
+
+	wantRaw := `ebus_active_echo_mismatch_subclass_total{subclass="pre_echo_syn_raw"} 1`
+	if !strings.Contains(metrics, wantRaw) {
+		t.Errorf("metrics missing raw line %q:\n%s", wantRaw, metrics)
+	}
+	wantEscaped := `ebus_active_echo_mismatch_subclass_total{subclass="pre_echo_syn_escaped_data"} 1`
+	if !strings.Contains(metrics, wantEscaped) {
+		t.Errorf("metrics missing escaped-data line %q:\n%s", wantEscaped, metrics)
+	}
+	// Legacy label MUST NOT appear as a sample (HELP text retains the
+	// note that it's retired, but no counter line should be emitted).
+	for _, line := range strings.Split(metrics, "\n") {
+		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.Contains(line, `subclass="pre_echo_syn"`) {
+			t.Errorf("RETIRED legacy label `pre_echo_syn` re-appeared as a sample (batch-23 round-4 contract violation): %q", line)
+		}
 	}
 }
 

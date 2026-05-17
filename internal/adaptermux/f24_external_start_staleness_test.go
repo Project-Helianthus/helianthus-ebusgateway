@@ -139,6 +139,87 @@ func TestF24_GatewaySession0_NotSubjectToStalenessGuard(t *testing.T) {
 	}
 }
 
+// TestF24_StaleSuppression_DefersRegrantUntilNextSyn pins the F-24-fix
+// (Codex PR #634 P1 thread "Wait for idle after suppressing stale
+// STARTED", 2026-05-17 batch-23). When the F-24 staleness branch
+// suppresses a stale external STARTED, the external initiator has
+// already won wire arbitration but `arb.hasOwner` is never confirmed.
+// A concurrent gateway (or other external) START issued before the
+// abandoned external's bus slot terminates would collide with bytes
+// already on the wire. The fix: set `deferRegrantUntilNextSyn=true`
+// in the suppression branch; `tryGrantAndStart` rejects until the
+// next SYN observation clears the flag in `onSYNLocked`.
+//
+// This test verifies the two invariants directly on the Mux:
+//  1. Immediately after F-24 suppression, deferRegrantUntilNextSyn=true
+//     and tryGrantAndStart is a no-op even with a fresh pending request.
+//  2. After observing any SYN (any SYN observation marks bus-idle), the
+//     flag clears and the next tryGrantAndStart proceeds normally.
+func TestF24_StaleSuppression_DefersRegrantUntilNextSyn(t *testing.T) {
+	mock := newP3MockTransport()
+	var logBuf cancelledStartedLogBuffer
+	mux := newF24TestMux(t, mock, &logBuf, 100*time.Millisecond)
+	defer mux.shutdown()
+
+	const externalSID = uint64(81)
+	notify := mux.injectStaleExternalPendingStart(externalSID, 0x31, 500*time.Millisecond)
+
+	// Trigger F-24 suppression.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x31}
+
+	select {
+	case result := <-notify:
+		if result.granted {
+			t.Fatal("setup: F-24 suppression branch did not fire")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("setup: notify never received result")
+	}
+
+	// Invariant 1: deferral flag set.
+	mux.stateMu.Lock()
+	deferred := mux.deferRegrantUntilNextSyn
+	mux.stateMu.Unlock()
+	if !deferred {
+		t.Fatal("F-24-fix regression: deferRegrantUntilNextSyn should be true after stale-STARTED suppression — the abandoned external initiator's bus slot has not yet terminated")
+	}
+
+	// Enqueue a fresh gateway request and confirm tryGrantAndStart is
+	// a no-op while the flag is set.
+	gwReqCh := mux.arb.requestStart(gatewaySessionID, 0x71)
+	mux.tryGrantAndStart()
+	mux.stateMu.Lock()
+	stillPending := mux.pendingStart == nil
+	mux.stateMu.Unlock()
+	if !stillPending {
+		t.Fatal("F-24-fix regression: tryGrantAndStart proceeded while deferRegrantUntilNextSyn=true — gateway START would race the abandoned external initiator's bus slot")
+	}
+	if !strings.Contains(logBuf.String(), "F-24 stale-STARTED suppression pending bus-idle") {
+		t.Fatalf("F-24-fix: expected deferral log line; got:\n%s", logBuf.String())
+	}
+
+	// Invariant 2: any SYN observation clears the flag.
+	mux.stateMu.Lock()
+	mux.onSYNLocked(wirePhaseEventNone, 0, false, time.Now())
+	cleared := !mux.deferRegrantUntilNextSyn
+	mux.stateMu.Unlock()
+	if !cleared {
+		t.Fatal("F-24-fix regression: SYN observation did not clear deferRegrantUntilNextSyn — gateway grant would remain deferred indefinitely after F-24 suppression")
+	}
+
+	// After clearing, a fresh tryGrantAndStart must pick up the
+	// pending gateway request.
+	mux.tryGrantAndStart()
+	mux.stateMu.Lock()
+	grantPicked := mux.pendingStart != nil && mux.pendingStart.sessionID == gatewaySessionID
+	mux.stateMu.Unlock()
+	if !grantPicked {
+		t.Fatal("F-24-fix regression: post-SYN tryGrantAndStart failed to grant gateway request — deferral cleared but follow-up grant path is broken")
+	}
+
+	_ = gwReqCh
+}
+
 // TestF24_NegativeBudgetDisablesGuard verifies the legacy-behavior
 // escape hatch — passing a negative ExternalStartStaleness disables
 // the guard entirely, preserving pre-F-24 grant semantics for

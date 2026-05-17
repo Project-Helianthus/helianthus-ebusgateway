@@ -505,6 +505,22 @@ type Mux struct {
 	// NACK, SYN timeout, or idle grace expired).
 	gatewayTxnActive bool
 
+	// F-24-fix (batch-23, 2026-05-17, Codex PR #634 P1 thread
+	// "Wait for idle after suppressing stale STARTED"): when the
+	// F-24 stale-STARTED suppression branch fires, the external
+	// initiator has WON wire arbitration but the gateway never
+	// confirmed ownership (`arb.hasOwner` stays false). If a fresh
+	// grant fires immediately, the next initiator (gateway or
+	// another external) issues a START in the middle of the
+	// abandoned external winner's bus slot, colliding with bytes
+	// already on the wire. deferRegrantUntilNextSyn defers the
+	// follow-up `tryGrantAndStart` until the SYN handler observes
+	// the next SYN-idle boundary — proof the abandoned frame
+	// terminated. Cleared in onSYNLocked (any SYN observation
+	// satisfies the wait — SYN itself is a bus-idle marker).
+	// Protected by stateMu.
+	deferRegrantUntilNextSyn bool
+
 	// activeTxn is the diagnostics snapshot for the current/last gateway
 	// transaction. Updated under stateMu. Exposed via ActiveTxnSnapshot()
 	// for tests and production observability. Bounded — never grows.
@@ -2025,6 +2041,15 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bool, now time.Time) ([]PassiveEvent, bool, bool) {
 	var passiveEvents []PassiveEvent
 
+	// F-24-fix (Codex PR #634 P1 thread "Wait for idle after
+	// suppressing stale STARTED"): any SYN observation marks a bus-
+	// idle boundary, so the abandoned external initiator's slot has
+	// terminated. Clear the deferral flag; the post-SYN
+	// tryGrantAndStart kick fired by readLoop (when shouldTryGrant
+	// is true) will now proceed normally on this SYN observation or
+	// the next one.
+	m.deferRegrantUntilNextSyn = false
+
 	// SYN-path diagnostics (bounded). Capture gwActiveBefore snapshot
 	// under stateMu so the ring entry matches the decision the SYN
 	// branches below make. Only record when gateway owns the bus at
@@ -2863,6 +2888,16 @@ func (m *Mux) tryGrantAndStart() {
 		m.stateMu.Unlock()
 		return
 	}
+	// F-24-fix (Codex PR #634 P1 thread "Wait for idle after
+	// suppressing stale STARTED"): if F-24 just suppressed a stale
+	// external STARTED, the abandoned external initiator's bus slot
+	// has not yet terminated with a SYN. Defer regrant until the
+	// next SYN observation clears the flag in onSYNLocked.
+	if m.deferRegrantUntilNextSyn {
+		m.logger.Printf("adaptermux: tryGrantAndStart skipped — F-24 stale-STARTED suppression pending bus-idle (next SYN)")
+		m.stateMu.Unlock()
+		return
+	}
 
 	// Bus-idle snapshot for the proxy-bug C1 (R1) fast path: the
 	// wire has been quiet for at least one SYN interval. When the
@@ -3638,8 +3673,22 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 				pending.deadline.Stop()
 			}
 			age := time.Since(pending.req.enqueuedAt)
+			// F-24-fix (Codex PR #634 P1 thread "Wait for idle after
+			// suppressing stale STARTED"): defer the next grant until
+			// the SYN handler confirms a bus-idle boundary. The
+			// adapter reported a real wire-level arbitration win for
+			// this external initiator; even though we suppressed the
+			// STARTED notification, the initiator's M2S frame is (or
+			// is about to be) on the wire. arb.hasOwner is false here
+			// (we never confirmed ownership), so without this flag a
+			// concurrent gateway or external START would race the
+			// abandoned external's bus slot. The flag is consumed in
+			// onSYNLocked — any SYN observation (whether mid-frame
+			// terminator or pure idle SYN) is sufficient proof the
+			// abandoned bus slot has ended.
+			m.deferRegrantUntilNextSyn = true
 			m.stateMu.Unlock()
-			m.logger.Printf("adaptermux: suppressing stale STARTED for session %d — request age %v > budget %v (F-24)",
+			m.logger.Printf("adaptermux: suppressing stale STARTED for session %d — request age %v > budget %v (F-24); deferring regrant until next SYN",
 				pending.sessionID, age, m.cfg.ExternalStartStaleness)
 			select {
 			case pending.notify <- startResult{
@@ -3650,9 +3699,10 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 			}:
 			default:
 			}
-			if m.arb.hasPending() {
-				m.tryGrantAndStart()
-			}
+			// NOTE: intentionally NOT calling tryGrantAndStart here.
+			// The next SYN observation in onSYNLocked clears
+			// deferRegrantUntilNextSyn and the readLoop's
+			// shouldTryGrant path picks up the grant naturally.
 			return
 		}
 		m.pendingStart = nil

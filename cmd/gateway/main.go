@@ -221,9 +221,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		busObservability.SetAdaptermuxDiagProvider(func() ebusgateway.AdaptermuxDiagSnapshot {
 			s := snap.ActiveTxnSnapshot()
 			return ebusgateway.AdaptermuxDiagSnapshot{
-				SynSuppressedPreEcho:        s.SynSuppressedPreEcho,
-				SynSeenDuringGrantWindow:    s.SynSeenDuringGrantWindow,
-				SynSeenWhileInterWriteEmpty: s.SynSeenWhileInterWriteEmpty,
+				SynSuppressedPreEcho:               s.SynSuppressedPreEcho,
+				SynSeenDuringGrantWindow:           s.SynSeenDuringGrantWindow,
+				SynSeenWhileInterWriteEmpty:        s.SynSeenWhileInterWriteEmpty,
+				SynSeenAfterTransportWindowExpired: s.SynSeenAfterTransportWindowExpired,
 			}
 		})
 	}

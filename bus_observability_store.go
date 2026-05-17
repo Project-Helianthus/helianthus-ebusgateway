@@ -1016,6 +1016,13 @@ type AdaptermuxDiagSnapshot struct {
 	// least one byte has been delivered to active (Attack 3 — inter-
 	// write queue-empty window).
 	SynSeenWhileInterWriteEmpty uint64
+	// SynSeenAfterTransportWindowExpired counts SYNs observed during
+	// gateway ownership where the upstream ENH transport's
+	// postGrantPreEcho window has closed via deadline-expiry in the
+	// current transaction (Attack 2 — batch-22 round-3). Forensic
+	// only; correlates with the residual pre_echo_syn rate
+	// unexplained by Attack 1 + Attack 3 instrumentation.
+	SynSeenAfterTransportWindowExpired uint64
 }
 
 // SetAdaptermuxDiagProvider registers a snapshot provider callback for
@@ -1189,6 +1196,12 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		writer.writeType("ebus_adaptermux_syn_seen_while_inter_write_empty_total", "counter")
 		writer.writeCounterSample("ebus_adaptermux_syn_seen_while_inter_write_empty_total",
 			float64(adaptermuxDiag.SynSeenWhileInterWriteEmpty), nil)
+
+		writer.writeHelp("ebus_adaptermux_syn_seen_after_transport_window_expired_total",
+			"Diagnostic (batch-22 round-3): SYNs observed while gateway owned the bus AND the upstream ENH transport's postGrantPreEcho window had already closed via deadline-expiry in the current gateway transaction. The transport's 50ms window normally closes on the first non-SYN echo; closure-by-expiry indicates the gateway has not yet seen a real echo and the transport-layer SYN suppression is no longer active for this txn — any subsequent idle 0xAA on the wire reaches the gateway unsuppressed at the transport layer. Forensic only — no behavior change. Per Attack 2 (batch-22): events here are leak candidates beyond what Attack 1 + Attack 3 instrumentation covers (~54% pre_echo_syn residual unaccounted-for after round-2). Operator analysis: compare rate to ebus_active_echo_mismatch_subclass_total{subclass=\"pre_echo_syn\"} to confirm Attack 2 dominance.")
+		writer.writeType("ebus_adaptermux_syn_seen_after_transport_window_expired_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_syn_seen_after_transport_window_expired_total",
+			float64(adaptermuxDiag.SynSeenAfterTransportWindowExpired), nil)
 	}
 
 	writer.writeHelp("ebus_frame_bytes_total", "Aggregate retained frame byte counts.")

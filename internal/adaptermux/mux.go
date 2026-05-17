@@ -2443,6 +2443,23 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		} else if !hasPendingEcho && bytesDeliveredBefore > 0 {
 			m.activeTxn.synSeenWhileInterWriteEmpty.Add(1)
 		}
+		// batch-22 round-3 Attack 2 observation: orthogonal to the
+		// gwActiveBefore / interWriteEmpty branches above (this
+		// counter can fire alongside either, OR independently if
+		// neither). Increment when the upstream ENH transport's
+		// postGrantPreEcho window has closed via expiry in the
+		// current gateway transaction. Compares the lifetime
+		// counter against the per-txn baseline captured at
+		// recordGatewayGrant. Forensic only — no behavior change.
+		//
+		// Use postGrantWindowExpiredCountSafe() which acquires
+		// connMu internally — m.upstream is guarded by connMu and
+		// can be replaced concurrently by reconnect; reading it
+		// under stateMu alone would race (Codex pre-push review).
+		current, hasReporter := m.postGrantWindowExpiredCountSafe()
+		if hasReporter && current > m.activeTxn.transportExpiredAtTxnStart.Load() {
+			m.activeTxn.synSeenAfterTransportWindowExpired.Add(1)
+		}
 	}
 
 	// SYN-path diagnostics: record only when gateway owned the bus at
@@ -4109,4 +4126,33 @@ func (m *Mux) broadcastResetToSessions() {
 func isNetTimeout(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// postGrantWindowExpiredCountSafe snapshots m.upstream under connMu
+// (the field's documented guard — see Mux struct comment at the
+// upstream field), type-asserts against the optional
+// PostGrantWindowExpiredReporter interface, and returns the current
+// expiry count alongside a "reporter implemented" flag. The
+// connMu-then-released-before-call sequence mirrors the existing
+// pattern at tryGrantAndStart / RequestStart sites: snapshot the
+// pointer under connMu, then call the lock-free atomic accessor on
+// the snapshot. Avoids holding connMu across the call (which would
+// risk lock-ordering issues with reconnect paths).
+//
+// Callers that already hold stateMu can call this safely — there is
+// no stateMu/connMu nesting in either direction; the helper releases
+// connMu before invoking the (lock-free) atomic accessor on the
+// captured snapshot.
+//
+// batch-22 round-3 Attack 2 instrumentation, 2026-05-17 (Codex
+// pre-push review fix). Forensic-only — no behavior change.
+func (m *Mux) postGrantWindowExpiredCountSafe() (uint64, bool) {
+	m.connMu.Lock()
+	tr := m.upstream
+	m.connMu.Unlock()
+	reporter, ok := tr.(transport.PostGrantWindowExpiredReporter)
+	if !ok {
+		return 0, false
+	}
+	return reporter.PostGrantWindowExpiredCount(), true
 }

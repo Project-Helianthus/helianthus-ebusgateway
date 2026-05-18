@@ -193,6 +193,13 @@ const (
 
 // matchEcho checks if a received byte matches the next expected echo.
 //
+// receivedWasEscaped is the F-23 provenance flag — true means the byte
+// was escape-decoded from wire `A9 01` (logical 0xAA-as-payload),
+// distinguishing it from a raw wire SYN (`AA` with wasEscaped=false).
+// Used only for queueJustDrained classification: an escape-decoded
+// 0xAA echo is a body byte (sentinel set), a raw 0xAA is a terminator
+// (sentinel cleared).
+//
 // Returns:
 //   - echoMatchSuppressed: byte is this session's echo, suppress it
 //   - echoMatchNone: no echo expected, byte is third-party traffic
@@ -200,7 +207,7 @@ const (
 //
 // flushedBytes contains any accumulated echo bytes that should be
 // delivered as observer frames before the current byte.
-func (t *echoTracker) matchEcho(received byte) (result echoMatchResult, flushedBytes []byte) {
+func (t *echoTracker) matchEcho(received byte, receivedWasEscaped bool) (result echoMatchResult, flushedBytes []byte) {
 	if len(t.expectedEchoes) == 0 {
 		return echoMatchNone, nil
 	}
@@ -240,7 +247,15 @@ func (t *echoTracker) matchEcho(received byte) (result echoMatchResult, flushedB
 			// echo_tracker import-free; the value is a wire-protocol
 			// constant and will not drift).
 			const symbolSyn byte = 0xAA
-			if received == symbolSyn {
+			// batch-26 round-7 (Codex r4 P2): only a RAW wire SYN
+			// (received==0xAA AND wasEscaped=false) is a legitimate
+			// frame terminator. An escape-decoded 0xAA
+			// (received==0xAA AND wasEscaped=true) is a payload byte
+			// (or CRC) whose wire encoding was `A9 01` — semantically
+			// indistinguishable from any other body byte. Treat it as
+			// a body match → set the sentinel.
+			isRealWireSyn := received == symbolSyn && !receivedWasEscaped
+			if isRealWireSyn {
 				t.queueJustDrained = false
 			} else {
 				t.queueJustDrained = true

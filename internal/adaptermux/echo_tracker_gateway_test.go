@@ -25,18 +25,18 @@ func TestEchoTracker_BasicSuppression(t *testing.T) {
 	tracker.recordSent(0x08)
 
 	// Match echoes.
-	result, _ := tracker.matchEcho(0x71)
+	result, _ := tracker.matchEcho(0x71, false)
 	if result != echoMatchSuppressed {
 		t.Fatalf("first echo: got %d, want Suppressed", result)
 	}
 
-	result, _ = tracker.matchEcho(0x08)
+	result, _ = tracker.matchEcho(0x08, false)
 	if result != echoMatchSuppressed {
 		t.Fatalf("second echo: got %d, want Suppressed", result)
 	}
 
 	// No more expected echoes.
-	result, _ = tracker.matchEcho(0xFF)
+	result, _ = tracker.matchEcho(0xFF, false)
 	if result != echoMatchNone {
 		t.Fatalf("third-party byte: got %d, want None", result)
 	}
@@ -49,13 +49,13 @@ func TestEchoTracker_Mismatch(t *testing.T) {
 	tracker.recordSent(0x08)
 
 	// First byte matches.
-	result, _ := tracker.matchEcho(0x71)
+	result, _ := tracker.matchEcho(0x71, false)
 	if result != echoMatchSuppressed {
 		t.Fatalf("first echo: got %d, want Suppressed", result)
 	}
 
 	// Second byte mismatches.
-	result, flushed := tracker.matchEcho(0xFF)
+	result, flushed := tracker.matchEcho(0xFF, false)
 	if result != echoMatchFlushed {
 		t.Fatalf("mismatch: got %d, want Flushed", result)
 	}
@@ -71,8 +71,8 @@ func TestEchoTracker_FlushOnSYN(t *testing.T) {
 	tracker.recordSent(0x08)
 
 	// Match both echoes.
-	tracker.matchEcho(0x71)
-	tracker.matchEcho(0x08)
+	tracker.matchEcho(0x71, false)
+	tracker.matchEcho(0x08, false)
 
 	// Flush at SYN boundary.
 	flushed, _ := tracker.flushOnSYN()
@@ -97,12 +97,12 @@ func TestEchoTracker_Rollback(t *testing.T) {
 	tracker.rollbackSent()
 
 	// Only one echo expected now.
-	result, _ := tracker.matchEcho(0x71)
+	result, _ := tracker.matchEcho(0x71, false)
 	if result != echoMatchSuppressed {
 		t.Fatalf("first echo: got %d, want Suppressed", result)
 	}
 
-	result, _ = tracker.matchEcho(0x08)
+	result, _ = tracker.matchEcho(0x08, false)
 	if result != echoMatchNone {
 		t.Fatalf("after rollback: got %d, want None", result)
 	}
@@ -118,12 +118,12 @@ func TestEchoTracker_EscapeBytePayload(t *testing.T) {
 	tracker.recordSent(0xAA) // SYN byte as data
 
 	// Both should match as regular bytes.
-	result, _ := tracker.matchEcho(0xA9)
+	result, _ := tracker.matchEcho(0xA9, false)
 	if result != echoMatchSuppressed {
 		t.Fatalf("0xA9 echo: got %d, want Suppressed", result)
 	}
 
-	result, _ = tracker.matchEcho(0xAA)
+	result, _ = tracker.matchEcho(0xAA, false)
 	if result != echoMatchSuppressed {
 		t.Fatalf("0xAA echo: got %d, want Suppressed", result)
 	}
@@ -141,7 +141,7 @@ func TestEchoTracker_Reset(t *testing.T) {
 	tracker := newEchoTracker()
 
 	tracker.recordSent(0x71)
-	tracker.matchEcho(0x71)
+	tracker.matchEcho(0x71, false)
 	tracker.reset()
 
 	if tracker.hasPendingEchoes() {
@@ -149,7 +149,7 @@ func TestEchoTracker_Reset(t *testing.T) {
 	}
 
 	// After reset, any byte is non-echo.
-	result, _ := tracker.matchEcho(0x71)
+	result, _ := tracker.matchEcho(0x71, false)
 	if result != echoMatchNone {
 		t.Fatalf("after reset: got %d, want None", result)
 	}
@@ -159,7 +159,7 @@ func TestEchoTracker_EmptyTracker(t *testing.T) {
 	tracker := newEchoTracker()
 
 	// No sent bytes — everything is third-party.
-	result, _ := tracker.matchEcho(0x71)
+	result, _ := tracker.matchEcho(0x71, false)
 	if result != echoMatchNone {
 		t.Fatalf("empty tracker: got %d, want None", result)
 	}
@@ -205,7 +205,7 @@ func TestEchoTracker_OverflowReset(t *testing.T) {
 
 	// matchEcho against the latest write 0x08 succeeds — the post-reset
 	// queue head IS 0x08 (the only entry).
-	result, _ := tracker.matchEcho(0x08)
+	result, _ := tracker.matchEcho(0x08, false)
 	if result != echoMatchSuppressed {
 		t.Errorf("matchEcho(0x08) = %v; want Suppressed (post-reset head)", result)
 	}
@@ -222,7 +222,7 @@ func TestEchoTracker_OverflowReset(t *testing.T) {
 	if got := len(tracker.expectedEchoes); got != 0 {
 		t.Errorf("queue len after consuming 0x08 = %d; want 0", got)
 	}
-	result, _ = tracker.matchEcho(0x71)
+	result, _ = tracker.matchEcho(0x71, false)
 	if result != echoMatchNone {
 		t.Errorf("stale echo of 0x71 post-overflow = %v; want echoMatchNone (queue empty after consume)", result)
 	}
@@ -271,7 +271,7 @@ func TestEchoTracker_OverflowRollbackRestoresQueue(t *testing.T) {
 	// Real echoes (e.g. of byte 0) now match correctly — pre-fix they
 	// would have all returned echoMatchNone because the prior queue
 	// was destroyed.
-	result, _ := tracker.matchEcho(0)
+	result, _ := tracker.matchEcho(0, false)
 	if result != echoMatchSuppressed {
 		t.Errorf("matchEcho(0) post-rollback = %v; want Suppressed (restored queue head)", result)
 	}
@@ -291,7 +291,7 @@ func TestEchoTracker_OverflowSnapshotInvalidatedByMatch(t *testing.T) {
 	tracker.recordSent(0x08) // overflow → snapshot stored
 
 	// matchEcho commits → snapshot must be cleared.
-	tracker.matchEcho(0x08)
+	tracker.matchEcho(0x08, false)
 
 	// Now rollback must NOT restore the prior 256 entries (we already
 	// committed the overflow by consuming the post-reset head).
@@ -301,5 +301,57 @@ func TestEchoTracker_OverflowSnapshotInvalidatedByMatch(t *testing.T) {
 	}
 	if got := tracker.overflowResets(); got != 1 {
 		t.Errorf("overflowResets after match+rollback = %d; want 1 (counter NOT reverted)", got)
+	}
+}
+
+// TestMatchEcho_QueueJustDrained_EscapeDecodedPayload (batch-26 round-7,
+// Codex r4 P2) verifies that an escape-decoded 0xAA payload (wire
+// `A9 01` → logical 0xAA with wasEscaped=true) is treated as a body
+// byte (sets queueJustDrained=true), NOT as a terminator SYN (which
+// would clear queueJustDrained=false).
+//
+// Failure mode pre-fix: matchEcho only saw the decoded byte value. A
+// gateway write of payload 0xAA (e.g. a temperature value 170 in a
+// data byte) would echo back as decoded 0xAA, triggering the
+// terminator-clearing branch and disabling the Attack-3 SYN
+// suppression for the rest of the transaction.
+func TestMatchEcho_QueueJustDrained_EscapeDecodedPayload(t *testing.T) {
+	tracker := newEchoTracker(8)
+	tracker.markRequestStart()
+
+	// Sequence: gateway writes payload byte 0xAA (escape-decoded on
+	// the wire from `A9 01`).
+	tracker.recordSent(0xAA)
+	result, _ := tracker.matchEcho(0xAA, true) // wasEscaped=true → payload
+	if result != echoMatchSuppressed {
+		t.Fatalf("matchEcho result = %d, want %d (echo of payload 0xAA must be suppressed)", result, echoMatchSuppressed)
+	}
+	if !tracker.IsQueueJustDrained() {
+		t.Errorf("queueJustDrained=false after consuming escape-decoded 0xAA payload echo; want true — escape-decoded body byte is NOT a terminator")
+	}
+}
+
+// TestMatchEcho_QueueJustDrained_RawWireSyn verifies the OTHER branch:
+// a real wire SYN echo (wasEscaped=false) IS the terminator and
+// clears queueJustDrained.
+func TestMatchEcho_QueueJustDrained_RawWireSyn(t *testing.T) {
+	tracker := newEchoTracker(8)
+	tracker.markRequestStart()
+
+	// Write a body byte first so we have ground state.
+	tracker.recordSent(0x71)
+	tracker.matchEcho(0x71, false)
+	if !tracker.IsQueueJustDrained() {
+		t.Fatalf("test precondition broken: queueJustDrained=false after body byte echo")
+	}
+
+	// Now write SymbolSyn (terminator) and consume its raw wire echo.
+	tracker.recordSent(0xAA)
+	result, _ := tracker.matchEcho(0xAA, false) // wasEscaped=false → real SYN
+	if result != echoMatchSuppressed {
+		t.Fatalf("matchEcho result = %d, want %d (terminator SYN echo must be suppressed)", result, echoMatchSuppressed)
+	}
+	if tracker.IsQueueJustDrained() {
+		t.Errorf("queueJustDrained=true after consuming raw wire SYN terminator; want false — terminator clears the sentinel")
 	}
 }

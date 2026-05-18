@@ -1920,7 +1920,7 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// we preserve the queue across stale bytes.
 	matchWouldHit := !hadPendingEcho || (hadPendingEcho && symbol == preMatchHead)
 	if isGatewayOwned && matchWouldHit {
-		m.gatewayEcho.matchEcho(symbol) // track echo state internally
+		m.gatewayEcho.matchEcho(symbol, wasEscaped) // track echo state internally
 	}
 	// P11 — gate activeCh delivery: mid-write requires queue-head match;
 	// response phase (no pending writes) accepts any byte.

@@ -316,7 +316,7 @@ func TestEchoTracker_OverflowSnapshotInvalidatedByMatch(t *testing.T) {
 // terminator-clearing branch and disabling the Attack-3 SYN
 // suppression for the rest of the transaction.
 func TestMatchEcho_QueueJustDrained_EscapeDecodedPayload(t *testing.T) {
-	tracker := newEchoTracker(8)
+	tracker := newEchoTracker()
 	tracker.markRequestStart()
 
 	// Sequence: gateway writes payload byte 0xAA (escape-decoded on
@@ -335,7 +335,7 @@ func TestMatchEcho_QueueJustDrained_EscapeDecodedPayload(t *testing.T) {
 // a real wire SYN echo (wasEscaped=false) IS the terminator and
 // clears queueJustDrained.
 func TestMatchEcho_QueueJustDrained_RawWireSyn(t *testing.T) {
-	tracker := newEchoTracker(8)
+	tracker := newEchoTracker()
 	tracker.markRequestStart()
 
 	// Write a body byte first so we have ground state.

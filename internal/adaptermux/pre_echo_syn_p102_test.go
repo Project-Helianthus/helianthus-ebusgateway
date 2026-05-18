@@ -360,3 +360,103 @@ func TestPreEchoSyn_StuckWrite_IdleReleaseStillFires(t *testing.T) {
 		t.Errorf("InactiveReason=%q, want %q (stuck-write must terminate via idle release, NOT terminator)", snap.InactiveReason, ReasonSYNIdle)
 	}
 }
+
+// TestPreEchoSyn_QueueJustDrained_ClearedOnIdleRelease (batch-26
+// round-7 — Codex r2 defect 3, MEDIUM) verifies that the
+// queueJustDrained sentinel is bounded by IdleReleaseGrace, not by
+// queueJustDrained itself.
+//
+// Failure mode pre-fix: the gateway consumed echo K (queueJustDrained
+// set, bytesDeliveredToActive>0), then stalled before sendLoop
+// recorded byte K+1. queueJustDrained stayed true; the inter-write
+// suppression chain
+// (betweenWritesSyn → preEchoMidFrameSuppress → suppressIdleRelease)
+// blocked the IdleReleaseGrace path, so ownership persisted up to
+// MaxOwnershipDuration (10s).
+//
+// Post-fix:
+//   - suppressIdleRelease no longer reads queueJustDrained — it gates
+//     only on midWriteSyn (queue head non-SYN), which is false once
+//     the queue is empty.
+//   - When idle release fires for the gateway owner, the branch
+//     additionally calls gatewayEcho.ClearQueueJustDrained() so the
+//     sentinel can't persist into the next grant.
+//
+// Scenario:
+//  1. grantGateway (initiator 0x71) → busOwned=now, gatewayTxnActive
+//     = true.
+//  2. Write byte 0x71 — gatewayEcho.expectedEchoes=[0x71].
+//  3. Inject echo 0x71 on wire → consumed via ReadByte →
+//     expectedEchoes empty, queueJustDrained=true,
+//     bytesDeliveredToActive=1.
+//  4. Sleep > IdleReleaseGrace (200ms), then inject wire SYN.
+//  5. Assert: gatewayTxnActive=false, ReasonSYNIdle,
+//     queueJustDrained=false.
+func TestPreEchoSyn_QueueJustDrained_ClearedOnIdleRelease(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+
+	// Step 2: write a non-SYN byte and let it echo+consume so we leave
+	// the pre-first-echo window (bytesDeliveredToActive=1) and the
+	// expectedEchoes queue drains to empty (queueJustDrained=true).
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write(0x71) err=%v", err)
+	}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+	if b, err := at.ReadByte(); err != nil || b != 0x71 {
+		t.Fatalf("ReadByte (echo of 0x71) = (0x%02X, %v), want (0x71, nil)", b, err)
+	}
+
+	// Precondition: the inter-write sentinel must be set. Read directly
+	// from gatewayEcho — the public ActiveTxnSnapshot does not surface
+	// this internal flag, and the test asserts on its lifecycle.
+	mux.stateMu.Lock()
+	preIdleDrained := mux.gatewayEcho.IsQueueJustDrained()
+	bytesPre := mux.activeTxn.bytesDeliveredToActive.Load()
+	mux.stateMu.Unlock()
+	if !preIdleDrained {
+		t.Fatalf("test precondition broken: queueJustDrained=false after consuming non-SYN echo; expected true")
+	}
+	if bytesPre == 0 {
+		t.Fatalf("test precondition broken: bytesDeliveredToActive=0 after consuming echo; expected >=1")
+	}
+
+	// Step 4: wait past IdleReleaseGrace (200ms default) then inject the
+	// wire SYN that should fire the idle-release branch.
+	time.Sleep(220 * time.Millisecond)
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	snap := mux.ActiveTxnSnapshot()
+
+	// Assertion (a): the txn is no longer active. Pre-defect-3 the
+	// stale sentinel would have left snap.Active=true here (since the
+	// betweenWritesSyn-derived suppressIdleRelease blocked the grace
+	// branch).
+	if snap.Active {
+		t.Errorf("ActiveTxnSnapshot.Active=true after IdleReleaseGrace expiry — idle release was suppressed by the queueJustDrained sentinel (regression)")
+	}
+
+	// Assertion (b): the teardown reason must be SYNIdle (NOT
+	// SYNTerminator). Terminator classification would mean we mistook
+	// the wire SYN for a frame terminator while bytesDeliveredToActive
+	// was non-zero — that path is gated on `!preEchoMidFrameSuppress`
+	// and pre-fix would not have fired here either.
+	if snap.InactiveReason != ReasonSYNIdle {
+		t.Errorf("InactiveReason=%q, want %q — stale queueJustDrained must be cleared via idle-grace path, not terminator", snap.InactiveReason, ReasonSYNIdle)
+	}
+
+	// Assertion (c): the sentinel was cleared by the idle-release
+	// branch. Without ClearQueueJustDrained() the flag would persist
+	// into the next grant and re-arm the suppression chain for an
+	// unrelated future txn.
+	mux.stateMu.Lock()
+	postIdleDrained := mux.gatewayEcho.IsQueueJustDrained()
+	mux.stateMu.Unlock()
+	if postIdleDrained {
+		t.Errorf("queueJustDrained=true after idle release; want false (ClearQueueJustDrained must fire in the gateway-owner idle-release branch)")
+	}
+}

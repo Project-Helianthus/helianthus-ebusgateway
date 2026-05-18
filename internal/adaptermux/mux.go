@@ -2352,17 +2352,33 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	//
 	// P10.2 — gate idle release ONLY for live mid-frame races, NOT for
 	// stuck-write timeouts. The distinguishing signal:
-	//   - bytesDeliveredToActive > 0 + preEchoMidFrameSuppress: the
-	//     gateway has live echo activity AND a noise SYN arrived
-	//     mid-write. Aborting the txn would discard real progress.
-	//     Suppress idle release.
-	//   - bytesDeliveredToActive == 0 + preEchoMidFrameSuppress: the
-	//     gateway wrote bytes but NO echo ever arrived. The bus is
-	//     stuck/unresponsive. The IdleReleaseGrace mechanism is exactly
-	//     designed to bail out here. Allow idle release. (Used by
-	//     TestRegression_StartedButNoResponse to model production
-	//     unresponsive-target scenarios.)
-	suppressIdleRelease := preEchoMidFrameSuppress &&
+	//   - bytesDeliveredToActive > 0 + midWriteSyn: the gateway has
+	//     live echo activity AND a noise SYN arrived mid-write
+	//     (queue head non-SYN). Aborting the txn would discard real
+	//     progress. Suppress idle release.
+	//   - bytesDeliveredToActive == 0 + midWriteSyn: the gateway
+	//     wrote bytes but NO echo ever arrived. The bus is
+	//     stuck/unresponsive. The IdleReleaseGrace mechanism is
+	//     exactly designed to bail out here. Allow idle release.
+	//     (Used by TestRegression_StartedButNoResponse to model
+	//     production unresponsive-target scenarios.)
+	//
+	// batch-26 round-7 (Codex r2 defect 3 — MEDIUM): the idle
+	// release gate must NOT depend on betweenWritesSyn /
+	// queueJustDrained. The sentinel is set when matchEcho drained
+	// the queue and stays true until the NEXT recordSent /
+	// markRequestStart / flushOnSYN. If the gateway stalls in that
+	// window (e.g. consumer side hangs between consuming echo K and
+	// the sendLoop running recordSent for byte K+1), queueJustDrained
+	// remains true indefinitely; tying suppressIdleRelease to it
+	// (via preEchoMidFrameSuppress) would extend ownership up to
+	// MaxOwnershipDuration (10s) and block external sessions. The
+	// IdleReleaseGrace contract is: 200 ms after busOwned with no
+	// further wire-phase progress, release. The sentinel must not
+	// override that. Below the release branch additionally calls
+	// gatewayEcho.ClearQueueJustDrained() so the next SYN
+	// observation is treated as a legitimate idle terminator.
+	suppressIdleRelease := midWriteSyn && wasGatewayOwned && m.gatewayTxnActive &&
 		m.activeTxn.bytesDeliveredToActive.Load() > 0
 	if phaseEvent == wirePhaseEventSYNIdle && hasOwner && !suppressIdleRelease {
 		// Two thresholds:
@@ -2438,6 +2454,16 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 			// gone but activePathExpectsBytes() still returns true,
 			// routing third-party traffic into activeCh indefinitely.
 			if ownerID == gatewaySessionID && m.gatewayTxnActive {
+				// batch-26 round-7 (Codex r2 defect 3 — MEDIUM): clear
+				// the inter-write sentinel along with txn teardown. The
+				// sentinel was set by matchEcho consuming a non-SYN
+				// echo, and would otherwise persist into the next grant
+				// because it is only cleared by recordSent /
+				// markRequestStart / flushOnSYN. Idle release is the
+				// fourth bounding event in spirit — once we tore down
+				// the txn due to IdleReleaseGrace, the inter-write
+				// window is over by definition.
+				m.gatewayEcho.ClearQueueJustDrained()
 				m.gatewayTxnActive = false
 				m.recordGatewayInactive(ReasonSYNIdle)
 			}

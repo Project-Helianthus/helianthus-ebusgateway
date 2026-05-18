@@ -358,6 +358,28 @@ func (t *echoTracker) IsQueueJustDrained() bool {
 	return t.queueJustDrained
 }
 
+// ClearQueueJustDrained drops the inter-write sentinel without
+// touching expectedEchoes / seenEchoes / atRequestStart. The mux
+// idle-release path (IdleReleaseGrace expiry) calls this BEFORE
+// proceeding with the SYN as a legitimate idle terminator: the
+// grace timer exists precisely to break stuck transactions, so a
+// sticky queueJustDrained from a partial K/K+1 handoff must not be
+// allowed to extend ownership beyond IdleReleaseGrace.
+//
+// Codex round-7 review (defect 3, MEDIUM): without this clear, a
+// stall after consuming echo K but before recording K+1 would keep
+// queueJustDrained=true; the next wire SYN would be suppressed as
+// "between writes" and idle release would not fire until
+// MaxOwnershipDuration (10s). Decouples the sentinel lifetime from
+// the IdleReleaseGrace contract.
+//
+// Exported (PascalCase) for the same reason as IsQueueJustDrained:
+// the mux caller treats this as an inter-file contract while still
+// holding stateMu.
+func (t *echoTracker) ClearQueueJustDrained() {
+	t.queueJustDrained = false
+}
+
 // stats returns echo tracking statistics.
 func (t *echoTracker) stats() (suppressed, mismatches uint64) {
 	return t.totalSuppressed, t.totalMismatches

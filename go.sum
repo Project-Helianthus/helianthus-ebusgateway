@@ -6,6 +6,8 @@ github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260517203306-6ef85ee0
 github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260517203306-6ef85ee0c49a/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
 github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260517221644-f64ea2dab20c h1:S37/i7aghmSO/Ml3SO0xa7VnEC5ae0aazGLEqtVRUm4=
 github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260517221644-f64ea2dab20c/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
+github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260518052315-b0b2d8812034 h1:sqL1lR5i4ysKKf+mASAMGff9qtsubj9EZXlvKRYK1ho=
+github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260518052315-b0b2d8812034/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
 github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260510071332-e7b3e38e42d2 h1:6VFOfwe5L0GQkVRMcjdjCjnfBWcDoelnmoP1wIflrKM=
 github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260510071332-e7b3e38e42d2/go.mod h1:MhgS/S+s+EJ4+8c9KXom+pAXLTRYcjLI8qVSVCvsQu4=
 github.com/cenkalti/backoff v2.2.1+incompatible h1:tNowT99t7UNflLxfYYSlKYsBpXdEet03Pg2g16Swow4=

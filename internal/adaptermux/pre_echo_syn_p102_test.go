@@ -460,3 +460,88 @@ func TestPreEchoSyn_QueueJustDrained_ClearedOnIdleRelease(t *testing.T) {
 		t.Errorf("queueJustDrained=true after idle release; want false (ClearQueueJustDrained must fire in the gateway-owner idle-release branch)")
 	}
 }
+
+// TestPreEchoSyn_BetweenWritesSyn_PreservesOwnership_UnderExternalPressure
+// (batch-26 round-7 — Codex r3 P1 defect) verifies that when an
+// Attack-3 SYN arrives in the queueJustDrained window AND an external
+// session has a pending START, the F-26 external-bidder bypass does
+// NOT release ownership while the gateway is still mid-write.
+//
+// Sequence:
+//  1. grantGateway → gatewayTxnActive=true, bytesDelivered=0
+//  2. Write byte K → recordSent(K), queue=[K]
+//  3. Inject echo K → matchEcho, queue=[] → queueJustDrained=true,
+//     bytesDelivered=1
+//  4. Queue an external START (so arb.hasExternalPending()=true)
+//  5. Inject wire SYN (the Attack-3 noise)
+//  6. Assert: gateway STILL owns the bus (ownership not yanked by F-26
+//     external bypass), gatewayTxnActive=true. The wire SYN was
+//     suppressed by preEchoMidFrameSuppress (betweenWritesSyn branch).
+//
+// Pre-r3 the narrowed suppressIdleRelease (midWriteSyn-only) allowed
+// the SYNIdle branch to run; F-26 then released immediately because of
+// the external pending request, aborting the gateway's in-flight write.
+func TestPreEchoSyn_BetweenWritesSyn_PreservesOwnership_UnderExternalPressure(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+
+	// Step 2: write byte K → recordSent populates queue.
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write(0x71) err=%v", err)
+	}
+
+	// Step 3: feed the echo so matchEcho drains the queue and sets
+	// queueJustDrained=true.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+	if b, err := at.ReadByte(); err != nil || b != 0x71 {
+		t.Fatalf("ReadByte (echo) = (0x%02X, %v), want (0x71, nil)", b, err)
+	}
+
+	// Preconditions.
+	mux.stateMu.Lock()
+	preDrained := mux.gatewayEcho.IsQueueJustDrained()
+	bytesPre := mux.activeTxn.bytesDeliveredToActive.Load()
+	mux.stateMu.Unlock()
+	if !preDrained {
+		t.Fatalf("test precondition broken: queueJustDrained=false; want true")
+	}
+	if bytesPre == 0 {
+		t.Fatalf("test precondition broken: bytesDeliveredToActive=0; want >=1")
+	}
+
+	// Step 4: queue an external START so arb.hasExternalPending() becomes
+	// true. The F-26 bypass below the suppressIdleRelease gate triggers
+	// on this exact condition.
+	_ = mux.arb.requestStart(7, 0x31)
+
+	// Step 5: inject wire SYN WITHIN IdleReleaseGrace (we're <200ms past
+	// grantGateway). The wire SYN must be classified as Attack-3 noise
+	// via betweenWritesSyn → preEchoMidFrameSuppress → suppressIdleRelease
+	// (now restored to honor betweenWritesSyn within grace).
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(30 * time.Millisecond)
+
+	// Assertion (a): gateway STILL owns the bus. The F-26 bypass must
+	// NOT have fired during the between-writes window.
+	if !mux.arb.isOwner(gatewaySessionID) {
+		t.Errorf("gateway lost ownership after Attack-3 SYN with external pending — F-26 bypass triggered during between-writes window")
+	}
+
+	// Assertion (b): gatewayTxnActive remains true. The txn is alive.
+	snap := mux.ActiveTxnSnapshot()
+	if !snap.Active {
+		t.Errorf("ActiveTxnSnapshot.Active=false after Attack-3 SYN; want true (txn still mid-write between K and K+1)")
+	}
+
+	// Assertion (c): the queue is still empty (SYN was suppressed, not
+	// delivered as terminator).
+	mux.stateMu.Lock()
+	stillDrained := mux.gatewayEcho.IsQueueJustDrained()
+	mux.stateMu.Unlock()
+	if !stillDrained {
+		t.Errorf("queueJustDrained=false after between-writes SYN; want true (sentinel must persist until next recordSent)")
+	}
+}

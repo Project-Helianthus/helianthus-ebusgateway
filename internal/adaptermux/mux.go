@@ -2363,23 +2363,36 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	//     (Used by TestRegression_StartedButNoResponse to model
 	//     production unresponsive-target scenarios.)
 	//
-	// batch-26 round-7 (Codex r2 defect 3 — MEDIUM): the idle
-	// release gate must NOT depend on betweenWritesSyn /
-	// queueJustDrained. The sentinel is set when matchEcho drained
-	// the queue and stays true until the NEXT recordSent /
-	// markRequestStart / flushOnSYN. If the gateway stalls in that
-	// window (e.g. consumer side hangs between consuming echo K and
-	// the sendLoop running recordSent for byte K+1), queueJustDrained
-	// remains true indefinitely; tying suppressIdleRelease to it
-	// (via preEchoMidFrameSuppress) would extend ownership up to
-	// MaxOwnershipDuration (10s) and block external sessions. The
-	// IdleReleaseGrace contract is: 200 ms after busOwned with no
-	// further wire-phase progress, release. The sentinel must not
-	// override that. Below the release branch additionally calls
-	// gatewayEcho.ClearQueueJustDrained() so the next SYN
-	// observation is treated as a legitimate idle terminator.
-	suppressIdleRelease := midWriteSyn && wasGatewayOwned && m.gatewayTxnActive &&
-		m.activeTxn.bytesDeliveredToActive.Load() > 0
+	// batch-26 round-7 (Codex r2 defect 3 + r3 P1): the idle release
+	// gate must honor BOTH midWriteSyn AND betweenWritesSyn during the
+	// IdleReleaseGrace window so the F-26 external-bidder bypass
+	// (below) does NOT release ownership mid-write under contention.
+	//
+	// Initial fix (r2 defect 3) narrowed suppressIdleRelease to
+	// midWriteSyn-only on the theory that the sentinel could stick
+	// indefinitely if the gateway stalled between bytes. Codex r3 P1
+	// caught the missed implication: when an Attack-3 SYN arrives in
+	// the queueJustDrained window AND an external session has a
+	// pending START, the F-26 bypass fires SYNIdle release on the
+	// gateway in the middle of its inter-write window, aborting the
+	// live transaction before recordSent(K+1) runs.
+	//
+	// Correct invariant: suppress idle release whenever gateway is
+	// mid-frame (midWriteSyn OR betweenWritesSyn) — BUT bound the
+	// betweenWritesSyn case by IdleReleaseGrace so a pathological
+	// stall doesn't pin ownership forever. midWriteSyn has its own
+	// implicit bound via bus.Send's activeChanTimeout (5s for the
+	// outer Send context); the sentinel-only case relies on grace.
+	//
+	// When grace expires for the between-writes case, the existing
+	// gateway-owner release branch below clears the sentinel via
+	// gatewayEcho.ClearQueueJustDrained() — so the next SYN
+	// observation IS a legitimate idle terminator.
+	elapsedSinceGrant := time.Since(m.busOwned)
+	betweenWritesWithinGrace := betweenWritesSyn && elapsedSinceGrant <= m.cfg.IdleReleaseGrace
+	suppressIdleRelease := wasGatewayOwned && m.gatewayTxnActive &&
+		m.activeTxn.bytesDeliveredToActive.Load() > 0 &&
+		(midWriteSyn || betweenWritesWithinGrace)
 	if phaseEvent == wirePhaseEventSYNIdle && hasOwner && !suppressIdleRelease {
 		// Two thresholds:
 		//   - Gateway owner: 200 ms IdleReleaseGrace measured from

@@ -253,25 +253,20 @@ func TestOnSYNLocked_DeliversTerminatorToActive_WhenBytesReadPositive(t *testing
 }
 
 // TestOnSYNLocked_NoTerminatorDeliveryWhenBytesReadZero documents the
-// grant-window stale-SYN semantics under round-6: a SYN arriving after
-// grant but before the active caller has started Write must not be
-// treated as a terminator and must not be delivered to activeCh.
+// grant-window stale-SYN semantics: a SYN arriving after grant but before
+// the active caller has started Write must not be treated as a terminator
+// and must not be delivered to activeCh.
 //
-// Round-6 (batch-24) update: the synSuppressedPreEcho counter NOW
-// increments in this window because round-6 broadens preEchoMidFrameSuppress
-// to include the grantSyn condition (gatewayTxnActive=false &&
-// hasPendingEcho=false while wasGatewayOwned=true). Pre-round-6 this
-// counter stayed unchanged because the preFirstEchoSyn gate required
-// gatewayTxnActive=true. The behavior change is intentional: the
-// grant-window SYN was the root of Attack 1 leak class (~127/min
-// observation) and round-6 explicitly classifies it as wire-SYN noise.
+// (batch-25 hotfix: the round-6 grantSyn branch that incremented
+// SynSuppressedPreEcho here was reverted because live evidence showed it
+// over-suppressed legitimate gateway echoes. Behavior reverts to the
+// original semantics: no counter increment in this window; the SYN simply
+// does not terminate the nascent txn because bytesRead==0 anyway.)
 func TestOnSYNLocked_NoTerminatorDeliveryWhenBytesReadZero(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
 
 	grantGateway(t, mux, mock, 0x71)
-
-	before := mux.ActiveTxnSnapshot().SynSuppressedPreEcho
 
 	// Do NOT consume any bytes via ReadByte — bytesRead stays 0.
 	// Inject a SYN (simulating a pre-grant stale SYN that arrived in the
@@ -286,12 +281,6 @@ func TestOnSYNLocked_NoTerminatorDeliveryWhenBytesReadZero(t *testing.T) {
 	}
 	if snap.InactiveReason == ReasonSYNTerminator {
 		t.Errorf("InactiveReason=%q — terminator path must NOT fire when bytesRead==0", snap.InactiveReason)
-	}
-
-	// Round-6: the grant-window SYN is now classified as wire noise via
-	// the grantSyn branch, so synSuppressedPreEcho MUST increment.
-	if snap.SynSuppressedPreEcho <= before {
-		t.Errorf("SynSuppressedPreEcho=%d before=%d, want increment under round-6 grantSyn branch", snap.SynSuppressedPreEcho, before)
 	}
 
 	// SYN diag entry: no active transaction was armed, and nothing reached
@@ -309,80 +298,6 @@ func TestOnSYNLocked_NoTerminatorDeliveryWhenBytesReadZero(t *testing.T) {
 	}
 }
 
-// TestEchoMismatch_SYNAfterGrantBeforeFirstEcho is the end-to-end
-// regression test for the echo_mismatch root cause. Sequence:
-//
-//  1. Gateway obtains bus ownership via completeArbitrationGrant.
-//  2. readLoop reads a stale SYN from the TCP/ENH buffer (this is bus
-//     idle traffic buffered before bus.Send's first Write reached the
-//     adapter — the structural race is real: readLoop's tight loop is
-//     much faster than bus.Send's notify→sendRawWithEcho→Write→
-//     sendLoop→upstream chain).
-//  3. bus.Send writes the first real byte (the request source 0x15).
-//  4. readLoop reads the echo of that byte (0x15).
-//
-// Pre-fix: ReadByte returns the stale SYN (0xAA) first, sendRawWithEcho
-// sees 0xAA in place of 0x15, emits echo_mismatch.
-//
-// Post-fix: the stale SYN is suppressed from activeCh (counted in
-// synSuppressedPreEcho); ReadByte returns 0x15 — the real echo — first.
-// No echo_mismatch.
-func TestEchoMismatch_SYNAfterGrantBeforeFirstEcho(t *testing.T) {
-	mux, mock, _, cleanup := newP3TestMux(t)
-	defer cleanup()
-
-	grantGateway(t, mux, mock, 0x71)
-	at := mux.ActiveTransport()
-
-	before := mux.ActiveTxnSnapshot().SynSuppressedPreEcho
-
-	// Inject a stale SYN BEFORE any Write — bytesRead is still 0.
-	// This models the echo_mismatch production sequence: bus idle chatter
-	// buffered in the TCP socket between STARTED and the first gateway
-	// byte, surfacing via readLoop before bus.Send reaches the adapter.
-	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
-	time.Sleep(20 * time.Millisecond)
-
-	if _, err := at.Write([]byte{0x15}); err != nil {
-		t.Fatalf("Write err=%v", err)
-	}
-
-	// Then inject the real echo byte that bus.Send would expect to read
-	// back (0x15 — source of a scan from 0x15 targeting 0x08).
-	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x15}
-
-	// ReadByte must return 0x15 — the real echo — NOT the stale 0xAA SYN.
-	// Pre-fix this would return 0xAA and bus.Send would emit echo_mismatch.
-	b, err := at.ReadByte()
-	if err != nil {
-		t.Fatalf("ReadByte err=%v", err)
-	}
-	if b == protocol.SymbolSyn {
-		t.Fatalf("ReadByte returned stale SYN 0xAA — pre-echo suppression failed; this is the echo_mismatch regression (13,904 events in soak)")
-	}
-	if b != 0x15 {
-		t.Fatalf("ReadByte=0x%02X, want 0x15 (the real echo)", b)
-	}
-
-	// Round-6 (batch-24): the stale grant-window SYN is now classified as
-	// wire intrusion via preEchoMidFrameSuppress's grantSyn branch, so
-	// synSuppressedPreEcho MUST increment. Pre-round-6 this counter was
-	// unchanged here (the preFirstEchoSyn gate required gatewayTxnActive=true).
-	after := mux.ActiveTxnSnapshot().SynSuppressedPreEcho
-	if after <= before {
-		t.Errorf("SynSuppressedPreEcho=%d before=%d, want increment under round-6 grantSyn branch", after, before)
-	}
-
-	// Gateway still owns the bus and the txn is still active — the stale
-	// SYN did not terminate the nascent transaction.
-	snap := mux.ActiveTxnSnapshot()
-	if !snap.Active {
-		t.Errorf("Active=false, want true — stale SYN must not end the txn")
-	}
-	if snap.InactiveReason != ReasonNone {
-		t.Errorf("InactiveReason=%q, want empty — no inactive transition on pre-echo SYN", snap.InactiveReason)
-	}
-}
 
 // TestEchoMismatch_SYNAfterWriteBeforeFirstEcho is the exact scenario
 // Codex flagged on PR #502 (commit 30c3dcd / finding at mux.go:1210):

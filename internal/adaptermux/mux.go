@@ -2118,61 +2118,25 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	nextExpectedEcho, hasPendingEcho := m.gatewayEcho.peekNextExpected()
 	midWriteSyn := hasPendingEcho && nextExpectedEcho != protocol.SymbolSyn
 
-	// batch-24 round-6 — broaden P10.2 to suppress wire SYN in two more
-	// gateway-owned-but-not-protected windows. After round-5 closed the
-	// transport-deadline Attack 2 path (~5.17/min → ~0.2/min Attack 2
-	// rate), residual leak (~4.6/min) traces to wire SYN intrusions that
-	// the original P10.2 mid-write gate could not see:
+	// batch-25 hotfix — reverted batch-24 round-6 broadening (grantSyn /
+	// interWriteSyn). Live Prometheus history showed the broader gate
+	// over-suppressed legitimate gateway echoes: per-frame echo_mismatch
+	// ratio CLIMBED from 5-11% (pre-investigation) to 12-23% on the
+	// round-6 binary, while absolute counts dropped only because gateway
+	// throughput collapsed (passive frame rate 1.0-1.3 c/s →
+	// 0.0-0.5 c/s, ~65% drop). Post-revert (binary injected
+	// 2026-05-18T05:00 UTC) ratio dropped back to 7.21% and frame rate
+	// recovered to 1.119 c/s within 7 minutes. See
+	// _work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-18-batch25.md.
 	//
-	//   - grantSyn (Attack 1 / synSeenDuringGrantWindow at ~127/min):
-	//     gateway has won arbitration (wasGatewayOwned=true after
-	//     completeArbitrationGrant), but the first activeTransport.Write
-	//     has NOT yet flipped gatewayTxnActive=true. Original P10.2
-	//     required gatewayTxnActive=true → bypassed. A wire SYN here
-	//     enters activeCh and sits buffered; when the first Write
-	//     submits, bus.Send.sendRawWithEcho reads the buffered 0xAA in
-	//     echo position → echo_mismatch subclass=pre_echo_syn_raw.
+	// Restored P10.2 to its pre-round-6 semantics: suppress wire SYN
+	// only when a non-SYN echo is pending (the original mid-write
+	// invariant). grantSyn / interWriteSyn would need a different
+	// approach — likely a state-machine-aware gate that distinguishes
+	// the gateway's own SYN write from a wire-intruded SYN, rather
+	// than the bytesDeliveredToActive heuristic that turned out to
+	// misclassify legitimate post-txn echo windows under load.
 	//
-	//   - interWriteSyn (Attack 3 / synSeenWhileInterWriteEmpty at
-	//     ~1.27/min in counter, fuller leak rate after multiplier):
-	//     gateway txn is active (>=1 byte delivered) but the echo queue
-	//     is currently empty (matchEcho consumed byte K, sendLoop has
-	//     not yet armed recordSent(K+1)). Original P10.2 required
-	//     hasPendingEcho=true → bypassed. The legacy "queue empty →
-	//     assume terminator" branch (pre-P10.2 PR #502 semantics) used
-	//     to fire here. Round-6 retracts that assumption: every
-	//     legitimate terminator now goes through sendEndOfMessage →
-	//     sendRawWithEcho(SymbolSyn), so by the time the wire echoes
-	//     the terminator, recordSent(SymbolSyn) has populated the queue
-	//     and hasPendingEcho=true with nextExpected=SymbolSyn — the
-	//     terminator gate at line ~2197 still fires through that
-	//     branch. Only wire-intruded SYNs (gateway never wrote one)
-	//     fall through the empty-queue path, and those are exactly the
-	//     leak class round-6 closes.
-	//
-	// Safety: legitimate post-transaction terminator SYNs are handled
-	// by ownership having already been released (TransactionDone via
-	// F-21, or terminator gate fired before us). In either case
-	// wasGatewayOwned=false, so the outer guard prevents over-
-	// suppression. The `bytesDeliveredToActive>0` guard on interWriteSyn
-	// also protects against day-one transactions that never delivered.
-	//
-	// grantSyn additional guard: bytesDeliveredToActive == 0. This
-	// distinguishes the genuine grant-to-first-write window
-	// (gatewayTxnActive=false because the first Write has not yet
-	// flipped it; bytesDelivered=0 because nothing has been delivered)
-	// from the post-transaction idle-grace window
-	// (gatewayTxnActive=false because the terminator already cleared
-	// it; bytesDelivered>0 because the terminator delivery bumped the
-	// counter). The post-txn idle window must remain eligible for
-	// idle release so ownership unwinds normally — failing this
-	// pinned gateway ownership for full sessions in
-	// TestActivePath_SoakCycle_NoSustainedGrowth.
-	interWriteSyn := m.gatewayTxnActive && !hasPendingEcho &&
-		m.activeTxn.bytesDeliveredToActive.Load() > 0
-	grantSyn := !m.gatewayTxnActive && !hasPendingEcho &&
-		m.activeTxn.bytesDeliveredToActive.Load() == 0
-
 	// Flush gateway echo tracker at SYN boundary. Flushed bytes are
 	// confirmed gateway self-traffic — do NOT emit to passive path
 	// (passive is third-party only). They are delivered to external
@@ -2181,12 +2145,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// P10.2: skip flush when this SYN is mid-write noise. The expected-
 	// echo queue must survive so the next real echo of the pending
 	// non-SYN byte still matches.
-	//
-	// batch-24 round-6: extend skip to grantSyn / interWriteSyn windows
-	// too. In all three cases the wire SYN is an intrusion, not a
-	// terminator — flushing would discard a legitimately-pending echo
-	// (e.g. K+1 arrives between the SYN observation and the next echo).
-	preEchoMidFrameSuppress := wasGatewayOwned && (midWriteSyn || interWriteSyn || grantSyn)
+	preEchoMidFrameSuppress := wasGatewayOwned && m.gatewayTxnActive && midWriteSyn
 	if !preEchoMidFrameSuppress {
 		m.gatewayEcho.flushOnSYN()
 	}
@@ -2250,20 +2209,12 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// events observed in production soak before this fix; ~16% of all
 	// echo_mismatch).
 	//
-	// batch-24 round-6: the terminator gate's `!midWriteSyn` guard is
-	// upgraded to `!preEchoMidFrameSuppress`. That broader guard now
-	// also covers the interWriteSyn (Attack 3) window — the legacy
-	// "queue empty → assume terminator" branch. Rationale: every
-	// legitimate end-of-transaction terminator goes through
-	// bus.Bus.sendEndOfMessage → sendRawWithEcho(SymbolSyn), so by the
-	// time the wire echoes the terminator, recordSent(SymbolSyn) has
-	// populated the echo queue and the branch fires via the
-	// `hasPendingEcho && nextExpected==SymbolSyn` path (preEcho-suppress
-	// false → terminator gate fires). Wire-intruded SYNs that arrive
-	// when the queue is empty are exactly the leak class round-6
-	// closes. grantSyn is also covered (gatewayTxnActive=false here →
-	// the outer gateway-txn-active guard prevents reaching this branch
-	// anyway, but the broader symmetry is documented).
+	// batch-25 hotfix: reverted batch-24 round-6 broadening to
+	// `!preEchoMidFrameSuppress`. The wider guard caused legitimate
+	// queue-empty terminator paths to be misclassified as wire
+	// intrusions under load, blocking ownership unwind and collapsing
+	// gateway throughput (~65% drop in passive frame rate). See the
+	// preEchoMidFrameSuppress derivation above.
 	terminatorDelivered := false
 	if hasOwner && ownerID == gatewaySessionID && m.gatewayTxnActive &&
 		m.activeTxn.bytesDeliveredToActive.Load() > 0 &&

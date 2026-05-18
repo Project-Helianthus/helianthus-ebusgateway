@@ -169,10 +169,11 @@ func TestActiveTxnDiag_InactiveReason_SYNIdle(t *testing.T) {
 
 // TestActiveTxnDiag_SYNBeforeRead_DoesNotClear proves that a SYN arriving
 // during gateway ownership BEFORE any Write must not terminate the
-// nascent transaction. Round-6 (batch-24) update: the SYN IS now
-// counted as suppressed pre-echo via the grantSyn branch (was unchanged
-// pre-round-6). The transaction has not started yet, so the SYN must
-// not terminate it; only the counter classification changes.
+// nascent transaction. The transaction has not started yet, so the SYN
+// must not terminate it. (batch-25 hotfix: the round-6 grantSyn branch
+// that counted these via SynSuppressedPreEcho was reverted; the SYN now
+// passes through the original midWriteSyn=false path and no counter
+// increments.)
 func TestActiveTxnDiag_SYNBeforeRead_DoesNotClear(t *testing.T) {
 	mux, mock, _, cleanup := newP3TestMux(t)
 	defer cleanup()
@@ -180,7 +181,6 @@ func TestActiveTxnDiag_SYNBeforeRead_DoesNotClear(t *testing.T) {
 	grantGateway(t, mux, mock, 0x71)
 
 	// NOTE: no Write yet — simulating the grant-to-first-write window.
-	before := mux.ActiveTxnSnapshot().SynSuppressedPreEcho
 
 	// SYN arrives BEFORE any Write. Must NOT clear the nascent active
 	// state.
@@ -194,11 +194,6 @@ func TestActiveTxnDiag_SYNBeforeRead_DoesNotClear(t *testing.T) {
 	}
 	if snap.InactiveReason != ReasonNone {
 		t.Fatalf("InactiveReason must be empty, got %q", snap.InactiveReason)
-	}
-	// Round-6: grantSyn branch fires, synSuppressedPreEcho must increment.
-	if snap.SynSuppressedPreEcho <= before {
-		t.Fatalf("SynSuppressedPreEcho must increment under round-6 grantSyn branch; got %d before=%d",
-			snap.SynSuppressedPreEcho, before)
 	}
 }
 

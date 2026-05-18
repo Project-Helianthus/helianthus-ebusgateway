@@ -186,6 +186,22 @@ type activeTxnDiag struct {
 	// leave the counter at zero — diagnostic degrades cleanly.
 	synSeenAfterTransportWindowExpired atomic.Uint64
 
+	// synSuppressedBetweenWrites (batch-26 round-7) counts wire SYNs
+	// that the betweenWritesSyn branch of preEchoMidFrameSuppress
+	// suppressed. The branch fires when the gateway echo tracker
+	// reports queueJustDrained=true AND the expected-echo queue is
+	// currently empty — i.e., the brief window between matchEcho
+	// consuming echo K of a non-SYN body byte and sendLoop's
+	// recordSent arming byte K+1.
+	//
+	// Forensic semantics: synSuppressedPreEcho is the SUM of all
+	// suppression paths (pre-first-echo + midWriteSyn +
+	// betweenWritesSyn); this counter is the subset specifically
+	// attributable to the Attack 3 (inter-write empty-queue) fix.
+	// Operator dashboards: subtract this from synSeenWhileInterWriteEmpty
+	// to get the residual that was NOT closed by round-7.
+	synSuppressedBetweenWrites atomic.Uint64
+
 	// transportExpiredAtTxnStart is the snapshot of
 	// transport.PostGrantWindowExpiredCount() taken at the moment
 	// the current gateway transaction was granted (in
@@ -256,6 +272,12 @@ type ActiveTxnSnapshot struct {
 	// transaction. Targets the ~54% pre_echo_syn residual unexplained
 	// by Attack 1 + Attack 3 instrumentation.
 	SynSeenAfterTransportWindowExpired uint64
+	// SynSuppressedBetweenWrites mirrors
+	// activeTxnDiag.synSuppressedBetweenWrites (batch-26 round-7).
+	// Counts wire SYNs the betweenWritesSyn (queueJustDrained) gate
+	// suppressed — the Attack 3 (inter-write empty-queue) fix.
+	// Subset of SynSuppressedPreEcho.
+	SynSuppressedBetweenWrites uint64
 	// InterWriteDrainTotal mirrors activeTxnDiag.interWriteDrainTotal
 	// (P12). Bytes drained from activeCh in sendLoop's pre-recordSent
 	// section. Non-zero is normal; persistent zero indicates the
@@ -331,6 +353,7 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 		SynSeenDuringGrantWindow:           m.activeTxn.synSeenDuringGrantWindow.Load(),
 		SynSeenWhileInterWriteEmpty:        m.activeTxn.synSeenWhileInterWriteEmpty.Load(),
 		SynSeenAfterTransportWindowExpired: m.activeTxn.synSeenAfterTransportWindowExpired.Load(),
+		SynSuppressedBetweenWrites:         m.activeTxn.synSuppressedBetweenWrites.Load(),
 		InterWriteDrainTotal:        m.activeTxn.interWriteDrainTotal.Load(),
 		EchoQueueOverflowResets:     m.gatewayEcho.overflowResets(),
 		BytesDeliveredToActive:      m.activeTxn.bytesDeliveredToActive.Load(),

@@ -225,6 +225,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				SynSeenDuringGrantWindow:           s.SynSeenDuringGrantWindow,
 				SynSeenWhileInterWriteEmpty:        s.SynSeenWhileInterWriteEmpty,
 				SynSeenAfterTransportWindowExpired: s.SynSeenAfterTransportWindowExpired,
+				SynSuppressedBetweenWrites:         s.SynSuppressedBetweenWrites,
 			}
 		})
 	}

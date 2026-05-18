@@ -64,6 +64,37 @@ type echoTracker struct {
 	// call sequence (recordSent → Write → maybe rollbackSent) where the
 	// snapshot is only valid for the duration of a single doSend.
 	preOverflowEchoes []byte
+
+	// queueJustDrained (batch-26 round-7 — Attack 3 closure) marks the
+	// brief inter-write window between the gateway's matchEcho
+	// consumption of echo K and the sendLoop's recordSent of byte K+1.
+	// During that window expectedEchoes is empty (peekNextExpected
+	// returns hasPending=false), so the peek-based P10.2 gate cannot
+	// suppress a wire SYN even when one CANNOT be a legitimate
+	// terminator (the gateway is mid-frame between two body writes,
+	// not at end-of-message).
+	//
+	// Set true by matchEcho when a non-SYN match transitions the queue
+	// from len==1 to len==0 (the typical "echo of body byte K consumed,
+	// next write K+1 still pending" shape). Cleared:
+	//   - by recordSent: a new write means we are no longer between
+	//     writes; the queue is armed again.
+	//   - by markRequestStart: a fresh transaction boundary invalidates
+	//     prior inter-write state.
+	//   - by flushOnSYN: a wire SYN observed legitimately closing the
+	//     txn (terminator gate fired); the flag's lifetime ends with
+	//     the txn.
+	//   - by matchEcho when consuming a SymbolSyn (terminator echo); the
+	//     gateway just observed legitimate end-of-frame, no longer
+	//     between body writes.
+	//
+	// The flag is bounded by recordSent / markRequestStart / flushOnSYN
+	// — it CANNOT carry over to a new transaction. This bounding is the
+	// key distinction from the round-6 bytesDeliveredToActive approach
+	// (which was cleared only by recordGatewayGrant and thus leaked
+	// across txn boundaries → over-suppression of legitimate echoes →
+	// throughput collapse, batch-25 revert).
+	queueJustDrained bool
 }
 
 // newEchoTracker creates a fresh echo tracker.
@@ -99,6 +130,11 @@ func newEchoTracker() *echoTracker {
 // prior echo expectations even though the adapter never accepted the
 // new byte — subsequent real echoes would all return echoMatchNone.
 func (t *echoTracker) recordSent(data byte) {
+	// batch-26 round-7: any write means we are definitely no longer
+	// between writes. Clear queueJustDrained BEFORE arming the queue so
+	// the sentinel reflects exactly the inter-write window — the
+	// recordSent here is what closes that window.
+	t.queueJustDrained = false
 	if len(t.expectedEchoes) >= maxPendingEchoes {
 		t.preOverflowEchoes = make([]byte, len(t.expectedEchoes))
 		copy(t.preOverflowEchoes, t.expectedEchoes)
@@ -157,6 +193,13 @@ const (
 
 // matchEcho checks if a received byte matches the next expected echo.
 //
+// receivedWasEscaped is the F-23 provenance flag — true means the byte
+// was escape-decoded from wire `A9 01` (logical 0xAA-as-payload),
+// distinguishing it from a raw wire SYN (`AA` with wasEscaped=false).
+// Used only for queueJustDrained classification: an escape-decoded
+// 0xAA echo is a body byte (sentinel set), a raw 0xAA is a terminator
+// (sentinel cleared).
+//
 // Returns:
 //   - echoMatchSuppressed: byte is this session's echo, suppress it
 //   - echoMatchNone: no echo expected, byte is third-party traffic
@@ -164,7 +207,7 @@ const (
 //
 // flushedBytes contains any accumulated echo bytes that should be
 // delivered as observer frames before the current byte.
-func (t *echoTracker) matchEcho(received byte) (result echoMatchResult, flushedBytes []byte) {
+func (t *echoTracker) matchEcho(received byte, receivedWasEscaped bool) (result echoMatchResult, flushedBytes []byte) {
 	if len(t.expectedEchoes) == 0 {
 		return echoMatchNone, nil
 	}
@@ -176,6 +219,7 @@ func (t *echoTracker) matchEcho(received byte) (result echoMatchResult, flushedB
 
 	if received == t.expectedEchoes[0] {
 		// Match: consume from expected, accumulate in seen.
+		preLen := len(t.expectedEchoes)
 		t.expectedEchoes = t.expectedEchoes[1:]
 		// AM41: drop oldest if seenEchoes is at capacity.
 		if len(t.seenEchoes) >= maxSeenEchoes {
@@ -183,6 +227,40 @@ func (t *echoTracker) matchEcho(received byte) (result echoMatchResult, flushedB
 		}
 		t.seenEchoes = append(t.seenEchoes, received)
 		t.totalSuppressed++
+		// batch-26 round-7 — Attack 3 closure. When this match transitions
+		// the queue from non-empty to empty AND the consumed echo is NOT
+		// a terminator SYN, we have entered the inter-write window: the
+		// gateway has consumed echo K of a body byte and the sendLoop
+		// has not yet armed echo K+1. Any wire SYN in this window
+		// CANNOT be a legitimate terminator (the body is not done) and
+		// CANNOT be a mid-write race against a queue head (the queue is
+		// empty). queueJustDrained signals the mux to suppress such
+		// SYNs without needing a queue head to compare against.
+		//
+		// SymbolSyn match: a legitimate terminator echo just consumed.
+		// Clearing the flag (rather than setting it) preserves the
+		// terminator branch's ability to fire — this match is the
+		// "end of frame" signal, not "between body writes".
+		if preLen == 1 {
+			// symbolSyn = 0xAA per eBUS protocol (canonical
+			// protocol.SymbolSyn — duplicated as a literal here to keep
+			// echo_tracker import-free; the value is a wire-protocol
+			// constant and will not drift).
+			const symbolSyn byte = 0xAA
+			// batch-26 round-7 (Codex r4 P2): only a RAW wire SYN
+			// (received==0xAA AND wasEscaped=false) is a legitimate
+			// frame terminator. An escape-decoded 0xAA
+			// (received==0xAA AND wasEscaped=true) is a payload byte
+			// (or CRC) whose wire encoding was `A9 01` — semantically
+			// indistinguishable from any other body byte. Treat it as
+			// a body match → set the sentinel.
+			isRealWireSyn := received == symbolSyn && !receivedWasEscaped
+			if isRealWireSyn {
+				t.queueJustDrained = false
+			} else {
+				t.queueJustDrained = true
+			}
+		}
 		return echoMatchSuppressed, nil
 	}
 
@@ -222,6 +300,13 @@ func (t *echoTracker) flushOnSYN() (flushedBytes []byte, wasAtStart bool) {
 	// in-flight overflow reset. preOverflowEchoes no longer eligible
 	// for rollback.
 	t.preOverflowEchoes = nil
+	// batch-26 round-7: a wire SYN observed legitimately closing the
+	// txn ends the inter-write window — the gateway is between
+	// transactions now, not between body writes within one. Without
+	// this clear, the flag from the prior inter-write window would
+	// carry through to the next grant and over-suppress legitimate
+	// post-grant SYNs.
+	t.queueJustDrained = false
 
 	return flushedBytes, wasAtStart
 }
@@ -235,6 +320,11 @@ func (t *echoTracker) markRequestStart() {
 	// Codex PR #603 P2 invariant: a new request boundary invalidates
 	// any pending overflow snapshot.
 	t.preOverflowEchoes = nil
+	// batch-26 round-7: a fresh transaction invalidates any inter-write
+	// flag from a prior txn. Same boundary discipline as
+	// preOverflowEchoes — never carry inter-write state across grant
+	// boundaries (the over-suppression failure mode of round-6).
+	t.queueJustDrained = false
 }
 
 // hasPendingEchoes reports whether there are expected echoes that
@@ -263,6 +353,46 @@ func (t *echoTracker) reset() {
 	t.seenEchoes = t.seenEchoes[:0]
 	t.atRequestStart = false
 	t.preOverflowEchoes = nil
+	t.queueJustDrained = false
+}
+
+// IsQueueJustDrained reports whether the gateway is currently in the
+// inter-write window — i.e., matchEcho consumed a non-SYN echo that
+// emptied the expectedEchoes queue, AND no subsequent recordSent /
+// flushOnSYN / markRequestStart has fired. batch-26 round-7 — the mux
+// SYN gate uses this signal to suppress wire SYNs that arrive after
+// matchEcho but before the next recordSent (Attack 3 — the leak the
+// peek-based P10.2 gate cannot see because the queue head it inspects
+// is gone).
+//
+// Exported via PascalCase even though the tracker is unexported within
+// the package so the SYN-handling site reads as a deliberate
+// inter-package contract; all other accessors on echoTracker are also
+// safe to read from the mux while holding stateMu.
+func (t *echoTracker) IsQueueJustDrained() bool {
+	return t.queueJustDrained
+}
+
+// ClearQueueJustDrained drops the inter-write sentinel without
+// touching expectedEchoes / seenEchoes / atRequestStart. The mux
+// idle-release path (IdleReleaseGrace expiry) calls this BEFORE
+// proceeding with the SYN as a legitimate idle terminator: the
+// grace timer exists precisely to break stuck transactions, so a
+// sticky queueJustDrained from a partial K/K+1 handoff must not be
+// allowed to extend ownership beyond IdleReleaseGrace.
+//
+// Codex round-7 review (defect 3, MEDIUM): without this clear, a
+// stall after consuming echo K but before recording K+1 would keep
+// queueJustDrained=true; the next wire SYN would be suppressed as
+// "between writes" and idle release would not fire until
+// MaxOwnershipDuration (10s). Decouples the sentinel lifetime from
+// the IdleReleaseGrace contract.
+//
+// Exported (PascalCase) for the same reason as IsQueueJustDrained:
+// the mux caller treats this as an inter-file contract while still
+// holding stateMu.
+func (t *echoTracker) ClearQueueJustDrained() {
+	t.queueJustDrained = false
 }
 
 // stats returns echo tracking statistics.

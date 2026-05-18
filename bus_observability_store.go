@@ -1023,6 +1023,14 @@ type AdaptermuxDiagSnapshot struct {
 	// only; correlates with the residual pre_echo_syn rate
 	// unexplained by Attack 1 + Attack 3 instrumentation.
 	SynSeenAfterTransportWindowExpired uint64
+	// SynSuppressedBetweenWrites counts SYNs the betweenWritesSyn
+	// (queueJustDrained) gate suppressed — the Attack 3 (inter-write
+	// empty-queue) closure introduced in batch-26 round-7. Subset of
+	// SynSuppressedPreEcho. Operator dashboards: rate(SynSuppressedBetweenWrites)
+	// should rise after round-7 deploy while
+	// ebus_active_echo_mismatch_subclass_total{subclass="pre_echo_syn_raw"}
+	// drops.
+	SynSuppressedBetweenWrites uint64
 }
 
 // SetAdaptermuxDiagProvider registers a snapshot provider callback for
@@ -1196,6 +1204,12 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		writer.writeType("ebus_adaptermux_syn_seen_while_inter_write_empty_total", "counter")
 		writer.writeCounterSample("ebus_adaptermux_syn_seen_while_inter_write_empty_total",
 			float64(adaptermuxDiag.SynSeenWhileInterWriteEmpty), nil)
+
+		writer.writeHelp("ebus_adaptermux_syn_suppressed_between_writes_total",
+			"batch-26 round-7 — Attack 3 closure. Counts wire SYNs the betweenWritesSyn (queueJustDrained) gate suppressed: arrivals during the brief window between matchEcho consuming a non-SYN body-byte echo and the next recordSent arming the queue. Subset of ebus_adaptermux_syn_suppressed_pre_echo_total. Operator analysis: rate should rise after round-7 deploy while ebus_active_echo_mismatch_subclass_total{subclass=\"pre_echo_syn_raw\"} drops; the closure is bounded by recordSent/markRequestStart/flushOnSYN so cross-txn carry-over (the round-6 failure mode) cannot occur.")
+		writer.writeType("ebus_adaptermux_syn_suppressed_between_writes_total", "counter")
+		writer.writeCounterSample("ebus_adaptermux_syn_suppressed_between_writes_total",
+			float64(adaptermuxDiag.SynSuppressedBetweenWrites), nil)
 
 		writer.writeHelp("ebus_adaptermux_syn_seen_after_transport_window_expired_total",
 			"Diagnostic (batch-22 round-3): SYNs observed while gateway owned the bus AND the upstream ENH transport's postGrantPreEcho window had already closed via deadline-expiry in the current gateway transaction. The transport's 50ms window normally closes on the first non-SYN echo; closure-by-expiry indicates the gateway has not yet seen a real echo and the transport-layer SYN suppression is no longer active for this txn — any subsequent idle 0xAA on the wire reaches the gateway unsuppressed at the transport layer. Forensic only — no behavior change. Per Attack 2 (batch-22): events here are leak candidates beyond what Attack 1 + Attack 3 instrumentation covers (~54% pre_echo_syn residual unaccounted-for after round-2). Operator analysis: compare rate to ebus_active_echo_mismatch_subclass_total{subclass=\"pre_echo_syn_raw\"} to confirm Attack 2 dominance. NOTE (batch-23 round-5, 2026-05-17): the prior `pre_echo_syn` label was retired and split into `pre_echo_syn_raw` (real wire SYN intrusion — the class this counter correlates with) and `pre_echo_syn_escaped_data` (escape-decoded payload 0xAA from a third-party frame); Attack 2 is a raw-wire-SYN-leak hypothesis and does not implicate the escape-decoded subclass.")

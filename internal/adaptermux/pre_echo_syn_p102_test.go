@@ -170,6 +170,160 @@ func TestPreEchoSyn_LegitimateTerminator_Delivered(t *testing.T) {
 }
 
 
+// TestPreEchoSyn_BetweenWritesSyn_Suppress (batch-26 round-7 — Attack 3
+// closure). Verifies that a wire SYN arriving in the inter-write window
+// (matchEcho consumed echo K, recordSent of K+1 not yet armed) is
+// suppressed via the queueJustDrained sentinel, NOT delivered to
+// activeCh, and the txn stays alive.
+//
+// Sequence modeled (matches the consultant timeline that confirmed
+// Attack 3 dominance):
+//  1. grantGateway → gatewayTxnActive=true, bytesDeliveredToActive=0.
+//  2. at.Write(0x08) → recordSent(0x08), queue=[0x08].
+//  3. Wire echo 0x08 → matchEcho consumes head, queue=[], preLen==1 +
+//     received != SymbolSyn → queueJustDrained=true,
+//     bytesDeliveredToActive=1.
+//  4. at.ReadByte() drains 0x08 to the bus.Send consumer.
+//  5. NOW (BEFORE the next Write) a noise wire SYN arrives.
+//     onSYNLocked: hasPendingEcho=false, queueJustDrained=true,
+//     gatewayTxnActive=true, bytesDeliveredToActive>0
+//     → betweenWritesSyn=true, preEchoMidFrameSuppress=true
+//     → terminator branch does NOT fire (gated on
+//       !preEchoMidFrameSuppress)
+//     → synSuppressedBetweenWrites counter increments
+//     → flushOnSYN does NOT fire (queueJustDrained preserved)
+//     → idle release does NOT fire (suppressIdleRelease gates).
+//  6. at.Write(0xB5) → recordSent(0xB5) clears queueJustDrained and
+//     arms queue=[0xB5]. Subsequent wire echo 0xB5 still matches
+//     (sentinel did not corrupt downstream echo flow).
+//
+// This is the test that GATES round-7: pre-fix the SYN at step 5 races
+// the real echo of 0xB5 and produces echo_mismatch with subclass
+// pre_echo_syn_raw; post-fix the SYN is suppressed and no mismatch fires.
+func TestPreEchoSyn_BetweenWritesSyn_Suppress(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+
+	// Step 2 + 3 + 4: write a non-SYN body byte, feed its echo, consume.
+	// After this, gatewayEcho is in the inter-write state
+	// (queueJustDrained=true).
+	if _, err := at.Write([]byte{0x08}); err != nil {
+		t.Fatalf("Write(0x08) err=%v", err)
+	}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x08}
+	if b, err := at.ReadByte(); err != nil || b != 0x08 {
+		t.Fatalf("ReadByte (echo of 0x08) = (0x%02X, %v), want (0x08, nil)", b, err)
+	}
+
+	mid := mux.ActiveTxnSnapshot()
+	if mid.BytesDeliveredToActive == 0 {
+		t.Fatalf("BytesDeliveredToActive=0 after first echo, want >=1 — test precondition")
+	}
+	suppressedBefore := mid.SynSuppressedPreEcho
+	betweenWritesBefore := mid.SynSuppressedBetweenWrites
+
+	// Step 5: noise SYN arrives in the inter-write window — BEFORE the
+	// next Write fires recordSent. queueJustDrained should still be true
+	// at this point because no recordSent/markRequestStart/flushOnSYN
+	// has cleared it.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	snap := mux.ActiveTxnSnapshot()
+
+	// Assertion (a): the round-7 subset counter incremented.
+	if snap.SynSuppressedBetweenWrites <= betweenWritesBefore {
+		t.Errorf("SynSuppressedBetweenWrites=%d, before=%d, want increment — Attack 3 suppression must fire on inter-write SYN",
+			snap.SynSuppressedBetweenWrites, betweenWritesBefore)
+	}
+
+	// Assertion (b): umbrella SynSuppressedPreEcho also incremented
+	// (the between-writes branch is part of preEchoMidFrameSuppress, so
+	// the OR chain raises both).
+	if snap.SynSuppressedPreEcho <= suppressedBefore {
+		t.Errorf("SynSuppressedPreEcho=%d, before=%d, want increment — umbrella suppression counter must rise",
+			snap.SynSuppressedPreEcho, suppressedBefore)
+	}
+
+	// Assertion (c): the txn stays active. The inter-write SYN must NOT
+	// abort the transaction via terminator or idle release.
+	if !snap.Active {
+		t.Errorf("ActiveTxnSnapshot.Active=false, want true — inter-write SYN must not abort live txn")
+	}
+	if snap.InactiveReason == ReasonSYNTerminator {
+		t.Errorf("InactiveReason=ReasonSYNTerminator — pre-round-7 bug: terminator path fired on inter-write SYN")
+	}
+	if snap.InactiveReason == ReasonSYNIdle {
+		t.Errorf("InactiveReason=ReasonSYNIdle — idle release fired on inter-write SYN despite bytesDeliveredToActive>0")
+	}
+
+	// Step 6: write the next body byte, feed its echo, confirm no
+	// downstream corruption (queueJustDrained must NOT carry forward
+	// past recordSent).
+	if _, err := at.Write([]byte{0xB5}); err != nil {
+		t.Fatalf("Write(0xB5) err=%v", err)
+	}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xB5}
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		b, err := at.ReadByte()
+		if err == nil && b == 0xB5 {
+			return // success
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("did not receive 0xB5 echo after inter-write SYN — gatewayEcho queue corrupted by flushOnSYN or queueJustDrained leaked")
+}
+
+// TestPreEchoSyn_InterWriteSyn_Suppress (batch-26 round-7) — reintroduces
+// the round-6-shaped test that was removed in batch-25 hotfix, but with
+// the NEW semantic. The original round-6 test asserted against the
+// over-broad bytesDeliveredToActive gate (which caused throughput
+// collapse). This version asserts against synSuppressedBetweenWrites
+// (the tightly-bounded queueJustDrained sentinel that does NOT carry
+// over across transactions).
+//
+// Distinguishing assertion: the prior round-6 test would have failed
+// after a SYN terminator legitimately closed the txn AND a subsequent
+// fresh-txn SYN arrived — it would still suppress because the broader
+// "active flag + bytesDelivered" gate was never reset. Round-7's
+// queueJustDrained IS reset by flushOnSYN, so the second txn's SYNs
+// are NOT spuriously suppressed.
+func TestPreEchoSyn_InterWriteSyn_Suppress(t *testing.T) {
+	mux, mock, _, cleanup := newP3TestMux(t)
+	defer cleanup()
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+
+	// Set up the inter-write state.
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write(0x71) err=%v", err)
+	}
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0x71}
+	if _, err := at.ReadByte(); err != nil {
+		t.Fatalf("ReadByte err=%v", err)
+	}
+
+	betweenWritesBefore := mux.ActiveTxnSnapshot().SynSuppressedBetweenWrites
+
+	// Inter-write SYN.
+	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: protocol.SymbolSyn}
+	time.Sleep(50 * time.Millisecond)
+
+	snap := mux.ActiveTxnSnapshot()
+	if snap.SynSuppressedBetweenWrites <= betweenWritesBefore {
+		t.Errorf("SynSuppressedBetweenWrites=%d, before=%d, want increment via round-7 queueJustDrained gate (NOT the round-6 bytesDeliveredToActive gate)",
+			snap.SynSuppressedBetweenWrites, betweenWritesBefore)
+	}
+	if !snap.Active {
+		t.Errorf("Active=false, want true — round-7 must keep txn alive across the inter-write SYN")
+	}
+}
+
 // P10.2 — verify that an unresponsive-target stuck-write scenario still
 // terminates via idle release. This guards the
 // `!suppressIdleRelease` carve-out: when bytesDeliveredToActive == 0

@@ -2118,6 +2118,33 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	nextExpectedEcho, hasPendingEcho := m.gatewayEcho.peekNextExpected()
 	midWriteSyn := hasPendingEcho && nextExpectedEcho != protocol.SymbolSyn
 
+	// batch-26 round-7 — Attack 3 closure (inter-write empty-queue SYN
+	// leak). The peek-based P10.2 gate (midWriteSyn) cannot suppress a
+	// wire SYN that arrives during the brief window between matchEcho
+	// consuming echo K and sendLoop's recordSent of byte K+1 — at that
+	// instant peekNextExpected returns hasPending=false (the queue is
+	// empty), so midWriteSyn is false even though the gateway is
+	// objectively still mid-frame between body writes.
+	//
+	// queueJustDrained (echo_tracker) is set by matchEcho when a
+	// NON-SYN echo consumption empties the queue, and cleared on the
+	// next bounding event:
+	//   - recordSent: a new write arms the queue again.
+	//   - markRequestStart: a fresh txn boundary.
+	//   - flushOnSYN: a wire SYN observed legitimately closing the txn.
+	//   - matchEcho consuming SymbolSyn: terminator echo observed.
+	// The flag is true ONLY in the brief window between echo K's read
+	// and byte K+1's write — exactly where Attack 3 fires.
+	//
+	// This replaces the round-6 bytesDeliveredToActive>0 broadening
+	// (reverted in batch-25) which leaked across txn boundaries (only
+	// reset at recordGatewayGrant), causing legitimate post-txn echo
+	// windows to be misclassified as wire intrusions under load and
+	// collapsing throughput ~65%. queueJustDrained is bounded by
+	// recordSent/markRequestStart/flushOnSYN — it CANNOT carry over to
+	// a new transaction.
+	betweenWritesSyn := m.gatewayEcho.IsQueueJustDrained() && !hasPendingEcho
+
 	// batch-25 hotfix — reverted batch-24 round-6 broadening (grantSyn /
 	// interWriteSyn). Live Prometheus history showed the broader gate
 	// over-suppressed legitimate gateway echoes: per-frame echo_mismatch
@@ -2129,23 +2156,19 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// recovered to 1.119 c/s within 7 minutes. See
 	// _work_adaptermux_audit/EBUSD-VERIFICATION-2026-05-18-batch25.md.
 	//
-	// Restored P10.2 to its pre-round-6 semantics: suppress wire SYN
-	// only when a non-SYN echo is pending (the original mid-write
-	// invariant). grantSyn / interWriteSyn would need a different
-	// approach — likely a state-machine-aware gate that distinguishes
-	// the gateway's own SYN write from a wire-intruded SYN, rather
-	// than the bytesDeliveredToActive heuristic that turned out to
-	// misclassify legitimate post-txn echo windows under load.
+	// batch-26 round-7 — re-introduces inter-write suppression via the
+	// tightly-bounded queueJustDrained sentinel above (not the
+	// cross-txn bytesDeliveredToActive heuristic).
 	//
 	// Flush gateway echo tracker at SYN boundary. Flushed bytes are
 	// confirmed gateway self-traffic — do NOT emit to passive path
 	// (passive is third-party only). They are delivered to external
 	// sessions via deliverSYNToSessions + deliverToSessions elsewhere.
 	//
-	// P10.2: skip flush when this SYN is mid-write noise. The expected-
-	// echo queue must survive so the next real echo of the pending
-	// non-SYN byte still matches.
-	preEchoMidFrameSuppress := wasGatewayOwned && m.gatewayTxnActive && midWriteSyn
+	// P10.2: skip flush when this SYN is mid-write OR between-writes
+	// noise. The expected-echo queue (and the inter-write sentinel)
+	// must survive so the next real echo still matches.
+	preEchoMidFrameSuppress := wasGatewayOwned && m.gatewayTxnActive && (midWriteSyn || betweenWritesSyn)
 	if !preEchoMidFrameSuppress {
 		m.gatewayEcho.flushOnSYN()
 	}
@@ -2447,6 +2470,20 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	preEchoSuppressed := preFirstEchoSyn || preEchoMidFrameSuppress
 	if preEchoSuppressed {
 		m.activeTxn.synSuppressedPreEcho.Add(1)
+	}
+	// batch-26 round-7 — Attack 3 subset counter. Increment specifically
+	// when the betweenWritesSyn branch (queueJustDrained=true,
+	// hasPendingEcho=false) was the path that triggered suppression. Two
+	// guard conditions:
+	//   1. preEchoMidFrameSuppress fired (txn active, owner, etc).
+	//   2. betweenWritesSyn is the *reason* it fired (not just a
+	//      coincident midWriteSyn path — those two are mutually
+	//      exclusive because midWriteSyn requires hasPendingEcho=true
+	//      and betweenWritesSyn requires hasPendingEcho=false, but the
+	//      explicit guard documents intent and survives any future
+	//      refactor of the suppression derivation).
+	if preEchoMidFrameSuppress && betweenWritesSyn && !midWriteSyn {
+		m.activeTxn.synSuppressedBetweenWrites.Add(1)
 	}
 
 	// batch-21 diagnostic: classify which suppression gap a SYN passes

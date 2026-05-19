@@ -779,7 +779,13 @@ func (m *Mux) ensureSessionPacer(sessionID uint64) {
 	if _, ok := m.sessionPacers.Load(sessionID); ok {
 		return
 	}
-	m.sessionPacers.LoadOrStore(sessionID, v8classifier.NewPacer())
+	// Phase 3 Step B3.6e: use NewPacerForSession so the per-session
+	// pacer's echo watchdog has its admin-event emitter pre-wired
+	// to the classifier's adminEvents ring buffer. Falling back to
+	// v8classifier.NewPacer here would leave the watchdog firing
+	// silently — counters increment, but operator-facing
+	// ClassifierAdminEvent entries would never appear.
+	m.sessionPacers.LoadOrStore(sessionID, m.v8.NewPacerForSession())
 }
 
 // Start connects to the adapter and begins the multiplexer loop.
@@ -2099,12 +2105,22 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 		// "zero overhead in ModeOff" contract. When v8 is on, the
 		// echo timestamp from matchEchoWithTime feeds RTT into the
 		// gateway pacer's L_rtt EMA.
+		//
+		// Phase 3 Step B3.6e: on a suppressed (matched) echo,
+		// cancel the echo-watchdog timer that doSend armed —
+		// otherwise a delayed soft/hard fire would spuriously
+		// emit an admin event for a write whose echo already
+		// landed. CancelEchoWatchdog is idempotent and lock-free
+		// from the caller's perspective.
 		if m.v8 != nil {
 			echoNow := time.Now()
 			result, _, writeAt, hasWriteAt := m.gatewayEcho.matchEchoWithTime(symbol, wasEscaped)
-			if result == echoMatchSuppressed && hasWriteAt {
+			if result == echoMatchSuppressed {
 				if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
-					pacer.RecordEcho(echoNow.Sub(writeAt), echoNow)
+					pacer.CancelEchoWatchdog()
+					if hasWriteAt {
+						pacer.RecordEcho(echoNow.Sub(writeAt), echoNow)
+					}
 				}
 			}
 		} else {
@@ -4259,8 +4275,24 @@ func (m *Mux) sendLoop() {
 				// time.Time slot allocation per byte. When v8 is
 				// on we capture time.Now() so the matching site
 				// can compute RTT for the L_rtt EMA.
+				//
+				// Phase 3 Step B3.6e: when v8 is on, ALSO arm the
+				// echo-watchdog using the (soft, hard, hardEnabled)
+				// tuple from the gateway pacer's EchoDeadlines.
+				// BeforeActiveWrite (B3.6c) was already called
+				// earlier at the doSend pre-write hook; the
+				// watchdog is armed here using the post-grace
+				// L_rtt state. If the echo arrives in time, the
+				// match site cancels the watchdog. If the soft
+				// (and conditionally hard) deadline expires
+				// first, the pacer emits an admin event into the
+				// classifier's adminEvents ring buffer.
 				if m.v8 != nil {
-					m.gatewayEcho.recordSentWithTime(req.data, time.Now())
+					writeAt := time.Now()
+					m.gatewayEcho.recordSentWithTime(req.data, writeAt)
+					if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+						pacer.ArmEchoWatchdog(writeAt)
+					}
 				} else {
 					m.gatewayEcho.recordSent(req.data)
 				}

@@ -752,6 +752,34 @@ func (c *Classifier) PendingAdminEvents() int {
 	return c.adminEvents.pending()
 }
 
+// NewPacerForSession returns a new per-session Pacer wired to
+// this classifier's admin-event buffer (Phase 3 Step B3.6e). The
+// pacer's watchdog timeouts (soft / hard) emit ClassifierAdminEvent
+// entries with the appropriate kind, routed through the same ring
+// buffer that ProtocolFault uses (per v8 invariant I1 — admin
+// events stay out-of-band, never cross into client byte streams).
+//
+// Callers (typically Mux.ensureSessionPacer in adaptermux) use
+// this in place of v8classifier.NewPacer so the watchdog is
+// pre-wired without having to call SetAdminEventEmitter
+// separately at every construction site.
+//
+// Returns nil if the classifier is nil (so call sites in ModeOff
+// where m.v8 == nil get a defensive nil rather than panicking).
+func (c *Classifier) NewPacerForSession() *Pacer {
+	if c == nil {
+		return nil
+	}
+	p := NewPacer()
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		c.adminEvents.emit(ClassifierAdminEvent{
+			At:   at,
+			Kind: kind,
+		})
+	})
+	return p
+}
+
 // EnforceDropsAppliedTotal returns the cumulative count of bytes
 // the classifier ACTUALLY DROPPED from session dispatch under
 // ModeEnforce. Phase 3 Step B3.6b (v8 §4 AA-injection filter).

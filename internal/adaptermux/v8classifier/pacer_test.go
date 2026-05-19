@@ -1,6 +1,7 @@
 package v8classifier
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -524,3 +525,296 @@ func TestPacer_Schedule_ZeroNow_NoSentinelLeak(t *testing.T) {
 		t.Errorf("third Schedule(t0): %v; want %v", emit3, want3)
 	}
 }
+
+// =============================================================
+// Phase 3 Step B3.6e — echo watchdog tests
+// =============================================================
+//
+// These tests exercise the soft/hard deadline timer fire path
+// against a Pacer with an artificially small L_rtt EMA so the
+// timers fire fast enough to validate the wiring without slowing
+// the test suite. The default L_rtt bootstrap is 100ms; to get
+// sub-100ms soft deadlines we use SetTau (no — tau doesn't affect
+// deadlines) — instead we feed RecordEcho samples that pull the
+// EMA down to a small value, OR we accept the ~100ms wait for
+// the default bootstrap to fire.
+//
+// For tests we shrink the deadlines by feeding a tiny RecordEcho
+// sample (e.g. 1ms) which collapses the EMA quickly. Soft becomes
+// ~100ms+1ms*α (still ~100ms) — so we use a different approach:
+// run with the default L_rtt and just wait ~120ms for soft. Hard
+// is 2*L_rtt + 200ms = ~400ms. Tests must tolerate this latency.
+
+// TestPacer_Watchdog_NotArmedAtConstruction pins the production-
+// default state: a freshly-constructed Pacer has no watchdog
+// armed. WatchdogArmed() is false; SoftTimeoutTotal /
+// HardTimeoutTotal are zero.
+func TestPacer_Watchdog_NotArmedAtConstruction(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	if p.WatchdogArmed() {
+		t.Error("WatchdogArmed() = true at construction; want false")
+	}
+	if got := p.SoftTimeoutTotal(); got != 0 {
+		t.Errorf("SoftTimeoutTotal() = %d at construction; want 0", got)
+	}
+	if got := p.HardTimeoutTotal(); got != 0 {
+		t.Errorf("HardTimeoutTotal() = %d at construction; want 0", got)
+	}
+}
+
+// TestPacer_ArmEchoWatchdog_ArmsTimers pins the basic arm
+// contract: after ArmEchoWatchdog, WatchdogArmed reports true.
+// Then CancelEchoWatchdog clears the state.
+func TestPacer_ArmEchoWatchdog_ArmsTimers(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	p.ArmEchoWatchdog(t0)
+	if !p.WatchdogArmed() {
+		t.Error("WatchdogArmed() = false after Arm; want true")
+	}
+	p.CancelEchoWatchdog()
+	if p.WatchdogArmed() {
+		t.Error("WatchdogArmed() = true after Cancel; want false")
+	}
+}
+
+// TestPacer_CancelEchoWatchdog_BeforeFire pins that a cancel
+// before the timer fires prevents the soft/hard counters from
+// incrementing and prevents any emitter callback.
+func TestPacer_CancelEchoWatchdog_BeforeFire(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	var emittedKinds []AdminEventKind
+	var mu emitMutex
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		mu.Lock()
+		emittedKinds = append(emittedKinds, kind)
+		mu.Unlock()
+	})
+
+	p.ArmEchoWatchdog(time.Now())
+	// Cancel immediately, well before the soft deadline (~100ms).
+	p.CancelEchoWatchdog()
+	// Wait past the would-be soft deadline to confirm no fire.
+	time.Sleep(150 * time.Millisecond)
+
+	if got := p.SoftTimeoutTotal(); got != 0 {
+		t.Errorf("SoftTimeoutTotal() after cancel = %d; want 0", got)
+	}
+	if got := p.HardTimeoutTotal(); got != 0 {
+		t.Errorf("HardTimeoutTotal() after cancel = %d; want 0", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(emittedKinds) != 0 {
+		t.Errorf("emittedKinds after cancel = %v; want empty", emittedKinds)
+	}
+}
+
+// TestPacer_SoftDeadlineFires pins that the soft timer fires
+// after the configured deadline AND emits a soft-timeout admin
+// event. Default L_rtt bootstrap = 100ms, soft normal = +100ms
+// → ~200ms total.
+func TestPacer_SoftDeadlineFires(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	var emitted []AdminEventKind
+	var mu emitMutex
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		mu.Lock()
+		emitted = append(emitted, kind)
+		mu.Unlock()
+	})
+
+	p.ArmEchoWatchdog(time.Now())
+	// Wait past soft deadline but well before hard deadline.
+	// L_rtt_EMA = 100ms (bootstrap), soft = 100ms+100ms = 200ms.
+	// Hard = 2*100ms+200ms = 400ms.
+	time.Sleep(300 * time.Millisecond)
+
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Errorf("SoftTimeoutTotal() = %d after soft window; want 1", got)
+	}
+	if got := p.HardTimeoutTotal(); got != 0 {
+		t.Errorf("HardTimeoutTotal() = %d after soft window (before hard); want 0", got)
+	}
+	mu.Lock()
+	gotKinds := append([]AdminEventKind{}, emitted...)
+	mu.Unlock()
+	if len(gotKinds) != 1 || gotKinds[0] != AdminEventKindEchoSoftTimeout {
+		t.Errorf("emitted kinds = %v; want [EchoSoftTimeout]", gotKinds)
+	}
+}
+
+// TestPacer_HardDeadlineFires pins that the hard timer fires
+// after the configured deadline AND emits a hard-timeout admin
+// event. Soft fires first, then hard.
+func TestPacer_HardDeadlineFires(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	var emitted []AdminEventKind
+	var mu emitMutex
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		mu.Lock()
+		emitted = append(emitted, kind)
+		mu.Unlock()
+	})
+
+	p.ArmEchoWatchdog(time.Now())
+	// Wait past hard deadline. L_rtt=100ms, hard=2*100+200=400ms.
+	time.Sleep(500 * time.Millisecond)
+
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Errorf("SoftTimeoutTotal() = %d after hard window; want 1", got)
+	}
+	if got := p.HardTimeoutTotal(); got != 1 {
+		t.Errorf("HardTimeoutTotal() = %d after hard window; want 1", got)
+	}
+	mu.Lock()
+	gotKinds := append([]AdminEventKind{}, emitted...)
+	mu.Unlock()
+	if len(gotKinds) != 2 {
+		t.Fatalf("emitted kinds = %v; want 2 (soft then hard)", gotKinds)
+	}
+	if gotKinds[0] != AdminEventKindEchoSoftTimeout {
+		t.Errorf("emitted[0] = %v; want EchoSoftTimeout", gotKinds[0])
+	}
+	if gotKinds[1] != AdminEventKindEchoHardTimeout {
+		t.Errorf("emitted[1] = %v; want EchoHardTimeout", gotKinds[1])
+	}
+}
+
+// TestPacer_GraceMode_HardTimerNotArmed pins the grace-mode
+// invariant: when graceRemaining > 0, EchoDeadlines reports
+// hardEnabled=false, and ArmEchoWatchdog must NOT arm the hard
+// timer. Even if we wait past where hard would have fired, only
+// soft fires.
+func TestPacer_GraceMode_HardTimerNotArmed(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	// Trigger grace by simulating long-idle BeforeActiveWrite.
+	// First seed a prior echo so lastEchoAt is non-zero.
+	p.RecordEcho(50*time.Millisecond, t0)
+	// Now call BeforeActiveWrite far in the future (>= 30s) to
+	// trip grace.
+	p.BeforeActiveWrite(t0.Add(60 * time.Second))
+
+	var emitted []AdminEventKind
+	var mu emitMutex
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		mu.Lock()
+		emitted = append(emitted, kind)
+		mu.Unlock()
+	})
+
+	p.ArmEchoWatchdog(time.Now())
+	// Wait past where hard would have fired in normal mode
+	// (~500ms). In grace mode soft = L_rtt + 500ms ≈ 550ms, so
+	// we need a longer wait to catch the soft fire.
+	time.Sleep(700 * time.Millisecond)
+
+	if got := p.HardTimeoutTotal(); got != 0 {
+		t.Errorf("HardTimeoutTotal() = %d in grace mode; want 0 (hard timer must not be armed)", got)
+	}
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Errorf("SoftTimeoutTotal() = %d in grace mode; want 1 (soft must still fire)", got)
+	}
+	mu.Lock()
+	gotKinds := append([]AdminEventKind{}, emitted...)
+	mu.Unlock()
+	if len(gotKinds) != 1 || gotKinds[0] != AdminEventKindEchoSoftTimeout {
+		t.Errorf("emitted kinds = %v; want [EchoSoftTimeout] only", gotKinds)
+	}
+}
+
+// TestPacer_ArmEchoWatchdog_ReplacesPriorArm pins that a second
+// Arm before the first echo cancels the first arm's timers — at
+// most ONE outstanding watchdog per pacer. The first arm's soft
+// deadline must NOT fire if the second arm replaces it before
+// that deadline.
+func TestPacer_ArmEchoWatchdog_ReplacesPriorArm(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {})
+
+	p.ArmEchoWatchdog(time.Now())
+	// Re-arm well before soft deadline (~200ms).
+	time.Sleep(20 * time.Millisecond)
+	p.ArmEchoWatchdog(time.Now())
+	// Cancel before the second arm's deadline too.
+	time.Sleep(20 * time.Millisecond)
+	p.CancelEchoWatchdog()
+	// Wait past where either arm could fire.
+	time.Sleep(300 * time.Millisecond)
+
+	if got := p.SoftTimeoutTotal(); got != 0 {
+		t.Errorf("SoftTimeoutTotal() after re-arm + cancel = %d; want 0", got)
+	}
+}
+
+// TestPacer_NilEmitter_CountersStillIncrement pins that the
+// counters increment even when no emitter callback is registered.
+// Diagnostic-only callers (tests, smoke harnesses) need this
+// signal without having to wire a full emitter.
+func TestPacer_NilEmitter_CountersStillIncrement(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	// Explicitly DO NOT set emitter (or set to nil).
+	p.ArmEchoWatchdog(time.Now())
+	time.Sleep(300 * time.Millisecond)
+
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Errorf("SoftTimeoutTotal() with nil emitter = %d; want 1", got)
+	}
+}
+
+// TestClassifier_NewPacerForSession_WiresAdminEvents pins the
+// integration contract: NewPacerForSession returns a Pacer whose
+// echo-watchdog timeouts surface in the classifier's adminEvents
+// ring buffer. Soft fires → drain returns an
+// AdminEventKindEchoSoftTimeout entry.
+func TestClassifier_NewPacerForSession_WiresAdminEvents(t *testing.T) {
+	t.Parallel()
+	c := New(ModeShadow)
+	p := c.NewPacerForSession()
+	if p == nil {
+		t.Fatal("NewPacerForSession() = nil; want non-nil")
+	}
+	// Arm watchdog and wait past soft deadline.
+	p.ArmEchoWatchdog(time.Now())
+	time.Sleep(300 * time.Millisecond)
+
+	events, dropped := c.DrainAdminEvents()
+	if dropped != 0 {
+		t.Errorf("dropped = %d; want 0", dropped)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(events) = %d; want 1", len(events))
+	}
+	if events[0].Kind != AdminEventKindEchoSoftTimeout {
+		t.Errorf("events[0].Kind = %v; want EchoSoftTimeout", events[0].Kind)
+	}
+}
+
+// TestClassifier_NewPacerForSession_NilClassifier pins the
+// defensive nil-return: calling NewPacerForSession on a nil
+// classifier (which can happen during ModeOff cleanup paths)
+// returns nil rather than panicking.
+func TestClassifier_NewPacerForSession_NilClassifier(t *testing.T) {
+	t.Parallel()
+	var c *Classifier
+	if got := c.NewPacerForSession(); got != nil {
+		t.Errorf("nil-classifier NewPacerForSession() = %v; want nil", got)
+	}
+}
+
+// emitMutex is a thin sync.Mutex wrapper so the watchdog tests
+// can guard their shared `emitted` slice from the timer-fire
+// goroutine without litering the test bodies with sync imports.
+type emitMutex struct {
+	m sync.Mutex
+}
+
+func (e *emitMutex) Lock()   { e.m.Lock() }
+func (e *emitMutex) Unlock() { e.m.Unlock() }

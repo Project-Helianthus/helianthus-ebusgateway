@@ -127,9 +127,15 @@ func TestV8Classifier_ShadowMode_InstantiatedAndObserves(t *testing.T) {
 // pins the B3.2-scaffold invariant for enforce mode: even when the
 // caller explicitly opts in to ModeEnforce, the classifier in this
 // PR ONLY observes; it does NOT yet drop or rewrite any bytes.
-// Real filtering lands in B3.3+. A test future-self should NOT add
-// a session-level assertion here — the contract is "classifier is
-// wired and observing, byte stream untouched".
+// Real filtering lands in B3.3+.
+//
+// MAINTAINER NOTE: when B3.3+ wires real filtering authority into
+// the enforce path, this test MUST be UPDATED OR DELETED — its
+// purpose is to fire if a future PR accidentally enables filtering
+// before the full B3.3..B3.7 stack lands. Once enforce gains real
+// filtering, replace the "drop=false always" assertion with a
+// session-level behavior assertion that the right bytes are
+// filtered.
 func TestV8Classifier_EnforceMode_InstantiatedAndObservesButDoesNotDrop(t *testing.T) {
 	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeEnforce)
 	defer cleanup()

@@ -23,9 +23,18 @@ import (
 // but do NOT alter the byte stream; in ModeEnforce they will (in
 // future PRs) make the filtering decisions the gateway acts on.
 //
-// Concurrency: Classifier is intended to be invoked under
-// adaptermux.Mux's read goroutine (single producer). Counter
-// accessors are safe to call from any goroutine (atomic loads).
+// Concurrency contract:
+//
+//   - Observe and OnAdminEvent MUST be called serially by the
+//     adaptermux.Mux read goroutine (single producer). B3.2 only
+//     uses atomic counters which are race-tolerant on their own,
+//     BUT subsequent PRs (B3.3 escape decoder, B3.4 per-session
+//     FSM, B3.5 pacer + L_rtt) will add mutable state that is
+//     NOT safe under concurrent Observe calls. Any future caller
+//     that wants to invoke Observe from a different goroutine
+//     MUST first redesign the classifier for concurrent producers.
+//   - Accessors (Mode, ObservedBytesTotal, ObservedAdminEventsTotal)
+//     are safe to call from any goroutine (atomic loads).
 type Classifier struct {
 	// mode is the runtime mode. Immutable after construction.
 	mode Mode
@@ -100,17 +109,25 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 	return false
 }
 
-// OnAdminEvent is the per-admin-event hook the mux's read loop
-// calls when the upstream transport surfaces an admin diagnostic
+// OnAdminEvent is the per-admin-event hook that B3.6 will call
+// when the upstream transport surfaces an admin diagnostic
 // (escape-pending timeout, escape recovery, escape budget
 // exhausted — see helianthus-ebusgo/transport AdminEvent kinds).
 // Per v8 §1.1 / I1 admin events flow on the proxy admin channel,
 // NEVER into the client byte streams.
 //
-// Phase 3 Step B3.2 (this file): in ModeOff this is a no-op. In
-// ModeShadow / ModeEnforce it increments
-// observedAdminEventsTotal. Subsequent PRs route the events to
-// the gateway's admin channel surface.
+// NOT WIRED IN B3.2. The current ebusgo transport surface
+// exposes admin events only through internal counters
+// (EscapePendingTimeoutTotal, EscapeRecoveryTotal,
+// EscapeBudgetExhaustedTotal, EscapeAaAbsorbedTotal) — not as a
+// separate stream. B3.6 (admin channel) extends the
+// transport-to-mux boundary with a "ReadAdminEvent" surface and
+// wires it to this hook. Until then OnAdminEvent is a callable
+// API for direct unit testing but NOT invoked from adaptermux.Mux.
+//
+// Behavior: in ModeOff this is a no-op. In ModeShadow / ModeEnforce
+// it increments observedAdminEventsTotal. AdminEventNone is filtered
+// out (only non-None events count).
 func (c *Classifier) OnAdminEvent(admin transport.AdminEvent, now time.Time) {
 	if c == nil || c.mode == ModeOff || admin.Kind == transport.AdminEventNone {
 		return

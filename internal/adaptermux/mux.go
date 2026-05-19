@@ -252,10 +252,12 @@ type Config struct {
 	//
 	// Modes:
 	//   - ModeOff (default): no observation, no behavioral effect.
-	//   - ModeShadow: classifier observes every wire byte + admin
-	//     event but does NOT alter the byte stream. Counters
-	//     surface via Mux.V8Classifier().ObservedBytesTotal() and
-	//     ObservedAdminEventsTotal().
+	//   - ModeShadow: classifier observes every StreamEvent the
+	//     mux's read loop dispatches but does NOT alter the byte
+	//     stream. Counter surfaces via
+	//     Mux.V8Classifier().ObservedBytesTotal(). Admin-event
+	//     observation lands in B3.6 (the transport-to-mux admin
+	//     channel surface is not yet exposed in B3.2).
 	//   - ModeEnforce: classifier becomes the authoritative read
 	//     path. (Filtering not yet implemented in B3.2; will land
 	//     in stacked PRs B3.3..B3.6.)
@@ -472,11 +474,12 @@ type Mux struct {
 
 	// v8 is the frame-atomic-visibility v8 classifier (Phase 3
 	// Step B3.2 scaffold). Non-nil iff cfg.V8ClassifierMode is set
-	// (zero-value ModeOff also yields a nil classifier — equivalent
-	// behavior, just saves one allocation + one Observe call per
-	// wire byte). Subsequent stacked PRs (B3.3..B3.7) wire the
-	// classifier into the read path's filtering decisions. For
-	// B3.2 it is observe-only and behaviorally inert.
+	// to a non-Off value (ModeOff explicitly leaves this nil so
+	// the call site's `if m.v8 != nil` short-circuit fully elides
+	// the Observe call AND its time.Now() argument evaluation on
+	// the hot path). Subsequent stacked PRs (B3.3..B3.7) wire
+	// the classifier into the read path's filtering decisions.
+	// For B3.2 it is observe-only and behaviorally inert.
 	v8 *v8classifier.Classifier
 
 	// Adapter connection (guarded by connMu for reconnection).
@@ -1405,6 +1408,17 @@ func (m *Mux) readLoop() {
 		firstTimeoutTime = time.Time{} // AM27: reset timeout streak on successful read
 		lastDataTime = time.Now()      // AM27: track last data for blackhole detection
 
+		// Phase 3 Step B3.2: route every StreamEvent through the v8
+		// classifier BEFORE the dispatch switch. The nil-guard
+		// short-circuits BOTH the method call AND the time.Now()
+		// evaluation when the classifier is off (production default),
+		// keeping the hot-path overhead at zero. B3.2 scaffold:
+		// `drop` is always false; future stacked PRs (B3.3..B3.7)
+		// will honor the return value at appropriate dispatch sites.
+		if m.v8 != nil {
+			_ = m.v8.Observe(event, time.Now())
+		}
+
 		switch event.Kind {
 		case transport.StreamEventStarted:
 			m.logger.Printf("adaptermux: readLoop got StreamEventStarted data=0x%02X", event.Data)
@@ -1682,24 +1696,12 @@ func (m *Mux) readLoop() {
 			m.handleReset()
 			continue
 		case transport.StreamEventByte:
-			// Phase 3 Step B3.2: pass the event through the v8
-			// classifier BEFORE the pre-v8 onReceived path. In
-			// ModeOff (or when v8 is nil) the call is a no-op. In
-			// ModeShadow / ModeEnforce the classifier records the
-			// observation but does NOT yet alter the byte stream
-			// — that wiring lands in B3.3+ when the classifier
-			// gains real filtering authority. For now the return
-			// value is always false (never drop).
-			m.v8.Observe(event, time.Now())
 			// F-23 (batch-19, Codex bot on PR-2): thread the upstream
 			// WasEscaped flag through onReceived so adapter-direct
 			// passive consumers see the same provenance the raw-TCP
 			// passive observers get via their local escape decoder.
 			m.onReceived(event.Byte, event.WasEscaped)
 		case transport.StreamEventWireSyn:
-			// Phase 3 Step B3.2: classifier sees the same pre-grant
-			// SYN marker the mux sees. ModeOff/nil = no-op.
-			m.v8.Observe(event, time.Now())
 			// F-38-fix (PR #155 P1, 2026-05-15): pre-grant SYN passive
 			// marker emitted by enh_transport during awaitingStart.
 			// Identical downstream effect to a wire SYN byte (route to
@@ -1707,9 +1709,6 @@ func (m *Mux) readLoop() {
 			// kind keeps the active sender's ReadByte queue clean.
 			m.onReceived(event.Byte, false)
 		default:
-			// Phase 3 Step B3.2: any future stream-event kind also
-			// flows through the classifier. ModeOff/nil = no-op.
-			m.v8.Observe(event, time.Now())
 			m.onReceived(event.Byte, event.WasEscaped)
 		}
 	}

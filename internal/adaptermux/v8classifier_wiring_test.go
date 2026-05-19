@@ -2,6 +2,7 @@ package adaptermux
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -295,9 +296,10 @@ func classifiedTestMuxWithSession(t *testing.T, mode v8classifier.Mode) (
 		t.Fatal("AddSession returned 0")
 	}
 
-	// Drain whatever ENH framing the writeLoop emits during INIT
-	// using the event-driven idle-window pattern.
-	drainSessionUntilIdle(t, clientConn, 50*time.Millisecond, 500*time.Millisecond)
+	// Drain whatever ENH framing the writeLoop emits during
+	// INIT. minBytes=0: we don't pre-assume any specific frame
+	// arrives during INIT — just wait for idle.
+	drainSessionUntilIdle(t, clientConn, 0, 50*time.Millisecond, 500*time.Millisecond)
 
 	cleanup = func() {
 		_ = clientConn.Close()
@@ -307,45 +309,93 @@ func classifiedTestMuxWithSession(t *testing.T, mode v8classifier.Mode) (
 	return mux, mock, clientConn, sid, cleanup
 }
 
-// drainSessionUntilIdle reads from clientConn until no bytes
-// arrive within `idleWindow`, or until `hardDeadline` is exceeded.
+// drainSessionUntilIdle reads from clientConn enforcing a
+// "wait-for-frame then wait-for-idle" contract — both halves
+// must succeed within hardDeadline, otherwise t.Fatalf.
 //
-// Per Codex round-2 MEDIUM on PR #644: fixed-duration drains
-// leave a race where a delayed Started-mirror frame can leak
-// into the AA-injection probe window, causing false-fail
-// (Enforce) or false-pass (Shadow). Event-driven idle detection
-// fixes this — we keep reading until the pipe is genuinely
-// silent for `idleWindow`, proving any pre-injection framing
-// has been consumed.
+// minBytes: if > 0, the helper MUST observe at least this many
+// bytes before the idle window starts counting. Used for
+// post-injection drains where a specific frame is expected to
+// arrive (e.g. Started's session-mirror frame). minBytes == 0
+// is the "just drain whatever is queued, then wait for idle"
+// pattern used for INIT drains where the precondition is
+// unknown.
 //
-// The function returns the total byte count drained — useful
-// for tests that want to assert SOMETHING flowed before the
-// idle period (e.g. "Started's mirror frame WAS forwarded").
-func drainSessionUntilIdle(t *testing.T, conn net.Conn, idleWindow, hardDeadline time.Duration) int {
+// idleWindow: the duration the pipe must be silent BEFORE the
+// helper returns. Confirms no late-arriving frame will
+// contaminate the subsequent per-test probe.
+//
+// hardDeadline: total budget for both phases combined. If
+// minBytes isn't reached OR an idle window isn't observed
+// within this time, the helper FATALS — the test cannot
+// proceed under unproven preconditions.
+//
+// Per Codex round-3 review on PR #644:
+//   - Round 2's "wait for idle only" let delayed Started
+//     bytes leak past the helper when they arrived AFTER the
+//     first 50ms quiet period.
+//   - Round 3's minBytes>0 contract requires observing the
+//     expected frame BEFORE the idle window starts, closing
+//     the race.
+//   - Hard-deadline expiry and non-timeout read errors now
+//     surface as test failures rather than silent degradation.
+//
+// Returns total bytes drained.
+func drainSessionUntilIdle(t *testing.T, conn net.Conn, minBytes int, idleWindow, hardDeadline time.Duration) int {
 	t.Helper()
 	buf := make([]byte, 256)
 	total := 0
 	hard := time.Now().Add(hardDeadline)
-	for time.Now().Before(hard) {
-		// Read with a short deadline (the idle window). If the
-		// read times out without bytes, we've hit an idle
-		// period — the pipe is quiet enough to start the
-		// per-test injection.
+
+	// Phase 1: wait for at least minBytes (if specified). Skipped
+	// when minBytes == 0.
+	for total < minBytes {
+		if time.Now().After(hard) {
+			t.Fatalf("drainSessionUntilIdle: hard deadline %v elapsed before observing minBytes=%d (got %d) — expected frame did not arrive", hardDeadline, minBytes, total)
+		}
 		_ = conn.SetReadDeadline(time.Now().Add(idleWindow))
 		n, err := conn.Read(buf)
+		total += n
+		if err != nil && !isPipeTimeoutErr(err) {
+			t.Fatalf("drainSessionUntilIdle phase-1 read err: %v (n=%d total=%d)", err, n, total)
+		}
+		// Timeout with n==0 is fine; loop continues waiting for
+		// minBytes within the hard budget.
+	}
+
+	// Phase 2: wait for idleWindow of silence.
+	for {
+		if time.Now().After(hard) {
+			t.Fatalf("drainSessionUntilIdle: hard deadline %v elapsed before observing %v idle window (drained %d bytes total)", hardDeadline, idleWindow, total)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(idleWindow))
+		n, err := conn.Read(buf)
+		total += n
 		if n > 0 {
-			total += n
+			// More bytes — keep waiting for silence.
 			continue
 		}
-		// Timeout (or other error) with no bytes — idle window
-		// satisfied.
-		_ = err
+		if err != nil && !isPipeTimeoutErr(err) {
+			t.Fatalf("drainSessionUntilIdle phase-2 read err: %v (total=%d)", err, total)
+		}
+		// Timeout with n==0 — idle window satisfied.
 		return total
 	}
-	// Hard deadline hit — pipe wasn't idle for `idleWindow` within
-	// the whole budget. Tests should rarely see this on net.Pipe
-	// + the small frames involved.
-	return total
+}
+
+// isPipeTimeoutErr reports whether the read error is the
+// "deadline exceeded" kind that we treat as a successful idle
+// signal. EOF / closed pipe / other errors are real failures
+// and surface via t.Fatalf in drainSessionUntilIdle.
+func isPipeTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var nerr net.Error
+	if errors.As(err, &nerr) {
+		return nerr.Timeout()
+	}
+	return false
 }
 
 // TestV8Classifier_EnforceMode_AaInjectionDoesNotReachSession is
@@ -357,6 +407,17 @@ func drainSessionUntilIdle(t *testing.T, conn net.Conn, idleWindow, hardDeadline
 //
 // Counter assertions remain as secondary confirmation but the
 // PRIMARY pin is the session-pipe silence.
+//
+// Test setup uses StreamEventFailed (not Started) to drive the
+// FSM into PASSIVE_TRACKING because Failed reliably fans out
+// the winner byte to external sessions (per the phantom-filter
+// test pattern), giving us a concrete frame to wait for before
+// the AA probe. Started would be logged as "stale arbitration
+// response" without a pending bid in this minimal test setup
+// and produce nothing on the session pipe. From the v8
+// classifier's perspective, Started and Failed are semantically
+// equivalent — both trigger fsm.EnterPassiveTracking — so
+// either is fine for the FSM-state precondition.
 func TestV8Classifier_EnforceMode_AaInjectionDoesNotReachSession(t *testing.T) {
 	mux, mock, clientConn, _, cleanup := classifiedTestMuxWithSession(t, v8classifier.ModeEnforce)
 	defer cleanup()
@@ -366,9 +427,11 @@ func TestV8Classifier_EnforceMode_AaInjectionDoesNotReachSession(t *testing.T) {
 		t.Fatal("V8Classifier() = nil in ModeEnforce; want non-nil")
 	}
 
-	// Drive the FSM into mid-frame via Started.
+	// Drive the FSM into mid-frame via Failed (winner byte 0x71
+	// fans out to all external sessions per the mux's Failed
+	// handler, giving us a concrete frame to wait for).
 	mock.eventCh <- transport.StreamEvent{
-		Kind: transport.StreamEventStarted, Data: 0x71,
+		Kind: transport.StreamEventFailed, Data: 0x71,
 	}
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
@@ -378,15 +441,20 @@ func TestV8Classifier_EnforceMode_AaInjectionDoesNotReachSession(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if got := c.FsmEnterPassiveTotal(); got != 1 {
-		t.Fatalf("FsmEnterPassiveTotal()=%d; want 1 (Started not processed)", got)
+		t.Fatalf("FsmEnterPassiveTotal()=%d; want 1 (Failed not processed)", got)
 	}
 
-	// Drain any frame the session emitted in response to Started
-	// using the event-driven idle-window pattern (per Codex
-	// round-2 MEDIUM on PR #644): read until 50ms of silence,
-	// proving the Started-mirror frame has been fully consumed
-	// from the pipe before we start the AA probe.
-	_ = drainSessionUntilIdle(t, clientConn, 50*time.Millisecond, 500*time.Millisecond)
+	// Drain Failed's session-mirror frame, then wait for idle.
+	// minBytes=1: the mirror produces at least 1 byte (exact
+	// count varies — sometimes 1, sometimes 2 of the ENH-
+	// framed pair depending on read batching). After the first
+	// byte arrives, the 50ms idle-window phase guarantees any
+	// remaining mirror bytes are also consumed before the AA
+	// probe starts. Per Codex round-3 MEDIUM on PR #644: this
+	// closes the race where a late-arriving mirror byte could
+	// have contaminated the probe under the round-2
+	// "idle-only" pattern.
+	_ = drainSessionUntilIdle(t, clientConn, 1, 50*time.Millisecond, 1*time.Second)
 
 	// LOAD-BEARING INJECTION: mid-frame wire AUTO-SYN → FSM emits
 	// DropAaInjection → ModeEnforce returns drop=true → readLoop
@@ -438,6 +506,10 @@ func TestV8Classifier_EnforceMode_AaInjectionDoesNotReachSession(t *testing.T) {
 // This is the pre-promotion validation mode — operators count
 // would-have-dropped vs in-mode dropped before promoting to
 // Enforce.
+//
+// Same test-setup choice as the Enforce sibling: Failed (not
+// Started) drives the FSM to passive tracking AND fans out a
+// concrete mirror frame for the drain helper to wait for.
 func TestV8Classifier_ShadowMode_AaInjectionReachesSession(t *testing.T) {
 	mux, mock, clientConn, _, cleanup := classifiedTestMuxWithSession(t, v8classifier.ModeShadow)
 	defer cleanup()
@@ -448,7 +520,7 @@ func TestV8Classifier_ShadowMode_AaInjectionReachesSession(t *testing.T) {
 	}
 
 	mock.eventCh <- transport.StreamEvent{
-		Kind: transport.StreamEventStarted, Data: 0x71,
+		Kind: transport.StreamEventFailed, Data: 0x71,
 	}
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
@@ -458,9 +530,8 @@ func TestV8Classifier_ShadowMode_AaInjectionReachesSession(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	// Drain Started's mirror frame via the event-driven idle
-	// pattern (per Codex round-2 MEDIUM on PR #644).
-	_ = drainSessionUntilIdle(t, clientConn, 50*time.Millisecond, 500*time.Millisecond)
+	// Drain Failed's session-mirror frame, then wait for idle.
+	_ = drainSessionUntilIdle(t, clientConn, 1, 50*time.Millisecond, 1*time.Second)
 
 	mock.eventCh <- transport.StreamEvent{
 		Kind: transport.StreamEventByte, Byte: 0xAA, WasEscaped: false,

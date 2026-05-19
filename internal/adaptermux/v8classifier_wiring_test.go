@@ -316,7 +316,8 @@ func classifiedTestMuxWithSession(t *testing.T, mode v8classifier.Mode) (
 // minBytes: if > 0, the helper MUST observe at least this many
 // bytes before the idle window starts counting. Used for
 // post-injection drains where a specific frame is expected to
-// arrive (e.g. Started's session-mirror frame). minBytes == 0
+// arrive (e.g. a Failed-event session-mirror frame).
+// minBytes == 0
 // is the "just drain whatever is queued, then wait for idle"
 // pattern used for INIT drains where the precondition is
 // unknown.

@@ -249,6 +249,14 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 	m.sessions[id] = sess
 	m.sessionsMu.Unlock()
 
+	// Phase 3 Step B3.6c: pre-create the per-session pacer when
+	// V8ClassifierMode != Off. The SessionPacer accessor would
+	// lazy-create on first use anyway, but pre-creating here
+	// makes the lifecycle explicit and ensures the pacer exists
+	// before any active write fires (avoids the LoadOrStore
+	// race on first write).
+	_ = m.SessionPacer(id)
+
 	// Populate the lock-free RemoteAddr side index so diagnostic logs
 	// taken from stateMu-holding code paths (onSYNLocked, etc.) can
 	// label themselves with the client endpoint without sessionsMu.
@@ -289,6 +297,10 @@ func (m *Mux) RemoveSession(id uint64) {
 	// Drop the lock-free RemoteAddr side index entry too. Done after
 	// sessionsMu is released so this never blocks the critical section.
 	m.sessionRemoteAddrs.Delete(id)
+
+	// Phase 3 Step B3.6c: drop the per-session v8 pacer. No-op
+	// when V8ClassifierMode == Off (the entry was never created).
+	m.sessionPacers.Delete(id)
 
 	if ok {
 		m.arb.removeSession(id)

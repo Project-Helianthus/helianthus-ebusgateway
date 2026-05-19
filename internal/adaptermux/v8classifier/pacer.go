@@ -188,6 +188,12 @@ type Pacer struct {
 	// arrived. Useful for tests and diagnostics that need to
 	// distinguish "pre-bootstrap" from "post-first-sample".
 	recordedSamples uint64
+
+	// beforeActiveWriteTotal counts how many BeforeActiveWrite
+	// calls arrived. Phase 3 Step B3.6c — useful for operator
+	// dashboards to confirm the adapter-write path is correctly
+	// invoking the pacer's pre-write hook.
+	beforeActiveWriteTotal uint64
 }
 
 // NewPacer returns a Pacer with default τ_wire_byte and
@@ -306,6 +312,7 @@ func (p *Pacer) LastScheduledEmit() time.Time {
 func (p *Pacer) BeforeActiveWrite(now time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.beforeActiveWriteTotal++
 	if p.lastEchoAt.IsZero() {
 		return
 	}
@@ -315,6 +322,16 @@ func (p *Pacer) BeforeActiveWrite(now time.Time) {
 	if p.graceRemaining < GraceBootstrapSamples {
 		p.graceRemaining = GraceBootstrapSamples
 	}
+}
+
+// BeforeActiveWriteTotal returns the cumulative count of
+// BeforeActiveWrite invocations. Phase 3 Step B3.6c — useful for
+// confirming the adapter-write path is correctly invoking the
+// pacer's pre-write hook. Safe to call from any goroutine.
+func (p *Pacer) BeforeActiveWriteTotal() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.beforeActiveWriteTotal
 }
 
 // RecordEcho feeds an observed echo round-trip time into the

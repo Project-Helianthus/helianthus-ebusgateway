@@ -77,8 +77,15 @@ func TestSessionPacer_AddSession_CreatesPacer(t *testing.T) {
 }
 
 // TestSessionPacer_RemoveSession_DropsEntry pins that RemoveSession
-// cleans up the per-session pacer entry. The internal map should
-// not leak entries across session lifecycles.
+// cleans up the per-session pacer entry AND that the load-only
+// SessionPacer accessor returns nil afterward (NO lazy-recreate).
+//
+// Per Codex round-1 MEDIUM on PR #645: the prior version of this
+// test couldn't actually prove deletion — it observed
+// SessionPacer's lazy-create returning a fresh Pacer, which is
+// indistinguishable from the deletion never having fired. The
+// round-1 fix removed lazy-create from SessionPacer; this test
+// is the load-only assertion that proves deletion.
 func TestSessionPacer_RemoveSession_DropsEntry(t *testing.T) {
 	t.Parallel()
 	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
@@ -91,27 +98,27 @@ func TestSessionPacer_RemoveSession_DropsEntry(t *testing.T) {
 		t.Fatal("AddSession returned 0")
 	}
 
-	if got := mux.SessionPacer(sid); got == nil {
+	pacerBefore := mux.SessionPacer(sid)
+	if pacerBefore == nil {
 		t.Fatalf("precondition: SessionPacer(%d) nil before Remove", sid)
+	}
+	// Bump the counter on the pre-Remove pacer so the load-only
+	// post-Remove probe would clearly distinguish the OLD pacer
+	// from a hypothetical lazy-recreate (if lazy-create ever
+	// resurges as a regression). With load-only, the second
+	// SessionPacer call MUST return nil — no Pacer to inspect.
+	pacerBefore.BeforeActiveWrite(time.Now())
+	if got := pacerBefore.BeforeActiveWriteTotal(); got != 1 {
+		t.Fatalf("precondition: pacerBefore counter = %d; want 1", got)
 	}
 
 	mux.RemoveSession(sid)
 
-	// After Remove, the entry should be gone. SessionPacer
-	// lazy-creates on demand, but a SECOND call after Remove
-	// would not find the same instance as before — let's verify
-	// the Delete actually fired by checking the map directly is
-	// not possible (sync.Map opaque), so we just verify
-	// SessionPacer returns a DIFFERENT instance (proving the
-	// original was evicted).
-	pacer := mux.SessionPacer(sid)
-	if pacer == nil {
-		t.Fatal("SessionPacer after Remove unexpectedly returned nil")
-	}
-	// The lazy-recreate returns a fresh Pacer with default
-	// bootstrap state — proving the prior instance was deleted.
-	if got := pacer.BeforeActiveWriteTotal(); got != 0 {
-		t.Errorf("lazy-recreated Pacer.BeforeActiveWriteTotal() = %d; want 0 (fresh)", got)
+	// PRIMARY ASSERTION: SessionPacer is load-only post-Remove.
+	// Returns nil — proves the Delete actually fired AND proves
+	// no resurrection-on-hot-path race.
+	if got := mux.SessionPacer(sid); got != nil {
+		t.Errorf("SessionPacer(%d) = %v after Remove; want nil (load-only contract — no lazy-recreate)", sid, got)
 	}
 }
 

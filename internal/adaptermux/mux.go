@@ -714,42 +714,72 @@ func New(cfg Config) *Mux {
 	if cfg.V8ClassifierMode != v8classifier.ModeOff {
 		mux.v8 = v8classifier.New(cfg.V8ClassifierMode)
 		// Phase 3 Step B3.6c: pre-create the gateway-internal
-		// session pacer. External sessions get their pacers in
-		// AddSession. Both paths lazy via SessionPacer(); this
-		// just ensures the gateway pacer exists at first
-		// active-write so the L_rtt EMA is the bootstrap value
-		// rather than nil-deref.
-		mux.sessionPacers.Store(gatewaySessionID, v8classifier.NewPacer())
+		// session pacer via ensureSessionPacer (the
+		// LIFECYCLE-ONLY constructor). External sessions get
+		// their pacers in AddSession. The hot-path doSend uses
+		// SessionPacer (load-only) which returns nil for any
+		// sessionID that wasn't ensure'd here or in
+		// AddSession — eliminates the
+		// RemoveSession+lazy-create resurrection race (Codex
+		// round-1 MEDIUM on PR #645).
+		mux.ensureSessionPacer(gatewaySessionID)
 	}
 	return mux
 }
 
-// SessionPacer returns the per-session v8 classifier Pacer for the
-// given sessionID, or nil if the mux is in ModeOff. Lazy-creates
-// the entry on first access (mostly a no-op since AddSession +
-// the Mux constructor pre-create the entries).
+// SessionPacer returns the per-session v8 classifier Pacer for
+// the given sessionID. Load-only — does NOT lazy-create. Returns
+// nil when:
+//   - V8ClassifierMode == Off (no v8 classifier at all)
+//   - sessionID was never registered via AddSession (or via the
+//     Mux constructor for the gateway-internal pacer)
+//   - sessionID was registered but has been removed via
+//     RemoveSession
 //
 // Phase 3 Step B3.6c — adapter-write path (mux.doSend) uses this
 // to look up the pacer for BeforeActiveWrite. The output pacer
 // side (session.writeLoop) lands in B3.6f and uses the same
-// lookup.
+// load-only lookup.
 //
-// Returns nil when V8ClassifierMode == Off. Callers MUST nil-check
-// before calling pacer methods — Pacer is mutex-backed and its
-// methods would panic on a nil receiver.
+// Per Codex round-1 MEDIUM on PR #645: lazy-create was REMOVED
+// because it could resurrect a deleted pacer entry on a doSend
+// that raced with RemoveSession (doSend passes arb.isOwner
+// BEFORE Remove deletes the pacer entry, then SessionPacer
+// LoadOrStore created a new entry that never got cleaned up).
+// The load-only contract eliminates this race: RemoveSession
+// deletes; subsequent doSend calls see nil and skip the
+// BeforeActiveWrite call (which is the correct behavior — the
+// session is gone, no pacer state to maintain).
+//
+// Callers MUST nil-check before calling pacer methods — Pacer is
+// mutex-backed and its methods would panic on a nil receiver.
 func (m *Mux) SessionPacer(sessionID uint64) *v8classifier.Pacer {
 	if m == nil || m.v8 == nil {
 		return nil
 	}
-	if v, ok := m.sessionPacers.Load(sessionID); ok {
-		return v.(*v8classifier.Pacer)
+	v, ok := m.sessionPacers.Load(sessionID)
+	if !ok {
+		return nil
 	}
-	// Lazy create: race-tolerant via LoadOrStore. If two callers
-	// race here, only one Pacer instance survives; the other is
-	// GC'd as soon as its caller returns.
-	created := v8classifier.NewPacer()
-	actual, _ := m.sessionPacers.LoadOrStore(sessionID, created)
-	return actual.(*v8classifier.Pacer)
+	return v.(*v8classifier.Pacer)
+}
+
+// ensureSessionPacer is the LIFECYCLE-ONLY constructor used by
+// Mux.New (for the gateway-internal pacer) and AddSession (for
+// external session pacers). LoadOrStore is race-tolerant for the
+// expected single-caller-per-sessionID pattern.
+//
+// Hot-path callers MUST use SessionPacer (load-only) instead.
+// Per Codex round-1 MEDIUM on PR #645: this split eliminates the
+// RemoveSession + lazy-create-from-doSend race.
+func (m *Mux) ensureSessionPacer(sessionID uint64) {
+	if m == nil || m.v8 == nil {
+		return
+	}
+	if _, ok := m.sessionPacers.Load(sessionID); ok {
+		return
+	}
+	m.sessionPacers.LoadOrStore(sessionID, v8classifier.NewPacer())
 }
 
 // Start connects to the adapter and begins the multiplexer loop.

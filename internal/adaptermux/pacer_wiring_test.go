@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 )
 
@@ -159,6 +161,81 @@ func TestSessionPacer_DoSend_GatewayInvokesBeforeActiveWrite(t *testing.T) {
 	if got := pacer.BeforeActiveWriteTotal(); got != uint64(len(req)) {
 		t.Errorf("BeforeActiveWriteTotal() = %d; want %d (one per byte written)", got, len(req))
 	}
+}
+
+// TestSessionPacer_RecordEcho_OnGatewayEchoMatch pins the Phase 3
+// Step B3.6d behavioral contract: when the gateway writes a byte
+// AND the adapter echoes it back AND mode != Off, the matched
+// echo's RTT MUST be fed to the gateway pacer's L_rtt EMA via
+// RecordEcho. The L_rtt EMA moves off its bootstrap value
+// (LrttBootstrapInitial = 100ms) only when this wiring is correct.
+func TestSessionPacer_RecordEcho_OnGatewayEchoMatch(t *testing.T) {
+	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	pacer := mux.SessionPacer(gatewaySessionID)
+	if pacer == nil {
+		t.Fatal("gateway pacer nil in ModeShadow")
+	}
+	if got := pacer.RecordedSamples(); got != 0 {
+		t.Fatalf("precondition: RecordedSamples = %d; want 0", got)
+	}
+
+	// Grant the gateway, write a byte, then inject the echo on
+	// the upstream mock — this fires matchEchoWithTime →
+	// pacer.RecordEcho.
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err: %v", err)
+	}
+
+	// Echo back. The mock's StreamEventByte arrives at readLoop
+	// which calls matchEchoWithTime.
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0x71, WasEscaped: false,
+	}
+
+	// Poll until RecordedSamples reaches 1.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if pacer.RecordedSamples() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := pacer.RecordedSamples(); got != 1 {
+		t.Errorf("RecordedSamples() = %d; want 1 (echo match should feed RecordEcho)", got)
+	}
+}
+
+// TestSessionPacer_RecordEcho_OffMode_NoSamples pins the
+// production-default invariant: in ModeOff, no L_rtt sample fires
+// even when the gateway echoes are matched. The
+// recordSentWithTime path is called with writeAt=zero, which
+// matchEchoWithTime correctly reports as hasWriteAt=false →
+// no RecordEcho call.
+func TestSessionPacer_RecordEcho_OffMode_NoSamples(t *testing.T) {
+	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeOff)
+	defer cleanup()
+
+	if got := mux.SessionPacer(gatewaySessionID); got != nil {
+		t.Fatalf("SessionPacer in ModeOff = %v; want nil", got)
+	}
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err: %v", err)
+	}
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0x71, WasEscaped: false,
+	}
+
+	// Wait briefly to let any spurious RecordEcho fire.
+	time.Sleep(100 * time.Millisecond)
+	// No pacer to inspect — assertion is that nothing panics
+	// or leaks in the absence of a v8 classifier.
 }
 
 // TestSessionPacer_OffMode_DoSendDoesNotCallPacer pins the

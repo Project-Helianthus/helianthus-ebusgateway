@@ -2091,7 +2091,19 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// we preserve the queue across stale bytes.
 	matchWouldHit := !hadPendingEcho || (hadPendingEcho && symbol == preMatchHead)
 	if isGatewayOwned && matchWouldHit {
-		m.gatewayEcho.matchEcho(symbol, wasEscaped) // track echo state internally
+		// Phase 3 Step B3.6d: use matchEchoWithTime so we can
+		// compute echo RTT for the v8 classifier's L_rtt EMA.
+		// When the byte matches a previously-recorded gateway
+		// write (echoMatchSuppressed) AND the original write was
+		// timestamped via recordSentWithTime (hasWriteAt=true),
+		// feed the RTT to the gateway pacer.
+		echoNow := time.Now()
+		result, _, writeAt, hasWriteAt := m.gatewayEcho.matchEchoWithTime(symbol, wasEscaped)
+		if result == echoMatchSuppressed && hasWriteAt {
+			if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+				pacer.RecordEcho(echoNow.Sub(writeAt), echoNow)
+			}
+		}
 	}
 	// P11 — gate activeCh delivery: mid-write requires queue-head match;
 	// response phase (no pending writes) accepts any byte.
@@ -4233,7 +4245,26 @@ func (m *Mux) sendLoop() {
 					m.gatewayTxnActive = true
 				}
 				m.recordWritePrefix(req.data)
-				m.gatewayEcho.recordSent(req.data)
+				// Phase 3 Step B3.6d: stamp the write with
+				// time.Now() so matchEchoWithTime can return it
+				// for RTT computation. When V8ClassifierMode is
+				// Off we still call the time-tracking variant
+				// (the zero-time slot is benign — hasWriteAt
+				// stays false in matchEchoWithTime, no L_rtt
+				// sample emitted). When v8 != nil we record the
+				// real write time. Time.Now() is the same cost
+				// as the legacy path (no v8 != nil branch
+				// avoidance saves us a syscall — the legacy
+				// path also calls time.Now() at the matchEcho
+				// site below). Net hot-path overhead: one
+				// time.Time slot per byte in
+				// expectedWriteTimes (16 bytes / byte on a
+				// typical Go layout).
+				writeAt := time.Time{}
+				if m.v8 != nil {
+					writeAt = time.Now()
+				}
+				m.gatewayEcho.recordSentWithTime(req.data, writeAt)
 				m.stateMu.Unlock()
 			}
 			err := m.doSend(req.sessionID, req.data)

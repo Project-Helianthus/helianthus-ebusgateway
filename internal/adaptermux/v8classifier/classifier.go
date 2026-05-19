@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegram_fsm"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
@@ -111,13 +112,91 @@ type Classifier struct {
 	escapedPayloadEscTotal atomic.Uint64
 	wireAutoSynTotal       atomic.Uint64
 	plainByteTotal         atomic.Uint64
+
+	// Phase 3 Step B3.4 (per-byte telegram FSM driver, v8 §3 / §4):
+	// fsm is the single mux-wide telegram FSM instance the classifier
+	// drives. The instance is created in New() when mode != ModeOff;
+	// it remains nil in ModeOff (zero-allocation default).
+	//
+	// FSM lifecycle:
+	//   - StreamEventByte → fsm.Feed(byte, wasEscaped). The returned
+	//     Decision goes into one of the three fsmDecision*Total
+	//     counters below.
+	//   - StreamEventStarted / StreamEventFailed → fsm.EnterPassiveTracking().
+	//     Both events signal "a telegram is starting on the wire and
+	//     the event Data carries QQ"; the classifier observes the
+	//     subsequent bytes as PASSIVE_TRACKING from MASTER_HEADER
+	//     byte 1 onward (matching the FSM library's EnterPassiveTracking
+	//     contract: QQ already consumed via event.Data, next byte
+	//     is ZZ).
+	//   - StreamEventReset → fsm.ResetToIdle(). Transport reset
+	//     invalidates any in-flight telegram state.
+	//
+	// Per the Concurrency contract above, fsm is single-producer
+	// (mux read goroutine). FSM state accessors (FSMState,
+	// FSMInternalState, IsPassiveTracking) return point-in-time
+	// snapshots and are safe to call from other goroutines for
+	// diagnostics; tests using the accessors must accept that the
+	// state may change between the call and any subsequent read.
+	//
+	// B3.4 is OBSERVE-ONLY. The Decision returned by Feed is counted
+	// but does NOT yet affect emission (B3.6 wires the
+	// DecisionDropAaInjection → drop=true path in ModeEnforce).
+	fsm *telegram_fsm.Machine
+
+	// FSM decision counters. The three values that telegram_fsm.Decision
+	// can take (Forward, DropAaInjection, ProtocolFault) each get
+	// their own counter. Sum across the three == count of
+	// StreamEventByte events that the FSM Feed processed, with two
+	// caveats: (1) when fsm is nil (ModeOff) NONE of these
+	// increment; (2) bytes arriving while the FSM is in
+	// StateAborted will continue through Feed but the Decision
+	// breakdown depends on the FSM library's own contract — see
+	// telegram_fsm.go.
+	fsmForwardTotal         atomic.Uint64
+	fsmDropAaInjectionTotal atomic.Uint64
+	fsmProtocolFaultTotal   atomic.Uint64
+
+	// FSM lifecycle event counters. Pin how many times we entered
+	// passive tracking vs reset, for shadow-mode operators who want
+	// to confirm the classifier is seeing the same telegram
+	// boundaries the legacy passive observer sees.
+	fsmEnterPassiveTotal atomic.Uint64
+	fsmResetTotal        atomic.Uint64
+
+	// Atomic snapshots of the FSM's externally-visible state. Per
+	// Codex round-1 review on PR #641: telegram_fsm.Machine is NOT
+	// thread-safe (its Machine.State() reads the same mutable
+	// fields Observe writes via Feed/Enter*/Reset). Direct
+	// accessors that touched c.fsm would race against the mux
+	// read goroutine's Observe calls.
+	//
+	// Fix: Observe writes these atomic snapshots AFTER each FSM
+	// mutation. The accessors (FSMState/FSMInternalState/
+	// FSMIsPassive) read ONLY from the atomics — never touch
+	// c.fsm — so concurrent diagnostics readers are race-free.
+	//
+	// Encoding: telegram_fsm.State is uint8; we store it in
+	// atomic.Uint32 (Go has no atomic.Uint8). FSMIsPassive uses
+	// atomic.Bool.
+	fsmStateSnapshot         atomic.Uint32 // telegram_fsm.State cast to uint32
+	fsmInternalStateSnapshot atomic.Uint32 // telegram_fsm.State cast to uint32
+	fsmIsPassiveSnapshot     atomic.Bool
 }
 
 // New constructs a Classifier in the given mode. The zero-value
 // Classifier (i.e. mode=ModeOff) is also valid; New exists for
 // explicit construction.
+//
+// Phase 3 Step B3.4: when mode != ModeOff the classifier owns a
+// fresh telegram_fsm.Machine (StateIdle). In ModeOff the fsm field
+// remains nil, preserving the zero-allocation default.
 func New(mode Mode) *Classifier {
-	return &Classifier{mode: mode}
+	c := &Classifier{mode: mode}
+	if mode != ModeOff {
+		c.fsm = telegram_fsm.New()
+	}
+	return c
 }
 
 // Mode returns the immutable runtime mode of the classifier.
@@ -175,11 +254,107 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 	// they have their own semantic meaning and do NOT carry a
 	// (Byte, WasEscaped) tuple the escape-decoder provenance
 	// taxonomy applies to.
-	if event.Kind == transport.StreamEventByte {
+	switch event.Kind {
+	case transport.StreamEventByte:
 		c.classifyByteProvenance(event.Byte, event.WasEscaped)
+		c.driveFSMByte(event.Byte, event.WasEscaped)
+	case transport.StreamEventStarted, transport.StreamEventFailed:
+		// Both events signal "a telegram is starting on the wire and
+		// event.Data carries QQ" — the FSM's EnterPassiveTracking
+		// contract matches both cases (QQ already consumed,
+		// MASTER_HEADER byte 1 is the next byte fed). For mux-wide
+		// observation we do NOT distinguish "we won" from
+		// "someone else won" here; that distinction is per-session
+		// and lands in B3.5+. EnterArbitrating is intentionally NOT
+		// called by the mux-wide classifier — the wire stream is
+		// observed passively in both cases.
+		c.fsmEnterPassive(event)
+	case transport.StreamEventReset:
+		c.fsmReset()
 	}
 	_ = now
 	return false
+}
+
+// driveFSMByte feeds one wire byte into the FSM, counts the
+// returned Decision, AND updates the atomic state snapshots so
+// concurrent diagnostic readers see fresh values. Single producer
+// per the Classifier concurrency contract.
+//
+// B3.4 OBSERVES the Decision but does NOT yet act on it. B3.6 will
+// extend this site with the ModeEnforce DropAaInjection path that
+// makes Observe return drop=true.
+func (c *Classifier) driveFSMByte(b byte, wasEscaped bool) {
+	if c.fsm == nil {
+		return
+	}
+	decision := c.fsm.Feed(b, wasEscaped)
+	switch decision {
+	case telegram_fsm.DecisionForward:
+		c.fsmForwardTotal.Add(1)
+	case telegram_fsm.DecisionDropAaInjection:
+		c.fsmDropAaInjectionTotal.Add(1)
+	case telegram_fsm.DecisionProtocolFault:
+		c.fsmProtocolFaultTotal.Add(1)
+	}
+	c.publishFSMSnapshotLocked()
+}
+
+// publishFSMSnapshotLocked writes the FSM's current externally-
+// visible state into the atomic snapshot fields. "Locked" here
+// means "called from the single-producer Observe path" — the
+// snapshot writes are atomics, no mutex involved. Concurrent
+// readers (FSMState/FSMInternalState/FSMIsPassive) read ONLY from
+// these atomics, so they never race against c.fsm's mutable
+// fields.
+//
+// MUST be called after every FSM mutation in driveFSMByte,
+// fsmEnterPassive, and fsmReset.
+func (c *Classifier) publishFSMSnapshotLocked() {
+	c.fsmStateSnapshot.Store(uint32(c.fsm.State()))
+	c.fsmInternalStateSnapshot.Store(uint32(c.fsm.InternalState()))
+	c.fsmIsPassiveSnapshot.Store(c.fsm.IsPassive())
+}
+
+// fsmEnterPassive routes a StreamEventStarted or StreamEventFailed
+// into the FSM's passive-tracking entry. Per v8 §3.1: the event's
+// Data byte IS the winner's QQ; EnterPassiveTracking sets the FSM
+// to MASTER_HEADER byte 1 (skipping over QQ).
+//
+// If the FSM is not currently in StateIdle (e.g. a stale Started
+// arrives while we're still tracking a prior telegram), the
+// FSM library's EnterPassiveTracking implementation clears the
+// per-telegram fields (masterNN, masterBytesConsumed, masterDest,
+// retx counters, slaveNN) BEFORE setting the new
+// StateMasterHeader / passive=true. It does NOT call ResetToIdle
+// internally, but the field-clear is equivalent for the
+// classifier's purposes — no stale telegram-1 fields leak into
+// telegram-2 tracking. If the FSM library ever adds new
+// per-telegram fields that EnterPassiveTracking doesn't clear,
+// this site would need an explicit ResetToIdle prefix. (Codex
+// round-1 LOW finding on PR #641, 2026-05-19.)
+//
+// This matches the wire-truth invariant: an actual STARTED/FAILED
+// on the wire MUST drive the classifier's view, even if our
+// prior state expected a different continuation.
+func (c *Classifier) fsmEnterPassive(_ transport.StreamEvent) {
+	if c.fsm == nil {
+		return
+	}
+	c.fsm.EnterPassiveTracking()
+	c.fsmEnterPassiveTotal.Add(1)
+	c.publishFSMSnapshotLocked()
+}
+
+// fsmReset routes a StreamEventReset into the FSM's hard reset.
+// Transport-level reset invalidates any in-flight telegram state.
+func (c *Classifier) fsmReset() {
+	if c.fsm == nil {
+		return
+	}
+	c.fsm.ResetToIdle()
+	c.fsmResetTotal.Add(1)
+	c.publishFSMSnapshotLocked()
 }
 
 // classifyByteProvenance increments exactly one of the four
@@ -339,4 +514,111 @@ func (c *Classifier) PlainByteTotal() uint64 {
 		return 0
 	}
 	return c.plainByteTotal.Load()
+}
+
+// FSMState returns the current point-in-time snapshot of the
+// telegram FSM's externally-visible state (StatePassiveTracking
+// composite collapsed via Machine.State). Returns telegram_fsm.StateIdle
+// when fsm is nil (ModeOff or pre-construction).
+//
+// Race-safe via the fsmStateSnapshot atomic: this accessor reads
+// ONLY the atomic field, never touches c.fsm directly. Concurrent
+// callers may see a snapshot one or two Observe calls stale but
+// will never see a torn read. (Codex round-1 HIGH finding on
+// PR #641: telegram_fsm.Machine is not thread-safe.)
+//
+// Phase 3 Step B3.4 exposes this primarily for shadow-mode
+// operator-visibility and for the wiring tests that assert the
+// FSM is actually being driven through telegram boundaries.
+func (c *Classifier) FSMState() telegram_fsm.State {
+	if c == nil {
+		return telegram_fsm.StateIdle
+	}
+	return telegram_fsm.State(c.fsmStateSnapshot.Load())
+}
+
+// FSMInternalState returns the FSM's raw sub-phase (un-collapsed
+// by the PassiveTracking composite mapping). Returns
+// telegram_fsm.StateIdle when fsm is nil. Useful for tests that
+// want to assert "the FSM is in MASTER_DATA right now" without
+// the StatePassiveTracking collapse hiding the sub-phase.
+//
+// Race-safe via the fsmInternalStateSnapshot atomic; same
+// stale-but-not-torn guarantee as FSMState.
+func (c *Classifier) FSMInternalState() telegram_fsm.State {
+	if c == nil {
+		return telegram_fsm.StateIdle
+	}
+	return telegram_fsm.State(c.fsmInternalStateSnapshot.Load())
+}
+
+// FSMIsPassive reports whether the FSM is currently in
+// PASSIVE_TRACKING (we're observing a foreign initiator's
+// telegram). Returns false when fsm is nil.
+//
+// Race-safe via the fsmIsPassiveSnapshot atomic; same
+// stale-but-not-torn guarantee as FSMState.
+func (c *Classifier) FSMIsPassive() bool {
+	if c == nil {
+		return false
+	}
+	return c.fsmIsPassiveSnapshot.Load()
+}
+
+// FsmForwardTotal returns the cumulative count of
+// telegram_fsm.DecisionForward decisions the FSM emitted for
+// StreamEventByte events observed in non-off mode. Returns 0 in
+// ModeOff. Safe to call from any goroutine.
+func (c *Classifier) FsmForwardTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.fsmForwardTotal.Load()
+}
+
+// FsmDropAaInjectionTotal returns the cumulative count of
+// telegram_fsm.DecisionDropAaInjection decisions. Per v8 §4 these
+// are the bytes the AA-injection filter would drop in ModeEnforce.
+// In B3.4 the drop is NOT applied — the byte still flows to
+// downstream observers — but the counter exposes how often the
+// filter WOULD have fired. Returns 0 in ModeOff. Safe to call
+// from any goroutine.
+func (c *Classifier) FsmDropAaInjectionTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.fsmDropAaInjectionTotal.Load()
+}
+
+// FsmProtocolFaultTotal returns the cumulative count of
+// telegram_fsm.DecisionProtocolFault decisions. Per v8 invariant
+// I10: PROTOCOL_FAULT bytes are FORWARDED to all observers PLUS an
+// admin event is emitted; B3.6 wires the admin-event side.
+// Returns 0 in ModeOff. Safe to call from any goroutine.
+func (c *Classifier) FsmProtocolFaultTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.fsmProtocolFaultTotal.Load()
+}
+
+// FsmEnterPassiveTotal returns the cumulative count of times the
+// classifier invoked fsm.EnterPassiveTracking() in response to a
+// StreamEventStarted or StreamEventFailed. Returns 0 in ModeOff.
+// Safe to call from any goroutine.
+func (c *Classifier) FsmEnterPassiveTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.fsmEnterPassiveTotal.Load()
+}
+
+// FsmResetTotal returns the cumulative count of times the classifier
+// invoked fsm.ResetToIdle() in response to a StreamEventReset.
+// Returns 0 in ModeOff. Safe to call from any goroutine.
+func (c *Classifier) FsmResetTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.fsmResetTotal.Load()
 }

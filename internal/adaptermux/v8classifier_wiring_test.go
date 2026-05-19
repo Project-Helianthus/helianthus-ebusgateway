@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/telegram_fsm"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
@@ -193,6 +194,77 @@ func TestV8Classifier_ShadowMode_ProvenanceCountersThroughMux(t *testing.T) {
 		c.WireAutoSynTotal() + c.PlainByteTotal()
 	if sum != 9 {
 		t.Errorf("sum of provenance counters = %d; want 9", sum)
+	}
+}
+
+// TestV8Classifier_ShadowMode_FSMDrivenThroughMux pins the B3.4
+// integration: a StreamEventStarted dispatched by readLoop must
+// cause the classifier's FSM to enter passive-tracking, and
+// subsequent StreamEventByte events must increment the FSM
+// decision counter at the mux boundary.
+func TestV8Classifier_ShadowMode_FSMDrivenThroughMux(t *testing.T) {
+	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	c := mux.V8Classifier()
+	if c == nil {
+		t.Fatal("V8Classifier() = nil in ModeShadow; want non-nil")
+	}
+
+	// Push StreamEventStarted (winner = 0x71). FSM should enter
+	// passive tracking after readLoop dispatches the event.
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventStarted,
+		Data: 0x71,
+	}
+	// Then push 3 plain payload bytes — each should yield a
+	// Forward decision.
+	for _, b := range []byte{0x10, 0xB5, 0x09} {
+		mock.eventCh <- transport.StreamEvent{
+			Kind: transport.StreamEventByte,
+			Byte: b,
+		}
+	}
+
+	// Poll until the classifier has observed all 4 events.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.ObservedBytesTotal() >= 4 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := c.ObservedBytesTotal(); got != 4 {
+		t.Fatalf("ObservedBytesTotal()=%d; want 4", got)
+	}
+
+	// FSM should be in passive tracking (or its internal
+	// MASTER_HEADER sub-phase, collapsed via FSMState).
+	if got := c.FSMState(); got != telegram_fsm.StatePassiveTracking {
+		t.Errorf("FSMState()=%v; want StatePassiveTracking through mux", got)
+	}
+	if !c.FSMIsPassive() {
+		t.Error("FSMIsPassive()=false; want true through mux")
+	}
+
+	// Lifecycle counters: 1 enter passive, 0 resets.
+	if got := c.FsmEnterPassiveTotal(); got != 1 {
+		t.Errorf("FsmEnterPassiveTotal()=%d; want 1 through mux", got)
+	}
+	if got := c.FsmResetTotal(); got != 0 {
+		t.Errorf("FsmResetTotal()=%d; want 0 (no reset events sent)", got)
+	}
+
+	// Decision counters: 3 forwards (one per plain payload byte),
+	// 0 drops, 0 faults.
+	if got := c.FsmForwardTotal(); got != 3 {
+		t.Errorf("FsmForwardTotal()=%d; want 3 (three plain bytes)", got)
+	}
+	if got := c.FsmDropAaInjectionTotal(); got != 0 {
+		t.Errorf("FsmDropAaInjectionTotal()=%d; want 0", got)
+	}
+	if got := c.FsmProtocolFaultTotal(); got != 0 {
+		t.Errorf("FsmProtocolFaultTotal()=%d; want 0", got)
 	}
 }
 

@@ -272,7 +272,7 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 	switch event.Kind {
 	case transport.StreamEventByte:
 		c.classifyByteProvenance(event.Byte, event.WasEscaped)
-		c.driveFSMByte(event.Byte, event.WasEscaped)
+		c.driveFSMByte(event.Byte, event.WasEscaped, now)
 	case transport.StreamEventStarted, transport.StreamEventFailed:
 		// Both events signal "a telegram is starting on the wire and
 		// event.Data carries QQ" — the FSM's EnterPassiveTracking
@@ -296,12 +296,28 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 // concurrent diagnostic readers see fresh values. Single producer
 // per the Classifier concurrency contract.
 //
+// The `now` parameter is the monotonic-clock observation time
+// for this byte, threaded down from Observe (per Codex round-1
+// MEDIUM on PR #643). Using this instead of an internal
+// time.Now() call keeps the classifier's clock path
+// deterministic and avoids one syscall per fault-cascade byte.
+//
 // Phase 3 Step B3.6a: DecisionProtocolFault now also emits a
 // ClassifierAdminEvent into the per-classifier admin-event ring
 // buffer (out-of-band per v8 I1 — NEVER into client byte streams).
-// B3.6b will extend this site with the ModeEnforce DropAaInjection
-// path that makes Observe return drop=true.
-func (c *Classifier) driveFSMByte(b byte, wasEscaped bool) {
+//
+// NOTE on counter/event consistency: fsmProtocolFaultTotal
+// increments BEFORE the admin emit. A dashboard concurrently
+// sampling the counter and draining events may briefly observe
+// `counter > drained_events + dropped`. The drains are NOT an
+// atomic snapshot with the counters — eventual consistency only.
+// If a future operator dashboard needs exact correlation, a
+// combined snapshot API would have to be added. (Codex round-1
+// LOW on PR #643 — explicit documentation.)
+//
+// B3.6b will extend this site with the ModeEnforce
+// DropAaInjection path that makes Observe return drop=true.
+func (c *Classifier) driveFSMByte(b byte, wasEscaped bool, now time.Time) {
 	if c.fsm == nil {
 		return
 	}
@@ -320,7 +336,7 @@ func (c *Classifier) driveFSMByte(b byte, wasEscaped bool) {
 		// emission policy applies — the admin emit does not gate
 		// the byte stream.
 		c.adminEvents.emit(ClassifierAdminEvent{
-			At:         time.Now(),
+			At:         now,
 			Kind:       AdminEventKindProtocolFault,
 			FSMState:   c.fsm.State(),
 			Byte:       b,

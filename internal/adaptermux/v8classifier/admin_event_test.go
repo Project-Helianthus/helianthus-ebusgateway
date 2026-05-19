@@ -118,6 +118,32 @@ func TestAdminEventBuffer_Overflow_DropsOldest(t *testing.T) {
 	}
 }
 
+// TestAdminEventBuffer_RejectsNoneKind pins the Codex round-1
+// LOW fix: emit(Kind=None) is a no-op so the sentinel never
+// pollutes the recorded buffer. None is the zero value and has
+// no production caller; the guard enforces the documented
+// invariant.
+func TestAdminEventBuffer_RejectsNoneKind(t *testing.T) {
+	t.Parallel()
+	var b adminEventBuffer
+	for i := 0; i < 10; i++ {
+		b.emit(ClassifierAdminEvent{
+			Kind: AdminEventKindNone,
+			Byte: byte(i),
+		})
+	}
+	if got := b.pending(); got != 0 {
+		t.Errorf("pending after emit(Kind=None)×10 = %d; want 0 (rejected)", got)
+	}
+	events, dropped := b.drain()
+	if len(events) != 0 {
+		t.Errorf("drain after Kind=None emits: %d events; want 0", len(events))
+	}
+	if dropped != 0 {
+		t.Errorf("dropped=%d; want 0 (Kind=None rejection is NOT a drop — it's a refusal to enqueue)", dropped)
+	}
+}
+
 func TestAdminEventBuffer_DroppedCounter_ResetOnDrain(t *testing.T) {
 	t.Parallel()
 	var b adminEventBuffer
@@ -257,36 +283,49 @@ func TestClassifier_PendingAdminEvents_ReflectsBuffer(t *testing.T) {
 	}
 }
 
-// TestAdminEventBuffer_ConcurrentDrainerVsProducer pins the
-// multi-consumer-safe contract: a drainer goroutine racing
-// against the single producer must never observe a torn read or
-// trigger a data race. The mutex inside adminEventBuffer
-// guarantees this; the test fires under -race.
+// TestAdminEventBuffer_ConcurrentDrainerVsProducer pins both
+// the multi-consumer-safe contract AND a basic accounting
+// invariant under concurrent producer/drainer activity
+// (Codex round-1 LOW on PR #643 — the test previously only
+// proved -race wouldn't fire).
+//
+// Invariant: total_drained + final_drain + dropped == total_emitted.
+// Every emitted event either:
+//   (a) gets drained mid-run, OR
+//   (b) gets drained on the final flush, OR
+//   (c) gets dropped (counted in `dropped`).
+// No event silently disappears.
+//
+// The mutex inside adminEventBuffer guarantees no data race;
+// the test fires under -race to verify.
 func TestAdminEventBuffer_ConcurrentDrainerVsProducer(t *testing.T) {
 	t.Parallel()
 	var b adminEventBuffer
 	stop := make(chan struct{})
 
-	// Drainer goroutine.
+	const totalEmitted = 1000
+
+	// Drainer goroutine accumulates seen counts + dropped counts.
+	var seen uint64
+	var seenDropped uint64
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		totalSeen := 0
 		for {
 			select {
 			case <-stop:
 				return
 			default:
-				events, _ := b.drain()
-				totalSeen += len(events)
-				_ = totalSeen
+				events, dropped := b.drain()
+				seen += uint64(len(events))
+				seenDropped += dropped
 			}
 		}
 	}()
 
-	// Producer: 1000 emits, with periodic over-cap bursts.
-	for i := 0; i < 1000; i++ {
+	// Producer: totalEmitted emits.
+	for i := 0; i < totalEmitted; i++ {
 		b.emit(ClassifierAdminEvent{
 			Kind: AdminEventKindProtocolFault,
 			Byte: byte(i),
@@ -296,5 +335,13 @@ func TestAdminEventBuffer_ConcurrentDrainerVsProducer(t *testing.T) {
 	wg.Wait()
 
 	// Final drain to flush any remainder.
-	_, _ = b.drain()
+	finalEvents, finalDropped := b.drain()
+	seen += uint64(len(finalEvents))
+	seenDropped += finalDropped
+
+	// Accounting invariant.
+	if total := seen + seenDropped; total != uint64(totalEmitted) {
+		t.Errorf("accounting: seen=%d + dropped=%d = %d; want %d (no events silently lost)",
+			seen, seenDropped, total, totalEmitted)
+	}
 }

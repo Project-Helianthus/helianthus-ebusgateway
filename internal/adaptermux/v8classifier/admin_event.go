@@ -133,6 +133,14 @@ type ClassifierAdminEvent struct {
 // hot path to block on a slow consumer. Operators draining at
 // realistic rates (every few seconds) will never see drops; a
 // stuck consumer drops the OLDEST events first.
+//
+// IMPORTANT (Codex round-1 LOW on PR #643): the cap is
+// intentionally small (64) so the O(N) copy-and-shift on
+// overflow stays bounded. If a future PR raises this cap, the
+// emit() implementation MUST switch from copy(b.events,
+// b.events[1:]) to a proper head/tail ring index pattern — the
+// current copy approach is acceptable at 64 but becomes
+// avoidable churn during fault storms at larger caps.
 const adminEventBufferCap = 64
 
 // adminEventBuffer is the per-classifier ring buffer. Lives
@@ -158,16 +166,27 @@ type adminEventBuffer struct {
 // drop) and the dropped counter increments. The producer never
 // blocks.
 //
+// Events with Kind == AdminEventKindNone are REJECTED at the
+// emit boundary (Codex round-1 LOW on PR #643). The None
+// sentinel exists only as the zero value and has no production
+// caller; guarding here enforces the documented invariant that
+// "None should not appear in recorded events".
+//
 // Called from the single-producer mux read goroutine. The mutex
 // protects against concurrent Drain calls from a consumer
 // goroutine.
 func (b *adminEventBuffer) emit(ev ClassifierAdminEvent) {
+	if ev.Kind == AdminEventKindNone {
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(b.events) >= adminEventBufferCap {
 		// Drop oldest, slide remaining. This is O(N) per drop but
 		// only fires under sustained saturation — typical
-		// production has zero drops.
+		// production has zero drops. See adminEventBufferCap doc
+		// for why O(N) is acceptable at cap=64 and what to switch
+		// to if the cap ever grows.
 		copy(b.events, b.events[1:])
 		b.events = b.events[:len(b.events)-1]
 		b.dropped++

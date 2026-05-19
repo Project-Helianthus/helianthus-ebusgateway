@@ -2091,18 +2091,24 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// we preserve the queue across stale bytes.
 	matchWouldHit := !hadPendingEcho || (hadPendingEcho && symbol == preMatchHead)
 	if isGatewayOwned && matchWouldHit {
-		// Phase 3 Step B3.6d: use matchEchoWithTime so we can
-		// compute echo RTT for the v8 classifier's L_rtt EMA.
-		// When the byte matches a previously-recorded gateway
-		// write (echoMatchSuppressed) AND the original write was
-		// timestamped via recordSentWithTime (hasWriteAt=true),
-		// feed the RTT to the gateway pacer.
-		echoNow := time.Now()
-		result, _, writeAt, hasWriteAt := m.gatewayEcho.matchEchoWithTime(symbol, wasEscaped)
-		if result == echoMatchSuppressed && hasWriteAt {
-			if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
-				pacer.RecordEcho(echoNow.Sub(writeAt), echoNow)
+		// Phase 3 Step B3.6d (Codex round-1 MAJOR on PR #646):
+		// gate the time-tracking match path on m.v8 != nil. In
+		// ModeOff (m.v8 == nil) we call the legacy matchEcho and
+		// skip both time.Now() at the match site AND the writeAt
+		// pop in matchEchoWithTime — restoring the documented
+		// "zero overhead in ModeOff" contract. When v8 is on, the
+		// echo timestamp from matchEchoWithTime feeds RTT into the
+		// gateway pacer's L_rtt EMA.
+		if m.v8 != nil {
+			echoNow := time.Now()
+			result, _, writeAt, hasWriteAt := m.gatewayEcho.matchEchoWithTime(symbol, wasEscaped)
+			if result == echoMatchSuppressed && hasWriteAt {
+				if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+					pacer.RecordEcho(echoNow.Sub(writeAt), echoNow)
+				}
 			}
+		} else {
+			m.gatewayEcho.matchEcho(symbol, wasEscaped)
 		}
 	}
 	// P11 — gate activeCh delivery: mid-write requires queue-head match;
@@ -4245,26 +4251,19 @@ func (m *Mux) sendLoop() {
 					m.gatewayTxnActive = true
 				}
 				m.recordWritePrefix(req.data)
-				// Phase 3 Step B3.6d: stamp the write with
-				// time.Now() so matchEchoWithTime can return it
-				// for RTT computation. When V8ClassifierMode is
-				// Off we still call the time-tracking variant
-				// (the zero-time slot is benign — hasWriteAt
-				// stays false in matchEchoWithTime, no L_rtt
-				// sample emitted). When v8 != nil we record the
-				// real write time. Time.Now() is the same cost
-				// as the legacy path (no v8 != nil branch
-				// avoidance saves us a syscall — the legacy
-				// path also calls time.Now() at the matchEcho
-				// site below). Net hot-path overhead: one
-				// time.Time slot per byte in
-				// expectedWriteTimes (16 bytes / byte on a
-				// typical Go layout).
-				writeAt := time.Time{}
+				// Phase 3 Step B3.6d (Codex round-1 MAJOR on PR
+				// #646): gate the time-tracking record path on
+				// m.v8 != nil. In ModeOff (m.v8 == nil) we call
+				// the legacy recordSent which appends only to
+				// expectedEchoes — NO time.Now() call, NO
+				// time.Time slot allocation per byte. When v8 is
+				// on we capture time.Now() so the matching site
+				// can compute RTT for the L_rtt EMA.
 				if m.v8 != nil {
-					writeAt = time.Now()
+					m.gatewayEcho.recordSentWithTime(req.data, time.Now())
+				} else {
+					m.gatewayEcho.recordSent(req.data)
 				}
-				m.gatewayEcho.recordSentWithTime(req.data, writeAt)
 				m.stateMu.Unlock()
 			}
 			err := m.doSend(req.sessionID, req.data)

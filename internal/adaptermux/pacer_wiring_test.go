@@ -211,16 +211,25 @@ func TestSessionPacer_RecordEcho_OnGatewayEchoMatch(t *testing.T) {
 
 // TestSessionPacer_RecordEcho_OffMode_NoSamples pins the
 // production-default invariant: in ModeOff, no L_rtt sample fires
-// even when the gateway echoes are matched. The
-// recordSentWithTime path is called with writeAt=zero, which
-// matchEchoWithTime correctly reports as hasWriteAt=false →
-// no RecordEcho call.
+// even when the gateway echoes are matched, AND no per-byte
+// time.Time slot is allocated in echoTracker.expectedWriteTimes
+// (Codex round-1 MAJOR on PR #646 — ModeOff must be true zero
+// overhead, not "harmless time.Time{} append per byte").
+//
+// Postcondition checked: after a full grant + write + echo round
+// trip, the gateway pacer slot is STILL nil (no lazy allocation
+// on the hot path) and the gateway echoTracker's
+// expectedWriteTimes queue is STILL empty (proves the legacy
+// recordSent path was taken, not recordSentWithTime). Either
+// failure would indicate a regression where the v8 != nil
+// short-circuit at doSend / matchEcho leaked back into the
+// ModeOff configuration.
 func TestSessionPacer_RecordEcho_OffMode_NoSamples(t *testing.T) {
 	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeOff)
 	defer cleanup()
 
 	if got := mux.SessionPacer(gatewaySessionID); got != nil {
-		t.Fatalf("SessionPacer in ModeOff = %v; want nil", got)
+		t.Fatalf("precondition: SessionPacer in ModeOff = %v; want nil", got)
 	}
 
 	grantGateway(t, mux, mock, 0x71)
@@ -232,10 +241,59 @@ func TestSessionPacer_RecordEcho_OffMode_NoSamples(t *testing.T) {
 		Kind: transport.StreamEventByte, Byte: 0x71, WasEscaped: false,
 	}
 
-	// Wait briefly to let any spurious RecordEcho fire.
+	// Brief settle so the echo-match path completes on the read
+	// goroutine before we inspect tracker state.
 	time.Sleep(100 * time.Millisecond)
-	// No pacer to inspect — assertion is that nothing panics
-	// or leaks in the absence of a v8 classifier.
+
+	// PRIMARY assertion: ModeOff still has no gateway pacer. Any
+	// drift toward lazy-allocate on the hot path would surface
+	// here as a non-nil pointer.
+	if got := mux.SessionPacer(gatewaySessionID); got != nil {
+		t.Errorf("post-echo: SessionPacer in ModeOff = %v; want nil (no lazy-allocate on hot path)", got)
+	}
+
+	// SECONDARY assertion: the gateway echoTracker took the
+	// legacy recordSent path (no timestamp). expectedWriteTimes
+	// must be empty AFTER the write+match round trip — proves
+	// the per-byte time.Time slot allocation did NOT happen.
+	mux.stateMu.Lock()
+	wtLen := len(mux.gatewayEcho.expectedWriteTimes)
+	mux.stateMu.Unlock()
+	if wtLen != 0 {
+		t.Errorf("post-echo: gatewayEcho.expectedWriteTimes length = %d; want 0 (ModeOff must skip timestamp allocation)", wtLen)
+	}
+}
+
+// TestEchoTracker_LegacyRecordSent_NoWriteAtSlot pins the
+// echo_tracker.go side of the conditional lockstep invariant
+// (Codex round-1 MAJOR on PR #646): the legacy recordSent path
+// MUST NOT touch expectedWriteTimes. A focused unit test on the
+// tracker alone — no Mux setup required.
+func TestEchoTracker_LegacyRecordSent_NoWriteAtSlot(t *testing.T) {
+	t.Parallel()
+	tr := newEchoTracker()
+	for _, b := range []byte{0x71, 0x08, 0x07, 0x04, 0x00} {
+		tr.recordSent(b)
+	}
+	if got := len(tr.expectedEchoes); got != 5 {
+		t.Errorf("expectedEchoes length = %d; want 5", got)
+	}
+	if got := len(tr.expectedWriteTimes); got != 0 {
+		t.Errorf("expectedWriteTimes length = %d; want 0 (legacy recordSent must NOT append timestamp slots)", got)
+	}
+	// matchEchoWithTime on a legacy-populated tracker MUST
+	// report hasWriteAt=false for every match — no L_rtt sample
+	// possible without a recorded writeAt.
+	result, _, writeAt, hasWriteAt := tr.matchEchoWithTime(0x71, false)
+	if result != echoMatchSuppressed {
+		t.Errorf("matchEchoWithTime result = %v; want echoMatchSuppressed", result)
+	}
+	if hasWriteAt {
+		t.Error("hasWriteAt = true on legacy-recorded byte; want false (no timestamp captured)")
+	}
+	if !writeAt.IsZero() {
+		t.Errorf("writeAt = %v on legacy-recorded byte; want zero", writeAt)
+	}
 }
 
 // TestSessionPacer_OffMode_DoSendDoesNotCallPacer pins the

@@ -253,9 +253,9 @@ func TestClassifyByteProvenance_TableDriven(t *testing.T) {
 	t.Parallel()
 
 	rows := []struct {
-		name        string
-		b           byte
-		wasEscaped  bool
+		name                                                  string
+		b                                                     byte
+		wasEscaped                                            bool
 		wantPayloadAa, wantPayloadEsc, wantWireSyn, wantPlain uint64
 	}{
 		// Canonical taxonomy.

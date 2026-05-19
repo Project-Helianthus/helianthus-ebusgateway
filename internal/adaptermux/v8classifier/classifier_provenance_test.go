@@ -240,6 +240,76 @@ func TestProvenance_NilReceiverSafe(t *testing.T) {
 	}
 }
 
+// TestClassifyByteProvenance_TableDriven exercises classifyByteProvenance
+// directly (NOT through Observe) so the four-way routing branch has
+// dedicated, isolated coverage. Per Codex round-1 hygiene note on
+// PR #640: the method's doc-comment claims testability as the
+// extraction rationale; this is the test that earns that claim.
+//
+// Each row asserts: feeding (b, wasEscaped) to classifyByteProvenance
+// increments exactly the expected counter by 1 and leaves the
+// other three at 0.
+func TestClassifyByteProvenance_TableDriven(t *testing.T) {
+	t.Parallel()
+
+	rows := []struct {
+		name        string
+		b           byte
+		wasEscaped  bool
+		wantPayloadAa, wantPayloadEsc, wantWireSyn, wantPlain uint64
+	}{
+		// Canonical taxonomy.
+		{"PayloadAA", 0xAA, true, 1, 0, 0, 0},
+		{"PayloadESC", 0xA9, true, 0, 1, 0, 0},
+		{"WireSYN", 0xAA, false, 0, 0, 1, 0},
+		// Several plain-byte representatives across the byte range.
+		{"Plain_0x00", 0x00, false, 0, 0, 0, 1},
+		{"Plain_0x55", 0x55, false, 0, 0, 0, 1},
+		{"Plain_0x71_gateway", 0x71, false, 0, 0, 0, 1},
+		{"Plain_0xA8_belowAA", 0xA8, false, 0, 0, 0, 1},
+		{"Plain_0xAB_aboveAA", 0xAB, false, 0, 0, 0, 1},
+		{"Plain_0xFE_broadcast", 0xFE, false, 0, 0, 0, 1},
+		{"Plain_0xFF", 0xFF, false, 0, 0, 0, 1},
+		// Defensive fall-throughs (impossible in a well-formed
+		// v8 stream but folded into plain by design).
+		{"Defensive_bareA9_notEscaped", 0xA9, false, 0, 0, 0, 1},
+		{"Defensive_0x42_escaped", 0x42, true, 0, 0, 0, 1},
+		{"Defensive_0xFF_escaped", 0xFF, true, 0, 0, 0, 1},
+		{"Defensive_0x00_escaped", 0x00, true, 0, 0, 0, 1},
+	}
+
+	for _, row := range rows {
+		row := row
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			// Fresh classifier per row — isolation.
+			c := New(ModeShadow)
+			c.classifyByteProvenance(row.b, row.wasEscaped)
+
+			if got := c.EscapedPayloadAaTotal(); got != row.wantPayloadAa {
+				t.Errorf("EscapedPayloadAaTotal()=%d; want %d", got, row.wantPayloadAa)
+			}
+			if got := c.EscapedPayloadEscTotal(); got != row.wantPayloadEsc {
+				t.Errorf("EscapedPayloadEscTotal()=%d; want %d", got, row.wantPayloadEsc)
+			}
+			if got := c.WireAutoSynTotal(); got != row.wantWireSyn {
+				t.Errorf("WireAutoSynTotal()=%d; want %d", got, row.wantWireSyn)
+			}
+			if got := c.PlainByteTotal(); got != row.wantPlain {
+				t.Errorf("PlainByteTotal()=%d; want %d", got, row.wantPlain)
+			}
+
+			// Sum invariant always holds: exactly one counter
+			// incremented per call.
+			sum := c.EscapedPayloadAaTotal() + c.EscapedPayloadEscTotal() +
+				c.WireAutoSynTotal() + c.PlainByteTotal()
+			if sum != 1 {
+				t.Errorf("sum=%d; want 1 (exactly one bucket per call)", sum)
+			}
+		})
+	}
+}
+
 // TestProvenance_EnforceMode_DoesNotDropYet pins the B3.3 scaffold-
 // only contract: even with provenance classification active, the
 // classifier in ModeEnforce returns drop=false for every byte. Real

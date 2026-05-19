@@ -184,9 +184,9 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 
 // classifyByteProvenance increments exactly one of the four
 // provenance counters based on the (b, wasEscaped) tuple. Extracted
-// for testability — the routing logic is small but the four-way
-// branch deserves its own coverage in
-// classifier_provenance_test.go.
+// to keep Observe small and to support direct table-test coverage
+// of the four-way branch (see
+// classifier_provenance_test.go::TestClassifyByteProvenance_TableDriven).
 //
 // The taxonomy (per the Classifier struct field doc):
 //
@@ -199,16 +199,24 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 //   - all (0x00..0xA8, false)
 //   - (0xA9, false) — should be impossible in a well-formed v8
 //     ENHTransport stream (a bare 0xA9 wire byte is the escape
-//     lead, not an emitted decoded byte), but counted defensively
-//     as plain to avoid silent drops.
+//     lead, not an emitted decoded byte). Folded into plain so the
+//     sum invariant holds; B3.3 INTENTIONALLY does NOT surface
+//     this as a separate anomaly counter — that is a follow-up
+//     enhancement once B3.4+ has the FSM context to decide whether
+//     the anomaly is meaningful (mid-frame anomaly vs harmless
+//     idle artifact).
 //   - all (0xAB..0xFF, false)
 //   - any (b, true) where b is neither 0xAA nor 0xA9 — should be
 //     impossible (the v8 escape decoder only emits wasEscaped=true
-//     for the two valid escape pairs), but counted defensively.
+//     for the two valid escape pairs). Same B3.3-intentional
+//     "fold into plain, don't surface separately" treatment.
 //
 // The defensive branches mean ALL StreamEventByte events
 // monotonically increment exactly one counter, regardless of
-// upstream bug or future protocol extension.
+// upstream bug or future protocol extension. If operators want
+// distinct visibility into these "impossible" cases, a future
+// PR can split out anomaly counters without breaking any existing
+// accessor's contract — the sum invariant is preserved either way.
 func (c *Classifier) classifyByteProvenance(b byte, wasEscaped bool) {
 	if wasEscaped {
 		switch b {

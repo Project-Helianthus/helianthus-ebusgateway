@@ -353,21 +353,28 @@ func TestSessionPacer_Watchdog_ArmedOnDoSend(t *testing.T) {
 		t.Fatalf("Write err: %v", err)
 	}
 
-	// Poll briefly — Write returns after doSend completes, but the
-	// arm runs under stateMu so we may see a brief window where
-	// the call hasn't fully returned. Polling tolerates that.
-	deadline := time.Now().Add(500 * time.Millisecond)
+	// Codex round-1 MEDIUM #1 on PR #647: the previous 500ms
+	// poll window exceeded the normal-mode hard deadline (~400ms),
+	// so an unrelated CI stall could let the hard timer fire and
+	// clear WatchdogArmed before the assertion checked it. Switch
+	// to a tight poll window (50ms — well under the soft deadline
+	// of ~200ms) and cancel IMMEDIATELY after the first observed
+	// armed=true.
+	deadline := time.Now().Add(50 * time.Millisecond)
+	armed := false
 	for time.Now().Before(deadline) {
 		if pacer.WatchdogArmed() {
+			armed = true
 			break
 		}
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(1 * time.Millisecond)
 	}
-	if !pacer.WatchdogArmed() {
-		t.Errorf("WatchdogArmed() = false after gateway write; want true (B3.6e arm at doSend)")
+	if !armed {
+		t.Errorf("WatchdogArmed() = false after gateway write; want true (B3.6e arm at sendLoop)")
 	}
-	// Cancel so the watchdog doesn't fire during cleanup and emit a
-	// spurious admin event that could confuse downstream tests.
+	// Cancel immediately so the watchdog cannot fire during
+	// cleanup and emit a spurious admin event that could confuse
+	// downstream tests.
 	pacer.CancelEchoWatchdog()
 }
 

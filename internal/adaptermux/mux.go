@@ -4290,7 +4290,27 @@ func (m *Mux) sendLoop() {
 				if m.v8 != nil {
 					writeAt := time.Now()
 					m.gatewayEcho.recordSentWithTime(req.data, writeAt)
+					// Codex round-1 MAJOR #1 on PR #647:
+					// BeforeActiveWrite MUST run before
+					// ArmEchoWatchdog so a long-idle gateway
+					// write enters grace-bootstrap (graceRemaining
+					// set non-zero) before the watchdog computes
+					// deadlines from EchoDeadlines. Without this
+					// hoist, the arm at the sendLoop site used
+					// pre-grace L_rtt state — the first
+					// post-idle echo was waited on with normal
+					// (tight) deadlines instead of grace (loose),
+					// defeating the B3.5 grace-bootstrap fix.
+					//
+					// BeforeActiveWrite is idempotent if called
+					// twice before any RecordEcho (per its
+					// docstring), so doSend's existing
+					// BeforeActiveWrite call below remains
+					// harmless for non-gateway sessions and is a
+					// no-op for the gateway pacer at the second
+					// invocation.
 					if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+						pacer.BeforeActiveWrite(writeAt)
 						pacer.ArmEchoWatchdog(writeAt)
 					}
 				} else {
@@ -4328,6 +4348,19 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 		}
 		m.gatewayEcho.rollbackSent()
 		m.stateMu.Unlock()
+		// Codex round-1 MUST FIX #2 on PR #647: write-error
+		// rollback must ALSO cancel the watchdog the sendLoop
+		// armed before doSend. Without this, the soft / hard
+		// timer would fire later and emit a stale admin event
+		// for a byte that never reached the adapter. The pacer
+		// comment lists write-fail as a documented cancellation
+		// boundary; this call closes that path.
+		//
+		// Outside stateMu — CancelEchoWatchdog uses the pacer's
+		// own mutex; nested-lock free.
+		if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+			pacer.CancelEchoWatchdog()
+		}
 	}()
 
 	if !m.arb.isOwner(sessionID) {
@@ -4363,18 +4396,28 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 	// BEFORE the first post-idle echo is awaited. Skipped when
 	// V8ClassifierMode == Off (SessionPacer returns nil).
 	//
+	// Codex round-1 MAJOR #1 on PR #647: for GATEWAY sessions the
+	// sendLoop now invokes BeforeActiveWrite BEFORE ArmEchoWatchdog
+	// (so the watchdog sees post-grace L_rtt). To preserve the
+	// canonical "exactly one BeforeActiveWrite per active write"
+	// semantics (asserted by TestSessionPacer_DoSend_GatewayInvokesBeforeActiveWrite),
+	// gateway sessions skip the doSend call. External sessions
+	// (sessionID > 0) still take the doSend path — they don't go
+	// through sendLoop's gateway-only critical section, so this is
+	// their canonical site.
+	//
 	// Pacer integration plan (B3.6c..B3.6f):
-	//   B3.6c (THIS PR): BeforeActiveWrite at the doSend pre-Write
-	//                    hot path. Grace-bootstrap accounted, but
-	//                    no L_rtt EMA samples yet, no enforced
-	//                    deadlines.
-	//   B3.6d:           RecordEcho wiring at the echo-arrival site
-	//                    so the L_rtt EMA actually moves.
-	//   B3.6e:           Echo watchdog timer enforcing soft/hard
-	//                    deadlines + admin events.
-	//   B3.6f:           Output pacer at session.writeLoop.
-	if pacer := m.SessionPacer(sessionID); pacer != nil {
-		pacer.BeforeActiveWrite(time.Now())
+	//   B3.6c: BeforeActiveWrite at the active-write pre-Write
+	//          hot path (sendLoop for gateway; doSend for external).
+	//   B3.6d: RecordEcho wiring at the echo-arrival site
+	//          so the L_rtt EMA actually moves.
+	//   B3.6e: Echo watchdog timer enforcing soft/hard
+	//          deadlines + admin events (gateway only).
+	//   B3.6f: Output pacer at session.writeLoop.
+	if !isGateway {
+		if pacer := m.SessionPacer(sessionID); pacer != nil {
+			pacer.BeforeActiveWrite(time.Now())
+		}
 	}
 	_, err := tr.Write([]byte{data})
 	if err != nil {

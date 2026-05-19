@@ -296,18 +296,8 @@ func classifiedTestMuxWithSession(t *testing.T, mode v8classifier.Mode) (
 	}
 
 	// Drain whatever ENH framing the writeLoop emits during INIT
-	// so subsequent assertions read fresh bytes only.
-	drain := make(chan struct{})
-	go func() {
-		defer close(drain)
-		buf := make([]byte, 256)
-		deadline := time.Now().Add(150 * time.Millisecond)
-		for time.Now().Before(deadline) {
-			_ = clientConn.SetReadDeadline(time.Now().Add(40 * time.Millisecond))
-			_, _ = clientConn.Read(buf)
-		}
-	}()
-	<-drain
+	// using the event-driven idle-window pattern.
+	drainSessionUntilIdle(t, clientConn, 50*time.Millisecond, 500*time.Millisecond)
 
 	cleanup = func() {
 		_ = clientConn.Close()
@@ -315,6 +305,47 @@ func classifiedTestMuxWithSession(t *testing.T, mode v8classifier.Mode) (
 		baseCleanup()
 	}
 	return mux, mock, clientConn, sid, cleanup
+}
+
+// drainSessionUntilIdle reads from clientConn until no bytes
+// arrive within `idleWindow`, or until `hardDeadline` is exceeded.
+//
+// Per Codex round-2 MEDIUM on PR #644: fixed-duration drains
+// leave a race where a delayed Started-mirror frame can leak
+// into the AA-injection probe window, causing false-fail
+// (Enforce) or false-pass (Shadow). Event-driven idle detection
+// fixes this — we keep reading until the pipe is genuinely
+// silent for `idleWindow`, proving any pre-injection framing
+// has been consumed.
+//
+// The function returns the total byte count drained — useful
+// for tests that want to assert SOMETHING flowed before the
+// idle period (e.g. "Started's mirror frame WAS forwarded").
+func drainSessionUntilIdle(t *testing.T, conn net.Conn, idleWindow, hardDeadline time.Duration) int {
+	t.Helper()
+	buf := make([]byte, 256)
+	total := 0
+	hard := time.Now().Add(hardDeadline)
+	for time.Now().Before(hard) {
+		// Read with a short deadline (the idle window). If the
+		// read times out without bytes, we've hit an idle
+		// period — the pipe is quiet enough to start the
+		// per-test injection.
+		_ = conn.SetReadDeadline(time.Now().Add(idleWindow))
+		n, err := conn.Read(buf)
+		if n > 0 {
+			total += n
+			continue
+		}
+		// Timeout (or other error) with no bytes — idle window
+		// satisfied.
+		_ = err
+		return total
+	}
+	// Hard deadline hit — pipe wasn't idle for `idleWindow` within
+	// the whole budget. Tests should rarely see this on net.Pipe
+	// + the small frames involved.
+	return total
 }
 
 // TestV8Classifier_EnforceMode_AaInjectionDoesNotReachSession is
@@ -351,20 +382,11 @@ func TestV8Classifier_EnforceMode_AaInjectionDoesNotReachSession(t *testing.T) {
 	}
 
 	// Drain any frame the session emitted in response to Started
-	// (the mux mirrors Started to external sessions in the
-	// expected ENH form). We want to start counting bytes ONLY
-	// after that.
-	drain := make(chan struct{})
-	go func() {
-		defer close(drain)
-		buf := make([]byte, 256)
-		d2 := time.Now().Add(100 * time.Millisecond)
-		for time.Now().Before(d2) {
-			_ = clientConn.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
-			_, _ = clientConn.Read(buf)
-		}
-	}()
-	<-drain
+	// using the event-driven idle-window pattern (per Codex
+	// round-2 MEDIUM on PR #644): read until 50ms of silence,
+	// proving the Started-mirror frame has been fully consumed
+	// from the pipe before we start the AA probe.
+	_ = drainSessionUntilIdle(t, clientConn, 50*time.Millisecond, 500*time.Millisecond)
 
 	// LOAD-BEARING INJECTION: mid-frame wire AUTO-SYN → FSM emits
 	// DropAaInjection → ModeEnforce returns drop=true → readLoop
@@ -436,18 +458,9 @@ func TestV8Classifier_ShadowMode_AaInjectionReachesSession(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	// Drain Started's mirror frame.
-	drain := make(chan struct{})
-	go func() {
-		defer close(drain)
-		buf := make([]byte, 256)
-		d2 := time.Now().Add(100 * time.Millisecond)
-		for time.Now().Before(d2) {
-			_ = clientConn.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
-			_, _ = clientConn.Read(buf)
-		}
-	}()
-	<-drain
+	// Drain Started's mirror frame via the event-driven idle
+	// pattern (per Codex round-2 MEDIUM on PR #644).
+	_ = drainSessionUntilIdle(t, clientConn, 50*time.Millisecond, 500*time.Millisecond)
 
 	mock.eventCh <- transport.StreamEvent{
 		Kind: transport.StreamEventByte, Byte: 0xAA, WasEscaped: false,

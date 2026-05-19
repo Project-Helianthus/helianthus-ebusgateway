@@ -14,24 +14,24 @@
 //
 // Mode rollout (per v8 §1.10):
 //
-//   off     — classifier is dormant. No observation, no counters,
-//             no behavioral effect. Production default until B3.7
-//             live-bus validation closes.
-//   shadow  — classifier observes every wire byte AND admin event
-//             from the upstream transport and computes its
-//             classification decisions, but DOES NOT alter the
-//             byte stream forwarded to sessions. Divergences vs
-//             the current pre-v8 path are logged to the admin
-//             channel for operator inspection. Used during live-
-//             bus validation (Step C / B3.7).
-//   enforce — classifier replaces the pre-v8 read path. Round-7
-//             mitigations (betweenWritesSyn, queueJustDrained,
-//             payloadAaAutoSyn*) become unreachable code paths;
-//             v8 round-9 absorb counter
-//             (Bus.Round9AbsorbEntered) should stay at 0 under
-//             a healthy proxy. The Prometheus alert
-//             HelianthusRound9FiredUnderProxy (v8 §1.12) is the
-//             primary safety net.
+//	off     — classifier is dormant. No observation, no counters,
+//	          no behavioral effect. Production default until B3.7
+//	          live-bus validation closes.
+//	shadow  — classifier observes every wire byte AND admin event
+//	          from the upstream transport and computes its
+//	          classification decisions, but DOES NOT alter the
+//	          byte stream forwarded to sessions. Divergences vs
+//	          the current pre-v8 path are logged to the admin
+//	          channel for operator inspection. Used during live-
+//	          bus validation (Step C / B3.7).
+//	enforce — classifier replaces the pre-v8 read path. Round-7
+//	          mitigations (betweenWritesSyn, queueJustDrained,
+//	          payloadAaAutoSyn*) become unreachable code paths;
+//	          v8 round-9 absorb counter
+//	          (Bus.Round9AbsorbEntered) should stay at 0 under
+//	          a healthy proxy. The Prometheus alert
+//	          HelianthusRound9FiredUnderProxy (v8 §1.12) is the
+//	          primary safety net.
 package v8classifier
 
 import (

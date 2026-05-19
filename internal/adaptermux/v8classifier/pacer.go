@@ -262,6 +262,15 @@ type Pacer struct {
 	// Unexported (lowercase). Test access uses a same-package
 	// helper in pacer_test.go.
 	onTimeoutEnterHook func()
+
+	// onTimeoutGenMismatchHook is a TEST-ONLY synchronization
+	// hook fired ONLY when the timer-fire callback observes a
+	// generation mismatch and is about to no-op. Used by
+	// TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic to
+	// signal when the stale callback has finished the no-op
+	// path — replacing the round-2 fixed-sleep (Codex round-3
+	// MAJOR #1 on PR #647). Production callers leave it nil.
+	onTimeoutGenMismatchHook func()
 }
 
 // AdminEventEmitFunc is the callback signature for echo-watchdog
@@ -712,7 +721,11 @@ func (p *Pacer) onSoftTimeout(gen uint64) {
 		// armed timer that has since been cancelled / replaced.
 		// Discard silently; do NOT clear p.softTimer (it belongs
 		// to a newer arm) and do NOT increment the counter.
+		mismatchHook := p.onTimeoutGenMismatchHook
 		p.mu.Unlock()
+		if mismatchHook != nil {
+			mismatchHook()
+		}
 		return
 	}
 	p.softTimeoutTotal++
@@ -740,7 +753,11 @@ func (p *Pacer) onHardTimeout(gen uint64) {
 	}
 	p.mu.Lock()
 	if p.armGeneration != gen {
+		mismatchHook := p.onTimeoutGenMismatchHook
 		p.mu.Unlock()
+		if mismatchHook != nil {
+			mismatchHook()
+		}
 		return
 	}
 	p.hardTimeoutTotal++

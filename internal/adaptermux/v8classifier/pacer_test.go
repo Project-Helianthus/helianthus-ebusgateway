@@ -971,6 +971,12 @@ func (e *emitMutex) Unlock() { e.m.Unlock() }
 // AFTER the fire callback completed — by then the generation
 // guard had already fired. This test uses the onTimeoutEnterHook
 // to pause the callback at the deterministic race window.
+//
+// Codex round-3 MAJOR #1 on PR #647: the round-2 version
+// relied on a 50ms sleep before asserting. Replaced with a
+// deterministic mismatch-hook signal so the test waits on the
+// stale callback completing its no-op branch, not on a fixed
+// duration.
 func TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic(t *testing.T) {
 	t.Parallel()
 	p := NewPacer()
@@ -987,6 +993,19 @@ func TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic(t *testing.T) {
 			close(entered)
 		}
 		<-released
+	}
+	// Codex round-3 MAJOR #1 on PR #647: deterministic
+	// completion signal — the stale callback closes this after
+	// passing the generation-mismatch no-op branch, so the test
+	// asserts ONLY after the stale path is provably finished.
+	staleNoOpDone := make(chan struct{})
+	p.onTimeoutGenMismatchHook = func() {
+		select {
+		case <-staleNoOpDone:
+			// Already signalled — second fire from hard timer.
+		default:
+			close(staleNoOpDone)
+		}
 	}
 
 	p.ArmEchoWatchdog(time.Now())
@@ -1006,17 +1025,21 @@ func TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic(t *testing.T) {
 	p.onTimeoutEnterHook = nil // clear hook before re-arm so the new arm doesn't deadlock
 	p.ArmEchoWatchdog(time.Now())
 	// Release the stale callback. It should observe the new
-	// generation and no-op.
+	// generation and no-op (signalling staleNoOpDone).
 	close(released)
 
-	// Give the stale callback a moment to run + bail out, then
-	// cancel the new arm cleanly.
-	time.Sleep(50 * time.Millisecond)
+	// Deterministically wait for the stale callback to finish
+	// its no-op path. NO fixed sleep.
+	select {
+	case <-staleNoOpDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale callback did not reach generation-mismatch no-op within 2s — generation guard may be broken")
+	}
 
 	// PRIMARY ASSERTION: softTimeoutTotal stayed at 0. The stale
 	// callback did NOT increment.
 	if got := p.SoftTimeoutTotal(); got != 0 {
-		t.Errorf("SoftTimeoutTotal() = %d after stale fire was released; want 0 (stale fire must no-op via gen mismatch)", got)
+		t.Errorf("SoftTimeoutTotal() = %d after stale fire completed no-op; want 0 (stale fire must no-op via gen mismatch)", got)
 	}
 	// SECONDARY ASSERTION: the new arm's softTimer is still set
 	// (was NOT cleared by the stale fire's p.softTimer = nil).
@@ -1032,18 +1055,32 @@ func TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic(t *testing.T) {
 // reentry test covered read-only methods; this one covers the
 // state-mutating Arm path.
 //
-// Mechanics: the emitter Arms a NEW watchdog from inside the
-// fire callback. The first arm fired (incremented counter to
-// 1) and called the emitter; the emitter re-arms; cancel and
-// confirm the counter stayed at 1 (the re-armed timer did not
-// also fire).
+// Codex round-3 MEDIUM #1 on PR #647: the round-2 version
+// had a race window — the re-armed timer's 200ms could elapse
+// before the test goroutine called Cancel under CI stall. Now
+// the re-arm installs a SECOND-PHASE entry hook that blocks
+// the re-armed fire callback indefinitely. The test cancels
+// while the re-armed timer is blocked, then releases the hook;
+// the cancel bumped the generation so the post-block fire
+// no-ops on gen mismatch.
 func TestPacer_EmitterMayReArm(t *testing.T) {
 	t.Parallel()
 	p := NewPacer()
 	var armOnce sync.Once
 	armed := make(chan struct{})
+	rearmedFireBlock := make(chan struct{})
+	rearmedFireEntered := make(chan struct{})
+	rearmedEnteredOnce := sync.Once{}
 	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
 		armOnce.Do(func() {
+			// Install the SECOND-PHASE hook BEFORE re-arming so
+			// the re-armed timer's fire blocks deterministically
+			// on rearmedFireBlock (and the test can cancel
+			// before the block is released).
+			p.onTimeoutEnterHook = func() {
+				rearmedEnteredOnce.Do(func() { close(rearmedFireEntered) })
+				<-rearmedFireBlock
+			}
 			// Re-arm from inside the emitter. If the Pacer mutex
 			// were still held this would deadlock.
 			p.ArmEchoWatchdog(time.Now())
@@ -1058,12 +1095,27 @@ func TestPacer_EmitterMayReArm(t *testing.T) {
 		t.Fatal("emitter's ArmEchoWatchdog call did not complete within 2s — likely deadlock")
 	}
 
-	// Cancel the re-armed watchdog cleanly. The total count
-	// reflects ONLY the first arm's fire (the re-armed timer
-	// was cancelled before it could fire).
+	// Wait for the re-armed timer to fire and enter the hook.
+	// This guarantees the re-arm is in-flight before we cancel.
+	select {
+	case <-rearmedFireEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("re-armed timer did not fire within 2s")
+	}
+
+	// Cancel the re-armed watchdog (bumps generation). When we
+	// release the hook below, the re-armed fire will observe
+	// the gen mismatch and no-op.
 	p.CancelEchoWatchdog()
+	close(rearmedFireBlock)
+
+	// Brief settle so the released callback finishes its no-op
+	// path. We don't have a mismatch-hook signal wired here
+	// (the round-3 fix only added it to the dedicated stale-fire
+	// test), so a small bounded sleep is acceptable.
+	time.Sleep(50 * time.Millisecond)
 
 	if got := p.SoftTimeoutTotal(); got != 1 {
-		t.Errorf("SoftTimeoutTotal() = %d after re-arm-from-emitter + cancel; want 1 (only first arm fired)", got)
+		t.Errorf("SoftTimeoutTotal() = %d after re-arm-from-emitter + cancel; want 1 (only first arm fired; re-armed fire must no-op via gen mismatch)", got)
 	}
 }

@@ -2032,7 +2032,8 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 		// gatewayTxnActive=false is the correct state for delivery —
 		// capture AFTER to skip the trailing SYN that has no consumer.
 		var preEchoSuppressed bool
-		passiveEvents, shouldTryGrant, preEchoSuppressed = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
+		var cancelGatewayWatchdogFromSYN bool
+		passiveEvents, shouldTryGrant, preEchoSuppressed, cancelGatewayWatchdogFromSYN = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
 		activeExpects := m.activePathExpectsByte(symbol)
 		if preEchoSuppressed {
 			// Pre-echo SYN suppression (echo_mismatch root cause fix).
@@ -2057,10 +2058,10 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 		// Codex round-2 MUST FIX on PR #647: if the gateway lost
 		// ownership via max-duration timeout while a watchdog was
 		// armed, the echo will never arrive — cancel.
-		if ownershipTimedOutGateway {
-			if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
-				pacer.CancelEchoWatchdog()
-			}
+		// Codex round-3 MUST FIX #1: same for SYN-timeout /
+		// SYN-idle teardown branches inside onSYNLocked.
+		if ownershipTimedOutGateway || cancelGatewayWatchdogFromSYN {
+			m.cancelGatewayWatchdog()
 		}
 
 		// --- Phase 2: deliver outside all locks ---
@@ -2315,8 +2316,15 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 // and whether this SYN is pre-echo noise that the caller must suppress
 // from activeCh delivery (see echo_mismatch root-cause comment at the
 // call site).
-func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bool, now time.Time) ([]PassiveEvent, bool, bool) {
+// Codex round-3 MUST FIX #1 on PR #647: returns an additional
+// `cancelGatewayWatchdog` bool. When true, the caller MUST invoke
+// m.cancelGatewayWatchdog() after releasing stateMu — set by the
+// SYN-timeout / SYN-idle teardown branches inside onSYNLocked
+// when they transition the gateway out of an active txn, so the
+// echo watchdog cannot fire stale after the txn is gone.
+func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bool, now time.Time) ([]PassiveEvent, bool, bool, bool) {
 	var passiveEvents []PassiveEvent
+	var cancelGatewayWatchdog bool
 
 	// F-24-fix (Codex PR #634 P1 thread "Wait for idle after
 	// suppressing stale STARTED"): any SYN observation marks a bus-
@@ -2603,6 +2611,13 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 			if ownerID == gatewaySessionID && m.gatewayTxnActive {
 				m.gatewayTxnActive = false
 				m.recordGatewayInactive(ReasonSYNTimeout)
+				// Codex round-3 MUST FIX #1 on PR #647: signal
+				// the caller (onReceived SYN branch at line ~2035)
+				// to cancel the gateway echo watchdog after
+				// releasing stateMu. The teardown path released
+				// gateway ownership; an armed watchdog must not
+				// emit a stale soft/hard event for the lost txn.
+				cancelGatewayWatchdog = true
 			}
 		}
 	}
@@ -2738,6 +2753,12 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 				m.gatewayEcho.ClearQueueJustDrained()
 				m.gatewayTxnActive = false
 				m.recordGatewayInactive(ReasonSYNIdle)
+				// Codex round-3 MUST FIX #1 on PR #647: same as
+				// SYN timeout above — flag the caller to cancel
+				// the watchdog after stateMu unlock so a stale
+				// timer fire cannot emit an admin event for the
+				// torn-down txn.
+				cancelGatewayWatchdog = true
 			}
 		}
 	}
@@ -2891,7 +2912,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// onReceived), so with gatewayTxnActive cleared it becomes false and
 	// the caller's deliverToActive is skipped. No double-delivery.
 	_ = terminatorDelivered
-	return passiveEvents, shouldTryGrant, preEchoSuppressed
+	return passiveEvents, shouldTryGrant, preEchoSuppressed, cancelGatewayWatchdog
 }
 
 // handleReset handles an adapter RESETTED event.

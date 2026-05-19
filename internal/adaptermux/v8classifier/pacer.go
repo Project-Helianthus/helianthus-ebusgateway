@@ -114,12 +114,21 @@ type Pacer struct {
 	// actually emitted — that's the caller's responsibility).
 	// Schedule() advances this on every call to maintain the
 	// inter-byte cadence regardless of caller scheduling jitter.
-	//
-	// Zero value (time.Time{}) means "no byte scheduled yet";
-	// the first Schedule call emits immediately (no
-	// retroactive padding to bootstrap a cadence the caller
-	// can't observe).
 	lastScheduledEmit time.Time
+
+	// scheduledInitialized tracks whether Schedule has ever been
+	// called. The first Schedule call emits at `now` (no
+	// retroactive padding to bootstrap a cadence the caller
+	// can't observe); subsequent calls enforce the τ cadence.
+	//
+	// Per Codex round-1 LOW on PR #642: previously this state
+	// was inferred from lastScheduledEmit.IsZero(). That broke
+	// if a caller ever passed time.Time{} as `now` — the first
+	// Schedule(zero) would emit at zero, set lastScheduledEmit
+	// to zero, and the NEXT call would again skip cadence
+	// enforcement. The explicit boolean removes the zero-time
+	// sentinel leak.
+	scheduledInitialized bool
 
 	// lRttEMA is the current exponential-moving-average estimate
 	// of echo round-trip time. Bootstrapped to
@@ -164,10 +173,24 @@ func NewPacer() *Pacer {
 // SetTau overrides the inter-byte cadence. Exposed for B3.7
 // per-session symbol_rate adaptation; until then callers should
 // rely on the constructor default.
-func (p *Pacer) SetTau(tau time.Duration) {
+//
+// Per Codex round-1 MEDIUM on PR #642: invalid values (tau <= 0)
+// are REJECTED silently — the prior tau is preserved. A negative
+// tau would otherwise let `lastScheduledEmit.Add(p.tau)` move
+// backwards, defeating monotonic pacing. A zero tau would
+// collapse a burst into identical emit times (no pacing at all).
+//
+// Returns true if the new tau was accepted, false if rejected.
+// Callers that want the "must apply or fail loudly" contract
+// can assert on the bool.
+func (p *Pacer) SetTau(tau time.Duration) (accepted bool) {
+	if tau <= 0 {
+		return false
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.tau = tau
+	return true
 }
 
 // Schedule reports when the next byte should be emitted given the
@@ -186,9 +209,14 @@ func (p *Pacer) Schedule(now time.Time) time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var emitAt time.Time
-	if p.lastScheduledEmit.IsZero() {
+	if !p.scheduledInitialized {
 		// First call — emit immediately. No retroactive padding.
+		// The explicit scheduledInitialized flag (not
+		// lastScheduledEmit.IsZero) prevents a caller passing
+		// time.Time{} as `now` from re-triggering this branch on
+		// the SECOND call.
 		emitAt = now
+		p.scheduledInitialized = true
 	} else {
 		next := p.lastScheduledEmit.Add(p.tau)
 		if next.After(now) {
@@ -210,27 +238,72 @@ func (p *Pacer) LastScheduledEmit() time.Time {
 	return p.lastScheduledEmit
 }
 
+// BeforeActiveWrite is called by the session writer BEFORE arming
+// the echo-watchdog for a new active write. Per Codex round-1
+// MAJOR on PR #642: grace bootstrap MUST enter before the first
+// echo of a long-idle write, so the watchdog uses grace
+// deadlines on the very first post-idle echo. Doing the long-idle
+// check inside RecordEcho was too late — by then the first echo
+// had already been waited on with normal deadlines.
+//
+// Behavior:
+//   - If the pacer has prior echo history (lastEchoAt non-zero)
+//     AND now - lastEchoAt >= GraceIdleThreshold, sets
+//     graceRemaining = GraceBootstrapSamples.
+//   - If never sampled (lastEchoAt zero), does nothing — the
+//     construction state already represents bootstrap; no need
+//     to re-enter grace.
+//   - If we already have grace samples queued, takes the max
+//     (idempotent if called twice before any RecordEcho).
+//
+// Callers SHOULD invoke BeforeActiveWrite immediately before
+// querying EchoDeadlines() for the first byte of an active write.
+// Calling it more than once before the corresponding RecordEcho
+// is safe (the second call is a no-op as long as
+// graceRemaining is already at GraceBootstrapSamples).
+func (p *Pacer) BeforeActiveWrite(now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.lastEchoAt.IsZero() {
+		return
+	}
+	if now.Sub(p.lastEchoAt) < GraceIdleThreshold {
+		return
+	}
+	if p.graceRemaining < GraceBootstrapSamples {
+		p.graceRemaining = GraceBootstrapSamples
+	}
+}
+
 // RecordEcho feeds an observed echo round-trip time into the
 // L_rtt EMA. Per v8 §1.4 this is called ONLY in active mode
 // (echoes of the gateway's own writes); passive-mode bytes do
 // NOT contribute samples.
 //
-// The first call after long idle (now - lastEchoAt >=
-// GraceIdleThreshold) sets graceRemaining =
-// GraceBootstrapSamples, putting the next GraceBootstrapSamples
-// echoes into grace-bootstrap mode.
+// Per Codex round-1 MEDIUM on PR #642: invalid samples (rtt <= 0)
+// are REJECTED — neither the EMA, the lastEchoAt anchor, nor the
+// recordedSamples counter is updated. A future call site that
+// computes rtt from mismatched clock anchors would otherwise
+// poison the EMA. Validation chosen over silent clamping so
+// callers see the rejection in the recordedSamples counter (it
+// won't increment).
+//
+// Grace bootstrap entry is now handled by BeforeActiveWrite (B3.5
+// round-1 MAJOR fix). RecordEcho only decrements the grace
+// counter as samples arrive, consuming the slots set by
+// BeforeActiveWrite.
 //
 // During grace bootstrap, the EMA still updates normally; only
 // the deadline computation differs (see EchoDeadlines).
 func (p *Pacer) RecordEcho(rtt time.Duration, now time.Time) {
+	if rtt <= 0 {
+		// Invalid sample — reject. Documented contract: callers
+		// must compute rtt from a single clock source with
+		// observed write time predating echo time.
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	// Long-idle detection: if we have prior echo history AND the
-	// gap exceeds the grace threshold, enter grace bootstrap.
-	if !p.lastEchoAt.IsZero() && now.Sub(p.lastEchoAt) >= GraceIdleThreshold {
-		p.graceRemaining = GraceBootstrapSamples
-	}
 
 	// Standard EMA update: new = α × sample + (1-α) × old.
 	// Done in float64 to avoid integer-truncation drift over many
@@ -276,32 +349,36 @@ func (p *Pacer) RecordedSamples() uint64 {
 	return p.recordedSamples
 }
 
-// EchoDeadlines returns the (soft, hard) deadlines for the NEXT
-// echo, expressed as durations relative to the write time. Per
-// v8 §1.4:
+// EchoDeadlines returns the deadlines for the NEXT echo,
+// expressed as durations relative to the write time. Per v8 §1.4:
 //
 //   - Grace mode (graceRemaining > 0):
-//     soft = L_rtt_EMA + 500ms
-//     hard = 0 (disabled — caller MUST NOT enforce a hard
-//     timeout while grace is active)
+//     soft        = L_rtt_EMA + 500ms
+//     hard        = 0 (caller MUST ignore this value)
+//     hardEnabled = false
 //
 //   - Normal mode (graceRemaining == 0):
-//     soft = L_rtt_EMA + 100ms
-//     hard = 2 × L_rtt_EMA + 200ms
+//     soft        = L_rtt_EMA + 100ms
+//     hard        = 2 × L_rtt_EMA + 200ms
+//     hardEnabled = true
 //
-// Callers SHOULD treat hard=0 as "no hard deadline; rely on
-// transport-layer timeouts". B3.6 will wire these into the
-// session's echo-watchdog timer.
+// Per Codex round-1 LOW on PR #642: the signature returns an
+// explicit hardEnabled bool rather than relying on hard=0 as a
+// "disabled" sentinel. This protects against the legitimate-zero
+// edge case (e.g. a future configuration where L_rtt could land
+// on zero would otherwise conflate "disabled" with "compute to
+// zero"). Callers MUST consult hardEnabled before honoring hard.
 //
 // Safe to call from any goroutine.
-func (p *Pacer) EchoDeadlines() (soft, hard time.Duration) {
+func (p *Pacer) EchoDeadlines() (soft, hard time.Duration, hardEnabled bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.graceRemaining > 0 {
-		return p.lRttEMA + SoftDeadlineGrace, 0
+		return p.lRttEMA + SoftDeadlineGrace, 0, false
 	}
 	return p.lRttEMA + SoftDeadlineNormal,
-		2*p.lRttEMA + HardDeadlineNormalAdd
+		2*p.lRttEMA + HardDeadlineNormalAdd,
+		true
 }
 
 // ResetLrtt resets the L_rtt EMA to the bootstrap value, clears

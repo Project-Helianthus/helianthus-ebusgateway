@@ -143,10 +143,14 @@ func TestPacer_RecordEcho_FirstSampleUpdatesEMA(t *testing.T) {
 	}
 }
 
-// TestPacer_GraceBootstrap_TriggeredByLongIdle pins the v8 §1.4
-// long-idle trigger: a RecordEcho call with now-lastEcho >= 30s
-// sets graceRemaining to 3.
-func TestPacer_GraceBootstrap_TriggeredByLongIdle(t *testing.T) {
+// TestPacer_GraceBootstrap_TriggeredByBeforeActiveWrite pins the
+// v8 §1.4 long-idle trigger via the new BeforeActiveWrite path
+// (Codex round-1 MAJOR fix): a write call after >=30s idle from
+// the last echo sets graceRemaining = GraceBootstrapSamples.
+// Critically, this fires BEFORE the first post-idle echo, so
+// EchoDeadlines() called between BeforeActiveWrite and the first
+// RecordEcho already returns grace deadlines.
+func TestPacer_GraceBootstrap_TriggeredByBeforeActiveWrite(t *testing.T) {
 	t.Parallel()
 	p := NewPacer()
 
@@ -156,46 +160,104 @@ func TestPacer_GraceBootstrap_TriggeredByLongIdle(t *testing.T) {
 		t.Error("InGraceBootstrap()=true after first sample; want false (no prior idle)")
 	}
 
-	// Long-idle: next sample 31s later → grace bootstrap.
+	// Long-idle write: 31s later, call BeforeActiveWrite BEFORE
+	// any new echo arrives. This is the critical fix for the
+	// round-1 MAJOR — the FIRST post-idle echo's deadline must
+	// already be in grace mode at the moment the watchdog arms.
 	tLate := t0.Add(31 * time.Second)
-	p.RecordEcho(50*time.Millisecond, tLate)
-	// After this call: graceRemaining was set to 3, then
-	// decremented to 2 by the RecordEcho's tail.
+	p.BeforeActiveWrite(tLate)
+
 	if !p.InGraceBootstrap() {
-		t.Error("InGraceBootstrap()=false after long-idle sample; want true (entered grace)")
+		t.Error("InGraceBootstrap()=false after BeforeActiveWrite + long idle; want true")
+	}
+	_, _, hardEnabled := p.EchoDeadlines()
+	if hardEnabled {
+		t.Error("hardEnabled=true after BeforeActiveWrite; want false (grace must protect FIRST post-idle echo)")
 	}
 
-	// Two more samples → graceRemaining 1 → 0 (exits grace).
+	// Three samples consume grace: 3 → 2 → 1 → 0.
+	p.RecordEcho(50*time.Millisecond, tLate)
+	if !p.InGraceBootstrap() {
+		t.Error("InGraceBootstrap()=false after 1st grace echo; want true")
+	}
 	p.RecordEcho(50*time.Millisecond, tLate.Add(100*time.Millisecond))
 	if !p.InGraceBootstrap() {
-		t.Error("InGraceBootstrap()=false after 2nd grace sample; want true (still in grace)")
+		t.Error("InGraceBootstrap()=false after 2nd grace echo; want true")
 	}
 	p.RecordEcho(50*time.Millisecond, tLate.Add(200*time.Millisecond))
 	if p.InGraceBootstrap() {
-		t.Error("InGraceBootstrap()=true after 3rd grace sample; want false (grace exhausted)")
+		t.Error("InGraceBootstrap()=true after 3rd grace echo; want false (grace exhausted)")
 	}
 }
 
 // TestPacer_GraceBootstrap_NotTriggeredByShortIdle pins the
-// boundary: idle < 30s does NOT enter grace.
+// boundary: BeforeActiveWrite with idle < 30s does NOT enter grace.
 func TestPacer_GraceBootstrap_NotTriggeredByShortIdle(t *testing.T) {
 	t.Parallel()
 	p := NewPacer()
 	p.RecordEcho(50*time.Millisecond, t0)
 	// 29 seconds — below the 30s threshold.
-	p.RecordEcho(50*time.Millisecond, t0.Add(29*time.Second))
+	p.BeforeActiveWrite(t0.Add(29 * time.Second))
 	if p.InGraceBootstrap() {
 		t.Error("InGraceBootstrap()=true after 29s idle; want false")
 	}
 }
 
+// TestPacer_GraceBootstrap_BoundaryExactly30s pins the >=
+// boundary: exactly 30 s of idle DOES trigger grace.
+func TestPacer_GraceBootstrap_BoundaryExactly30s(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	p.RecordEcho(50*time.Millisecond, t0)
+	// Exactly 30 seconds — at the >= boundary.
+	p.BeforeActiveWrite(t0.Add(GraceIdleThreshold))
+	if !p.InGraceBootstrap() {
+		t.Error("InGraceBootstrap()=false at exactly 30s idle; want true (>= boundary)")
+	}
+}
+
+// TestPacer_BeforeActiveWrite_NoPriorHistoryIsNoOp pins that
+// calling BeforeActiveWrite on a fresh pacer (no prior
+// RecordEcho) is a no-op — the construction state already
+// represents bootstrap, no need to re-enter grace.
+func TestPacer_BeforeActiveWrite_NoPriorHistoryIsNoOp(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	p.BeforeActiveWrite(t0)
+	if p.InGraceBootstrap() {
+		t.Error("InGraceBootstrap()=true on fresh pacer after BeforeActiveWrite; want false (no prior history)")
+	}
+}
+
+// TestPacer_BeforeActiveWrite_Idempotent pins that calling
+// BeforeActiveWrite twice (before any RecordEcho) does not
+// double-arm grace beyond GraceBootstrapSamples.
+func TestPacer_BeforeActiveWrite_Idempotent(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	p.RecordEcho(50*time.Millisecond, t0)
+	p.BeforeActiveWrite(t0.Add(31 * time.Second))
+	p.BeforeActiveWrite(t0.Add(32 * time.Second))
+	// Both calls should leave graceRemaining at exactly
+	// GraceBootstrapSamples (not 2× that).
+	for i := 0; i < GraceBootstrapSamples; i++ {
+		if !p.InGraceBootstrap() {
+			t.Errorf("iter %d: InGraceBootstrap()=false; want true", i)
+		}
+		p.RecordEcho(50*time.Millisecond, t0.Add(time.Duration(32+i)*time.Second))
+	}
+	if p.InGraceBootstrap() {
+		t.Error("InGraceBootstrap()=true after consuming all grace samples; want false (idempotent — not double-armed)")
+	}
+}
+
 // TestPacer_EchoDeadlines_NormalMode pins the v8 §1.4 formula:
-// soft = L_rtt + 100ms, hard = 2×L_rtt + 200ms.
+// soft = L_rtt + 100ms, hard = 2×L_rtt + 200ms, hardEnabled = true.
 func TestPacer_EchoDeadlines_NormalMode(t *testing.T) {
 	t.Parallel()
 	p := NewPacer()
 	// At construction: L_rtt = 100ms, no grace.
-	soft, hard := p.EchoDeadlines()
+	soft, hard, hardEnabled := p.EchoDeadlines()
 	wantSoft := 100*time.Millisecond + SoftDeadlineNormal
 	wantHard := 2*100*time.Millisecond + HardDeadlineNormalAdd
 	if soft != wantSoft {
@@ -204,24 +266,31 @@ func TestPacer_EchoDeadlines_NormalMode(t *testing.T) {
 	if hard != wantHard {
 		t.Errorf("hard=%v; want %v", hard, wantHard)
 	}
+	if !hardEnabled {
+		t.Error("hardEnabled=false in normal mode; want true")
+	}
 }
 
 // TestPacer_EchoDeadlines_GraceMode pins that during grace, soft
-// uses the loose 500ms slack and hard is disabled (returns 0).
+// uses the loose 500ms slack, hardEnabled is false (so the hard
+// value MUST be ignored by callers).
 func TestPacer_EchoDeadlines_GraceMode(t *testing.T) {
 	t.Parallel()
 	p := NewPacer()
-	// Trigger grace by long-idle pattern.
+	// Trigger grace via BeforeActiveWrite after long idle.
 	p.RecordEcho(50*time.Millisecond, t0)
-	p.RecordEcho(50*time.Millisecond, t0.Add(31*time.Second))
+	p.BeforeActiveWrite(t0.Add(31 * time.Second))
 	if !p.InGraceBootstrap() {
-		t.Fatal("precondition: should be in grace")
+		t.Fatal("precondition: should be in grace after BeforeActiveWrite + long idle")
 	}
-	soft, hard := p.EchoDeadlines()
-	// L_rtt should be ~85ms after two 50ms samples (first 100 → 85,
-	// second 85 → 79.5). Either way the formula adds 500ms slack.
+	soft, hard, hardEnabled := p.EchoDeadlines()
+	// L_rtt should be ~85ms after one 50ms sample (100→85).
+	if hardEnabled {
+		t.Errorf("hardEnabled=true in grace mode; want false")
+	}
+	// hard value MUST be 0 when disabled (the contract):
 	if hard != 0 {
-		t.Errorf("hard=%v in grace mode; want 0 (disabled)", hard)
+		t.Errorf("hard=%v in grace mode; want 0", hard)
 	}
 	if soft <= 500*time.Millisecond {
 		t.Errorf("soft=%v in grace mode; want > 500ms (L_rtt + 500ms slack)", soft)
@@ -236,7 +305,7 @@ func TestPacer_ResetLrtt(t *testing.T) {
 
 	// Build up state.
 	p.RecordEcho(50*time.Millisecond, t0)
-	p.RecordEcho(50*time.Millisecond, t0.Add(31*time.Second))
+	p.BeforeActiveWrite(t0.Add(31 * time.Second))
 	scheduledBefore := p.Schedule(t0.Add(31 * time.Second))
 	if !p.InGraceBootstrap() {
 		t.Fatal("precondition: should be in grace")
@@ -260,12 +329,15 @@ func TestPacer_ResetLrtt(t *testing.T) {
 }
 
 // TestPacer_TauOverride pins SetTau and that subsequent Schedule
-// calls use the new τ.
+// calls use the new τ. Per Codex round-1 fix on PR #642: SetTau
+// returns bool indicating accepted/rejected. Valid value → true.
 func TestPacer_TauOverride(t *testing.T) {
 	t.Parallel()
 	p := NewPacer()
 	const customTau = 10 * time.Millisecond
-	p.SetTau(customTau)
+	if !p.SetTau(customTau) {
+		t.Fatal("SetTau(10ms) returned false; want true (valid value)")
+	}
 
 	p.Schedule(t0)
 	emit := p.Schedule(t0)
@@ -299,7 +371,7 @@ func TestPacer_ConcurrentRead(t *testing.T) {
 				_ = p.InGraceBootstrap()
 				_ = p.RecordedSamples()
 				_ = p.LastScheduledEmit()
-				_, _ = p.EchoDeadlines()
+				_, _, _ = p.EchoDeadlines()
 			}
 		}
 	}()
@@ -315,5 +387,109 @@ func TestPacer_ConcurrentRead(t *testing.T) {
 	}
 	if got := p.RecordedSamples(); got != 200 {
 		t.Errorf("RecordedSamples()=%d; want 200 (1000/5)", got)
+	}
+}
+
+// TestPacer_RecordEcho_RejectsInvalidRtt pins the Codex round-1
+// MEDIUM fix: rtt <= 0 is rejected without updating the EMA, the
+// lastEchoAt anchor, or the recordedSamples counter. A future
+// caller computing rtt from mismatched clocks otherwise poisons
+// the EMA.
+func TestPacer_RecordEcho_RejectsInvalidRtt(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	lrttBefore := p.Lrtt()
+
+	// Negative rtt — reject.
+	p.RecordEcho(-1*time.Millisecond, t0)
+	if got := p.Lrtt(); got != lrttBefore {
+		t.Errorf("Lrtt()=%v after negative RTT; want unchanged %v", got, lrttBefore)
+	}
+	if got := p.RecordedSamples(); got != 0 {
+		t.Errorf("RecordedSamples()=%d after negative RTT; want 0 (rejected)", got)
+	}
+
+	// Zero rtt — also reject.
+	p.RecordEcho(0, t0)
+	if got := p.Lrtt(); got != lrttBefore {
+		t.Errorf("Lrtt()=%v after zero RTT; want unchanged %v", got, lrttBefore)
+	}
+	if got := p.RecordedSamples(); got != 0 {
+		t.Errorf("RecordedSamples()=%d after zero RTT; want 0 (rejected)", got)
+	}
+
+	// Positive rtt — accept.
+	p.RecordEcho(50*time.Millisecond, t0)
+	if got := p.Lrtt(); got == lrttBefore {
+		t.Errorf("Lrtt()=%v after valid RTT; want changed", got)
+	}
+	if got := p.RecordedSamples(); got != 1 {
+		t.Errorf("RecordedSamples()=%d after valid RTT; want 1", got)
+	}
+}
+
+// TestPacer_SetTau_RejectsInvalid pins the Codex round-1 MEDIUM
+// fix: zero or negative tau is rejected; the prior tau is
+// preserved. The bool return reports rejection.
+func TestPacer_SetTau_RejectsInvalid(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+
+	// Establish a known custom tau.
+	if !p.SetTau(5 * time.Millisecond) {
+		t.Fatal("SetTau(5ms) rejected; precondition failed")
+	}
+
+	// Now try to set zero — must reject.
+	if p.SetTau(0) {
+		t.Error("SetTau(0) returned true; want false (rejected)")
+	}
+	// And negative — must reject.
+	if p.SetTau(-1 * time.Second) {
+		t.Error("SetTau(-1s) returned true; want false (rejected)")
+	}
+
+	// The previously-set tau must be preserved. Verify by
+	// observing Schedule behavior.
+	p.Schedule(t0)
+	emit := p.Schedule(t0)
+	want := t0.Add(5 * time.Millisecond)
+	if !emit.Equal(want) {
+		t.Errorf("Schedule after rejected SetTau = %v; want %v (prior 5ms preserved)", emit, want)
+	}
+}
+
+// TestPacer_Schedule_ZeroNow_NoSentinelLeak pins the Codex
+// round-1 LOW fix: passing time.Time{} (zero) as `now` does NOT
+// re-trigger the "first call" branch on the next Schedule, even
+// though lastScheduledEmit is now zero. The explicit
+// scheduledInitialized bool removes the zero-time sentinel leak.
+func TestPacer_Schedule_ZeroNow_NoSentinelLeak(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+
+	// First call with zero now — accepted, emits at zero.
+	emit1 := p.Schedule(time.Time{})
+	if !emit1.IsZero() {
+		t.Errorf("first Schedule(zero) = %v; want zero", emit1)
+	}
+
+	// Second call with t0 — must NOT re-trigger the "first call"
+	// branch (would return t0 immediately); MUST enforce the τ
+	// cadence from the prior zero-time emit.
+	//
+	// emit2 = max(t0, zero + τ_wire_byte) = t0 if t0 > τ from
+	// zero (which it is, since t0 is far past the epoch).
+	emit2 := p.Schedule(t0)
+	want := t0
+	if !emit2.Equal(want) {
+		t.Errorf("Schedule after zero-now: %v; want %v (cadence enforced)", emit2, want)
+	}
+
+	// Third call with t0 — now must enforce cadence vs emit2.
+	emit3 := p.Schedule(t0)
+	want3 := emit2.Add(TauWireByte)
+	if !emit3.Equal(want3) {
+		t.Errorf("third Schedule(t0): %v; want %v", emit3, want3)
 	}
 }

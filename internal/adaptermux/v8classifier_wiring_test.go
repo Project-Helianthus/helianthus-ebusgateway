@@ -123,6 +123,79 @@ func TestV8Classifier_ShadowMode_InstantiatedAndObserves(t *testing.T) {
 	}
 }
 
+// TestV8Classifier_ShadowMode_ProvenanceCountersThroughMux pins the
+// B3.3 provenance taxonomy at the mux boundary: bytes with
+// different (Byte, WasEscaped) tuples flowing through the
+// readLoop must land in the correct provenance buckets.
+//
+// Three event shapes:
+//   - (0xAA, WasEscaped=true)  → escapedPayloadAaTotal
+//   - (0xAA, WasEscaped=false) → wireAutoSynTotal
+//   - (0x55, WasEscaped=false) → plainByteTotal
+func TestV8Classifier_ShadowMode_ProvenanceCountersThroughMux(t *testing.T) {
+	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	c := mux.V8Classifier()
+	if c == nil {
+		t.Fatal("V8Classifier() = nil in ModeShadow; want non-nil")
+	}
+
+	// Push 3 of each shape (9 StreamEventByte events).
+	for i := 0; i < 3; i++ {
+		mock.eventCh <- transport.StreamEvent{
+			Kind:       transport.StreamEventByte,
+			Byte:       0xAA,
+			WasEscaped: true,
+		}
+		mock.eventCh <- transport.StreamEvent{
+			Kind:       transport.StreamEventByte,
+			Byte:       0xAA,
+			WasEscaped: false,
+		}
+		mock.eventCh <- transport.StreamEvent{
+			Kind:       transport.StreamEventByte,
+			Byte:       0x55,
+			WasEscaped: false,
+		}
+	}
+
+	// Poll until all 9 events are observed.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.ObservedBytesTotal() >= 9 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := c.ObservedBytesTotal(); got != 9 {
+		t.Fatalf("ObservedBytesTotal()=%d; want 9 (readLoop must dispatch every StreamEvent)", got)
+	}
+
+	if got := c.EscapedPayloadAaTotal(); got != 3 {
+		t.Errorf("EscapedPayloadAaTotal()=%d; want 3 (3 payload-AA events)", got)
+	}
+	if got := c.WireAutoSynTotal(); got != 3 {
+		t.Errorf("WireAutoSynTotal()=%d; want 3 (3 wire-SYN events)", got)
+	}
+	if got := c.PlainByteTotal(); got != 3 {
+		t.Errorf("PlainByteTotal()=%d; want 3 (3 plain-byte events)", got)
+	}
+	// EscapedPayloadEsc should stay 0 — we didn't send any.
+	if got := c.EscapedPayloadEscTotal(); got != 0 {
+		t.Errorf("EscapedPayloadEscTotal()=%d; want 0 (no payload-ESC events sent)", got)
+	}
+
+	// Cross-counter invariant from the unit test, re-verified at
+	// the mux level: sum of provenance buckets == count of
+	// StreamEventByte events == 9.
+	sum := c.EscapedPayloadAaTotal() + c.EscapedPayloadEscTotal() +
+		c.WireAutoSynTotal() + c.PlainByteTotal()
+	if sum != 9 {
+		t.Errorf("sum of provenance counters = %d; want 9", sum)
+	}
+}
+
 // TestV8Classifier_EnforceMode_InstantiatedAndObservesButDoesNotDrop
 // pins the B3.2-scaffold invariant for enforce mode: even when the
 // caller explicitly opts in to ModeEnforce, the classifier in this

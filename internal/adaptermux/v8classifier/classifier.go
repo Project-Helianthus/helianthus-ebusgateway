@@ -55,6 +55,62 @@ type Classifier struct {
 	// operators can confirm the classifier is wired to the
 	// ENHTransport's admin event surface.
 	observedAdminEventsTotal atomic.Uint64
+
+	// Phase 3 Step B3.3 (escape-decoder observer counters): the v8
+	// design (§1.3 / §1.4) needs to distinguish four byte-class
+	// shapes emerging from the upstream ENHTransport's AA-aware
+	// escape decoder, ALL emitted as StreamEventByte but with
+	// different (Byte, WasEscaped) tuples:
+	//
+	//   (1) escapedPayloadAaTotal — Byte=0xAA, WasEscaped=true.
+	//       A data byte that happens to equal the SYN value,
+	//       transported on the wire as the escape pair 0xA9 0x01.
+	//       The B3.4 telegram FSM treats this as PAYLOAD; the
+	//       B3.6 AA-filter uses this counter to confirm the
+	//       proxy is correctly delivering payload-AA bytes
+	//       (vs dropping them as injection noise).
+	//
+	//   (2) escapedPayloadEscTotal — Byte=0xA9, WasEscaped=true.
+	//       A data byte that happens to equal the ESC lead value,
+	//       transported on the wire as the escape pair 0xA9 0x00.
+	//       Rare in production traffic; useful for operator
+	//       sanity-checking. The B3.4 FSM treats this as PAYLOAD.
+	//
+	//   (3) wireAutoSynTotal — Byte=0xAA, WasEscaped=false.
+	//       A REAL wire AUTO-SYN byte (bus-idle marker). The
+	//       B3.4 FSM treats this as either inter-telegram filler
+	//       (when IDLE) or invariant violation (when mid-frame —
+	//       AA-injection that the v8 escape decoder did NOT
+	//       absorb because it was inter-frame, not mid-pair).
+	//
+	//   (4) plainByteTotal — any other (Byte, WasEscaped=false)
+	//       tuple. Regular data bytes (telegram header, CRC,
+	//       ACK/NACK, source/target/PB/SB, NN, body bytes that
+	//       don't equal 0xAA or 0xA9).
+	//
+	// Invariants:
+	//   - (1) + (2) + (3) + (4) == count of StreamEventByte
+	//     events passing through Observe (excludes WireSyn /
+	//     Started / Failed / Reset which have their own counter
+	//     paths via observedBytesTotal but NOT via these four).
+	//   - Each counter monotonically non-decreasing.
+	//   - Atomic, race-tolerant, single-producer write side per
+	//     the Concurrency contract above.
+	//
+	// These counters are the building blocks for:
+	//   - B3.4 telegram FSM transitions (which need the
+	//     payload-vs-SYN distinction)
+	//   - B3.5 per-session pacer (which needs to know whether a
+	//     0xAA is filler or payload)
+	//   - B3.6 AA-injection filter (the ModeEnforce drop
+	//     decision keys on WasEscaped + FSM-phase)
+	//   - B3.7 shadow-mode divergence comparison (counts the
+	//     same shapes the existing pre-v8 path would have
+	//     applied round-7/round-9 mitigations to)
+	escapedPayloadAaTotal  atomic.Uint64
+	escapedPayloadEscTotal atomic.Uint64
+	wireAutoSynTotal       atomic.Uint64
+	plainByteTotal         atomic.Uint64
 }
 
 // New constructs a Classifier in the given mode. The zero-value
@@ -77,36 +133,114 @@ func (c *Classifier) Mode() Mode {
 // transport.StreamEvent that flows through the upstream. The hook
 // is allocation-free on the hot path.
 //
-// Phase 3 Step B3.2 (this file): in ModeOff the hook is a constant-
-// time no-op. In ModeShadow and ModeEnforce the hook increments
-// observedBytesTotal. Subsequent PRs will add:
+// Phase 3 Step B3.3 (this file): in ModeOff the hook is a constant-
+// time no-op. In ModeShadow / ModeEnforce the hook:
 //
-//   B3.3: route StreamEventByte / StreamEventWireSyn through the v8
-//         AA-aware escape decoder (already in ebusgo transport).
-//   B3.4: per-session telegram FSM instances.
-//   B3.5: per-session pacer + L_rtt EMA.
-//   B3.6: admin channel for PROTOCOL_FAULT + queue overflow.
-//   B3.7: shadow-mode divergence comparison vs the current path.
+//   - increments observedBytesTotal (every StreamEvent kind);
+//   - for StreamEventByte ONLY, classifies the byte into one of
+//     four provenance buckets based on (Byte, WasEscaped) and
+//     increments the matching counter (escapedPayloadAaTotal /
+//     escapedPayloadEscTotal / wireAutoSynTotal / plainByteTotal).
+//     See the field doc on Classifier for the full taxonomy.
+//
+// Future stacked PRs add:
+//
+//	B3.4: per-session telegram FSM instances (consumes the
+//	      provenance counters' underlying signal to drive
+//	      classify-then-transition rules from v8 §4).
+//	B3.5: per-session pacer + L_rtt EMA.
+//	B3.6: admin channel wiring + AA-injection drop decisions
+//	      (this is where Observe starts returning drop=true in
+//	      ModeEnforce for the right (Byte=0xAA, WasEscaped=false,
+//	      FSM phase != IDLE) tuple).
+//	B3.7: shadow-mode divergence comparison vs the current path.
 //
 // The `now` parameter is the monotonic-clock observation time for
 // this event (v8 I0). Callers that don't care about clock semantics
-// may pass time.Time{} — the scaffold ignores it; future PRs use
-// it for L_rtt / pacer.
+// may pass time.Time{} — B3.3 ignores it; B3.5+ use it for L_rtt /
+// pacer.
 //
 // Returns true if the caller should DROP this event from emission
 // to sessions. In ModeOff / ModeShadow the return is always false.
-// ModeEnforce will start returning true in B3.3 for filtered
-// AA-injection bytes. Callers in B3.2 may ignore the return value.
+// In B3.3 ModeEnforce also returns false (real filtering lands in
+// B3.6). Callers MAY ignore the return value until B3.6.
 func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop bool) {
 	if c == nil || c.mode == ModeOff {
 		return false
 	}
 	c.observedBytesTotal.Add(1)
-	// ModeShadow and ModeEnforce: no behavioral change yet. B3.3+
-	// will populate this path with real classification logic.
-	_ = event
+
+	// Provenance classification fires only for StreamEventByte.
+	// WireSyn / Started / Failed / Reset / unknown kinds bypass —
+	// they have their own semantic meaning and do NOT carry a
+	// (Byte, WasEscaped) tuple the escape-decoder provenance
+	// taxonomy applies to.
+	if event.Kind == transport.StreamEventByte {
+		c.classifyByteProvenance(event.Byte, event.WasEscaped)
+	}
 	_ = now
 	return false
+}
+
+// classifyByteProvenance increments exactly one of the four
+// provenance counters based on the (b, wasEscaped) tuple. Extracted
+// to keep Observe small and to support direct table-test coverage
+// of the four-way branch (see
+// classifier_provenance_test.go::TestClassifyByteProvenance_TableDriven).
+//
+// The taxonomy (per the Classifier struct field doc):
+//
+//	(0xAA, true)  → escapedPayloadAaTotal   — payload 0xAA byte
+//	(0xA9, true)  → escapedPayloadEscTotal  — payload 0xA9 byte
+//	(0xAA, false) → wireAutoSynTotal        — real wire AUTO-SYN
+//	anything else → plainByteTotal          — regular data byte
+//
+// The "anything else" branch covers:
+//   - all (0x00..0xA8, false)
+//   - (0xA9, false) — should be impossible in a well-formed v8
+//     ENHTransport stream (a bare 0xA9 wire byte is the escape
+//     lead, not an emitted decoded byte). Folded into plain so the
+//     sum invariant holds; B3.3 INTENTIONALLY does NOT surface
+//     this as a separate anomaly counter — that is a follow-up
+//     enhancement once B3.4+ has the FSM context to decide whether
+//     the anomaly is meaningful (mid-frame anomaly vs harmless
+//     idle artifact).
+//   - all (0xAB..0xFF, false)
+//   - any (b, true) where b is neither 0xAA nor 0xA9 — should be
+//     impossible (the v8 escape decoder only emits wasEscaped=true
+//     for the two valid escape pairs). Same B3.3-intentional
+//     "fold into plain, don't surface separately" treatment.
+//
+// The defensive branches mean ALL StreamEventByte events
+// monotonically increment exactly one counter, regardless of
+// upstream bug or future protocol extension. If operators want
+// distinct visibility into these "impossible" cases, a future
+// PR can split out anomaly counters without breaking any existing
+// accessor's contract — the sum invariant is preserved either way.
+func (c *Classifier) classifyByteProvenance(b byte, wasEscaped bool) {
+	if wasEscaped {
+		switch b {
+		case 0xAA:
+			c.escapedPayloadAaTotal.Add(1)
+			return
+		case 0xA9:
+			c.escapedPayloadEscTotal.Add(1)
+			return
+		default:
+			// Defensive: escape decoder emitted wasEscaped=true
+			// for an unexpected byte. Treat as plain to avoid
+			// silent drop; downstream FSM will surface the
+			// anomaly via its own validation paths.
+			c.plainByteTotal.Add(1)
+			return
+		}
+	}
+	// wasEscaped == false.
+	if b == 0xAA {
+		c.wireAutoSynTotal.Add(1)
+		return
+	}
+	c.plainByteTotal.Add(1)
 }
 
 // OnAdminEvent is the per-admin-event hook that B3.6 will call
@@ -154,4 +288,55 @@ func (c *Classifier) ObservedAdminEventsTotal() uint64 {
 		return 0
 	}
 	return c.observedAdminEventsTotal.Load()
+}
+
+// EscapedPayloadAaTotal returns the cumulative count of payload
+// 0xAA bytes (Byte=0xAA, WasEscaped=true — wire-transported as the
+// escape pair 0xA9 0x01). Per Phase 3 Step B3.3 / v8 §1.4 this
+// distinguishes a real data byte equal to the SYN value from a
+// bus-idle wire AUTO-SYN (see WireAutoSynTotal). Returns 0 in
+// ModeOff. Safe to call from any goroutine.
+func (c *Classifier) EscapedPayloadAaTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.escapedPayloadAaTotal.Load()
+}
+
+// EscapedPayloadEscTotal returns the cumulative count of payload
+// 0xA9 bytes (Byte=0xA9, WasEscaped=true — wire-transported as the
+// escape pair 0xA9 0x00). Rare in production traffic; exposed for
+// operator sanity-checking and shadow-mode comparison. Returns 0
+// in ModeOff. Safe to call from any goroutine.
+func (c *Classifier) EscapedPayloadEscTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.escapedPayloadEscTotal.Load()
+}
+
+// WireAutoSynTotal returns the cumulative count of real wire
+// AUTO-SYN bytes (Byte=0xAA, WasEscaped=false). The bus-idle
+// marker. Per v8 §1.4 the FSM-driven AA filter (B3.6) decides
+// per-byte whether to forward the byte or drop it as
+// AA-injection based on the FSM phase; the count here records
+// every such byte regardless of forwarding decision. Returns 0
+// in ModeOff. Safe to call from any goroutine.
+func (c *Classifier) WireAutoSynTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.wireAutoSynTotal.Load()
+}
+
+// PlainByteTotal returns the cumulative count of regular data
+// bytes — any (Byte, WasEscaped=false) tuple where Byte != 0xAA,
+// plus the defensive fall-through bucket for any unexpected
+// (WasEscaped=true, Byte not in {0xAA, 0xA9}) tuple. Returns 0
+// in ModeOff. Safe to call from any goroutine.
+func (c *Classifier) PlainByteTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.plainByteTotal.Load()
 }

@@ -68,13 +68,13 @@ func TestParseMode_UnknownLabels(t *testing.T) {
 	for _, in := range []string{
 		"enfource", // typo
 		"shadows",
-		"on",        // ambiguous — must be off|shadow|enforce
-		"1",         // arabic-numeral truthy — could be confused with "on"
-		"yes",       // truthy
-		"true",      // truthy
-		"force",     // half-word
-		"shadow!",   // suffix
-		"v8",        // shorthand
+		"on",      // ambiguous — must be off|shadow|enforce
+		"1",       // arabic-numeral truthy — could be confused with "on"
+		"yes",     // truthy
+		"true",    // truthy
+		"force",   // half-word
+		"shadow!", // suffix
+		"v8",      // shorthand
 	} {
 		got, err := ParseMode(in)
 		if err == nil {

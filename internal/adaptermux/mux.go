@@ -17,6 +17,8 @@ import (
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 )
 
 const infoCacheInterRequestDelay = 200 * time.Millisecond
@@ -239,6 +241,32 @@ type Config struct {
 
 	// Logger for multiplexer events. If nil, log.Default() is used.
 	Logger *log.Logger
+
+	// V8ClassifierMode selects the rollout mode of the
+	// frame-atomic-visibility v8 classifier (Phase 3 Step B3.2
+	// scaffold). The zero value is v8classifier.ModeOff, which
+	// disables the classifier entirely (production default until
+	// B3.7 live-bus validation closes). See
+	// helianthus-docs-ebus/architecture/adaptermux/frame-atomic-visibility-v8.md
+	// for the rollout phases.
+	//
+	// Modes:
+	//   - ModeOff (default): no observation, no behavioral effect.
+	//   - ModeShadow: classifier observes every StreamEvent the
+	//     mux's read loop dispatches but does NOT alter the byte
+	//     stream. Counter surfaces via
+	//     Mux.V8Classifier().ObservedBytesTotal(). Admin-event
+	//     observation lands in B3.6 (the transport-to-mux admin
+	//     channel surface is not yet exposed in B3.2).
+	//   - ModeEnforce: classifier becomes the authoritative read
+	//     path. (Filtering not yet implemented in B3.2; will land
+	//     in stacked PRs B3.3..B3.6.)
+	//
+	// Set from the environment via v8classifier.EnvVarName
+	// (HELIANTHUS_V8_CLASSIFIER_MODE) in the gateway startup glue,
+	// or explicitly by tests. Mode parsing lives in
+	// v8classifier.ParseMode.
+	V8ClassifierMode v8classifier.Mode
 }
 
 func (c *Config) defaults() {
@@ -444,6 +472,16 @@ type Mux struct {
 	cfg    Config
 	logger *log.Logger
 
+	// v8 is the frame-atomic-visibility v8 classifier (Phase 3
+	// Step B3.2 scaffold). Non-nil iff cfg.V8ClassifierMode is set
+	// to a non-Off value (ModeOff explicitly leaves this nil so
+	// the call site's `if m.v8 != nil` short-circuit fully elides
+	// the Observe call AND its time.Now() argument evaluation on
+	// the hot path). Subsequent stacked PRs (B3.3..B3.7) wire
+	// the classifier into the read path's filtering decisions.
+	// For B3.2 it is observe-only and behaviorally inert.
+	v8 *v8classifier.Classifier
+
 	// Adapter connection (guarded by connMu for reconnection).
 	connMu           sync.Mutex
 	conn             net.Conn
@@ -637,7 +675,7 @@ func New(cfg Config) *Mux {
 	cfg.defaults()
 	arb := newArbitrator()
 	arb.setPolicy(cfg.PendingStartTTL, cfg.FairnessRatio, cfg.PostExternalReleaseGrace)
-	return &Mux{
+	mux := &Mux{
 		cfg:          cfg,
 		logger:       cfg.Logger,
 		arb:          arb,
@@ -647,6 +685,15 @@ func New(cfg Config) *Mux {
 		activeSendCh: make(chan sendRequest, 256),  // AM49: increased from 16 for burst tolerance
 		activeCh:     make(chan activeEvent, 4096), // unified byte+error channel (4096: survives ~16s of bus traffic during arbitration waits)
 	}
+	// Phase 3 Step B3.2: instantiate the v8 classifier only when a
+	// non-Off mode is configured. ModeOff is equivalent to a nil
+	// classifier (both yield a no-op Observe path); leaving it nil
+	// avoids one allocation per Mux and one branch + atomic per
+	// wire byte on the hot path.
+	if cfg.V8ClassifierMode != v8classifier.ModeOff {
+		mux.v8 = v8classifier.New(cfg.V8ClassifierMode)
+	}
+	return mux
 }
 
 // Start connects to the adapter and begins the multiplexer loop.
@@ -1361,6 +1408,17 @@ func (m *Mux) readLoop() {
 		firstTimeoutTime = time.Time{} // AM27: reset timeout streak on successful read
 		lastDataTime = time.Now()      // AM27: track last data for blackhole detection
 
+		// Phase 3 Step B3.2: route every StreamEvent through the v8
+		// classifier BEFORE the dispatch switch. The nil-guard
+		// short-circuits BOTH the method call AND the time.Now()
+		// evaluation when the classifier is off (production default),
+		// keeping the hot-path overhead at zero. B3.2 scaffold:
+		// `drop` is always false; future stacked PRs (B3.3..B3.7)
+		// will honor the return value at appropriate dispatch sites.
+		if m.v8 != nil {
+			_ = m.v8.Observe(event, time.Now())
+		}
+
 		switch event.Kind {
 		case transport.StreamEventStarted:
 			m.logger.Printf("adaptermux: readLoop got StreamEventStarted data=0x%02X", event.Data)
@@ -1654,6 +1712,20 @@ func (m *Mux) readLoop() {
 			m.onReceived(event.Byte, event.WasEscaped)
 		}
 	}
+}
+
+// V8Classifier returns the v8 classifier instance attached to this
+// mux, or nil when V8ClassifierMode is Off (the production default
+// in B3.2). Exposed for diagnostics, expvar surfaces, and tests.
+// A nil return is safe to call all v8classifier.Classifier methods
+// on (each has nil-receiver handling).
+//
+// Phase 3 Step B3.2 (this file): the classifier is observe-only —
+// callers MUST NOT depend on the return value for routing
+// decisions. Subsequent stacked PRs (B3.3..B3.7) extend the
+// classifier's authority.
+func (m *Mux) V8Classifier() *v8classifier.Classifier {
+	return m.v8
 }
 
 // readUpstream reads a stream event from the adapter transport.

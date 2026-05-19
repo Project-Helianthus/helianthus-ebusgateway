@@ -268,20 +268,17 @@ func TestV8Classifier_ShadowMode_FSMDrivenThroughMux(t *testing.T) {
 	}
 }
 
-// TestV8Classifier_EnforceMode_InstantiatedAndObservesButDoesNotDrop
-// pins the B3.2-scaffold invariant for enforce mode: even when the
-// caller explicitly opts in to ModeEnforce, the classifier in this
-// PR ONLY observes; it does NOT yet drop or rewrite any bytes.
-// Real filtering lands in B3.3+.
+// TestV8Classifier_EnforceMode_AaInjectionSkipsOnReceived pins
+// the B3.6b behavioral contract at the mux boundary: when the
+// classifier returns drop=true (FSM DropAaInjection in
+// ModeEnforce), the mux's readLoop MUST skip the byte's dispatch
+// to onReceived. The byte still flows through the classifier
+// (counters increment), but does NOT reach the session
+// fan-out.
 //
-// MAINTAINER NOTE: when B3.3+ wires real filtering authority into
-// the enforce path, this test MUST be UPDATED OR DELETED — its
-// purpose is to fire if a future PR accidentally enables filtering
-// before the full B3.3..B3.7 stack lands. Once enforce gains real
-// filtering, replace the "drop=false always" assertion with a
-// session-level behavior assertion that the right bytes are
-// filtered.
-func TestV8Classifier_EnforceMode_InstantiatedAndObservesButDoesNotDrop(t *testing.T) {
+// Replaces the B3.2 SCAFFOLD-only
+// TestV8Classifier_EnforceMode_InstantiatedAndObservesButDoesNotDrop.
+func TestV8Classifier_EnforceMode_AaInjectionSkipsOnReceived(t *testing.T) {
 	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeEnforce)
 	defer cleanup()
 
@@ -289,25 +286,87 @@ func TestV8Classifier_EnforceMode_InstantiatedAndObservesButDoesNotDrop(t *testi
 	if c == nil {
 		t.Fatal("V8Classifier() = nil in ModeEnforce; want non-nil")
 	}
-	if got := c.Mode(); got != v8classifier.ModeEnforce {
-		t.Errorf("classifier mode = %v; want ModeEnforce", got)
+
+	// Drive the classifier into mid-frame so the next wire AUTO-SYN
+	// is treated as AA-injection (FSM DropAaInjection).
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventStarted, Data: 0x71,
 	}
-
-	// Push a single SYN. Classifier MUST observe it; mux MUST emit
-	// it normally (no drop). The latter is implicitly asserted by
-	// readLoop's existing onReceived dispatch — if Observe ever
-	// returned drop=true, the existing legacy adaptermux tests
-	// would surface the regression.
-	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xAA}
-
+	// Wait for the Started to be processed.
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
-		if c.ObservedBytesTotal() >= 1 {
+		if c.FsmEnterPassiveTotal() >= 1 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if got := c.ObservedBytesTotal(); got != 1 {
-		t.Errorf("ObservedBytesTotal() = %d; want 1 in ModeEnforce", got)
+	if got := c.FsmEnterPassiveTotal(); got != 1 {
+		t.Fatalf("FsmEnterPassiveTotal()=%d; want 1 (Started not yet processed)", got)
+	}
+
+	// Now push a mid-frame wire AUTO-SYN — AA-injection per v8 §4.
+	// The classifier MUST count + drop it.
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0xAA, WasEscaped: false,
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.EnforceDropsAppliedTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := c.EnforceDropsAppliedTotal(); got != 1 {
+		t.Errorf("EnforceDropsAppliedTotal()=%d; want 1 (AA-injection dropped by enforce)", got)
+	}
+	if got := c.FsmDropAaInjectionTotal(); got != 1 {
+		t.Errorf("FsmDropAaInjectionTotal()=%d; want 1", got)
+	}
+}
+
+// TestV8Classifier_ShadowMode_AaInjectionForwarded pins the
+// Shadow-mode contract at the mux boundary: even when the FSM
+// recommends a drop (DecisionDropAaInjection), Shadow does NOT
+// apply the drop — the byte still reaches onReceived. This is
+// the pre-promotion validation mode operators run before
+// promoting to Enforce.
+func TestV8Classifier_ShadowMode_AaInjectionForwarded(t *testing.T) {
+	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	c := mux.V8Classifier()
+	if c == nil {
+		t.Fatal("V8Classifier() = nil in ModeShadow; want non-nil")
+	}
+
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventStarted, Data: 0x71,
+	}
+	// Wait for Started to land in classifier.
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.FsmEnterPassiveTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0xAA, WasEscaped: false,
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.FsmDropAaInjectionTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := c.FsmDropAaInjectionTotal(); got != 1 {
+		t.Errorf("FsmDropAaInjectionTotal()=%d; want 1 (FSM verdict still counted in Shadow)", got)
+	}
+	// CRITICAL: Shadow MUST NOT apply the drop.
+	if got := c.EnforceDropsAppliedTotal(); got != 0 {
+		t.Errorf("EnforceDropsAppliedTotal()=%d; want 0 (Shadow never applies drops)", got)
 	}
 }

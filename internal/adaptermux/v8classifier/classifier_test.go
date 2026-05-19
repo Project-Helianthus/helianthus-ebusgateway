@@ -70,12 +70,17 @@ func TestClassifier_Observe_ShadowMode_CountsButDoesNotDrop(t *testing.T) {
 	}
 }
 
-func TestClassifier_Observe_EnforceMode_CountsButDoesNotDropYet(t *testing.T) {
+func TestClassifier_Observe_EnforceMode_IdleStateBytesNotDropped(t *testing.T) {
 	t.Parallel()
 
-	// B3.2 scaffold: even in ModeEnforce the classifier does not
-	// drop anything yet. The actual filtering decisions land in
-	// B3.3+. This test pins the SCAFFOLD-ONLY contract.
+	// Phase 3 Step B3.6b: even in ModeEnforce, bytes the FSM
+	// classifies as Forward (most non-frame traffic and any byte
+	// observed without a Started/Failed predecessor) are NOT
+	// dropped. Replaces the B3.2 SCAFFOLD-ONLY test — the
+	// invariant has shifted from "ModeEnforce drops nothing" to
+	// "ModeEnforce drops AA-injection only" (which requires
+	// being mid-frame; bytes in IDLE state get Forward and pass
+	// through cleanly).
 	c := New(ModeEnforce)
 	now := time.Unix(0, 0)
 	const n = 25
@@ -85,11 +90,14 @@ func TestClassifier_Observe_EnforceMode_CountsButDoesNotDropYet(t *testing.T) {
 			Byte: byte(i),
 		}, now)
 		if drop {
-			t.Errorf("iter %d: Observe(...) returned drop=true in ModeEnforce; B3.2 scaffold returns false until B3.3 wires real filtering", i)
+			t.Errorf("iter %d: Observe(byte 0x%02X in IDLE) returned drop=true; want false (only AA-injection mid-frame drops)", i, byte(i))
 		}
 	}
 	if got := c.ObservedBytesTotal(); got != n {
 		t.Errorf("ObservedBytesTotal() = %d; want %d in ModeEnforce", got, n)
+	}
+	if got := c.EnforceDropsAppliedTotal(); got != 0 {
+		t.Errorf("EnforceDropsAppliedTotal() = %d; want 0 (no AA-injection in IDLE)", got)
 	}
 }
 

@@ -226,38 +226,139 @@ func TestFSM_NilReceiverSafe(t *testing.T) {
 	}
 }
 
-// TestFSM_EnforceMode_DoesNotDropYet pins the B3.4 SCAFFOLD
-// invariant: even when the FSM emits a DecisionDropAaInjection
-// (which B3.6 will translate to drop=true in ModeEnforce), B3.4
-// still returns drop=false from Observe. The counter increments,
-// but no behavioral change. Future-regression guard.
-func TestFSM_EnforceMode_DoesNotDropYet(t *testing.T) {
+// TestFSM_EnforceMode_DropsAaInjection pins the B3.6b
+// behavioral contract: when the FSM emits DecisionDropAaInjection
+// AND mode == ModeEnforce, Observe returns drop=true AND the
+// drop counter (EnforceDropsAppliedTotal) increments. Replaces
+// the B3.4 SCAFFOLD-only TestFSM_EnforceMode_DoesNotDropYet.
+//
+// This is the v8 §4 AA-injection filter contract — operators
+// promoting from Shadow to Enforce expect mid-frame wire SYNs to
+// be filtered out of cross-proxy byte streams.
+func TestFSM_EnforceMode_DropsAaInjection(t *testing.T) {
 	t.Parallel()
 	c := New(ModeEnforce)
 	now := time.Unix(0, 0)
 
 	// Enter passive tracking so subsequent AA bytes are
-	// classified mid-frame (where the FSM would emit
-	// DropAaInjection per v8 §4).
+	// classified mid-frame (where the FSM emits DropAaInjection
+	// per v8 §4).
 	c.Observe(transport.StreamEvent{
 		Kind: transport.StreamEventStarted,
 		Data: 0x71,
 	}, now)
 
-	// Feed a wire AUTO-SYN mid-frame — the FSM should emit
-	// DropAaInjection.
+	// Feed a wire AUTO-SYN mid-frame — the FSM emits
+	// DropAaInjection AND ModeEnforce propagates drop=true.
 	drop := c.Observe(transport.StreamEvent{
 		Kind: transport.StreamEventByte,
 		Byte: 0xAA,
 		// wasEscaped=false (real wire SYN, mid-frame = AA-injection)
 	}, now)
-	if drop {
-		t.Error("Observe(mid-frame wire 0xAA) returned drop=true in ModeEnforce; B3.4 must return drop=false until B3.6 wires real filtering")
+	if !drop {
+		t.Error("Observe(mid-frame wire 0xAA) returned drop=false in ModeEnforce; B3.6b MUST drop AA-injection")
 	}
 
-	// The FSM should have counted the drop decision.
-	if got := c.FsmDropAaInjectionTotal(); got == 0 {
-		t.Errorf("FsmDropAaInjectionTotal()=0; expected non-zero (FSM should emit DropAaInjection for mid-frame wire SYN)")
+	// Counter accounting:
+	//   - FsmDropAaInjectionTotal records every FSM decision (any mode)
+	//   - EnforceDropsAppliedTotal records the subset where Enforce
+	//     actually applied the drop
+	if got := c.FsmDropAaInjectionTotal(); got != 1 {
+		t.Errorf("FsmDropAaInjectionTotal()=%d; want 1", got)
+	}
+	if got := c.EnforceDropsAppliedTotal(); got != 1 {
+		t.Errorf("EnforceDropsAppliedTotal()=%d; want 1", got)
+	}
+}
+
+// TestFSM_ShadowMode_AaInjectionCounted_NotDropped pins the
+// Shadow-mode contract: the FSM emits DecisionDropAaInjection
+// (and FsmDropAaInjectionTotal increments), but Observe still
+// returns drop=false and EnforceDropsAppliedTotal stays at 0.
+// The difference between the two counters during a Shadow
+// validation run is the "would have dropped" estimate operators
+// use to project enforce impact.
+func TestFSM_ShadowMode_AaInjectionCounted_NotDropped(t *testing.T) {
+	t.Parallel()
+	c := New(ModeShadow)
+	now := time.Unix(0, 0)
+
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventStarted,
+		Data: 0x71,
+	}, now)
+	drop := c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventByte,
+		Byte: 0xAA,
+	}, now)
+	if drop {
+		t.Error("Observe in ModeShadow returned drop=true; Shadow must NEVER drop (observation-only contract)")
+	}
+	if got := c.FsmDropAaInjectionTotal(); got != 1 {
+		t.Errorf("FsmDropAaInjectionTotal()=%d; want 1 (FSM decision still counted in Shadow)", got)
+	}
+	if got := c.EnforceDropsAppliedTotal(); got != 0 {
+		t.Errorf("EnforceDropsAppliedTotal()=%d; want 0 (Shadow never applies drops)", got)
+	}
+}
+
+// TestFSM_EnforceMode_ProtocolFaultStillForwards pins v8 I10:
+// PROTOCOL_FAULT bytes are FORWARDED to all observers regardless
+// of mode. Only AA-injection is filtered.
+func TestFSM_EnforceMode_ProtocolFaultStillForwards(t *testing.T) {
+	t.Parallel()
+	c := New(ModeEnforce)
+	now := time.Unix(0, 0)
+
+	// Drive the FSM into the position where the next byte
+	// triggers ProtocolFault (NN>16 in MASTER_HEADER byte 4).
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventStarted, Data: 0x71,
+	}, now)
+	for _, b := range []byte{0x10, 0xB5, 0x16} {
+		c.Observe(transport.StreamEvent{
+			Kind: transport.StreamEventByte, Byte: b,
+		}, now)
+	}
+	// NN=0xFF — exceeds the 16-byte cap, FSM emits ProtocolFault.
+	drop := c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0xFF,
+	}, now)
+	if drop {
+		t.Error("Observe(ProtocolFault byte) returned drop=true; v8 I10 requires fault bytes to be FORWARDED")
+	}
+	if got := c.FsmProtocolFaultTotal(); got != 1 {
+		t.Errorf("FsmProtocolFaultTotal()=%d; want 1", got)
+	}
+	// EnforceDropsAppliedTotal MUST stay at 0 — protocol faults
+	// don't count as drops.
+	if got := c.EnforceDropsAppliedTotal(); got != 0 {
+		t.Errorf("EnforceDropsAppliedTotal()=%d; want 0 (faults are forwarded, not dropped)", got)
+	}
+}
+
+// TestFSM_EnforceMode_LegitimateBytesNotDropped pins that
+// Forward-class bytes (most of the telegram) are NOT dropped
+// even in ModeEnforce. Only DropAaInjection triggers a drop.
+func TestFSM_EnforceMode_LegitimateBytesNotDropped(t *testing.T) {
+	t.Parallel()
+	c := New(ModeEnforce)
+	now := time.Unix(0, 0)
+
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventStarted, Data: 0x71,
+	}, now)
+	// Plain payload bytes — all Forward decisions.
+	for _, b := range []byte{0x10, 0xB5, 0x16} {
+		drop := c.Observe(transport.StreamEvent{
+			Kind: transport.StreamEventByte, Byte: b,
+		}, now)
+		if drop {
+			t.Errorf("Observe(legitimate byte 0x%02X) returned drop=true; want false", b)
+		}
+	}
+	if got := c.EnforceDropsAppliedTotal(); got != 0 {
+		t.Errorf("EnforceDropsAppliedTotal()=%d; want 0 (only AA-injection drops)", got)
 	}
 }
 

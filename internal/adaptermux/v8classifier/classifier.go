@@ -182,6 +182,21 @@ type Classifier struct {
 	fsmStateSnapshot         atomic.Uint32 // telegram_fsm.State cast to uint32
 	fsmInternalStateSnapshot atomic.Uint32 // telegram_fsm.State cast to uint32
 	fsmIsPassiveSnapshot     atomic.Bool
+
+	// Phase 3 Step B3.6a (v8 §1.1 / I1): per-classifier outbound
+	// admin-event ring buffer. Records PROTOCOL_FAULT and (in
+	// later B3.6 PRs) echo-deadline / queue-overflow events.
+	// Allocation-free emit on the hot path; the buffer drops the
+	// OLDEST entry on overflow (FIFO) so the producer never
+	// blocks on a slow consumer.
+	//
+	// Per v8 invariant I1: these events flow OUT-OF-BAND only.
+	// They MUST NOT be serialized into any cross-proxy session
+	// byte stream. The ring buffer is drained by a
+	// proxy-operator-facing surface (admin /debug endpoint,
+	// expvar, or a poll goroutine that pushes to logs) — none of
+	// those paths bridge back to client byte streams.
+	adminEvents adminEventBuffer
 }
 
 // New constructs a Classifier in the given mode. The zero-value
@@ -281,9 +296,11 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 // concurrent diagnostic readers see fresh values. Single producer
 // per the Classifier concurrency contract.
 //
-// B3.4 OBSERVES the Decision but does NOT yet act on it. B3.6 will
-// extend this site with the ModeEnforce DropAaInjection path that
-// makes Observe return drop=true.
+// Phase 3 Step B3.6a: DecisionProtocolFault now also emits a
+// ClassifierAdminEvent into the per-classifier admin-event ring
+// buffer (out-of-band per v8 I1 — NEVER into client byte streams).
+// B3.6b will extend this site with the ModeEnforce DropAaInjection
+// path that makes Observe return drop=true.
 func (c *Classifier) driveFSMByte(b byte, wasEscaped bool) {
 	if c.fsm == nil {
 		return
@@ -296,6 +313,19 @@ func (c *Classifier) driveFSMByte(b byte, wasEscaped bool) {
 		c.fsmDropAaInjectionTotal.Add(1)
 	case telegram_fsm.DecisionProtocolFault:
 		c.fsmProtocolFaultTotal.Add(1)
+		// Emit out-of-band admin event. Per v8 invariant I10 the
+		// byte is STILL forwarded to all observers (PROTOCOL_FAULT
+		// visibility); the admin event is the operator-facing
+		// notification only. Caller proceeds with whatever
+		// emission policy applies — the admin emit does not gate
+		// the byte stream.
+		c.adminEvents.emit(ClassifierAdminEvent{
+			At:         time.Now(),
+			Kind:       AdminEventKindProtocolFault,
+			FSMState:   c.fsm.State(),
+			Byte:       b,
+			WasEscaped: wasEscaped,
+		})
 	}
 	c.publishFSMSnapshotLocked()
 }
@@ -621,4 +651,39 @@ func (c *Classifier) FsmResetTotal() uint64 {
 		return 0
 	}
 	return c.fsmResetTotal.Load()
+}
+
+// DrainAdminEvents returns the buffered outbound admin events
+// (drained — the buffer is emptied) plus the cumulative drop
+// count since the last Drain. Per v8 invariant I1: these events
+// are out-of-band — callers MUST NOT forward them into any
+// cross-proxy session byte stream. Acceptable destinations:
+// operator logs, expvar, /debug endpoint, Prometheus metrics
+// scrape.
+//
+// Returns (nil, 0) when the classifier is nil or has nothing
+// to drain. The dropped count is non-zero only when the
+// admin-event ring buffer overflowed since the last Drain.
+//
+// Safe to call from any goroutine — the internal mutex
+// serializes drains vs the single-producer EmitAdminEvent path.
+// Consumers SHOULD drain at a steady cadence (every few
+// seconds in production); a stuck consumer eventually drops
+// the OLDEST events FIFO, surfaced via the dropped counter.
+func (c *Classifier) DrainAdminEvents() (events []ClassifierAdminEvent, dropped uint64) {
+	if c == nil {
+		return nil, 0
+	}
+	return c.adminEvents.drain()
+}
+
+// PendingAdminEvents returns the current buffer occupancy
+// without draining. Useful for adaptive-drain consumers that
+// only call Drain when the buffer has events. Returns 0 when
+// the classifier is nil. Safe to call from any goroutine.
+func (c *Classifier) PendingAdminEvents() int {
+	if c == nil {
+		return 0
+	}
+	return c.adminEvents.pending()
 }

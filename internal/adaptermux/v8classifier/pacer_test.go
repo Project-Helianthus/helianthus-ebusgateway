@@ -14,6 +14,37 @@ import (
 // Helper: t0 is the canonical synthetic-time anchor for tests.
 var t0 = time.Unix(1_000_000_000, 0)
 
+// TestPacer_BeforeActiveWriteTotal pins the Phase 3 Step B3.6c
+// counter — every BeforeActiveWrite call increments, regardless
+// of whether the call triggers grace bootstrap.
+func TestPacer_BeforeActiveWriteTotal(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	if got := p.BeforeActiveWriteTotal(); got != 0 {
+		t.Errorf("BeforeActiveWriteTotal() at construction = %d; want 0", got)
+	}
+
+	// 5 BeforeActiveWrite calls (no prior history → no grace
+	// trigger, just counter increments).
+	for i := 0; i < 5; i++ {
+		p.BeforeActiveWrite(t0.Add(time.Duration(i) * time.Second))
+	}
+	if got := p.BeforeActiveWriteTotal(); got != 5 {
+		t.Errorf("BeforeActiveWriteTotal() = %d; want 5", got)
+	}
+
+	// Verify the counter increments even when grace fires (long
+	// idle from a prior recorded sample).
+	p.RecordEcho(50*time.Millisecond, t0)
+	p.BeforeActiveWrite(t0.Add(31 * time.Second))
+	if got := p.BeforeActiveWriteTotal(); got != 6 {
+		t.Errorf("BeforeActiveWriteTotal() after grace fire = %d; want 6", got)
+	}
+	if !p.InGraceBootstrap() {
+		t.Error("grace not entered after long-idle BeforeActiveWrite")
+	}
+}
+
 // TestPacer_NewPacer_DefaultState pins the constructor invariants.
 func TestPacer_NewPacer_DefaultState(t *testing.T) {
 	t.Parallel()

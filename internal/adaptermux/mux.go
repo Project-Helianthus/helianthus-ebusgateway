@@ -482,6 +482,27 @@ type Mux struct {
 	// For B3.2 it is observe-only and behaviorally inert.
 	v8 *v8classifier.Classifier
 
+	// sessionPacers is a per-sessionID map of v8classifier.Pacer
+	// instances, used by the adapter-write hot path (mux.doSend)
+	// to invoke BeforeActiveWrite + (B3.6d+) RecordEcho. Phase 3
+	// Step B3.6c (L_rtt side of the pacer wiring; the output
+	// pacer at session.writeLoop lands in B3.6f).
+	//
+	// Populated lazily:
+	//   - gateway session pacer (sessionID == gatewaySessionID)
+	//     is created in New() when V8ClassifierMode != Off.
+	//   - external session pacers are created in AddSession on
+	//     the same condition.
+	//   - cleanup happens in RemoveSession.
+	//
+	// sync.Map is used (rather than a mutex-protected map[uint64])
+	// because the adapter-write hot path needs a lock-free
+	// lookup; per-session pacer instances themselves are mutex-
+	// protected internally.
+	//
+	// All entries are *v8classifier.Pacer. Empty in ModeOff.
+	sessionPacers sync.Map
+
 	// Adapter connection (guarded by connMu for reconnection).
 	connMu           sync.Mutex
 	conn             net.Conn
@@ -692,8 +713,73 @@ func New(cfg Config) *Mux {
 	// wire byte on the hot path.
 	if cfg.V8ClassifierMode != v8classifier.ModeOff {
 		mux.v8 = v8classifier.New(cfg.V8ClassifierMode)
+		// Phase 3 Step B3.6c: pre-create the gateway-internal
+		// session pacer via ensureSessionPacer (the
+		// LIFECYCLE-ONLY constructor). External sessions get
+		// their pacers in AddSession. The hot-path doSend uses
+		// SessionPacer (load-only) which returns nil for any
+		// sessionID that wasn't ensure'd here or in
+		// AddSession — eliminates the
+		// RemoveSession+lazy-create resurrection race (Codex
+		// round-1 MEDIUM on PR #645).
+		mux.ensureSessionPacer(gatewaySessionID)
 	}
 	return mux
+}
+
+// SessionPacer returns the per-session v8 classifier Pacer for
+// the given sessionID. Load-only — does NOT lazy-create. Returns
+// nil when:
+//   - V8ClassifierMode == Off (no v8 classifier at all)
+//   - sessionID was never registered via AddSession (or via the
+//     Mux constructor for the gateway-internal pacer)
+//   - sessionID was registered but has been removed via
+//     RemoveSession
+//
+// Phase 3 Step B3.6c — adapter-write path (mux.doSend) uses this
+// to look up the pacer for BeforeActiveWrite. The output pacer
+// side (session.writeLoop) lands in B3.6f and uses the same
+// load-only lookup.
+//
+// Per Codex round-1 MEDIUM on PR #645: lazy-create was REMOVED
+// because it could resurrect a deleted pacer entry on a doSend
+// that raced with RemoveSession (doSend passes arb.isOwner
+// BEFORE Remove deletes the pacer entry, then SessionPacer
+// LoadOrStore created a new entry that never got cleaned up).
+// The load-only contract eliminates this race: RemoveSession
+// deletes; subsequent doSend calls see nil and skip the
+// BeforeActiveWrite call (which is the correct behavior — the
+// session is gone, no pacer state to maintain).
+//
+// Callers MUST nil-check before calling pacer methods — Pacer is
+// mutex-backed and its methods would panic on a nil receiver.
+func (m *Mux) SessionPacer(sessionID uint64) *v8classifier.Pacer {
+	if m == nil || m.v8 == nil {
+		return nil
+	}
+	v, ok := m.sessionPacers.Load(sessionID)
+	if !ok {
+		return nil
+	}
+	return v.(*v8classifier.Pacer)
+}
+
+// ensureSessionPacer is the LIFECYCLE-ONLY constructor used by
+// Mux.New (for the gateway-internal pacer) and AddSession (for
+// external session pacers). LoadOrStore is race-tolerant for the
+// expected single-caller-per-sessionID pattern.
+//
+// Hot-path callers MUST use SessionPacer (load-only) instead.
+// Per Codex round-1 MEDIUM on PR #645: this split eliminates the
+// RemoveSession + lazy-create-from-doSend race.
+func (m *Mux) ensureSessionPacer(sessionID uint64) {
+	if m == nil || m.v8 == nil {
+		return
+	}
+	if _, ok := m.sessionPacers.Load(sessionID); ok {
+		return
+	}
+	m.sessionPacers.LoadOrStore(sessionID, v8classifier.NewPacer())
 }
 
 // Start connects to the adapter and begins the multiplexer loop.
@@ -4209,23 +4295,25 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 	// recordSent without the matching matchEcho consumer would let the
 	// per-session queue grow to the 256-byte cap and trigger spurious
 	// totalOverflowResets alarms every 256 external SENDs.
-	// B3.6 INTEGRATION HOOK POINT (Phase 3, frame-atomic-visibility
-	// v8 §1.4 / §4.5): this is the adapter-write choke point where
-	// the v8classifier.Pacer's BeforeActiveWrite + EchoDeadlines +
-	// (after tr.Write completes and the echo arrives) RecordEcho
-	// must be invoked when V8ClassifierMode != Off. See
-	// internal/adaptermux/v8classifier/pacer.go for the API; the
-	// pacer is a per-session struct that lands in B3.6 (not yet
-	// instantiated in B3.5). Sequence per the pacer's design:
-	//   pacer.BeforeActiveWrite(now)
-	//   soft, hard, hardEnabled := pacer.EchoDeadlines()
-	//   arm watchdog with (soft, hard, hardEnabled)
-	//   tr.Write(byte)                            <-- here
-	//   ... wait for echo arrival ...
-	//   pacer.RecordEcho(echoRtt, echoArrivedAt)
-	// Do NOT conflate this hook point with session.writeLoop's
-	// sendCh draining (that's the OUTPUT pacer side per v8 §4.5,
-	// which uses Schedule / LastScheduledEmit instead).
+	// Phase 3 Step B3.6c: pacer wiring at the adapter-write
+	// choke point. Per v8 §1.4: BeforeActiveWrite fires before
+	// tr.Write so a long-idle write enters grace-bootstrap
+	// BEFORE the first post-idle echo is awaited. Skipped when
+	// V8ClassifierMode == Off (SessionPacer returns nil).
+	//
+	// Pacer integration plan (B3.6c..B3.6f):
+	//   B3.6c (THIS PR): BeforeActiveWrite at the doSend pre-Write
+	//                    hot path. Grace-bootstrap accounted, but
+	//                    no L_rtt EMA samples yet, no enforced
+	//                    deadlines.
+	//   B3.6d:           RecordEcho wiring at the echo-arrival site
+	//                    so the L_rtt EMA actually moves.
+	//   B3.6e:           Echo watchdog timer enforcing soft/hard
+	//                    deadlines + admin events.
+	//   B3.6f:           Output pacer at session.writeLoop.
+	if pacer := m.SessionPacer(sessionID); pacer != nil {
+		pacer.BeforeActiveWrite(time.Now())
+	}
 	_, err := tr.Write([]byte{data})
 	if err != nil {
 		return fmt.Errorf("%w: %v", errAdapterWrite, err)

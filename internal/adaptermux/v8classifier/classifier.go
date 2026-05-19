@@ -163,6 +163,25 @@ type Classifier struct {
 	// boundaries the legacy passive observer sees.
 	fsmEnterPassiveTotal atomic.Uint64
 	fsmResetTotal        atomic.Uint64
+
+	// Atomic snapshots of the FSM's externally-visible state. Per
+	// Codex round-1 review on PR #641: telegram_fsm.Machine is NOT
+	// thread-safe (its Machine.State() reads the same mutable
+	// fields Observe writes via Feed/Enter*/Reset). Direct
+	// accessors that touched c.fsm would race against the mux
+	// read goroutine's Observe calls.
+	//
+	// Fix: Observe writes these atomic snapshots AFTER each FSM
+	// mutation. The accessors (FSMState/FSMInternalState/
+	// FSMIsPassive) read ONLY from the atomics — never touch
+	// c.fsm — so concurrent diagnostics readers are race-free.
+	//
+	// Encoding: telegram_fsm.State is uint8; we store it in
+	// atomic.Uint32 (Go has no atomic.Uint8). FSMIsPassive uses
+	// atomic.Bool.
+	fsmStateSnapshot         atomic.Uint32 // telegram_fsm.State cast to uint32
+	fsmInternalStateSnapshot atomic.Uint32 // telegram_fsm.State cast to uint32
+	fsmIsPassiveSnapshot     atomic.Bool
 }
 
 // New constructs a Classifier in the given mode. The zero-value
@@ -257,10 +276,10 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 	return false
 }
 
-// driveFSMByte feeds one wire byte into the FSM and counts the
-// returned Decision. Single producer per the Classifier concurrency
-// contract; FSM state is NOT race-tolerant — callers MUST hold the
-// mux read goroutine identity.
+// driveFSMByte feeds one wire byte into the FSM, counts the
+// returned Decision, AND updates the atomic state snapshots so
+// concurrent diagnostic readers see fresh values. Single producer
+// per the Classifier concurrency contract.
 //
 // B3.4 OBSERVES the Decision but does NOT yet act on it. B3.6 will
 // extend this site with the ModeEnforce DropAaInjection path that
@@ -278,6 +297,23 @@ func (c *Classifier) driveFSMByte(b byte, wasEscaped bool) {
 	case telegram_fsm.DecisionProtocolFault:
 		c.fsmProtocolFaultTotal.Add(1)
 	}
+	c.publishFSMSnapshotLocked()
+}
+
+// publishFSMSnapshotLocked writes the FSM's current externally-
+// visible state into the atomic snapshot fields. "Locked" here
+// means "called from the single-producer Observe path" — the
+// snapshot writes are atomics, no mutex involved. Concurrent
+// readers (FSMState/FSMInternalState/FSMIsPassive) read ONLY from
+// these atomics, so they never race against c.fsm's mutable
+// fields.
+//
+// MUST be called after every FSM mutation in driveFSMByte,
+// fsmEnterPassive, and fsmReset.
+func (c *Classifier) publishFSMSnapshotLocked() {
+	c.fsmStateSnapshot.Store(uint32(c.fsm.State()))
+	c.fsmInternalStateSnapshot.Store(uint32(c.fsm.InternalState()))
+	c.fsmIsPassiveSnapshot.Store(c.fsm.IsPassive())
 }
 
 // fsmEnterPassive routes a StreamEventStarted or StreamEventFailed
@@ -287,17 +323,27 @@ func (c *Classifier) driveFSMByte(b byte, wasEscaped bool) {
 //
 // If the FSM is not currently in StateIdle (e.g. a stale Started
 // arrives while we're still tracking a prior telegram), the
-// EnterPassiveTracking call still wins — the FSM library treats it
-// as a forced reset-then-enter. This matches the wire-truth
-// invariant: an actual STARTED/FAILED on the wire MUST drive the
-// classifier's view, even if our prior state expected a different
-// continuation.
+// FSM library's EnterPassiveTracking implementation clears the
+// per-telegram fields (masterNN, masterBytesConsumed, masterDest,
+// retx counters, slaveNN) BEFORE setting the new
+// StateMasterHeader / passive=true. It does NOT call ResetToIdle
+// internally, but the field-clear is equivalent for the
+// classifier's purposes — no stale telegram-1 fields leak into
+// telegram-2 tracking. If the FSM library ever adds new
+// per-telegram fields that EnterPassiveTracking doesn't clear,
+// this site would need an explicit ResetToIdle prefix. (Codex
+// round-1 LOW finding on PR #641, 2026-05-19.)
+//
+// This matches the wire-truth invariant: an actual STARTED/FAILED
+// on the wire MUST drive the classifier's view, even if our
+// prior state expected a different continuation.
 func (c *Classifier) fsmEnterPassive(_ transport.StreamEvent) {
 	if c.fsm == nil {
 		return
 	}
 	c.fsm.EnterPassiveTracking()
 	c.fsmEnterPassiveTotal.Add(1)
+	c.publishFSMSnapshotLocked()
 }
 
 // fsmReset routes a StreamEventReset into the FSM's hard reset.
@@ -308,6 +354,7 @@ func (c *Classifier) fsmReset() {
 	}
 	c.fsm.ResetToIdle()
 	c.fsmResetTotal.Add(1)
+	c.publishFSMSnapshotLocked()
 }
 
 // classifyByteProvenance increments exactly one of the four
@@ -472,18 +519,22 @@ func (c *Classifier) PlainByteTotal() uint64 {
 // FSMState returns the current point-in-time snapshot of the
 // telegram FSM's externally-visible state (StatePassiveTracking
 // composite collapsed via Machine.State). Returns telegram_fsm.StateIdle
-// when fsm is nil (ModeOff or pre-construction). Safe to call from
-// other goroutines for diagnostics; concurrent readers see a
-// possibly-stale snapshot but no torn read.
+// when fsm is nil (ModeOff or pre-construction).
+//
+// Race-safe via the fsmStateSnapshot atomic: this accessor reads
+// ONLY the atomic field, never touches c.fsm directly. Concurrent
+// callers may see a snapshot one or two Observe calls stale but
+// will never see a torn read. (Codex round-1 HIGH finding on
+// PR #641: telegram_fsm.Machine is not thread-safe.)
 //
 // Phase 3 Step B3.4 exposes this primarily for shadow-mode
 // operator-visibility and for the wiring tests that assert the
 // FSM is actually being driven through telegram boundaries.
 func (c *Classifier) FSMState() telegram_fsm.State {
-	if c == nil || c.fsm == nil {
+	if c == nil {
 		return telegram_fsm.StateIdle
 	}
-	return c.fsm.State()
+	return telegram_fsm.State(c.fsmStateSnapshot.Load())
 }
 
 // FSMInternalState returns the FSM's raw sub-phase (un-collapsed
@@ -491,21 +542,27 @@ func (c *Classifier) FSMState() telegram_fsm.State {
 // telegram_fsm.StateIdle when fsm is nil. Useful for tests that
 // want to assert "the FSM is in MASTER_DATA right now" without
 // the StatePassiveTracking collapse hiding the sub-phase.
+//
+// Race-safe via the fsmInternalStateSnapshot atomic; same
+// stale-but-not-torn guarantee as FSMState.
 func (c *Classifier) FSMInternalState() telegram_fsm.State {
-	if c == nil || c.fsm == nil {
+	if c == nil {
 		return telegram_fsm.StateIdle
 	}
-	return c.fsm.InternalState()
+	return telegram_fsm.State(c.fsmInternalStateSnapshot.Load())
 }
 
 // FSMIsPassive reports whether the FSM is currently in
 // PASSIVE_TRACKING (we're observing a foreign initiator's
 // telegram). Returns false when fsm is nil.
+//
+// Race-safe via the fsmIsPassiveSnapshot atomic; same
+// stale-but-not-torn guarantee as FSMState.
 func (c *Classifier) FSMIsPassive() bool {
-	if c == nil || c.fsm == nil {
+	if c == nil {
 		return false
 	}
-	return c.fsm.IsPassive()
+	return c.fsmIsPassiveSnapshot.Load()
 }
 
 // FsmForwardTotal returns the cumulative count of

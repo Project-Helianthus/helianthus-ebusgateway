@@ -36,11 +36,41 @@ import (
 //         - Normal hard = 2 * L_rtt_EMA + 200ms.
 //
 // PR scope contract — B3.5 lands the COMPUTATION, not the wiring
-// into actual session emission. Schedule and RecordEcho can be
-// called by tests and (eventually) by session.go; they return
-// timing decisions without applying them. B3.6 will integrate the
-// pacer into session.go's sendCh draining path so the timing
-// decisions actually affect emission.
+// into actual session emission. Schedule, BeforeActiveWrite,
+// RecordEcho, and EchoDeadlines can be called by tests and
+// (eventually) by callsites in adaptermux; they return timing
+// decisions without applying them.
+//
+// B3.6 integration map (per Codex round-2 MEDIUM on PR #642 —
+// these two halves of the Pacer hook into DIFFERENT adaptermux
+// paths and must NOT be conflated):
+//
+//   - Output pacer (Schedule, LastScheduledEmit):
+//     hooks into session.go's TCP-egress path that pushes bytes
+//     back to the cross-proxy CLIENT. Per v8 §4.5 ("intra-
+//     telegram pacing"), each per-session sendCh-drain → conn.Write
+//     emission gets paced at τ_wire_byte. The relevant choke
+//     point is session.writeLoop (the goroutine draining sendCh
+//     to the client TCP socket).
+//
+//   - L_rtt regime (BeforeActiveWrite, RecordEcho, EchoDeadlines,
+//     ResetLrtt, Lrtt, InGraceBootstrap):
+//     hooks into the gateway's ADAPTER-WRITE path that puts bytes
+//     onto the eBUS wire. Per v8 §1.4 active-only sampling, the
+//     relevant choke point is mux.go's sendLoop / doSend (or
+//     wherever bytes reach transport.Write). The watchdog must
+//     arm BEFORE tr.Write fires, in this sequence:
+//        BeforeActiveWrite(now)        → maybe enter grace
+//        soft, hard, hardEnabled := EchoDeadlines()
+//        arm watchdog with (soft, hard, hardEnabled)
+//        tr.Write(byte)                → byte on wire
+//        ... wait for echo ...
+//        RecordEcho(echoRtt, now)      → EMA update + consume grace
+//
+//   - Conflating the two halves (applying BeforeActiveWrite at
+//     session.writeLoop, or applying Schedule at mux.doSend) would
+//     defeat the design — the v8 timing decisions hinge on these
+//     call sites being correctly distinguished.
 //
 // Concurrency: Pacer is a per-session state machine. A given
 // Pacer instance MUST be accessed serially by one goroutine
@@ -198,13 +228,16 @@ func (p *Pacer) SetTau(tau time.Duration) (accepted bool) {
 // max(now, lastScheduledEmit + tau), and lastScheduledEmit is
 // advanced to the returned value.
 //
-// Caller usage: a session writer goroutine that has a buffered
-// byte ready calls Schedule(time.Now()), then sleeps until the
-// returned time before pushing the byte to the client TCP egress.
+// Caller usage: session.writeLoop (the goroutine that drains
+// sendCh to the client's TCP socket — NOT the adapter-write
+// path) calls Schedule(time.Now()) for each byte before
+// conn.Write, sleeps until the returned time, then writes.
 //
-// PR B3.5 scope: this method is callable but the session writer
+// PR B3.5 scope: this method is callable but session.writeLoop
 // is NOT yet wired to use it. B3.6 integrates Schedule into
-// session.go's sendCh draining.
+// session.go's sendCh-draining loop (TCP egress to the
+// cross-proxy CLIENT — NOT the active-write path that goes to
+// the adapter via mux.go).
 func (p *Pacer) Schedule(now time.Time) time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -238,13 +271,22 @@ func (p *Pacer) LastScheduledEmit() time.Time {
 	return p.lastScheduledEmit
 }
 
-// BeforeActiveWrite is called by the session writer BEFORE arming
-// the echo-watchdog for a new active write. Per Codex round-1
-// MAJOR on PR #642: grace bootstrap MUST enter before the first
-// echo of a long-idle write, so the watchdog uses grace
-// deadlines on the very first post-idle echo. Doing the long-idle
-// check inside RecordEcho was too late — by then the first echo
-// had already been waited on with normal deadlines.
+// BeforeActiveWrite is called by the ADAPTER-WRITE path (NOT the
+// session TCP-egress path) BEFORE arming the echo-watchdog for a
+// new active write. The choke point is mux.go's sendLoop or
+// doSend — wherever the byte is about to hit transport.Write.
+// Per Codex round-1 MAJOR on PR #642: grace bootstrap MUST enter
+// before the first echo of a long-idle write, so the watchdog
+// uses grace deadlines on the very first post-idle echo. Doing
+// the long-idle check inside RecordEcho was too late — by then
+// the first echo had already been waited on with normal
+// deadlines.
+//
+// Calling at the wrong site (e.g. session.writeLoop / sendCh
+// draining) DEFEATS this fix because sendCh-draining is the TCP
+// egress back to the cross-proxy client, which does NOT cause
+// adapter echoes. Per Codex round-2 MEDIUM on PR #642: do NOT
+// conflate these two paths.
 //
 // Behavior:
 //   - If the pacer has prior echo history (lastEchoAt non-zero)

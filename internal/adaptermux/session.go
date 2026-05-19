@@ -765,6 +765,21 @@ func (s *session) writeFrame(frame sessionFrame) error {
 		return fmt.Errorf("adaptermux: unknown session frame kind %d", frame.kind)
 	}
 
+	// B3.6 INTEGRATION HOOK POINT (Phase 3, frame-atomic-visibility
+	// v8 §4.5): this is the TCP-egress choke point where the
+	// v8classifier.Pacer's Schedule must be consulted when
+	// V8ClassifierMode != Off and the session is a cross-proxy
+	// observer. See internal/adaptermux/v8classifier/pacer.go for
+	// the API; the pacer is a per-session struct that lands in
+	// B3.6 (not yet instantiated in B3.5). Sequence per the
+	// pacer's design:
+	//   emitAt := pacer.Schedule(time.Now())
+	//   if emitAt.After(time.Now()) { sleep until emitAt }
+	//   s.conn.Write(buf)                          <-- here
+	// Do NOT conflate this hook point with mux.doSend's tr.Write
+	// (that's the L_rtt-EMA / BeforeActiveWrite side per v8 §1.4,
+	// which uses BeforeActiveWrite + EchoDeadlines + RecordEcho
+	// against the adapter, NOT the client's TCP egress).
 	_, err := s.conn.Write(buf)
 	return err
 }

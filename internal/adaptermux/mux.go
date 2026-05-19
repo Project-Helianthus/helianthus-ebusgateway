@@ -4196,6 +4196,23 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 	// recordSent without the matching matchEcho consumer would let the
 	// per-session queue grow to the 256-byte cap and trigger spurious
 	// totalOverflowResets alarms every 256 external SENDs.
+	// B3.6 INTEGRATION HOOK POINT (Phase 3, frame-atomic-visibility
+	// v8 §1.4 / §4.5): this is the adapter-write choke point where
+	// the v8classifier.Pacer's BeforeActiveWrite + EchoDeadlines +
+	// (after tr.Write completes and the echo arrives) RecordEcho
+	// must be invoked when V8ClassifierMode != Off. See
+	// internal/adaptermux/v8classifier/pacer.go for the API; the
+	// pacer is a per-session struct that lands in B3.6 (not yet
+	// instantiated in B3.5). Sequence per the pacer's design:
+	//   pacer.BeforeActiveWrite(now)
+	//   soft, hard, hardEnabled := pacer.EchoDeadlines()
+	//   arm watchdog with (soft, hard, hardEnabled)
+	//   tr.Write(byte)                            <-- here
+	//   ... wait for echo arrival ...
+	//   pacer.RecordEcho(echoRtt, echoArrivedAt)
+	// Do NOT conflate this hook point with session.writeLoop's
+	// sendCh draining (that's the OUTPUT pacer side per v8 §4.5,
+	// which uses Schedule / LastScheduledEmit instead).
 	_, err := tr.Write([]byte{data})
 	if err != nil {
 		return fmt.Errorf("%w: %v", errAdapterWrite, err)

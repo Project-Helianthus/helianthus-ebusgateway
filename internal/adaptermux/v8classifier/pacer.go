@@ -242,6 +242,26 @@ type Pacer struct {
 	// delayed, distinguishing it from no-arm misconfigurations.
 	softTimeoutTotal uint64
 	hardTimeoutTotal uint64
+
+	// onTimeoutEnterHook is a TEST-ONLY synchronization hook,
+	// invoked by onSoftTimeout / onHardTimeout BEFORE the
+	// p.mu.Lock() that performs the generation check. Production
+	// callers leave it nil; the
+	// TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic test
+	// uses it to deterministically interleave a Cancel call
+	// between the timer fire and the lock acquisition — the
+	// exact race that Codex round-1 MUST FIX #1 closes.
+	//
+	// Per Codex round-2 MAJOR #1 on PR #647: the earlier
+	// counter-poll-based race test only exercised the race after
+	// the fire callback had fully completed, which the
+	// generation guard didn't actually defend against. The hook
+	// pauses the callback at the perfect spot for the race to
+	// be deterministic.
+	//
+	// Unexported (lowercase). Test access uses a same-package
+	// helper in pacer_test.go.
+	onTimeoutEnterHook func()
 }
 
 // AdminEventEmitFunc is the callback signature for echo-watchdog
@@ -656,6 +676,14 @@ func (p *Pacer) cancelTimersLocked() {
 // Codex round-1 MUST FIX #1 on PR #647: takes `gen` (the
 // generation value captured BY VALUE in the AfterFunc closure at
 // arm time) and no-ops if it no longer matches p.armGeneration.
+// Codex round-2 LOW #1 comment refresh: this is GENERATION
+// checking, not pointer identity. The earlier pointer-identity
+// approach was abandoned because the closure capturing `softT`
+// by reference raced (race detector flagged the unsynchronized
+// read in the timer-fire goroutine against the write in the
+// arm goroutine). Generation values are captured by value into
+// the closure — no shared mutable state.
+//
 // This guards against the Stop()-returns-false race: when
 // ArmEchoWatchdog cancels a timer that has already fired (or is
 // in the process of firing), the stale callback would otherwise
@@ -663,11 +691,21 @@ func (p *Pacer) cancelTimersLocked() {
 // landed and (b) clear the NEWER arm's timer pointer
 // (`p.softTimer = nil`), breaking cancel semantics for the
 // in-flight write. Generation-checking makes both effects
-// impossible — AND avoids the data race the pointer-identity
-// variant had (closure captures variable by reference; race
-// detector flags the unsynchronized write/read on that variable).
+// impossible.
+//
+// Generation overflow is not practically reachable (2^64
+// arm/cancel pairs takes centuries at any realistic rate).
+// Codex round-2 confirmed not blocking.
 func (p *Pacer) onSoftTimeout(gen uint64) {
 	now := time.Now()
+	// Codex round-2 MAJOR #1 on PR #647: test-only hook fires
+	// BEFORE the lock acquisition so a test can deterministically
+	// race a Cancel call against this fire callback. nil in
+	// production; lock-free read is fine because tests serialize
+	// the set vs the timer-fire arrival.
+	if hook := p.onTimeoutEnterHook; hook != nil {
+		hook()
+	}
 	p.mu.Lock()
 	if p.armGeneration != gen {
 		// Stale fire — this callback belonged to a previously
@@ -690,9 +728,16 @@ func (p *Pacer) onSoftTimeout(gen uint64) {
 }
 
 // onHardTimeout is the hard-timer fire callback. Same locking +
-// generation-check pattern as onSoftTimeout.
+// generation-check pattern as onSoftTimeout. Codex round-2 LOW
+// #1: comment refresh — generation, not pointer identity.
 func (p *Pacer) onHardTimeout(gen uint64) {
 	now := time.Now()
+	// Codex round-2 MAJOR #1 on PR #647: same test-only hook
+	// pattern as onSoftTimeout. Production: nil; tests: optional
+	// synchronization point.
+	if hook := p.onTimeoutEnterHook; hook != nil {
+		hook()
+	}
 	p.mu.Lock()
 	if p.armGeneration != gen {
 		p.mu.Unlock()

@@ -896,6 +896,16 @@ func (m *Mux) Close() error {
 		}
 		m.connMu.Unlock()
 
+		// Codex round-2 MUST FIX on PR #647: cancel any pending
+		// gateway echo watchdog. Close is the strongest teardown
+		// boundary; an armed watchdog could otherwise fire a soft
+		// or hard timeout admin event AFTER Close returned, which
+		// would surface as a phantom event on a mux that has
+		// already shut down.
+		if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+			pacer.CancelEchoWatchdog()
+		}
+
 		m.wg.Wait()
 	})
 	return m.closeErr
@@ -1301,6 +1311,13 @@ func (m *Mux) reconnect() error {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonReconnect)
 	}
+	// Codex round-2 MUST FIX on PR #647: reconnect tears down
+	// gateway echo state — the in-flight watchdog is no longer
+	// meaningful (the byte's echo will never arrive over the
+	// replaced transport). Cancel here, NOT inside the SessionPacer
+	// nil-check block above — the cancel call uses the pacer's
+	// own mutex (independent of stateMu) and is nested-lock free.
+	pacerToCancel := m.SessionPacer(gatewaySessionID)
 	// Bump gen forward (monotonic) — any in-flight goroutine's captured
 	// arbGen will no longer match, so it cannot clear blockingArbActive.
 	// Clear blockingArbActive here because the transport is being replaced.
@@ -1324,6 +1341,12 @@ func (m *Mux) reconnect() error {
 		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 	}
 	m.stateMu.Unlock()
+
+	// Cancel the pacer watchdog OUTSIDE stateMu (Codex round-2
+	// MUST FIX on PR #647 — see captured pacerToCancel above).
+	if pacerToCancel != nil {
+		pacerToCancel.CancelEchoWatchdog()
+	}
 
 	// Cancel in-flight pending START if any.
 	if pendingToCancel != nil {
@@ -1455,6 +1478,7 @@ func (m *Mux) readLoop() {
 				// Enforce ownership timeout on quiet bus — onReceived
 				// won't run to check MaxOwnershipDuration.
 				quietBusTimedOut := false
+				var quietBusOwnerWasGateway bool
 				m.stateMu.Lock()
 				ownerID, _, hasOwner := m.arb.owner()
 				if hasOwner && !m.busOwned.IsZero() &&
@@ -1464,10 +1488,22 @@ func (m *Mux) readLoop() {
 					if ownerID == gatewaySessionID && m.gatewayTxnActive {
 						m.gatewayTxnActive = false
 						m.recordGatewayInactive(ReasonMaxOwnership)
+						quietBusOwnerWasGateway = true
 					}
 					quietBusTimedOut = true
 				}
 				m.stateMu.Unlock()
+				// Codex round-2 MUST FIX on PR #647: if the
+				// gateway lost ownership via max-duration timeout
+				// while a watchdog was armed, the echo will never
+				// arrive on this transport instance — cancel so
+				// no stale soft/hard fire emits an admin event
+				// for a write whose context is gone.
+				if quietBusOwnerWasGateway {
+					if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+						pacer.CancelEchoWatchdog()
+					}
+				}
 
 				// F-18: per-session echo trackers removed; nothing to
 				// reset for external sessions on ownership timeout.
@@ -1961,6 +1997,7 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// AM11: track ownership timeout so we can reset external session
 	// echo trackers after releasing stateMu (ABBA avoidance).
 	ownershipTimedOut := false
+	var ownershipTimedOutGateway bool
 	if hasOwner && !m.busOwned.IsZero() &&
 		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 		m.arb.releaseOwnership(ownerID)
@@ -1968,6 +2005,7 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 		if ownerID == gatewaySessionID && m.gatewayTxnActive {
 			m.gatewayTxnActive = false
 			m.recordGatewayInactive(ReasonMaxOwnership)
+			ownershipTimedOutGateway = true
 		}
 		hasOwner = false
 		ownershipTimedOut = true
@@ -2016,6 +2054,14 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 		// to perform. Gateway-side echo handling continues unchanged
 		// via m.gatewayEcho.
 		_ = ownershipTimedOut
+		// Codex round-2 MUST FIX on PR #647: if the gateway lost
+		// ownership via max-duration timeout while a watchdog was
+		// armed, the echo will never arrive — cancel.
+		if ownershipTimedOutGateway {
+			if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+				pacer.CancelEchoWatchdog()
+			}
+		}
 
 		// --- Phase 2: deliver outside all locks ---
 
@@ -2166,6 +2212,14 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// F-18: per-session echo trackers removed; nothing to reset on
 	// ownership timeout.
 	_ = ownershipTimedOut
+	// Codex round-2 MUST FIX on PR #647: cancel the gateway
+	// watchdog when ownership was forcibly released. Mirror of
+	// the same cancel at the SYN-branch unlock above.
+	if ownershipTimedOutGateway {
+		if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+			pacer.CancelEchoWatchdog()
+		}
+	}
 
 	// --- Phase 2: deliver outside all locks ---
 	// Codex PR #502 P2: revalidate active-path gating atomically with
@@ -2853,6 +2907,7 @@ func (m *Mux) handleReset() {
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
+	wasGatewayActive := m.gatewayTxnActive
 	if m.gatewayTxnActive {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonReset)
@@ -2873,6 +2928,21 @@ func (m *Mux) handleReset() {
 		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 	}
 	m.stateMu.Unlock()
+
+	// Codex round-2 MUST FIX on PR #647: a RESETTED boundary
+	// erases any in-flight gateway transaction. Cancel the
+	// watchdog OUTSIDE stateMu so the pacer mutex doesn't nest
+	// inside stateMu. The gateway-active condition was captured
+	// under stateMu above (wasGatewayActive); the cancel is
+	// idempotent so racing a concurrent ArmEchoWatchdog (which
+	// can't happen here because the only producer is sendLoop's
+	// gateway-only block, and post-reset there is no gateway
+	// transaction) is still safe.
+	if wasGatewayActive {
+		if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+			pacer.CancelEchoWatchdog()
+		}
+	}
 
 	// Cancel in-flight pending START if any.
 	if pendingToCancel != nil {

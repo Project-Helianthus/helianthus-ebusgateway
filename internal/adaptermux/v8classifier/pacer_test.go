@@ -957,3 +957,113 @@ type emitMutex struct {
 
 func (e *emitMutex) Lock()   { e.m.Lock() }
 func (e *emitMutex) Unlock() { e.m.Unlock() }
+
+// TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic pins
+// the EXACT race that Codex round-1 MUST FIX #1 closes: a timer
+// fire callback that has reached the AfterFunc goroutine but has
+// not yet acquired the Pacer mutex, while a concurrent
+// CancelEchoWatchdog bumps the generation. Without the
+// generation guard the stale fire would (a) increment
+// softTimeoutTotal and (b) clear p.softTimer for a NEWER arm.
+//
+// Codex round-2 MAJOR #1 on PR #647: the prior race test
+// (TestPacer_ArmEchoWatchdog_StaleFireRaceNoOp) only checked
+// AFTER the fire callback completed — by then the generation
+// guard had already fired. This test uses the onTimeoutEnterHook
+// to pause the callback at the deterministic race window.
+func TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	// Block soft-fire callback BEFORE its lock acquisition.
+	released := make(chan struct{})
+	entered := make(chan struct{})
+	p.onTimeoutEnterHook = func() {
+		select {
+		case <-entered:
+			// already signalled — second fire (e.g. hard timer
+			// after a soft-only race) re-enters but doesn't
+			// re-signal.
+		default:
+			close(entered)
+		}
+		<-released
+	}
+
+	p.ArmEchoWatchdog(time.Now())
+	// Wait for the soft-fire callback to enter the hook.
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("soft fire callback did not enter onTimeoutEnterHook within 2s")
+	}
+	// Cancel the watchdog — bumps generation. The blocked
+	// callback below should observe the mismatched gen and
+	// no-op when we release it.
+	p.CancelEchoWatchdog()
+	// Also re-arm to ensure the stale callback can't clobber the
+	// new arm's softTimer pointer (the load-bearing part of MUST
+	// FIX #1's second effect).
+	p.onTimeoutEnterHook = nil // clear hook before re-arm so the new arm doesn't deadlock
+	p.ArmEchoWatchdog(time.Now())
+	// Release the stale callback. It should observe the new
+	// generation and no-op.
+	close(released)
+
+	// Give the stale callback a moment to run + bail out, then
+	// cancel the new arm cleanly.
+	time.Sleep(50 * time.Millisecond)
+
+	// PRIMARY ASSERTION: softTimeoutTotal stayed at 0. The stale
+	// callback did NOT increment.
+	if got := p.SoftTimeoutTotal(); got != 0 {
+		t.Errorf("SoftTimeoutTotal() = %d after stale fire was released; want 0 (stale fire must no-op via gen mismatch)", got)
+	}
+	// SECONDARY ASSERTION: the new arm's softTimer is still set
+	// (was NOT cleared by the stale fire's p.softTimer = nil).
+	if !p.WatchdogArmed() {
+		t.Error("WatchdogArmed() = false after stale fire; want true (stale fire must not clear the new arm's softTimer)")
+	}
+	p.CancelEchoWatchdog()
+}
+
+// TestPacer_EmitterMayReArm pins Codex round-2 MEDIUM #1: the
+// emitter callback may safely call ArmEchoWatchdog (not just
+// the read-only WatchdogArmed / SoftTimeoutTotal). The earlier
+// reentry test covered read-only methods; this one covers the
+// state-mutating Arm path.
+//
+// Mechanics: the emitter Arms a NEW watchdog from inside the
+// fire callback. The first arm fired (incremented counter to
+// 1) and called the emitter; the emitter re-arms; cancel and
+// confirm the counter stayed at 1 (the re-armed timer did not
+// also fire).
+func TestPacer_EmitterMayReArm(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	var armOnce sync.Once
+	armed := make(chan struct{})
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		armOnce.Do(func() {
+			// Re-arm from inside the emitter. If the Pacer mutex
+			// were still held this would deadlock.
+			p.ArmEchoWatchdog(time.Now())
+			close(armed)
+		})
+	})
+
+	p.ArmEchoWatchdog(time.Now())
+	select {
+	case <-armed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emitter's ArmEchoWatchdog call did not complete within 2s — likely deadlock")
+	}
+
+	// Cancel the re-armed watchdog cleanly. The total count
+	// reflects ONLY the first arm's fire (the re-armed timer
+	// was cancelled before it could fire).
+	p.CancelEchoWatchdog()
+
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Errorf("SoftTimeoutTotal() = %d after re-arm-from-emitter + cancel; want 1 (only first arm fired)", got)
+	}
+}

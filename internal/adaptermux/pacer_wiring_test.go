@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 )
 
@@ -158,6 +160,139 @@ func TestSessionPacer_DoSend_GatewayInvokesBeforeActiveWrite(t *testing.T) {
 	}
 	if got := pacer.BeforeActiveWriteTotal(); got != uint64(len(req)) {
 		t.Errorf("BeforeActiveWriteTotal() = %d; want %d (one per byte written)", got, len(req))
+	}
+}
+
+// TestSessionPacer_RecordEcho_OnGatewayEchoMatch pins the Phase 3
+// Step B3.6d behavioral contract: when the gateway writes a byte
+// AND the adapter echoes it back AND mode != Off, the matched
+// echo's RTT MUST be fed to the gateway pacer's L_rtt EMA via
+// RecordEcho. The L_rtt EMA moves off its bootstrap value
+// (LrttBootstrapInitial = 100ms) only when this wiring is correct.
+func TestSessionPacer_RecordEcho_OnGatewayEchoMatch(t *testing.T) {
+	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	pacer := mux.SessionPacer(gatewaySessionID)
+	if pacer == nil {
+		t.Fatal("gateway pacer nil in ModeShadow")
+	}
+	if got := pacer.RecordedSamples(); got != 0 {
+		t.Fatalf("precondition: RecordedSamples = %d; want 0", got)
+	}
+
+	// Grant the gateway, write a byte, then inject the echo on
+	// the upstream mock — this fires matchEchoWithTime →
+	// pacer.RecordEcho.
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err: %v", err)
+	}
+
+	// Echo back. The mock's StreamEventByte arrives at readLoop
+	// which calls matchEchoWithTime.
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0x71, WasEscaped: false,
+	}
+
+	// Poll until RecordedSamples reaches 1.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if pacer.RecordedSamples() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := pacer.RecordedSamples(); got != 1 {
+		t.Errorf("RecordedSamples() = %d; want 1 (echo match should feed RecordEcho)", got)
+	}
+}
+
+// TestSessionPacer_RecordEcho_OffMode_NoSamples pins the
+// production-default invariant: in ModeOff, no L_rtt sample fires
+// even when the gateway echoes are matched, AND no per-byte
+// time.Time slot is allocated in echoTracker.expectedWriteTimes
+// (Codex round-1 MAJOR on PR #646 — ModeOff must be true zero
+// overhead, not "harmless time.Time{} append per byte").
+//
+// Postcondition checked: after a full grant + write + echo round
+// trip, the gateway pacer slot is STILL nil (no lazy allocation
+// on the hot path) and the gateway echoTracker's
+// expectedWriteTimes queue is STILL empty (proves the legacy
+// recordSent path was taken, not recordSentWithTime). Either
+// failure would indicate a regression where the v8 != nil
+// short-circuit at doSend / matchEcho leaked back into the
+// ModeOff configuration.
+func TestSessionPacer_RecordEcho_OffMode_NoSamples(t *testing.T) {
+	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeOff)
+	defer cleanup()
+
+	if got := mux.SessionPacer(gatewaySessionID); got != nil {
+		t.Fatalf("precondition: SessionPacer in ModeOff = %v; want nil", got)
+	}
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err: %v", err)
+	}
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0x71, WasEscaped: false,
+	}
+
+	// Brief settle so the echo-match path completes on the read
+	// goroutine before we inspect tracker state.
+	time.Sleep(100 * time.Millisecond)
+
+	// PRIMARY assertion: ModeOff still has no gateway pacer. Any
+	// drift toward lazy-allocate on the hot path would surface
+	// here as a non-nil pointer.
+	if got := mux.SessionPacer(gatewaySessionID); got != nil {
+		t.Errorf("post-echo: SessionPacer in ModeOff = %v; want nil (no lazy-allocate on hot path)", got)
+	}
+
+	// SECONDARY assertion: the gateway echoTracker took the
+	// legacy recordSent path (no timestamp). expectedWriteTimes
+	// must be empty AFTER the write+match round trip — proves
+	// the per-byte time.Time slot allocation did NOT happen.
+	mux.stateMu.Lock()
+	wtLen := len(mux.gatewayEcho.expectedWriteTimes)
+	mux.stateMu.Unlock()
+	if wtLen != 0 {
+		t.Errorf("post-echo: gatewayEcho.expectedWriteTimes length = %d; want 0 (ModeOff must skip timestamp allocation)", wtLen)
+	}
+}
+
+// TestEchoTracker_LegacyRecordSent_NoWriteAtSlot pins the
+// echo_tracker.go side of the conditional lockstep invariant
+// (Codex round-1 MAJOR on PR #646): the legacy recordSent path
+// MUST NOT touch expectedWriteTimes. A focused unit test on the
+// tracker alone — no Mux setup required.
+func TestEchoTracker_LegacyRecordSent_NoWriteAtSlot(t *testing.T) {
+	t.Parallel()
+	tr := newEchoTracker()
+	for _, b := range []byte{0x71, 0x08, 0x07, 0x04, 0x00} {
+		tr.recordSent(b)
+	}
+	if got := len(tr.expectedEchoes); got != 5 {
+		t.Errorf("expectedEchoes length = %d; want 5", got)
+	}
+	if got := len(tr.expectedWriteTimes); got != 0 {
+		t.Errorf("expectedWriteTimes length = %d; want 0 (legacy recordSent must NOT append timestamp slots)", got)
+	}
+	// matchEchoWithTime on a legacy-populated tracker MUST
+	// report hasWriteAt=false for every match — no L_rtt sample
+	// possible without a recorded writeAt.
+	result, _, writeAt, hasWriteAt := tr.matchEchoWithTime(0x71, false)
+	if result != echoMatchSuppressed {
+		t.Errorf("matchEchoWithTime result = %v; want echoMatchSuppressed", result)
+	}
+	if hasWriteAt {
+		t.Error("hasWriteAt = true on legacy-recorded byte; want false (no timestamp captured)")
+	}
+	if !writeAt.IsZero() {
+		t.Errorf("writeAt = %v on legacy-recorded byte; want zero", writeAt)
 	}
 }
 

@@ -2091,7 +2091,25 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// we preserve the queue across stale bytes.
 	matchWouldHit := !hadPendingEcho || (hadPendingEcho && symbol == preMatchHead)
 	if isGatewayOwned && matchWouldHit {
-		m.gatewayEcho.matchEcho(symbol, wasEscaped) // track echo state internally
+		// Phase 3 Step B3.6d (Codex round-1 MAJOR on PR #646):
+		// gate the time-tracking match path on m.v8 != nil. In
+		// ModeOff (m.v8 == nil) we call the legacy matchEcho and
+		// skip both time.Now() at the match site AND the writeAt
+		// pop in matchEchoWithTime — restoring the documented
+		// "zero overhead in ModeOff" contract. When v8 is on, the
+		// echo timestamp from matchEchoWithTime feeds RTT into the
+		// gateway pacer's L_rtt EMA.
+		if m.v8 != nil {
+			echoNow := time.Now()
+			result, _, writeAt, hasWriteAt := m.gatewayEcho.matchEchoWithTime(symbol, wasEscaped)
+			if result == echoMatchSuppressed && hasWriteAt {
+				if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+					pacer.RecordEcho(echoNow.Sub(writeAt), echoNow)
+				}
+			}
+		} else {
+			m.gatewayEcho.matchEcho(symbol, wasEscaped)
+		}
 	}
 	// P11 — gate activeCh delivery: mid-write requires queue-head match;
 	// response phase (no pending writes) accepts any byte.
@@ -4233,7 +4251,19 @@ func (m *Mux) sendLoop() {
 					m.gatewayTxnActive = true
 				}
 				m.recordWritePrefix(req.data)
-				m.gatewayEcho.recordSent(req.data)
+				// Phase 3 Step B3.6d (Codex round-1 MAJOR on PR
+				// #646): gate the time-tracking record path on
+				// m.v8 != nil. In ModeOff (m.v8 == nil) we call
+				// the legacy recordSent which appends only to
+				// expectedEchoes — NO time.Now() call, NO
+				// time.Time slot allocation per byte. When v8 is
+				// on we capture time.Now() so the matching site
+				// can compute RTT for the L_rtt EMA.
+				if m.v8 != nil {
+					m.gatewayEcho.recordSentWithTime(req.data, time.Now())
+				} else {
+					m.gatewayEcho.recordSent(req.data)
+				}
 				m.stateMu.Unlock()
 			}
 			err := m.doSend(req.sessionID, req.data)

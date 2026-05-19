@@ -291,9 +291,11 @@ func TestClassifier_PendingAdminEvents_ReflectsBuffer(t *testing.T) {
 //
 // Invariant: total_drained + final_drain + dropped == total_emitted.
 // Every emitted event either:
-//   (a) gets drained mid-run, OR
-//   (b) gets drained on the final flush, OR
-//   (c) gets dropped (counted in `dropped`).
+//
+//	(a) gets drained mid-run, OR
+//	(b) gets drained on the final flush, OR
+//	(c) gets dropped (counted in `dropped`).
+//
 // No event silently disappears.
 //
 // The mutex inside adminEventBuffer guarantees no data race;

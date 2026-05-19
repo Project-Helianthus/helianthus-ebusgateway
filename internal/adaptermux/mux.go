@@ -1408,15 +1408,28 @@ func (m *Mux) readLoop() {
 		firstTimeoutTime = time.Time{} // AM27: reset timeout streak on successful read
 		lastDataTime = time.Now()      // AM27: track last data for blackhole detection
 
-		// Phase 3 Step B3.2: route every StreamEvent through the v8
-		// classifier BEFORE the dispatch switch. The nil-guard
-		// short-circuits BOTH the method call AND the time.Now()
-		// evaluation when the classifier is off (production default),
-		// keeping the hot-path overhead at zero. B3.2 scaffold:
-		// `drop` is always false; future stacked PRs (B3.3..B3.7)
-		// will honor the return value at appropriate dispatch sites.
+		// Phase 3 Step B3.2 / B3.6b: route every StreamEvent through
+		// the v8 classifier BEFORE the dispatch switch. The
+		// nil-guard short-circuits BOTH the method call AND the
+		// time.Now() evaluation when the classifier is off
+		// (production default), keeping the hot-path overhead at
+		// zero.
+		//
+		// B3.6b: in ModeEnforce the classifier may return drop=true
+		// for AA-injection bytes (FSM DecisionDropAaInjection).
+		// When that happens we SKIP the legacy dispatch entirely
+		// for THIS event — the byte is filtered out of session
+		// streams, classifier counters still record it via
+		// EnforceDropsAppliedTotal + fsmDropAaInjectionTotal.
+		//
+		// ModeShadow always returns drop=false even when the FSM
+		// recommends a drop — operators run Shadow first to
+		// validate the classifier against the wire before
+		// promoting to Enforce.
 		if m.v8 != nil {
-			_ = m.v8.Observe(event, time.Now())
+			if m.v8.Observe(event, time.Now()) {
+				continue
+			}
 		}
 
 		switch event.Kind {

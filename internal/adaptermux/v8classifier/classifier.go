@@ -197,6 +197,24 @@ type Classifier struct {
 	// expvar, or a poll goroutine that pushes to logs) — none of
 	// those paths bridge back to client byte streams.
 	adminEvents adminEventBuffer
+
+	// Phase 3 Step B3.6b (v8 §4 AA-injection filter): cumulative
+	// count of bytes the classifier ACTUALLY DROPPED in
+	// ModeEnforce. Distinct from fsmDropAaInjectionTotal:
+	//   - fsmDropAaInjectionTotal counts every time the FSM
+	//     returned DecisionDropAaInjection, in ALL modes
+	//     (including Shadow, where the drop is observed but NOT
+	//     applied — the byte still reaches onReceived).
+	//   - enforceDropsAppliedTotal counts only the cases where
+	//     mode == Enforce AND Observe returned drop=true to its
+	//     caller (the mux's readLoop).
+	// In ModeShadow this counter stays at 0 even when
+	// fsmDropAaInjectionTotal accumulates. The difference between
+	// the two counters under sustained Shadow operation is the
+	// "would have dropped if we were enforcing" estimate — useful
+	// for pre-enforce validation runs (Step C live-bus
+	// validation, B3.7).
+	enforceDropsAppliedTotal atomic.Uint64
 }
 
 // New constructs a Classifier in the given mode. The zero-value
@@ -256,8 +274,16 @@ func (c *Classifier) Mode() Mode {
 //
 // Returns true if the caller should DROP this event from emission
 // to sessions. In ModeOff / ModeShadow the return is always false.
-// In B3.3 ModeEnforce also returns false (real filtering lands in
-// B3.6). Callers MAY ignore the return value until B3.6.
+//
+// Phase 3 Step B3.6b (v8 §4 AA-injection filter): ModeEnforce now
+// returns true when the byte is StreamEventByte AND the FSM
+// returns DecisionDropAaInjection. The caller (Mux.readLoop) MUST
+// honor this signal by skipping the byte's dispatch to onReceived
+// — otherwise sessions would still see the AA-injection bytes and
+// the v8 filter would be a no-op. The drop is also counted in
+// enforceDropsAppliedTotal so operators can distinguish
+// "would-have-dropped" (fsmDropAaInjectionTotal, all modes) from
+// "actually-dropped" (enforceDropsAppliedTotal, Enforce only).
 func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop bool) {
 	if c == nil || c.mode == ModeOff {
 		return false
@@ -272,7 +298,13 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 	switch event.Kind {
 	case transport.StreamEventByte:
 		c.classifyByteProvenance(event.Byte, event.WasEscaped)
-		c.driveFSMByte(event.Byte, event.WasEscaped, now)
+		// driveFSMByte returns true when the byte should be
+		// dropped in the current mode. Propagate to the caller.
+		drop = c.driveFSMByte(event.Byte, event.WasEscaped, now)
+		if drop {
+			c.enforceDropsAppliedTotal.Add(1)
+		}
+		return drop
 	case transport.StreamEventStarted, transport.StreamEventFailed:
 		// Both events signal "a telegram is starting on the wire and
 		// event.Data carries QQ" — the FSM's EnterPassiveTracking
@@ -296,13 +328,25 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 // concurrent diagnostic readers see fresh values. Single producer
 // per the Classifier concurrency contract.
 //
+// Returns true when the caller (Observe) should propagate
+// drop=true to the mux's readLoop. This is governed by the v8 §4
+// AA-injection filter rules:
+//
+//   - ModeOff / ModeShadow: always returns false (Shadow OBSERVES
+//     the FSM decision but does NOT yet alter the byte stream).
+//   - ModeEnforce + DecisionDropAaInjection: returns true. The
+//     byte is dropped from session dispatch. The drop counter
+//     (enforceDropsAppliedTotal) is bumped in Observe.
+//   - ModeEnforce + DecisionProtocolFault: returns false — per
+//     v8 invariant I10, PROTOCOL_FAULT bytes are STILL forwarded
+//     to all observers; the admin event is the operator-facing
+//     notification only.
+//
 // The `now` parameter is the monotonic-clock observation time
 // for this byte, threaded down from Observe (per Codex round-1
-// MEDIUM on PR #643). Using this instead of an internal
-// time.Now() call keeps the classifier's clock path
-// deterministic and avoids one syscall per fault-cascade byte.
+// MEDIUM on PR #643).
 //
-// Phase 3 Step B3.6a: DecisionProtocolFault now also emits a
+// Phase 3 Step B3.6a: DecisionProtocolFault emits a
 // ClassifierAdminEvent into the per-classifier admin-event ring
 // buffer (out-of-band per v8 I1 — NEVER into client byte streams).
 //
@@ -314,12 +358,9 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 // If a future operator dashboard needs exact correlation, a
 // combined snapshot API would have to be added. (Codex round-1
 // LOW on PR #643 — explicit documentation.)
-//
-// B3.6b will extend this site with the ModeEnforce
-// DropAaInjection path that makes Observe return drop=true.
-func (c *Classifier) driveFSMByte(b byte, wasEscaped bool, now time.Time) {
+func (c *Classifier) driveFSMByte(b byte, wasEscaped bool, now time.Time) (drop bool) {
 	if c.fsm == nil {
-		return
+		return false
 	}
 	decision := c.fsm.Feed(b, wasEscaped)
 	switch decision {
@@ -327,14 +368,20 @@ func (c *Classifier) driveFSMByte(b byte, wasEscaped bool, now time.Time) {
 		c.fsmForwardTotal.Add(1)
 	case telegram_fsm.DecisionDropAaInjection:
 		c.fsmDropAaInjectionTotal.Add(1)
+		// Phase 3 Step B3.6b: ModeEnforce honors the FSM's drop
+		// decision. ModeShadow counts but does NOT alter the byte
+		// stream — operators run shadow first to validate the
+		// classifier against the wire before promoting to enforce.
+		if c.mode == ModeEnforce {
+			drop = true
+		}
 	case telegram_fsm.DecisionProtocolFault:
 		c.fsmProtocolFaultTotal.Add(1)
 		// Emit out-of-band admin event. Per v8 invariant I10 the
 		// byte is STILL forwarded to all observers (PROTOCOL_FAULT
 		// visibility); the admin event is the operator-facing
-		// notification only. Caller proceeds with whatever
-		// emission policy applies — the admin emit does not gate
-		// the byte stream.
+		// notification only. drop stays false — fault bytes are
+		// NEVER filtered out regardless of mode.
 		c.adminEvents.emit(ClassifierAdminEvent{
 			At:         now,
 			Kind:       AdminEventKindProtocolFault,
@@ -344,6 +391,7 @@ func (c *Classifier) driveFSMByte(b byte, wasEscaped bool, now time.Time) {
 		})
 	}
 	c.publishFSMSnapshotLocked()
+	return drop
 }
 
 // publishFSMSnapshotLocked writes the FSM's current externally-
@@ -702,4 +750,29 @@ func (c *Classifier) PendingAdminEvents() int {
 		return 0
 	}
 	return c.adminEvents.pending()
+}
+
+// EnforceDropsAppliedTotal returns the cumulative count of bytes
+// the classifier ACTUALLY DROPPED from session dispatch under
+// ModeEnforce. Phase 3 Step B3.6b (v8 §4 AA-injection filter).
+//
+// Relationship to fsmDropAaInjectionTotal:
+//   - fsmDropAaInjectionTotal: count of FSM DecisionDropAaInjection
+//     verdicts, in ALL modes (Shadow counts even though it doesn't
+//     enforce).
+//   - EnforceDropsAppliedTotal: subset where mode == Enforce AND
+//     Observe returned drop=true to the mux's readLoop.
+//
+// During a Shadow validation run before enforce promotion, the
+// difference (fsmDropAaInjectionTotal - EnforceDropsAppliedTotal)
+// is the "would have dropped" estimate operators can use to
+// project enforce impact.
+//
+// Returns 0 in ModeOff or when the classifier is nil. Safe to
+// call from any goroutine.
+func (c *Classifier) EnforceDropsAppliedTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.enforceDropsAppliedTotal.Load()
 }

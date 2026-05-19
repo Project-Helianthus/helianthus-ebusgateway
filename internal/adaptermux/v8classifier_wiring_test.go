@@ -2,6 +2,8 @@ package adaptermux
 
 import (
 	"context"
+	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -268,46 +270,303 @@ func TestV8Classifier_ShadowMode_FSMDrivenThroughMux(t *testing.T) {
 	}
 }
 
-// TestV8Classifier_EnforceMode_InstantiatedAndObservesButDoesNotDrop
-// pins the B3.2-scaffold invariant for enforce mode: even when the
-// caller explicitly opts in to ModeEnforce, the classifier in this
-// PR ONLY observes; it does NOT yet drop or rewrite any bytes.
-// Real filtering lands in B3.3+.
+// classifiedTestMuxWithSession returns a mux + a real attached
+// session whose client-side pipe end can be read by the test to
+// observe what bytes actually flow out (or get filtered).
 //
-// MAINTAINER NOTE: when B3.3+ wires real filtering authority into
-// the enforce path, this test MUST be UPDATED OR DELETED — its
-// purpose is to fire if a future PR accidentally enables filtering
-// before the full B3.3..B3.7 stack lands. Once enforce gains real
-// filtering, replace the "drop=false always" assertion with a
-// session-level behavior assertion that the right bytes are
-// filtered.
-func TestV8Classifier_EnforceMode_InstantiatedAndObservesButDoesNotDrop(t *testing.T) {
-	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeEnforce)
+// Per Codex round-1 MEDIUM on PR #644: the previous version of
+// the mux-boundary tests only asserted classifier counters; a
+// buggy readLoop that incremented EnforceDropsAppliedTotal AND
+// still dispatched the byte would have passed those tests.
+// Reading from a real session pipe is the load-bearing assertion
+// that the drop actually skipped onReceived.
+func classifiedTestMuxWithSession(t *testing.T, mode v8classifier.Mode) (
+	mux *Mux,
+	mock *p3MockTransport,
+	clientConn net.Conn,
+	sid uint64,
+	cleanup func(),
+) {
+	t.Helper()
+	mux, mock, _, baseCleanup := newClassifiedTestMux(t, mode)
+
+	clientConn, serverConn := net.Pipe()
+	sid = mux.AddSession(serverConn)
+	if sid == 0 {
+		t.Fatal("AddSession returned 0")
+	}
+
+	// Drain whatever ENH framing the writeLoop emits during
+	// INIT. minBytes=0: we don't pre-assume any specific frame
+	// arrives during INIT — just wait for idle.
+	drainSessionUntilIdle(t, clientConn, 0, 50*time.Millisecond, 500*time.Millisecond)
+
+	cleanup = func() {
+		_ = clientConn.Close()
+		mux.RemoveSession(sid)
+		baseCleanup()
+	}
+	return mux, mock, clientConn, sid, cleanup
+}
+
+// drainSessionUntilIdle reads from clientConn enforcing a
+// "wait-for-frame then wait-for-idle" contract — both halves
+// must succeed within hardDeadline, otherwise t.Fatalf.
+//
+// minBytes: if > 0, the helper MUST observe at least this many
+// bytes before the idle window starts counting. Used for
+// post-injection drains where a specific frame is expected to
+// arrive (e.g. a Failed-event session-mirror frame).
+// minBytes == 0
+// is the "just drain whatever is queued, then wait for idle"
+// pattern used for INIT drains where the precondition is
+// unknown.
+//
+// idleWindow: the duration the pipe must be silent BEFORE the
+// helper returns. Confirms no late-arriving frame will
+// contaminate the subsequent per-test probe.
+//
+// hardDeadline: total budget for both phases combined. If
+// minBytes isn't reached OR an idle window isn't observed
+// within this time, the helper FATALS — the test cannot
+// proceed under unproven preconditions.
+//
+// Per Codex round-3 review on PR #644:
+//   - Round 2's "wait for idle only" let delayed Started
+//     bytes leak past the helper when they arrived AFTER the
+//     first 50ms quiet period.
+//   - Round 3's minBytes>0 contract requires observing the
+//     expected frame BEFORE the idle window starts, closing
+//     the race.
+//   - Hard-deadline expiry and non-timeout read errors now
+//     surface as test failures rather than silent degradation.
+//
+// Returns total bytes drained.
+func drainSessionUntilIdle(t *testing.T, conn net.Conn, minBytes int, idleWindow, hardDeadline time.Duration) int {
+	t.Helper()
+	buf := make([]byte, 256)
+	total := 0
+	hard := time.Now().Add(hardDeadline)
+
+	// Phase 1: wait for at least minBytes (if specified). Skipped
+	// when minBytes == 0.
+	for total < minBytes {
+		if time.Now().After(hard) {
+			t.Fatalf("drainSessionUntilIdle: hard deadline %v elapsed before observing minBytes=%d (got %d) — expected frame did not arrive", hardDeadline, minBytes, total)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(idleWindow))
+		n, err := conn.Read(buf)
+		total += n
+		if err != nil && !isPipeTimeoutErr(err) {
+			t.Fatalf("drainSessionUntilIdle phase-1 read err: %v (n=%d total=%d)", err, n, total)
+		}
+		// Timeout with n==0 is fine; loop continues waiting for
+		// minBytes within the hard budget.
+	}
+
+	// Phase 2: wait for idleWindow of silence.
+	for {
+		if time.Now().After(hard) {
+			t.Fatalf("drainSessionUntilIdle: hard deadline %v elapsed before observing %v idle window (drained %d bytes total)", hardDeadline, idleWindow, total)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(idleWindow))
+		n, err := conn.Read(buf)
+		total += n
+		if n > 0 {
+			// More bytes — keep waiting for silence.
+			continue
+		}
+		if err != nil && !isPipeTimeoutErr(err) {
+			t.Fatalf("drainSessionUntilIdle phase-2 read err: %v (total=%d)", err, total)
+		}
+		// Timeout with n==0 — idle window satisfied.
+		return total
+	}
+}
+
+// isPipeTimeoutErr reports whether the read error is the
+// "deadline exceeded" kind that we treat as a successful idle
+// signal. EOF / closed pipe / other errors are real failures
+// and surface via t.Fatalf in drainSessionUntilIdle.
+func isPipeTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var nerr net.Error
+	if errors.As(err, &nerr) {
+		return nerr.Timeout()
+	}
+	return false
+}
+
+// TestV8Classifier_EnforceMode_AaInjectionDoesNotReachSession is
+// the LOAD-BEARING B3.6b behavioral test (Codex round-1 MEDIUM
+// fix). It proves that under ModeEnforce, an AA-injection wire
+// byte is filtered BEFORE the session sees it — by reading from
+// a real session's pipe end and asserting NO bytes arrive in the
+// post-injection window.
+//
+// Counter assertions remain as secondary confirmation but the
+// PRIMARY pin is the session-pipe silence.
+//
+// Test setup uses StreamEventFailed (not Started) to drive the
+// FSM into PASSIVE_TRACKING because Failed reliably fans out
+// the winner byte to external sessions (per the phantom-filter
+// test pattern), giving us a concrete frame to wait for before
+// the AA probe. Started would be logged as "stale arbitration
+// response" without a pending bid in this minimal test setup
+// and produce nothing on the session pipe. From the v8
+// classifier's perspective, Started and Failed are semantically
+// equivalent — both trigger fsm.EnterPassiveTracking — so
+// either is fine for the FSM-state precondition.
+func TestV8Classifier_EnforceMode_AaInjectionDoesNotReachSession(t *testing.T) {
+	mux, mock, clientConn, _, cleanup := classifiedTestMuxWithSession(t, v8classifier.ModeEnforce)
 	defer cleanup()
 
 	c := mux.V8Classifier()
 	if c == nil {
 		t.Fatal("V8Classifier() = nil in ModeEnforce; want non-nil")
 	}
-	if got := c.Mode(); got != v8classifier.ModeEnforce {
-		t.Errorf("classifier mode = %v; want ModeEnforce", got)
+
+	// Drive the FSM into mid-frame via Failed (winner byte 0x71
+	// fans out to all external sessions per the mux's Failed
+	// handler, giving us a concrete frame to wait for).
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventFailed, Data: 0x71,
 	}
-
-	// Push a single SYN. Classifier MUST observe it; mux MUST emit
-	// it normally (no drop). The latter is implicitly asserted by
-	// readLoop's existing onReceived dispatch — if Observe ever
-	// returned drop=true, the existing legacy adaptermux tests
-	// would surface the regression.
-	mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xAA}
-
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
-		if c.ObservedBytesTotal() >= 1 {
+		if c.FsmEnterPassiveTotal() >= 1 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if got := c.ObservedBytesTotal(); got != 1 {
-		t.Errorf("ObservedBytesTotal() = %d; want 1 in ModeEnforce", got)
+	if got := c.FsmEnterPassiveTotal(); got != 1 {
+		t.Fatalf("FsmEnterPassiveTotal()=%d; want 1 (Failed not processed)", got)
+	}
+
+	// Drain Failed's session-mirror frame, then wait for idle.
+	// minBytes=1: the mirror produces at least 1 byte (exact
+	// count varies — sometimes 1, sometimes 2 of the ENH-
+	// framed pair depending on read batching). After the first
+	// byte arrives, the 50ms idle-window phase guarantees any
+	// remaining mirror bytes are also consumed before the AA
+	// probe starts. Per Codex round-3 MEDIUM on PR #644: this
+	// closes the race where a late-arriving mirror byte could
+	// have contaminated the probe under the round-2
+	// "idle-only" pattern.
+	_ = drainSessionUntilIdle(t, clientConn, 1, 50*time.Millisecond, 1*time.Second)
+
+	// LOAD-BEARING INJECTION: mid-frame wire AUTO-SYN → FSM emits
+	// DropAaInjection → ModeEnforce returns drop=true → readLoop
+	// `continue`s past onReceived → session pipe sees NOTHING.
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0xAA, WasEscaped: false,
+	}
+
+	// Wait for the classifier to confirm it processed the byte.
+	deadline = time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.EnforceDropsAppliedTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := c.EnforceDropsAppliedTotal(); got != 1 {
+		t.Fatalf("EnforceDropsAppliedTotal()=%d; want 1 (classifier should have applied the drop)", got)
+	}
+
+	// PRIMARY ASSERTION: zero bytes flow on the session pipe in
+	// the post-injection window. A regression that called Observe
+	// + incremented the counter AND dispatched the byte would
+	// produce >= 2 bytes here (the ENH-encoded ENHResReceived
+	// frame).
+	bytesAfterInject := 0
+	buf := make([]byte, 64)
+	probeUntil := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(probeUntil) {
+		_ = clientConn.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
+		n, _ := clientConn.Read(buf)
+		bytesAfterInject += n
+	}
+	if bytesAfterInject != 0 {
+		t.Errorf("Enforce dropped AA-injection but session pipe got %d bytes; want 0 (filter must skip onReceived)", bytesAfterInject)
+	}
+
+	// Secondary: FsmDropAaInjectionTotal should also be 1.
+	if got := c.FsmDropAaInjectionTotal(); got != 1 {
+		t.Errorf("FsmDropAaInjectionTotal()=%d; want 1", got)
+	}
+}
+
+// TestV8Classifier_ShadowMode_AaInjectionReachesSession is the
+// inverse: under ModeShadow, the FSM emits DropAaInjection
+// (FsmDropAaInjectionTotal increments) but the byte STILL reaches
+// the session pipe. EnforceDropsAppliedTotal stays at 0.
+//
+// This is the pre-promotion validation mode — operators count
+// would-have-dropped vs in-mode dropped before promoting to
+// Enforce.
+//
+// Same test-setup choice as the Enforce sibling: Failed (not
+// Started) drives the FSM to passive tracking AND fans out a
+// concrete mirror frame for the drain helper to wait for.
+func TestV8Classifier_ShadowMode_AaInjectionReachesSession(t *testing.T) {
+	mux, mock, clientConn, _, cleanup := classifiedTestMuxWithSession(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	c := mux.V8Classifier()
+	if c == nil {
+		t.Fatal("V8Classifier() = nil in ModeShadow; want non-nil")
+	}
+
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventFailed, Data: 0x71,
+	}
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.FsmEnterPassiveTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Drain Failed's session-mirror frame, then wait for idle.
+	_ = drainSessionUntilIdle(t, clientConn, 1, 50*time.Millisecond, 1*time.Second)
+
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0xAA, WasEscaped: false,
+	}
+
+	// Wait for classifier to register the FSM verdict.
+	deadline = time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.FsmDropAaInjectionTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := c.FsmDropAaInjectionTotal(); got != 1 {
+		t.Fatalf("FsmDropAaInjectionTotal()=%d; want 1 (FSM verdict counted in Shadow)", got)
+	}
+
+	// PRIMARY ASSERTION: under Shadow, despite the FSM
+	// recommending a drop, the byte SHOULD reach the session.
+	// We expect >= 2 bytes (ENHResReceived frame).
+	bytesAfterInject := 0
+	buf := make([]byte, 64)
+	probeUntil := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(probeUntil) && bytesAfterInject == 0 {
+		_ = clientConn.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
+		n, _ := clientConn.Read(buf)
+		bytesAfterInject += n
+	}
+	if bytesAfterInject == 0 {
+		t.Error("Shadow mode dropped the AA byte from session — Shadow MUST forward (observe-only contract)")
+	}
+
+	// Secondary: EnforceDropsAppliedTotal MUST stay at 0.
+	if got := c.EnforceDropsAppliedTotal(); got != 0 {
+		t.Errorf("EnforceDropsAppliedTotal()=%d; want 0 (Shadow must never apply drops)", got)
 	}
 }

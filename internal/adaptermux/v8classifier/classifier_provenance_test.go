@@ -310,18 +310,21 @@ func TestClassifyByteProvenance_TableDriven(t *testing.T) {
 	}
 }
 
-// TestProvenance_EnforceMode_DoesNotDropYet pins the B3.3 scaffold-
-// only contract: even with provenance classification active, the
-// classifier in ModeEnforce returns drop=false for every byte. Real
-// filtering decisions (which CAN return drop=true on
-// AA-injection mid-frame) land in B3.6 once the FSM (B3.4) and
-// admin channel are in.
-func TestProvenance_EnforceMode_DoesNotDropYet(t *testing.T) {
+// TestProvenance_EnforceMode_IdleStateAllBytesForwarded pins the
+// B3.6b contract for IDLE-state bytes: the four canonical
+// provenance shapes plus the two defensive fall-throughs are ALL
+// forwarded (drop=false) when fed in IDLE. The FSM's IDLE handler
+// emits Forward for every byte regardless of provenance, so no
+// drops fire. AA-injection drops require MID-FRAME context (see
+// TestFSM_EnforceMode_DropsAaInjection for that path).
+//
+// Replaces the B3.3 SCAFFOLD-only TestProvenance_EnforceMode_DoesNotDropYet.
+func TestProvenance_EnforceMode_IdleStateAllBytesForwarded(t *testing.T) {
 	t.Parallel()
 	c := New(ModeEnforce)
 	now := time.Unix(0, 0)
 	// Feed the four canonical shapes plus the two defensive
-	// fall-throughs. NONE should produce drop=true.
+	// fall-throughs. NONE should produce drop=true in IDLE.
 	for _, e := range []transport.StreamEvent{
 		{Kind: transport.StreamEventByte, Byte: 0xAA, WasEscaped: true},
 		{Kind: transport.StreamEventByte, Byte: 0xA9, WasEscaped: true},
@@ -331,7 +334,10 @@ func TestProvenance_EnforceMode_DoesNotDropYet(t *testing.T) {
 		{Kind: transport.StreamEventByte, Byte: 0x42, WasEscaped: true},  // defensive
 	} {
 		if drop := c.Observe(e, now); drop {
-			t.Errorf("Observe(%+v) returned drop=true in ModeEnforce; B3.3 scaffold MUST always return false until B3.6 wires real filtering", e)
+			t.Errorf("Observe(%+v) in IDLE returned drop=true; want false (IDLE forwards all bytes)", e)
 		}
+	}
+	if got := c.EnforceDropsAppliedTotal(); got != 0 {
+		t.Errorf("EnforceDropsAppliedTotal() = %d; want 0 (no AA-injection in IDLE)", got)
 	}
 }

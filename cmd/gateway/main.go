@@ -47,6 +47,14 @@ var (
 	startHTTPServerFn                         = startHTTPServer
 	admissionStabilityRefreshDelay            = time.Duration(ebusgateway.StartupAdmissionStateMinStabilitySecondsDefault)*time.Second + 200*time.Millisecond
 	instanceGUIDPattern                       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+	// publishV8RolloutExpvarsOnce guards the one-time expvar.Publish
+	// calls for the five helianthus_round9_* / helianthus_payload_aa_* /
+	// helianthus_v8_shadow_* counters mirrored onto /debug/vars.
+	// expvar.Publish panics on duplicate names, and the test harness
+	// can re-enter run() within a single process — so guard the
+	// publishes behind a process-wide sync.Once.
+	publishV8RolloutExpvarsOnce sync.Once
 )
 
 type runtimeWatchObserver struct {
@@ -243,6 +251,53 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}()
 
 	gateway.Start(ctx)
+
+	// v8 frame-atomic-visibility rollout counters — wire the four
+	// protocol.Bus counters (round-9 + payload_aa_*) and the v8
+	// classifier shadow-mode counter into the BusObservabilityStore
+	// Prometheus surface. When the active transport isn't adapter-
+	// direct (no mux, no classifier) we still publish the four bus
+	// counters so HelianthusRound9FiredUnderProxy can fire on any
+	// transport. The v8 classifier counter degrades to 0 when the
+	// classifier is nil (Classifier.ShadowWouldHaveDroppedTotal
+	// has nil-receiver handling — see
+	// internal/adaptermux/v8classifier/classifier.go:848).
+	if busObservability != nil && gateway.Bus != nil {
+		bus := gateway.Bus
+		var classifier *v8classifier.Classifier
+		if m, ok := adapterClassifier.(*adaptermux.Mux); ok {
+			classifier = m.V8Classifier()
+		}
+		busObservability.SetV8RolloutProvider(func() ebusgateway.V8RolloutSnapshot {
+			return ebusgateway.V8RolloutSnapshot{
+				Round9AbsorbEntered:            bus.Round9AbsorbEntered(),
+				PayloadAaAutoSynAbsorbed:       bus.PayloadAaAutoSynAbsorbed(),
+				PayloadAaAutoSynRecovered:      bus.PayloadAaAutoSynRecovered(),
+				PayloadAaAutoSynDrainExhausted: bus.PayloadAaAutoSynDrainExhausted(),
+				V8ShadowWouldHaveDroppedTotal:  classifier.ShadowWouldHaveDroppedTotal(),
+			}
+		})
+
+		// Mirror the same counters on /debug/vars (expvar) so
+		// operators can read them with curl + jq without
+		// scraping the Prometheus surface. expvar.Func re-reads
+		// the underlying atomic on every scrape — keeps the two
+		// surfaces in lock-step. Names match the Prometheus
+		// metric names 1:1 so dashboards built on either
+		// transport produce identical numbers.
+		publishV8RolloutExpvarsOnce.Do(func() {
+			expvar.Publish("helianthus_round9_absorb_entered_total",
+				expvar.Func(func() any { return bus.Round9AbsorbEntered() }))
+			expvar.Publish("helianthus_payload_aa_auto_syn_absorbed_total",
+				expvar.Func(func() any { return bus.PayloadAaAutoSynAbsorbed() }))
+			expvar.Publish("helianthus_payload_aa_auto_syn_recovered_total",
+				expvar.Func(func() any { return bus.PayloadAaAutoSynRecovered() }))
+			expvar.Publish("helianthus_payload_aa_auto_syn_drain_exhausted_total",
+				expvar.Func(func() any { return bus.PayloadAaAutoSynDrainExhausted() }))
+			expvar.Publish("helianthus_v8_shadow_would_have_dropped_total",
+				expvar.Func(func() any { return classifier.ShadowWouldHaveDroppedTotal() }))
+		})
+	}
 
 	// P3 (post-Phase-C live validation 2026-05-08): when enabled,
 	// plant the productids static seed entries into the registry at

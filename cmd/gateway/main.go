@@ -36,7 +36,7 @@ import (
 )
 
 var (
-	buildVersion                              = "0.6.0"
+	buildVersion                              = "0.6.19"
 	buildID                                   = "unknown"
 	wireObserveFirstObserversFn               = wireObserveFirstObservers
 	startDiscoveryScanLoopFn                  = startDiscoveryScanLoopWithClassifier

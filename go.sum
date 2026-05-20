@@ -1,5 +1,5 @@
-github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260519172908-3fca19de9735 h1:vyx0mdtB7NtZVGgu86Jesn7+RmVMjKof5Mtz2h6FspM=
-github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260519172908-3fca19de9735/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
+github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260520030132-808674a01091 h1:7P1dQh9S+Ly1waW8kRVxWySfBbE7HwBDYOjyB4JMfdM=
+github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260520030132-808674a01091/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
 github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260510071332-e7b3e38e42d2 h1:6VFOfwe5L0GQkVRMcjdjCjnfBWcDoelnmoP1wIflrKM=
 github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260510071332-e7b3e38e42d2/go.mod h1:MhgS/S+s+EJ4+8c9KXom+pAXLTRYcjLI8qVSVCvsQu4=
 github.com/cenkalti/backoff v2.2.1+incompatible h1:tNowT99t7UNflLxfYYSlKYsBpXdEet03Pg2g16Swow4=

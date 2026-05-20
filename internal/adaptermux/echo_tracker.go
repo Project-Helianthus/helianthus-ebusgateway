@@ -1,5 +1,7 @@
 package adaptermux
 
+import "time"
+
 // echoTracker tracks bytes sent by a session and suppresses the
 // corresponding echoes from the adapter. Each session (gateway internal
 // or external ENH client) has its own tracker.
@@ -27,6 +29,39 @@ type echoTracker struct {
 	// expectedEchoes is a FIFO queue of bytes that we expect the adapter
 	// to echo back. Populated by recordSent(), consumed by matchEcho().
 	expectedEchoes []byte
+
+	// expectedWriteTimes is a FIFO queue of wall-clock times when each
+	// byte in expectedEchoes was recorded. Phase 3 Step B3.6d wires
+	// this to compute echo RTT for the v8 classifier's L_rtt EMA.
+	//
+	// CONDITIONAL LOCKSTEP INVARIANT:
+	//   `len(expectedWriteTimes) == 0` OR
+	//   `len(expectedWriteTimes) == len(expectedEchoes)`
+	//
+	// This relaxation is what restores the ModeOff zero-overhead
+	// contract (Codex round-1 MAJOR on PR #646). When the v8
+	// classifier is off, the gateway doSend site calls the legacy
+	// `recordSent(data)` which appends ONLY to expectedEchoes —
+	// expectedWriteTimes stays empty and no time.Time slot is
+	// allocated per byte. When v8 is on, the doSend site calls
+	// `recordSentWithTime(data, time.Now())` and both queues stay
+	// in PERFECT length lockstep through every operation (append,
+	// pop, rollback, reset, flushOnSYN, markRequestStart, overflow
+	// snapshot/restore).
+	//
+	// Because the v8 mode is immutable per Mux instance, a single
+	// tracker lifetime exercises only one path; the conditional
+	// invariant is monotonic — once expectedWriteTimes is populated
+	// it never drops to a partial-coverage state where some entries
+	// are missing timestamps. The mismatch / flushOnSYN /
+	// markRequestStart / reset paths clear BOTH queues uniformly
+	// via `[:0]`, which is idempotent on the empty case.
+	//
+	// matchEchoWithTime pops from expectedWriteTimes only when it is
+	// non-empty; the legacy recordSent path therefore reports
+	// hasWriteAt=false for every match, preventing accidental RTT
+	// emission from untimestamped writes.
+	expectedWriteTimes []time.Time
 
 	// seenEchoes accumulates matched echo bytes since the last SYN
 	// boundary. Used for observer frame assembly.
@@ -64,6 +99,19 @@ type echoTracker struct {
 	// call sequence (recordSent → Write → maybe rollbackSent) where the
 	// snapshot is only valid for the duration of a single doSend.
 	preOverflowEchoes []byte
+
+	// preOverflowWriteTimes is the timestamped sibling of
+	// preOverflowEchoes (Codex round-1 MEDIUM #1 on PR #646). When
+	// recordSentWithTime triggers an overflow reset, BOTH queues
+	// are snapshotted before the reset so rollbackSent restores the
+	// original write-times — not a placeholder array of zeros that
+	// silently disables L_rtt sampling for the 256 pre-overflow
+	// bytes. nil iff the most recent recordSent did not trigger an
+	// overflow reset OR was the legacy (no-time) path. Lifecycle
+	// matches preOverflowEchoes one-to-one: cleared on subsequent
+	// successful append, on matchEcho commit, on flushOnSYN, on
+	// markRequestStart, and on reset.
+	preOverflowWriteTimes []time.Time
 
 	// queueJustDrained (batch-26 round-7 — Attack 3 closure) marks the
 	// brief inter-write window between the gateway's matchEcho
@@ -130,6 +178,46 @@ func newEchoTracker() *echoTracker {
 // prior echo expectations even though the adapter never accepted the
 // new byte — subsequent real echoes would all return echoMatchNone.
 func (t *echoTracker) recordSent(data byte) {
+	// Phase 3 Step B3.6d (Codex round-1 MAJOR on PR #646): the
+	// legacy path appends ONLY to expectedEchoes. Skipping the
+	// expectedWriteTimes append restores the ModeOff zero-overhead
+	// contract — no time.Time slot allocated per byte. See the
+	// expectedWriteTimes field comment for the conditional lockstep
+	// invariant.
+	t.queueJustDrained = false
+	if len(t.expectedEchoes) >= maxPendingEchoes {
+		t.preOverflowEchoes = make([]byte, len(t.expectedEchoes))
+		copy(t.preOverflowEchoes, t.expectedEchoes)
+		t.expectedEchoes = t.expectedEchoes[:0]
+		// Legacy path: expectedWriteTimes was empty (no
+		// recordSentWithTime ever fired on this tracker), so the
+		// snapshot for it is nil. Idempotent `[:0]` keeps the
+		// invariant if a future code path ever mixes recordSent and
+		// recordSentWithTime on the same tracker (currently
+		// impossible — v8 mode is immutable per Mux).
+		t.preOverflowWriteTimes = nil
+		t.expectedWriteTimes = t.expectedWriteTimes[:0]
+		t.totalOverflowResets++
+	} else {
+		t.preOverflowEchoes = nil
+		t.preOverflowWriteTimes = nil
+	}
+	t.expectedEchoes = append(t.expectedEchoes, data)
+}
+
+// recordSentWithTime is the time-tracking variant of recordSent.
+// Pass the wall-clock time of the write; matchEchoWithTime will
+// return it when this byte's echo is matched. Pass time.Time{}
+// (zero) to skip time tracking entirely — equivalent to the legacy
+// recordSent path. Phase 3 Step B3.6d.
+//
+// The expectedWriteTimes queue stays in PERFECT LOCKSTEP with
+// expectedEchoes through every operation (append, pop, rollback,
+// overflow-reset). If `writeAt` is zero, the slot still gets an
+// entry (zero time) so matchEchoWithTime's hasWriteAt return
+// reports false for that byte — preserving the contract that
+// only explicitly-timestamped writes feed L_rtt samples.
+func (t *echoTracker) recordSentWithTime(data byte, writeAt time.Time) {
 	// batch-26 round-7: any write means we are definitely no longer
 	// between writes. Clear queueJustDrained BEFORE arming the queue so
 	// the sentinel reflects exactly the inter-write window — the
@@ -138,15 +226,27 @@ func (t *echoTracker) recordSent(data byte) {
 	if len(t.expectedEchoes) >= maxPendingEchoes {
 		t.preOverflowEchoes = make([]byte, len(t.expectedEchoes))
 		copy(t.preOverflowEchoes, t.expectedEchoes)
+		// Codex round-1 MEDIUM #1 on PR #646: snapshot
+		// expectedWriteTimes alongside expectedEchoes so
+		// rollbackSent can restore the ORIGINAL write-times. Prior
+		// to this snapshot, rollback rebuilt expectedWriteTimes as
+		// all zeros, silently disabling L_rtt sampling for the
+		// pre-overflow bytes that the adapter Write was about to
+		// fail on.
+		t.preOverflowWriteTimes = make([]time.Time, len(t.expectedWriteTimes))
+		copy(t.preOverflowWriteTimes, t.expectedWriteTimes)
 		t.expectedEchoes = t.expectedEchoes[:0]
+		t.expectedWriteTimes = t.expectedWriteTimes[:0]
 		t.totalOverflowResets++
 	} else {
 		// Successful append without overflow: clear any stale
 		// snapshot from a prior overflow that was never rolled back
 		// (the adapter Write succeeded; the reset is now committed).
 		t.preOverflowEchoes = nil
+		t.preOverflowWriteTimes = nil
 	}
 	t.expectedEchoes = append(t.expectedEchoes, data)
+	t.expectedWriteTimes = append(t.expectedWriteTimes, writeAt)
 }
 
 // rollbackSent removes the last recorded sent byte (e.g., on SEND error).
@@ -166,10 +266,28 @@ func (t *echoTracker) rollbackSent() {
 		if t.totalOverflowResets > 0 {
 			t.totalOverflowResets--
 		}
+		// Codex round-1 MEDIUM #1 on PR #646: restore the ORIGINAL
+		// write-times from the snapshot so the rolled-back bytes
+		// remain eligible for L_rtt sampling. If the snapshot is
+		// nil (legacy recordSent path — no timestamps were ever
+		// captured), expectedWriteTimes stays empty, matching the
+		// conditional lockstep invariant.
+		if t.preOverflowWriteTimes != nil {
+			t.expectedWriteTimes = t.preOverflowWriteTimes
+			t.preOverflowWriteTimes = nil
+		} else {
+			t.expectedWriteTimes = t.expectedWriteTimes[:0]
+		}
 		return
 	}
 	if len(t.expectedEchoes) > 0 {
 		t.expectedEchoes = t.expectedEchoes[:len(t.expectedEchoes)-1]
+		// Conditional lockstep: pop the parallel timestamp slot
+		// only when the queues are length-matched. The empty-times
+		// case (legacy recordSent) leaves nothing to pop.
+		if len(t.expectedWriteTimes) > 0 {
+			t.expectedWriteTimes = t.expectedWriteTimes[:len(t.expectedWriteTimes)-1]
+		}
 	}
 }
 
@@ -208,16 +326,47 @@ const (
 // flushedBytes contains any accumulated echo bytes that should be
 // delivered as observer frames before the current byte.
 func (t *echoTracker) matchEcho(received byte, receivedWasEscaped bool) (result echoMatchResult, flushedBytes []byte) {
+	res, fb, _, _ := t.matchEchoWithTime(received, receivedWasEscaped)
+	return res, fb
+}
+
+// matchEchoWithTime is the v8-aware variant of matchEcho. In
+// addition to the (result, flushedBytes) return, it surfaces the
+// writeAt timestamp of the matched byte (the time.Time passed to
+// recordSentWithTime when the byte was queued). Phase 3 Step B3.6d.
+//
+// hasWriteAt is true iff the consumed byte was queued with a
+// non-zero writeAt (i.e. via recordSentWithTime, not the legacy
+// recordSent path). When false, writeAt is zero and the caller
+// MUST NOT compute RTT or call pacer.RecordEcho — the timing
+// information is unrecoverable for that byte.
+//
+// The caller (mux.go's match-echo site) uses this signal to feed
+// the v8 classifier's L_rtt EMA only on validly-timestamped
+// matches; legacy paths and overflow-rollback paths (which lose
+// timing) are correctly suppressed.
+func (t *echoTracker) matchEchoWithTime(received byte, receivedWasEscaped bool) (result echoMatchResult, flushedBytes []byte, writeAt time.Time, hasWriteAt bool) {
 	if len(t.expectedEchoes) == 0 {
-		return echoMatchNone, nil
+		return echoMatchNone, nil, time.Time{}, false
 	}
 
 	// Codex PR #603 P2 invariant: any matchEcho commits the prior
 	// recordSent (the adapter actually replied to it), so the
 	// preOverflowEchoes snapshot is no longer eligible for rollback.
 	t.preOverflowEchoes = nil
+	t.preOverflowWriteTimes = nil
 
 	if received == t.expectedEchoes[0] {
+		// Phase 3 Step B3.6d: pop the corresponding writeAt from the
+		// parallel queue and capture it for the caller. Stays in
+		// lockstep with expectedEchoes — invariant maintained by
+		// recordSentWithTime / rollbackSent / reset / flushOnSYN /
+		// markRequestStart all updating both queues together.
+		if len(t.expectedWriteTimes) > 0 {
+			writeAt = t.expectedWriteTimes[0]
+			t.expectedWriteTimes = t.expectedWriteTimes[1:]
+			hasWriteAt = !writeAt.IsZero()
+		}
 		// Match: consume from expected, accumulate in seen.
 		preLen := len(t.expectedEchoes)
 		t.expectedEchoes = t.expectedEchoes[1:]
@@ -261,7 +410,7 @@ func (t *echoTracker) matchEcho(received byte, receivedWasEscaped bool) (result 
 				t.queueJustDrained = true
 			}
 		}
-		return echoMatchSuppressed, nil
+		return echoMatchSuppressed, nil, writeAt, hasWriteAt
 	}
 
 	// Mismatch: flush any accumulated echoes as observer frames.
@@ -275,9 +424,10 @@ func (t *echoTracker) matchEcho(received byte, receivedWasEscaped bool) (result 
 
 	// Clear expected echoes on mismatch — the echo sequence is broken.
 	t.expectedEchoes = t.expectedEchoes[:0]
+	t.expectedWriteTimes = t.expectedWriteTimes[:0]
 	t.atRequestStart = false
 
-	return echoMatchFlushed, flushed
+	return echoMatchFlushed, flushed, time.Time{}, false
 }
 
 // flushOnSYN flushes accumulated echo bytes at a SYN boundary.
@@ -296,10 +446,12 @@ func (t *echoTracker) flushOnSYN() (flushedBytes []byte, wasAtStart bool) {
 
 	// Clear expected echoes at SYN boundary.
 	t.expectedEchoes = t.expectedEchoes[:0]
+	t.expectedWriteTimes = t.expectedWriteTimes[:0]
 	// Codex PR #603 P2 invariant: a SYN boundary commits any
 	// in-flight overflow reset. preOverflowEchoes no longer eligible
 	// for rollback.
 	t.preOverflowEchoes = nil
+	t.preOverflowWriteTimes = nil
 	// batch-26 round-7: a wire SYN observed legitimately closing the
 	// txn ends the inter-write window — the gateway is between
 	// transactions now, not between body writes within one. Without
@@ -317,9 +469,11 @@ func (t *echoTracker) markRequestStart() {
 	t.atRequestStart = true
 	t.seenEchoes = t.seenEchoes[:0]
 	t.expectedEchoes = t.expectedEchoes[:0]
+	t.expectedWriteTimes = t.expectedWriteTimes[:0]
 	// Codex PR #603 P2 invariant: a new request boundary invalidates
 	// any pending overflow snapshot.
 	t.preOverflowEchoes = nil
+	t.preOverflowWriteTimes = nil
 	// batch-26 round-7: a fresh transaction invalidates any inter-write
 	// flag from a prior txn. Same boundary discipline as
 	// preOverflowEchoes — never carry inter-write state across grant
@@ -350,9 +504,11 @@ func (t *echoTracker) peekNextExpected() (byte, bool) {
 // reset clears all tracking state.
 func (t *echoTracker) reset() {
 	t.expectedEchoes = t.expectedEchoes[:0]
+	t.expectedWriteTimes = t.expectedWriteTimes[:0]
 	t.seenEchoes = t.seenEchoes[:0]
 	t.atRequestStart = false
 	t.preOverflowEchoes = nil
+	t.preOverflowWriteTimes = nil
 	t.queueJustDrained = false
 }
 

@@ -17,6 +17,8 @@ import (
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 )
 
 const infoCacheInterRequestDelay = 200 * time.Millisecond
@@ -239,6 +241,32 @@ type Config struct {
 
 	// Logger for multiplexer events. If nil, log.Default() is used.
 	Logger *log.Logger
+
+	// V8ClassifierMode selects the rollout mode of the
+	// frame-atomic-visibility v8 classifier (Phase 3 Step B3.2
+	// scaffold). The zero value is v8classifier.ModeOff, which
+	// disables the classifier entirely (production default until
+	// B3.7 live-bus validation closes). See
+	// helianthus-docs-ebus/architecture/adaptermux/frame-atomic-visibility-v8.md
+	// for the rollout phases.
+	//
+	// Modes:
+	//   - ModeOff (default): no observation, no behavioral effect.
+	//   - ModeShadow: classifier observes every StreamEvent the
+	//     mux's read loop dispatches but does NOT alter the byte
+	//     stream. Counter surfaces via
+	//     Mux.V8Classifier().ObservedBytesTotal(). Admin-event
+	//     observation lands in B3.6 (the transport-to-mux admin
+	//     channel surface is not yet exposed in B3.2).
+	//   - ModeEnforce: classifier becomes the authoritative read
+	//     path. (Filtering not yet implemented in B3.2; will land
+	//     in stacked PRs B3.3..B3.6.)
+	//
+	// Set from the environment via v8classifier.EnvVarName
+	// (HELIANTHUS_V8_CLASSIFIER_MODE) in the gateway startup glue,
+	// or explicitly by tests. Mode parsing lives in
+	// v8classifier.ParseMode.
+	V8ClassifierMode v8classifier.Mode
 }
 
 func (c *Config) defaults() {
@@ -444,6 +472,37 @@ type Mux struct {
 	cfg    Config
 	logger *log.Logger
 
+	// v8 is the frame-atomic-visibility v8 classifier (Phase 3
+	// Step B3.2 scaffold). Non-nil iff cfg.V8ClassifierMode is set
+	// to a non-Off value (ModeOff explicitly leaves this nil so
+	// the call site's `if m.v8 != nil` short-circuit fully elides
+	// the Observe call AND its time.Now() argument evaluation on
+	// the hot path). Subsequent stacked PRs (B3.3..B3.7) wire
+	// the classifier into the read path's filtering decisions.
+	// For B3.2 it is observe-only and behaviorally inert.
+	v8 *v8classifier.Classifier
+
+	// sessionPacers is a per-sessionID map of v8classifier.Pacer
+	// instances, used by the adapter-write hot path (mux.doSend)
+	// to invoke BeforeActiveWrite + (B3.6d+) RecordEcho. Phase 3
+	// Step B3.6c (L_rtt side of the pacer wiring; the output
+	// pacer at session.writeLoop lands in B3.6f).
+	//
+	// Populated lazily:
+	//   - gateway session pacer (sessionID == gatewaySessionID)
+	//     is created in New() when V8ClassifierMode != Off.
+	//   - external session pacers are created in AddSession on
+	//     the same condition.
+	//   - cleanup happens in RemoveSession.
+	//
+	// sync.Map is used (rather than a mutex-protected map[uint64])
+	// because the adapter-write hot path needs a lock-free
+	// lookup; per-session pacer instances themselves are mutex-
+	// protected internally.
+	//
+	// All entries are *v8classifier.Pacer. Empty in ModeOff.
+	sessionPacers sync.Map
+
 	// Adapter connection (guarded by connMu for reconnection).
 	connMu           sync.Mutex
 	conn             net.Conn
@@ -637,7 +696,7 @@ func New(cfg Config) *Mux {
 	cfg.defaults()
 	arb := newArbitrator()
 	arb.setPolicy(cfg.PendingStartTTL, cfg.FairnessRatio, cfg.PostExternalReleaseGrace)
-	return &Mux{
+	mux := &Mux{
 		cfg:          cfg,
 		logger:       cfg.Logger,
 		arb:          arb,
@@ -647,6 +706,86 @@ func New(cfg Config) *Mux {
 		activeSendCh: make(chan sendRequest, 256),  // AM49: increased from 16 for burst tolerance
 		activeCh:     make(chan activeEvent, 4096), // unified byte+error channel (4096: survives ~16s of bus traffic during arbitration waits)
 	}
+	// Phase 3 Step B3.2: instantiate the v8 classifier only when a
+	// non-Off mode is configured. ModeOff is equivalent to a nil
+	// classifier (both yield a no-op Observe path); leaving it nil
+	// avoids one allocation per Mux and one branch + atomic per
+	// wire byte on the hot path.
+	if cfg.V8ClassifierMode != v8classifier.ModeOff {
+		mux.v8 = v8classifier.New(cfg.V8ClassifierMode)
+		// Phase 3 Step B3.6c: pre-create the gateway-internal
+		// session pacer via ensureSessionPacer (the
+		// LIFECYCLE-ONLY constructor). External sessions get
+		// their pacers in AddSession. The hot-path doSend uses
+		// SessionPacer (load-only) which returns nil for any
+		// sessionID that wasn't ensure'd here or in
+		// AddSession — eliminates the
+		// RemoveSession+lazy-create resurrection race (Codex
+		// round-1 MEDIUM on PR #645).
+		mux.ensureSessionPacer(gatewaySessionID)
+	}
+	return mux
+}
+
+// SessionPacer returns the per-session v8 classifier Pacer for
+// the given sessionID. Load-only — does NOT lazy-create. Returns
+// nil when:
+//   - V8ClassifierMode == Off (no v8 classifier at all)
+//   - sessionID was never registered via AddSession (or via the
+//     Mux constructor for the gateway-internal pacer)
+//   - sessionID was registered but has been removed via
+//     RemoveSession
+//
+// Phase 3 Step B3.6c — adapter-write path (mux.doSend) uses this
+// to look up the pacer for BeforeActiveWrite. The output pacer
+// side (session.writeLoop) lands in B3.6f and uses the same
+// load-only lookup.
+//
+// Per Codex round-1 MEDIUM on PR #645: lazy-create was REMOVED
+// because it could resurrect a deleted pacer entry on a doSend
+// that raced with RemoveSession (doSend passes arb.isOwner
+// BEFORE Remove deletes the pacer entry, then SessionPacer
+// LoadOrStore created a new entry that never got cleaned up).
+// The load-only contract eliminates this race: RemoveSession
+// deletes; subsequent doSend calls see nil and skip the
+// BeforeActiveWrite call (which is the correct behavior — the
+// session is gone, no pacer state to maintain).
+//
+// Callers MUST nil-check before calling pacer methods — Pacer is
+// mutex-backed and its methods would panic on a nil receiver.
+func (m *Mux) SessionPacer(sessionID uint64) *v8classifier.Pacer {
+	if m == nil || m.v8 == nil {
+		return nil
+	}
+	v, ok := m.sessionPacers.Load(sessionID)
+	if !ok {
+		return nil
+	}
+	return v.(*v8classifier.Pacer)
+}
+
+// ensureSessionPacer is the LIFECYCLE-ONLY constructor used by
+// Mux.New (for the gateway-internal pacer) and AddSession (for
+// external session pacers). LoadOrStore is race-tolerant for the
+// expected single-caller-per-sessionID pattern.
+//
+// Hot-path callers MUST use SessionPacer (load-only) instead.
+// Per Codex round-1 MEDIUM on PR #645: this split eliminates the
+// RemoveSession + lazy-create-from-doSend race.
+func (m *Mux) ensureSessionPacer(sessionID uint64) {
+	if m == nil || m.v8 == nil {
+		return
+	}
+	if _, ok := m.sessionPacers.Load(sessionID); ok {
+		return
+	}
+	// Phase 3 Step B3.6e: use NewPacerForSession so the per-session
+	// pacer's echo watchdog has its admin-event emitter pre-wired
+	// to the classifier's adminEvents ring buffer. Falling back to
+	// v8classifier.NewPacer here would leave the watchdog firing
+	// silently — counters increment, but operator-facing
+	// ClassifierAdminEvent entries would never appear.
+	m.sessionPacers.LoadOrStore(sessionID, m.v8.NewPacerForSession())
 }
 
 // Start connects to the adapter and begins the multiplexer loop.
@@ -758,6 +897,26 @@ func (m *Mux) Close() error {
 		m.connMu.Unlock()
 
 		m.wg.Wait()
+
+		// Codex round-2 MUST FIX on PR #647 + Codex GitHub-bot P2
+		// review on PR #650: cancel any pending gateway echo
+		// watchdog. Close is the strongest teardown boundary; an
+		// armed watchdog could otherwise fire a soft or hard
+		// timeout admin event AFTER Close returned, which would
+		// surface as a phantom event on a mux that has already
+		// shut down.
+		//
+		// P2 follow-up: do the cancel AFTER m.wg.Wait() so the
+		// sendLoop has provably stopped before we cancel. The
+		// earlier "cancel before wg.Wait" pattern had a window
+		// where sendLoop could process a queued gateway write
+		// during shutdown (the select's send case can win
+		// against ctx.Done()) and re-arm the watchdog after the
+		// cancel ran. With cancel-after-wait, sendLoop is gone
+		// before the cancel — no possible re-arm.
+		if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+			pacer.CancelEchoWatchdog()
+		}
 	})
 	return m.closeErr
 }
@@ -1162,6 +1321,13 @@ func (m *Mux) reconnect() error {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonReconnect)
 	}
+	// Codex round-2 MUST FIX on PR #647: reconnect tears down
+	// gateway echo state — the in-flight watchdog is no longer
+	// meaningful (the byte's echo will never arrive over the
+	// replaced transport). Cancel here, NOT inside the SessionPacer
+	// nil-check block above — the cancel call uses the pacer's
+	// own mutex (independent of stateMu) and is nested-lock free.
+	pacerToCancel := m.SessionPacer(gatewaySessionID)
 	// Bump gen forward (monotonic) — any in-flight goroutine's captured
 	// arbGen will no longer match, so it cannot clear blockingArbActive.
 	// Clear blockingArbActive here because the transport is being replaced.
@@ -1185,6 +1351,21 @@ func (m *Mux) reconnect() error {
 		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 	}
 	m.stateMu.Unlock()
+
+	// Cancel the pacer watchdog OUTSIDE stateMu (Codex round-2
+	// MUST FIX on PR #647 — see captured pacerToCancel above).
+	// Codex GitHub-bot P2 review on PR #650: reconnect is a hard
+	// reset of the upstream transport; the previous L_rtt EMA and
+	// lastEchoAt anchor reflect the OLD connection's latency
+	// characteristics and would produce spurious soft/hard
+	// timeouts on the FIRST post-reconnect write if the new
+	// connection has different latency. ResetLrtt rebootstraps
+	// L_rtt to the initial value and clears lastEchoAt so the
+	// next BeforeActiveWrite re-enters grace bootstrap.
+	if pacerToCancel != nil {
+		pacerToCancel.CancelEchoWatchdog()
+		pacerToCancel.ResetLrtt()
+	}
 
 	// Cancel in-flight pending START if any.
 	if pendingToCancel != nil {
@@ -1316,6 +1497,7 @@ func (m *Mux) readLoop() {
 				// Enforce ownership timeout on quiet bus — onReceived
 				// won't run to check MaxOwnershipDuration.
 				quietBusTimedOut := false
+				var quietBusOwnerWasGateway bool
 				m.stateMu.Lock()
 				ownerID, _, hasOwner := m.arb.owner()
 				if hasOwner && !m.busOwned.IsZero() &&
@@ -1325,10 +1507,22 @@ func (m *Mux) readLoop() {
 					if ownerID == gatewaySessionID && m.gatewayTxnActive {
 						m.gatewayTxnActive = false
 						m.recordGatewayInactive(ReasonMaxOwnership)
+						quietBusOwnerWasGateway = true
 					}
 					quietBusTimedOut = true
 				}
 				m.stateMu.Unlock()
+				// Codex round-2 MUST FIX on PR #647: if the
+				// gateway lost ownership via max-duration timeout
+				// while a watchdog was armed, the echo will never
+				// arrive on this transport instance — cancel so
+				// no stale soft/hard fire emits an admin event
+				// for a write whose context is gone.
+				if quietBusOwnerWasGateway {
+					if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+						pacer.CancelEchoWatchdog()
+					}
+				}
 
 				// F-18: per-session echo trackers removed; nothing to
 				// reset for external sessions on ownership timeout.
@@ -1360,6 +1554,30 @@ func (m *Mux) readLoop() {
 
 		firstTimeoutTime = time.Time{} // AM27: reset timeout streak on successful read
 		lastDataTime = time.Now()      // AM27: track last data for blackhole detection
+
+		// Phase 3 Step B3.2 / B3.6b: route every StreamEvent through
+		// the v8 classifier BEFORE the dispatch switch. The
+		// nil-guard short-circuits BOTH the method call AND the
+		// time.Now() evaluation when the classifier is off
+		// (production default), keeping the hot-path overhead at
+		// zero.
+		//
+		// B3.6b: in ModeEnforce the classifier may return drop=true
+		// for AA-injection bytes (FSM DecisionDropAaInjection).
+		// When that happens we SKIP the legacy dispatch entirely
+		// for THIS event — the byte is filtered out of session
+		// streams, classifier counters still record it via
+		// EnforceDropsAppliedTotal + fsmDropAaInjectionTotal.
+		//
+		// ModeShadow always returns drop=false even when the FSM
+		// recommends a drop — operators run Shadow first to
+		// validate the classifier against the wire before
+		// promoting to Enforce.
+		if m.v8 != nil {
+			if m.v8.Observe(event, time.Now()) {
+				continue
+			}
+		}
 
 		switch event.Kind {
 		case transport.StreamEventStarted:
@@ -1656,6 +1874,20 @@ func (m *Mux) readLoop() {
 	}
 }
 
+// V8Classifier returns the v8 classifier instance attached to this
+// mux, or nil when V8ClassifierMode is Off (the production default
+// in B3.2). Exposed for diagnostics, expvar surfaces, and tests.
+// A nil return is safe to call all v8classifier.Classifier methods
+// on (each has nil-receiver handling).
+//
+// Phase 3 Step B3.2 (this file): the classifier is observe-only —
+// callers MUST NOT depend on the return value for routing
+// decisions. Subsequent stacked PRs (B3.3..B3.7) extend the
+// classifier's authority.
+func (m *Mux) V8Classifier() *v8classifier.Classifier {
+	return m.v8
+}
+
 // readUpstream reads a stream event from the adapter transport.
 func (m *Mux) readUpstream() (transport.StreamEvent, error) {
 	m.connMu.Lock()
@@ -1784,6 +2016,7 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// AM11: track ownership timeout so we can reset external session
 	// echo trackers after releasing stateMu (ABBA avoidance).
 	ownershipTimedOut := false
+	var ownershipTimedOutGateway bool
 	if hasOwner && !m.busOwned.IsZero() &&
 		time.Since(m.busOwned) > m.cfg.MaxOwnershipDuration {
 		m.arb.releaseOwnership(ownerID)
@@ -1791,6 +2024,7 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 		if ownerID == gatewaySessionID && m.gatewayTxnActive {
 			m.gatewayTxnActive = false
 			m.recordGatewayInactive(ReasonMaxOwnership)
+			ownershipTimedOutGateway = true
 		}
 		hasOwner = false
 		ownershipTimedOut = true
@@ -1817,7 +2051,8 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 		// gatewayTxnActive=false is the correct state for delivery —
 		// capture AFTER to skip the trailing SYN that has no consumer.
 		var preEchoSuppressed bool
-		passiveEvents, shouldTryGrant, preEchoSuppressed = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
+		var cancelGatewayWatchdogFromSYN bool
+		passiveEvents, shouldTryGrant, preEchoSuppressed, cancelGatewayWatchdogFromSYN = m.onSYNLocked(phaseEvent, ownerID, hasOwner, now)
 		activeExpects := m.activePathExpectsByte(symbol)
 		if preEchoSuppressed {
 			// Pre-echo SYN suppression (echo_mismatch root cause fix).
@@ -1839,6 +2074,14 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 		// to perform. Gateway-side echo handling continues unchanged
 		// via m.gatewayEcho.
 		_ = ownershipTimedOut
+		// Codex round-2 MUST FIX on PR #647: if the gateway lost
+		// ownership via max-duration timeout while a watchdog was
+		// armed, the echo will never arrive — cancel.
+		// Codex round-3 MUST FIX #1: same for SYN-timeout /
+		// SYN-idle teardown branches inside onSYNLocked.
+		if ownershipTimedOutGateway || cancelGatewayWatchdogFromSYN {
+			m.cancelGatewayWatchdog()
+		}
 
 		// --- Phase 2: deliver outside all locks ---
 
@@ -1920,7 +2163,35 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// we preserve the queue across stale bytes.
 	matchWouldHit := !hadPendingEcho || (hadPendingEcho && symbol == preMatchHead)
 	if isGatewayOwned && matchWouldHit {
-		m.gatewayEcho.matchEcho(symbol, wasEscaped) // track echo state internally
+		// Phase 3 Step B3.6d (Codex round-1 MAJOR on PR #646):
+		// gate the time-tracking match path on m.v8 != nil. In
+		// ModeOff (m.v8 == nil) we call the legacy matchEcho and
+		// skip both time.Now() at the match site AND the writeAt
+		// pop in matchEchoWithTime — restoring the documented
+		// "zero overhead in ModeOff" contract. When v8 is on, the
+		// echo timestamp from matchEchoWithTime feeds RTT into the
+		// gateway pacer's L_rtt EMA.
+		//
+		// Phase 3 Step B3.6e: on a suppressed (matched) echo,
+		// cancel the echo-watchdog timer that doSend armed —
+		// otherwise a delayed soft/hard fire would spuriously
+		// emit an admin event for a write whose echo already
+		// landed. CancelEchoWatchdog is idempotent and lock-free
+		// from the caller's perspective.
+		if m.v8 != nil {
+			echoNow := time.Now()
+			result, _, writeAt, hasWriteAt := m.gatewayEcho.matchEchoWithTime(symbol, wasEscaped)
+			if result == echoMatchSuppressed {
+				if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+					pacer.CancelEchoWatchdog()
+					if hasWriteAt {
+						pacer.RecordEcho(echoNow.Sub(writeAt), echoNow)
+					}
+				}
+			}
+		} else {
+			m.gatewayEcho.matchEcho(symbol, wasEscaped)
+		}
 	}
 	// P11 — gate activeCh delivery: mid-write requires queue-head match;
 	// response phase (no pending writes) accepts any byte.
@@ -1961,6 +2232,14 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// F-18: per-session echo trackers removed; nothing to reset on
 	// ownership timeout.
 	_ = ownershipTimedOut
+	// Codex round-2 MUST FIX on PR #647: cancel the gateway
+	// watchdog when ownership was forcibly released. Mirror of
+	// the same cancel at the SYN-branch unlock above.
+	if ownershipTimedOutGateway {
+		if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+			pacer.CancelEchoWatchdog()
+		}
+	}
 
 	// --- Phase 2: deliver outside all locks ---
 	// Codex PR #502 P2: revalidate active-path gating atomically with
@@ -2056,8 +2335,15 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 // and whether this SYN is pre-echo noise that the caller must suppress
 // from activeCh delivery (see echo_mismatch root-cause comment at the
 // call site).
-func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bool, now time.Time) ([]PassiveEvent, bool, bool) {
+// Codex round-3 MUST FIX #1 on PR #647: returns an additional
+// `cancelGatewayWatchdog` bool. When true, the caller MUST invoke
+// m.cancelGatewayWatchdog() after releasing stateMu — set by the
+// SYN-timeout / SYN-idle teardown branches inside onSYNLocked
+// when they transition the gateway out of an active txn, so the
+// echo watchdog cannot fire stale after the txn is gone.
+func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bool, now time.Time) ([]PassiveEvent, bool, bool, bool) {
 	var passiveEvents []PassiveEvent
+	var cancelGatewayWatchdog bool
 
 	// F-24-fix (Codex PR #634 P1 thread "Wait for idle after
 	// suppressing stale STARTED"): any SYN observation marks a bus-
@@ -2254,6 +2540,17 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		}
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonSYNTerminator)
+		// Codex GitHub-bot P1 review on PR #650: the normal
+		// gateway-txn completion path (SYN terminator echo) must
+		// cancel the watchdog. Without this, every successful
+		// gateway transaction in ModeShadow / ModeEnforce leaves
+		// the timer armed; a subsequent quiet period (no new
+		// writes to re-arm) fires the soft/hard deadline and
+		// emits a false-positive admin event for a transaction
+		// that already completed successfully. Mirror of the
+		// SYN-timeout / SYN-idle cancel signaling — set the flag,
+		// caller cancels after stateMu unlock.
+		cancelGatewayWatchdog = true
 	}
 
 	// Note: external session echo tracker flush is done AFTER stateMu.Unlock()
@@ -2344,6 +2641,13 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 			if ownerID == gatewaySessionID && m.gatewayTxnActive {
 				m.gatewayTxnActive = false
 				m.recordGatewayInactive(ReasonSYNTimeout)
+				// Codex round-3 MUST FIX #1 on PR #647: signal
+				// the caller (onReceived SYN branch at line ~2035)
+				// to cancel the gateway echo watchdog after
+				// releasing stateMu. The teardown path released
+				// gateway ownership; an armed watchdog must not
+				// emit a stale soft/hard event for the lost txn.
+				cancelGatewayWatchdog = true
 			}
 		}
 	}
@@ -2479,6 +2783,12 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 				m.gatewayEcho.ClearQueueJustDrained()
 				m.gatewayTxnActive = false
 				m.recordGatewayInactive(ReasonSYNIdle)
+				// Codex round-3 MUST FIX #1 on PR #647: same as
+				// SYN timeout above — flag the caller to cancel
+				// the watchdog after stateMu unlock so a stale
+				// timer fire cannot emit an admin event for the
+				// torn-down txn.
+				cancelGatewayWatchdog = true
 			}
 		}
 	}
@@ -2632,7 +2942,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// onReceived), so with gatewayTxnActive cleared it becomes false and
 	// the caller's deliverToActive is skipped. No double-delivery.
 	_ = terminatorDelivered
-	return passiveEvents, shouldTryGrant, preEchoSuppressed
+	return passiveEvents, shouldTryGrant, preEchoSuppressed, cancelGatewayWatchdog
 }
 
 // handleReset handles an adapter RESETTED event.
@@ -2648,6 +2958,7 @@ func (m *Mux) handleReset() {
 	m.stateMu.Lock()
 	m.phase.reset(wirePhaseIdle)
 	m.gatewayEcho.reset()
+	wasGatewayActive := m.gatewayTxnActive
 	if m.gatewayTxnActive {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonReset)
@@ -2668,6 +2979,21 @@ func (m *Mux) handleReset() {
 		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 	}
 	m.stateMu.Unlock()
+
+	// Codex round-2 MUST FIX on PR #647: a RESETTED boundary
+	// erases any in-flight gateway transaction. Cancel the
+	// watchdog OUTSIDE stateMu so the pacer mutex doesn't nest
+	// inside stateMu. The gateway-active condition was captured
+	// under stateMu above (wasGatewayActive); the cancel is
+	// idempotent so racing a concurrent ArmEchoWatchdog (which
+	// can't happen here because the only producer is sendLoop's
+	// gateway-only block, and post-reset there is no gateway
+	// transaction) is still safe.
+	if wasGatewayActive {
+		if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+			pacer.CancelEchoWatchdog()
+		}
+	}
 
 	// Cancel in-flight pending START if any.
 	if pendingToCancel != nil {
@@ -4062,7 +4388,55 @@ func (m *Mux) sendLoop() {
 					m.gatewayTxnActive = true
 				}
 				m.recordWritePrefix(req.data)
-				m.gatewayEcho.recordSent(req.data)
+				// Phase 3 Step B3.6d (Codex round-1 MAJOR on PR
+				// #646): gate the time-tracking record path on
+				// m.v8 != nil. In ModeOff (m.v8 == nil) we call
+				// the legacy recordSent which appends only to
+				// expectedEchoes — NO time.Now() call, NO
+				// time.Time slot allocation per byte. When v8 is
+				// on we capture time.Now() so the matching site
+				// can compute RTT for the L_rtt EMA.
+				//
+				// Phase 3 Step B3.6e: when v8 is on, ALSO arm the
+				// echo-watchdog using the (soft, hard, hardEnabled)
+				// tuple from the gateway pacer's EchoDeadlines.
+				// BeforeActiveWrite (B3.6c) was already called
+				// earlier at the doSend pre-write hook; the
+				// watchdog is armed here using the post-grace
+				// L_rtt state. If the echo arrives in time, the
+				// match site cancels the watchdog. If the soft
+				// (and conditionally hard) deadline expires
+				// first, the pacer emits an admin event into the
+				// classifier's adminEvents ring buffer.
+				if m.v8 != nil {
+					writeAt := time.Now()
+					m.gatewayEcho.recordSentWithTime(req.data, writeAt)
+					// Codex round-1 MAJOR #1 on PR #647:
+					// BeforeActiveWrite MUST run before
+					// ArmEchoWatchdog so a long-idle gateway
+					// write enters grace-bootstrap (graceRemaining
+					// set non-zero) before the watchdog computes
+					// deadlines from EchoDeadlines. Without this
+					// hoist, the arm at the sendLoop site used
+					// pre-grace L_rtt state — the first
+					// post-idle echo was waited on with normal
+					// (tight) deadlines instead of grace (loose),
+					// defeating the B3.5 grace-bootstrap fix.
+					//
+					// BeforeActiveWrite is idempotent if called
+					// twice before any RecordEcho (per its
+					// docstring), so doSend's existing
+					// BeforeActiveWrite call below remains
+					// harmless for non-gateway sessions and is a
+					// no-op for the gateway pacer at the second
+					// invocation.
+					if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+						pacer.BeforeActiveWrite(writeAt)
+						pacer.ArmEchoWatchdog(writeAt)
+					}
+				} else {
+					m.gatewayEcho.recordSent(req.data)
+				}
 				m.stateMu.Unlock()
 			}
 			err := m.doSend(req.sessionID, req.data)
@@ -4095,6 +4469,19 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 		}
 		m.gatewayEcho.rollbackSent()
 		m.stateMu.Unlock()
+		// Codex round-1 MUST FIX #2 on PR #647: write-error
+		// rollback must ALSO cancel the watchdog the sendLoop
+		// armed before doSend. Without this, the soft / hard
+		// timer would fire later and emit a stale admin event
+		// for a byte that never reached the adapter. The pacer
+		// comment lists write-fail as a documented cancellation
+		// boundary; this call closes that path.
+		//
+		// Outside stateMu — CancelEchoWatchdog uses the pacer's
+		// own mutex; nested-lock free.
+		if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+			pacer.CancelEchoWatchdog()
+		}
 	}()
 
 	if !m.arb.isOwner(sessionID) {
@@ -4124,6 +4511,35 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 	// recordSent without the matching matchEcho consumer would let the
 	// per-session queue grow to the 256-byte cap and trigger spurious
 	// totalOverflowResets alarms every 256 external SENDs.
+	// Phase 3 Step B3.6c: pacer wiring at the adapter-write
+	// choke point. Per v8 §1.4: BeforeActiveWrite fires before
+	// tr.Write so a long-idle write enters grace-bootstrap
+	// BEFORE the first post-idle echo is awaited. Skipped when
+	// V8ClassifierMode == Off (SessionPacer returns nil).
+	//
+	// Codex round-1 MAJOR #1 on PR #647: for GATEWAY sessions the
+	// sendLoop now invokes BeforeActiveWrite BEFORE ArmEchoWatchdog
+	// (so the watchdog sees post-grace L_rtt). To preserve the
+	// canonical "exactly one BeforeActiveWrite per active write"
+	// semantics (asserted by TestSessionPacer_DoSend_GatewayInvokesBeforeActiveWrite),
+	// gateway sessions skip the doSend call. External sessions
+	// (sessionID > 0) still take the doSend path — they don't go
+	// through sendLoop's gateway-only critical section, so this is
+	// their canonical site.
+	//
+	// Pacer integration plan (B3.6c..B3.6f):
+	//   B3.6c: BeforeActiveWrite at the active-write pre-Write
+	//          hot path (sendLoop for gateway; doSend for external).
+	//   B3.6d: RecordEcho wiring at the echo-arrival site
+	//          so the L_rtt EMA actually moves.
+	//   B3.6e: Echo watchdog timer enforcing soft/hard
+	//          deadlines + admin events (gateway only).
+	//   B3.6f: Output pacer at session.writeLoop.
+	if !isGateway {
+		if pacer := m.SessionPacer(sessionID); pacer != nil {
+			pacer.BeforeActiveWrite(time.Now())
+		}
+	}
 	_, err := tr.Write([]byte{data})
 	if err != nil {
 		return fmt.Errorf("%w: %v", errAdapterWrite, err)

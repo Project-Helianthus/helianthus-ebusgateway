@@ -21,6 +21,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
@@ -1408,6 +1409,26 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	muxCfg.ReadTimeout = 50 * time.Millisecond
 	if muxCfg.WriteTimeout == 0 {
 		muxCfg.WriteTimeout = 5 * time.Second
+	}
+
+	// Phase 3 Step B3.7 (Codex round-1 MAJOR on PR #650): wire the
+	// HELIANTHUS_V8_CLASSIFIER_MODE env var into the mux config.
+	// Without this read, the v8 classifier is unreachable in
+	// production — Config.V8ClassifierMode would always be the
+	// zero-value (ModeOff) regardless of what operators set in
+	// the addon options. ParseMode handles case-insensitive
+	// "off|shadow|enforce" plus convenience synonyms ("disabled",
+	// "false", etc.); an unset env var defaults to ModeOff (safe);
+	// an unrecognized value fails loudly via the returned error.
+	if envMode := os.Getenv(v8classifier.EnvVarName); envMode != "" {
+		parsedMode, err := v8classifier.ParseMode(envMode)
+		if err != nil {
+			log.Fatalf("invalid %s=%q: %v (expected off|shadow|enforce)", v8classifier.EnvVarName, envMode, err)
+		}
+		muxCfg.V8ClassifierMode = parsedMode
+		if parsedMode != v8classifier.ModeOff {
+			log.Printf("v8 classifier enabled: mode=%s", parsedMode)
+		}
 	}
 
 	mux := adaptermux.New(muxCfg)

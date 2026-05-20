@@ -792,25 +792,46 @@ func (s *session) writeFrame(frame sessionFrame) error {
 
 	// Phase 3 Step B3.6f (frame-atomic-visibility v8 §4.5): pace
 	// the TCP egress through the per-session v8classifier.Pacer.
-	// The pacer enforces τ_wire_byte=4.17ms inter-byte cadence so
-	// the cross-proxy client (ebusd) cannot observe egress bytes
-	// arriving faster than the bus wire-byte rate — a v8 invariant
-	// for frame-atomic visibility.
+	// The pacer enforces τ_wire_byte=4.17ms cadence on AVERAGE
+	// across frames — see "frame-average pacing semantics" below.
+	//
+	// SEMANTICS — frame-average pacing (Codex round-1 MUST FIX on
+	// PR #648): each session frame is written ATOMICALLY in a
+	// single conn.Write call, NOT split into per-byte syscalls.
+	// Splitting the Write would let the cross-proxy client (ebusd)
+	// read partial ENH frames from its TCP receive buffer and
+	// process them with an incomplete escape sequence (the
+	// `0xA9 NN` two-byte form would be readable as just `0xA9`
+	// during the τ gap), which would directly violate frame-atomic
+	// visibility — the v8 §4.5 invariant the pacer is supposed
+	// to enforce.
+	//
+	// The cadence is enforced AT FRAME GRANULARITY:
+	//   - The pacer's lastScheduledEmit anchor advances by N×τ
+	//     for an N-byte frame.
+	//   - The NEXT frame's first byte emits at
+	//     prevFrameStart + prevFrameByteCount × τ.
+	//   - INTRA-frame byte arrival is atomic (all bytes of a
+	//     frame observable at the frame's emit time, not at
+	//     `emitTime + i×τ`).
+	//
+	// This matches how the bus itself would emit a multi-byte
+	// frame — the bytes are wire-encoded back-to-back at the
+	// adapter, then arrive at the gateway's read side together
+	// (modulo TCP fragmentation jitter). The client (ebusd)
+	// always reads ENH frames as atomic units from its TCP
+	// buffer anyway, so frame-average pacing is the correct
+	// trade-off.
 	//
 	// Wiring contract:
 	//   1. Call Schedule(now) ONCE to get the FIRST byte's emit
 	//      time. This is what we sleep until.
 	//   2. Call Schedule(now) (len(buf)-1) more times to advance
 	//      the pacer's cadence anchor by τ per byte, so the NEXT
-	//      frame's first-byte emit is paced from
-	//      lastEmit + N×τ, not from `now`.
+	//      frame's first byte is paced from lastEmit + N×τ.
 	//   3. Sleep until emitAt with shutdown-responsive cancel via
 	//      s.done / s.mux.ctx.Done.
-	//   4. Write the whole frame in a single Write — the cadence
-	//      is enforced at frame-emit-time, not by splitting the
-	//      Write into per-byte syscalls (which would multiply
-	//      kernel overhead without changing the wall-clock
-	//      perceived cadence at the client's TCP receive buffer).
+	//   4. Write the whole frame in a single conn.Write.
 	//
 	// ModeOff zero-overhead contract: when m.v8 == nil OR the
 	// per-session pacer is nil (which can happen during the brief

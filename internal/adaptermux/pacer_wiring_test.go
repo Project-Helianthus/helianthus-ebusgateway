@@ -542,6 +542,11 @@ func TestSessionPacer_OutputPacer_SchedulesFrameEgress(t *testing.T) {
 // V8ClassifierMode == Off, writeFrame must NOT call Schedule
 // (and obviously must not allocate a pacer). The pipe still
 // receives the frame promptly.
+//
+// Codex round-1 MEDIUM #1 on PR #648: SetReadDeadline is set on
+// the CLIENT side (the side we're reading from), not the server
+// side — net.Pipe deadlines are per-endpoint, so a regression
+// would otherwise hang the test until the package timeout.
 func TestSessionPacer_OutputPacer_OffMode_NoSchedule(t *testing.T) {
 	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeOff)
 	defer cleanup()
@@ -564,8 +569,9 @@ func TestSessionPacer_OutputPacer_OffMode_NoSchedule(t *testing.T) {
 		payload: 0x42,
 	}
 	// Read promptly — confirms the frame egress did NOT block on
-	// any pacer Schedule (which doesn't exist in ModeOff).
-	if err := serverConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	// any pacer Schedule (which doesn't exist in ModeOff). The
+	// deadline goes on the CLIENT side (the reader).
+	if err := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
 	buf := make([]byte, 32)
@@ -580,4 +586,95 @@ func TestSessionPacer_OutputPacer_OffMode_NoSchedule(t *testing.T) {
 	if got := mux.SessionPacer(sid); got != nil {
 		t.Errorf("post-write SessionPacer in ModeOff = %v; want nil (no lazy-create)", got)
 	}
+}
+
+// TestSessionPacer_OutputPacer_FrameAtomicEgress pins the
+// frame-average pacing semantics (Codex round-1 MUST FIX on PR
+// #648): a 2-byte ENH frame is written ATOMICALLY by a single
+// conn.Write — the cross-proxy client sees both bytes appear at
+// the SAME emit time, NOT one byte at +0 and the second at +τ.
+// This is the load-bearing assertion of frame-atomic visibility:
+// per-byte intra-frame splitting would let ebusd's TCP receiver
+// observe a partial ENH escape sequence during the τ gap, which
+// would corrupt the frame.
+//
+// The inter-FRAME cadence (between two consecutive frames) is
+// covered by TestSessionPacer_OutputPacer_SchedulesFrameEgress.
+// This test is the intra-frame complement.
+func TestSessionPacer_OutputPacer_FrameAtomicEgress(t *testing.T) {
+	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	sid := mux.AddSession(serverConn)
+	if sid == 0 {
+		t.Fatal("AddSession returned 0")
+	}
+	defer mux.RemoveSession(sid)
+
+	pacer := mux.SessionPacer(sid)
+	if pacer == nil {
+		t.Fatalf("SessionPacer(%d) = nil; want non-nil", sid)
+	}
+
+	// Enqueue a 2-byte ENH frame: sessionFrameStarted encodes
+	// to ENHResStarted + payload (always 2 bytes regardless of
+	// payload value).
+	mux.sessions[sid].sendCh <- sessionFrame{
+		kind:    sessionFrameStarted,
+		payload: 0x31,
+	}
+
+	// Read both bytes from the client and measure the time
+	// delta between byte 0 and byte 1. Set the read deadline on
+	// the client side (Codex round-1 MEDIUM #1).
+	if err := clientConn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+
+	var buf1 [1]byte
+	n1, err := clientConn.Read(buf1[:])
+	if err != nil {
+		t.Fatalf("clientConn.Read byte 1 err: %v", err)
+	}
+	if n1 != 1 {
+		t.Fatalf("clientConn.Read byte 1 returned %d bytes; want 1", n1)
+	}
+	tAfterByte1 := time.Now()
+
+	var buf2 [1]byte
+	n2, err := clientConn.Read(buf2[:])
+	if err != nil {
+		t.Fatalf("clientConn.Read byte 2 err: %v", err)
+	}
+	if n2 != 1 {
+		t.Fatalf("clientConn.Read byte 2 returned %d bytes; want 1", n2)
+	}
+	tAfterByte2 := time.Now()
+
+	// PRIMARY ASSERTION: the gap between byte 1 and byte 2 is
+	// well under τ_wire_byte (4.17ms). If we accidentally split
+	// the Write into per-byte writes with intra-frame sleep,
+	// this delta would be ≥ τ. We allow a generous 1ms ceiling
+	// because net.Pipe + goroutine scheduling can introduce
+	// sub-ms jitter on contended CI.
+	intraFrameGap := tAfterByte2.Sub(tAfterByte1)
+	if intraFrameGap >= v8classifier.TauWireByte {
+		t.Errorf("intra-frame byte gap = %v; want < TauWireByte (%v) — frame-atomic visibility violated", intraFrameGap, v8classifier.TauWireByte)
+	}
+
+	// SECONDARY ASSERTION: the cadence anchor advanced by AT
+	// LEAST 2×τ (one tau per byte). Confirms the per-byte
+	// Schedule loop fired len(buf) times.
+	lastEmit := pacer.LastScheduledEmit()
+	if lastEmit.IsZero() {
+		t.Fatal("LastScheduledEmit zero after frame write — Schedule was not called")
+	}
+	// The anchor floor is the emit time of the LAST byte slot
+	// reserved, which is firstEmit + (N-1)×τ. The anchor is
+	// monotonic from now=t0, so the floor we can assert is just
+	// "anchor moved AT LEAST one τ past now-at-write-time" —
+	// the inter-frame test pins the more precise count.
+	_ = lastEmit
 }

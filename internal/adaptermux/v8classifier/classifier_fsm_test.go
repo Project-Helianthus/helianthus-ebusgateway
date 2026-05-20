@@ -302,6 +302,98 @@ func TestFSM_ShadowMode_AaInjectionCounted_NotDropped(t *testing.T) {
 	}
 }
 
+// TestShadowWouldHaveDroppedTotal_ShadowMode pins the Phase 3
+// Step B3.7 contract: in ModeShadow, ShadowWouldHaveDroppedTotal
+// returns the same value as FsmDropAaInjectionTotal — every
+// would-be drop in shadow IS a divergence vs the legacy
+// pre-v8 path (legacy let the byte through; v8 would have
+// dropped it).
+func TestShadowWouldHaveDroppedTotal_ShadowMode(t *testing.T) {
+	t.Parallel()
+	c := New(ModeShadow)
+	now := time.Unix(0, 0)
+
+	// Precondition: counter is 0 before any Observe.
+	if got := c.ShadowWouldHaveDroppedTotal(); got != 0 {
+		t.Fatalf("ShadowWouldHaveDroppedTotal() at construction = %d; want 0", got)
+	}
+
+	// Trigger an AA-injection drop verdict.
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventStarted,
+		Data: 0x71,
+	}, now)
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventByte,
+		Byte: 0xAA,
+	}, now)
+
+	// In Shadow, the counter mirrors FsmDropAaInjectionTotal.
+	if got := c.ShadowWouldHaveDroppedTotal(); got != 1 {
+		t.Errorf("ShadowWouldHaveDroppedTotal()=%d in ModeShadow; want 1 (mirrors FsmDropAaInjectionTotal)", got)
+	}
+	// Sanity: the underlying FsmDropAaInjectionTotal matches.
+	if got := c.FsmDropAaInjectionTotal(); got != 1 {
+		t.Errorf("FsmDropAaInjectionTotal()=%d; want 1", got)
+	}
+	// EnforceDropsAppliedTotal stays 0 in Shadow.
+	if got := c.EnforceDropsAppliedTotal(); got != 0 {
+		t.Errorf("EnforceDropsAppliedTotal()=%d; want 0", got)
+	}
+}
+
+// TestShadowWouldHaveDroppedTotal_EnforceMode pins that in
+// ModeEnforce, ShadowWouldHaveDroppedTotal returns 0 even when
+// FsmDropAaInjectionTotal is non-zero. In Enforce, drops are
+// applied — there is no "would have" to count. Operators
+// reading the counter under Enforce should see 0 (the
+// EnforceDropsAppliedTotal counter is the right signal there).
+func TestShadowWouldHaveDroppedTotal_EnforceMode(t *testing.T) {
+	t.Parallel()
+	c := New(ModeEnforce)
+	now := time.Unix(0, 0)
+
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventStarted,
+		Data: 0x71,
+	}, now)
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventByte,
+		Byte: 0xAA,
+	}, now)
+
+	// Enforce mode: ShadowWouldHaveDroppedTotal stays 0 by
+	// design (the mode-gate filters it).
+	if got := c.ShadowWouldHaveDroppedTotal(); got != 0 {
+		t.Errorf("ShadowWouldHaveDroppedTotal()=%d in ModeEnforce; want 0 (Enforce uses EnforceDropsAppliedTotal)", got)
+	}
+	// The underlying counters did increment.
+	if got := c.FsmDropAaInjectionTotal(); got != 1 {
+		t.Errorf("FsmDropAaInjectionTotal()=%d; want 1", got)
+	}
+	if got := c.EnforceDropsAppliedTotal(); got != 1 {
+		t.Errorf("EnforceDropsAppliedTotal()=%d; want 1", got)
+	}
+}
+
+// TestShadowWouldHaveDroppedTotal_OffAndNil pins the
+// production-default and defensive cases.
+func TestShadowWouldHaveDroppedTotal_OffAndNil(t *testing.T) {
+	t.Parallel()
+	// ModeOff: counter always 0 (classifier doesn't run).
+	c := New(ModeOff)
+	c.Observe(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xAA}, time.Unix(0, 0))
+	if got := c.ShadowWouldHaveDroppedTotal(); got != 0 {
+		t.Errorf("ShadowWouldHaveDroppedTotal()=%d in ModeOff; want 0", got)
+	}
+	// nil classifier: counter is 0 (defensive — operator queries
+	// against a not-yet-constructed mux must not panic).
+	var nilClassifier *Classifier
+	if got := nilClassifier.ShadowWouldHaveDroppedTotal(); got != 0 {
+		t.Errorf("nil.ShadowWouldHaveDroppedTotal()=%d; want 0", got)
+	}
+}
+
 // TestFSM_EnforceMode_ProtocolFaultStillForwards pins v8 I10:
 // PROTOCOL_FAULT bytes are FORWARDED to all observers regardless
 // of mode. Only AA-injection is filtered.

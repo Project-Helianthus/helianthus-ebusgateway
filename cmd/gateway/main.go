@@ -47,7 +47,43 @@ var (
 	startHTTPServerFn                         = startHTTPServer
 	admissionStabilityRefreshDelay            = time.Duration(ebusgateway.StartupAdmissionStateMinStabilitySecondsDefault)*time.Second + 200*time.Millisecond
 	instanceGUIDPattern                       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+	// v8RolloutExpvarCurrent holds the currently-active bus +
+	// classifier references that back the five helianthus_round9_* /
+	// helianthus_payload_aa_* / helianthus_v8_shadow_* expvars
+	// mirrored onto /debug/vars.
+	//
+	// Why a process-global atomic and not a plain sync.Once-captured
+	// closure: expvar.Publish panics on duplicate names, so the
+	// publishes themselves must be one-shot. But the test harness re-
+	// enters run() with a fresh *Gateway / *protocol.Bus and a fresh
+	// *adaptermux.Mux per scenario. A naive sync.Once that captures
+	// the first bus would leave /debug/vars reading stale counters
+	// from the dead first gateway while /metrics serves the live
+	// counters from the new BusObservabilityStore provider — a
+	// genuine surface-inconsistency bug flagged in PR #655 round-1
+	// review.
+	//
+	// Indirection: publish the expvar.Funcs ONCE with closures that
+	// dereference v8RolloutExpvarCurrent.Load() at every scrape.
+	// run() updates the pointer on each invocation; old gateways
+	// stop being scraped because nothing holds their bus reference
+	// any more.
+	v8RolloutExpvarPublishOnce sync.Once
+	v8RolloutExpvarCurrent     atomic.Pointer[v8RolloutExpvarSource]
 )
+
+// v8RolloutExpvarSource is the indirection layer for the five
+// helianthus_*_total expvar surfaces. Nil-classifier is intentional —
+// non-adapter-direct transports run with classifier=nil and rely on
+// v8classifier.Classifier.ShadowWouldHaveDroppedTotal()'s nil-receiver
+// contract (returns 0). bus must not be nil: gateway.Bus is always
+// non-nil after a successful ebusgateway.New(), and the wiring site
+// guards on it.
+type v8RolloutExpvarSource struct {
+	bus        *protocol.Bus
+	classifier *v8classifier.Classifier
+}
 
 type runtimeWatchObserver struct {
 	primary  ebusgateway.WatchObserver
@@ -243,6 +279,94 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	}()
 
 	gateway.Start(ctx)
+
+	// v8 frame-atomic-visibility rollout counters — wire the four
+	// protocol.Bus counters (round-9 + payload_aa_*) and the v8
+	// classifier shadow-mode counter into the BusObservabilityStore
+	// Prometheus surface. When the active transport isn't adapter-
+	// direct (no mux, no classifier) we still publish the four bus
+	// counters so HelianthusRound9FiredUnderProxy can fire on any
+	// transport. The v8 classifier counter degrades to 0 when the
+	// classifier is nil (Classifier.ShadowWouldHaveDroppedTotal
+	// has nil-receiver handling — see
+	// internal/adaptermux/v8classifier/classifier.go:848).
+	if busObservability != nil && gateway.Bus != nil {
+		bus := gateway.Bus
+		var classifier *v8classifier.Classifier
+		if m, ok := adapterClassifier.(*adaptermux.Mux); ok {
+			classifier = m.V8Classifier()
+		}
+		busObservability.SetV8RolloutProvider(func() ebusgateway.V8RolloutSnapshot {
+			return ebusgateway.V8RolloutSnapshot{
+				Round9AbsorbEntered:            bus.Round9AbsorbEntered(),
+				PayloadAaAutoSynAbsorbed:       bus.PayloadAaAutoSynAbsorbed(),
+				PayloadAaAutoSynRecovered:      bus.PayloadAaAutoSynRecovered(),
+				PayloadAaAutoSynDrainExhausted: bus.PayloadAaAutoSynDrainExhausted(),
+				V8ShadowWouldHaveDroppedTotal:  classifier.ShadowWouldHaveDroppedTotal(),
+			}
+		})
+
+		// Mirror the same counters on /debug/vars (expvar) so
+		// operators can read them with curl + jq without
+		// scraping the Prometheus surface. expvar.Func re-reads
+		// the underlying atomic on every scrape — keeps the two
+		// surfaces in lock-step. Names match the Prometheus
+		// metric names 1:1 so dashboards built on either
+		// transport produce identical numbers.
+		//
+		// Stale-closure defense (PR #655 round-1, Codex MAJOR):
+		// the expvar.Publish calls themselves run ONCE per process
+		// (publish panics on duplicate names), but the closures
+		// dereference an atomic.Pointer that run() updates on each
+		// invocation. The test harness re-entering run() with a
+		// fresh gateway therefore swaps the pointer and /debug/vars
+		// immediately starts reading the new bus — no surface
+		// inconsistency between /metrics and /debug/vars.
+		v8RolloutExpvarCurrent.Store(&v8RolloutExpvarSource{
+			bus:        bus,
+			classifier: classifier,
+		})
+		v8RolloutExpvarPublishOnce.Do(func() {
+			expvar.Publish("helianthus_round9_absorb_entered_total",
+				expvar.Func(func() any {
+					if src := v8RolloutExpvarCurrent.Load(); src != nil {
+						return src.bus.Round9AbsorbEntered()
+					}
+					return uint64(0)
+				}))
+			expvar.Publish("helianthus_payload_aa_auto_syn_absorbed_total",
+				expvar.Func(func() any {
+					if src := v8RolloutExpvarCurrent.Load(); src != nil {
+						return src.bus.PayloadAaAutoSynAbsorbed()
+					}
+					return uint64(0)
+				}))
+			expvar.Publish("helianthus_payload_aa_auto_syn_recovered_total",
+				expvar.Func(func() any {
+					if src := v8RolloutExpvarCurrent.Load(); src != nil {
+						return src.bus.PayloadAaAutoSynRecovered()
+					}
+					return uint64(0)
+				}))
+			expvar.Publish("helianthus_payload_aa_auto_syn_drain_exhausted_total",
+				expvar.Func(func() any {
+					if src := v8RolloutExpvarCurrent.Load(); src != nil {
+						return src.bus.PayloadAaAutoSynDrainExhausted()
+					}
+					return uint64(0)
+				}))
+			expvar.Publish("helianthus_v8_shadow_would_have_dropped_total",
+				expvar.Func(func() any {
+					if src := v8RolloutExpvarCurrent.Load(); src != nil {
+						// classifier may be nil on non-adapter-direct
+						// transports — the method has nil-receiver
+						// handling and returns 0.
+						return src.classifier.ShadowWouldHaveDroppedTotal()
+					}
+					return uint64(0)
+				}))
+		})
+	}
 
 	// P3 (post-Phase-C live validation 2026-05-08): when enabled,
 	// plant the productids static seed entries into the registry at

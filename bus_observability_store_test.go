@@ -1939,3 +1939,106 @@ func TestEvidenceBuffer_StrongEvidenceRequiresCoherentB524Echo(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderPrometheus_V8RolloutCountersOmittedWhenProviderUnset pins
+// the test-only no-provider degradation contract: when no v8 rollout
+// provider is wired (e.g. a store constructed directly in a unit
+// test that does not exercise the cmd/gateway wiring), RenderPrometheus
+// must NOT emit any helianthus_round9_*, helianthus_payload_aa_*, or
+// helianthus_v8_* counter.
+//
+// IMPORTANT: in PRODUCTION the provider is registered unconditionally
+// — gateway.Bus exists on every transport, so the four bus counters
+// (round-9 + 3 payload_aa_*) report on ebusd-tcp as well as
+// adapter-direct. The fifth counter reports 0 via the classifier
+// nil-receiver contract when the mux is absent. This test exists
+// only to keep test setups free of dangling counter samples that
+// would imply a v8 rollout the test was not designed to exercise.
+func TestRenderPrometheus_V8RolloutCountersOmittedWhenProviderUnset(t *testing.T) {
+	store := NewBusObservabilityStore(DefaultConfig())
+	metrics := store.RenderPrometheus()
+
+	for _, family := range []string{
+		"helianthus_round9_absorb_entered_total",
+		"helianthus_payload_aa_auto_syn_absorbed_total",
+		"helianthus_payload_aa_auto_syn_recovered_total",
+		"helianthus_payload_aa_auto_syn_drain_exhausted_total",
+		"helianthus_v8_shadow_would_have_dropped_total",
+	} {
+		if strings.Contains(metrics, family) {
+			t.Errorf("metrics unexpectedly contains %q with no provider set; v8 family must degrade cleanly when adapter-direct is not in use", family)
+		}
+	}
+}
+
+// TestRenderPrometheus_V8RolloutCountersEmittedFromProvider pins the
+// wiring contract: when SetV8RolloutProvider returns a non-zero
+// snapshot, the five counter samples are emitted with the exact
+// metric names referenced by the operator alert spec
+// (helianthus-docs-ebus/deployment/prometheus-alerts.md). The values
+// in the rendered output must match the snapshot returned by the
+// provider — confirms no field is dropped or misordered between
+// V8RolloutSnapshot and the writeCounterSample calls.
+func TestRenderPrometheus_V8RolloutCountersEmittedFromProvider(t *testing.T) {
+	store := NewBusObservabilityStore(DefaultConfig())
+	store.SetV8RolloutProvider(func() V8RolloutSnapshot {
+		return V8RolloutSnapshot{
+			Round9AbsorbEntered:            7,
+			PayloadAaAutoSynAbsorbed:       23,
+			PayloadAaAutoSynRecovered:      5,
+			PayloadAaAutoSynDrainExhausted: 2,
+			V8ShadowWouldHaveDroppedTotal:  11,
+		}
+	})
+
+	metrics := store.RenderPrometheus()
+
+	for name, want := range map[string]string{
+		"helianthus_round9_absorb_entered_total":               "7",
+		"helianthus_payload_aa_auto_syn_absorbed_total":        "23",
+		"helianthus_payload_aa_auto_syn_recovered_total":       "5",
+		"helianthus_payload_aa_auto_syn_drain_exhausted_total": "2",
+		"helianthus_v8_shadow_would_have_dropped_total":        "11",
+	} {
+		// Each sample is emitted as a line "<name> <value>\n"
+		// without label braces (no label dimensions on these
+		// counters). Search for the exact "name value" substring
+		// to assert both presence and field mapping.
+		line := name + " " + want
+		if !strings.Contains(metrics, line) {
+			t.Errorf("metrics missing line %q\nfull surface:\n%s", line, metrics)
+		}
+	}
+}
+
+// TestRenderPrometheus_V8RolloutProviderInvokedPerScrape pins that
+// the provider is invoked on every RenderPrometheus call (the
+// counters are read fresh from atomic.Uint64 underneath). Without
+// this, a counter increment between scrapes would be invisible to
+// alert rules — defeating the rate-based alerts in prometheus-alerts.md.
+func TestRenderPrometheus_V8RolloutProviderInvokedPerScrape(t *testing.T) {
+	store := NewBusObservabilityStore(DefaultConfig())
+
+	calls := 0
+	store.SetV8RolloutProvider(func() V8RolloutSnapshot {
+		calls++
+		return V8RolloutSnapshot{Round9AbsorbEntered: uint64(calls)}
+	})
+
+	first := store.RenderPrometheus()
+	second := store.RenderPrometheus()
+	third := store.RenderPrometheus()
+
+	if calls != 3 {
+		t.Errorf("provider invoked %d times across 3 RenderPrometheus calls; want 3 (one per scrape)", calls)
+	}
+	if !strings.Contains(first, "helianthus_round9_absorb_entered_total 1") {
+		t.Errorf("first scrape missing fresh value=1; got:\n%s", first)
+	}
+	if !strings.Contains(second, "helianthus_round9_absorb_entered_total 2") {
+		t.Errorf("second scrape missing fresh value=2; got:\n%s", second)
+	}
+	if !strings.Contains(third, "helianthus_round9_absorb_entered_total 3") {
+		t.Errorf("third scrape missing fresh value=3; got:\n%s", third)
+	}
+}

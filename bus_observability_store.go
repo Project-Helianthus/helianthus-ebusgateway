@@ -111,6 +111,31 @@ type BusObservabilityStore struct {
 	// (ebus_adaptermux_syn_seen_*) alongside the rest of the surface.
 	adaptermuxDiagProvider func() AdaptermuxDiagSnapshot
 
+	// v8RolloutProvider returns the latest snapshot of the v8 frame-
+	// atomic-visibility rollout counters: round-9 legacy-fallback
+	// entries plus the three payload_aa_* counters from
+	// helianthus-ebusgo's protocol.Bus, AND the v8 classifier shadow-
+	// mode would-have-dropped counter from
+	// internal/adaptermux/v8classifier.Classifier.
+	//
+	// Set via SetV8RolloutProvider; nil ONLY in tests that construct
+	// the store directly without going through cmd/gateway/main.go.
+	// In production, gateway.Bus exists on every transport (ebusd-tcp
+	// and adapter-direct both build a protocol.Bus), so the provider
+	// is registered unconditionally — meaning the four
+	// helianthus_round9_* / helianthus_payload_aa_* counters fire on
+	// every transport. The fifth counter
+	// (helianthus_v8_shadow_would_have_dropped_total) reports 0
+	// when the classifier is nil (non-adapter-direct) by the
+	// v8classifier.Classifier nil-receiver contract.
+	//
+	// When this provider is nil, RenderPrometheus omits the entire
+	// counter family — the test-only degradation contract. See
+	// deployment/prometheus-alerts.md for the
+	// HelianthusRound9FiredUnderProxy and
+	// HelianthusV8ShadowWouldHaveDroppedGrowing alert wiring.
+	v8RolloutProvider func() V8RolloutSnapshot
+
 	energyFreshnessMetricsRefresher func(now time.Time, passiveState string)
 	busAdmission                    *BusAdmission
 	admissionStabilityWindow        *AdmissionStabilityWindow
@@ -1048,6 +1073,81 @@ func (store *BusObservabilityStore) SetAdaptermuxDiagProvider(provider func() Ad
 	store.mu.Unlock()
 }
 
+// V8RolloutSnapshot is the per-scrape view of the frame-atomic-visibility
+// v8 rollout counters. Three of the four payload_aa_* counters live on
+// helianthus-ebusgo's *protocol.Bus (entered/recovered/exhausted), the
+// Round9AbsorbEntered counter also lives there, and the shadow-mode
+// would-have-dropped counter lives on the gateway's instance-local
+// *v8classifier.Classifier. Snapshotting them into a single struct
+// keeps bus_observability_store decoupled from both packages.
+//
+// Field naming matches the Prometheus surface 1:1 (snake-case lowering
+// of the Go field name with a leading "helianthus_" prefix) — see
+// helianthus-docs-ebus/deployment/prometheus-alerts.md for the
+// operator alerts that consume these counters.
+type V8RolloutSnapshot struct {
+	// Round9AbsorbEntered counts transactions that entered the
+	// legacy pre-v8 round-9 absorb path in protocol.Bus.
+	// Published as helianthus_round9_absorb_entered_total.
+	//
+	// HelianthusRound9FiredUnderProxy alert fires on any growth:
+	// once the v8 frame-atomic-visibility path is fully deployed
+	// the round-9 fallback should never trigger. Growth indicates
+	// either an upstream regression or a corner case the v8 path
+	// does not yet cover.
+	Round9AbsorbEntered uint64
+
+	// PayloadAaAutoSynAbsorbed counts wire SYN bytes the round-9
+	// absorb path consumed during payload-0xAA writes.
+	// Published as helianthus_payload_aa_auto_syn_absorbed_total.
+	// Forensic — paired with Round9AbsorbEntered for severity
+	// dashboards (per-byte cost of legacy-fallback firings).
+	PayloadAaAutoSynAbsorbed uint64
+
+	// PayloadAaAutoSynRecovered counts transactions where the
+	// absorb path's drain successfully recovered to a clean
+	// terminator after consuming wire SYNs.
+	// Published as helianthus_payload_aa_auto_syn_recovered_total.
+	// Forensic — ratio recovered/entered shows how often the
+	// fallback actually rescued the transaction vs hit drain
+	// exhaustion.
+	PayloadAaAutoSynRecovered uint64
+
+	// PayloadAaAutoSynDrainExhausted counts transactions where the
+	// absorb path exhausted its drain budget without recovering.
+	// Published as helianthus_payload_aa_auto_syn_drain_exhausted_total.
+	// Forensic — non-zero indicates the round-9 fallback is
+	// running but failing to rescue; the transaction will surface
+	// as a bus error.
+	PayloadAaAutoSynDrainExhausted uint64
+
+	// V8ShadowWouldHaveDroppedTotal mirrors
+	// v8classifier.Classifier.ShadowWouldHaveDroppedTotal — bytes
+	// the v8 classifier WOULD have dropped under ModeEnforce but
+	// did NOT drop in ModeShadow. Published as
+	// helianthus_v8_shadow_would_have_dropped_total.
+	//
+	// HelianthusV8ShadowWouldHaveDroppedGrowing alert fires on
+	// rate > 0 in shadow mode — operators must assess enforce-
+	// mode safety before rolling out. ModeOff and ModeEnforce
+	// both report 0 here by design (see v8classifier.go:805).
+	V8ShadowWouldHaveDroppedTotal uint64
+}
+
+// SetV8RolloutProvider registers a snapshot provider callback for the
+// v8 frame-atomic-visibility rollout counters. Wired in cmd/gateway/main.go
+// after the gateway's protocol.Bus and the adaptermux's v8 classifier are
+// constructed; the callback closes over both. nil-store and nil-provider
+// are no-ops so tests that do not exercise the v8 path are unaffected.
+func (store *BusObservabilityStore) SetV8RolloutProvider(provider func() V8RolloutSnapshot) {
+	if store == nil {
+		return
+	}
+	store.mu.Lock()
+	store.v8RolloutProvider = provider
+	store.mu.Unlock()
+}
+
 func (store *BusObservabilityStore) RenderPrometheus() string {
 	if store == nil {
 		return ""
@@ -1079,6 +1179,7 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	energyMetricsRefresher := store.energyFreshnessMetricsRefresher
 	passiveState := passive.state
 	adaptermuxDiagProvider := store.adaptermuxDiagProvider
+	v8RolloutProvider := store.v8RolloutProvider
 	store.mu.Unlock()
 
 	// batch-21 diagnostic counters — snapshot OUTSIDE store.mu (the
@@ -1091,6 +1192,19 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	if adaptermuxDiagProvider != nil {
 		adaptermuxDiag = adaptermuxDiagProvider()
 		haveAdaptermuxDiag = true
+	}
+
+	// v8 frame-atomic-visibility rollout counters — same lock
+	// discipline as above. The provider reads atomic.Uint64
+	// counters on *protocol.Bus and *v8classifier.Classifier;
+	// holding store.mu while doing so would not deadlock but is
+	// unnecessary and keeps the scrape path free of cross-package
+	// lock dependencies.
+	var v8Rollout V8RolloutSnapshot
+	haveV8Rollout := false
+	if v8RolloutProvider != nil {
+		v8Rollout = v8RolloutProvider()
+		haveV8Rollout = true
 	}
 
 	if energyMetricsRefresher != nil {
@@ -1216,6 +1330,56 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		writer.writeType("ebus_adaptermux_syn_seen_after_transport_window_expired_total", "counter")
 		writer.writeCounterSample("ebus_adaptermux_syn_seen_after_transport_window_expired_total",
 			float64(adaptermuxDiag.SynSeenAfterTransportWindowExpired), nil)
+	}
+
+	// v8 frame-atomic-visibility rollout counters — wired via
+	// SetV8RolloutProvider after the gateway's protocol.Bus and the
+	// adaptermux's v8 classifier are constructed in
+	// cmd/gateway/main.go. In production the provider is registered
+	// unconditionally because gateway.Bus exists on every transport
+	// (ebusd-tcp and adapter-direct both build a protocol.Bus), so
+	// the four bus counters (round-9 + 3 payload_aa_*) fire on every
+	// transport. The fifth counter
+	// (helianthus_v8_shadow_would_have_dropped_total) reports 0
+	// when the classifier is nil (non-adapter-direct) via the
+	// v8classifier.Classifier nil-receiver contract.
+	//
+	// The provider is only nil in unit tests that construct the
+	// store directly without going through the cmd/gateway wiring —
+	// in that case the entire family is omitted so tests do not
+	// accumulate dangling counter samples. Alerts that consume
+	// these counters are documented in
+	// helianthus-docs-ebus/deployment/prometheus-alerts.md.
+	if haveV8Rollout {
+		writer.writeHelp("helianthus_round9_absorb_entered_total",
+			"Count of transactions that entered the legacy pre-v8 round-9 absorb path in helianthus-ebusgo's protocol.Bus. Under the frame-atomic-visibility v8 deployment this counter should stay flat — any growth fires HelianthusRound9FiredUnderProxy and indicates either an upstream regression or a corner case the v8 path does not yet cover (see frame-atomic-visibility-v8 §1.12 / I8).")
+		writer.writeType("helianthus_round9_absorb_entered_total", "counter")
+		writer.writeCounterSample("helianthus_round9_absorb_entered_total",
+			float64(v8Rollout.Round9AbsorbEntered), nil)
+
+		writer.writeHelp("helianthus_payload_aa_auto_syn_absorbed_total",
+			"Count of wire SYN bytes the round-9 absorb path consumed during payload-0xAA writes in protocol.Bus. Forensic counter paired with helianthus_round9_absorb_entered_total — ratio gives the per-firing byte cost of the legacy-fallback path.")
+		writer.writeType("helianthus_payload_aa_auto_syn_absorbed_total", "counter")
+		writer.writeCounterSample("helianthus_payload_aa_auto_syn_absorbed_total",
+			float64(v8Rollout.PayloadAaAutoSynAbsorbed), nil)
+
+		writer.writeHelp("helianthus_payload_aa_auto_syn_recovered_total",
+			"Count of transactions where the round-9 absorb path's drain successfully recovered to a clean terminator after consuming wire SYNs. Forensic — ratio recovered/entered shows how often the fallback actually rescued the transaction vs hit drain exhaustion.")
+		writer.writeType("helianthus_payload_aa_auto_syn_recovered_total", "counter")
+		writer.writeCounterSample("helianthus_payload_aa_auto_syn_recovered_total",
+			float64(v8Rollout.PayloadAaAutoSynRecovered), nil)
+
+		writer.writeHelp("helianthus_payload_aa_auto_syn_drain_exhausted_total",
+			"Count of transactions where the round-9 absorb path exhausted its drain budget without recovering. Forensic — non-zero indicates the round-9 fallback is running but failing to rescue; the transaction will surface as a bus error.")
+		writer.writeType("helianthus_payload_aa_auto_syn_drain_exhausted_total", "counter")
+		writer.writeCounterSample("helianthus_payload_aa_auto_syn_drain_exhausted_total",
+			float64(v8Rollout.PayloadAaAutoSynDrainExhausted), nil)
+
+		writer.writeHelp("helianthus_v8_shadow_would_have_dropped_total",
+			"Count of bytes the v8 classifier WOULD have dropped under ModeEnforce but did NOT drop in ModeShadow (frame-atomic-visibility-v8 §4.7 — B3.7 shadow divergence). HelianthusV8ShadowWouldHaveDroppedGrowing alert fires on rate > 0 in shadow mode; operators must assess enforce-mode safety before rolling out. ModeOff and ModeEnforce both report 0 here by design.")
+		writer.writeType("helianthus_v8_shadow_would_have_dropped_total", "counter")
+		writer.writeCounterSample("helianthus_v8_shadow_would_have_dropped_total",
+			float64(v8Rollout.V8ShadowWouldHaveDroppedTotal), nil)
 	}
 
 	writer.writeHelp("ebus_frame_bytes_total", "Aggregate retained frame byte counts.")

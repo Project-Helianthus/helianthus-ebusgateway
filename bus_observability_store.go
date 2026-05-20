@@ -1334,11 +1334,20 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 
 	// v8 frame-atomic-visibility rollout counters — wired via
 	// SetV8RolloutProvider after the gateway's protocol.Bus and the
-	// adaptermux's v8 classifier are constructed. When the gateway
-	// is not running adapter-direct (no Mux, no classifier) the
-	// provider stays nil and this entire family is omitted from
-	// the surface so the scrape stays free of zero-valued counters
-	// that would otherwise mislead alert rules. Alerts that consume
+	// adaptermux's v8 classifier are constructed in
+	// cmd/gateway/main.go. In production the provider is registered
+	// unconditionally because gateway.Bus exists on every transport
+	// (ebusd-tcp and adapter-direct both build a protocol.Bus), so
+	// the four bus counters (round-9 + 3 payload_aa_*) fire on every
+	// transport. The fifth counter
+	// (helianthus_v8_shadow_would_have_dropped_total) reports 0
+	// when the classifier is nil (non-adapter-direct) via the
+	// v8classifier.Classifier nil-receiver contract.
+	//
+	// The provider is only nil in unit tests that construct the
+	// store directly without going through the cmd/gateway wiring —
+	// in that case the entire family is omitted so tests do not
+	// accumulate dangling counter samples. Alerts that consume
 	// these counters are documented in
 	// helianthus-docs-ebus/deployment/prometheus-alerts.md.
 	if haveV8Rollout {

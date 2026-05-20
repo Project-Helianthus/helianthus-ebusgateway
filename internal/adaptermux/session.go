@@ -796,32 +796,35 @@ func (s *session) writeFrame(frame sessionFrame) error {
 	// across frames — see "frame-average pacing semantics" below.
 	//
 	// SEMANTICS — frame-average pacing (Codex round-1 MUST FIX on
-	// PR #648): each session frame is written ATOMICALLY in a
-	// single conn.Write call, NOT split into per-byte syscalls.
-	// Splitting the Write would let the cross-proxy client (ebusd)
-	// read partial ENH frames from its TCP receive buffer and
-	// process them with an incomplete escape sequence (the
-	// `0xA9 NN` two-byte form would be readable as just `0xA9`
-	// during the τ gap), which would directly violate frame-atomic
-	// visibility — the v8 §4.5 invariant the pacer is supposed
-	// to enforce.
+	// PR #648, refined by round-2 MEDIUM #1): each session frame
+	// is written via a SINGLE conn.Write call — the writer makes
+	// NO deliberate intra-frame pacing or splitting. TCP itself
+	// is a byte stream and does NOT preserve application write
+	// boundaries for the peer's Read calls; the peer may receive
+	// the frame as 1 read or N reads depending on its own buffer
+	// management and TCP segmentation. What the pacer guarantees
+	// is that the WRITER never inserts an intra-frame τ gap that
+	// could let the peer's Read coincide with a partial ENH
+	// escape sequence (`0xA9 NN`).
 	//
 	// The cadence is enforced AT FRAME GRANULARITY:
-	//   - The pacer's lastScheduledEmit anchor advances by N×τ
-	//     for an N-byte frame.
-	//   - The NEXT frame's first byte emits at
-	//     prevFrameStart + prevFrameByteCount × τ.
-	//   - INTRA-frame byte arrival is atomic (all bytes of a
-	//     frame observable at the frame's emit time, not at
-	//     `emitTime + i×τ`).
+	//   - For an N-byte frame, the Schedule loop reserves N
+	//     byte slots. After the loop, lastScheduledEmit points at
+	//     the LAST reserved slot (frameStart + (N-1)*τ); the
+	//     NEXT frame's first Schedule call advances it to
+	//     frameStart + N*τ (Codex round-2 MEDIUM #2 precision).
+	//   - NEXT frame's first byte therefore emits no earlier
+	//     than prevFrameStart + N*τ — the wire-equivalent rate
+	//     for N bytes.
+	//   - Within a frame, the writer issues ONE Write; there is
+	//     no deliberate intra-frame sleep.
 	//
 	// This matches how the bus itself would emit a multi-byte
 	// frame — the bytes are wire-encoded back-to-back at the
 	// adapter, then arrive at the gateway's read side together
-	// (modulo TCP fragmentation jitter). The client (ebusd)
-	// always reads ENH frames as atomic units from its TCP
-	// buffer anyway, so frame-average pacing is the correct
-	// trade-off.
+	// (modulo TCP fragmentation jitter). Frame-average pacing
+	// is the correct trade-off: inter-frame cadence is wire-
+	// equivalent, intra-frame writes are atomic at the WRITER.
 	//
 	// Wiring contract:
 	//   1. Call Schedule(now) ONCE to get the FIRST byte's emit

@@ -631,11 +631,16 @@ func TestPacer_SoftDeadlineFires(t *testing.T) {
 	})
 
 	p.ArmEchoWatchdog(time.Now())
-	// Codex round-1 MEDIUM #2 on PR #647: poll the counter
-	// instead of sleeping a fixed duration. Robust on slow CI.
+	// Poll len(emitted) (not the counter) because the counter
+	// is bumped under p.mu while the emit callback fires AFTER
+	// p.mu is dropped — a tight read of the counter can race
+	// the emit append.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if p.SoftTimeoutTotal() >= 1 {
+		mu.Lock()
+		n := len(emitted)
+		mu.Unlock()
+		if n >= 1 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -673,11 +678,16 @@ func TestPacer_HardDeadlineFires(t *testing.T) {
 	})
 
 	p.ArmEchoWatchdog(time.Now())
-	// Poll the hard counter. L_rtt=100ms, hard=2*100+200=400ms;
-	// generous 2s deadline tolerates slow CI.
+	// Poll len(emitted) >= 2 — both soft AND hard emits must
+	// have appended. Counter-based polling here races the emit
+	// append (counter bumped under mutex; emit callback fires
+	// unlocked).
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if p.HardTimeoutTotal() >= 1 {
+		mu.Lock()
+		n := len(emitted)
+		mu.Unlock()
+		if n >= 2 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -727,13 +737,17 @@ func TestPacer_GraceMode_HardTimerNotArmed(t *testing.T) {
 	})
 
 	p.ArmEchoWatchdog(time.Now())
-	// Codex round-1 MEDIUM #2 on PR #647: poll the soft counter
-	// (grace soft = L_rtt + 500ms ≈ 550ms). 3s deadline tolerates
-	// slow CI; if hard were erroneously armed at 400ms we'd see
-	// it long before this deadline.
+	// Poll the emitted SLICE rather than SoftTimeoutTotal: the
+	// counter bumps under p.mu and the emit callback fires AFTER
+	// p.mu is dropped, so a tight read of the counter can see
+	// "1" before the emit has appended. Polling len(emitted) is
+	// the correct visibility signal.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if p.SoftTimeoutTotal() >= 1 {
+		mu.Lock()
+		n := len(emitted)
+		mu.Unlock()
+		if n >= 1 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -911,12 +925,15 @@ func TestClassifier_NewPacerForSession_WiresAdminEvents(t *testing.T) {
 	if p == nil {
 		t.Fatal("NewPacerForSession() = nil; want non-nil")
 	}
-	// Arm watchdog and poll for the soft fire (Codex round-1
-	// MEDIUM #2 on PR #647: counter polling, not fixed sleep).
+	// Arm watchdog and poll PendingAdminEvents — the integration
+	// path bumps the pacer counter under mutex BUT the emitter
+	// callback (which routes to adminEvents.emit) fires after
+	// the mutex is dropped. Polling PendingAdminEvents directly
+	// observes the integration we're testing.
 	p.ArmEchoWatchdog(time.Now())
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if p.SoftTimeoutTotal() >= 1 {
+		if c.PendingAdminEvents() >= 1 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)

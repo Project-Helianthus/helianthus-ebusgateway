@@ -444,3 +444,140 @@ func TestSessionPacer_Watchdog_OffMode_NoArm(t *testing.T) {
 		t.Errorf("post-write SessionPacer in ModeOff = %v; want nil (no watchdog lazy-create)", got)
 	}
 }
+
+// TestSessionPacer_OutputPacer_SchedulesFrameEgress pins the
+// Phase 3 Step B3.6f wiring: in V8ClassifierMode != Off, each
+// frame written by session.writeFrame consults the per-session
+// pacer's Schedule. The cadence anchor advances by τ_wire_byte
+// per byte (4.17ms per byte). We exercise this by writing two
+// 1-byte frames in quick succession on the same session and
+// confirming the LastScheduledEmit advances by at least one τ
+// between them.
+func TestSessionPacer_OutputPacer_SchedulesFrameEgress(t *testing.T) {
+	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	// Add an external session via the same plumbing that
+	// production AddSession exercises.
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	sid := mux.AddSession(serverConn)
+	if sid == 0 {
+		t.Fatal("AddSession returned 0")
+	}
+	defer mux.RemoveSession(sid)
+
+	pacer := mux.SessionPacer(sid)
+	if pacer == nil {
+		t.Fatalf("SessionPacer(%d) = nil; want non-nil", sid)
+	}
+	// Precondition: LastScheduledEmit is zero (no Schedule fired).
+	if got := pacer.LastScheduledEmit(); !got.IsZero() {
+		t.Fatalf("precondition: LastScheduledEmit = %v; want zero", got)
+	}
+
+	// Drive a frame egress: enqueue a single-byte ENH frame on
+	// the session's sendCh. The writeLoop drains it and calls
+	// writeFrame, which fires our new Schedule wiring.
+	// Use a payload byte < 0x80 so writeFrame takes the "short
+	// form" path (1-byte buf).
+	mux.sessions[sid].sendCh <- sessionFrame{
+		kind:    sessionFrameReceived,
+		payload: 0x42,
+	}
+	// Read from the pipe so writeLoop's Write doesn't block.
+	go func() {
+		buf := make([]byte, 32)
+		_, _ = clientConn.Read(buf)
+	}()
+
+	// Poll LastScheduledEmit until it advances (post-Schedule call).
+	deadline := time.Now().Add(2 * time.Second)
+	var emit1 time.Time
+	for time.Now().Before(deadline) {
+		emit1 = pacer.LastScheduledEmit()
+		if !emit1.IsZero() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if emit1.IsZero() {
+		t.Fatal("LastScheduledEmit stayed zero after frame egress — Schedule was not called")
+	}
+
+	// Enqueue a SECOND frame and confirm the anchor advances by
+	// at least one τ.
+	mux.sessions[sid].sendCh <- sessionFrame{
+		kind:    sessionFrameReceived,
+		payload: 0x43,
+	}
+	go func() {
+		buf := make([]byte, 32)
+		_, _ = clientConn.Read(buf)
+	}()
+
+	deadline = time.Now().Add(2 * time.Second)
+	var emit2 time.Time
+	for time.Now().Before(deadline) {
+		emit2 = pacer.LastScheduledEmit()
+		if emit2.After(emit1) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !emit2.After(emit1) {
+		t.Errorf("LastScheduledEmit did not advance between frames: emit1=%v emit2=%v", emit1, emit2)
+	}
+	// Verify the advance is AT LEAST τ_wire_byte (4.17ms). It
+	// can be MORE if wall clock advanced past the prior emit
+	// (writeLoop scheduling latency, GC, etc).
+	advance := emit2.Sub(emit1)
+	if advance < v8classifier.TauWireByte {
+		t.Errorf("cadence advance %v < TauWireByte %v; pacer enforcement broken", advance, v8classifier.TauWireByte)
+	}
+}
+
+// TestSessionPacer_OutputPacer_OffMode_NoSchedule pins the
+// ModeOff zero-overhead contract on the output-pacer side: when
+// V8ClassifierMode == Off, writeFrame must NOT call Schedule
+// (and obviously must not allocate a pacer). The pipe still
+// receives the frame promptly.
+func TestSessionPacer_OutputPacer_OffMode_NoSchedule(t *testing.T) {
+	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeOff)
+	defer cleanup()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	sid := mux.AddSession(serverConn)
+	if sid == 0 {
+		t.Fatal("AddSession returned 0")
+	}
+	defer mux.RemoveSession(sid)
+
+	// SessionPacer is nil in ModeOff.
+	if got := mux.SessionPacer(sid); got != nil {
+		t.Fatalf("SessionPacer in ModeOff = %v; want nil", got)
+	}
+
+	mux.sessions[sid].sendCh <- sessionFrame{
+		kind:    sessionFrameReceived,
+		payload: 0x42,
+	}
+	// Read promptly — confirms the frame egress did NOT block on
+	// any pacer Schedule (which doesn't exist in ModeOff).
+	if err := serverConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	buf := make([]byte, 32)
+	n, err := clientConn.Read(buf)
+	if err != nil {
+		t.Fatalf("clientConn.Read err: %v", err)
+	}
+	if n < 1 {
+		t.Errorf("clientConn.Read returned %d bytes; want >= 1", n)
+	}
+	// Post-write: SessionPacer STILL nil — no lazy-create.
+	if got := mux.SessionPacer(sid); got != nil {
+		t.Errorf("post-write SessionPacer in ModeOff = %v; want nil (no lazy-create)", got)
+	}
+}

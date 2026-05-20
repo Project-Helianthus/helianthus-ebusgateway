@@ -790,21 +790,74 @@ func (s *session) writeFrame(frame sessionFrame) error {
 		return fmt.Errorf("adaptermux: unknown session frame kind %d", frame.kind)
 	}
 
-	// B3.6 INTEGRATION HOOK POINT (Phase 3, frame-atomic-visibility
-	// v8 §4.5): this is the TCP-egress choke point where the
-	// v8classifier.Pacer's Schedule must be consulted when
-	// V8ClassifierMode != Off and the session is a cross-proxy
-	// observer. See internal/adaptermux/v8classifier/pacer.go for
-	// the API; the pacer is a per-session struct that lands in
-	// B3.6 (not yet instantiated in B3.5). Sequence per the
-	// pacer's design:
-	//   emitAt := pacer.Schedule(time.Now())
-	//   if emitAt.After(time.Now()) { sleep until emitAt }
-	//   s.conn.Write(buf)                          <-- here
+	// Phase 3 Step B3.6f (frame-atomic-visibility v8 §4.5): pace
+	// the TCP egress through the per-session v8classifier.Pacer.
+	// The pacer enforces τ_wire_byte=4.17ms inter-byte cadence so
+	// the cross-proxy client (ebusd) cannot observe egress bytes
+	// arriving faster than the bus wire-byte rate — a v8 invariant
+	// for frame-atomic visibility.
+	//
+	// Wiring contract:
+	//   1. Call Schedule(now) ONCE to get the FIRST byte's emit
+	//      time. This is what we sleep until.
+	//   2. Call Schedule(now) (len(buf)-1) more times to advance
+	//      the pacer's cadence anchor by τ per byte, so the NEXT
+	//      frame's first-byte emit is paced from
+	//      lastEmit + N×τ, not from `now`.
+	//   3. Sleep until emitAt with shutdown-responsive cancel via
+	//      s.done / s.mux.ctx.Done.
+	//   4. Write the whole frame in a single Write — the cadence
+	//      is enforced at frame-emit-time, not by splitting the
+	//      Write into per-byte syscalls (which would multiply
+	//      kernel overhead without changing the wall-clock
+	//      perceived cadence at the client's TCP receive buffer).
+	//
+	// ModeOff zero-overhead contract: when m.v8 == nil OR the
+	// per-session pacer is nil (which can happen during the brief
+	// window between AddSession and ensureSessionPacer completing —
+	// though in practice they're sequential), the pacer path is
+	// fully bypassed — no Schedule call, no time.Now, no sleep.
+	// External-session active writes through mux.doSend already
+	// pace independently of this output cadence.
+	//
 	// Do NOT conflate this hook point with mux.doSend's tr.Write
 	// (that's the L_rtt-EMA / BeforeActiveWrite side per v8 §1.4,
 	// which uses BeforeActiveWrite + EchoDeadlines + RecordEcho
 	// against the adapter, NOT the client's TCP egress).
+	// Defensive nil-check on s.mux — production callers always
+	// have a mux (session is constructed via Mux.AddSession), but
+	// unit tests (e.g. TestSession_WriteFrameErrorHost) build a
+	// bare session struct without a mux to exercise the encoder
+	// path in isolation. Without this guard those tests panic on
+	// s.mux.v8.
+	if s.mux != nil && s.mux.v8 != nil {
+		if pacer := s.mux.SessionPacer(s.id); pacer != nil {
+			now := time.Now()
+			emitAt := pacer.Schedule(now)
+			// Advance the cadence anchor for the remaining
+			// bytes in this frame. Each Schedule call increments
+			// lastScheduledEmit by τ; we discard the returned
+			// emit-times for byte indexes 1..N-1 because the
+			// frame is written in a single Write, but the anchor
+			// advance is what enforces inter-FRAME cadence on
+			// the next iteration.
+			for i := 1; i < len(buf); i++ {
+				_ = pacer.Schedule(now)
+			}
+			if delay := time.Until(emitAt); delay > 0 {
+				timer := time.NewTimer(delay)
+				select {
+				case <-timer.C:
+				case <-s.done:
+					timer.Stop()
+					return net.ErrClosed
+				case <-s.mux.ctx.Done():
+					timer.Stop()
+					return s.mux.ctx.Err()
+				}
+			}
+		}
+	}
 	_, err := s.conn.Write(buf)
 	return err
 }

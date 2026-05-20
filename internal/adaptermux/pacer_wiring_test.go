@@ -1,7 +1,9 @@
 package adaptermux
 
 import (
+	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -443,4 +445,243 @@ func TestSessionPacer_Watchdog_OffMode_NoArm(t *testing.T) {
 	if got := mux.SessionPacer(gatewaySessionID); got != nil {
 		t.Errorf("post-write SessionPacer in ModeOff = %v; want nil (no watchdog lazy-create)", got)
 	}
+}
+
+// TestSessionPacer_OutputPacer_SchedulesFrameEgress pins the
+// Phase 3 Step B3.6f wiring: in V8ClassifierMode != Off, each
+// frame written by session.writeFrame consults the per-session
+// pacer's Schedule AND honors the sleep before conn.Write.
+//
+// Codex round-2 MAJOR #2 on PR #648: the earlier version only
+// checked LastScheduledEmit anchor movement, which would pass
+// even if the actual sleep was removed (a real regression). The
+// load-bearing assertion is now WALL-CLOCK: the second frame's
+// first byte must not arrive at the client before
+// firstFrameStart + N*τ_wire_byte. We use a 2-byte ENH frame
+// (sessionFrameStarted) so the inter-frame gap is 2×τ ≈ 8.3ms
+// — comfortably above scheduler jitter.
+func TestSessionPacer_OutputPacer_SchedulesFrameEgress(t *testing.T) {
+	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	sid := mux.AddSession(serverConn)
+	if sid == 0 {
+		t.Fatal("AddSession returned 0")
+	}
+	defer mux.RemoveSession(sid)
+
+	pacer := mux.SessionPacer(sid)
+	if pacer == nil {
+		t.Fatalf("SessionPacer(%d) = nil; want non-nil", sid)
+	}
+	if got := pacer.LastScheduledEmit(); !got.IsZero() {
+		t.Fatalf("precondition: LastScheduledEmit = %v; want zero", got)
+	}
+
+	if err := clientConn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+
+	// Capture the wall-clock time BEFORE we enqueue the first
+	// frame so we can later assert the second frame's first
+	// byte didn't arrive earlier than the wire-equivalent.
+	tStart := time.Now()
+
+	// Enqueue TWO 2-byte ENH frames back-to-back. Each frame is
+	// 2 bytes; the cadence anchor advances by 2τ per frame, so
+	// the second frame's first byte should emit no earlier than
+	// tStart + 2*TauWireByte.
+	mux.sessions[sid].sendCh <- sessionFrame{
+		kind:    sessionFrameStarted,
+		payload: 0x31,
+	}
+	mux.sessions[sid].sendCh <- sessionFrame{
+		kind:    sessionFrameStarted,
+		payload: 0x32,
+	}
+
+	// Read the first frame (2 bytes) and timestamp its arrival.
+	frame1 := make([]byte, 2)
+	_, err := io.ReadFull(clientConn, frame1)
+	if err != nil {
+		t.Fatalf("read frame1: %v", err)
+	}
+	// Read the second frame and timestamp its arrival.
+	frame2 := make([]byte, 2)
+	_, err = io.ReadFull(clientConn, frame2)
+	if err != nil {
+		t.Fatalf("read frame2: %v", err)
+	}
+	tFrame2 := time.Now()
+
+	// PRIMARY ASSERTION (Codex round-2 MAJOR #2): the second
+	// frame's first byte must not have been readable at the
+	// client before tStart + 2*τ_wire_byte. A regression that
+	// deletes the sleep inside writeFrame would let the second
+	// frame egress immediately after the first, and this
+	// assertion would clearly fail.
+	elapsed := tFrame2.Sub(tStart)
+	requiredFloor := 2 * v8classifier.TauWireByte
+	if elapsed < requiredFloor {
+		t.Errorf("frame2 arrived at +%v after tStart; want >= %v (frame1 was 2 bytes so frame2 must wait 2*τ — the sleep at writeFrame may have been bypassed)", elapsed, requiredFloor)
+	}
+
+	// SECONDARY ASSERTION: the pacer's anchor advanced
+	// monotonically. After two 2-byte frames, lastScheduledEmit
+	// is at tStart + (2*2 - 1)*τ = tStart + 3*τ (last reserved
+	// byte slot).
+	emit := pacer.LastScheduledEmit()
+	if emit.IsZero() {
+		t.Fatal("LastScheduledEmit zero after two frames — Schedule was not called")
+	}
+	if !emit.After(tStart) {
+		t.Errorf("LastScheduledEmit = %v; want after tStart %v", emit, tStart)
+	}
+}
+
+// TestSessionPacer_OutputPacer_OffMode_NoSchedule pins the
+// ModeOff zero-overhead contract on the output-pacer side: when
+// V8ClassifierMode == Off, writeFrame must NOT call Schedule
+// (and obviously must not allocate a pacer). The pipe still
+// receives the frame promptly.
+//
+// Codex round-1 MEDIUM #1 on PR #648: SetReadDeadline is set on
+// the CLIENT side (the side we're reading from), not the server
+// side — net.Pipe deadlines are per-endpoint, so a regression
+// would otherwise hang the test until the package timeout.
+func TestSessionPacer_OutputPacer_OffMode_NoSchedule(t *testing.T) {
+	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeOff)
+	defer cleanup()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	sid := mux.AddSession(serverConn)
+	if sid == 0 {
+		t.Fatal("AddSession returned 0")
+	}
+	defer mux.RemoveSession(sid)
+
+	// SessionPacer is nil in ModeOff.
+	if got := mux.SessionPacer(sid); got != nil {
+		t.Fatalf("SessionPacer in ModeOff = %v; want nil", got)
+	}
+
+	mux.sessions[sid].sendCh <- sessionFrame{
+		kind:    sessionFrameReceived,
+		payload: 0x42,
+	}
+	// Read promptly — confirms the frame egress did NOT block on
+	// any pacer Schedule (which doesn't exist in ModeOff). The
+	// deadline goes on the CLIENT side (the reader).
+	if err := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	buf := make([]byte, 32)
+	n, err := clientConn.Read(buf)
+	if err != nil {
+		t.Fatalf("clientConn.Read err: %v", err)
+	}
+	if n < 1 {
+		t.Errorf("clientConn.Read returned %d bytes; want >= 1", n)
+	}
+	// Post-write: SessionPacer STILL nil — no lazy-create.
+	if got := mux.SessionPacer(sid); got != nil {
+		t.Errorf("post-write SessionPacer in ModeOff = %v; want nil (no lazy-create)", got)
+	}
+}
+
+// TestSessionPacer_OutputPacer_FrameAtomicEgress pins the
+// frame-average pacing semantics (Codex round-1 MUST FIX on PR
+// #648): writeFrame issues a SINGLE conn.Write per frame — no
+// deliberate intra-frame pacing or splitting. The reader sees
+// both bytes of a 2-byte ENH frame arrive together (modulo TCP
+// segmentation, which is not a concern for sub-MSS payloads).
+//
+// Codex round-2 MAJOR #1 on PR #648: the earlier version read
+// byte-by-byte and measured the inter-Read delta, which conflates
+// the writer's TCP write behavior with the test goroutine's own
+// scheduling latency between Reads. A regression that adds an
+// intra-frame sleep would correctly fail, but a fast machine
+// could ALSO falsely pass if scheduling jitter were lower than
+// τ. The new version uses io.ReadFull to atomically drain the
+// frame, and the regression vector is detected differently: we
+// install a recording net.Conn wrapper that counts the number
+// of Write calls per frame. Exactly ONE Write call per
+// sessionFrame ensures no per-byte syscall split.
+//
+// The inter-FRAME wall-clock cadence is covered by
+// TestSessionPacer_OutputPacer_SchedulesFrameEgress.
+func TestSessionPacer_OutputPacer_FrameAtomicEgress(t *testing.T) {
+	mux, _, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	clientConn, pipeServerConn := net.Pipe()
+	defer clientConn.Close()
+	// Wrap the server side of the pipe with a writeCounter so we
+	// can assert the per-frame Write count (Codex round-2 MAJOR #1).
+	recorder := &writeCountingConn{Conn: pipeServerConn}
+	sid := mux.AddSession(recorder)
+	if sid == 0 {
+		t.Fatal("AddSession returned 0")
+	}
+	defer mux.RemoveSession(sid)
+
+	// Enqueue a 2-byte ENH frame.
+	mux.sessions[sid].sendCh <- sessionFrame{
+		kind:    sessionFrameStarted,
+		payload: 0x31,
+	}
+
+	if err := clientConn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	// Drain the full 2-byte frame in one ReadFull.
+	frame := make([]byte, 2)
+	if _, err := io.ReadFull(clientConn, frame); err != nil {
+		t.Fatalf("io.ReadFull: %v", err)
+	}
+
+	// PRIMARY ASSERTION: writeFrame issued EXACTLY ONE Write
+	// call for the 2-byte frame. A regression that split the
+	// Write into per-byte calls would surface as N writes.
+	if got := recorder.writeCount(); got != 1 {
+		t.Errorf("writeFrame issued %d Write calls for 2-byte frame; want exactly 1 (per-byte splitting would break frame-atomic visibility)", got)
+	}
+	// Sanity: the single Write delivered the full frame.
+	if got := recorder.totalBytes(); got != 2 {
+		t.Errorf("recorder totalBytes = %d; want 2", got)
+	}
+}
+
+// writeCountingConn wraps a net.Conn to count Write call
+// frequency + total bytes written. Used by the
+// FrameAtomicEgress test to assert the writer issues exactly
+// one Write per session frame (no per-byte splitting).
+type writeCountingConn struct {
+	net.Conn
+	mu     sync.Mutex
+	writes int
+	bytes  int
+}
+
+func (w *writeCountingConn) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.writes++
+	w.bytes += len(p)
+	w.mu.Unlock()
+	return w.Conn.Write(p)
+}
+
+func (w *writeCountingConn) writeCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writes
+}
+
+func (w *writeCountingConn) totalBytes() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.bytes
 }

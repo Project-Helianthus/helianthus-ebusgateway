@@ -1941,12 +1941,19 @@ func TestEvidenceBuffer_StrongEvidenceRequiresCoherentB524Echo(t *testing.T) {
 }
 
 // TestRenderPrometheus_V8RolloutCountersOmittedWhenProviderUnset pins
-// the no-provider degradation contract: when no v8 rollout provider is
-// wired, RenderPrometheus must NOT emit any helianthus_round9_*,
-// helianthus_payload_aa_*, or helianthus_v8_* counter. Operators
-// running on non-adapter-direct transports (e.g. ebusd-tcp) should
-// see a clean scrape free of zero-valued counters that would mislead
-// alert rules.
+// the test-only no-provider degradation contract: when no v8 rollout
+// provider is wired (e.g. a store constructed directly in a unit
+// test that does not exercise the cmd/gateway wiring), RenderPrometheus
+// must NOT emit any helianthus_round9_*, helianthus_payload_aa_*, or
+// helianthus_v8_* counter.
+//
+// IMPORTANT: in PRODUCTION the provider is registered unconditionally
+// — gateway.Bus exists on every transport, so the four bus counters
+// (round-9 + 3 payload_aa_*) report on ebusd-tcp as well as
+// adapter-direct. The fifth counter reports 0 via the classifier
+// nil-receiver contract when the mux is absent. This test exists
+// only to keep test setups free of dangling counter samples that
+// would imply a v8 rollout the test was not designed to exercise.
 func TestRenderPrometheus_V8RolloutCountersOmittedWhenProviderUnset(t *testing.T) {
 	store := NewBusObservabilityStore(DefaultConfig())
 	metrics := store.RenderPrometheus()

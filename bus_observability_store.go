@@ -113,14 +113,25 @@ type BusObservabilityStore struct {
 
 	// v8RolloutProvider returns the latest snapshot of the v8 frame-
 	// atomic-visibility rollout counters: round-9 legacy-fallback
-	// entries (from helianthus-ebusgo's protocol.Bus) plus the v8
-	// classifier shadow-mode would-have-dropped counter (from
-	// internal/adaptermux/v8classifier.Classifier). Set via
-	// SetV8RolloutProvider; nil when the gateway is built without
-	// adapter-direct (the v8 path is only active when a Mux exists).
-	// When nil, RenderPrometheus omits the helianthus_round9_* and
-	// helianthus_v8_* counter families entirely so the surface
-	// degrades cleanly. See deployment/prometheus-alerts.md for the
+	// entries plus the three payload_aa_* counters from
+	// helianthus-ebusgo's protocol.Bus, AND the v8 classifier shadow-
+	// mode would-have-dropped counter from
+	// internal/adaptermux/v8classifier.Classifier.
+	//
+	// Set via SetV8RolloutProvider; nil ONLY in tests that construct
+	// the store directly without going through cmd/gateway/main.go.
+	// In production, gateway.Bus exists on every transport (ebusd-tcp
+	// and adapter-direct both build a protocol.Bus), so the provider
+	// is registered unconditionally — meaning the four
+	// helianthus_round9_* / helianthus_payload_aa_* counters fire on
+	// every transport. The fifth counter
+	// (helianthus_v8_shadow_would_have_dropped_total) reports 0
+	// when the classifier is nil (non-adapter-direct) by the
+	// v8classifier.Classifier nil-receiver contract.
+	//
+	// When this provider is nil, RenderPrometheus omits the entire
+	// counter family — the test-only degradation contract. See
+	// deployment/prometheus-alerts.md for the
 	// HelianthusRound9FiredUnderProxy and
 	// HelianthusV8ShadowWouldHaveDroppedGrowing alert wiring.
 	v8RolloutProvider func() V8RolloutSnapshot

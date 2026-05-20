@@ -48,14 +48,42 @@ var (
 	admissionStabilityRefreshDelay            = time.Duration(ebusgateway.StartupAdmissionStateMinStabilitySecondsDefault)*time.Second + 200*time.Millisecond
 	instanceGUIDPattern                       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
-	// publishV8RolloutExpvarsOnce guards the one-time expvar.Publish
-	// calls for the five helianthus_round9_* / helianthus_payload_aa_* /
-	// helianthus_v8_shadow_* counters mirrored onto /debug/vars.
-	// expvar.Publish panics on duplicate names, and the test harness
-	// can re-enter run() within a single process — so guard the
-	// publishes behind a process-wide sync.Once.
-	publishV8RolloutExpvarsOnce sync.Once
+	// v8RolloutExpvarCurrent holds the currently-active bus +
+	// classifier references that back the five helianthus_round9_* /
+	// helianthus_payload_aa_* / helianthus_v8_shadow_* expvars
+	// mirrored onto /debug/vars.
+	//
+	// Why a process-global atomic and not a plain sync.Once-captured
+	// closure: expvar.Publish panics on duplicate names, so the
+	// publishes themselves must be one-shot. But the test harness re-
+	// enters run() with a fresh *Gateway / *protocol.Bus and a fresh
+	// *adaptermux.Mux per scenario. A naive sync.Once that captures
+	// the first bus would leave /debug/vars reading stale counters
+	// from the dead first gateway while /metrics serves the live
+	// counters from the new BusObservabilityStore provider — a
+	// genuine surface-inconsistency bug flagged in PR #655 round-1
+	// review.
+	//
+	// Indirection: publish the expvar.Funcs ONCE with closures that
+	// dereference v8RolloutExpvarCurrent.Load() at every scrape.
+	// run() updates the pointer on each invocation; old gateways
+	// stop being scraped because nothing holds their bus reference
+	// any more.
+	v8RolloutExpvarPublishOnce sync.Once
+	v8RolloutExpvarCurrent     atomic.Pointer[v8RolloutExpvarSource]
 )
+
+// v8RolloutExpvarSource is the indirection layer for the five
+// helianthus_*_total expvar surfaces. Nil-classifier is intentional —
+// non-adapter-direct transports run with classifier=nil and rely on
+// v8classifier.Classifier.ShadowWouldHaveDroppedTotal()'s nil-receiver
+// contract (returns 0). bus must not be nil: gateway.Bus is always
+// non-nil after a successful ebusgateway.New(), and the wiring site
+// guards on it.
+type v8RolloutExpvarSource struct {
+	bus        *protocol.Bus
+	classifier *v8classifier.Classifier
+}
 
 type runtimeWatchObserver struct {
 	primary  ebusgateway.WatchObserver
@@ -285,17 +313,58 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		// surfaces in lock-step. Names match the Prometheus
 		// metric names 1:1 so dashboards built on either
 		// transport produce identical numbers.
-		publishV8RolloutExpvarsOnce.Do(func() {
+		//
+		// Stale-closure defense (PR #655 round-1, Codex MAJOR):
+		// the expvar.Publish calls themselves run ONCE per process
+		// (publish panics on duplicate names), but the closures
+		// dereference an atomic.Pointer that run() updates on each
+		// invocation. The test harness re-entering run() with a
+		// fresh gateway therefore swaps the pointer and /debug/vars
+		// immediately starts reading the new bus — no surface
+		// inconsistency between /metrics and /debug/vars.
+		v8RolloutExpvarCurrent.Store(&v8RolloutExpvarSource{
+			bus:        bus,
+			classifier: classifier,
+		})
+		v8RolloutExpvarPublishOnce.Do(func() {
 			expvar.Publish("helianthus_round9_absorb_entered_total",
-				expvar.Func(func() any { return bus.Round9AbsorbEntered() }))
+				expvar.Func(func() any {
+					if src := v8RolloutExpvarCurrent.Load(); src != nil {
+						return src.bus.Round9AbsorbEntered()
+					}
+					return uint64(0)
+				}))
 			expvar.Publish("helianthus_payload_aa_auto_syn_absorbed_total",
-				expvar.Func(func() any { return bus.PayloadAaAutoSynAbsorbed() }))
+				expvar.Func(func() any {
+					if src := v8RolloutExpvarCurrent.Load(); src != nil {
+						return src.bus.PayloadAaAutoSynAbsorbed()
+					}
+					return uint64(0)
+				}))
 			expvar.Publish("helianthus_payload_aa_auto_syn_recovered_total",
-				expvar.Func(func() any { return bus.PayloadAaAutoSynRecovered() }))
+				expvar.Func(func() any {
+					if src := v8RolloutExpvarCurrent.Load(); src != nil {
+						return src.bus.PayloadAaAutoSynRecovered()
+					}
+					return uint64(0)
+				}))
 			expvar.Publish("helianthus_payload_aa_auto_syn_drain_exhausted_total",
-				expvar.Func(func() any { return bus.PayloadAaAutoSynDrainExhausted() }))
+				expvar.Func(func() any {
+					if src := v8RolloutExpvarCurrent.Load(); src != nil {
+						return src.bus.PayloadAaAutoSynDrainExhausted()
+					}
+					return uint64(0)
+				}))
 			expvar.Publish("helianthus_v8_shadow_would_have_dropped_total",
-				expvar.Func(func() any { return classifier.ShadowWouldHaveDroppedTotal() }))
+				expvar.Func(func() any {
+					if src := v8RolloutExpvarCurrent.Load(); src != nil {
+						// classifier may be nil on non-adapter-direct
+						// transports — the method has nil-receiver
+						// handling and returns 0.
+						return src.classifier.ShadowWouldHaveDroppedTotal()
+					}
+					return uint64(0)
+				}))
 		})
 	}
 

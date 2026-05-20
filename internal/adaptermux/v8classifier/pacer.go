@@ -194,7 +194,101 @@ type Pacer struct {
 	// dashboards to confirm the adapter-write path is correctly
 	// invoking the pacer's pre-write hook.
 	beforeActiveWriteTotal uint64
+
+	// Phase 3 Step B3.6e — echo watchdog state.
+	//
+	// adminEventEmit is the callback invoked when a soft or hard
+	// echo deadline fires. nil disables watchdog admin-event
+	// emission — counters still increment, no admin event is
+	// recorded. Wired by Classifier.NewPacerForSession (which
+	// routes the callback into the classifier's adminEvents ring).
+	adminEventEmit AdminEventEmitFunc
+
+	// softTimer and hardTimer are the active watchdog timers. Set
+	// by ArmEchoWatchdog, cleared by CancelEchoWatchdog or by the
+	// timer fire callback. nil when no active write is
+	// outstanding. The Pacer tracks AT MOST ONE outstanding
+	// write's watchdog — production callers follow
+	// bus.sendRawWithEcho's strict "write one, wait for echo,
+	// write next" cadence, so pipelined-write contention is not
+	// produced. Concurrent calls to ArmEchoWatchdog cancel the
+	// prior arm (the first byte's watchdog is replaced by the
+	// second byte's — the first byte's echo arrival simply finds
+	// no timer to cancel).
+	softTimer *time.Timer
+	hardTimer *time.Timer
+
+	// armGeneration counts ArmEchoWatchdog invocations. Each
+	// arm's timer-fire closures capture the generation value at
+	// arm time (BY VALUE) and onSoftTimeout / onHardTimeout
+	// no-op if the captured generation no longer matches
+	// p.armGeneration at fire time.
+	//
+	// Codex round-1 MUST FIX #1 on PR #647: pointer-identity
+	// against `p.softTimer` was the initial attempt, but the
+	// `softT` variable that the closure captures by reference
+	// is itself written by the Arm goroutine and read by the
+	// timer-fire goroutine — the race detector (correctly)
+	// flags that even though the temporal ordering would make
+	// the read safe in practice. The generation counter is
+	// captured by VALUE inside each closure, so the closure
+	// holds a stable snapshot that doesn't race with the next
+	// arm's writes.
+	armGeneration uint64
+
+	// softTimeoutTotal and hardTimeoutTotal count fired timeouts.
+	// Diagnostic counters for operator dashboards and tests —
+	// confirm the watchdog actually fires when echoes are
+	// delayed, distinguishing it from no-arm misconfigurations.
+	softTimeoutTotal uint64
+	hardTimeoutTotal uint64
+
+	// onTimeoutEnterHook is a TEST-ONLY synchronization hook,
+	// invoked by onSoftTimeout / onHardTimeout BEFORE the
+	// p.mu.Lock() that performs the generation check. Production
+	// callers leave it nil; the
+	// TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic test
+	// uses it to deterministically interleave a Cancel call
+	// between the timer fire and the lock acquisition — the
+	// exact race that Codex round-1 MUST FIX #1 closes.
+	//
+	// Per Codex round-2 MAJOR #1 on PR #647: the earlier
+	// counter-poll-based race test only exercised the race after
+	// the fire callback had fully completed, which the
+	// generation guard didn't actually defend against. The hook
+	// pauses the callback at the perfect spot for the race to
+	// be deterministic.
+	//
+	// Unexported (lowercase). Test access uses a same-package
+	// helper in pacer_test.go.
+	onTimeoutEnterHook func()
+
+	// onTimeoutGenMismatchHook is a TEST-ONLY synchronization
+	// hook fired ONLY when the timer-fire callback observes a
+	// generation mismatch and is about to no-op. Used by
+	// TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic to
+	// signal when the stale callback has finished the no-op
+	// path — replacing the round-2 fixed-sleep (Codex round-3
+	// MAJOR #1 on PR #647). Production callers leave it nil.
+	onTimeoutGenMismatchHook func()
 }
+
+// AdminEventEmitFunc is the callback signature for echo-watchdog
+// timeout admin events. Invoked by the soft and hard timer fire
+// paths with the kind (EchoSoftTimeout / EchoHardTimeout) and the
+// wall-clock time of the fire. The receiver is expected to route
+// the event into the classifier's adminEvents ring buffer (or to
+// any other operator-visible surface).
+//
+// CONTRACT (Codex round-1 LOW on PR #647): the callback runs
+// AFTER the Pacer's internal mutex is dropped — so callback code
+// MAY re-enter Pacer methods (e.g. WatchdogArmed, SoftTimeoutTotal,
+// even ArmEchoWatchdog) without deadlock. The mutex-drop is
+// intentional precisely to enable diagnostic call-backs. The
+// callback MUST NOT block indefinitely (the time.AfterFunc
+// goroutine is single-purpose) and MUST be safe for concurrent
+// invocation if multiple pacers share a sink.
+type AdminEventEmitFunc func(kind AdminEventKind, at time.Time)
 
 // NewPacer returns a Pacer with default τ_wire_byte and
 // LrttBootstrapInitial L_rtt EMA. Caller may override tau via
@@ -451,4 +545,252 @@ func (p *Pacer) ResetLrtt() {
 	p.lRttEMA = LrttBootstrapInitial
 	p.lastEchoAt = time.Time{}
 	p.graceRemaining = 0
+}
+
+// SetAdminEventEmitter registers the callback invoked when the
+// soft or hard echo deadline fires (Phase 3 Step B3.6e). nil
+// disables admin-event emission — the counters still increment so
+// tests / operators can verify the watchdog mechanics, but no
+// ClassifierAdminEvent is recorded. Typically wired once at
+// pacer construction by Classifier.NewPacerForSession.
+//
+// Safe to call from any goroutine. Subsequent calls overwrite the
+// prior callback; setting nil disables emission immediately
+// (already-armed timers fire with whatever emitter was current at
+// fire time — re-arming via ArmEchoWatchdog atomically picks up
+// the new emitter).
+func (p *Pacer) SetAdminEventEmitter(f AdminEventEmitFunc) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.adminEventEmit = f
+}
+
+// ArmEchoWatchdog arms the soft (and conditionally hard) echo
+// deadline timers for the current outstanding write. Called by
+// the gateway send path IMMEDIATELY after BeforeActiveWrite — the
+// deadlines computed here use the (possibly grace-bootstrapped)
+// L_rtt state that BeforeActiveWrite established. Per Codex
+// round-1 MAJOR on PR #642 the grace-bootstrap entry MUST precede
+// the watchdog arm; this method takes the current grace state at
+// face value.
+//
+// Cancellation semantics (Codex round-1 MUST FIX #1 on PR #647):
+//   - Any prior arm is cancelled via Stop(); the new timers are
+//     created with their pointer captured in the fire closure so
+//     stale fires from cancelled timers are no-op'd by an
+//     identity check inside onSoftTimeout / onHardTimeout. This
+//     closes the Stop()-returns-false race where the
+//     already-running fire callback would otherwise clear a
+//     newer arm's timer pointer.
+//   - The Pacer tracks AT MOST ONE outstanding write's
+//     watchdog; a second ArmEchoWatchdog before the prior echo
+//     lands replaces the prior watchdog rather than stacking a
+//     second one.
+//
+// The `now` parameter is currently unused; it is reserved as a
+// future hook for emitting an arm-time admin event (Codex round-1
+// LOW #2 on PR #647) and keeps the call-site signature consistent
+// with BeforeActiveWrite / RecordEcho for diagnostic logging.
+//
+// Fire semantics:
+//   - Soft timer fires after `soft` duration (always). Callback
+//     identity-checks against p.softTimer, then increments
+//     softTimeoutTotal and emits AdminEventKindEchoSoftTimeout via
+//     the registered emitter.
+//   - Hard timer fires after `hard` duration ONLY when grace mode
+//     is inactive (hardEnabled == true). Callback identity-checks
+//     against p.hardTimer, then increments hardTimeoutTotal and
+//     emits AdminEventKindEchoHardTimeout.
+//
+// Per EchoDeadlines semantics: in grace mode the soft deadline is
+// L_rtt_EMA + 500ms and the hard deadline is suppressed; in
+// normal mode soft = L_rtt_EMA + 100ms, hard = 2×L_rtt_EMA + 200ms.
+//
+// Thread-safety: the arm path holds the Pacer mutex while
+// stopping prior timers and starting new ones. The fire callback
+// reacquires the mutex briefly to identity-check + bump counters
+// + read the emitter; the emitter callback itself runs WITHOUT
+// the mutex (so the emitter MAY safely re-enter Pacer methods).
+func (p *Pacer) ArmEchoWatchdog(now time.Time) {
+	_ = now // reserved for future arm-time diagnostics
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cancelTimersLocked()
+	var soft, hard time.Duration
+	var hardEnabled bool
+	if p.graceRemaining > 0 {
+		soft = p.lRttEMA + SoftDeadlineGrace
+		hardEnabled = false
+	} else {
+		soft = p.lRttEMA + SoftDeadlineNormal
+		hard = 2*p.lRttEMA + HardDeadlineNormalAdd
+		hardEnabled = true
+	}
+	// Codex round-1 MUST FIX #1 on PR #647: capture the
+	// generation BY VALUE in each fire closure. cancelTimersLocked
+	// already bumped armGeneration above, so `gen` here is the
+	// post-bump value that the closure binds. Any stale fire
+	// from a previously-cancelled timer carries the old
+	// generation and gets no-op'd in onSoftTimeout /
+	// onHardTimeout via the armGeneration mismatch check.
+	gen := p.armGeneration
+	p.softTimer = time.AfterFunc(soft, func() { p.onSoftTimeout(gen) })
+	if hardEnabled {
+		p.hardTimer = time.AfterFunc(hard, func() { p.onHardTimeout(gen) })
+	}
+}
+
+// CancelEchoWatchdog cancels both watchdog timers without firing.
+// Called by the mux when the matching echo lands AND when the
+// session closes / write fails / arbitration is lost — any
+// pre-completion path that ends an outstanding write needs to
+// disarm the watchdog so a delayed timer fire after the abort
+// doesn't emit a spurious admin event.
+//
+// Idempotent: cancelling already-stopped timers is safe. Safe to
+// call from any goroutine.
+func (p *Pacer) CancelEchoWatchdog() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cancelTimersLocked()
+}
+
+// cancelTimersLocked is the lock-held helper used by both the
+// public CancelEchoWatchdog and the ArmEchoWatchdog re-arm path.
+// Stops both timers, nils the fields, AND bumps armGeneration so
+// any timer callback that was already queued / running but
+// hadn't yet acquired p.mu sees a generation mismatch and
+// no-ops. Caller MUST hold p.mu.
+//
+// Codex round-1 MUST FIX #1 on PR #647: bumping the generation
+// here (rather than only on Arm) gives CancelEchoWatchdog the
+// same race-safety as ArmEchoWatchdog's re-arm.
+func (p *Pacer) cancelTimersLocked() {
+	if p.softTimer != nil {
+		p.softTimer.Stop()
+		p.softTimer = nil
+	}
+	if p.hardTimer != nil {
+		p.hardTimer.Stop()
+		p.hardTimer = nil
+	}
+	p.armGeneration++
+}
+
+// onSoftTimeout is the soft-timer fire callback. Increments the
+// counter, captures the emitter under the mutex, then drops the
+// mutex BEFORE invoking the emitter so the emitter callback may
+// freely re-enter Pacer methods.
+//
+// Codex round-1 MUST FIX #1 on PR #647: takes `gen` (the
+// generation value captured BY VALUE in the AfterFunc closure at
+// arm time) and no-ops if it no longer matches p.armGeneration.
+// Codex round-2 LOW #1 comment refresh: this is GENERATION
+// checking, not pointer identity. The earlier pointer-identity
+// approach was abandoned because the closure capturing `softT`
+// by reference raced (race detector flagged the unsynchronized
+// read in the timer-fire goroutine against the write in the
+// arm goroutine). Generation values are captured by value into
+// the closure — no shared mutable state.
+//
+// This guards against the Stop()-returns-false race: when
+// ArmEchoWatchdog cancels a timer that has already fired (or is
+// in the process of firing), the stale callback would otherwise
+// (a) increment the counter for a write whose echo already
+// landed and (b) clear the NEWER arm's timer pointer
+// (`p.softTimer = nil`), breaking cancel semantics for the
+// in-flight write. Generation-checking makes both effects
+// impossible.
+//
+// Generation overflow is not practically reachable (2^64
+// arm/cancel pairs takes centuries at any realistic rate).
+// Codex round-2 confirmed not blocking.
+func (p *Pacer) onSoftTimeout(gen uint64) {
+	now := time.Now()
+	// Codex round-2 MAJOR #1 on PR #647: test-only hook fires
+	// BEFORE the lock acquisition so a test can deterministically
+	// race a Cancel call against this fire callback. nil in
+	// production; lock-free read is fine because tests serialize
+	// the set vs the timer-fire arrival.
+	if hook := p.onTimeoutEnterHook; hook != nil {
+		hook()
+	}
+	p.mu.Lock()
+	if p.armGeneration != gen {
+		// Stale fire — this callback belonged to a previously
+		// armed timer that has since been cancelled / replaced.
+		// Discard silently; do NOT clear p.softTimer (it belongs
+		// to a newer arm) and do NOT increment the counter.
+		mismatchHook := p.onTimeoutGenMismatchHook
+		p.mu.Unlock()
+		if mismatchHook != nil {
+			mismatchHook()
+		}
+		return
+	}
+	p.softTimeoutTotal++
+	emit := p.adminEventEmit
+	// Clear our own timer field so a subsequent
+	// ArmEchoWatchdog's cancelTimersLocked correctly observes the
+	// fired state.
+	p.softTimer = nil
+	p.mu.Unlock()
+	if emit != nil {
+		emit(AdminEventKindEchoSoftTimeout, now)
+	}
+}
+
+// onHardTimeout is the hard-timer fire callback. Same locking +
+// generation-check pattern as onSoftTimeout. Codex round-2 LOW
+// #1: comment refresh — generation, not pointer identity.
+func (p *Pacer) onHardTimeout(gen uint64) {
+	now := time.Now()
+	// Codex round-2 MAJOR #1 on PR #647: same test-only hook
+	// pattern as onSoftTimeout. Production: nil; tests: optional
+	// synchronization point.
+	if hook := p.onTimeoutEnterHook; hook != nil {
+		hook()
+	}
+	p.mu.Lock()
+	if p.armGeneration != gen {
+		mismatchHook := p.onTimeoutGenMismatchHook
+		p.mu.Unlock()
+		if mismatchHook != nil {
+			mismatchHook()
+		}
+		return
+	}
+	p.hardTimeoutTotal++
+	emit := p.adminEventEmit
+	p.hardTimer = nil
+	p.mu.Unlock()
+	if emit != nil {
+		emit(AdminEventKindEchoHardTimeout, now)
+	}
+}
+
+// SoftTimeoutTotal returns the cumulative number of soft-deadline
+// fires. Safe to call from any goroutine.
+func (p *Pacer) SoftTimeoutTotal() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.softTimeoutTotal
+}
+
+// HardTimeoutTotal returns the cumulative number of hard-deadline
+// fires. Safe to call from any goroutine.
+func (p *Pacer) HardTimeoutTotal() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.hardTimeoutTotal
+}
+
+// WatchdogArmed reports whether the echo watchdog currently has
+// at least one timer outstanding. Used by tests to verify
+// arm/cancel correctness without resorting to timing-based
+// observations. Safe to call from any goroutine.
+func (p *Pacer) WatchdogArmed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.softTimer != nil || p.hardTimer != nil
 }

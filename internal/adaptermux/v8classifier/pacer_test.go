@@ -1,6 +1,7 @@
 package v8classifier
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -522,5 +523,599 @@ func TestPacer_Schedule_ZeroNow_NoSentinelLeak(t *testing.T) {
 	want3 := emit2.Add(TauWireByte)
 	if !emit3.Equal(want3) {
 		t.Errorf("third Schedule(t0): %v; want %v", emit3, want3)
+	}
+}
+
+// =============================================================
+// Phase 3 Step B3.6e — echo watchdog tests
+// =============================================================
+//
+// These tests exercise the soft/hard deadline timer fire path
+// against a Pacer with an artificially small L_rtt EMA so the
+// timers fire fast enough to validate the wiring without slowing
+// the test suite. The default L_rtt bootstrap is 100ms; to get
+// sub-100ms soft deadlines we use SetTau (no — tau doesn't affect
+// deadlines) — instead we feed RecordEcho samples that pull the
+// EMA down to a small value, OR we accept the ~100ms wait for
+// the default bootstrap to fire.
+//
+// For tests we shrink the deadlines by feeding a tiny RecordEcho
+// sample (e.g. 1ms) which collapses the EMA quickly. Soft becomes
+// ~100ms+1ms*α (still ~100ms) — so we use a different approach:
+// run with the default L_rtt and just wait ~120ms for soft. Hard
+// is 2*L_rtt + 200ms = ~400ms. Tests must tolerate this latency.
+
+// TestPacer_Watchdog_NotArmedAtConstruction pins the production-
+// default state: a freshly-constructed Pacer has no watchdog
+// armed. WatchdogArmed() is false; SoftTimeoutTotal /
+// HardTimeoutTotal are zero.
+func TestPacer_Watchdog_NotArmedAtConstruction(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	if p.WatchdogArmed() {
+		t.Error("WatchdogArmed() = true at construction; want false")
+	}
+	if got := p.SoftTimeoutTotal(); got != 0 {
+		t.Errorf("SoftTimeoutTotal() = %d at construction; want 0", got)
+	}
+	if got := p.HardTimeoutTotal(); got != 0 {
+		t.Errorf("HardTimeoutTotal() = %d at construction; want 0", got)
+	}
+}
+
+// TestPacer_ArmEchoWatchdog_ArmsTimers pins the basic arm
+// contract: after ArmEchoWatchdog, WatchdogArmed reports true.
+// Then CancelEchoWatchdog clears the state.
+func TestPacer_ArmEchoWatchdog_ArmsTimers(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	p.ArmEchoWatchdog(t0)
+	if !p.WatchdogArmed() {
+		t.Error("WatchdogArmed() = false after Arm; want true")
+	}
+	p.CancelEchoWatchdog()
+	if p.WatchdogArmed() {
+		t.Error("WatchdogArmed() = true after Cancel; want false")
+	}
+}
+
+// TestPacer_CancelEchoWatchdog_BeforeFire pins that a cancel
+// before the timer fires prevents the soft/hard counters from
+// incrementing and prevents any emitter callback.
+func TestPacer_CancelEchoWatchdog_BeforeFire(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	var emittedKinds []AdminEventKind
+	var mu emitMutex
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		mu.Lock()
+		emittedKinds = append(emittedKinds, kind)
+		mu.Unlock()
+	})
+
+	p.ArmEchoWatchdog(time.Now())
+	// Cancel immediately, well before the soft deadline (~100ms).
+	p.CancelEchoWatchdog()
+	// Wait past the would-be soft deadline to confirm no fire.
+	time.Sleep(150 * time.Millisecond)
+
+	if got := p.SoftTimeoutTotal(); got != 0 {
+		t.Errorf("SoftTimeoutTotal() after cancel = %d; want 0", got)
+	}
+	if got := p.HardTimeoutTotal(); got != 0 {
+		t.Errorf("HardTimeoutTotal() after cancel = %d; want 0", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(emittedKinds) != 0 {
+		t.Errorf("emittedKinds after cancel = %v; want empty", emittedKinds)
+	}
+}
+
+// TestPacer_SoftDeadlineFires pins that the soft timer fires
+// after the configured deadline AND emits a soft-timeout admin
+// event. Default L_rtt bootstrap = 100ms, soft normal = +100ms
+// → ~200ms total. Cancel the hard timer immediately after the
+// soft fires (Codex round-1 MEDIUM #2 on PR #647: do not let
+// the hard timer fire here — it would race the per-test deadline
+// on slow CI and pollute the assertion).
+func TestPacer_SoftDeadlineFires(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	var emitted []AdminEventKind
+	var mu emitMutex
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		mu.Lock()
+		emitted = append(emitted, kind)
+		mu.Unlock()
+	})
+
+	p.ArmEchoWatchdog(time.Now())
+	// Codex round-1 MEDIUM #2 on PR #647: poll the counter
+	// instead of sleeping a fixed duration. Robust on slow CI.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.SoftTimeoutTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Errorf("SoftTimeoutTotal() = %d after soft window; want 1", got)
+	}
+	// Cancel the hard timer before it can fire — keeps the
+	// assertion below honest regardless of CI scheduling.
+	p.CancelEchoWatchdog()
+	if got := p.HardTimeoutTotal(); got != 0 {
+		t.Errorf("HardTimeoutTotal() = %d after cancel; want 0", got)
+	}
+	mu.Lock()
+	gotKinds := append([]AdminEventKind{}, emitted...)
+	mu.Unlock()
+	if len(gotKinds) != 1 || gotKinds[0] != AdminEventKindEchoSoftTimeout {
+		t.Errorf("emitted kinds = %v; want [EchoSoftTimeout]", gotKinds)
+	}
+}
+
+// TestPacer_HardDeadlineFires pins that the hard timer fires
+// after the configured deadline AND emits a hard-timeout admin
+// event. Soft fires first, then hard. Codex round-1 MEDIUM #2 on
+// PR #647: poll instead of fixed-sleep.
+func TestPacer_HardDeadlineFires(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	var emitted []AdminEventKind
+	var mu emitMutex
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		mu.Lock()
+		emitted = append(emitted, kind)
+		mu.Unlock()
+	})
+
+	p.ArmEchoWatchdog(time.Now())
+	// Poll the hard counter. L_rtt=100ms, hard=2*100+200=400ms;
+	// generous 2s deadline tolerates slow CI.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.HardTimeoutTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Errorf("SoftTimeoutTotal() = %d after hard window; want 1", got)
+	}
+	if got := p.HardTimeoutTotal(); got != 1 {
+		t.Errorf("HardTimeoutTotal() = %d after hard window; want 1", got)
+	}
+	mu.Lock()
+	gotKinds := append([]AdminEventKind{}, emitted...)
+	mu.Unlock()
+	if len(gotKinds) != 2 {
+		t.Fatalf("emitted kinds = %v; want 2 (soft then hard)", gotKinds)
+	}
+	if gotKinds[0] != AdminEventKindEchoSoftTimeout {
+		t.Errorf("emitted[0] = %v; want EchoSoftTimeout", gotKinds[0])
+	}
+	if gotKinds[1] != AdminEventKindEchoHardTimeout {
+		t.Errorf("emitted[1] = %v; want EchoHardTimeout", gotKinds[1])
+	}
+}
+
+// TestPacer_GraceMode_HardTimerNotArmed pins the grace-mode
+// invariant: when graceRemaining > 0, EchoDeadlines reports
+// hardEnabled=false, and ArmEchoWatchdog must NOT arm the hard
+// timer. Even if we wait past where hard would have fired, only
+// soft fires.
+func TestPacer_GraceMode_HardTimerNotArmed(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	// Trigger grace by simulating long-idle BeforeActiveWrite.
+	// First seed a prior echo so lastEchoAt is non-zero.
+	p.RecordEcho(50*time.Millisecond, t0)
+	// Now call BeforeActiveWrite far in the future (>= 30s) to
+	// trip grace.
+	p.BeforeActiveWrite(t0.Add(60 * time.Second))
+
+	var emitted []AdminEventKind
+	var mu emitMutex
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		mu.Lock()
+		emitted = append(emitted, kind)
+		mu.Unlock()
+	})
+
+	p.ArmEchoWatchdog(time.Now())
+	// Codex round-1 MEDIUM #2 on PR #647: poll the soft counter
+	// (grace soft = L_rtt + 500ms ≈ 550ms). 3s deadline tolerates
+	// slow CI; if hard were erroneously armed at 400ms we'd see
+	// it long before this deadline.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.SoftTimeoutTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := p.HardTimeoutTotal(); got != 0 {
+		t.Errorf("HardTimeoutTotal() = %d in grace mode; want 0 (hard timer must not be armed)", got)
+	}
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Errorf("SoftTimeoutTotal() = %d in grace mode; want 1 (soft must still fire)", got)
+	}
+	mu.Lock()
+	gotKinds := append([]AdminEventKind{}, emitted...)
+	mu.Unlock()
+	if len(gotKinds) != 1 || gotKinds[0] != AdminEventKindEchoSoftTimeout {
+		t.Errorf("emitted kinds = %v; want [EchoSoftTimeout] only", gotKinds)
+	}
+}
+
+// TestPacer_ArmEchoWatchdog_ReplacesPriorArm pins that a second
+// Arm before the first echo cancels the first arm's timers — at
+// most ONE outstanding watchdog per pacer. The first arm's soft
+// deadline must NOT fire if the second arm replaces it before
+// that deadline.
+func TestPacer_ArmEchoWatchdog_ReplacesPriorArm(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {})
+
+	p.ArmEchoWatchdog(time.Now())
+	// Re-arm well before soft deadline (~200ms).
+	time.Sleep(20 * time.Millisecond)
+	p.ArmEchoWatchdog(time.Now())
+	// Cancel before the second arm's deadline too.
+	time.Sleep(20 * time.Millisecond)
+	p.CancelEchoWatchdog()
+	// Wait past where either arm could fire.
+	time.Sleep(300 * time.Millisecond)
+
+	if got := p.SoftTimeoutTotal(); got != 0 {
+		t.Errorf("SoftTimeoutTotal() after re-arm + cancel = %d; want 0", got)
+	}
+}
+
+// TestPacer_ArmEchoWatchdog_StaleFireRaceNoOp pins the Codex
+// round-1 MUST FIX #1 invariant: when ArmEchoWatchdog cancels a
+// timer whose Stop() returns false (fired or firing), the
+// already-queued fire callback must NOT increment counters and
+// must NOT clear the NEWER arm's timer pointer.
+//
+// To exercise the Stop()-returns-false path we use the
+// short-lived pacer pattern: arm with the default L_rtt (soft
+// ~200ms), let the soft timer FIRE, then re-arm. The fired
+// callback for the first arm has finished (incremented counter
+// once). A subsequent re-arm should NOT see the first arm's
+// callback continue to clear the new timer. We then cancel the
+// second arm and confirm the counter stayed at 1 (only the
+// first arm fired) — proving the second arm's timer was clean
+// and not cleared by a stale fire.
+func TestPacer_ArmEchoWatchdog_StaleFireRaceNoOp(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {})
+
+	// First arm — let it fire its soft deadline.
+	p.ArmEchoWatchdog(time.Now())
+	// Poll for the fire instead of sleeping a fixed duration —
+	// robust on slow CI.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.SoftTimeoutTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Fatalf("first arm SoftTimeoutTotal = %d; want 1 (precondition)", got)
+	}
+
+	// Second arm — the first arm's timer has already fired and
+	// completed, so its callback is in some state that cannot
+	// affect this arm IF the generation-bump pattern works.
+	p.ArmEchoWatchdog(time.Now())
+	if !p.WatchdogArmed() {
+		t.Fatal("WatchdogArmed=false after second arm; the first arm's stale callback must have cleared it (regression of MUST FIX #1)")
+	}
+
+	// Cancel cleanly. The second arm should not have fired.
+	p.CancelEchoWatchdog()
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Errorf("SoftTimeoutTotal after re-arm + cancel = %d; want 1 (second arm must NOT fire and stale first-arm callback must NOT re-increment)", got)
+	}
+}
+
+// TestPacer_EmitterMayReenterPacer pins the Codex round-1 LOW #1
+// contract refinement: the emitter callback runs AFTER the
+// Pacer mutex is dropped, so it MAY safely re-enter Pacer
+// methods. We verify by having the emitter call WatchdogArmed
+// and SoftTimeoutTotal from inside the callback — neither
+// would return without deadlock if the contract were broken.
+func TestPacer_EmitterMayReenterPacer(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	var mu sync.Mutex
+	var observedSoftTotal uint64
+	var firstFire sync.Once
+	firstSeen := make(chan struct{})
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		// Re-enter the pacer from the emitter callback. If the
+		// pacer mutex were still held at this point this would
+		// deadlock and the test would time out.
+		armed := p.WatchdogArmed()
+		soft := p.SoftTimeoutTotal()
+		mu.Lock()
+		observedSoftTotal = soft
+		mu.Unlock()
+		_ = armed
+		firstFire.Do(func() { close(firstSeen) })
+	})
+
+	p.ArmEchoWatchdog(time.Now())
+	select {
+	case <-firstSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emitter callback did not complete within 2s — contract broken (mutex held during emit, or no fire)")
+	}
+	// Cancel any remaining timers so the hard fire doesn't race
+	// the test exit.
+	p.CancelEchoWatchdog()
+
+	mu.Lock()
+	got := observedSoftTotal
+	mu.Unlock()
+	if got < 1 {
+		t.Errorf("observedSoftTotal inside emitter = %d; want >= 1", got)
+	}
+}
+
+// TestPacer_NilEmitter_CountersStillIncrement pins that the
+// counters increment even when no emitter callback is registered.
+// Diagnostic-only callers (tests, smoke harnesses) need this
+// signal without having to wire a full emitter.
+func TestPacer_NilEmitter_CountersStillIncrement(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	// Explicitly DO NOT set emitter (or set to nil).
+	p.ArmEchoWatchdog(time.Now())
+	// Codex round-1 MEDIUM #2 on PR #647: poll instead of fixed
+	// sleep.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.SoftTimeoutTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Errorf("SoftTimeoutTotal() with nil emitter = %d; want 1", got)
+	}
+	// Cancel to prevent the hard timer from polluting subsequent
+	// state if this test ever runs longer than expected.
+	p.CancelEchoWatchdog()
+}
+
+// TestClassifier_NewPacerForSession_WiresAdminEvents pins the
+// integration contract: NewPacerForSession returns a Pacer whose
+// echo-watchdog timeouts surface in the classifier's adminEvents
+// ring buffer. Soft fires → drain returns an
+// AdminEventKindEchoSoftTimeout entry.
+func TestClassifier_NewPacerForSession_WiresAdminEvents(t *testing.T) {
+	t.Parallel()
+	c := New(ModeShadow)
+	p := c.NewPacerForSession()
+	if p == nil {
+		t.Fatal("NewPacerForSession() = nil; want non-nil")
+	}
+	// Arm watchdog and poll for the soft fire (Codex round-1
+	// MEDIUM #2 on PR #647: counter polling, not fixed sleep).
+	p.ArmEchoWatchdog(time.Now())
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.SoftTimeoutTotal() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Cancel hard timer so the event count stays at 1 (soft only).
+	p.CancelEchoWatchdog()
+
+	events, dropped := c.DrainAdminEvents()
+	if dropped != 0 {
+		t.Errorf("dropped = %d; want 0", dropped)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(events) = %d; want 1", len(events))
+	}
+	if events[0].Kind != AdminEventKindEchoSoftTimeout {
+		t.Errorf("events[0].Kind = %v; want EchoSoftTimeout", events[0].Kind)
+	}
+}
+
+// TestClassifier_NewPacerForSession_NilClassifier pins the
+// defensive nil-return: calling NewPacerForSession on a nil
+// classifier (which can happen during ModeOff cleanup paths)
+// returns nil rather than panicking.
+func TestClassifier_NewPacerForSession_NilClassifier(t *testing.T) {
+	t.Parallel()
+	var c *Classifier
+	if got := c.NewPacerForSession(); got != nil {
+		t.Errorf("nil-classifier NewPacerForSession() = %v; want nil", got)
+	}
+}
+
+// emitMutex is a thin sync.Mutex wrapper so the watchdog tests
+// can guard their shared `emitted` slice from the timer-fire
+// goroutine without litering the test bodies with sync imports.
+type emitMutex struct {
+	m sync.Mutex
+}
+
+func (e *emitMutex) Lock()   { e.m.Lock() }
+func (e *emitMutex) Unlock() { e.m.Unlock() }
+
+// TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic pins
+// the EXACT race that Codex round-1 MUST FIX #1 closes: a timer
+// fire callback that has reached the AfterFunc goroutine but has
+// not yet acquired the Pacer mutex, while a concurrent
+// CancelEchoWatchdog bumps the generation. Without the
+// generation guard the stale fire would (a) increment
+// softTimeoutTotal and (b) clear p.softTimer for a NEWER arm.
+//
+// Codex round-2 MAJOR #1 on PR #647: the prior race test
+// (TestPacer_ArmEchoWatchdog_StaleFireRaceNoOp) only checked
+// AFTER the fire callback completed — by then the generation
+// guard had already fired. This test uses the onTimeoutEnterHook
+// to pause the callback at the deterministic race window.
+//
+// Codex round-3 MAJOR #1 on PR #647: the round-2 version
+// relied on a 50ms sleep before asserting. Replaced with a
+// deterministic mismatch-hook signal so the test waits on the
+// stale callback completing its no-op branch, not on a fixed
+// duration.
+func TestPacer_ArmEchoWatchdog_StaleFireRace_Deterministic(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	// Block soft-fire callback BEFORE its lock acquisition.
+	released := make(chan struct{})
+	entered := make(chan struct{})
+	p.onTimeoutEnterHook = func() {
+		select {
+		case <-entered:
+			// already signalled — second fire (e.g. hard timer
+			// after a soft-only race) re-enters but doesn't
+			// re-signal.
+		default:
+			close(entered)
+		}
+		<-released
+	}
+	// Codex round-3 MAJOR #1 on PR #647: deterministic
+	// completion signal — the stale callback closes this after
+	// passing the generation-mismatch no-op branch, so the test
+	// asserts ONLY after the stale path is provably finished.
+	staleNoOpDone := make(chan struct{})
+	p.onTimeoutGenMismatchHook = func() {
+		select {
+		case <-staleNoOpDone:
+			// Already signalled — second fire from hard timer.
+		default:
+			close(staleNoOpDone)
+		}
+	}
+
+	p.ArmEchoWatchdog(time.Now())
+	// Wait for the soft-fire callback to enter the hook.
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("soft fire callback did not enter onTimeoutEnterHook within 2s")
+	}
+	// Cancel the watchdog — bumps generation. The blocked
+	// callback below should observe the mismatched gen and
+	// no-op when we release it.
+	p.CancelEchoWatchdog()
+	// Also re-arm to ensure the stale callback can't clobber the
+	// new arm's softTimer pointer (the load-bearing part of MUST
+	// FIX #1's second effect).
+	p.onTimeoutEnterHook = nil // clear hook before re-arm so the new arm doesn't deadlock
+	p.ArmEchoWatchdog(time.Now())
+	// Release the stale callback. It should observe the new
+	// generation and no-op (signalling staleNoOpDone).
+	close(released)
+
+	// Deterministically wait for the stale callback to finish
+	// its no-op path. NO fixed sleep.
+	select {
+	case <-staleNoOpDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale callback did not reach generation-mismatch no-op within 2s — generation guard may be broken")
+	}
+
+	// PRIMARY ASSERTION: softTimeoutTotal stayed at 0. The stale
+	// callback did NOT increment.
+	if got := p.SoftTimeoutTotal(); got != 0 {
+		t.Errorf("SoftTimeoutTotal() = %d after stale fire completed no-op; want 0 (stale fire must no-op via gen mismatch)", got)
+	}
+	// SECONDARY ASSERTION: the new arm's softTimer is still set
+	// (was NOT cleared by the stale fire's p.softTimer = nil).
+	if !p.WatchdogArmed() {
+		t.Error("WatchdogArmed() = false after stale fire; want true (stale fire must not clear the new arm's softTimer)")
+	}
+	p.CancelEchoWatchdog()
+}
+
+// TestPacer_EmitterMayReArm pins Codex round-2 MEDIUM #1: the
+// emitter callback may safely call ArmEchoWatchdog (not just
+// the read-only WatchdogArmed / SoftTimeoutTotal). The earlier
+// reentry test covered read-only methods; this one covers the
+// state-mutating Arm path.
+//
+// Codex round-3 MEDIUM #1 on PR #647: the round-2 version
+// had a race window — the re-armed timer's 200ms could elapse
+// before the test goroutine called Cancel under CI stall. Now
+// the re-arm installs a SECOND-PHASE entry hook that blocks
+// the re-armed fire callback indefinitely. The test cancels
+// while the re-armed timer is blocked, then releases the hook;
+// the cancel bumped the generation so the post-block fire
+// no-ops on gen mismatch.
+func TestPacer_EmitterMayReArm(t *testing.T) {
+	t.Parallel()
+	p := NewPacer()
+	var armOnce sync.Once
+	armed := make(chan struct{})
+	rearmedFireBlock := make(chan struct{})
+	rearmedFireEntered := make(chan struct{})
+	rearmedEnteredOnce := sync.Once{}
+	p.SetAdminEventEmitter(func(kind AdminEventKind, at time.Time) {
+		armOnce.Do(func() {
+			// Install the SECOND-PHASE hook BEFORE re-arming so
+			// the re-armed timer's fire blocks deterministically
+			// on rearmedFireBlock (and the test can cancel
+			// before the block is released).
+			p.onTimeoutEnterHook = func() {
+				rearmedEnteredOnce.Do(func() { close(rearmedFireEntered) })
+				<-rearmedFireBlock
+			}
+			// Re-arm from inside the emitter. If the Pacer mutex
+			// were still held this would deadlock.
+			p.ArmEchoWatchdog(time.Now())
+			close(armed)
+		})
+	})
+
+	p.ArmEchoWatchdog(time.Now())
+	select {
+	case <-armed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emitter's ArmEchoWatchdog call did not complete within 2s — likely deadlock")
+	}
+
+	// Wait for the re-armed timer to fire and enter the hook.
+	// This guarantees the re-arm is in-flight before we cancel.
+	select {
+	case <-rearmedFireEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("re-armed timer did not fire within 2s")
+	}
+
+	// Cancel the re-armed watchdog (bumps generation). When we
+	// release the hook below, the re-armed fire will observe
+	// the gen mismatch and no-op.
+	p.CancelEchoWatchdog()
+	close(rearmedFireBlock)
+
+	// Brief settle so the released callback finishes its no-op
+	// path. We don't have a mismatch-hook signal wired here
+	// (the round-3 fix only added it to the dedicated stale-fire
+	// test), so a small bounded sleep is acceptable.
+	time.Sleep(50 * time.Millisecond)
+
+	if got := p.SoftTimeoutTotal(); got != 1 {
+		t.Errorf("SoftTimeoutTotal() = %d after re-arm-from-emitter + cancel; want 1 (only first arm fired; re-armed fire must no-op via gen mismatch)", got)
 	}
 }

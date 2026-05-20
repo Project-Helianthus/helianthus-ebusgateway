@@ -138,12 +138,12 @@ func newP3TestMux(t *testing.T) (*Mux, *p3MockTransport, context.CancelFunc, fun
 	mock := newP3MockTransport()
 
 	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
-	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
-	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
+		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -626,12 +626,12 @@ func TestCancelPendingStart_DuringRequestStart(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
-	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
-	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
+		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -970,12 +970,12 @@ func TestP3_Close_ClearsPendingStart(t *testing.T) {
 	mock := newP3MockTransport()
 
 	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
-	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
-	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
+		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1029,12 +1029,12 @@ func TestP3_FallbackStartArbitration(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
-	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
-	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
+		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
 	})
 	mux.ctx, mux.cancel = ctx, cancel
 
@@ -1143,12 +1143,12 @@ func TestRequestStartFailAfterCancel_NoDoubleSend(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
-	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
-	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
+		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1244,12 +1244,12 @@ func TestAbsorbDecrementOnRequestStartFailAfterCancel(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
-	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
-	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
+		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1702,12 +1702,12 @@ func TestConcurrentTryGrantAndStart(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
-	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
-	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
+		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1842,12 +1842,12 @@ func TestBlockingFallbackSuccessAfterCancel_NoDoubleSend(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
-	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
-	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
+		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1939,12 +1939,12 @@ func TestBlockingFallbackErrorAfterCancel_NoDoubleSend(t *testing.T) {
 	}
 
 	mux := New(Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     "127.0.0.1:0",
-		ReadTimeout: 200 * time.Millisecond,
-	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
-	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     200 * time.Millisecond,
+		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
+		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2371,7 +2371,7 @@ func TestSYNTimeoutRelease_BranchesOnOwnerIdentity(t *testing.T) {
 		mux.busOwned = time.Now()
 		mux.lastWireActivity = mux.busOwned
 		mux.gatewayTxnActive = true
-		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, gatewaySessionID, true, time.Now())
+		_, _, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, gatewaySessionID, true, time.Now())
 		_, _, owned := mux.arb.owner()
 		mux.stateMu.Unlock()
 
@@ -2390,7 +2390,7 @@ func TestSYNTimeoutRelease_BranchesOnOwnerIdentity(t *testing.T) {
 		mux.arb.confirmOwnership(extSessionID, 0x31)
 		mux.busOwned = time.Now() // just acquired → elapsed ~0
 		mux.lastWireActivity = mux.busOwned
-		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, time.Now())
+		_, _, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, time.Now())
 		ownerID, _, owned := mux.arb.owner()
 		mux.stateMu.Unlock()
 
@@ -2415,7 +2415,7 @@ func TestSYNTimeoutRelease_BranchesOnOwnerIdentity(t *testing.T) {
 		// 30ms grace.
 		mux.busOwned = time.Now().Add(-100 * time.Millisecond)
 		mux.lastWireActivity = mux.busOwned // no wire activity since grant
-		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, time.Now())
+		_, _, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, time.Now())
 		_, _, owned := mux.arb.owner()
 		mux.stateMu.Unlock()
 
@@ -2540,7 +2540,7 @@ func TestExternalSessionRelease_MeasuresGapNotGrant(t *testing.T) {
 		now := time.Now()
 		mux.busOwned = now.Add(-5 * time.Second)
 		mux.lastWireActivity = now.Add(-10 * time.Millisecond)
-		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, now)
+		_, _, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, now)
 		_, _, owned := mux.arb.owner()
 		mux.stateMu.Unlock()
 
@@ -2561,7 +2561,7 @@ func TestExternalSessionRelease_MeasuresGapNotGrant(t *testing.T) {
 		now := time.Now()
 		mux.busOwned = now.Add(-5 * time.Second)
 		mux.lastWireActivity = now.Add(-200 * time.Millisecond)
-		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, now)
+		_, _, _, _ = mux.onSYNLocked(wirePhaseEventSYNTimeout, extSessionID, true, now)
 		_, _, owned := mux.arb.owner()
 		mux.stateMu.Unlock()
 
@@ -2586,7 +2586,7 @@ func TestExternalSessionRelease_MeasuresGapNotGrant(t *testing.T) {
 		// gap-based grace (500ms) hasn't elapsed.
 		mux.busOwned = now.Add(-200 * time.Millisecond)
 		mux.lastWireActivity = now.Add(-10 * time.Millisecond)
-		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNIdle, extSessionID, true, now)
+		_, _, _, _ = mux.onSYNLocked(wirePhaseEventSYNIdle, extSessionID, true, now)
 		_, _, owned := mux.arb.owner()
 		mux.stateMu.Unlock()
 
@@ -2606,7 +2606,7 @@ func TestExternalSessionRelease_MeasuresGapNotGrant(t *testing.T) {
 		// Gateway uses grant-age, not gap. Grant is 200ms old → release.
 		mux.busOwned = now.Add(-200 * time.Millisecond)
 		mux.lastWireActivity = now // even with fresh "activity"
-		_, _, _ = mux.onSYNLocked(wirePhaseEventSYNIdle, gatewaySessionID, true, now)
+		_, _, _, _ = mux.onSYNLocked(wirePhaseEventSYNIdle, gatewaySessionID, true, now)
 		_, _, owned := mux.arb.owner()
 		mux.stateMu.Unlock()
 

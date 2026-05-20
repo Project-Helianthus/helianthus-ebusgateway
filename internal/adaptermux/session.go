@@ -14,6 +14,8 @@ import (
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 )
 
 // F-10 diagnostic instrumentation (EBUSD-VERIFICATION-2026-05-10.md):
@@ -300,6 +302,17 @@ func (m *Mux) RemoveSession(id uint64) {
 
 	// Phase 3 Step B3.6c: drop the per-session v8 pacer. No-op
 	// when V8ClassifierMode == Off (the entry was never created).
+	//
+	// Phase 3 Step B3.6e: cancel any pending echo-watchdog timers
+	// BEFORE the Delete so a delayed soft/hard timer fire after
+	// the session is gone cannot emit a stale ClassifierAdminEvent
+	// for a sessionID that no longer exists. The cancel runs
+	// idempotent if the watchdog was never armed.
+	if v, ok := m.sessionPacers.Load(id); ok {
+		if pacer, _ := v.(*v8classifier.Pacer); pacer != nil {
+			pacer.CancelEchoWatchdog()
+		}
+	}
 	m.sessionPacers.Delete(id)
 
 	if ok {

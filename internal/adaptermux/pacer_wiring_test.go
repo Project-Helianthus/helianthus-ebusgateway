@@ -327,3 +327,120 @@ func TestSessionPacer_OffMode_DoSendDoesNotCallPacer(t *testing.T) {
 		t.Errorf("SessionPacer(gateway) = %v after write in ModeOff; want nil (no lazy-create)", got)
 	}
 }
+
+// TestSessionPacer_Watchdog_ArmedOnDoSend pins the Phase 3 Step
+// B3.6e wiring at the mux.doSend hot path: when V8ClassifierMode
+// != Off, a gateway-internal active write MUST arm the gateway
+// pacer's echo watchdog. We verify by checking WatchdogArmed
+// immediately after the write — before any echo arrives, the
+// watchdog must still be running.
+func TestSessionPacer_Watchdog_ArmedOnDoSend(t *testing.T) {
+	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	pacer := mux.SessionPacer(gatewaySessionID)
+	if pacer == nil {
+		t.Fatal("gateway Pacer nil in ModeShadow")
+	}
+	if pacer.WatchdogArmed() {
+		t.Fatal("precondition: WatchdogArmed=true before any write")
+	}
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+	req := []byte{0x71}
+	if _, err := at.Write(req); err != nil {
+		t.Fatalf("Write err: %v", err)
+	}
+
+	// Codex round-1 MEDIUM #1 on PR #647: the previous 500ms
+	// poll window exceeded the normal-mode hard deadline (~400ms),
+	// so an unrelated CI stall could let the hard timer fire and
+	// clear WatchdogArmed before the assertion checked it. Switch
+	// to a tight poll window (50ms — well under the soft deadline
+	// of ~200ms) and cancel IMMEDIATELY after the first observed
+	// armed=true.
+	deadline := time.Now().Add(50 * time.Millisecond)
+	armed := false
+	for time.Now().Before(deadline) {
+		if pacer.WatchdogArmed() {
+			armed = true
+			break
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+	if !armed {
+		t.Errorf("WatchdogArmed() = false after gateway write; want true (B3.6e arm at sendLoop)")
+	}
+	// Cancel immediately so the watchdog cannot fire during
+	// cleanup and emit a spurious admin event that could confuse
+	// downstream tests.
+	pacer.CancelEchoWatchdog()
+}
+
+// TestSessionPacer_Watchdog_CancelledOnEchoMatch pins that the
+// match-site cancellation (B3.6e) actually fires: once the
+// adapter echoes the gateway's write back, the watchdog must
+// disarm so a delayed timer fire cannot emit a stale admin
+// event for an already-completed transaction.
+func TestSessionPacer_Watchdog_CancelledOnEchoMatch(t *testing.T) {
+	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeShadow)
+	defer cleanup()
+
+	pacer := mux.SessionPacer(gatewaySessionID)
+	if pacer == nil {
+		t.Fatal("gateway Pacer nil in ModeShadow")
+	}
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err: %v", err)
+	}
+
+	// Inject the echo so matchEchoWithTime fires → CancelEchoWatchdog.
+	mock.eventCh <- transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0x71, WasEscaped: false,
+	}
+
+	// Poll until the cancel propagates.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !pacer.WatchdogArmed() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if pacer.WatchdogArmed() {
+		t.Error("WatchdogArmed() = true after echo match; want false (B3.6e cancel at match site)")
+	}
+	// And confirm no spurious timeout fired during the round trip.
+	if got := pacer.SoftTimeoutTotal(); got != 0 {
+		t.Errorf("SoftTimeoutTotal() = %d after fast echo; want 0 (echo arrived before soft deadline)", got)
+	}
+}
+
+// TestSessionPacer_Watchdog_OffMode_NoArm pins the ModeOff
+// zero-overhead contract on the watchdog side: in ModeOff there
+// is no pacer, so there is no watchdog to arm. The test exercises
+// the doSend path and confirms (a) SessionPacer remains nil and
+// (b) no panic / no goroutine leak.
+func TestSessionPacer_Watchdog_OffMode_NoArm(t *testing.T) {
+	mux, mock, _, cleanup := newClassifiedTestMux(t, v8classifier.ModeOff)
+	defer cleanup()
+
+	if got := mux.SessionPacer(gatewaySessionID); got != nil {
+		t.Fatalf("precondition: SessionPacer in ModeOff = %v; want nil", got)
+	}
+
+	grantGateway(t, mux, mock, 0x71)
+	at := mux.ActiveTransport()
+	if _, err := at.Write([]byte{0x71}); err != nil {
+		t.Fatalf("Write err: %v", err)
+	}
+
+	// Post-write: still nil. (No lazy-create on the watchdog path.)
+	if got := mux.SessionPacer(gatewaySessionID); got != nil {
+		t.Errorf("post-write SessionPacer in ModeOff = %v; want nil (no watchdog lazy-create)", got)
+	}
+}

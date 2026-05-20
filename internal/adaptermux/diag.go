@@ -335,36 +335,36 @@ func (m *Mux) ActiveTxnSnapshot() ActiveTxnSnapshot {
 	rp := make([]byte, m.activeTxn.readPrefixLen)
 	copy(rp, m.activeTxn.readPrefix[:m.activeTxn.readPrefixLen])
 	return ActiveTxnSnapshot{
-		ID:                          m.activeTxn.id,
-		Initiator:                   m.activeTxn.initiator,
-		GrantedAt:                   m.activeTxn.grantedAt,
-		InactiveAt:                  m.activeTxn.inactiveAt,
-		InactiveReason:              m.activeTxn.inactiveReas,
-		DrainedOnGrant:              m.activeTxn.drainedOnGrant,
-		Active:                      m.gatewayTxnActive,
-		BytesWritten:                m.activeTxn.bytesWritten.Load(),
-		BytesRead:                   m.activeTxn.bytesRead.Load(),
-		GrantsTotal:                 m.activeTxn.grantsTotal.Load(),
-		WriteErrTotal:               m.activeTxn.writeErrTotal.Load(),
-		ReadTimeoutTot:              m.activeTxn.readTimeoutTot.Load(),
-		AfterInactive:               m.activeTxn.afterInactive.Load(),
-		TerminatorDropOnFullCh:      m.activeTxn.terminatorDropOnFullCh.Load(),
+		ID:                                 m.activeTxn.id,
+		Initiator:                          m.activeTxn.initiator,
+		GrantedAt:                          m.activeTxn.grantedAt,
+		InactiveAt:                         m.activeTxn.inactiveAt,
+		InactiveReason:                     m.activeTxn.inactiveReas,
+		DrainedOnGrant:                     m.activeTxn.drainedOnGrant,
+		Active:                             m.gatewayTxnActive,
+		BytesWritten:                       m.activeTxn.bytesWritten.Load(),
+		BytesRead:                          m.activeTxn.bytesRead.Load(),
+		GrantsTotal:                        m.activeTxn.grantsTotal.Load(),
+		WriteErrTotal:                      m.activeTxn.writeErrTotal.Load(),
+		ReadTimeoutTot:                     m.activeTxn.readTimeoutTot.Load(),
+		AfterInactive:                      m.activeTxn.afterInactive.Load(),
+		TerminatorDropOnFullCh:             m.activeTxn.terminatorDropOnFullCh.Load(),
 		SynSuppressedPreEcho:               m.activeTxn.synSuppressedPreEcho.Load(),
 		SynSeenDuringGrantWindow:           m.activeTxn.synSeenDuringGrantWindow.Load(),
 		SynSeenWhileInterWriteEmpty:        m.activeTxn.synSeenWhileInterWriteEmpty.Load(),
 		SynSeenAfterTransportWindowExpired: m.activeTxn.synSeenAfterTransportWindowExpired.Load(),
 		SynSuppressedBetweenWrites:         m.activeTxn.synSuppressedBetweenWrites.Load(),
-		InterWriteDrainTotal:        m.activeTxn.interWriteDrainTotal.Load(),
-		EchoQueueOverflowResets:     m.gatewayEcho.overflowResets(),
-		BytesDeliveredToActive:      m.activeTxn.bytesDeliveredToActive.Load(),
-		AbsorbResetTotal:            m.absorbResetTotal.Load(),
-		WritePrefix:                 wp,
-		ReadPrefix:                  rp,
-		EchoLike:                    m.activeTxn.echoLike.Load(),
-		NonEcho:                     m.activeTxn.nonEcho.Load(),
-		SynMarkers:                  m.activeTxn.synMarkers.Load(),
-		TxnClass:                    m.activeTxn.txnClass,
-		LastTxnClass:                m.activeTxn.lastClass,
+		InterWriteDrainTotal:               m.activeTxn.interWriteDrainTotal.Load(),
+		EchoQueueOverflowResets:            m.gatewayEcho.overflowResets(),
+		BytesDeliveredToActive:             m.activeTxn.bytesDeliveredToActive.Load(),
+		AbsorbResetTotal:                   m.absorbResetTotal.Load(),
+		WritePrefix:                        wp,
+		ReadPrefix:                         rp,
+		EchoLike:                           m.activeTxn.echoLike.Load(),
+		NonEcho:                            m.activeTxn.nonEcho.Load(),
+		SynMarkers:                         m.activeTxn.synMarkers.Load(),
+		TxnClass:                           m.activeTxn.txnClass,
+		LastTxnClass:                       m.activeTxn.lastClass,
 	}
 }
 
@@ -429,37 +429,91 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 // markActiveReadTimeout clears gatewayTxnActive with ReasonActiveReadTimeout.
 // Called from activeTransport.ReadByte/ReadEvent when the read times out.
 // Acquires stateMu internally. Caller must NOT hold stateMu.
+//
+// Codex round-2 MUST FIX on PR #647: if the transition fires AND
+// V8ClassifierMode != Off, the watchdog is cancelled outside stateMu
+// (pacer mutex is independent; nested-lock free). Closes the
+// stale-fire window where an armed watchdog would otherwise emit an
+// EchoSoftTimeout / EchoHardTimeout admin event for a write whose
+// active transaction was just torn down by the active-read-timeout
+// boundary.
 func (m *Mux) markActiveReadTimeout() {
 	m.stateMu.Lock()
+	transitioned := false
 	if m.gatewayTxnActive {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonActiveReadTimeout)
+		transitioned = true
 	}
 	m.stateMu.Unlock()
+	if transitioned {
+		m.cancelGatewayWatchdog()
+	}
 }
 
 // markActiveWriteError clears gatewayTxnActive with ReasonActiveWriteError.
 // Called from activeTransport.Write when sendLoop returns an error.
 // Acquires stateMu internally. Caller must NOT hold stateMu.
+//
+// Codex round-2 MUST FIX on PR #647: same cancel-after-unlock
+// pattern as markActiveReadTimeout. Mirror of the doSend defer
+// cancel (which fires on the immediate write-error path); this
+// helper is called for write errors propagated UP from sendLoop's
+// error channel to activeTransport.Write callers, which can
+// happen even if doSend's own cancel already fired (the cancel
+// is idempotent so the second invocation is a no-op).
 func (m *Mux) markActiveWriteError() {
 	m.stateMu.Lock()
+	transitioned := false
 	if m.gatewayTxnActive {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonActiveWriteError)
+		transitioned = true
 	}
 	m.stateMu.Unlock()
+	if transitioned {
+		m.cancelGatewayWatchdog()
+	}
 }
 
 // markActiveContextCancel clears gatewayTxnActive with ReasonContextCancel.
 // Called from activeTransport Read/Write when ctx.Done() fires.
 // Acquires stateMu internally. Caller must NOT hold stateMu.
+//
+// Codex round-2 MUST FIX on PR #647: same cancel-after-unlock
+// pattern. Context cancellation tears down the active transaction;
+// any pending echo watchdog is no longer meaningful.
 func (m *Mux) markActiveContextCancel() {
 	m.stateMu.Lock()
+	transitioned := false
 	if m.gatewayTxnActive {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonContextCancel)
+		transitioned = true
 	}
 	m.stateMu.Unlock()
+	if transitioned {
+		m.cancelGatewayWatchdog()
+	}
+}
+
+// cancelGatewayWatchdog is the private helper used by all gateway
+// ownership / active-txn teardown paths to cancel any pending
+// echo watchdog. Codex round-2 MUST FIX on PR #647 + round-3
+// MUST FIX expansion: every site that clears gatewayTxnActive or
+// releases gateway ownership invokes this so a stale soft/hard
+// fire cannot emit an admin event for a write whose context is
+// gone.
+//
+// Safe to call when V8ClassifierMode == Off (SessionPacer
+// returns nil; the call is a no-op). Caller MUST NOT hold
+// stateMu — CancelEchoWatchdog uses the pacer's own mutex, which
+// is independent from stateMu (nested-lock free either order),
+// but callers should avoid nesting by convention.
+func (m *Mux) cancelGatewayWatchdog() {
+	if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
+		pacer.CancelEchoWatchdog()
+	}
 }
 
 // recordGatewayInactive marks the gateway transaction as inactive with

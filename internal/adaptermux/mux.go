@@ -896,17 +896,27 @@ func (m *Mux) Close() error {
 		}
 		m.connMu.Unlock()
 
-		// Codex round-2 MUST FIX on PR #647: cancel any pending
-		// gateway echo watchdog. Close is the strongest teardown
-		// boundary; an armed watchdog could otherwise fire a soft
-		// or hard timeout admin event AFTER Close returned, which
-		// would surface as a phantom event on a mux that has
-		// already shut down.
+		m.wg.Wait()
+
+		// Codex round-2 MUST FIX on PR #647 + Codex GitHub-bot P2
+		// review on PR #650: cancel any pending gateway echo
+		// watchdog. Close is the strongest teardown boundary; an
+		// armed watchdog could otherwise fire a soft or hard
+		// timeout admin event AFTER Close returned, which would
+		// surface as a phantom event on a mux that has already
+		// shut down.
+		//
+		// P2 follow-up: do the cancel AFTER m.wg.Wait() so the
+		// sendLoop has provably stopped before we cancel. The
+		// earlier "cancel before wg.Wait" pattern had a window
+		// where sendLoop could process a queued gateway write
+		// during shutdown (the select's send case can win
+		// against ctx.Done()) and re-arm the watchdog after the
+		// cancel ran. With cancel-after-wait, sendLoop is gone
+		// before the cancel — no possible re-arm.
 		if pacer := m.SessionPacer(gatewaySessionID); pacer != nil {
 			pacer.CancelEchoWatchdog()
 		}
-
-		m.wg.Wait()
 	})
 	return m.closeErr
 }
@@ -1344,8 +1354,17 @@ func (m *Mux) reconnect() error {
 
 	// Cancel the pacer watchdog OUTSIDE stateMu (Codex round-2
 	// MUST FIX on PR #647 — see captured pacerToCancel above).
+	// Codex GitHub-bot P2 review on PR #650: reconnect is a hard
+	// reset of the upstream transport; the previous L_rtt EMA and
+	// lastEchoAt anchor reflect the OLD connection's latency
+	// characteristics and would produce spurious soft/hard
+	// timeouts on the FIRST post-reconnect write if the new
+	// connection has different latency. ResetLrtt rebootstraps
+	// L_rtt to the initial value and clears lastEchoAt so the
+	// next BeforeActiveWrite re-enters grace bootstrap.
 	if pacerToCancel != nil {
 		pacerToCancel.CancelEchoWatchdog()
+		pacerToCancel.ResetLrtt()
 	}
 
 	// Cancel in-flight pending START if any.
@@ -2521,6 +2540,17 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 		}
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonSYNTerminator)
+		// Codex GitHub-bot P1 review on PR #650: the normal
+		// gateway-txn completion path (SYN terminator echo) must
+		// cancel the watchdog. Without this, every successful
+		// gateway transaction in ModeShadow / ModeEnforce leaves
+		// the timer armed; a subsequent quiet period (no new
+		// writes to re-arm) fires the soft/hard deadline and
+		// emits a false-positive admin event for a transaction
+		// that already completed successfully. Mirror of the
+		// SYN-timeout / SYN-idle cancel signaling — set the flag,
+		// caller cancels after stateMu unlock.
+		cancelGatewayWatchdog = true
 	}
 
 	// Note: external session echo tracker flush is done AFTER stateMu.Unlock()

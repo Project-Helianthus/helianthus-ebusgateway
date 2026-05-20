@@ -804,3 +804,53 @@ func (c *Classifier) EnforceDropsAppliedTotal() uint64 {
 	}
 	return c.enforceDropsAppliedTotal.Load()
 }
+
+// ShadowWouldHaveDroppedTotal returns the cumulative count of
+// bytes the classifier WOULD have dropped under ModeEnforce but
+// did NOT drop because the runtime is in ModeShadow. Phase 3
+// Step B3.7 (shadow-mode divergence comparison vs the legacy
+// pre-v8 path).
+//
+// Semantics:
+//   - ModeShadow: returns fsmDropAaInjectionTotal — every FSM
+//     drop verdict was observed but the byte was forwarded
+//     unchanged to the session dispatch path. This counter IS
+//     the divergence signal: it counts the deltas between what
+//     v8 would do and what the legacy filter does (the legacy
+//     filter let these bytes through to the mux; v8 would
+//     have dropped them).
+//   - ModeEnforce: returns 0. In enforce mode there is no
+//     "would have" — drops are applied. Use EnforceDropsAppliedTotal
+//     for the actually-dropped count.
+//   - ModeOff: returns 0. The classifier doesn't run.
+//   - nil classifier: returns 0.
+//
+// Operator usage (canary rollout):
+//   1. Deploy with HELIANTHUS_V8_CLASSIFIER_MODE=shadow.
+//   2. Monitor this counter during a representative production
+//      window (e.g. 24h of bus activity).
+//   3. If the counter stays at 0 or stays bounded (no growth
+//      under normal load), the classifier's enforce-mode impact
+//      would be zero (or bounded). Promote to enforce.
+//   4. If the counter grows under normal load, the classifier
+//      is flagging legitimate bytes — investigate before
+//      promoting (likely a false-positive AA-injection
+//      classification).
+//
+// Prometheus alert (deployment/prometheus-alerts.md):
+//
+//	HelianthusV8ShadowWouldHaveDroppedTotalGrowing: alert on
+//	rate(helianthus_v8_shadow_would_have_dropped_total[5m]) > 0
+//	while classifier_mode=shadow. Page operators to assess
+//	enforce-mode safety BEFORE rolling out.
+//
+// Safe to call from any goroutine.
+func (c *Classifier) ShadowWouldHaveDroppedTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	if c.mode != ModeShadow {
+		return 0
+	}
+	return c.fsmDropAaInjectionTotal.Load()
+}

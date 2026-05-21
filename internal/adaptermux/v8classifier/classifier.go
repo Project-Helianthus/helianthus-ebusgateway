@@ -375,6 +375,29 @@ func (c *Classifier) driveFSMByte(b byte, wasEscaped bool, now time.Time) (drop 
 		if c.mode == ModeEnforce {
 			drop = true
 		}
+		// F-NEW-26 (2026-05-21): emit out-of-band admin event for
+		// every DropAaInjection decision. This is the operator
+		// introspection surface for the shadow→enforce promotion
+		// gate — the aggregate ShadowWouldHaveDroppedTotal counter
+		// tells operators HOW MANY bytes v8 wants to drop, but
+		// not WHICH bytes or under WHICH FSM state. Without this
+		// per-event detail an operator running shadow mode cannot
+		// distinguish true-positive (real wire AA-injection that
+		// SHOULD be filtered) from false-positive (legitimate
+		// traffic v8 over-eagerly flags). Emit in BOTH ModeShadow
+		// and ModeEnforce so the event log is consistent across
+		// the promotion path. Per v8 invariant I1 the event lives
+		// OUT-OF-BAND (admin channel only) — never serialized into
+		// cross-proxy byte streams.
+		if c.mode != ModeOff {
+			c.adminEvents.emit(ClassifierAdminEvent{
+				At:         now,
+				Kind:       AdminEventKindAaInjectionDrop,
+				FSMState:   c.fsm.State(),
+				Byte:       b,
+				WasEscaped: wasEscaped,
+			})
+		}
 	case telegram_fsm.DecisionProtocolFault:
 		c.fsmProtocolFaultTotal.Add(1)
 		// Emit out-of-band admin event. Per v8 invariant I10 the

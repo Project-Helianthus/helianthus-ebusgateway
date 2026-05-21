@@ -73,6 +73,30 @@ const (
 	// producer detects the next emit would overflow). B3.6c+
 	// expand the scope to per-session sendCh overflow too.
 	AdminEventKindQueueOverflow
+
+	// AdminEventKindAaInjectionDrop is emitted when the FSM
+	// returns telegram_fsm.DecisionDropAaInjection — a mid-frame
+	// wire AUTO-SYN (0xAA) the v8 classifier identifies as an
+	// AA-injection event. In ModeShadow the byte is COUNTED only
+	// (ShadowWouldHaveDroppedTotal increments); in ModeEnforce
+	// the byte is dropped from the cross-proxy stream
+	// (EnforceDropsAppliedTotal increments). In ModeOff the FSM
+	// does not run and this kind is unreachable.
+	//
+	// The per-event surface is the operator's introspection
+	// channel for the shadow→enforce promotion gate: each event
+	// captures the wire byte and FSM state at the time of the
+	// would-have-drop decision, so the operator can correlate
+	// the aggregate counter against the actual byte patterns and
+	// decide whether the classifier is flagging true protocol
+	// garbage (safe to promote) or legitimate traffic (over-
+	// eager — do not promote).
+	//
+	// Per v8 §1.1 / I1 these events live OUT-OF-BAND and MUST
+	// NOT be serialized into any cross-proxy session's byte
+	// stream — the v8 invariant that motivated the whole
+	// admin-event channel design.
+	AdminEventKindAaInjectionDrop
 )
 
 // String returns the canonical lowercase label for the admin
@@ -89,6 +113,8 @@ func (k AdminEventKind) String() string {
 		return "echo_hard_timeout"
 	case AdminEventKindQueueOverflow:
 		return "queue_overflow"
+	case AdminEventKindAaInjectionDrop:
+		return "aa_injection_drop"
 	default:
 		return "unknown"
 	}

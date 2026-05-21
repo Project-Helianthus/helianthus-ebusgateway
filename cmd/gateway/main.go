@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"expvar"
 	"flag"
 	"fmt"
@@ -71,6 +72,17 @@ var (
 	// any more.
 	v8RolloutExpvarPublishOnce sync.Once
 	v8RolloutExpvarCurrent     atomic.Pointer[v8RolloutExpvarSource]
+
+	// v8AdminEventsCurrentClassifier is the indirection layer for
+	// the /debug/v8/admin-events HTTP surface. Same rationale as
+	// v8RolloutExpvarCurrent: the handler is registered ONCE at
+	// startHTTPServer and dereferences this atomic.Pointer at
+	// request time. run() updates the pointer on each invocation
+	// (test re-entry safe). When the active transport isn't
+	// adapter-direct, classifier is nil; the handler returns an
+	// empty events array + dropped=0 in that case so the contract
+	// degrades cleanly without 404-ing.
+	v8AdminEventsCurrentClassifier atomic.Pointer[v8classifier.Classifier]
 )
 
 // v8RolloutExpvarSource is the indirection layer for the five
@@ -326,6 +338,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			bus:        bus,
 			classifier: classifier,
 		})
+		// F-NEW-26: pin the current classifier for the
+		// /debug/v8/admin-events HTTP handler too. Same atomic-
+		// pointer pattern as v8RolloutExpvarCurrent — handler
+		// registered ONCE per process at startHTTPServer,
+		// dereferences this pointer at request time. classifier
+		// may be nil (non-adapter-direct transports); the
+		// handler's nil-check returns an empty event list in
+		// that case so the surface stays available across
+		// transports for tooling that probes it unconditionally.
+		v8AdminEventsCurrentClassifier.Store(classifier)
 		v8RolloutExpvarPublishOnce.Do(func() {
 			expvar.Publish("helianthus_round9_absorb_entered_total",
 				expvar.Func(func() any {
@@ -1620,6 +1642,115 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	return closer, activeTxnClassifier(mux), nil
 }
 
+// v8AdminEventsResponse is the JSON envelope returned by
+// /debug/v8/admin-events. Stable wire format — operator tooling
+// (dashboards, classifier-tuning workflows) parse this.
+//
+// Fields:
+//
+//   - Events: copy of all events the ring buffer held at drain
+//     time, in FIFO order (oldest first). Each event includes the
+//     wire byte, FSM state at decision time, escape-decoded
+//     provenance, and monotonic-clock timestamp.
+//
+//   - Dropped: number of events the ring buffer dropped (oldest-
+//     first FIFO) since the last drain. Non-zero indicates the
+//     consumer is polling too slowly for the production event
+//     rate; saturate response is acceptable but the operator
+//     should tighten the poll cadence.
+//
+//   - Kind / FSMState: JSON-encoded as their stable string labels
+//     via the v8AdminEventJSON intermediate so the wire format
+//     doesn't expose numeric enum values that could shift across
+//     gateway versions.
+type v8AdminEventsResponse struct {
+	Events  []v8AdminEventJSON `json:"events"`
+	Dropped uint64             `json:"dropped"`
+}
+
+// v8AdminEventJSON is the per-event wire shape returned by
+// /debug/v8/admin-events. Mirrors v8classifier.ClassifierAdminEvent
+// but encodes the enums as stable string labels.
+type v8AdminEventJSON struct {
+	// At is the monotonic-clock observation time of the event.
+	// Encoded as RFC3339Nano for human-readable parsing without
+	// loss of resolution.
+	At time.Time `json:"at"`
+
+	// Kind is the v8classifier.AdminEventKind label (e.g.
+	// "protocol_fault", "aa_injection_drop").
+	Kind string `json:"kind"`
+
+	// FSMState is the telegram_fsm.State label at the time of
+	// the event (e.g. "MASTER_HEADER", "MASTER_PAYLOAD").
+	FSMState string `json:"fsm_state"`
+
+	// Byte is the wire byte that triggered the event, encoded
+	// as a 0x-prefixed two-digit hex string for human
+	// readability (e.g. "0xAA"). Zero-valued for non-byte
+	// events (queue overflow, echo timeouts).
+	Byte string `json:"byte"`
+
+	// WasEscaped reports whether the byte arrived as an
+	// escape-decoded payload (true) or as a raw wire byte
+	// (false). The shadow→enforce promotion gate uses this to
+	// distinguish true-positive AA-injection (raw wire 0xAA
+	// mid-frame) from data-byte 0xAA that arrived legitimately
+	// via the ENS 0xA9 escape sequence.
+	WasEscaped bool `json:"was_escaped"`
+}
+
+// handleV8AdminEvents drains the active v8 classifier's admin
+// event ring buffer and returns the contents as JSON. See the
+// v8AdminEventsResponse doc and the mux.HandleFunc call site for
+// the full endpoint contract.
+//
+// Nil-safe: when no classifier is registered (non-adapter-direct
+// transport, or run() not yet completed), returns
+// `{"events": [], "dropped": 0}` so probing tooling sees a
+// well-formed response on every transport rather than 404-ing.
+//
+// Only GET is accepted — POST/etc respond 405 to avoid surprising
+// side effects (the drain IS state-mutating).
+func handleV8AdminEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	resp := v8AdminEventsResponse{
+		Events: []v8AdminEventJSON{},
+	}
+
+	classifier := v8AdminEventsCurrentClassifier.Load()
+	if classifier != nil {
+		events, dropped := classifier.DrainAdminEvents()
+		resp.Dropped = dropped
+		if len(events) > 0 {
+			resp.Events = make([]v8AdminEventJSON, len(events))
+			for i, ev := range events {
+				resp.Events[i] = v8AdminEventJSON{
+					At:         ev.At,
+					Kind:       ev.Kind.String(),
+					FSMState:   ev.FSMState.String(),
+					Byte:       fmt.Sprintf("0x%02X", ev.Byte),
+					WasEscaped: ev.WasEscaped,
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// Cache-Control: no-store — drain is destructive, the same
+	// response is never valid twice. Tools that cache responses
+	// would silently mask new events.
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("/debug/v8/admin-events: encode error: %v", err)
+	}
+}
+
 func startHTTPServer(
 	ctx context.Context,
 	cfg ebusgateway.Config,
@@ -1747,6 +1878,37 @@ func startHTTPServer(
 	// validation finding: M5 expvars were defined + Publish()'d but not
 	// reachable over HTTP.
 	mux.Handle("/debug/vars", expvar.Handler())
+	// F-NEW-26 (2026-05-21): expose the v8 classifier's admin
+	// event ring buffer over HTTP so operators can introspect the
+	// byte-level detail behind the helianthus_v8_shadow_would_have_dropped_total
+	// counter. Without this endpoint the aggregate counter is a
+	// black box: an operator running v8 in shadow mode sees the
+	// count rising but cannot distinguish true-positive (real wire
+	// AA-injection that SHOULD be filtered when promoted to enforce)
+	// from false-positive (legitimate traffic v8 over-eagerly flags).
+	// The per-event detail (byte value + FSM state + escape
+	// provenance + timestamp) is the operator's evidence base for
+	// the shadow→enforce promotion gate documented in
+	// helianthus-docs-ebus/deployment/prometheus-alerts.md.
+	//
+	// Endpoint contract:
+	//   GET /debug/v8/admin-events
+	//   Response: application/json
+	//   Body: {"events": [<ClassifierAdminEvent>...], "dropped": <uint64>}
+	//
+	// DRAIN semantics: each successful GET returns the events
+	// accumulated since the last drain and EMPTIES the ring
+	// buffer. Operators MUST poll at a steady cadence (every
+	// few seconds in production); a stuck consumer drops the
+	// OLDEST events FIFO and the "dropped" field surfaces the
+	// saturation.
+	//
+	// Nil-safe: when the classifier is unset (non-adapter-direct
+	// transport, or run() not yet completed), the handler returns
+	// `{"events": [], "dropped": 0}` — the surface stays
+	// available so tooling that probes it unconditionally does
+	// not 404.
+	mux.HandleFunc("/debug/v8/admin-events", handleV8AdminEvents)
 	mux.Handle(cfg.GraphQLPath, queryHandler)
 	mux.Handle(cfg.SnapshotPath, snapshotHandler)
 	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)

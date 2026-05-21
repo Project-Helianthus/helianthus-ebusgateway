@@ -137,25 +137,37 @@ func TestProvenance_DefensiveFallThrough_UnexpectedEscaped(t *testing.T) {
 }
 
 // TestProvenance_SumInvariant pins the core invariant: for any
-// stream of StreamEventByte events, the four provenance counters
-// sum to the count of StreamEventByte events observed. Non-Byte
-// events (WireSyn, Started, Failed, Reset) MUST NOT contribute
-// to any of the four.
+// stream of byte-bearing events, the four provenance counters sum
+// to the count of byte-bearing events observed.
+//
+// F-NEW-27 (2026-05-21): StreamEventWireSyn IS a byte-bearing event
+// even though its kind label differs from StreamEventByte. Per
+// mux.go:1946-1952 it routes downstream as
+// `onReceived(event.Byte, wasEscaped=false)` — identical to a
+// StreamEventByte carrying 0xAA with WasEscaped=false. The classifier
+// MUST classify it the same way; otherwise it bypasses the v8 filter
+// (PR introducing this test had assumed WireSyn was a meta-event
+// like Started/Failed/Reset — that assumption proved wrong in
+// production where the bypass produced sustained round9 entries
+// in enforce mode). Started, Failed, and Reset remain pure meta-
+// events that do NOT contribute to provenance buckets.
 func TestProvenance_SumInvariant(t *testing.T) {
 	t.Parallel()
 	c := New(ModeShadow)
 	now := time.Unix(0, 0)
 
-	// Mixed StreamEventByte stream.
+	// Mixed byte-bearing event stream.
 	for _, e := range []transport.StreamEvent{
 		{Kind: transport.StreamEventByte, Byte: 0xAA, WasEscaped: true},  // payload AA
 		{Kind: transport.StreamEventByte, Byte: 0xAA, WasEscaped: false}, // wire SYN
 		{Kind: transport.StreamEventByte, Byte: 0x55, WasEscaped: false}, // plain
 		{Kind: transport.StreamEventByte, Byte: 0xA9, WasEscaped: true},  // payload ESC
 		{Kind: transport.StreamEventByte, Byte: 0x71, WasEscaped: false}, // plain
-		// Mixed-in non-Byte events that MUST be observed but NOT
-		// land in any provenance bucket.
+		// StreamEventWireSyn IS a byte-bearing event after F-NEW-27 —
+		// it lands in the wire_auto_syn bucket (kind forces
+		// WasEscaped=false regardless of event.WasEscaped).
 		{Kind: transport.StreamEventWireSyn, Byte: 0xAA},
+		// Pure meta-events — observed but NOT classified.
 		{Kind: transport.StreamEventStarted, Data: 0x71},
 		{Kind: transport.StreamEventFailed, Data: 0x10},
 		{Kind: transport.StreamEventReset},
@@ -163,14 +175,15 @@ func TestProvenance_SumInvariant(t *testing.T) {
 		c.Observe(e, now)
 	}
 
-	const streamEventByteCount = 5
+	const byteBearingEventCount = 6 // 5 StreamEventByte + 1 StreamEventWireSyn
 
 	sum := c.EscapedPayloadAaTotal() +
 		c.EscapedPayloadEscTotal() +
 		c.WireAutoSynTotal() +
 		c.PlainByteTotal()
-	if sum != streamEventByteCount {
-		t.Errorf("sum of provenance counters = %d; want %d (one bucket per StreamEventByte)", sum, streamEventByteCount)
+	if sum != byteBearingEventCount {
+		t.Errorf("sum of provenance counters = %d; want %d (one bucket per byte-bearing event including WireSyn)",
+			sum, byteBearingEventCount)
 	}
 
 	// Per-bucket breakdown.
@@ -180,18 +193,21 @@ func TestProvenance_SumInvariant(t *testing.T) {
 	if got := c.EscapedPayloadEscTotal(); got != 1 {
 		t.Errorf("EscapedPayloadEscTotal()=%d; want 1", got)
 	}
-	if got := c.WireAutoSynTotal(); got != 1 {
-		t.Errorf("WireAutoSynTotal()=%d; want 1", got)
+	// WireAutoSynTotal = 2: one StreamEventByte(0xAA, !escaped) +
+	// one StreamEventWireSyn (forced-escape-false).
+	if got := c.WireAutoSynTotal(); got != 2 {
+		t.Errorf("WireAutoSynTotal()=%d; want 2 (1 Byte-stream + 1 WireSyn — F-NEW-27 closes the bypass)", got)
 	}
 	if got := c.PlainByteTotal(); got != 2 {
 		t.Errorf("PlainByteTotal()=%d; want 2", got)
 	}
 
-	// Non-Byte events DID increment observedBytesTotal (per B3.2
-	// contract — every StreamEvent kind counts there) but did NOT
-	// touch any provenance bucket.
+	// All event kinds DID increment observedBytesTotal (per B3.2
+	// contract — every StreamEvent kind counts there). Pure
+	// meta-events (Started/Failed/Reset) do NOT touch any
+	// provenance bucket.
 	if got := c.ObservedBytesTotal(); got != 9 {
-		t.Errorf("ObservedBytesTotal()=%d; want 9 (5 Byte + 4 other)", got)
+		t.Errorf("ObservedBytesTotal()=%d; want 9 (5 Byte + 1 WireSyn + 3 meta)", got)
 	}
 }
 

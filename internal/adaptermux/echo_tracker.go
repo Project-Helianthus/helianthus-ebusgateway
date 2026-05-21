@@ -246,21 +246,12 @@ func (t *echoTracker) recordSentStructural(data byte, structural bool) {
 	t.recordSentInternal(data, structural, time.Time{}, false)
 }
 
-// recordSentWithTime is the time-tracking variant of recordSent.
-// Pass the wall-clock time of the write; matchEchoWithTime will
-// return it when this byte's echo is matched. Pass time.Time{}
-// (zero) to skip time tracking entirely — equivalent to the legacy
-// recordSent path. Phase 3 Step B3.6d.
-//
-// The expectedWriteTimes queue stays in PERFECT LOCKSTEP with
-// expectedEchoes through every operation (append, pop, rollback,
-// overflow-reset). If `writeAt` is zero, the slot still gets an
-// entry (zero time) so matchEchoWithTime's hasWriteAt return
-// reports false for that byte — preserving the contract that
-// only explicitly-timestamped writes feed L_rtt samples.
-func (t *echoTracker) recordSentWithTime(data byte, writeAt time.Time) {
-	t.recordSentInternal(data, false, writeAt, true)
-}
+// recordSentWithTime — removed in F-NEW-28 (2026-05-21). The
+// time-tracking sendLoop callers were updated to
+// recordSentWithTimeStructural which threads the structural-provenance
+// flag through. Callers that don't need the structural flag pass
+// `structural=false`. Kept the comment for archaeology: time-tracking
+// variant of recordSent for v8 RTT sampling, Phase 3 Step B3.6d.
 
 // recordSentWithTimeStructural is the F-NEW-28 (2026-05-21) variant
 // that accepts both the v8 time-tracking writeAt AND the structural

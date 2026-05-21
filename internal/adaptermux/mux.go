@@ -530,7 +530,35 @@ type Mux struct {
 
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int                // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
-	pendingAbsorbGen   uint64             // generation for stale-response absorb fail-safe timers
+	// pendingAbsorbResetTimer is the single persistent debounce timer
+	// that fires F-22's reset when pendingStartAbsorb has stayed
+	// > 0 for at least `cfg.StartDeadline` without a new arm or
+	// legitimate decrement. F-NEW-25 (2026-05-21): replaces the prior
+	// per-arm AfterFunc + pendingAbsorbGen generation-invalidation
+	// pattern, which had a livelock failure mode under signal-loss
+	// storms: if armPendingStartAbsorbLocked was called faster than
+	// the 2s deadline (e.g. the gateway's semantic poller retried a
+	// failed RequestStart and each retry's deadline-expiry path
+	// re-armed absorb), every freshly-scheduled AfterFunc bumped
+	// pendingAbsorbGen, invalidating its own gen check at fire time —
+	// so the reset NEVER executed and pendingStartAbsorb stayed at
+	// 1 permanently. The hot loop was observed in production on
+	// 2026-05-20 12:25 UTC, producing 1336 "tryGrantAndStart
+	// skipped — waiting to absorb 1 stale arbitration response(s)"
+	// log lines in <60s and stalling active B524 polling for 6+ hours.
+	//
+	// Single-timer debounce: each arm Reset()s the timer. The reset
+	// callback fires exactly `cfg.StartDeadline` after the LAST arm —
+	// not the first. Re-arming faster than the deadline simply
+	// extends the wait, which is the correct semantics for "wait
+	// until adapter responses settle before forcing reset".
+	pendingAbsorbResetTimer *time.Timer
+	// pendingAbsorbLastReason captures the most recent reason passed
+	// to armPendingStartAbsorbLocked, for diagnostic logging when the
+	// debounce timer fires. The closure is allocated once at first
+	// arm; without this field, the log message would always report
+	// the FIRST arm's reason rather than the LATEST one.
+	pendingAbsorbLastReason string
 	// absorbResetTotal counts how many times the absorb-timeout
 	// fail-safe (armPendingStartAbsorbLocked) fired and reset the
 	// pending absorb counter to zero. F-22 (batch-19, 2026-05-13):
@@ -844,6 +872,16 @@ func (m *Mux) Close() error {
 		pendingToCancel := m.pendingStart
 		m.pendingStart = nil
 		m.pendingStartAbsorb = 0
+		// F-NEW-25: stop the absorb-reset debounce timer if armed.
+		// Stop() is best-effort — if the callback is already
+		// running on another goroutine it will see
+		// pendingStartAbsorb == 0 above and no-op. Setting the
+		// field to nil so a re-armed mux (test harness) starts
+		// fresh.
+		if m.pendingAbsorbResetTimer != nil {
+			m.pendingAbsorbResetTimer.Stop()
+			m.pendingAbsorbResetTimer = nil
+		}
 		if pendingToCancel != nil && pendingToCancel.deadline != nil {
 			pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 		}
@@ -1347,6 +1385,15 @@ func (m *Mux) reconnect() error {
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
+	// F-NEW-25: stop the absorb-reset debounce timer on reconnect.
+	// reconnect explicitly drains pendingStartAbsorb here; leaving
+	// the timer running would either no-op when it fires (count
+	// already 0) or wrongly bump absorbResetTotal for a reset
+	// that the reconnect path already performed.
+	if m.pendingAbsorbResetTimer != nil {
+		m.pendingAbsorbResetTimer.Stop()
+		m.pendingAbsorbResetTimer = nil
+	}
 	if pendingToCancel != nil && pendingToCancel.deadline != nil {
 		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 	}
@@ -2975,6 +3022,15 @@ func (m *Mux) handleReset() {
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
+	// F-NEW-25: stop the absorb-reset debounce timer on RESETTED
+	// boundary. The reset semantics already drain pendingStartAbsorb;
+	// leaving the timer running would either no-op when it fires
+	// (count already 0) or fire and bump absorbResetTotal for a
+	// reset that already happened. Stop and discard.
+	if m.pendingAbsorbResetTimer != nil {
+		m.pendingAbsorbResetTimer.Stop()
+		m.pendingAbsorbResetTimer = nil
+	}
 	if pendingToCancel != nil && pendingToCancel.deadline != nil {
 		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 	}
@@ -4286,43 +4342,78 @@ func (m *Mux) cancelPendingStart(sessionID uint64) {
 // itself is fine. Mirrors F-15's reasoning that internal state-machine
 // timeouts don't justify a transport reset.
 //
+// F-NEW-25 (2026-05-21): replace the prior per-arm AfterFunc +
+// pendingAbsorbGen generation-invalidation pattern with a single
+// persistent *time.Timer + Reset() (debounce). The old pattern's
+// failure mode: when arm-rate exceeded 1/(StartDeadline), each new
+// arm bumped pendingAbsorbGen, invalidating every previously-
+// scheduled AfterFunc's gen check at fire time. The reset never
+// executed and pendingStartAbsorb stayed at 1 permanently, producing
+// a "tryGrantAndStart skipped — waiting to absorb 1" hot loop
+// that stalled active polling for 6+ hours (2026-05-20 12:25 UTC
+// production incident). New semantics: each arm Reset()s the same
+// timer; the callback fires exactly StartDeadline after the LAST arm,
+// not the first.
+//
 // Caller must hold stateMu.
 func (m *Mux) armPendingStartAbsorbLocked(reason string) {
 	m.pendingStartAbsorb++
-	m.pendingAbsorbGen++
-	gen := m.pendingAbsorbGen
+	m.pendingAbsorbLastReason = reason
 	deadline := m.cfg.StartDeadline
 	if deadline <= 0 {
 		deadline = 2 * time.Second
 	}
-	time.AfterFunc(deadline, func() {
-		m.stateMu.Lock()
-		if gen != m.pendingAbsorbGen || m.pendingStartAbsorb == 0 {
-			m.stateMu.Unlock()
-			return
-		}
-		// F-22 (batch-19): log the reset event and bump the metric,
-		// but do NOT close the upstream transport. The next semantic
-		// poll iteration will issue a fresh RequestStart cleanly
-		// over the still-open ENH connection.
-		count := m.pendingStartAbsorb
-		m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22)", reason, count)
-		m.absorbResetTotal.Add(1)
-		m.pendingStartAbsorb = 0
-		m.pendingAbsorbGen++
-		shouldAdvance := m.pendingStart == nil && m.arb.hasPending()
-		m.stateMu.Unlock()
+	if m.pendingAbsorbResetTimer == nil {
+		// First arm — allocate the persistent timer. Subsequent
+		// arms will Reset() it, debouncing the deadline. The
+		// callback closes over `m` only (NOT over a captured
+		// generation counter or reason string); it reads
+		// pendingAbsorbLastReason at fire time so the diagnostic
+		// log reflects whatever caused the most recent arm.
+		m.pendingAbsorbResetTimer = time.AfterFunc(deadline, m.fireAbsorbReset)
+		return
+	}
+	// Already-armed timer — extend the deadline. time.Timer.Reset on
+	// an AfterFunc timer is documented as safe to call at any time;
+	// if the timer has already fired, Reset re-arms it. If it has
+	// NOT fired yet, Reset replaces the pending deadline. Either way
+	// the next fire happens `deadline` from now, not from the
+	// original arm. This gives the debounce semantics needed to
+	// close the hot-loop bug.
+	m.pendingAbsorbResetTimer.Reset(deadline)
+}
 
-		// F-22: NO transport-reconnect side effect. Closing the
-		// upstream ENH connection here would have severed ebusd
-		// external sessions and produced cascade RequestStart
-		// failures (batch-19 evidence). The bus poll loop's next
-		// iteration will issue a fresh START arbitration which the
-		// adapter handles on the existing connection.
-		if shouldAdvance {
-			m.tryGrantAndStart()
-		}
-	})
+// fireAbsorbReset is the debounce timer callback. It runs in a fresh
+// goroutine (time.AfterFunc semantics). Acquires stateMu, drains the
+// absorb counter if still positive, and kicks tryGrantAndStart if the
+// queue has pending work and no active START is in flight.
+//
+// Idempotent under spurious fire: when pendingStartAbsorb is already
+// 0 (legitimate stale-response arrival drained the counter before
+// the debounce window closed), the callback is a no-op. No transport
+// reconnect side effect — the F-22 rationale stands.
+func (m *Mux) fireAbsorbReset() {
+	m.stateMu.Lock()
+	if m.pendingStartAbsorb == 0 {
+		// Legitimate decrement(s) drained the counter while the
+		// debounce timer was pending. Nothing to reset. Leaving
+		// the timer field non-nil is fine — next arm will call
+		// Reset() on it without re-allocating.
+		m.stateMu.Unlock()
+		return
+	}
+	count := m.pendingStartAbsorb
+	reason := m.pendingAbsorbLastReason
+	m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22 debounce)", reason, count)
+	m.absorbResetTotal.Add(1)
+	m.pendingStartAbsorb = 0
+	shouldAdvance := m.pendingStart == nil && m.arb.hasPending()
+	m.stateMu.Unlock()
+
+	// F-22: NO transport-reconnect side effect.
+	if shouldAdvance {
+		m.tryGrantAndStart()
+	}
 }
 
 // sendLoop processes send requests from the active path and external sessions.

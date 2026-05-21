@@ -305,6 +305,50 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 			c.enforceDropsAppliedTotal.Add(1)
 		}
 		return drop
+	case transport.StreamEventWireSyn:
+		// F-NEW-27 (2026-05-21): close the StreamEventWireSyn bypass.
+		//
+		// PR #155 (2026-05-15) introduced StreamEventWireSyn as a
+		// pre-grant SYN passive marker emitted by enh_transport during
+		// awaitingStart, with downstream effect IDENTICAL to a wire SYN
+		// byte (mux.go:1946-1952 routes it to
+		// `onReceived(event.Byte, wasEscaped=false)`). The v8 classifier
+		// was designed before this event kind existed and the original
+		// Observe switch fell through for WireSyn — returning drop=false
+		// regardless of mode, so the wire SYN reached the gateway's echo
+		// position unfiltered.
+		//
+		// In production this bypass produced sustained round9 absorb
+		// entries (~2.6/min in enforce mode), each one a textbook I8
+		// invariant violation per HelianthusRound9FiredUnderProxy. The
+		// payload_aa_auto_syn_absorbed counter stayed at 0 across all
+		// entries — confirming the SYN reached the echo position but the
+		// post-leak drain reads failed (independent transport-storm
+		// issue). Diagnosed by Codex adversarial review of the 2026-05-21
+		// enforce-mode stress test baseline + my code verification of
+		// classifier.go vs mux.go event routing.
+		//
+		// Fix: treat StreamEventWireSyn identically to a StreamEventByte
+		// carrying 0xAA with WasEscaped=false. The byte path normalization
+		// is forced by the event kind — by mux.go:1952 construction the
+		// byte is always 0xAA and is always a raw wire SYN (NOT
+		// escape-decoded payload). Drive the FSM through the same
+		// classification path; in enforce mode the FSM returns
+		// DecisionDropAaInjection for mid-frame wire 0xAA and the byte
+		// is filtered out of session dispatch.
+		//
+		// We FORCE WasEscaped=false here regardless of event.WasEscaped.
+		// The kind itself is the source-of-truth for provenance — a
+		// StreamEventWireSyn is by definition a raw wire byte; if the
+		// upstream transport ever incorrectly populated WasEscaped=true
+		// on this event kind, trusting that flag would re-open the
+		// bypass.
+		c.classifyByteProvenance(event.Byte, false)
+		drop = c.driveFSMByte(event.Byte, false, now)
+		if drop {
+			c.enforceDropsAppliedTotal.Add(1)
+		}
+		return drop
 	case transport.StreamEventStarted, transport.StreamEventFailed:
 		// Both events signal "a telegram is starting on the wire and
 		// event.Data carries QQ" — the FSM's EnterPassiveTracking

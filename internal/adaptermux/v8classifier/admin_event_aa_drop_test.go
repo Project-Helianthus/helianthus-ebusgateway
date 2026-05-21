@@ -142,6 +142,136 @@ func TestClassifier_DropAaInjection_NoEmit_ModeOff(t *testing.T) {
 	}
 }
 
+// TestStreamEventWireSyn_EnforceMode_Drops pins F-NEW-27: the
+// StreamEventWireSyn bypass closure. Before this fix, the
+// classifier's Observe switch had no case for StreamEventWireSyn —
+// the event fell through and returned drop=false regardless of mode.
+// Meanwhile mux.go:1946-1952 routes WireSyn to
+// onReceived(event.Byte, wasEscaped=false), i.e. as a raw wire 0xAA
+// byte. The bypass meant wire SYNs delivered via this event kind
+// reached the gateway's echo position unfiltered — producing
+// sustained round9 absorb entries in enforce mode (~2.6/min on the
+// production HA host on 2026-05-21).
+//
+// Post-fix: StreamEventWireSyn drives the FSM identically to a
+// StreamEventByte carrying 0xAA with WasEscaped=false. In enforce
+// mode, mid-frame WireSyn returns drop=true.
+func TestStreamEventWireSyn_EnforceMode_Drops(t *testing.T) {
+	t.Parallel()
+	c := New(ModeEnforce)
+	now := time.Unix(0, 0)
+
+	// Enter passive tracking so subsequent 0xAA bytes are
+	// classified mid-frame.
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventStarted, Data: 0x71,
+	}, now)
+
+	// Pre-fix: this returns drop=false (bypass).
+	// Post-fix: this returns drop=true (filtered).
+	drop := c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventWireSyn, Byte: 0xAA,
+	}, now)
+	if !drop {
+		t.Fatal("StreamEventWireSyn(0xAA) in enforce mode returned drop=false — F-NEW-27 bypass NOT closed. " +
+			"The wire SYN would reach the gateway's echo position unfiltered, producing round9 absorb entries.")
+	}
+	if got := c.FsmDropAaInjectionTotal(); got != 1 {
+		t.Errorf("FsmDropAaInjectionTotal()=%d; want 1 (FSM drop verdict counted)", got)
+	}
+	if got := c.EnforceDropsAppliedTotal(); got != 1 {
+		t.Errorf("EnforceDropsAppliedTotal()=%d; want 1 (enforce actually applied the drop)", got)
+	}
+
+	// And the admin event ring captured the drop event with
+	// WasEscaped=false (kind forces raw wire provenance regardless
+	// of event.WasEscaped).
+	events, _ := c.DrainAdminEvents()
+	if len(events) != 1 {
+		t.Fatalf("DrainAdminEvents: got %d events; want 1", len(events))
+	}
+	if events[0].Kind != AdminEventKindAaInjectionDrop {
+		t.Errorf("admin event kind=%v; want AdminEventKindAaInjectionDrop", events[0].Kind)
+	}
+	if events[0].Byte != 0xAA {
+		t.Errorf("admin event byte=0x%02X; want 0xAA", events[0].Byte)
+	}
+	if events[0].WasEscaped {
+		t.Error("admin event WasEscaped=true; want false (StreamEventWireSyn kind implies raw wire)")
+	}
+}
+
+// TestStreamEventWireSyn_ShadowMode_CountedNotDropped pins the
+// shadow-mode contract for StreamEventWireSyn — same as the
+// StreamEventByte shadow-mode contract. The FSM still emits the
+// drop verdict (FsmDropAaInjectionTotal increments + ring event
+// fires + ShadowWouldHaveDroppedTotal increments) but Observe
+// returns drop=false (shadow never alters the byte stream).
+func TestStreamEventWireSyn_ShadowMode_CountedNotDropped(t *testing.T) {
+	t.Parallel()
+	c := New(ModeShadow)
+	now := time.Unix(0, 0)
+
+	c.Observe(transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}, now)
+	drop := c.Observe(transport.StreamEvent{Kind: transport.StreamEventWireSyn, Byte: 0xAA}, now)
+	if drop {
+		t.Error("StreamEventWireSyn in ModeShadow returned drop=true; shadow must NEVER drop")
+	}
+	if got := c.FsmDropAaInjectionTotal(); got != 1 {
+		t.Errorf("FsmDropAaInjectionTotal()=%d; want 1 (FSM decision still counted in shadow)", got)
+	}
+	if got := c.ShadowWouldHaveDroppedTotal(); got != 1 {
+		t.Errorf("ShadowWouldHaveDroppedTotal()=%d; want 1 (divergence signal records WireSyn drops)", got)
+	}
+	if got := c.EnforceDropsAppliedTotal(); got != 0 {
+		t.Errorf("EnforceDropsAppliedTotal()=%d; want 0 (shadow never applies drops)", got)
+	}
+}
+
+// TestStreamEventWireSyn_OffMode_NoFSM pins the zero-overhead
+// contract: in ModeOff the FSM does not run, so WireSyn produces
+// no drop decision and no admin event.
+func TestStreamEventWireSyn_OffMode_NoFSM(t *testing.T) {
+	t.Parallel()
+	c := New(ModeOff)
+	now := time.Unix(0, 0)
+
+	c.Observe(transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}, now)
+	drop := c.Observe(transport.StreamEvent{Kind: transport.StreamEventWireSyn, Byte: 0xAA}, now)
+	if drop {
+		t.Error("StreamEventWireSyn in ModeOff returned drop=true; ModeOff is zero-overhead, never drops")
+	}
+	if got := c.FsmDropAaInjectionTotal(); got != 0 {
+		t.Errorf("FsmDropAaInjectionTotal()=%d in ModeOff; want 0", got)
+	}
+	events, _ := c.DrainAdminEvents()
+	if len(events) != 0 {
+		t.Errorf("DrainAdminEvents in ModeOff: got %d events; want 0", len(events))
+	}
+}
+
+// TestStreamEventWireSyn_ProvenanceClassification pins that
+// WireSyn lands in the wire_auto_syn provenance bucket (forced
+// WasEscaped=false regardless of event.WasEscaped).
+func TestStreamEventWireSyn_ProvenanceClassification(t *testing.T) {
+	t.Parallel()
+	c := New(ModeShadow)
+	now := time.Unix(0, 0)
+
+	// Two WireSyn events — even if the (incorrect) event.WasEscaped
+	// were true, the classifier MUST force it to false because
+	// StreamEventWireSyn by definition is a raw wire byte.
+	c.Observe(transport.StreamEvent{Kind: transport.StreamEventWireSyn, Byte: 0xAA, WasEscaped: false}, now)
+	c.Observe(transport.StreamEvent{Kind: transport.StreamEventWireSyn, Byte: 0xAA, WasEscaped: true}, now)
+
+	if got := c.WireAutoSynTotal(); got != 2 {
+		t.Errorf("WireAutoSynTotal()=%d; want 2 (both WireSyn events bucketed as wire-auto-syn regardless of event.WasEscaped)", got)
+	}
+	if got := c.EscapedPayloadAaTotal(); got != 0 {
+		t.Errorf("EscapedPayloadAaTotal()=%d; want 0 (WireSyn must NOT route to escaped-payload bucket even if WasEscaped=true)", got)
+	}
+}
+
 // TestAdminEventKindAaInjectionDrop_String pins the label.
 func TestAdminEventKindAaInjectionDrop_String(t *testing.T) {
 	t.Parallel()

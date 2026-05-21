@@ -70,12 +70,12 @@ func TestClassifier_DropAaInjection_EmitsAdminEvent_ShadowMode(t *testing.T) {
 	if ev.At != now {
 		t.Errorf("event At=%v; want %v (now threaded from Observe per Codex round-1 MEDIUM)", ev.At, now)
 	}
-	// FSMState should be a MASTER_HEADER variant — the FSM has
-	// just consumed QQ from the STARTED stream event and the
-	// next byte (the 0xAA wire byte) lands in the master header
-	// region where AA-injection detection runs. Exact state
-	// label varies with FSM internals; we only check non-zero
-	// so future FSM-state refactors don't break this regression.
+	// FSMState should be in the initiator-header region — the
+	// FSM has just consumed QQ from the STARTED stream event
+	// and the next byte (the 0xAA wire byte) lands where the
+	// AA-injection detection runs. Exact state label varies
+	// with FSM internals; we only check non-zero so future
+	// FSM-state refactors don't break this regression.
 	if ev.FSMState == telegram_fsm.StateIdle {
 		t.Errorf("event FSMState=%v; want non-idle (FSM was mid-telegram at drop time)", ev.FSMState)
 	}

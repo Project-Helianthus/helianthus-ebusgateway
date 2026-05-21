@@ -375,6 +375,29 @@ func (c *Classifier) driveFSMByte(b byte, wasEscaped bool, now time.Time) (drop 
 		if c.mode == ModeEnforce {
 			drop = true
 		}
+		// F-NEW-26 (2026-05-21): emit out-of-band admin event for
+		// every DropAaInjection decision. This is the operator
+		// introspection surface for the shadow→enforce promotion
+		// gate — the aggregate ShadowWouldHaveDroppedTotal counter
+		// tells operators HOW MANY bytes v8 wants to drop, but
+		// not WHICH bytes or under WHICH FSM state. Without this
+		// per-event detail an operator running shadow mode cannot
+		// distinguish true-positive (real wire AA-injection that
+		// SHOULD be filtered) from false-positive (legitimate
+		// traffic v8 over-eagerly flags). Emit in BOTH ModeShadow
+		// and ModeEnforce so the event log is consistent across
+		// the promotion path. Per v8 invariant I1 the event lives
+		// OUT-OF-BAND (admin channel only) — never serialized into
+		// cross-proxy byte streams.
+		if c.mode != ModeOff {
+			c.adminEvents.emit(ClassifierAdminEvent{
+				At:         now,
+				Kind:       AdminEventKindAaInjectionDrop,
+				FSMState:   c.fsm.State(),
+				Byte:       b,
+				WasEscaped: wasEscaped,
+			})
+		}
 	case telegram_fsm.DecisionProtocolFault:
 		c.fsmProtocolFaultTotal.Add(1)
 		// Emit out-of-band admin event. Per v8 invariant I10 the
@@ -750,6 +773,39 @@ func (c *Classifier) PendingAdminEvents() int {
 		return 0
 	}
 	return c.adminEvents.pending()
+}
+
+// PeekAdminEvents returns a snapshot of the admin event ring
+// AND the cumulative-since-last-drain dropped counter, in a
+// single atomic acquire of the ring's internal mutex. Mirrors
+// the (events, dropped) signature of DrainAdminEvents but does
+// NOT clear the ring or reset the dropped counter.
+//
+// Atomicity matters: if events and dropped were exposed as two
+// separate methods, a concurrent drain or overflow emit could
+// interleave between the calls — a peek consumer would see an
+// events slice that doesn't match the dropped count (Codex
+// round-2 MEDIUM on PR #657). One mutex acquire makes the
+// returned pair internally consistent.
+//
+// Use case: ad-hoc operator inspection that should not consume
+// a long-running poller's evidence stream. The canonical
+// destructive read remains DrainAdminEvents (which clears the
+// ring AND resets the dropped counter atomically).
+//
+// Semantics of the returned dropped value: cumulative since the
+// last DrainAdminEvents call (NOT since process start). A mixed
+// peek+drain consumer sees the counter snap to zero on drain;
+// a peek-only consumer sees it grow monotonically until the
+// next drain.
+//
+// Returns (nil, 0) when the classifier is nil. Safe to call
+// from any goroutine.
+func (c *Classifier) PeekAdminEvents() (events []ClassifierAdminEvent, dropped uint64) {
+	if c == nil {
+		return nil, 0
+	}
+	return c.adminEvents.peek()
 }
 
 // NewPacerForSession returns a new per-session Pacer wired to

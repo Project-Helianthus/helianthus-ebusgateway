@@ -73,6 +73,30 @@ const (
 	// producer detects the next emit would overflow). B3.6c+
 	// expand the scope to per-session sendCh overflow too.
 	AdminEventKindQueueOverflow
+
+	// AdminEventKindAaInjectionDrop is emitted when the FSM
+	// returns telegram_fsm.DecisionDropAaInjection — a mid-frame
+	// wire AUTO-SYN (0xAA) the v8 classifier identifies as an
+	// AA-injection event. In ModeShadow the byte is COUNTED only
+	// (ShadowWouldHaveDroppedTotal increments); in ModeEnforce
+	// the byte is dropped from the cross-proxy stream
+	// (EnforceDropsAppliedTotal increments). In ModeOff the FSM
+	// does not run and this kind is unreachable.
+	//
+	// The per-event surface is the operator's introspection
+	// channel for the shadow→enforce promotion gate: each event
+	// captures the wire byte and FSM state at the time of the
+	// would-have-drop decision, so the operator can correlate
+	// the aggregate counter against the actual byte patterns and
+	// decide whether the classifier is flagging true protocol
+	// garbage (safe to promote) or legitimate traffic (over-
+	// eager — do not promote).
+	//
+	// Per v8 §1.1 / I1 these events live OUT-OF-BAND and MUST
+	// NOT be serialized into any cross-proxy session's byte
+	// stream — the v8 invariant that motivated the whole
+	// admin-event channel design.
+	AdminEventKindAaInjectionDrop
 )
 
 // String returns the canonical lowercase label for the admin
@@ -89,6 +113,8 @@ func (k AdminEventKind) String() string {
 		return "echo_hard_timeout"
 	case AdminEventKindQueueOverflow:
 		return "queue_overflow"
+	case AdminEventKindAaInjectionDrop:
+		return "aa_injection_drop"
 	default:
 		return "unknown"
 	}
@@ -219,4 +245,34 @@ func (b *adminEventBuffer) pending() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(b.events)
+}
+
+// peek returns a copy of buffered events AND the cumulative
+// dropped counter, WITHOUT clearing the buffer or resetting
+// the counter. Both values are returned from a single mutex
+// acquire so they form an internally-consistent snapshot
+// (Codex round-2 MEDIUM on PR #657: separate peek + counter
+// methods would race against concurrent drain/overflow emit).
+//
+// Used by ad-hoc operator tooling (browser, curl + jq) that
+// should not consume a long-running poller's evidence stream.
+// F-NEW-26 follow-up — Codex round-1 LOW on PR #657 closed
+// the GET-drain footgun for concurrent consumers.
+//
+// The dropped counter returned here is cumulative since the
+// last drain() call (NOT since process start) — drain resets
+// it atomically with the event-slice clear. Mixed peek+drain
+// consumers see it snap to zero on drain; peek-only consumers
+// see it grow monotonically until the next drain.
+//
+// Multi-consumer safe via the mutex.
+func (b *adminEventBuffer) peek() (events []ClassifierAdminEvent, dropped uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.events) == 0 {
+		return nil, b.dropped
+	}
+	events = make([]ClassifierAdminEvent, len(b.events))
+	copy(events, b.events)
+	return events, b.dropped
 }

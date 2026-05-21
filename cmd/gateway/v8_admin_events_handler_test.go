@@ -192,9 +192,9 @@ func TestHandleV8AdminEvents_PeekDoesNotDrain(t *testing.T) {
 	if rec1.Code != http.StatusOK {
 		t.Fatalf("peek status = %d; want 200", rec1.Code)
 	}
-	if cc := rec1.Header().Get("Cache-Control"); cc != "max-age=1" {
-		t.Errorf("peek Cache-Control = %q; want %q (peek is idempotent — short cache OK)",
-			cc, "max-age=1")
+	if cc := rec1.Header().Get("Cache-Control"); cc != "private, max-age=1" {
+		t.Errorf("peek Cache-Control = %q; want %q (peek idempotent; private prevents shared-cache leak)",
+			cc, "private, max-age=1")
 	}
 
 	var resp1 struct {

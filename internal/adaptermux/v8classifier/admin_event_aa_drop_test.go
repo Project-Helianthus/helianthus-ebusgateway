@@ -169,16 +169,19 @@ func TestPeekAdminEvents_DoesNotDrain(t *testing.T) {
 	}, now)
 
 	// First peek sees the event.
-	events1 := c.PeekAdminEvents()
+	events1, dropped1 := c.PeekAdminEvents()
 	if len(events1) != 1 {
 		t.Fatalf("first peek: got %d events; want 1", len(events1))
+	}
+	if dropped1 != 0 {
+		t.Errorf("first peek dropped=%d; want 0 (no overflow yet)", dropped1)
 	}
 	if events1[0].Kind != AdminEventKindAaInjectionDrop {
 		t.Errorf("first peek event Kind=%v; want AdminEventKindAaInjectionDrop", events1[0].Kind)
 	}
 
 	// Second peek sees the SAME event (non-destructive).
-	events2 := c.PeekAdminEvents()
+	events2, _ := c.PeekAdminEvents()
 	if len(events2) != 1 {
 		t.Fatalf("second peek: got %d events; want 1 (peek must not drain)", len(events2))
 	}
@@ -193,7 +196,7 @@ func TestPeekAdminEvents_DoesNotDrain(t *testing.T) {
 	}
 
 	// Post-drain peek sees empty.
-	events3 := c.PeekAdminEvents()
+	events3, _ := c.PeekAdminEvents()
 	if len(events3) != 0 {
 		t.Errorf("post-drain peek: got %d events; want 0 (drain failed to clear)", len(events3))
 	}
@@ -203,26 +206,30 @@ func TestPeekAdminEvents_DoesNotDrain(t *testing.T) {
 func TestPeekAdminEvents_NilSafe(t *testing.T) {
 	t.Parallel()
 	var c *Classifier
-	events := c.PeekAdminEvents()
+	events, dropped := c.PeekAdminEvents()
 	if events != nil {
-		t.Errorf("nil.PeekAdminEvents() = %v; want nil", events)
+		t.Errorf("nil.PeekAdminEvents() events = %v; want nil", events)
 	}
-	if got := c.AdminEventsDroppedTotal(); got != 0 {
-		t.Errorf("nil.AdminEventsDroppedTotal() = %d; want 0", got)
+	if dropped != 0 {
+		t.Errorf("nil.PeekAdminEvents() dropped = %d; want 0", dropped)
 	}
 }
 
-// TestAdminEventsDroppedTotal_Snapshot pins that the peek-side
-// dropped counter exposes the cumulative-since-drain value
-// (NOT a per-call delta). The destructive drain resets it; the
-// peek path does not.
-func TestAdminEventsDroppedTotal_Snapshot(t *testing.T) {
+// TestPeekAdminEvents_AtomicSnapshot pins the Codex-round-2
+// MEDIUM contract: events and dropped come from a single mutex
+// acquire so they form an internally-consistent pair. Drives
+// one ring overflow and asserts that multiple peeks return
+// (events, dropped) pairs where both stay stable across calls
+// (no interleaved drain/overflow); a subsequent drain resets
+// BOTH atomically.
+func TestPeekAdminEvents_AtomicSnapshot(t *testing.T) {
 	t.Parallel()
 	c := New(ModeShadow)
 
-	// AdminEventsDroppedTotal starts at 0.
-	if got := c.AdminEventsDroppedTotal(); got != 0 {
-		t.Fatalf("AdminEventsDroppedTotal() at construction = %d; want 0", got)
+	// Pre-condition: empty.
+	events0, dropped0 := c.PeekAdminEvents()
+	if len(events0) != 0 || dropped0 != 0 {
+		t.Fatalf("construction state: events=%d dropped=%d; want (0,0)", len(events0), dropped0)
 	}
 
 	// Fill the ring to its cap and overflow it by one to force
@@ -234,19 +241,27 @@ func TestAdminEventsDroppedTotal_Snapshot(t *testing.T) {
 		})
 	}
 
-	// One drop expected.
-	if got := c.AdminEventsDroppedTotal(); got != 1 {
-		t.Errorf("AdminEventsDroppedTotal() after one overflow = %d; want 1", got)
+	// Multiple peeks return the same (events, dropped) pair.
+	events1, dropped1 := c.PeekAdminEvents()
+	if len(events1) != adminEventBufferCap || dropped1 != 1 {
+		t.Errorf("first peek: events=%d dropped=%d; want (%d, 1)",
+			len(events1), dropped1, adminEventBufferCap)
+	}
+	events2, dropped2 := c.PeekAdminEvents()
+	if len(events2) != adminEventBufferCap || dropped2 != 1 {
+		t.Errorf("second peek: events=%d dropped=%d; want (%d, 1) (peek must not mutate)",
+			len(events2), dropped2, adminEventBufferCap)
 	}
 
-	// Multiple peeks return the same dropped count.
-	if got := c.AdminEventsDroppedTotal(); got != 1 {
-		t.Errorf("second AdminEventsDroppedTotal() = %d; want 1 (peek must not reset)", got)
+	// Drain resets BOTH atomically.
+	drainedEvents, drainedDropped := c.DrainAdminEvents()
+	if len(drainedEvents) != adminEventBufferCap || drainedDropped != 1 {
+		t.Errorf("drain: events=%d dropped=%d; want (%d, 1)",
+			len(drainedEvents), drainedDropped, adminEventBufferCap)
 	}
-
-	// Drain resets it.
-	c.DrainAdminEvents()
-	if got := c.AdminEventsDroppedTotal(); got != 0 {
-		t.Errorf("post-drain AdminEventsDroppedTotal() = %d; want 0 (drain must reset)", got)
+	events3, dropped3 := c.PeekAdminEvents()
+	if len(events3) != 0 || dropped3 != 0 {
+		t.Errorf("post-drain peek: events=%d dropped=%d; want (0, 0) (drain must reset both)",
+			len(events3), dropped3)
 	}
 }

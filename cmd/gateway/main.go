@@ -1745,12 +1745,12 @@ func handleV8AdminEvents(w http.ResponseWriter, r *http.Request) {
 		var events []v8classifier.ClassifierAdminEvent
 		var dropped uint64
 		if peekOnly {
-			// Non-destructive read. Snapshot the ring + dropped
-			// counter without clearing. The classifier exposes
-			// this via a separate method so the drain path stays
-			// the canonical destructive operation.
-			events = classifier.PeekAdminEvents()
-			dropped = classifier.AdminEventsDroppedTotal()
+			// Non-destructive ATOMIC read: events + dropped come
+			// from a single mutex acquire (Codex round-2 MEDIUM
+			// on PR #657 — separate calls would race against a
+			// concurrent drain/overflow emit). The classifier
+			// exposes the destructive variant via DrainAdminEvents.
+			events, dropped = classifier.PeekAdminEvents()
 		} else {
 			events, dropped = classifier.DrainAdminEvents()
 		}
@@ -1771,10 +1771,16 @@ func handleV8AdminEvents(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if peekOnly {
-		// Peek is idempotent — short-cache is fine, but keep
-		// it brief so operators get fresh data across short
-		// polling intervals.
-		w.Header().Set("Cache-Control", "max-age=1")
+		// Peek is idempotent. `private` keeps shared
+		// intermediary caches (CDNs, reverse proxies) from
+		// storing the response on behalf of unrelated
+		// operators — this is a debug surface, not public
+		// content. `max-age=1` keeps tooling that polls every
+		// few seconds from seeing stale data while still
+		// allowing the browser's own cache to debounce
+		// duplicate-refresh storms. Codex round-2 LOW on
+		// PR #657.
+		w.Header().Set("Cache-Control", "private, max-age=1")
 	} else {
 		// Drain is destructive, the same response is never
 		// valid twice. Tools that cache the response would

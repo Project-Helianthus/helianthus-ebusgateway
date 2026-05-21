@@ -776,48 +776,36 @@ func (c *Classifier) PendingAdminEvents() int {
 }
 
 // PeekAdminEvents returns a snapshot of the admin event ring
-// WITHOUT draining it. The returned slice is a copy, safe to
-// hold across other classifier calls. The dropped counter is
-// NOT included in this method's return — call
-// AdminEventsDroppedTotal for that signal.
+// AND the cumulative-since-last-drain dropped counter, in a
+// single atomic acquire of the ring's internal mutex. Mirrors
+// the (events, dropped) signature of DrainAdminEvents but does
+// NOT clear the ring or reset the dropped counter.
+//
+// Atomicity matters: if events and dropped were exposed as two
+// separate methods, a concurrent drain or overflow emit could
+// interleave between the calls — a peek consumer would see an
+// events slice that doesn't match the dropped count (Codex
+// round-2 MEDIUM on PR #657). One mutex acquire makes the
+// returned pair internally consistent.
 //
 // Use case: ad-hoc operator inspection that should not consume
 // a long-running poller's evidence stream. The canonical
 // destructive read remains DrainAdminEvents (which clears the
-// ring AND resets the dropped counter on read).
+// ring AND resets the dropped counter atomically).
 //
-// Returns nil when the classifier is nil. Safe to call from
-// any goroutine; concurrent peek/drain pairs serialize through
-// the ring's internal mutex.
-func (c *Classifier) PeekAdminEvents() []ClassifierAdminEvent {
+// Semantics of the returned dropped value: cumulative since the
+// last DrainAdminEvents call (NOT since process start). A mixed
+// peek+drain consumer sees the counter snap to zero on drain;
+// a peek-only consumer sees it grow monotonically until the
+// next drain.
+//
+// Returns (nil, 0) when the classifier is nil. Safe to call
+// from any goroutine.
+func (c *Classifier) PeekAdminEvents() (events []ClassifierAdminEvent, dropped uint64) {
 	if c == nil {
-		return nil
+		return nil, 0
 	}
-	events, _ := c.adminEvents.peek()
-	return events
-}
-
-// AdminEventsDroppedTotal returns the cumulative count of admin
-// events the ring buffer dropped (oldest-FIFO) since process
-// start. Companion to PeekAdminEvents — the destructive
-// DrainAdminEvents path returns and resets a per-drain
-// dropped counter; this method exposes the lifetime-cumulative
-// counter for non-destructive consumers that want to detect
-// saturation across peek calls.
-//
-// NOTE: this counter is reset to zero by DrainAdminEvents (see
-// adminEventBuffer.drain). Mixed peek+drain consumers see the
-// counter snap back to zero after a drain; peek-only consumers
-// see it grow monotonically until the next drain.
-//
-// Returns 0 when the classifier is nil. Safe to call from any
-// goroutine.
-func (c *Classifier) AdminEventsDroppedTotal() uint64 {
-	if c == nil {
-		return 0
-	}
-	_, dropped := c.adminEvents.peek()
-	return dropped
+	return c.adminEvents.peek()
 }
 
 // NewPacerForSession returns a new per-session Pacer wired to

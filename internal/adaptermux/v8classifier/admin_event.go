@@ -247,15 +247,23 @@ func (b *adminEventBuffer) pending() int {
 	return len(b.events)
 }
 
-// peek returns a copy of buffered events WITHOUT clearing the
-// buffer or resetting the dropped counter. Used by ad-hoc
-// operator tooling (browser, curl + jq) that should not
-// consume a long-running poller's evidence stream. F-NEW-26
-// follow-up — Codex round-1 LOW on PR #657: closes the GET-
-// drain footgun when concurrent consumers share the HTTP
-// surface. The dropped counter returned here is the CUMULATIVE
-// total since process start; consumers correlate against a
-// prior peek to compute deltas.
+// peek returns a copy of buffered events AND the cumulative
+// dropped counter, WITHOUT clearing the buffer or resetting
+// the counter. Both values are returned from a single mutex
+// acquire so they form an internally-consistent snapshot
+// (Codex round-2 MEDIUM on PR #657: separate peek + counter
+// methods would race against concurrent drain/overflow emit).
+//
+// Used by ad-hoc operator tooling (browser, curl + jq) that
+// should not consume a long-running poller's evidence stream.
+// F-NEW-26 follow-up — Codex round-1 LOW on PR #657 closed
+// the GET-drain footgun for concurrent consumers.
+//
+// The dropped counter returned here is cumulative since the
+// last drain() call (NOT since process start) — drain resets
+// it atomically with the event-slice clear. Mixed peek+drain
+// consumers see it snap to zero on drain; peek-only consumers
+// see it grow monotonically until the next drain.
 //
 // Multi-consumer safe via the mutex.
 func (b *adminEventBuffer) peek() (events []ClassifierAdminEvent, dropped uint64) {

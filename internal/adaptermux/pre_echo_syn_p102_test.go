@@ -138,8 +138,10 @@ func TestPreEchoSyn_LegitimateTerminator_Delivered(t *testing.T) {
 	}
 
 	// Gateway writes the terminator SYN itself (sendEndOfMessage path).
-	// expectedEchoes head is now SYN.
-	go func() { _, _ = at.Write([]byte{protocol.SymbolSyn}) }()
+	// expectedEchoes head is now SYN. F-NEW-28 (2026-05-21): use
+	// writeTerminatorSyn helper to signal structural-SYN provenance
+	// before the write, matching bus.go's sendEndOfMessage path.
+	go writeTerminatorSyn(at)
 	time.Sleep(20 * time.Millisecond)
 
 	// Wire echoes the SYN. The gate must let it through as terminator.

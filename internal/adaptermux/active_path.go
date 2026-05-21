@@ -3,6 +3,7 @@ package adaptermux
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
@@ -16,15 +17,35 @@ import (
 // transport.StreamEventReader for RESETTED detection.
 type activeTransport struct {
 	mux *Mux
+
+	// nextWriteIsStructuralSyn is the F-NEW-28 (2026-05-21) one-shot
+	// flag toggled by SignalNextWriteIsStructuralSyn(). Consumed by
+	// the next Write call and reset to false afterwards. atomic.Bool
+	// for cheap concurrent-safe load/swap; in practice the signal
+	// and Write are issued sequentially from the same goroutine
+	// (bus.Send.sendRawWithEcho) so contention is minimal, but the
+	// atomic guards against accidental cross-goroutine misuse.
+	//
+	// The one-shot semantic — signal CONSUMED by next Write — keeps
+	// the contract simple: a signal that fires but isn't followed by
+	// a Write is harmless (the next Write that does happen will see
+	// stale `true` and propagate it, but that "next Write" by
+	// definition starts AFTER the prior call returned, so a missed
+	// signal would only mistag a structural write as structural —
+	// idempotent). Callers MUST issue Signal+Write in the order
+	// "Signal first, then Write", per the
+	// transport.StructuralWriteSignaler interface contract.
+	nextWriteIsStructuralSyn atomic.Bool
 }
 
 // Compile-time interface checks.
 var (
-	_ transport.RawTransport        = (*activeTransport)(nil)
-	_ transport.StreamEventReader   = (*activeTransport)(nil)
-	_ transport.InfoRequester       = (*activeTransport)(nil)
-	_ transport.EscapeAware         = (*activeTransport)(nil)
-	_ transport.EscapeFlaggedReader = (*activeTransport)(nil)
+	_ transport.RawTransport            = (*activeTransport)(nil)
+	_ transport.StreamEventReader       = (*activeTransport)(nil)
+	_ transport.InfoRequester           = (*activeTransport)(nil)
+	_ transport.EscapeAware             = (*activeTransport)(nil)
+	_ transport.EscapeFlaggedReader     = (*activeTransport)(nil)
+	_ transport.StructuralWriteSignaler = (*activeTransport)(nil)
 )
 
 // NOTE: activeTransport intentionally does NOT implement
@@ -158,12 +179,22 @@ func (t *activeTransport) Write(p []byte) (int, error) {
 	}
 
 	for i, b := range p {
+		// F-NEW-28 (2026-05-21): consume the one-shot structural
+		// signal flag. Swap-to-false so a single Signal applies to
+		// exactly one Write — if the caller passes a multi-byte slice
+		// after a Signal, ONLY the first byte is tagged structural
+		// (the contract per transport.StructuralWriteSignaler doc:
+		// "Signal IMMEDIATELY before Write, at most once per Write").
+		// bus.go's sendRawWithEcho always Writes single-byte slices,
+		// so the multi-byte caveat is purely defensive.
+		structural := t.nextWriteIsStructuralSyn.Swap(false)
 		result := make(chan error, 1)
 		select {
 		case t.mux.activeSendCh <- sendRequest{
-			sessionID: gatewaySessionID,
-			data:      b,
-			result:    result,
+			sessionID:  gatewaySessionID,
+			data:       b,
+			structural: structural,
+			result:     result,
 		}:
 		case <-t.mux.ctx.Done():
 			return i, fmt.Errorf("adaptermux: %w", t.mux.ctx.Err())
@@ -247,4 +278,23 @@ func (t *activeTransport) ArbitrationSendsSource() bool {
 // would misinterpret logical 0xAA bytes from the adapter as SYN markers.
 func (t *activeTransport) BytesAreUnescaped() bool {
 	return t.mux.bytesAreUnescaped()
+}
+
+// SignalNextWriteIsStructuralSyn implements
+// transport.StructuralWriteSignaler (F-NEW-28, 2026-05-21). Marks the
+// next Write call on this transport as a structural SymbolSyn
+// (end-of-message terminator) write. The flag is one-shot — consumed
+// by the next Write and reset to "payload" afterwards.
+//
+// Called by bus.go's sendRawWithEcho immediately before writing a
+// structural SymbolSyn (expectRawSyn=true). The flag flows through
+// activeSendCh's sendRequest.structural field into the gateway echo
+// tracker's expectedStructural slice, where the mux's
+// SYN-suppression predicate consults it to distinguish a pending
+// structural-terminator expected echo from a pending payload-0xAA
+// expected echo.
+//
+// See transport.StructuralWriteSignaler doc for the full contract.
+func (t *activeTransport) SignalNextWriteIsStructuralSyn() {
+	t.nextWriteIsStructuralSyn.Store(true)
 }

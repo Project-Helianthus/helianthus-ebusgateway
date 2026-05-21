@@ -155,7 +155,10 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 	// Phase 2: emulate sendEndOfMessage. Issue the terminator write via
 	// the active path so recordSent populates gatewayEcho with [SymbolSyn],
 	// then signal the response goroutine to inject the wire echo.
-	go func() { _, _ = at.Write([]byte{protocol.SymbolSyn}) }()
+	// F-NEW-28 (2026-05-21): use writeTerminatorSyn helper so the
+	// structural-SYN provenance flag flows through the gateway echo
+	// tracker, matching bus.go's sendEndOfMessage path.
+	go writeTerminatorSyn(at)
 	time.Sleep(20 * time.Millisecond) // let recordSent run
 	terminatorReady <- struct{}{}
 

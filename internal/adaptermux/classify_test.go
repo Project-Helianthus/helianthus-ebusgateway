@@ -177,8 +177,24 @@ func TestTxnClass_SYNTerminatorEchoOnly(t *testing.T) {
 		t.Fatalf("write err=%v", err)
 	}
 
+	// F-NEW-28 (2026-05-21): inject realistic ENH echo provenance.
+	// Pre-F-NEW-28 the mock emitted all echoes with WasEscaped=false
+	// — including the payload-0xAA byte (req[7]==0xAA). On the wire a
+	// payload byte equal to 0xAA is encoded as the escape pair
+	// `A9 01` and the adapter surfaces its decoded echo as
+	// logical 0xAA with WasEscaped=true (per the F-23 contract).
+	// The mux's SYN-suppression predicate at mux.go:2487 now uses
+	// this provenance to distinguish a payload-0xAA expected echo
+	// from a structural-terminator-SYN expected echo; emitting a
+	// wire-raw 0xAA echo for the payload byte would falsely look
+	// like a wire AUTO-SYN under v8 enforce and get suppressed,
+	// preventing the test from consuming all eight echoes.
 	for _, b := range req {
-		mock.eventCh <- transport.StreamEvent{Kind: transport.StreamEventByte, Byte: b}
+		mock.eventCh <- transport.StreamEvent{
+			Kind:       transport.StreamEventByte,
+			Byte:       b,
+			WasEscaped: b == protocol.SymbolSyn, // payload-0xAA echo arrives escape-decoded
+		}
 	}
 	time.Sleep(30 * time.Millisecond)
 	for range req {

@@ -18,6 +18,26 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
+// writeTerminatorSyn is the F-NEW-28 (2026-05-21) test helper that
+// emulates bus.go's sendEndOfMessage path: signal the transport as a
+// structural-SYN write, then issue the Write. Used by tests that
+// exercise the gateway's terminator delivery code path via
+// activeTransport.Write directly (bypassing bus.go).
+//
+// Without this helper, the gateway's echo tracker records
+// `expectedStructural=false` for the terminator byte, and the
+// mux.go:2487 midWriteSyn predicate incorrectly treats it as a
+// payload-0xAA write — suppressing the legitimate terminator
+// delivery. Production code (helianthus-ebusgo bus.go) issues the
+// signal automatically via the StructuralWriteSignaler interface; the
+// tests must do the same to faithfully model the production path.
+func writeTerminatorSyn(at transport.RawTransport) {
+	if signaler, ok := at.(transport.StructuralWriteSignaler); ok {
+		signaler.SignalNextWriteIsStructuralSyn()
+	}
+	_, _ = at.Write([]byte{protocol.SymbolSyn})
+}
+
 // --- P3 test infrastructure ---
 
 // p3MockTransport simulates an ENH transport that supports non-blocking

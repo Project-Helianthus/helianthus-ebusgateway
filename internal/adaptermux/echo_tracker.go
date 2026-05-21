@@ -30,6 +30,57 @@ type echoTracker struct {
 	// to echo back. Populated by recordSent(), consumed by matchEcho().
 	expectedEchoes []byte
 
+	// expectedStructural is the F-NEW-28 (2026-05-21) provenance-aware
+	// sibling of expectedEchoes. For each entry it records whether the
+	// gateway issued the corresponding write as a STRUCTURAL SymbolSyn
+	// (end-of-message terminator, expected wire echo: raw 0xAA with
+	// WasEscaped=false) or as a PAYLOAD byte (expected wire echo: the
+	// byte value with WasEscaped=true for 0xAA payload, false for
+	// non-0xAA payload).
+	//
+	// Set by recordSent's `structural` parameter, which is propagated
+	// from `sendRequest.structuralSyn` (mux.go) which in turn is set by
+	// `activeTransport.Write` consulting the one-shot
+	// `nextWriteIsStructuralSyn` flag toggled by bus.go's
+	// SignalNextWriteIsStructuralSyn() call before structural terminator
+	// writes.
+	//
+	// Used by the SYN-suppression predicate at `mux.go:2487`:
+	//
+	//   nextByte, nextStructural, hasPendingEcho :=
+	//       gatewayEcho.peekNextExpectedWithFlags()
+	//   midWriteSyn := hasPendingEcho &&
+	//       !(nextByte == protocol.SymbolSyn && nextStructural)
+	//   // "We're mid-payload-write UNLESS the pending echo is a
+	//   //  structural terminator."
+	//
+	// Closing the round-9 leak: pre-fix `midWriteSyn` was just
+	// `hasPendingEcho && nextByte != SymbolSyn`, which falsely treated a
+	// payload-0xAA expected echo as a structural-SYN expected echo,
+	// failing to suppress wire AUTO-SYNs that landed in echo position.
+	// With this flag the predicate distinguishes the two cases and the
+	// suppression fires correctly for payload-0xAA writes.
+	//
+	// CONDITIONAL LOCKSTEP INVARIANT (mirror of expectedWriteTimes):
+	//   `len(expectedStructural) == 0` OR
+	//   `len(expectedStructural) == len(expectedEchoes)`
+	//
+	// Unlike expectedWriteTimes (gated on v8 mode), expectedStructural
+	// MUST stay in PERFECT length lockstep with expectedEchoes at all
+	// times — the SYN-suppression predicate uses it on every wire SYN
+	// regardless of v8 mode. The recordSent path always appends to
+	// BOTH slices; matchEcho / rollbackSent / overflow-reset all
+	// maintain the lockstep.
+	expectedStructural []bool
+
+	// preOverflowStructural is the lockstep snapshot of
+	// expectedStructural taken at overflow-reset time, mirroring
+	// preOverflowEchoes / preOverflowWriteTimes. rollbackSent restores
+	// the structural flags alongside the byte values so the post-rollback
+	// queue is bit-identical to the pre-write state. nil iff the most
+	// recent recordSent did not trigger an overflow reset.
+	preOverflowStructural []bool
+
 	// expectedWriteTimes is a FIFO queue of wall-clock times when each
 	// byte in expectedEchoes was recorded. Phase 3 Step B3.6d wires
 	// this to compute echo RTT for the v8 classifier's L_rtt EMA.
@@ -178,31 +229,21 @@ func newEchoTracker() *echoTracker {
 // prior echo expectations even though the adapter never accepted the
 // new byte — subsequent real echoes would all return echoMatchNone.
 func (t *echoTracker) recordSent(data byte) {
-	// Phase 3 Step B3.6d (Codex round-1 MAJOR on PR #646): the
-	// legacy path appends ONLY to expectedEchoes. Skipping the
-	// expectedWriteTimes append restores the ModeOff zero-overhead
-	// contract — no time.Time slot allocated per byte. See the
-	// expectedWriteTimes field comment for the conditional lockstep
-	// invariant.
-	t.queueJustDrained = false
-	if len(t.expectedEchoes) >= maxPendingEchoes {
-		t.preOverflowEchoes = make([]byte, len(t.expectedEchoes))
-		copy(t.preOverflowEchoes, t.expectedEchoes)
-		t.expectedEchoes = t.expectedEchoes[:0]
-		// Legacy path: expectedWriteTimes was empty (no
-		// recordSentWithTime ever fired on this tracker), so the
-		// snapshot for it is nil. Idempotent `[:0]` keeps the
-		// invariant if a future code path ever mixes recordSent and
-		// recordSentWithTime on the same tracker (currently
-		// impossible — v8 mode is immutable per Mux).
-		t.preOverflowWriteTimes = nil
-		t.expectedWriteTimes = t.expectedWriteTimes[:0]
-		t.totalOverflowResets++
-	} else {
-		t.preOverflowEchoes = nil
-		t.preOverflowWriteTimes = nil
-	}
-	t.expectedEchoes = append(t.expectedEchoes, data)
+	t.recordSentInternal(data, false, time.Time{}, false)
+}
+
+// recordSentStructural records a byte with the F-NEW-28 structural
+// provenance flag. Called by the sendLoop when bus.go signalled a
+// structural SymbolSyn (terminator) write via
+// `SignalNextWriteIsStructuralSyn`. Distinct from a payload write of
+// the same byte value because the gateway's SYN-suppression predicate
+// at `mux.go:2487` distinguishes the two cases.
+//
+// Legacy path (no v8 time tracking) for the rare external-session
+// terminator writes. v8-on sites go through recordSentWithTime which
+// also takes the structural flag.
+func (t *echoTracker) recordSentStructural(data byte, structural bool) {
+	t.recordSentInternal(data, structural, time.Time{}, false)
 }
 
 // recordSentWithTime is the time-tracking variant of recordSent.
@@ -218,35 +259,70 @@ func (t *echoTracker) recordSent(data byte) {
 // reports false for that byte — preserving the contract that
 // only explicitly-timestamped writes feed L_rtt samples.
 func (t *echoTracker) recordSentWithTime(data byte, writeAt time.Time) {
+	t.recordSentInternal(data, false, writeAt, true)
+}
+
+// recordSentWithTimeStructural is the F-NEW-28 (2026-05-21) variant
+// that accepts both the v8 time-tracking writeAt AND the structural
+// provenance flag. Called by the sendLoop when bus.go signalled a
+// structural SymbolSyn write via SignalNextWriteIsStructuralSyn().
+// `structural=true` marks this byte as a structural terminator (raw
+// 0xAA expected echo); `structural=false` marks it as payload
+// (including payload-0xAA where the expected echo is logical 0xAA
+// with WasEscaped=true).
+func (t *echoTracker) recordSentWithTimeStructural(data byte, writeAt time.Time, structural bool) {
+	t.recordSentInternal(data, structural, writeAt, true)
+}
+
+// recordSentInternal is the single implementation that backs all
+// recordSent* variants. F-NEW-28 (2026-05-21): consolidates the four
+// combinations of {legacy/with-time} × {payload/structural} through
+// one path so the conditional-lockstep invariants for the three
+// queues (expectedEchoes, expectedStructural, expectedWriteTimes)
+// stay consistent. Caller-visible variants:
+//
+//   - recordSent(b)                                — payload, legacy
+//   - recordSentStructural(b, structural)          — payload-or-structural, legacy
+//   - recordSentWithTime(b, t)                     — payload, v8
+//   - recordSentWithTimeStructural(b, t, structural) — payload-or-structural, v8
+//
+// The withTime parameter gates expectedWriteTimes maintenance:
+// false → leave that slice untouched (legacy zero-overhead path),
+// true → keep it length-locked to expectedEchoes.
+// expectedStructural is ALWAYS length-locked (no gating) — the
+// SYN-suppression predicate uses it regardless of v8 mode.
+func (t *echoTracker) recordSentInternal(data byte, structural bool, writeAt time.Time, withTime bool) {
 	// batch-26 round-7: any write means we are definitely no longer
-	// between writes. Clear queueJustDrained BEFORE arming the queue so
-	// the sentinel reflects exactly the inter-write window — the
-	// recordSent here is what closes that window.
+	// between writes. Clear queueJustDrained BEFORE arming the queue
+	// so the sentinel reflects exactly the inter-write window.
 	t.queueJustDrained = false
 	if len(t.expectedEchoes) >= maxPendingEchoes {
 		t.preOverflowEchoes = make([]byte, len(t.expectedEchoes))
 		copy(t.preOverflowEchoes, t.expectedEchoes)
-		// Codex round-1 MEDIUM #1 on PR #646: snapshot
-		// expectedWriteTimes alongside expectedEchoes so
-		// rollbackSent can restore the ORIGINAL write-times. Prior
-		// to this snapshot, rollback rebuilt expectedWriteTimes as
-		// all zeros, silently disabling L_rtt sampling for the
-		// pre-overflow bytes that the adapter Write was about to
-		// fail on.
-		t.preOverflowWriteTimes = make([]time.Time, len(t.expectedWriteTimes))
-		copy(t.preOverflowWriteTimes, t.expectedWriteTimes)
+		t.preOverflowStructural = make([]bool, len(t.expectedStructural))
+		copy(t.preOverflowStructural, t.expectedStructural)
+		if withTime {
+			t.preOverflowWriteTimes = make([]time.Time, len(t.expectedWriteTimes))
+			copy(t.preOverflowWriteTimes, t.expectedWriteTimes)
+		} else {
+			t.preOverflowWriteTimes = nil
+		}
 		t.expectedEchoes = t.expectedEchoes[:0]
+		t.expectedStructural = t.expectedStructural[:0]
 		t.expectedWriteTimes = t.expectedWriteTimes[:0]
 		t.totalOverflowResets++
 	} else {
 		// Successful append without overflow: clear any stale
-		// snapshot from a prior overflow that was never rolled back
-		// (the adapter Write succeeded; the reset is now committed).
+		// snapshot from a prior overflow that was never rolled back.
 		t.preOverflowEchoes = nil
+		t.preOverflowStructural = nil
 		t.preOverflowWriteTimes = nil
 	}
 	t.expectedEchoes = append(t.expectedEchoes, data)
-	t.expectedWriteTimes = append(t.expectedWriteTimes, writeAt)
+	t.expectedStructural = append(t.expectedStructural, structural)
+	if withTime {
+		t.expectedWriteTimes = append(t.expectedWriteTimes, writeAt)
+	}
 }
 
 // rollbackSent removes the last recorded sent byte (e.g., on SEND error).
@@ -266,6 +342,16 @@ func (t *echoTracker) rollbackSent() {
 		if t.totalOverflowResets > 0 {
 			t.totalOverflowResets--
 		}
+		// F-NEW-28: restore the structural-flag snapshot in lockstep
+		// with the byte values. preOverflowStructural is always set
+		// alongside preOverflowEchoes by recordSentInternal, so a
+		// nil-check here is defensive.
+		if t.preOverflowStructural != nil {
+			t.expectedStructural = t.preOverflowStructural
+			t.preOverflowStructural = nil
+		} else {
+			t.expectedStructural = t.expectedStructural[:0]
+		}
 		// Codex round-1 MEDIUM #1 on PR #646: restore the ORIGINAL
 		// write-times from the snapshot so the rolled-back bytes
 		// remain eligible for L_rtt sampling. If the snapshot is
@@ -282,6 +368,13 @@ func (t *echoTracker) rollbackSent() {
 	}
 	if len(t.expectedEchoes) > 0 {
 		t.expectedEchoes = t.expectedEchoes[:len(t.expectedEchoes)-1]
+		// F-NEW-28: lockstep pop of the structural-flag slice.
+		// expectedStructural is always length-matched to
+		// expectedEchoes (no gating), so this pop is unconditional
+		// after the length check above.
+		if len(t.expectedStructural) > 0 {
+			t.expectedStructural = t.expectedStructural[:len(t.expectedStructural)-1]
+		}
 		// Conditional lockstep: pop the parallel timestamp slot
 		// only when the queues are length-matched. The empty-times
 		// case (legacy recordSent) leaves nothing to pop.
@@ -367,6 +460,12 @@ func (t *echoTracker) matchEchoWithTime(received byte, receivedWasEscaped bool) 
 			t.expectedWriteTimes = t.expectedWriteTimes[1:]
 			hasWriteAt = !writeAt.IsZero()
 		}
+		// F-NEW-28: pop the structural-flag head in lockstep with the
+		// byte queue. Always length-locked (no v8 gating), so this
+		// pop is unconditional once the head match succeeds.
+		if len(t.expectedStructural) > 0 {
+			t.expectedStructural = t.expectedStructural[1:]
+		}
 		// Match: consume from expected, accumulate in seen.
 		preLen := len(t.expectedEchoes)
 		t.expectedEchoes = t.expectedEchoes[1:]
@@ -424,6 +523,7 @@ func (t *echoTracker) matchEchoWithTime(received byte, receivedWasEscaped bool) 
 
 	// Clear expected echoes on mismatch — the echo sequence is broken.
 	t.expectedEchoes = t.expectedEchoes[:0]
+	t.expectedStructural = t.expectedStructural[:0]
 	t.expectedWriteTimes = t.expectedWriteTimes[:0]
 	t.atRequestStart = false
 
@@ -446,11 +546,13 @@ func (t *echoTracker) flushOnSYN() (flushedBytes []byte, wasAtStart bool) {
 
 	// Clear expected echoes at SYN boundary.
 	t.expectedEchoes = t.expectedEchoes[:0]
+	t.expectedStructural = t.expectedStructural[:0]
 	t.expectedWriteTimes = t.expectedWriteTimes[:0]
 	// Codex PR #603 P2 invariant: a SYN boundary commits any
 	// in-flight overflow reset. preOverflowEchoes no longer eligible
 	// for rollback.
 	t.preOverflowEchoes = nil
+	t.preOverflowStructural = nil
 	t.preOverflowWriteTimes = nil
 	// batch-26 round-7: a wire SYN observed legitimately closing the
 	// txn ends the inter-write window — the gateway is between
@@ -469,10 +571,12 @@ func (t *echoTracker) markRequestStart() {
 	t.atRequestStart = true
 	t.seenEchoes = t.seenEchoes[:0]
 	t.expectedEchoes = t.expectedEchoes[:0]
+	t.expectedStructural = t.expectedStructural[:0]
 	t.expectedWriteTimes = t.expectedWriteTimes[:0]
 	// Codex PR #603 P2 invariant: a new request boundary invalidates
 	// any pending overflow snapshot.
 	t.preOverflowEchoes = nil
+	t.preOverflowStructural = nil
 	t.preOverflowWriteTimes = nil
 	// batch-26 round-7: a fresh transaction invalidates any inter-write
 	// flag from a prior txn. Same boundary discipline as
@@ -501,13 +605,48 @@ func (t *echoTracker) peekNextExpected() (byte, bool) {
 	return t.expectedEchoes[0], true
 }
 
+// peekNextExpectedWithFlags returns the byte at the head of the
+// expected-echo queue, its F-NEW-28 structural-provenance flag, and a
+// boolean indicating whether the queue is non-empty.
+//
+// `structural=true` means the gateway issued the corresponding write
+// as a STRUCTURAL SymbolSyn (end-of-message terminator) — the legitimate
+// wire echo for this byte is a raw 0xAA with WasEscaped=false.
+//
+// `structural=false` means the write was a PAYLOAD byte (any value,
+// including byte=0xAA which is wire-encoded as the A9 01 escape pair
+// on ENH-class transports) — the legitimate wire echo is the byte
+// value with WasEscaped=true for 0xAA-payload, WasEscaped=false for
+// non-0xAA payload.
+//
+// Used by mux.go's SYN-suppression predicate to distinguish a
+// pending terminator-SYN expected echo from a pending payload-0xAA
+// expected echo. See echoTracker.expectedStructural field doc.
+//
+// Read-only; does NOT consume the queue head. Lockstep with
+// peekNextExpected — when the queue is non-empty, both slices have
+// length-locked entries at index 0.
+func (t *echoTracker) peekNextExpectedWithFlags() (b byte, structural bool, hasPending bool) {
+	if len(t.expectedEchoes) == 0 {
+		return 0, false, false
+	}
+	b = t.expectedEchoes[0]
+	if len(t.expectedStructural) > 0 {
+		structural = t.expectedStructural[0]
+	}
+	hasPending = true
+	return b, structural, hasPending
+}
+
 // reset clears all tracking state.
 func (t *echoTracker) reset() {
 	t.expectedEchoes = t.expectedEchoes[:0]
+	t.expectedStructural = t.expectedStructural[:0]
 	t.expectedWriteTimes = t.expectedWriteTimes[:0]
 	t.seenEchoes = t.seenEchoes[:0]
 	t.atRequestStart = false
 	t.preOverflowEchoes = nil
+	t.preOverflowStructural = nil
 	t.preOverflowWriteTimes = nil
 	t.queueJustDrained = false
 }

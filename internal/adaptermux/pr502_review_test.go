@@ -668,11 +668,15 @@ func grantGateway(t *testing.T, mux *Mux, mock *p3MockTransport, initiator byte)
 // The helper issues the Write in a goroutine so sendLoop can run while
 // the caller's stateMu critical section is not held, then sleeps
 // briefly to let recordSent populate the queue before returning.
+//
+// F-NEW-28 (2026-05-21): uses writeTerminatorSyn under the hood so the
+// structural-SYN provenance flag flows through the gateway echo
+// tracker, matching bus.go's sendEndOfMessage path.
 func gatewayEndOfMessage(t *testing.T, at transport.RawTransport) {
 	t.Helper()
 	done := make(chan struct{}, 1)
 	go func() {
-		_, _ = at.Write([]byte{protocol.SymbolSyn})
+		writeTerminatorSyn(at)
 		done <- struct{}{}
 	}()
 	time.Sleep(20 * time.Millisecond)

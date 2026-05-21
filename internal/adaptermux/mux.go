@@ -739,7 +739,27 @@ var (
 type sendRequest struct {
 	sessionID uint64
 	data      byte
-	result    chan error
+	// structural is the F-NEW-28 (2026-05-21) provenance flag for the
+	// gateway session's writes. When true, this byte is being sent as
+	// a STRUCTURAL SymbolSyn (end-of-message terminator) — the
+	// expected wire echo is a raw 0xAA with WasEscaped=false. When
+	// false (the default for all payload bytes including payload-0xAA),
+	// the expected wire echo is the byte value with WasEscaped
+	// determined by the byte's escape state on the wire (true for
+	// 0xAA-as-payload, false for non-0xAA).
+	//
+	// Set by activeTransport.Write consulting the one-shot
+	// `nextWriteIsStructuralSyn` flag toggled by bus.go's
+	// SignalNextWriteIsStructuralSyn() call. Propagated by sendLoop to
+	// echoTracker.recordSentInternal so the SYN-suppression predicate
+	// at `mux.go:2487` can distinguish a pending terminator-SYN
+	// expected echo from a pending payload-0xAA expected echo, closing
+	// the round-9 enforce-mode leak.
+	//
+	// External sessions (ENH client traffic) always pass structural=false
+	// — only the gateway's structural-terminator writes use the flag.
+	structural bool
+	result     chan error
 }
 
 // New creates a new adapter multiplexer with the given configuration.
@@ -2483,8 +2503,38 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// decision — otherwise a mid-frame noise SYN that arrives after
 	// IdleReleaseGrace elapses (slow txn) would still abort the
 	// legitimate transaction even though we suppressed activeCh delivery.
-	nextExpectedEcho, hasPendingEcho := m.gatewayEcho.peekNextExpected()
-	midWriteSyn := hasPendingEcho && nextExpectedEcho != protocol.SymbolSyn
+	// F-NEW-28 (2026-05-21, round-9 layer-correct fix): peek the
+	// next-expected echo's STRUCTURAL flag in addition to its byte
+	// value. The flag distinguishes:
+	//
+	//   (a) `(SymbolSyn, structural=true)`  — the gateway just wrote
+	//        a structural terminator SYN; the legitimate wire echo
+	//        is raw 0xAA (WasEscaped=false). A wire AUTO-SYN here is
+	//        either the legitimate terminator echo OR (more rarely)
+	//        a pre-terminator-echo idle SYN; both flow paths are
+	//        already handled by the terminator-delivery gate at
+	//        line 2614.
+	//
+	//   (b) `(SymbolSyn, structural=false)` — the gateway just wrote
+	//        a PAYLOAD 0xAA; the legitimate wire echo is logical 0xAA
+	//        with WasEscaped=true (the adapter wire-encoded our byte
+	//        as `A9 01`). A wire AUTO-SYN here is INTERFERENCE
+	//        (round-9 invariant violation) — it MUST be suppressed
+	//        from activeCh delivery to keep `sendRawWithEcho`'s
+	//        round-9 absorb path at bus.go:1204 cold under v8 enforce
+	//        (HelianthusRound9FiredUnderProxy I8).
+	//
+	//   (c) `(non-SymbolSyn, *)`              — non-SYN expected echo;
+	//        a wire SYN here is mid-frame noise. Same suppression as
+	//        before.
+	//
+	// Pre-F-NEW-28 the predicate only checked the byte value, so
+	// case (b) was incorrectly NOT suppressed — that was the leak
+	// (production: ~4/min residual under v8 enforce). With the
+	// structural flag the predicate now treats case (b) the same as
+	// case (c): midWriteSyn=true → wire SYN suppressed.
+	nextExpectedEcho, nextStructural, hasPendingEcho := m.gatewayEcho.peekNextExpectedWithFlags()
+	midWriteSyn := hasPendingEcho && !(nextExpectedEcho == protocol.SymbolSyn && nextStructural)
 
 	// batch-26 round-7 — Attack 3 closure (inter-write empty-queue SYN
 	// leak). The peek-based P10.2 gate (midWriteSyn) cannot suppress a
@@ -4575,7 +4625,18 @@ func (m *Mux) sendLoop() {
 				// classifier's adminEvents ring buffer.
 				if m.v8 != nil {
 					writeAt := time.Now()
-					m.gatewayEcho.recordSentWithTime(req.data, writeAt)
+					// F-NEW-28 (2026-05-21): propagate the
+					// structural-write provenance flag from
+					// sendRequest (toggled by bus.go's
+					// SignalNextWriteIsStructuralSyn → activeTransport.Write)
+					// into echoTracker.expectedStructural. The
+					// mux's SYN-suppression predicate at
+					// `mux.go:2487` (midWriteSyn) consults this
+					// flag to distinguish a pending
+					// structural-terminator expected echo from a
+					// pending payload-0xAA expected echo, closing
+					// the round-9 enforce-mode leak.
+					m.gatewayEcho.recordSentWithTimeStructural(req.data, writeAt, req.structural)
 					// Codex round-1 MAJOR #1 on PR #647:
 					// BeforeActiveWrite MUST run before
 					// ArmEchoWatchdog so a long-idle gateway
@@ -4600,7 +4661,12 @@ func (m *Mux) sendLoop() {
 						pacer.ArmEchoWatchdog(writeAt)
 					}
 				} else {
-					m.gatewayEcho.recordSent(req.data)
+					// F-NEW-28: same provenance plumbing on the
+					// v8-off path. expectedStructural is always
+					// length-locked to expectedEchoes regardless of
+					// v8 mode (the SYN-suppression predicate uses
+					// it on every wire SYN).
+					m.gatewayEcho.recordSentStructural(req.data, req.structural)
 				}
 				m.stateMu.Unlock()
 			}

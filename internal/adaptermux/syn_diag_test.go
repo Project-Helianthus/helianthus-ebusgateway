@@ -52,7 +52,7 @@ func TestSynDiag_RecordsOwnershipTransition(t *testing.T) {
 	// active path. This populates gatewayEcho with [SymbolSyn] so the
 	// next wire SYN matches the terminator gate's
 	// `hasPendingEcho && nextExpected==SymbolSyn` branch.
-	go func() { _, _ = at.Write([]byte{protocol.SymbolSyn}) }()
+	go writeTerminatorSyn(at)
 	time.Sleep(20 * time.Millisecond)
 
 	// Inject the trailing SYN (wire echo of the terminator).
@@ -191,7 +191,7 @@ func TestOnSYNLocked_DeliversTerminatorToActive_WhenBytesReadPositive(t *testing
 	// via the active path. This populates gatewayEcho with [SymbolSyn]
 	// so the wire echo below matches via the hasPendingEcho+SymbolSyn
 	// branch of the terminator gate.
-	go func() { _, _ = at.Write([]byte{protocol.SymbolSyn}) }()
+	go writeTerminatorSyn(at)
 	time.Sleep(20 * time.Millisecond)
 
 	// Inject the trailing SYN — this should be delivered to activeCh.
@@ -423,7 +423,16 @@ func TestTerminatorSYN_AfterFirstDelivery(t *testing.T) {
 	// Round-6: emulate sendEndOfMessage by writing the terminator SYN
 	// via the active path. recordSent arms gatewayEcho with [SymbolSyn]
 	// so the wire echo below matches the explicit-terminator branch.
-	go func() { _, _ = at.Write([]byte{protocol.SymbolSyn}) }()
+	//
+	// F-NEW-28 (2026-05-21): bus.go's sendRawWithEcho signals the
+	// transport BEFORE writing a structural SymbolSyn so the gateway
+	// echo tracker records expectedStructural=true and the
+	// SYN-suppression predicate at mux.go:2487 distinguishes a
+	// terminator-SYN expected echo from a payload-0xAA expected echo.
+	// Tests that emulate sendEndOfMessage must do the same — otherwise
+	// the predicate treats this write as payload-0xAA and the
+	// terminator wire SYN is incorrectly suppressed.
+	go writeTerminatorSyn(at)
 	time.Sleep(20 * time.Millisecond)
 
 	// Inject trailing SYN. With round-6 gating (hasPendingEcho=true,

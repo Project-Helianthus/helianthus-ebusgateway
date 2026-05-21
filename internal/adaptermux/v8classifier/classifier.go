@@ -90,10 +90,14 @@ type Classifier struct {
 	//       don't equal 0xAA or 0xA9).
 	//
 	// Invariants:
-	//   - (1) + (2) + (3) + (4) == count of StreamEventByte
-	//     events passing through Observe (excludes WireSyn /
-	//     Started / Failed / Reset which have their own counter
-	//     paths via observedBytesTotal but NOT via these four).
+	//   - (1) + (2) + (3) + (4) == count of byte-bearing events
+	//     passing through Observe (StreamEventByte + StreamEventWireSyn).
+	//     F-NEW-27 (2026-05-21): StreamEventWireSyn IS byte-bearing
+	//     per mux.go:1946-1952 which routes it as
+	//     `onReceived(event.Byte, wasEscaped=false)`; the classifier
+	//     buckets it as wire_auto_syn regardless of event.WasEscaped.
+	//     Started / Failed / Reset are pure meta-events and do NOT
+	//     contribute to any of the four.
 	//   - Each counter monotonically non-decreasing.
 	//   - Atomic, race-tolerant, single-producer write side per
 	//     the Concurrency contract above.
@@ -122,6 +126,12 @@ type Classifier struct {
 	//   - StreamEventByte → fsm.Feed(byte, wasEscaped). The returned
 	//     Decision goes into one of the three fsmDecision*Total
 	//     counters below.
+	//   - StreamEventWireSyn → fsm.Feed(byte, false). F-NEW-27
+	//     (2026-05-21): WireSyn drives the FSM identically to
+	//     StreamEventByte with WasEscaped=false (the kind itself
+	//     implies raw wire). Without this the v8 enforce-mode
+	//     filter has a bypass — see the case body in Observe for
+	//     the production incident that motivated this case.
 	//   - StreamEventStarted / StreamEventFailed → fsm.EnterPassiveTracking().
 	//     Both events signal "a telegram is starting on the wire and
 	//     the event Data carries QQ"; the classifier observes the
@@ -146,13 +156,13 @@ type Classifier struct {
 
 	// FSM decision counters. The three values that telegram_fsm.Decision
 	// can take (Forward, DropAaInjection, ProtocolFault) each get
-	// their own counter. Sum across the three == count of
-	// StreamEventByte events that the FSM Feed processed, with two
-	// caveats: (1) when fsm is nil (ModeOff) NONE of these
-	// increment; (2) bytes arriving while the FSM is in
-	// StateAborted will continue through Feed but the Decision
-	// breakdown depends on the FSM library's own contract — see
-	// telegram_fsm.go.
+	// their own counter. Sum across the three == count of byte-bearing
+	// events (StreamEventByte + StreamEventWireSyn since F-NEW-27 2026-05-21)
+	// that the FSM Feed processed, with two caveats: (1) when fsm is
+	// nil (ModeOff) NONE of these increment; (2) bytes arriving while
+	// the FSM is in StateAborted will continue through Feed but the
+	// Decision breakdown depends on the FSM library's own contract —
+	// see telegram_fsm.go.
 	fsmForwardTotal         atomic.Uint64
 	fsmDropAaInjectionTotal atomic.Uint64
 	fsmProtocolFaultTotal   atomic.Uint64
@@ -249,11 +259,14 @@ func (c *Classifier) Mode() Mode {
 // time no-op. In ModeShadow / ModeEnforce the hook:
 //
 //   - increments observedBytesTotal (every StreamEvent kind);
-//   - for StreamEventByte ONLY, classifies the byte into one of
-//     four provenance buckets based on (Byte, WasEscaped) and
-//     increments the matching counter (escapedPayloadAaTotal /
-//     escapedPayloadEscTotal / wireAutoSynTotal / plainByteTotal).
-//     See the field doc on Classifier for the full taxonomy.
+//   - for byte-bearing events (StreamEventByte and StreamEventWireSyn
+//     — the latter added by F-NEW-27 (2026-05-21) to close the
+//     bypass that let pre-grant SYN markers reach the gateway
+//     unfiltered), classifies the byte into one of four
+//     provenance buckets and increments the matching counter
+//     (escapedPayloadAaTotal / escapedPayloadEscTotal /
+//     wireAutoSynTotal / plainByteTotal). See the field doc on
+//     Classifier for the full taxonomy.
 //
 // Future stacked PRs add:
 //
@@ -275,11 +288,12 @@ func (c *Classifier) Mode() Mode {
 // Returns true if the caller should DROP this event from emission
 // to sessions. In ModeOff / ModeShadow the return is always false.
 //
-// Phase 3 Step B3.6b (v8 §4 AA-injection filter): ModeEnforce now
-// returns true when the byte is StreamEventByte AND the FSM
-// returns DecisionDropAaInjection. The caller (Mux.readLoop) MUST
-// honor this signal by skipping the byte's dispatch to onReceived
-// — otherwise sessions would still see the AA-injection bytes and
+// Phase 3 Step B3.6b (v8 §4 AA-injection filter): ModeEnforce
+// returns true when the byte is byte-bearing (StreamEventByte OR
+// StreamEventWireSyn, per F-NEW-27) AND the FSM returns
+// DecisionDropAaInjection. The caller (Mux.readLoop) MUST honor
+// this signal by skipping the byte's dispatch to onReceived —
+// otherwise sessions would still see the AA-injection bytes and
 // the v8 filter would be a no-op. The drop is also counted in
 // enforceDropsAppliedTotal so operators can distinguish
 // "would-have-dropped" (fsmDropAaInjectionTotal, all modes) from
@@ -290,11 +304,13 @@ func (c *Classifier) Observe(event transport.StreamEvent, now time.Time) (drop b
 	}
 	c.observedBytesTotal.Add(1)
 
-	// Provenance classification fires only for StreamEventByte.
-	// WireSyn / Started / Failed / Reset / unknown kinds bypass —
-	// they have their own semantic meaning and do NOT carry a
-	// (Byte, WasEscaped) tuple the escape-decoder provenance
-	// taxonomy applies to.
+	// Provenance classification fires for byte-bearing events:
+	// StreamEventByte and StreamEventWireSyn. F-NEW-27 (2026-05-21)
+	// added the WireSyn case after the original "only StreamEventByte"
+	// design proved to be a v8 enforce-mode bypass — see the WireSyn
+	// case body below for the production incident. Started / Failed /
+	// Reset are pure meta-events and route through their own cases
+	// (FSM phase transitions) without provenance bucketing.
 	switch event.Kind {
 	case transport.StreamEventByte:
 		c.classifyByteProvenance(event.Byte, event.WasEscaped)

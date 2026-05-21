@@ -553,6 +553,30 @@ type Mux struct {
 	// extends the wait, which is the correct semantics for "wait
 	// until adapter responses settle before forcing reset".
 	pendingAbsorbResetTimer *time.Timer
+	// pendingAbsorbResetDueAt is the canonical "if no new arm happens
+	// before this instant, the reset is allowed to fire" deadline.
+	// Codex round-1 MUST FIX on PR #656: prevents a stale AfterFunc
+	// callback from clearing a fresh post-arm counter. Race shape
+	// without this guard:
+	//   t=0:        arm — timer scheduled for t+deadline.
+	//   t=deadline: AfterFunc fires fireAbsorbReset; goroutine queued
+	//               but has NOT yet acquired stateMu.
+	//   t=d+ε:      NEW arm increments pendingStartAbsorb, calls
+	//               Reset() on the timer — schedules a fresh callback
+	//               for t+d+ε+deadline.
+	//   t=d+ε+δ:    the OLD goroutine finally acquires stateMu, sees
+	//               pendingStartAbsorb > 0, and (without this guard)
+	//               logs the reset + clears the fresh counter,
+	//               breaking the stale-response barrier for a request
+	//               that JUST armed.
+	// Guard: at fire time the callback reads
+	// pendingAbsorbResetDueAt under stateMu. If now() is BEFORE that
+	// instant, a fresher Reset() bumped the deadline; the callback
+	// no-ops and lets the future fire do the actual reset.
+	// Boundary clearers (Close / reconnect / handleReset) zero this
+	// field along with pendingStartAbsorb so any in-flight stale
+	// callback hits the "counter is 0" early-return.
+	pendingAbsorbResetDueAt time.Time
 	// pendingAbsorbLastReason captures the most recent reason passed
 	// to armPendingStartAbsorbLocked, for diagnostic logging when the
 	// debounce timer fires. The closure is allocated once at first
@@ -875,13 +899,17 @@ func (m *Mux) Close() error {
 		// F-NEW-25: stop the absorb-reset debounce timer if armed.
 		// Stop() is best-effort — if the callback is already
 		// running on another goroutine it will see
-		// pendingStartAbsorb == 0 above and no-op. Setting the
-		// field to nil so a re-armed mux (test harness) starts
-		// fresh.
+		// pendingStartAbsorb == 0 above and no-op. Clearing
+		// pendingAbsorbResetDueAt also closes the
+		// Codex-round-1 race where a stale callback could
+		// interpret a future-dated due-at as "skip" forever after
+		// Close; on a closed mux nothing should rearm anyway, but
+		// belt-and-suspenders.
 		if m.pendingAbsorbResetTimer != nil {
 			m.pendingAbsorbResetTimer.Stop()
 			m.pendingAbsorbResetTimer = nil
 		}
+		m.pendingAbsorbResetDueAt = time.Time{}
 		if pendingToCancel != nil && pendingToCancel.deadline != nil {
 			pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 		}
@@ -1390,10 +1418,17 @@ func (m *Mux) reconnect() error {
 	// the timer running would either no-op when it fires (count
 	// already 0) or wrongly bump absorbResetTotal for a reset
 	// that the reconnect path already performed.
+	// Clear pendingAbsorbResetDueAt for the same Codex-round-1
+	// reason as in Close: an in-flight stale callback could
+	// observe a pre-boundary future-dated due-at and incorrectly
+	// no-op forever; zeroing it makes the IsZero short-circuit
+	// in fireAbsorbReset treat the field as "no fresh arm" so any
+	// post-boundary arm sets the next valid due-at.
 	if m.pendingAbsorbResetTimer != nil {
 		m.pendingAbsorbResetTimer.Stop()
 		m.pendingAbsorbResetTimer = nil
 	}
+	m.pendingAbsorbResetDueAt = time.Time{}
 	if pendingToCancel != nil && pendingToCancel.deadline != nil {
 		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 	}
@@ -3027,10 +3062,13 @@ func (m *Mux) handleReset() {
 	// leaving the timer running would either no-op when it fires
 	// (count already 0) or fire and bump absorbResetTotal for a
 	// reset that already happened. Stop and discard.
+	// Clear pendingAbsorbResetDueAt for the same Codex-round-1
+	// reason as in Close/reconnect — see those sites' comments.
 	if m.pendingAbsorbResetTimer != nil {
 		m.pendingAbsorbResetTimer.Stop()
 		m.pendingAbsorbResetTimer = nil
 	}
+	m.pendingAbsorbResetDueAt = time.Time{}
 	if pendingToCancel != nil && pendingToCancel.deadline != nil {
 		pendingToCancel.deadline.Stop() // AM8: cancel deadline timer
 	}
@@ -4363,13 +4401,21 @@ func (m *Mux) armPendingStartAbsorbLocked(reason string) {
 	if deadline <= 0 {
 		deadline = 2 * time.Second
 	}
+	// Set the canonical due-at BEFORE arming the timer. A stale
+	// callback that's already mid-execution but pre-stateMu-acquire
+	// will read THIS due-at after we release stateMu and see that
+	// it's in the future — no-op'ing and letting the freshly-armed
+	// timer's own callback do the eventual reset.
+	m.pendingAbsorbResetDueAt = time.Now().Add(deadline)
 	if m.pendingAbsorbResetTimer == nil {
 		// First arm — allocate the persistent timer. Subsequent
 		// arms will Reset() it, debouncing the deadline. The
 		// callback closes over `m` only (NOT over a captured
 		// generation counter or reason string); it reads
-		// pendingAbsorbLastReason at fire time so the diagnostic
-		// log reflects whatever caused the most recent arm.
+		// pendingAbsorbLastReason and pendingAbsorbResetDueAt at
+		// fire time so the diagnostic log reflects whatever caused
+		// the most recent arm and the stale-callback guard sees
+		// the latest deadline.
 		m.pendingAbsorbResetTimer = time.AfterFunc(deadline, m.fireAbsorbReset)
 		return
 	}
@@ -4378,15 +4424,28 @@ func (m *Mux) armPendingStartAbsorbLocked(reason string) {
 	// if the timer has already fired, Reset re-arms it. If it has
 	// NOT fired yet, Reset replaces the pending deadline. Either way
 	// the next fire happens `deadline` from now, not from the
-	// original arm. This gives the debounce semantics needed to
-	// close the hot-loop bug.
+	// original arm. The fireAbsorbReset due-at check handles the
+	// case where the timer fired between this caller incrementing
+	// the counter and Reset() restarting it.
 	m.pendingAbsorbResetTimer.Reset(deadline)
 }
 
 // fireAbsorbReset is the debounce timer callback. It runs in a fresh
 // goroutine (time.AfterFunc semantics). Acquires stateMu, drains the
-// absorb counter if still positive, and kicks tryGrantAndStart if the
-// queue has pending work and no active START is in flight.
+// absorb counter if still positive AND the canonical due-at has
+// elapsed, and kicks tryGrantAndStart if the queue has pending work
+// and no active START is in flight.
+//
+// Stale-callback guard (Codex round-1 MUST FIX on PR #656): a fresh
+// arm may have called Reset() on the timer after this callback was
+// already scheduled by an expired-timer fire. The Go runtime does
+// not cancel the in-flight callback when Reset is called. Without
+// the due-at guard, the stale callback would clear a counter that
+// the fresh arm just incremented — breaking the stale-response
+// barrier exactly when it matters. The due-at compare under
+// stateMu makes the callback no-op when a fresh arm bumped the
+// deadline; the Reset()'d timer's own callback will do the real
+// reset at the right time.
 //
 // Idempotent under spurious fire: when pendingStartAbsorb is already
 // 0 (legitimate stale-response arrival drained the counter before
@@ -4402,11 +4461,26 @@ func (m *Mux) fireAbsorbReset() {
 		m.stateMu.Unlock()
 		return
 	}
+	if !m.pendingAbsorbResetDueAt.IsZero() && time.Now().Before(m.pendingAbsorbResetDueAt) {
+		// A fresher arm bumped the deadline into the future after
+		// this callback was already scheduled (the AfterFunc fired
+		// before the new arm's Reset() could pre-empt it, or the
+		// Go runtime queued multiple fires through Reset()
+		// transitions). The fresh arm's Reset() will fire its own
+		// callback at the right time; this stale callback must
+		// not clear the counter.
+		m.stateMu.Unlock()
+		return
+	}
 	count := m.pendingStartAbsorb
 	reason := m.pendingAbsorbLastReason
 	m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22 debounce)", reason, count)
 	m.absorbResetTotal.Add(1)
 	m.pendingStartAbsorb = 0
+	// Clear the due-at so subsequent stale callbacks (extremely
+	// unlikely but possible if the runtime queued multiple fires)
+	// see the IsZero short-circuit and don't re-log.
+	m.pendingAbsorbResetDueAt = time.Time{}
 	shouldAdvance := m.pendingStart == nil && m.arb.hasPending()
 	m.stateMu.Unlock()
 

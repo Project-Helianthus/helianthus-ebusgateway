@@ -8,30 +8,33 @@ import (
 )
 
 // absorb_debounce_test.go pins the contract for F-NEW-25 (2026-05-21):
-// armPendingStartAbsorbLocked must NOT livelock when called faster than
-// the F-22 reset deadline. The pre-fix implementation used per-arm
-// AfterFunc + pendingAbsorbGen generation-invalidation, which had the
-// failure mode that any new arm bumped the gen and invalidated its own
-// reset-callback's gen check at fire time. Under signal-loss storms
-// where the gateway's semantic poller retries failed RequestStarts at
-// ~1Hz, every retry's deadline path re-armed absorb faster than F-22's
-// 2s deadline could clear it. Result: pendingStartAbsorb stuck at 1
-// permanently, "tryGrantAndStart skipped — waiting to absorb 1 stale
-// arbitration response(s)" log spam at 1336 lines/min, active polling
-// stalled.
+// armPendingStartAbsorbLocked uses a single persistent *time.Timer +
+// Reset() (debounce semantics) instead of per-arm time.AfterFunc +
+// pendingAbsorbGen generation-invalidation.
 //
-// Production incident: 2026-05-20 12:25 UTC. Active B524 polling to
-// 0x15 (BASV2) dropped from ~2 c/s to 0 within minutes; gateway stayed
-// stuck for 6+ hours through three semantic_read_breaker open→half-open
-// cycles (628 closed→open, 2762 half-open→open, 3253 open→half-open)
-// before operator restart. Even restart did not recover because the
-// hot loop re-armed during startup.
+// Defense-in-depth rationale. The 2026-05-20 12:25 UTC production
+// drop in active B524 polling to 0x15 (BASV2) was investigated and
+// the root cause was a bus-physical signal-loss storm — the gateway's
+// semantic_read_breaker correctly opened (628 closed→open transitions)
+// and active polling correctly suspended; the gateway recovered on
+// its own once the bus stabilized. Live-archaeology log scan showed
+// ZERO `absorb timeout reset` events in 94k lines, meaning F-22
+// actually wasn't firing — but the gen-invalidation pattern IS
+// theoretically vulnerable to a livelock when arm rate exceeds
+// 1/StartDeadline (each new arm bumps gen and invalidates its own
+// AfterFunc's gen check at fire time, so the reset never executes).
+// The post-fix single-timer + Reset() makes that class of livelock
+// structurally impossible — Reset() always extends the deadline of
+// the SAME persistent timer regardless of arm rate.
 //
-// Fix: replace the gen-invalidation pattern with a single persistent
-// *time.Timer + Reset() (debounce). Each arm Reset()s the timer to
-// the FULL deadline from NOW. The callback fires only after a full
-// deadline of NO new arms — guaranteeing eventual clearance regardless
-// of arm rate.
+// Test-coverage honesty: the tests below pin the new semantics under
+// rapid arming but they cannot DISTINGUISH pre-fix from post-fix
+// behavior in a controlled environment. Both patterns reset the
+// counter within 1 deadline after arming stops; the bug requires
+// sustained-forever arming to manifest, which a unit test can't
+// run indefinitely. The Codex-round-1 stale-callback race
+// (pre-empted AfterFunc clearing a fresh post-arm counter) IS
+// regression-tested explicitly — see TestAbsorbReset_StaleCallback*.
 
 // armRateBuffer is a minimal in-memory log buffer for tests that don't
 // import absorb_timeout_revert_test.go's helpers. Kept self-contained
@@ -54,19 +57,11 @@ func (b *armRateBuffer) String() string {
 	return string(b.buf)
 }
 
-// TestAbsorbReset_RapidArmsStillEventuallyReset is the direct
-// regression test for the production 12:25 UTC hot loop. Calls
+// TestAbsorbReset_RapidArmsStillEventuallyReset arms
 // armPendingStartAbsorbLocked at rate FASTER than StartDeadline,
-// then stops re-arming and asserts the absorb-reset fires within
-// the next deadline window.
-//
-// Pre-fix (per-arm AfterFunc + gen invalidation): this test FAILS —
-// every fresh AfterFunc bumps gen, all callbacks early-return on
-// gen mismatch, pendingStartAbsorb never resets.
-//
-// Post-fix (single timer + Reset debounce): test PASSES — the
-// callback fires StartDeadline after the LAST arm regardless of how
-// many arms preceded.
+// stops re-arming, and asserts the absorb-reset fires within the
+// next deadline window. This is a forward-going semantic check —
+// see file header for honest pre/post-fix discrimination notes.
 func TestAbsorbReset_RapidArmsStillEventuallyReset(t *testing.T) {
 	var logBuf armRateBuffer
 	logger := log.New(&logBuf, "", 0)
@@ -241,6 +236,19 @@ func TestAbsorbReset_ContinuousRapidArmsDoNotLivelock(t *testing.T) {
 	// arming stops.
 	stop := make(chan struct{})
 	armerDone := make(chan struct{})
+	var stopOnce sync.Once
+	stopArmer := func() {
+		stopOnce.Do(func() { close(stop) })
+	}
+	// Codex round-1 LOW: t.Cleanup guarantees the armer goroutine
+	// exits even if the test fails before the explicit close(stop)
+	// below. Without it, a future edit that introduces a t.Fatal
+	// pre-stop would leak the armer for the rest of the test
+	// process's lifetime.
+	t.Cleanup(func() {
+		stopArmer()
+		<-armerDone
+	})
 	go func() {
 		defer close(armerDone)
 		ticker := time.NewTicker(20 * time.Millisecond) // 5× faster than deadline
@@ -267,8 +275,9 @@ func TestAbsorbReset_ContinuousRapidArmsDoNotLivelock(t *testing.T) {
 	duringReset := mux.absorbResetTotal.Load()
 
 	// Phase 2: stop the armer. Wait up to 3× deadline for the
-	// timer to fire.
-	close(stop)
+	// timer to fire. stopArmer is idempotent via sync.Once so the
+	// t.Cleanup close in the cleanup func above is a safe re-close.
+	stopArmer()
 	<-armerDone
 
 	deadlineWait := time.Now().Add(3 * startDeadline)
@@ -400,5 +409,184 @@ func TestAbsorbReset_LegitimateDecrementBeforeTimerFire(t *testing.T) {
 	if finalAbsorb != 0 {
 		t.Errorf("pendingStartAbsorb = %d after drain; want 0 (debounce callback wrongly bumped counter)",
 			finalAbsorb)
+	}
+}
+
+// TestAbsorbReset_StaleCallbackDoesNotClearFreshArm directly exercises
+// the Codex round-1 MUST FIX race: a stale fireAbsorbReset callback,
+// already queued by an expired timer but still waiting on stateMu,
+// must NOT clear a counter that a fresh arm has just incremented
+// (and Reset()'d the timer for).
+//
+// Without the pendingAbsorbResetDueAt guard, the stale callback
+// would see pendingStartAbsorb > 0 and clear it — breaking the
+// stale-response barrier for a transaction that JUST armed. The
+// guard makes the stale callback no-op when the canonical due-at
+// has been bumped into the future by a fresh arm.
+//
+// Deterministic simulation: instead of trying to win a real-time
+// race against AfterFunc scheduling, we directly drive
+// fireAbsorbReset with the FIELD STATE that the race would produce.
+// Pre-condition setup mimics "stale callback about to run, fresh
+// arm just bumped due-at":
+//  1. Set pendingStartAbsorb = 1 (a fresh arm's increment).
+//  2. Set pendingAbsorbResetDueAt = now + future (a fresh arm's
+//     deadline extension).
+//
+// Then call fireAbsorbReset directly and verify the counter is
+// untouched. Without the guard the counter would clear; WITH the
+// guard the future-dated due-at causes early-return.
+func TestAbsorbReset_StaleCallbackDoesNotClearFreshArm(t *testing.T) {
+	const startDeadline = 200 * time.Millisecond
+
+	mux := New(Config{
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     startDeadline,
+		StartDeadline:   startDeadline,
+		PendingStartTTL: 24 * time.Hour,
+		SYNInterval:     time.Hour,
+	})
+
+	priorReset := mux.absorbResetTotal.Load()
+
+	// Simulate the post-race state: pendingStartAbsorb > 0 AND
+	// pendingAbsorbResetDueAt in the future (a fresh arm pre-empted
+	// the stale callback). The stale callback is fireAbsorbReset
+	// itself, invoked directly to bypass goroutine scheduling
+	// non-determinism.
+	mux.stateMu.Lock()
+	mux.pendingStartAbsorb = 1
+	mux.pendingAbsorbResetDueAt = time.Now().Add(startDeadline)
+	mux.pendingAbsorbLastReason = "test-stale-fresh-armed"
+	mux.stateMu.Unlock()
+
+	mux.fireAbsorbReset()
+
+	mux.stateMu.Lock()
+	postAbsorb := mux.pendingStartAbsorb
+	postDueAt := mux.pendingAbsorbResetDueAt
+	mux.stateMu.Unlock()
+
+	if postAbsorb != 1 {
+		t.Fatalf("stale fireAbsorbReset cleared pendingStartAbsorb (now %d, want 1) "+
+			"despite future-dated pendingAbsorbResetDueAt — the due-at guard is broken. "+
+			"Production impact: a fresh stale-response barrier gets cleared "+
+			"the instant after a fresh arm raises it, exposing the next request "+
+			"to misapplied stale STARTED/FAILED.",
+			postAbsorb)
+	}
+	if postDueAt.IsZero() {
+		t.Error("stale fireAbsorbReset cleared pendingAbsorbResetDueAt despite no-op path; " +
+			"the no-op branch must NOT touch the due-at field (fresh arm owns it)")
+	}
+	if got := mux.absorbResetTotal.Load(); got != priorReset {
+		t.Errorf("stale fireAbsorbReset incremented absorbResetTotal (was %d, now %d) "+
+			"on the no-op path; the increment is paired with the actual reset only",
+			priorReset, got)
+	}
+}
+
+// TestAbsorbReset_LegitimateCallbackClearsWhenDueAtElapsed pins
+// the complementary contract: when pendingAbsorbResetDueAt is in
+// the PAST (the legitimate "deadline reached, no fresh arm bumped
+// it" case), fireAbsorbReset proceeds to reset.
+func TestAbsorbReset_LegitimateCallbackClearsWhenDueAtElapsed(t *testing.T) {
+	const startDeadline = 100 * time.Millisecond
+
+	mux := New(Config{
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     startDeadline,
+		StartDeadline:   startDeadline,
+		PendingStartTTL: 24 * time.Hour,
+		SYNInterval:     time.Hour,
+	})
+
+	priorReset := mux.absorbResetTotal.Load()
+
+	// Simulate the legitimate case: pendingStartAbsorb > 0 AND
+	// pendingAbsorbResetDueAt in the past (the natural deadline
+	// elapsed). fireAbsorbReset must clear.
+	mux.stateMu.Lock()
+	mux.pendingStartAbsorb = 2
+	mux.pendingAbsorbResetDueAt = time.Now().Add(-50 * time.Millisecond)
+	mux.pendingAbsorbLastReason = "test-elapsed"
+	mux.stateMu.Unlock()
+
+	mux.fireAbsorbReset()
+
+	mux.stateMu.Lock()
+	postAbsorb := mux.pendingStartAbsorb
+	postDueAt := mux.pendingAbsorbResetDueAt
+	mux.stateMu.Unlock()
+
+	if postAbsorb != 0 {
+		t.Errorf("legitimate fireAbsorbReset did NOT clear pendingStartAbsorb (still %d); "+
+			"the due-at-in-past path must reset",
+			postAbsorb)
+	}
+	if !postDueAt.IsZero() {
+		t.Errorf("legitimate fireAbsorbReset did NOT clear pendingAbsorbResetDueAt (got %v); "+
+			"the reset path should zero it to prevent any further stale callbacks "+
+			"from misinterpreting the field",
+			postDueAt)
+	}
+	if got := mux.absorbResetTotal.Load(); got != priorReset+1 {
+		t.Errorf("legitimate fireAbsorbReset advanced absorbResetTotal by %d (was %d, now %d); want exactly 1",
+			got-priorReset, priorReset, got)
+	}
+}
+
+// TestAbsorbReset_DueAtClearedOnBoundary pins that Close, reconnect,
+// and handleReset all clear pendingAbsorbResetDueAt. Without this,
+// a stale callback queued before the boundary could observe the
+// pre-boundary future-dated due-at as "skip" and never let the
+// post-boundary state advance.
+//
+// We exercise Close here (the simplest boundary that's reachable
+// from a test fixture); reconnect and handleReset paths execute
+// the same field-clear under stateMu so the contract is uniform.
+func TestAbsorbReset_DueAtClearedOnBoundary(t *testing.T) {
+	const startDeadline = 100 * time.Millisecond
+
+	mux := New(Config{
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     startDeadline,
+		StartDeadline:   startDeadline,
+		PendingStartTTL: 24 * time.Hour,
+		SYNInterval:     time.Hour,
+	})
+
+	mux.stateMu.Lock()
+	mux.armPendingStartAbsorbLocked("test-boundary")
+	preCloseDueAt := mux.pendingAbsorbResetDueAt
+	mux.stateMu.Unlock()
+	if preCloseDueAt.IsZero() {
+		t.Fatal("pendingAbsorbResetDueAt is zero immediately after arm")
+	}
+
+	_ = mux.Close()
+
+	mux.stateMu.Lock()
+	postCloseDueAt := mux.pendingAbsorbResetDueAt
+	postCloseTimer := mux.pendingAbsorbResetTimer
+	postCloseAbsorb := mux.pendingStartAbsorb
+	mux.stateMu.Unlock()
+
+	if !postCloseDueAt.IsZero() {
+		t.Errorf("after Close, pendingAbsorbResetDueAt = %v; want zero "+
+			"(boundary failed to clear the due-at — stale callback could no-op forever)",
+			postCloseDueAt)
+	}
+	if postCloseTimer != nil {
+		t.Errorf("after Close, pendingAbsorbResetTimer = %p; want nil", postCloseTimer)
+	}
+	if postCloseAbsorb != 0 {
+		t.Errorf("after Close, pendingStartAbsorb = %d; want 0", postCloseAbsorb)
 	}
 }

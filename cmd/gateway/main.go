@@ -1700,10 +1700,25 @@ type v8AdminEventJSON struct {
 	WasEscaped bool `json:"was_escaped"`
 }
 
-// handleV8AdminEvents drains the active v8 classifier's admin
-// event ring buffer and returns the contents as JSON. See the
-// v8AdminEventsResponse doc and the mux.HandleFunc call site for
-// the full endpoint contract.
+// handleV8AdminEvents returns the active v8 classifier's admin
+// event ring buffer as JSON.
+//
+// **Default GET drains the ring** (destructive). Each successful
+// GET returns the events accumulated since the last drain and
+// EMPTIES the buffer. This is the documented contract for
+// long-running poller tooling. Operators MUST poll at a steady
+// cadence (every few seconds in production); a stuck consumer
+// drops the OLDEST events FIFO and the `dropped` field surfaces
+// the saturation.
+//
+// **`?peek=true` returns events WITHOUT draining** (non-
+// destructive). For ad-hoc operator inspection (`curl | jq`,
+// browser visit, dashboards, health checks) that should NOT
+// consume the long-running poller's evidence stream. The full
+// ring contents are returned every time — the operator is
+// responsible for de-duplicating against prior peeks. Codex
+// round-1 LOW on PR #657 — the GET-drain footgun when
+// concurrent consumers share the HTTP surface.
 //
 // Nil-safe: when no classifier is registered (non-adapter-direct
 // transport, or run() not yet completed), returns
@@ -1711,7 +1726,7 @@ type v8AdminEventJSON struct {
 // well-formed response on every transport rather than 404-ing.
 //
 // Only GET is accepted — POST/etc respond 405 to avoid surprising
-// side effects (the drain IS state-mutating).
+// side effects.
 func handleV8AdminEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -1719,13 +1734,26 @@ func handleV8AdminEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	peekOnly := r.URL.Query().Get("peek") == "true"
+
 	resp := v8AdminEventsResponse{
 		Events: []v8AdminEventJSON{},
 	}
 
 	classifier := v8AdminEventsCurrentClassifier.Load()
 	if classifier != nil {
-		events, dropped := classifier.DrainAdminEvents()
+		var events []v8classifier.ClassifierAdminEvent
+		var dropped uint64
+		if peekOnly {
+			// Non-destructive read. Snapshot the ring + dropped
+			// counter without clearing. The classifier exposes
+			// this via a separate method so the drain path stays
+			// the canonical destructive operation.
+			events = classifier.PeekAdminEvents()
+			dropped = classifier.AdminEventsDroppedTotal()
+		} else {
+			events, dropped = classifier.DrainAdminEvents()
+		}
 		resp.Dropped = dropped
 		if len(events) > 0 {
 			resp.Events = make([]v8AdminEventJSON, len(events))
@@ -1742,10 +1770,17 @@ func handleV8AdminEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	// Cache-Control: no-store — drain is destructive, the same
-	// response is never valid twice. Tools that cache responses
-	// would silently mask new events.
-	w.Header().Set("Cache-Control", "no-store")
+	if peekOnly {
+		// Peek is idempotent — short-cache is fine, but keep
+		// it brief so operators get fresh data across short
+		// polling intervals.
+		w.Header().Set("Cache-Control", "max-age=1")
+	} else {
+		// Drain is destructive, the same response is never
+		// valid twice. Tools that cache the response would
+		// silently mask new events.
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Printf("/debug/v8/admin-events: encode error: %v", err)
 	}

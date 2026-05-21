@@ -775,6 +775,51 @@ func (c *Classifier) PendingAdminEvents() int {
 	return c.adminEvents.pending()
 }
 
+// PeekAdminEvents returns a snapshot of the admin event ring
+// WITHOUT draining it. The returned slice is a copy, safe to
+// hold across other classifier calls. The dropped counter is
+// NOT included in this method's return — call
+// AdminEventsDroppedTotal for that signal.
+//
+// Use case: ad-hoc operator inspection that should not consume
+// a long-running poller's evidence stream. The canonical
+// destructive read remains DrainAdminEvents (which clears the
+// ring AND resets the dropped counter on read).
+//
+// Returns nil when the classifier is nil. Safe to call from
+// any goroutine; concurrent peek/drain pairs serialize through
+// the ring's internal mutex.
+func (c *Classifier) PeekAdminEvents() []ClassifierAdminEvent {
+	if c == nil {
+		return nil
+	}
+	events, _ := c.adminEvents.peek()
+	return events
+}
+
+// AdminEventsDroppedTotal returns the cumulative count of admin
+// events the ring buffer dropped (oldest-FIFO) since process
+// start. Companion to PeekAdminEvents — the destructive
+// DrainAdminEvents path returns and resets a per-drain
+// dropped counter; this method exposes the lifetime-cumulative
+// counter for non-destructive consumers that want to detect
+// saturation across peek calls.
+//
+// NOTE: this counter is reset to zero by DrainAdminEvents (see
+// adminEventBuffer.drain). Mixed peek+drain consumers see the
+// counter snap back to zero after a drain; peek-only consumers
+// see it grow monotonically until the next drain.
+//
+// Returns 0 when the classifier is nil. Safe to call from any
+// goroutine.
+func (c *Classifier) AdminEventsDroppedTotal() uint64 {
+	if c == nil {
+		return 0
+	}
+	_, dropped := c.adminEvents.peek()
+	return dropped
+}
+
 // NewPacerForSession returns a new per-session Pacer wired to
 // this classifier's admin-event buffer (Phase 3 Step B3.6e). The
 // pacer's watchdog timeouts (soft / hard) emit ClassifierAdminEvent

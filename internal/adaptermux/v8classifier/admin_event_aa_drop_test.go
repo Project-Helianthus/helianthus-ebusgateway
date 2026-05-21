@@ -150,3 +150,103 @@ func TestAdminEventKindAaInjectionDrop_String(t *testing.T) {
 			got, "aa_injection_drop")
 	}
 }
+
+// TestPeekAdminEvents_DoesNotDrain pins the non-destructive
+// peek contract added to close Codex round-1 LOW on PR #657
+// (GET-drain footgun). Multiple peeks return the same events;
+// a subsequent drain still observes them.
+func TestPeekAdminEvents_DoesNotDrain(t *testing.T) {
+	t.Parallel()
+	c := New(ModeShadow)
+	now := time.Unix(0, 0)
+
+	// Generate one drop event.
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventStarted, Data: 0x71,
+	}, now)
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0xAA,
+	}, now)
+
+	// First peek sees the event.
+	events1 := c.PeekAdminEvents()
+	if len(events1) != 1 {
+		t.Fatalf("first peek: got %d events; want 1", len(events1))
+	}
+	if events1[0].Kind != AdminEventKindAaInjectionDrop {
+		t.Errorf("first peek event Kind=%v; want AdminEventKindAaInjectionDrop", events1[0].Kind)
+	}
+
+	// Second peek sees the SAME event (non-destructive).
+	events2 := c.PeekAdminEvents()
+	if len(events2) != 1 {
+		t.Fatalf("second peek: got %d events; want 1 (peek must not drain)", len(events2))
+	}
+	if events2[0] != events1[0] {
+		t.Errorf("second peek returned a different event than first; peek must be deterministic")
+	}
+
+	// Drain still sees the event (peek did not consume).
+	drained, _ := c.DrainAdminEvents()
+	if len(drained) != 1 {
+		t.Fatalf("post-peek drain: got %d events; want 1 (peek consumed events it should not have)", len(drained))
+	}
+
+	// Post-drain peek sees empty.
+	events3 := c.PeekAdminEvents()
+	if len(events3) != 0 {
+		t.Errorf("post-drain peek: got %d events; want 0 (drain failed to clear)", len(events3))
+	}
+}
+
+// TestPeekAdminEvents_NilSafe pins nil-receiver safety.
+func TestPeekAdminEvents_NilSafe(t *testing.T) {
+	t.Parallel()
+	var c *Classifier
+	events := c.PeekAdminEvents()
+	if events != nil {
+		t.Errorf("nil.PeekAdminEvents() = %v; want nil", events)
+	}
+	if got := c.AdminEventsDroppedTotal(); got != 0 {
+		t.Errorf("nil.AdminEventsDroppedTotal() = %d; want 0", got)
+	}
+}
+
+// TestAdminEventsDroppedTotal_Snapshot pins that the peek-side
+// dropped counter exposes the cumulative-since-drain value
+// (NOT a per-call delta). The destructive drain resets it; the
+// peek path does not.
+func TestAdminEventsDroppedTotal_Snapshot(t *testing.T) {
+	t.Parallel()
+	c := New(ModeShadow)
+
+	// AdminEventsDroppedTotal starts at 0.
+	if got := c.AdminEventsDroppedTotal(); got != 0 {
+		t.Fatalf("AdminEventsDroppedTotal() at construction = %d; want 0", got)
+	}
+
+	// Fill the ring to its cap and overflow it by one to force
+	// a drop. Use direct emit on the buffer (no FSM needed for
+	// this contract test).
+	for i := 0; i < adminEventBufferCap+1; i++ {
+		c.adminEvents.emit(ClassifierAdminEvent{
+			Kind: AdminEventKindProtocolFault,
+		})
+	}
+
+	// One drop expected.
+	if got := c.AdminEventsDroppedTotal(); got != 1 {
+		t.Errorf("AdminEventsDroppedTotal() after one overflow = %d; want 1", got)
+	}
+
+	// Multiple peeks return the same dropped count.
+	if got := c.AdminEventsDroppedTotal(); got != 1 {
+		t.Errorf("second AdminEventsDroppedTotal() = %d; want 1 (peek must not reset)", got)
+	}
+
+	// Drain resets it.
+	c.DrainAdminEvents()
+	if got := c.AdminEventsDroppedTotal(); got != 0 {
+		t.Errorf("post-drain AdminEventsDroppedTotal() = %d; want 0 (drain must reset)", got)
+	}
+}

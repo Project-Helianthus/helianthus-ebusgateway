@@ -246,3 +246,25 @@ func (b *adminEventBuffer) pending() int {
 	defer b.mu.Unlock()
 	return len(b.events)
 }
+
+// peek returns a copy of buffered events WITHOUT clearing the
+// buffer or resetting the dropped counter. Used by ad-hoc
+// operator tooling (browser, curl + jq) that should not
+// consume a long-running poller's evidence stream. F-NEW-26
+// follow-up — Codex round-1 LOW on PR #657: closes the GET-
+// drain footgun when concurrent consumers share the HTTP
+// surface. The dropped counter returned here is the CUMULATIVE
+// total since process start; consumers correlate against a
+// prior peek to compute deltas.
+//
+// Multi-consumer safe via the mutex.
+func (b *adminEventBuffer) peek() (events []ClassifierAdminEvent, dropped uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.events) == 0 {
+		return nil, b.dropped
+	}
+	events = make([]ClassifierAdminEvent, len(b.events))
+	copy(events, b.events)
+	return events, b.dropped
+}

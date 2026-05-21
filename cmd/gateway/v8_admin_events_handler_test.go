@@ -160,6 +160,97 @@ func TestHandleV8AdminEvents_OnlyGetAllowed(t *testing.T) {
 	}
 }
 
+// TestHandleV8AdminEvents_PeekDoesNotDrain pins the
+// `?peek=true` non-destructive contract added to close
+// Codex round-1 LOW on PR #657 (GET-drain footgun). Two
+// successive peek requests return the same events; a
+// subsequent drain (no query param) still observes them.
+// Cache-Control header switches from `no-store` (drain) to
+// `max-age=1` (peek) so caching proxies treat the two modes
+// correctly.
+func TestHandleV8AdminEvents_PeekDoesNotDrain(t *testing.T) {
+	orig := v8AdminEventsCurrentClassifier.Load()
+	t.Cleanup(func() { v8AdminEventsCurrentClassifier.Store(orig) })
+
+	c := v8classifier.New(v8classifier.ModeShadow)
+	v8AdminEventsCurrentClassifier.Store(c)
+
+	// Populate the ring with one event.
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventStarted, Data: 0x71,
+	}, now)
+	c.Observe(transport.StreamEvent{
+		Kind: transport.StreamEventByte, Byte: 0xAA,
+	}, now)
+
+	// First peek.
+	rec1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodGet, "/debug/v8/admin-events?peek=true", nil)
+	handleV8AdminEvents(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("peek status = %d; want 200", rec1.Code)
+	}
+	if cc := rec1.Header().Get("Cache-Control"); cc != "max-age=1" {
+		t.Errorf("peek Cache-Control = %q; want %q (peek is idempotent — short cache OK)",
+			cc, "max-age=1")
+	}
+
+	var resp1 struct {
+		Events []struct {
+			Kind string `json:"kind"`
+			Byte string `json:"byte"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(rec1.Body.Bytes(), &resp1); err != nil {
+		t.Fatalf("first peek invalid JSON: %v", err)
+	}
+	if len(resp1.Events) != 1 {
+		t.Fatalf("first peek events = %d; want 1", len(resp1.Events))
+	}
+
+	// Second peek returns the SAME event.
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/debug/v8/admin-events?peek=true", nil)
+	handleV8AdminEvents(rec2, req2)
+
+	var resp2 struct {
+		Events []struct {
+			Kind string `json:"kind"`
+			Byte string `json:"byte"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("second peek invalid JSON: %v", err)
+	}
+	if len(resp2.Events) != 1 {
+		t.Fatalf("second peek events = %d; want 1 (peek must NOT drain)", len(resp2.Events))
+	}
+
+	// Drain (no peek param) finally consumes.
+	rec3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest(http.MethodGet, "/debug/v8/admin-events", nil)
+	handleV8AdminEvents(rec3, req3)
+	if cc := rec3.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("drain Cache-Control = %q; want %q (drain is destructive)", cc, "no-store")
+	}
+
+	// Post-drain peek sees empty.
+	rec4 := httptest.NewRecorder()
+	req4 := httptest.NewRequest(http.MethodGet, "/debug/v8/admin-events?peek=true", nil)
+	handleV8AdminEvents(rec4, req4)
+	var resp4 struct {
+		Events []struct{} `json:"events"`
+	}
+	if err := json.Unmarshal(rec4.Body.Bytes(), &resp4); err != nil {
+		t.Fatalf("post-drain peek invalid JSON: %v", err)
+	}
+	if len(resp4.Events) != 0 {
+		t.Errorf("post-drain peek events = %d; want 0 (drain failed)", len(resp4.Events))
+	}
+}
+
 // TestV8AdminEventsCurrentClassifier_AtomicSwap pins the
 // indirection contract used by the handler: the package-level
 // atomic.Pointer can be swapped at test re-entry without

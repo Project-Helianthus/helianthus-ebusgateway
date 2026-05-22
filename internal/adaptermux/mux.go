@@ -530,6 +530,10 @@ type Mux struct {
 
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int                // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
+	// absorbSkipLog* rate-limits the hot tryGrantAndStart skip log while
+	// pendingStartAbsorb is acting as the stale-response barrier.
+	absorbSkipLogLastEmit        time.Time
+	absorbSkipLogSuppressedSince uint64
 	// pendingAbsorbResetTimer is the single persistent debounce timer
 	// that fires F-22's reset when pendingStartAbsorb has stayed
 	// > 0 for at least `cfg.StartDeadline` without a new arm or
@@ -3467,7 +3471,20 @@ func (m *Mux) tryGrantAndStart() {
 	// STARTED from the new one. Treat pendingStartAbsorb as a real regrant
 	// barrier, not just a best-effort diagnostic counter.
 	if m.pendingStartAbsorb > 0 {
-		m.logger.Printf("adaptermux: tryGrantAndStart skipped — waiting to absorb %d stale arbitration response(s)", m.pendingStartAbsorb)
+		now := time.Now()
+		if !m.absorbSkipLogLastEmit.IsZero() && now.Sub(m.absorbSkipLogLastEmit) < time.Second {
+			m.absorbSkipLogSuppressedSince++
+			m.stateMu.Unlock()
+			return
+		}
+		suppressed := m.absorbSkipLogSuppressedSince
+		m.absorbSkipLogSuppressedSince = 0
+		m.absorbSkipLogLastEmit = now
+		if suppressed > 0 {
+			m.logger.Printf("adaptermux: tryGrantAndStart skipped — waiting to absorb %d stale arbitration response(s) (%d suppressed)", m.pendingStartAbsorb, suppressed)
+		} else {
+			m.logger.Printf("adaptermux: tryGrantAndStart skipped — waiting to absorb %d stale arbitration response(s)", m.pendingStartAbsorb)
+		}
 		m.stateMu.Unlock()
 		return
 	}
@@ -4524,7 +4541,13 @@ func (m *Mux) fireAbsorbReset() {
 	}
 	count := m.pendingStartAbsorb
 	reason := m.pendingAbsorbLastReason
-	m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22 debounce)", reason, count)
+	suppressed := m.absorbSkipLogSuppressedSince
+	m.absorbSkipLogSuppressedSince = 0
+	if suppressed > 0 {
+		m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22 debounce) (%d suppressed)", reason, count, suppressed)
+	} else {
+		m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22 debounce)", reason, count)
+	}
 	m.absorbResetTotal.Add(1)
 	m.pendingStartAbsorb = 0
 	// Clear the due-at so subsequent stale callbacks (extremely

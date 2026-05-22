@@ -1,7 +1,9 @@
 package adaptermux
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -55,6 +57,87 @@ func (b *armRateBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return string(b.buf)
+}
+
+func TestAbsorbSkipLog_RateLimitedWithSuppressedSuffix(t *testing.T) {
+	var logBuf armRateBuffer
+	logger := log.New(&logBuf, "", 0)
+
+	mux := New(Config{
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     time.Second,
+		StartDeadline:   20 * time.Second,
+		PendingStartTTL: 24 * time.Hour,
+		SYNInterval:     time.Hour,
+		Logger:          logger,
+	})
+
+	mock := newP3MockTransport()
+	defer mock.Close()
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+
+	_ = mux.arb.requestStart(gatewaySessionID, 0x71)
+	mux.stateMu.Lock()
+	mux.pendingStartAbsorb = 1
+	mux.stateMu.Unlock()
+
+	const calls = 100
+	burstStart := time.Now()
+	for i := 0; i < calls; i++ {
+		mux.tryGrantAndStart()
+	}
+	if elapsed := time.Since(burstStart); elapsed >= time.Second {
+		t.Fatalf("test burst took %v; want <1s so the rate-limit window is not crossed", elapsed)
+	}
+
+	const prefix = "adaptermux: tryGrantAndStart skipped — waiting to absorb"
+	burstLog := logBuf.String()
+	burstLines := strings.Count(burstLog, prefix)
+	if burstLines > 2 {
+		t.Fatalf("%d skip log lines emitted during %d-call burst in <1s; want <=2. Log:\n%s",
+			burstLines, calls, burstLog)
+	}
+	if burstLines != 1 {
+		t.Fatalf("%d skip log lines emitted during %d-call burst; want exactly the initial visible line. Log:\n%s",
+			burstLines, calls, burstLog)
+	}
+	if strings.Contains(burstLog, "suppressed") {
+		t.Fatalf("suppressed suffix appeared before the next eligible emission. Log:\n%s", burstLog)
+	}
+
+	mux.stateMu.Lock()
+	suppressed := mux.absorbSkipLogSuppressedSince
+	lastEmit := mux.absorbSkipLogLastEmit
+	mux.stateMu.Unlock()
+	if want := uint64(calls - 1); suppressed != want {
+		t.Fatalf("suppressed count after burst = %d; want %d", suppressed, want)
+	}
+
+	if sleep := time.Until(lastEmit.Add(time.Second + 20*time.Millisecond)); sleep > 0 {
+		time.Sleep(sleep)
+	}
+	mux.tryGrantAndStart()
+
+	afterLog := logBuf.String()
+	afterLines := strings.Count(afterLog, prefix)
+	if afterLines != burstLines+1 {
+		t.Fatalf("skip log lines after next eligible call = %d; want %d. Log:\n%s",
+			afterLines, burstLines+1, afterLog)
+	}
+	if wantSuffix := fmt.Sprintf("(%d suppressed)", suppressed); !strings.Contains(afterLog, wantSuffix) {
+		t.Fatalf("next eligible skip log missing %q suffix. Log:\n%s", wantSuffix, afterLog)
+	}
+
+	mux.stateMu.Lock()
+	finalSuppressed := mux.absorbSkipLogSuppressedSince
+	mux.stateMu.Unlock()
+	if finalSuppressed != 0 {
+		t.Fatalf("suppressed count after eligible emission = %d; want 0", finalSuppressed)
+	}
 }
 
 // TestAbsorbReset_RapidArmsStillEventuallyReset arms

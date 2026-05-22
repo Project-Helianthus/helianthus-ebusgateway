@@ -1,7 +1,9 @@
 package adaptermux
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -55,6 +57,172 @@ func (b *armRateBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return string(b.buf)
+}
+
+func (b *armRateBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = b.buf[:0]
+}
+
+func TestAbsorbSkipLog_RateLimitedWithSuppressedSuffix(t *testing.T) {
+	var logBuf armRateBuffer
+	logger := log.New(&logBuf, "", 0)
+
+	mux := New(Config{
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     time.Second,
+		StartDeadline:   20 * time.Second,
+		PendingStartTTL: 24 * time.Hour,
+		SYNInterval:     time.Hour,
+		Logger:          logger,
+	})
+
+	mock := newP3MockTransport()
+	defer mock.Close()
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+
+	_ = mux.arb.requestStart(gatewaySessionID, 0x71)
+	mux.stateMu.Lock()
+	mux.pendingStartAbsorb = 1
+	mux.stateMu.Unlock()
+
+	const calls = 100
+	burstStart := time.Now()
+	for i := 0; i < calls; i++ {
+		mux.tryGrantAndStart()
+	}
+	if elapsed := time.Since(burstStart); elapsed >= time.Second {
+		t.Fatalf("test burst took %v; want <1s so the rate-limit window is not crossed", elapsed)
+	}
+
+	const prefix = "adaptermux: tryGrantAndStart skipped — waiting to absorb"
+	burstLog := logBuf.String()
+	burstLines := strings.Count(burstLog, prefix)
+	if burstLines > 2 {
+		t.Fatalf("%d skip log lines emitted during %d-call burst in <1s; want <=2. Log:\n%s",
+			burstLines, calls, burstLog)
+	}
+	if burstLines != 1 {
+		t.Fatalf("%d skip log lines emitted during %d-call burst; want exactly the initial visible line. Log:\n%s",
+			burstLines, calls, burstLog)
+	}
+	if strings.Contains(burstLog, "suppressed") {
+		t.Fatalf("suppressed suffix appeared before the next eligible emission. Log:\n%s", burstLog)
+	}
+
+	mux.stateMu.Lock()
+	suppressed := mux.absorbSkipLogSuppressedSince
+	lastEmit := mux.absorbSkipLogLastEmit
+	mux.stateMu.Unlock()
+	if want := uint64(calls - 1); suppressed != want {
+		t.Fatalf("suppressed count after burst = %d; want %d", suppressed, want)
+	}
+
+	if sleep := time.Until(lastEmit.Add(time.Second + 20*time.Millisecond)); sleep > 0 {
+		time.Sleep(sleep)
+	}
+	mux.tryGrantAndStart()
+
+	afterLog := logBuf.String()
+	afterLines := strings.Count(afterLog, prefix)
+	if afterLines != burstLines+1 {
+		t.Fatalf("skip log lines after next eligible call = %d; want %d. Log:\n%s",
+			afterLines, burstLines+1, afterLog)
+	}
+	if wantSuffix := fmt.Sprintf("(%d suppressed)", suppressed); !strings.Contains(afterLog, wantSuffix) {
+		t.Fatalf("next eligible skip log missing %q suffix. Log:\n%s", wantSuffix, afterLog)
+	}
+
+	mux.stateMu.Lock()
+	finalSuppressed := mux.absorbSkipLogSuppressedSince
+	mux.stateMu.Unlock()
+	if finalSuppressed != 0 {
+		t.Fatalf("suppressed count after eligible emission = %d; want 0", finalSuppressed)
+	}
+}
+
+// TestAbsorbSkipLog_NoCarryoverAcrossAbsorbEpisodes guards against the
+// Codex review finding on PR #660: when pendingStartAbsorb drains to 0
+// via a path OTHER than the visible skip-log emission or the F-22
+// deadline (e.g. normal stale-response consumption via
+// handleArbitrationResponse), the suppressed counter and last-emit
+// timestamp must be cleared so the next absorb episode does not carry
+// a stale `(N suppressed)` suffix or a stale rate-limit window.
+func TestAbsorbSkipLog_NoCarryoverAcrossAbsorbEpisodes(t *testing.T) {
+	var logBuf armRateBuffer
+	logger := log.New(&logBuf, "", 0)
+
+	mux := New(Config{
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         "127.0.0.1:0",
+		ReadTimeout:     time.Second,
+		StartDeadline:   20 * time.Second,
+		PendingStartTTL: 24 * time.Hour,
+		SYNInterval:     time.Hour,
+		Logger:          logger,
+	})
+
+	mock := newP3MockTransport()
+	defer mock.Close()
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+
+	_ = mux.arb.requestStart(gatewaySessionID, 0x71)
+
+	// Episode 1: arm absorb, burst skip calls, then drain via the
+	// "normal stale-response consumption" decrement path. Suppressed
+	// counter is non-zero, last-emit is non-zero.
+	mux.stateMu.Lock()
+	mux.pendingStartAbsorb = 1
+	mux.stateMu.Unlock()
+	for i := 0; i < 25; i++ {
+		mux.tryGrantAndStart()
+	}
+	mux.stateMu.Lock()
+	if mux.absorbSkipLogSuppressedSince == 0 {
+		mux.stateMu.Unlock()
+		t.Fatal("episode 1: expected suppressed counter > 0 after burst")
+	}
+	// Simulate the stale-response decrement path that the Codex review
+	// flagged. Decrementing to 0 must trigger clearAbsorbSkipLogStateLocked.
+	mux.pendingStartAbsorb--
+	if mux.pendingStartAbsorb == 0 {
+		mux.clearAbsorbSkipLogStateLocked()
+	}
+	episode1Suppressed := mux.absorbSkipLogSuppressedSince
+	episode1LastEmit := mux.absorbSkipLogLastEmit
+	mux.stateMu.Unlock()
+
+	if episode1Suppressed != 0 {
+		t.Fatalf("after stale-response decrement to 0, suppressed = %d; want 0", episode1Suppressed)
+	}
+	if !episode1LastEmit.IsZero() {
+		t.Fatalf("after stale-response decrement to 0, lastEmit = %v; want zero time", episode1LastEmit)
+	}
+
+	// Episode 2: arm absorb again immediately. Within the same wall-clock
+	// second, the FIRST skip call must emit (lastEmit was cleared) and
+	// must NOT carry a `(N suppressed)` suffix referring to episode 1.
+	logBuf.Reset()
+	mux.stateMu.Lock()
+	mux.pendingStartAbsorb = 1
+	mux.stateMu.Unlock()
+	mux.tryGrantAndStart()
+	first := logBuf.String()
+	const prefix = "adaptermux: tryGrantAndStart skipped — waiting to absorb"
+	if !strings.Contains(first, prefix) {
+		t.Fatalf("episode 2 first skip did not emit a log line. Log:\n%s", first)
+	}
+	if strings.Contains(first, "suppressed") {
+		t.Fatalf("episode 2 first skip carried stale `(N suppressed)` from episode 1. Log:\n%s", first)
+	}
 }
 
 // TestAbsorbReset_RapidArmsStillEventuallyReset arms

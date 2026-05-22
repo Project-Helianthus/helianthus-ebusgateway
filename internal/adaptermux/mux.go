@@ -530,6 +530,10 @@ type Mux struct {
 
 	pendingStart       *pendingStartState // in-flight START awaiting STARTED/FAILED
 	pendingStartAbsorb int                // stale adapter responses to absorb (FAILED/STARTED from cancelled requests)
+	// absorbSkipLog* rate-limits the hot tryGrantAndStart skip log while
+	// pendingStartAbsorb is acting as the stale-response barrier.
+	absorbSkipLogLastEmit        time.Time
+	absorbSkipLogSuppressedSince uint64
 	// pendingAbsorbResetTimer is the single persistent debounce timer
 	// that fires F-22's reset when pendingStartAbsorb has stayed
 	// > 0 for at least `cfg.StartDeadline` without a new arm or
@@ -916,6 +920,7 @@ func (m *Mux) Close() error {
 		pendingToCancel := m.pendingStart
 		m.pendingStart = nil
 		m.pendingStartAbsorb = 0
+		m.clearAbsorbSkipLogStateLocked()
 		// F-NEW-25: stop the absorb-reset debounce timer if armed.
 		// Stop() is best-effort — if the callback is already
 		// running on another goroutine it will see
@@ -1433,6 +1438,7 @@ func (m *Mux) reconnect() error {
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0
+	m.clearAbsorbSkipLogStateLocked()
 	// F-NEW-25: stop the absorb-reset debounce timer on reconnect.
 	// reconnect explicitly drains pendingStartAbsorb here; leaving
 	// the timer running would either no-op when it fires (count
@@ -3107,6 +3113,7 @@ func (m *Mux) handleReset() {
 	pendingToCancel := m.pendingStart
 	m.pendingStart = nil
 	m.pendingStartAbsorb = 0 // reset clears adapter state; no stale responses will arrive
+	m.clearAbsorbSkipLogStateLocked()
 	// F-NEW-25: stop the absorb-reset debounce timer on RESETTED
 	// boundary. The reset semantics already drain pendingStartAbsorb;
 	// leaving the timer running would either no-op when it fires
@@ -3467,7 +3474,20 @@ func (m *Mux) tryGrantAndStart() {
 	// STARTED from the new one. Treat pendingStartAbsorb as a real regrant
 	// barrier, not just a best-effort diagnostic counter.
 	if m.pendingStartAbsorb > 0 {
-		m.logger.Printf("adaptermux: tryGrantAndStart skipped — waiting to absorb %d stale arbitration response(s)", m.pendingStartAbsorb)
+		now := time.Now()
+		if !m.absorbSkipLogLastEmit.IsZero() && now.Sub(m.absorbSkipLogLastEmit) < time.Second {
+			m.absorbSkipLogSuppressedSince++
+			m.stateMu.Unlock()
+			return
+		}
+		suppressed := m.absorbSkipLogSuppressedSince
+		m.absorbSkipLogSuppressedSince = 0
+		m.absorbSkipLogLastEmit = now
+		if suppressed > 0 {
+			m.logger.Printf("adaptermux: tryGrantAndStart skipped — waiting to absorb %d stale arbitration response(s) (%d suppressed)", m.pendingStartAbsorb, suppressed)
+		} else {
+			m.logger.Printf("adaptermux: tryGrantAndStart skipped — waiting to absorb %d stale arbitration response(s)", m.pendingStartAbsorb)
+		}
 		m.stateMu.Unlock()
 		return
 	}
@@ -3675,6 +3695,9 @@ func (m *Mux) tryGrantAndStart() {
 				shouldAdvance := false
 				if m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
+					if m.pendingStartAbsorb == 0 {
+						m.clearAbsorbSkipLogStateLocked()
+					}
 					shouldAdvance = m.pendingStartAbsorb == 0 && m.arb.hasPending()
 				}
 				m.stateMu.Unlock()
@@ -3799,6 +3822,9 @@ func (m *Mux) tryGrantAndStart() {
 					isCurrentGen := m.blockingArbGen == arbGen
 					if isCurrentGen && m.pendingStartAbsorb > 0 {
 						m.pendingStartAbsorb--
+						if m.pendingStartAbsorb == 0 {
+							m.clearAbsorbSkipLogStateLocked()
+						}
 					}
 					m.stateMu.Unlock()
 					if isCurrentGen && m.arb.hasPending() {
@@ -3832,6 +3858,9 @@ func (m *Mux) tryGrantAndStart() {
 				// Codex-R8: scope absorb + queue advance to our generation.
 				if isCurrentGen && m.pendingStartAbsorb > 0 {
 					m.pendingStartAbsorb--
+					if m.pendingStartAbsorb == 0 {
+						m.clearAbsorbSkipLogStateLocked()
+					}
 				}
 				m.stateMu.Unlock()
 				if isCurrentGen && m.arb.hasPending() {
@@ -4015,6 +4044,9 @@ func (m *Mux) handleArbitrationResponse(started bool, data byte) {
 	// pending request.
 	if m.pendingStartAbsorb > 0 {
 		m.pendingStartAbsorb--
+		if m.pendingStartAbsorb == 0 {
+			m.clearAbsorbSkipLogStateLocked()
+		}
 		shouldAdvance := !started && m.pendingStartAbsorb == 0 && m.pendingStart == nil && m.arb.hasPending()
 		// F-15 follow-up (PR #626 Codex bot review on b3b7f13 + e6b96ee
 		// — P1 finding): the absorb-consume branch used to reconnect
@@ -4524,9 +4556,15 @@ func (m *Mux) fireAbsorbReset() {
 	}
 	count := m.pendingStartAbsorb
 	reason := m.pendingAbsorbLastReason
-	m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22 debounce)", reason, count)
+	suppressed := m.absorbSkipLogSuppressedSince
+	if suppressed > 0 {
+		m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22 debounce) (%d suppressed)", reason, count, suppressed)
+	} else {
+		m.logger.Printf("adaptermux: absorb timeout reset reason=%s (was waiting for %d stale arbitration response(s)) (F-22 debounce)", reason, count)
+	}
 	m.absorbResetTotal.Add(1)
 	m.pendingStartAbsorb = 0
+	m.clearAbsorbSkipLogStateLocked()
 	// Clear the due-at so subsequent stale callbacks (extremely
 	// unlikely but possible if the runtime queued multiple fires)
 	// see the IsZero short-circuit and don't re-log.
@@ -4538,6 +4576,21 @@ func (m *Mux) fireAbsorbReset() {
 	if shouldAdvance {
 		m.tryGrantAndStart()
 	}
+}
+
+// clearAbsorbSkipLogStateLocked resets the rate-limit fields associated with
+// the absorb-skip log so the next absorb cycle starts with a fresh suppressed
+// counter and emit timestamp. Caller must hold stateMu.
+//
+// Why this exists: pendingStartAbsorb can return to zero via several paths
+// (fireAbsorbReset deadline, normal stale-response consumption via
+// handleArbitrationResponse + the cancelled-start decrement branches in
+// sendLoop). Without this reset, a stale (N suppressed) suffix from a
+// previous absorb episode could leak into the first eligible skip-log of
+// the next episode, misrepresenting the rate (Codex review on PR #660).
+func (m *Mux) clearAbsorbSkipLogStateLocked() {
+	m.absorbSkipLogSuppressedSince = 0
+	m.absorbSkipLogLastEmit = time.Time{}
 }
 
 // sendLoop processes send requests from the active path and external sessions.

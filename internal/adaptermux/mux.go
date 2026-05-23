@@ -980,12 +980,20 @@ func (m *Mux) Close() error {
 		}
 		sessWg.Wait()
 
-		// Close adapter connection.
+		// Close adapter transport. The readLoop blocks in m.upstream, not
+		// necessarily m.conn; test transports and some wrappers are distinct
+		// objects, so closing only conn can leave readLoop parked forever.
 		m.connMu.Lock()
-		if m.conn != nil {
-			m.closeErr = m.conn.Close()
-		}
+		upstream := m.upstream
+		conn := m.conn
+		m.upstream = nil
+		m.conn = nil
 		m.connMu.Unlock()
+		if upstream != nil {
+			m.closeErr = upstream.Close()
+		} else if conn != nil {
+			m.closeErr = conn.Close()
+		}
 
 		m.wg.Wait()
 

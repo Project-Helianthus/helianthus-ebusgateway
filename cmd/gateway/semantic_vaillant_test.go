@@ -2481,6 +2481,33 @@ func TestDeriveFM5SemanticModeTransitions(t *testing.T) {
 			want:                graphql.Fm5SemanticModeGPIOOnly,
 		},
 		{
+			name:                "partial solar evidence is not interpreted",
+			controllerReachable: true,
+			fm5GateSatisfied:    true,
+			solarReadable:       true,
+			cylindersReadable:   false,
+			hasEvidence:         true,
+			want:                graphql.Fm5SemanticModeGPIOOnly,
+		},
+		{
+			name:                "partial cylinder evidence is not interpreted",
+			controllerReachable: true,
+			fm5GateSatisfied:    true,
+			solarReadable:       false,
+			cylindersReadable:   true,
+			hasEvidence:         true,
+			want:                graphql.Fm5SemanticModeGPIOOnly,
+		},
+		{
+			name:                "gate failure prevents interpretation",
+			controllerReachable: true,
+			fm5GateSatisfied:    false,
+			solarReadable:       true,
+			cylindersReadable:   true,
+			hasEvidence:         true,
+			want:                graphql.Fm5SemanticModeGPIOOnly,
+		},
+		{
 			name:                "absent",
 			controllerReachable: false,
 			fm5GateSatisfied:    false,
@@ -4736,6 +4763,256 @@ func TestRadioInventoryRegistryInfo_MaterializesVR71PhysicalDevice(t *testing.T)
 	}
 	if info.Address != 0x26 || info.Manufacturer != "Vaillant" || info.DeviceID != "VR_71" {
 		t.Fatalf("radioInventoryRegistryInfo = %+v; want VR_71 at 0x26", info)
+	}
+}
+
+func TestRegistryRadioDeviceSeeds_UsesKnownRegulatorAndFM5Identities(t *testing.T) {
+	t.Parallel()
+
+	reg := newTestRegistry(
+		registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"},
+		registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
+	)
+	poller := newTestPoller(reg)
+
+	seeds := poller.registryRadioDeviceSeeds()
+
+	regulator := seeds[radioDeviceKey{Group: remoteRegulators.group, Instance: 0}]
+	if regulator == nil || regulator.DeviceClassAddress == nil || *regulator.DeviceClassAddress != 0x15 {
+		t.Fatalf("regulator seed = %+v; want BASV2 class address 0x15", regulator)
+	}
+	fm5 := seeds[radioDeviceKey{Group: remoteFunctionalModules.group, Instance: 0}]
+	if fm5 == nil || fm5.DeviceClassAddress == nil || *fm5.DeviceClassAddress != 0x26 {
+		t.Fatalf("functional module seed = %+v; want VR_71 class address 0x26", fm5)
+	}
+}
+
+func TestStartupRadioDeviceInclude_SkipsDisconnectedRegulatorSlots(t *testing.T) {
+	t.Parallel()
+
+	classAddress := uint8(0x26)
+
+	if include, _ := startupRadioDeviceInclude(remoteRegulators.group, false, &classAddress); include {
+		t.Fatal("disconnected regulator slot included; want skipped")
+	}
+	if include, mode := startupRadioDeviceInclude(remoteFunctionalModules.group, false, &classAddress); !include || mode != "inventory" {
+		t.Fatalf("functional module identity evidence include=%v mode=%q; want inventory include", include, mode)
+	}
+	if include, _ := startupRadioDeviceInclude(remoteFunctionalModules.group, false, nil); include {
+		t.Fatal("empty functional module slot included; want skipped")
+	}
+}
+
+func TestStartupRadioFullScanGroups_AreSelectedPerGroup(t *testing.T) {
+	t.Parallel()
+
+	allUnseeded := startupRadioFullScanGroups(nil)
+	for _, grp := range remoteDeviceGroups {
+		if !allUnseeded[grp.group] {
+			t.Fatalf("empty radio discovery should require full scan for group 0x%02x", grp.group)
+		}
+	}
+
+	discovered := map[radioDeviceKey]*vaillantRadioDeviceSnapshot{
+		{Group: remoteRegulators.group, Instance: 0}: nil,
+	}
+	seededRegulator := startupRadioFullScanGroups(discovered)
+	if seededRegulator[remoteRegulators.group] {
+		t.Fatal("low-slot seeded regulator group should stay on fast scan")
+	}
+	if !seededRegulator[remoteThermostats.group] {
+		t.Fatal("unseeded thermostat group should still require full scan")
+	}
+
+	discovered[radioDeviceKey{Group: remoteThermostats.group, Instance: semanticStartupSlotFastMaxInstance + 1}] = nil
+	highSeededThermostat := startupRadioFullScanGroups(discovered)
+	if !highSeededThermostat[remoteThermostats.group] {
+		t.Fatal("seeded high thermostat slot should require full scan")
+	}
+}
+
+func TestRefreshDHWStartup_DoesNotPromoteCacheWithoutLiveProbe(t *testing.T) {
+	t.Parallel()
+
+	currentTemp := 47.5
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetDHWFromCache(&graphql.DhwStatus{
+		State: graphql.DhwState{CurrentTempC: &currentTemp},
+	})
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		dhw: &vaillantDhwSnapshot{
+			CurrentTempC: &currentTemp,
+		},
+		nowFn: time.Now,
+	}
+
+	poller.refreshDHWStartup(context.Background())
+
+	if _, liveEpoch := provider.StartupEpochs(); liveEpoch != 0 {
+		t.Fatalf("live epoch after cache-only DHW startup = %d; want 0", liveEpoch)
+	}
+	if got := provider.StartupPhase(); got != graphql.SemanticStartupPhaseCacheLoadedStale {
+		t.Fatalf("startup phase after cache-only DHW startup = %s; want %s", got, graphql.SemanticStartupPhaseCacheLoadedStale)
+	}
+}
+
+func TestRefreshBoilerStatusStartup_DoesNotPromoteCacheWithoutLiveProbe(t *testing.T) {
+	t.Parallel()
+
+	flowTemp := 42.0
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetBoilerStatusFromCache(&graphql.BoilerStatus{
+		State: graphql.BoilerState{FlowTemperatureC: &flowTemp},
+	})
+	poller := &vaillantSemanticPoller{
+		provider:      provider,
+		boilerAddress: 0x08,
+		boiler: &vaillantBoilerSnapshot{
+			FlowTemperatureC: &flowTemp,
+		},
+		nowFn: time.Now,
+	}
+
+	poller.refreshBoilerStatusStartup(context.Background())
+
+	if _, liveEpoch := provider.StartupEpochs(); liveEpoch != 0 {
+		t.Fatalf("live epoch after cache-only boiler startup = %d; want 0", liveEpoch)
+	}
+	if got := provider.StartupPhase(); got != graphql.SemanticStartupPhaseCacheLoadedStale {
+		t.Fatalf("startup phase after cache-only boiler startup = %s; want %s", got, graphql.SemanticStartupPhaseCacheLoadedStale)
+	}
+}
+
+func TestStartupL1PrimingStatusRequiresCriticalPlanes(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{provider: provider}
+
+	if status := poller.startupL1PrimingStatus(); status.ready() {
+		t.Fatalf("empty startup status ready = true; status=%s", status.String())
+	}
+
+	connected := true
+	provider.SetZones([]graphql.Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetDHW(&graphql.DhwStatus{})
+	provider.SetCircuits([]graphql.CircuitStatus{{Index: 0}})
+	provider.SetSystem(&graphql.SystemStatus{})
+	provider.SetRadioDevices([]graphql.RadioDevice{{
+		Group:           int(remoteRegulators.group),
+		Instance:        0,
+		DeviceConnected: &connected,
+	}})
+	provider.SetSolar(&graphql.SolarStatus{})
+	provider.SetCylinders([]graphql.CylinderStatus{{Index: 0}})
+	provider.SetBoilerStatus(&graphql.BoilerStatus{})
+
+	status := poller.startupL1PrimingStatus()
+	if status.fm5GateKnown {
+		t.Fatalf("startup status fm5GateKnown = true without module config; status=%s", status.String())
+	}
+	if !status.ready() {
+		t.Fatalf("complete startup status ready = false; status=%s", status.String())
+	}
+
+	moduleConfig := uint16(1)
+	poller.mu.Lock()
+	poller.system = &vaillantSystemSnapshot{ModuleConfigurationVR71: &moduleConfig}
+	poller.mu.Unlock()
+	if status := poller.startupL1PrimingStatus(); !status.fm5GateKnown {
+		t.Fatalf("startup status fm5GateKnown = false with module config; status=%s", status.String())
+	}
+}
+
+func TestStartupL1PrimingStatusTreatsOptionalFM5AndEmptyRadioAsReady(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetZones([]graphql.Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetDHW(&graphql.DhwStatus{})
+	provider.SetCircuits([]graphql.CircuitStatus{{Index: 0}})
+	provider.SetSystem(&graphql.SystemStatus{})
+	provider.SetBoilerStatus(&graphql.BoilerStatus{})
+	poller := &vaillantSemanticPoller{
+		provider:                  provider,
+		startupRadioDevicesProbed: true,
+	}
+
+	status := poller.startupL1PrimingStatus()
+	if status.fm5Evidence || !status.fm5Satisfied {
+		t.Fatalf("optional FM5 status = %s; want no evidence and satisfied", status.String())
+	}
+	if !status.radioDevices {
+		t.Fatalf("radioDevices readiness = false after completed empty startup probe; status=%s", status.String())
+	}
+	if !status.ready() {
+		t.Fatalf("startup status ready = false for optional FM5/empty radio; status=%s", status.String())
+	}
+}
+
+func TestStartupL1PrimingStatusRequiresFM5PlanesWhenInterpreted(t *testing.T) {
+	t.Parallel()
+
+	connected := true
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetZones([]graphql.Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetDHW(&graphql.DhwStatus{})
+	provider.SetCircuits([]graphql.CircuitStatus{{Index: 0}})
+	provider.SetSystem(&graphql.SystemStatus{})
+	provider.SetRadioDevices([]graphql.RadioDevice{{
+		Group:           int(remoteFunctionalModules.group),
+		Instance:        0,
+		DeviceConnected: &connected,
+	}})
+	provider.SetBoilerStatus(&graphql.BoilerStatus{})
+
+	moduleConfig := uint16(1)
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		reg: newTestRegistry(
+			registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
+		),
+		system: &vaillantSystemSnapshot{ModuleConfigurationVR71: &moduleConfig},
+	}
+
+	status := poller.startupL1PrimingStatus()
+	if !status.fm5Evidence || !status.fm5Required || status.fm5Satisfied {
+		t.Fatalf("interpreted FM5 status = %s; want evidence, required, unsatisfied", status.String())
+	}
+	if status.ready() {
+		t.Fatalf("startup status ready = true without interpreted FM5 planes; status=%s", status.String())
+	}
+
+	provider.SetSolar(&graphql.SolarStatus{})
+	provider.SetCylinders([]graphql.CylinderStatus{{Index: 0}})
+	if status := poller.startupL1PrimingStatus(); !status.ready() {
+		t.Fatalf("startup status ready = false after interpreted FM5 planes; status=%s", status.String())
+	}
+}
+
+func TestReconcileDiscoveryPresence_PublishesStartupZonesOnFirstHit(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		provider:         provider,
+		zones:            make(map[byte]*vaillantZoneSnapshot),
+		presence:         make(map[byte]*zonePresenceRecord),
+		zoneHitThreshold: 2,
+		nowFn:            time.Now,
+	}
+
+	source := poller.reconcileDiscoveryPresence(
+		context.Background(),
+		map[byte]bool{0: true, 1: true},
+		map[byte]bool{0: true, 1: true},
+	)
+	poller.publishZones(source)
+
+	zones := provider.Zones()
+	if len(zones) != 2 {
+		t.Fatalf("published zones = %d; want 2 after first startup hit", len(zones))
 	}
 }
 

@@ -445,9 +445,13 @@ func (a *arbitrator) cancelStart(sessionID uint64) bool {
 // holding an external pending START in the queue until a fairness
 // quantum elapses only wastes wall-clock that ebusd's local
 // arbitration deadline counts against the gateway. When busIdle is
-// true and external is pending, this function grants the external
-// FIFO head immediately and does NOT advance the fairness counter.
-// (Proxy-bug C1 / R1.)
+// true, external is pending, and the gateway is NOT pending, this
+// function grants the external FIFO head immediately and does NOT
+// advance the fairness counter. If both classes are pending, the
+// situation is real mux contention even if the wire is currently
+// between frames; F-25 fairness must still rotate the grant or a
+// continuous external scanner can hold the gateway near zero until it
+// stops. (Proxy-bug C1 / R1, bounded by F-25.)
 //
 // Ownership is NOT set here — the caller MUST call confirmOwnership
 // after the adapter's StartArbitration succeeds (Codex P1 #3060199707:
@@ -478,12 +482,12 @@ func (a *arbitrator) tryGrant(busIdle bool) (req *startRequest, granted bool) {
 	externalPending := len(a.pendingExternal) > 0
 
 	// Bus-idle fast path: grant external immediately and skip the
-	// fairness rotation entirely. The bus is wide open, so there's
-	// no reason to defer external for a fairness quantum. Gateway
-	// would also be granted on the next tryGrant invocation if it
-	// has any pending work (caller invokes tryGrantAndStart on every
-	// SYN boundary). (Proxy-bug C1 / R1.)
-	if busIdle && externalPending {
+	// fairness rotation entirely only when gateway is not also
+	// bidding. The bus is wide open and no gateway contender exists,
+	// so there is no fairness decision to make. When gatewayPending is
+	// true, this is a contended mux decision and must fall through to
+	// the normal F-25 rotation. (Proxy-bug C1 / R1 bounded by F-25.)
+	if busIdle && externalPending && !gatewayPending {
 		ext := a.pendingExternal[0]
 		a.pendingExternal = a.pendingExternal[1:]
 		return ext, true

@@ -6,19 +6,18 @@ import (
 	"time"
 )
 
-// TestTryGrant_BusIdle_ExternalPreemptsFairnessWindow pins proxy-bug
-// C1 (R1): when both gateway and external are pending AND the wire
-// has been idle for at least one SYN interval, tryGrant must grant
-// external FIRST without advancing the fairness counter — on an
-// uncontended bus, the fairness rotation is wasted wall-clock that
-// ebusd's local arbitration deadline (~50 ms) counts against the
-// gateway, even when no contention exists.
-func TestTryGrant_BusIdle_ExternalPreemptsFairnessWindow(t *testing.T) {
+// TestTryGrant_BusIdle_ExternalOnlyUsesFastPath pins proxy-bug C1
+// (R1): when external is pending, gateway is not pending, and the wire
+// has been idle for at least one SYN interval, tryGrant grants external
+// immediately without advancing the fairness counter. With no gateway
+// contender there is no F-25 fairness decision to make, and waiting for
+// the SYN-driven grant rhythm wastes ebusd's local arbitration budget.
+func TestTryGrant_BusIdle_ExternalOnlyUsesFastPath(t *testing.T) {
 	arb := newArbitrator()
 	arb.setPolicy(24*time.Hour, 0, 0) // disable C3 TTL for this test
 
-	// Both classes pending — same shape as the legacy fairness test.
-	_ = arb.requestStart(gatewaySessionID, 0x71)
+	// Only external is pending. If gateway also has a request, the
+	// F-25 contention rotation must decide the grant instead.
 	_ = arb.requestStart(1, 0x31)
 
 	priorCounter := arb.fairnessCounter
@@ -34,7 +33,7 @@ func TestTryGrant_BusIdle_ExternalPreemptsFairnessWindow(t *testing.T) {
 		t.Fatalf("idle-bus fast path: granted initiator 0x%02X, want 0x31", req.initiator)
 	}
 	if got := arb.fairnessCounter; got != priorCounter {
-		t.Fatalf("fairness counter advanced (%d → %d) on idle-bus fast path; must NOT — fast path is not a contention rotation",
+		t.Fatalf("fairness counter advanced (%d → %d) on idle-bus fast path; must NOT — external-only fast path is not a contention rotation",
 			priorCounter, got)
 	}
 }

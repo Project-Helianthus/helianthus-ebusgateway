@@ -186,6 +186,7 @@ const (
 	semanticStartupProbeTimeout        = 900 * time.Millisecond
 	semanticStartupSlotFastMaxInstance = byte(0x02)
 	semanticStartupSlotFullMaxInstance = byte(0x0A)
+	semanticStartupCriticalDHWAttempts = 3
 )
 
 var (
@@ -1282,11 +1283,16 @@ func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Contex
 	for {
 		attempts++
 		status := p.startupL1PrimingStatus()
+		if !status.dhw {
+			p.refreshDHWStartupUntilReady(primingCtx, 1)
+			status = p.startupL1PrimingStatus()
+		}
 		if !status.zones {
 			p.refreshZoneDiscovery(primingCtx, true)
+			status = p.startupL1PrimingStatus()
 		}
 		if !status.dhw {
-			p.refreshDHWStartup(primingCtx)
+			p.refreshDHWStartupUntilReady(primingCtx, 1)
 		}
 		if !status.system {
 			p.refreshSystemStartup(primingCtx)
@@ -1337,6 +1343,67 @@ func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Contex
 		case <-timer.C:
 		}
 	}
+}
+
+func (p *vaillantSemanticPoller) refreshStartupCriticalSemanticPlanes(ctx context.Context) {
+	if p == nil || p.provider == nil {
+		return
+	}
+
+	p.publishStartupSchedules()
+	status := p.startupL1PrimingStatus()
+	if !status.dhw {
+		p.refreshDHWStartupUntilReady(ctx, semanticStartupCriticalDHWAttempts)
+	}
+	status = p.startupL1PrimingStatus()
+	if !status.system {
+		p.refreshSystemStartup(ctx)
+	}
+	status = p.startupL1PrimingStatus()
+	if !status.boilerStatus {
+		p.refreshBoilerStatusStartup(ctx)
+	}
+}
+
+func (p *vaillantSemanticPoller) refreshDHWStartupUntilReady(ctx context.Context, attempts int) bool {
+	if p == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if attempts <= 0 {
+		attempts = 1
+	}
+	for attempt := 0; attempt < attempts; attempt++ {
+		if p.startupL1PrimingStatus().dhw {
+			return true
+		}
+		p.refreshDHWStartup(ctx)
+		if p.startupL1PrimingStatus().dhw {
+			return true
+		}
+		if attempt == attempts-1 {
+			break
+		}
+		delay := semanticStartupPrimingRetryDelay
+		if delay <= 0 {
+			delay = 50 * time.Millisecond
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return false
+		case <-timer.C:
+		}
+	}
+	return p.startupL1PrimingStatus().dhw
 }
 
 type startupL1PrimingStatus struct {
@@ -2362,6 +2429,9 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	}
 	p.mu.Unlock()
 
+	if primeStartup {
+		p.refreshStartupCriticalSemanticPlanes(ctx)
+	}
 	p.refreshZoneDiscovery(ctx, primeStartup)
 	if primeStartup {
 		p.refreshStartupSemanticPlanes(ctx)

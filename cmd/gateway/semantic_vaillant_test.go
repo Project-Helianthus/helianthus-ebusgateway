@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -472,6 +474,131 @@ func TestReadB524StartupUsesLivePathWithoutScheduler(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("send calls = %d; want 1", calls)
+	}
+}
+
+func TestRefreshDiscoveryPrimesDHWBeforeStartupZoneScan(t *testing.T) {
+	t.Parallel()
+
+	var selectors [][]byte
+	poller := &vaillantSemanticPoller{
+		provider:       graphql.NewLiveSemanticProvider(),
+		reg:            newTestRegistry(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV"}),
+		tasks:          newSemanticTaskScheduler(),
+		zones:          make(map[byte]*vaillantZoneSnapshot),
+		presence:       make(map[byte]*zonePresenceRecord),
+		circuits:       make(map[byte]*vaillantCircuitSnapshot),
+		radioDevices:   make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		solarCylinders: make(map[byte]*vaillantCylinderSnapshot),
+		source:         0x7F,
+		requestTimeout: 50 * time.Millisecond,
+		b524ProbeFn: func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+			return target == 0x15
+		},
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if frame.Primary != vaillantExtRegisterPrimary || frame.Secondary != vaillantExtRegisterSecondary || len(frame.Data) != 6 {
+			return &protocol.Frame{Data: []byte{0x00}}, nil
+		}
+		selector := slices.Clone(frame.Data)
+		selectors = append(selectors, selector)
+		group := selector[2]
+		instance := selector[3]
+		addr := uint16(selector[4]) | uint16(selector[5])<<8
+		payload := []byte{0x00}
+		switch {
+		case group == localDHW.group && instance == dhwInstance && addr == dhw_current_temp:
+			payload = make([]byte, 4)
+			binary.LittleEndian.PutUint32(payload, math.Float32bits(48.5))
+		case group == localDHW.group && instance == dhwInstance && addr == dhw_operation_mode:
+			payload = []byte{0x01, 0x00}
+		case group == localZones.group && addr == zone_index:
+			payload = []byte{0xFF}
+		}
+		data := []byte{0x01, instance, group, byte(addr), byte(addr >> 8)}
+		data = append(data, payload...)
+		return &protocol.Frame{Data: data}, nil
+	}
+
+	poller.refreshDiscovery(context.Background())
+
+	if len(selectors) == 0 {
+		t.Fatal("refreshDiscovery sent no B524 startup reads")
+	}
+	first := selectors[0]
+	if first[2] != localDHW.group || first[3] != dhwInstance {
+		t.Fatalf("first startup selector = % x; want DHW before zone scan", first)
+	}
+	if dhw := poller.provider.DHW(); dhw == nil {
+		t.Fatal("provider.DHW() = nil; want critical DHW singleton primed during discovery")
+	}
+}
+
+func TestRefreshDiscoveryRetriesDHWBeforeStartupZoneScan(t *testing.T) {
+	t.Parallel()
+
+	dhwRequests := 0
+	zoneRequestsBeforeDHWSuccess := 0
+	dhwSawLiveResponse := false
+	poller := &vaillantSemanticPoller{
+		provider:       graphql.NewLiveSemanticProvider(),
+		reg:            newTestRegistry(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV"}),
+		tasks:          newSemanticTaskScheduler(),
+		zones:          make(map[byte]*vaillantZoneSnapshot),
+		presence:       make(map[byte]*zonePresenceRecord),
+		circuits:       make(map[byte]*vaillantCircuitSnapshot),
+		radioDevices:   make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		solarCylinders: make(map[byte]*vaillantCylinderSnapshot),
+		source:         0x7F,
+		requestTimeout: 50 * time.Millisecond,
+		b524ProbeFn: func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool {
+			return target == 0x15
+		},
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if frame.Primary != vaillantExtRegisterPrimary || frame.Secondary != vaillantExtRegisterSecondary || len(frame.Data) != 6 {
+			return &protocol.Frame{Data: []byte{0x00}}, nil
+		}
+		selector := frame.Data
+		group := selector[2]
+		instance := selector[3]
+		addr := uint16(selector[4]) | uint16(selector[5])<<8
+		if group == localZones.group && !dhwSawLiveResponse {
+			zoneRequestsBeforeDHWSuccess++
+		}
+		if group == localDHW.group {
+			dhwRequests++
+			if dhwRequests <= 2 {
+				return nil, errors.New("transient dhw startup miss")
+			}
+		}
+		payload := []byte{0x00}
+		switch {
+		case group == localDHW.group && instance == dhwInstance && addr == dhw_current_temp:
+			payload = make([]byte, 4)
+			binary.LittleEndian.PutUint32(payload, math.Float32bits(48.5))
+			dhwSawLiveResponse = true
+		case group == localDHW.group && instance == dhwInstance && addr == dhw_operation_mode:
+			payload = []byte{0x01, 0x00}
+			dhwSawLiveResponse = true
+		case group == localZones.group && addr == zone_index:
+			payload = []byte{0xFF}
+		}
+		data := []byte{0x01, instance, group, byte(addr), byte(addr >> 8)}
+		data = append(data, payload...)
+		return &protocol.Frame{Data: data}, nil
+	}
+
+	poller.refreshDiscovery(context.Background())
+
+	if dhwRequests < 4 {
+		t.Fatalf("DHW startup requests = %d; want retry after first probe pair fails", dhwRequests)
+	}
+	if zoneRequestsBeforeDHWSuccess != 0 {
+		t.Fatalf("zone requests before DHW live response = %d; want 0", zoneRequestsBeforeDHWSuccess)
+	}
+	if dhw := poller.provider.DHW(); dhw == nil {
+		t.Fatal("provider.DHW() = nil; want retry to prime DHW before startup zone scan")
 	}
 }
 

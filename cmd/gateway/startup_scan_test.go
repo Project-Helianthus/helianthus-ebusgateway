@@ -169,6 +169,112 @@ func TestShouldStopSourceAdmissionScan(t *testing.T) {
 	}
 }
 
+func TestStartDiscoveryScanLoop_SourceSelectionActiveProbeReleasesSemanticBootstrap(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{
+		Transport: transport.NewLoopback(),
+	})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gateway.Close(); err != nil {
+			t.Fatalf("gateway.Close error = %v", err)
+		}
+	})
+
+	origRegistryScanDirectedFn := registryScanDirectedFn
+	origProbeFn := startupScanB524ProbeFn
+	origLoopExitFn := startupScanLoopExitFn
+	origEnrichVaillantIdentityFn := enrichVaillantIdentityFn
+	origEnrichSerialsFromEbusdFn := enrichSerialsFromEbusdFn
+	origPostStartupIdentityRetryFn := postStartupIdentityRetryFn
+	t.Cleanup(func() {
+		registryScanDirectedFn = origRegistryScanDirectedFn
+		startupScanB524ProbeFn = origProbeFn
+		startupScanLoopExitFn = origLoopExitFn
+		enrichVaillantIdentityFn = origEnrichVaillantIdentityFn
+		enrichSerialsFromEbusdFn = origEnrichSerialsFromEbusdFn
+		postStartupIdentityRetryFn = origPostStartupIdentityRetryFn
+	})
+
+	var (
+		mu      sync.Mutex
+		scanRun int
+	)
+	registryScanDirectedFn = func(_ context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+		mu.Lock()
+		scanRun++
+		mu.Unlock()
+		entry := reg.Register(registry.DeviceInfo{
+			Address:      0x15,
+			Manufacturer: "Vaillant",
+			DeviceID:     "BASV2",
+		})
+		return []registry.DeviceEntry{entry}, nil
+	}
+	startupScanB524ProbeFn = func(context.Context, byte, byte, byte, byte, uint16) bool {
+		return false
+	}
+	loopExited := make(chan struct{}, 1)
+	startupScanLoopExitFn = func() {
+		select {
+		case loopExited <- struct{}{}:
+		default:
+		}
+	}
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {}
+	enrichSerialsFromEbusdFn = func(context.Context, *registry.DeviceRegistry, ebusgateway.TransportConfig) {}
+	postStartupIdentityRetryFn = func(context.Context, *ebusgateway.Gateway, *graphql.Builder, ebusgateway.Config, *ebusgateway.TransportConfig) {
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = time.Hour
+	cfg.ScanSource = 0x7F
+	cfg.ScanSourceAuto = false
+	cfg.StartupCompanionTarget = 0x84
+	cfg.StartupProbeTargets = []byte{0x04, 0x08, 0x26}
+	cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "127.0.0.1:19001"
+
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+
+	select {
+	case <-signals.activeProbePassed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("activeProbePassed was not signaled from source-selection active evidence")
+	}
+	select {
+	case <-signals.semanticBootstrapReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("semanticBootstrapReady was not released with active source evidence")
+	}
+	select {
+	case <-loopExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scan loop did not exit after source-selection active evidence")
+	}
+
+	mu.Lock()
+	gotScanRun := scanRun
+	mu.Unlock()
+	if gotScanRun != 1 {
+		t.Fatalf("directed scan runs = %d; want 1 before semantic bootstrap release", gotScanRun)
+	}
+}
+
+func TestPostStartupIdentityRetryDefaultDoesNotCompeteWithStartupL1(t *testing.T) {
+	t.Parallel()
+
+	if postStartupIdentityRetryDelay < 60*time.Second {
+		t.Fatalf("postStartupIdentityRetryDelay = %s; want >=60s so physical serial enrichment cannot consume the L1 startup window", postStartupIdentityRetryDelay)
+	}
+}
+
 func TestShouldRetryDiscoveryWithFullRange(t *testing.T) {
 	origProbeFn := startupScanB524ProbeFn
 	t.Cleanup(func() { startupScanB524ProbeFn = origProbeFn })

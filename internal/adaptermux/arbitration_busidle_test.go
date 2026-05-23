@@ -6,19 +6,18 @@ import (
 	"time"
 )
 
-// TestTryGrant_BusIdle_ExternalPreemptsFairnessWindow pins proxy-bug
-// C1 (R1): when both gateway and external are pending AND the wire
-// has been idle for at least one SYN interval, tryGrant must grant
-// external FIRST without advancing the fairness counter — on an
-// uncontended bus, the fairness rotation is wasted wall-clock that
-// ebusd's local arbitration deadline (~50 ms) counts against the
-// gateway, even when no contention exists.
-func TestTryGrant_BusIdle_ExternalPreemptsFairnessWindow(t *testing.T) {
+// TestTryGrant_BusIdle_ExternalOnlyUsesFastPath pins proxy-bug C1
+// (R1): when external is pending, gateway is not pending, and the wire
+// has been idle for at least one SYN interval, tryGrant grants external
+// immediately without advancing the fairness counter. With no gateway
+// contender there is no F-25 fairness decision to make, and waiting for
+// the SYN-driven grant rhythm wastes ebusd's local arbitration budget.
+func TestTryGrant_BusIdle_ExternalOnlyUsesFastPath(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour, 0, 0) // disable C3 TTL for this test
+	arb.setPolicy(24*time.Hour, 0, 0) // disable C3 TTL for this test
 
-	// Both classes pending — same shape as the legacy fairness test.
-	_ = arb.requestStart(gatewaySessionID, 0x71)
+	// Only external is pending. If gateway also has a request, the
+	// F-25 contention rotation must decide the grant instead.
 	_ = arb.requestStart(1, 0x31)
 
 	priorCounter := arb.fairnessCounter
@@ -34,8 +33,54 @@ func TestTryGrant_BusIdle_ExternalPreemptsFairnessWindow(t *testing.T) {
 		t.Fatalf("idle-bus fast path: granted initiator 0x%02X, want 0x31", req.initiator)
 	}
 	if got := arb.fairnessCounter; got != priorCounter {
-		t.Fatalf("fairness counter advanced (%d → %d) on idle-bus fast path; must NOT — fast path is not a contention rotation",
+		t.Fatalf("fairness counter advanced (%d → %d) on idle-bus fast path; must NOT — external-only fast path is not a contention rotation",
 			priorCounter, got)
+	}
+}
+
+// TestTryGrant_BusIdle_BothPendingStillRotatesFairly pins the live
+// 2026-05-23 starvation regression: a continuous external scanner can
+// make every grant decision look "bus idle" at the mux boundary. The
+// idle fast path must not bypass F-25 when the gateway is also pending,
+// or a low-priority gateway initiator (0x7F) can be held near zero until
+// the external scanner (0x31) stops.
+func TestTryGrant_BusIdle_BothPendingStillRotatesFairly(t *testing.T) {
+	arb := newArbitrator()
+	arb.setPolicy(24*time.Hour, 0, 0)
+
+	totalRounds := DefaultFairnessRatio * 3
+	externalGrants := 0
+	gatewayGrants := 0
+
+	for i := 0; i < totalRounds; i++ {
+		gwCh := arb.requestStart(gatewaySessionID, 0x7F)
+		extCh := arb.requestStart(1, 0x31)
+
+		req, granted := arb.tryGrant(true)
+		if !granted {
+			t.Fatalf("round %d: expected grant", i)
+		}
+		arb.confirmOwnership(req.sessionID, req.initiator)
+		req.notify <- startResult{granted: true, initiator: req.initiator}
+
+		if req.sessionID == gatewaySessionID {
+			gatewayGrants++
+			arb.cancelStart(1)
+			<-extCh
+		} else {
+			externalGrants++
+			arb.cancelStart(gatewaySessionID)
+			<-gwCh
+		}
+
+		arb.releaseOwnership(req.sessionID)
+	}
+
+	wantExternal := totalRounds / DefaultFairnessRatio
+	wantGateway := totalRounds - wantExternal
+	if externalGrants != wantExternal || gatewayGrants != wantGateway {
+		t.Fatalf("idle contended rotation: ext=%d gw=%d; want ext=%d gw=%d",
+			externalGrants, gatewayGrants, wantExternal, wantGateway)
 	}
 }
 
@@ -45,7 +90,7 @@ func TestTryGrant_BusIdle_ExternalPreemptsFairnessWindow(t *testing.T) {
 // branch grants normally.
 func TestTryGrant_BusIdle_GatewayOnly_StillGranted(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour, 0, 0)
+	arb.setPolicy(24*time.Hour, 0, 0)
 
 	_ = arb.requestStart(gatewaySessionID, 0x71)
 
@@ -64,7 +109,7 @@ func TestTryGrant_BusIdle_GatewayOnly_StillGranted(t *testing.T) {
 // unchanged. This is the regression guard for the legacy semantic.
 func TestTryGrant_NotIdle_GatewayPriorityPreserved(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour, 0, 0)
+	arb.setPolicy(24*time.Hour, 0, 0)
 
 	_ = arb.requestStart(gatewaySessionID, 0x71)
 	_ = arb.requestStart(1, 0x31)
@@ -90,7 +135,7 @@ func TestPendingExternalTTL_StaleEntryRejected(t *testing.T) {
 	base := time.Now()
 	clock := base
 	arb.nowFn = func() time.Time { return clock }
-	arb.setPolicy(50 * time.Millisecond, 0, 0)
+	arb.setPolicy(50*time.Millisecond, 0, 0)
 
 	// Stale entry first.
 	staleCh := arb.requestStart(1, 0x31)
@@ -141,7 +186,7 @@ func TestPendingExternalTTL_StaleEntryRejected(t *testing.T) {
 // abandoned request.
 func TestRequestStart_ReplaceMarksCancelledFlag(t *testing.T) {
 	arb := newArbitrator()
-	arb.setPolicy(24 * time.Hour, 0, 0)
+	arb.setPolicy(24*time.Hour, 0, 0)
 
 	// Reach into pendingExternal to grab the pointer before replace.
 	_ = arb.requestStart(1, 0x31)

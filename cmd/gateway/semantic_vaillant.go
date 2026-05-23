@@ -182,6 +182,17 @@ var remoteDeviceGroups = []b524GroupDef{
 	remoteFunctionalModules,
 }
 
+const (
+	semanticStartupProbeTimeout        = 900 * time.Millisecond
+	semanticStartupSlotFastMaxInstance = byte(0x02)
+	semanticStartupSlotFullMaxInstance = byte(0x0A)
+)
+
+var (
+	semanticStartupPrimingBudget     = 35 * time.Second
+	semanticStartupPrimingRetryDelay = 500 * time.Millisecond
+)
+
 // deviceSlotKey identifies a single device slot by its OP=0x06 group+instance.
 type deviceSlotKey struct {
 	Group    byte
@@ -315,29 +326,31 @@ type vaillantSemanticPoller struct {
 	catalog    productids.Catalog
 	catalogErr error
 
-	mu                       sync.Mutex
-	controller               byte
-	boilerAddress            byte
-	regulatorCapability      productids.ControllerCapability
-	regAbsenceState          regulatorAbsenceState
-	regAbsenceSince          time.Time
-	registryDeviceCount      int
-	regulatorRecheckInterval time.Duration
-	regulatorAbsenceGrace    time.Duration
-	zones                    map[byte]*vaillantZoneSnapshot
-	presence                 map[byte]*zonePresenceRecord
-	dhw                      *vaillantDhwSnapshot
-	dhwLastUpdateAt          time.Time
-	boiler                   *vaillantBoilerSnapshot
-	system                   *vaillantSystemSnapshot
-	circuits                 map[byte]*vaillantCircuitSnapshot
-	radioDevices             map[radioDeviceKey]*vaillantRadioDeviceSnapshot
-	deviceSlotCache          map[deviceSlotKey]bool // OP=0x06 slots where device_connected responded
-	deviceSlotDiscoveryDone  bool
-	deviceSlotDiscoveryAt    time.Time
-	fm5Mode                  graphql.Fm5SemanticMode
-	solar                    *vaillantSolarSnapshot
-	solarCylinders           map[byte]*vaillantCylinderSnapshot
+	mu                        sync.Mutex
+	controller                byte
+	boilerAddress             byte
+	regulatorCapability       productids.ControllerCapability
+	regAbsenceState           regulatorAbsenceState
+	regAbsenceSince           time.Time
+	registryDeviceCount       int
+	regulatorRecheckInterval  time.Duration
+	regulatorAbsenceGrace     time.Duration
+	zones                     map[byte]*vaillantZoneSnapshot
+	presence                  map[byte]*zonePresenceRecord
+	dhw                       *vaillantDhwSnapshot
+	dhwLastUpdateAt           time.Time
+	boiler                    *vaillantBoilerSnapshot
+	system                    *vaillantSystemSnapshot
+	circuits                  map[byte]*vaillantCircuitSnapshot
+	radioDevices              map[radioDeviceKey]*vaillantRadioDeviceSnapshot
+	deviceSlotCache           map[deviceSlotKey]bool // OP=0x06 slots where device_connected responded
+	deviceSlotDiscoveryDone   bool
+	deviceSlotDiscoveryAt     time.Time
+	startupSemanticPrimed     bool
+	startupRadioDevicesProbed bool
+	fm5Mode                   graphql.Fm5SemanticMode
+	solar                     *vaillantSolarSnapshot
+	solarCylinders            map[byte]*vaillantCylinderSnapshot
 
 	adapterInfo    *vaillantAdapterInfoState
 	startupBarrier <-chan struct{}
@@ -1233,6 +1246,636 @@ func (p *vaillantSemanticPoller) enqueueControllerSemanticPriming(ctx context.Co
 	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
 }
 
+func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Context) {
+	if p == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
+	if controller == 0 {
+		p.refreshDiscovery(ctx)
+		p.mu.Lock()
+		controller = p.controller
+		p.mu.Unlock()
+	}
+	if controller == 0 {
+		return
+	}
+	if p.provider == nil {
+		return
+	}
+
+	p.publishStartupSchedules()
+	primingCtx := ctx
+	cancel := func() {}
+	if semanticStartupPrimingBudget > 0 {
+		primingCtx, cancel = context.WithTimeout(ctx, semanticStartupPrimingBudget)
+	}
+	defer cancel()
+
+	attempts := 0
+	for {
+		attempts++
+		status := p.startupL1PrimingStatus()
+		if !status.zones {
+			p.refreshZoneDiscovery(primingCtx, true)
+		}
+		if !status.dhw {
+			p.refreshDHWStartup(primingCtx)
+		}
+		if !status.system {
+			p.refreshSystemStartup(primingCtx)
+		}
+		if !status.boilerStatus {
+			p.refreshBoilerStatusStartup(primingCtx)
+		}
+		status = p.startupL1PrimingStatus()
+		if !status.circuits {
+			p.refreshCircuitsStartup(primingCtx)
+		}
+		if !status.radioDevices {
+			p.refreshRadioDevicesStartup(primingCtx)
+		}
+		status = p.startupL1PrimingStatus()
+		if !status.fm5Satisfied && status.fm5Evidence && !status.fm5GateKnown {
+			p.refreshSystemStartup(primingCtx)
+			status = p.startupL1PrimingStatus()
+		}
+		if !status.fm5Satisfied && status.system {
+			p.refreshFM5SemanticStartup(primingCtx)
+		}
+		status = p.startupL1PrimingStatus()
+		if status.ready() {
+			log.Printf("semantic_startup_l1_priming result=ready attempts=%d %s", attempts, status.String())
+			return
+		}
+		if semanticStartupPrimingBudget <= 0 {
+			log.Printf("semantic_startup_l1_priming result=incomplete attempts=%d %s", attempts, status.String())
+			return
+		}
+
+		delay := semanticStartupPrimingRetryDelay
+		if delay <= 0 {
+			delay = 50 * time.Millisecond
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-primingCtx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			log.Printf("semantic_startup_l1_priming result=deadline attempts=%d %s", attempts, status.String())
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+type startupL1PrimingStatus struct {
+	zones        bool
+	dhw          bool
+	circuits     bool
+	system       bool
+	radioDevices bool
+	fm5GateKnown bool
+	fm5Evidence  bool
+	fm5Required  bool
+	fm5Satisfied bool
+	solar        bool
+	cylinders    bool
+	boilerStatus bool
+}
+
+func (status startupL1PrimingStatus) ready() bool {
+	return status.zones &&
+		status.dhw &&
+		status.circuits &&
+		status.system &&
+		status.radioDevices &&
+		status.fm5Satisfied &&
+		status.boilerStatus
+}
+
+func (status startupL1PrimingStatus) String() string {
+	return fmt.Sprintf(
+		"zones=%t dhw=%t circuits=%t system=%t radio_devices=%t fm5_gate_known=%t fm5_evidence=%t fm5_required=%t fm5_satisfied=%t solar=%t cylinders=%t boiler_status=%t",
+		status.zones,
+		status.dhw,
+		status.circuits,
+		status.system,
+		status.radioDevices,
+		status.fm5GateKnown,
+		status.fm5Evidence,
+		status.fm5Required,
+		status.fm5Satisfied,
+		status.solar,
+		status.cylinders,
+		status.boilerStatus,
+	)
+}
+
+func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus {
+	if p == nil || p.provider == nil {
+		return startupL1PrimingStatus{}
+	}
+	p.mu.Lock()
+	moduleConfig := (*uint16)(nil)
+	if p.system != nil {
+		moduleConfig = cloneUint16Ptr(p.system.ModuleConfigurationVR71)
+	}
+	fm5GateKnown := p.system != nil && p.system.ModuleConfigurationVR71 != nil
+	radioSnapshots := make([]*vaillantRadioDeviceSnapshot, 0, len(p.radioDevices))
+	for _, snapshot := range p.radioDevices {
+		if snapshot != nil {
+			radioSnapshots = append(radioSnapshots, cloneRadioSnapshot(snapshot))
+		}
+	}
+	radioProbed := p.startupRadioDevicesProbed
+	p.mu.Unlock()
+	fm5Evidence := hasFM5EvidenceFromRadioSnapshots(radioSnapshots) || p.hasFM5RegistryEvidence()
+	fm5Required := fm5Evidence && moduleConfig != nil && *moduleConfig <= 2
+	zonesReady := len(p.provider.Zones()) > 0
+	solarReady := p.provider.Solar() != nil
+	cylindersReady := len(p.provider.Cylinders()) > 0
+	fm5Satisfied := !fm5Evidence || (fm5GateKnown && !fm5Required) || (fm5Required && solarReady && cylindersReady)
+	return startupL1PrimingStatus{
+		zones:        zonesReady,
+		dhw:          p.provider.DHW() != nil,
+		circuits:     len(p.provider.Circuits()) > 0,
+		system:       p.provider.System() != nil,
+		radioDevices: radioProbed || len(p.provider.RadioDevices()) > 0,
+		fm5GateKnown: fm5GateKnown,
+		fm5Evidence:  fm5Evidence,
+		fm5Required:  fm5Required,
+		fm5Satisfied: fm5Satisfied,
+		solar:        solarReady,
+		cylinders:    cylindersReady,
+		boilerStatus: p.provider.BoilerStatus() != nil,
+	}
+}
+
+func (p *vaillantSemanticPoller) startupProbeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(ctx, semanticStartupProbeTimeout)
+}
+
+func (p *vaillantSemanticPoller) readB524Startup(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {
+	probeCtx, cancel := p.startupProbeContext(ctx)
+	defer cancel()
+	return p.readB524Value(probeCtx, opcode, group, instance, addr)
+}
+
+func (p *vaillantSemanticPoller) readB524Uint16Startup(ctx context.Context, opcode, group, instance byte, addr uint16) (*uint16, bool) {
+	raw, ok := p.readB524Startup(ctx, opcode, group, instance, addr)
+	if !ok {
+		return nil, false
+	}
+	value, ok := decodeB524Uint16(raw)
+	if !ok {
+		return nil, false
+	}
+	return &value, true
+}
+
+func (p *vaillantSemanticPoller) publishStartupSchedules() {
+	if p == nil || p.provider == nil || p.provider.Schedules() != nil {
+		return
+	}
+	p.provider.SetSchedules(&graphql.ScheduleStatus{Programs: []graphql.ScheduleProgram{}})
+}
+
+func (p *vaillantSemanticPoller) refreshDHWStartup(ctx context.Context) {
+	if p == nil {
+		return
+	}
+
+	attempted := make(semanticFieldSet)
+	status := &vaillantDhwSnapshot{}
+	readAny := false
+	if raw, ok := p.readB524Startup(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhw_current_temp); ok {
+		if value := decodeB524Float32FromRaw(raw); value != nil {
+			status.CurrentTempC = value
+			attempted[dhwFieldCurrentTempC] = struct{}{}
+			readAny = true
+		}
+	}
+	opModeRaw, opModeOK := p.readB524Uint16Startup(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhw_operation_mode)
+	if opModeOK {
+		attempted[dhwFieldOperatingMode] = struct{}{}
+		attempted[dhwFieldPreset] = struct{}{}
+		attempted[dhwFieldDhwOperationModeRaw] = struct{}{}
+		readAny = true
+	}
+	if opModeOK {
+		status.OperatingMode, status.Preset = deriveDhwModeAndPreset(opModeRaw, nil)
+		status.ConfigurationDHWOperationMode = formatUintToken(*opModeRaw)
+	}
+
+	p.mu.Lock()
+	source := semanticSnapshotSourceCache
+	if readAny {
+		if p.dhw == nil {
+			p.dhw = &vaillantDhwSnapshot{}
+		}
+		mergeDhwSnapshotFields(p.dhw, status, semanticSnapshotSourceLive, attempted)
+		p.markDHWUpdatedNowLocked()
+		source = semanticSnapshotSourceLive
+	}
+	hasSnapshot := p.dhw != nil
+	p.mu.Unlock()
+	if hasSnapshot {
+		p.publishDHW(source)
+	}
+}
+
+func (p *vaillantSemanticPoller) refreshCircuitsStartup(ctx context.Context) {
+	if p == nil {
+		return
+	}
+
+	updates := make(map[byte]*vaillantCircuitSnapshot)
+	inactive := make(map[byte]struct{})
+	for instance := byte(0x00); instance <= 0x0A; instance++ {
+		circuitTypeRaw, ok := p.readB524Uint16Startup(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_type)
+		if !ok || circuitTypeRaw == nil {
+			continue
+		}
+		switch *circuitTypeRaw {
+		case 0x0000, 0x00FF, 0xFFFF:
+			inactive[instance] = struct{}{}
+			continue
+		default:
+			updates[instance] = &vaillantCircuitSnapshot{
+				Instance:       instance,
+				Active:         true,
+				CircuitTypeRaw: cloneUint16Ptr(circuitTypeRaw),
+			}
+		}
+	}
+	if len(updates) == 0 && len(inactive) == 0 {
+		p.mu.Lock()
+		hasExisting := len(p.circuits) > 0
+		p.mu.Unlock()
+		if hasExisting {
+			p.publishCircuits(semanticSnapshotSourceCache)
+		}
+		return
+	}
+
+	p.mu.Lock()
+	if p.circuits == nil {
+		p.circuits = make(map[byte]*vaillantCircuitSnapshot)
+	}
+	for instance := range inactive {
+		delete(p.circuits, instance)
+	}
+	for instance, incoming := range updates {
+		p.circuits[instance] = mergeCircuitSnapshotNonDestructive(p.circuits[instance], incoming)
+	}
+	p.mu.Unlock()
+	p.publishCircuits(semanticSnapshotSourceLive)
+}
+
+func (p *vaillantSemanticPoller) refreshSystemStartup(ctx context.Context) {
+	if p == nil {
+		return
+	}
+
+	snapshot := &vaillantSystemSnapshot{}
+	readAny := false
+	if raw, ok := p.readB524Uint16Startup(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_scheme); ok && raw != nil {
+		snapshot.SystemScheme = cloneUint16Ptr(raw)
+		readAny = true
+	}
+	if raw, ok := p.readB524Uint16Startup(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_module_configuration_vr71); ok && raw != nil {
+		snapshot.ModuleConfigurationVR71 = cloneUint16Ptr(raw)
+		readAny = true
+	}
+	if raw, ok := p.readB524Startup(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_water_pressure); ok {
+		if value := decodeB524Float32FromRaw(raw); value != nil {
+			snapshot.SystemWaterPressure = value
+			readAny = true
+		}
+	}
+
+	p.mu.Lock()
+	source := semanticSnapshotSourceCache
+	if readAny {
+		p.system = mergeSystemSnapshotNonDestructive(p.system, snapshot)
+		source = semanticSnapshotSourceLive
+	}
+	hasSnapshot := p.system != nil
+	p.mu.Unlock()
+	if hasSnapshot {
+		p.publishSystem(source)
+	}
+}
+
+func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context) {
+	if p == nil {
+		return
+	}
+
+	discovered := p.registryRadioDeviceSeeds()
+	fullScanGroups := startupRadioFullScanGroups(discovered)
+	verified := make(map[radioDeviceKey]bool)
+	readAny := false
+	probeSlot := func(grp b524GroupDef, instance byte) {
+		connectedRaw, ok := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_connected)
+		if !ok || len(connectedRaw) == 0 {
+			return
+		}
+		readAny = true
+		connected := connectedRaw[0] == 1
+		classAddress := p.readB524U8Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
+		key := radioDeviceKey{Group: grp.group, Instance: instance}
+		verified[key] = true
+		include, slotMode := startupRadioDeviceInclude(grp.group, connected, classAddress)
+		if !include {
+			delete(discovered, key)
+			return
+		}
+		discovered[key] = &vaillantRadioDeviceSnapshot{
+			Group:              grp.group,
+			Instance:           instance,
+			SlotMode:           slotMode,
+			DeviceConnected:    &connected,
+			DeviceClassAddress: cloneUint8Ptr(classAddress),
+			DeviceModel:        decodeRadioDeviceModel(classAddress),
+		}
+	}
+
+	for _, grp := range remoteDeviceGroups {
+		for instance := byte(0x00); instance <= semanticStartupSlotFastMaxInstance; instance++ {
+			probeSlot(grp, instance)
+		}
+	}
+	for _, grp := range remoteDeviceGroups {
+		if fullScanGroups[grp.group] {
+			for instance := semanticStartupSlotFastMaxInstance + 1; instance <= semanticStartupSlotFullMaxInstance; instance++ {
+				probeSlot(grp, instance)
+			}
+		}
+	}
+	if readAny {
+		for key, snapshot := range discovered {
+			if snapshot != nil && snapshot.SlotMode == "registry" && !verified[key] {
+				delete(discovered, key)
+			}
+		}
+	}
+
+	p.mu.Lock()
+	p.startupRadioDevicesProbed = readAny
+	if len(discovered) == 0 {
+		if readAny {
+			p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+		}
+		p.mu.Unlock()
+		if readAny {
+			p.publishRadioDevices(semanticSnapshotSourceLive)
+		}
+		return
+	}
+	if p.radioDevices == nil || readAny {
+		p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+	}
+	for key, snapshot := range discovered {
+		p.radioDevices[key] = snapshot
+	}
+	p.mu.Unlock()
+	source := semanticSnapshotSourceCache
+	if readAny {
+		source = semanticSnapshotSourceLive
+	}
+	p.publishRadioDevices(source)
+}
+
+func startupRadioFullScanGroups(discovered map[radioDeviceKey]*vaillantRadioDeviceSnapshot) map[byte]bool {
+	seeded := make(map[byte]bool)
+	highSeeded := make(map[byte]bool)
+	for key := range discovered {
+		seeded[key.Group] = true
+		if key.Instance > semanticStartupSlotFastMaxInstance {
+			highSeeded[key.Group] = true
+		}
+	}
+
+	out := make(map[byte]bool)
+	for _, grp := range remoteDeviceGroups {
+		if !seeded[grp.group] || highSeeded[grp.group] {
+			out[grp.group] = true
+		}
+	}
+	return out
+}
+
+func startupRadioDeviceInclude(group byte, connected bool, classAddress *uint8) (bool, string) {
+	switch group {
+	case remoteRegulators.group, remoteThermostats.group:
+		return connected, "startup"
+	case remoteFunctionalModules.group:
+		if connected {
+			return true, "startup"
+		}
+		if classAddress != nil {
+			return true, "inventory"
+		}
+		return false, "startup"
+	default:
+		return connected, "startup"
+	}
+}
+
+func (p *vaillantSemanticPoller) registryRadioDeviceSeeds() map[radioDeviceKey]*vaillantRadioDeviceSnapshot {
+	out := make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+	if p == nil || p.reg == nil {
+		return out
+	}
+	nextInstance := map[byte]byte{}
+	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
+		addr := ebusgateway.SnapshotTargetAddressForRouting(snap)
+		deviceID := normalizeDeviceID(snap.DeviceID)
+		var group byte
+		switch {
+		case strings.HasPrefix(deviceID, "BASV") || addr == 0x15:
+			group = remoteRegulators.group
+		case strings.HasPrefix(deviceID, "VR71") || strings.HasPrefix(deviceID, "FM5") || addr == circuitManagingDeviceVR71Address:
+			group = remoteFunctionalModules.group
+		case strings.HasPrefix(deviceID, "VR92"):
+			group = remoteThermostats.group
+		default:
+			return true
+		}
+		instance := nextInstance[group]
+		nextInstance[group] = instance + 1
+		classAddress := uint8(addr)
+		connected := true
+		out[radioDeviceKey{Group: group, Instance: instance}] = &vaillantRadioDeviceSnapshot{
+			Group:              group,
+			Instance:           instance,
+			SlotMode:           "registry",
+			DeviceConnected:    &connected,
+			DeviceClassAddress: &classAddress,
+			DeviceModel:        decodeRadioDeviceModel(&classAddress),
+		}
+		return true
+	})
+	return out
+}
+
+func (p *vaillantSemanticPoller) readB524U8Startup(ctx context.Context, opcode, group, instance byte, addr uint16) *uint8 {
+	raw, ok := p.readB524Startup(ctx, opcode, group, instance, addr)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	value := raw[0]
+	return &value
+}
+
+func (p *vaillantSemanticPoller) refreshFM5SemanticStartup(ctx context.Context) {
+	if p == nil || p.provider == nil {
+		return
+	}
+
+	p.mu.Lock()
+	controller := p.controller
+	systemSnapshot := cloneSystemSnapshot(p.system)
+	var moduleConfig *uint16
+	if p.system != nil {
+		moduleConfig = cloneUint16Ptr(p.system.ModuleConfigurationVR71)
+	}
+	radioSnapshots := make([]*vaillantRadioDeviceSnapshot, 0, len(p.radioDevices))
+	for _, snapshot := range p.radioDevices {
+		if snapshot != nil {
+			radioSnapshots = append(radioSnapshots, cloneRadioSnapshot(snapshot))
+		}
+	}
+	p.mu.Unlock()
+
+	fm5GateSatisfied := moduleConfig != nil && *moduleConfig <= 2
+	var incomingSolar *vaillantSolarSnapshot
+	incomingCylinders := make(map[byte]*vaillantCylinderSnapshot)
+	solarReadable := false
+	cylindersReadable := false
+	if controller != 0 && fm5GateSatisfied {
+		incomingSolar, solarReadable = p.readSolarSnapshotStartup(ctx)
+		incomingCylinders, cylindersReadable = p.readCylinderSnapshotsStartup(ctx)
+	}
+	hasFM5Evidence := hasFM5EvidenceFromRadioSnapshots(radioSnapshots) || p.hasFM5RegistryEvidence()
+	nextMode := deriveFM5SemanticMode(controller != 0, fm5GateSatisfied, solarReadable, cylindersReadable, hasFM5Evidence)
+	for _, info := range fm5InventoryRegistryInfos(systemSnapshot, nextMode) {
+		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
+	}
+
+	p.mu.Lock()
+	p.fm5Mode = nextMode
+	switch nextMode {
+	case graphql.Fm5SemanticModeInterpreted:
+		p.solar = mergeSolarSnapshotNonDestructive(p.solar, incomingSolar)
+		p.solarCylinders = mergeCylinderSnapshotMapNonDestructive(p.solarCylinders, incomingCylinders)
+	default:
+		p.solar = nil
+		p.solarCylinders = make(map[byte]*vaillantCylinderSnapshot)
+	}
+	p.mu.Unlock()
+	p.publishFM5Semantic(semanticSnapshotSourceLive)
+}
+
+func (p *vaillantSemanticPoller) readSolarSnapshotStartup(ctx context.Context) (*vaillantSolarSnapshot, bool) {
+	incoming := &vaillantSolarSnapshot{}
+	readAny := false
+	if raw, ok := p.readB524Startup(ctx, localSolar.opcode, localSolar.group, solarInstance, solar_enabled); ok {
+		incoming.SolarEnabled = decodeB524BoolFromRaw(raw)
+		readAny = true
+	}
+	if raw, ok := p.readB524Startup(ctx, localSolar.opcode, localSolar.group, solarInstance, solar_collector_temp); ok {
+		incoming.CollectorTemperatureC = decodeB524Float32FromRaw(raw)
+		readAny = true
+	}
+	if raw, ok := p.readB524Startup(ctx, localSolar.opcode, localSolar.group, solarInstance, solar_pump_active); ok {
+		incoming.PumpActive = decodeB524BoolFromRaw(raw)
+		readAny = true
+	}
+	if !readAny {
+		return nil, false
+	}
+	return incoming, true
+}
+
+func (p *vaillantSemanticPoller) readCylinderSnapshotsStartup(ctx context.Context) (map[byte]*vaillantCylinderSnapshot, bool) {
+	out := make(map[byte]*vaillantCylinderSnapshot, 2)
+	for instance := byte(0x00); instance <= 0x01; instance++ {
+		raw, ok := p.readB524Startup(ctx, localCylinders.opcode, localCylinders.group, instance, cylinder_temperature)
+		if !ok {
+			continue
+		}
+		out[instance] = &vaillantCylinderSnapshot{
+			Instance:     instance,
+			TemperatureC: decodeB524Float32FromRaw(raw),
+		}
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+func (p *vaillantSemanticPoller) refreshBoilerStatusStartup(ctx context.Context) {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	boilerAddress := p.boilerAddress
+	p.mu.Unlock()
+	if boilerAddress == 0 {
+		boilerAddress = p.findBoilerAddress()
+	}
+
+	snapshot := &vaillantBoilerSnapshot{}
+	updated := false
+	if boilerAddress != 0 {
+		probeCtx, cancel := p.startupProbeContext(ctx)
+		if value := p.readB509DATA2c(probeCtx, boilerAddress, boiler_b509_flow_temperature); value != nil {
+			snapshot.FlowTemperatureC = value
+			updated = true
+		}
+		cancel()
+	}
+	if raw, ok := p.readB524Startup(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhw_current_temp); ok {
+		if value := decodeB524Float32FromRaw(raw); value != nil {
+			snapshot.DhwTemperatureC = value
+			updated = true
+		}
+	}
+
+	p.mu.Lock()
+	if boilerAddress != 0 {
+		p.boilerAddress = boilerAddress
+	}
+	source := semanticSnapshotSourceCache
+	if updated {
+		p.boiler = mergeBoilerSnapshotNonDestructive(p.boiler, snapshot)
+		source = semanticSnapshotSourceLive
+	}
+	hasSnapshot := p.boiler != nil
+	p.mu.Unlock()
+	if hasSnapshot {
+		p.publishBoilerStatus(source)
+	}
+}
+
 func (p *vaillantSemanticPoller) Start(ctx context.Context) {
 	if p == nil {
 		return
@@ -1501,9 +2144,8 @@ func parsePassiveShadowPayload(event ebusgateway.AdjudicatedPassiveEvent, key eb
 }
 
 func (p *vaillantSemanticPoller) startPollingLoops(ctx context.Context) {
-	// Discovery owns downstream controller/boiler priming and avoids duplicate startup bursts.
+	// Discovery owns downstream startup/controller/boiler priming and avoids duplicate startup bursts.
 	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
-	p.enqueueTask(semanticTaskPriorityHigh, p.refreshState)
 	p.enqueueTask(semanticTaskPriorityLow, p.refreshSchedules)
 
 	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
@@ -1645,6 +2287,8 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.fm5Mode = graphql.Fm5SemanticModeAbsent
 		p.solar = nil
 		p.solarCylinders = make(map[byte]*vaillantCylinderSnapshot)
+		p.startupSemanticPrimed = false
+		p.startupRadioDevicesProbed = false
 		semanticZoneCount.Set(0)
 		p.mu.Unlock()
 		if regCap != prev {
@@ -1702,7 +2346,16 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	p.controller = controller
 	p.boilerAddress = boilerAddress
 	p.regulatorCapability = regCap
+	primeStartup := !p.startupSemanticPrimed
+	if primeStartup {
+		p.startupSemanticPrimed = true
+	}
 	p.mu.Unlock()
+
+	p.refreshZoneDiscovery(ctx, primeStartup)
+	if primeStartup {
+		p.refreshStartupSemanticPlanes(ctx)
+	}
 	if regCap != prev {
 		log.Printf("semantic_regulator_capability capability=%s", regCap.String())
 	}
@@ -1716,11 +2369,19 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	if boilerAddress != prevBoilerAddress && boilerAddress != 0 {
 		p.enqueueBoilerStatusPriming(ctx)
 	}
+}
 
+func (p *vaillantSemanticPoller) refreshZoneDiscovery(ctx context.Context, startup bool) {
 	present := make(map[byte]bool, 4)
 	checked := make(map[byte]bool, 9)
 	for instance := byte(0x00); instance <= 0x08; instance++ { // II_MAX=0x08 per Vaillant regulator spec
-		indexBytes, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_index)
+		var indexBytes []byte
+		var ok bool
+		if startup {
+			indexBytes, ok = p.readB524Startup(ctx, localZones.opcode, localZones.group, instance, zone_index)
+		} else {
+			indexBytes, ok = p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_index)
+		}
 		if !ok {
 			continue
 		}
@@ -1754,10 +2415,58 @@ func (p *vaillantSemanticPoller) reconcileDiscoveryPresence(ctx context.Context,
 		}
 	}
 	p.applyZonePresenceProbes(checked, present)
+	if len(present) > 0 && p.startupZonesNeedImmediatePresence() {
+		p.applyZonePresenceImmediate(checked, present)
+		return semanticSnapshotSourceLive
+	}
 	if len(present) == 0 {
 		return semanticSnapshotSourceCache
 	}
 	return semanticSnapshotSourceLive
+}
+
+func (p *vaillantSemanticPoller) startupZonesNeedImmediatePresence() bool {
+	if p == nil || p.provider == nil {
+		return false
+	}
+	if len(p.provider.Zones()) > 0 {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.zones) == 0
+}
+
+func (p *vaillantSemanticPoller) applyZonePresenceImmediate(checked, present map[byte]bool) {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.zones == nil {
+		p.zones = make(map[byte]*vaillantZoneSnapshot)
+	}
+	if p.presence == nil {
+		p.presence = make(map[byte]*zonePresenceRecord)
+	}
+
+	hitThreshold := p.zoneHitThresholdValue()
+	for instance := range checked {
+		if !present[instance] {
+			p.markZoneMissingLocked(instance)
+			continue
+		}
+		record := p.ensureZonePresenceRecordLocked(instance)
+		previousState := record.State
+		record.State = zonePresencePresent
+		record.HitStreak = hitThreshold
+		record.MissStreak = 0
+		p.ensureZoneEntryLocked(instance)
+		p.recordZonePresenceTransitionLocked(instance, previousState, record.State, record.HitStreak, record.MissStreak)
+	}
+	semanticZoneCount.Set(int64(len(p.zones)))
 }
 
 func (p *vaillantSemanticPoller) applyZonePresenceProbes(checked, present map[byte]bool) {

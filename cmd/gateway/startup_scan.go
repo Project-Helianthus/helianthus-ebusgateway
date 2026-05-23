@@ -339,7 +339,7 @@ const proxyObserveFirstStartupSource byte = 0xF7
 const startupScanMaxUnconfirmedPasses = 5
 
 var (
-	postStartupIdentityRetryDelay    = 5 * time.Second
+	postStartupIdentityRetryDelay    = 75 * time.Second
 	postStartupIdentityRetryAttempts = 3
 )
 
@@ -861,6 +861,12 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 			if confirmationSatisfied || confirmationFallbackExhausted {
 				restrictedConfirmationAfterRecoveryPending = false
 				directScanConfirmationRetries = 0
+			}
+
+			if sourceSelectionActiveAdmission && activeConfirmed {
+				signalActiveProbePassed()
+				signalSemanticBootstrapReady()
+				return
 			}
 
 			if confirmationPending && usedRestrictedTargets && !retryingFullRange && !fullRangeRecoveryAttempted &&

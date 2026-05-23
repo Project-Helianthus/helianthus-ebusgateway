@@ -2434,7 +2434,7 @@ func cloneCircuitStatus(source CircuitStatus) CircuitStatus {
 }
 
 func cloneRadioDevices(source []RadioDevice) []RadioDevice {
-	if len(source) == 0 {
+	if source == nil {
 		return nil
 	}
 	out := make([]RadioDevice, len(source))
@@ -2858,7 +2858,7 @@ func (s *Server) snapshotRadioDevices(snapshot *snapshotState) []RadioDevice {
 		return nil
 	}
 	devices := s.semantic.RadioDevices()
-	if len(devices) == 0 {
+	if devices == nil {
 		return nil
 	}
 	out := cloneRadioDevices(devices)
@@ -2916,7 +2916,7 @@ func (s *Server) snapshotCylinders(snapshot *snapshotState) []CylinderStatus {
 		return nil
 	}
 	cylinders := s.semantic.Cylinders()
-	if len(cylinders) == 0 {
+	if cylinders == nil {
 		return nil
 	}
 	out := cloneCylinders(cylinders)
@@ -3294,7 +3294,7 @@ func cloneCylinder(status CylinderStatus) CylinderStatus {
 }
 
 func cloneCylinders(values []CylinderStatus) []CylinderStatus {
-	if len(values) == 0 {
+	if values == nil {
 		return nil
 	}
 	out := make([]CylinderStatus, len(values))

@@ -297,7 +297,7 @@ func (p testSemanticProvider) RadioDevices() []RadioDevice {
 	if p.radioDelay > 0 {
 		time.Sleep(p.radioDelay)
 	}
-	if len(p.radio) == 0 {
+	if p.radio == nil {
 		return nil
 	}
 	return cloneRadioDevices(p.radio)
@@ -1227,6 +1227,27 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 	})
 
+	t.Run("radio empty payload", func(t *testing.T) {
+		emptyServer, err := NewServer(reg, &testInvoker{})
+		if err != nil {
+			t.Fatalf("NewServer error = %v", err)
+		}
+		emptyServer.SetSemanticProvider(testSemanticProvider{
+			radio: []RadioDevice{},
+		})
+		res := doRPC(t, emptyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      18,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.radio_devices.get","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].([]any)
+		if !ok || len(data) != 0 {
+			t.Fatalf("empty radio data = %#v; want empty array", envelope["data"])
+		}
+	})
+
 	t.Run("fm5 mode payload", func(t *testing.T) {
 		res := doRPC(t, server.Handler(), rpcRequest{
 			JSONRPC: "2.0",
@@ -1276,6 +1297,27 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		first, _ := data[0].(map[string]any)
 		if idx, _ := first["index"].(float64); int(idx) != 0 {
 			t.Fatalf("first cylinder index = %v; want 0", first["index"])
+		}
+	})
+
+	t.Run("cylinders empty payload", func(t *testing.T) {
+		emptyServer, err := NewServer(reg, &testInvoker{})
+		if err != nil {
+			t.Fatalf("NewServer error = %v", err)
+		}
+		emptyServer.SetSemanticProvider(testSemanticProvider{
+			cylinders: []CylinderStatus{},
+		})
+		res := doRPC(t, emptyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      25,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.cylinders.get","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		data, ok := envelope["data"].([]any)
+		if !ok || len(data) != 0 {
+			t.Fatalf("empty cylinders data = %#v; want empty array", envelope["data"])
 		}
 	})
 

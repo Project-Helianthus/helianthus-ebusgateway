@@ -1404,8 +1404,18 @@ func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus
 	fm5Required := fm5Evidence && moduleConfig != nil && *moduleConfig <= 2
 	zonesReady := len(p.provider.Zones()) > 0
 	solarReady := p.provider.Solar() != nil
-	cylindersReady := len(p.provider.Cylinders()) > 0
-	fm5Satisfied := !fm5Evidence || (fm5GateKnown && !fm5Required) || (fm5Required && solarReady && cylindersReady)
+	cylinders := p.provider.Cylinders()
+	cylindersPublished := cylinders != nil
+	interpretedCylindersReady := len(cylinders) > 0
+	fm5Mode := p.provider.FM5SemanticMode()
+	fm5NonInterpretedPublished := fm5Evidence &&
+		fm5Mode == graphql.Fm5SemanticModeGPIOOnly &&
+		solarReady &&
+		cylindersPublished
+	fm5Satisfied := !fm5Evidence ||
+		fm5NonInterpretedPublished ||
+		(fm5GateKnown && !fm5Required) ||
+		(fm5Required && solarReady && interpretedCylindersReady)
 	return startupL1PrimingStatus{
 		zones:        zonesReady,
 		dhw:          p.provider.DHW() != nil,
@@ -1417,7 +1427,7 @@ func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus
 		fm5Required:  fm5Required,
 		fm5Satisfied: fm5Satisfied,
 		solar:        solarReady,
-		cylinders:    cylindersReady,
+		cylinders:    cylindersPublished,
 		boilerStatus: p.provider.BoilerStatus() != nil,
 	}
 }
@@ -1432,7 +1442,7 @@ func (p *vaillantSemanticPoller) startupProbeContext(ctx context.Context) (conte
 func (p *vaillantSemanticPoller) readB524Startup(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {
 	probeCtx, cancel := p.startupProbeContext(ctx)
 	defer cancel()
-	return p.readB524Value(probeCtx, opcode, group, instance, addr)
+	return p.readB524ValueLive(probeCtx, opcode, group, instance, addr)
 }
 
 func (p *vaillantSemanticPoller) readB524Uint16Startup(ctx context.Context, opcode, group, instance byte, addr uint16) (*uint16, bool) {
@@ -4872,13 +4882,15 @@ func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSourc
 	}
 
 	if mode != graphql.Fm5SemanticModeInterpreted {
+		emptySolar := &graphql.SolarStatus{}
+		emptyCylinders := []graphql.CylinderStatus{}
 		switch source {
 		case semanticSnapshotSourceCache:
-			p.provider.SetSolarFromCache(nil)
-			p.provider.SetCylindersFromCache(nil)
+			p.provider.SetSolarFromCache(emptySolar)
+			p.provider.SetCylindersFromCache(emptyCylinders)
 		default:
-			p.provider.SetSolar(nil)
-			p.provider.SetCylinders(nil)
+			p.provider.SetSolar(emptySolar)
+			p.provider.SetCylinders(emptyCylinders)
 		}
 		p.publishCircuits(source)
 		return

@@ -437,6 +437,44 @@ func TestParseB524ReadPayload(t *testing.T) {
 	}
 }
 
+func TestReadB524StartupUsesLivePathWithoutScheduler(t *testing.T) {
+	t.Parallel()
+
+	const (
+		opcode   = byte(0x02)
+		group    = byte(0x00)
+		instance = byte(0x00)
+		addr     = uint16(0x0036)
+	)
+
+	calls := 0
+	poller := &vaillantSemanticPoller{
+		sendFrameFn: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			calls++
+			if !slices.Equal(frame.Data, buildB524ReadSelector(opcode, group, instance, addr)) {
+				t.Fatalf("request selector = % x; want B524 selector", frame.Data)
+			}
+			return &protocol.Frame{
+				Data: []byte{0x01, instance, group, byte(addr), byte(addr >> 8), 0x02, 0x00},
+			}, nil
+		},
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+	}
+
+	got, ok := poller.readB524Startup(context.Background(), opcode, group, instance, addr)
+	if !ok {
+		t.Fatal("readB524Startup() ok = false; want live direct read success")
+	}
+	if !slices.Equal(got, []byte{0x02, 0x00}) {
+		t.Fatalf("readB524Startup() = % x; want 02 00", got)
+	}
+	if calls != 1 {
+		t.Fatalf("send calls = %d; want 1", calls)
+	}
+}
+
 func TestParseB509ReadPayload(t *testing.T) {
 	t.Parallel()
 
@@ -3126,6 +3164,13 @@ func TestPublishFM5Semantic_DowngradeRehydratesCircuitOwnershipToUnknown(t *test
 	poller.mu.Unlock()
 	poller.publishFM5Semantic(semanticSnapshotSourceLive)
 
+	if provider.Solar() == nil {
+		t.Fatal("provider.Solar() = nil after GPIO-only FM5 publish; want empty non-null plane")
+	}
+	if cylinders := provider.Cylinders(); cylinders == nil || len(cylinders) != 0 {
+		t.Fatalf("provider.Cylinders() = %#v after GPIO-only FM5 publish; want empty non-null plane", cylinders)
+	}
+
 	status := provider.Circuits()
 	if len(status) != 1 {
 		t.Fatalf("provider.Circuits() = %d entries; want 1", len(status))
@@ -4988,6 +5033,80 @@ func TestStartupL1PrimingStatusRequiresFM5PlanesWhenInterpreted(t *testing.T) {
 	provider.SetCylinders([]graphql.CylinderStatus{{Index: 0}})
 	if status := poller.startupL1PrimingStatus(); !status.ready() {
 		t.Fatalf("startup status ready = false after interpreted FM5 planes; status=%s", status.String())
+	}
+}
+
+func TestStartupL1PrimingStatusRejectsEmptyInterpretedCylinders(t *testing.T) {
+	t.Parallel()
+
+	connected := true
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetZones([]graphql.Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetDHW(&graphql.DhwStatus{})
+	provider.SetCircuits([]graphql.CircuitStatus{{Index: 0}})
+	provider.SetSystem(&graphql.SystemStatus{})
+	provider.SetRadioDevices([]graphql.RadioDevice{{
+		Group:           int(remoteFunctionalModules.group),
+		Instance:        0,
+		DeviceConnected: &connected,
+	}})
+	provider.SetFM5SemanticMode(graphql.Fm5SemanticModeInterpreted)
+	provider.SetSolar(&graphql.SolarStatus{})
+	provider.SetCylinders([]graphql.CylinderStatus{})
+	provider.SetBoilerStatus(&graphql.BoilerStatus{})
+
+	moduleConfig := uint16(1)
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		reg: newTestRegistry(
+			registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
+		),
+		system: &vaillantSystemSnapshot{ModuleConfigurationVR71: &moduleConfig},
+	}
+
+	status := poller.startupL1PrimingStatus()
+	if !status.cylinders {
+		t.Fatalf("interpreted empty cylinders status = %s; want published cylinders plane", status.String())
+	}
+	if status.fm5Satisfied {
+		t.Fatalf("interpreted empty cylinders status = %s; want FM5 unsatisfied until live cylinder evidence", status.String())
+	}
+	if status.ready() {
+		t.Fatalf("startup status ready = true with empty interpreted cylinders; status=%s", status.String())
+	}
+}
+
+func TestStartupL1PrimingStatusAcceptsPublishedGPIOOnlyFM5Planes(t *testing.T) {
+	t.Parallel()
+
+	connected := true
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetZones([]graphql.Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetDHW(&graphql.DhwStatus{})
+	provider.SetCircuits([]graphql.CircuitStatus{{Index: 0}})
+	provider.SetSystem(&graphql.SystemStatus{})
+	provider.SetRadioDevices([]graphql.RadioDevice{{
+		Group:           int(remoteFunctionalModules.group),
+		Instance:        0,
+		DeviceConnected: &connected,
+	}})
+	provider.SetFM5SemanticMode(graphql.Fm5SemanticModeGPIOOnly)
+	provider.SetSolar(&graphql.SolarStatus{})
+	provider.SetCylinders([]graphql.CylinderStatus{})
+	provider.SetBoilerStatus(&graphql.BoilerStatus{})
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		reg: newTestRegistry(
+			registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "VR_71"},
+		),
+	}
+
+	status := poller.startupL1PrimingStatus()
+	if !status.fm5Evidence || !status.fm5Satisfied {
+		t.Fatalf("GPIO-only FM5 status = %s; want evidence and satisfied", status.String())
+	}
+	if !status.ready() {
+		t.Fatalf("startup status ready = false for published GPIO-only FM5 planes; status=%s", status.String())
 	}
 }
 

@@ -45,6 +45,44 @@ func TestSemanticEnergyAdaptersExposeNeverSeenShapeWithoutPoints(t *testing.T) {
 	}
 }
 
+func TestMCPSemanticProviderAdapterPreservesEmptyCylinders(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	adapter := mcpSemanticProviderAdapter{provider: provider}
+
+	if got := adapter.Cylinders(); got != nil {
+		t.Fatalf("Cylinders() before publish = %#v; want nil", got)
+	}
+
+	provider.SetCylinders([]graphql.CylinderStatus{})
+	if got := adapter.Cylinders(); got == nil || len(got) != 0 {
+		t.Fatalf("Cylinders() after empty publish = %#v; want empty non-nil slice", got)
+	}
+
+	provider.SetCylinders(nil)
+	if got := adapter.Cylinders(); got != nil {
+		t.Fatalf("Cylinders() after nil publish = %#v; want nil", got)
+	}
+}
+
+func TestMCPSemanticProviderAdapterPreservesEmptyRadioDevices(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	adapter := mcpSemanticProviderAdapter{provider: provider}
+
+	if got := adapter.RadioDevices(); got != nil {
+		t.Fatalf("RadioDevices() before publish = %#v; want nil", got)
+	}
+
+	provider.SetRadioDevices([]graphql.RadioDevice{})
+	if got := adapter.RadioDevices(); got == nil || len(got) != 0 {
+		t.Fatalf("RadioDevices() after empty publish = %#v; want empty non-nil slice", got)
+	}
+
+	provider.SetRadioDevices(nil)
+	if got := adapter.RadioDevices(); got != nil {
+		t.Fatalf("RadioDevices() after nil publish = %#v; want nil", got)
+	}
+}
+
 type recordingSemanticWriter struct {
 	calls int
 }

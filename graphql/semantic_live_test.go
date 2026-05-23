@@ -215,8 +215,17 @@ func TestLiveSemanticProvider_FM5SolarAndCylinders(t *testing.T) {
 	if provider.Solar() != nil {
 		t.Fatal("Solar() expected nil by default")
 	}
-	if len(provider.Cylinders()) != 0 {
-		t.Fatalf("Cylinders() len = %d; want 0", len(provider.Cylinders()))
+	if provider.Cylinders() != nil {
+		t.Fatalf("Cylinders() = %#v by default; want nil", provider.Cylinders())
+	}
+
+	provider.SetCylinders([]CylinderStatus{})
+	if cylinders := provider.Cylinders(); cylinders == nil || len(cylinders) != 0 {
+		t.Fatalf("Cylinders() after empty set = %#v; want empty non-nil slice", cylinders)
+	}
+	provider.SetCylinders(nil)
+	if provider.Cylinders() != nil {
+		t.Fatalf("Cylinders() after nil set = %#v; want nil", provider.Cylinders())
 	}
 
 	collector := 71.5
@@ -259,6 +268,24 @@ func TestLiveSemanticProvider_FM5SolarAndCylinders(t *testing.T) {
 	latestCylinders := provider.Cylinders()
 	if len(latestCylinders) != 1 || latestCylinders[0].TemperatureC == nil || *latestCylinders[0].TemperatureC != 48.0 {
 		t.Fatalf("provider cylinders mutated through getter: %#v", latestCylinders)
+	}
+}
+
+func TestLiveSemanticProvider_RadioDevicesPreservesEmptyPublication(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+
+	if provider.RadioDevices() != nil {
+		t.Fatalf("RadioDevices() by default = %#v; want nil", provider.RadioDevices())
+	}
+
+	provider.SetRadioDevices([]RadioDevice{})
+	if devices := provider.RadioDevices(); devices == nil || len(devices) != 0 {
+		t.Fatalf("RadioDevices() after empty set = %#v; want empty non-nil slice", devices)
+	}
+
+	provider.SetRadioDevices(nil)
+	if provider.RadioDevices() != nil {
+		t.Fatalf("RadioDevices() after nil set = %#v; want nil", provider.RadioDevices())
 	}
 }
 

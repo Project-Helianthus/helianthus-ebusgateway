@@ -227,7 +227,7 @@ func (provider *LiveSemanticProvider) RadioDevices() []RadioDevice {
 	}
 	provider.mu.RLock()
 	defer provider.mu.RUnlock()
-	if len(provider.radio) == 0 {
+	if provider.radio == nil {
 		return nil
 	}
 	out := make([]RadioDevice, len(provider.radio))
@@ -264,7 +264,7 @@ func (provider *LiveSemanticProvider) Cylinders() []CylinderStatus {
 	}
 	provider.mu.RLock()
 	defer provider.mu.RUnlock()
-	if len(provider.cylinders) == 0 {
+	if provider.cylinders == nil {
 		return nil
 	}
 	return cloneCylinderStatuses(provider.cylinders)
@@ -305,7 +305,7 @@ func (provider *LiveSemanticProvider) SetCylinders(cylinders []CylinderStatus) {
 	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	if len(cylinders) == 0 {
+	if cylinders == nil {
 		provider.cylinders = nil
 		return
 	}
@@ -489,14 +489,18 @@ func (provider *LiveSemanticProvider) setRadioDevicesWithSource(devices []RadioD
 		return
 	}
 
-	devicesCopy := make([]RadioDevice, len(devices))
-	for i, device := range devices {
-		devicesCopy[i] = cloneRadioDevice(device)
+	var devicesCopy []RadioDevice
+	if devices != nil {
+		devicesCopy = make([]RadioDevice, len(devices))
+		for i, device := range devices {
+			devicesCopy[i] = cloneRadioDevice(device)
+		}
 	}
 
 	var transition *phaseTransitionLog
 	provider.mu.Lock()
-	if equalRadioDevices(provider.radio, devicesCopy) {
+	samePublishedShape := (provider.radio == nil) == (devicesCopy == nil)
+	if samePublishedShape && equalRadioDevices(provider.radio, devicesCopy) {
 		if source == semanticDataSourceLive && len(devicesCopy) > 0 {
 			provider.radioLiveSeen = true
 		}
@@ -510,6 +514,8 @@ func (provider *LiveSemanticProvider) setRadioDevicesWithSource(devices []RadioD
 			provider.radioLiveSeen = true
 		}
 		transition = provider.recordEpochUpdateLocked(source, semanticStreamRadioDevices, reason)
+	} else if source == semanticDataSourceLive {
+		provider.radioLiveSeen = true
 	}
 	provider.mu.Unlock()
 	provider.logPhaseTransition(transition)
@@ -1344,7 +1350,7 @@ func cloneCylinderStatus(status CylinderStatus) CylinderStatus {
 }
 
 func cloneCylinderStatuses(cylinders []CylinderStatus) []CylinderStatus {
-	if len(cylinders) == 0 {
+	if cylinders == nil {
 		return nil
 	}
 	out := make([]CylinderStatus, len(cylinders))

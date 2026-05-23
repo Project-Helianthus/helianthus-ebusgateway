@@ -133,7 +133,7 @@ func (adapter mcpSemanticProviderAdapter) RadioDevices() []mcp.RadioDevice {
 		return nil
 	}
 	devices := adapter.provider.RadioDevices()
-	if len(devices) == 0 {
+	if devices == nil {
 		return nil
 	}
 	out := make([]mcp.RadioDevice, len(devices))
@@ -197,7 +197,7 @@ func (adapter mcpSemanticProviderAdapter) Cylinders() []mcp.CylinderStatus {
 		return nil
 	}
 	cylinders := adapter.provider.Cylinders()
-	if len(cylinders) == 0 {
+	if cylinders == nil {
 		return nil
 	}
 	out := make([]mcp.CylinderStatus, len(cylinders))

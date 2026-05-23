@@ -2311,8 +2311,33 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// writePrefix as the gate but those are capped diagnostic state;
 	// P11 round-2 uses gatewayEcho's pre-match queue head, which is
 	// protocol-accurate and uncapped.
+	//
+	// F-NEW-29 (2026-05-23, plan fix-p11-midwrite-byte-routing-w21-26):
+	// First-byte arbitration revalidation. When the gateway has just been
+	// granted arbitration (matchCount==0 && writeCount==1) and the very
+	// first wire byte we observe is a foreign initiator-class address that
+	// doesn't match our expected echo, the arbitration grant was a
+	// false-positive: another initiator actually has the bus. Forward the
+	// byte to activeCh (do NOT drop) so bus.go's existing first-byte-
+	// after-arbitration classifier (helianthus-ebusgo bus.go:1328-1378)
+	// can raise ErrBusCollision and sendWithRetries can retry naturally.
+	//
+	// Strict P11 mid-write drop remains active for ALL other mismatches:
+	// mid-frame stale bytes, non-initiator-class noise, post-first-echo wire
+	// intrusions. P11 round-2's design intent is preserved after ownership
+	// is validated by at least one echo.
+	firstByteSuspectArbLoss := false
+	if hadPendingEcho &&
+		m.gatewayEcho.matchCount() == 0 &&
+		m.gatewayEcho.writeCount() == 1 &&
+		symbol != preMatchHead &&
+		protocol.AddressClassOf(symbol) == protocol.AddressClassMaster {
+		firstByteSuspectArbLoss = true
+		m.activeTxn.firstByteSuspectArbLoss.Store(true)
+	}
+
 	activeExpects := m.gatewayTxnActive
-	if activeExpects && hadPendingEcho {
+	if activeExpects && hadPendingEcho && !firstByteSuspectArbLoss {
 		// Mid-write: only the next expected echo passes.
 		activeExpects = symbol == preMatchHead
 	}

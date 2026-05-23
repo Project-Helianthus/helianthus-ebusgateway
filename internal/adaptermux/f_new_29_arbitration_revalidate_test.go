@@ -14,7 +14,7 @@ func TestMux_ArbitrationRevalidate_ForwardsFirstForeignMasterByte(t *testing.T) 
 		foreignMaster byte = 0xF1
 	)
 	if got := protocol.AddressClassOf(foreignMaster); got != protocol.AddressClassMaster {
-		t.Fatalf("test premise broken: AddressClassOf(0x%02X) = %v; want master", foreignMaster, got)
+		t.Fatalf("test premise broken: AddressClassOf(0x%02X) = %v; want initiator class", foreignMaster, got)
 	}
 
 	mux, mock, _, cleanup := newP3TestMux(t)
@@ -43,7 +43,7 @@ func TestMux_ArbitrationRevalidate_ForwardsFirstForeignMasterByte(t *testing.T) 
 	expectActiveByte(t, mux, foreignMaster)
 
 	if !mux.activeTxn.firstByteSuspectArbLoss.Load() {
-		t.Fatal("firstByteSuspectArbLoss=false; want true after first foreign master byte")
+		t.Fatal("firstByteSuspectArbLoss=false; want true after first foreign initiator byte")
 	}
 }
 
@@ -54,7 +54,7 @@ func TestMux_AfterFirstEchoMatch_StaleByteStillDropped(t *testing.T) {
 		foreignMaster byte = 0xF1
 	)
 	if got := protocol.AddressClassOf(foreignMaster); got != protocol.AddressClassMaster {
-		t.Fatalf("test premise broken: AddressClassOf(0x%02X) = %v; want master", foreignMaster, got)
+		t.Fatalf("test premise broken: AddressClassOf(0x%02X) = %v; want initiator class", foreignMaster, got)
 	}
 
 	mux, mock, _, cleanup := newP3TestMux(t)
@@ -113,7 +113,7 @@ func TestMux_ArbitrationRevalidate_DoesNotFireOnNonMasterNoise(t *testing.T) {
 		nonMasterNoise byte = 0x55
 	)
 	if got := protocol.AddressClassOf(nonMasterNoise); got == protocol.AddressClassMaster {
-		t.Fatalf("test premise broken: AddressClassOf(0x%02X) = master; want non-master", nonMasterNoise)
+		t.Fatalf("test premise broken: AddressClassOf(0x%02X) = initiator class; want non-initiator class", nonMasterNoise)
 	}
 
 	mux, mock, _, cleanup := newP3TestMux(t)
@@ -144,7 +144,7 @@ func TestMux_ArbitrationRevalidate_DoesNotFireOnNonMasterNoise(t *testing.T) {
 
 	expectNoActiveByte(t, mux)
 	if mux.activeTxn.firstByteSuspectArbLoss.Load() {
-		t.Fatal("firstByteSuspectArbLoss=true after non-master noise; want false")
+		t.Fatal("firstByteSuspectArbLoss=true after non-initiator noise; want false")
 	}
 }
 

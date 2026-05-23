@@ -74,7 +74,14 @@ type activeTxnDiag struct {
 	// legitimate frame terminator or pre-echo idle-buffer noise. Codex PR
 	// #502 P1 — superseded bytesWritten as the terminator/suppression gate.
 	bytesDeliveredToActive atomic.Uint64
-	drainedOnGrant         int // count of stale bytes drained just before this grant
+	// firstByteSuspectArbLoss is set by mux's first-byte arbitration
+	// revalidation predicate (F-NEW-29, 2026-05-23) when the first wire
+	// byte during a gateway-owned txn is a foreign initiator-class byte that
+	// doesn't match the gateway's first expected echo. Forwarded to
+	// activeCh so bus.go:1328-1378's first-byte-after-arbitration
+	// classifier can raise ErrBusCollision.
+	firstByteSuspectArbLoss atomic.Bool
+	drainedOnGrant          int // count of stale bytes drained just before this grant
 
 	// totals across the mux lifetime (never reset)
 	grantsTotal    atomic.Uint64
@@ -398,6 +405,7 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 	m.activeTxn.bytesWritten.Store(0)
 	m.activeTxn.bytesRead.Store(0)
 	m.activeTxn.bytesDeliveredToActive.Store(0)
+	m.activeTxn.firstByteSuspectArbLoss.Store(false)
 	m.activeTxn.drainedOnGrant = drained
 	m.activeTxn.grantsTotal.Add(1)
 	// batch-22 round-3 Attack 2: snapshot the upstream transport's
@@ -532,9 +540,10 @@ func (m *Mux) recordGatewayInactive(reason ActiveTxnInactiveReason) {
 	wp := m.activeTxn.writePrefix[:m.activeTxn.writePrefixLen]
 	rp := m.activeTxn.readPrefix[:m.activeTxn.readPrefixLen]
 	m.logger.Printf(
-		"adaptermux: activeTxn inactive id=%d reason=%s class=%s writes=%d reads=%d echoLike=%d nonEcho=%d synMarkers=%d writePrefix=% X readPrefix=% X dur=%s",
+		"adaptermux: activeTxn inactive id=%d reason=%s class=%s writes=%d reads=%d firstByteSuspectArbLoss=%v echoLike=%d nonEcho=%d synMarkers=%d writePrefix=% X readPrefix=% X dur=%s",
 		m.activeTxn.id, reason, class,
 		m.activeTxn.bytesWritten.Load(), m.activeTxn.bytesRead.Load(),
+		m.activeTxn.firstByteSuspectArbLoss.Load(),
 		m.activeTxn.echoLike.Load(), m.activeTxn.nonEcho.Load(), m.activeTxn.synMarkers.Load(),
 		wp, rp,
 		time.Since(m.activeTxn.grantedAt),

@@ -124,6 +124,7 @@ type echoTracker struct {
 
 	// Stats.
 	totalSuppressed uint64
+	totalWritten    uint64
 	totalMismatches uint64
 
 	// totalOverflowResets counts how many times recordSent reset the
@@ -314,6 +315,7 @@ func (t *echoTracker) recordSentInternal(data byte, structural bool, writeAt tim
 	if withTime {
 		t.expectedWriteTimes = append(t.expectedWriteTimes, writeAt)
 	}
+	t.totalWritten++
 }
 
 // rollbackSent removes the last recorded sent byte (e.g., on SEND error).
@@ -564,6 +566,8 @@ func (t *echoTracker) markRequestStart() {
 	t.expectedEchoes = t.expectedEchoes[:0]
 	t.expectedStructural = t.expectedStructural[:0]
 	t.expectedWriteTimes = t.expectedWriteTimes[:0]
+	t.totalSuppressed = 0
+	t.totalWritten = 0
 	// Codex PR #603 P2 invariant: a new request boundary invalidates
 	// any pending overflow snapshot.
 	t.preOverflowEchoes = nil
@@ -636,6 +640,8 @@ func (t *echoTracker) reset() {
 	t.expectedWriteTimes = t.expectedWriteTimes[:0]
 	t.seenEchoes = t.seenEchoes[:0]
 	t.atRequestStart = false
+	t.totalSuppressed = 0
+	t.totalWritten = 0
 	t.preOverflowEchoes = nil
 	t.preOverflowStructural = nil
 	t.preOverflowWriteTimes = nil
@@ -684,6 +690,22 @@ func (t *echoTracker) ClearQueueJustDrained() {
 // stats returns echo tracking statistics.
 func (t *echoTracker) stats() (suppressed, mismatches uint64) {
 	return t.totalSuppressed, t.totalMismatches
+}
+
+// matchCount returns the cumulative number of echo matches consumed by
+// matchEcho for the current gateway txn. Reset on markRequestStart.
+// F-NEW-29 (2026-05-23): exposed for mux's first-byte arbitration
+// revalidation predicate.
+func (t *echoTracker) matchCount() uint64 {
+	return t.totalSuppressed
+}
+
+// writeCount returns the cumulative number of bytes the gateway has
+// issued via recordSent* since the last markRequestStart. Distinct from
+// len(expectedEchoes), which shrinks as matchEcho consumes entries.
+// F-NEW-29: exposed for mux's first-byte arbitration revalidation predicate.
+func (t *echoTracker) writeCount() uint64 {
+	return t.totalWritten
 }
 
 // overflowResets returns the number of times recordSent reset the

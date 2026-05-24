@@ -614,22 +614,10 @@ const (
 )
 
 var (
-	zoneConfigFieldSet = newSemanticFieldSet(
+	zoneConfigRefreshFieldSet = newSemanticFieldSet(
 		zoneFieldName,
-	)
-	zoneStateFieldSet = newSemanticFieldSet(
-		zoneFieldOperatingMode,
-		zoneFieldPreset,
-		zoneFieldHvacAction,
-		zoneFieldAllowedModes,
-		zoneFieldCurrentTempC,
-		zoneFieldTargetTempC,
-		zoneFieldCurrentHumidityPct,
-		zoneFieldZoneOperationModeRaw,
-		zoneFieldSpecialFunctionRaw,
 		zoneFieldRoomTemperatureZoneMappingRaw,
 		zoneFieldZoneCircuitIndexRaw,
-		zoneFieldZoneValveStatusRaw,
 		zoneFieldCircuitTypeRaw,
 		zoneFieldQuickVetoTempC,
 		zoneFieldQuickVetoDurationH,
@@ -640,6 +628,18 @@ var (
 		zoneFieldHolidaySetpointC,
 		zoneFieldHolidayStartTime,
 		zoneFieldHolidayEndTime,
+	)
+	zoneFastStateFieldSet = newSemanticFieldSet(
+		zoneFieldOperatingMode,
+		zoneFieldPreset,
+		zoneFieldHvacAction,
+		zoneFieldAllowedModes,
+		zoneFieldCurrentTempC,
+		zoneFieldTargetTempC,
+		zoneFieldCurrentHumidityPct,
+		zoneFieldZoneOperationModeRaw,
+		zoneFieldSpecialFunctionRaw,
+		zoneFieldZoneValveStatusRaw,
 	)
 	zoneGrabFieldSet = newSemanticFieldSet(
 		zoneFieldName,
@@ -2770,36 +2770,199 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 		}
 	}
 	if controller == 0 || len(zones) == 0 {
+		if controller != 0 {
+			p.publishDHW(p.refreshDHWSlowConfig(ctx))
+		}
 		return
 	}
 
-	liveReadSuccess := false
+	zoneLiveReadSuccess := false
 	for _, instance := range zones {
 		primaryName, primaryOK := p.readB524ZoneNamePart(ctx, instance, zone_name)
 		prefix, prefixOK := p.readB524ZoneNamePart(ctx, instance, zone_name_prefix)
 		suffix, suffixOK := p.readB524ZoneNamePart(ctx, instance, zone_name_suffix)
 		if primaryOK || prefixOK || suffixOK {
-			liveReadSuccess = true
+			zoneLiveReadSuccess = true
 		}
 
-		incoming := &vaillantZoneSnapshot{
-			Name: composeZoneName(primaryName, prefix, suffix),
+		incoming, slowOK := p.refreshZoneSlowConfigFields(ctx, instance)
+		if slowOK {
+			zoneLiveReadSuccess = true
 		}
+		if incoming == nil {
+			incoming = &vaillantZoneSnapshot{}
+		}
+		incoming.Name = composeZoneName(primaryName, prefix, suffix)
+
 		p.mu.Lock()
 		if entry := p.zones[instance]; entry != nil {
-			mergeZoneSnapshotFields(entry, incoming, semanticSnapshotSourceLive, zoneConfigFieldSet)
+			mergeZoneSnapshotFields(entry, incoming, semanticSnapshotSourceLive, zoneConfigRefreshFieldSet)
 		}
 		p.mu.Unlock()
 	}
-	if !liveReadSuccess && p.tryRefreshFromEbusdGrab(ctx) {
+
+	dhwSource := p.refreshDHWSlowConfig(ctx)
+	if !zoneLiveReadSuccess && p.tryRefreshFromEbusdGrab(ctx) {
 		grabHydrated = true
 	}
 
-	source := semanticSnapshotSourceCache
-	if liveReadSuccess || grabHydrated {
-		source = semanticSnapshotSourceLive
+	zoneSource := semanticSnapshotSourceCache
+	if zoneLiveReadSuccess || grabHydrated {
+		zoneSource = semanticSnapshotSourceLive
 	}
-	p.publishZones(source)
+	p.publishZones(zoneSource)
+	p.publishDHW(dhwSource)
+}
+
+func (p *vaillantSemanticPoller) refreshZoneSlowConfigFields(ctx context.Context, instance byte) (*vaillantZoneSnapshot, bool) {
+	incoming := &vaillantZoneSnapshot{}
+	liveReadSuccess := false
+
+	var qvTempPtr, qvDurPtr *float64
+	if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_temp); ok {
+		v := value
+		qvTempPtr = &v
+		liveReadSuccess = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_duration); ok {
+		v := value
+		qvDurPtr = &v
+		liveReadSuccess = true
+	}
+	var qvEndTime, qvEndDate string
+	if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_end_time); ok && len(raw) >= 2 {
+		qvEndTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
+		liveReadSuccess = true
+	}
+	if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_end_date); ok && len(raw) >= 3 {
+		year := 2000 + int(raw[2])
+		qvEndDate = fmt.Sprintf("%04d-%02d-%02d", year, raw[1], raw[0])
+		liveReadSuccess = true
+	}
+
+	var holidayStartDate, holidayEndDate, holidayStartTime, holidayEndTime string
+	var holidaySetpointPtr *float64
+	if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_start_date); ok && len(raw) >= 3 {
+		if date := decodeB524DateSuppressSentinel(raw); date != "" {
+			holidayStartDate = date
+		}
+		liveReadSuccess = true
+	}
+	if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_end_date); ok && len(raw) >= 3 {
+		if date := decodeB524DateSuppressSentinel(raw); date != "" {
+			holidayEndDate = date
+		}
+		liveReadSuccess = true
+	}
+	if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_holiday_setpoint); ok {
+		v := value
+		holidaySetpointPtr = &v
+		liveReadSuccess = true
+	}
+	if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_end_time); ok && len(raw) >= 2 {
+		holidayEndTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
+		liveReadSuccess = true
+	}
+	if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_start_time); ok && len(raw) >= 2 {
+		holidayStartTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
+		liveReadSuccess = true
+	}
+
+	zoneRoomTemperatureZoneMappingRaw, zoneRoomTemperatureZoneMappingRawOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_room_temperature_zone_mapping_raw)
+	if zoneRoomTemperatureZoneMappingRawOK {
+		liveReadSuccess = true
+	}
+	circuitInstance := resolveAssociatedCircuitInstance(zoneRoomTemperatureZoneMappingRaw, instance)
+	circuitType, hasCircuitType := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, circuitInstance, circuit_type)
+	if hasCircuitType {
+		liveReadSuccess = true
+	}
+	var associatedCircuitRaw *uint16
+	if zoneRoomTemperatureZoneMappingRaw != nil {
+		value := uint16(circuitInstance)
+		associatedCircuitRaw = &value
+	}
+
+	incoming.QuickVetoTempC = qvTempPtr
+	incoming.QuickVetoDurationH = qvDurPtr
+	incoming.QuickVetoEndTime = qvEndTime
+	incoming.QuickVetoEndDate = qvEndDate
+	incoming.HolidayStartDate = holidayStartDate
+	incoming.HolidayEndDate = holidayEndDate
+	incoming.HolidaySetpointC = holidaySetpointPtr
+	incoming.HolidayStartTime = holidayStartTime
+	incoming.HolidayEndTime = holidayEndTime
+	incoming.ConfigurationRoomTemperatureZoneMappingRaw = zoneRoomTemperatureZoneMappingRaw
+	incoming.ConfigurationAssociatedCircuitRaw = associatedCircuitRaw
+	incoming.ConfigurationCircuitTypeRaw = circuitType
+
+	return incoming, liveReadSuccess
+}
+
+func (p *vaillantSemanticPoller) refreshDHWSlowConfig(ctx context.Context) semanticSnapshotSource {
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
+	if controller == 0 {
+		return semanticSnapshotSourceCache
+	}
+
+	attempted := make(semanticFieldSet)
+	liveReadSuccess := false
+	var dhwHolidayStartDate, dhwHolidayEndDate string
+	if raw, ok := p.readB524Value(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhw_holiday_start_date); ok && len(raw) >= 3 {
+		if date := decodeB524DateSuppressSentinel(raw); date != "" {
+			dhwHolidayStartDate = date
+		}
+		liveReadSuccess = true
+		attempted[dhwFieldHolidayStartDate] = struct{}{}
+	}
+	if raw, ok := p.readB524Value(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhw_holiday_end_date); ok && len(raw) >= 3 {
+		if date := decodeB524DateSuppressSentinel(raw); date != "" {
+			dhwHolidayEndDate = date
+		}
+		liveReadSuccess = true
+		attempted[dhwFieldHolidayEndDate] = struct{}{}
+	}
+	if !liveReadSuccess {
+		return semanticSnapshotSourceCache
+	}
+
+	status := &vaillantDhwSnapshot{
+		HolidayStartDate: dhwHolidayStartDate,
+		HolidayEndDate:   dhwHolidayEndDate,
+	}
+	p.mu.Lock()
+	if p.dhw == nil {
+		p.dhw = &vaillantDhwSnapshot{}
+	}
+	mergeDhwSnapshotFields(p.dhw, status, semanticSnapshotSourceLive, attempted)
+	p.markDHWUpdatedNowLocked()
+	p.mu.Unlock()
+	return semanticSnapshotSourceLive
+}
+
+func (p *vaillantSemanticPoller) cachedZoneCircuitType(instance byte) (*uint16, bool) {
+	if p == nil {
+		return nil, false
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	circuitInstance := instance
+	if zone := p.zones[instance]; zone != nil {
+		if zone.ConfigurationCircuitTypeRaw != nil {
+			return cloneUint16Ptr(zone.ConfigurationCircuitTypeRaw), true
+		}
+		if zone.ConfigurationAssociatedCircuitRaw != nil && *zone.ConfigurationAssociatedCircuitRaw <= 0xFF {
+			circuitInstance = byte(*zone.ConfigurationAssociatedCircuitRaw)
+		}
+	}
+	if circuit := p.circuits[circuitInstance]; circuit != nil && circuit.CircuitTypeRaw != nil {
+		return cloneUint16Ptr(circuit.CircuitTypeRaw), true
+	}
+	return nil, false
 }
 
 func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
@@ -2852,97 +3015,25 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 			liveReadSuccess = true
 		}
 
-		var qvTempPtr, qvDurPtr *float64
-		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_temp); ok {
-			v := value
-			qvTempPtr = &v
-			liveReadSuccess = true
-		}
-		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_duration); ok {
-			v := value
-			qvDurPtr = &v
-			liveReadSuccess = true
-		}
-		var qvEndTime, qvEndDate string
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_end_time); ok && len(raw) >= 2 {
-			qvEndTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
-			liveReadSuccess = true
-		}
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_end_date); ok && len(raw) >= 3 {
-			year := 2000 + int(raw[2])
-			qvEndDate = fmt.Sprintf("%04d-%02d-%02d", year, raw[1], raw[0])
-			liveReadSuccess = true
-		}
-
-		var holidayStartDate, holidayEndDate, holidayStartTime, holidayEndTime string
-		var holidaySetpointPtr *float64
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_start_date); ok && len(raw) >= 3 {
-			if date := decodeB524DateSuppressSentinel(raw); date != "" {
-				holidayStartDate = date
-			}
-			liveReadSuccess = true
-		}
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_end_date); ok && len(raw) >= 3 {
-			if date := decodeB524DateSuppressSentinel(raw); date != "" {
-				holidayEndDate = date
-			}
-			liveReadSuccess = true
-		}
-		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_holiday_setpoint); ok {
-			v := value
-			holidaySetpointPtr = &v
-			liveReadSuccess = true
-		}
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_end_time); ok && len(raw) >= 2 {
-			holidayEndTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
-			liveReadSuccess = true
-		}
-		if raw, ok := p.readB524Value(ctx, localZones.opcode, localZones.group, instance, zone_holiday_start_time); ok && len(raw) >= 2 {
-			holidayStartTime = fmt.Sprintf("%02d:%02d", raw[0], raw[1])
-			liveReadSuccess = true
-		}
-
 		zoneOpMode, zoneOpModeOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_heating_op_mode)
 		zoneSF, zoneSFOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_special_function)
 		zoneValve, zoneValveOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_valve_status)
-		zoneRoomTemperatureZoneMappingRaw, zoneRoomTemperatureZoneMappingRawOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_room_temperature_zone_mapping_raw)
-		if zoneOpModeOK || zoneSFOK || zoneValveOK || zoneRoomTemperatureZoneMappingRawOK {
+		if zoneOpModeOK || zoneSFOK || zoneValveOK {
 			liveReadSuccess = true
 		}
-		circuitInstance := resolveAssociatedCircuitInstance(zoneRoomTemperatureZoneMappingRaw, instance)
-		circuitType, hasCircuitType := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, circuitInstance, circuit_type)
-		if hasCircuitType {
-			liveReadSuccess = true
-		}
-		var associatedCircuitRaw *uint16
-		if zoneRoomTemperatureZoneMappingRaw != nil {
-			value := uint16(circuitInstance)
-			associatedCircuitRaw = &value
-		}
+		circuitType, hasCircuitType := p.cachedZoneCircuitType(instance)
 
 		operatingMode, preset, allowedModes := deriveZoneModeAndPreset(zoneOpMode, zoneSF, circuitType, hasCircuitType)
 		hvacAction := deriveZoneHvacAction(zoneValve, circuitType, hasCircuitType)
 		incoming := &vaillantZoneSnapshot{
-			OperatingMode:      operatingMode,
-			Preset:             preset,
-			HvacAction:         hvacAction,
-			AllowedModes:       allowedModes,
-			CurrentTempC:       currentPtr,
-			TargetTempC:        targetPtr,
-			HumidityPct:        humidity,
-			QuickVetoTempC:     qvTempPtr,
-			QuickVetoDurationH: qvDurPtr,
-			QuickVetoEndTime:   qvEndTime,
-			QuickVetoEndDate:   qvEndDate,
-			HolidayStartDate:   holidayStartDate,
-			HolidayEndDate:     holidayEndDate,
-			HolidaySetpointC:   holidaySetpointPtr,
-			HolidayStartTime:   holidayStartTime,
-			HolidayEndTime:     holidayEndTime,
-			ConfigurationRoomTemperatureZoneMappingRaw: zoneRoomTemperatureZoneMappingRaw,
-			ConfigurationAssociatedCircuitRaw:          associatedCircuitRaw,
-			ConfigurationCircuitTypeRaw:                circuitType,
-			StateValveStatusRaw:                        zoneValve,
+			OperatingMode:       operatingMode,
+			Preset:              preset,
+			HvacAction:          hvacAction,
+			AllowedModes:        allowedModes,
+			CurrentTempC:        currentPtr,
+			TargetTempC:         targetPtr,
+			HumidityPct:         humidity,
+			StateValveStatusRaw: zoneValve,
 		}
 		if zoneOpMode != nil {
 			incoming.ConfigurationHeatingOperationMode = formatUintToken(*zoneOpMode)
@@ -2953,7 +3044,7 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 
 		p.mu.Lock()
 		if entry := p.zones[instance]; entry != nil {
-			mergeZoneSnapshotFields(entry, incoming, semanticSnapshotSourceLive, zoneStateFieldSet)
+			mergeZoneSnapshotFields(entry, incoming, semanticSnapshotSourceLive, zoneFastStateFieldSet)
 		}
 		p.mu.Unlock()
 	}
@@ -3247,31 +3338,13 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 		attempted[dhwFieldSpecialFunctionRaw] = struct{}{}
 	}
 
-	var dhwHolidayStartDate, dhwHolidayEndDate string
-	if raw, ok := p.readB524Value(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhw_holiday_start_date); ok && len(raw) >= 3 {
-		if date := decodeB524DateSuppressSentinel(raw); date != "" {
-			dhwHolidayStartDate = date
-		}
-		liveReadSuccess = true
-		attempted[dhwFieldHolidayStartDate] = struct{}{}
-	}
-	if raw, ok := p.readB524Value(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhw_holiday_end_date); ok && len(raw) >= 3 {
-		if date := decodeB524DateSuppressSentinel(raw); date != "" {
-			dhwHolidayEndDate = date
-		}
-		liveReadSuccess = true
-		attempted[dhwFieldHolidayEndDate] = struct{}{}
-	}
-
 	if !liveReadSuccess {
 		return p.sourceFromEbusdGrab(p.refreshDHWFromEbusdGrab(ctx))
 	}
 
 	status := &vaillantDhwSnapshot{
-		CurrentTempC:     currentPtr,
-		TargetTempC:      targetPtr,
-		HolidayStartDate: dhwHolidayStartDate,
-		HolidayEndDate:   dhwHolidayEndDate,
+		CurrentTempC: currentPtr,
+		TargetTempC:  targetPtr,
 	}
 	if attempted.has(dhwFieldOperatingMode) || attempted.has(dhwFieldPreset) {
 		status.OperatingMode, status.Preset = deriveDhwModeAndPreset(opModeRaw, sfModeRaw)
@@ -4251,18 +4324,40 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB524(ctx context.Context, ti
 		return updated
 	}
 
-	if value := p.readDhwFloat(ctx, dhw_current_temp); value != nil {
-		snapshot.DhwTemperatureC = value
+	p.mergeBoilerDHWFieldsFromSnapshot(snapshot)
+	return updated
+}
+
+func (p *vaillantSemanticPoller) mergeBoilerDHWFieldsFromSnapshot(snapshot *vaillantBoilerSnapshot) bool {
+	if p == nil || snapshot == nil {
+		return false
+	}
+
+	p.mu.Lock()
+	dhw := p.dhw
+	if dhw == nil {
+		p.mu.Unlock()
+		return false
+	}
+	current := cloneFloat64Ptr(dhw.CurrentTempC)
+	target := cloneFloat64Ptr(dhw.TargetTempC)
+	operationMode := strings.TrimSpace(dhw.ConfigurationDHWOperationMode)
+	p.mu.Unlock()
+
+	updated := false
+	if current != nil {
+		snapshot.DhwTemperatureC = current
 		updated = true
 	}
-	if value := p.readDhwFloat(ctx, dhw_target_temp); value != nil {
-		snapshot.DhwTargetTemperatureC = value
+	if target != nil {
+		snapshot.DhwTargetTemperatureC = target
 		updated = true
 	}
-	if raw, ok := p.readDhwUint16(ctx, dhw_operation_mode); ok && raw != nil {
-		value := int(*raw)
-		snapshot.DhwOperatingMode = &value
-		updated = true
+	if operationMode != "" {
+		if parsed, err := strconv.Atoi(operationMode); err == nil {
+			snapshot.DhwOperatingMode = &parsed
+			updated = true
+		}
 	}
 	return updated
 }
@@ -7179,7 +7274,7 @@ func (p *vaillantSemanticPoller) readB509UCHFloat(ctx context.Context, target by
 }
 
 func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {
-	if p == nil || p.bus == nil {
+	if p == nil || (p.bus == nil && p.sendFrameFn == nil) {
 		return nil, false
 	}
 	if ctx == nil {
@@ -7216,7 +7311,7 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 				Secondary: vaillantExtRegisterSecondary,
 				Data:      buildB524ReadSelector(opcode, group, instance, addr),
 			}
-			response, err := p.bus.Send(reqCtx, request)
+			response, err := p.sendSemanticFrame(reqCtx, request)
 			cancel()
 			p.readMu.Unlock()
 

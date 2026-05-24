@@ -942,16 +942,16 @@ func (c *Classifier) EnforceDropsAppliedTotal() uint64 {
 //   - nil classifier: returns 0.
 //
 // Operator usage (canary rollout):
-//   1. Deploy with HELIANTHUS_V8_CLASSIFIER_MODE=shadow.
-//   2. Monitor this counter during a representative production
-//      window (e.g. 24h of bus activity).
-//   3. If the counter stays at 0 or stays bounded (no growth
-//      under normal load), the classifier's enforce-mode impact
-//      would be zero (or bounded). Promote to enforce.
-//   4. If the counter grows under normal load, the classifier
-//      is flagging legitimate bytes — investigate before
-//      promoting (likely a false-positive AA-injection
-//      classification).
+//  1. Deploy with HELIANTHUS_V8_CLASSIFIER_MODE=shadow.
+//  2. Monitor this counter during a representative production
+//     window (e.g. 24h of bus activity).
+//  3. If the counter stays at 0 or stays bounded (no growth
+//     under normal load), the classifier's enforce-mode impact
+//     would be zero (or bounded). Promote to enforce.
+//  4. If the counter grows under normal load, the classifier
+//     is flagging legitimate bytes — investigate before
+//     promoting (likely a false-positive AA-injection
+//     classification).
 //
 // Prometheus alert (deployment/prometheus-alerts.md):
 //

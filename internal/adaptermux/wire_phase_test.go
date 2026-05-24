@@ -546,9 +546,9 @@ func TestWirePhase_ResponseDoubleNACK(t *testing.T) {
 	tracker.advance(protocol.SymbolNack) // first NACK -> retry
 
 	// Retry response + second NACK.
-	tracker.advance(0x01)                       // LEN
-	tracker.advance(0xAB)                       // DATA
-	tracker.advance(0xEE)                       // CRC -> ResponseDone
+	tracker.advance(0x01) // LEN
+	tracker.advance(0xAB) // DATA
+	tracker.advance(0xEE) // CRC -> ResponseDone
 	// F-21 (batch-20): second response NACK defers to trailing SYN.
 	got := tracker.advance(protocol.SymbolNack)
 	if got != wirePhaseEventNone {

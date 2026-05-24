@@ -193,8 +193,8 @@ func TestE2E_ScanB504_ToTarget0x08_SuccessFullFlow(t *testing.T) {
 		t.Logf("Phase-3 timeout after %d/%d bytes consumed", len(gotSnapshot), totalExpected)
 		t.Logf("bytes consumed: % X", gotSnapshot)
 		dumpSynDiag(t, mux)
-		t.Fatalf("Phase-3 timeout: terminator SYN never delivered to activeCh after explicit "+
-			"sendEndOfMessage. Round-6 regression — the hasPendingEcho+SymbolSyn branch of "+
+		t.Fatalf("Phase-3 timeout: terminator SYN never delivered to activeCh after explicit " +
+			"sendEndOfMessage. Round-6 regression — the hasPendingEcho+SymbolSyn branch of " +
 			"the terminator gate failed to fire.")
 	}
 

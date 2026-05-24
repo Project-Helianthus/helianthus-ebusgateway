@@ -171,7 +171,6 @@ func TestPreEchoSyn_LegitimateTerminator_Delivered(t *testing.T) {
 	}
 }
 
-
 // TestPreEchoSyn_BetweenWritesSyn_Suppress (batch-26 round-7 — Attack 3
 // closure). Verifies that a wire SYN arriving in the inter-write window
 // (matchEcho consumed echo K, recordSent of K+1 not yet armed) is
@@ -191,7 +190,7 @@ func TestPreEchoSyn_LegitimateTerminator_Delivered(t *testing.T) {
 //     gatewayTxnActive=true, bytesDeliveredToActive>0
 //     → betweenWritesSyn=true, preEchoMidFrameSuppress=true
 //     → terminator branch does NOT fire (gated on
-//       !preEchoMidFrameSuppress)
+//     !preEchoMidFrameSuppress)
 //     → synSuppressedBetweenWrites counter increments
 //     → flushOnSYN does NOT fire (queueJustDrained preserved)
 //     → idle release does NOT fire (suppressIdleRelease gates).

@@ -74,11 +74,11 @@ func TestParseHexByteList_Invalid(t *testing.T) {
 	t.Parallel()
 
 	cases := []string{
-		"0xZZ",            // non-hex digits
-		"0x71,garbage",    // second item invalid
-		"0x71,0x100",      // value > 0xFF (8-bit overflow)
-		"0x71;0xFD",       // wrong separator
-		"not-a-hex-byte",  // wholly bogus
+		"0xZZ",           // non-hex digits
+		"0x71,garbage",   // second item invalid
+		"0x71,0x100",     // value > 0xFF (8-bit overflow)
+		"0x71;0xFD",      // wrong separator
+		"not-a-hex-byte", // wholly bogus
 	}
 	for _, in := range cases {
 		t.Run(in, func(t *testing.T) {

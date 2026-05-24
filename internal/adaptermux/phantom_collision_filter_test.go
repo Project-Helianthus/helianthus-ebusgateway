@@ -58,7 +58,7 @@ func TestReadLoop_PhantomCollisionByteNotMirrored(t *testing.T) {
 	// directly via AddSession to keep the scope contained to the
 	// readLoop → mirror-delivery path.
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 	sid := mux.AddSession(serverConn)
 	if sid == 0 {
 		t.Fatal("AddSession returned 0")
@@ -116,7 +116,7 @@ func TestReadLoop_RealMasterByteStillMirrored(t *testing.T) {
 		ReadTimeout: 200 * time.Millisecond,
 		// Treat every byte as a known initiator — C5 must be a no-op.
 		IsKnownInitiatorByte: func(b byte) bool { return true },
-		PendingStartTTL:   24 * time.Hour,
+		PendingStartTTL:      24 * time.Hour,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -139,7 +139,7 @@ func TestReadLoop_RealMasterByteStillMirrored(t *testing.T) {
 	}()
 
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 	sid := mux.AddSession(serverConn)
 	if sid == 0 {
 		t.Fatal("AddSession returned 0")

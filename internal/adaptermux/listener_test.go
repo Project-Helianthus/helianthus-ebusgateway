@@ -75,13 +75,13 @@ func newTestMux(t *testing.T) (*Mux, context.CancelFunc, func()) {
 	adapterAddr, adapterClose := fakeAdapterServer(t)
 
 	cfg := Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     adapterAddr,
-		DialTimeout: 2 * time.Second,
-		ReadTimeout: 200 * time.Millisecond,
-	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
-	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         adapterAddr,
+		DialTimeout:     2 * time.Second,
+		ReadTimeout:     200 * time.Millisecond,
+		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
+		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
 	}
 
 	mux := New(cfg)
@@ -327,13 +327,13 @@ func TestConnect_INITRetrySucceeds(t *testing.T) {
 	defer adapterClose()
 
 	cfg := Config{
-		Protocol:    "enh",
-		Network:     "tcp",
-		Address:     adapterAddr,
-		DialTimeout: 2 * time.Second,
-		ReadTimeout: 200 * time.Millisecond,
-	PendingStartTTL: 24 * time.Hour,  // disable C3 TTL drain in legacy tests
-	SYNInterval: time.Hour,  // disable C1 idle fast path in legacy tests
+		Protocol:        "enh",
+		Network:         "tcp",
+		Address:         adapterAddr,
+		DialTimeout:     2 * time.Second,
+		ReadTimeout:     200 * time.Millisecond,
+		PendingStartTTL: 24 * time.Hour, // disable C3 TTL drain in legacy tests
+		SYNInterval:     time.Hour,      // disable C1 idle fast path in legacy tests
 	}
 
 	mux := New(cfg)

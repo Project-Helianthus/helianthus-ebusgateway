@@ -477,6 +477,252 @@ func TestReadB524StartupUsesLivePathWithoutScheduler(t *testing.T) {
 	}
 }
 
+func TestRefreshStateSkipsSlowZoneAndDHWB524Selectors(t *testing.T) {
+	t.Parallel()
+
+	var selectors [][]byte
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		provider:       graphql.NewLiveSemanticProvider(),
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+		zones: map[byte]*vaillantZoneSnapshot{
+			0x00: {
+				Instance:                    0x00,
+				Present:                     true,
+				ConfigurationCircuitTypeRaw: uint16Ptr(1),
+			},
+		},
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: {Instance: 0x00, Active: true, CircuitTypeRaw: uint16Ptr(1)},
+		},
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		selectors = append(selectors, slices.Clone(frame.Data))
+		return testB524ResponseForSelector(frame.Data), nil
+	}
+
+	poller.refreshState(context.Background())
+
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_current_temp)
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_target_temp)
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_heating_op_mode)
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_valve_status)
+	requireB524Selector(t, selectors, localDHW.group, dhwInstance, dhw_current_temp)
+	requireB524Selector(t, selectors, localDHW.group, dhwInstance, dhw_operation_mode)
+
+	for _, forbidden := range []struct {
+		group    byte
+		instance byte
+		addr     uint16
+	}{
+		{localZones.group, 0x00, zone_quick_veto_temp},
+		{localZones.group, 0x00, zone_quick_veto_end_time},
+		{localZones.group, 0x00, zone_holiday_start_date},
+		{localZones.group, 0x00, zone_room_temperature_zone_mapping_raw},
+		{localCircuits.group, 0x00, circuit_type},
+		{localDHW.group, dhwInstance, dhw_holiday_start_date},
+		{localDHW.group, dhwInstance, dhw_holiday_end_date},
+	} {
+		if hasB524Selector(selectors, forbidden.group, forbidden.instance, forbidden.addr) {
+			t.Fatalf("refreshState read slow selector group=0x%02x instance=0x%02x addr=0x%04x", forbidden.group, forbidden.instance, forbidden.addr)
+		}
+	}
+}
+
+func TestRefreshConfigReadsSlowZoneAndDHWB524Selectors(t *testing.T) {
+	t.Parallel()
+
+	var selectors [][]byte
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		provider:       graphql.NewLiveSemanticProvider(),
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+		zones: map[byte]*vaillantZoneSnapshot{
+			0x00: {Instance: 0x00, Present: true},
+		},
+		circuits: make(map[byte]*vaillantCircuitSnapshot),
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		selectors = append(selectors, slices.Clone(frame.Data))
+		return testB524ResponseForSelector(frame.Data), nil
+	}
+
+	poller.refreshConfig(context.Background())
+
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_quick_veto_temp)
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_quick_veto_end_time)
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_holiday_start_date)
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_room_temperature_zone_mapping_raw)
+	requireB524Selector(t, selectors, localCircuits.group, 0x00, circuit_type)
+	requireB524Selector(t, selectors, localDHW.group, dhwInstance, dhw_holiday_start_date)
+	requireB524Selector(t, selectors, localDHW.group, dhwInstance, dhw_holiday_end_date)
+
+	if hasB524Selector(selectors, localZones.group, 0x00, zone_current_temp) {
+		t.Fatal("refreshConfig read fast zone current temperature selector")
+	}
+	if hasB524Selector(selectors, localDHW.group, dhwInstance, dhw_current_temp) {
+		t.Fatal("refreshConfig read fast DHW current temperature selector")
+	}
+}
+
+func TestRefreshConfigDHWOnlySuccessKeepsZonesCacheSource(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		provider:       provider,
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+		zones: map[byte]*vaillantZoneSnapshot{
+			0x00: {Instance: 0x00, Present: true, Name: "Zone 1"},
+		},
+		circuits: make(map[byte]*vaillantCircuitSnapshot),
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) == 6 && frame.Data[2] == localDHW.group {
+			return testB524ResponseForSelector(frame.Data), nil
+		}
+		return nil, errors.New("zone read unavailable")
+	}
+
+	poller.refreshConfig(context.Background())
+
+	if dhw := provider.DHW(); dhw == nil {
+		t.Fatal("DHW = nil; want DHW slow config to publish")
+	}
+	if cacheEpoch, liveEpoch := provider.StartupEpochs(); liveEpoch != 1 || cacheEpoch != 1 {
+		t.Fatalf("StartupEpochs() = cache=%d live=%d; want zone cache=1 and DHW live=1", cacheEpoch, liveEpoch)
+	}
+}
+
+func TestRefreshConfigNoZonesStillRefreshesDHWSlowConfig(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		scheduler:             ebusgateway.NewSemanticReadScheduler(),
+		provider:              provider,
+		reg:                   newTestRegistry(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV"}),
+		source:                0x7F,
+		controller:            0x15,
+		requestTimeout:        50 * time.Millisecond,
+		zones:                 make(map[byte]*vaillantZoneSnapshot),
+		presence:              make(map[byte]*zonePresenceRecord),
+		circuits:              make(map[byte]*vaillantCircuitSnapshot),
+		radioDevices:          make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		solarCylinders:        make(map[byte]*vaillantCylinderSnapshot),
+		startupSemanticPrimed: true,
+		b524ProbeFn: func(context.Context, byte, byte, byte, byte, uint16) bool {
+			return true
+		},
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) == 6 && frame.Data[2] == localDHW.group {
+			return testB524ResponseForSelector(frame.Data), nil
+		}
+		if len(frame.Data) == 6 && frame.Data[2] == localZones.group && (uint16(frame.Data[4])|uint16(frame.Data[5])<<8) == zone_index {
+			group := frame.Data[2]
+			instance := frame.Data[3]
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			return &protocol.Frame{Data: []byte{0x01, instance, group, byte(addr), byte(addr >> 8), 0xFF}}, nil
+		}
+		return nil, errors.New("non-DHW read unavailable")
+	}
+
+	poller.refreshConfig(context.Background())
+
+	dhw := provider.DHW()
+	if dhw == nil {
+		t.Fatal("DHW = nil; want no-zone config refresh to publish DHW slow fields")
+	}
+	if dhw.Config.HolidayStartDate == "" || dhw.Config.HolidayEndDate == "" {
+		t.Fatalf("DHW holiday dates = %q/%q; want slow config values", dhw.Config.HolidayStartDate, dhw.Config.HolidayEndDate)
+	}
+}
+
+func hasB524Selector(selectors [][]byte, group, instance byte, addr uint16) bool {
+	for _, selector := range selectors {
+		if len(selector) != 6 {
+			continue
+		}
+		gotAddr := uint16(selector[4]) | uint16(selector[5])<<8
+		if selector[2] == group && selector[3] == instance && gotAddr == addr {
+			return true
+		}
+	}
+	return false
+}
+
+func requireB524Selector(t *testing.T, selectors [][]byte, group, instance byte, addr uint16) {
+	t.Helper()
+	if !hasB524Selector(selectors, group, instance, addr) {
+		t.Fatalf("missing selector group=0x%02x instance=0x%02x addr=0x%04x in % x", group, instance, addr, selectors)
+	}
+}
+
+func testB524ResponseForSelector(selector []byte) *protocol.Frame {
+	if len(selector) != 6 {
+		return &protocol.Frame{Data: []byte{0x00}}
+	}
+	group := selector[2]
+	instance := selector[3]
+	addr := uint16(selector[4]) | uint16(selector[5])<<8
+	payload := testB524PayloadForSelector(group, addr)
+	data := []byte{0x01, instance, group, byte(addr), byte(addr >> 8)}
+	data = append(data, payload...)
+	return &protocol.Frame{Data: data}
+}
+
+func testB524PayloadForSelector(group byte, addr uint16) []byte {
+	switch {
+	case group == localZones.group && (addr == zone_current_temp ||
+		addr == zone_target_temp ||
+		addr == zone_fallback_manual_temp ||
+		addr == zone_current_humidity ||
+		addr == zone_quick_veto_temp ||
+		addr == zone_quick_veto_duration ||
+		addr == zone_holiday_setpoint):
+		return testB524Float32Payload(21.5)
+	case group == localDHW.group && (addr == dhw_current_temp || addr == dhw_target_temp):
+		return testB524Float32Payload(48.5)
+	case group == localRegulator.group && addr == system_flow_temperature:
+		return testB524Float32Payload(42.5)
+	case group == localZones.group && (addr == zone_quick_veto_end_time ||
+		addr == zone_holiday_start_time ||
+		addr == zone_holiday_end_time):
+		return []byte{6, 30}
+	case group == localZones.group && (addr == zone_quick_veto_end_date ||
+		addr == zone_holiday_start_date ||
+		addr == zone_holiday_end_date):
+		return []byte{2, 1, 24}
+	case group == localDHW.group && (addr == dhw_holiday_start_date || addr == dhw_holiday_end_date):
+		return []byte{2, 1, 24}
+	case group == localZones.group && (addr == zone_heating_op_mode ||
+		addr == zone_special_function ||
+		addr == zone_valve_status ||
+		addr == zone_room_temperature_zone_mapping_raw):
+		return []byte{1, 0}
+	case group == localCircuits.group && (addr == circuit_type ||
+		addr == circuit_pump_status ||
+		addr == circuit_circuit_state):
+		return []byte{1, 0}
+	default:
+		return []byte{'T', 'e', 's', 't', 0, 0}
+	}
+}
+
+func testB524Float32Payload(value float64) []byte {
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint32(payload, math.Float32bits(float32(value)))
+	return payload
+}
+
 func TestRefreshDiscoveryPrimesDHWBeforeStartupZoneScan(t *testing.T) {
 	t.Parallel()
 
@@ -2552,6 +2798,79 @@ func TestRefreshBoilerStatusTier_NoSuccessfulReadsPreservesSnapshot(t *testing.T
 	}
 }
 
+func TestRefreshBoilerStatusFastUsesCachedDHWWithoutB524DHWReads(t *testing.T) {
+	t.Parallel()
+
+	current := 47.5
+	target := 50.0
+	var selectors [][]byte
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		provider:       graphql.NewLiveSemanticProvider(),
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+		dhw: &vaillantDhwSnapshot{
+			CurrentTempC:                  &current,
+			TargetTempC:                   &target,
+			ConfigurationDHWOperationMode: "1",
+		},
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		selectors = append(selectors, slices.Clone(frame.Data))
+		return testB524ResponseForSelector(frame.Data), nil
+	}
+
+	poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
+
+	for _, selector := range selectors {
+		if len(selector) == 6 && selector[2] == localDHW.group {
+			t.Fatalf("boiler fast issued duplicate DHW B524 selector % x", selector)
+		}
+	}
+	if poller.boiler == nil {
+		t.Fatal("poller.boiler = nil; want merged boiler snapshot")
+	}
+	if poller.boiler.DhwTemperatureC == nil || *poller.boiler.DhwTemperatureC != current {
+		t.Fatalf("boiler DhwTemperatureC = %v; want cached %.1f", poller.boiler.DhwTemperatureC, current)
+	}
+	if poller.boiler.DhwTargetTemperatureC == nil || *poller.boiler.DhwTargetTemperatureC != target {
+		t.Fatalf("boiler DhwTargetTemperatureC = %v; want cached %.1f", poller.boiler.DhwTargetTemperatureC, target)
+	}
+	if poller.boiler.DhwOperatingMode == nil || *poller.boiler.DhwOperatingMode != 1 {
+		t.Fatalf("boiler DhwOperatingMode = %v; want cached 1", poller.boiler.DhwOperatingMode)
+	}
+}
+
+func TestRefreshBoilerStatusFastCachedDHWOnlyDoesNotPublishLive(t *testing.T) {
+	t.Parallel()
+
+	current := 47.5
+	target := 50.0
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		provider:       provider,
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+		dhw: &vaillantDhwSnapshot{
+			CurrentTempC:                  &current,
+			TargetTempC:                   &target,
+			ConfigurationDHWOperationMode: "1",
+		},
+	}
+	poller.sendFrameFn = func(context.Context, protocol.Frame) (*protocol.Frame, error) {
+		return nil, errors.New("boiler fast unavailable")
+	}
+
+	poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
+
+	if got := provider.BoilerStatus(); got != nil {
+		t.Fatalf("BoilerStatus() = %+v; want nil without live boiler/B524 success", got)
+	}
+}
+
 func TestDeriveCircuitManagingDevice(t *testing.T) {
 	t.Parallel()
 
@@ -3775,7 +4094,30 @@ func TestMergeZoneSnapshotFields_PartialLiveUpdatePreservesLastKnownAndFreshness
 		CurrentTempC:                      &updatedCurrent,
 		ConfigurationHeatingOperationMode: "2",
 	}
-	mergeZoneSnapshotFields(entry, incoming, semanticSnapshotSourceLive, zoneStateFieldSet)
+	mergeZoneSnapshotFields(entry, incoming, semanticSnapshotSourceLive, newSemanticFieldSet(
+		zoneFieldOperatingMode,
+		zoneFieldPreset,
+		zoneFieldHvacAction,
+		zoneFieldAllowedModes,
+		zoneFieldCurrentTempC,
+		zoneFieldTargetTempC,
+		zoneFieldCurrentHumidityPct,
+		zoneFieldZoneOperationModeRaw,
+		zoneFieldSpecialFunctionRaw,
+		zoneFieldRoomTemperatureZoneMappingRaw,
+		zoneFieldZoneCircuitIndexRaw,
+		zoneFieldZoneValveStatusRaw,
+		zoneFieldCircuitTypeRaw,
+		zoneFieldQuickVetoTempC,
+		zoneFieldQuickVetoDurationH,
+		zoneFieldQuickVetoEndTime,
+		zoneFieldQuickVetoEndDate,
+		zoneFieldHolidayStartDate,
+		zoneFieldHolidayEndDate,
+		zoneFieldHolidaySetpointC,
+		zoneFieldHolidayStartTime,
+		zoneFieldHolidayEndTime,
+	))
 
 	if entry.CurrentTempC == nil || *entry.CurrentTempC != 21.8 {
 		t.Fatalf("entry.CurrentTempC = %v; want 21.8", entry.CurrentTempC)

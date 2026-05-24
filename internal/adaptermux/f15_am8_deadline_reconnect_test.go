@@ -360,4 +360,3 @@ func TestF22_AbsorbTimerResetsCounterWithoutReconnect(t *testing.T) {
 		t.Fatalf("pendingStartAbsorb = %d after safety-net fire; want 0 (reset must clear the barrier)", stillBlocked)
 	}
 }
-

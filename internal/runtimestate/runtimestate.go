@@ -665,4 +665,3 @@ func (m *Manager) atomicWrite(snap *State) error {
 	m.opts.Metrics.OnWrite("ok")
 	return nil
 }
-

@@ -114,49 +114,49 @@ type Config struct {
 	DiagnosticFullRangeRetry bool
 	// SemanticInterval is a legacy single-interval semantic polling configuration.
 	// Prefer SemanticDiscoveryInterval / SemanticConfigInterval / SemanticStateInterval.
-	SemanticInterval                        time.Duration
-	SemanticDiscoveryInterval               time.Duration
-	SemanticConfigInterval                  time.Duration
-	SemanticStateInterval                   time.Duration
-	SemanticEnergyInterval                  time.Duration
-	SemanticRequestTimeout                  time.Duration
-	SemanticReadBreakerFailureBudget        int
-	SemanticReadBreakerFailureBudgetSet     bool
-	SemanticReadBreakerOpenCooldown         time.Duration
-	SemanticReadBreakerHalfOpenProbeLimit   int
-	SemanticZonePresenceMissThreshold       int
-	SemanticZonePresenceHitThreshold        int
-	SemanticDHWStaleTTL                     time.Duration
-	SemanticRegulatorRecheckInterval        time.Duration
-	SemanticRegulatorAbsenceGrace           time.Duration
-	SemanticCachePath                       string
-	BroadcastListen                         bool
-	PassiveAbsenceThreshold                 time.Duration
-	PassiveTransactionWatchdog              time.Duration
-	PassiveReconnectInitialDelay            time.Duration
-	PassiveReconnectMaxDelay                time.Duration
-	PassiveDedupActivePublishBudget         time.Duration
-	PassiveDedupPassiveDeliveryBudget       time.Duration
-	PassiveDedupPendingGraceTimeout         time.Duration
-	PassiveDedupActiveFingerprintRetention  time.Duration
-	PassiveDedupPendingCapacity             int
-	PassiveDedupRecoveryHysteresis          time.Duration
-	PassiveDedupRecoveryEventThreshold      int
-	LocalAddressSnapshotter                 LocalBusAddressSnapshotter
-	AdmittedSource                          func() byte
-	WatchObserver                           WatchObserver
-	WatchEfficiencyObserver                 WatchEfficiencyObserver
-	HTTPAddr                                string
-	MetricsPath                             string
-	GraphQLPath                             string
-	SnapshotPath                            string
-	SubscriptionPath                        string
-	MCPPath                                 string
-	UIPath                                  string
-	PortalPath                              string
-	MDNSAdvertise                           bool
-	MDNSInstance                            string
-	InstanceGUID                            string
+	SemanticInterval                       time.Duration
+	SemanticDiscoveryInterval              time.Duration
+	SemanticConfigInterval                 time.Duration
+	SemanticStateInterval                  time.Duration
+	SemanticEnergyInterval                 time.Duration
+	SemanticRequestTimeout                 time.Duration
+	SemanticReadBreakerFailureBudget       int
+	SemanticReadBreakerFailureBudgetSet    bool
+	SemanticReadBreakerOpenCooldown        time.Duration
+	SemanticReadBreakerHalfOpenProbeLimit  int
+	SemanticZonePresenceMissThreshold      int
+	SemanticZonePresenceHitThreshold       int
+	SemanticDHWStaleTTL                    time.Duration
+	SemanticRegulatorRecheckInterval       time.Duration
+	SemanticRegulatorAbsenceGrace          time.Duration
+	SemanticCachePath                      string
+	BroadcastListen                        bool
+	PassiveAbsenceThreshold                time.Duration
+	PassiveTransactionWatchdog             time.Duration
+	PassiveReconnectInitialDelay           time.Duration
+	PassiveReconnectMaxDelay               time.Duration
+	PassiveDedupActivePublishBudget        time.Duration
+	PassiveDedupPassiveDeliveryBudget      time.Duration
+	PassiveDedupPendingGraceTimeout        time.Duration
+	PassiveDedupActiveFingerprintRetention time.Duration
+	PassiveDedupPendingCapacity            int
+	PassiveDedupRecoveryHysteresis         time.Duration
+	PassiveDedupRecoveryEventThreshold     int
+	LocalAddressSnapshotter                LocalBusAddressSnapshotter
+	AdmittedSource                         func() byte
+	WatchObserver                          WatchObserver
+	WatchEfficiencyObserver                WatchEfficiencyObserver
+	HTTPAddr                               string
+	MetricsPath                            string
+	GraphQLPath                            string
+	SnapshotPath                           string
+	SubscriptionPath                       string
+	MCPPath                                string
+	UIPath                                 string
+	PortalPath                             string
+	MDNSAdvertise                          bool
+	MDNSInstance                           string
+	InstanceGUID                           string
 	// InstanceGUIDSource is the AD27 provenance tag passed by the
 	// add-on alongside InstanceGUID. One of: "runtime_state",
 	// "legacy_migrated", "generated", "cli-override". Empty when the
@@ -166,7 +166,7 @@ type Config struct {
 	InstanceGUIDSource string
 	// RuntimeStatePath overrides /data/runtime_state.json for tests +
 	// alternate deployments. Empty uses the runtimestate package default.
-	RuntimeStatePath string
+	RuntimeStatePath                        string
 	DumpOutputDir                           string
 	DumpUploadPath                          string
 	DumpUploadURL                           string

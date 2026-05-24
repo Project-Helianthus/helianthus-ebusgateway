@@ -298,7 +298,6 @@ func TestOnSYNLocked_NoTerminatorDeliveryWhenBytesReadZero(t *testing.T) {
 	}
 }
 
-
 // TestEchoMismatch_SYNAfterWriteBeforeFirstEcho is the exact scenario
 // Codex flagged on PR #502 (commit 30c3dcd / finding at mux.go:1210):
 // the terminator gate keying off bytesWritten>0 allows a queued idle SYN

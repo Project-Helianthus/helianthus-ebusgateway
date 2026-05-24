@@ -679,6 +679,18 @@ func testB524ResponseForSelector(selector []byte) *protocol.Frame {
 	return &protocol.Frame{Data: data}
 }
 
+func testB524ResponseForSelectorPayload(selector []byte, payload ...byte) *protocol.Frame {
+	if len(selector) != 6 {
+		return &protocol.Frame{Data: []byte{0x00}}
+	}
+	group := selector[2]
+	instance := selector[3]
+	addr := uint16(selector[4]) | uint16(selector[5])<<8
+	data := []byte{0x01, instance, group, byte(addr), byte(addr >> 8)}
+	data = append(data, payload...)
+	return &protocol.Frame{Data: data}
+}
+
 func testB524PayloadForSelector(group byte, addr uint16) []byte {
 	switch {
 	case group == localZones.group && (addr == zone_current_temp ||
@@ -6465,6 +6477,174 @@ func TestB524GroupDef_OpcodeGroupBindingIsCorrect(t *testing.T) {
 		if g.opcode != vaillantB524OpcodeRead {
 			t.Errorf("remote group %q (GG=0x%02X) has opcode 0x%02X; want 0x06", g.name, g.group, g.opcode)
 		}
+	}
+}
+
+func TestDiscoverDeviceSlotsExcludesDisconnectedRegulatorAndThermostatSlots(t *testing.T) {
+	t.Parallel()
+
+	var selectors [][]byte
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		selectors = append(selectors, slices.Clone(frame.Data))
+		if len(frame.Data) != 6 {
+			return nil, errors.New("invalid B524 selector")
+		}
+		group := frame.Data[2]
+		instance := frame.Data[3]
+		addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+		if addr == device_slot_connected {
+			switch {
+			case group == remoteRegulators.group && instance == 0x01:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+			case group == remoteThermostats.group && instance == 0x01:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+			case group == remoteThermostats.group && instance == 0x02:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x01), nil
+			}
+		}
+		return testB524ResponseForSelectorPayload(frame.Data, 0xFF), nil
+	}
+
+	active, observedAny := poller.discoverDeviceSlots(context.Background())
+
+	if !observedAny {
+		t.Fatal("discoverDeviceSlots observedAny = false; want true for responsive disconnected/connected slots")
+	}
+	if active[deviceSlotKey{Group: remoteRegulators.group, Instance: 0x01}] {
+		t.Fatal("disconnected regulator slot was retained for steady-state detail refresh")
+	}
+	if active[deviceSlotKey{Group: remoteThermostats.group, Instance: 0x01}] {
+		t.Fatal("disconnected thermostat slot was retained for steady-state detail refresh")
+	}
+	if !active[deviceSlotKey{Group: remoteThermostats.group, Instance: 0x02}] {
+		t.Fatal("connected thermostat slot was not retained for steady-state detail refresh")
+	}
+	if hasB524Selector(selectors, remoteRegulators.group, 0x01, device_slot_class_address) {
+		t.Fatal("disconnected regulator slot should not receive identity-detail probes")
+	}
+	if hasB524Selector(selectors, remoteThermostats.group, 0x01, device_slot_class_address) {
+		t.Fatal("disconnected thermostat slot should not receive identity-detail probes")
+	}
+}
+
+func TestDiscoverDeviceSlotsKeepsDisconnectedFunctionalModuleIdentityEvidence(t *testing.T) {
+	t.Parallel()
+
+	var selectors [][]byte
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		selectors = append(selectors, slices.Clone(frame.Data))
+		if len(frame.Data) != 6 {
+			return nil, errors.New("invalid B524 selector")
+		}
+		group := frame.Data[2]
+		instance := frame.Data[3]
+		addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+		if group == remoteFunctionalModules.group && instance == 0x04 {
+			switch addr {
+			case device_slot_connected:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+			case device_slot_class_address:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x26), nil
+			}
+		}
+		return testB524ResponseForSelectorPayload(frame.Data, 0xFF), nil
+	}
+
+	active, observedAny := poller.discoverDeviceSlots(context.Background())
+
+	if !observedAny {
+		t.Fatal("discoverDeviceSlots observedAny = false; want true for responsive functional module slot")
+	}
+	if !active[deviceSlotKey{Group: remoteFunctionalModules.group, Instance: 0x04}] {
+		t.Fatal("disconnected functional module identity evidence was not retained")
+	}
+	requireB524Selector(t, selectors, remoteFunctionalModules.group, 0x04, device_slot_class_address)
+}
+
+func TestRefreshRadioDevicesClearsStaleSnapshotsWhenDiscoveryFindsNoRefreshableSlots(t *testing.T) {
+	t.Parallel()
+
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		provider:       graphql.NewLiveSemanticProvider(),
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+		radioDevices: map[radioDeviceKey]*vaillantRadioDeviceSnapshot{
+			{Group: remoteRegulators.group, Instance: 0x01}: {
+				Group:    remoteRegulators.group,
+				Instance: 0x01,
+				SlotMode: "active",
+			},
+		},
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) != 6 {
+			return nil, errors.New("invalid B524 selector")
+		}
+		return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+	}
+
+	poller.refreshRadioDevices(context.Background())
+
+	poller.mu.Lock()
+	got := len(poller.radioDevices)
+	poller.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("radioDevices length = %d; want stale snapshots cleared", got)
+	}
+}
+
+func TestRefreshRadioDevicesPreservesSnapshotsWhenRediscoveryOnlyTimesOut(t *testing.T) {
+	t.Parallel()
+
+	poller := &vaillantSemanticPoller{
+		scheduler:                ebusgateway.NewSemanticReadScheduler(),
+		provider:                 graphql.NewLiveSemanticProvider(),
+		source:                   0x7F,
+		controller:               0x15,
+		requestTimeout:           50 * time.Millisecond,
+		deviceSlotRediscoveryTTL: time.Millisecond,
+		deviceSlotCache: map[deviceSlotKey]bool{
+			{Group: remoteRegulators.group, Instance: 0x01}: true,
+		},
+		deviceSlotDiscoveryDone: true,
+		deviceSlotDiscoveryAt:   time.Now().Add(-time.Second),
+		radioDevices: map[radioDeviceKey]*vaillantRadioDeviceSnapshot{
+			{Group: remoteRegulators.group, Instance: 0x01}: {
+				Group:    remoteRegulators.group,
+				Instance: 0x01,
+				SlotMode: "active",
+			},
+		},
+	}
+	poller.sendFrameFn = func(context.Context, protocol.Frame) (*protocol.Frame, error) {
+		return nil, errors.New("temporary rediscovery timeout")
+	}
+
+	poller.refreshRadioDevices(context.Background())
+
+	poller.mu.Lock()
+	radioDevices := len(poller.radioDevices)
+	cachedSlots := len(poller.deviceSlotCache)
+	poller.mu.Unlock()
+	if radioDevices != 1 {
+		t.Fatalf("radioDevices length = %d; want stale snapshot preserved through all-timeout rediscovery", radioDevices)
+	}
+	if cachedSlots != 1 {
+		t.Fatalf("deviceSlotCache length = %d; want existing cache preserved through all-timeout rediscovery", cachedSlots)
 	}
 }
 

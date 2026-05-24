@@ -349,7 +349,7 @@ type vaillantSemanticPoller struct {
 	lastCircuitFullScanAt       time.Time
 	lastCircuitFullScanComplete bool
 	radioDevices                map[radioDeviceKey]*vaillantRadioDeviceSnapshot
-	deviceSlotCache             map[deviceSlotKey]bool // OP=0x06 slots where device_connected responded
+	deviceSlotCache             map[deviceSlotKey]bool // OP=0x06 slots retained for steady-state detail refresh
 	deviceSlotDiscoveryDone     bool
 	deviceSlotDiscoveryAt       time.Time
 	startupSemanticPrimed       bool
@@ -4751,22 +4751,38 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 }
 
 // discoverDeviceSlots probes all OP=0x06 device slot groups to find which
-// slots have a connected device. Returns the set of (group, instance) pairs
-// where device_connected (RR=0x0001) responded with a non-nil value.
+// slots should be retained for steady-state detail refresh. Connected slots
+// are retained. Disconnected functional module slots are retained only when
+// identity registers prove inventory, preserving FM5 evidence without
+// refreshing empty regulator/thermostat slots every config tick.
 // This runs at startup and every deviceSlotRediscoveryTTL to avoid
 // probing empty slots on every poll cycle (~30 timeouts eliminated).
-func (p *vaillantSemanticPoller) discoverDeviceSlots(ctx context.Context) map[deviceSlotKey]bool {
+func (p *vaillantSemanticPoller) discoverDeviceSlots(ctx context.Context) (map[deviceSlotKey]bool, bool) {
 	active := make(map[deviceSlotKey]bool)
+	observedAny := false
 	for _, grp := range remoteDeviceGroups {
 		for instance := byte(0x00); instance <= 0x0A; instance++ {
 			connectedRaw := p.readB524U8(ctx, grp.opcode, grp.group, instance, device_slot_connected)
 			if connectedRaw == nil {
-				continue // timeout — slot empty
+				continue
 			}
-			active[deviceSlotKey{Group: grp.group, Instance: instance}] = true
+			observedAny = true
+			if *connectedRaw == 1 {
+				active[deviceSlotKey{Group: grp.group, Instance: instance}] = true
+				continue
+			}
+			if grp.group != remoteFunctionalModules.group {
+				continue
+			}
+			classAddress := p.readB524U8(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
+			firmware := p.readB524Firmware(ctx, grp.opcode, grp.group, instance, device_slot_firmware)
+			hardware := p.readB524U16(ctx, grp.opcode, grp.group, instance, device_slot_hardware_identifier)
+			if hasRemoteIdentityEvidence(classAddress, firmware, hardware) {
+				active[deviceSlotKey{Group: grp.group, Instance: instance}] = true
+			}
 		}
 	}
-	return active
+	return active, observedAny
 }
 
 func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
@@ -4785,13 +4801,17 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 
 	// Phase 1: Device slot discovery — full scan of all OP=0x06 groups.
 	// Runs at startup and every deviceSlotRediscoveryTTL (30min default).
+	discoveryObserved := false
 	if needsDiscovery {
-		activeSlots := p.discoverDeviceSlots(ctx)
-		p.mu.Lock()
-		p.deviceSlotCache = activeSlots
-		p.deviceSlotDiscoveryDone = true
-		p.deviceSlotDiscoveryAt = p.now()
-		p.mu.Unlock()
+		activeSlots, observedAny := p.discoverDeviceSlots(ctx)
+		discoveryObserved = observedAny
+		if observedAny {
+			p.mu.Lock()
+			p.deviceSlotCache = activeSlots
+			p.deviceSlotDiscoveryDone = true
+			p.deviceSlotDiscoveryAt = p.now()
+			p.mu.Unlock()
+		}
 	}
 
 	p.mu.Lock()
@@ -4799,6 +4819,13 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 	p.mu.Unlock()
 
 	if len(slots) == 0 {
+		if discoveryObserved {
+			p.mu.Lock()
+			p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+			p.mu.Unlock()
+			p.publishRadioDevices(semanticSnapshotSourceLive)
+			p.refreshFM5Semantic(ctx)
+		}
 		return
 	}
 

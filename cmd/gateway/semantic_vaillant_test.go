@@ -597,6 +597,220 @@ func TestRefreshConfigReadsSlowZoneAndDHWB524Selectors(t *testing.T) {
 	}
 }
 
+func TestRefreshBoilerStatusFastProjectsB524MirrorsWithoutActiveB524Reads(t *testing.T) {
+	t.Parallel()
+
+	var selectors [][]byte
+	observedAt := time.Unix(100, 0)
+	flowTemp := 42.5
+	dhwTemp := 48.5
+	pumpRaw := uint16(1)
+	heatingRaw := uint16(2)
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+		nowFn:          func() time.Time { return observedAt.Add(30 * time.Second) },
+		system: &vaillantSystemSnapshot{
+			Controller:                  0x15,
+			SystemFlowTemperature:       &flowTemp,
+			SystemFlowTemperatureLiveAt: observedAt,
+		},
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: {
+				Instance:           0x00,
+				Active:             true,
+				Controller:         0x15,
+				PumpStatusRaw:      &pumpRaw,
+				PumpStatusLiveAt:   observedAt,
+				CircuitStateRaw:    &heatingRaw,
+				CircuitStateLiveAt: observedAt,
+			},
+		},
+		dhw: &vaillantDhwSnapshot{CurrentTempC: &dhwTemp},
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		selectors = append(selectors, slices.Clone(frame.Data))
+		return testB524ResponseForSelector(frame.Data), nil
+	}
+
+	snapshot := &vaillantBoilerSnapshot{}
+	if !poller.refreshBoilerStatusB524(context.Background(), boilerStatusTierFast, snapshot) {
+		t.Fatal("refreshBoilerStatusB524(fast) updated = false; want projected snapshot update")
+	}
+	if len(selectors) != 0 {
+		t.Fatalf("refreshBoilerStatusB524(fast) performed %d active reads; want zero", len(selectors))
+	}
+	if snapshot.FlowTemperatureC == nil || *snapshot.FlowTemperatureC != flowTemp {
+		t.Fatalf("flow temperature = %#v; want %.1f", snapshot.FlowTemperatureC, flowTemp)
+	}
+	if snapshot.CentralHeatingPumpActive == nil || !*snapshot.CentralHeatingPumpActive {
+		t.Fatalf("pump active = %#v; want true", snapshot.CentralHeatingPumpActive)
+	}
+	if snapshot.HeatingStatusRaw == nil || *snapshot.HeatingStatusRaw != int(heatingRaw) {
+		t.Fatalf("heating status = %#v; want %d", snapshot.HeatingStatusRaw, heatingRaw)
+	}
+	if snapshot.DhwTemperatureC == nil || *snapshot.DhwTemperatureC != dhwTemp {
+		t.Fatalf("dhw temperature = %#v; want %.1f", snapshot.DhwTemperatureC, dhwTemp)
+	}
+}
+
+func TestRefreshBoilerStatusFastIgnoresStaleB524Mirrors(t *testing.T) {
+	t.Parallel()
+
+	observedAt := time.Unix(100, 0)
+	flowTemp := 42.5
+	pumpRaw := uint16(1)
+	heatingRaw := uint16(2)
+	poller := &vaillantSemanticPoller{
+		scheduler:          ebusgateway.NewSemanticReadScheduler(),
+		provider:           graphql.NewLiveSemanticProvider(),
+		source:             0x7F,
+		controller:         0x15,
+		configInterval:     5 * time.Minute,
+		boilerFastInterval: 30 * time.Second,
+		requestTimeout:     50 * time.Millisecond,
+		nowFn:              func() time.Time { return observedAt.Add(6 * time.Minute) },
+		system: &vaillantSystemSnapshot{
+			Controller:                  0x15,
+			SystemFlowTemperature:       &flowTemp,
+			SystemFlowTemperatureLiveAt: observedAt,
+		},
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: {
+				Instance:           0x00,
+				Active:             true,
+				Controller:         0x15,
+				PumpStatusRaw:      &pumpRaw,
+				PumpStatusLiveAt:   observedAt,
+				CircuitStateRaw:    &heatingRaw,
+				CircuitStateLiveAt: observedAt,
+			},
+		},
+	}
+
+	snapshot := &vaillantBoilerSnapshot{}
+	if poller.refreshBoilerStatusB524(context.Background(), boilerStatusTierFast, snapshot) {
+		t.Fatal("refreshBoilerStatusB524(fast) updated = true; want stale mirrors ignored")
+	}
+	if snapshot.FlowTemperatureC != nil || snapshot.CentralHeatingPumpActive != nil || snapshot.HeatingStatusRaw != nil {
+		t.Fatalf("stale mirror snapshot = %+v; want no projected fields", snapshot)
+	}
+}
+
+func TestRefreshBoilerStatusFastIgnoresDifferentControllerB524Mirrors(t *testing.T) {
+	t.Parallel()
+
+	observedAt := time.Unix(100, 0)
+	flowTemp := 42.5
+	pumpRaw := uint16(1)
+	heatingRaw := uint16(2)
+	poller := &vaillantSemanticPoller{
+		scheduler:          ebusgateway.NewSemanticReadScheduler(),
+		provider:           graphql.NewLiveSemanticProvider(),
+		source:             0x7F,
+		controller:         0x26,
+		configInterval:     5 * time.Minute,
+		boilerFastInterval: 30 * time.Second,
+		requestTimeout:     50 * time.Millisecond,
+		nowFn:              func() time.Time { return observedAt.Add(30 * time.Second) },
+		system: &vaillantSystemSnapshot{
+			Controller:                  0x15,
+			SystemFlowTemperature:       &flowTemp,
+			SystemFlowTemperatureLiveAt: observedAt,
+		},
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: {
+				Instance:           0x00,
+				Active:             true,
+				Controller:         0x15,
+				PumpStatusRaw:      &pumpRaw,
+				PumpStatusLiveAt:   observedAt,
+				CircuitStateRaw:    &heatingRaw,
+				CircuitStateLiveAt: observedAt,
+			},
+		},
+	}
+
+	snapshot := &vaillantBoilerSnapshot{}
+	if poller.refreshBoilerStatusB524(context.Background(), boilerStatusTierFast, snapshot) {
+		t.Fatal("refreshBoilerStatusB524(fast) updated = true; want different-controller mirrors ignored")
+	}
+	if snapshot.FlowTemperatureC != nil || snapshot.CentralHeatingPumpActive != nil || snapshot.HeatingStatusRaw != nil {
+		t.Fatalf("different-controller mirror snapshot = %+v; want no projected fields", snapshot)
+	}
+}
+
+func TestRefreshBoilerStatusFastIgnoresRestampedPartialMirrorSnapshots(t *testing.T) {
+	t.Parallel()
+
+	observedAt := time.Unix(100, 0)
+	flowTemp := 42.5
+	pressure := 1.4
+	pumpRaw := uint16(1)
+	heatingRaw := uint16(2)
+	circuitType := uint16(1)
+
+	system := mergeSystemSnapshotNonDestructive(
+		&vaillantSystemSnapshot{
+			Controller:                  0x15,
+			SystemFlowTemperature:       &flowTemp,
+			SystemFlowTemperatureLiveAt: observedAt,
+		},
+		&vaillantSystemSnapshot{
+			Controller:          0x26,
+			SystemWaterPressure: &pressure,
+		},
+	)
+	circuit := mergeCircuitSnapshotNonDestructive(
+		&vaillantCircuitSnapshot{
+			Instance:           0x00,
+			Active:             true,
+			Controller:         0x15,
+			PumpStatusRaw:      &pumpRaw,
+			PumpStatusLiveAt:   observedAt,
+			CircuitStateRaw:    &heatingRaw,
+			CircuitStateLiveAt: observedAt,
+		},
+		&vaillantCircuitSnapshot{
+			Instance:       0x00,
+			Active:         true,
+			Controller:     0x26,
+			CircuitTypeRaw: &circuitType,
+		},
+	)
+	if system.SystemFlowTemperature != nil || !system.SystemFlowTemperatureLiveAt.IsZero() {
+		t.Fatalf("merged system mirror = (%v, %s); want cleared on controller change", system.SystemFlowTemperature, system.SystemFlowTemperatureLiveAt)
+	}
+	if circuit.PumpStatusRaw != nil || !circuit.PumpStatusLiveAt.IsZero() {
+		t.Fatalf("merged pump mirror = (%v, %s); want cleared on controller change", circuit.PumpStatusRaw, circuit.PumpStatusLiveAt)
+	}
+	if circuit.CircuitStateRaw != nil || !circuit.CircuitStateLiveAt.IsZero() {
+		t.Fatalf("merged state mirror = (%v, %s); want cleared on controller change", circuit.CircuitStateRaw, circuit.CircuitStateLiveAt)
+	}
+
+	poller := &vaillantSemanticPoller{
+		scheduler:          ebusgateway.NewSemanticReadScheduler(),
+		provider:           graphql.NewLiveSemanticProvider(),
+		source:             0x7F,
+		controller:         0x26,
+		configInterval:     5 * time.Minute,
+		boilerFastInterval: 30 * time.Second,
+		requestTimeout:     50 * time.Millisecond,
+		nowFn:              func() time.Time { return observedAt.Add(30 * time.Second) },
+		system:             system,
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x00: circuit,
+		},
+	}
+
+	snapshot := &vaillantBoilerSnapshot{}
+	if poller.refreshBoilerStatusB524(context.Background(), boilerStatusTierFast, snapshot) {
+		t.Fatal("refreshBoilerStatusB524(fast) updated = true; want partial restamped mirrors ignored")
+	}
+}
+
 func TestRefreshConfigDHWOnlySuccessKeepsZonesCacheSource(t *testing.T) {
 	t.Parallel()
 
@@ -3057,6 +3271,61 @@ func TestRefreshBoilerStatusFastCachedDHWOnlyDoesNotPublishLive(t *testing.T) {
 	}
 }
 
+func TestRefreshBoilerStatusFastMergesCachedDHWWhenB509UpdatesWithoutB524Mirrors(t *testing.T) {
+	t.Parallel()
+
+	current := 47.5
+	target := 50.0
+	flow := 42.5
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		provider:       provider,
+		source:         0x7F,
+		controller:     0x15,
+		boilerAddress:  0x08,
+		requestTimeout: 50 * time.Millisecond,
+		dhw: &vaillantDhwSnapshot{
+			CurrentTempC:                  &current,
+			TargetTempC:                   &target,
+			ConfigurationDHWOperationMode: "1",
+		},
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if frame.Primary != vaillantB509Primary || frame.Secondary != vaillantB509Secondary {
+			t.Fatalf("unexpected non-B509 active read: primary=0x%02x secondary=0x%02x data=% x", frame.Primary, frame.Secondary, frame.Data)
+		}
+		if len(frame.Data) < 3 || frame.Data[0] != vaillantB509OpcodeRead {
+			t.Fatalf("unexpected B509 request data % x", frame.Data)
+		}
+		addr := uint16(frame.Data[1])<<8 | uint16(frame.Data[2])
+		payload := append([]byte{vaillantB509OpcodeRead, byte(addr >> 8), byte(addr)}, encodeTempDATA2c(flow)...)
+		return &protocol.Frame{Data: payload}, nil
+	}
+
+	poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
+
+	if poller.boiler == nil {
+		t.Fatal("poller.boiler = nil; want merged boiler snapshot")
+	}
+	if poller.boiler.FlowTemperatureC == nil || *poller.boiler.FlowTemperatureC != flow {
+		t.Fatalf("boiler FlowTemperatureC = %v; want B509 %.1f", poller.boiler.FlowTemperatureC, flow)
+	}
+	if poller.boiler.DhwTemperatureC == nil || *poller.boiler.DhwTemperatureC != current {
+		t.Fatalf("boiler DhwTemperatureC = %v; want cached %.1f", poller.boiler.DhwTemperatureC, current)
+	}
+	if poller.boiler.DhwTargetTemperatureC == nil || *poller.boiler.DhwTargetTemperatureC != target {
+		t.Fatalf("boiler DhwTargetTemperatureC = %v; want cached %.1f", poller.boiler.DhwTargetTemperatureC, target)
+	}
+	if poller.boiler.DhwOperatingMode == nil || *poller.boiler.DhwOperatingMode != 1 {
+		t.Fatalf("boiler DhwOperatingMode = %v; want cached 1", poller.boiler.DhwOperatingMode)
+	}
+	status := provider.BoilerStatus()
+	if status == nil || status.State.DhwTemperatureC == nil || *status.State.DhwTemperatureC != current {
+		t.Fatalf("published boiler status = %+v; want cached DHW on live B509 update", status)
+	}
+}
+
 func TestDeriveCircuitManagingDevice(t *testing.T) {
 	t.Parallel()
 
@@ -4440,6 +4709,134 @@ func TestVaillantSemanticPoller_PublishZones_FillsRoomStateFromMappedRadioSensor
 	}
 	if zones[1].State.CurrentHumidityPct == nil || *zones[1].State.CurrentHumidityPct != thermostatHumidity {
 		t.Fatalf("zone 2 humidity = %#v; want %.1f", zones[1].State.CurrentHumidityPct, thermostatHumidity)
+	}
+}
+
+func TestVaillantSemanticPoller_PublishZones_InfersThermostatMappingFromRadioAssignment(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	cache := &semanticSnapshotCaptureSpy{}
+	connected := true
+	zoneAssignment := uint8(2)
+	radioTemp := 17.8125
+	radioHumidity := 53.0
+
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		cache:    cache,
+		zones: map[byte]*vaillantZoneSnapshot{
+			0x01: {
+				Instance: 0x01,
+				Present:  true,
+				Name:     "Etaj",
+			},
+		},
+		radioDevices: map[radioDeviceKey]*vaillantRadioDeviceSnapshot{
+			{Group: remoteThermostats.group, Instance: 0x01}: {
+				Group:            remoteThermostats.group,
+				Instance:         0x01,
+				DeviceConnected:  &connected,
+				ZoneAssignment:   &zoneAssignment,
+				RoomTemperatureC: &radioTemp,
+				RoomHumidityPct:  &radioHumidity,
+			},
+		},
+	}
+
+	poller.publishZones(semanticSnapshotSourceLive)
+
+	zones := provider.Zones()
+	if len(zones) != 1 {
+		t.Fatalf("len(provider.Zones()) = %d; want 1", len(zones))
+	}
+	if zones[0].State.CurrentTempC == nil || *zones[0].State.CurrentTempC != radioTemp {
+		t.Fatalf("zone current temp = %#v; want radio %.4f", zones[0].State.CurrentTempC, radioTemp)
+	}
+	if zones[0].State.CurrentHumidityPct == nil || *zones[0].State.CurrentHumidityPct != radioHumidity {
+		t.Fatalf("zone humidity = %#v; want radio %.1f", zones[0].State.CurrentHumidityPct, radioHumidity)
+	}
+	if zones[0].Config.RoomTemperatureZoneMapping == nil || *zones[0].Config.RoomTemperatureZoneMapping != 2 {
+		t.Fatalf("roomTemperatureZoneMapping = %#v; want inferred 2", zones[0].Config.RoomTemperatureZoneMapping)
+	}
+	if zones[0].Config.AssociatedCircuit == nil || *zones[0].Config.AssociatedCircuit != 1 {
+		t.Fatalf("associatedCircuit = %#v; want inferred 1", zones[0].Config.AssociatedCircuit)
+	}
+	if cache.calls == 0 || len(cache.last.Zones) != 1 {
+		t.Fatalf("cache calls=%d zones=%d; want persisted zone snapshot", cache.calls, len(cache.last.Zones))
+	}
+	if cache.last.Zones[0].State.CurrentTempC != nil {
+		t.Fatalf("cached current temp = %#v; want nil direct zone value", cache.last.Zones[0].State.CurrentTempC)
+	}
+	if cache.last.Zones[0].Config.RoomTemperatureZoneMapping != nil {
+		t.Fatalf("cached inferred mapping = %#v; want nil direct zone mapping", cache.last.Zones[0].Config.RoomTemperatureZoneMapping)
+	}
+	if cache.last.Zones[0].Config.AssociatedCircuit != nil {
+		t.Fatalf("cached inferred associated circuit = %#v; want nil direct associated circuit", cache.last.Zones[0].Config.AssociatedCircuit)
+	}
+}
+
+func TestVaillantSemanticPoller_PublishZones_DoesNotInferAmbiguousThermostatAssignment(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	cache := &semanticSnapshotCaptureSpy{}
+	connected := true
+	zoneAssignment := uint8(2)
+	firstTemp := 17.8125
+	secondTemp := 18.25
+
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		cache:    cache,
+		zones: map[byte]*vaillantZoneSnapshot{
+			0x01: {
+				Instance: 0x01,
+				Present:  true,
+				Name:     "Etaj",
+			},
+		},
+		radioDevices: map[radioDeviceKey]*vaillantRadioDeviceSnapshot{
+			{Group: remoteThermostats.group, Instance: 0x01}: {
+				Group:            remoteThermostats.group,
+				Instance:         0x01,
+				DeviceConnected:  &connected,
+				ZoneAssignment:   &zoneAssignment,
+				RoomTemperatureC: &firstTemp,
+			},
+			{Group: remoteThermostats.group, Instance: 0x02}: {
+				Group:            remoteThermostats.group,
+				Instance:         0x02,
+				DeviceConnected:  &connected,
+				ZoneAssignment:   &zoneAssignment,
+				RoomTemperatureC: &secondTemp,
+			},
+		},
+	}
+
+	poller.publishZones(semanticSnapshotSourceLive)
+
+	zones := provider.Zones()
+	if len(zones) != 1 {
+		t.Fatalf("len(provider.Zones()) = %d; want 1", len(zones))
+	}
+	if zones[0].State.CurrentTempC != nil {
+		t.Fatalf("zone current temp = %#v; want nil for ambiguous inferred mapping", zones[0].State.CurrentTempC)
+	}
+	if zones[0].Config.RoomTemperatureZoneMapping != nil {
+		t.Fatalf("roomTemperatureZoneMapping = %#v; want nil for ambiguous inferred mapping", zones[0].Config.RoomTemperatureZoneMapping)
+	}
+	if zones[0].Config.AssociatedCircuit != nil {
+		t.Fatalf("associatedCircuit = %#v; want nil for ambiguous inferred mapping", zones[0].Config.AssociatedCircuit)
+	}
+	if cache.calls == 0 || len(cache.last.Zones) != 1 {
+		t.Fatalf("cache calls=%d zones=%d; want persisted zone snapshot", cache.calls, len(cache.last.Zones))
+	}
+	if cache.last.Zones[0].Config.RoomTemperatureZoneMapping != nil {
+		t.Fatalf("cached ambiguous mapping = %#v; want nil", cache.last.Zones[0].Config.RoomTemperatureZoneMapping)
+	}
+	if cache.last.Zones[0].Config.AssociatedCircuit != nil {
+		t.Fatalf("cached ambiguous associated circuit = %#v; want nil", cache.last.Zones[0].Config.AssociatedCircuit)
 	}
 }
 

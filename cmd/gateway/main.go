@@ -761,6 +761,12 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		builder.SetScheduleWriter(gatedGraphQLWriter)
 		builder.SetWatchSummaryProvider(newGraphQLWatchSummaryProvider(semanticPoller.shadow))
 	}
+	if semanticPoller != nil && semanticPoller.shadow != nil && deduplicator != nil {
+		// Use the semantic shadow directly here. The broader runtime observer can
+		// fall back to the deduplicator itself, which would re-enter dedup locks
+		// while passive fingerprints are being built.
+		deduplicator.SetWatchObserver(semanticPoller.shadow)
+	}
 	observeFirstFlags := ebusgateway.NormalizeObserveFirstFeatureFlags(
 		cfg.ObserveFirstEnabled,
 		cfg.PassiveStateDirectApply,

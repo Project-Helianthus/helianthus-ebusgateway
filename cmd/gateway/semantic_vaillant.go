@@ -4866,20 +4866,22 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 		}
 
 		device := &vaillantRadioDeviceSnapshot{
-			Group:                group,
-			Instance:             instance,
-			SlotMode:             slotMode,
-			DeviceConnected:      cloneBoilerBoolPtr(&connected),
-			DeviceClassAddress:   cloneUint8Ptr(classAddress),
-			DeviceModel:          decodeRadioDeviceModel(classAddress),
-			FirmwareVersion:      cloneStringPtr(firmware),
-			HardwareIdentifier:   cloneUint16Ptr(hardware),
-			RemoteControlAddress: p.readB524U8(ctx, opcode, group, instance, device_slot_remote_control_address),
-			DevicePaired:         p.readB524Bool(ctx, opcode, group, instance, device_slot_paired),
-			ReceptionStrength:    p.readB524U8(ctx, opcode, group, instance, device_slot_reception_strength),
-			ZoneAssignment:       p.readB524U8(ctx, opcode, group, instance, device_slot_zone_assignment),
-			RoomTemperatureC:     p.readB524F32(ctx, opcode, group, instance, device_slot_room_temperature),
-			RoomHumidityPct:      p.readB524F32(ctx, opcode, group, instance, device_slot_room_humidity),
+			Group:              group,
+			Instance:           instance,
+			SlotMode:           slotMode,
+			DeviceConnected:    cloneBoilerBoolPtr(&connected),
+			DeviceClassAddress: cloneUint8Ptr(classAddress),
+			DeviceModel:        decodeRadioDeviceModel(classAddress),
+			FirmwareVersion:    cloneStringPtr(firmware),
+			HardwareIdentifier: cloneUint16Ptr(hardware),
+		}
+		if connected {
+			device.RemoteControlAddress = p.readB524U8(ctx, opcode, group, instance, device_slot_remote_control_address)
+			device.DevicePaired = p.readB524Bool(ctx, opcode, group, instance, device_slot_paired)
+			device.ReceptionStrength = p.readB524U8(ctx, opcode, group, instance, device_slot_reception_strength)
+			device.ZoneAssignment = p.readB524U8(ctx, opcode, group, instance, device_slot_zone_assignment)
+			device.RoomTemperatureC = p.readB524F32(ctx, opcode, group, instance, device_slot_room_temperature)
+			device.RoomHumidityPct = p.readB524F32(ctx, opcode, group, instance, device_slot_room_humidity)
 		}
 		discovered[radioDeviceKey{Group: group, Instance: instance}] = device
 	}
@@ -6451,13 +6453,230 @@ func semanticReadWatchDescriptorPassiveFallback(key ebusgateway.WatchKey) ebusga
 }
 
 func semanticReadWatchDescriptorWithDecoderID(key ebusgateway.WatchKey, decoderID string) ebusgateway.WatchDescriptor {
+	semanticClass, freshnessProfile, directApplyPolicy := semanticReadWatchDescriptorPolicy(key)
 	return ebusgateway.WatchDescriptor{
 		Key:               key,
-		SemanticClass:     ebusgateway.WatchSemanticClassState,
-		FreshnessProfile:  ebusgateway.WatchFreshnessProfileStateFast,
+		SemanticClass:     semanticClass,
+		FreshnessProfile:  freshnessProfile,
 		DecoderID:         decoderID,
 		CorrelationPolicy: ebusgateway.WatchCorrelationPolicyRequestResponse,
-		DirectApplyPolicy: ebusgateway.WatchDirectApplyPolicyStateDefault,
+		DirectApplyPolicy: directApplyPolicy,
+	}
+}
+
+func semanticReadWatchDescriptorPolicy(key ebusgateway.WatchKey) (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	switch typed := key.(type) {
+	case ebusgateway.B524WatchKey:
+		return semanticReadB524WatchDescriptorPolicy(typed)
+	case *ebusgateway.B524WatchKey:
+		if typed != nil {
+			return semanticReadB524WatchDescriptorPolicy(*typed)
+		}
+	}
+	return semanticReadStateFastDescriptorPolicy()
+}
+
+func semanticReadStateFastDescriptorPolicy() (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	return ebusgateway.WatchSemanticClassState, ebusgateway.WatchFreshnessProfileStateFast, ebusgateway.WatchDirectApplyPolicyStateDefault
+}
+
+func semanticReadStateSlowDescriptorPolicy() (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	return ebusgateway.WatchSemanticClassState, ebusgateway.WatchFreshnessProfileStateSlow, ebusgateway.WatchDirectApplyPolicyStateDefault
+}
+
+func semanticReadConfigDescriptorPolicy() (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	return ebusgateway.WatchSemanticClassConfig, ebusgateway.WatchFreshnessProfileConfig, ebusgateway.WatchDirectApplyPolicyConfigOptIn
+}
+
+func semanticReadDiscoveryDescriptorPolicy() (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	return ebusgateway.WatchSemanticClassDiscovery, ebusgateway.WatchFreshnessProfileDiscovery, ebusgateway.WatchDirectApplyPolicyNever
+}
+
+func semanticReadB524WatchDescriptorPolicy(key ebusgateway.B524WatchKey) (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	switch key.Opcode {
+	case vaillantB524OpcodeLocal:
+		return semanticReadB524LocalDescriptorPolicy(key.Group, key.RegisterAddress)
+	case vaillantB524OpcodeRead:
+		return semanticReadB524RemoteDescriptorPolicy(key.Group, key.RegisterAddress)
+	default:
+		return semanticReadStateFastDescriptorPolicy()
+	}
+}
+
+func semanticReadB524LocalDescriptorPolicy(group byte, addr uint16) (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	switch group {
+	case localZones.group:
+		return semanticReadB524ZoneDescriptorPolicy(addr)
+	case localDHW.group:
+		return semanticReadB524DHWDescriptorPolicy(addr)
+	case localCircuits.group:
+		return semanticReadB524CircuitDescriptorPolicy(addr)
+	case localRegulator.group:
+		return semanticReadB524RegulatorDescriptorPolicy(addr)
+	case localSolar.group:
+		return semanticReadB524SolarDescriptorPolicy(addr)
+	case localCylinders.group:
+		return semanticReadB524CylinderDescriptorPolicy(addr)
+	default:
+		return semanticReadStateFastDescriptorPolicy()
+	}
+}
+
+func semanticReadB524RegulatorDescriptorPolicy(addr uint16) (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	switch addr {
+	case system_off,
+		system_water_pressure,
+		system_flow_temperature,
+		system_outdoor_temperature,
+		system_maintenance_due,
+		system_hwc_cylinder_temperature_top,
+		system_hwc_cylinder_temperature_bottom:
+		return semanticReadStateFastDescriptorPolicy()
+	case system_outdoor_temperature_avg_24h,
+		energy_fuel_sum_hc,
+		energy_electricity_sum_hc,
+		energy_electricity_sum_hwc,
+		energy_fuel_sum_hwc,
+		energy_fuel_sum_hc_this_month,
+		energy_electricity_sum_hc_this_month,
+		energy_electricity_sum_hwc_this_month,
+		energy_fuel_sum_hwc_this_month,
+		energy_fuel_sum_hc_last_month,
+		energy_electricity_sum_hc_last_month,
+		energy_electricity_sum_hwc_last_month,
+		energy_fuel_sum_hwc_last_month:
+		return semanticReadStateSlowDescriptorPolicy()
+	case system_adaptive_heating_curve,
+		system_alternative_point,
+		system_heating_circuit_bivalence_point,
+		system_dhw_bivalence_point,
+		system_hc_emergency_temperature,
+		system_hwc_max_flow_temp_desired,
+		system_max_room_humidity,
+		system_maintenance_date,
+		system_installer_name_1,
+		system_installer_name_2,
+		system_installer_phone_1,
+		system_installer_phone_2,
+		system_installer_menu_code:
+		return semanticReadConfigDescriptorPolicy()
+	case system_scheme, system_module_configuration_vr71:
+		return semanticReadDiscoveryDescriptorPolicy()
+	default:
+		return semanticReadStateFastDescriptorPolicy()
+	}
+}
+
+func semanticReadB524ZoneDescriptorPolicy(addr uint16) (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	switch addr {
+	case zone_current_temp, zone_special_function, zone_valve_status:
+		return semanticReadStateFastDescriptorPolicy()
+	case zone_current_humidity, zone_quick_veto_end_time, zone_quick_veto_end_date:
+		return semanticReadStateSlowDescriptorPolicy()
+	case zone_heating_op_mode,
+		zone_target_temp,
+		zone_fallback_manual_temp,
+		zone_room_temperature_zone_mapping_raw,
+		zone_quick_veto_temp,
+		zone_quick_veto_duration,
+		zone_holiday_start_date,
+		zone_holiday_end_date,
+		zone_holiday_setpoint,
+		zone_holiday_end_time,
+		zone_holiday_start_time:
+		return semanticReadConfigDescriptorPolicy()
+	case zone_name, zone_name_prefix, zone_name_suffix, zone_index:
+		return semanticReadDiscoveryDescriptorPolicy()
+	default:
+		return semanticReadStateFastDescriptorPolicy()
+	}
+}
+
+func semanticReadB524DHWDescriptorPolicy(addr uint16) (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	switch addr {
+	case dhw_current_temp, dhw_special_function:
+		return semanticReadStateFastDescriptorPolicy()
+	case dhw_operation_mode, dhw_target_temp, dhw_holiday_start_date, dhw_holiday_end_date:
+		return semanticReadConfigDescriptorPolicy()
+	default:
+		return semanticReadStateFastDescriptorPolicy()
+	}
+}
+
+func semanticReadB524CircuitDescriptorPolicy(addr uint16) (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	switch addr {
+	case circuit_flow_setpoint,
+		circuit_flow_temp,
+		circuit_circuit_state,
+		circuit_pump_status,
+		circuit_calc_flow_temp,
+		circuit_mixer_position:
+		return semanticReadStateFastDescriptorPolicy()
+	case circuit_humidity,
+		circuit_dew_point,
+		circuit_pump_hours,
+		circuit_pump_starts:
+		return semanticReadStateSlowDescriptorPolicy()
+	case circuit_type,
+		circuit_cooling_enabled,
+		circuit_heating_curve,
+		circuit_flow_temp_max,
+		circuit_flow_temp_min,
+		circuit_summer_limit,
+		circuit_room_temp_control,
+		circuit_frost_protection:
+		return semanticReadConfigDescriptorPolicy()
+	default:
+		return semanticReadStateFastDescriptorPolicy()
+	}
+}
+
+func semanticReadB524SolarDescriptorPolicy(addr uint16) (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	switch addr {
+	case solar_collector_temp, solar_return_temp, solar_pump_active, solar_current_yield:
+		return semanticReadStateFastDescriptorPolicy()
+	case solar_pump_hours:
+		return semanticReadStateSlowDescriptorPolicy()
+	case solar_enabled, solar_function_mode:
+		return semanticReadConfigDescriptorPolicy()
+	default:
+		return semanticReadStateFastDescriptorPolicy()
+	}
+}
+
+func semanticReadB524CylinderDescriptorPolicy(addr uint16) (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	switch addr {
+	case cylinder_temperature:
+		return semanticReadStateFastDescriptorPolicy()
+	case cylinder_max_setpoint, cylinder_charge_hysteresis, cylinder_charge_offset:
+		return semanticReadConfigDescriptorPolicy()
+	default:
+		return semanticReadStateFastDescriptorPolicy()
+	}
+}
+
+func semanticReadB524RemoteDescriptorPolicy(group byte, addr uint16) (ebusgateway.WatchSemanticClass, ebusgateway.WatchFreshnessProfile, ebusgateway.WatchDirectApplyPolicy) {
+	switch group {
+	case remoteRegulators.group, remoteThermostats.group, remoteFunctionalModules.group:
+		switch addr {
+		case device_slot_connected:
+			return semanticReadStateSlowDescriptorPolicy()
+		case device_slot_room_humidity,
+			device_slot_room_temperature,
+			device_slot_paired,
+			device_slot_reception_strength:
+			return semanticReadStateSlowDescriptorPolicy()
+		case device_slot_class_address,
+			device_slot_firmware,
+			device_slot_remote_control_address,
+			device_slot_hardware_identifier,
+			device_slot_zone_assignment:
+			return semanticReadDiscoveryDescriptorPolicy()
+		default:
+			return semanticReadStateFastDescriptorPolicy()
+		}
+	default:
+		return semanticReadStateFastDescriptorPolicy()
 	}
 }
 

@@ -490,7 +490,7 @@ func TestDeliverToSessions_NoReorderUnderBurst(t *testing.T) {
 //  4. Assert at each step:
 //     a. Owner session receives each byte (F-18 contract).
 //     b. Ownership held until the trailing SYN (NOT the final ACK,
-//        per F-21).
+//     per F-21).
 //     c. Ownership released exactly at the SYN observation.
 //     d. After release, m.phase is back at Idle.
 //

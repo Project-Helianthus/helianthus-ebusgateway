@@ -47,7 +47,7 @@ func TestRevalidator_OrdersByLastSeenAtDescThenAddrAsc(t *testing.T) {
 	members := []KnownBusMember{
 		makeMember(0x08, t0.Add(-3*time.Minute)),
 		makeMember(0x15, t0),
-		makeMember(0xF6, t0),                  // tie with 0x15 → addr ASC means 0x15 first
+		makeMember(0xF6, t0), // tie with 0x15 → addr ASC means 0x15 first
 		makeMember(0x26, t0.Add(-1*time.Minute)),
 		makeMember(0x04, t0.Add(-3*time.Minute)), // tie with 0x08 → addr ASC means 0x04 first
 	}
@@ -210,7 +210,7 @@ func TestRevalidator_PassivelyRefreshedMembersDoNotConsumeCap(t *testing.T) {
 func TestRevalidator_NoReplyOutcomeReportedAndCounted(t *testing.T) {
 	t0 := time.Date(2026, 5, 10, 19, 0, 0, 0, time.UTC)
 	members := []KnownBusMember{
-		makeMember(0x08, t0),                  // responder
+		makeMember(0x08, t0),                     // responder
 		makeMember(0x15, t0.Add(-1*time.Second)), // no-reply
 		makeMember(0xF6, t0.Add(-2*time.Second)), // responder
 	}

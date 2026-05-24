@@ -67,7 +67,7 @@ func TestSessionPacer_AddSession_CreatesPacer(t *testing.T) {
 	defer cleanup()
 
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 	sid := mux.AddSession(serverConn)
 	if sid == 0 {
 		t.Fatal("AddSession returned 0")
@@ -96,7 +96,7 @@ func TestSessionPacer_RemoveSession_DropsEntry(t *testing.T) {
 	defer cleanup()
 
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 	sid := mux.AddSession(serverConn)
 	if sid == 0 {
 		t.Fatal("AddSession returned 0")
@@ -465,7 +465,7 @@ func TestSessionPacer_OutputPacer_SchedulesFrameEgress(t *testing.T) {
 	defer cleanup()
 
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 	sid := mux.AddSession(serverConn)
 	if sid == 0 {
 		t.Fatal("AddSession returned 0")
@@ -556,7 +556,7 @@ func TestSessionPacer_OutputPacer_OffMode_NoSchedule(t *testing.T) {
 	defer cleanup()
 
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 	sid := mux.AddSession(serverConn)
 	if sid == 0 {
 		t.Fatal("AddSession returned 0")
@@ -618,7 +618,7 @@ func TestSessionPacer_OutputPacer_FrameAtomicEgress(t *testing.T) {
 	defer cleanup()
 
 	clientConn, pipeServerConn := net.Pipe()
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 	// Wrap the server side of the pipe with a writeCounter so we
 	// can assert the per-frame Write count (Codex round-2 MAJOR #1).
 	recorder := &writeCountingConn{Conn: pipeServerConn}

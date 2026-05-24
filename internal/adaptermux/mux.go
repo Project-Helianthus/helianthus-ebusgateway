@@ -2085,7 +2085,7 @@ func (m *Mux) onReceived(symbol byte, wasEscaped bool) {
 	// decoded payload 0xAA (wasEscaped=true) is genuine bus traffic
 	// from a third-party frame and MUST refresh the activity clock;
 	// only a real un-escaped wire SYN counts as bus-idle.
-	if !(symbol == protocol.SymbolSyn && !wasEscaped) {
+	if symbol != protocol.SymbolSyn || wasEscaped {
 		m.lastWireActivity = now
 	}
 
@@ -2573,7 +2573,7 @@ func (m *Mux) onSYNLocked(phaseEvent wirePhaseEvent, ownerID uint64, hasOwner bo
 	// structural flag the predicate now treats case (b) the same as
 	// case (c): midWriteSyn=true → wire SYN suppressed.
 	nextExpectedEcho, nextStructural, hasPendingEcho := m.gatewayEcho.peekNextExpectedWithFlags()
-	midWriteSyn := hasPendingEcho && !(nextExpectedEcho == protocol.SymbolSyn && nextStructural)
+	midWriteSyn := hasPendingEcho && (nextExpectedEcho != protocol.SymbolSyn || !nextStructural)
 
 	// batch-26 round-7 — Attack 3 closure (inter-write empty-queue SYN
 	// leak). The peek-based P10.2 gate (midWriteSyn) cannot suppress a

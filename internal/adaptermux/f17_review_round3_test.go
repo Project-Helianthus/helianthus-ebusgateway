@@ -266,10 +266,10 @@ func TestRequestStartErr_InFlightCancelled_ResetErr_DeliversReset(t *testing.T) 
 // a fixed error from RequestStart. Used to exercise M2's
 // non-blocking-half err branch deterministically.
 type requestStartErrTransport struct {
-	eventCh    chan transport.StreamEvent
-	err        error
-	calls      atomic.Int32
-	closed     atomic.Bool
+	eventCh chan transport.StreamEvent
+	err     error
+	calls   atomic.Int32
+	closed  atomic.Bool
 }
 
 func (t *requestStartErrTransport) RequestStart(initiator byte) error {

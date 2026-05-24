@@ -81,7 +81,7 @@ func TestAbsorbSkipLog_RateLimitedWithSuppressedSuffix(t *testing.T) {
 	})
 
 	mock := newP3MockTransport()
-	defer mock.Close()
+	defer func() { _ = mock.Close() }()
 	mux.connMu.Lock()
 	mux.upstream = mock
 	mux.connMu.Unlock()
@@ -169,7 +169,7 @@ func TestAbsorbSkipLog_NoCarryoverAcrossAbsorbEpisodes(t *testing.T) {
 	})
 
 	mock := newP3MockTransport()
-	defer mock.Close()
+	defer func() { _ = mock.Close() }()
 	mux.connMu.Lock()
 	mux.upstream = mock
 	mux.connMu.Unlock()

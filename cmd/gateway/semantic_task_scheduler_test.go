@@ -108,3 +108,88 @@ func TestSemanticTaskScheduler_RunPriorityOrder(t *testing.T) {
 	cancel()
 	<-done
 }
+
+func TestSemanticTaskScheduler_CoalescesPendingTasksByKey(t *testing.T) {
+	scheduler := newSemanticTaskScheduler()
+
+	if err := scheduler.submitCoalesced("state", semanticTaskPriorityLow, func(context.Context) {}); err != nil {
+		t.Fatalf("submit low error = %v", err)
+	}
+	if err := scheduler.submitCoalesced("state", semanticTaskPriorityHigh, func(context.Context) {}); err != nil {
+		t.Fatalf("submit duplicate high error = %v", err)
+	}
+
+	if got := len(scheduler.queue); got != 1 {
+		t.Fatalf("queue length = %d; want 1", got)
+	}
+	if got := scheduler.queue[0].priority; got != semanticTaskPriorityHigh {
+		t.Fatalf("coalesced priority = %d; want %d", got, semanticTaskPriorityHigh)
+	}
+}
+
+func TestSemanticTaskScheduler_DefersOneRerunForRunningTaskKey(t *testing.T) {
+	scheduler := newSemanticTaskScheduler()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ran := make(chan string, 3)
+
+	if err := scheduler.submitCoalesced("state", semanticTaskPriorityHigh, func(context.Context) {
+		close(started)
+		<-release
+		ran <- "initial"
+	}); err != nil {
+		t.Fatalf("submit initial error = %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		scheduler.run(ctx)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for task start")
+	}
+
+	if err := scheduler.submitCoalesced("state", semanticTaskPriorityHigh, func(context.Context) {
+		ran <- "deferred"
+	}); err != nil {
+		t.Fatalf("submit duplicate while running error = %v", err)
+	}
+	if err := scheduler.submitCoalesced("state", semanticTaskPriorityLow, func(context.Context) {
+		ran <- "extra"
+	}); err != nil {
+		t.Fatalf("submit second duplicate while running error = %v", err)
+	}
+
+	close(release)
+	select {
+	case got := <-ran:
+		if got != "initial" {
+			t.Fatalf("first task = %q; want initial", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial task completion")
+	}
+	select {
+	case got := <-ran:
+		if got != "deferred" {
+			t.Fatalf("deferred task = %q; want deferred", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for deferred task completion")
+	}
+	select {
+	case got := <-ran:
+		t.Fatalf("extra duplicate running task executed: %q", got)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	cancel()
+	<-done
+}

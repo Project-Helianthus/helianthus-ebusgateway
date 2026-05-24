@@ -9,6 +9,8 @@ import (
 
 var errSemanticTaskQueueOverloaded = errors.New("semantic task queue overloaded")
 
+type semanticTaskKey string
+
 type semanticTaskPriority int
 
 const (
@@ -30,6 +32,9 @@ type semanticTaskScheduler struct {
 	queue []*semanticTask
 	seq   uint64
 
+	pendingByKey map[semanticTaskKey]*semanticTask
+	runningKeys  map[semanticTaskKey]bool
+
 	maxDepth     int
 	promoteAfter time.Duration
 	emergencyAt  time.Duration
@@ -39,6 +44,7 @@ type semanticTaskScheduler struct {
 }
 
 type semanticTask struct {
+	key        semanticTaskKey
 	priority   semanticTaskPriority
 	enqueuedAt time.Time
 	seq        uint64
@@ -51,12 +57,25 @@ func newSemanticTaskScheduler() *semanticTaskScheduler {
 		promoteAfter: defaultSemanticTaskPromoteAfter,
 		emergencyAt:  defaultSemanticTaskEmergencyAt,
 		now:          time.Now,
+		pendingByKey: make(map[semanticTaskKey]*semanticTask),
+		runningKeys:  make(map[semanticTaskKey]bool),
 	}
 	s.cond = sync.NewCond(&s.mu)
 	return s
 }
 
 func (s *semanticTaskScheduler) submit(priority semanticTaskPriority, run func(context.Context)) error {
+	return s.submitTask("", priority, run)
+}
+
+func (s *semanticTaskScheduler) submitCoalesced(key semanticTaskKey, priority semanticTaskPriority, run func(context.Context)) error {
+	if key == "" {
+		return s.submit(priority, run)
+	}
+	return s.submitTask(key, priority, run)
+}
+
+func (s *semanticTaskScheduler) submitTask(key semanticTaskKey, priority semanticTaskPriority, run func(context.Context)) error {
 	if s == nil || run == nil {
 		return nil
 	}
@@ -66,17 +85,30 @@ func (s *semanticTaskScheduler) submit(priority semanticTaskPriority, run func(c
 	if s.stopped {
 		return context.Canceled
 	}
+	if key != "" {
+		if existing := s.pendingByKey[key]; existing != nil {
+			if priority > existing.priority {
+				existing.priority = priority
+			}
+			return nil
+		}
+	}
 	if s.maxDepth > 0 && len(s.queue) >= s.maxDepth {
 		return errSemanticTaskQueueOverloaded
 	}
 
 	s.seq++
-	s.queue = append(s.queue, &semanticTask{
+	task := &semanticTask{
+		key:        key,
 		priority:   priority,
 		enqueuedAt: s.now(),
 		seq:        s.seq,
 		run:        run,
-	})
+	}
+	s.queue = append(s.queue, task)
+	if key != "" {
+		s.pendingByKey[key] = task
+	}
 	s.cond.Signal()
 	return nil
 }
@@ -107,7 +139,10 @@ func (s *semanticTaskScheduler) run(ctx context.Context) {
 		if task == nil {
 			return
 		}
-		task.run(ctx)
+		func() {
+			defer s.taskDone(task)
+			task.run(ctx)
+		}()
 	}
 }
 
@@ -132,7 +167,20 @@ func (s *semanticTaskScheduler) nextTask(ctx context.Context) *semanticTask {
 	}
 	task := s.queue[idx]
 	s.queue = append(s.queue[:idx], s.queue[idx+1:]...)
+	if task.key != "" {
+		delete(s.pendingByKey, task.key)
+		s.runningKeys[task.key] = true
+	}
 	return task
+}
+
+func (s *semanticTaskScheduler) taskDone(task *semanticTask) {
+	if s == nil || task == nil || task.key == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.runningKeys, task.key)
+	s.mu.Unlock()
 }
 
 func (s *semanticTaskScheduler) nextTaskIndexLocked() int {

@@ -2773,18 +2773,18 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 		return
 	}
 
-	liveReadSuccess := false
+	zoneLiveReadSuccess := false
 	for _, instance := range zones {
 		primaryName, primaryOK := p.readB524ZoneNamePart(ctx, instance, zone_name)
 		prefix, prefixOK := p.readB524ZoneNamePart(ctx, instance, zone_name_prefix)
 		suffix, suffixOK := p.readB524ZoneNamePart(ctx, instance, zone_name_suffix)
 		if primaryOK || prefixOK || suffixOK {
-			liveReadSuccess = true
+			zoneLiveReadSuccess = true
 		}
 
 		incoming, slowOK := p.refreshZoneSlowConfigFields(ctx, instance)
 		if slowOK {
-			liveReadSuccess = true
+			zoneLiveReadSuccess = true
 		}
 		if incoming == nil {
 			incoming = &vaillantZoneSnapshot{}
@@ -2799,18 +2799,15 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 	}
 
 	dhwSource := p.refreshDHWSlowConfig(ctx)
-	if dhwSource == semanticSnapshotSourceLive {
-		liveReadSuccess = true
-	}
-	if !liveReadSuccess && p.tryRefreshFromEbusdGrab(ctx) {
+	if !zoneLiveReadSuccess && p.tryRefreshFromEbusdGrab(ctx) {
 		grabHydrated = true
 	}
 
-	source := semanticSnapshotSourceCache
-	if liveReadSuccess || grabHydrated {
-		source = semanticSnapshotSourceLive
+	zoneSource := semanticSnapshotSourceCache
+	if zoneLiveReadSuccess || grabHydrated {
+		zoneSource = semanticSnapshotSourceLive
 	}
-	p.publishZones(source)
+	p.publishZones(zoneSource)
 	p.publishDHW(dhwSource)
 }
 
@@ -4324,7 +4321,7 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB524(ctx context.Context, ti
 		return updated
 	}
 
-	updated = p.mergeBoilerDHWFieldsFromSnapshot(snapshot) || updated
+	p.mergeBoilerDHWFieldsFromSnapshot(snapshot)
 	return updated
 }
 

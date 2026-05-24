@@ -569,6 +569,38 @@ func TestRefreshConfigReadsSlowZoneAndDHWB524Selectors(t *testing.T) {
 	}
 }
 
+func TestRefreshConfigDHWOnlySuccessKeepsZonesCacheSource(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		provider:       provider,
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+		zones: map[byte]*vaillantZoneSnapshot{
+			0x00: {Instance: 0x00, Present: true, Name: "Zone 1"},
+		},
+		circuits: make(map[byte]*vaillantCircuitSnapshot),
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) == 6 && frame.Data[2] == localDHW.group {
+			return testB524ResponseForSelector(frame.Data), nil
+		}
+		return nil, errors.New("zone read unavailable")
+	}
+
+	poller.refreshConfig(context.Background())
+
+	if dhw := provider.DHW(); dhw == nil {
+		t.Fatal("DHW = nil; want DHW slow config to publish")
+	}
+	if cacheEpoch, liveEpoch := provider.StartupEpochs(); liveEpoch != 1 || cacheEpoch != 1 {
+		t.Fatalf("StartupEpochs() = cache=%d live=%d; want zone cache=1 and DHW live=1", cacheEpoch, liveEpoch)
+	}
+}
+
 func hasB524Selector(selectors [][]byte, group, instance byte, addr uint16) bool {
 	for _, selector := range selectors {
 		if len(selector) != 6 {
@@ -2762,6 +2794,35 @@ func TestRefreshBoilerStatusFastUsesCachedDHWWithoutB524DHWReads(t *testing.T) {
 	}
 	if poller.boiler.DhwOperatingMode == nil || *poller.boiler.DhwOperatingMode != 1 {
 		t.Fatalf("boiler DhwOperatingMode = %v; want cached 1", poller.boiler.DhwOperatingMode)
+	}
+}
+
+func TestRefreshBoilerStatusFastCachedDHWOnlyDoesNotPublishLive(t *testing.T) {
+	t.Parallel()
+
+	current := 47.5
+	target := 50.0
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		scheduler:      ebusgateway.NewSemanticReadScheduler(),
+		provider:       provider,
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+		dhw: &vaillantDhwSnapshot{
+			CurrentTempC:                  &current,
+			TargetTempC:                   &target,
+			ConfigurationDHWOperationMode: "1",
+		},
+	}
+	poller.sendFrameFn = func(context.Context, protocol.Frame) (*protocol.Frame, error) {
+		return nil, errors.New("boiler fast unavailable")
+	}
+
+	poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
+
+	if got := provider.BoilerStatus(); got != nil {
+		t.Fatalf("BoilerStatus() = %+v; want nil without live boiler/B524 success", got)
 	}
 }
 

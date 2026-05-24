@@ -491,12 +491,14 @@ func TestRefreshStateSkipsSlowZoneAndDHWB524Selectors(t *testing.T) {
 			0x00: {
 				Instance:                    0x00,
 				Present:                     true,
+				Preset:                      "manual",
 				ConfigurationCircuitTypeRaw: uint16Ptr(1),
 			},
 		},
 		circuits: map[byte]*vaillantCircuitSnapshot{
 			0x00: {Instance: 0x00, Active: true, CircuitTypeRaw: uint16Ptr(1)},
 		},
+		dhw: &vaillantDhwSnapshot{Preset: "manual"},
 	}
 	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
 		selectors = append(selectors, slices.Clone(frame.Data))
@@ -506,28 +508,40 @@ func TestRefreshStateSkipsSlowZoneAndDHWB524Selectors(t *testing.T) {
 	poller.refreshState(context.Background())
 
 	requireB524Selector(t, selectors, localZones.group, 0x00, zone_current_temp)
-	requireB524Selector(t, selectors, localZones.group, 0x00, zone_target_temp)
-	requireB524Selector(t, selectors, localZones.group, 0x00, zone_heating_op_mode)
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_special_function)
 	requireB524Selector(t, selectors, localZones.group, 0x00, zone_valve_status)
 	requireB524Selector(t, selectors, localDHW.group, dhwInstance, dhw_current_temp)
-	requireB524Selector(t, selectors, localDHW.group, dhwInstance, dhw_operation_mode)
+	requireB524Selector(t, selectors, localDHW.group, dhwInstance, dhw_special_function)
 
 	for _, forbidden := range []struct {
 		group    byte
 		instance byte
 		addr     uint16
 	}{
+		{localZones.group, 0x00, zone_target_temp},
+		{localZones.group, 0x00, zone_fallback_manual_temp},
+		{localZones.group, 0x00, zone_current_humidity},
+		{localZones.group, 0x00, zone_heating_op_mode},
 		{localZones.group, 0x00, zone_quick_veto_temp},
 		{localZones.group, 0x00, zone_quick_veto_end_time},
 		{localZones.group, 0x00, zone_holiday_start_date},
 		{localZones.group, 0x00, zone_room_temperature_zone_mapping_raw},
 		{localCircuits.group, 0x00, circuit_type},
+		{localDHW.group, dhwInstance, dhw_target_temp},
+		{localDHW.group, dhwInstance, dhw_operation_mode},
 		{localDHW.group, dhwInstance, dhw_holiday_start_date},
 		{localDHW.group, dhwInstance, dhw_holiday_end_date},
 	} {
 		if hasB524Selector(selectors, forbidden.group, forbidden.instance, forbidden.addr) {
 			t.Fatalf("refreshState read slow selector group=0x%02x instance=0x%02x addr=0x%04x", forbidden.group, forbidden.instance, forbidden.addr)
 		}
+	}
+
+	if got := poller.zones[0x00].Preset; got != "manual" {
+		t.Fatalf("zone preset = %q; want preserved manual without cached op-mode", got)
+	}
+	if got := poller.dhw.Preset; got != "manual" {
+		t.Fatalf("DHW preset = %q; want preserved manual without cached op-mode", got)
 	}
 }
 
@@ -553,19 +567,33 @@ func TestRefreshConfigReadsSlowZoneAndDHWB524Selectors(t *testing.T) {
 
 	poller.refreshConfig(context.Background())
 
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_target_temp)
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_current_humidity)
+	requireB524Selector(t, selectors, localZones.group, 0x00, zone_heating_op_mode)
 	requireB524Selector(t, selectors, localZones.group, 0x00, zone_quick_veto_temp)
 	requireB524Selector(t, selectors, localZones.group, 0x00, zone_quick_veto_end_time)
 	requireB524Selector(t, selectors, localZones.group, 0x00, zone_holiday_start_date)
 	requireB524Selector(t, selectors, localZones.group, 0x00, zone_room_temperature_zone_mapping_raw)
 	requireB524Selector(t, selectors, localCircuits.group, 0x00, circuit_type)
+	requireB524Selector(t, selectors, localDHW.group, dhwInstance, dhw_target_temp)
+	requireB524Selector(t, selectors, localDHW.group, dhwInstance, dhw_operation_mode)
 	requireB524Selector(t, selectors, localDHW.group, dhwInstance, dhw_holiday_start_date)
 	requireB524Selector(t, selectors, localDHW.group, dhwInstance, dhw_holiday_end_date)
 
 	if hasB524Selector(selectors, localZones.group, 0x00, zone_current_temp) {
 		t.Fatal("refreshConfig read fast zone current temperature selector")
 	}
+	if hasB524Selector(selectors, localZones.group, 0x00, zone_special_function) {
+		t.Fatal("refreshConfig read fast zone special function selector")
+	}
+	if hasB524Selector(selectors, localZones.group, 0x00, zone_valve_status) {
+		t.Fatal("refreshConfig read fast zone valve status selector")
+	}
 	if hasB524Selector(selectors, localDHW.group, dhwInstance, dhw_current_temp) {
 		t.Fatal("refreshConfig read fast DHW current temperature selector")
+	}
+	if hasB524Selector(selectors, localDHW.group, dhwInstance, dhw_special_function) {
+		t.Fatal("refreshConfig read fast DHW special function selector")
 	}
 }
 
@@ -719,6 +747,9 @@ func testB524PayloadForSelector(group byte, addr uint16) []byte {
 		addr == zone_special_function ||
 		addr == zone_valve_status ||
 		addr == zone_room_temperature_zone_mapping_raw):
+		return []byte{1, 0}
+	case group == localDHW.group && (addr == dhw_operation_mode ||
+		addr == dhw_special_function):
 		return []byte{1, 0}
 	case group == localCircuits.group && (addr == circuit_type ||
 		addr == circuit_pump_status ||

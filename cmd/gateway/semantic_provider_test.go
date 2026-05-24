@@ -78,6 +78,20 @@ func TestMCPSemanticProviderAdapterPreservesEmptyZones(t *testing.T) {
 	}
 }
 
+func TestMCPSemanticProviderAdapterPreservesEmptyCircuits(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	adapter := mcpSemanticProviderAdapter{provider: provider}
+
+	if got := adapter.Circuits(); got != nil {
+		t.Fatalf("Circuits() before publish = %#v; want nil", got)
+	}
+
+	provider.SetCircuits([]graphql.CircuitStatus{})
+	if got := adapter.Circuits(); got == nil || len(got) != 0 {
+		t.Fatalf("Circuits() after empty publish = %#v; want empty non-nil slice", got)
+	}
+}
+
 func TestMCPSemanticProviderAdapterPreservesEmptyRadioDevices(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	adapter := mcpSemanticProviderAdapter{provider: provider}

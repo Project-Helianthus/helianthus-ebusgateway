@@ -88,7 +88,7 @@ func (adapter mcpSemanticProviderAdapter) Circuits() []mcp.CircuitStatus {
 		return nil
 	}
 	circuits := adapter.provider.Circuits()
-	if len(circuits) == 0 {
+	if circuits == nil {
 		return nil
 	}
 	out := make([]mcp.CircuitStatus, len(circuits))

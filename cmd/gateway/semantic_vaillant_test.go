@@ -6483,7 +6483,6 @@ func TestRefreshStartupSemanticPlanesPublishesAbsentFM5Planes(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	provider.SetZones([]graphql.Zone{{ID: "zone-1", Name: "Zone 1"}})
 	provider.SetDHW(&graphql.DhwStatus{})
-	provider.SetCircuits([]graphql.CircuitStatus{{Index: 0}})
 	provider.SetSystem(&graphql.SystemStatus{})
 	provider.SetBoilerStatus(&graphql.BoilerStatus{})
 
@@ -6501,6 +6500,9 @@ func TestRefreshStartupSemanticPlanesPublishesAbsentFM5Planes(t *testing.T) {
 	}
 	if cylinders := provider.Cylinders(); cylinders == nil || len(cylinders) != 0 {
 		t.Fatalf("provider.Cylinders() = %#v after startup priming; want empty non-null absent-FM5 plane", cylinders)
+	}
+	if circuits := provider.Circuits(); circuits == nil || len(circuits) != 0 {
+		t.Fatalf("provider.Circuits() = %#v after startup priming; want empty non-null plane", circuits)
 	}
 	if mode := provider.FM5SemanticMode(); mode != graphql.Fm5SemanticModeAbsent {
 		t.Fatalf("provider.FM5SemanticMode() = %q; want %q", mode, graphql.Fm5SemanticModeAbsent)

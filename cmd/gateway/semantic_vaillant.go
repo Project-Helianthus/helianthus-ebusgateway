@@ -1312,6 +1312,7 @@ func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Contex
 	}
 
 	p.publishStartupSchedules()
+	p.publishStartupPlaneDefaults()
 	primingCtx := ctx
 	cancel := func() {}
 	if semanticStartupPrimingBudget > 0 {
@@ -1382,6 +1383,21 @@ func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Contex
 			return
 		case <-timer.C:
 		}
+	}
+}
+
+func (p *vaillantSemanticPoller) publishStartupPlaneDefaults() {
+	if p == nil || p.provider == nil {
+		return
+	}
+	if p.provider.Circuits() == nil {
+		p.provider.SetCircuits([]graphql.CircuitStatus{})
+	}
+	if p.provider.Solar() == nil {
+		p.provider.SetSolar(&graphql.SolarStatus{})
+	}
+	if p.provider.Cylinders() == nil {
+		p.provider.SetCylinders([]graphql.CylinderStatus{})
 	}
 }
 
@@ -1526,7 +1542,7 @@ func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus
 	return startupL1PrimingStatus{
 		zones:        zonesReady,
 		dhw:          p.provider.DHW() != nil,
-		circuits:     len(p.provider.Circuits()) > 0,
+		circuits:     p.provider.Circuits() != nil,
 		system:       p.provider.System() != nil,
 		radioDevices: radioProbed || len(p.provider.RadioDevices()) > 0,
 		fm5GateKnown: fm5GateKnown,
@@ -4059,6 +4075,9 @@ func (p *vaillantSemanticPoller) publishCircuits(source semanticSnapshotSource) 
 	}
 
 	previous := p.provider.Circuits()
+	if len(out) == 0 && previous == nil {
+		return
+	}
 	if source == semanticSnapshotSourceCache && len(out) == 0 && len(previous) > 0 {
 		return
 	}

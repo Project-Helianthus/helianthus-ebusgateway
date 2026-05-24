@@ -2350,6 +2350,9 @@ func cloneZones(source []Zone) []Zone {
 }
 
 func cloneCircuits(source []CircuitStatus) []CircuitStatus {
+	if source != nil && len(source) == 0 {
+		return []CircuitStatus{}
+	}
 	if len(source) == 0 {
 		return nil
 	}
@@ -2840,7 +2843,7 @@ func (s *Server) snapshotCircuits(snapshot *snapshotState) []CircuitStatus {
 		return nil
 	}
 	circuits := s.semantic.Circuits()
-	if len(circuits) == 0 {
+	if circuits == nil {
 		return nil
 	}
 	out := cloneCircuits(circuits)

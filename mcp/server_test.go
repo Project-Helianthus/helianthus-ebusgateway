@@ -241,24 +241,25 @@ func (p *testWatchSummaryProvider) Snapshot() WatchSummary {
 }
 
 type testSemanticProvider struct {
-	zones          []Zone
-	zonesPublished bool
-	circuits       []CircuitStatus
-	radio          []RadioDevice
-	fm5Mode        Fm5SemanticMode
-	solar          *SolarStatus
-	cylinders      []CylinderStatus
-	dhw            *DhwStatus
-	energy         *EnergyTotals
-	boiler         *BoilerStatus
-	system         *SystemStatus
-	schedules      *ScheduleStatus
-	adapterInfo    *AdapterHardwareInfo
-	zonesDelay     time.Duration
-	circuitsDelay  time.Duration
-	radioDelay     time.Duration
-	dhwDelay       time.Duration
-	energyDelay    time.Duration
+	zones             []Zone
+	zonesPublished    bool
+	circuits          []CircuitStatus
+	circuitsPublished bool
+	radio             []RadioDevice
+	fm5Mode           Fm5SemanticMode
+	solar             *SolarStatus
+	cylinders         []CylinderStatus
+	dhw               *DhwStatus
+	energy            *EnergyTotals
+	boiler            *BoilerStatus
+	system            *SystemStatus
+	schedules         *ScheduleStatus
+	adapterInfo       *AdapterHardwareInfo
+	zonesDelay        time.Duration
+	circuitsDelay     time.Duration
+	radioDelay        time.Duration
+	dhwDelay          time.Duration
+	energyDelay       time.Duration
 }
 
 func (p testSemanticProvider) Zones() []Zone {
@@ -292,6 +293,9 @@ func (p testSemanticProvider) Circuits() []CircuitStatus {
 		time.Sleep(p.circuitsDelay)
 	}
 	if len(p.circuits) == 0 {
+		if p.circuitsPublished {
+			return []CircuitStatus{}
+		}
 		return nil
 	}
 	return cloneCircuits(p.circuits)
@@ -1257,6 +1261,57 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 		if circuitType, _ := second["circuit_type"].(string); circuitType != "fixed_value" {
 			t.Fatalf("second circuit type = %q; want fixed_value", circuitType)
+		}
+	})
+
+	t.Run("empty circuits keep live and snapshot shape", func(t *testing.T) {
+		emptyServer, err := NewServer(reg, &testInvoker{})
+		if err != nil {
+			t.Fatalf("NewServer error = %v", err)
+		}
+		emptyServer.SetSemanticProvider(testSemanticProvider{
+			circuits:          []CircuitStatus{},
+			circuitsPublished: true,
+		})
+
+		live := doRPC(t, emptyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      44,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.circuits.get","arguments":{}}`),
+		})
+		liveEnvelope := envelopeFromResult(t, live)
+		liveData, ok := liveEnvelope["data"].([]any)
+		if !ok || len(liveData) != 0 {
+			t.Fatalf("live empty circuits data = %#v; want empty array", liveEnvelope["data"])
+		}
+
+		capture := doRPC(t, emptyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      45,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+		})
+		captureEnvelope := envelopeFromResult(t, capture)
+		captureData, ok := captureEnvelope["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("capture data type = %T; want map", captureEnvelope["data"])
+		}
+		snapshotID, _ := captureData["snapshot_id"].(string)
+		if snapshotID == "" {
+			t.Fatal("snapshot_id empty")
+		}
+
+		snapshot := doRPC(t, emptyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      46,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.circuits.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		})
+		snapshotEnvelope := envelopeFromResult(t, snapshot)
+		snapshotData, ok := snapshotEnvelope["data"].([]any)
+		if !ok || len(snapshotData) != 0 {
+			t.Fatalf("snapshot empty circuits data = %#v; want empty array", snapshotEnvelope["data"])
 		}
 	})
 

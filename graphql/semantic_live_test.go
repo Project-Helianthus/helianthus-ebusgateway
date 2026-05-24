@@ -85,6 +85,28 @@ func TestLiveSemanticProvider_EmptyZoneLivePublishCountsForReadiness(t *testing.
 	}
 }
 
+func TestLiveSemanticProvider_EmptyCircuitLivePublishCountsForReadiness(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+
+	provider.SetCircuitsFromCache([]CircuitStatus{{Index: 0}})
+	provider.SetDHW(&DhwStatus{Config: DhwConfig{OperatingMode: "auto"}})
+	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveWarmup {
+		t.Fatalf("phase after DHW live with cache circuits = %s; want %s", got, SemanticStartupPhaseLiveWarmup)
+	}
+
+	provider.SetCircuits([]CircuitStatus{})
+	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveReady {
+		t.Fatalf("phase after empty circuits live = %s; want %s", got, SemanticStartupPhaseLiveReady)
+	}
+	cacheEpoch, liveEpoch := provider.StartupEpochs()
+	if cacheEpoch != 1 || liveEpoch != 2 {
+		t.Fatalf("epochs after empty circuits live = (%d,%d); want (1,2)", cacheEpoch, liveEpoch)
+	}
+	if circuits := provider.Circuits(); circuits == nil || len(circuits) != 0 {
+		t.Fatalf("Circuits() after empty live publish = %#v; want empty non-nil slice", circuits)
+	}
+}
+
 func TestLiveSemanticProvider_CacheRefreshAfterLiveReadyKeepsPhase(t *testing.T) {
 	provider := NewLiveSemanticProvider()
 

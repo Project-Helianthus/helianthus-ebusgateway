@@ -215,6 +215,9 @@ func (provider *LiveSemanticProvider) Circuits() []CircuitStatus {
 	provider.mu.RLock()
 	defer provider.mu.RUnlock()
 	if len(provider.circuits) == 0 {
+		if provider.circuitPublished {
+			return []CircuitStatus{}
+		}
 		return nil
 	}
 	out := make([]CircuitStatus, len(provider.circuits))
@@ -457,22 +460,24 @@ func (provider *LiveSemanticProvider) setCircuitsWithSource(circuits []CircuitSt
 		return
 	}
 
+	receivedCircuits := circuits != nil
 	circuitsCopy := make([]CircuitStatus, len(circuits))
 	for i, status := range circuits {
 		circuitsCopy[i] = cloneCircuitStatus(status)
 	}
+	published := receivedCircuits && (source == semanticDataSourceLive || len(circuitsCopy) > 0)
 
 	var transition *phaseTransitionLog
 	provider.mu.Lock()
-	if equalCircuitStatuses(provider.circuits, circuitsCopy) {
-		if source == semanticDataSourceLive && len(circuitsCopy) > 0 {
+	if equalCircuitStatuses(provider.circuits, circuitsCopy) && (!published || provider.circuitPublished) {
+		if source == semanticDataSourceLive && published {
 			provider.circuitLiveSeen = true
 		}
 		provider.mu.Unlock()
 		return
 	}
 	provider.circuits = circuitsCopy
-	if len(circuitsCopy) > 0 {
+	if published {
 		provider.circuitPublished = true
 		if source == semanticDataSourceLive {
 			provider.circuitLiveSeen = true

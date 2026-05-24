@@ -2431,6 +2431,149 @@ func TestPrepareSemanticReadWatch_UsesObserverDescriptorFreshness(t *testing.T) 
 	}
 }
 
+func TestSemanticReadWatchDescriptorWithDecoderID_ClassifiesB524Cadence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		key         ebusgateway.WatchKey
+		wantClass   ebusgateway.WatchSemanticClass
+		wantProfile ebusgateway.WatchFreshnessProfile
+		wantPolicy  ebusgateway.WatchDirectApplyPolicy
+		wantTTL     time.Duration
+	}{
+		{
+			name:        "zone current temp stays fast state",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, localZones.group, 0x00, zone_current_temp),
+			wantClass:   ebusgateway.WatchSemanticClassState,
+			wantProfile: ebusgateway.WatchFreshnessProfileStateFast,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyStateDefault,
+			wantTTL:     30 * time.Second,
+		},
+		{
+			name:        "zone humidity is slow state",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, localZones.group, 0x00, zone_current_humidity),
+			wantClass:   ebusgateway.WatchSemanticClassState,
+			wantProfile: ebusgateway.WatchFreshnessProfileStateSlow,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyStateDefault,
+			wantTTL:     120 * time.Second,
+		},
+		{
+			name:        "zone target temp is config opt in",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, localZones.group, 0x00, zone_target_temp),
+			wantClass:   ebusgateway.WatchSemanticClassConfig,
+			wantProfile: ebusgateway.WatchFreshnessProfileConfig,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyConfigOptIn,
+			wantTTL:     5 * time.Minute,
+		},
+		{
+			name:        "zone index is discovery",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, localZones.group, 0x00, zone_index),
+			wantClass:   ebusgateway.WatchSemanticClassDiscovery,
+			wantProfile: ebusgateway.WatchFreshnessProfileDiscovery,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyNever,
+			wantTTL:     time.Hour,
+		},
+		{
+			name:        "regulator flow temperature stays fast state",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, system_flow_temperature),
+			wantClass:   ebusgateway.WatchSemanticClassState,
+			wantProfile: ebusgateway.WatchFreshnessProfileStateFast,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyStateDefault,
+			wantTTL:     30 * time.Second,
+		},
+		{
+			name:        "regulator energy totals are slow state",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, energy_fuel_sum_hc),
+			wantClass:   ebusgateway.WatchSemanticClassState,
+			wantProfile: ebusgateway.WatchFreshnessProfileStateSlow,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyStateDefault,
+			wantTTL:     120 * time.Second,
+		},
+		{
+			name:        "regulator installer field is config",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, system_installer_menu_code),
+			wantClass:   ebusgateway.WatchSemanticClassConfig,
+			wantProfile: ebusgateway.WatchFreshnessProfileConfig,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyConfigOptIn,
+			wantTTL:     5 * time.Minute,
+		},
+		{
+			name:        "regulator module configuration is discovery",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, system_module_configuration_vr71),
+			wantClass:   ebusgateway.WatchSemanticClassDiscovery,
+			wantProfile: ebusgateway.WatchFreshnessProfileDiscovery,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyNever,
+			wantTTL:     time.Hour,
+		},
+		{
+			name:        "circuit type is config",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeLocal, localCircuits.group, 0x00, circuit_type),
+			wantClass:   ebusgateway.WatchSemanticClassConfig,
+			wantProfile: ebusgateway.WatchFreshnessProfileConfig,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyConfigOptIn,
+			wantTTL:     5 * time.Minute,
+		},
+		{
+			name:        "remote slot connected is slow state liveness",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeRead, remoteFunctionalModules.group, 0x01, device_slot_connected),
+			wantClass:   ebusgateway.WatchSemanticClassState,
+			wantProfile: ebusgateway.WatchFreshnessProfileStateSlow,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyStateDefault,
+			wantTTL:     120 * time.Second,
+		},
+		{
+			name:        "remote slot humidity is slow state",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeRead, remoteFunctionalModules.group, 0x01, device_slot_room_humidity),
+			wantClass:   ebusgateway.WatchSemanticClassState,
+			wantProfile: ebusgateway.WatchFreshnessProfileStateSlow,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyStateDefault,
+			wantTTL:     120 * time.Second,
+		},
+		{
+			name:        "remote slot hardware identity is discovery",
+			key:         ebusgateway.NewB524WatchKey(0x15, vaillantB524OpcodeRead, remoteFunctionalModules.group, 0x01, device_slot_hardware_identifier),
+			wantClass:   ebusgateway.WatchSemanticClassDiscovery,
+			wantProfile: ebusgateway.WatchFreshnessProfileDiscovery,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyNever,
+			wantTTL:     time.Hour,
+		},
+		{
+			name:        "non B524 keeps prior fast state fallback",
+			key:         ebusgateway.NewB509WatchKey(0x08, 0x0200),
+			wantClass:   ebusgateway.WatchSemanticClassState,
+			wantProfile: ebusgateway.WatchFreshnessProfileStateFast,
+			wantPolicy:  ebusgateway.WatchDirectApplyPolicyStateDefault,
+			wantTTL:     30 * time.Second,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			descriptor := semanticReadWatchDescriptorWithDecoderID(test.key, "test.decoder")
+			if descriptor.SemanticClass != test.wantClass {
+				t.Fatalf("SemanticClass = %q; want %q", descriptor.SemanticClass, test.wantClass)
+			}
+			if descriptor.FreshnessProfile != test.wantProfile {
+				t.Fatalf("FreshnessProfile = %q; want %q", descriptor.FreshnessProfile, test.wantProfile)
+			}
+			if descriptor.DirectApplyPolicy != test.wantPolicy {
+				t.Fatalf("DirectApplyPolicy = %q; want %q", descriptor.DirectApplyPolicy, test.wantPolicy)
+			}
+			ttl, err := descriptor.EffectiveFreshnessTTL()
+			if err != nil {
+				t.Fatalf("EffectiveFreshnessTTL() error = %v", err)
+			}
+			if ttl != test.wantTTL {
+				t.Fatalf("EffectiveFreshnessTTL() = %s; want %s", ttl, test.wantTTL)
+			}
+		})
+	}
+}
+
 func TestPrepareSemanticReadWatchRuntime_FallbackDescriptorB524DiscoveryBucketsCorrectly(t *testing.T) {
 	t.Parallel()
 
@@ -2461,8 +2604,8 @@ func TestPrepareSemanticReadWatchRuntime_FallbackDescriptorB524DiscoveryBucketsC
 	if strings.Contains(metrics, `ambiguous_total{family="B524",reason="missing_runtime_descriptor"}`) {
 		t.Fatalf("RenderPrometheus incorrectly classified fallback-descriptor B524 read as ambiguous:\n%s", metrics)
 	}
-	if !strings.Contains(metrics, `passive_hits_total{family="B524",freshness_profile="state_fast"} 0`) {
-		t.Fatalf("RenderPrometheus missing bucketed B524 state_fast entry:\n%s", metrics)
+	if !strings.Contains(metrics, `passive_hits_total{family="B524",freshness_profile="discovery"} 0`) {
+		t.Fatalf("RenderPrometheus missing bucketed B524 discovery entry:\n%s", metrics)
 	}
 }
 
@@ -6575,6 +6718,82 @@ func TestDiscoverDeviceSlotsKeepsDisconnectedFunctionalModuleIdentityEvidence(t 
 		t.Fatal("disconnected functional module identity evidence was not retained")
 	}
 	requireB524Selector(t, selectors, remoteFunctionalModules.group, 0x04, device_slot_class_address)
+}
+
+func TestRefreshRadioDevicesSkipsVolatileDetailsForDisconnectedFunctionalModuleInventory(t *testing.T) {
+	t.Parallel()
+
+	var selectors [][]byte
+	poller := &vaillantSemanticPoller{
+		scheduler:                ebusgateway.NewSemanticReadScheduler(),
+		provider:                 graphql.NewLiveSemanticProvider(),
+		reg:                      newTestRegistry(),
+		source:                   0x7F,
+		controller:               0x15,
+		requestTimeout:           50 * time.Millisecond,
+		deviceSlotRediscoveryTTL: 30 * time.Minute,
+		deviceSlotDiscoveryDone:  true,
+		deviceSlotDiscoveryAt:    time.Now(),
+		deviceSlotCache: map[deviceSlotKey]bool{
+			{Group: remoteFunctionalModules.group, Instance: 0x04}: true,
+		},
+		nowFn: time.Now,
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		selectors = append(selectors, slices.Clone(frame.Data))
+		if len(frame.Data) != 6 {
+			return nil, errors.New("invalid B524 selector")
+		}
+		group := frame.Data[2]
+		instance := frame.Data[3]
+		addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+		if group == remoteFunctionalModules.group && instance == 0x04 {
+			switch addr {
+			case device_slot_connected:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+			case device_slot_class_address:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x26), nil
+			case device_slot_firmware:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x01, 0x02, 0x03), nil
+			case device_slot_hardware_identifier:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x34, 0x12), nil
+			}
+		}
+		return testB524ResponseForSelectorPayload(frame.Data, 0xFF), nil
+	}
+
+	poller.refreshRadioDevices(context.Background())
+
+	requireB524Selector(t, selectors, remoteFunctionalModules.group, 0x04, device_slot_connected)
+	requireB524Selector(t, selectors, remoteFunctionalModules.group, 0x04, device_slot_class_address)
+	requireB524Selector(t, selectors, remoteFunctionalModules.group, 0x04, device_slot_firmware)
+	requireB524Selector(t, selectors, remoteFunctionalModules.group, 0x04, device_slot_hardware_identifier)
+
+	for _, forbidden := range []uint16{
+		device_slot_remote_control_address,
+		device_slot_paired,
+		device_slot_reception_strength,
+		device_slot_zone_assignment,
+		device_slot_room_temperature,
+		device_slot_room_humidity,
+	} {
+		if hasB524Selector(selectors, remoteFunctionalModules.group, 0x04, forbidden) {
+			t.Fatalf("disconnected functional-module inventory read volatile addr=0x%04x; want identity-only detail refresh", forbidden)
+		}
+	}
+
+	poller.mu.Lock()
+	device := poller.radioDevices[radioDeviceKey{Group: remoteFunctionalModules.group, Instance: 0x04}]
+	poller.mu.Unlock()
+	if device == nil {
+		t.Fatal("radioDevices missing disconnected functional-module inventory snapshot")
+	}
+	if device.SlotMode != "inventory" {
+		t.Fatalf("SlotMode = %q; want inventory", device.SlotMode)
+	}
+	if device.RoomTemperatureC != nil || device.RoomHumidityPct != nil || device.ReceptionStrength != nil || device.DevicePaired != nil {
+		t.Fatalf("volatile fields populated for disconnected inventory snapshot: %+v", device)
+	}
 }
 
 func TestRefreshRadioDevicesClearsStaleSnapshotsWhenDiscoveryFindsNoRefreshableSlots(t *testing.T) {

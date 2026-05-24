@@ -2989,6 +2989,106 @@ func TestRefreshCircuits_NoSuccessfulReadsPreservesSnapshot(t *testing.T) {
 	}
 }
 
+func TestRefreshCircuits_TargetedProbeFailureForcesNextFullScan(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000, 0)
+	circuitType := uint16(1)
+	poller := &vaillantSemanticPoller{
+		controller:                  0x15,
+		circuitFullScanInterval:     semanticCircuitFullScanInterval,
+		lastCircuitFullScanAt:       now.Add(-5 * time.Minute),
+		lastCircuitFullScanComplete: true,
+		nowFn:                       func() time.Time { return now },
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x01: {
+				Instance:       0x01,
+				Active:         true,
+				CircuitTypeRaw: &circuitType,
+			},
+		},
+	}
+
+	poller.refreshCircuits(context.Background())
+
+	poller.mu.Lock()
+	got, fullScan := poller.circuitRefreshInstancesLocked(now.Add(time.Second))
+	poller.mu.Unlock()
+	if !fullScan {
+		t.Fatal("circuitRefreshInstancesLocked fullScan = false; want true after targeted probe failure")
+	}
+	if want := allCircuitRefreshInstances(); !slices.Equal(got, want) {
+		t.Fatalf("circuitRefreshInstancesLocked instances = %#v; want %#v", got, want)
+	}
+}
+
+func TestCircuitRefreshInstances_UsesKnownActiveCircuitsBeforeFullScanDue(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000, 0)
+	poller := &vaillantSemanticPoller{
+		circuitFullScanInterval:     semanticCircuitFullScanInterval,
+		lastCircuitFullScanAt:       now.Add(-5 * time.Minute),
+		lastCircuitFullScanComplete: true,
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x09: {Instance: 0x09, Active: true},
+			0x01: {Instance: 0x01, Active: true},
+			0x02: {Instance: 0x02, Active: false},
+		},
+	}
+
+	got, fullScan := poller.circuitRefreshInstancesLocked(now)
+	if fullScan {
+		t.Fatal("circuitRefreshInstancesLocked fullScan = true; want false")
+	}
+	if want := []byte{0x01, 0x09}; !slices.Equal(got, want) {
+		t.Fatalf("circuitRefreshInstancesLocked instances = %#v; want %#v", got, want)
+	}
+}
+
+func TestCircuitRefreshInstances_FullScanAfterRediscoveryInterval(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000, 0)
+	poller := &vaillantSemanticPoller{
+		circuitFullScanInterval: semanticCircuitFullScanInterval,
+		lastCircuitFullScanAt:   now.Add(-semanticCircuitFullScanInterval),
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x01: {Instance: 0x01, Active: true},
+		},
+	}
+
+	got, fullScan := poller.circuitRefreshInstancesLocked(now)
+	if !fullScan {
+		t.Fatal("circuitRefreshInstancesLocked fullScan = false; want true")
+	}
+	if want := allCircuitRefreshInstances(); !slices.Equal(got, want) {
+		t.Fatalf("circuitRefreshInstancesLocked instances = %#v; want %#v", got, want)
+	}
+}
+
+func TestCircuitRefreshInstances_RetriesPartialFullScanOnConfigCadence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000, 0)
+	poller := &vaillantSemanticPoller{
+		circuitFullScanInterval:     semanticCircuitFullScanInterval,
+		lastCircuitFullScanAt:       now.Add(-semanticCircuitPartialScanInterval),
+		lastCircuitFullScanComplete: false,
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x01: {Instance: 0x01, Active: true},
+		},
+	}
+
+	got, fullScan := poller.circuitRefreshInstancesLocked(now)
+	if !fullScan {
+		t.Fatal("circuitRefreshInstancesLocked fullScan = false; want true after partial scan retry interval")
+	}
+	if want := allCircuitRefreshInstances(); !slices.Equal(got, want) {
+		t.Fatalf("circuitRefreshInstancesLocked instances = %#v; want %#v", got, want)
+	}
+}
+
 func TestDecodeHeatingCircuitTypeToken(t *testing.T) {
 	t.Parallel()
 

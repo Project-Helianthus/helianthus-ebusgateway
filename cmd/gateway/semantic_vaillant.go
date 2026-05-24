@@ -187,6 +187,8 @@ const (
 	semanticStartupSlotFastMaxInstance = byte(0x02)
 	semanticStartupSlotFullMaxInstance = byte(0x0A)
 	semanticStartupCriticalDHWAttempts = 3
+	semanticCircuitFullScanInterval    = 30 * time.Minute
+	semanticCircuitPartialScanInterval = 5 * time.Minute
 )
 
 var (
@@ -315,6 +317,7 @@ type vaillantSemanticPoller struct {
 	zoneHitThreshold         int
 	dhwStaleTTL              time.Duration
 	deviceSlotRediscoveryTTL time.Duration
+	circuitFullScanInterval  time.Duration
 
 	pollMu sync.Mutex
 	readMu sync.Mutex
@@ -327,31 +330,33 @@ type vaillantSemanticPoller struct {
 	catalog    productids.Catalog
 	catalogErr error
 
-	mu                        sync.Mutex
-	controller                byte
-	boilerAddress             byte
-	regulatorCapability       productids.ControllerCapability
-	regAbsenceState           regulatorAbsenceState
-	regAbsenceSince           time.Time
-	registryDeviceCount       int
-	regulatorRecheckInterval  time.Duration
-	regulatorAbsenceGrace     time.Duration
-	zones                     map[byte]*vaillantZoneSnapshot
-	presence                  map[byte]*zonePresenceRecord
-	dhw                       *vaillantDhwSnapshot
-	dhwLastUpdateAt           time.Time
-	boiler                    *vaillantBoilerSnapshot
-	system                    *vaillantSystemSnapshot
-	circuits                  map[byte]*vaillantCircuitSnapshot
-	radioDevices              map[radioDeviceKey]*vaillantRadioDeviceSnapshot
-	deviceSlotCache           map[deviceSlotKey]bool // OP=0x06 slots where device_connected responded
-	deviceSlotDiscoveryDone   bool
-	deviceSlotDiscoveryAt     time.Time
-	startupSemanticPrimed     bool
-	startupRadioDevicesProbed bool
-	fm5Mode                   graphql.Fm5SemanticMode
-	solar                     *vaillantSolarSnapshot
-	solarCylinders            map[byte]*vaillantCylinderSnapshot
+	mu                          sync.Mutex
+	controller                  byte
+	boilerAddress               byte
+	regulatorCapability         productids.ControllerCapability
+	regAbsenceState             regulatorAbsenceState
+	regAbsenceSince             time.Time
+	registryDeviceCount         int
+	regulatorRecheckInterval    time.Duration
+	regulatorAbsenceGrace       time.Duration
+	zones                       map[byte]*vaillantZoneSnapshot
+	presence                    map[byte]*zonePresenceRecord
+	dhw                         *vaillantDhwSnapshot
+	dhwLastUpdateAt             time.Time
+	boiler                      *vaillantBoilerSnapshot
+	system                      *vaillantSystemSnapshot
+	circuits                    map[byte]*vaillantCircuitSnapshot
+	lastCircuitFullScanAt       time.Time
+	lastCircuitFullScanComplete bool
+	radioDevices                map[radioDeviceKey]*vaillantRadioDeviceSnapshot
+	deviceSlotCache             map[deviceSlotKey]bool // OP=0x06 slots where device_connected responded
+	deviceSlotDiscoveryDone     bool
+	deviceSlotDiscoveryAt       time.Time
+	startupSemanticPrimed       bool
+	startupRadioDevicesProbed   bool
+	fm5Mode                     graphql.Fm5SemanticMode
+	solar                       *vaillantSolarSnapshot
+	solarCylinders              map[byte]*vaillantCylinderSnapshot
 
 	adapterInfo    *vaillantAdapterInfoState
 	startupBarrier <-chan struct{}
@@ -698,6 +703,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		zoneHitThreshold:         cfg.SemanticZonePresenceHitThreshold,
 		dhwStaleTTL:              cfg.SemanticDHWStaleTTL,
 		deviceSlotRediscoveryTTL: 30 * time.Minute,
+		circuitFullScanInterval:  semanticCircuitFullScanInterval,
 
 		catalog:    catalog,
 		catalogErr: catalogErr,
@@ -1608,9 +1614,10 @@ func (p *vaillantSemanticPoller) refreshCircuitsStartup(ctx context.Context) {
 		return
 	}
 
+	instances := allCircuitRefreshInstances()
 	updates := make(map[byte]*vaillantCircuitSnapshot)
 	inactive := make(map[byte]struct{})
-	for instance := byte(0x00); instance <= 0x0A; instance++ {
+	for _, instance := range instances {
 		circuitTypeRaw, ok := p.readB524Uint16Startup(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_type)
 		if !ok || circuitTypeRaw == nil {
 			continue
@@ -1647,6 +1654,8 @@ func (p *vaillantSemanticPoller) refreshCircuitsStartup(ctx context.Context) {
 	for instance, incoming := range updates {
 		p.circuits[instance] = mergeCircuitSnapshotNonDestructive(p.circuits[instance], incoming)
 	}
+	p.lastCircuitFullScanAt = p.now()
+	p.lastCircuitFullScanComplete = len(updates)+len(inactive) == len(instances)
 	p.mu.Unlock()
 	p.publishCircuits(semanticSnapshotSourceLive)
 }
@@ -3417,8 +3426,10 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 		return
 	}
 
+	now := p.now()
 	p.mu.Lock()
 	controllerPresent := p.controller != 0
+	instances, fullScan := p.circuitRefreshInstancesLocked(now)
 	p.mu.Unlock()
 	if !controllerPresent {
 		return
@@ -3428,7 +3439,7 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 	inactive := make(map[byte]struct{})
 	probeSuccess := false
 
-	for instance := byte(0x00); instance <= 0x0A; instance++ {
+	for _, instance := range instances {
 		circuitTypeRaw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_type)
 		if !ok || circuitTypeRaw == nil {
 			continue
@@ -3442,6 +3453,12 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 		}
 	}
 	if !probeSuccess {
+		if !fullScan {
+			p.mu.Lock()
+			p.lastCircuitFullScanAt = time.Time{}
+			p.lastCircuitFullScanComplete = false
+			p.mu.Unlock()
+		}
 		return
 	}
 
@@ -3550,6 +3567,10 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 	for instance, incoming := range updates {
 		p.circuits[instance] = mergeCircuitSnapshotNonDestructive(p.circuits[instance], incoming)
 	}
+	if fullScan {
+		p.lastCircuitFullScanAt = now
+		p.lastCircuitFullScanComplete = len(discovered)+len(inactive) == len(instances)
+	}
 	p.mu.Unlock()
 
 	source := semanticSnapshotSourceCache
@@ -3557,6 +3578,43 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 		source = semanticSnapshotSourceLive
 	}
 	p.publishCircuits(source)
+}
+
+func allCircuitRefreshInstances() []byte {
+	instances := make([]byte, 0, 0x0B)
+	for instance := byte(0x00); instance <= 0x0A; instance++ {
+		instances = append(instances, instance)
+	}
+	return instances
+}
+
+func (p *vaillantSemanticPoller) circuitRefreshInstancesLocked(now time.Time) ([]byte, bool) {
+	if p == nil {
+		return nil, false
+	}
+	interval := p.circuitFullScanInterval
+	if interval <= 0 {
+		interval = semanticCircuitFullScanInterval
+	}
+	if len(p.circuits) == 0 || p.lastCircuitFullScanAt.IsZero() || now.Sub(p.lastCircuitFullScanAt) >= interval {
+		return allCircuitRefreshInstances(), true
+	}
+	if !p.lastCircuitFullScanComplete && now.Sub(p.lastCircuitFullScanAt) >= semanticCircuitPartialScanInterval {
+		return allCircuitRefreshInstances(), true
+	}
+
+	instances := make([]byte, 0, len(p.circuits))
+	for instance, snapshot := range p.circuits {
+		if snapshot == nil || !snapshot.Active {
+			continue
+		}
+		instances = append(instances, instance)
+	}
+	if len(instances) == 0 {
+		return allCircuitRefreshInstances(), true
+	}
+	slices.Sort(instances)
+	return instances, false
 }
 
 func mergeCircuitSnapshotNonDestructive(existing, incoming *vaillantCircuitSnapshot) *vaillantCircuitSnapshot {

@@ -183,6 +183,9 @@ func (provider *LiveSemanticProvider) Zones() []Zone {
 	provider.mu.RLock()
 	defer provider.mu.RUnlock()
 	if len(provider.zones) == 0 {
+		if provider.zonePublished {
+			return []Zone{}
+		}
 		return nil
 	}
 	zones := make([]Zone, len(provider.zones))
@@ -389,15 +392,19 @@ func (provider *LiveSemanticProvider) setZonesWithSource(zones []Zone, source se
 	if provider == nil {
 		return
 	}
+	receivedZones := zones != nil
 	zonesCopy := make([]Zone, len(zones))
 	for i, z := range zones {
 		zonesCopy[i] = cloneZone(z)
 	}
+	published := receivedZones && (source == semanticDataSourceLive || len(zonesCopy) > 0)
 	var transition *phaseTransitionLog
 	provider.mu.Lock()
 	provider.zones = zonesCopy
-	if len(zonesCopy) > 0 {
+	if published {
 		provider.zonePublished = true
+	}
+	if published {
 		if source == semanticDataSourceLive {
 			provider.zoneLiveSeen = true
 		}

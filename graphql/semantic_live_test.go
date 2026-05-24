@@ -63,6 +63,28 @@ func TestLiveSemanticProvider_LiveReadyRequiresLiveForPublishedStreams(t *testin
 	}
 }
 
+func TestLiveSemanticProvider_EmptyZoneLivePublishCountsForReadiness(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+
+	provider.SetZonesFromCache([]Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetDHW(&DhwStatus{Config: DhwConfig{OperatingMode: "auto"}})
+	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveWarmup {
+		t.Fatalf("phase after DHW live with cache zones = %s; want %s", got, SemanticStartupPhaseLiveWarmup)
+	}
+
+	provider.SetZones([]Zone{})
+	if got := provider.StartupPhase(); got != SemanticStartupPhaseLiveReady {
+		t.Fatalf("phase after empty zones live = %s; want %s", got, SemanticStartupPhaseLiveReady)
+	}
+	cacheEpoch, liveEpoch := provider.StartupEpochs()
+	if cacheEpoch != 1 || liveEpoch != 2 {
+		t.Fatalf("epochs after empty zones live = (%d,%d); want (1,2)", cacheEpoch, liveEpoch)
+	}
+	if zones := provider.Zones(); zones == nil || len(zones) != 0 {
+		t.Fatalf("Zones() after empty live publish = %#v; want empty non-nil slice", zones)
+	}
+}
+
 func TestLiveSemanticProvider_CacheRefreshAfterLiveReadyKeepsPhase(t *testing.T) {
 	provider := NewLiveSemanticProvider()
 

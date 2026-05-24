@@ -2338,6 +2338,9 @@ func cloneMap(source map[string]any) map[string]any {
 }
 
 func cloneZones(source []Zone) []Zone {
+	if source != nil && len(source) == 0 {
+		return []Zone{}
+	}
 	if len(source) == 0 {
 		return nil
 	}
@@ -2815,7 +2818,7 @@ func (s *Server) snapshotZones(snapshot *snapshotState) []Zone {
 		return nil
 	}
 	zones := s.semantic.Zones()
-	if len(zones) == 0 {
+	if zones == nil {
 		return nil
 	}
 	out := make([]Zone, len(zones))

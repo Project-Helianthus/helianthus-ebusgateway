@@ -64,6 +64,20 @@ func TestMCPSemanticProviderAdapterPreservesEmptyCylinders(t *testing.T) {
 	}
 }
 
+func TestMCPSemanticProviderAdapterPreservesEmptyZones(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	adapter := mcpSemanticProviderAdapter{provider: provider}
+
+	if got := adapter.Zones(); got != nil {
+		t.Fatalf("Zones() before publish = %#v; want nil", got)
+	}
+
+	provider.SetZones([]graphql.Zone{})
+	if got := adapter.Zones(); got == nil || len(got) != 0 {
+		t.Fatalf("Zones() after empty publish = %#v; want empty non-nil slice", got)
+	}
+}
+
 func TestMCPSemanticProviderAdapterPreservesEmptyRadioDevices(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	adapter := mcpSemanticProviderAdapter{provider: provider}

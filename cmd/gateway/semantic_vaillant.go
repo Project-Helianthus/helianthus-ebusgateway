@@ -1352,7 +1352,7 @@ func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Contex
 			p.refreshSystemStartup(primingCtx)
 			status = p.startupL1PrimingStatus()
 		}
-		if !status.fm5Satisfied && status.system {
+		if status.system && (!status.fm5Satisfied || !status.solar || !status.cylinders) {
 			p.refreshFM5SemanticStartup(primingCtx)
 		}
 		status = p.startupL1PrimingStatus()
@@ -1509,7 +1509,7 @@ func (p *vaillantSemanticPoller) startupL1PrimingStatus() startupL1PrimingStatus
 	p.mu.Unlock()
 	fm5Evidence := hasFM5EvidenceFromRadioSnapshots(radioSnapshots) || p.hasFM5RegistryEvidence()
 	fm5Required := fm5Evidence && moduleConfig != nil && *moduleConfig <= 2
-	zonesReady := len(p.provider.Zones()) > 0
+	zonesReady := p.provider.Zones() != nil
 	solarReady := p.provider.Solar() != nil
 	cylinders := p.provider.Cylinders()
 	cylindersPublished := cylinders != nil

@@ -1652,9 +1652,11 @@ func (p *vaillantSemanticPoller) refreshCircuitsStartup(ctx context.Context) {
 		}
 		switch *circuitTypeRaw {
 		case 0x0000, 0x00FF, 0xFFFF:
-			if snapshot := p.readDhwPseudoCircuitStartupEvidence(ctx, instance); snapshot != nil {
+			if snapshot, known := p.readDhwPseudoCircuitStartupEvidence(ctx, instance); snapshot != nil {
 				snapshot.Controller = controller
 				updates[instance] = snapshot
+				continue
+			} else if !known && instance == dhwPseudoCircuitInstance {
 				continue
 			}
 			inactive[instance] = struct{}{}
@@ -1700,25 +1702,31 @@ func (p *vaillantSemanticPoller) refreshCircuitsStartup(ctx context.Context) {
 	p.publishCircuits(semanticSnapshotSourceLive)
 }
 
-func (p *vaillantSemanticPoller) readDhwPseudoCircuitStartupEvidence(ctx context.Context, instance byte) *vaillantCircuitSnapshot {
+func (p *vaillantSemanticPoller) readDhwPseudoCircuitStartupEvidence(ctx context.Context, instance byte) (*vaillantCircuitSnapshot, bool) {
 	if p == nil || instance != dhwPseudoCircuitInstance {
-		return nil
+		return nil, false
 	}
 	snapshot := newDhwPseudoCircuitSnapshot(instance)
-	if raw, ok := p.readB524Startup(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_flow_temp); ok {
-		if value := decodeB524Float32FromRaw(raw); isDhwPseudoCircuitTemperatureEvidence(value) {
-			snapshot.FlowTemperatureC = value
-		}
+	flow, flowKnown := p.readDhwPseudoCircuitStartupTemperatureEvidence(ctx, instance, circuit_flow_temp)
+	if isDhwPseudoCircuitTemperatureEvidence(flow) {
+		snapshot.FlowTemperatureC = flow
 	}
-	if raw, ok := p.readB524Startup(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_calc_flow_temp); ok {
-		if value := decodeB524Float32FromRaw(raw); isDhwPseudoCircuitTemperatureEvidence(value) {
-			snapshot.CalcFlowTempC = value
-		}
+	calc, calcKnown := p.readDhwPseudoCircuitStartupTemperatureEvidence(ctx, instance, circuit_calc_flow_temp)
+	if isDhwPseudoCircuitTemperatureEvidence(calc) {
+		snapshot.CalcFlowTempC = calc
 	}
 	if snapshot.FlowTemperatureC == nil && snapshot.CalcFlowTempC == nil {
-		return nil
+		return nil, flowKnown && calcKnown
 	}
-	return snapshot
+	return snapshot, true
+}
+
+func (p *vaillantSemanticPoller) readDhwPseudoCircuitStartupTemperatureEvidence(ctx context.Context, instance byte, addr uint16) (*float64, bool) {
+	raw, ok := p.readB524Startup(ctx, localCircuits.opcode, localCircuits.group, instance, addr)
+	if !ok {
+		return nil, false
+	}
+	return decodeB524Float32FromRaw(raw), true
 }
 
 func (p *vaillantSemanticPoller) refreshSystemStartup(ctx context.Context) {
@@ -3759,9 +3767,11 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 		probeSuccess = true
 		switch *circuitTypeRaw {
 		case 0x0000, 0x00FF, 0xFFFF:
-			if snapshot := p.readDhwPseudoCircuitEvidence(ctx, instance); snapshot != nil {
+			if snapshot, known := p.readDhwPseudoCircuitEvidence(ctx, instance); snapshot != nil {
 				snapshot.Controller = controller
 				discovered[instance] = snapshot
+				continue
+			} else if !known && instance == dhwPseudoCircuitInstance {
 				continue
 			}
 			inactive[instance] = struct{}{}
@@ -3903,27 +3913,31 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 	p.publishCircuits(source)
 }
 
-func (p *vaillantSemanticPoller) readDhwPseudoCircuitEvidence(ctx context.Context, instance byte) *vaillantCircuitSnapshot {
+func (p *vaillantSemanticPoller) readDhwPseudoCircuitEvidence(ctx context.Context, instance byte) (*vaillantCircuitSnapshot, bool) {
 	if p == nil || instance != dhwPseudoCircuitInstance {
-		return nil
+		return nil, false
 	}
 	snapshot := newDhwPseudoCircuitSnapshot(instance)
-	if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_flow_temp); ok {
-		v := value
-		if isDhwPseudoCircuitTemperatureEvidence(&v) {
-			snapshot.FlowTemperatureC = &v
-		}
+	flow, flowKnown := p.readDhwPseudoCircuitTemperatureEvidence(ctx, instance, circuit_flow_temp)
+	if isDhwPseudoCircuitTemperatureEvidence(flow) {
+		snapshot.FlowTemperatureC = flow
 	}
-	if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_calc_flow_temp); ok {
-		v := value
-		if isDhwPseudoCircuitTemperatureEvidence(&v) {
-			snapshot.CalcFlowTempC = &v
-		}
+	calc, calcKnown := p.readDhwPseudoCircuitTemperatureEvidence(ctx, instance, circuit_calc_flow_temp)
+	if isDhwPseudoCircuitTemperatureEvidence(calc) {
+		snapshot.CalcFlowTempC = calc
 	}
 	if snapshot.FlowTemperatureC == nil && snapshot.CalcFlowTempC == nil {
-		return nil
+		return nil, flowKnown && calcKnown
 	}
-	return snapshot
+	return snapshot, true
+}
+
+func (p *vaillantSemanticPoller) readDhwPseudoCircuitTemperatureEvidence(ctx context.Context, instance byte, addr uint16) (*float64, bool) {
+	raw, ok := p.readB524Value(ctx, localCircuits.opcode, localCircuits.group, instance, addr)
+	if !ok {
+		return nil, false
+	}
+	return decodeB524Float32FromRaw(raw), true
 }
 
 func newDhwPseudoCircuitSnapshot(instance byte) *vaillantCircuitSnapshot {

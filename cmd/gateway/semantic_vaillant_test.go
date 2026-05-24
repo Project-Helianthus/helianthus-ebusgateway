@@ -3889,6 +3889,60 @@ func TestRefreshCircuits_DoesNotPromoteDhwPseudoCircuitWithoutTemperatureEvidenc
 	}
 }
 
+func TestRefreshCircuits_PreservesDhwPseudoCircuitWhenEvidenceReadsFail(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000, 0)
+	existingType := uint16(3)
+	existingFlow := 47.5
+	poller := &vaillantSemanticPoller{
+		controller:                  0x15,
+		source:                      0x7F,
+		provider:                    graphql.NewLiveSemanticProvider(),
+		scheduler:                   ebusgateway.NewSemanticReadScheduler(),
+		requestTimeout:              50 * time.Millisecond,
+		circuitFullScanInterval:     semanticCircuitFullScanInterval,
+		lastCircuitFullScanAt:       now.Add(-5 * time.Minute),
+		lastCircuitFullScanComplete: true,
+		nowFn:                       func() time.Time { return now },
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x09: {
+				Instance:         0x09,
+				Active:           true,
+				CircuitTypeRaw:   &existingType,
+				FlowTemperatureC: &existingFlow,
+			},
+		},
+		sendFrameFn: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return testB524ResponseForSelectorPayload(frame.Data), nil
+			}
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			switch addr {
+			case circuit_type:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00), nil
+			case circuit_flow_temp, circuit_calc_flow_temp:
+				return &protocol.Frame{Data: []byte{0x00}}, nil
+			default:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+			}
+		},
+	}
+
+	poller.refreshCircuits(context.Background())
+
+	entry, ok := poller.circuits[0x09]
+	if !ok || entry == nil {
+		t.Fatal("DHW pseudo-circuit snapshot missing after transient evidence read failures")
+	}
+	if entry.CircuitTypeRaw == nil || *entry.CircuitTypeRaw != 3 {
+		t.Fatalf("entry.CircuitTypeRaw = %v; want preserved 3", entry.CircuitTypeRaw)
+	}
+	if entry.FlowTemperatureC == nil || *entry.FlowTemperatureC != 47.5 {
+		t.Fatalf("entry.FlowTemperatureC = %v; want preserved 47.5", entry.FlowTemperatureC)
+	}
+}
+
 func TestRefreshCircuits_TargetedProbeFailureForcesNextFullScan(t *testing.T) {
 	t.Parallel()
 

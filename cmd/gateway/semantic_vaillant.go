@@ -593,6 +593,21 @@ type boilerStatusTierSchedule struct {
 	priority semanticTaskPriority
 }
 
+const (
+	semanticTaskRefreshRegulatorCapability semanticTaskKey = "refresh_regulator_capability"
+	semanticTaskRefreshDiscovery           semanticTaskKey = "refresh_discovery"
+	semanticTaskRefreshConfig              semanticTaskKey = "refresh_config"
+	semanticTaskRefreshState               semanticTaskKey = "refresh_state"
+	semanticTaskRefreshCircuits            semanticTaskKey = "refresh_circuits"
+	semanticTaskRefreshSystem              semanticTaskKey = "refresh_system"
+	semanticTaskRefreshRadioDevices        semanticTaskKey = "refresh_radio_devices"
+	semanticTaskRefreshEnergy              semanticTaskKey = "refresh_energy"
+	semanticTaskRefreshSchedules           semanticTaskKey = "refresh_schedules"
+	semanticTaskRefreshBoilerFast          semanticTaskKey = "refresh_boiler_fast"
+	semanticTaskRefreshBoilerMedium        semanticTaskKey = "refresh_boiler_medium"
+	semanticTaskRefreshBoilerSlow          semanticTaskKey = "refresh_boiler_slow"
+)
+
 var (
 	zoneConfigFieldSet = newSemanticFieldSet(
 		zoneFieldName,
@@ -1207,6 +1222,19 @@ func (p *vaillantSemanticPoller) boilerStatusTierTask(tier boilerStatusTier) fun
 	}
 }
 
+func boilerStatusTierTaskKey(tier boilerStatusTier) semanticTaskKey {
+	switch tier {
+	case boilerStatusTierFast:
+		return semanticTaskRefreshBoilerFast
+	case boilerStatusTierMedium:
+		return semanticTaskRefreshBoilerMedium
+	case boilerStatusTierSlow:
+		return semanticTaskRefreshBoilerSlow
+	default:
+		return semanticTaskKey("")
+	}
+}
+
 func (p *vaillantSemanticPoller) enqueueBoilerStatusPriming(ctx context.Context) {
 	if p == nil {
 		return
@@ -1221,7 +1249,7 @@ func (p *vaillantSemanticPoller) enqueueBoilerStatusPriming(ctx context.Context)
 		return
 	}
 	for _, schedule := range p.boilerStatusTierSchedules() {
-		p.enqueueTask(schedule.priority, p.boilerStatusTierTask(schedule.tier))
+		p.enqueueTask(boilerStatusTierTaskKey(schedule.tier), schedule.priority, p.boilerStatusTierTask(schedule.tier))
 	}
 }
 
@@ -1240,11 +1268,11 @@ func (p *vaillantSemanticPoller) enqueueControllerSemanticPriming(ctx context.Co
 		p.refreshEnergy(ctx)
 		return
 	}
-	p.enqueueTask(semanticTaskPriorityHigh, p.refreshConfig)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshCircuits)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshSystem)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshRadioDevices)
-	p.enqueueTask(semanticTaskPriorityMedium, p.refreshEnergy)
+	p.enqueueTask(semanticTaskRefreshConfig, semanticTaskPriorityHigh, p.refreshConfig)
+	p.enqueueTask(semanticTaskRefreshCircuits, semanticTaskPriorityMedium, p.refreshCircuits)
+	p.enqueueTask(semanticTaskRefreshSystem, semanticTaskPriorityMedium, p.refreshSystem)
+	p.enqueueTask(semanticTaskRefreshRadioDevices, semanticTaskPriorityMedium, p.refreshRadioDevices)
+	p.enqueueTask(semanticTaskRefreshEnergy, semanticTaskPriorityMedium, p.refreshEnergy)
 }
 
 func (p *vaillantSemanticPoller) refreshStartupSemanticPlanes(ctx context.Context) {
@@ -2222,25 +2250,25 @@ func parsePassiveShadowPayload(event ebusgateway.AdjudicatedPassiveEvent, key eb
 
 func (p *vaillantSemanticPoller) startPollingLoops(ctx context.Context) {
 	// Discovery owns downstream startup/controller/boiler priming and avoids duplicate startup bursts.
-	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
-	p.enqueueTask(semanticTaskPriorityLow, p.refreshSchedules)
+	p.enqueueTask(semanticTaskRefreshDiscovery, semanticTaskPriorityHigh, p.refreshDiscovery)
+	p.enqueueTask(semanticTaskRefreshSchedules, semanticTaskPriorityLow, p.refreshSchedules)
 
-	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskPriorityLow, p.refreshRegulatorCapability)
-	go p.runLoop(ctx, p.discoveryInterval, semanticTaskPriorityLow, p.refreshDiscovery)
-	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityMedium, p.refreshConfig)
-	go p.runLoop(ctx, p.stateInterval, semanticTaskPriorityHigh, p.refreshState)
-	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshCircuits)
-	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshSystem)
-	go p.runLoop(ctx, p.configInterval, semanticTaskPriorityLow, p.refreshRadioDevices)
-	go p.runLoop(ctx, p.energyInterval, semanticTaskPriorityMedium, p.refreshEnergy)
-	go p.runLoop(ctx, p.scheduleInterval, semanticTaskPriorityLow, p.refreshSchedules)
+	go p.runLoop(ctx, p.regulatorRecheckInterval, semanticTaskRefreshRegulatorCapability, semanticTaskPriorityLow, p.refreshRegulatorCapability)
+	go p.runLoop(ctx, p.discoveryInterval, semanticTaskRefreshDiscovery, semanticTaskPriorityLow, p.refreshDiscovery)
+	go p.runLoop(ctx, p.configInterval, semanticTaskRefreshConfig, semanticTaskPriorityMedium, p.refreshConfig)
+	go p.runLoop(ctx, p.stateInterval, semanticTaskRefreshState, semanticTaskPriorityHigh, p.refreshState)
+	go p.runLoop(ctx, p.configInterval, semanticTaskRefreshCircuits, semanticTaskPriorityLow, p.refreshCircuits)
+	go p.runLoop(ctx, p.configInterval, semanticTaskRefreshSystem, semanticTaskPriorityLow, p.refreshSystem)
+	go p.runLoop(ctx, p.configInterval, semanticTaskRefreshRadioDevices, semanticTaskPriorityLow, p.refreshRadioDevices)
+	go p.runLoop(ctx, p.energyInterval, semanticTaskRefreshEnergy, semanticTaskPriorityMedium, p.refreshEnergy)
+	go p.runLoop(ctx, p.scheduleInterval, semanticTaskRefreshSchedules, semanticTaskPriorityLow, p.refreshSchedules)
 	go p.adapterInfo.run(ctx)
 	for _, schedule := range p.boilerStatusTierSchedules() {
-		go p.runLoop(ctx, schedule.interval, schedule.priority, p.boilerStatusTierTask(schedule.tier))
+		go p.runLoop(ctx, schedule.interval, boilerStatusTierTaskKey(schedule.tier), schedule.priority, p.boilerStatusTierTask(schedule.tier))
 	}
 }
 
-func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Duration, priority semanticTaskPriority, fn func(context.Context)) {
+func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Duration, key semanticTaskKey, priority semanticTaskPriority, fn func(context.Context)) {
 	if interval <= 0 {
 		return
 	}
@@ -2252,12 +2280,12 @@ func (p *vaillantSemanticPoller) runLoop(ctx context.Context, interval time.Dura
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.enqueueTask(priority, fn)
+			p.enqueueTask(key, priority, fn)
 		}
 	}
 }
 
-func (p *vaillantSemanticPoller) enqueueTask(priority semanticTaskPriority, fn func(context.Context)) {
+func (p *vaillantSemanticPoller) enqueueTask(key semanticTaskKey, priority semanticTaskPriority, fn func(context.Context)) {
 	if p == nil || fn == nil {
 		return
 	}
@@ -2266,15 +2294,15 @@ func (p *vaillantSemanticPoller) enqueueTask(priority semanticTaskPriority, fn f
 		fn(context.Background())
 		return
 	}
-	err := scheduler.submit(priority, func(taskCtx context.Context) {
+	err := scheduler.submitCoalesced(key, priority, func(taskCtx context.Context) {
 		p.withPollLock(taskCtx, fn)
 	})
 	if errors.Is(err, errSemanticTaskQueueOverloaded) {
-		log.Printf("semantic poll scheduler overloaded: skipping task (priority=%d)", priority)
+		log.Printf("semantic poll scheduler overloaded: skipping task key=%s priority=%d", key, priority)
 		return
 	}
 	if err != nil {
-		log.Printf("semantic poll scheduler submit failed: %v", err)
+		log.Printf("semantic poll scheduler submit failed key=%s err=%v", key, err)
 	}
 }
 
@@ -2338,7 +2366,7 @@ func (p *vaillantSemanticPoller) refreshRegulatorCapability(_ context.Context) {
 	// If device count changed, enqueue an immediate full discovery refresh.
 	if deviceCount != prevDeviceCount && prevDeviceCount > 0 {
 		log.Printf("semantic_regulator_recheck inventory_change prev=%d curr=%d", prevDeviceCount, deviceCount)
-		p.enqueueTask(semanticTaskPriorityLow, p.refreshDiscovery)
+		p.enqueueTask(semanticTaskRefreshDiscovery, semanticTaskPriorityLow, p.refreshDiscovery)
 	}
 }
 
@@ -7590,7 +7618,7 @@ func (p *vaillantSemanticPoller) EnqueueDiscoveryRefresh() {
 	if p == nil {
 		return
 	}
-	p.enqueueTask(semanticTaskPriorityHigh, p.refreshDiscovery)
+	p.enqueueTask(semanticTaskRefreshDiscovery, semanticTaskPriorityHigh, p.refreshDiscovery)
 }
 
 // EnqueueAddressIdentityProbe schedules a per-address identity

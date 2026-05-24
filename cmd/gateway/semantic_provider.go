@@ -20,7 +20,7 @@ func (adapter mcpSemanticProviderAdapter) Zones() []mcp.Zone {
 		return nil
 	}
 	zones := adapter.provider.Zones()
-	if len(zones) == 0 {
+	if zones == nil {
 		return nil
 	}
 	out := make([]mcp.Zone, len(zones))

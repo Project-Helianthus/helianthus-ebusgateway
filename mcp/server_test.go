@@ -241,23 +241,24 @@ func (p *testWatchSummaryProvider) Snapshot() WatchSummary {
 }
 
 type testSemanticProvider struct {
-	zones         []Zone
-	circuits      []CircuitStatus
-	radio         []RadioDevice
-	fm5Mode       Fm5SemanticMode
-	solar         *SolarStatus
-	cylinders     []CylinderStatus
-	dhw           *DhwStatus
-	energy        *EnergyTotals
-	boiler        *BoilerStatus
-	system        *SystemStatus
-	schedules     *ScheduleStatus
-	adapterInfo   *AdapterHardwareInfo
-	zonesDelay    time.Duration
-	circuitsDelay time.Duration
-	radioDelay    time.Duration
-	dhwDelay      time.Duration
-	energyDelay   time.Duration
+	zones          []Zone
+	zonesPublished bool
+	circuits       []CircuitStatus
+	radio          []RadioDevice
+	fm5Mode        Fm5SemanticMode
+	solar          *SolarStatus
+	cylinders      []CylinderStatus
+	dhw            *DhwStatus
+	energy         *EnergyTotals
+	boiler         *BoilerStatus
+	system         *SystemStatus
+	schedules      *ScheduleStatus
+	adapterInfo    *AdapterHardwareInfo
+	zonesDelay     time.Duration
+	circuitsDelay  time.Duration
+	radioDelay     time.Duration
+	dhwDelay       time.Duration
+	energyDelay    time.Duration
 }
 
 func (p testSemanticProvider) Zones() []Zone {
@@ -265,6 +266,9 @@ func (p testSemanticProvider) Zones() []Zone {
 		time.Sleep(p.zonesDelay)
 	}
 	if len(p.zones) == 0 {
+		if p.zonesPublished {
+			return []Zone{}
+		}
 		return nil
 	}
 	out := make([]Zone, len(p.zones))
@@ -1164,6 +1168,57 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 		if id, _ := second["id"].(string); id != "zone-b" {
 			t.Fatalf("second zone id = %q; want zone-b", id)
+		}
+	})
+
+	t.Run("empty zones keep live and snapshot shape", func(t *testing.T) {
+		emptyServer, err := NewServer(reg, &testInvoker{})
+		if err != nil {
+			t.Fatalf("NewServer error = %v", err)
+		}
+		emptyServer.SetSemanticProvider(testSemanticProvider{
+			zones:          []Zone{},
+			zonesPublished: true,
+		})
+
+		live := doRPC(t, emptyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      41,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.zones.get","arguments":{}}`),
+		})
+		liveEnvelope := envelopeFromResult(t, live)
+		liveData, ok := liveEnvelope["data"].([]any)
+		if !ok || len(liveData) != 0 {
+			t.Fatalf("live empty zones data = %#v; want empty array", liveEnvelope["data"])
+		}
+
+		capture := doRPC(t, emptyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      42,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.snapshot.capture","arguments":{}}`),
+		})
+		captureEnvelope := envelopeFromResult(t, capture)
+		captureData, ok := captureEnvelope["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("capture data type = %T; want map", captureEnvelope["data"])
+		}
+		snapshotID, _ := captureData["snapshot_id"].(string)
+		if snapshotID == "" {
+			t.Fatal("snapshot_id empty")
+		}
+
+		snapshot := doRPC(t, emptyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      43,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.zones.get","arguments":{"consistency":{"mode":"SNAPSHOT","snapshot_id":"` + snapshotID + `"}}}`),
+		})
+		snapshotEnvelope := envelopeFromResult(t, snapshot)
+		snapshotData, ok := snapshotEnvelope["data"].([]any)
+		if !ok || len(snapshotData) != 0 {
+			t.Fatalf("snapshot empty zones data = %#v; want empty array", snapshotEnvelope["data"])
 		}
 	})
 

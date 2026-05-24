@@ -6477,6 +6477,36 @@ func TestStartupL1PrimingStatusAcceptsPublishedGPIOOnlyFM5Planes(t *testing.T) {
 	}
 }
 
+func TestRefreshStartupSemanticPlanesPublishesAbsentFM5Planes(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetZones([]graphql.Zone{{ID: "zone-1", Name: "Zone 1"}})
+	provider.SetDHW(&graphql.DhwStatus{})
+	provider.SetCircuits([]graphql.CircuitStatus{{Index: 0}})
+	provider.SetSystem(&graphql.SystemStatus{})
+	provider.SetBoilerStatus(&graphql.BoilerStatus{})
+
+	poller := &vaillantSemanticPoller{
+		controller:                0x15,
+		provider:                  provider,
+		reg:                       newTestRegistry(),
+		startupRadioDevicesProbed: true,
+	}
+
+	poller.refreshStartupSemanticPlanes(context.Background())
+
+	if provider.Solar() == nil {
+		t.Fatal("provider.Solar() = nil after startup priming; want empty non-null absent-FM5 plane")
+	}
+	if cylinders := provider.Cylinders(); cylinders == nil || len(cylinders) != 0 {
+		t.Fatalf("provider.Cylinders() = %#v after startup priming; want empty non-null absent-FM5 plane", cylinders)
+	}
+	if mode := provider.FM5SemanticMode(); mode != graphql.Fm5SemanticModeAbsent {
+		t.Fatalf("provider.FM5SemanticMode() = %q; want %q", mode, graphql.Fm5SemanticModeAbsent)
+	}
+}
+
 func TestReconcileDiscoveryPresence_PublishesStartupZonesOnFirstHit(t *testing.T) {
 	t.Parallel()
 

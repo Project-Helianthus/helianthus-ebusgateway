@@ -616,6 +616,12 @@ const (
 var (
 	zoneConfigRefreshFieldSet = newSemanticFieldSet(
 		zoneFieldName,
+		zoneFieldOperatingMode,
+		zoneFieldPreset,
+		zoneFieldAllowedModes,
+		zoneFieldTargetTempC,
+		zoneFieldCurrentHumidityPct,
+		zoneFieldZoneOperationModeRaw,
 		zoneFieldRoomTemperatureZoneMappingRaw,
 		zoneFieldZoneCircuitIndexRaw,
 		zoneFieldCircuitTypeRaw,
@@ -635,9 +641,6 @@ var (
 		zoneFieldHvacAction,
 		zoneFieldAllowedModes,
 		zoneFieldCurrentTempC,
-		zoneFieldTargetTempC,
-		zoneFieldCurrentHumidityPct,
-		zoneFieldZoneOperationModeRaw,
 		zoneFieldSpecialFunctionRaw,
 		zoneFieldZoneValveStatusRaw,
 	)
@@ -2818,6 +2821,32 @@ func (p *vaillantSemanticPoller) refreshZoneSlowConfigFields(ctx context.Context
 	incoming := &vaillantZoneSnapshot{}
 	liveReadSuccess := false
 
+	var targetPtr *float64
+	if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_target_temp); ok {
+		target := value
+		targetPtr = &target
+		liveReadSuccess = true
+	}
+	if targetPtr == nil {
+		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_fallback_manual_temp); ok {
+			target := value
+			targetPtr = &target
+			liveReadSuccess = true
+		}
+	}
+
+	var humidity *float64
+	if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_current_humidity); ok {
+		currentHumidity := value
+		humidity = &currentHumidity
+		liveReadSuccess = true
+	}
+
+	zoneOpMode, zoneOpModeOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_heating_op_mode)
+	if zoneOpModeOK {
+		liveReadSuccess = true
+	}
+
 	var qvTempPtr, qvDurPtr *float64
 	if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_quick_veto_temp); ok {
 		v := value
@@ -2883,6 +2912,25 @@ func (p *vaillantSemanticPoller) refreshZoneSlowConfigFields(ctx context.Context
 		associatedCircuitRaw = &value
 	}
 
+	_, cachedZoneSF, _, _ := p.cachedZoneDerivationInputs(instance)
+	if zoneOpMode != nil || cachedZoneSF != nil || hasCircuitType {
+		operatingMode, preset, allowedModes := deriveZoneModeAndPreset(zoneOpMode, cachedZoneSF, circuitType, hasCircuitType)
+		if zoneOpMode != nil {
+			incoming.OperatingMode = operatingMode
+		}
+		if zoneOpMode != nil || cachedZoneSF != nil {
+			incoming.Preset = preset
+		}
+		if hasCircuitType {
+			incoming.AllowedModes = allowedModes
+		}
+	}
+	if zoneOpMode != nil {
+		incoming.ConfigurationHeatingOperationMode = formatUintToken(*zoneOpMode)
+	}
+
+	incoming.TargetTempC = targetPtr
+	incoming.HumidityPct = humidity
 	incoming.QuickVetoTempC = qvTempPtr
 	incoming.QuickVetoDurationH = qvDurPtr
 	incoming.QuickVetoEndTime = qvEndTime
@@ -2909,6 +2957,18 @@ func (p *vaillantSemanticPoller) refreshDHWSlowConfig(ctx context.Context) seman
 
 	attempted := make(semanticFieldSet)
 	liveReadSuccess := false
+	targetPtr := p.readDhwFloat(ctx, dhw_target_temp)
+	if targetPtr != nil {
+		liveReadSuccess = true
+		attempted[dhwFieldTargetTempC] = struct{}{}
+	}
+	opModeRaw, opModeOK := p.readDhwUint16(ctx, dhw_operation_mode)
+	if opModeOK {
+		liveReadSuccess = true
+		attempted[dhwFieldOperatingMode] = struct{}{}
+		attempted[dhwFieldPreset] = struct{}{}
+		attempted[dhwFieldDhwOperationModeRaw] = struct{}{}
+	}
 	var dhwHolidayStartDate, dhwHolidayEndDate string
 	if raw, ok := p.readB524Value(ctx, localDHW.opcode, localDHW.group, dhwInstance, dhw_holiday_start_date); ok && len(raw) >= 3 {
 		if date := decodeB524DateSuppressSentinel(raw); date != "" {
@@ -2931,6 +2991,12 @@ func (p *vaillantSemanticPoller) refreshDHWSlowConfig(ctx context.Context) seman
 	status := &vaillantDhwSnapshot{
 		HolidayStartDate: dhwHolidayStartDate,
 		HolidayEndDate:   dhwHolidayEndDate,
+		TargetTempC:      targetPtr,
+	}
+	if opModeRaw != nil {
+		_, cachedSpecial := p.cachedDHWDerivationInputs()
+		status.OperatingMode, status.Preset = deriveDhwModeAndPreset(opModeRaw, cachedSpecial)
+		status.ConfigurationDHWOperationMode = formatUintToken(*opModeRaw)
 	}
 	p.mu.Lock()
 	if p.dhw == nil {
@@ -2942,9 +3008,9 @@ func (p *vaillantSemanticPoller) refreshDHWSlowConfig(ctx context.Context) seman
 	return semanticSnapshotSourceLive
 }
 
-func (p *vaillantSemanticPoller) cachedZoneCircuitType(instance byte) (*uint16, bool) {
+func (p *vaillantSemanticPoller) cachedZoneDerivationInputs(instance byte) (opMode, specialFunction, circuitType *uint16, hasCircuitType bool) {
 	if p == nil {
-		return nil, false
+		return nil, nil, nil, false
 	}
 
 	p.mu.Lock()
@@ -2952,17 +3018,48 @@ func (p *vaillantSemanticPoller) cachedZoneCircuitType(instance byte) (*uint16, 
 
 	circuitInstance := instance
 	if zone := p.zones[instance]; zone != nil {
+		opMode, _ = parseUint16Token(zone.ConfigurationHeatingOperationMode)
+		specialFunction, _ = parseUint16Token(zone.StateSpecialFunction)
 		if zone.ConfigurationCircuitTypeRaw != nil {
-			return cloneUint16Ptr(zone.ConfigurationCircuitTypeRaw), true
+			return opMode, specialFunction, cloneUint16Ptr(zone.ConfigurationCircuitTypeRaw), true
 		}
 		if zone.ConfigurationAssociatedCircuitRaw != nil && *zone.ConfigurationAssociatedCircuitRaw <= 0xFF {
 			circuitInstance = byte(*zone.ConfigurationAssociatedCircuitRaw)
 		}
 	}
 	if circuit := p.circuits[circuitInstance]; circuit != nil && circuit.CircuitTypeRaw != nil {
-		return cloneUint16Ptr(circuit.CircuitTypeRaw), true
+		return opMode, specialFunction, cloneUint16Ptr(circuit.CircuitTypeRaw), true
 	}
-	return nil, false
+	return opMode, specialFunction, nil, false
+}
+
+func (p *vaillantSemanticPoller) cachedDHWDerivationInputs() (opMode, specialFunction *uint16) {
+	if p == nil {
+		return nil, nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.dhw == nil {
+		return nil, nil
+	}
+	opMode, _ = parseUint16Token(p.dhw.ConfigurationDHWOperationMode)
+	specialFunction, _ = parseUint16Token(p.dhw.StateSpecialFunction)
+	return opMode, specialFunction
+}
+
+func parseUint16Token(token string) (*uint16, bool) {
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" {
+		return nil, false
+	}
+	value, err := strconv.ParseUint(trimmed, 10, 16)
+	if err != nil {
+		return nil, false
+	}
+	parsed := uint16(value)
+	return &parsed, true
 }
 
 func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
@@ -2986,57 +3083,40 @@ func (p *vaillantSemanticPoller) refreshState(ctx context.Context) {
 
 	liveReadSuccess := false
 	for _, instance := range zones {
-		var (
-			currentPtr *float64
-			targetPtr  *float64
-			humidity   *float64
-		)
+		var currentPtr *float64
 		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_current_temp); ok {
 			current := value
 			currentPtr = &current
 			liveReadSuccess = true
 		}
 
-		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_target_temp); ok {
-			target := value
-			targetPtr = &target
-			liveReadSuccess = true
-		}
-		if targetPtr == nil {
-			if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_fallback_manual_temp); ok {
-				target := value
-				targetPtr = &target
-				liveReadSuccess = true
-			}
-		}
-		if value, ok := p.readB524Float32LE(ctx, localZones.opcode, localZones.group, instance, zone_current_humidity); ok {
-			currentHumidity := value
-			humidity = &currentHumidity
-			liveReadSuccess = true
-		}
-
-		zoneOpMode, zoneOpModeOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_heating_op_mode)
 		zoneSF, zoneSFOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_special_function)
 		zoneValve, zoneValveOK := p.readB524Uint16(ctx, localZones.opcode, localZones.group, instance, zone_valve_status)
-		if zoneOpModeOK || zoneSFOK || zoneValveOK {
+		if zoneSFOK || zoneValveOK {
 			liveReadSuccess = true
 		}
-		circuitType, hasCircuitType := p.cachedZoneCircuitType(instance)
+		cachedOpMode, cachedZoneSF, circuitType, hasCircuitType := p.cachedZoneDerivationInputs(instance)
+		zoneSFForDerive := zoneSF
+		if zoneSFForDerive == nil {
+			zoneSFForDerive = cachedZoneSF
+		}
 
-		operatingMode, preset, allowedModes := deriveZoneModeAndPreset(zoneOpMode, zoneSF, circuitType, hasCircuitType)
+		allowedModes := deriveZoneAllowedModes(circuitType, hasCircuitType)
 		hvacAction := deriveZoneHvacAction(zoneValve, circuitType, hasCircuitType)
 		incoming := &vaillantZoneSnapshot{
-			OperatingMode:       operatingMode,
-			Preset:              preset,
 			HvacAction:          hvacAction,
-			AllowedModes:        allowedModes,
 			CurrentTempC:        currentPtr,
-			TargetTempC:         targetPtr,
-			HumidityPct:         humidity,
 			StateValveStatusRaw: zoneValve,
 		}
-		if zoneOpMode != nil {
-			incoming.ConfigurationHeatingOperationMode = formatUintToken(*zoneOpMode)
+		if cachedOpMode != nil || hasMeaningfulSpecialFunction(zoneSFForDerive) {
+			operatingMode, preset, _ := deriveZoneModeAndPreset(cachedOpMode, zoneSFForDerive, circuitType, hasCircuitType)
+			if cachedOpMode != nil {
+				incoming.OperatingMode = operatingMode
+			}
+			incoming.Preset = preset
+		}
+		if hasCircuitType {
+			incoming.AllowedModes = allowedModes
 		}
 		if zoneSF != nil {
 			incoming.StateSpecialFunction = formatUintToken(*zoneSF)
@@ -3319,20 +3399,11 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 		liveReadSuccess = true
 		attempted[dhwFieldCurrentTempC] = struct{}{}
 	}
-	targetPtr := p.readDhwFloat(ctx, dhw_target_temp)
-	if targetPtr != nil {
-		liveReadSuccess = true
-		attempted[dhwFieldTargetTempC] = struct{}{}
-	}
-	opModeRaw, opModeOK := p.readDhwUint16(ctx, dhw_operation_mode)
 	sfModeRaw, sfModeOK := p.readDhwUint16(ctx, dhw_special_function)
-	if opModeOK || sfModeOK {
+	if sfModeOK {
 		liveReadSuccess = true
 		attempted[dhwFieldOperatingMode] = struct{}{}
 		attempted[dhwFieldPreset] = struct{}{}
-	}
-	if opModeOK {
-		attempted[dhwFieldDhwOperationModeRaw] = struct{}{}
 	}
 	if sfModeOK {
 		attempted[dhwFieldSpecialFunctionRaw] = struct{}{}
@@ -3344,13 +3415,18 @@ func (p *vaillantSemanticPoller) refreshDHW(ctx context.Context) semanticSnapsho
 
 	status := &vaillantDhwSnapshot{
 		CurrentTempC: currentPtr,
-		TargetTempC:  targetPtr,
 	}
-	if attempted.has(dhwFieldOperatingMode) || attempted.has(dhwFieldPreset) {
-		status.OperatingMode, status.Preset = deriveDhwModeAndPreset(opModeRaw, sfModeRaw)
-	}
-	if opModeRaw != nil {
-		status.ConfigurationDHWOperationMode = formatUintToken(*opModeRaw)
+	opModeRaw, cachedSF := p.cachedDHWDerivationInputs()
+	if opModeRaw != nil || hasMeaningfulSpecialFunction(sfModeRaw) {
+		sfForDerive := sfModeRaw
+		if sfForDerive == nil {
+			sfForDerive = cachedSF
+		}
+		operatingMode, preset := deriveDhwModeAndPreset(opModeRaw, sfForDerive)
+		if opModeRaw != nil {
+			status.OperatingMode = operatingMode
+		}
+		status.Preset = preset
 	}
 	if sfModeRaw != nil {
 		status.StateSpecialFunction = formatUintToken(*sfModeRaw)
@@ -8560,6 +8636,10 @@ func deriveZoneModeAndPreset(opMode, specialFunction, circuitType *uint16, hasCi
 		}
 	}
 	return mode, preset, allowed
+}
+
+func hasMeaningfulSpecialFunction(specialFunction *uint16) bool {
+	return normalizeSpecialFunctionToken(specialFunction) != ""
 }
 
 func deriveDhwModeAndPreset(opMode, specialFunction *uint16) (string, string) {

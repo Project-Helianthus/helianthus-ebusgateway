@@ -760,6 +760,44 @@ func TestShadowCacheBootstrapRuntimeDescriptorUpgradesPassiveFallbackDescriptor(
 	}
 }
 
+func TestShadowCacheObserveReturnsRuntimeDescriptorActivation(t *testing.T) {
+	t.Parallel()
+
+	key := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C)
+	missingKey := NewB524WatchKey(0x15, 0x06, 0x03, 0x02, 0x001C)
+	catalog, activations := testShadowCatalogAndActivations(t, nil, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{})
+
+	descriptor := WatchDescriptor{
+		Key:               key,
+		SemanticClass:     WatchSemanticClassState,
+		FreshnessProfile:  WatchFreshnessProfileStateFast,
+		DecoderID:         "test.semantic",
+		CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+	}
+	if err := cache.BootstrapRuntimeDescriptor(descriptor, WatchActivationSourcePoller); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor() error = %v", err)
+	}
+
+	observation := cache.Observe(key)
+	if observation.State != WatchObservationStateActive {
+		t.Fatalf("Observe(key).State = %q; want %q", observation.State, WatchObservationStateActive)
+	}
+	if !observation.HasDescriptor {
+		t.Fatal("Observe(key).HasDescriptor = false; want true")
+	}
+	if observation.Descriptor.DirectApplyPolicy != WatchDirectApplyPolicyStateDefault {
+		t.Fatalf("DirectApplyPolicy = %q; want %q", observation.Descriptor.DirectApplyPolicy, WatchDirectApplyPolicyStateDefault)
+	}
+	if got, want := observation.Sources, []WatchActivationSource{WatchActivationSourcePoller}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("Observe(key).Sources = %v; want %v", got, want)
+	}
+	if missing := cache.Observe(missingKey); missing.State != WatchObservationStateCatalogMiss {
+		t.Fatalf("Observe(missing).State = %q; want %q", missing.State, WatchObservationStateCatalogMiss)
+	}
+}
+
 func TestShadowCacheBootstrapRuntimeDescriptorExistingKeyPromotionRecomputesBudgetAndPins(t *testing.T) {
 	t.Parallel()
 

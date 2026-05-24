@@ -251,6 +251,127 @@ func TestActivePassiveDeduplicator_B524CorrelatedReadUsesRuntimeObserverFallback
 	}
 }
 
+func TestActivePassiveDeduplicator_B524CorrelatedReadUsesShadowWatchObserver(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	forceHealthyDedup(deduplicator)
+	stateKey := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x001C)
+	catalog, activations := testShadowCatalogAndActivations(t, nil, WatchActivationSourceTooling)
+	shadow := newTestShadowCache(t, catalog, activations, time.Unix(0, 0), ShadowCacheOptions{})
+	if err := shadow.BootstrapRuntimeDescriptor(WatchDescriptor{
+		Key:               stateKey,
+		SemanticClass:     WatchSemanticClassState,
+		FreshnessProfile:  WatchFreshnessProfileStateFast,
+		DecoderID:         "test.semantic",
+		CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+	}, WatchActivationSourcePoller); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor() error = %v", err)
+	}
+	deduplicator.SetWatchObserver(shadow)
+
+	base := time.Unix(0, 0)
+	deduplicator.nowFunc = func() time.Time { return base }
+
+	request := protocol.Frame{
+		Source:    0x31,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x24,
+		Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x1C, 0x00},
+	}
+	response := protocol.Frame{
+		Source:    request.Target,
+		Target:    request.Source,
+		Primary:   request.Primary,
+		Secondary: request.Secondary,
+		Data:      []byte{0x42, 0x01, 0x03, 0x1C, 0x00, 0x22},
+	}
+
+	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base, request, response))
+	assertNoAdjudicatedEvent(t, subscription, 25*time.Millisecond)
+
+	deduplicator.nowFunc = func() time.Time {
+		return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Millisecond)
+	}
+	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
+
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
+	if !event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = false; want true with semantic shadow watch observer")
+	}
+	if event.FamilyPolicy.DirectApplyPolicy != ObserveFirstDirectApplyPolicyStateDefault {
+		t.Fatalf("DirectApplyPolicy = %q; want %q", event.FamilyPolicy.DirectApplyPolicy, ObserveFirstDirectApplyPolicyStateDefault)
+	}
+	if event.Fingerprint.SharedWatchKey == nil || event.Fingerprint.SharedWatchKey.Canonical() != stateKey.Canonical() {
+		t.Fatalf("SharedWatchKey = %v; want %s", event.Fingerprint.SharedWatchKey, stateKey.Canonical())
+	}
+}
+
+func TestActivePassiveDeduplicator_B524ConfigShadowObserverDoesNotPromoteToStateDefault(t *testing.T) {
+	deduplicator := newTestDeduplicator(t)
+	subscription, err := deduplicator.Subscribe("test", DedupSubscriberCritical, 16)
+	if err != nil {
+		t.Fatalf("Subscribe error = %v", err)
+	}
+	defer subscription.Close()
+
+	forceHealthyDedup(deduplicator)
+	configKey := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x0005)
+	catalog, activations := testShadowCatalogAndActivations(t, nil, WatchActivationSourceTooling)
+	shadow := newTestShadowCache(t, catalog, activations, time.Unix(0, 0), ShadowCacheOptions{})
+	if err := shadow.BootstrapRuntimeDescriptor(WatchDescriptor{
+		Key:               configKey,
+		SemanticClass:     WatchSemanticClassConfig,
+		FreshnessProfile:  WatchFreshnessProfileConfig,
+		DecoderID:         "test.semantic.config",
+		CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+		DirectApplyPolicy: WatchDirectApplyPolicyConfigOptIn,
+	}, WatchActivationSourcePoller); err != nil {
+		t.Fatalf("BootstrapRuntimeDescriptor() error = %v", err)
+	}
+	deduplicator.SetWatchObserver(shadow)
+
+	base := time.Unix(0, 0)
+	deduplicator.nowFunc = func() time.Time { return base }
+
+	request := protocol.Frame{
+		Source:    0x31,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x24,
+		Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x05, 0x00},
+	}
+	response := protocol.Frame{
+		Source:    request.Target,
+		Target:    request.Source,
+		Primary:   request.Primary,
+		Secondary: request.Secondary,
+		Data:      []byte{0x42, 0x01, 0x03, 0x05, 0x00, 0x22},
+	}
+
+	deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base, request, response))
+	assertNoAdjudicatedEvent(t, subscription, 25*time.Millisecond)
+
+	deduplicator.nowFunc = func() time.Time {
+		return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Millisecond)
+	}
+	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
+
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
+	if event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = true; want false for config-class B524 shadow observation")
+	}
+	if event.FamilyPolicy.DirectApplyPolicy == ObserveFirstDirectApplyPolicyStateDefault {
+		t.Fatalf("DirectApplyPolicy = %q; config-class B524 must not promote to state_default", event.FamilyPolicy.DirectApplyPolicy)
+	}
+}
+
 func TestActivePassiveDeduplicator_B524ConfigPolicyNotPromotedToStateDefault(t *testing.T) {
 	deduplicator := newTestDeduplicator(t)
 	forceHealthyDedup(deduplicator)

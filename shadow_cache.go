@@ -318,6 +318,20 @@ func (cache *ShadowCache) FeatureFlags() ObserveFirstFeatureFlags {
 	return cache.featureFlags
 }
 
+func (cache *ShadowCache) Observe(key WatchKey) WatchObservation {
+	if cache == nil || key == nil {
+		return WatchObservation{State: WatchObservationStateCatalogMiss}
+	}
+
+	cache.mu.Lock()
+	activations := cache.activations
+	cache.mu.Unlock()
+	if activations == nil {
+		return WatchObservation{State: WatchObservationStateCatalogMiss}
+	}
+	return activations.Observe(key)
+}
+
 func (cache *ShadowCache) StartCompactor() {
 	if cache == nil || cache.compactorCadence <= 0 {
 		return

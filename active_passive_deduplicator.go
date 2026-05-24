@@ -322,6 +322,15 @@ func (deduplicator *ActivePassiveDeduplicator) LocalAddressSnapshot() LocalAddre
 	return deduplicator.localAddr
 }
 
+func (deduplicator *ActivePassiveDeduplicator) SetWatchObserver(observer WatchObserver) {
+	if deduplicator == nil {
+		return
+	}
+	deduplicator.mu.Lock()
+	defer deduplicator.mu.Unlock()
+	deduplicator.cfg.WatchObserver = observer
+}
+
 func (deduplicator *ActivePassiveDeduplicator) Subscribe(name string, priority DedupSubscriberPriority, buffer int) (*AdjudicatedPassiveSubscription, error) {
 	if deduplicator == nil {
 		return nil, fmt.Errorf("deduplicator missing: %w", ebuserrors.ErrInvalidPayload)

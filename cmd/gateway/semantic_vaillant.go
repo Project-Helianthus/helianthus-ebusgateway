@@ -1802,7 +1802,7 @@ func startupRadioDeviceInclude(group byte, connected bool, classAddress *uint8) 
 		if connected {
 			return true, "startup"
 		}
-		if classAddress != nil {
+		if classAddress != nil && *classAddress == circuitManagingDeviceVR71Address {
 			return true, "inventory"
 		}
 		return false, "startup"

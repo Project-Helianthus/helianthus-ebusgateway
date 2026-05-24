@@ -5424,6 +5424,10 @@ func TestStartupRadioDeviceInclude_SkipsDisconnectedRegulatorSlots(t *testing.T)
 	if include, mode := startupRadioDeviceInclude(remoteFunctionalModules.group, false, &classAddress); !include || mode != "inventory" {
 		t.Fatalf("functional module identity evidence include=%v mode=%q; want inventory include", include, mode)
 	}
+	unknownClassAddress := uint8(0x00)
+	if include, _ := startupRadioDeviceInclude(remoteFunctionalModules.group, false, &unknownClassAddress); include {
+		t.Fatal("unknown disconnected functional module slot included; want skipped")
+	}
 	if include, _ := startupRadioDeviceInclude(remoteFunctionalModules.group, false, nil); include {
 		t.Fatal("empty functional module slot included; want skipped")
 	}

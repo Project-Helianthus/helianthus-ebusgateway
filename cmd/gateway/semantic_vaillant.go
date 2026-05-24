@@ -2770,6 +2770,9 @@ func (p *vaillantSemanticPoller) refreshConfig(ctx context.Context) {
 		}
 	}
 	if controller == 0 || len(zones) == 0 {
+		if controller != 0 {
+			p.publishDHW(p.refreshDHWSlowConfig(ctx))
+		}
 		return
 	}
 

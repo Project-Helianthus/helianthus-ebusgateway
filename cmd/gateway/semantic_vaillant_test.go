@@ -601,6 +601,51 @@ func TestRefreshConfigDHWOnlySuccessKeepsZonesCacheSource(t *testing.T) {
 	}
 }
 
+func TestRefreshConfigNoZonesStillRefreshesDHWSlowConfig(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		scheduler:             ebusgateway.NewSemanticReadScheduler(),
+		provider:              provider,
+		reg:                   newTestRegistry(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV"}),
+		source:                0x7F,
+		controller:            0x15,
+		requestTimeout:        50 * time.Millisecond,
+		zones:                 make(map[byte]*vaillantZoneSnapshot),
+		presence:              make(map[byte]*zonePresenceRecord),
+		circuits:              make(map[byte]*vaillantCircuitSnapshot),
+		radioDevices:          make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		solarCylinders:        make(map[byte]*vaillantCylinderSnapshot),
+		startupSemanticPrimed: true,
+		b524ProbeFn: func(context.Context, byte, byte, byte, byte, uint16) bool {
+			return true
+		},
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) == 6 && frame.Data[2] == localDHW.group {
+			return testB524ResponseForSelector(frame.Data), nil
+		}
+		if len(frame.Data) == 6 && frame.Data[2] == localZones.group && (uint16(frame.Data[4])|uint16(frame.Data[5])<<8) == zone_index {
+			group := frame.Data[2]
+			instance := frame.Data[3]
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			return &protocol.Frame{Data: []byte{0x01, instance, group, byte(addr), byte(addr >> 8), 0xFF}}, nil
+		}
+		return nil, errors.New("non-DHW read unavailable")
+	}
+
+	poller.refreshConfig(context.Background())
+
+	dhw := provider.DHW()
+	if dhw == nil {
+		t.Fatal("DHW = nil; want no-zone config refresh to publish DHW slow fields")
+	}
+	if dhw.Config.HolidayStartDate == "" || dhw.Config.HolidayEndDate == "" {
+		t.Fatalf("DHW holiday dates = %q/%q; want slow config values", dhw.Config.HolidayStartDate, dhw.Config.HolidayEndDate)
+	}
+}
+
 func hasB524Selector(selectors [][]byte, group, instance byte, addr uint16) bool {
 	for _, selector := range selectors {
 		if len(selector) != 6 {

@@ -127,19 +127,19 @@ func TestSemanticTaskScheduler_CoalescesPendingTasksByKey(t *testing.T) {
 	}
 }
 
-func TestSemanticTaskScheduler_CoalescesRunningTasksByKey(t *testing.T) {
+func TestSemanticTaskScheduler_DefersOneRerunForRunningTaskKey(t *testing.T) {
 	scheduler := newSemanticTaskScheduler()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	started := make(chan struct{})
 	release := make(chan struct{})
-	ran := make(chan struct{}, 2)
+	ran := make(chan string, 3)
 
 	if err := scheduler.submitCoalesced("state", semanticTaskPriorityHigh, func(context.Context) {
 		close(started)
 		<-release
-		ran <- struct{}{}
+		ran <- "initial"
 	}); err != nil {
 		t.Fatalf("submit initial error = %v", err)
 	}
@@ -157,20 +157,36 @@ func TestSemanticTaskScheduler_CoalescesRunningTasksByKey(t *testing.T) {
 	}
 
 	if err := scheduler.submitCoalesced("state", semanticTaskPriorityHigh, func(context.Context) {
-		ran <- struct{}{}
+		ran <- "deferred"
 	}); err != nil {
 		t.Fatalf("submit duplicate while running error = %v", err)
+	}
+	if err := scheduler.submitCoalesced("state", semanticTaskPriorityLow, func(context.Context) {
+		ran <- "extra"
+	}); err != nil {
+		t.Fatalf("submit second duplicate while running error = %v", err)
 	}
 
 	close(release)
 	select {
-	case <-ran:
+	case got := <-ran:
+		if got != "initial" {
+			t.Fatalf("first task = %q; want initial", got)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for initial task completion")
 	}
 	select {
-	case <-ran:
-		t.Fatal("duplicate running task executed")
+	case got := <-ran:
+		if got != "deferred" {
+			t.Fatalf("deferred task = %q; want deferred", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for deferred task completion")
+	}
+	select {
+	case got := <-ran:
+		t.Fatalf("extra duplicate running task executed: %q", got)
 	case <-time.After(25 * time.Millisecond):
 	}
 

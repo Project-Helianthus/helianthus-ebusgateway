@@ -86,9 +86,6 @@ func (s *semanticTaskScheduler) submitTask(key semanticTaskKey, priority semanti
 		return context.Canceled
 	}
 	if key != "" {
-		if s.runningKeys[key] {
-			return nil
-		}
 		if existing := s.pendingByKey[key]; existing != nil {
 			if priority > existing.priority {
 				existing.priority = priority

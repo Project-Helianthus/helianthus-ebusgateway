@@ -455,8 +455,9 @@ type vaillantDhwSnapshot struct {
 }
 
 type vaillantCircuitSnapshot struct {
-	Instance byte
-	Active   bool
+	Instance   byte
+	Active     bool
+	Controller byte
 
 	CircuitTypeRaw     *uint16
 	CoolingEnabledRaw  *uint16
@@ -468,8 +469,10 @@ type vaillantCircuitSnapshot struct {
 	SummerLimitC       *float64
 	RoomTempControlRaw *uint16
 	CircuitStateRaw    *uint16
+	CircuitStateLiveAt time.Time
 	FrostProtectionC   *float64
 	PumpStatusRaw      *uint16
+	PumpStatusLiveAt   time.Time
 	CalcFlowTempC      *float64
 	MixerPositionPct   *float64
 	HumidityPct        *float64
@@ -1617,6 +1620,9 @@ func (p *vaillantSemanticPoller) refreshCircuitsStartup(ctx context.Context) {
 		return
 	}
 
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
 	instances := allCircuitRefreshInstances()
 	updates := make(map[byte]*vaillantCircuitSnapshot)
 	inactive := make(map[byte]struct{})
@@ -1633,6 +1639,7 @@ func (p *vaillantSemanticPoller) refreshCircuitsStartup(ctx context.Context) {
 			updates[instance] = &vaillantCircuitSnapshot{
 				Instance:       instance,
 				Active:         true,
+				Controller:     controller,
 				CircuitTypeRaw: cloneUint16Ptr(circuitTypeRaw),
 			}
 		}
@@ -1655,6 +1662,12 @@ func (p *vaillantSemanticPoller) refreshCircuitsStartup(ctx context.Context) {
 		delete(p.circuits, instance)
 	}
 	for instance, incoming := range updates {
+		if incoming.CircuitStateRaw != nil {
+			incoming.CircuitStateLiveAt = p.now()
+		}
+		if incoming.PumpStatusRaw != nil {
+			incoming.PumpStatusLiveAt = p.now()
+		}
 		p.circuits[instance] = mergeCircuitSnapshotNonDestructive(p.circuits[instance], incoming)
 	}
 	p.lastCircuitFullScanAt = p.now()
@@ -1668,7 +1681,10 @@ func (p *vaillantSemanticPoller) refreshSystemStartup(ctx context.Context) {
 		return
 	}
 
-	snapshot := &vaillantSystemSnapshot{}
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
+	snapshot := &vaillantSystemSnapshot{Controller: controller}
 	readAny := false
 	if raw, ok := p.readB524Uint16Startup(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_scheme); ok && raw != nil {
 		snapshot.SystemScheme = cloneUint16Ptr(raw)
@@ -1688,6 +1704,9 @@ func (p *vaillantSemanticPoller) refreshSystemStartup(ctx context.Context) {
 	p.mu.Lock()
 	source := semanticSnapshotSourceCache
 	if readAny {
+		if snapshot.SystemFlowTemperature != nil {
+			snapshot.SystemFlowTemperatureLiveAt = p.now()
+		}
 		p.system = mergeSystemSnapshotNonDestructive(p.system, snapshot)
 		source = semanticSnapshotSourceLive
 	}
@@ -3196,6 +3215,15 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 				currentHumidityPct = radioHumidityPct
 			}
 		}
+		roomMappingRaw := entry.ConfigurationRoomTemperatureZoneMappingRaw
+		if roomMappingRaw == nil {
+			roomMappingRaw = p.inferRadioRoomMappingForZoneLocked(entry.Instance)
+		}
+		associatedCircuitRaw := entry.ConfigurationAssociatedCircuitRaw
+		if associatedCircuitRaw == nil && roomMappingRaw != nil {
+			value := uint16(resolveAssociatedCircuitInstance(roomMappingRaw, entry.Instance))
+			associatedCircuitRaw = &value
+		}
 		zone := graphql.Zone{
 			ID:   fmt.Sprintf("zone-%d", instance+1),
 			Name: name,
@@ -3212,8 +3240,8 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 				TargetTempC:                entry.TargetTempC,
 				AllowedModes:               append([]string(nil), entry.AllowedModes...),
 				CircuitType:                decodeCircuitType(entry.ConfigurationCircuitTypeRaw),
-				AssociatedCircuit:          decodeAssociatedCircuit(entry.ConfigurationAssociatedCircuitRaw),
-				RoomTemperatureZoneMapping: decodeRoomTemperatureZoneMapping(entry.ConfigurationRoomTemperatureZoneMappingRaw),
+				AssociatedCircuit:          decodeAssociatedCircuit(associatedCircuitRaw),
+				RoomTemperatureZoneMapping: decodeRoomTemperatureZoneMapping(roomMappingRaw),
 				QuickVeto:                  quickVetoActive,
 				QuickVetoSetpointC:         entry.QuickVetoTempC,
 				QuickVetoDurationH:         entry.QuickVetoDurationH,
@@ -3255,10 +3283,17 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 }
 
 func (p *vaillantSemanticPoller) mappedRadioRoomStateForZoneLocked(entry *vaillantZoneSnapshot) (*float64, *float64) {
-	if p == nil || entry == nil || entry.ConfigurationRoomTemperatureZoneMappingRaw == nil {
+	if p == nil || entry == nil {
 		return nil, nil
 	}
-	mapping := *entry.ConfigurationRoomTemperatureZoneMappingRaw
+	mappingRaw := entry.ConfigurationRoomTemperatureZoneMappingRaw
+	if mappingRaw == nil {
+		mappingRaw = p.inferRadioRoomMappingForZoneLocked(entry.Instance)
+	}
+	if mappingRaw == nil {
+		return nil, nil
+	}
+	mapping := *mappingRaw
 	if mapping == 0 || mapping == 0xFFFF {
 		return nil, nil
 	}
@@ -3280,6 +3315,28 @@ func (p *vaillantSemanticPoller) mappedRadioRoomStateForZoneLocked(entry *vailla
 		return nil, nil
 	}
 	return cloneFloat64Ptr(snapshot.RoomTemperatureC), cloneFloat64Ptr(snapshot.RoomHumidityPct)
+}
+
+func (p *vaillantSemanticPoller) inferRadioRoomMappingForZoneLocked(instance byte) *uint16 {
+	if p == nil {
+		return nil
+	}
+	zoneNumber := int(instance) + 1
+	matches := make([]byte, 0, 1)
+	for key, snapshot := range p.radioDevices {
+		if key.Group != remoteThermostats.group || snapshot == nil || !radioDeviceConnected(snapshot) || snapshot.ZoneAssignment == nil {
+			continue
+		}
+		if int(*snapshot.ZoneAssignment) != zoneNumber {
+			continue
+		}
+		matches = append(matches, key.Instance)
+	}
+	if len(matches) != 1 {
+		return nil
+	}
+	mapping := uint16(matches[0]) + 1
+	return &mapping
 }
 
 func (p *vaillantSemanticPoller) firstConnectedRadioDeviceLocked(group byte) *vaillantRadioDeviceSnapshot {
@@ -3638,10 +3695,10 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 
 	now := p.now()
 	p.mu.Lock()
-	controllerPresent := p.controller != 0
+	controller := p.controller
 	instances, fullScan := p.circuitRefreshInstancesLocked(now)
 	p.mu.Unlock()
-	if !controllerPresent {
+	if controller == 0 {
 		return
 	}
 
@@ -3678,6 +3735,7 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 		snapshot := &vaillantCircuitSnapshot{
 			Instance:       instance,
 			Active:         true,
+			Controller:     controller,
 			CircuitTypeRaw: cloneUint16Ptr(circuitTypeRaw),
 		}
 		anyRead = true
@@ -3722,6 +3780,7 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 		}
 		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_circuit_state); ok && raw != nil {
 			snapshot.CircuitStateRaw = cloneUint16Ptr(raw)
+			snapshot.CircuitStateLiveAt = now
 			anyRead = true
 		}
 		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_frost_protection); ok {
@@ -3731,6 +3790,7 @@ func (p *vaillantSemanticPoller) refreshCircuits(ctx context.Context) {
 		}
 		if raw, ok := p.readB524Uint16(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_pump_status); ok && raw != nil {
 			snapshot.PumpStatusRaw = cloneUint16Ptr(raw)
+			snapshot.PumpStatusLiveAt = now
 			anyRead = true
 		}
 		if value, ok := p.readB524Float32LE(ctx, localCircuits.opcode, localCircuits.group, instance, circuit_calc_flow_temp); ok {
@@ -3838,6 +3898,18 @@ func mergeCircuitSnapshotNonDestructive(existing, incoming *vaillantCircuitSnaps
 
 	merged.Instance = incoming.Instance
 	merged.Active = merged.Active || incoming.Active
+	controllerChanged := incoming.Controller != 0 && incoming.Controller != merged.Controller
+	if controllerChanged && incoming.CircuitStateRaw == nil {
+		merged.CircuitStateRaw = nil
+		merged.CircuitStateLiveAt = time.Time{}
+	}
+	if controllerChanged && incoming.PumpStatusRaw == nil {
+		merged.PumpStatusRaw = nil
+		merged.PumpStatusLiveAt = time.Time{}
+	}
+	if incoming.Controller != 0 {
+		merged.Controller = incoming.Controller
+	}
 	if incoming.CircuitTypeRaw != nil {
 		merged.CircuitTypeRaw = cloneUint16Ptr(incoming.CircuitTypeRaw)
 	}
@@ -3867,12 +3939,14 @@ func mergeCircuitSnapshotNonDestructive(existing, incoming *vaillantCircuitSnaps
 	}
 	if incoming.CircuitStateRaw != nil {
 		merged.CircuitStateRaw = cloneUint16Ptr(incoming.CircuitStateRaw)
+		merged.CircuitStateLiveAt = incoming.CircuitStateLiveAt
 	}
 	if incoming.FrostProtectionC != nil {
 		merged.FrostProtectionC = cloneFloat64Ptr(incoming.FrostProtectionC)
 	}
 	if incoming.PumpStatusRaw != nil {
 		merged.PumpStatusRaw = cloneUint16Ptr(incoming.PumpStatusRaw)
+		merged.PumpStatusLiveAt = incoming.PumpStatusLiveAt
 	}
 	if incoming.CalcFlowTempC != nil {
 		merged.CalcFlowTempC = cloneFloat64Ptr(incoming.CalcFlowTempC)
@@ -3902,6 +3976,7 @@ func cloneCircuitSnapshot(snapshot *vaillantCircuitSnapshot) *vaillantCircuitSna
 	return &vaillantCircuitSnapshot{
 		Instance:           snapshot.Instance,
 		Active:             snapshot.Active,
+		Controller:         snapshot.Controller,
 		CircuitTypeRaw:     cloneUint16Ptr(snapshot.CircuitTypeRaw),
 		CoolingEnabledRaw:  cloneUint16Ptr(snapshot.CoolingEnabledRaw),
 		FlowSetpointC:      cloneFloat64Ptr(snapshot.FlowSetpointC),
@@ -3912,8 +3987,10 @@ func cloneCircuitSnapshot(snapshot *vaillantCircuitSnapshot) *vaillantCircuitSna
 		SummerLimitC:       cloneFloat64Ptr(snapshot.SummerLimitC),
 		RoomTempControlRaw: cloneUint16Ptr(snapshot.RoomTempControlRaw),
 		CircuitStateRaw:    cloneUint16Ptr(snapshot.CircuitStateRaw),
+		CircuitStateLiveAt: snapshot.CircuitStateLiveAt,
 		FrostProtectionC:   cloneFloat64Ptr(snapshot.FrostProtectionC),
 		PumpStatusRaw:      cloneUint16Ptr(snapshot.PumpStatusRaw),
+		PumpStatusLiveAt:   snapshot.PumpStatusLiveAt,
 		CalcFlowTempC:      cloneFloat64Ptr(snapshot.CalcFlowTempC),
 		MixerPositionPct:   cloneFloat64Ptr(snapshot.MixerPositionPct),
 		HumidityPct:        cloneFloat64Ptr(snapshot.HumidityPct),
@@ -4277,10 +4354,13 @@ type vaillantBoilerSnapshot struct {
 }
 
 type vaillantSystemSnapshot struct {
+	Controller byte
+
 	// State
 	SystemOff                    *bool
 	SystemWaterPressure          *float64
 	SystemFlowTemperature        *float64
+	SystemFlowTemperatureLiveAt  time.Time
 	OutdoorTemperature           *float64
 	OutdoorTemperatureAvg24h     *float64
 	MaintenanceDue               *bool
@@ -4400,9 +4480,18 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusTier(ctx context.Context, ti
 	if boilerAddress != 0 {
 		updated = p.refreshBoilerStatusB509(ctx, boilerAddress, tier, snapshot) || updated
 	}
+	dhwUpdated := false
+	if tier == boilerStatusTierFast {
+		dhwUpdated = p.mergeBoilerDHWFieldsFromSnapshot(snapshot)
+	}
 
 	// Preserve last-known values on transient/partial failures.
 	if !updated {
+		if dhwUpdated {
+			p.mu.Lock()
+			p.boiler = mergeBoilerSnapshotNonDestructive(p.boiler, snapshot)
+			p.mu.Unlock()
+		}
 		return
 	}
 
@@ -4416,6 +4505,10 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusTier(ctx context.Context, ti
 func (p *vaillantSemanticPoller) refreshBoilerStatusB524(ctx context.Context, tier boilerStatusTier, snapshot *vaillantBoilerSnapshot) bool {
 	if p == nil || snapshot == nil {
 		return false
+	}
+
+	if tier == boilerStatusTierFast {
+		return p.mergeBoilerMirrorFieldsFromSnapshots(snapshot)
 	}
 
 	updated := false
@@ -4457,12 +4550,71 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB524(ctx context.Context, ti
 		}
 	}
 
-	if tier != boilerStatusTierFast {
-		return updated
+	return updated
+}
+
+func (p *vaillantSemanticPoller) mergeBoilerMirrorFieldsFromSnapshots(snapshot *vaillantBoilerSnapshot) bool {
+	if p == nil || snapshot == nil {
+		return false
 	}
 
-	p.mergeBoilerDHWFieldsFromSnapshot(snapshot)
+	p.mu.Lock()
+	controller := p.controller
+	system := cloneSystemSnapshot(p.system)
+	circuit := cloneCircuitSnapshot(p.circuits[0x00])
+	p.mu.Unlock()
+	if controller == 0 {
+		return false
+	}
+
+	now := p.now()
+	maxAge := p.boilerMirrorMaxAge()
+	updated := false
+	if system != nil && system.Controller == controller && system.SystemFlowTemperature != nil && semanticSnapshotObservedWithin(system.SystemFlowTemperatureLiveAt, now, maxAge) {
+		snapshot.FlowTemperatureC = cloneFloat64Ptr(system.SystemFlowTemperature)
+		updated = true
+	}
+	if circuit != nil && circuit.Controller == controller {
+		if circuit.PumpStatusRaw != nil && semanticSnapshotObservedWithin(circuit.PumpStatusLiveAt, now, maxAge) {
+			active := *circuit.PumpStatusRaw != 0
+			snapshot.CentralHeatingPumpActive = &active
+			updated = true
+		}
+		if circuit.CircuitStateRaw != nil && semanticSnapshotObservedWithin(circuit.CircuitStateLiveAt, now, maxAge) {
+			status := int(*circuit.CircuitStateRaw)
+			snapshot.HeatingStatusRaw = &status
+			updated = true
+		}
+	}
+	if updated {
+		p.mergeBoilerDHWFieldsFromSnapshot(snapshot)
+	}
 	return updated
+}
+
+func (p *vaillantSemanticPoller) boilerMirrorMaxAge() time.Duration {
+	interval := p.configInterval
+	if interval <= 0 {
+		interval = ebusgateway.DefaultConfig().SemanticConfigInterval
+	}
+	fastInterval := p.boilerFastInterval
+	if fastInterval <= 0 {
+		fastInterval = 30 * time.Second
+	}
+	return interval + fastInterval
+}
+
+func semanticSnapshotObservedWithin(observedAt, now time.Time, maxAge time.Duration) bool {
+	if observedAt.IsZero() {
+		return false
+	}
+	if maxAge <= 0 {
+		return true
+	}
+	if now.Before(observedAt) {
+		return true
+	}
+	return now.Sub(observedAt) <= maxAge
 }
 
 func (p *vaillantSemanticPoller) mergeBoilerDHWFieldsFromSnapshot(snapshot *vaillantBoilerSnapshot) bool {
@@ -4754,7 +4906,7 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 		return
 	}
 
-	snapshot := &vaillantSystemSnapshot{}
+	snapshot := &vaillantSystemSnapshot{Controller: controller}
 	updated := false
 
 	if raw, ok := p.readB524Uint16(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_off); ok && raw != nil {
@@ -4768,6 +4920,7 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 	}
 	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_flow_temperature); ok {
 		snapshot.SystemFlowTemperature = &value
+		snapshot.SystemFlowTemperatureLiveAt = p.now()
 		updated = true
 	}
 	if value, ok := p.readB524Float32LE(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_outdoor_temperature); ok {
@@ -5676,6 +5829,14 @@ func mergeSystemSnapshotNonDestructive(existing, incoming *vaillantSystemSnapsho
 		return merged
 	}
 
+	controllerChanged := incoming.Controller != 0 && incoming.Controller != merged.Controller
+	if controllerChanged && incoming.SystemFlowTemperature == nil {
+		merged.SystemFlowTemperature = nil
+		merged.SystemFlowTemperatureLiveAt = time.Time{}
+	}
+	if incoming.Controller != 0 {
+		merged.Controller = incoming.Controller
+	}
 	if incoming.SystemOff != nil {
 		merged.SystemOff = cloneBoilerBoolPtr(incoming.SystemOff)
 	}
@@ -5684,6 +5845,7 @@ func mergeSystemSnapshotNonDestructive(existing, incoming *vaillantSystemSnapsho
 	}
 	if incoming.SystemFlowTemperature != nil {
 		merged.SystemFlowTemperature = cloneFloat64Ptr(incoming.SystemFlowTemperature)
+		merged.SystemFlowTemperatureLiveAt = incoming.SystemFlowTemperatureLiveAt
 	}
 	if incoming.OutdoorTemperature != nil {
 		merged.OutdoorTemperature = cloneFloat64Ptr(incoming.OutdoorTemperature)
@@ -5750,9 +5912,11 @@ func cloneSystemSnapshot(snapshot *vaillantSystemSnapshot) *vaillantSystemSnapsh
 		return nil
 	}
 	return &vaillantSystemSnapshot{
+		Controller:                   snapshot.Controller,
 		SystemOff:                    cloneBoilerBoolPtr(snapshot.SystemOff),
 		SystemWaterPressure:          cloneFloat64Ptr(snapshot.SystemWaterPressure),
 		SystemFlowTemperature:        cloneFloat64Ptr(snapshot.SystemFlowTemperature),
+		SystemFlowTemperatureLiveAt:  snapshot.SystemFlowTemperatureLiveAt,
 		OutdoorTemperature:           cloneFloat64Ptr(snapshot.OutdoorTemperature),
 		OutdoorTemperatureAvg24h:     cloneFloat64Ptr(snapshot.OutdoorTemperatureAvg24h),
 		MaintenanceDue:               cloneBoilerBoolPtr(snapshot.MaintenanceDue),
@@ -6241,6 +6405,8 @@ func (p *vaillantSemanticPoller) cacheZonesLocked(published []graphql.Zone) []gr
 		if entry := p.zones[instance]; entry != nil {
 			zone.State.CurrentTempC = cloneFloat64Ptr(entry.CurrentTempC)
 			zone.State.CurrentHumidityPct = cloneFloat64Ptr(entry.HumidityPct)
+			zone.Config.RoomTemperatureZoneMapping = decodeRoomTemperatureZoneMapping(entry.ConfigurationRoomTemperatureZoneMappingRaw)
+			zone.Config.AssociatedCircuit = decodeAssociatedCircuit(entry.ConfigurationAssociatedCircuitRaw)
 		}
 		out = append(out, zone)
 	}

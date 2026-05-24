@@ -4376,6 +4376,217 @@ func TestVaillantSemanticPoller_PublishZones_SeparatesRoomTemperatureZoneMapping
 	}
 }
 
+func TestVaillantSemanticPoller_PublishZones_FillsRoomStateFromMappedRadioSensors(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	regulatorMapping := uint16(1)
+	thermostatMapping := uint16(2)
+	regulatorConnected := true
+	thermostatConnected := true
+	regulatorTemp := 14.8125
+	regulatorHumidity := 62.0
+	thermostatTemp := 17.6875
+	thermostatHumidity := 53.0
+
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		zones: map[byte]*vaillantZoneSnapshot{
+			0x00: {
+				Instance: 0x00,
+				Present:  true,
+				Name:     "Parter",
+				ConfigurationRoomTemperatureZoneMappingRaw: &regulatorMapping,
+			},
+			0x01: {
+				Instance: 0x01,
+				Present:  true,
+				Name:     "Etaj",
+				ConfigurationRoomTemperatureZoneMappingRaw: &thermostatMapping,
+			},
+		},
+		radioDevices: map[radioDeviceKey]*vaillantRadioDeviceSnapshot{
+			{Group: remoteRegulators.group, Instance: 0x01}: {
+				Group:            remoteRegulators.group,
+				Instance:         0x01,
+				DeviceConnected:  &regulatorConnected,
+				RoomTemperatureC: &regulatorTemp,
+				RoomHumidityPct:  &regulatorHumidity,
+			},
+			{Group: remoteThermostats.group, Instance: 0x01}: {
+				Group:            remoteThermostats.group,
+				Instance:         0x01,
+				DeviceConnected:  &thermostatConnected,
+				RoomTemperatureC: &thermostatTemp,
+				RoomHumidityPct:  &thermostatHumidity,
+			},
+		},
+	}
+
+	poller.publishZones(semanticSnapshotSourceLive)
+
+	zones := provider.Zones()
+	if len(zones) != 2 {
+		t.Fatalf("len(provider.Zones()) = %d; want 2", len(zones))
+	}
+	if zones[0].State.CurrentTempC == nil || *zones[0].State.CurrentTempC != regulatorTemp {
+		t.Fatalf("zone 1 current temp = %#v; want %.4f", zones[0].State.CurrentTempC, regulatorTemp)
+	}
+	if zones[0].State.CurrentHumidityPct == nil || *zones[0].State.CurrentHumidityPct != regulatorHumidity {
+		t.Fatalf("zone 1 humidity = %#v; want %.1f", zones[0].State.CurrentHumidityPct, regulatorHumidity)
+	}
+	if zones[1].State.CurrentTempC == nil || *zones[1].State.CurrentTempC != thermostatTemp {
+		t.Fatalf("zone 2 current temp = %#v; want %.4f", zones[1].State.CurrentTempC, thermostatTemp)
+	}
+	if zones[1].State.CurrentHumidityPct == nil || *zones[1].State.CurrentHumidityPct != thermostatHumidity {
+		t.Fatalf("zone 2 humidity = %#v; want %.1f", zones[1].State.CurrentHumidityPct, thermostatHumidity)
+	}
+}
+
+func TestVaillantSemanticPoller_PublishZones_KeepsDirectRoomStateOverRadioFallback(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	mapping := uint16(2)
+	connected := true
+	directTemp := 21.0
+	directHumidity := 44.0
+	radioTemp := 17.6875
+	radioHumidity := 53.0
+
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		zones: map[byte]*vaillantZoneSnapshot{
+			0x01: {
+				Instance:     0x01,
+				Present:      true,
+				Name:         "Etaj",
+				CurrentTempC: &directTemp,
+				HumidityPct:  &directHumidity,
+				ConfigurationRoomTemperatureZoneMappingRaw: &mapping,
+			},
+		},
+		radioDevices: map[radioDeviceKey]*vaillantRadioDeviceSnapshot{
+			{Group: remoteThermostats.group, Instance: 0x01}: {
+				Group:            remoteThermostats.group,
+				Instance:         0x01,
+				DeviceConnected:  &connected,
+				RoomTemperatureC: &radioTemp,
+				RoomHumidityPct:  &radioHumidity,
+			},
+		},
+	}
+
+	poller.publishZones(semanticSnapshotSourceLive)
+
+	zones := provider.Zones()
+	if len(zones) != 1 {
+		t.Fatalf("len(provider.Zones()) = %d; want 1", len(zones))
+	}
+	if zones[0].State.CurrentTempC == nil || *zones[0].State.CurrentTempC != directTemp {
+		t.Fatalf("zone current temp = %#v; want direct %.1f", zones[0].State.CurrentTempC, directTemp)
+	}
+	if zones[0].State.CurrentHumidityPct == nil || *zones[0].State.CurrentHumidityPct != directHumidity {
+		t.Fatalf("zone humidity = %#v; want direct %.1f", zones[0].State.CurrentHumidityPct, directHumidity)
+	}
+}
+
+func TestVaillantSemanticPoller_PublishZones_RadioFallbackDoesNotPersistAsDirectState(t *testing.T) {
+	t.Parallel()
+
+	provider := graphql.NewLiveSemanticProvider()
+	cache := &semanticSnapshotCaptureSpy{}
+	mapping := uint16(2)
+	connected := true
+	radioTemp := 17.6875
+	radioHumidity := 53.0
+
+	poller := &vaillantSemanticPoller{
+		provider: provider,
+		cache:    cache,
+		zones: map[byte]*vaillantZoneSnapshot{
+			0x01: {
+				Instance: 0x01,
+				Present:  true,
+				Name:     "Etaj",
+				ConfigurationRoomTemperatureZoneMappingRaw: &mapping,
+			},
+		},
+		radioDevices: map[radioDeviceKey]*vaillantRadioDeviceSnapshot{
+			{Group: remoteThermostats.group, Instance: 0x01}: {
+				Group:            remoteThermostats.group,
+				Instance:         0x01,
+				DeviceConnected:  &connected,
+				RoomTemperatureC: &radioTemp,
+				RoomHumidityPct:  &radioHumidity,
+			},
+		},
+	}
+
+	poller.publishZones(semanticSnapshotSourceLive)
+
+	published := provider.Zones()
+	if len(published) != 1 {
+		t.Fatalf("len(provider.Zones()) = %d; want 1", len(published))
+	}
+	if published[0].State.CurrentTempC == nil || *published[0].State.CurrentTempC != radioTemp {
+		t.Fatalf("published current temp = %#v; want radio fallback %.4f", published[0].State.CurrentTempC, radioTemp)
+	}
+	if cache.calls == 0 || len(cache.last.Zones) != 1 {
+		t.Fatalf("cache calls=%d zones=%d; want persisted zone snapshot", cache.calls, len(cache.last.Zones))
+	}
+	if cache.last.Zones[0].State.CurrentTempC != nil {
+		t.Fatalf("cached current temp = %#v; want nil direct zone value", cache.last.Zones[0].State.CurrentTempC)
+	}
+	if cache.last.Zones[0].State.CurrentHumidityPct != nil {
+		t.Fatalf("cached humidity = %#v; want nil direct zone value", cache.last.Zones[0].State.CurrentHumidityPct)
+	}
+}
+
+func TestVaillantSemanticPoller_PublishZones_SkipsUnknownRoomSensorMappingFallback(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []uint16{0, 0xFF, 0xFFFF} {
+		raw := raw
+		t.Run(fmt.Sprintf("mapping_0x%04x", raw), func(t *testing.T) {
+			t.Parallel()
+
+			provider := graphql.NewLiveSemanticProvider()
+			connected := true
+			radioTemp := 17.6875
+			poller := &vaillantSemanticPoller{
+				provider: provider,
+				zones: map[byte]*vaillantZoneSnapshot{
+					0x01: {
+						Instance: 0x01,
+						Present:  true,
+						Name:     "Etaj",
+						ConfigurationRoomTemperatureZoneMappingRaw: &raw,
+					},
+				},
+				radioDevices: map[radioDeviceKey]*vaillantRadioDeviceSnapshot{
+					{Group: remoteThermostats.group, Instance: 0xFE}: {
+						Group:            remoteThermostats.group,
+						Instance:         0xFE,
+						DeviceConnected:  &connected,
+						RoomTemperatureC: &radioTemp,
+					},
+				},
+			}
+
+			poller.publishZones(semanticSnapshotSourceLive)
+
+			zones := provider.Zones()
+			if len(zones) != 1 {
+				t.Fatalf("len(provider.Zones()) = %d; want 1", len(zones))
+			}
+			if zones[0].State.CurrentTempC != nil {
+				t.Fatalf("zone current temp = %#v; want nil for unknown mapping 0x%04x", zones[0].State.CurrentTempC, raw)
+			}
+		})
+	}
+}
+
 func TestMergeDhwSnapshotFields_PartialLiveUpdatePreservesLastKnownAndFreshness(t *testing.T) {
 	t.Parallel()
 

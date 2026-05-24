@@ -3185,12 +3185,23 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 		if quickVetoActive && entry.QuickVetoEndDate != "" && entry.QuickVetoEndTime != "" {
 			qvExpiry = entry.QuickVetoEndDate + "T" + entry.QuickVetoEndTime
 		}
+		currentTempC := entry.CurrentTempC
+		currentHumidityPct := entry.HumidityPct
+		if currentTempC == nil || currentHumidityPct == nil {
+			radioTempC, radioHumidityPct := p.mappedRadioRoomStateForZoneLocked(entry)
+			if currentTempC == nil {
+				currentTempC = radioTempC
+			}
+			if currentHumidityPct == nil {
+				currentHumidityPct = radioHumidityPct
+			}
+		}
 		zone := graphql.Zone{
 			ID:   fmt.Sprintf("zone-%d", instance+1),
 			Name: name,
 			State: graphql.ZoneState{
-				CurrentTempC:       entry.CurrentTempC,
-				CurrentHumidityPct: entry.HumidityPct,
+				CurrentTempC:       currentTempC,
+				CurrentHumidityPct: currentHumidityPct,
 				HvacAction:         entry.HvacAction,
 				SpecialFunction:    entry.StateSpecialFunction,
 				ValvePositionPct:   decodeValvePositionPct(entry.StateValveStatusRaw),
@@ -3241,6 +3252,56 @@ func (p *vaillantSemanticPoller) publishZones(source semanticSnapshotSource) {
 		}
 	}
 	p.persistSemanticCache(source)
+}
+
+func (p *vaillantSemanticPoller) mappedRadioRoomStateForZoneLocked(entry *vaillantZoneSnapshot) (*float64, *float64) {
+	if p == nil || entry == nil || entry.ConfigurationRoomTemperatureZoneMappingRaw == nil {
+		return nil, nil
+	}
+	mapping := *entry.ConfigurationRoomTemperatureZoneMappingRaw
+	if mapping == 0 || mapping == 0xFFFF {
+		return nil, nil
+	}
+	if decodeRoomTemperatureZoneMapping(&mapping) == nil {
+		return nil, nil
+	}
+
+	var snapshot *vaillantRadioDeviceSnapshot
+	switch mapping {
+	case 1:
+		snapshot = p.firstConnectedRadioDeviceLocked(remoteRegulators.group)
+	default:
+		if mapping > 0x100 {
+			return nil, nil
+		}
+		snapshot = p.radioDevices[radioDeviceKey{Group: remoteThermostats.group, Instance: byte(mapping - 1)}]
+	}
+	if snapshot == nil || !radioDeviceConnected(snapshot) {
+		return nil, nil
+	}
+	return cloneFloat64Ptr(snapshot.RoomTemperatureC), cloneFloat64Ptr(snapshot.RoomHumidityPct)
+}
+
+func (p *vaillantSemanticPoller) firstConnectedRadioDeviceLocked(group byte) *vaillantRadioDeviceSnapshot {
+	if p == nil {
+		return nil
+	}
+	var selected *vaillantRadioDeviceSnapshot
+	var selectedInstance byte
+	for key, snapshot := range p.radioDevices {
+		if key.Group != group || snapshot == nil || !radioDeviceConnected(snapshot) {
+			continue
+		}
+		if selected == nil || key.Instance < selectedInstance {
+			selected = snapshot
+			selectedInstance = key.Instance
+		}
+	}
+	return selected
+}
+
+func radioDeviceConnected(snapshot *vaillantRadioDeviceSnapshot) bool {
+	return snapshot != nil && snapshot.DeviceConnected != nil && *snapshot.DeviceConnected
 }
 
 func zoneEquals(a, b graphql.Zone) bool {
@@ -6163,11 +6224,27 @@ func (p *vaillantSemanticPoller) persistSemanticSnapshot() {
 	if p == nil || p.cache == nil || p.provider == nil {
 		return
 	}
+	p.mu.Lock()
+	zones := p.cacheZonesLocked(p.provider.Zones())
+	p.mu.Unlock()
 	_ = p.cache.Save(semanticCacheSnapshot{
-		Zones:  p.provider.Zones(),
+		Zones:  zones,
 		DHW:    p.provider.DHW(),
 		Boiler: p.provider.BoilerStatus(),
 	})
+}
+
+func (p *vaillantSemanticPoller) cacheZonesLocked(published []graphql.Zone) []graphql.Zone {
+	out := make([]graphql.Zone, 0, len(published))
+	for idx, zone := range published {
+		instance := zoneInstanceFromSemanticID(zone.ID, idx)
+		if entry := p.zones[instance]; entry != nil {
+			zone.State.CurrentTempC = cloneFloat64Ptr(entry.CurrentTempC)
+			zone.State.CurrentHumidityPct = cloneFloat64Ptr(entry.HumidityPct)
+		}
+		out = append(out, zone)
+	}
+	return out
 }
 
 func dhwEquals(a, b *graphql.DhwStatus) bool {

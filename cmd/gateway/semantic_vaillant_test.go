@@ -3763,6 +3763,186 @@ func TestRefreshCircuits_NoSuccessfulReadsPreservesSnapshot(t *testing.T) {
 	}
 }
 
+func TestRefreshCircuits_PromotesDhwPseudoCircuitWithTemperatureEvidence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000, 0)
+	existingType := uint16(1)
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		controller:                  0x15,
+		source:                      0x7F,
+		provider:                    provider,
+		scheduler:                   ebusgateway.NewSemanticReadScheduler(),
+		requestTimeout:              50 * time.Millisecond,
+		circuitFullScanInterval:     semanticCircuitFullScanInterval,
+		lastCircuitFullScanAt:       now.Add(-5 * time.Minute),
+		lastCircuitFullScanComplete: true,
+		nowFn:                       func() time.Time { return now },
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x09: {
+				Instance:       0x09,
+				Active:         true,
+				CircuitTypeRaw: &existingType,
+			},
+		},
+		sendFrameFn: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return testB524ResponseForSelectorPayload(frame.Data), nil
+			}
+			group := frame.Data[2]
+			instance := frame.Data[3]
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			if group != localCircuits.group || instance != 0x09 {
+				return testB524ResponseForSelectorPayload(frame.Data), nil
+			}
+			switch addr {
+			case circuit_type:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00), nil
+			case circuit_flow_temp:
+				return testB524ResponseForSelectorPayload(frame.Data, testB524Float32Payload(47.5)...), nil
+			case circuit_calc_flow_temp:
+				return testB524ResponseForSelectorPayload(frame.Data, testB524Float32Payload(46.25)...), nil
+			case circuit_flow_setpoint,
+				circuit_heating_curve,
+				circuit_flow_temp_max,
+				circuit_flow_temp_min,
+				circuit_summer_limit,
+				circuit_frost_protection,
+				circuit_mixer_position,
+				circuit_humidity,
+				circuit_dew_point:
+				return testB524ResponseForSelectorPayload(frame.Data, testB524Float32Payload(0)...), nil
+			case circuit_pump_hours,
+				circuit_pump_starts:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+			default:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+			}
+		},
+	}
+
+	poller.refreshCircuits(context.Background())
+
+	entry, ok := poller.circuits[0x09]
+	if !ok || entry == nil {
+		t.Fatal("DHW pseudo-circuit snapshot missing after refresh")
+	}
+	if entry.CircuitTypeRaw == nil || *entry.CircuitTypeRaw != 3 {
+		t.Fatalf("entry.CircuitTypeRaw = %v; want 3 (dhw)", entry.CircuitTypeRaw)
+	}
+	if entry.FlowTemperatureC == nil || *entry.FlowTemperatureC != 47.5 {
+		t.Fatalf("entry.FlowTemperatureC = %v; want 47.5", entry.FlowTemperatureC)
+	}
+
+	status := provider.Circuits()
+	if len(status) != 1 {
+		t.Fatalf("provider.Circuits() = %d entries; want 1", len(status))
+	}
+	if status[0].Index != 9 || status[0].CircuitType != "dhw" {
+		t.Fatalf("provider.Circuits()[0] = %#v; want index 9 type dhw", status[0])
+	}
+}
+
+func TestRefreshCircuits_DoesNotPromoteDhwPseudoCircuitWithoutTemperatureEvidence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000, 0)
+	existingType := uint16(1)
+	poller := &vaillantSemanticPoller{
+		controller:                  0x15,
+		source:                      0x7F,
+		provider:                    graphql.NewLiveSemanticProvider(),
+		scheduler:                   ebusgateway.NewSemanticReadScheduler(),
+		requestTimeout:              50 * time.Millisecond,
+		circuitFullScanInterval:     semanticCircuitFullScanInterval,
+		lastCircuitFullScanAt:       now.Add(-5 * time.Minute),
+		lastCircuitFullScanComplete: true,
+		nowFn:                       func() time.Time { return now },
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x09: {
+				Instance:       0x09,
+				Active:         true,
+				CircuitTypeRaw: &existingType,
+			},
+		},
+		sendFrameFn: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return testB524ResponseForSelectorPayload(frame.Data), nil
+			}
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			switch addr {
+			case circuit_type:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00), nil
+			case circuit_flow_temp, circuit_calc_flow_temp:
+				return testB524ResponseForSelectorPayload(frame.Data, testB524Float32Payload(math.NaN())...), nil
+			default:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+			}
+		},
+	}
+
+	poller.refreshCircuits(context.Background())
+
+	if entry := poller.circuits[0x09]; entry != nil {
+		t.Fatalf("poller.circuits[0x09] = %#v; want removed without DHW temperature evidence", entry)
+	}
+}
+
+func TestRefreshCircuits_PreservesDhwPseudoCircuitWhenEvidenceReadsFail(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000, 0)
+	existingType := uint16(3)
+	existingFlow := 47.5
+	poller := &vaillantSemanticPoller{
+		controller:                  0x15,
+		source:                      0x7F,
+		provider:                    graphql.NewLiveSemanticProvider(),
+		scheduler:                   ebusgateway.NewSemanticReadScheduler(),
+		requestTimeout:              50 * time.Millisecond,
+		circuitFullScanInterval:     semanticCircuitFullScanInterval,
+		lastCircuitFullScanAt:       now.Add(-5 * time.Minute),
+		lastCircuitFullScanComplete: true,
+		nowFn:                       func() time.Time { return now },
+		circuits: map[byte]*vaillantCircuitSnapshot{
+			0x09: {
+				Instance:         0x09,
+				Active:           true,
+				CircuitTypeRaw:   &existingType,
+				FlowTemperatureC: &existingFlow,
+			},
+		},
+		sendFrameFn: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return testB524ResponseForSelectorPayload(frame.Data), nil
+			}
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			switch addr {
+			case circuit_type:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00), nil
+			case circuit_flow_temp, circuit_calc_flow_temp:
+				return &protocol.Frame{Data: []byte{0x00}}, nil
+			default:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+			}
+		},
+	}
+
+	poller.refreshCircuits(context.Background())
+
+	entry, ok := poller.circuits[0x09]
+	if !ok || entry == nil {
+		t.Fatal("DHW pseudo-circuit snapshot missing after transient evidence read failures")
+	}
+	if entry.CircuitTypeRaw == nil || *entry.CircuitTypeRaw != 3 {
+		t.Fatalf("entry.CircuitTypeRaw = %v; want preserved 3", entry.CircuitTypeRaw)
+	}
+	if entry.FlowTemperatureC == nil || *entry.FlowTemperatureC != 47.5 {
+		t.Fatalf("entry.FlowTemperatureC = %v; want preserved 47.5", entry.FlowTemperatureC)
+	}
+}
+
 func TestRefreshCircuits_TargetedProbeFailureForcesNextFullScan(t *testing.T) {
 	t.Parallel()
 

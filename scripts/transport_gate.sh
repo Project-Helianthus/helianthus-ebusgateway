@@ -104,6 +104,8 @@ def normalize(line: str) -> str | None:
     stripped = line.strip()
     if not stripped or stripped in {"}", ")"} or stripped.startswith("//"):
         return None
+    if stripped.startswith("buildVersion") and "=" in stripped:
+        return None
     for old, new in replacements:
         stripped = stripped.replace(old, new)
     return re.sub(r"\s+", " ", stripped)

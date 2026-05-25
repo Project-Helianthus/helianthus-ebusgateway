@@ -202,6 +202,44 @@ test("PortalShell ignores stale bootstrap completions when arming bus observabil
   ]);
 });
 
+test("PortalShell renders the gateway version in the topbar status", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sourcePath = path.resolve(here, "../src/app.js");
+  const source = await readFile(sourcePath, "utf8");
+
+  const health = createDeferredResponse({ status: "ok", gateway_version: "0.6.32" });
+  const bootstrap = createDeferredResponse({
+    capabilities: {},
+    endpoints: { graphql: "/graphql" },
+  });
+  const fetchQueue = [health.promise, bootstrap.promise];
+
+  const elements = new Map([
+    ["[data-role=\"status\"]", { textContent: "" }],
+    ["[data-role=\"meta\"]", { textContent: "" }],
+  ]);
+
+  const { shell } = createPortalShellHarness({
+    source,
+    sourcePath,
+    elements,
+    fetchImpl() {
+      const next = fetchQueue.shift();
+      if (!next) {
+        throw new Error("unexpected fetch");
+      }
+      return next;
+    },
+  });
+
+  const status = shell.loadStatus();
+  health.resolve();
+  bootstrap.resolve();
+  await status;
+
+  assert.equal(elements.get("[data-role=\"status\"]").textContent, "Gateway ok (0.6.32)");
+});
+
 test("PortalShell renders unsupported adapter info with an unsupported label", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const sourcePath = path.resolve(here, "../src/app.js");

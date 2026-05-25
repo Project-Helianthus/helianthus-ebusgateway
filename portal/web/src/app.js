@@ -592,7 +592,10 @@ class PortalShell extends HTMLElement {
         return;
       }
       if (statusEl) {
-        statusEl.textContent = `Gateway ${health.status}`;
+        const gatewayVersion = typeof health.gateway_version === "string" && health.gateway_version
+          ? health.gateway_version
+          : "dev";
+        statusEl.textContent = `Gateway ${health.status} (${gatewayVersion})`;
       }
       const capabilities = bootstrap.capabilities || {};
       const gqlEndpoint = bootstrap && bootstrap.endpoints && typeof bootstrap.endpoints.graphql === "string"

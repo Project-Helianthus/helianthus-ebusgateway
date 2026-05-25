@@ -588,6 +588,10 @@ func defaultExpectedFailure(testCase TopologyCase) string {
 	}
 	if testCase.Kind == TopologyProxyDual {
 		if testCase.ProxyTransport == TransportUDPPlain {
+			if testCase.GatewayTransport == TransportUDPPlain &&
+				(testCase.EbusdTransport == TransportENS || testCase.EbusdTransport == TransportENH) {
+				return ""
+			}
 			return "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)"
 		}
 		if testCase.ProxyTransport == TransportTCPPlain {

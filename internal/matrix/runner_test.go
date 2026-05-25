@@ -376,6 +376,9 @@ func TestDefaultExpectedFailureCoverage(t *testing.T) {
 	checkReason("T27", "proxy dual-client with ebusd northbound udp reports no signal")
 	checkReason("T33", "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)")
 	checkReason("T37", "proxy dual-client with southbound tcp reports no signal (ens/enh clients also show host comm framing)")
+	checkReason("T65", "")
+	checkReason("T66", "")
+	checkReason("T67", "proxy dual-client with southbound udp reports no signal (ens/enh clients also show host comm framing)")
 	checkReason("T26", "")
 
 	defaultFailCount := 0
@@ -384,7 +387,7 @@ func TestDefaultExpectedFailureCoverage(t *testing.T) {
 			defaultFailCount++
 		}
 	}
-	if defaultFailCount != 42 {
-		t.Fatalf("default expected-failure count = %d; want 42", defaultFailCount)
+	if defaultFailCount != 40 {
+		t.Fatalf("default expected-failure count = %d; want 40", defaultFailCount)
 	}
 }

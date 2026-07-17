@@ -70,6 +70,33 @@ type TransportConfig struct {
 	Dial         func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error)
 }
 
+type EEBusPairingWindowMode string
+
+const EEBusPairingWindowClosed EEBusPairingWindowMode = "closed"
+
+// EEBusConfig is the inert M5A configuration boundary for the future eeBUS
+// runtime sidecar. No runtime consumes this value in M5A.
+type EEBusConfig struct {
+	Enabled            bool
+	ListenPort         uint16
+	Interfaces         []string
+	Subnets            []string
+	CertificatePath    string
+	PrivateKeyPath     string
+	TrustStorePath     string
+	RemoteSKIAllowlist []string
+	PairingWindowMode  EEBusPairingWindowMode
+}
+
+func DefaultEEBusConfig() EEBusConfig {
+	return EEBusConfig{
+		Interfaces:         []string{},
+		Subnets:            []string{},
+		RemoteSKIAllowlist: []string{},
+		PairingWindowMode:  EEBusPairingWindowClosed,
+	}
+}
+
 type WatchObserver interface {
 	Observe(key WatchKey) WatchObservation
 }
@@ -96,6 +123,7 @@ type Config struct {
 	PassiveTransport         transport.RawTransport // pre-configured passive transport (adapter-direct mode)
 	ProxyListenAddr          string                 // TCP listen address for ENH proxy clients (empty disables)
 	TransportConfig          TransportConfig
+	EEBusConfig              EEBusConfig
 	BusConfig                protocol.BusConfig
 	QueueCapacity            int
 	Providers                []registry.PlaneProvider
@@ -232,6 +260,7 @@ func DefaultConfig() Config {
 			WriteTimeout: 5 * time.Second,
 			DialTimeout:  5 * time.Second,
 		},
+		EEBusConfig: DefaultEEBusConfig(),
 		BusConfig:   protocol.DefaultBusConfig(),
 		Providers:   vaillantproviders.Default(),
 		ScanOnStart: true,

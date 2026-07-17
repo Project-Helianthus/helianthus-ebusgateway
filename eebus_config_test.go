@@ -64,7 +64,7 @@ func TestM5AEEBusScaffold_HasNoRuntimeOrModuleCoupling(t *testing.T) {
 	}
 
 	allowedReferences := []string{
-		"cmd/gateway/main.go",
+		"cmd/gateway/eebus_config_flags.go",
 		"config.go",
 	}
 	var unexpected []string

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"time"
@@ -367,13 +366,6 @@ func applyDefaults(cfg Config) Config {
 	if cfg.StateMinStabilitySeconds == 0 {
 		cfg.StateMinStabilitySeconds = StartupAdmissionStateMinStabilitySecondsDefault
 	}
-	// AD22 invariant enforcement at config-load (per Codex-bot review on M2):
-	// non-zero invalid values (e.g. -1, 120, or any value violating
-	// state_min_stability_s × 5 ≤ continuous_threshold_s) MUST be rejected
-	// FATALly here, not just exercised in tests.
-	if err := ValidateStartupAdmissionStability(cfg.StateMinStabilitySeconds); err != nil {
-		log.Fatalf("FATAL: %v", err)
-	}
 	if cfg.SemanticInterval == 0 {
 		cfg.SemanticInterval = 1 * time.Minute
 	}
@@ -556,7 +548,8 @@ func applyDefaults(cfg Config) Config {
 // ValidateStartupAdmissionStability enforces AD22.
 func ValidateStartupAdmissionStability(stateMinStabilitySeconds int) error {
 	if stateMinStabilitySeconds < StartupAdmissionStateMinStabilitySecondsMin || stateMinStabilitySeconds > StartupAdmissionStateMinStabilitySecondsMax {
-		return fmt.Errorf("startup admission: state_min_stability_s=%d out of range [%d, %d]",
+		return fmt.Errorf("%w: state_min_stability_s=%d out of range [%d, %d]",
+			ErrStartupAdmissionStabilityInvariant,
 			stateMinStabilitySeconds,
 			StartupAdmissionStateMinStabilitySecondsMin,
 			StartupAdmissionStateMinStabilitySecondsMax)

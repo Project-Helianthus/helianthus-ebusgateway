@@ -175,12 +175,9 @@ func selectEEBusListenAddress(interfaceName string, addresses []netip.Addr, pref
 		membershipAddress := address.WithZone("")
 		matched := false
 		for _, prefix := range prefixes {
-			if prefix.Contains(membershipAddress) {
+			if prefix.Contains(membershipAddress) && validEEBusListenAddressInPrefix(membershipAddress, prefix) {
 				matched = true
-				if !validEEBusListenAddressInPrefix(membershipAddress, prefix) {
-					matched = false
-					break
-				}
+				break
 			}
 		}
 		if matched {

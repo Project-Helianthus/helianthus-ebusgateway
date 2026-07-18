@@ -250,6 +250,20 @@ func TestMapEEBusRuntimeConfig_ResolvesOneUniqueAddressInsideSubnetUnion(t *test
 			want:          netip.MustParseAddr("192.0.2.0"),
 		},
 		{
+			name:          "IPv4 /31 host survives an earlier overlapping network classification",
+			interfaceName: "en0",
+			subnets:       []string{"192.0.2.0/24", "192.0.2.0/31"},
+			addresses:     []netip.Addr{netip.MustParseAddr("192.0.2.0")},
+			want:          netip.MustParseAddr("192.0.2.0"),
+		},
+		{
+			name:          "IPv4 /31 host survives a later overlapping network classification",
+			interfaceName: "en0",
+			subnets:       []string{"192.0.2.0/31", "192.0.2.0/24"},
+			addresses:     []netip.Addr{netip.MustParseAddr("192.0.2.0")},
+			want:          netip.MustParseAddr("192.0.2.0"),
+		},
+		{
 			name:          "IPv4 /32 endpoint remains a host",
 			interfaceName: "en0",
 			subnets:       []string{"192.0.2.42/32"},

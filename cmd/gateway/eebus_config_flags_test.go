@@ -18,6 +18,8 @@ func TestBindFlags_EEBusScaffoldNormalizesExplicitValues(t *testing.T) {
 		"-eebus-listen-port", "4712",
 		"-eebus-interfaces", " en0, en1,en0 ,,en2 ",
 		"-eebus-subnets", "2001:db8::42/64,192.0.2.17/24,192.0.2.0/24",
+		"-eebus-state-root", " /data/eebus/runtime ",
+		"-eebus-discovery-enabled",
 		"-eebus-certificate-path", " /data/eebus/cert.pem ",
 		"-eebus-private-key-path", " /data/eebus/key.pem ",
 		"-eebus-trust-store-path", " /data/eebus/trust.json ",
@@ -37,6 +39,9 @@ func TestBindFlags_EEBusScaffoldNormalizesExplicitValues(t *testing.T) {
 	}
 	if want := []string{"192.0.2.0/24", "2001:db8::/64"}; !reflect.DeepEqual(got.Subnets, want) {
 		t.Fatalf("Subnets = %v; want %v", got.Subnets, want)
+	}
+	if got.StateRoot != "/data/eebus/runtime" || !got.DiscoveryEnabled {
+		t.Fatalf("StateRoot/DiscoveryEnabled = %q/%v; want /data/eebus/runtime/true", got.StateRoot, got.DiscoveryEnabled)
 	}
 	if got.CertificatePath != "/data/eebus/cert.pem" ||
 		got.PrivateKeyPath != "/data/eebus/key.pem" ||
@@ -84,6 +89,7 @@ func TestBindFlags_EEBusRejectsInvalidValuesWithoutMutation(t *testing.T) {
 		{name: "short ski", args: []string{"-eebus-remote-ski-allowlist", "abcd"}},
 		{name: "non-hex ski", args: []string{"-eebus-remote-ski-allowlist", strings.Repeat("z", 40)}},
 		{name: "future pairing mode", args: []string{"-eebus-pairing-window-mode", "manual"}},
+		{name: "state root NUL", args: []string{"-eebus-state-root", "state\x00root"}},
 		{name: "certificate path NUL", args: []string{"-eebus-certificate-path", "cert\x00.pem"}},
 		{name: "private key path NUL", args: []string{"-eebus-private-key-path", "key\x00.pem"}},
 		{name: "trust store path NUL", args: []string{"-eebus-trust-store-path", "trust\x00.json"}},

@@ -16,6 +16,12 @@ func TestDefaultConfig_DisablesEEBusScaffold(t *testing.T) {
 	if cfg.ListenPort != 0 {
 		t.Fatalf("EEBusConfig.ListenPort = %d; want 0", cfg.ListenPort)
 	}
+	if cfg.StateRoot != "" {
+		t.Fatalf("EEBusConfig.StateRoot = %q; want empty", cfg.StateRoot)
+	}
+	if cfg.DiscoveryEnabled {
+		t.Fatal("EEBusConfig.DiscoveryEnabled = true; want false")
+	}
 	if len(cfg.Interfaces) != 0 || len(cfg.Subnets) != 0 || len(cfg.RemoteSKIAllowlist) != 0 {
 		t.Fatalf(
 			"EEBusConfig lists = interfaces:%v subnets:%v allowlist:%v; want empty",
@@ -53,20 +59,23 @@ func TestDefaultEEBusConfig_ReturnsIndependentEmptySlices(t *testing.T) {
 	}
 }
 
-func TestM5AEEBusScaffold_HasNoRuntimeOrModuleCoupling(t *testing.T) {
-	const forbiddenImport = "github.com/Project-Helianthus/helianthus-eebusreg"
+func TestM5AR1EEBusConfig_RuntimeCouplingIsConfinedToPrivateMapper(t *testing.T) {
+	const runtimeImport = "github.com/Project-Helianthus/helianthus-eebusreg"
 	goMod, err := os.ReadFile("go.mod")
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
 	}
-	if strings.Contains(string(goMod), forbiddenImport) {
-		t.Fatalf("go.mod contains forbidden M5A dependency %q", forbiddenImport)
+	if !strings.Contains(string(goMod), runtimeImport) {
+		t.Fatalf("go.mod is missing required MSP-05A-R1 dependency %q", runtimeImport)
 	}
 
-	allowedReferences := []string{
+	allowedConfigReferences := []string{
 		"cmd/gateway/eebus_config_flags.go",
+		"cmd/gateway/eebus_runtime_config.go",
 		"config.go",
 	}
+	const allowedRuntimeImport = "cmd/gateway/eebus_runtime_config.go"
+	foundRuntimeImport := false
 	var unexpected []string
 	err = filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -86,10 +95,14 @@ func TestM5AEEBusScaffold_HasNoRuntimeOrModuleCoupling(t *testing.T) {
 			return readErr
 		}
 		normalized := filepath.ToSlash(strings.TrimPrefix(path, "."+string(filepath.Separator)))
-		if strings.Contains(string(content), forbiddenImport) {
-			unexpected = append(unexpected, normalized+": forbidden import")
+		if strings.Contains(string(content), runtimeImport) {
+			if normalized != allowedRuntimeImport {
+				unexpected = append(unexpected, normalized+": runtime import outside private mapper")
+			} else {
+				foundRuntimeImport = true
+			}
 		}
-		if strings.Contains(string(content), "EEBusConfig") && !slices.Contains(allowedReferences, normalized) {
+		if strings.Contains(string(content), "EEBusConfig") && !slices.Contains(allowedConfigReferences, normalized) {
 			unexpected = append(unexpected, normalized+": runtime reference outside config scaffold")
 		}
 		return nil
@@ -98,6 +111,9 @@ func TestM5AEEBusScaffold_HasNoRuntimeOrModuleCoupling(t *testing.T) {
 		t.Fatalf("walk production Go files: %v", err)
 	}
 	if len(unexpected) != 0 {
-		t.Fatalf("M5A eeBUS boundary violations: %v", unexpected)
+		t.Fatalf("MSP-05A-R1 eeBUS boundary violations: %v", unexpected)
+	}
+	if !foundRuntimeImport {
+		t.Fatalf("%s does not import %q", allowedRuntimeImport, runtimeImport)
 	}
 }

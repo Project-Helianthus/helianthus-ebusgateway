@@ -167,6 +167,7 @@ func TestMapEEBusRuntimeConfig_RejectsIncompleteEnabledProductBeforeResolver(t *
 	}{
 		{name: "missing state root", mutate: func(cfg *ebusgateway.EEBusConfig) { cfg.StateRoot = "" }},
 		{name: "relative state root", mutate: func(cfg *ebusgateway.EEBusConfig) { cfg.StateRoot = "var/lib/eebus" }},
+		{name: "state root traversal", mutate: func(cfg *ebusgateway.EEBusConfig) { cfg.StateRoot = "/var/lib/helianthus/../eebus" }},
 		{name: "filesystem root", mutate: func(cfg *ebusgateway.EEBusConfig) { cfg.StateRoot = "/" }},
 		{name: "zero port", mutate: func(cfg *ebusgateway.EEBusConfig) { cfg.ListenPort = 0 }},
 		{name: "missing interface", mutate: func(cfg *ebusgateway.EEBusConfig) { cfg.Interfaces = nil }},
@@ -242,6 +243,20 @@ func TestMapEEBusRuntimeConfig_ResolvesOneUniqueAddressInsideSubnetUnion(t *test
 			want: netip.MustParseAddr("192.0.2.42"),
 		},
 		{
+			name:          "IPv4 /31 endpoint remains a host",
+			interfaceName: "en0",
+			subnets:       []string{"192.0.2.0/31"},
+			addresses:     []netip.Addr{netip.MustParseAddr("192.0.2.0")},
+			want:          netip.MustParseAddr("192.0.2.0"),
+		},
+		{
+			name:          "IPv4 /32 endpoint remains a host",
+			interfaceName: "en0",
+			subnets:       []string{"192.0.2.42/32"},
+			addresses:     []netip.Addr{netip.MustParseAddr("192.0.2.42")},
+			want:          netip.MustParseAddr("192.0.2.42"),
+		},
+		{
 			name:          "IPv6 link-local zone is preserved",
 			interfaceName: "en0",
 			subnets:       []string{"fe80::/64"},
@@ -289,6 +304,11 @@ func TestMapEEBusRuntimeConfig_RejectsInvalidOrAmbiguousResolvedAddress(t *testi
 		{name: "multicast IPv6", subnets: []string{"::/0"}, addresses: []netip.Addr{netip.MustParseAddr("ff02::1")}},
 		{name: "IPv4-mapped IPv6", subnets: []string{"::/0"}, addresses: []netip.Addr{netip.MustParseAddr("::ffff:192.0.2.42")}},
 		{name: "global IPv4 broadcast", subnets: []string{"0.0.0.0/0"}, addresses: []netip.Addr{netip.MustParseAddr("255.255.255.255")}},
+		{name: "IPv4 subnet network address", subnets: []string{"192.0.2.0/24"}, addresses: []netip.Addr{netip.MustParseAddr("192.0.2.0")}},
+		{name: "IPv4 directed broadcast address", subnets: []string{"192.0.2.0/24"}, addresses: []netip.Addr{netip.MustParseAddr("192.0.2.255")}},
+		{name: "IPv6 link-local missing zone", subnets: []string{"fe80::/64"}, addresses: []netip.Addr{netip.MustParseAddr("fe80::1234")}},
+		{name: "IPv6 link-local mismatched zone", subnets: []string{"fe80::/64"}, addresses: []netip.Addr{netip.MustParseAddr("fe80::1234%en1")}},
+		{name: "IPv6 global address with zone", subnets: []string{"2001:db8::/64"}, addresses: []netip.Addr{netip.MustParseAddr("2001:db8::1234%en0")}},
 	}
 
 	for _, test := range tests {

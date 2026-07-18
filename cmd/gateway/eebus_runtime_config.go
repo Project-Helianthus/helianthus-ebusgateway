@@ -55,7 +55,7 @@ func mapEEBusRuntimeConfig(cfg ebusgateway.EEBusConfig, resolve eebusInterfaceAd
 	if err != nil {
 		return eebusruntime.Config{}, fmt.Errorf("resolve eeBUS interface %q addresses: %w", interfaceName, err)
 	}
-	listenAddress, err := selectEEBusListenAddress(addresses, prefixes)
+	listenAddress, err := selectEEBusListenAddress(interfaceName, addresses, prefixes)
 	if err != nil {
 		return eebusruntime.Config{}, err
 	}
@@ -89,7 +89,13 @@ func validateEEBusStateRoot(value string) (string, error) {
 	if strings.ContainsRune(value, '\x00') {
 		return "", errors.New("eeBUS state root contains NUL")
 	}
-	stateRoot := filepath.Clean(strings.TrimSpace(value))
+	stateRootInput := strings.TrimSpace(value)
+	for _, segment := range strings.Split(stateRootInput, string(filepath.Separator)) {
+		if segment == ".." {
+			return "", errors.New("eeBUS state root must not contain traversal")
+		}
+	}
+	stateRoot := filepath.Clean(stateRootInput)
 	if stateRoot == "." || stateRoot == "" {
 		return "", errors.New("enabled eeBUS configuration requires a state root")
 	}
@@ -160,18 +166,25 @@ func mapEEBusRemotes(allowlist []string) ([]eebusruntime.Remote, error) {
 	return remotes, nil
 }
 
-func selectEEBusListenAddress(addresses []netip.Addr, prefixes []netip.Prefix) (netip.Addr, error) {
+func selectEEBusListenAddress(interfaceName string, addresses []netip.Addr, prefixes []netip.Prefix) (netip.Addr, error) {
 	matches := make(map[netip.Addr]struct{})
 	for _, address := range addresses {
-		if !validEEBusListenAddress(address) {
+		if !validEEBusListenAddress(interfaceName, address) {
 			continue
 		}
 		membershipAddress := address.WithZone("")
+		matched := false
 		for _, prefix := range prefixes {
 			if prefix.Contains(membershipAddress) {
-				matches[address] = struct{}{}
-				break
+				matched = true
+				if !validEEBusListenAddressInPrefix(membershipAddress, prefix) {
+					matched = false
+					break
+				}
 			}
+		}
+		if matched {
+			matches[address] = struct{}{}
 		}
 	}
 	if len(matches) != 1 {
@@ -183,13 +196,31 @@ func selectEEBusListenAddress(addresses []netip.Addr, prefixes []netip.Prefix) (
 	return netip.Addr{}, errors.New("eeBUS interface address selection failed")
 }
 
-func validEEBusListenAddress(address netip.Addr) bool {
+func validEEBusListenAddress(interfaceName string, address netip.Addr) bool {
 	if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() || address.Is4In6() {
 		return false
 	}
+	if address.Is6() {
+		if address.IsLinkLocalUnicast() {
+			return address.Zone() == interfaceName
+		}
+		return address.Zone() == ""
+	}
 	if !address.Is4() {
-		return true
+		return false
 	}
 	octets := address.As4()
 	return octets[0] != 0 && octets != [4]byte{255, 255, 255, 255}
+}
+
+func validEEBusListenAddressInPrefix(address netip.Addr, prefix netip.Prefix) bool {
+	if !address.Is4() || !prefix.Addr().Is4() || prefix.Bits() >= 31 {
+		return true
+	}
+	octets := address.As4()
+	addressValue := uint32(octets[0])<<24 | uint32(octets[1])<<16 | uint32(octets[2])<<8 | uint32(octets[3])
+	networkOctets := prefix.Masked().Addr().As4()
+	networkValue := uint32(networkOctets[0])<<24 | uint32(networkOctets[1])<<16 | uint32(networkOctets[2])<<8 | uint32(networkOctets[3])
+	hostMask := ^uint32(0) >> prefix.Bits()
+	return addressValue != networkValue && addressValue != networkValue|hostMask
 }

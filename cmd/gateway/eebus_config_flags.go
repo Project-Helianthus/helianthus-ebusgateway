@@ -34,6 +34,15 @@ func bindEEBusFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		cfg.EEBusConfig.Subnets = subnets
 		return nil
 	})
+	fs.Func("eebus-state-root", "eeBUS runtime state root", func(value string) error {
+		path, err := normalizeEEBusPath("eebus-state-root", value)
+		if err != nil {
+			return err
+		}
+		cfg.EEBusConfig.StateRoot = path
+		return nil
+	})
+	fs.BoolVar(&cfg.EEBusConfig.DiscoveryEnabled, "eebus-discovery-enabled", cfg.EEBusConfig.DiscoveryEnabled, "enable eeBUS discovery")
 	fs.Func("eebus-certificate-path", "eeBUS certificate file path", func(value string) error {
 		path, err := normalizeEEBusPath("eebus-certificate-path", value)
 		if err != nil {

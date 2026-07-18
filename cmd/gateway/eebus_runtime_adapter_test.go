@@ -3,10 +3,16 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/netip"
+	"path/filepath"
 	"testing"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
@@ -118,6 +124,45 @@ func TestMSP05BStartEEBusRuntimeFailureShutsConstructedRuntimeOnce(t *testing.T)
 	}
 }
 
+func TestMSP05BStartEEBusRuntimeRejectsMissingFactoryAndNilRuntime(t *testing.T) {
+	resolver := func(string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("192.0.2.42")}, nil
+	}
+	factoryErr := errors.New("runtime factory failed")
+	tests := []struct {
+		name    string
+		factory eebusRuntimeFactory
+		wantErr error
+	}{
+		{name: "nil factory", factory: nil},
+		{
+			name: "nil runtime with error",
+			factory: func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+				return nil, factoryErr
+			},
+			wantErr: factoryErr,
+		},
+		{
+			name: "nil runtime without error",
+			factory: func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+				return nil, nil
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, err := startEEBusRuntime(context.Background(), msp05bEnabledConfig(), resolver, test.factory)
+			if adapter != nil || err == nil {
+				t.Fatalf("start result = (%v, %v); want nil adapter and error", adapter, err)
+			}
+			if test.wantErr != nil && !errors.Is(err, test.wantErr) {
+				t.Fatalf("start error = %v; want factory cause", err)
+			}
+		})
+	}
+}
+
 func TestMSP05BStartedAdapterShutdownIsIdempotent(t *testing.T) {
 	runtime := &msp05bRuntime{shutdownErr: errors.New("sidecar shutdown failed")}
 	adapter, err := startEEBusRuntime(
@@ -174,4 +219,97 @@ func TestMSP05BRunJoinsLaterErrorWithSidecarShutdown(t *testing.T) {
 	if runtime.startCalls != 1 || runtime.stopCalls != 1 {
 		t.Fatalf("calls start=%d shutdown=%d; want exactly one each", runtime.startCalls, runtime.stopCalls)
 	}
+}
+
+func TestMSP05BRunJoinsHTTPStartupErrorWithSidecarShutdown(t *testing.T) {
+	originalResolver := resolveEEBusInterfaceAddressesFn
+	originalFactory := newEEBusRuntimeFn
+	originalWire := wireObserveFirstObserversFn
+	originalDiscovery := startDiscoveryScanLoopFn
+	originalSemantic := startVaillantSemanticPollingFn
+	originalHTTP := startHTTPServerFn
+	t.Cleanup(func() {
+		resolveEEBusInterfaceAddressesFn = originalResolver
+		newEEBusRuntimeFn = originalFactory
+		wireObserveFirstObserversFn = originalWire
+		startDiscoveryScanLoopFn = originalDiscovery
+		startVaillantSemanticPollingFn = originalSemantic
+		startHTTPServerFn = originalHTTP
+	})
+
+	runtime := &msp05bRuntime{shutdownErr: errors.New("sidecar shutdown failed")}
+	httpErr := errors.New("HTTP startup failed")
+	installMSP05BRunDependencies(runtime)
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+		return nil, nil, httpErr
+	}
+
+	err := run(context.Background(), msp05bGatewayRunConfig(t))
+	if !errors.Is(err, httpErr) || !errors.Is(err, runtime.shutdownErr) {
+		t.Fatalf("run error = %v; want HTTP and sidecar shutdown causes", err)
+	}
+	if runtime.startCalls != 1 || runtime.stopCalls != 1 {
+		t.Fatalf("calls start=%d shutdown=%d; want exactly one each", runtime.startCalls, runtime.stopCalls)
+	}
+}
+
+func TestMSP05BRunCleanCancellationReturnsSidecarShutdownError(t *testing.T) {
+	originalResolver := resolveEEBusInterfaceAddressesFn
+	originalFactory := newEEBusRuntimeFn
+	originalWire := wireObserveFirstObserversFn
+	originalDiscovery := startDiscoveryScanLoopFn
+	originalSemantic := startVaillantSemanticPollingFn
+	originalHTTP := startHTTPServerFn
+	t.Cleanup(func() {
+		resolveEEBusInterfaceAddressesFn = originalResolver
+		newEEBusRuntimeFn = originalFactory
+		wireObserveFirstObserversFn = originalWire
+		startDiscoveryScanLoopFn = originalDiscovery
+		startVaillantSemanticPollingFn = originalSemantic
+		startHTTPServerFn = originalHTTP
+	})
+
+	runtime := &msp05bRuntime{shutdownErr: errors.New("sidecar shutdown failed")}
+	installMSP05BRunDependencies(runtime)
+	ctx, cancel := context.WithCancel(context.Background())
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+		cancel()
+		return nil, nil, nil
+	}
+
+	err := run(ctx, msp05bGatewayRunConfig(t))
+	if !errors.Is(err, runtime.shutdownErr) {
+		t.Fatalf("run error = %v; want sidecar shutdown cause after clean cancellation", err)
+	}
+	if runtime.startCalls != 1 || runtime.stopCalls != 1 {
+		t.Fatalf("calls start=%d shutdown=%d; want exactly one each", runtime.startCalls, runtime.stopCalls)
+	}
+}
+
+func installMSP05BRunDependencies(runtime eebusruntime.Runtime) {
+	resolveEEBusInterfaceAddressesFn = func(string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("192.0.2.42")}, nil
+	}
+	newEEBusRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+		return runtime, nil
+	}
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, nil
+	}
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
+		return startupScanSignals{}
+	}
+	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
+		return nil
+	}
+}
+
+func msp05bGatewayRunConfig(t *testing.T) ebusgateway.Config {
+	t.Helper()
+	cfg := ebusgateway.DefaultConfig()
+	cfg.EEBusConfig = msp05bEnabledConfig()
+	cfg.Transport = transport.NewLoopback()
+	cfg.BroadcastListen = false
+	cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
+	return cfg
 }

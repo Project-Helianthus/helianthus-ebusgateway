@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"expvar"
 	"flag"
 	"fmt"
@@ -154,11 +155,23 @@ func recordBusAdmissionTransitionWithStabilityRefresh(ctx context.Context, store
 	}()
 }
 
-func run(ctx context.Context, cfg ebusgateway.Config) error {
+func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	applyTransportSourcePolicy(&cfg)
 
 	if len(cfg.Providers) == 0 {
 		cfg.Providers = vaillantproviders.Default()
+	}
+
+	eebusAdapter, err := startEEBusRuntime(ctx, cfg.EEBusConfig, resolveEEBusInterfaceAddressesFn, newEEBusRuntimeFn)
+	if err != nil {
+		return fmt.Errorf("eeBUS sidecar: %w", err)
+	}
+	if eebusAdapter != nil {
+		defer func() {
+			if err := eebusAdapter.Shutdown(); err != nil {
+				result = errors.Join(result, fmt.Errorf("shutdown eeBUS sidecar: %w", err))
+			}
+		}()
 	}
 
 	// Initialize the runtime-state Manager early so the cached

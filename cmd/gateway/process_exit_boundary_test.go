@@ -47,10 +47,19 @@ func processExitViolations(filename string, source any) ([]processExitViolation,
 	}
 
 	var mainBody *ast.BlockStmt
+	var nestedMainFunctions []*ast.FuncLit
 	for _, declaration := range parsed.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
 		if ok && function.Recv == nil && function.Name.Name == "main" {
 			mainBody = function.Body
+			ast.Inspect(mainBody, func(node ast.Node) bool {
+				literal, ok := node.(*ast.FuncLit)
+				if !ok {
+					return true
+				}
+				nestedMainFunctions = append(nestedMainFunctions, literal)
+				return false
+			})
 			break
 		}
 	}
@@ -61,22 +70,32 @@ func processExitViolations(filename string, source any) ([]processExitViolation,
 		if !ok {
 			return true
 		}
-		qualifier, ok := selector.X.(*ast.Ident)
-		if !ok {
-			return true
+		qualifier, qualified := selector.X.(*ast.Ident)
+		path := ""
+		call := selector.Sel.Name
+		if qualified {
+			path = aliases[qualifier.Name]
+			call = qualifier.Name + "." + selector.Sel.Name
 		}
-		path := aliases[qualifier.Name]
 		terminates := path == "os" && selector.Sel.Name == "Exit"
-		terminates = terminates || path == "log" && (selector.Sel.Name == "Fatal" || selector.Sel.Name == "Fatalf" || selector.Sel.Name == "Fatalln")
+		terminates = terminates || selector.Sel.Name == "Fatal" || selector.Sel.Name == "Fatalf" || selector.Sel.Name == "Fatalln"
 		if !terminates {
 			return true
 		}
-		if mainBody != nil && selector.Pos() >= mainBody.Pos() && selector.End() <= mainBody.End() {
+		insideMain := mainBody != nil && selector.Pos() >= mainBody.Pos() && selector.End() <= mainBody.End()
+		insideNestedFunction := false
+		for _, literal := range nestedMainFunctions {
+			if selector.Pos() >= literal.Pos() && selector.End() <= literal.End() {
+				insideNestedFunction = true
+				break
+			}
+		}
+		if insideMain && !insideNestedFunction {
 			return true
 		}
 		violations = append(violations, processExitViolation{
 			position: files.Position(selector.Pos()),
-			call:     qualifier.Name + "." + selector.Sel.Name,
+			call:     call,
 		})
 		return true
 	})
@@ -84,27 +103,50 @@ func processExitViolations(filename string, source any) ([]processExitViolation,
 }
 
 func TestGatewayWorkerCodeCannotTerminateProcess(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read gateway package: %v", err)
-	}
-
 	var findings []string
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		violations, err := processExitViolations(name, nil)
+	for _, directory := range []string{".", "../.."} {
+		entries, err := os.ReadDir(directory)
 		if err != nil {
-			t.Fatalf("inspect %s: %v", name, err)
+			t.Fatalf("read gateway package %s: %v", directory, err)
 		}
-		for _, violation := range violations {
-			findings = append(findings, fmt.Sprintf("%s: %s", violation.position, violation.call))
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			filename := filepath.Join(directory, name)
+			violations, err := processExitViolations(filename, nil)
+			if err != nil {
+				t.Fatalf("inspect %s: %v", filename, err)
+			}
+			for _, violation := range violations {
+				findings = append(findings, fmt.Sprintf("%s: %s", violation.position, violation.call))
+			}
 		}
 	}
 	if len(findings) != 0 {
 		t.Fatalf("gateway process termination is allowed only inside main():\n%s", strings.Join(findings, "\n"))
+	}
+}
+
+func TestProcessExitGuardRejectsLoggerReceiversAndNestedMainWorkers(t *testing.T) {
+	const source = `package fixture
+import "log"
+func main() {
+  log.Fatalf("top-level termination")
+  worker := func() {
+    logger := log.Default()
+    logger.Fatal("nested termination")
+  }
+  _ = worker
+}
+`
+	violations, err := processExitViolations("fixture.go", source)
+	if err != nil {
+		t.Fatalf("inspect receiver fixture: %v", err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("receiver/nested process-exit violations = %v; want 1", violations)
 	}
 }
 

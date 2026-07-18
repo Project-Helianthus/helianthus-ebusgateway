@@ -11,6 +11,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
@@ -1381,6 +1382,25 @@ func TestWireAdapterDirect_NonAdapterDirect_ReturnsNil(t *testing.T) {
 	}
 	if closer != nil {
 		t.Fatal("closer should be nil for non-adapter-direct protocol")
+	}
+}
+
+func TestWireAdapterDirect_InvalidClassifierModeReturnsError(t *testing.T) {
+	t.Setenv(v8classifier.EnvVarName, "invalid-mode")
+	cfg := ebusgateway.DefaultConfig()
+	cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "192.0.2.1:9999"
+
+	closer, classifier, err := wireAdapterDirect(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("invalid classifier mode error = nil; want rejection")
+	}
+	if closer != nil || classifier != nil {
+		t.Fatalf("invalid classifier mode returned resources: closer=%v classifier=%v", closer != nil, classifier != nil)
+	}
+	if !strings.Contains(err.Error(), v8classifier.EnvVarName) || !strings.Contains(err.Error(), "invalid-mode") {
+		t.Fatalf("invalid classifier mode error = %q; want environment name and value", err)
 	}
 }
 

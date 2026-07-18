@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -146,7 +147,7 @@ func validateEEBusSubnets(subnets []string) ([]netip.Prefix, error) {
 func mapEEBusRemotes(allowlist []string) ([]eebusruntime.Remote, error) {
 	var remotes []eebusruntime.Remote
 	if allowlist != nil {
-		remotes = make([]eebusruntime.Remote, len(allowlist))
+		remotes = make([]eebusruntime.Remote, 0, len(allowlist))
 	}
 	seen := make(map[string]struct{}, len(allowlist))
 	for index, ski := range allowlist {
@@ -161,8 +162,11 @@ func mapEEBusRemotes(allowlist []string) ([]eebusruntime.Remote, error) {
 			return nil, fmt.Errorf("duplicate eeBUS remote SKI at index %d", index)
 		}
 		seen[identity] = struct{}{}
-		remotes[index] = eebusruntime.Remote{SKI: ski}
+		remotes = append(remotes, eebusruntime.Remote{SKI: identity})
 	}
+	sort.Slice(remotes, func(left, right int) bool {
+		return remotes[left].SKI < remotes[right].SKI
+	})
 	return remotes, nil
 }
 

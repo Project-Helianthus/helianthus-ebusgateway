@@ -57,11 +57,7 @@ func processExitViolations(filename string, source any) ([]processExitViolation,
 
 	var violations []processExitViolation
 	ast.Inspect(parsed, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		selector, ok := call.Fun.(*ast.SelectorExpr)
+		selector, ok := node.(*ast.SelectorExpr)
 		if !ok {
 			return true
 		}
@@ -75,11 +71,11 @@ func processExitViolations(filename string, source any) ([]processExitViolation,
 		if !terminates {
 			return true
 		}
-		if mainBody != nil && call.Pos() >= mainBody.Pos() && call.End() <= mainBody.End() {
+		if mainBody != nil && selector.Pos() >= mainBody.Pos() && selector.End() <= mainBody.End() {
 			return true
 		}
 		violations = append(violations, processExitViolation{
-			position: files.Position(call.Pos()),
+			position: files.Position(selector.Pos()),
 			call:     qualifier.Name + "." + selector.Sel.Name,
 		})
 		return true
@@ -120,7 +116,8 @@ import (
 )
 func worker() {
   logging.Fatalf("stop")
-  system.Exit(1)
+  terminate := system.Exit
+  terminate(1)
 }
 `
 	violations, err := processExitViolations("fixture.go", source)

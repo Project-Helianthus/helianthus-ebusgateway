@@ -215,7 +215,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 	metrics := ebusgateway.GetOrInitStartupSourceSelectionMetrics()
 	artifactBuilder := ebusgateway.NewSourceSelectionArtifactBuilder(string(cfg.TransportConfig.Protocol))
 	if err := artifactBuilder.SetSourceSelectionMode("degraded_no_events"); err != nil {
-		log.Fatalf("FATAL: AD23 enum violation at startup: %v", err)
+		return fmt.Errorf("set startup source-selection mode: %w", err)
 	}
 	overrideSet := admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && cfg.StartupSource.Source != nil
 	overrideSource := byte(0x00)
@@ -226,7 +226,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 		metrics.RecordExplicitValidateOnly()
 		artifactBuilder.SetExplicitSource(overrideSource)
 		if err := artifactBuilder.SetSourceSelectionMode("explicit_validate_only"); err != nil {
-			log.Fatalf("FATAL: SAS M4 enum violation on explicit source path: %v", err)
+			return fmt.Errorf("set explicit source-selection mode: %w", err)
 		}
 		// Exact source is configured: state immediately becomes "active" because
 		// the explicit source is in use from the first active frame. The selector
@@ -524,7 +524,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(cfg)))
 			artifactBuilder.SetSourceSelection(result.Source, result.Companion, result.Metrics.WarmupDurationActual)
 			if perr := artifactBuilder.SetSourceSelectionMode("source_selection"); perr != nil {
-				log.Fatalf("FATAL: SAS M4 enum violation on source-selection default-policy path: %v", perr)
+				return fmt.Errorf("set default-policy source-selection mode: %w", perr)
 			}
 			log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X provenance=source_selection_default_policy", result.Source, result.Companion)
 			recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "pending", result.Source, result.Companion, "active_probe_pending")
@@ -541,7 +541,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(cfg)))
 			artifactBuilder.SetSourceSelection(result.Source, result.Companion, 0)
 			if perr := artifactBuilder.SetSourceSelectionMode("source_selection"); perr != nil {
-				log.Fatalf("FATAL: SAS M4 enum violation on configured source validation path: %v", perr)
+				return fmt.Errorf("set configured source-selection mode: %w", perr)
 			}
 			log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X provenance=configured_source", result.Source, result.Companion)
 			recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "pending", result.Source, result.Companion, "active_probe_pending")
@@ -686,7 +686,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 			metrics.MarkDegraded(time.Now())
 			artifactBuilder.SetDegraded("source_selection_failed")
 			if perr := artifactBuilder.SetSourceSelectionMode("degraded_no_events"); perr != nil {
-				log.Fatalf("FATAL: AD23 enum violation on source-address selector-fail path: %v", perr)
+				return fmt.Errorf("set degraded source-selection mode: %w", perr)
 			}
 		} else {
 			if overrideSet {
@@ -700,7 +700,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) error {
 				artifactBuilder.SetPromotedSuspects(len(startupProbeTargets(cfg)))
 				artifactBuilder.SetSourceSelection(result.Source, result.Companion, time.Since(warmupStartedAt))
 				if perr := artifactBuilder.SetSourceSelectionMode("source_selection"); perr != nil {
-					log.Fatalf("FATAL: AD23 enum violation on source-selection path: %v", perr)
+					return fmt.Errorf("set selected source-selection mode: %w", perr)
 				}
 				log.Printf("startup source selection candidate source=0x%02X companion_target=0x%02X", result.Source, result.Companion)
 				recordBusAdmissionTransitionWithStabilityRefresh(ctx, busObservability, "pending", result.Source, result.Companion, "active_probe_pending")
@@ -1576,7 +1576,7 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	if envMode := os.Getenv(v8classifier.EnvVarName); envMode != "" {
 		parsedMode, err := v8classifier.ParseMode(envMode)
 		if err != nil {
-			log.Fatalf("invalid %s=%q: %v (expected off|shadow|enforce)", v8classifier.EnvVarName, envMode, err)
+			return nil, nil, fmt.Errorf("invalid %s=%q (expected off|shadow|enforce): %w", v8classifier.EnvVarName, envMode, err)
 		}
 		muxCfg.V8ClassifierMode = parsedMode
 		if parsedMode != v8classifier.ModeOff {

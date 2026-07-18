@@ -2,8 +2,11 @@ package ebusgateway
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
+	"os"
+	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +16,36 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
+
+func TestNewGateway_InvalidAdmissionStabilityReturnsBeforeDial(t *testing.T) {
+	if os.Getenv("HELIANTHUS_TEST_INVALID_ADMISSION_STABILITY") == "1" {
+		cfg := Config{
+			StateMinStabilitySeconds: 120,
+			TransportConfig: TransportConfig{
+				Protocol: TransportENH,
+				Network:  "tcp",
+				Address:  "192.0.2.1:9999",
+				Dial: func(context.Context, string, string, time.Duration) (net.Conn, error) {
+					panic("transport dialed before admission stability validation")
+				},
+			},
+		}
+		gateway, err := New(context.Background(), cfg)
+		if gateway != nil {
+			t.Fatalf("New() gateway = %v; want nil", gateway)
+		}
+		if !errors.Is(err, ErrStartupAdmissionStabilityInvariant) {
+			t.Fatalf("New() error = %v; want ErrStartupAdmissionStabilityInvariant", err)
+		}
+		return
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=^TestNewGateway_InvalidAdmissionStabilityReturnsBeforeDial$")
+	command.Env = append(os.Environ(), "HELIANTHUS_TEST_INVALID_ADMISSION_STABILITY=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("invalid admission stability terminated the helper process: %v\n%s", err, output)
+	}
+}
 
 func TestNewGateway_UsesProvidedTransport(t *testing.T) {
 	loopback := transport.NewLoopback()

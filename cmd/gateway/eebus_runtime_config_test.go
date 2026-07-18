@@ -108,7 +108,7 @@ func TestMapEEBusRuntimeConfig_DisabledRejectsActiveInputBeforeResolver(t *testi
 	}
 }
 
-func TestMapEEBusRuntimeConfig_MapsEnabledProductLosslessly(t *testing.T) {
+func TestMapEEBusRuntimeConfig_NormalizesAndSortsRemotes(t *testing.T) {
 	firstSKI := strings.Repeat("B", 40)
 	secondSKI := strings.Repeat("a", 40)
 	cfg := validEEBusRuntimeGatewayConfig()
@@ -128,8 +128,8 @@ func TestMapEEBusRuntimeConfig_MapsEnabledProductLosslessly(t *testing.T) {
 		ListenAddress:    netip.AddrPortFrom(address, 4712),
 		DiscoveryEnabled: true,
 		Remotes: []eebusruntime.Remote{
-			{SKI: firstSKI},
 			{SKI: secondSKI},
+			{SKI: strings.ToLower(firstSKI)},
 		},
 		PairingPolicy: eebusruntime.PairingPolicyClosed,
 	}
@@ -186,7 +186,7 @@ func TestMapEEBusRuntimeConfig_RejectsIncompleteEnabledProductBeforeResolver(t *
 		{name: "invalid remote SKI", mutate: func(cfg *ebusgateway.EEBusConfig) { cfg.RemoteSKIAllowlist = []string{"abcd"} }},
 		{name: "duplicate remote SKI", mutate: func(cfg *ebusgateway.EEBusConfig) {
 			remoteSKI := strings.Repeat("a", 40)
-			cfg.RemoteSKIAllowlist = []string{remoteSKI, remoteSKI}
+			cfg.RemoteSKIAllowlist = []string{remoteSKI, strings.ToUpper(remoteSKI)}
 		}},
 	}
 

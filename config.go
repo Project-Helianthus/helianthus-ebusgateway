@@ -74,13 +74,15 @@ type EEBusPairingWindowMode string
 
 const EEBusPairingWindowClosed EEBusPairingWindowMode = "closed"
 
-// EEBusConfig is the inert M5A configuration boundary for the future eeBUS
-// runtime sidecar. No runtime consumes this value in M5A.
+// EEBusConfig is the disabled-by-default configuration boundary for the eeBUS
+// runtime sidecar.
 type EEBusConfig struct {
 	Enabled            bool
 	ListenPort         uint16
 	Interfaces         []string
 	Subnets            []string
+	StateRoot          string
+	DiscoveryEnabled   bool
 	CertificatePath    string
 	PrivateKeyPath     string
 	TrustStorePath     string
